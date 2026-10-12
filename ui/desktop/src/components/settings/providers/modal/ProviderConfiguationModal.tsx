@@ -13,6 +13,7 @@ import { useConfig } from '../../../ConfigContext';
 import { useModelAndProvider } from '../../../ModelAndProviderContext';
 import { ProviderDetails, removeCustomProvider } from '../../../../api';
 import { Button } from '../../../ui/button';
+import { InfoTip } from '../../../ui/info-tip';
 import { providerSetupCopy } from '../copy';
 import { restOnDialog } from '../../models/dialogFocus';
 import CodingAgentSetupRecovery from './CodingAgentSetupRecovery';
@@ -70,14 +71,20 @@ export default function ProviderConfigurationModal({
     ? providerSetupCopy.deleteTitle(provider.metadata.display_name)
     : providerSetupCopy.configure(provider.metadata.display_name);
 
-  // A line under the title only where it carries something the form cannot say. A provider with
-  // a key field needs none ("Add your API keys…" restated the field); the delete states are
-  // consequences, and the two providers with no key field say why there is none. Llama Server and
-  // Ollama declare no secret and were once asked for "API key(s)" (W2-PRV-13).
+  // A line under the title only for the delete states: they are consequences, said at the moment
+  // of decision (principle 2), so they stay visible. A provider with a key field needs no line
+  // ("Add your API keys…" restated the field).
   const descriptionText = showDeleteConfirmation
     ? isActiveProvider
       ? providerSetupCopy.inUse
       : providerSetupCopy.deleteConsequence
+    : undefined;
+  // Why a form has no key field is an explanation, so it is the title's InfoTip, not a line under
+  // it: Configure Amazon Bedrock was the one dialog on the first-run path with a subtitle (vision
+  // FR-R3-2). Llama Server and Ollama declare no secret and were once asked for "API key(s)"
+  // (W2-PRV-13); a coding agent's form is a command path, not a key.
+  const titleHelp = showDeleteConfirmation
+    ? undefined
     : codingAgentKind
       ? providerSetupCopy.agentIntro(provider.metadata.display_name)
       : provider.metadata.config_keys.some((key) => key.secret)
@@ -254,6 +261,11 @@ export default function ProviderConfigurationModal({
         scrollBody
         title={headerText}
         titleClassName={titleInk}
+        titleInfo={
+          titleHelp ? (
+            <InfoTip label={headerText} help={titleHelp} data-testid="provider-config-title-info" />
+          ) : undefined
+        }
         subtitle={descriptionText}
         footer={
           <ProviderSetupActions

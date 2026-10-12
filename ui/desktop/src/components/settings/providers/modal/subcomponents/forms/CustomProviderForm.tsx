@@ -1,4 +1,6 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useId } from 'react';
+import { createPortal } from 'react-dom';
+import { ModalShell } from '../../../../../ModalShell';
 import { Input } from '../../../../../ui/input';
 import { SecretInput } from '../../../../../ui/secret-input';
 import { Select } from '../../../../../ui/Select';
@@ -6,6 +8,7 @@ import { Button } from '../../../../../ui/button';
 import { Checkbox } from '../../../../../ui/Checkbox';
 import { Field } from '../../../../../ui/field';
 import { Note } from '../../../../../ui/note';
+import { InfoTip, useInfoTipId } from '../../../../../ui/info-tip';
 import { SecureStorageNotice } from '../SecureStorageNotice';
 import { UpdateCustomProviderRequest } from '../../../../../../api';
 import { isBrowserSurface } from '../../../../../../utils/surface';
@@ -43,6 +46,14 @@ interface CustomProviderFormProps {
    * the old reading, so a caller that knows nothing changes nothing.
    */
   hasSavedKey?: boolean;
+  /**
+   * Where Cancel and the submit button go. Inside {@link CustomProviderDialog} it is the dialog's
+   * footer, so the two stay put under the footer's rule while the fields scroll, as every other
+   * dialog's actions do (vision FR-R3-2: they used to scroll inside the body). `null` while that
+   * footer has not mounted yet: nothing is drawn rather than a second copy in the body. Left out,
+   * the buttons close the form itself.
+   */
+  actionsHost?: HTMLElement | null;
 }
 
 export default function CustomProviderForm({
@@ -51,7 +62,12 @@ export default function CustomProviderForm({
   initialData,
   isEditable,
   hasSavedKey = true,
+  actionsHost,
 }: CustomProviderFormProps) {
+  // The submit button names the form with `form=` because, in the dialog, it is not inside it.
+  const formId = `custom-provider-form-${useId().replace(/[^a-zA-Z0-9_-]/g, '')}`;
+  const localModelHelpId = useInfoTipId();
+  const streamingHelpId = useInfoTipId();
   /** An edit of a provider whose key is saved: a blank key keeps it. */
   const keepsSavedKey = initialData !== null && hasSavedKey;
   /**
@@ -151,133 +167,202 @@ export default function CustomProviderForm({
         ? 'Anthropic compatible'
         : 'Ollama compatible';
 
-  return (
-    <form onSubmit={handleSubmit} className="flex flex-col gap-4 py-3">
-      {isEditable && (
-        <>
-          <Field
-            id="provider-select"
-            label={customProviderCopy.providerType}
-            error={validationErrors.providerType}
-          >
-            {/* react-select names its own input: the label points at `inputId`, and the
-                container keeps `id` so Field's helper id stays unique. */}
-            <Select
-              inputId="provider-select-input"
-              aria-label={customProviderCopy.providerType}
-              options={[
-                { value: 'openai_compatible', label: engineLabel('openai_compatible') },
-                { value: 'anthropic_compatible', label: engineLabel('anthropic_compatible') },
-                { value: 'ollama_compatible', label: engineLabel('ollama_compatible') },
-              ]}
-              value={{ value: engine, label: engineLabel(engine) }}
-              onChange={(option: unknown) => {
-                const selectedOption = option as { value: string; label: string } | null;
-                if (selectedOption) setEngine(selectedOption.value);
-              }}
-              isSearchable={false}
-              menuPlacement="auto"
-              menuPortalTarget={typeof document === 'undefined' ? undefined : document.body}
-            />
-          </Field>
-          <Field
-            id="display-name"
-            label={customProviderCopy.displayName}
-            error={validationErrors.displayName}
-          >
-            <Input
-              value={displayName}
-              onChange={(e) => setDisplayName(e.target.value)}
-              placeholder="Your provider name"
-            />
-          </Field>
-          <Field
-            id="api-url"
-            label={customProviderCopy.apiUrl}
-            error={validationErrors.apiUrl}
-            helper={
-              urlNeedsTypedKey ? (
-                <span data-testid="host-managed-custom-url">{HOST_MANAGED_CUSTOM_URL}</span>
-              ) : undefined
-            }
-          >
-            <Input
-              value={apiUrl}
-              onChange={(e) => setApiUrl(e.target.value)}
-              placeholder="https://api.example.com/v1"
-            />
-          </Field>
-        </>
-      )}
+  const actions = (
+    <>
+      <Button type="button" variant="secondary" onClick={onCancel}>
+        {customProviderCopy.cancel}
+      </Button>
+      <Button type="submit" form={formId} disabled={saving}>
+        {initialData
+          ? keepsSavedKey
+            ? customProviderCopy.update
+            : customProviderCopy.save
+          : customProviderCopy.create}
+      </Button>
+    </>
+  );
 
-      <div className="flex flex-col gap-2">
-        <Field id="api-key" label={customProviderCopy.apiKey} error={validationErrors.apiKey}>
-          {/* The same primitive the built-in providers' form uses for every secret
-              parameter, so the two forms mask — and reveal — a key the same way. */}
-          <SecretInput
-            revealLabel={customProviderCopy.apiKey}
-            value={apiKey}
-            onChange={(e) => setApiKey(e.target.value)}
-            placeholder={keepsSavedKey ? 'Leave blank to keep existing key' : 'Your API key'}
-            disabled={isLocalModel}
-          />
-        </Field>
-        {!initialData && (
-          <div className="br-provider-check-row" data-testid="custom-provider-local-row">
-            <label className="flex cursor-pointer items-center gap-2">
-              <Checkbox
-                id="local-model"
-                checked={isLocalModel}
-                onChange={(event) => handleLocalModels(event.target.checked)}
+  return (
+    <>
+      <form id={formId} onSubmit={handleSubmit} className="flex flex-col gap-4 py-3">
+        {isEditable && (
+          <>
+            <Field
+              id="provider-select"
+              label={customProviderCopy.providerType}
+              info={customProviderCopy.providerTypeHelp}
+              error={validationErrors.providerType}
+            >
+              {/* react-select names its own input: the label points at `inputId`, and the
+                container keeps `id` so Field's helper id stays unique. */}
+              <Select
+                inputId="provider-select-input"
+                aria-label={customProviderCopy.providerType}
+                options={[
+                  { value: 'openai_compatible', label: engineLabel('openai_compatible') },
+                  { value: 'anthropic_compatible', label: engineLabel('anthropic_compatible') },
+                  { value: 'ollama_compatible', label: engineLabel('ollama_compatible') },
+                ]}
+                value={{ value: engine, label: engineLabel(engine) }}
+                onChange={(option: unknown) => {
+                  const selectedOption = option as { value: string; label: string } | null;
+                  if (selectedOption) setEngine(selectedOption.value);
+                }}
+                isSearchable={false}
+                menuPlacement="auto"
+                menuPortalTarget={typeof document === 'undefined' ? undefined : document.body}
               />
-              <span className="text-label text-text-default">{customProviderCopy.localModel}</span>
-            </label>
-          </div>
+            </Field>
+            <Field
+              id="display-name"
+              label={customProviderCopy.displayName}
+              error={validationErrors.displayName}
+            >
+              <Input
+                value={displayName}
+                onChange={(e) => setDisplayName(e.target.value)}
+                placeholder="Your provider name"
+              />
+            </Field>
+            <Field
+              id="api-url"
+              label={customProviderCopy.apiUrl}
+              info={customProviderCopy.apiUrlHelp}
+              error={validationErrors.apiUrl}
+              helper={
+                urlNeedsTypedKey ? (
+                  <span data-testid="host-managed-custom-url">{HOST_MANAGED_CUSTOM_URL}</span>
+                ) : undefined
+              }
+            >
+              <Input
+                value={apiUrl}
+                onChange={(e) => setApiUrl(e.target.value)}
+                placeholder="https://api.example.com/v1"
+              />
+            </Field>
+          </>
         )}
-      </div>
-      {isEditable && (
-        <>
-          <Field
-            id="available-models"
-            label={customProviderCopy.models}
-            error={validationErrors.models}
-          >
-            <Input
-              value={models}
-              onChange={(e) => setModels(e.target.value)}
-              placeholder="model-a, model-b, model-c"
+
+        <div className="flex flex-col gap-2">
+          <Field id="api-key" label={customProviderCopy.apiKey} error={validationErrors.apiKey}>
+            {/* The same primitive the built-in providers' form uses for every secret
+              parameter, so the two forms mask — and reveal — a key the same way. */}
+            <SecretInput
+              revealLabel={customProviderCopy.apiKey}
+              value={apiKey}
+              onChange={(e) => setApiKey(e.target.value)}
+              placeholder={keepsSavedKey ? 'Leave blank to keep existing key' : 'Your API key'}
+              disabled={isLocalModel}
             />
           </Field>
-          <div className="br-provider-check-row" data-testid="custom-provider-streaming-row">
-            <label className="flex cursor-pointer items-center gap-2">
-              <Checkbox
-                id="supports-streaming"
-                checked={supportsStreaming}
-                onChange={(event) => setSupportsStreaming(event.target.checked)}
+          {!initialData && (
+            <div className="br-provider-check-row" data-testid="custom-provider-local-row">
+              <label className="flex cursor-pointer items-center gap-2">
+                <Checkbox
+                  id="local-model"
+                  checked={isLocalModel}
+                  onChange={(event) => handleLocalModels(event.target.checked)}
+                  aria-describedby={localModelHelpId}
+                />
+                <span className="text-label text-text-default">
+                  {customProviderCopy.localModel}
+                </span>
+              </label>
+              {/* The InfoTip is the label's sibling, never inside it: a click on it must not toggle
+                the box. */}
+              <InfoTip
+                id={localModelHelpId}
+                label={customProviderCopy.localModel}
+                help={customProviderCopy.localModelHelp}
               />
-              <span className="text-label text-text-default">{customProviderCopy.streaming}</span>
-            </label>
-          </div>
-        </>
-      )}
-      <SecureStorageNotice className="mt-0" />
-      {submitError && (
-        <Note tone="danger" role="alert" testId="custom-provider-submit-error">
-          <span className="whitespace-pre-wrap break-words">{submitError}</span>
-        </Note>
-      )}
-      <div className="flex justify-end gap-2 pt-1">
-        <Button type="button" variant="secondary" onClick={onCancel}>
-          {customProviderCopy.cancel}
-        </Button>
-        <Button type="submit" disabled={saving}>
-          {initialData
-            ? keepsSavedKey
-              ? customProviderCopy.update
-              : customProviderCopy.save
-            : customProviderCopy.create}
-        </Button>
-      </div>
-    </form>
+            </div>
+          )}
+        </div>
+        {isEditable && (
+          <>
+            <Field
+              id="available-models"
+              label={customProviderCopy.models}
+              info={customProviderCopy.modelsHelp}
+              error={validationErrors.models}
+            >
+              <Input
+                value={models}
+                onChange={(e) => setModels(e.target.value)}
+                placeholder="model-a, model-b, model-c"
+              />
+            </Field>
+            <div className="br-provider-check-row" data-testid="custom-provider-streaming-row">
+              <label className="flex cursor-pointer items-center gap-2">
+                <Checkbox
+                  id="supports-streaming"
+                  checked={supportsStreaming}
+                  onChange={(event) => setSupportsStreaming(event.target.checked)}
+                  aria-describedby={streamingHelpId}
+                />
+                <span className="text-label text-text-default">{customProviderCopy.streaming}</span>
+              </label>
+              <InfoTip
+                id={streamingHelpId}
+                label={customProviderCopy.streaming}
+                help={customProviderCopy.streamingHelp}
+              />
+            </div>
+          </>
+        )}
+        <SecureStorageNotice className="mt-0" />
+        {submitError && (
+          <Note tone="danger" role="alert" testId="custom-provider-submit-error">
+            <span className="whitespace-pre-wrap break-words">{submitError}</span>
+          </Note>
+        )}
+        {actionsHost === undefined ? (
+          <div className="flex justify-end gap-2 pt-1">{actions}</div>
+        ) : null}
+      </form>
+      {actionsHost ? createPortal(actions, actionsHost) : null}
+    </>
+  );
+}
+
+type CustomProviderDialogProps = Omit<CustomProviderFormProps, 'actionsHost'> & {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  title: string;
+};
+
+/**
+ * Add provider (and a custom or declarative provider's edit) as a dialog with the catalog's one
+ * anatomy: the title over a rule, the fields in a body that scrolls, and Cancel and the submit
+ * button in the footer under its rule, as the Configure dialog has them (vision FR-R3-2, ruling 7).
+ * The form keeps its own state and buttons; the footer is only where they are drawn, so the form
+ * still unmounts with the dialog's content and opens empty the next time.
+ */
+export function CustomProviderDialog({
+  open,
+  onOpenChange,
+  title,
+  ...formProps
+}: CustomProviderDialogProps) {
+  const [actionsHost, setActionsHost] = useState<HTMLDivElement | null>(null);
+  return (
+    <ModalShell
+      open={open}
+      onOpenChange={onOpenChange}
+      size="md"
+      purpose="form"
+      scrollBody
+      title={title}
+      footer={
+        <div
+          ref={setActionsHost}
+          className="flex flex-wrap items-center justify-end gap-2"
+          data-testid="custom-provider-actions"
+        />
+      }
+    >
+      <CustomProviderForm {...formProps} actionsHost={actionsHost} />
+    </ModalShell>
   );
 }

@@ -10,10 +10,9 @@ import {
   UpdateCustomProviderRequest,
 } from '../../../api';
 import { Plus } from '../../icons/app-icons';
-import { ModalShell } from '../../ModalShell';
 import { InfoTip } from '../../ui/info-tip';
 import { SettingSection } from '../../ui/setting-row';
-import CustomProviderForm from './modal/subcomponents/forms/CustomProviderForm';
+import { CustomProviderDialog } from './modal/subcomponents/forms/CustomProviderForm';
 import { SwitchModelModal } from '../models/subcomponents/SwitchModelModal';
 import { holdChatModel } from '../models/pendingChatModel';
 import type Model from '../models/modelInterface';
@@ -905,24 +904,18 @@ export default function ProviderCatalog({
         )}
       </Tabs>
 
-      <ModalShell
+      <CustomProviderDialog
         open={showCustomProviderModal}
         onOpenChange={(open) => {
           if (!open) handleCloseCustomModal();
         }}
-        size="md"
-        purpose="form"
-        scrollBody
         title={customModalTitle}
-      >
-        <CustomProviderForm
-          initialData={initialData}
-          isEditable={editable}
-          hasSavedKey={editingProvider?.isConfigured ?? true}
-          onSubmit={editingProvider ? handleUpdateCustomProvider : handleCreateCustomProvider}
-          onCancel={handleCloseCustomModal}
-        />
-      </ModalShell>
+        initialData={initialData}
+        isEditable={editable}
+        hasSavedKey={editingProvider?.isConfigured ?? true}
+        onSubmit={editingProvider ? handleUpdateCustomProvider : handleCreateCustomProvider}
+        onCancel={handleCloseCustomModal}
+      />
       {configuringProvider && (
         <ProviderConfigurationModal
           provider={configuringProvider}

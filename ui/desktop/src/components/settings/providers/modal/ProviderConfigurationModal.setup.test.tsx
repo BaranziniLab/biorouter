@@ -9,6 +9,8 @@ import type {
   CodingAgentKind,
 } from '../../../onboarding/codingAgentStatus';
 import ProviderConfigurationModal from './ProviderConfiguationModal';
+import { providerSetupCopy } from '../copy';
+import { uiCopy } from '../../../ui/copy';
 
 const mocks = vi.hoisted(() => ({
   submit: vi.fn(),
@@ -177,7 +179,12 @@ it('rechecks a failed configuration retry and offers the new sign-in state', asy
 
 it('explains Claude Code subscription setup without asking for an API key', async () => {
   render(<ProviderConfigurationModal provider={provider('claude_code')} onClose={vi.fn()} />);
-  expect(screen.getByText(/No API key is needed here/)).toBeInTheDocument();
+  // The explanation is the title's InfoTip (vision FR-R3-2), not a subtitle under the title.
+  const title = providerSetupCopy.configure('Claude Code');
+  expect(
+    screen.getByRole('button', { name: uiCopy.infoTipName(title) })
+  ).toHaveAccessibleDescription(providerSetupCopy.agentIntro('Claude Code'));
+  expect(screen.getByRole('dialog', { name: title })).not.toHaveAttribute('aria-describedby');
   expect(screen.queryByText(/Add your API key/)).not.toBeInTheDocument();
 });
 
@@ -251,9 +258,28 @@ it('does not ask a provider with no secret for an API key', () => {
   } as ProviderDetails;
   render(<ProviderConfigurationModal provider={llama} onClose={vi.fn()} />);
   expect(screen.queryByText(/API key\(s\)/)).not.toBeInTheDocument();
+  // Why there is no key field is the title's InfoTip, so every Configure dialog on the first-run
+  // path has the same anatomy: a title over a rule, no subtitle (vision FR-R3-2).
+  const title = providerSetupCopy.configure('Llama Server');
   expect(
-    screen.getByText('Llama Server needs no API key. Adjust how Biorouter reaches it.')
-  ).toBeInTheDocument();
+    screen.getByRole('button', { name: uiCopy.infoTipName(title) })
+  ).toHaveAccessibleDescription('Llama Server needs no API key. Adjust how Biorouter reaches it.');
+  expect(screen.getByRole('dialog', { name: title })).not.toHaveAttribute('aria-describedby');
+});
+
+it('keeps the delete consequence visible under the title, not in an InfoTip', async () => {
+  render(
+    <ProviderConfigurationModal
+      provider={{ ...provider('claude_code'), is_configured: true }}
+      onClose={vi.fn()}
+    />
+  );
+  fireEvent.click(await screen.findByRole('button', { name: providerSetupCopy.remove }));
+  const dialog = await screen.findByRole('dialog', {
+    name: providerSetupCopy.deleteTitle('Claude Code'),
+  });
+  expect(dialog).toHaveAccessibleDescription(providerSetupCopy.deleteConsequence);
+  expect(screen.queryByTestId('provider-config-title-info')).not.toBeInTheDocument();
 });
 
 describe.each(['codex', 'claude_code'] as const)(
