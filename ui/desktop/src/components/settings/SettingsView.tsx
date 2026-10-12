@@ -15,6 +15,7 @@ import { ReadableContent } from '../Layout/ReadableContent';
 import { PageHeader } from '../Layout/PageHeader';
 import { prefersReducedMotion } from '../../styles/motion';
 import { settingsShellCopy } from './app/copy';
+import { useWarmSettings } from './warmSettings';
 import { resolveSettingsDeepLink, type SettingsTab } from './settingsSections';
 import './settings.css';
 
@@ -95,6 +96,12 @@ export default function SettingsView({
   useEffect(() => {
     void readDisclosureAcknowledgement();
   }, []);
+
+  // And ask for the values the Chat and App tabs show while Settings opens, for the same reason:
+  // each tab mounts when it is chosen, and a control that has to read its value first is an empty
+  // box for the first frames of every visit (vision round 8, V4-R7-2). Models, the tab Settings
+  // opens on, shows none of them, so there is time.
+  useWarmSettings();
 
   // The highlighted row and what clears it. Held outside the scroll effect: that effect re-runs
   // (and cleans up) the moment it clears `pendingSection`, which must not cancel the highlight's

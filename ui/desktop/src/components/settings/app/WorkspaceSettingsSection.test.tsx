@@ -1,5 +1,5 @@
 import { describe, expect, it, vi, afterEach } from 'vitest';
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { act, render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { generalCopy } from './copy';
 
 const mocks = vi.hoisted(() => ({ upsert: vi.fn(), read: vi.fn() }));
@@ -59,5 +59,43 @@ describe('Never open tabs automatically', () => {
     expect(screen.queryByRole('heading')).toBeNull();
     expect(container.querySelector('.biorouter-settings-row p')).toBeNull();
     expect(toggle).toHaveAccessibleDescription(generalCopy.announceOnlyHelp);
+  });
+
+  /**
+   * A switch for a setting the daemon holds is the same control until it answers, held unpainted,
+   * and a later visit starts from the last answer (vision round 8, V4-R7-2): a placeholder `false`
+   * drew the OFF knob for a person who had turned this on, and slid it across on every visit.
+   */
+  describe('before and after the daemon has answered', () => {
+    it('holds the switch unpainted on a first visit rather than painting an OFF it does not know', async () => {
+      mocks.read.mockImplementation(() => new Promise(() => {}));
+      render(<NeverOpenTabsRow />);
+      expect(document.querySelector('[data-slot="switch"]')).toHaveAttribute('data-pending');
+      expect(screen.queryByRole('switch', { name: generalCopy.announceOnly })).toBeNull();
+      await act(async () => {});
+    });
+
+    it('starts a later visit from the last answer, painted in the first render', async () => {
+      mocks.read.mockResolvedValue(true);
+      const first = render(<NeverOpenTabsRow />);
+      await waitFor(() =>
+        expect(screen.getByRole('switch', { name: generalCopy.announceOnly })).toBeChecked()
+      );
+      first.unmount();
+
+      mocks.read.mockImplementation(() => new Promise(() => {}));
+      render(<NeverOpenTabsRow />);
+      expect(document.querySelector('[data-slot="switch"]')).not.toHaveAttribute('data-pending');
+      expect(screen.getByRole('switch', { name: generalCopy.announceOnly })).toBeChecked();
+      await act(async () => {});
+    });
+
+    it('shows the default, off, when the key cannot be read and nothing was ever read', async () => {
+      mocks.read.mockRejectedValue(new Error('daemon down'));
+      render(<NeverOpenTabsRow />);
+      expect(
+        await screen.findByRole('switch', { name: generalCopy.announceOnly })
+      ).not.toBeChecked();
+    });
   });
 });

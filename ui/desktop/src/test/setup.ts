@@ -6,6 +6,7 @@ import { assertNoUnexpectedNetworkAttempts, installOfflineFetch } from './networ
 import { waitForQueuedZeroDelayTimers } from './queuedTimers';
 import { client } from '../api/client.gen';
 import { resetComposerQueuesForTests } from '../utils/composerQueues';
+import { resetLastKnownForTests } from '../components/settings/lastKnown';
 
 // This is the standard setup to ensure that React Testing Library's
 // automatic cleanup runs after each test.
@@ -27,6 +28,9 @@ import { resetComposerQueuesForTests } from '../utils/composerQueues';
 afterEach(() => {
   cleanup();
   resetComposerQueuesForTests();
+  // Settings' controls start from the last answer this window heard (settings/lastKnown.ts), so
+  // one test's answer must not be the next test's first paint.
+  resetLastKnownForTests();
   assertNoUnexpectedNetworkAttempts(expect.getState().testPath);
 });
 

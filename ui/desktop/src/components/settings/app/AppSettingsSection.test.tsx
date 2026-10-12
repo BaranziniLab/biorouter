@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi, beforeEach } from 'vitest';
-import { act, fireEvent, render, screen } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { renderToString } from 'react-dom/server';
 import { aboutCopy, appearanceCopy, generalCopy } from './copy';
 
@@ -139,13 +139,95 @@ describe('switches read from the main process', () => {
     expect(await screen.findByRole('switch', { name: generalCopy.preventSleep })).toBeChecked();
   });
 
-  it('holds all three, Dock included, until each has been read', async () => {
+  it('holds all four, Dock and Never open tabs included, until each has been read', async () => {
     render(<AppSettingsSection />);
-    expect(document.querySelectorAll('[data-pending]')).toHaveLength(3);
+    expect(document.querySelectorAll('[data-pending]')).toHaveLength(4);
     for (const name of [generalCopy.menuBar, generalCopy.dock, generalCopy.preventSleep]) {
       expect(await screen.findByRole('switch', { name })).toBeChecked();
     }
+    expect(await screen.findByRole('switch', { name: generalCopy.announceOnly })).not.toBeChecked();
     expect(document.querySelectorAll('[data-pending]')).toHaveLength(0);
+  });
+});
+
+/**
+ * Settings mounts only the tab on screen, so every visit to App is a new mount. A switch that
+ * starts from "not read yet" is held unpainted for the one or two frames the main process takes,
+ * on every visit, and the column of switches fills in two steps (vision round 8, V4-R7-2). The
+ * answer cannot have changed since the last visit, so a later one starts from it.
+ */
+describe('a later visit to the App tab', () => {
+  /** The held switches never answer, so only a remembered value can paint them. */
+  function hangIpc() {
+    const never = () => new Promise<boolean>(() => {});
+    window.electron.getMenuBarIconState = vi.fn(never);
+    window.electron.getDockIconState = vi.fn(never);
+    window.electron.getWakelockState = vi.fn(never);
+  }
+
+  const mainProcessSwitches = [generalCopy.menuBar, generalCopy.dock, generalCopy.preventSleep];
+
+  /** The first visit, with distinct answers, left again as a tab switch leaves it. */
+  async function firstVisit() {
+    window.electron.getMenuBarIconState = vi.fn().mockResolvedValue(false);
+    window.electron.getDockIconState = vi.fn().mockResolvedValue(true);
+    window.electron.getWakelockState = vi.fn().mockResolvedValue(false);
+    const visit = render(<AppSettingsSection />);
+    for (const name of mainProcessSwitches) await screen.findByRole('switch', { name });
+    visit.unmount();
+  }
+
+  it('paints every main-process switch, with its last value, in the first render', async () => {
+    await firstVisit();
+    hangIpc();
+    render(<AppSettingsSection />);
+
+    // Nothing is held, and nothing has been awaited: this is the first committed frame.
+    expect(document.querySelectorAll('[data-pending]')).toHaveLength(0);
+    expect(screen.getByRole('switch', { name: generalCopy.menuBar })).not.toBeChecked();
+    expect(screen.getByRole('switch', { name: generalCopy.dock })).toBeChecked();
+    expect(screen.getByRole('switch', { name: generalCopy.preventSleep })).not.toBeChecked();
+  });
+
+  it('still asks the main process, and shows what it says when it differs', async () => {
+    await firstVisit();
+    window.electron.getWakelockState = vi.fn().mockResolvedValue(true);
+    render(<AppSettingsSection />);
+    expect(screen.getByRole('switch', { name: generalCopy.preventSleep })).not.toBeChecked();
+    await waitFor(() =>
+      expect(screen.getByRole('switch', { name: generalCopy.preventSleep })).toBeChecked()
+    );
+    expect(window.electron.getWakelockState).toHaveBeenCalledTimes(1);
+  });
+
+  it('starts from a change the person made, not the answer before it', async () => {
+    await firstVisit();
+    const first = render(<AppSettingsSection />);
+    fireEvent.click(await screen.findByRole('switch', { name: generalCopy.preventSleep }));
+    await waitFor(() => expect(window.electron.setWakelock).toHaveBeenCalledWith(true));
+    first.unmount();
+
+    hangIpc();
+    render(<AppSettingsSection />);
+    expect(screen.getByRole('switch', { name: generalCopy.preventSleep })).toBeChecked();
+  });
+
+  it('keeps the last answer when a later read fails, and shows no default over it', async () => {
+    await firstVisit();
+    window.electron.getMenuBarIconState = vi.fn().mockRejectedValue(new Error('no main process'));
+    render(<AppSettingsSection />);
+    await waitFor(() => expect(window.electron.getMenuBarIconState).toHaveBeenCalled());
+    await act(async () => {});
+    expect(screen.getByRole('switch', { name: generalCopy.menuBar })).not.toBeChecked();
+  });
+
+  it('holds a switch nobody has read, rather than painting a guess, on a first visit', async () => {
+    hangIpc();
+    render(<AppSettingsSection />);
+    expect(document.querySelectorAll('[data-pending]').length).toBeGreaterThanOrEqual(3);
+    expect(screen.queryByRole('switch', { name: generalCopy.menuBar })).toBeNull();
+    // Let the config-backed rows' reads land inside act.
+    await act(async () => {});
   });
 });
 

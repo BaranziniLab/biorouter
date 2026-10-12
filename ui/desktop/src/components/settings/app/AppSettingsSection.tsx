@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { Switch } from '../../ui/switch';
 import { StoredSwitch } from '../StoredSwitch';
+import { recall, useLastKnown, type LastKnownKey } from '../lastKnown';
 import { Button } from '../../ui/button';
 import { SettingRow, SettingSection } from '../../ui/setting-row';
 import UpdateSection from './UpdateSection';
@@ -38,12 +39,15 @@ function readShowPricing(): boolean {
  * them. The tail spacer lives once, on the App tab's own wrapper in `SettingsView`.
  */
 export default function AppSettingsSection() {
-  // `null` until the main process has answered. These three switches hold their place unpainted
-  // until then (`StoredSwitch`): a placeholder `true` flashed the coral ON track on every open for
-  // a person who had turned the setting off (vision V4-01).
-  const [menuBarIconEnabled, setMenuBarIconEnabled] = useState<boolean | null>(null);
-  const [dockIconEnabled, setDockIconEnabled] = useState<boolean | null>(null);
-  const [wakelockEnabled, setWakelockEnabled] = useState<boolean | null>(null);
+  // `undefined` until the main process has answered, and only the first time this window asks:
+  // each visit starts from the last answer and replaces it when the new one lands (V4-R7-2).
+  // These three switches hold their place unpainted until one is known (`StoredSwitch`): a
+  // placeholder `true` flashed the coral ON track on every open for a person who had turned the
+  // setting off (vision V4-01), and starting each visit unread painted the column of switches in
+  // two steps. A remembered answer is not that placeholder.
+  const [menuBarIconEnabled, setMenuBarIconEnabled] = useLastKnown<boolean>('menuBarIcon');
+  const [dockIconEnabled, setDockIconEnabled] = useLastKnown<boolean>('dockIcon');
+  const [wakelockEnabled, setWakelockEnabled] = useLastKnown<boolean>('wakelock');
   // Known on the first render: the platform is synchronous, and a row that appears one frame
   // later (Show in Dock) shifts every row below it.
   const [isMacOS] = useState(() => window.electron.platform === 'darwin');
@@ -57,18 +61,24 @@ export default function AppSettingsSection() {
   const shouldShowUpdates = !pinnedVersion;
 
   useEffect(() => {
-    // A state that cannot be read leaves the setting at its default, which is on for all three,
-    // rather than a switch that never appears.
-    const read = (ask: () => Promise<boolean>, set: (enabled: boolean) => void) => {
-      ask().then(set, () => set(true));
+    // A state that cannot be read leaves the setting at what the last read said and, with none, at
+    // its default, which is on for all three, rather than a switch that never appears.
+    const read = (
+      key: LastKnownKey,
+      ask: () => Promise<boolean>,
+      set: (enabled: boolean) => void
+    ) => {
+      ask().then(set, () => {
+        if (recall(key) === undefined) set(true);
+      });
     };
-    read(() => window.electron.getMenuBarIconState(), setMenuBarIconEnabled);
-    read(() => window.electron.getWakelockState(), setWakelockEnabled);
-    if (isMacOS) read(() => window.electron.getDockIconState(), setDockIconEnabled);
-  }, [isMacOS]);
+    read('menuBarIcon', () => window.electron.getMenuBarIconState(), setMenuBarIconEnabled);
+    read('wakelock', () => window.electron.getWakelockState(), setWakelockEnabled);
+    if (isMacOS) read('dockIcon', () => window.electron.getDockIconState(), setDockIconEnabled);
+  }, [isMacOS, setMenuBarIconEnabled, setWakelockEnabled, setDockIconEnabled]);
 
   const handleMenuBarIconToggle = async () => {
-    if (menuBarIconEnabled === null) return;
+    if (menuBarIconEnabled === undefined) return;
     const newState = !menuBarIconEnabled;
     // At least one of the two must stay on, or the app has no visible handle.
     if (!newState && dockIconEnabled === false && isMacOS) {
@@ -84,7 +94,7 @@ export default function AppSettingsSection() {
   };
 
   const handleDockIconToggle = async () => {
-    if (dockIconEnabled === null) return;
+    if (dockIconEnabled === undefined) return;
     const newState = !dockIconEnabled;
     if (!newState && menuBarIconEnabled === false) {
       const success = await window.electron.setMenuBarIcon(true);
@@ -100,7 +110,7 @@ export default function AppSettingsSection() {
   };
 
   const handleWakelockToggle = async () => {
-    if (wakelockEnabled === null) return;
+    if (wakelockEnabled === undefined) return;
     const newState = !wakelockEnabled;
     const success = await window.electron.setWakelock(newState);
     if (success) {
@@ -140,21 +150,24 @@ export default function AppSettingsSection() {
         </SettingRow>
 
         <SettingRow label={generalCopy.menuBar}>
-          <StoredSwitch checked={menuBarIconEnabled} onCheckedChange={handleMenuBarIconToggle} />
+          <StoredSwitch
+            checked={menuBarIconEnabled ?? null}
+            onCheckedChange={handleMenuBarIconToggle}
+          />
         </SettingRow>
 
         {isMacOS && (
           <SettingRow label={generalCopy.dock}>
             <StoredSwitch
               disabled={isDockSwitchDisabled}
-              checked={dockIconEnabled}
+              checked={dockIconEnabled ?? null}
               onCheckedChange={handleDockIconToggle}
             />
           </SettingRow>
         )}
 
         <SettingRow label={generalCopy.preventSleep} help={generalCopy.preventSleepHelp}>
-          <StoredSwitch checked={wakelockEnabled} onCheckedChange={handleWakelockToggle} />
+          <StoredSwitch checked={wakelockEnabled ?? null} onCheckedChange={handleWakelockToggle} />
         </SettingRow>
 
         <NeverOpenTabsRow />

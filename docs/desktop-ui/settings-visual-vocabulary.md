@@ -110,6 +110,21 @@ biorouter-settings-row  (min-height var(--row-height) = 40px, padding 10px 12px,
   starts on them and the daemon's answer replaces them with the same words; the Skeleton is only
   for a model or provider the app cannot name yet. `modelsGeometry.browser.test.tsx` reads the
   first commit and every frame after it in Chromium.
+  Chat and App are the same rule for values only the daemon or the main process holds. Settings
+  mounts just the tab on screen, so each visit is a new mount, and a control that starts from
+  "not read yet" was an empty box for the first frames of every visit (vision rounds 7 and 8,
+  V4-R7-2). Such a control now takes its state from `useLastKnown(key)` (`settings/lastKnown.ts`):
+  the last answer this window heard, written through when the person changes it, replaced by the
+  read that still runs on every mount. A key nothing has read stays `undefined` and the control
+  holds its place as before (`StoredSwitch`, `SettingSelect value={null}`, `MaxTurnsRow
+  loaded={false}`); a placeholder is never a guess. `SettingsView` calls `useWarmSettings()`, so
+  the first visit has an answer too: Settings opens on Models, which shows none of them, and the
+  reads (`warmSettings.ts`) only fill a key nothing has answered, so a switch flipped while one
+  was in flight is not set back. New rows that read a setting from outside the renderer add a
+  `LastKnownKey` and a line in `warmSettings.ts`. `tabSwitchFrames.browser.test.tsx` clicks the
+  real tabs in Chromium with the daemon and the main process 600 ms late and reads every commit
+  and frame. The one App control still held on a visit is the Privacy tiers switch: its
+  panel is frozen privacy UI and reads the daemon on each mount, so it is not seeded from this store.
 - No `min-h-*`, no `py-2`, no `py-3`, no `items-start`, no per-row measure fork. A hand-built
   row is still 40px, and the padding that makes it so is not `px-3 py-2.5`: that is 10 above, 10
   below, a 20px line and the 1px transparent edge, which is 41px, and 45px around a 24px

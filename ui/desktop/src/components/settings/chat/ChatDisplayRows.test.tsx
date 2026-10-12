@@ -139,6 +139,43 @@ describe('Spellcheck status', () => {
   });
 });
 
+/**
+ * The switch is the same control until the main process answers, held unpainted, and a later
+ * visit starts from the last answer (vision round 8, V4-R7-2). A placeholder `true` drew the coral
+ * ON track for a person who had turned spellcheck off, on every visit.
+ */
+describe('Spellcheck before and after the main process has answered', () => {
+  it('holds the switch unpainted on a first visit rather than painting an ON it does not know', async () => {
+    window.electron.getSpellcheckState = vi.fn(() => new Promise<boolean>(() => {}));
+    render(<SpellcheckRow />);
+    expect(document.querySelector('[data-slot="switch"]')).toHaveAttribute('data-pending');
+    expect(screen.queryByRole('switch', { name: displayCopy.spellcheck })).toBeNull();
+    expect(screen.queryByText(displayCopy.restartToApply)).not.toBeInTheDocument();
+  });
+
+  it('starts a later visit from the last answer, painted in the first render', async () => {
+    window.electron.getSpellcheckState = vi.fn().mockResolvedValue(false);
+    const first = render(<SpellcheckRow />);
+    await waitFor(() =>
+      expect(screen.getByRole('switch', { name: displayCopy.spellcheck })).not.toBeChecked()
+    );
+    first.unmount();
+
+    window.electron.getSpellcheckState = vi.fn(() => new Promise<boolean>(() => {}));
+    render(<SpellcheckRow />);
+    expect(document.querySelector('[data-slot="switch"]')).not.toHaveAttribute('data-pending');
+    expect(screen.getByRole('switch', { name: displayCopy.spellcheck })).not.toBeChecked();
+    // Nothing is claimed about a restart before this row has heard from the app.
+    expect(screen.queryByText(displayCopy.restartToApply)).not.toBeInTheDocument();
+  });
+
+  it('shows the default, on, when the state cannot be read and nothing was ever read', async () => {
+    window.electron.getSpellcheckState = vi.fn().mockRejectedValue(new Error('no main process'));
+    render(<SpellcheckRow />);
+    expect(await screen.findByRole('switch', { name: displayCopy.spellcheck })).toBeChecked();
+  });
+});
+
 describe('Project hints', () => {
   it('is one Edit… button whose name says what it edits, with the filename in its help', () => {
     render(<ProjectHintsRow />);

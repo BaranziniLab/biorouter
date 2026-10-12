@@ -145,4 +145,124 @@ describe('Settings > Chat > Approvals', () => {
     expect(await screen.findByRole('spinbutton', { name: approvalsCopy.maxTurns })).toBeVisible();
     expect(screen.queryByRole('button', { name: /chat limits/i })).toBeNull();
   });
+
+  /**
+   * Settings mounts only the tab on screen, so every visit to Chat is a new mount. A select with
+   * no words and a field with no number for the frames the daemon takes, on every visit, is what
+   * vision round 8 found (V4-R7-2). The answer cannot have changed since the last visit, so a later
+   * one starts from it, and still asks.
+   */
+  describe('a later visit', () => {
+    const answers = (key: string) =>
+      key === 'BIOROUTER_MODE' ? 'approve' : key === 'BIOROUTER_MAX_TURNS' ? 25 : undefined;
+
+    /** Visit once, wait for the answers, and leave as a tab switch does. */
+    async function firstVisit() {
+      config.read.mockImplementation(async (key: string) => answers(key));
+      const visit = render(<ModeSection />);
+      await screen.findByRole('button', { name: `${approvalsCopy.mode} Manual` });
+      await waitFor(() =>
+        expect(screen.getByRole('spinbutton', { name: approvalsCopy.maxTurns })).toHaveValue(25)
+      );
+      visit.unmount();
+    }
+
+    /** The daemon is slow from here on, so only a remembered answer can paint the controls. */
+    function daemonHangs() {
+      config.read.mockImplementation(() => new Promise(() => {}));
+    }
+
+    it('paints the stored mode and Max turns in the first render, enabled', async () => {
+      await firstVisit();
+      daemonHangs();
+      render(<ModeSection />);
+
+      const select = screen.getByRole('button', { name: `${approvalsCopy.mode} Manual` });
+      expect(select).toBeEnabled();
+      expect(select).not.toHaveAttribute('aria-busy');
+      // Manual is a mode the tool permissions shape, so that row is live too.
+      expect(screen.getByRole('button', { name: approvalsCopy.editToolPermissions })).toBeEnabled();
+      const turns = screen.getByRole('spinbutton', { name: approvalsCopy.maxTurns });
+      expect(turns).toBeEnabled();
+      expect(turns).not.toHaveAttribute('aria-busy');
+      expect(turns).toHaveValue(25);
+    });
+
+    it('still asks the daemon, and shows what it says when it differs', async () => {
+      await firstVisit();
+      config.read.mockImplementation(async (key: string) =>
+        key === 'BIOROUTER_MODE' ? 'smart_approve' : key === 'BIOROUTER_MAX_TURNS' ? 40 : undefined
+      );
+      render(<ModeSection />);
+      expect(screen.getByRole('button', { name: `${approvalsCopy.mode} Manual` })).toBeEnabled();
+      expect(
+        await screen.findByRole('button', { name: `${approvalsCopy.mode} Smart` })
+      ).toBeEnabled();
+      await waitFor(() =>
+        expect(screen.getByRole('spinbutton', { name: approvalsCopy.maxTurns })).toHaveValue(40)
+      );
+    });
+
+    it('starts from a mode the person chose, not the answer before it', async () => {
+      await firstVisit();
+      const user = userEvent.setup();
+      const visit = render(<ModeSection />);
+      await user.click(await screen.findByRole('button', { name: `${approvalsCopy.mode} Manual` }));
+      await user.click(await screen.findByRole('menuitemradio', { name: /Autonomous/ }));
+      await waitFor(() =>
+        expect(config.upsert).toHaveBeenCalledWith('BIOROUTER_MODE', 'auto', false)
+      );
+      visit.unmount();
+
+      daemonHangs();
+      render(<ModeSection />);
+      expect(
+        screen.getByRole('button', { name: `${approvalsCopy.mode} Autonomous` })
+      ).toBeEnabled();
+    });
+
+    it('remembers that nothing was saved for Max turns, and shows the default at once', async () => {
+      config.read.mockImplementation(async () => undefined);
+      const visit = render(<ModeSection />);
+      await screen.findByRole('button', { name: `${approvalsCopy.mode} Autonomous` });
+      await waitFor(() =>
+        expect(screen.getByRole('spinbutton', { name: approvalsCopy.maxTurns })).toBeEnabled()
+      );
+      visit.unmount();
+
+      daemonHangs();
+      render(<ModeSection />);
+      const turns = screen.getByRole('spinbutton', { name: approvalsCopy.maxTurns });
+      expect(turns).toBeEnabled();
+      expect(turns).toHaveValue(100);
+    });
+
+    it('keeps the last answer when a later read fails, rather than the default', async () => {
+      await firstVisit();
+      config.read.mockImplementation(async () => {
+        throw new Error('daemon down');
+      });
+      const logged = vi.spyOn(console, 'error').mockImplementation(() => {});
+      render(<ModeSection />);
+      await waitFor(() => expect(logged).toHaveBeenCalledTimes(2));
+      expect(screen.getByRole('button', { name: `${approvalsCopy.mode} Manual` })).toBeEnabled();
+      expect(screen.getByRole('spinbutton', { name: approvalsCopy.maxTurns })).toHaveValue(25);
+      logged.mockRestore();
+    });
+
+    it('with nothing read and a failing daemon, falls back to the defaults as it always did', async () => {
+      config.read.mockImplementation(async () => {
+        throw new Error('daemon down');
+      });
+      const logged = vi.spyOn(console, 'error').mockImplementation(() => {});
+      render(<ModeSection />);
+      expect(
+        await screen.findByRole('button', { name: `${approvalsCopy.mode} Autonomous` })
+      ).toBeEnabled();
+      await waitFor(() =>
+        expect(screen.getByRole('spinbutton', { name: approvalsCopy.maxTurns })).toHaveValue(100)
+      );
+      logged.mockRestore();
+    });
+  });
 });

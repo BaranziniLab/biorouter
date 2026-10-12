@@ -5,6 +5,7 @@ import SettingsView from './SettingsView';
 import { CONFIGURATION_ENABLED } from '../../updates';
 import { SETTINGS_SECTION_IDS } from './settingsSections';
 import { settingsShellCopy } from './app/copy';
+import { recall } from './lastKnown';
 
 // Every section but Privacy is stubbed, and each stub is identifiable, so this
 // file can assert both that the Privacy panel is really mounted (the failure
@@ -87,6 +88,25 @@ describe('SettingsView', () => {
     renderSettings();
     expect(screen.queryByTestId('section-app')).toBeNull();
     expect(disclosureAsks.count).toBe(1);
+  });
+
+  /**
+   * Vision round 8, V4-R7-2. Each tab mounts when it is chosen, and a control that has to read its
+   * value first is an empty box for the first frames of the visit. Settings opens on Models, which
+   * shows none of the Chat or App values, so it asks for them while it opens and the first visit
+   * to either tab has an answer to start from (`warmSettings.test.ts` has the reads themselves).
+   */
+  it('asks for the Chat and App values on open, before either tab is visited', async () => {
+    expect(recall('approvalMode')).toBeUndefined();
+    expect(recall('maxTurns')).toBeUndefined();
+    renderSettings();
+    expect(screen.queryByTestId('section-chat')).toBeNull();
+    expect(screen.queryByTestId('section-app')).toBeNull();
+    // The stubbed daemon answers "nothing saved" to every key: Autonomous, and no Max turns.
+    await act(async () => {});
+    expect(recall('approvalMode')).toBe('auto');
+    expect(recall('maxTurns')).toBeNull();
+    expect(recall('announceOnly')).toBe(false);
   });
 
   /**
