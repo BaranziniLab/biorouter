@@ -126,6 +126,21 @@ window.appConfig = { get: (key) => (key === 'BIOROUTER_HOME_DIR' ? '/Users/me' :
 `;
 
 const HOUR = 3_600_000;
+
+/**
+ * The newest instant for a fixture of chats spread over `span` ms that keeps every one of them on
+ * one local calendar day: now, unless less than `span` has passed since midnight, then the minute
+ * before it. A date-grouped view then holds the whole fixture under one heading at any hour (Today,
+ * or Yesterday in the first hours of the day), and all of it moves to the next heading together
+ * if midnight passes while the test runs. Built back from now alone, a fixture straddled midnight
+ * in those hours, and a view that sorts inside each date group sorted Today's part on its own
+ * (gate final 2: Sort by Name put "Chat 001" first at 00:14, not the whole list's "Chat 000").
+ */
+function oneDayEnd(span: number, now = Date.now()): number {
+  const midnight = new Date(now).setHours(0, 0, 0, 0);
+  return now - midnight >= span ? now : midnight - 60_000;
+}
+
 function sessions() {
   const now = Date.now();
   const row = (i: number, ago: number, name: string, extra: Record<string, unknown> = {}) => ({
@@ -804,8 +819,8 @@ describe('the app sidebar under the whole stylesheet (R-27)', () => {
 
     it('reads the next page when its box grows past the rows it holds (V1-R2-1)', async (ctx) => {
       if (!browser) return ctx.skip();
-      const now = Date.now();
       const TOTAL = 60;
+      const now = oneDayEnd((TOTAL - 1) * 60_000);
       const requested: string[] = [];
       // The default view pages by 10 from an opaque cursor, as the daemon does.
       const serve = (url: string) => {
@@ -897,13 +912,13 @@ describe('the app sidebar under the whole stylesheet (R-27)', () => {
     /**
      * `total` chats, newest first, under Group by None (line N of the list is chat `s{N + 1}`), or
      * under Group by Folder with `perFolder` chats in each folder, the folders in the same order,
-     * or under `groupBy` when it is given (Date puts every chat under "Today").
+     * or under `groupBy` when it is given (Date puts every chat under one heading, `oneDayEnd`).
      */
     const openLongList = (
       total: number,
       options: { scale?: number; perFolder?: number; groupBy?: 'date' } = {}
     ) => {
-      const now = Date.now();
+      const now = oneDayEnd((total - 1) * 1_000);
       const all = Array.from({ length: total }, (_, i) => ({
         id: `s${i + 1}`,
         name: `Chat ${i + 1}`,
@@ -1511,8 +1526,9 @@ describe('the app sidebar under the whole stylesheet (R-27)', () => {
      */
     it('paints a view that needs every chat only once its read has landed (V1-R3-3)', async (ctx) => {
       if (!browser) return ctx.skip();
-      const now = Date.now();
       const TOTAL = 120;
+      // The default view groups by date: every chat on one day, so Sort by Name sorts all of them.
+      const now = oneDayEnd((TOTAL - 1) * 60_000);
       // Names out of activity order (37 is prime to 120), so no part of the list sorts by name
       // into the start of the whole list's name order: that starts "Chat 000", the oldest chat.
       const all = Array.from({ length: TOTAL }, (_, i) => ({
