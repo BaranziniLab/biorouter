@@ -10,6 +10,10 @@ interface Props {
   onCancel: () => void;
 }
 
+/** What both states of a "Will fetch" chip share: the control ground inside the card, and focus. */
+const CHIP_CLASS =
+  'biorouter-focus-surface tint-interactive bg-background-default hover:bg-background-fill-strong';
+
 /**
  * Paste-a-chunk-of-prose staging (ui-spec §4.4).
  *
@@ -24,6 +28,13 @@ interface Props {
  *   `py-0.5` spans. `asChild` so the chip IS the button and takes the global
  *   focus fill; without it an opaque neutral-badge span would sit on
  *   top of its own focus surface and a keyboard user would see nothing.
+ * - **A chip is a control, so inside the card it rests on the page ground**
+ *   (`bg-background-default`, hovering on `bg-background-fill-strong`; design.md 9.11
+ *   rule 3), like the Title field and Stage beside it. A neutral badge rests on the strong
+ *   step, which on this card's fill drew 1.09:1, a fill on a fill (V3-R8-1). Pressed and not
+ *   pressed differ by fill, not only by the strike-through: the selected wash is the
+ *   pressed state's. `biorouter-focus-surface` keeps the grey focus surface, which an own
+ *   `bg-*` utility would otherwise out-rank (main.css, `.biorouter-focus-surface`).
  * - **The box is the filled card** (R-27, design.md 9.11): the subtle fill with a transparent
  *   1px edge and no outline. `br-fill-surface` makes its fields and its Stage button rest one
  *   ground back, on the page's, because a fill never sits on a fill.
@@ -100,8 +111,8 @@ export function PasteTextBox({ onStage, onCancel }: Props) {
                 asChild
                 className={
                   on
-                    ? 'tint-selected tint-interactive text-text-default'
-                    : 'tint-interactive text-text-muted line-through'
+                    ? CHIP_CLASS + ' tint-selected text-text-default'
+                    : CHIP_CLASS + ' text-text-muted line-through'
                 }
               >
                 <button type="button" aria-pressed={on} onClick={() => toggleUrl(u)}>
