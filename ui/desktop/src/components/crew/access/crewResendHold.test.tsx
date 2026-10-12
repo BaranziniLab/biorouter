@@ -145,7 +145,9 @@ describe('BaseChat routes every re-send through the Crew hold (F1)', () => {
 
   it('hands the transcript, the turn error, the composer and the workflow only held senders', () => {
     expect(source).toMatch(/onMessageUpdate=\{heldMessageUpdate\}/);
-    expect(source).toMatch(/<ChatTurnError error=\{turnError\} onRetry=\{heldRetryTurn\} \/>/);
+    // The row is the turn error itself when the transcript does not already show it
+    // (`turnErrorRow`, pinned in BaseChat.summaryRail.test.ts); its retry is the held one.
+    expect(source).toMatch(/<ChatTurnError error=\{turnErrorRow\} onRetry=\{heldRetryTurn\} \/>/);
     expect(source).toMatch(/onSteer=\{heldSteer\}/);
     expect(source).toMatch(/append=\{\(text: string\) => heldSubmit\(text\)\}/);
     expect(source).toMatch(/submitAndReturnToBottom\(\{ sessionId, submit: heldSubmit \}/);
