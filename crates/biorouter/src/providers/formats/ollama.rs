@@ -161,6 +161,22 @@ pub struct ModelFacts {
     /// Sent a turn with both, it renders the text and DROPS the calls, so the
     /// model sees tool results for calls it never made (R7).
     pub drops_calls_after_text: bool,
+    /// The model's chat template never renders the tool list, although
+    /// `capabilities` says `tools`. deepseek-r1:8b (Ollama 0.40.2): neither
+    /// its Go `TEMPLATE` nor the Jinja `template` `/api/show` returns mentions
+    /// tools, and the same 136,952-byte request that phi4-mini read as 29,997
+    /// prompt tokens reached it as 19,094 — the ~11k tokens of tool schemas
+    /// were dropped. Offered tools it could not see, it spent 166 s inventing
+    /// an SDK to call them with (F11). Such a model cannot call a tool it was
+    /// never shown, so it is treated as having no tool support.
+    ///
+    /// Read only from a real template: an empty one says nothing, and a model
+    /// served by a built-in renderer (`RENDERER` in its Modelfile, whose
+    /// `template` is then the `{{ .Prompt }}` stub — lfm2, glm-4.7, gemma4,
+    /// qwen3.8) is rendered by code this text does not describe. A template
+    /// that mentions Go's `.Tools` or the word `tools` anywhere counts as
+    /// showing them, so the check can only fail open.
+    pub template_never_shows_tools: bool,
     /// `remote_host` / `remote_model`: Ollama serves this model by forwarding
     /// to another host (an Ollama cloud model, possibly renamed with `ollama
     /// cp`), so a request for it leaves this machine.
@@ -211,6 +227,16 @@ impl ModelFacts {
         .iter()
         .any(|pattern| template.contains(pattern));
         let drops_calls_after_text = template.contains("else if .ToolCalls");
+        let modelfile = show
+            .get("modelfile")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        let rendered_by_code = modelfile
+            .lines()
+            .any(|line| line.trim_start().starts_with("RENDERER "));
+        let template_never_shows_tools = !rendered_by_code
+            && template_hides_tools(template)
+            && modelfile_template(modelfile).is_none_or(template_hides_tools);
         let remote = ["remote_host", "remote_model"].iter().any(|key| {
             show.get(key)
                 .and_then(Value::as_str)
@@ -226,6 +252,7 @@ impl ModelFacts {
             think_values,
             tools_only_near_last_user,
             drops_calls_after_text,
+            template_never_shows_tools,
             remote,
             remote_origin,
         }
@@ -233,6 +260,16 @@ impl ModelFacts {
 
     pub fn has(&self, capability: &str) -> bool {
         self.capabilities.iter().any(|c| c == capability)
+    }
+
+    /// Why a tools request to this model is refused before it is sent, or
+    /// `None` when it may be sent.
+    pub fn no_tools_error(&self, model: &str) -> Option<ProviderError> {
+        match self.supports_tools() {
+            Some(false) if !self.has("tools") => Some(no_tools_error(model, None)),
+            Some(false) => Some(template_without_tools_error(model)),
+            _ => None,
+        }
     }
 
     /// Whether `think` may be sent at all. Sending it to a model without the
@@ -247,9 +284,12 @@ impl ModelFacts {
     }
 
     /// Whether the model may be offered for tool-calling chats. `None` when the
-    /// server reported no capabilities, so the caller can keep it listed.
+    /// server reported no capabilities, so the caller can keep it listed. A
+    /// `tools` capability whose template never shows the tool list is no
+    /// support at all ([`Self::template_never_shows_tools`]).
     pub fn supports_tools(&self) -> Option<bool> {
-        (!self.capabilities.is_empty()).then(|| self.has("tools"))
+        (!self.capabilities.is_empty())
+            .then(|| self.has("tools") && !self.template_never_shows_tools)
     }
 
     fn levels_known(&self) -> bool {
@@ -1522,6 +1562,54 @@ pub fn no_tools_error(model: &str, server_said: Option<&str>) -> ProviderError {
     ))
 }
 
+/// R19 for a model whose template never shows the tool list
+/// ([`ModelFacts::template_never_shows_tools`]): Ollama lists `tools` for it,
+/// so the sentence says what is actually wrong rather than repeating that
+/// claim back.
+pub fn template_without_tools_error(model: &str) -> ProviderError {
+    let subject = if model.is_empty() {
+        "This model"
+    } else {
+        model
+    };
+    ProviderError::RequestFailed(format!(
+        "{subject} cannot call tools: Ollama lists tool support for it, but its chat template \
+         never shows the tool definitions to the model, so it cannot know what to call, and \
+         Biorouter's agent works through tool calls. Choose a model that supports tools \
+         (qwen3.8:27b and gemma4:31b are the supported local models), or set \
+         BIOROUTER_TOOLSHIM=true to have tool calls read from this model's text."
+    ))
+}
+
+/// Whether a chat template, Go or Jinja, never renders the tool list. `false`
+/// for an empty template and for the `{{ .Prompt }}` stub a renderer-served
+/// model reports, which describe nothing; `false` whenever Go's `.Tools` or
+/// the word `tools` appears at all, so a template that might show them is
+/// never refused.
+fn template_hides_tools(template: &str) -> bool {
+    let template = template.trim();
+    if template.is_empty() || template == "{{ .Prompt }}" {
+        return false;
+    }
+    if template.contains(".Tools") {
+        return false;
+    }
+    let word = |byte: u8| byte.is_ascii_alphanumeric() || byte == b'_';
+    let bytes = template.as_bytes();
+    !template.match_indices("tools").any(|(at, found)| {
+        let before = at.checked_sub(1).map(|i| bytes[i]);
+        let after = bytes.get(at + found.len()).copied();
+        !before.is_some_and(word) && !after.is_some_and(word)
+    })
+}
+
+/// The `TEMPLATE """…"""` block of a Modelfile as `/api/show` prints it.
+fn modelfile_template(modelfile: &str) -> Option<&str> {
+    let start = modelfile.find("TEMPLATE \"\"\"")? + "TEMPLATE \"\"\"".len();
+    let rest = modelfile.get(start..)?;
+    rest.find("\"\"\"").and_then(|end| rest.get(..end))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1816,6 +1904,127 @@ mod tests {
         );
         assert_eq!(plain.supports_tools(), Some(false));
         assert_eq!(ModelFacts::from_show(&json!({})).supports_tools(), None);
+    }
+
+    const DEEPSEEK_JINJA: &str =
+        include_str!("../../../tests/fixtures/ollama/templates/deepseek-r1_8b.jinja");
+    const DEEPSEEK_GO: &str =
+        include_str!("../../../tests/fixtures/ollama/templates/deepseek-r1_8b.tmpl");
+
+    fn modelfile_with(template: &str) -> String {
+        format!(
+            "# Modelfile generated by \"ollama show\"\nFROM /blobs/sha256-x\nTEMPLATE \
+             \"\"\"{template}\"\"\"\nPARAMETER temperature 0.6\nLICENSE \"\"\"MIT\"\"\"\n"
+        )
+    }
+
+    /// F11 (live 2026-10-12): deepseek-r1:8b lists `tools` in its capabilities,
+    /// but neither template `/api/show` returns for it — the Jinja `template`
+    /// nor the Go `TEMPLATE` in its Modelfile — ever renders the tool list.
+    /// Offered tools, it received none of them (19,094 prompt tokens for the
+    /// request phi4-mini read as 29,997) and spent 166 s inventing an SDK. It
+    /// is refused like a model without tools, with the sentence that says
+    /// which of the two it is.
+    #[test]
+    fn a_template_that_never_shows_tools_is_no_tool_support() {
+        let deepseek = ModelFacts::from_show(&json!({
+            "capabilities": ["tools", "thinking", "completion"],
+            "template": DEEPSEEK_JINJA,
+            "modelfile": modelfile_with(DEEPSEEK_GO),
+        }));
+        assert!(deepseek.template_never_shows_tools);
+        assert_eq!(deepseek.supports_tools(), Some(false));
+        let error = deepseek
+            .no_tools_error("deepseek-r1:8b")
+            .expect("refused")
+            .to_string();
+        assert!(
+            error.contains("deepseek-r1:8b cannot call tools"),
+            "{error}"
+        );
+        assert!(
+            error.contains("never shows the tool definitions"),
+            "{error}"
+        );
+        assert!(error.contains("BIOROUTER_TOOLSHIM"), "{error}");
+        for template in [DEEPSEEK_JINJA, DEEPSEEK_GO] {
+            let facts = ModelFacts::from_show(&json!({
+                "capabilities": ["completion", "tools"],
+                "template": template,
+            }));
+            assert_eq!(facts.supports_tools(), Some(false), "{template}");
+        }
+
+        // A model without the capability keeps the sentence that says so.
+        let gemma3 = ModelFacts::from_show(&json!({
+            "capabilities": ["completion", "vision"],
+            "template": "{{- range $i, $_ := .Messages }}{{ .Content }}{{ end }}",
+        }));
+        let error = gemma3.no_tools_error("gemma3:4b").unwrap().to_string();
+        assert!(
+            error.contains("Ollama reports no tool support for it"),
+            "{error}"
+        );
+    }
+
+    /// The check fails open: every template that might show the tools, and
+    /// every model rendered by Ollama's own code, keeps its tool support.
+    #[test]
+    fn templates_that_show_tools_and_renderer_models_keep_tool_support() {
+        let shipped = [
+            include_str!("../../../tests/fixtures/ollama/templates/llama3.1_8b.tmpl"),
+            include_str!("../../../tests/fixtures/ollama/templates/mistral-small3.2_24b.tmpl"),
+            include_str!("../../../tests/fixtures/ollama/templates/ministral-3_8b.tmpl"),
+        ];
+        for template in shipped {
+            let facts = ModelFacts::from_show(&json!({
+                "capabilities": ["completion", "tools"],
+                "template": template,
+                "modelfile": modelfile_with(template),
+            }));
+            assert!(!facts.template_never_shows_tools, "{template}");
+            assert_eq!(facts.supports_tools(), Some(true), "{template}");
+            assert!(facts.no_tools_error("m").is_none());
+        }
+        // A Jinja template that iterates `tools`.
+        let jinja = ModelFacts::from_show(&json!({
+            "capabilities": ["completion", "tools"],
+            "template": "{%- if tools %}{% for tool in tools %}{{ tool | tojson }}{% endfor %}\
+                         {% endif %}{% for m in messages %}{{ m.content }}{% endfor %}",
+        }));
+        assert_eq!(jinja.supports_tools(), Some(true));
+        // The `template` field hides them but the Modelfile's TEMPLATE shows
+        // them: not proved blind.
+        let split = ModelFacts::from_show(&json!({
+            "capabilities": ["completion", "tools"],
+            "template": DEEPSEEK_JINJA,
+            "modelfile": modelfile_with(shipped[0]),
+        }));
+        assert_eq!(split.supports_tools(), Some(true));
+        // lfm2, glm-4.7, gemma4, qwen3.8: a renderer, and the `{{ .Prompt }}`
+        // stub as `template`.
+        for modelfile in [
+            "FROM /blobs/sha256-x\nRENDERER lfm2\nPARSER lfm2\n",
+            "FROM /blobs/sha256-x\n",
+            "",
+        ] {
+            let facts = ModelFacts::from_show(&json!({
+                "capabilities": ["completion", "tools"],
+                "template": "{{ .Prompt }}",
+                "modelfile": modelfile,
+            }));
+            assert_eq!(facts.supports_tools(), Some(true), "{modelfile}");
+        }
+        // A renderer with any template text at all is still the renderer's.
+        let rendered = ModelFacts::from_show(&json!({
+            "capabilities": ["completion", "tools"],
+            "template": DEEPSEEK_GO,
+            "modelfile": "FROM /blobs/sha256-x\nRENDERER qwen3.8\nPARSER qwen3.5\n",
+        }));
+        assert_eq!(rendered.supports_tools(), Some(true));
+        // `toolsets` and `my_tools` are not the word `tools`.
+        assert!(template_hides_tools("{{ .Content }} toolsets my_tools"));
+        assert!(!template_hides_tools("{{ .Content }} (tools)"));
     }
 
     fn lines(body: &str) -> impl Stream<Item = anyhow::Result<String>> + Unpin + Send + 'static {

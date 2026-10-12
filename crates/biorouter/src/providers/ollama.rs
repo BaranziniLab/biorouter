@@ -2191,9 +2191,11 @@ impl OllamaProvider {
             if let Some(facts) = &facts {
                 // R19: a model without tool support answers every request
                 // with tools with an HTTP 400. Said plainly, before the model
-                // is loaded, rather than as "Ollama rejected the request".
-                if facts.supports_tools() == Some(false) {
-                    return Err(native::no_tools_error(model, None));
+                // is loaded, rather than as "Ollama rejected the request". A
+                // model whose template never shows the tools is refused the
+                // same way: it answers with 200s, about tools it never saw.
+                if let Some(error) = facts.no_tools_error(model) {
+                    return Err(error);
                 }
                 if facts.tools_only_near_last_user {
                     // R8: the template drops the tool list after the first
@@ -5084,6 +5086,41 @@ mod tests {
             .stream("system", &[Message::user().with_text("hi")], &[])
             .await;
         assert!(items.is_ok());
+    }
+
+    /// F11 (live 2026-10-12): deepseek-r1:8b reports `tools`, but its template
+    /// never renders them, so a tools request reached it with every tool
+    /// definition dropped and it answered for 166 s about tools it never saw.
+    /// It is refused before it loads, like a model without tools, and hidden
+    /// from the model list the same way.
+    #[tokio::test]
+    async fn a_model_whose_template_never_shows_tools_is_refused_before_it_loads() {
+        let show = json!({
+            "capabilities": ["tools", "thinking", "completion"],
+            "template": include_str!("../../tests/fixtures/ollama/templates/deepseek-r1_8b.jinja"),
+            "modelfile": format!(
+                "FROM /blobs/sha256-x\nTEMPLATE \"\"\"{}\"\"\"\n",
+                include_str!("../../tests/fixtures/ollama/templates/deepseek-r1_8b.tmpl")
+            ),
+        });
+        let server = MockServer::start().await;
+        mount_show(&server, show).await;
+        mount_chat(&server, &format!("{DONE}\n")).await;
+        let provider = provider_at(&server, &unique("deepseek-r1:8b"));
+        let error = provider
+            .stream(
+                "system",
+                &[Message::user().with_text("write factorial.py")],
+                &[shell_tool()],
+            )
+            .await
+            .err()
+            .expect("a tools request to a tool-blind template must fail");
+        let text = error.to_string();
+        assert!(text.contains("never shows the tool definitions"), "{text}");
+        assert!(text.contains("BIOROUTER_TOOLSHIM"), "{text}");
+        assert!(!error.kind().is_transient(), "{error:?}");
+        assert!(chat_requests(&server).await.is_empty());
     }
 
     /// R8: for a template that shows the tools only next to the latest user
