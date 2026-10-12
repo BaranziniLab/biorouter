@@ -2639,10 +2639,10 @@ impl CodeExecutionClient {
                 let calls = collected.completed_call_count();
                 let text = if !output.recorded && calls > 0 {
                     format!(
-                        "Result: {}\nThe script did not call record_result, so nothing its \
-                         {calls} completed tool call(s) returned was passed back. They ran; to \
-                         see what they returned, pass it to record_result(value), for example \
-                         record_result({{ first, second }}).",
+                        "Result: {}\nThe script's {calls} tool call(s) completed successfully, \
+                         so there is no need to run them again. It did not call record_result, \
+                         so nothing they returned was passed back: to see a value, pass it to \
+                         record_result(value), for example record_result({{ first, second }}).",
                         output.text
                     )
                 } else {
@@ -4784,7 +4784,8 @@ const out = todo_write({ content: "- [ ] run factorial.py" });"#,
         assert!(text.starts_with("Result: undefined\n"), "{text}");
         assert!(
             text.contains("did not call record_result")
-                && text.contains("its 1 completed tool call(s)"),
+                && text.contains("The script's 1 tool call(s) completed successfully")
+                && text.contains("no need to run them again"),
             "{text}"
         );
 
