@@ -416,8 +416,11 @@ Its values are therefore literals, generated into a `THEMES:GENERATED:SPLASH` re
 a thin sweep under it. It used to draw the BR monogram with a staggered blur-slide entrance, which made the
 monogram the first logo a new person saw and a second logo before the wordmark the first-run page leads with.
 The lockup is static geometry (a viewBox, two bar rects and a text element in the bundled Inter at weight 600)
-copied from a rendered `<BioRouterWordmark/>` at 160 by 49, and `bootSplash.browser.test.ts` holds it to the
-component's measured numbers and to the same pixels. The splash waits for Inter (up to 250 ms) before it shows, so
+copied from a rendered `<BioRouterWordmark/>` at 160 by 49 in Chrome on macOS. `bootSplash.browser.test.ts` holds
+it, on every platform, to the same pixels as the component drawn at the same numbers, and on macOS also to the
+numbers the component measures and to the same pixels unpinned. That second half is gated to macOS: Chrome on Linux
+measures text through FreeType, and on CI it put the box's x 0.12 units (about 0.04 px) off the markup (2026-10-12),
+so regenerate the numbers on macOS. The splash waits for Inter (up to 250 ms) before it shows, so
 the first frame is the whole logo rather than a bar with letters following. A launch that finishes inside 400 ms
 shows nothing.
 
