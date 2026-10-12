@@ -94,6 +94,16 @@ describe('resolveDialogOpener', () => {
     const result = resolveDialogOpener(document.activeElement);
     expect(result.viaMenu).toBe(true);
     expect(result.opener?.id).toBe('row');
+    // Only the last focus stands for it, which a right-click on a part that takes none never moved.
+    expect(result.guessed).toBe(true);
+  });
+
+  it('is not a guess for a trigger the menu names', () => {
+    const host = mount(`
+      <button id="trigger">More</button>
+      <div role="menu" aria-labelledby="trigger"><div role="menuitem" id="item">Info</div></div>
+    `);
+    expect(resolveDialogOpener(host.querySelector('#item')).guessed).toBeUndefined();
   });
 
   it('is nothing when an unlabelled menu has no remembered control', () => {
@@ -159,7 +169,7 @@ describe('useReturnFocusToOpener, for a dialog a menu item opened', () => {
     expect(trigger).toHaveFocus();
   });
 
-  it('after a pointer pick: focuses the dialog box, and gives nothing back', () => {
+  it('after a pointer pick: focuses the dialog box, and a key close gives focus to the trigger (V1-R8-1)', () => {
     const { result } = renderHook(() => useReturnFocusToOpener({}));
     const { trigger, item, content, menu } = scene('none');
     point();
@@ -169,8 +179,62 @@ describe('useReturnFocusToOpener, for a dialog a menu item opened', () => {
     expect(content).toHaveFocus();
     menu.remove();
     press();
+    // Escape after a ⋯ clicked open used to leave focus on <body>; the menu names its trigger.
+    expect(closeOn(content, result.current).defaultPrevented).toBe(true);
+    expect(trigger).toHaveFocus();
+  });
+
+  it('after a pointer pick closed with the pointer: gives nothing back', () => {
+    const { result } = renderHook(() => useReturnFocusToOpener({}));
+    const { trigger, item, content, menu } = scene('none');
+    point();
+    item.focus();
+    openOn(content, result.current);
+    menu.remove();
+    point();
     expect(closeOn(content, result.current).defaultPrevented).toBe(false);
     expect(trigger).not.toHaveFocus();
+  });
+
+  it('after a pointer pick in a ContextMenu: a key close gives nothing back to a guessed opener', () => {
+    const { result } = renderHook(() => useReturnFocusToOpener({}));
+    const host = mount(`
+      <input id="search" aria-label="Search" />
+      <div role="menu" id="ctx"><button role="menuitem" id="ctx-item">Info</button></div>
+      <div id="ctx-content" tabindex="-1"><button>Cancel</button></div>
+    `);
+    const search = host.querySelector<HTMLElement>('#search')!;
+    const content = host.querySelector<HTMLElement>('#ctx-content')!;
+    // The search field held focus; a right-click on a part of a row that takes none moved nothing.
+    search.focus();
+    point();
+    host.querySelector<HTMLElement>('#ctx-item')!.focus();
+    openOn(content, result.current);
+    host.querySelector('#ctx')!.remove();
+    content.focus();
+    press();
+    expect(closeOn(content, result.current).defaultPrevented).toBe(false);
+    expect(search).not.toHaveFocus();
+  });
+
+  it('after a key pick in a ContextMenu: a key close gives focus back to the row (Shift+F10)', () => {
+    const { result } = renderHook(() => useReturnFocusToOpener({}));
+    const host = mount(`
+      <div id="row" tabindex="0">Row</div>
+      <div role="menu" id="ctx"><button role="menuitem" id="ctx-item">Info</button></div>
+      <div id="ctx-content" tabindex="-1"><button>Cancel</button></div>
+    `);
+    const row = host.querySelector<HTMLElement>('#row')!;
+    const content = host.querySelector<HTMLElement>('#ctx-content')!;
+    row.focus();
+    press();
+    host.querySelector<HTMLElement>('#ctx-item')!.focus();
+    openOn(content, result.current);
+    host.querySelector('#ctx')!.remove();
+    content.focus();
+    press();
+    expect(closeOn(content, result.current).defaultPrevented).toBe(true);
+    expect(row).toHaveFocus();
   });
 
   it('after a pointer pick of a dialog whose first stop is a text field: leaves the field to Radix', () => {

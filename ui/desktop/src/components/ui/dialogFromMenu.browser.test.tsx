@@ -10,7 +10,9 @@
  *   (⋯, Enter, Enter on the item, Escape) used to land on `<body>`. They land on the control that
  *   opened the menu: the ⋯ for a DropdownMenu, found from its `aria-labelledby` (or `aria-controls`
  *   when a caller's own `id` replaced Radix's), and the row for a ContextMenu, which names nothing.
- *   A pick made with the pointer gives nothing back, as the menus' own rule says.
+ *   The close decides, as the menus' own rule says: a key close gives focus back however the item
+ *   was picked (V1-R8-1), a pointer close gives nothing back, and a ContextMenu pointer pick, whose
+ *   opener is only the last focus, gives nothing back either.
  * - **Open.** After a pointer pick every script focus matches `:focus-visible`, so the first stop of
  *   a dialog with no text field wore the inset ring after a mouse click. Focus goes to the dialog
  *   box, which draws no ring; a text field keeps focus, and a caller that places focus itself is
@@ -20,12 +22,34 @@
 import { readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { build } from 'esbuild';
+import { build, type Plugin } from 'esbuild';
 import { chromium, type Browser, type Page } from 'playwright';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const MAIN_CSS = readFileSync(resolve(here, '../../styles/main.css'), 'utf8');
+
+/**
+ * To see these cases fail on another version of the dialog primitive, point `DIALOG_SOURCE` at
+ * that `dialog.tsx`: it is loaded wherever the bundle imports `./dialog` or `./ui/dialog`, its own
+ * imports resolved from this directory.
+ */
+const dialogSourcePlugin: Plugin = {
+  name: 'dialog-source',
+  setup(b) {
+    const source = process.env.DIALOG_SOURCE;
+    if (!source) return;
+    b.onResolve({ filter: /^\.\/(ui\/)?dialog$/ }, () => ({
+      path: source,
+      namespace: 'dialog-source',
+    }));
+    b.onLoad({ filter: /.*/, namespace: 'dialog-source' }, (args) => ({
+      contents: readFileSync(args.path, 'utf8'),
+      resolveDir: here,
+      loader: 'tsx',
+    }));
+  },
+};
 
 /** The authored `.biorouter-modal-surface:focus` rule, read from main.css. */
 function boxFocusRule(): string {
@@ -94,6 +118,11 @@ function App() {
       >
         <div id="row" tabIndex={0} style={{ width: 300, height: 40, border: '1px solid #999' }}>Row</div>
       </RowContextMenu>
+      <RowContextMenu
+        items={[{ label: 'Delete', onSelect: () => setKind('confirm'), testId: 'stats-confirm' }]}
+      >
+        <div id="stats" style={{ width: 300, height: 40, border: '1px solid #999' }}>Stats, takes no focus</div>
+      </RowContextMenu>
       <button id="plain" type="button" onClick={() => setKind('info')}>Plain opener</button>
       <button id="elsewhere" type="button">Elsewhere</button>
       <ModalShell open={kind === 'info'} onOpenChange={change} title="Info"
@@ -158,6 +187,7 @@ describe('a dialog opened from a menu item (V4-03, V4-04)', () => {
       jsx: 'automatic',
       platform: 'browser',
       define: { 'process.env.NODE_ENV': '"production"' },
+      plugins: [dialogSourcePlugin],
       logLevel: 'silent',
     });
     script = bundle.outputFiles[0].text;
@@ -261,15 +291,79 @@ describe('a dialog opened from a menu item (V4-03, V4-04)', () => {
       }
     });
 
-    it('gives nothing back after a pointer pick: no ring on a button the person clicked', async (ctx) => {
+    // V1-R8-1: a ⋯ clicked open, an item clicked, then Escape left focus on <body>, and the next Tab
+    // began at the top of the window. The close is what decides, as for the menu itself.
+    for (const [name, trigger] of [
+      ['a labelled DropdownMenu trigger', '[aria-label="Labelled menu"]'],
+      ['a trigger whose own id replaced Radix’s', '#own-id'],
+    ] as const) {
+      for (const item of ['item-info', 'item-confirm', 'item-form']) {
+        it(`gives focus back to ${name} after a pointer pick of ${item} and Escape, ringed`, async (ctx) => {
+          if (!browser) return ctx.skip();
+          const tab = await openPage();
+          try {
+            await mousePick(tab, trigger, item);
+            await tab.keyboard.press('Escape');
+            await closed(tab);
+            await settle(tab);
+            const now = await focused(tab);
+            expect(now.tag, 'focus is on the ⋯, not <body>').toBe('button');
+            expect(now.label).toBe(trigger === '#own-id' ? 'Own id menu' : 'Labelled menu');
+            // A key closed it, so the returned focus is keyboard focus.
+            expect(now.focusVisible).toBe(true);
+          } finally {
+            await tab.close();
+          }
+        });
+      }
+    }
+
+    it('gives focus back after a pointer pick and Enter on Cancel', async (ctx) => {
       if (!browser) return ctx.skip();
       const tab = await openPage();
       try {
         await mousePick(tab, '[aria-label="Labelled menu"]', 'item-confirm');
-        await tab.keyboard.press('Escape');
+        await tab.getByRole('button', { name: 'Cancel' }).focus();
+        await tab.keyboard.press('Enter');
+        await closed(tab);
+        await settle(tab);
+        expect((await focused(tab)).label).toBe('Labelled menu');
+      } finally {
+        await tab.close();
+      }
+    });
+
+    it('gives nothing back after a pointer pick closed with the pointer: no ring on a button the person clicked', async (ctx) => {
+      if (!browser) return ctx.skip();
+      const tab = await openPage();
+      try {
+        await mousePick(tab, '[aria-label="Labelled menu"]', 'item-confirm');
+        await tab.getByRole('button', { name: 'Cancel' }).click();
         await closed(tab);
         await settle(tab);
         expect((await focused(tab)).tag).toBe('body');
+      } finally {
+        await tab.close();
+      }
+    });
+
+    it('gives nothing back to a ContextMenu’s guessed opener after a pointer pick and Escape', async (ctx) => {
+      if (!browser) return ctx.skip();
+      const tab = await openPage();
+      try {
+        // Focus sits on another control; a right-click on a part of a row that takes no focus
+        // moves none, so the only opener the menu could name is that unrelated control.
+        await tab.focus('#elsewhere');
+        await tab.click('#stats', { button: 'right' });
+        await tab.click('[data-testid=stats-confirm]');
+        await tab.waitForSelector(dialog);
+        await settle(tab);
+        await tab.keyboard.press('Escape');
+        await closed(tab);
+        await settle(tab);
+        expect((await focused(tab)).id, 'not sent to a control the person was not on').not.toBe(
+          'elsewhere'
+        );
       } finally {
         await tab.close();
       }

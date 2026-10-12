@@ -17,11 +17,15 @@ import { focusArrivedFrom, lastFocusOutsideMenu, lastInputWasKey } from './input
  * hence the climb. A ContextMenu names nothing, so its opener is the control that held focus when
  * the menu took it (`lastFocusOutsideMenu`: the row a Shift+F10 was pressed on).
  *
- * `viaMenu` says a menu was crossed, which is what changes the rules (see the hook).
+ * `viaMenu` says a menu was crossed, which is what changes the rules (see the hook). `guessed` says
+ * the opener came from that last focus rather than from a trigger the menu names: right for a menu
+ * a key opened, but a right-click on a part of a row that takes no focus leaves it on whatever held
+ * focus before (a search field, another row).
  */
 export function resolveDialogOpener(element: Element | null): {
   opener: HTMLElement | null;
   viaMenu: boolean;
+  guessed?: true;
 } {
   let current: Element | null = element;
   let viaMenu = false;
@@ -46,7 +50,9 @@ export function resolveDialogOpener(element: Element | null): {
     if (!label || menu.contains(label)) {
       // A menu that names no opener (a ContextMenu): the control that held focus when it opened.
       const heldFocus = lastFocusOutsideMenu();
-      return { opener: heldFocus && !menu.contains(heldFocus) ? heldFocus : null, viaMenu };
+      return heldFocus && !menu.contains(heldFocus)
+        ? { opener: heldFocus, viaMenu, guessed: true }
+        : { opener: null, viaMenu };
     }
     current = label;
   }
@@ -126,10 +132,17 @@ function firstAutoFocusTarget(container: HTMLElement): HTMLElement | null {
  *
  * **A dialog opened from a menu item** (sidebar row actions, "View info", "Delete"). The item is
  * what holds focus when the dialog mounts, so the opener is the control that opened the menu
- * (`resolveDialogOpener`), and the menus' own rule applies: a pick made with the KEYBOARD gives
- * focus back when the dialog is closed with the keyboard (⋯, Enter, Enter on "View info", Escape
- * lands on ⋯, not on `<body>`: V4-03); a pick made with the POINTER does not, because a
- * script-focused ⋯ would wear a keyboard ring after a mouse click (`chats/menuFocusReturn.ts`).
+ * (`resolveDialogOpener`), and the menus' own rule applies, which asks how the dialog was CLOSED: a
+ * close with a key (Escape, Enter or Space on Cancel) gives focus back (⋯, Enter, Enter on "View
+ * info", Escape lands on ⋯, not on `<body>`: V4-03), and a close with the pointer does not, because
+ * a script-focused ⋯ would wear a keyboard ring after a mouse click and `:focus-within` would pin a
+ * row's hover-revealed actions after the pointer left (`chats/menuFocusReturn.ts`). How the item
+ * was PICKED does not matter when the menu names its trigger: a ⋯ clicked open and dismissed with
+ * Escape used to leave focus on `<body>`, and the next Tab started at the top of the window
+ * (V1-R8-1). It matters for a ContextMenu, whose opener is only the last control that held focus:
+ * after a pointer pick that is a guess (a right-click on a part of a row that takes no focus moves
+ * none), so nothing is given back; a caller that knows its row says so in `onCloseAutoFocus`
+ * (`chats/menuFocusReturn.ts` `returnFocusAfterKeyClose`).
  *
  * **A pointer open is a quiet open**, from a menu or not. Whether a focus a script moves matches
  * `:focus-visible` is Chromium's call from the focus it replaces, not from the input that caused
@@ -154,8 +167,9 @@ export function useReturnFocusToOpener(handlers: {
 } {
   const { onOpenAutoFocus, onCloseAutoFocus } = handlers;
   const opener = React.useRef<HTMLElement | null>(null);
-  // Set when the opener was found through a menu; true only if the pick was a key press too.
-  const fromMenu = React.useRef<{ pickedByKey: boolean } | null>(null);
+  // Set when the opener was found through a menu: whether the pick was a key press, and whether the
+  // opener is only the last focus (a ContextMenu) rather than a trigger the menu names.
+  const fromMenu = React.useRef<{ pickedByKey: boolean; guessed: boolean } | null>(null);
   // The content node an opener was last read for, so a ref that re-attaches mid-dialog (a caller's
   // inline ref) does not read a later focus move (back from a Select's portal) as the opener.
   const readFor = React.useRef<HTMLElement | null>(null);
@@ -175,7 +189,9 @@ export function useReturnFocusToOpener(handlers: {
     readFor.current = content;
     const resolved = resolveDialogOpener(from);
     opener.current = resolved.opener;
-    fromMenu.current = resolved.viaMenu ? { pickedByKey: lastInputWasKey() } : null;
+    fromMenu.current = resolved.viaMenu
+      ? { pickedByKey: lastInputWasKey(), guessed: resolved.guessed === true }
+      : null;
   }, []);
   const handleOpen = React.useCallback(
     (event: Event) => {
@@ -189,7 +205,9 @@ export function useReturnFocusToOpener(handlers: {
       const resolved = resolveDialogOpener(document.activeElement);
       opener.current = resolved.opener;
       const pickedByKey = lastInputWasKey();
-      fromMenu.current = resolved.viaMenu ? { pickedByKey } : null;
+      fromMenu.current = resolved.viaMenu
+        ? { pickedByKey, guessed: resolved.guessed === true }
+        : null;
       onOpenAutoFocus?.(event);
       if (event.defaultPrevented || pickedByKey || !content) return;
       const first = firstAutoFocusTarget(content);
@@ -207,8 +225,9 @@ export function useReturnFocusToOpener(handlers: {
       opener.current = null;
       fromMenu.current = null;
       if (event.defaultPrevented || !target || !target.isConnected) return;
-      // Picked or closed with the pointer: nothing to give back (see above).
-      if (menu && !(menu.pickedByKey && lastInputWasKey())) return;
+      // Closed with the pointer, or a ContextMenu's guessed opener after a pointer pick: nothing to
+      // give back (see above). A key close returns to a trigger the menu names, however it was picked.
+      if (menu && !(lastInputWasKey() && (menu.pickedByKey || !menu.guessed))) return;
       // Focus already sitting on something outside the content (a non-modal dialog closed by a
       // press on another field) is where the person went: leave it. Inside the content, or on
       // `<body>` once the focused control unmounted, is the case this exists for.
