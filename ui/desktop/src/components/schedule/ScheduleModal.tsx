@@ -137,6 +137,16 @@ export const ScheduleModal: React.FC<ScheduleModalProps> = ({
     await onSubmit(newSchedulePayload);
   };
 
+  // Coral means "this will do something" (coordinator ruling 22, shared-controls.md "A Button that
+  // cannot act"). A click on New schedule's primary with a field missing only names that field, so it
+  // is the neutral secondary until it can act, and stays ENABLED so the click still says what is
+  // missing (the FR-R3-3 door, as the provider dialogs and Create and run do). The test is the same
+  // two checks `handleLocalSubmit` runs, so the colour and the click cannot disagree; the cron
+  // picker's own validity already disables the button, which the primitive draws neutral. Edit mode
+  // has nothing to fill in.
+  const canCreate =
+    isEditMode || (scheduleNameProblem(scheduleId.trim()) === null && workflowSourcePath !== '');
+
   if (!isOpen) return null;
 
   return (
@@ -163,7 +173,12 @@ export const ScheduleModal: React.FC<ScheduleModalProps> = ({
           >
             {copy.cancel}
           </Button>
-          <Button type="submit" form="schedule-form" disabled={isLoadingExternally || !isValid}>
+          <Button
+            type="submit"
+            form="schedule-form"
+            variant={canCreate ? 'default' : 'secondary'}
+            disabled={isLoadingExternally || !isValid}
+          >
             {isLoadingExternally
               ? isEditMode
                 ? copy.saving

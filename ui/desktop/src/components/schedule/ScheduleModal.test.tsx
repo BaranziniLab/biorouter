@@ -141,3 +141,93 @@ describe('ScheduleModal name validation', () => {
     expect(screen.getByRole('alert')).toHaveTextContent('may only contain letters, digits');
   });
 });
+
+/**
+ * Coral means "this will do something" (vision V3-R9-3, coordinator ruling 22, shared-controls.md
+ * "A Button that cannot act"). New schedule opened with Name and Workflow file empty and a coral,
+ * enabled "Create schedule" whose only answer was to name the missing field. Like the provider
+ * dialogs and Create and run, it is the neutral secondary until it can act, and it stays enabled so
+ * the click still says what is missing. `bg-background-accent` is the `default` variant's fill and
+ * `br-fill-rest` the `secondary` one's, so the class says which of the two is drawn.
+ */
+describe('ScheduleModal primary button colour', () => {
+  const create = () => screen.getByRole('button', { name: 'Create schedule' });
+  const isCoral = (el: HTMLElement) => /\bbg-background-accent\b/.test(el.className);
+  const isNeutral = (el: HTMLElement) =>
+    /\bbr-fill-rest\b/.test(el.className) && !/\bbg-background-accent\b/.test(el.className);
+
+  it('is neutral and still enabled on an empty form', () => {
+    renderModal();
+
+    expect(isNeutral(create())).toBe(true);
+    expect(create()).toBeEnabled();
+  });
+
+  it('stays neutral until BOTH the name and the workflow file are filled', async () => {
+    const user = userEvent.setup();
+    renderModal();
+
+    await user.type(screen.getByLabelText('Name'), 'daily-summary');
+    expect(isNeutral(create())).toBe(true);
+
+    await user.type(screen.getByLabelText('Workflow file'), '/tmp/wf.yaml');
+    expect(isCoral(create())).toBe(true);
+    expect(create()).toBeEnabled();
+  });
+
+  it('turns neutral again when a filled field is cleared', async () => {
+    const user = userEvent.setup();
+    renderModal();
+
+    await user.type(screen.getByLabelText('Name'), 'daily-summary');
+    await user.type(screen.getByLabelText('Workflow file'), '/tmp/wf.yaml');
+    expect(isCoral(create())).toBe(true);
+
+    await user.clear(screen.getByLabelText('Workflow file'));
+    expect(isNeutral(create())).toBe(true);
+  });
+
+  /**
+   * A name the daemon would refuse is not "filled": the click would only name the rule, so the button
+   * is judged by the same `scheduleNameProblem` the submit runs.
+   */
+  it('is neutral while the name breaks the rule, and coral once it is fixed', async () => {
+    const user = userEvent.setup();
+    renderModal();
+
+    await user.type(screen.getByLabelText('Workflow file'), '/tmp/wf.yaml');
+    await user.type(screen.getByLabelText('Name'), 'daily summary');
+    expect(isNeutral(create())).toBe(true);
+
+    await user.clear(screen.getByLabelText('Name'));
+    await user.type(screen.getByLabelText('Name'), 'daily-summary');
+    expect(isCoral(create())).toBe(true);
+  });
+
+  it('still names the missing field when pressed neutral', async () => {
+    const user = userEvent.setup();
+    const { onSubmit } = renderModal();
+
+    await user.click(create());
+
+    expect(onSubmit).not.toHaveBeenCalled();
+    expect(await screen.findByRole('alert')).toHaveTextContent('Enter a name for this schedule.');
+  });
+
+  it('is coral when editing, where there is nothing to fill in', () => {
+    renderModal({
+      schedule: {
+        id: 'daily-summary',
+        source: '/tmp/wf.yaml',
+        cron: '0 0 14 * * *',
+        last_run: null,
+        currently_running: false,
+        paused: false,
+      } as never,
+    });
+
+    const save = screen.getByRole('button', { name: 'Save changes' });
+    expect(isCoral(save)).toBe(true);
+    expect(save).toBeEnabled();
+  });
+});
