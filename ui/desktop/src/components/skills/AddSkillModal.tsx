@@ -197,10 +197,13 @@ export default function AddSkillModal({ onClose, onSaved }: Props) {
           />
         </div>
         <div className="flex gap-2">
+          {/* A repository URL is a machine string: no spellcheck underline, no auto-capital
+              (V4-R7-5; `<Input machine />`). */}
           <Input
             id="skill-source-url"
             ref={urlFieldRef}
             type="text"
+            machine
             placeholder={ADD_SKILL_COPY.repositoryPlaceholder}
             aria-describedby={repositoryHelpId}
             value={url}

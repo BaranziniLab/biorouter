@@ -234,6 +234,23 @@ describe('AddSkillModal: help on demand, not on the page', () => {
 });
 
 /**
+ * V4-R7-5: a repository URL is a machine string. Left as a plain `Input`, Chromium underlines
+ * a correct `https://github.com/owner/repo` as misspelt and a phone keyboard capitalises its
+ * first letter. `<Input machine />` sets the trio ahead of the caller's own props (the primitive
+ * itself is pinned in `ui/input.test.tsx`); this pins that the field takes it.
+ */
+describe('AddSkillModal: the repository field holds a machine string', () => {
+  it('switches spellcheck, auto-correct and auto-capitalise off', () => {
+    render(<AddSkillModal onClose={() => {}} onSaved={() => {}} />);
+
+    const field = screen.getByRole('textbox', { name: ADD_SKILL_COPY.repositoryLabel });
+    expect(field).toHaveAttribute('spellcheck', 'false');
+    expect(field).toHaveAttribute('autocorrect', 'off');
+    expect(field).toHaveAttribute('autocapitalize', 'off');
+  });
+});
+
+/**
  * R-27 (owner message 13): the drop zone is the one filled field the Workflows import and the
  * .brxt dialog draw, and the preview is told apart from it by space, not a rule. jsdom runs no
  * stylesheet, so these pin the class names and the `data-state` the recipe is keyed on; the paint
