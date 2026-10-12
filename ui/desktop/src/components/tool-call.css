@@ -93,6 +93,32 @@
 .br-tool-preview-note {
   border-top: 1px solid transparent;
 }
+
+/* A call's arguments, one named field per value (`ArgumentFields`). A value is
+   text a person reads before approving (a bug report's body becomes a public
+   issue), so it WRAPS, real line breaks kept, and a long URL breaks rather than
+   pushing the box sideways. One escaped `white-space: pre` line was 7,662
+   characters wide in a 724px box (final check, 2026-10-12). Authored rather
+   than utilities, as the composer's focus edge is: wrapping is load-bearing,
+   and a utility that class scanning missed would silently restore the line. */
+.br-tool-preview-fields {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 0;
+  padding: 8px 12px;
+}
+
+.br-tool-preview-fields dd {
+  margin: 0;
+}
+
+.br-tool-preview-text {
+  min-width: 0;
+  margin: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
 /* @ws WS-TOOLS end: action card */
 
 /* @ws WS-TOOLS begin: artifact card */

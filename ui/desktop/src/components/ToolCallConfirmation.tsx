@@ -30,6 +30,26 @@ function refusalIsPermanent(error: unknown): boolean {
   );
 }
 
+/** A leading warning sign (with or without its emoji selector) and the space after it. */
+const LEADING_WARNING_GLYPH = /^\s*\u26A0\uFE0F?\s*/u;
+
+/**
+ * The finding as the card shows it, beside its own warning icon.
+ *
+ * A producer may lead its prompt with "⚠ ", because the terminal prints the
+ * prompt as bare text and that glyph is its only warning sign there:
+ * `bug_report::private_warning` does ("⚠ This chat is PRIVATE: …"). Drawn
+ * after the card's icon it made two warning signs side by side (final check,
+ * 2026-10-12), so the card drops a LEADING one and keeps the rest of the text
+ * exactly: a ⚠ inside the sentence marks a second warning and stays. Stripping
+ * here rather than at the producer also fixes cards persisted by an older
+ * daemon. A prompt that is only the glyph keeps it, rather than going blank.
+ */
+function findingText(prompt: string): string {
+  const stripped = prompt.replace(LEADING_WARNING_GLYPH, '');
+  return stripped.length > 0 ? stripped : prompt;
+}
+
 const ALLOW_ONCE = 'allow_once';
 const ALWAYS_ALLOW = 'always_allow';
 const DENY = 'deny';
@@ -228,7 +248,7 @@ export default function ToolConfirmation({
       className="flex items-start gap-2 text-body text-text-warning"
     >
       <AlertTriangle aria-hidden="true" className="mt-0.5 size-4 shrink-0" />
-      <span className="min-w-0">{prompt}</span>
+      <span className="min-w-0">{findingText(prompt)}</span>
     </div>
   ) : null;
 

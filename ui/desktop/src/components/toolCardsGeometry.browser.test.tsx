@@ -233,6 +233,65 @@ describe('the transcript cards in a real layout engine', () => {
     }
   });
 
+  /**
+   * Final check, /bug (2026-10-12). The report body is the text that becomes a
+   * public issue, and it arrived as one escaped JSON line: scrollWidth 61,600px
+   * against a 724px box, about 90 characters visible. Measured here, in a real
+   * layout engine, because jsdom lays nothing out and a class test passes
+   * whether the wrapping rule exists or not.
+   */
+  it('wraps a long argument value inside the card instead of scrolling it sideways (the /bug body)', async () => {
+    if (!browser) return;
+    const body =
+      '**Describe the bug**\n\nIn this chat, the assistant created a new markdown file.\n\n' +
+      'The summary rail kept saying +0 -0 after the file was written. '.repeat(120) +
+      'https://github.com/BaranziniLab/biorouter/' +
+      'a-very-long-path-segment-'.repeat(20);
+    const args = { repository: 'github.com/BaranziniLab/biorouter', title: 'Code delta', body };
+    const preview = {
+      kind: 'arguments',
+      json: JSON.stringify(args, null, 2),
+      truncated: false,
+    } as unknown as ToolPreview;
+    // The private card's width (the 760 column) and the public card's (a chat
+    // narrowed by an open side panel).
+    for (const width of [COLUMN, 580]) {
+      const tab = await open(
+        `<div style="width:${width}px"><div class="br-action-card">` +
+          `${renderToStaticMarkup(<ToolCallPreview preview={preview} />)}</div></div>`
+      );
+      try {
+        const m = await tab.evaluate(() => {
+          const frame = document.querySelector('[data-testid="tool-preview-body"]') as HTMLElement;
+          const value = document.querySelector(
+            '[data-testid="tool-preview-value-body"]'
+          ) as HTMLElement | null;
+          const box = (
+            document.querySelector('.br-tool-preview') as HTMLElement
+          ).getBoundingClientRect();
+          const shown = value?.getBoundingClientRect();
+          return {
+            scrollWidth: frame.scrollWidth,
+            clientWidth: frame.clientWidth,
+            found: Boolean(value),
+            insideBox: shown ? shown.right <= box.right : false,
+            lines: shown
+              ? Math.round(shown.height / parseFloat(getComputedStyle(value!).lineHeight))
+              : 0,
+          };
+        });
+        // Nothing to scroll sideways: every character is on screen.
+        expect(m.scrollWidth).toBeLessThanOrEqual(m.clientWidth);
+        expect(m.found).toBe(true);
+        expect(m.insideBox).toBe(true);
+        // Wrapped onto many lines, the long URL included.
+        expect(m.lines).toBeGreaterThan(40);
+      } finally {
+        await tab.close();
+      }
+    }
+  });
+
   it('plays the entrance for a card that arrives live and not for one that mounts at rest', async () => {
     if (!browser) return;
     const card = `<div class="br-action-card br-enter">Run Shell?</div>`;

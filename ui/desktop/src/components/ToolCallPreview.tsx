@@ -159,6 +159,106 @@ function CodeBlock({ text }: { text: string }) {
   );
 }
 
+/**
+ * Columns a wrapped line is estimated at, for deciding whether to collapse.
+ * The narrowest card the preview is drawn in (a chat beside an open side
+ * panel) holds about 70 characters of the 13px code face; under-estimating
+ * only costs a "Show more" that opens a little.
+ */
+const WRAP_COLUMNS = 64;
+
+/** Lines `text` takes once wrapped at {@link WRAP_COLUMNS}. */
+function wrappedLines(text: string): number {
+  return text
+    .split('\n')
+    .reduce((n, line) => n + Math.max(1, Math.ceil(line.length / WRAP_COLUMNS)), 0);
+}
+
+/**
+ * The backend's pretty JSON as `[key, value]` pairs, or `null` when it is not
+ * one whole object. A clipped blob is never parsed: what is shown must be what
+ * was sent, and the "Truncated" note already says the rest is missing.
+ */
+function argumentFields(json: string, truncated: boolean): Array<[string, unknown]> | null {
+  if (truncated) return null;
+  try {
+    const value: unknown = JSON.parse(json);
+    if (value !== null && typeof value === 'object' && !Array.isArray(value)) {
+      return Object.entries(value);
+    }
+  } catch {
+    // Not JSON after all: shown as text below.
+  }
+  return null;
+}
+
+/**
+ * A string is shown as itself, with real line breaks. Anything else (and an
+ * empty string, which would otherwise read as a missing value) stays JSON, so
+ * `["bug"]` is not mistaken for prose.
+ */
+function fieldText(value: unknown): string {
+  return typeof value === 'string' && value !== '' ? value : JSON.stringify(value, null, 2);
+}
+
+/**
+ * The arguments of a call, as fields a person can read.
+ *
+ * Final check, /bug (2026-10-12): shown as the backend's pretty JSON in a
+ * `whitespace-pre` box, a string argument was one escaped line.
+ * `platform__report_bug`'s body, the text that becomes a world-readable issue,
+ * was 7,662 characters wide in a 724px box, about 90 of them visible, with
+ * literal `\n`, under a card saying "Read the body below". So each field is
+ * named, and its value is the exact text, wrapped (`.br-tool-preview-text`,
+ * authored in tool-call.css so it holds wherever class scanning did not run).
+ * The text is never rendered as Markdown: the person is checking what will be
+ * published, and rendering hides some of it (an HTML comment, a link's URL).
+ */
+function ArgumentFields({ fields }: { fields: Array<[string, unknown]> }) {
+  return (
+    <dl className="br-tool-preview-fields">
+      {fields.map(([key, value]) => (
+        <div key={key} data-testid="tool-preview-field">
+          <dt className="font-mono text-supporting text-text-muted">{key}</dt>
+          <dd
+            data-testid={`tool-preview-value-${key}`}
+            className="br-tool-preview-text font-mono text-code text-text-default"
+          >
+            {fieldText(value)}
+          </dd>
+        </div>
+      ))}
+    </dl>
+  );
+}
+
+function ArgumentsPreview({ json, truncated }: { json: string; truncated: boolean }) {
+  const fields = argumentFields(json, truncated);
+  // One key line per field, then its wrapped value.
+  const lines = fields
+    ? fields.reduce((n, [, value]) => n + 1 + wrappedLines(fieldText(value)), 0)
+    : wrappedLines(json);
+  return (
+    <PreviewFrame
+      icon={<Code className="size-3.5" />}
+      title={PREVIEW_COPY.arguments}
+      truncated={truncated}
+      collapsible={lines > COLLAPSED_LINES}
+    >
+      {fields ? (
+        <ArgumentFields fields={fields} />
+      ) : (
+        <pre
+          data-testid="tool-preview-raw"
+          className="br-tool-preview-text px-3 py-2 font-mono text-code text-text-default"
+        >
+          {json}
+        </pre>
+      )}
+    </PreviewFrame>
+  );
+}
+
 /** Render whatever the backend resolved this call into. */
 export function ToolCallPreview({ preview }: { preview: ToolPreview }) {
   switch (preview.kind) {
@@ -210,16 +310,7 @@ export function ToolCallPreview({ preview }: { preview: ToolPreview }) {
       );
 
     case 'arguments':
-      return (
-        <PreviewFrame
-          icon={<Code className="size-3.5" />}
-          title={PREVIEW_COPY.arguments}
-          truncated={preview.truncated}
-          collapsible={countLines(preview.json) > COLLAPSED_LINES}
-        >
-          <CodeBlock text={preview.json} />
-        </PreviewFrame>
-      );
+      return <ArgumentsPreview json={preview.json} truncated={preview.truncated} />;
 
     default:
       // An older backend, or a preview kind this build does not know yet.
