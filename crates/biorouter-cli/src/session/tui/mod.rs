@@ -593,6 +593,10 @@ async fn drive_response(
                             commit_stream_to_session(app, &mut session.messages);
                             app.push_message(&message, debug);
                             app.thinking = None;
+                            // The card's prompt first (the modal opens on it), then
+                            // what approval files, read with PgUp/PgDn.
+                            let prompt =
+                                with_artefact(prompt, super::confirmation_artefact(&message));
                             let permission = run_permission_modal(app, tui, rx, prompt).await?;
                             if permission == Permission::Cancel {
                                 let mut resp = Message::user();
@@ -719,6 +723,15 @@ fn is_stream_text(m: &Message) -> bool {
 fn commit_stream_to_session(app: &mut App, messages: &mut Conversation) {
     if let Some(text) = app.stream_commit() {
         messages.push(Message::assistant().with_text(text));
+    }
+}
+
+/// The modal text for a confirmation that carries an artefact to approve
+/// (`session::confirmation_artefact`): the card's prompt, then the artefact.
+fn with_artefact(prompt: Option<String>, artefact: Option<String>) -> Option<String> {
+    match (prompt, artefact) {
+        (Some(prompt), Some(artefact)) => Some(format!("{prompt}\n\n{artefact}")),
+        (prompt, artefact) => prompt.or(artefact),
     }
 }
 
@@ -2049,6 +2062,37 @@ mod tests {
         let text = buffer_text(&mut app, 80, 24);
         assert!(text.contains("Tool approval"));
         assert!(text.contains("Allow"));
+    }
+
+    #[test]
+    fn a_bug_report_modal_opens_on_the_prompt_and_scrolls_to_the_report() {
+        assert_eq!(with_artefact(None, None), None);
+        assert_eq!(with_artefact(Some("p".into()), None).as_deref(), Some("p"));
+        assert_eq!(with_artefact(None, Some("a".into())).as_deref(), Some("a"));
+        let text = with_artefact(
+            Some("Publish this bug report?".into()),
+            Some(format!(
+                "Title: Blank chart\n\n{}End of the issue body",
+                "The panel is blank.\n".repeat(30)
+            )),
+        )
+        .unwrap();
+        assert!(text.starts_with("Publish this bug report?\n\n"), "{text}");
+
+        let mut app = App::new(StatusInfo::default());
+        app.modal = Some(PermissionModal {
+            prompt: Some(text),
+            options: vec![("Allow", "allow once"), ("Deny", "deny")],
+            selected: 1,
+            scroll: 0,
+        });
+        let first = buffer_text(&mut app, 80, 24);
+        assert!(first.contains("Publish this bug report?"));
+        assert!(first.contains("Title: Blank chart"));
+        app.modal.as_mut().unwrap().scroll = 30;
+        let last = buffer_text(&mut app, 80, 24);
+        assert!(last.contains("End of the issue body"));
+        assert!(last.contains("Deny"));
     }
 
     #[test]

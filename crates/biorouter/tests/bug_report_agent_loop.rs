@@ -231,6 +231,36 @@ async fn the_model_is_offered_the_reporter_and_its_call_reaches_the_handler() {
     );
 }
 
+/// With a description, the analysis comes back through the loop carrying the
+/// investigation method pinned to THIS build's version — the documentation,
+/// the source at its tag, and a request for a suspected cause — rather than an
+/// instruction to file at once.
+#[tokio::test]
+#[serial_test::serial(user_proof_available)]
+async fn a_described_problem_gets_the_investigation_pinned_to_this_version() {
+    let _proof = ProofAvailable::set(true);
+    let (_offered, response) = run_turn(serde_json::json!({
+        "action": "analyze",
+        "description": "the chart panel is blank when the dataset has one row"
+    }))
+    .await;
+
+    assert!(response.contains("The user is reporting"), "{response}");
+    assert!(
+        response.contains("https://biorouter.ucsf.edu/docs"),
+        "{response}"
+    );
+    assert!(
+        response.contains(&format!(
+            "https://github.com/BaranziniLab/biorouter/tree/v{}",
+            env!("CARGO_PKG_VERSION")
+        )),
+        "the source must be read at the version the user runs: {response}"
+    );
+    assert!(response.contains("`suspected_cause`"), "{response}");
+    assert!(!response.contains("ASK THE USER"), "{response}");
+}
+
 /// A `file` call with a real report gets as far as the approval and no further.
 #[tokio::test]
 #[serial_test::serial(user_proof_available)]
@@ -638,5 +668,22 @@ async fn filing_is_refused_from_an_integration_test_binary() {
     assert!(
         !body_file.exists(),
         "the guard ran after the body was written to disk"
+    );
+}
+
+/// The compose path's twin of the guard above, from the same blind spot.
+///
+/// After approval the compose page is opened in the user's browser. A test
+/// that approved a card would otherwise pop a browser — carrying the report in
+/// its address — on whatever machine ran the suite, and `cfg!(test)` is false
+/// in this binary, so only the runtime check can stop it.
+#[tokio::test]
+async fn the_compose_page_is_never_opened_from_an_integration_test_binary() {
+    assert!(
+        !biorouter::agents::bug_report::issue::open_in_browser(
+            "https://example.invalid/biorouter-bug-report-guard-probe"
+        )
+        .await,
+        "a test binary must never open a browser"
     );
 }

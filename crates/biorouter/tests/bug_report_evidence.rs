@@ -104,3 +104,41 @@ fn the_fixture_carries_nothing_the_scrubber_would_have_to_remove() {
         scrubbed.summary()
     );
 }
+
+/// ⚠ The failure list is added to the report automatically, so the model
+/// cannot rewrite it — whatever the scrubber leaves there must pass the
+/// harness's second scrub, or the report can never be filed. That used to fail
+/// for any failure quoting a credential assignment: `KEY=[redacted]` matched
+/// its own rule again and `validate_issue` refused the body.
+#[test]
+fn every_failure_from_a_real_export_scrubs_to_a_fixed_point() {
+    use biorouter::agents::bug_report::redact::scrub;
+
+    let conversation = conversation_from_export(&export()).expect("a real export deserializes");
+    let (failures, ..) = failures_in(&conversation);
+    assert!(!failures.is_empty(), "the fixture lost its failures");
+
+    let mut texts: Vec<String> = Vec::new();
+    for failure in &failures {
+        texts.push(failure.to_line());
+        texts.extend(failure.arguments.clone());
+    }
+    // And a failure as it would read if the session had leaked a credential
+    // and a type annotation into a tool's output.
+    texts.push(
+        "error: GITHUB_TOKEN=ghs_supersecretvalue123456 rejected in fn connect(api_key: String)"
+            .to_string(),
+    );
+    for text in texts {
+        let once = scrub(&text, None);
+        let twice = scrub(&once.text, None);
+        assert_eq!(twice.text, once.text, "not idempotent: {text}");
+        assert!(
+            twice.findings.is_empty(),
+            "the second scrub found {} in `{}`, so the harness would refuse a report it \
+             cannot fix",
+            twice.summary(),
+            once.text
+        );
+    }
+}

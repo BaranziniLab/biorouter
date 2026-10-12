@@ -355,8 +355,14 @@ pub fn failures_in(conversation: &Conversation) -> (Vec<ToolFailure>, usize, usi
 }
 
 /// Phrases that carry no information about the bug, only the request to file
-/// one. Lower-case, matched as a prefix after trimming punctuation.
+/// one. Lower-case, matched as a prefix after trimming punctuation, and only
+/// where the phrase ends at a word boundary.
+///
+/// `/bug` is the slash command: its typed text (`/bug the chart panel is
+/// blank`) is the user-visible row the command leaves behind, so the
+/// description is whatever follows it.
 const TRIGGER_PHRASES: &[&str] = &[
+    "/bug",
     "report a bug to biorouter",
     "report a bug in biorouter",
     "file an issue with biorouter",
@@ -411,6 +417,12 @@ pub fn described_problem(recent_user_messages: &[String]) -> Option<String> {
         let Some(rest) = lowered.strip_prefix(phrase) else {
             continue;
         };
+        // A phrase that runs on into a word is not that phrase: "biorouterd
+        // crashes …" must not lose its first nine letters, nor "/bugfix …"
+        // its first four.
+        if rest.chars().next().is_some_and(char::is_alphanumeric) {
+            continue;
+        }
         let cut = trimmed.len().saturating_sub(rest.len());
         let Some(candidate) = trimmed.get(cut..) else {
             continue;
@@ -425,13 +437,36 @@ pub fn described_problem(recent_user_messages: &[String]) -> Option<String> {
     (best.chars().count() >= DESCRIPTION_FLOOR_CHARS).then(|| best.to_string())
 }
 
+/// `text` without the composer's chip and quotation markup, trimmed.
+///
+/// The composer appends both to the message it sends (a chip the user placed
+/// becomes a `<biorouter-ref …>` tag, a quoted passage a `<biorouter-quote>`
+/// block) and neither is the user's prose. The split is
+/// [`resource_refs::split_composer_text`](crate::agents::resource_refs::split_composer_text),
+/// the one implementation the `/bug` command's expansion uses too; this half
+/// drops the quotations, which are someone else's words.
+fn strip_composer_markup(text: &str) -> String {
+    crate::agents::resource_refs::split_composer_text(text)
+        .prose
+        .trim()
+        .to_string()
+}
+
 /// The user's own recent prose, most recent last.
+///
+/// ⚠ Only rows the USER can see. A slash command stores the typed text
+/// user-visible and agent-hidden, and its expansion user-HIDDEN and
+/// agent-visible (`Agent::reply`'s `execute_command` branch); hook context is
+/// user-hidden too. Read without this filter, `/bug` would have the reporter
+/// quote the model-only expansion back as "YOUR last message", and hidden rows
+/// would crowd the user's own words out of the [`USER_MESSAGES_KEPT`] slots.
 fn recent_user_text(conversation: &Conversation) -> Vec<String> {
     let mut out: Vec<String> = conversation
         .messages()
         .iter()
         .rev()
         .filter(|message| message.role == rmcp::model::Role::User)
+        .filter(|message| message.metadata.user_visible)
         .filter_map(|message| {
             let text = message
                 .content
@@ -442,8 +477,8 @@ fn recent_user_text(conversation: &Conversation) -> Vec<String> {
                 })
                 .collect::<Vec<_>>()
                 .join("\n");
-            let text = text.trim();
-            (!text.is_empty()).then(|| clip(text, USER_CLIP_CHARS))
+            let text = strip_composer_markup(&text);
+            (!text.is_empty()).then(|| clip(&text, USER_CLIP_CHARS))
         })
         .take(USER_MESSAGES_KEPT)
         .collect();
@@ -854,6 +889,106 @@ mod tests {
             described_problem(&["The artifact panel is blank for one-row datasets.".to_string()])
                 .as_deref(),
             Some("The artifact panel is blank for one-row datasets.")
+        );
+    }
+
+    /// `/bug` is a trigger like "report a bug": what follows it is the
+    /// description, and a bare `/bug` is not one.
+    #[test]
+    fn the_slash_command_is_a_trigger_phrase() {
+        assert_eq!(
+            described_problem(&["/bug the chart panel is blank for one row".to_string()])
+                .as_deref(),
+            Some("the chart panel is blank for one row")
+        );
+        assert_eq!(
+            described_problem(&["/bug: the chart panel is blank for one row".to_string()])
+                .as_deref(),
+            Some("the chart panel is blank for one row")
+        );
+        assert!(described_problem(&["/bug".to_string()]).is_none());
+        assert!(described_problem(&["/bug  ".to_string()]).is_none());
+    }
+
+    /// A trigger that runs on into a word is not the trigger.
+    #[test]
+    fn a_trigger_phrase_must_end_at_a_word_boundary() {
+        assert_eq!(
+            described_problem(&["biorouterd crashes when the laptop wakes from sleep".to_string()])
+                .as_deref(),
+            Some("biorouterd crashes when the laptop wakes from sleep")
+        );
+        assert_eq!(
+            described_problem(&["/bugfix the chart panel is blank for one row".to_string()])
+                .as_deref(),
+            Some("/bugfix the chart panel is blank for one row")
+        );
+    }
+
+    /// ⚠ Only what the USER can see. After `/bug`, the transcript holds the
+    /// typed text (user-visible, agent-hidden) and the command's expansion
+    /// (user-hidden, agent-visible); hook context is user-hidden too. Without
+    /// the filter the reporter quoted the model-only expansion back as the
+    /// user's own last message.
+    #[test]
+    fn user_hidden_rows_are_not_the_user_s_words() {
+        let conversation = Conversation::new_unvalidated(vec![
+            Message::user().with_text("earlier question"),
+            Message::user()
+                .with_text("/bug the chart panel is blank for one row")
+                .with_visibility(true, false),
+            Message::user()
+                .with_text(
+                    "The user typed /bug: they want to report a problem with Biorouter itself.",
+                )
+                .with_visibility(false, true),
+            Message::user()
+                .with_text("<hook-context>injected by a hook</hook-context>")
+                .with_visibility(false, true),
+        ]);
+        let recent = recent_user_text(&conversation);
+        assert_eq!(
+            recent,
+            vec![
+                "earlier question".to_string(),
+                "/bug the chart panel is blank for one row".to_string()
+            ]
+        );
+        assert_eq!(
+            described_problem(&recent).as_deref(),
+            Some("the chart panel is blank for one row")
+        );
+    }
+
+    /// The composer appends a chip's `<biorouter-ref …>` tag and a quoted
+    /// passage's `<biorouter-quote>…</biorouter-quote>` block to the message.
+    /// Neither is the user's prose.
+    #[test]
+    fn composer_chips_and_quotes_are_not_the_user_s_words() {
+        let conversation = Conversation::new_unvalidated(vec![
+            Message::user().with_text(
+                "the knowledge panel shows no pages \
+                 <biorouter-ref type=\"knowledge_base\" id=\"soul\" label=\"Soul &amp; Body\"> \
+                 <biorouter-ref type=\"skill\" name=\"rna-qc\"/>",
+            ),
+            Message::user().with_text(
+                "explain this <biorouter-quote>{\"source\":\"report.md\",\"text\":\"cohort \
+                 of 41 participants\"}</biorouter-quote>",
+            ),
+            // Nothing but a chip: nothing the user said.
+            Message::user().with_text("<biorouter-ref type=\"extension\" name=\"developer\">"),
+        ]);
+        assert_eq!(
+            recent_user_text(&conversation),
+            vec![
+                "the knowledge panel shows no pages".to_string(),
+                "explain this".to_string()
+            ]
+        );
+        // A malformed tag is not markup the composer wrote, and stays.
+        assert_eq!(
+            strip_composer_markup("a <biorouter-reference type=\"x\"> b"),
+            "a <biorouter-reference type=\"x\"> b"
         );
     }
 

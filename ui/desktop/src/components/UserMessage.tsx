@@ -10,8 +10,13 @@ import { ProvenanceChip } from './ProvenanceChip';
 import { formatMessageTimestamp } from '../utils/timeUtils';
 import { ChevronDown, ChevronUp, Edit, Send } from './icons/app-icons';
 import { Button } from './ui/button';
-import { ResourceRefChip, ResourceRefText } from './ResourceRefChip';
+import { CommandChip, ResourceRefChip, ResourceRefText } from './ResourceRefChip';
 import { joinComposerText, removeComposerRefAt, splitComposerText } from '../utils/composerRefs';
+import {
+  composerTextOfSent,
+  joinLeadingCommand,
+  splitLeadingCommand,
+} from '../utils/composerCommand';
 import { CLAMP_EXPAND_MS, CLAMP_MAX_HEIGHT_PX, describeMessageLength } from '../utils/messageClamp';
 import { cn } from '../utils';
 
@@ -32,6 +37,13 @@ import { cn } from '../utils';
  * instant, "because you are moving away from it".
  */
 type ClampState = 'collapsed' | 'expanding' | 'open';
+
+/**
+ * The edit box's starting text for a sent message: `composerTextOfSent`, so a
+ * `/bug` chip sent with no prose draws the same chip the transcript does.
+ * Saving it unchanged is still a no-op: the comparison is on trimmed text.
+ */
+const editableText = (text: string): string => composerTextOfSent(text);
 
 interface UserMessageProps {
   message: Message;
@@ -105,6 +117,12 @@ export default function UserMessage({
   // their sentence would delete half a tag and silently lose the reference.
   const editRefs = useMemo(() => splitComposerText(editContent).refs, [editContent]);
   const editBody = useMemo(() => splitComposerText(editContent).body, [editContent]);
+  // …and a leading `/bug ` is the command chip, as in the composer. The message
+  // keeps it at its start; the textarea holds the prose after it.
+  const { command: editCommand, prose: editProse } = useMemo(
+    () => splitLeadingCommand(editBody),
+    [editBody]
+  );
 
   // Memoize the timestamp
   const timestamp = useMemo(() => formatMessageTimestamp(message.created), [message.created]);
@@ -162,13 +180,13 @@ export default function UserMessage({
   useEffect(() => {
     // If we're not editing, update the edit content to match the current message
     if (!isEditing) {
-      setEditContent(displayText);
+      setEditContent(editableText(displayText));
     }
   }, [message.content, displayText, message.id, isEditing]);
 
   // Initialize edit mode with current message content
   const initializeEditMode = useCallback(() => {
-    setEditContent(displayText);
+    setEditContent(editableText(displayText));
     setError(null);
     window.electron.logInfo(`Entering edit mode with content: ${displayText}`);
   }, [displayText]);
@@ -201,17 +219,39 @@ export default function UserMessage({
   // Handle content changes in edit mode
   const handleContentChange = useCallback(
     (e: React.ChangeEvent<HTMLTextAreaElement>) => {
-      // The textarea holds the prose; the references ride along untouched.
-      const newContent = joinComposerText(e.target.value, editRefs);
+      // The textarea holds the prose; the command and the references ride along
+      // untouched. `/bug ` typed at the start with no chip yet becomes the chip
+      // (the split claims it); the caret goes back to where the user was typing.
+      const value = e.target.value;
+      if (!editCommand) {
+        const converted = splitLeadingCommand(value);
+        if (converted.command) {
+          const caret = Math.max(
+            0,
+            e.target.selectionStart - (value.length - converted.prose.length)
+          );
+          setTimeout(() => textareaRef.current?.setSelectionRange(caret, caret), 0);
+        }
+      }
+      const newContent = joinComposerText(joinLeadingCommand(editCommand, value), editRefs);
       setEditContent(newContent);
       setError(null); // Clear any previous errors
       window.electron.logInfo(`Content changed: ${newContent}`);
     },
-    [editRefs]
+    [editCommand, editRefs]
   );
 
   const handleRemoveEditReference = useCallback((index: number) => {
     setEditContent((current) => removeComposerRefAt(current, index));
+  }, []);
+
+  // Removing the chip keeps the prose: the message is no longer a command.
+  const handleRemoveEditCommand = useCallback(() => {
+    setEditContent((current) => {
+      const { body, refs } = splitComposerText(current);
+      return joinComposerText(splitLeadingCommand(body).prose, refs);
+    });
+    textareaRef.current?.focus();
   }, []);
 
   const handleSave = useCallback(
@@ -240,7 +280,7 @@ export default function UserMessage({
   const handleCancel = useCallback(() => {
     window.electron.logInfo('Cancel clicked - reverting to original content');
     setIsEditing(false);
-    setEditContent(displayText); // Reset to original content
+    setEditContent(editableText(displayText)); // Reset to original content
     setError(null);
   }, [displayText]);
 
@@ -254,13 +294,23 @@ export default function UserMessage({
       if (e.key === 'Escape') {
         e.preventDefault();
         handleCancel();
+      } else if (
+        e.key === 'Backspace' &&
+        editCommand &&
+        e.currentTarget instanceof HTMLTextAreaElement &&
+        e.currentTarget.selectionStart === 0 &&
+        e.currentTarget.selectionEnd === 0
+      ) {
+        // As in the composer: Backspace at the start of the prose takes the chip.
+        e.preventDefault();
+        handleRemoveEditCommand();
       } else if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
         e.preventDefault();
         window.electron.logInfo('Cmd+Enter detected, calling handleSave');
         handleSave();
       }
     },
-    [handleCancel, handleSave]
+    [editCommand, handleCancel, handleRemoveEditCommand, handleSave]
   );
 
   // Auto-resize textarea based on content
@@ -287,11 +337,14 @@ export default function UserMessage({
         {isEditing ? (
           // Truly wide, centered, in-place edit box replacing the bubble
           <div className="w-full max-w-4xl mx-auto bg-background-default text-text-default rounded-container border border-border-subtle p-3 my-2">
-            {editRefs.length > 0 && (
+            {(editCommand || editRefs.length > 0) && (
               <div
                 data-testid="edit-reference-rail"
                 className="mb-2 flex flex-wrap items-center gap-1.5"
               >
+                {editCommand && (
+                  <CommandChip command={editCommand} onRemove={handleRemoveEditCommand} />
+                )}
                 {editRefs.map((ref, index) => (
                   <ResourceRefChip
                     key={`${ref.kind}:${ref.value}`}
@@ -303,7 +356,7 @@ export default function UserMessage({
             )}
             <textarea
               ref={textareaRef}
-              value={editBody}
+              value={editProse}
               onChange={handleContentChange}
               onKeyDown={handleKeyDown}
               className="w-full resize-none bg-transparent text-body text-text-default placeholder:text-text-muted border border-border-emphasized rounded-element p-3 transition-colors focus:border-border-strong"

@@ -342,6 +342,7 @@ mod tests {
         for command in [
             "compact",
             "effort",
+            "bug",
             "diverge",
             "knowledge",
             "rename",

@@ -17,6 +17,7 @@ import { readKnowledgeSelection, type KnowledgeSelection } from './knowledge/kno
 import { getInitialWorkingDir } from '../utils/workingDir';
 import { IMAGE_EXTENSIONS } from '../utils/imageFormats';
 import { labelledRefTag, refTag, type RefKind } from '../utils/resourceRefs';
+import { isChipCommand, joinLeadingCommand } from '../utils/composerCommand';
 import { useConfig } from './ConfigContext';
 import { fetchSkillCatalog, pickerBundles, standaloneSkills } from './skills/useSkillCatalog';
 import { extensionReferenceItems } from './extensionReferenceItems';
@@ -183,6 +184,14 @@ export const getMentionInsertText = (item: DisplayItem) => {
   const clientInsert =
     item.itemType === 'Builtin' ? CLIENT_INSERT_COMMANDS[item.name]?.insert : undefined;
   if (clientInsert) return clientInsert;
+
+  // `/bug ` WITH its space: the composer draws exactly that as a chip, and a
+  // bare `/bug` stays text (`utils/composerCommand.ts`). The row itself is the
+  // daemon's, so it keeps the daemon's description and the built-in badge.
+  const commandName = item.name.replace(/^\/+/, '');
+  if (item.itemType === 'Builtin' && isChipCommand(commandName)) {
+    return joinLeadingCommand(commandName, '');
+  }
 
   return ['Builtin', 'Workflow'].includes(item.itemType) ? `/${item.name}` : item.extra;
 };

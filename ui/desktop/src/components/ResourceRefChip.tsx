@@ -13,10 +13,16 @@
  * (a port of the backend's) claimed, so a chip on screen is always a resource
  * the agent will actually load.
  */
+import {
+  CHIP_COMMANDS,
+  commandToken,
+  splitSentCommand,
+  type ChipCommand,
+} from '../utils/composerCommand';
 import { splitComposerText } from '../utils/composerRefs';
 import type { QuoteReference } from '../utils/quotedText';
 import { QuotedTextChip } from './QuotedTextChip';
-import { X } from './icons/app-icons';
+import { Bug, X } from './icons/app-icons';
 import { ENTITY_ICONS, type EntityKind } from './icons/entity-icons';
 import { Badge } from './ui/badge';
 import { type RefKind, type RefSpan } from '../utils/resourceRefs';
@@ -120,6 +126,62 @@ export function ResourceRefChip({ refSpan, onRemove, className }: ResourceRefChi
   );
 }
 
+// The glyph a chip command is drawn with. Lucide's own mark for the thing, as
+// the entity chips use theirs.
+const COMMAND_ICONS: Record<ChipCommand, typeof Bug> = {
+  bug: Bug,
+};
+
+interface CommandChipProps {
+  command: ChipCommand;
+  /** Renders a remove control. Omitted where the command is already sent. */
+  onRemove?: () => void;
+  className?: string;
+}
+
+/**
+ * A slash command drawn as a chip (`/bug`), in the composer and in a sent
+ * message.
+ *
+ * Presentation only: the message still starts with `/bug ` on the wire, which
+ * is where the daemon reads a command (`utils/composerCommand.ts`). It is the
+ * same accent {@link Badge} as a reference chip, with the same name ink and the
+ * same remove control, so a command and a reference read as one kind of
+ * attached object. The command is said in words for a screen reader and on
+ * hover, since the label alone does not say a command will run.
+ */
+export function CommandChip({ command, onRemove, className }: CommandChipProps) {
+  const Icon = COMMAND_ICONS[command];
+  const { label, title } = CHIP_COMMANDS[command];
+  const token = commandToken(command);
+
+  return (
+    <Badge
+      tone="accent"
+      data-testid="command-chip"
+      data-command={command}
+      title={title}
+      className={`max-w-full min-w-0 align-middle ${className ?? ''}`}
+    >
+      <Icon className="h-3 w-3 shrink-0" />
+      <span className="sr-only">Command {token}: </span>
+      <span data-testid="command-chip-name" className="min-w-0 truncate text-text-default">
+        {label}
+      </span>
+      {onRemove && (
+        <button
+          type="button"
+          onClick={onRemove}
+          aria-label={`Remove command ${token}`}
+          className="-mr-0.5 ml-0.5 shrink-0 cursor-pointer rounded-sm p-0.5 text-text-muted transition-colors duration-[var(--motion-fast)] hover:bg-background-accent/15 hover:text-text-default"
+        >
+          <X className="h-2.5 w-2.5" />
+        </button>
+      )}
+    </Badge>
+  );
+}
+
 interface ResourceRefTextProps {
   text: string;
   className?: string;
@@ -133,12 +195,16 @@ interface ResourceRefTextProps {
  * hand — or one truncated mid-attribute — degrades to something readable rather
  * than to a blank where a reference used to be. That is also honest: the
  * backend will not resolve it either.
+ *
+ * A message that starts with a chip command (`/bug`) draws it as the command
+ * chip, first, the way the composer did before it was sent.
  */
 export function ResourceRefText({ text, className }: ResourceRefTextProps) {
-  const { refs } = splitComposerText(text);
+  const { command, rest } = splitSentCommand(text);
+  const { refs } = splitComposerText(rest);
   let cursor = 0;
   const nodes = refs.map((ref, index) => {
-    const preceding = text.slice(cursor, ref.start);
+    const preceding = rest.slice(cursor, ref.start);
     cursor = ref.end;
     return (
       <span key={index}>
@@ -149,8 +215,9 @@ export function ResourceRefText({ text, className }: ResourceRefTextProps) {
   });
   return (
     <>
+      {command && <CommandChip command={command} className={className} />}
       {nodes}
-      {text.slice(cursor)}
+      {rest.slice(cursor)}
     </>
   );
 }
