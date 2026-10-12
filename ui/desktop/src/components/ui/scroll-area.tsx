@@ -37,6 +37,23 @@ interface ScrollAreaProps extends React.ComponentPropsWithoutRef<typeof ScrollAr
    * Every other scroll area keeps `scrollTop` through a resize.
    */
   anchorBottomOnResize?: () => boolean;
+  /**
+   * Asked when the content has grown while the reader follows the end, before
+   * the scroll area follows it there, and again in the frame that would
+   * scroll; false keeps `scrollTop` for that growth. A function, read at the
+   * instant of the growth, like `anchorBottomOnResize`. Omitted: every growth
+   * is followed, as before.
+   *
+   * A growth it declines is not followed later either: the height it reached
+   * is remembered whatever this answers, so only the next growth asks again.
+   *
+   * The live chat's transcript passes it (`summary/useTranscriptFollow.ts`): a
+   * turn error row the person did not cause, landing after they could be
+   * reading (a chat whose model failed to restore seconds after it opened,
+   * vision V2-R9-2), is added below the fold instead of moving every card on
+   * screen up under the pointer. Every other scroll area follows every growth.
+   */
+  followGrowth?: () => boolean;
 }
 
 /** How long after the last scroll event the scrollbar stays shown. */
@@ -53,6 +70,7 @@ const ScrollArea = React.forwardRef<ScrollAreaHandle, ScrollAreaProps>(
       paddingY,
       handleScroll: handleScrollProp,
       anchorBottomOnResize,
+      followGrowth,
       ...props
     },
     ref
@@ -66,6 +84,8 @@ const ScrollArea = React.forwardRef<ScrollAreaHandle, ScrollAreaProps>(
     const lastScrollHeightRef = React.useRef(0);
     const isActivelyScrollingRef = React.useRef(false);
     const scrollTimeoutRef = React.useRef<number | null>(null);
+    const followGrowthRef = React.useRef(followGrowth);
+    followGrowthRef.current = followGrowth;
 
     const BOTTOM_SCROLL_THRESHOLD = 200;
 
@@ -218,19 +238,27 @@ const ScrollArea = React.forwardRef<ScrollAreaHandle, ScrollAreaProps>(
       // 2. User was following (at the bottom)
       // 3. User hasn't manually scrolled up
       // 4. User is not actively scrolling
+      // 5. The owner does not hold this growth below the fold (`followGrowth`)
       if (
         currentScrollHeight > lastScrollHeightRef.current &&
         isFollowing &&
         !userScrolledUpRef.current &&
-        !isActivelyScrollingRef.current
+        !isActivelyScrollingRef.current &&
+        (followGrowthRef.current?.() ?? true)
       ) {
         // Use requestAnimationFrame to ensure DOM has updated.
         // Follow streaming content with an INSTANT scroll: a smooth scroll is
         // re-issued on every content chunk and never settles, so it fights the
         // growing transcript and janks. Smooth is reserved for the explicit
         // jump-to-bottom button (scrollToBottom).
+        // `followGrowth` is asked again here: a growth from an earlier commit
+        // whose frame has not run yet when a held row lands must not carry it.
         requestAnimationFrame(() => {
-          if (viewportRef.current && !isActivelyScrollingRef.current) {
+          if (
+            viewportRef.current &&
+            !isActivelyScrollingRef.current &&
+            (followGrowthRef.current?.() ?? true)
+          ) {
             viewportRef.current.scrollTo({
               top: viewportRef.current.scrollHeight,
               behavior: 'auto',
