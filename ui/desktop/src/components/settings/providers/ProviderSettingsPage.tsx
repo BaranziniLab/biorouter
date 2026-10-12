@@ -153,8 +153,10 @@ export default function ProviderSettings({
         onBack={onClose}
         tabs={<div ref={setTabsHost} className="br-provider-band-tabs-host" />}
       />
+      {/* `br-page-headroom`: the clear space under the band at the top, the one Settings and the
+          first-run page keep too (`--page-headroom`). */}
       <ScrollArea className="flex-1 w-full">
-        <div className="mx-auto w-full max-w-measure-chat px-6 py-6">
+        <div className="br-page-headroom mx-auto w-full max-w-measure-chat px-6 pb-6">
           {/* Mounted at once, so the coding-agent probe runs while the list loads; the catalog
               draws the skeleton until it knows which tab opens, then opens there at rest. */}
           <ProviderCatalog

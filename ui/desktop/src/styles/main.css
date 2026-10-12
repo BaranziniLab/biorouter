@@ -499,6 +499,25 @@
      a visible pink rule at 4x. Two clear pixels remove it outright, and cost
      nothing visible: at 10px those pixels were already under 20% alpha. */
   --scroll-fade-clear: 2px;
+  /* THE PAGE'S HEADROOM: the clear space between a page band's bottom edge
+     (`--chrome-height`) and the first row of the page under it, while the page
+     is at its top. ONE value for every page that puts a scrolled reading column
+     under a band: Settings, the first-run setup page and the provider page
+     (`.br-page-headroom`, authored below the scroll fade). It is padding on the
+     scrolled content, not a gap above the scroller, so it scrolls away with the
+     first row and a page in motion keeps every pixel of its height.
+
+     ⚠ It must stay taller than `--scroll-fade-top`. At the top the fade is off
+     (`data-scrolled` is false below a whole pixel of scroll), and for the first
+     pixels after it turns on it covers only this empty space, never a row.
+     `styles/settingsScrollFade.test.ts` holds the two apart.
+
+     24px is the owner's floor ("leave plenty of headroom at the top", the
+     2026-10-12 report): Settings drew its first section 20px under the band and
+     the setup page 24px, each from its own padding literal (`py-5`, `py-6`), so
+     the one page read cramped against the band beside the other.
+     `settings/pageHeadroom.browser.test.tsx` measures it in Chromium. */
+  --page-headroom: 24px;
 
   /* Rows. Two rhythms and no more: the rail (sidebar, nav, menu item, recents,
      select option) and the content list. They are separate because they answer
@@ -5012,6 +5031,18 @@ body:has(.biorouter-modal-surface [data-slot='select-content'][data-state='open'
   );
 }
 
+/* THE PAGE'S HEADROOM (`--page-headroom`), on the first box INSIDE a page's
+   scroller: Settings' reading column (`settings/SettingsView.tsx`), the
+   first-run setup page (`ProviderGuard.tsx`) and the provider page
+   (`settings/providers/ProviderSettingsPage.tsx`). Inside, so it scrolls away
+   with the first row rather than standing as a dead strip under the band.
+   Authored rather than a Tailwind arbitrary value, for the class-scanning
+   reason the fade above gives; the call sites keep their bottom padding as a
+   `pb-*` utility and give the top to this rule alone. */
+.br-page-headroom {
+  padding-top: var(--page-headroom);
+}
+
 .biorouter-settings-section {
   padding-block: 14px;
 }
@@ -6081,8 +6112,27 @@ body:has(.biorouter-modal-surface [data-slot='select-content'][data-state='open'
 /* ScrollArea (`ui/scroll-area.tsx`): the viewport's native scrollbar rests hidden and shows
    while the pointer is over the area or it is scrolling (`data-scrolling`, set by the
    component). `scrollbar-color` for Chromium's standard scrollbar, the thumb pseudo-element for
-   the WebKit one; both beat the global `*` rule by specificity. */
+   the WebKit one; both beat the global `*` rule by specificity.
+
+   ⚠ `position: relative` makes the VIEWPORT the containing block of everything absolutely
+   positioned in the scrolled content that has no positioned box of its own above it, and is the
+   fix for the 2026-10-12 report "the first lines do not show when scrolled all the way up".
+   Unpositioned, the viewport handed those boxes to the ROOT: an InfoTip's `sr-only` description
+   (a 1px absolute span on every row with help) was placed against the root, past the viewport's
+   clip, and gave the `overflow: hidden` root up to 1,600px of overflow. A wheel cannot scroll a
+   hidden box, but `scrollIntoView` and focus scrolling can, and they did: opening Settings at a
+   section (the update notice's "update", "usage", "project", even "privacy" by the 10px of the
+   viewport's scroll padding) scrolled the root too, the wheel brought only the viewport back to
+   0, and the top of the page stayed under the band, on every tab, until Settings was reopened.
+   Positioned here, those boxes are clipped and scrolled by the viewport like the rows they
+   describe, the root has nothing to scroll, and `ui/scroll-area.tsx` puts the root back if
+   anything ever scrolls it again. The transcripts' viewports already ran this way after their
+   first find (`SearchHighlighter` sets it inline, and never unsets it), and the component views
+   (Workflows, the Scheduler, Built apps, Extensions, Skills, Chat history) wrap their content in a
+   positioned box of their own, so neither moves. `settings/pageHeadroom.browser.test.tsx` opens
+   Settings at a section and wheels back to the top. */
 .br-scroll-viewport {
+  position: relative;
   scrollbar-color: transparent transparent;
 }
 
