@@ -1,7 +1,7 @@
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { useState } from 'react';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ThemeProvider } from '../../contexts/ThemeContext';
 import { AppTooltipLayer } from '../ui/AppTooltipLayer';
 import MarkdownContent from '../MarkdownContent';
@@ -2905,5 +2905,162 @@ describe('ArtifactViewer — rung 3: the ▾ overflow menu', () => {
     } finally {
       restore();
     }
+  });
+});
+
+/**
+ * Which scroll the panel gives its tab list when it reveals the active tab (vision V2-R4-4).
+ *
+ * The reveal used to stop 8px from the list's edge, but an end that has tabs past it fades over
+ * `--tab-edge-fade` (32px), so a tab selected where an end cut it had its close slot and the end of
+ * its accent strip under the fade. The rule is `tabRevealScrollLeft` (Layout/useTabStripOverflow,
+ * unit-tested there, shared with the chat strip). jsdom computes no layout, so these stub the
+ * geometry the reveal reads: 6 tabs, 136px wide every 139px from 8, in a 500px list that starts at
+ * x=100 and fades 32px at an end with tabs past it. What the reveal asks of the browser is
+ * `scrollTo`; the pixels (the fade, the settle) are checked in the panel harness, in Chromium.
+ */
+describe('ArtifactViewer — the active tab is revealed clear of the edge fade', () => {
+  const LIST_LEFT = 100;
+  const LIST_WIDTH = 500;
+  const TAB_WIDTH = 136;
+  const TAB_COUNT = 6;
+  const SCROLL_WIDTH = 8 + (TAB_COUNT - 1) * 139 + TAB_WIDTH + 8;
+  const MAX_SCROLL = SCROLL_WIDTH - LIST_WIDTH;
+
+  const OriginalResizeObserver = globalThis.ResizeObserver;
+  let watchers: Array<{ target: Element; callback: () => void }> = [];
+
+  const viewer = (artifact: ArtifactSource) => (
+    <ThemeProvider>
+      <ArtifactViewer artifact={artifact} onClose={vi.fn()} onOpenArtifact={vi.fn()} />
+    </ThemeProvider>
+  );
+  const file = (title: string): ArtifactSource => ({ kind: 'file', title, path: `/work/${title}` });
+
+  beforeEach(() => {
+    watchers = [];
+    class FakeResizeObserver {
+      constructor(private readonly callback: () => void) {}
+      observe(target: Element) {
+        watchers.push({ target, callback: this.callback });
+      }
+      unobserve() {}
+      disconnect() {
+        watchers = watchers.filter((watcher) => watcher.callback !== this.callback);
+      }
+    }
+    globalThis.ResizeObserver = FakeResizeObserver as unknown as typeof ResizeObserver;
+  });
+
+  afterEach(() => {
+    globalThis.ResizeObserver = OriginalResizeObserver;
+  });
+
+  /**
+   * Mounts six tabs (the last is active), then lays them out: `state.scrollLeft` is the list's
+   * scroll, every tab's rect follows it, and `scale` shrinks a tab's painted rect about its
+   * centre while its `offsetWidth` stays the layout width (the select settle).
+   */
+  async function layOutSixTabs() {
+    installElectronMock();
+    const { rerender } = render(viewer(file('t0.md')));
+    for (let index = 1; index < TAB_COUNT; index += 1) rerender(viewer(file(`t${index}.md`)));
+    const list = await screen.findByRole('tablist');
+    const tabs = screen
+      .getAllByRole('tab')
+      .map((button) => button.closest('.br-tab') as HTMLElement);
+    expect(tabs).toHaveLength(TAB_COUNT);
+
+    const state = { scrollLeft: 0, scale: 1 };
+    const scrollTo = vi.fn((options: { left?: number; behavior?: string }) => {
+      state.scrollLeft = options.left ?? state.scrollLeft;
+    });
+    Object.defineProperty(list, 'scrollLeft', {
+      configurable: true,
+      get: () => state.scrollLeft,
+      set: (value: number) => {
+        state.scrollLeft = value;
+      },
+    });
+    Object.defineProperty(list, 'clientWidth', { configurable: true, value: LIST_WIDTH });
+    Object.defineProperty(list, 'scrollWidth', { configurable: true, value: SCROLL_WIDTH });
+    list.scrollTo = scrollTo as unknown as typeof list.scrollTo;
+    list.style.setProperty('--tab-edge-fade', '32px');
+    list.getBoundingClientRect = () =>
+      ({ left: LIST_LEFT, right: LIST_LEFT + LIST_WIDTH, width: LIST_WIDTH }) as DOMRect;
+    for (const [index, tab] of tabs.entries()) {
+      Object.defineProperty(tab, 'offsetWidth', { configurable: true, value: TAB_WIDTH });
+      tab.getBoundingClientRect = () => {
+        const laidOut = LIST_LEFT + 8 + index * 139 - state.scrollLeft;
+        const width = TAB_WIDTH * state.scale;
+        const left = laidOut + (TAB_WIDTH - width) / 2;
+        return { left, right: left + width, width } as DOMRect;
+      };
+    }
+    return { list, tabs, state, scrollTo };
+  }
+
+  /** The list's ResizeObserver fires: the reveal runs against the geometry as it is now. */
+  function resizeList(list: HTMLElement) {
+    act(() => {
+      for (const watcher of watchers) if (watcher.target === list) watcher.callback();
+    });
+  }
+
+  const lastScroll = (scrollTo: ReturnType<typeof vi.fn>) =>
+    (scrollTo.mock.calls[scrollTo.mock.calls.length - 1][0] as { left: number }).left;
+
+  it('stops a tab the end cuts 32px short of it, outside the fade', async () => {
+    const { list, tabs, state, scrollTo } = await layOutSixTabs();
+    state.scrollLeft = 0;
+    // Tab 3 is 425..561 in the list; the box ends at 500.
+    fireEvent.click(within(tabs[3]).getByRole('tab'));
+    await waitFor(() => expect(scrollTo).toHaveBeenCalled());
+    // Its end sits 32px before the box's end, where the fade ends: 561 - (500 - 32).
+    expect(lastScroll(scrollTo)).toBe(93);
+    // And it is not moved twice: the reveal that has landed asks for nothing more.
+    scrollTo.mockClear();
+    resizeList(list);
+    expect(scrollTo).not.toHaveBeenCalled();
+  });
+
+  it('stops a tab the start cuts 32px past it', async () => {
+    const { tabs, state, scrollTo } = await layOutSixTabs();
+    state.scrollLeft = 200;
+    // Tab 1 is 147..283: its start is under the start fade at 200.
+    fireEvent.click(within(tabs[1]).getByRole('tab'));
+    await waitFor(() => expect(scrollTo).toHaveBeenCalled());
+    expect(lastScroll(scrollTo)).toBe(147 - 32);
+  });
+
+  it('takes the last tab to the end of the list, where nothing fades', async () => {
+    const { list, state, scrollTo } = await layOutSixTabs();
+    // The active tab is the last, 703..839; at 330 the box is 330..830 and it ends 9px past it.
+    state.scrollLeft = 330;
+    resizeList(list);
+    expect(scrollTo).toHaveBeenCalledTimes(1);
+    expect(lastScroll(scrollTo)).toBe(MAX_SCROLL);
+  });
+
+  it('leaves a tab that is already clear of both fades where it is', async () => {
+    const { list, tabs, state, scrollTo } = await layOutSixTabs();
+    state.scrollLeft = 100;
+    // Tab 3 is 425..561: 325..461 in the box 0..500, clear of the end fade that starts at 468.
+    fireEvent.click(within(tabs[3]).getByRole('tab'));
+    await waitFor(() => expect(tabs[3]).toHaveAttribute('data-active', 'true'));
+    resizeList(list);
+    expect(scrollTo).not.toHaveBeenCalled();
+  });
+
+  it('reads the tab as laid out, not as the select settle paints it', async () => {
+    const { tabs, state, scrollTo } = await layOutSixTabs();
+    state.scrollLeft = 0;
+    // A newly active tab is 3% short in its first frame (`scale` 0.97 about its centre).
+    state.scale = 0.97;
+    fireEvent.click(within(tabs[3]).getByRole('tab'));
+    await waitFor(() => expect(scrollTo).toHaveBeenCalled());
+    // The same 93 as the unscaled case. Measured from the rect it is 91, and the settled tab
+    // would end 2px inside the fade.
+    expect(lastScroll(scrollTo)).toBe(93);
   });
 });

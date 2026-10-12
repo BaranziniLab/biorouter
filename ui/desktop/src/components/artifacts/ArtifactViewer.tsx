@@ -66,7 +66,12 @@ import {
   TextQuote,
   X,
 } from '../icons/app-icons';
-import { useTabStripOverflow, useTabStripScrolledEdges } from '../Layout/useTabStripOverflow';
+import {
+  tabEdgeFadeOf,
+  tabRevealScrollLeft,
+  useTabStripOverflow,
+  useTabStripScrolledEdges,
+} from '../Layout/useTabStripOverflow';
 import type { PreviewPanelMode } from '../Layout/yieldLadder';
 import {
   DropdownMenu,
@@ -965,21 +970,39 @@ export default function ArtifactViewer({
    * `scrollIntoView`, so no ancestor (the split box, the chat column) can be
    * scrolled along with it. Instant on a resize; smooth on a switch unless the
    * person asked for less motion.
+   *
+   * "Whole" means clear of the edge fade (`--tab-edge-fade`, 32px), not just inside
+   * the box: an end with tabs scrolled past it fades, and a tab revealed only to 8px
+   * from that end had its close slot and the end of its accent strip under the fade
+   * (V2-R4-4, the chat strip's defect; the panel had the same 8px reveal).
+   * `tabRevealScrollLeft` is the one rule for both strips; it returns null for a
+   * tab that is already shown, so the ResizeObserver can call this freely.
    */
   const revealActiveTab = useCallback((behavior: 'auto' | 'smooth') => {
     const list = tabListRef.current;
     const tab = activeTabButtonRef.current?.closest<HTMLElement>('.br-tab');
     if (!list || !tab) return;
-    const pad = 8;
     const listRect = list.getBoundingClientRect();
     const tabRect = tab.getBoundingClientRect();
     // Unlaid-out (a hidden group, jsdom): nothing to reveal against.
     if (listRect.width === 0 || tabRect.width === 0) return;
-    let delta = 0;
-    if (tabRect.left < listRect.left + pad) delta = tabRect.left - listRect.left - pad;
-    else if (tabRect.right > listRect.right - pad) delta = tabRect.right - listRect.right + pad;
-    if (Math.abs(delta) < 1) return;
-    const left = Math.max(0, list.scrollLeft + delta);
+    // The tab as LAID OUT, not as painted: a tab that has just become active plays a
+    // 0.97 to 1 settle (`br-tab-select`, a `scale` about its centre), and this runs in
+    // that first frame, when its rect is 3% short. Measured from the rect, the reveal
+    // lands the settled tab 2px inside the fade. The centre does not move under a
+    // centred scale, and `offsetWidth` is the layout width, so the two give the settled
+    // box. (A strip that has no layout width, as in jsdom, falls back to the rect.)
+    const tabWidth = tab.offsetWidth || tabRect.width;
+    const tabCentre = tabRect.left + tabRect.width / 2;
+    const left = tabRevealScrollLeft({
+      tabLeft: tabCentre - tabWidth / 2 - listRect.left - list.clientLeft + list.scrollLeft,
+      tabWidth,
+      scrollLeft: list.scrollLeft,
+      clientWidth: list.clientWidth,
+      scrollWidth: list.scrollWidth,
+      fade: tabEdgeFadeOf(list),
+    });
+    if (left === null) return;
     if (typeof list.scrollTo === 'function') list.scrollTo({ left, behavior });
     else list.scrollLeft = left;
   }, []);
