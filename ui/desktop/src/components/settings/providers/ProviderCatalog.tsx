@@ -148,7 +148,9 @@ interface ProviderCatalogProps {
   /**
    * The provider list is still being fetched (`providers` is not the answer yet). The catalog
    * draws its quiet skeleton instead of a tab that would say "Nothing here yet." about providers
-   * it has not been told about (first run, vision FR-R1-1).
+   * it has not been told about (first run, vision FR-R1-1). First run also passes it while it holds
+   * the first screen for the privacy notice's answer, so the page and the notice arrive together
+   * (FR-R4-4); it is the same skeleton, whatever the wait is for.
    */
   loading?: boolean;
   /**

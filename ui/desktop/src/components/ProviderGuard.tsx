@@ -10,6 +10,7 @@ import { ProviderDetails } from '../api';
 import { createNavigationHandler } from '../utils/navigationUtils';
 import { isBrowserSurface } from '../utils/surface';
 import { HostManagedModelPanel } from './privacy/HostManagedModelPanel';
+import { useFirstRunNoticeHold } from './privacy/firstRunNoticeDecision';
 import { getTitlebarControlInset } from './Layout/TitlebarControls';
 import { InfoTip } from './ui/info-tip';
 import { Button } from './ui/button';
@@ -167,6 +168,15 @@ export default function ProviderGuard({ didSelectProvider, children }: ProviderG
   }, [needsCatalog, getProviders]);
 
   /**
+   * On an upgraded install the day-one privacy notice opens over this page, and its count (started
+   * at boot, `renderer.tsx`) used to land a second after the page had settled, over a person who
+   * was already reading the list (FR-R4-4). The catalog holds its skeleton until that answer is in,
+   * show or no-show, for at most 2.5 s, so the page and the notice arrive together. A fresh
+   * install answers at once (no chats to count); an acknowledged one never asks.
+   */
+  const holdForNotice = useFirstRunNoticeHold(needsCatalog);
+
+  /**
    * Re-read the list after a setup changed it (a key saved, an agent's command written), so a
    * row's "Configured" follows what was just done. The first read is the effect above.
    */
@@ -297,7 +307,7 @@ export default function ProviderGuard({ didSelectProvider, children }: ProviderG
               <ProviderCatalog
                 tabsHost={tabsHost}
                 providers={providers ?? []}
-                loading={providers === null}
+                loading={providers === null || holdForNotice}
                 holdUntilSettled
                 refreshProviders={refreshProviders}
                 mode="onboarding"

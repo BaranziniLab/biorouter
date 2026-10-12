@@ -6,6 +6,7 @@ if (typeof (globalThis as Record<string, unknown>).process === 'undefined') {
 import React, { Suspense, lazy } from 'react';
 import ReactDOM from 'react-dom/client';
 import { ConfigProvider } from './components/ConfigContext';
+import { startFirstRunNoticeCount } from './components/privacy/firstRunNoticeDecision';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import { client } from './api/client.gen';
 import { daemonClientConfig } from './utils/daemonClient';
@@ -576,6 +577,10 @@ if (needsHeadlessElectron || typeof window.appConfig === 'undefined') {
     }
     console.log('connecting at', biorouterApiHost);
     client.setConfig(daemonClientConfig(biorouterApiHost, await window.electron.getSecretKey()));
+    // The day-one privacy notice's count starts here, in parallel with the app chunk loading and
+    // the first-run page's provider fetch, and the first-run page waits for its answer so the
+    // notice and the page arrive together (FR-R4-4). A leaf module: it pulls in no dialog.
+    startFirstRunNoticeCount();
   }
 
   ReactDOM.createRoot(document.getElementById('root')!).render(

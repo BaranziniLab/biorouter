@@ -5,13 +5,32 @@ import ProviderGuard, { ONBOARDING_SKIPPED_KEY } from './ProviderGuard';
 import { persistDetectedProviderSetup } from './onboarding/CommercialSetupCard';
 import { firstRunCopy } from './onboarding/copy';
 import { providerPageCopy } from './settings/providers/copy';
+import {
+  resetFirstRunNoticeDecisionForTests,
+  startFirstRunNoticeCount,
+} from './privacy/firstRunNoticeDecision';
+import { FirstRunPrivacyNoticeGate } from './privacy/FirstRunPrivacyNoticeGate';
+import type { Session } from '../api';
 
 const mocks = vi.hoisted(() => ({
   read: vi.fn(),
   upsert: vi.fn(),
   getProviders: vi.fn(),
   navigate: vi.fn(),
+  listSessions: vi.fn(),
   location: { pathname: '/', search: '' },
+}));
+
+// The day-one notice's count, which the first-run page waits for (FR-R4-4). The real decision module
+// runs; only the daemon call under it is the test's.
+vi.mock('../api', async (importOriginal) => ({
+  ...(await importOriginal<Record<string, unknown>>()),
+  listSessions: mocks.listSessions,
+}));
+
+vi.mock('../utils/userAction', async (importOriginal) => ({
+  ...(await importOriginal<Record<string, unknown>>()),
+  userActionHeaders: async () => ({}),
 }));
 
 vi.mock('./ConfigContext', () => ({
@@ -97,6 +116,9 @@ describe('ProviderGuard', () => {
     configReads({});
     mocks.upsert.mockResolvedValue(undefined);
     mocks.getProviders.mockResolvedValue([]);
+    localStorage.clear();
+    resetFirstRunNoticeDecisionForTests();
+    mocks.listSessions.mockResolvedValue({ data: { sessions: [] } });
   });
 
   it('persists the detected provider contract before opening its model picker', async () => {
@@ -215,6 +237,112 @@ describe('ProviderGuard', () => {
     renderGuard();
     const catalog = await screen.findByTestId('catalog-stub');
     await waitFor(() => expect(catalog).toHaveAttribute('data-loading', 'false'));
+  });
+
+  // FR-R4-4: on an upgraded install the privacy notice opens over this page, and its count took a
+  // second longer than the page, so the notice rose over a person already reading the list. The
+  // count starts at boot and the catalog keeps its skeleton until the answer is in, whichever way
+  // it goes, so the page and the notice arrive together.
+  describe('the day-one notice count', () => {
+    /** A count the test settles by hand, started the way the boot starts it. */
+    async function countInFlight() {
+      let settle!: (sessions: Session[]) => void;
+      let fail!: (error: unknown) => void;
+      mocks.listSessions.mockReturnValue(
+        new Promise((resolve, reject) => {
+          settle = (sessions) => resolve({ data: { sessions } });
+          fail = reject;
+        })
+      );
+      startFirstRunNoticeCount();
+      await waitFor(() => expect(mocks.listSessions).toHaveBeenCalled());
+      return { settle, fail };
+    }
+
+    const BACKFILLED = [
+      {
+        id: 's1',
+        privacy_tier: 'private',
+        privacy_reason: 'backfill:versa_azure',
+        provider_name: 'versa_azure',
+      },
+    ] as unknown as Session[];
+
+    it('keeps the skeleton after the provider list has answered, until the count does', async () => {
+      const count = await countInFlight();
+      renderGuard();
+      const catalog = await screen.findByTestId('catalog-stub');
+      await waitFor(() => expect(mocks.getProviders).toHaveBeenCalled());
+      // The list is in; the notice's answer is not. Nothing is drawn yet.
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(catalog).toHaveAttribute('data-loading', 'true');
+
+      count.settle(BACKFILLED);
+      await waitFor(() => expect(catalog).toHaveAttribute('data-loading', 'false'));
+    });
+
+    // The point of the hold. The same answer opens the notice and lets the catalog draw, so in the
+    // first commit where the dialog exists the catalog is already out of its skeleton: the page
+    // never settles first and then blurs under a person who has begun to read it.
+    it('opens the notice in the same commit the catalog draws', async () => {
+      const count = await countInFlight();
+      render(
+        <>
+          <ProviderGuard didSelectProvider={false}>
+            <div>Application</div>
+          </ProviderGuard>
+          <FirstRunPrivacyNoticeGate />
+        </>
+      );
+      const catalog = await screen.findByTestId('catalog-stub');
+      await waitFor(() => expect(mocks.getProviders).toHaveBeenCalled());
+      expect(catalog).toHaveAttribute('data-loading', 'true');
+      expect(screen.queryByTestId('first-run-privacy-notice')).toBeNull();
+
+      count.settle(BACKFILLED);
+      await screen.findByTestId('first-run-privacy-notice');
+      // No await since the dialog appeared: this is the commit it appeared in.
+      expect(catalog).toHaveAttribute('data-loading', 'false');
+    });
+
+    it('lets go on a no-show answer too', async () => {
+      const count = await countInFlight();
+      renderGuard();
+      const catalog = await screen.findByTestId('catalog-stub');
+      expect(catalog).toHaveAttribute('data-loading', 'true');
+      count.settle([]);
+      await waitFor(() => expect(catalog).toHaveAttribute('data-loading', 'false'));
+    });
+
+    it('lets go when the daemon does not answer the count', async () => {
+      const count = await countInFlight();
+      renderGuard();
+      const catalog = await screen.findByTestId('catalog-stub');
+      count.fail(new Error('daemon down'));
+      await waitFor(() => expect(catalog).toHaveAttribute('data-loading', 'false'));
+    });
+
+    it('waits for nothing when nobody started a count', async () => {
+      renderGuard();
+      const catalog = await screen.findByTestId('catalog-stub');
+      await waitFor(() => expect(catalog).toHaveAttribute('data-loading', 'false'));
+    });
+
+    it('never takes a drawn catalog back to its skeleton when a count starts later', async () => {
+      renderGuard();
+      const catalog = await screen.findByTestId('catalog-stub');
+      await waitFor(() => expect(catalog).toHaveAttribute('data-loading', 'false'));
+      await countInFlight();
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(catalog).toHaveAttribute('data-loading', 'false');
+    });
+
+    it('does not hold an install that has a provider: it has no skeleton to hold', async () => {
+      configReads({ provider: 'versa_azure' });
+      await countInFlight();
+      renderGuard();
+      expect(await screen.findByText('Application')).toBeInTheDocument();
+    });
   });
 
   it('lets a configured install straight through', async () => {

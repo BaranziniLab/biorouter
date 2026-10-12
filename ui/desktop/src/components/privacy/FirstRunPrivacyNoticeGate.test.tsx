@@ -28,6 +28,10 @@ vi.mock('../ConfigContext', () => ({
 }));
 
 import { FirstRunPrivacyNoticeGate, FIRST_RUN_NOTICE_ACK_KEY } from './FirstRunPrivacyNoticeGate';
+import {
+  resetFirstRunNoticeDecisionForTests,
+  startFirstRunNoticeCount,
+} from './firstRunNoticeDecision';
 import type { Session } from '../../api';
 
 function row(id: string, tier: 'private' | 'public', provider: string | null, reason?: string) {
@@ -60,6 +64,8 @@ function served(sessions: Session[]) {
 beforeEach(() => {
   vi.clearAllMocks();
   localStorage.clear();
+  // The count is a launch's state (FR-R4-4), so each test starts a launch.
+  resetFirstRunNoticeDecisionForTests();
   mocks.extensionsList = [];
   mocks.listSessions.mockResolvedValue(served(BACKFILLED));
 });
@@ -99,9 +105,10 @@ describe('FirstRunPrivacyNoticeGate', () => {
     await waitFor(() => expect(screen.queryByTestId('first-run-privacy-notice')).toBeNull());
     expect(localStorage.getItem(FIRST_RUN_NOTICE_ACK_KEY)).toBe('1');
 
-    // A later launch: a fresh mount reading the same recorded acknowledgement.
+    // A later launch: a fresh page load reading the same recorded acknowledgement.
     first.unmount();
     vi.clearAllMocks();
+    resetFirstRunNoticeDecisionForTests();
     render(<FirstRunPrivacyNoticeGate />);
     await waitFor(() => expect(screen.queryByTestId('first-run-privacy-notice')).toBeNull());
     // ...and it does not even ask. An acknowledged machine does no work here.
@@ -119,9 +126,32 @@ describe('FirstRunPrivacyNoticeGate', () => {
     expect(localStorage.getItem(FIRST_RUN_NOTICE_ACK_KEY)).toBeNull();
 
     first.unmount();
+    resetFirstRunNoticeDecisionForTests();
     mocks.listSessions.mockResolvedValue(served(BACKFILLED));
     render(<FirstRunPrivacyNoticeGate />);
     await screen.findByTestId('first-run-privacy-notice');
+  });
+
+  // FR-R4-4: the count starts at boot (`renderer.tsx`), long before the gate mounts, and the gate
+  // takes that answer instead of asking again. It used to start its own fetch on mount, a second
+  // behind the first-run page on a large database.
+  it('uses the count the boot started instead of fetching its own', async () => {
+    startFirstRunNoticeCount();
+    await waitFor(() => expect(mocks.listSessions).toHaveBeenCalledTimes(1));
+    render(<FirstRunPrivacyNoticeGate />);
+    await screen.findByTestId('first-run-privacy-notice');
+    expect(mocks.listSessions).toHaveBeenCalledTimes(1);
+  });
+
+  it('opens at once when the count was answered before the gate mounted', async () => {
+    startFirstRunNoticeCount();
+    // Let the boot's count land, with no gate on screen.
+    await waitFor(() => expect(mocks.listSessions).toHaveBeenCalled());
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    render(<FirstRunPrivacyNoticeGate />);
+    // The first render already holds the notice: nothing is fetched, nothing is waited for.
+    expect(screen.getByTestId('first-run-privacy-notice')).toBeInTheDocument();
+    expect(mocks.listSessions).toHaveBeenCalledTimes(1);
   });
 
   // ⚠ The one assertion in this file that a render cannot make. Every test above

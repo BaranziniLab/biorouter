@@ -298,6 +298,19 @@ switches it; a person's click still does. `loading` alone draws the skeleton too
 in flight never reads as "Nothing here yet.". First run first painted Local with that line, filled it a
 second later and switched itself to Public when the probe answered.
 
+On an upgraded install the day-one privacy notice opens over this page, and it used to arrive 0.7 to
+0.9 s after the page had settled (FR-R4-4): the gate started its own count of the chat list when it
+mounted, and on a database of five thousand chats the answer landed while a person was already
+reading the list. The count is now one decision for the launch (`privacy/firstRunNoticeDecision.ts`),
+started by `renderer.tsx` as soon as the daemon is reachable, in parallel with the app loading and the
+provider fetch. `ProviderGuard` passes `loading` while that answer is pending, show or no-show, for at
+most 2.5 s (`FIRST_RUN_NOTICE_WAIT_MS`, the probe's budget), so the page and the notice arrive in the
+same commit. The hold only delays the first draw: once it ends it is spent, and a catalog that has
+drawn is never taken back to its skeleton. A fresh install has no chats to count and answers at once;
+an acknowledged one does no work. An install that already has a provider has no skeleton to hold and
+is not delayed. The notice's copy, props and rule are unchanged; the counting rules moved verbatim to
+`privacy/noticeCounts.ts` so the boot can import them without the dialog.
+
 Both routes are **outside the app shell** (`routeOwnsTopBand`), so they have no sidebar and none of the
 shell's top-band bookkeeping, and the page does that bookkeeping itself. The band starts at **y=0** and is
 the window-drag region, as every band is (principle 1); there is no spacer under the strip. It used to

@@ -1,53 +1,20 @@
-import { useEffect, useState } from 'react';
+import { useEffect } from 'react';
 import { useConfig } from '../ConfigContext';
 import { publicClinicalExtensions } from '../settings/extensions/extensionPrivacy';
+import { FirstRunPrivacyNotice } from './FirstRunPrivacyNotice';
 import {
-  computeNoticeCounts,
-  FirstRunPrivacyNotice,
-  shouldShowFirstRunNotice,
-  type NoticeCounts,
-} from './FirstRunPrivacyNotice';
-import { listSessions, type Session } from '../../api';
-import { userActionHeaders } from '../../utils/userAction';
+  acknowledgeFirstRunNotice,
+  FIRST_RUN_NOTICE_ACK_KEY,
+  startFirstRunNoticeCount,
+  useFirstRunNoticeDecision,
+} from './firstRunNoticeDecision';
 
 /**
- * Where "this machine has already been told" is recorded.
- *
- * ⚠ **localStorage, unlike the sibling non-private-model disclosure, which
- * records its acknowledgement in the daemon.** That one gates an action and its
- * acknowledgement is a fact about the user: DR-16 makes it carry a proof-of-user
- * header and the daemon refuses to record it without one. This one gates
- * nothing. It reports something that has already happened to data at rest, it is
- * dismissible, and the worst outcome of losing the record is that a user sees an
- * accurate one-screen summary twice. Paying for a route, a store, an OpenAPI
- * regeneration and a proof-of-user round trip to prevent that would be spending
- * the security machinery on a receipt.
- *
- * The cost is stated rather than hidden: clearing browser storage, or a second
- * machine sharing the same database, shows the notice again. Both are correct
- * behaviours for a notice whose subject is "your history changed".
+ * Where the acknowledgement is recorded, and why it is not in the daemon, is written beside the key
+ * in `firstRunNoticeDecision.ts`, which owns the count and the record (FR-R4-4). Re-exported so the
+ * name has the same address it always had.
  */
-export const FIRST_RUN_NOTICE_ACK_KEY = 'biorouter-privacy-first-run-notice-ack';
-
-function alreadyAcknowledged(): boolean {
-  try {
-    return localStorage.getItem(FIRST_RUN_NOTICE_ACK_KEY) === '1';
-  } catch {
-    // Storage disabled or full. Treat as "not acknowledged" — showing an
-    // accurate notice one extra time is the harmless direction, and the write
-    // below fails the same way, so this cannot loop silently on a launch that
-    // would otherwise have been quiet.
-    return false;
-  }
-}
-
-function recordAcknowledged(): void {
-  try {
-    localStorage.setItem(FIRST_RUN_NOTICE_ACK_KEY, '1');
-  } catch {
-    // See above. Nothing the user can do about it and nothing to say.
-  }
-}
+export { FIRST_RUN_NOTICE_ACK_KEY };
 
 /**
  * The install-wide mount of {@link FirstRunPrivacyNotice} (issue #56 §15.5(3)).
@@ -68,7 +35,7 @@ function recordAcknowledged(): void {
  * have to navigate to History to be told History changed.
  *
  * ⚠ **Due only when the MIGRATION marked something visible.** Not "when a
- * private chat exists" — see {@link shouldShowFirstRunNotice}. A fresh install
+ * private chat exists" — see `shouldShowFirstRunNotice` in `noticeCounts.ts`. A fresh install
  * never sees this, however many private chats it accumulates later.
  *
  * ⚠ **One fetch, and it settles the question for good.** The counts are read
@@ -78,43 +45,23 @@ function recordAcknowledged(): void {
  */
 export function FirstRunPrivacyNoticeGate() {
   const { extensionsList } = useConfig();
-  const [counts, setCounts] = useState<NoticeCounts | null>(null);
-  const [dismissed, setDismissed] = useState(() => alreadyAcknowledged());
+  const decision = useFirstRunNoticeDecision();
 
+  // The boot starts the count as soon as the daemon is reachable (`renderer.tsx`), so by now it is
+  // usually running or answered. This is for a surface the boot did not reach, and it is a no-op
+  // when the count has already started (FR-R4-4).
   useEffect(() => {
-    if (dismissed) return;
-    let cancelled = false;
-    // With the user's proof: without it the daemon omits every private chat,
-    // and the notice would count none (issue #56, QA 2026-09-10 M1).
-    userActionHeaders()
-      .then((headers) =>
-        listSessions<true>({ throwOnError: true, headers, query: { include_subagents: false } })
-      )
-      .then((response) => {
-        if (!cancelled) setCounts(computeNoticeCounts(response.data.sessions as Session[]));
-      })
-      .catch(() => {
-        // The daemon is not answering yet, or not at all. Say nothing and leave
-        // the record unwritten, so the next launch asks again — the alternative
-        // is burning the one-time notice on a launch where it could not have
-        // been shown.
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [dismissed]);
+    startFirstRunNoticeCount();
+  }, []);
 
-  if (dismissed || !counts || !shouldShowFirstRunNotice(counts)) return null;
+  if (decision.status !== 'show') return null;
 
   return (
     <FirstRunPrivacyNotice
       open
-      counts={counts}
+      counts={decision.counts}
       publicClinicalExtensions={publicClinicalExtensions(extensionsList ?? [])}
-      onDismiss={() => {
-        recordAcknowledged();
-        setDismissed(true);
-      }}
+      onDismiss={acknowledgeFirstRunNotice}
     />
   );
 }
