@@ -144,16 +144,35 @@ fn resume_session_read_error(session_id: &str, error: anyhow::Error) -> ErrorRes
     }
 }
 
+/// The session `POST /agent/resume` answers with, read only after the metadata
+/// row has passed the subagent proof.
+///
+/// `include_transcript` is `!load_model_and_extensions`. The desktop opens a
+/// chat with two resumes that are meant to differ: the first paints the
+/// transcript and loads nothing, the second loads the agent and needs only the
+/// row (ruling 28, V2-R9-3). Every reader of the second answer reads metadata
+/// alone: `restore_persisted_provider_if_missing`, `restore_subagent_runtime_profile`
+/// and `load_extensions_from_session` read the provider, model, type,
+/// extension data and working directory, and `ensureAgentLoaded` reads
+/// `session.id`. So the agent load answers with the metadata row it already
+/// read, and a large chat no longer sends its whole transcript twice. Its
+/// `conversation` is `null`, and its `message_count` is the store's row count.
+/// The transcript read, and so the body the paint resume answers with, is
+/// unchanged.
 async fn read_resume_session(
     reader: &impl AgentSessionReader,
     session_id: &str,
     headers: &HeaderMap,
+    include_transcript: bool,
 ) -> Result<Session, ErrorResponse> {
     let metadata = reader
         .read_session(session_id, false)
         .await
         .map_err(|error| resume_session_read_error(session_id, error))?;
     refuse_subagent_unless_user(&metadata, headers)?;
+    if !include_transcript {
+        return Ok(metadata);
+    }
     reader
         .read_session(session_id, true)
         .await
@@ -1401,8 +1420,15 @@ async fn resume_agent(
     )
     .await?;
 
-    let session =
-        read_resume_session(state.session_manager(), &payload.session_id, &headers).await?;
+    // The paint resume carries the transcript; the agent load answers with the
+    // metadata row (ruling 28, see `read_resume_session`).
+    let session = read_resume_session(
+        state.session_manager(),
+        &payload.session_id,
+        &headers,
+        !payload.load_model_and_extensions,
+    )
+    .await?;
 
     // A queued background child has a durable session row but not yet its
     // delegated runtime profile. Constructing a generic cached Agent here would
@@ -4639,6 +4665,37 @@ mod resume_update_security_tests {
         (status, serde_json::from_slice(&body).unwrap())
     }
 
+    /// `POST /agent/resume` with either body and no proof: status and body, so
+    /// the two bodies' refusals can be compared word for word.
+    async fn unproven_resume_response(
+        state: Arc<AppState>,
+        session_id: &str,
+        load_model_and_extensions: bool,
+    ) -> (StatusCode, String) {
+        let response = routes(state)
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/agent/resume")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::to_vec(&serde_json::json!({
+                            "session_id": session_id,
+                            "load_model_and_extensions": load_model_and_extensions,
+                        }))
+                        .unwrap(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let status = response.status();
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        (status, String::from_utf8_lossy(&body).into_owned())
+    }
+
     #[test]
     fn both_handlers_run_reach_before_they_read_an_authorized_session_or_agent() {
         let source = include_str!("agent.rs");
@@ -4709,18 +4766,30 @@ mod resume_update_security_tests {
         let transcript = body
             .find("read_session(session_id, true)")
             .expect("resume no longer loads the authorized transcript");
-        assert!(metadata < proof && proof < transcript);
+        // Ruling 28: the agent load answers with the metadata row, and only
+        // once that row has passed the proof.
+        let metadata_answer = body
+            .find("return Ok(metadata);")
+            .expect("the agent-loading resume no longer answers with the metadata row");
+        assert!(metadata < proof && proof < metadata_answer && metadata_answer < transcript);
     }
 
     #[tokio::test]
     #[serial]
     async fn forbidden_subagent_store_reads_stop_at_metadata() {
-        for route in ["resume", "update"] {
+        for route in ["resume with the transcript", "resume, agent load", "update"] {
             let reader = RecordingSessionReader::subagent();
             let result = match route {
-                "resume" => read_resume_session(&reader, "child", &HeaderMap::new())
-                    .await
-                    .map(|_| ()),
+                "resume with the transcript" => {
+                    read_resume_session(&reader, "child", &HeaderMap::new(), true)
+                        .await
+                        .map(|_| ())
+                }
+                "resume, agent load" => {
+                    read_resume_session(&reader, "child", &HeaderMap::new(), false)
+                        .await
+                        .map(|_| ())
+                }
                 "update" => read_update_session(&reader, "child", &HeaderMap::new())
                     .await
                     .map(|_| ()),
@@ -4749,10 +4818,32 @@ mod resume_update_security_tests {
                 .expect("valid test header value"),
         );
 
-        read_resume_session(&reader, "child", &headers)
+        read_resume_session(&reader, "child", &headers, true)
             .await
             .expect("proven subagent resume was refused");
         assert_eq!(reader.reads(), vec![false, true]);
+    }
+
+    /// Ruling 28 (V2-R9-3): the agent-loading resume reads the store once, the
+    /// metadata row, and answers with it. A second, full read is the 9.8 MB a
+    /// large chat used to pay on every open.
+    #[tokio::test]
+    #[serial]
+    async fn proven_agent_loading_resume_reads_the_metadata_row_only() {
+        install_test_user_action_key();
+        let reader = RecordingSessionReader::subagent();
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "X-User-Action",
+            TEST_USER_ACTION_KEY
+                .parse()
+                .expect("valid test header value"),
+        );
+
+        read_resume_session(&reader, "child", &headers, false)
+            .await
+            .expect("proven subagent resume was refused");
+        assert_eq!(reader.reads(), vec![false]);
     }
 
     #[test]
@@ -5129,6 +5220,117 @@ mod resume_update_security_tests {
         let (status, resumed) = resume_response(Arc::clone(&state), ordinary.id(), false).await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(resumed["initializing"], false);
+    }
+
+    /// Ruling 28 (V2-R9-3) at the route. The desktop opens a chat with two
+    /// resumes: the paint resume (`load_model_and_extensions: false`) answers
+    /// with the transcript, the store's full read exactly as before; the agent
+    /// load (`true`) answers with the same row and no transcript, because none
+    /// of its readers reads one and a large chat paid megabytes for it twice.
+    #[tokio::test(flavor = "multi_thread")]
+    #[serial]
+    async fn the_agent_loading_resume_answers_with_the_row_and_the_paint_resume_with_the_transcript(
+    ) {
+        install_test_user_action_key();
+        let state = AppState::new().await.unwrap();
+        let chat = seed(&state, SessionType::User, false).await;
+        for text in ["first message", "second message"] {
+            state
+                .session_manager()
+                .add_message(chat.id(), &Message::user().with_text(text))
+                .await
+                .unwrap();
+        }
+
+        let (status, painted) = resume_response(Arc::clone(&state), chat.id(), false).await;
+        assert_eq!(status, StatusCode::OK, "{painted}");
+        let transcript = painted["session"]["conversation"]
+            .as_array()
+            .expect("the paint resume no longer carries the transcript");
+        assert_eq!(transcript.len(), 2);
+        let full_read = state
+            .session_manager()
+            .get_session(chat.id(), true)
+            .await
+            .unwrap();
+        assert_eq!(
+            painted["session"],
+            serde_json::to_value(&full_read).unwrap(),
+            "the paint resume no longer answers with the store's full read"
+        );
+
+        let (status, loaded) = resume_response(Arc::clone(&state), chat.id(), true).await;
+        assert_eq!(status, StatusCode::OK, "{loaded}");
+        assert!(
+            loaded["initialization_error"].is_null(),
+            "the agent load must succeed, or this test measures a failure path: {loaded}"
+        );
+        assert_eq!(
+            loaded["session"]["id"],
+            chat.id(),
+            "the agent load no longer names its chat; ensureAgentLoaded reads this id"
+        );
+        assert!(
+            loaded["session"]["conversation"].is_null(),
+            "the agent-loading resume sent the transcript again: {}",
+            loaded["session"]["conversation"]
+        );
+        assert_eq!(loaded["session"]["message_count"], 2);
+        let mut row = painted["session"].clone();
+        row["conversation"] = serde_json::Value::Null;
+        assert_eq!(
+            loaded["session"], row,
+            "the agent load dropped or changed more of the row than its transcript"
+        );
+    }
+
+    /// Ruling 28: the agent load is refused exactly as the paint resume is, by
+    /// the same two gates, in the same words, before either mints an agent. A
+    /// private chat is refused by `session_reach`; a public subagent's chat by
+    /// `refuse_subagent_unless_user`.
+    #[tokio::test(flavor = "multi_thread")]
+    #[serial]
+    async fn both_resume_bodies_are_refused_by_the_same_gates_in_the_same_words() {
+        install_test_user_action_key();
+        assert!(
+            biorouter::privacy::privacy_tiers_enabled(),
+            "this test requires the normal privacy-tier gate"
+        );
+        let state = AppState::new().await.unwrap();
+        let private_chat = seed(&state, SessionType::User, true).await;
+        let public_child = seed(&state, SessionType::SubAgent, false).await;
+
+        for (target, gate, sentence) in [
+            (
+                private_chat.id(),
+                "session_reach",
+                crate::routes::session_reach::SESSION_OUT_OF_REACH,
+            ),
+            (
+                public_child.id(),
+                "refuse_subagent_unless_user",
+                SUBAGENT_USER_ACTION_REQUIRED,
+            ),
+        ] {
+            let (paint_status, paint_body) =
+                unproven_resume_response(Arc::clone(&state), target, false).await;
+            let (load_status, load_body) =
+                unproven_resume_response(Arc::clone(&state), target, true).await;
+            assert_eq!(paint_status, StatusCode::FORBIDDEN, "{gate}: {paint_body}");
+            assert_eq!(load_status, StatusCode::FORBIDDEN, "{gate}: {load_body}");
+            assert!(
+                paint_body.contains(sentence),
+                "{gate} no longer refuses the paint resume: {paint_body}"
+            );
+            assert_eq!(
+                load_body, paint_body,
+                "{gate} refuses the agent load in other words than the paint resume"
+            );
+            assert!(
+                state.peek_agent(target).await.is_none(),
+                "{gate}: a refused resume minted an agent"
+            );
+        }
     }
 
     #[tokio::test(flavor = "multi_thread")]

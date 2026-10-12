@@ -444,7 +444,8 @@ impl Conversation {
         let turn_follows = !options.create_only && (options.prompt.is_some() || active.is_some());
         self.show_binding(&state["session"], turn_follows)?;
         if options.history {
-            self.show_history(&state["session"])?;
+            let session = self.history_session(&state).await?;
+            self.show_history(&session)?;
         }
         if options.create_only {
             return self.finish("created").await;
@@ -867,6 +868,20 @@ impl Conversation {
     fn binding_change(&mut self, frame: &Value) -> Option<String> {
         binding_change(&mut self.binding, self.format, frame)
     }
+    /// The session whose transcript `--history` prints. A resume that loads the
+    /// model and extensions answers with the chat's row and no transcript (the
+    /// agent load reads none, ruling 28), so when `state` came from one, the
+    /// transcript comes from the resume that loads nothing, which carries it.
+    /// An older daemon still sends it with the agent load, and then no second
+    /// request is made.
+    async fn history_session(&self, state: &Value) -> Result<Value> {
+        if state["session"]["conversation"].is_array() {
+            return Ok(state["session"].clone());
+        }
+        let mut painted = self.resume(false).await?;
+        Ok(painted["session"].take())
+    }
+
     fn show_history(&self, session: &Value) -> Result<()> {
         if self.format == Format::StreamJson {
             return self.event(&json!({"type":"History","session_id":self.session_id,"conversation":session["conversation"]}));
@@ -1686,6 +1701,53 @@ mod tests {
             );
             assert_eq!(requests[3].2["continuation_lease"], "lease-a");
             assert!(!paths.contains(&"/agent/continuation/abandon"));
+        }
+
+        /// Ruling 28: the daemon's agent-loading resume answers with the row and
+        /// no transcript, so `--history` reads it from the resume that loads
+        /// nothing. A state that already carries one (an older daemon) costs no
+        /// second request.
+        #[tokio::test]
+        #[serial]
+        async fn history_reads_the_transcript_the_agent_load_no_longer_sends() {
+            if !crate::test_sandbox::in_a_process_of_its_own() {
+                return;
+            }
+            let transcript = json!([{"role": "user", "content": []}]);
+            let mut painted = pending("owned", None);
+            painted["pending_continuation"] = Value::Null;
+            painted["session"]["conversation"] = transcript.clone();
+            let daemon =
+                FakeDaemon::start_with_resume(StatusCode::OK, json!({}), painted.clone()).await;
+            let conversation = conversation(daemon.client(), false);
+
+            let mut loaded = painted.clone();
+            loaded["session"]["conversation"] = Value::Null;
+            let session = conversation
+                .history_session(&loaded)
+                .await
+                .unwrap_or_else(|error| panic!("history after an agent load: {error:#}"));
+            assert_eq!(session["conversation"], transcript);
+            let requests = daemon.requests();
+            let resumes: Vec<&Value> = requests
+                .iter()
+                .filter(|(_, path, _)| path == "/agent/resume")
+                .map(|(_, _, body)| body)
+                .collect();
+            assert_eq!(resumes.len(), 1, "{requests:?}");
+            assert_eq!(resumes[0]["load_model_and_extensions"], false);
+
+            let before = daemon.requests().len();
+            let session = conversation
+                .history_session(&painted)
+                .await
+                .expect("history from a state that carries the transcript");
+            assert_eq!(session["conversation"], transcript);
+            assert_eq!(
+                daemon.requests().len(),
+                before,
+                "a state with its transcript must not be read again"
+            );
         }
     }
 
