@@ -315,6 +315,25 @@ describe('KBManagerDialog', () => {
       expect(input).toHaveAccessibleName('Rename "Alpha"');
     });
 
+    // Ruling 22 (FR-R3-3), the sibling of V3-R9-4: Save is coral while it can act, neutral and
+    // still pressable once the name is emptied (its click only names the missing field).
+    it('draws Save coral while the name can be saved and neutral once it is emptied', async () => {
+      const { user, input } = await startRename();
+      const save = screen.getByTestId('knowledge-kb-submit');
+      expect(save.classList.contains('bg-background-accent')).toBe(true);
+      expect(save.classList.contains('br-fill-rest')).toBe(false);
+
+      await user.clear(input);
+      expect(save.classList.contains('br-fill-rest')).toBe(true);
+      expect(save.classList.contains('bg-background-accent')).toBe(false);
+      expect(save).toBeEnabled();
+      await user.click(save);
+      expect(await screen.findByRole('alert')).toHaveTextContent(knowledgeCopy.format.nameRequired);
+
+      await user.type(input, 'A');
+      expect(save.classList.contains('bg-background-accent')).toBe(true);
+    });
+
     it('clears the message when the person types, and Enter asks the same way', async () => {
       const { user, input } = await startRename();
       await user.clear(input);

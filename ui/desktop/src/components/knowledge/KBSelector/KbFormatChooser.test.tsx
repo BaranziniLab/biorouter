@@ -126,3 +126,79 @@ describe('KbFormatChooser, a name that cannot be used', () => {
     expect(alert.closest('[data-slot="field"]')).toBeNull();
   });
 });
+
+/**
+ * V3-R9-4, ruling 22 (FR-R3-3): colour means "this will do something". Create opened coral over an
+ * empty Name, and its only answer to a click was "Enter a name." A primary whose click only names
+ * the missing field is `secondary` until it can act, and stays enabled so the click still speaks.
+ * The tests read the Button's own variant classes (jsdom runs no stylesheet): the coral primary
+ * carries `bg-background-accent`, the secondary carries `br-fill-rest`.
+ */
+describe('KbFormatChooser, Create is coral only once it can act', () => {
+  const create = () => screen.getByTestId('knowledge-format-submit');
+  const isCoral = (button: HTMLElement) => button.classList.contains('bg-background-accent');
+  const isSecondary = (button: HTMLElement) => button.classList.contains('br-fill-rest');
+  const nameField = () => screen.getByTestId('knowledge-format-name') as HTMLInputElement;
+
+  it('opens secondary and enabled over an empty Name', () => {
+    renderChooser({ initialName: '' });
+    expect(isSecondary(create())).toBe(true);
+    expect(isCoral(create())).toBe(false);
+    expect(create()).toBeEnabled();
+  });
+
+  it('opens coral when the manager hands it a name to start from', () => {
+    renderChooser({ initialName: 'Cohort notes' });
+    expect(isCoral(create())).toBe(true);
+    expect(isSecondary(create())).toBe(false);
+  });
+
+  it('turns coral as soon as the Name can be used, and steps back when it is emptied', async () => {
+    const user = userEvent.setup();
+    renderChooser({ initialName: '' });
+    await user.type(nameField(), 'C');
+    expect(isCoral(create())).toBe(true);
+    expect(isSecondary(create())).toBe(false);
+
+    await user.clear(nameField());
+    expect(isSecondary(create())).toBe(true);
+    expect(isCoral(create())).toBe(false);
+  });
+
+  it('counts a name of only spaces or punctuation as not yet, as Create does', async () => {
+    const user = userEvent.setup();
+    const { onCreate } = renderChooser({ initialName: '' });
+    // Nothing the daemon could make a folder from: the click would say "needs letters".
+    fireEvent.change(nameField(), { target: { value: '  !!!  ' } });
+    expect(isSecondary(create())).toBe(true);
+    expect(isCoral(create())).toBe(false);
+
+    await user.click(create());
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      knowledgeCopy.format.nameNeedsLetters
+    );
+    expect(onCreate).not.toHaveBeenCalled();
+    // And the colour agrees with the alert: still neutral, still pressable.
+    expect(isSecondary(create())).toBe(true);
+    expect(create()).toBeEnabled();
+  });
+
+  it('still answers a click on the secondary Create with what is missing', async () => {
+    const user = userEvent.setup();
+    const { onCreate } = renderChooser({ initialName: '' });
+    await user.click(create());
+    expect(await screen.findByRole('alert')).toHaveTextContent(knowledgeCopy.format.nameRequired);
+    expect(nameField()).toHaveFocus();
+    expect(onCreate).not.toHaveBeenCalled();
+    expect(isSecondary(create())).toBe(true);
+  });
+
+  it('creates from the coral button as before', async () => {
+    const user = userEvent.setup();
+    const { onCreate } = renderChooser({ initialName: '' });
+    await user.type(nameField(), 'Cohort notes');
+    expect(isCoral(create())).toBe(true);
+    await user.click(create());
+    await waitFor(() => expect(onCreate).toHaveBeenCalledWith('Cohort notes', 'okf'));
+  });
+});

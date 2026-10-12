@@ -14,6 +14,9 @@
  *  - the message is the field's own line, 12px, in the danger ink, beneath the input;
  *  - the input draws the danger edge, at the same 1px, and holds the caret;
  *  - a failure the daemon reports is NOT on the field, and the field's edge stays quiet;
+ *  - Create is the coral primary only once the Name can be used (V3-R9-4, ruling 22): over an empty
+ *    Name it paints what Cancel paints, once a name is typed it paints the accent, and it is
+ *    pressable throughout;
  *  - the manager's rename card (the real `KBManagerDialog` over two stand-in contexts) answers an
  *    empty name the same way: the field's 12px line, the danger edge, the caret in the input.
  * Set `KB_CHOOSER_SHOTS` to a directory to also save the screenshots the review reads.
@@ -186,7 +189,8 @@ describe.each(['light', 'dark'] as const)('the Create knowledge base dialog (%s)
         `<head><style>${css}</style></head>` +
         `<body style="margin:0;background:var(--background-default)"><div id="root"></div>` +
         `<span id="probe-ink" style="color:var(--text-danger)">x</span>` +
-        `<span id="probe-edge" style="border:1px solid var(--border-danger)">x</span></body></html>`
+        `<span id="probe-edge" style="border:1px solid var(--border-danger)">x</span>` +
+        `<span id="probe-accent" style="background-color:var(--background-accent)">x</span></body></html>`
     );
     // After the content is set (a set document drops earlier init scripts) and before the bundle.
     await page.evaluate((outcome) => {
@@ -312,6 +316,58 @@ describe.each(['light', 'dark'] as const)('the Create knowledge base dialog (%s)
     }
   }, 120_000);
 
+  it('draws Create neutral over an empty Name and coral once it can act', async (ctx) => {
+    if (!browser) return ctx.skip();
+    const page = await open();
+    try {
+      const ground = (selector: string) =>
+        page
+          .locator(selector)
+          .first()
+          .evaluate((el) => getComputedStyle(el).backgroundColor);
+      const CANCEL = 'button:has-text("Cancel")';
+      const accent = await ground('#probe-accent');
+      const cancel = await ground(CANCEL);
+      // The accent and the control ground are different things, or this instrument reads nothing.
+      expect(accent).not.toBe(cancel);
+
+      // Opened empty: the same ground as Cancel (both secondary), not the accent, and pressable.
+      expect(await ground(CREATE), 'empty Name: the control ground').toBe(cancel);
+      expect(await ground(CREATE)).not.toBe(accent);
+      expect(await page.isEnabled(CREATE)).toBe(true);
+      if (SHOTS) {
+        mkdirSync(SHOTS, { recursive: true });
+        await page.screenshot({ path: join(SHOTS, `format-chooser-create-neutral-${mode}.png`) });
+      }
+
+      // A name that cannot make a folder is still "not yet".
+      await page.keyboard.type('!!!');
+      await page.waitForTimeout(200);
+      expect(await ground(CREATE), 'no letters: still the control ground').toBe(cancel);
+
+      // A usable name: the accent, and Cancel stays where it was.
+      await page.fill(NAME, '');
+      await page.keyboard.type('Cohort notes');
+      await page.waitForTimeout(200);
+      expect(await ground(CREATE), 'a usable Name: the accent').toBe(accent);
+      expect(await ground(CANCEL)).toBe(cancel);
+      expect(await page.isEnabled(CREATE)).toBe(true);
+      if (SHOTS) {
+        await page.screenshot({ path: join(SHOTS, `format-chooser-create-coral-${mode}.png`) });
+      }
+
+      // Emptied again, it steps back, and a click still says what is missing.
+      await page.fill(NAME, '');
+      await page.waitForTimeout(200);
+      expect(await ground(CREATE)).toBe(cancel);
+      await page.click(CREATE);
+      await page.waitForSelector('[role="alert"]');
+      expect(await page.locator('[role="alert"]').innerText()).toBe('Enter a name.');
+    } finally {
+      await page.close();
+    }
+  }, 120_000);
+
   it('keeps a failure the daemon reports off the field', async (ctx) => {
     if (!browser) return ctx.skip();
     const page = await open('reject');
@@ -347,7 +403,21 @@ describe.each(['light', 'dark'] as const)('the Create knowledge base dialog (%s)
       await page.getByRole('menuitem', { name: /Rename/ }).click();
       const INPUT = '[data-testid="knowledge-kb-name-input"]';
       await page.waitForSelector(INPUT);
+      // Save is coral while the name can be saved, and neutral (Cancel's ground) once emptied.
+      const ground = (selector: string) =>
+        page
+          .locator(selector)
+          .first()
+          .evaluate((el) => getComputedStyle(el).backgroundColor);
+      const SAVE = '[data-testid="knowledge-kb-submit"]';
+      const accent = await ground('#probe-accent');
+      expect(await ground(SAVE), 'a name to save: the accent').toBe(accent);
       await page.fill(INPUT, '');
+      await page.waitForTimeout(200);
+      expect(await ground(SAVE), 'emptied: not the accent').not.toBe(accent);
+      expect(await ground(SAVE), 'emptied: the control ground').toBe(
+        await ground('button:has-text("Cancel")')
+      );
       const restEdge = (await look(page, INPUT)).edge;
       await page.click('[data-testid="knowledge-kb-submit"]');
       await page.waitForSelector('[role="alert"]');

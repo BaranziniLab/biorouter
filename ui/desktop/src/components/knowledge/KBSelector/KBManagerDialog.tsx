@@ -453,9 +453,12 @@ export function KBManagerDialog({
                     <Button type="button" variant="secondary" onClick={resetDraft}>
                       Cancel
                     </Button>
+                    {/* Coral only while it can act (ruling 22): an emptied name leaves Save
+                        neutral, still pressable, and a click names the missing field. */}
                     <Button
                       data-testid="knowledge-kb-submit"
                       type="button"
+                      variant={draft.trim() ? 'default' : 'secondary'}
                       onClick={() => void submitDraft()}
                     >
                       Save

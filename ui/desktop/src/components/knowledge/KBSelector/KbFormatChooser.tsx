@@ -68,6 +68,12 @@ const FORMATS: {
  * is not about the field and stays a danger `Note` at the foot, as in the schedule
  * dialog.
  *
+ * ⚠ **Create is neutral until the Name can be used, and stays pressable** (V3-R9-4). It opened
+ * coral over an empty Name, and its only answer to a click was "Enter a name." Colour means "this
+ * will do something" (ruling 22); a button whose click only names the missing field is
+ * `secondary` until it can act, and is not `disabled`, so the click and the Enter in the field
+ * still say what is wrong.
+ *
  * This is also the surface a future `Convert format` action reuses. Do not build
  * a second one.
  */
@@ -91,6 +97,11 @@ export function KbFormatChooser({ open, onOpenChange, initialName = '', onCreate
   }, [open, initialName]);
 
   const id = useMemo(() => previewKbId(name), [name]);
+  // Create is the coral primary only once it can act (ruling 22, FR-R3-3). "Can act" is exactly
+  // what `submit` accepts: a name with at least one letter or number, which is also what the
+  // folder preview needs to show an id. Until then it is `secondary` and STILL ENABLED, because a
+  // click is how the person hears which problem the Name has.
+  const ready = id !== '';
 
   async function submit() {
     const trimmed = name.trim();
@@ -142,6 +153,7 @@ export function KbFormatChooser({ open, onOpenChange, initialName = '', onCreate
           </Button>
           <Button
             type="button"
+            variant={ready ? 'default' : 'secondary'}
             data-testid="knowledge-format-submit"
             onClick={() => void submit()}
             disabled={busy}
