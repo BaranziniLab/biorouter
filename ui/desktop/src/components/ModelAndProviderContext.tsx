@@ -30,15 +30,10 @@ import {
   getModelDisplayName,
   getProviderDisplayName,
 } from './settings/models/predefinedModelsUtils';
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from './ui/dialog';
+import { ModalShell } from './ModalShell';
 import { Button } from './ui/button';
+import { Note } from './ui/note';
+import { Spinner } from './ui/spinner';
 import { notifySessionToolsChanged } from '../utils/sessionToolEvents';
 import {
   announceAppModelSelection,
@@ -306,10 +301,7 @@ const WarmupDetailRow = ({
   <div className="grid grid-cols-[minmax(7.5rem,auto)_minmax(0,1fr)] items-start gap-x-3 gap-y-1">
     <span className="text-text-muted">{label}</span>
     <span
-      className={[
-        'min-w-0 text-right text-text-default',
-        mono ? 'break-all font-mono text-[11px] leading-relaxed' : '',
-      ]
+      className={['min-w-0 text-right text-text-default', mono ? 'break-all font-mono' : '']
         .filter(Boolean)
         .join(' ')}
     >
@@ -417,7 +409,7 @@ export const ModelAndProviderProvider: React.FC<ModelAndProviderProviderProps> =
         ? {
             ...current,
             isWarming: true,
-            detail: 'Starting Llama Server and waiting for a test response...',
+            detail: 'Starting Llama Server and waiting for a test response…',
           }
         : current
     );
@@ -433,8 +425,8 @@ export const ModelAndProviderProvider: React.FC<ModelAndProviderProviderProps> =
                 detail:
                   res.data.sidecar.detail ||
                   (res.data.sidecar.state === 'ready'
-                    ? 'Running a warm-up prompt...'
-                    : 'Loading model...'),
+                    ? 'Running a warm-up prompt…'
+                    : 'Loading model…'),
               }
             : current
         );
@@ -944,107 +936,36 @@ export const ModelAndProviderProvider: React.FC<ModelAndProviderProviderProps> =
         {children}
       </ModelAndProviderContext.Provider>
 
-      <Dialog
+      <ModalShell
         open={!!llamaWarmupDialog}
         onOpenChange={(open) => {
           if (!open && !llamaWarmupDialog?.isWarming) {
             resolveWarmupDialog(false);
           }
         }}
-      >
-        {/*
-          `max-h` + a scrolling BODY, not just `overflow-hidden`. This sheet's detail
-          block grows with the model (blob path, suitability message, fallback state),
-          and with no height ceiling the dialog centred itself taller than the viewport
-          — putting its own "Warm up" and "Keep previous" buttons off-screen, where they
-          are unreachable rather than merely ugly. The ceiling lives here and the scroll
-          lives on the body below, so the header and footer stay pinned and the footer's
-          controls are always in view. Guarded by ModelAndProviderContext.warmupDialog.test.tsx.
-        */}
-        <DialogContent className="flex max-h-[calc(100vh-4rem)] w-[calc(100vw-2rem)] flex-col overflow-hidden sm:max-w-[520px]">
-          <DialogHeader>
-            <DialogTitle>Warm up local model</DialogTitle>
-            <DialogDescription>
-              {llamaWarmupDialog?.entry?.display_name ?? llamaWarmupDialog?.model.name} runs on this
-              computer. First use can take a while because the model may need to load, download, and
-              produce a test response.
-            </DialogDescription>
-          </DialogHeader>
-
-          {llamaWarmupDialog && (
-            <div className="min-h-0 flex-1 space-y-4 overflow-y-auto pr-1 text-sm">
-              <div className="min-w-0 rounded-md border border-border-subtle bg-background-medium p-3">
-                <div className="grid min-w-0 gap-1.5 text-xs">
-                  <WarmupDetailRow label="Download">
-                    {llamaWarmupDialog.entry?.download_size ?? 'custom'}
-                  </WarmupDetailRow>
-                  <WarmupDetailRow label="Local copy">
-                    {modelDownloadLabel(llamaWarmupDialog.entry)}
-                  </WarmupDetailRow>
-                  <WarmupDetailRow label="Llama Server fallback">
-                    {fallbackDownloadLabel(llamaWarmupDialog.entry)}
-                  </WarmupDetailRow>
-                  <WarmupDetailRow label="Ollama model">
-                    {llamaWarmupDialog.entry?.ollama_name ?? 'custom'}
-                  </WarmupDetailRow>
-                  <WarmupDetailRow label="Model store" mono>
-                    {llamaWarmupDialog.status.system.model_cache_dir}
-                  </WarmupDetailRow>
-                  {llamaWarmupDialog.entry?.model_path && (
-                    <WarmupDetailRow label="Model blob" mono>
-                      {llamaWarmupDialog.entry.model_path}
-                    </WarmupDetailRow>
-                  )}
-                  {llamaWarmupDialog.entry?.suitability_message && (
-                    <div className="pt-1 text-text-default break-words">
-                      {llamaWarmupDialog.entry.suitability_message}
-                    </div>
-                  )}
-                  <WarmupDetailRow label="Default context">
-                    {formatContext(llamaWarmupDialog.status.system.default_context_size)} tokens
-                  </WarmupDetailRow>
-                  <WarmupDetailRow label="Detected GPU memory">
-                    {typeof llamaWarmupDialog.status.system.accelerator_memory_gib === 'number'
-                      ? `${llamaWarmupDialog.status.system.accelerator_memory_gib} GiB ${acceleratorMemoryLabel(llamaWarmupDialog.status.system.accelerator_memory_kind)}`
-                      : acceleratorMemoryLabel(
-                          llamaWarmupDialog.status.system.accelerator_memory_kind
-                        )}
-                  </WarmupDetailRow>
-                  <WarmupDetailRow label="Recommended GPU memory">
-                    {llamaWarmupDialog.entry
-                      ? `${llamaWarmupDialog.entry.recommended_gpu_memory_gib} GiB`
-                      : 'unknown'}
-                  </WarmupDetailRow>
-                </div>
-              </div>
-
-              {llamaWarnings.length > 0 && (
-                <div className="space-y-2 rounded-md border border-border-warning bg-background-warning/10 p-3 text-xs text-text-default">
-                  {llamaWarnings.map((warning) => (
-                    <p key={warning}>{warning}</p>
-                  ))}
-                </div>
-              )}
-
-              {llamaWarmupDialog.isWarming && (
-                <div className="flex items-start gap-2 rounded-md border border-border-subtle bg-background-default p-3 text-xs text-text-muted">
-                  <div className="mt-0.5 h-3 w-3 flex-shrink-0 rounded-full border-2 border-current border-t-transparent animate-spin" />
-                  <div className="min-w-0">
-                    <p className="text-text-default">Waiting for the model to generate...</p>
-                    {llamaWarmupDialog.detail && (
-                      <p className="mt-1 truncate font-mono">{llamaWarmupDialog.detail}</p>
-                    )}
-                  </div>
-                </div>
-              )}
-            </div>
-          )}
-
-          <DialogFooter className="flex-col gap-2 pt-2 sm:flex-row">
+        // Warming is work in flight: no ×, no Escape and no backdrop. The guard above already
+        // ignored a close while warming; this also stops offering the × that did nothing.
+        purpose={llamaWarmupDialog?.isWarming ? 'required' : 'info'}
+        size="md"
+        // `scrollBody`, not just a taller dialog. This sheet's detail block grows with the model
+        // (blob path, suitability message, fallback state), and with no height ceiling the
+        // dialog once sat taller than the window, putting its own "Warm up" and "Keep previous"
+        // buttons off-screen, where they are unreachable rather than merely ugly. The shell caps
+        // its height against the window, scrolls THIS body between the header and footer rules
+        // and keeps the footer pinned. Guarded by ModelAndProviderContext.warmupDialog.test.tsx.
+        scrollBody
+        title="Warm up local model"
+        subtitle={
+          llamaWarmupDialog
+            ? `${llamaWarmupDialog.entry?.display_name ?? llamaWarmupDialog.model.name} runs on this computer. First use can take a while because the model may need to load, download, and produce a test response.`
+            : undefined
+        }
+        bodyClassName="flex flex-col gap-3 py-3"
+        footer={
+          <>
             <Button
               type="button"
-              variant="outline"
-              className="w-full sm:w-auto"
+              variant="secondary"
               onClick={() => resolveWarmupDialog(false)}
               disabled={llamaWarmupDialog?.isWarming}
             >
@@ -1052,15 +973,87 @@ export const ModelAndProviderProvider: React.FC<ModelAndProviderProviderProps> =
             </Button>
             <Button
               type="button"
-              className="w-full sm:w-auto"
               onClick={handleWarmupConfirm}
               disabled={!llamaWarmupDialog || llamaWarmupDialog.isWarming}
             >
-              {llamaWarmupDialog?.isWarming ? 'Warming up...' : 'Warm up model'}
+              {llamaWarmupDialog?.isWarming ? 'Warming up…' : 'Warm up model'}
             </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+          </>
+        }
+      >
+        {llamaWarmupDialog && (
+          <>
+            <div className="biorouter-modal-panel min-w-0 rounded-element p-3">
+              <div className="grid min-w-0 gap-1.5 text-supporting">
+                <WarmupDetailRow label="Download">
+                  {llamaWarmupDialog.entry?.download_size ?? 'custom'}
+                </WarmupDetailRow>
+                <WarmupDetailRow label="Local copy">
+                  {modelDownloadLabel(llamaWarmupDialog.entry)}
+                </WarmupDetailRow>
+                <WarmupDetailRow label="Llama Server fallback">
+                  {fallbackDownloadLabel(llamaWarmupDialog.entry)}
+                </WarmupDetailRow>
+                <WarmupDetailRow label="Ollama model">
+                  {llamaWarmupDialog.entry?.ollama_name ?? 'custom'}
+                </WarmupDetailRow>
+                <WarmupDetailRow label="Model store" mono>
+                  {llamaWarmupDialog.status.system.model_cache_dir}
+                </WarmupDetailRow>
+                {llamaWarmupDialog.entry?.model_path && (
+                  <WarmupDetailRow label="Model blob" mono>
+                    {llamaWarmupDialog.entry.model_path}
+                  </WarmupDetailRow>
+                )}
+                {llamaWarmupDialog.entry?.suitability_message && (
+                  <div className="pt-1 text-text-default break-words">
+                    {llamaWarmupDialog.entry.suitability_message}
+                  </div>
+                )}
+                <WarmupDetailRow label="Default context">
+                  {formatContext(llamaWarmupDialog.status.system.default_context_size)} tokens
+                </WarmupDetailRow>
+                <WarmupDetailRow label="Detected GPU memory">
+                  {typeof llamaWarmupDialog.status.system.accelerator_memory_gib === 'number'
+                    ? `${llamaWarmupDialog.status.system.accelerator_memory_gib} GiB ${acceleratorMemoryLabel(llamaWarmupDialog.status.system.accelerator_memory_kind)}`
+                    : acceleratorMemoryLabel(
+                        llamaWarmupDialog.status.system.accelerator_memory_kind
+                      )}
+                </WarmupDetailRow>
+                <WarmupDetailRow label="Recommended GPU memory">
+                  {llamaWarmupDialog.entry
+                    ? `${llamaWarmupDialog.entry.recommended_gpu_memory_gib} GiB`
+                    : 'unknown'}
+                </WarmupDetailRow>
+              </div>
+            </div>
+
+            {llamaWarnings.length > 0 && (
+              <Note tone="warning">
+                <div className="space-y-2">
+                  {llamaWarnings.map((warning) => (
+                    <p key={warning}>{warning}</p>
+                  ))}
+                </div>
+              </Note>
+            )}
+
+            {llamaWarmupDialog.isWarming && (
+              <div className="biorouter-modal-panel flex items-start gap-2 rounded-element p-3 text-supporting text-text-muted">
+                <span className="mt-px shrink-0">
+                  <Spinner size={14} />
+                </span>
+                <div className="min-w-0">
+                  <p className="text-text-default">Waiting for the model to generate…</p>
+                  {llamaWarmupDialog.detail && (
+                    <p className="mt-1 truncate font-mono">{llamaWarmupDialog.detail}</p>
+                  )}
+                </div>
+              </div>
+            )}
+          </>
+        )}
+      </ModalShell>
     </>
   );
 };
