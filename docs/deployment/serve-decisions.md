@@ -1122,6 +1122,65 @@ command would close all of them permanently and retire this record's whole surfa
 
 ---
 
+## SD-14 — The shell is served only to a navigation, while apps share its origin
+
+**Ruling (2026-10-09).** The shell (`GET /` and every path that falls through to it) is refused
+with a `403` and no body worth reading to any request whose Fetch Metadata says it is not a
+document navigation: `Sec-Fetch-Mode` other than `navigate`, or `Sec-Fetch-Dest` other than
+`document`. That covers `fetch('/')`, an `<iframe>` or `<object>` of `/`, and a `<script src>`.
+A request that carries neither header is served as before. The shell's response also carries
+`Content-Security-Policy: frame-ancestors 'none'`, `X-Frame-Options: DENY` and
+`Cross-Origin-Opener-Policy: same-origin`. Implemented in `routes::web_ui::index`, on the shared
+predicate `auth::is_document_navigation`.
+
+**Why.** The shell embeds the daemon's secret, and its cookie is `Path=/`, so it rides along on
+every request to this origin. Every Agent Drafter app this daemon serves lives on the same origin,
+and an app's code is written by an agent, so an app's script could `fetch('/')` and read the
+secret out of the document. With it, the page could call any API route from the person's browser,
+with the served cookie's operator standing (SD-10) attached, and send the secret off the machine
+by navigating, which no content policy governs. A drafting chat with its shell switched off, or a
+prompt-injected build, reached more through the app than it could itself.
+
+**What each piece closes.** Script cannot set Fetch Metadata, so a fetch or a frame of the shell
+is told apart from opening it. `frame-ancestors 'none'` stops a frame even where Fetch Metadata is
+missing. The opener policy puts the shell in its own browsing-context group whenever it is opened
+by, or opens, a page without that policy, which every app page is, so an app that opens `/` in a
+popup gets a handle it cannot script.
+
+**Displaced alternatives.**
+
+- *The same opener policy on app pages.* Rejected. Two pages of one origin with the same policy
+  share a browsing-context group, so the shell's isolation from apps would be undone.
+- *Keep the secret out of the document, in a session only the shell may use.* Rejected for now.
+  Nothing on one origin tells the shell's document from an app's, and a cookie's path is not a
+  boundary between them.
+
+**Consequence to accept.** These are defence in depth on one origin, not isolation. An app page is
+served with its own opener policy, `noopener-allow-popups`, so one app that opens another's page in
+a popup gets a closed handle too (measured in Chrome, 2026-10-10, along with every refusal above). A
+browser that does not know that value treats it as `unsafe-none`, and there the popup is readable;
+and every app shares one `localStorage`. Serving apps on an origin of their own (a second listener
+on `serve`, or `http://<id>.localhost:<port>` on loopback) is the follow-up that closes both. Any client of the shell that sends Fetch Metadata and is not a document
+navigation is refused; the interface itself fetches no path that falls through to the shell.
+
+**All of it needs a secure context (2026-10-10).** A browser sends Fetch Metadata only to an
+address it treats as secure, and it ignores `Cross-Origin-Opener-Policy` everywhere else. On
+`biorouter serve --host 0.0.0.0` opened at its plain-HTTP LAN address, an app's `fetch('/')`
+arrives with no `Sec-Fetch-*` header, and a popup stays scriptable (a reviewer measured both in
+Chrome). The shell and every app surface (page, assets, socket, models, run state, figure frame)
+therefore refuse browser credentials at a plain-HTTP network address. Blocking only new app loads
+is insufficient: an old app tab may remain open through an update and fetch the secret-bearing
+shell. Both the cookie-bearing shell load and its token exchange now require loopback,
+`localhost` or a name under `.localhost`, or HTTPS forwarded by a TLS proxy with the browser's
+Fetch Metadata preserved (`auth::reached_over_a_secure_context`). `X-Forwarded-Proto: https` alone
+is refused because old HTTP page code can forge that header; it cannot forge `Sec-Fetch-Mode` or
+`Sec-Fetch-Dest`. Refusals give SSH tunnel or TLS guidance and carry no secret. Explicit secret-header
+API callers remain supported. Missing headers remain accepted on loopback for non-browser clients,
+so an engine that sends no Fetch Metadata at all (Safari before 16.4) is still not isolated there;
+such engines are refused through a non-loopback HTTPS proxy. Per-app origins remain the complete fix.
+
+---
+
 ## Related documentation
 
 - [Architecture of the serving path](serve-architecture.md) — how the decisions above are built.

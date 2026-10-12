@@ -1,8 +1,12 @@
 import { EventEmitter } from 'node:events';
 import type { BrowserWindow } from 'electron';
 import type { BiorouterdResult } from '../biorouterd';
-import { describe, expect, it } from 'vitest';
-import { bindManagedAppPreviewBackend } from './managedAppPreviewBackend';
+import { describe, expect, it, vi } from 'vitest';
+import {
+  bindManagedAppPreviewBackend,
+  fetchDaemonAppOrigin,
+  loopbackAppOrigin,
+} from './managedAppPreviewBackend';
 
 function fixture(managed = true, signalCode: string | null = null) {
   const process = Object.assign(new EventEmitter(), {
@@ -86,5 +90,119 @@ describe('managed app provenance and lifetime', () => {
     expect(f.process.exitCode).toBeNull();
     expect(f.process.killed).toBe(false);
     expect(f.context?.signal.aborted).toBe(true);
+  });
+});
+
+/**
+ * A shared daemon is reached through the desktop's proxy, which refuses a page, so the preview
+ * is bound to the daemon's own listener, and revoked when the main process learns that daemon
+ * is gone: its handle never exits, because a shared daemon outlives the app.
+ */
+describe('a shared daemon’s preview backend', () => {
+  it('carries the daemon’s app origin beside the address launch links are minted at', () => {
+    const f = fixture();
+    const backend = bindManagedAppPreviewBackend(
+      f.result,
+      f.owner as unknown as BrowserWindow,
+      'secret',
+      'http://127.0.0.1:51851'
+    )!;
+    expect(backend).toMatchObject({
+      baseUrl: 'http://127.0.0.1:64005',
+      appOrigin: 'http://127.0.0.1:51851',
+      secretKey: 'secret',
+    });
+    expect('appOrigin' in f.context!).toBe(false);
+  });
+
+  it('is revoked when its lifetime ends, and born revoked into an ended one', () => {
+    const f = fixture();
+    const lifetime = new AbortController();
+    const backend = bindManagedAppPreviewBackend(
+      f.result,
+      f.owner as unknown as BrowserWindow,
+      'secret',
+      'http://127.0.0.1:51851',
+      lifetime.signal
+    )!;
+    expect(backend.signal.aborted).toBe(false);
+    lifetime.abort();
+    expect(backend.signal.aborted).toBe(true);
+    // The daemon's handle did not exit: a later binding, on a new lifetime, is live.
+    const next = bindManagedAppPreviewBackend(
+      f.result,
+      f.owner as unknown as BrowserWindow,
+      'secret',
+      'http://127.0.0.1:51900',
+      new AbortController().signal
+    )!;
+    expect(next.signal.aborted).toBe(false);
+    expect(
+      bindManagedAppPreviewBackend(
+        f.result,
+        f.owner as unknown as BrowserWindow,
+        'secret',
+        'http://127.0.0.1:51851',
+        lifetime.signal
+      )!.signal.aborted
+    ).toBe(true);
+  });
+
+  it.each([
+    ['http://127.0.0.1:51851', 'http://127.0.0.1:51851'],
+    ['http://127.0.0.1:51851/', 'http://127.0.0.1:51851'],
+    ['http://0.0.0.0:51851', 'http://127.0.0.1:51851'],
+    ['http://localhost:51851', 'http://127.0.0.1:51851'],
+    ['http://[::1]:51851', undefined],
+    ['https://127.0.0.1:51851', undefined],
+    ['http://10.0.0.5:51851', undefined],
+    ['http://127.0.0.1', undefined],
+    ['http://127.0.0.1:51851/below', undefined],
+    ['http://u:p@127.0.0.1:51851', undefined],
+    [42, undefined],
+  ])('takes %j as the app origin %j', (candidate, origin) => {
+    expect(loopbackAppOrigin(candidate)).toBe(origin);
+  });
+
+  it('asks the daemon, with the secret, where it serves apps', async () => {
+    const fetchImpl = vi.fn(
+      async () =>
+        ({
+          ok: true,
+          status: 200,
+          json: async () => ({ status: 'ok', api_base_url: 'http://127.0.0.1:51851' }),
+        }) as Response
+    );
+    await expect(
+      fetchDaemonAppOrigin('http://127.0.0.1:51852/', 'desktop-secret', fetchImpl)
+    ).resolves.toBe('http://127.0.0.1:51851');
+    const [url, init] = fetchImpl.mock.calls[0] as unknown as [string, RequestInit];
+    expect(url).toBe('http://127.0.0.1:51852/headless/health');
+    expect(init.headers).toEqual({ 'X-Secret-Key': 'desktop-secret' });
+  });
+
+  it.each([
+    async () => ({ ok: false, status: 502, json: async () => ({}) }) as Response,
+    async () =>
+      ({
+        ok: true,
+        status: 200,
+        json: async () => ({ api_base_url: 'http://evil.test:1' }),
+      }) as Response,
+    async () =>
+      ({
+        ok: true,
+        status: 200,
+        json: async () => {
+          throw new Error('not json');
+        },
+      }) as unknown as Response,
+    async () => {
+      throw new TypeError('fetch failed');
+    },
+  ])('names no app origin when the daemon does not say a loopback one (%#)', async (impl) => {
+    await expect(
+      fetchDaemonAppOrigin('http://127.0.0.1:51852', 'desktop-secret', vi.fn(impl))
+    ).resolves.toBeUndefined();
   });
 });

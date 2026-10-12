@@ -22,13 +22,24 @@ pub enum ArtifactKind {
     /// A plain interactive artifact (HTML/CSS/JS), no agent.
     Static,
     /// An artifact wired to a Biorouter agent (ACP / MCP-App bridge).
+    ///
+    /// `"agent"` is accepted on read because [`ArtifactKind::parse`] has always
+    /// accepted it from a tool call, so a hand-written manifest saying so is not
+    /// a typo worth hiding the whole app over (`list` used to drop it silently).
+    #[serde(alias = "agent")]
     Agentic,
 }
 
 impl ArtifactKind {
+    /// The kind a tool call names, or `None` when it names none we know.
+    ///
+    /// ⚠ A blank string is `None`, not `Static`. It used to be `Static`, so a
+    /// model that sent `kind: ""` meaning "the default" silently got a page with
+    /// no agent, and the default everywhere else is agentic. A caller that wants
+    /// a default decides it itself, out loud.
     pub fn parse(s: &str) -> Option<Self> {
         match s.trim().to_lowercase().as_str() {
-            "static" | "" => Some(Self::Static),
+            "static" => Some(Self::Static),
             "agentic" | "agent" => Some(Self::Agentic),
             _ => None,
         }
@@ -224,6 +235,16 @@ pub struct Manifest {
     /// app there. Apps created before this was recorded have `None`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session_id: Option<String>,
+    /// Server-managed. A random id minted when the app is created, so two apps
+    /// that happen to share an `id` (one deleted, a new one built under the same
+    /// title slug later; or an app replaced through `create_app`) are still two
+    /// apps. The daemon puts it in the key of the app's durable conversations
+    /// (`app:<id>:<app_uid>:<client>`), and without it a re-created "dashboard"
+    /// resumed the deleted one's chat history and shared state in any browser
+    /// that had opened the old one. `None` for apps created before it existed:
+    /// they keep the old `app:<id>:<client>` key, so their conversations resume.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub app_uid: Option<String>,
     /// The declared app contract (Apps SDK v2): typed state schema, actions,
     /// signals, and custom components. Absent/empty → a v1 app with no declared
     /// surface, which deserializes and re-serializes unchanged.
@@ -254,6 +275,69 @@ fn now_secs() -> u64 {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0)
+}
+
+/// A fresh [`Manifest::app_uid`]: 32 hex characters, so it can sit inside a
+/// `:`-separated session key without escaping.
+fn new_app_uid() -> String {
+    uuid::Uuid::new_v4().simple().to_string()
+}
+
+/// An app directory whose manifest could not be loaded, as [`ArtifactStore::list_with_broken`]
+/// reports it. Such an app used to vanish from every listing while its folder
+/// still held the id, so nothing could delete it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BrokenApp {
+    /// The directory name, which is the id `delete` takes.
+    pub id: String,
+    /// One sentence for the person, naming what is wrong.
+    pub error: String,
+    /// Unix seconds the directory was last modified, so a listing can sort it
+    /// among the healthy apps.
+    pub modified_at: u64,
+}
+
+/// How long a directory with no `manifest.json` counts as an app still being
+/// created rather than a broken one. `create` makes the directory and writes the
+/// manifest a moment later; a listing in between must not offer to delete it.
+const MANIFESTLESS_GRACE: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// Called with an app's id after its directory is deleted. See [`on_app_deleted`].
+type AppDeletedHook = fn(&str);
+
+static APP_DELETED_HOOKS: std::sync::Mutex<Vec<AppDeletedHook>> = std::sync::Mutex::new(Vec::new());
+
+/// Run `hook` whenever an app is deleted from any store in this process: through
+/// `DELETE /apps/{id}`, the `delete_app` tool, `create_app` replacing an app at
+/// an explicit id, or a factory reset ([`ArtifactStore::delete_all`]). The
+/// daemon registers one that forgets what it holds in memory for the id (the
+/// socket token, the access cookie, open agent sockets) and the app's vault
+/// key, none of which this crate can reach.
+///
+/// ⚠ Only a deletion through [`ArtifactStore::delete`] is heard. Code that
+/// removes app folders itself (a `remove_dir_all` of the store root) leaves the
+/// daemon holding all of that for whatever is built under each id next.
+///
+/// Registering the same function twice is a no-op, so a caller may register
+/// every time it builds a router.
+pub fn on_app_deleted(hook: AppDeletedHook) {
+    let mut hooks = APP_DELETED_HOOKS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if !hooks.iter().any(|known| std::ptr::fn_addr_eq(*known, hook)) {
+        hooks.push(hook);
+    }
+}
+
+fn notify_app_deleted(id: &str) {
+    // Copied out first so a hook can never deadlock on this lock.
+    let hooks = APP_DELETED_HOOKS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .clone();
+    for hook in hooks {
+        hook(id);
+    }
 }
 
 /// Turn a title into a filesystem-safe, URL-safe slug.
@@ -447,6 +531,9 @@ impl ArtifactStore {
     fn dir(&self, id: &str) -> io::Result<PathBuf> {
         validate_artifact_id(id)?;
         let dir = self.root.join(id);
+        if std::fs::symlink_metadata(&dir).is_ok() && !self.has_entry_named_exactly(id) {
+            return Err(io::Error::new(io::ErrorKind::NotFound, "no such app"));
+        }
         reject_store_symlinks(&self.root, &dir)?;
         Ok(dir)
     }
@@ -515,6 +602,7 @@ impl ArtifactStore {
             built_at: None,
             sdk_hash: None,
             session_id: None,
+            app_uid: Some(new_app_uid()),
             surface: SurfaceDecl::default(),
             theme: ThemeConfig::default(),
         };
@@ -528,6 +616,12 @@ impl ArtifactStore {
     /// Create an artifact at an **explicit** id (slugified). If one already
     /// exists at that id it is replaced, so re-authoring the same app is
     /// idempotent (no `-2` duplicates) and apps are stably addressable.
+    ///
+    /// ⚠ Replacing DELETES the existing app first, workspace data and vault
+    /// included, and the new app gets a new [`Manifest::app_uid`], so it never
+    /// resumes the old one's conversations. Whether a caller may replace is the
+    /// caller's decision: the `create_app` tool refuses an id another chat's app
+    /// holds unless it is told `replace: true`.
     pub fn create_with_id(
         &self,
         id: &str,
@@ -538,7 +632,9 @@ impl ArtifactStore {
         files: &[(String, String)],
     ) -> io::Result<Manifest> {
         let id = slugify(id);
-        if self.dir(&id)?.exists() {
+        // `has_entry`, so an app `list_with_broken` reports (a symlink in the
+        // app's place included) is replaced too, rather than refused by `dir`.
+        if self.has_entry(&id) {
             self.delete(&id)?;
         }
         let dir = self.dir(&id)?;
@@ -563,6 +659,7 @@ impl ArtifactStore {
             built_at: None,
             sdk_hash: None,
             session_id: None,
+            app_uid: Some(new_app_uid()),
             surface: SurfaceDecl::default(),
             theme: ThemeConfig::default(),
         };
@@ -603,20 +700,97 @@ impl ArtifactStore {
         self.save_manifest(&m)
     }
 
+    /// Every app whose manifest loads, newest first. Apps whose manifest does
+    /// not load are left out; [`Self::list_with_broken`] reports them.
     pub fn list(&self) -> Vec<Manifest> {
-        let mut out = Vec::new();
+        self.list_with_broken().0
+    }
+
+    /// Every app, newest first, and separately every app directory whose
+    /// manifest could not be loaded, so a listing can show it and offer to
+    /// delete it instead of hiding it.
+    ///
+    /// Only entries named like an app id are considered (anything else in the
+    /// store root is not an app). A symlinked entry is reported rather than
+    /// followed, and a directory with no manifest yet is skipped for
+    /// [`MANIFESTLESS_GRACE`], because `create` writes the manifest just after
+    /// the directory.
+    pub fn list_with_broken(&self) -> (Vec<Manifest>, Vec<BrokenApp>) {
+        let mut apps = Vec::new();
+        let mut broken = Vec::new();
         if let Ok(entries) = std::fs::read_dir(&self.root) {
             for entry in entries.flatten() {
-                if entry.path().is_dir() {
-                    let id = entry.file_name().to_string_lossy().to_string();
-                    if let Ok(m) = self.load_manifest(&id) {
-                        out.push(m);
-                    }
+                let id = entry.file_name().to_string_lossy().to_string();
+                if validate_artifact_id(&id).is_err() {
+                    continue;
                 }
+                // `file_type` does not follow a symlink, which `path().is_dir()` did.
+                let Ok(file_type) = entry.file_type() else {
+                    continue;
+                };
+                if !file_type.is_dir() && !file_type.is_symlink() {
+                    continue;
+                }
+                let modified = entry.metadata().ok().and_then(|meta| meta.modified().ok());
+                let modified_at = modified
+                    .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+                    .map_or(0, |since| since.as_secs());
+                let error = match self.load_manifest(&id) {
+                    Ok(manifest) => {
+                        apps.push(manifest);
+                        continue;
+                    }
+                    Err(_) if file_type.is_symlink() => {
+                        "its folder is a symbolic link, which Biorouter does not follow".to_string()
+                    }
+                    Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                        let young = modified
+                            .and_then(|time| time.elapsed().ok())
+                            .is_none_or(|age| age < MANIFESTLESS_GRACE);
+                        if young {
+                            continue;
+                        }
+                        "its folder has no manifest.json".to_string()
+                    }
+                    Err(error) => format!("its manifest.json could not be read: {error}"),
+                };
+                broken.push(BrokenApp {
+                    id,
+                    error,
+                    modified_at,
+                });
             }
         }
-        out.sort_by_key(|manifest| std::cmp::Reverse(manifest.updated_at));
-        out
+        apps.sort_by_key(|manifest| std::cmp::Reverse(manifest.updated_at));
+        broken.sort_by(|a, b| b.modified_at.cmp(&a.modified_at).then(a.id.cmp(&b.id)));
+        (apps, broken)
+    }
+
+    /// Whether anything is stored under `id`: a loadable app, or a broken one
+    /// [`Self::list_with_broken`] reports. What `delete` callers check, so an app
+    /// whose manifest no longer loads can still be deleted.
+    pub fn has_entry(&self, id: &str) -> bool {
+        if validate_artifact_id(id).is_err() || !self.has_entry_named_exactly(id) {
+            return false;
+        }
+        std::fs::symlink_metadata(self.root.join(id))
+            .is_ok_and(|meta| meta.is_dir() || meta.file_type().is_symlink())
+    }
+
+    /// Whether the store root holds an entry whose name is `id`, byte for byte.
+    ///
+    /// ⚠ Not `root.join(id)` alone. On a case-insensitive volume (macOS's
+    /// default) `Dashboard` opens the folder `dashboard`, so deleting by that
+    /// spelling removed the app and then told the [`on_app_deleted`] hooks
+    /// `Dashboard`, while the daemon held the app's socket token, cookie and
+    /// vault key under `dashboard`: the next app built as `dashboard` inherited
+    /// all three. Ids are ASCII, so a byte comparison is the whole question.
+    fn has_entry_named_exactly(&self, id: &str) -> bool {
+        std::fs::read_dir(&self.root).is_ok_and(|entries| {
+            entries
+                .flatten()
+                .any(|entry| entry.file_name().as_encoded_bytes() == id.as_bytes())
+        })
     }
 
     pub fn write_file(&self, id: &str, path: &str, content: &str) -> io::Result<()> {
@@ -665,12 +839,61 @@ impl ArtifactStore {
         self.file_path(id, path).is_ok_and(|file| file.is_file())
     }
 
+    /// Delete the app stored under `id`, then tell every [`on_app_deleted`]
+    /// hook, so nothing the process still holds for the id outlives it.
+    ///
+    /// A symlink in the app's place is removed as a link and never followed:
+    /// it is what [`Self::list_with_broken`] reports for it, and removing the
+    /// link touches nothing outside the store.
     pub fn delete(&self, id: &str) -> io::Result<()> {
+        validate_artifact_id(id)?;
+        if !self.has_entry_named_exactly(id) {
+            // Nothing by this exact name, though the volume may resolve it to
+            // another app's folder; see `has_entry_named_exactly`.
+            return Ok(());
+        }
+        let entry = self.root.join(id);
+        let is_link =
+            std::fs::symlink_metadata(&entry).is_ok_and(|meta| meta.file_type().is_symlink());
+        if is_link {
+            // The store root itself must still be a real directory.
+            reject_store_symlinks(&self.root, &self.root)?;
+            // A Windows directory symlink is removed with `remove_dir`, which on
+            // a link removes the link and not what it points at.
+            std::fs::remove_file(&entry).or_else(|_| std::fs::remove_dir(&entry))?;
+            notify_app_deleted(id);
+            return Ok(());
+        }
         let dir = self.dir(id)?;
         if dir.exists() {
             std::fs::remove_dir_all(dir)?;
+            notify_app_deleted(id);
         }
         Ok(())
+    }
+
+    /// Delete every app in the store, broken ones and ones still being created
+    /// included, each through [`Self::delete`] so every [`on_app_deleted`] hook
+    /// hears of it. Returns how many it deleted.
+    ///
+    /// What a factory reset of applications calls before it removes the root.
+    /// Removing the root alone left the daemon holding every app's socket
+    /// token, cookie, open sockets and vault key, for whatever was built under
+    /// each id next. Entries not named like an app id are not apps and are left
+    /// for the caller.
+    pub fn delete_all(&self) -> io::Result<usize> {
+        let Ok(entries) = std::fs::read_dir(&self.root) else {
+            return Ok(0);
+        };
+        let ids: Vec<String> = entries
+            .flatten()
+            .filter_map(|entry| entry.file_name().into_string().ok())
+            .filter(|id| self.has_entry(id))
+            .collect();
+        for id in &ids {
+            self.delete(id)?;
+        }
+        Ok(ids.len())
     }
 }
 
@@ -784,7 +1007,17 @@ mod tests {
         assert!(s
             .write_file("linked-app", "index.html", "overwrite")
             .is_err());
-        assert!(s.delete("linked-app").is_err());
+        // Listed as broken rather than hidden, and deletable: deleting removes
+        // the link and never follows it.
+        let (apps, broken) = s.list_with_broken();
+        assert!(apps.is_empty());
+        assert_eq!(broken.len(), 1, "{broken:?}");
+        assert_eq!(broken[0].id, "linked-app");
+        assert!(broken[0].error.contains("symbolic link"), "{broken:?}");
+        assert!(s.has_entry("linked-app"));
+        s.delete("linked-app").unwrap();
+        assert!(!s.has_entry("linked-app"));
+        assert!(std::fs::symlink_metadata(root.path().join("linked-app")).is_err());
         assert_eq!(
             std::fs::read_to_string(outside.path().join("manifest.json")).unwrap(),
             "outside"
@@ -1153,5 +1386,275 @@ mod tests {
         assert!(s.exists("gone"));
         s.delete("gone").unwrap();
         assert!(!s.exists("gone"));
+    }
+
+    /// Two apps that share an id are still two apps: a re-created or replaced
+    /// app gets its own `app_uid`, which is what keeps it from resuming the old
+    /// app's durable conversations.
+    #[test]
+    fn every_created_app_gets_its_own_uid() {
+        let (_d, s) = store();
+        let first = s
+            .create("Dashboard", "", ArtifactKind::Agentic, "index.html", &[])
+            .unwrap();
+        let uid = first.app_uid.clone().expect("a new app has a uid");
+        assert_eq!(uid.len(), 32);
+        assert!(uid.bytes().all(|b| b.is_ascii_hexdigit()), "{uid}");
+        assert_eq!(
+            s.load_manifest("dashboard").unwrap().app_uid,
+            Some(uid.clone())
+        );
+
+        s.delete("dashboard").unwrap();
+        let again = s
+            .create("Dashboard", "", ArtifactKind::Agentic, "index.html", &[])
+            .unwrap();
+        assert_eq!(again.id, "dashboard");
+        assert_ne!(again.app_uid, Some(uid.clone()), "deleted and re-created");
+
+        let replaced = s
+            .create_with_id(
+                "dashboard",
+                "Other",
+                "",
+                ArtifactKind::Static,
+                "index.html",
+                &[],
+            )
+            .unwrap();
+        assert_ne!(replaced.app_uid, again.app_uid, "replaced at its id");
+
+        // A manifest written before the field existed loads without one, and
+        // keeps not having one, so its conversations keep their old key.
+        let legacy: Manifest = serde_json::from_str(
+            r#"{"id":"old","title":"Old","kind":"agentic","entry":"index.html"}"#,
+        )
+        .unwrap();
+        assert_eq!(legacy.app_uid, None);
+        assert!(!serde_json::to_string(&legacy).unwrap().contains("app_uid"));
+    }
+
+    /// A manifest that does not load used to make its app vanish from every
+    /// listing while the folder kept the id, so nothing could delete it.
+    #[test]
+    fn broken_manifests_are_listed_and_deletable() {
+        let (_d, s) = store();
+        s.create("Fine", "", ArtifactKind::Static, "index.html", &[])
+            .unwrap();
+        s.create("Garbled", "", ArtifactKind::Static, "index.html", &[])
+            .unwrap();
+        std::fs::write(s.root().join("garbled").join("manifest.json"), "{ not json").unwrap();
+        // Not an app id: never listed, either way.
+        std::fs::create_dir_all(s.root().join("not an id")).unwrap();
+        // A folder with no manifest yet is an app still being created.
+        std::fs::create_dir_all(s.root().join("half-made")).unwrap();
+
+        let (apps, broken) = s.list_with_broken();
+        assert_eq!(
+            apps.iter().map(|m| m.id.as_str()).collect::<Vec<_>>(),
+            ["fine"]
+        );
+        assert_eq!(broken.len(), 1, "{broken:?}");
+        assert_eq!(broken[0].id, "garbled");
+        assert!(broken[0].error.contains("manifest.json"), "{broken:?}");
+        assert_eq!(s.list().len(), 1, "list() still returns only loadable apps");
+
+        assert!(s.load_manifest("garbled").is_err());
+        assert!(s.has_entry("garbled"));
+        assert!(!s.has_entry("no-such-app"));
+        assert!(!s.has_entry("../escape"));
+        s.delete("garbled").unwrap();
+        assert!(!s.has_entry("garbled"));
+        assert!(s.list_with_broken().1.is_empty());
+    }
+
+    /// Past the grace period a folder with no manifest is broken, not new.
+    #[cfg(unix)]
+    #[test]
+    fn a_manifestless_folder_is_broken_once_it_is_old() {
+        let (_d, s) = store();
+        let dir = s.root().join("abandoned");
+        std::fs::create_dir_all(&dir).unwrap();
+        let old = std::time::SystemTime::now() - MANIFESTLESS_GRACE * 4;
+        std::fs::File::open(&dir)
+            .unwrap()
+            .set_modified(old)
+            .unwrap();
+        let (_, broken) = s.list_with_broken();
+        assert_eq!(broken.len(), 1, "{broken:?}");
+        assert!(broken[0].error.contains("no manifest.json"), "{broken:?}");
+        assert!(s.has_entry("abandoned"));
+        s.delete("abandoned").unwrap();
+        assert!(!dir.exists());
+    }
+
+    /// Replacing an app at its id removes a symlink found in its place as a
+    /// link, and builds a real app there; it neither follows the link nor
+    /// refuses the replacement.
+    #[cfg(unix)]
+    #[test]
+    fn replacing_at_an_id_held_by_a_symlink_removes_only_the_link() {
+        let (_d, s) = store();
+        let outside = tempfile::tempdir().unwrap();
+        std::fs::write(outside.path().join("manifest.json"), "outside").unwrap();
+        std::fs::create_dir_all(s.root()).unwrap();
+        std::os::unix::fs::symlink(outside.path(), s.root().join("linked")).unwrap();
+
+        let m = s
+            .create_with_id(
+                "linked",
+                "Real",
+                "",
+                ArtifactKind::Static,
+                "index.html",
+                &[],
+            )
+            .unwrap();
+        assert_eq!(m.id, "linked");
+        let meta = std::fs::symlink_metadata(s.root().join("linked")).unwrap();
+        assert!(meta.is_dir() && !meta.file_type().is_symlink());
+        assert_eq!(s.load_manifest("linked").unwrap().title, "Real");
+        assert_eq!(
+            std::fs::read_to_string(outside.path().join("manifest.json")).unwrap(),
+            "outside"
+        );
+    }
+
+    /// `"agent"` is what `ArtifactKind::parse` accepts from a tool call, so a
+    /// manifest that says it loads rather than hiding the app.
+    #[test]
+    fn a_manifest_kind_of_agent_reads_as_agentic() {
+        let m: Manifest =
+            serde_json::from_str(r#"{"id":"a","title":"A","kind":"agent","entry":"index.html"}"#)
+                .unwrap();
+        assert_eq!(m.kind, ArtifactKind::Agentic);
+        // Written back in the canonical spelling.
+        assert!(serde_json::to_string(&m).unwrap().contains("\"agentic\""));
+    }
+
+    static DELETED: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+
+    fn record_deleted(id: &str) {
+        DELETED.lock().unwrap().push(id.to_string());
+    }
+
+    /// Every deletion path tells the hooks, once, and only after the app is
+    /// really gone; a delete of nothing tells nobody.
+    #[test]
+    fn deleting_an_app_tells_the_registered_hooks() {
+        on_app_deleted(record_deleted);
+        on_app_deleted(record_deleted);
+        let (_d, s) = store();
+        s.create("Hooked One", "", ArtifactKind::Static, "index.html", &[])
+            .unwrap();
+        s.delete("hooked-one").unwrap();
+        s.delete("hooked-one").unwrap();
+        s.create_with_id(
+            "hooked-two",
+            "Two",
+            "",
+            ArtifactKind::Static,
+            "index.html",
+            &[],
+        )
+        .unwrap();
+        s.create_with_id(
+            "hooked-two",
+            "Two again",
+            "",
+            ArtifactKind::Static,
+            "index.html",
+            &[],
+        )
+        .unwrap();
+        let seen = DELETED
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|id| id.starts_with("hooked-"))
+            .cloned()
+            .collect::<Vec<_>>();
+        assert_eq!(seen, ["hooked-one", "hooked-two"]);
+    }
+
+    fn heard(prefix: &str) -> Vec<String> {
+        let mut heard = DELETED
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|id| id.to_ascii_lowercase().starts_with(prefix))
+            .cloned()
+            .collect::<Vec<_>>();
+        heard.sort();
+        heard
+    }
+
+    /// On a case-insensitive volume (macOS's default) a case variant of an id
+    /// opens the app's folder, so deleting by `CaseFold-App` removed the app
+    /// and told the hooks `CaseFold-App`, while the daemon held the app's
+    /// token, cookie and vault key under `casefold-app` for the next app built
+    /// there. Only the exact name is the app. (On a case-sensitive volume the
+    /// variant names nothing to begin with, so this passes there either way.)
+    #[test]
+    fn a_case_variant_of_an_id_is_not_the_app() {
+        on_app_deleted(record_deleted);
+        let (_d, s) = store();
+        s.create_with_id(
+            "casefold-app",
+            "Casefold",
+            "",
+            ArtifactKind::Static,
+            "index.html",
+            &[],
+        )
+        .unwrap();
+
+        assert!(!s.has_entry("CaseFold-App"));
+        assert!(!s.exists("CaseFold-App"));
+        s.write_file("casefold-app", "index.html", "casefold marker")
+            .unwrap();
+        assert!(s.read_bytes("CaseFold-App", "index.html").is_err());
+        s.delete("CaseFold-App").unwrap();
+        assert!(
+            s.load_manifest("casefold-app").is_ok(),
+            "the app is still there"
+        );
+        assert!(heard("casefold-").is_empty(), "{:?}", heard("casefold-"));
+
+        assert!(s.has_entry("casefold-app"));
+        s.delete("casefold-app").unwrap();
+        assert_eq!(heard("casefold-"), ["casefold-app"]);
+    }
+
+    /// A factory reset removed the store root directly, so the daemon forgot
+    /// nothing it held for any app. `delete_all` deletes each through `delete`:
+    /// healthy, broken and still-being-created alike, and nothing that is not
+    /// named like an app.
+    #[test]
+    fn deleting_every_app_tells_the_hooks_of_each() {
+        on_app_deleted(record_deleted);
+        let (_d, s) = store();
+        s.create_with_id(
+            "wipe-healthy",
+            "Healthy",
+            "",
+            ArtifactKind::Static,
+            "index.html",
+            &[],
+        )
+        .unwrap();
+        std::fs::create_dir_all(s.root().join("wipe-broken")).unwrap();
+        std::fs::write(s.root().join("wipe-broken").join("manifest.json"), "{").unwrap();
+        std::fs::create_dir_all(s.root().join("wipe-new")).unwrap();
+        std::fs::write(s.root().join("wipe.notes"), "not an app").unwrap();
+
+        assert_eq!(s.delete_all().unwrap(), 3);
+        assert_eq!(heard("wipe-"), ["wipe-broken", "wipe-healthy", "wipe-new"]);
+        assert!(s.root().join("wipe.notes").exists());
+        let (apps, broken) = s.list_with_broken();
+        assert!(apps.is_empty() && broken.is_empty());
+
+        let missing = ArtifactStore::new(s.root().join("no-store-here"));
+        assert_eq!(missing.delete_all().unwrap(), 0);
     }
 }

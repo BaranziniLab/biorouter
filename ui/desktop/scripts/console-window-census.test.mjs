@@ -257,6 +257,7 @@ test('the known spawning files are all found', () => {
   const expected = [
     ['src/biorouterd.ts', 2],
     ['src/main.ts', 9],
+    ['src/utils/appBrowserLaunch.ts', 2],
     ['src/utils/artifactGit.ts', 1],
     ['src/utils/dependencyChecker.ts', 4],
     ['src/utils/heicConvert.ts', 2],

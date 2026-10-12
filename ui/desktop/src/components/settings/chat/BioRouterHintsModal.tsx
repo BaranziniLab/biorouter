@@ -77,7 +77,8 @@ export const BioRouterHintsModal = ({
     setIsSaving(true);
     clearSaved();
     try {
-      await window.electron.writeFile(biorouterHintsFilePath, biorouterHintsFile);
+      const written = await window.electron.writeFile(biorouterHintsFilePath, biorouterHintsFile);
+      if (!written) throw new Error('Failed to save .biorouterhints file');
       markSaved();
       setBioRouterHintsFileFound(true);
     } catch (error) {

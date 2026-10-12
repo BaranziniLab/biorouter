@@ -4,7 +4,7 @@
  *
  * Verifies the loop that powers agentic artifacts end-to-end: it launches the
  * Biorouter ACP agent over a WebSocket (`biorouter acp --ws`), connects as an
- * ACP client (exactly like the artifact runtime `agent.js` does), and checks
+ * ACP client, and checks
  * that replies are REAL agentic answers from the configured model — not
  * hardwired / rule-based strings:
  *

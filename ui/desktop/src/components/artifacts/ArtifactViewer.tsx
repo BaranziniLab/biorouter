@@ -28,6 +28,7 @@ import { PREVIEW_SIZE_MESSAGE_TYPE, withPreviewSizeReporting } from '../../utils
 import { sendArtifactAnnotation } from '../../utils/annotationChannel';
 import { artifactFileErrorMessage } from '../../utils/artifactFileErrors';
 import { copyToClipboard } from '../../utils/clipboard';
+import { openInBrowser } from '../../utils/openInBrowser';
 import { useTransientValue } from '../../hooks/useTransientFlag';
 import { describeUnsupportedFormat } from '../../utils/formatSupport';
 import { isImageExtension } from '../../utils/imageFormats';
@@ -1263,7 +1264,8 @@ export default function ArtifactViewer({
       return;
     }
     if (activeArtifact.kind === 'externalUrl') {
-      await window.electron.openExternal(activeArtifact.url);
+      // A live app's link is opened through a fresh launch link, and its failure is shown.
+      await openInBrowser(activeArtifact.url);
       return;
     }
     if (activeArtifact.kind === 'file') {
@@ -1715,7 +1717,7 @@ function ArtifactPreviewBody({
           snapshotDataUrl={annotationSnapshotDataUrl}
           onViewIdChange={onLiveBrowserViewChange}
           onAgentShareChange={onLiveBrowserShareChange}
-          onOpenExternal={(url) => void window.electron.openExternal(url)}
+          onOpenExternal={(url) => void openInBrowser(url)}
         />
       );
     }
@@ -1740,7 +1742,7 @@ function ArtifactPreviewBody({
             </button>
             <button
               type="button"
-              onClick={() => void window.electron.openExternal(preview.url)}
+              onClick={() => void openInBrowser(preview.url)}
               className="inline-flex h-8 items-center gap-2 rounded-element border border-border-subtle bg-background-default px-3 text-label text-text-default transition-colors hover:bg-overlay-hover"
             >
               <ExternalLink className="h-3.5 w-3.5" aria-hidden="true" />

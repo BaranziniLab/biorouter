@@ -1,0 +1,22 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>{{TITLE}}</title>
+</head>
+<body>
+  <main class="br-container">
+    <span class="br-badge">Biorouter App</span>
+    <h1>{{TITLE}}</h1>
+    <p style="color: var(--br-text-muted); margin-top: 2px;">{{DESCRIPTION}}</p>
+    <!-- A static page: no agent. Build the interface here. Scripts written in
+         this file (<script>…</script>, onclick="…") run when the app is
+         launched; larger logic can live in src/main.ts (run build_app). -->
+    <section class="br-card" style="margin-top: 16px;">
+      <div class="br-output" id="out" data-placeholder="Content goes here."></div>
+    </section>
+    <p class="br-footer">Powered by Biorouter · built with Agent Drafter</p>
+  </main>
+</body>
+</html>

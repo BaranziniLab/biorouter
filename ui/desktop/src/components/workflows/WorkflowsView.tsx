@@ -279,7 +279,8 @@ export default function WorkflowsView() {
       });
 
       if (!result.canceled && result.filePath) {
-        await window.electron.writeFile(result.filePath, response.data.yaml);
+        const written = await window.electron.writeFile(result.filePath, response.data.yaml);
+        if (!written) throw new Error('Failed to write workflow file');
         toastSuccess({
           title: 'Workflow exported',
           msg: `Workflow saved to ${result.filePath}`,

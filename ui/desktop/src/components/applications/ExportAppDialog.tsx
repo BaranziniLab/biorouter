@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Button } from '../ui/button';
 // V8 — the app's OWN checkbox, not `@radix-ui/themes`'. It is built exactly
 // like the `CustomRadio` it sits under (a `peer sr-only` input driving styled
@@ -17,12 +17,28 @@ import {
   DialogHeader,
   DialogTitle,
 } from '../ui/dialog';
-import type { AppManifest, ExportMode, ExportOptions } from './appManagement';
+import {
+  exportableExtensions,
+  referencedKnowledgeBases,
+  referencedSkills,
+  type AppManifest,
+} from './appManagement';
+import type {
+  AppExportMode,
+  AppExportRequest,
+  AppExportResult,
+} from '../../utils/appExportRequest';
 
 interface ExportAppDialogProps {
   app: AppManifest;
-  onConfirm: (options: ExportOptions) => void;
-  onCancel: () => void;
+  /** Runs the export and answers how it went. The dialog stays open, busy, until it does. */
+  onExport: (request: AppExportRequest) => Promise<AppExportResult>;
+  onClose: () => void;
+  /**
+   * A `biorouter serve` browser: the export downloads as a zip, and the daemon's own binary is
+   * not offered, since it was built for the server rather than for whoever downloads it.
+   */
+  browser?: boolean;
 }
 
 /**
@@ -43,18 +59,21 @@ function IncludeCheckbox({
   onChange,
   label,
   hint,
+  disabled,
 }: {
   id: string;
   checked: boolean;
   onChange: (checked: boolean) => void;
   label: string;
   hint: string;
+  disabled?: boolean;
 }) {
   return (
     <div className="biorouter-list-row flex items-start gap-2 rounded-none px-1 py-2">
       <Checkbox
         id={id}
         checked={checked}
+        disabled={disabled}
         onChange={(event) => onChange(event.target.checked)}
         className="mt-0.5"
       />
@@ -66,25 +85,57 @@ function IncludeCheckbox({
   );
 }
 
+/** The dialog's three faces: the choice, the export running, and the harness's findings. */
+type Phase =
+  | { kind: 'choose' }
+  | { kind: 'running' }
+  | { kind: 'lint'; message: string; findings: string[]; request: AppExportRequest };
+
+/** How many findings are listed before "and N more". */
+const SHOWN_FINDINGS = 8;
+
 /**
  * The Applications-panel export dialog (Apps SDK v2, design §3.9): launcher vs
- * full export, with per-item payload toggles pre-checked from what the app's
- * agent config actually references. Confirm hands the chosen options back to
- * the caller, which performs the request; Cancel sends nothing.
+ * full export, with per-item payload toggles pre-checked from everything the
+ * app references. Confirm runs the export through `onExport`; Cancel sends
+ * nothing.
+ *
+ * In full mode all three lists are sent, an unchecked item left out and an
+ * empty list meaning "none": a list with nothing checked used to be dropped, and
+ * the daemon read a missing list as "everything the app references", so a
+ * knowledge base the person had unchecked shipped anyway.
+ *
+ * When the harness lint blocks the export, the findings are shown here and the
+ * person may export anyway. That is the only way `allowLintErrors` is ever set.
  */
-export default function ExportAppDialog({ app, onConfirm, onCancel }: ExportAppDialogProps) {
-  const kb = app.agent?.knowledge_base || undefined;
-  const skills = app.agent?.skills ?? [];
-  const extensions = app.agent?.extensions ?? [];
+export default function ExportAppDialog({
+  app,
+  onExport,
+  onClose,
+  browser = false,
+}: ExportAppDialogProps) {
+  const knowledgeBases = referencedKnowledgeBases(app);
+  const skills = referencedSkills(app);
+  const extensions = exportableExtensions(app);
 
-  const [mode, setMode] = useState<ExportMode>('launcher');
+  const [mode, setMode] = useState<AppExportMode>('launcher');
   const [bundleDaemon, setBundleDaemon] = useState(false);
   // Pre-checked from the manifest: everything the agent references travels by
   // default; the user opts out item by item.
-  const [includeKb, setIncludeKb] = useState(kb !== undefined);
+  const [selectedKbs, setSelectedKbs] = useState<ReadonlySet<string>>(
+    () => new Set(knowledgeBases)
+  );
   const [selectedSkills, setSelectedSkills] = useState<ReadonlySet<string>>(() => new Set(skills));
   const [selectedExtensions, setSelectedExtensions] = useState<ReadonlySet<string>>(
     () => new Set(extensions)
+  );
+  const [phase, setPhase] = useState<Phase>({ kind: 'choose' });
+  const mounted = useRef(true);
+  useEffect(
+    () => () => {
+      mounted.current = false;
+    },
+    []
   );
 
   const toggle = (set: ReadonlySet<string>, item: string, checked: boolean): Set<string> => {
@@ -94,23 +145,51 @@ export default function ExportAppDialog({ app, onConfirm, onCancel }: ExportAppD
     return next;
   };
 
-  const confirm = () => {
-    const include =
-      mode === 'full'
-        ? {
-            knowledge_bases: kb && includeKb ? [kb] : undefined,
-            skills: skills.filter((s) => selectedSkills.has(s)),
-            extensions: extensions.filter((e) => selectedExtensions.has(e)),
-          }
-        : {};
-    onConfirm({ mode, bundleDaemon: mode === 'full' && bundleDaemon, include });
+  const run = async (request: AppExportRequest) => {
+    setPhase({ kind: 'running' });
+    let result: AppExportResult;
+    try {
+      result = await onExport(request);
+    } catch {
+      result = { status: 'failed', message: 'Could not export the app.' };
+    }
+    if (!mounted.current) return;
+    if (result.status === 'lint') {
+      setPhase({
+        kind: 'lint',
+        message: result.message,
+        findings: result.findings,
+        request: { ...request, allowLintErrors: true, retry: result.retry || undefined },
+      });
+      return;
+    }
+    onClose();
   };
+
+  const confirm = () => {
+    void run({
+      mode,
+      bundleDaemon: !browser && mode === 'full' && bundleDaemon,
+      allowLintErrors: false,
+      ...(mode === 'full'
+        ? {
+            include: {
+              knowledge_bases: knowledgeBases.filter((kb) => selectedKbs.has(kb)),
+              skills: skills.filter((s) => selectedSkills.has(s)),
+              extensions: extensions.filter((e) => selectedExtensions.has(e)),
+            },
+          }
+        : {}),
+    });
+  };
+
+  const running = phase.kind === 'running';
 
   return (
     <Dialog
       open
       onOpenChange={(open) => {
-        if (!open) onCancel();
+        if (!open) onClose();
       }}
     >
       {/* V8 — a dialog's width comes off the `MODAL_SIZE` ladder, never from a
@@ -118,85 +197,142 @@ export default function ExportAppDialog({ app, onConfirm, onCancel }: ExportAppD
           form: a mode choice plus a column of include toggles. The `sm:max-w-md`
           it replaces was 448px, a fifteenth width nobody chose. */}
       <DialogContent className={MODAL_SIZE.md}>
-        <DialogHeader>
-          <DialogTitle>Export “{app.title}”</DialogTitle>
-          <DialogDescription>
-            Choose what travels with the exported folder. Credentials never travel. The recipient is
-            prompted on first run.
-          </DialogDescription>
-        </DialogHeader>
+        {phase.kind === 'lint' ? (
+          <>
+            <DialogHeader>
+              <DialogTitle>Export “{app.title}” anyway?</DialogTitle>
+              <DialogDescription>
+                The app check found problems that can keep the exported app from working. Fix them
+                in the chat that built it, or export it as it is.
+              </DialogDescription>
+            </DialogHeader>
+            <ul
+              aria-label="Problems found"
+              className="flex max-h-60 flex-col gap-1 overflow-y-auto border-y border-border-subtle py-2"
+            >
+              {(phase.findings.length > 0 ? phase.findings : [phase.message])
+                .slice(0, SHOWN_FINDINGS)
+                .map((finding, index) => (
+                  <li key={index} className="text-supporting text-text-default">
+                    {finding}
+                  </li>
+                ))}
+              {phase.findings.length > SHOWN_FINDINGS && (
+                <li className="text-supporting text-text-muted">
+                  and {phase.findings.length - SHOWN_FINDINGS} more
+                </li>
+              )}
+            </ul>
+            <DialogFooter>
+              <Button variant="outline" onClick={onClose}>
+                Cancel
+              </Button>
+              <Button onClick={() => void run(phase.request)}>Export anyway</Button>
+            </DialogFooter>
+          </>
+        ) : (
+          <>
+            <DialogHeader>
+              <DialogTitle>Export “{app.title}”</DialogTitle>
+              <DialogDescription>
+                {browser
+                  ? 'Downloads the app as a .zip of a folder that runs on another computer. '
+                  : 'Writes a folder that runs on another computer. '}
+                Credentials never travel. The recipient is prompted on first run.
+              </DialogDescription>
+            </DialogHeader>
 
-        <div role="radiogroup" aria-label="Export mode" className="flex flex-col">
-          <CustomRadio
-            id="export-mode-launcher"
-            name="export-mode"
-            value="launcher"
-            checked={mode === 'launcher'}
-            onChange={() => setMode('launcher')}
-            label="Launcher (app + scripts)"
-            secondaryLabel="Smallest folder. Uses the knowledge bases, skills, and extensions already on the target machine."
-          />
-          <CustomRadio
-            id="export-mode-full"
-            name="export-mode"
-            value="full"
-            checked={mode === 'full'}
-            onChange={() => setMode('full')}
-            label="Full (bundle server-side content)"
-            secondaryLabel="Carries the items below so a fresh machine can run the app."
-          />
-        </div>
-
-        {mode === 'full' && (
-          <div className="flex flex-col border-y border-border-subtle">
-            {kb && (
-              <IncludeCheckbox
-                id="export-include-kb"
-                checked={includeKb}
-                onChange={setIncludeKb}
-                label={`Knowledge base: ${kb}`}
-                hint="Bundled as a .brkb and imported into the recipient's store on first run."
+            <div role="radiogroup" aria-label="Export mode" className="flex flex-col">
+              <CustomRadio
+                id="export-mode-launcher"
+                name="export-mode"
+                value="launcher"
+                checked={mode === 'launcher'}
+                onChange={() => setMode('launcher')}
+                label="Launcher (app + scripts)"
+                secondaryLabel="Smallest folder. Uses the knowledge bases, skills, and extensions already on the target machine."
               />
+              <CustomRadio
+                id="export-mode-full"
+                name="export-mode"
+                value="full"
+                checked={mode === 'full'}
+                onChange={() => setMode('full')}
+                label="Full (bundle server-side content)"
+                secondaryLabel="Carries the items below so a fresh machine can run the app."
+              />
+            </div>
+
+            {mode === 'full' && (
+              <div className="flex flex-col border-y border-border-subtle">
+                {knowledgeBases.map((kb) => (
+                  <IncludeCheckbox
+                    key={kb}
+                    id={`export-include-kb-${kb}`}
+                    checked={selectedKbs.has(kb)}
+                    disabled={running}
+                    onChange={(checked) => setSelectedKbs((prev) => toggle(prev, kb, checked))}
+                    label={`Knowledge base: ${kb}`}
+                    hint="Bundled as a .brkb with its sources. A private base is included only when you could open it."
+                  />
+                ))}
+                {skills.map((skill) => (
+                  <IncludeCheckbox
+                    key={skill}
+                    id={`export-include-skill-${skill}`}
+                    checked={selectedSkills.has(skill)}
+                    disabled={running}
+                    onChange={(checked) =>
+                      setSelectedSkills((prev) => toggle(prev, skill, checked))
+                    }
+                    label={`Skill: ${skill}`}
+                    hint="Staged in the export and installed into the recipient's skills on first run."
+                  />
+                ))}
+                {extensions.map((ext) => (
+                  <IncludeCheckbox
+                    key={ext}
+                    id={`export-include-extension-${ext}`}
+                    checked={selectedExtensions.has(ext)}
+                    disabled={running}
+                    onChange={(checked) =>
+                      setSelectedExtensions((prev) => toggle(prev, ext, checked))
+                    }
+                    label={`Extension: ${ext}`}
+                    hint="Recorded in export.json for the recipient to install from the marketplace."
+                  />
+                ))}
+                {knowledgeBases.length === 0 && skills.length === 0 && extensions.length === 0 && (
+                  <p className="py-2 text-supporting text-text-muted">
+                    This app references no knowledge bases, skills, or extensions.
+                  </p>
+                )}
+                {!browser && (
+                  <IncludeCheckbox
+                    id="export-bundle-daemon"
+                    checked={bundleDaemon}
+                    disabled={running}
+                    onChange={setBundleDaemon}
+                    label="Bundle daemon binary (~110 MB)"
+                    hint="Runs on a computer like this one with no Biorouter installed."
+                  />
+                )}
+                <p className="text-supporting text-text-muted mt-1">
+                  Full exports can be large. A bundled knowledge base carries its sources.
+                </p>
+              </div>
             )}
-            {skills.map((skill) => (
-              <IncludeCheckbox
-                key={skill}
-                id={`export-include-skill-${skill}`}
-                checked={selectedSkills.has(skill)}
-                onChange={(checked) => setSelectedSkills((prev) => toggle(prev, skill, checked))}
-                label={`Skill: ${skill}`}
-                hint="Staged in the export and installed into the recipient's skills on first run."
-              />
-            ))}
-            {extensions.map((ext) => (
-              <IncludeCheckbox
-                key={ext}
-                id={`export-include-extension-${ext}`}
-                checked={selectedExtensions.has(ext)}
-                onChange={(checked) => setSelectedExtensions((prev) => toggle(prev, ext, checked))}
-                label={`Extension: ${ext}`}
-                hint="Bundled or pinned for first-run install; built-ins already travel with the daemon."
-              />
-            ))}
-            <IncludeCheckbox
-              id="export-bundle-daemon"
-              checked={bundleDaemon}
-              onChange={setBundleDaemon}
-              label="Bundle daemon binary (~110 MB)"
-              hint="Skips the biorouterd download on the recipient's machine."
-            />
-            <p className="text-supporting text-text-muted mt-1">
-              Full exports can be large. A bundled knowledge base carries its sources.
-            </p>
-          </div>
-        )}
 
-        <DialogFooter>
-          <Button variant="outline" onClick={onCancel}>
-            Cancel
-          </Button>
-          <Button onClick={confirm}>Export</Button>
-        </DialogFooter>
+            <DialogFooter>
+              <Button variant="outline" onClick={onClose}>
+                Cancel
+              </Button>
+              <Button onClick={confirm} disabled={running} aria-busy={running || undefined}>
+                {running ? 'Exporting…' : 'Export'}
+              </Button>
+            </DialogFooter>
+          </>
+        )}
       </DialogContent>
     </Dialog>
   );

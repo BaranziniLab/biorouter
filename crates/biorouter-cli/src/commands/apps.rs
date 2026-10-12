@@ -34,13 +34,21 @@
 //! `apps open` must keep passing [`Supervision::Detached`]: tying its daemon to
 //! this process would kill the daemon as `open` returned.
 //!
-//! **Daemon management is deliberately minimal.** The CLI has no pre-existing
-//! biorouterd-supervision helper, so `open`/`serve` first health-check the
-//! configured port (`BIOROUTER_PORT`, default 3000) via the auth-exempt
-//! `GET /status`, reuse a daemon if one answers, and otherwise best-effort spawn
-//! the sibling `biorouterd agent`. If no `biorouterd` binary can be located the
-//! command fails with the exact command to run — an honest v1 over a fragile
-//! spawn.
+//! **The profile's shared daemon comes first.** When the desktop app or
+//! `biorouter crew` runs this profile's shared daemon, `open` and `serve` mint the
+//! link there, over its private socket, and send the browser to that daemon's own
+//! listener ([`shared_daemon_launch`]); nothing is started. They used to start a
+//! second full daemon beside it that never exited. A port the person names in
+//! `BIOROUTER_PORT` keeps its meaning: the shared daemon is used then only when
+//! it listens on that port ([`named_port`]).
+//!
+//! **Otherwise daemon management is deliberately minimal.** From the configured
+//! port (`BIOROUTER_PORT`, default 3000) up, `open`/`serve` health-check each port
+//! via the auth-exempt `GET /status`, taking as a Biorouter daemon only one that
+//! answers `ok` ([`port_state`]) and passing over a port anything else holds,
+//! reuse a daemon whose key they know, and otherwise best-effort spawn the sibling
+//! `biorouterd agent`. If no `biorouterd` binary can be located the command fails
+//! with the exact command to run — an honest v1 over a fragile spawn.
 //!
 //! **Opening an app takes the daemon's secret (W2-HRD-1).** A daemon serves an
 //! app's page only to a browser holding that app's access cookie, set by a
@@ -275,6 +283,60 @@ pub(crate) async fn daemon_ok(host: &str, port: u16) -> bool {
         _ => false,
     }
 }
+
+/// What answers on a loopback port, as far as `apps open` and `apps serve` care.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PortState {
+    /// Nothing accepts a connection: a daemon can be started here.
+    Free,
+    /// A Biorouter daemon: `GET /status` answers 200 with the body `ok`.
+    Biorouter,
+    /// Something else holds the port: a dev server's catch-all that answers 200
+    /// to any path, a listener that never answers, another service.
+    Foreign,
+}
+
+/// What answers on `port` (see [`PortState`]).
+///
+/// Stricter than [`daemon_ok`], which takes any 200 and which other commands
+/// share: a Vite or CRA dev server on :3000 answers `/status` with its page, and
+/// this command then said a Biorouter daemon whose key it did not know held the
+/// port. HTTP/1.0, like [`with_secret`], so the body comes unchunked.
+async fn port_state(port: u16) -> PortState {
+    let addr = format!("{DAEMON_HOST}:{port}");
+    let connect = biorouter::net::connect_non_inheritable(&addr);
+    let mut stream = match tokio::time::timeout(Duration::from_millis(600), connect).await {
+        Ok(Ok(stream)) => stream,
+        _ => return PortState::Free,
+    };
+    let request = format!("GET /status HTTP/1.0\r\nHost: {addr}\r\nConnection: close\r\n\r\n");
+    if stream.write_all(request.as_bytes()).await.is_err() {
+        return PortState::Foreign;
+    }
+    let mut response = Vec::new();
+    let read = tokio::time::timeout(
+        Duration::from_secs(2),
+        (&mut stream).take(4096).read_to_end(&mut response),
+    )
+    .await;
+    if !matches!(read, Ok(Ok(_))) {
+        return PortState::Foreign;
+    }
+    let text = String::from_utf8_lossy(&response);
+    match text.split_once("\r\n\r\n") {
+        Some((head, body))
+            if head.split_whitespace().nth(1) == Some("200") && body.trim() == "ok" =>
+        {
+            PortState::Biorouter
+        }
+        _ => PortState::Foreign,
+    }
+}
+
+/// How many ports `apps open` and `apps serve` try, from the configured one up,
+/// before giving up on finding one that is free or holds a daemon they can use.
+/// The exported launchers try the same six (3000–3005 by default).
+const PORT_ATTEMPTS: u16 = 6;
 
 /// Locate the `biorouterd` binary: prefer the sibling of the running `biorouter`
 /// executable (dev tree and installed app both colocate them), then the sibling
@@ -620,6 +682,11 @@ pub(crate) fn open_page_in_browser(page: &Path) -> std::io::Result<()> {
     webbrowser::open(page_url.as_str())
 }
 
+/// `CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW`: a detached daemon's own
+/// process group, and no console to receive this one's Ctrl-C or close.
+#[cfg(windows)]
+const DETACHED_DAEMON_FLAGS: u32 = 0x0000_0200 | 0x0800_0000;
+
 /// Whether a daemon this command starts is tied to this process's lifetime.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Supervision {
@@ -632,27 +699,67 @@ pub(crate) enum Supervision {
     TiedToThisProcess,
 }
 
-/// Ensure a daemon whose secret this command knows is reachable on the configured
-/// port, spawning one if needed. Answers the daemon and its secret.
-async fn ensure_daemon(port: u16, supervision: Supervision) -> Result<(Daemon, String)> {
-    if daemon_ok(DAEMON_HOST, port).await {
-        let known = std::env::var("BIOROUTER_SERVER__SECRET_KEY")
-            .ok()
-            .filter(|secret| !secret.is_empty())
-            .into_iter()
-            .chain(remembered_secret(port));
-        for secret in known {
-            if secret_works(port, &secret).await {
-                return Ok((Daemon::Reused, secret));
-            }
+/// The secret of the daemon on `port`, when this command knows one that works:
+/// `BIOROUTER_SERVER__SECRET_KEY`, or the record of a daemon `apps open` or
+/// `apps serve` started there.
+async fn known_secret(port: u16) -> Option<String> {
+    let known = std::env::var("BIOROUTER_SERVER__SECRET_KEY")
+        .ok()
+        .filter(|secret| !secret.is_empty())
+        .into_iter()
+        .chain(remembered_secret(port));
+    for secret in known {
+        if secret_works(port, &secret).await {
+            return Some(secret);
         }
-        bail!(
-            "a Biorouter daemon is already running on port {port}, and opening an app on it takes \
-             that daemon's secret key, which this command does not know. It knows the key of a \
-             daemon `biorouter apps open` or `biorouter apps serve` started; for any other, set \
-             BIOROUTER_SERVER__SECRET_KEY to its key, or set BIOROUTER_PORT to a free port so \
-             this command starts a daemon of its own."
-        );
+    }
+    None
+}
+
+/// Ensure a daemon whose secret this command knows is reachable, from the
+/// configured port up, spawning one if needed. Answers the daemon, its secret and
+/// the port it is on.
+///
+/// A port held by something that is not Biorouter is passed over for the next,
+/// as the exported launchers do; it used to stop the command with a claim that a
+/// Biorouter daemon whose key it lacked was running there. A Biorouter daemon on
+/// the configured port whose key this command does not know still stops it: that
+/// is a daemon the person pointed it at.
+async fn ensure_daemon(first: u16, supervision: Supervision) -> Result<(Daemon, String, u16)> {
+    let mut port = first;
+    loop {
+        match port_state(port).await {
+            PortState::Free => break,
+            PortState::Biorouter => {
+                if let Some(secret) = known_secret(port).await {
+                    return Ok((Daemon::Reused, secret, port));
+                }
+                if port == first {
+                    bail!(
+                        "a Biorouter daemon is already running on port {port}, and opening an app on it takes \
+                         that daemon's secret key, which this command does not know. It knows the key of a \
+                         daemon `biorouter apps open` or `biorouter apps serve` started; for any other, set \
+                         BIOROUTER_SERVER__SECRET_KEY to its key, or set BIOROUTER_PORT to a free port so \
+                         this command starts a daemon of its own."
+                    );
+                }
+                eprintln!(
+                    "    {} port {port} has a Biorouter daemon this command has no key for; trying the next",
+                    style("·").dim()
+                );
+            }
+            PortState::Foreign => eprintln!(
+                "    {} port {port} is in use by something that is not Biorouter; trying the next",
+                style("·").dim()
+            ),
+        }
+        port = match port.checked_add(1) {
+            Some(next) if next - first < PORT_ATTEMPTS => next,
+            _ => bail!(
+                "no port from {first} to {port} is free for a Biorouter daemon. Set BIOROUTER_PORT \
+                 to a free port."
+            ),
+        };
     }
 
     let secret = new_daemon_secret();
@@ -666,6 +773,15 @@ async fn ensure_daemon(port: u16, supervision: Supervision) -> Result<(Daemon, S
         command
             .arg("--exit-with-parent")
             .arg(std::process::id().to_string());
+    }
+    // A daemon `apps open` leaves running must not share this console. Windows
+    // sends Ctrl-C, and the close of the console window, to every process
+    // attached to it, and the daemon stops on either: the next Ctrl-C at that
+    // prompt, or closing the window, took the open app down with it. Its own
+    // process group and no console, as `run.ps1` gives the daemon it starts.
+    #[cfg(windows)]
+    if supervision == Supervision::Detached {
+        command.creation_flags(DETACHED_DAEMON_FLAGS);
     }
     let mut child = command
         .env("BIOROUTER_PORT", port.to_string())
@@ -714,7 +830,7 @@ async fn ensure_daemon(port: u16, supervision: Supervision) -> Result<(Daemon, S
             // a later `apps open` or `apps serve`, which can mint it only with
             // this secret. `serve` removes the record when it stops the daemon.
             let remembered = remember_daemon(port, &secret);
-            return Ok((Daemon::Started { child, remembered }, secret));
+            return Ok((Daemon::Started { child, remembered }, secret, port));
         }
         if tokio::time::Instant::now() >= deadline {
             let _ = child.start_kill();
@@ -767,13 +883,242 @@ fn serve_link_advice(port: u16, id: &str, started: Option<bool>) -> String {
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
+// the profile's shared daemon
+// ──────────────────────────────────────────────────────────────────────────────
+
+/// `base` as an origin a browser on this machine is sent to: plain http to a
+/// loopback host on an explicit port. A daemon listening on every interface names
+/// `0.0.0.0` or `[::]`, an address to listen on and not one to visit, so it
+/// becomes the loopback address of its family. `None` for anything else.
+// Reached only through the shared daemon, which is unix-only for now.
+#[cfg_attr(not(unix), allow(dead_code))]
+fn loopback_origin(base: &str) -> Option<String> {
+    let url = url::Url::parse(base).ok()?;
+    if url.scheme() != "http"
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || url.path() != "/"
+        || url.query().is_some()
+        || url.fragment().is_some()
+    {
+        return None;
+    }
+    let port = url.port()?;
+    let host = match url.host_str()? {
+        "127.0.0.1" | "0.0.0.0" => "127.0.0.1",
+        "localhost" => "localhost",
+        "[::1]" | "[::]" => "[::1]",
+        _ => return None,
+    };
+    Some(format!("http://{host}:{port}"))
+}
+
+/// The address a browser on this machine opens app `id` at, from the shared
+/// daemon's launch answer: the link on the daemon's own listener. That is the
+/// answer's `url` when it names one, else the link's path on `listener` (the
+/// daemon's `/headless/health` `api_base_url`, for a daemon from before the
+/// answer named it). `None` unless the answer is exactly `id`'s page with a
+/// token, on a loopback listener.
+#[cfg_attr(not(unix), allow(dead_code))]
+fn shared_launch_link(
+    answer: &serde_json::Value,
+    id: &str,
+    listener: Option<&str>,
+) -> Option<String> {
+    let path = answer.get("path")?.as_str()?;
+    if !is_launch_path(path, id) {
+        return None;
+    }
+    match answer.get("url") {
+        Some(serde_json::Value::String(url)) => {
+            let origin = url.strip_suffix(path)?;
+            (loopback_origin(origin)? == origin).then(|| url.clone())
+        }
+        None | Some(serde_json::Value::Null) => {
+            Some(format!("{}{path}", loopback_origin(listener?)?))
+        }
+        Some(_) => None,
+    }
+}
+
+/// Mint app `id`'s launch link on the shared daemon `client` reaches.
+#[cfg(unix)]
+async fn launch_on_shared_daemon(
+    client: &crate::daemon_client::CrewClient,
+    id: &str,
+) -> Result<String> {
+    // The id goes into a request line, so it must be an app name and nothing else.
+    biorouter_mcp::agent_drafter::store::validate_artifact_id(id)
+        .map_err(|_| anyhow!("'{id}' is not an app name"))?;
+    // `request_text`, not `request`: the daemon refuses a missing app in plain
+    // text, which `request` reports only as "not JSON".
+    let answer = client
+        .request_text("POST", &format!("/apps/{id}/launch"), None)
+        .await
+        .map_err(
+            |error| match error.downcast_ref::<crate::daemon_client::DaemonRefusal>() {
+                Some(refusal) if refusal.status == 404 => {
+                    anyhow!(
+                        "this profile's Biorouter daemon would not open '{id}': it has no such app"
+                    )
+                }
+                _ => anyhow!("this profile's Biorouter daemon would not open '{id}': {error}"),
+            },
+        )?;
+    let answer: serde_json::Value = serde_json::from_str(&answer).unwrap_or_default();
+    let listener = if answer.get("url").is_some_and(|url| !url.is_null()) {
+        None
+    } else {
+        client
+            .request("GET", "/headless/health", None)
+            .await
+            .ok()
+            .and_then(|health| Some(health.get("api_base_url")?.as_str()?.to_string()))
+    };
+    shared_launch_link(&answer, id, listener.as_deref()).ok_or_else(|| {
+        anyhow!("this profile's Biorouter daemon answered with an unexpected address for '{id}'")
+    })
+}
+
+/// App `id`'s launch link on this profile's shared daemon, the one the desktop
+/// app and `biorouter crew` run, when one is running and this command can use
+/// it: `Ok(None)` sends the caller on to a daemon of its own.
+///
+/// These commands used to look only at `BIOROUTER_PORT` (default 3000), so with
+/// the desktop app open they started a second full daemon, with its own MCP
+/// servers and scheduler, that never exited. The shared daemon is reached over
+/// its private socket with the key its starter saved, as every `crew` command
+/// reaches it; nothing is started here (`connect(true)`), and a daemon this
+/// command cannot use (started by an older Biorouter, or its key refused) is left
+/// running and passed over, with a line saying why.
+///
+/// A port named in `BIOROUTER_PORT` is honoured: see [`named_port`].
+async fn shared_daemon_launch(id: &str) -> Result<Option<String>> {
+    let named = named_port(std::env::var("BIOROUTER_PORT").ok().as_deref());
+    shared_daemon_launch_on(id, named).await
+}
+
+/// The port the person named in `BIOROUTER_PORT` (`value`), if they named one.
+///
+/// Someone who runs `BIOROUTER_PORT=8080 biorouter apps serve <id>` to match an
+/// SSH tunnel or a firewall rule means that port, and the shared daemon listens
+/// on one of its own choosing. So a named port sends these commands past the
+/// shared daemon unless it is the port that daemon listens on
+/// ([`on_named_port`]). ⚠ Not "skip the shared daemon whenever the variable is
+/// set": a shell the agent runs inside the shared daemon inherits the daemon's
+/// own `BIOROUTER_PORT`, and that shell is where the agent itself runs
+/// `apps open`. The desktop starts the daemon on a port it names, which then
+/// matches; `biorouter crew` starts it with `0`, which asks for any free port and
+/// names none.
+fn named_port(value: Option<&str>) -> Option<u16> {
+    value?.trim().parse::<u16>().ok().filter(|port| *port != 0)
+}
+
+/// Whether `link`, minted on the shared daemon, is on the port the person named.
+#[cfg_attr(not(unix), allow(dead_code))]
+fn on_named_port(link: &str, named: Option<u16>) -> bool {
+    match named {
+        None => true,
+        Some(port) => url::Url::parse(link).ok().and_then(|url| url.port()) == Some(port),
+    }
+}
+
+/// [`shared_daemon_launch`], for the port the person named (`named`).
+async fn shared_daemon_launch_on(id: &str, named: Option<u16>) -> Result<Option<String>> {
+    #[cfg(not(unix))]
+    {
+        let _ = (id, named);
+        Ok(None)
+    }
+    #[cfg(unix)]
+    {
+        use crate::daemon_client::{CrewClient, Restated, DAEMON_NOT_RUNNING_CODE};
+        let client = match CrewClient::connect(true).await {
+            Ok(client) => client,
+            Err(error) => {
+                let absent = error
+                    .downcast_ref::<Restated>()
+                    .is_some_and(|restated| restated.code == Some(DAEMON_NOT_RUNNING_CODE));
+                if !absent {
+                    let reason = error.to_string();
+                    eprintln!(
+                        "    {} not using this profile's Biorouter daemon: {}",
+                        style("·").dim(),
+                        reason.lines().next().unwrap_or_default()
+                    );
+                }
+                return Ok(None);
+            }
+        };
+        // A named port is checked before anything is minted, so a shared daemon
+        // on another port is passed over without a link being made for nobody,
+        // and without its refusals deciding a command meant for another daemon.
+        if let Some(port) = named {
+            let listener = client
+                .request("GET", "/headless/health", None)
+                .await
+                .ok()
+                .and_then(|health| Some(health.get("api_base_url")?.as_str()?.to_string()));
+            if !listener
+                .as_deref()
+                .is_some_and(|listener| on_named_port(listener, named))
+            {
+                eprintln!(
+                    "    {} not using this profile's Biorouter daemon, which listens on {}: \
+                     BIOROUTER_PORT names port {port}. Unset BIOROUTER_PORT to use it.",
+                    style("·").dim(),
+                    listener.as_deref().unwrap_or("another port"),
+                );
+                return Ok(None);
+            }
+        }
+        let link = launch_on_shared_daemon(&client, id).await?;
+        // And the link itself, which is what the browser is sent to.
+        Ok(on_named_port(&link, named).then_some(link))
+    }
+}
+
+/// Open `launch` in the default browser through a private launch page, and print
+/// it for when no browser opened or one could not read the page.
+fn open_or_print(launch: &str) {
+    // The link itself never reaches an opener's command line: see
+    // `write_launch_page`. The terminal is this account's alone, so the link is
+    // printed there when no browser could be opened.
+    //
+    // It is printed when the page did open, too: a browser that cannot read the
+    // page (a snap-packaged browser cannot read hidden folders such as the state
+    // dir) shows an error, and `open` still reports success.
+    let once = format!("it works once, within {LAUNCH_LINK_LIFETIME}");
+    match open_launch_link(launch, &launch_pages_dir(), open_page_in_browser) {
+        Ok(_) => println!(
+            "  {} if the app does not appear, open this address instead ({once}): {launch}",
+            style("·").dim()
+        ),
+        Err(e) => {
+            eprintln!("    {} {e}", style("!").yellow());
+            println!(
+                "  {} open this address instead ({once}): {launch}",
+                style("·").dim()
+            );
+        }
+    }
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
 // open
 // ──────────────────────────────────────────────────────────────────────────────
 
 pub async fn handle_apps_open(id: String) -> Result<()> {
     require_app(&id)?;
-    let port = configured_port();
-    let (daemon, secret) = ensure_daemon(port, Supervision::Detached).await?;
+    if let Some(launch) = shared_daemon_launch(&id).await? {
+        println!(
+            "  {} using this profile's Biorouter daemon",
+            style("·").dim()
+        );
+        open_or_print(&launch);
+        return Ok(());
+    }
+    let (daemon, secret, port) = ensure_daemon(configured_port(), Supervision::Detached).await?;
     let url = app_url(port, &id);
     let launch = launch_url(port, &id, &secret).await?;
 
@@ -791,27 +1136,7 @@ pub async fn handle_apps_open(id: String) -> Result<()> {
         }
     }
 
-    // The link itself never reaches an opener's command line: see
-    // `write_launch_page`. The terminal is this account's alone, so the link is
-    // printed there when no browser could be opened.
-    //
-    // It is printed when the page did open, too: a browser that cannot read the
-    // page (a snap-packaged browser cannot read hidden folders such as the state
-    // dir) shows an error, and `open` still reports success.
-    let once = format!("it works once, within {LAUNCH_LINK_LIFETIME}");
-    match open_launch_link(&launch, &launch_pages_dir(), open_page_in_browser) {
-        Ok(_) => println!(
-            "  {} if the app does not appear, open this address instead ({once}): {launch}",
-            style("·").dim()
-        ),
-        Err(e) => {
-            eprintln!("    {} {e}", style("!").yellow());
-            println!(
-                "  {} open this address instead ({once}): {launch}",
-                style("·").dim()
-            );
-        }
-    }
+    open_or_print(&launch);
     println!("  {} {}", style("→").fg(ACCENT), style(&url).bold());
     Ok(())
 }
@@ -822,14 +1147,30 @@ pub async fn handle_apps_open(id: String) -> Result<()> {
 
 pub async fn handle_apps_serve(id: String) -> Result<()> {
     require_app(&id)?;
-    let port = configured_port();
+    // The profile's shared daemon is already served by whoever runs it, so there
+    // is nothing to hold in the foreground: print a link and return, as for any
+    // daemon this command did not start.
+    if let Some(launch) = shared_daemon_launch(&id).await? {
+        println!(
+            "  {} the address below opens the app once, within {LAUNCH_LINK_LIFETIME}. \
+             Run this again for another.",
+            style("·").dim()
+        );
+        println!("  {} {}", style("→").fg(ACCENT), style(&launch).bold());
+        println!(
+            "  {} served by this profile's Biorouter daemon; it keeps running after this command.",
+            style("·").dim()
+        );
+        return Ok(());
+    }
 
     // ⚠ BEFORE the spawn, and before anything that can park. A handler replaces
     // the default action — which for SIGTERM is to end this process on the spot
     // and leave the daemon behind — so from here on a signal waits to be read,
     // including one that lands during the readiness wait inside `ensure_daemon`.
     let mut stop = StopSignals::install()?;
-    let (daemon, secret) = ensure_daemon(port, Supervision::TiedToThisProcess).await?;
+    let (daemon, secret, port) =
+        ensure_daemon(configured_port(), Supervision::TiedToThisProcess).await?;
     let url = match launch_url(port, &id, &secret).await {
         Ok(url) => url,
         Err(error) => {
@@ -1308,11 +1649,12 @@ mod tests {
         assert!(unknown.contains("does not know"), "{unknown}");
 
         assert!(remember_daemon(port, SECRET));
-        let (daemon, secret) = ensure_daemon(port, Supervision::TiedToThisProcess)
+        let (daemon, secret, reused) = ensure_daemon(port, Supervision::TiedToThisProcess)
             .await
             .expect("a recorded daemon is reused");
         assert!(matches!(daemon, Daemon::Reused));
         assert_eq!(secret, SECRET);
+        assert_eq!(reused, port);
 
         let first = launch_url(port, "beta", &secret).await.unwrap();
         let second = launch_url(port, "beta", &secret).await.unwrap();
@@ -1355,6 +1697,372 @@ mod tests {
         for advice in [recorded, unrecorded, serve_link_advice(3000, "beta", None)] {
             assert!(advice.contains("once, within five minutes"), "{advice}");
         }
+    }
+
+    /// A server that answers every request with `status` and `body`, as a dev
+    /// server's catch-all does, on `listener`.
+    fn answer_everything(
+        listener: tokio::net::TcpListener,
+        status: &'static str,
+        body: &'static str,
+    ) {
+        tokio::spawn(async move {
+            while let Ok((mut stream, _)) = listener.accept().await {
+                tokio::spawn(async move {
+                    let mut chunk = [0u8; 1024];
+                    let _ = stream.read(&mut chunk).await;
+                    let answer = format!(
+                        "HTTP/1.1 {status}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                        body.len()
+                    );
+                    let _ = stream.write_all(answer.as_bytes()).await;
+                    let _ = stream.shutdown().await;
+                });
+            }
+        });
+    }
+
+    /// Two listeners on adjacent loopback ports, the lower one first.
+    async fn adjacent_listeners() -> (tokio::net::TcpListener, tokio::net::TcpListener) {
+        for _ in 0..50 {
+            let lower = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let port = lower.local_addr().unwrap().port();
+            let Some(next) = port.checked_add(1) else {
+                continue;
+            };
+            if let Ok(upper) = tokio::net::TcpListener::bind(("127.0.0.1", next)).await {
+                return (lower, upper);
+            }
+        }
+        panic!("no two adjacent loopback ports were free");
+    }
+
+    /// Only a daemon that says `ok` on `/status` is a Biorouter daemon. Any 200
+    /// used to be, so a dev server's catch-all on :3000 stopped `apps open` with
+    /// a claim that a Biorouter daemon whose key it lacked was running there.
+    #[tokio::test]
+    async fn only_a_status_that_says_ok_is_a_biorouter_daemon() {
+        let daemon = a_daemon_with("k", "beta").await;
+        assert_eq!(port_state(daemon).await, PortState::Biorouter);
+
+        for (status, body) in [
+            ("200 OK", "<!doctype html><div id=root></div>"),
+            ("200 OK", ""),
+            ("404 Not Found", "ok"),
+        ] {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let port = listener.local_addr().unwrap().port();
+            answer_everything(listener, status, body);
+            assert_eq!(
+                port_state(port).await,
+                PortState::Foreign,
+                "{status} {body:?}"
+            );
+        }
+
+        let closed = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let free = closed.local_addr().unwrap().port();
+        drop(closed);
+        assert_eq!(port_state(free).await, PortState::Free);
+    }
+
+    /// A port held by something that is not Biorouter is passed over for the
+    /// next, as the exported launchers do, and a daemon there that this command
+    /// started is reused.
+    #[tokio::test]
+    async fn a_port_held_by_something_else_is_passed_over() {
+        const SECRET: &str = "a11a11a11a11a11a11a11a11a11a11a11a11a11a11a11a11a11a11a11a11a11a";
+        let (foreign, relay) = adjacent_listeners().await;
+        let first = foreign.local_addr().unwrap().port();
+        answer_everything(foreign, "200 OK", "<!doctype html>");
+        let next = relay.local_addr().unwrap().port();
+        // `a_daemon_with` binds a port of its own, so stand the daemon up on `next`
+        // through the listener already holding it, which hands its connections to
+        // the same stand-in. ⚠ Not dropped and bound again: macOS hands out
+        // ephemeral ports in order, so the stand-in's own `:0` took `next` in the
+        // gap and the second bind failed with `AddrInUse`.
+        let daemon = a_daemon_with(SECRET, "beta").await;
+        tokio::spawn(async move {
+            while let Ok((mut inbound, _)) = relay.accept().await {
+                tokio::spawn(async move {
+                    if let Ok(mut outbound) =
+                        tokio::net::TcpStream::connect(("127.0.0.1", daemon)).await
+                    {
+                        let _ = tokio::io::copy_bidirectional(&mut inbound, &mut outbound).await;
+                    }
+                });
+            }
+        });
+        assert!(remember_daemon(next, SECRET));
+
+        let (daemon_state, secret, port) = ensure_daemon(first, Supervision::Detached)
+            .await
+            .expect("the daemon on the next port is reused");
+        assert!(matches!(daemon_state, Daemon::Reused));
+        assert_eq!((secret.as_str(), port), (SECRET, next));
+        forget_daemon(next, SECRET);
+    }
+
+    #[test]
+    fn a_shared_daemons_listener_is_a_loopback_origin() {
+        for (base, origin) in [
+            ("http://127.0.0.1:51851", Some("http://127.0.0.1:51851")),
+            ("http://0.0.0.0:51851", Some("http://127.0.0.1:51851")),
+            ("http://[::]:51851", Some("http://[::1]:51851")),
+            ("http://localhost:51851/", Some("http://localhost:51851")),
+            ("https://127.0.0.1:51851", None),
+            ("http://10.0.0.5:51851", None),
+            ("http://127.0.0.1", None),
+            ("http://127.0.0.1:51851/below", None),
+            ("http://u@127.0.0.1:51851", None),
+            ("not a url", None),
+        ] {
+            assert_eq!(loopback_origin(base).as_deref(), origin, "{base}");
+        }
+    }
+
+    /// The link `apps open` hands the browser for a shared daemon is the one on
+    /// the daemon's own listener: the daemon's `url`, or else its path on the
+    /// listener the daemon names in `/headless/health`.
+    #[test]
+    fn a_shared_daemons_link_is_on_its_own_listener() {
+        let token = "ab".repeat(32);
+        let path = format!("/apps/beta/?t={token}");
+        let url = format!("http://127.0.0.1:51851{path}");
+        let answer = serde_json::json!({ "path": path, "url": url });
+        assert_eq!(shared_launch_link(&answer, "beta", None), Some(url.clone()));
+
+        let older = serde_json::json!({ "path": path });
+        assert_eq!(
+            shared_launch_link(&older, "beta", Some("http://0.0.0.0:51851")),
+            Some(url.clone())
+        );
+        assert_eq!(shared_launch_link(&older, "beta", None), None);
+        assert_eq!(
+            shared_launch_link(&older, "beta", Some("http://10.0.0.5:1")),
+            None
+        );
+
+        for wrong in [
+            serde_json::json!({ "path": path, "url": format!("http://127.0.0.1:51851/apps/other/?t={token}") }),
+            serde_json::json!({ "path": path, "url": format!("{url}&next=/sessions") }),
+            serde_json::json!({ "path": path, "url": format!("http://evil.test:1{path}") }),
+            serde_json::json!({ "path": path, "url": 42 }),
+            serde_json::json!({ "path": format!("/apps/other/?t={token}"), "url": url }),
+        ] {
+            assert_eq!(
+                shared_launch_link(&wrong, "beta", Some("http://127.0.0.1:1")),
+                None,
+                "{wrong}"
+            );
+        }
+    }
+
+    /// A stand-in for the profile's shared daemon on its private socket: its
+    /// identity, the route a client checks its key on, an app's launch route
+    /// (answering `url` only when `names_listener`) and `/headless/health`.
+    #[cfg(unix)]
+    async fn a_shared_daemon(
+        names_listener: bool,
+    ) -> (
+        biorouter::daemon_runtime::Descriptor,
+        std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+    ) {
+        use biorouter::daemon_runtime::{self, Descriptor, Endpoint};
+        use bytes::Bytes;
+        use http_body_util::Full;
+        use hyper::{server::conn::http1, service::service_fn, Request, Response};
+        use hyper_util::rt::TokioIo;
+        use std::os::unix::fs::PermissionsExt;
+
+        let directory = daemon_runtime::runtime_directory();
+        daemon_runtime::private_directory(&directory).unwrap();
+        let socket = directory.join("daemon.sock");
+        let _ = fs::remove_file(&socket);
+        let listener = tokio::net::UnixListener::bind(&socket).unwrap();
+        fs::set_permissions(&socket, fs::Permissions::from_mode(0o600)).unwrap();
+        let descriptor = Descriptor {
+            version: daemon_runtime::VERSION,
+            profile_id: daemon_runtime::profile_identity().unwrap(),
+            instance_id: "33333333-3333-4333-8333-333333333333".to_owned(),
+            pid: std::process::id(),
+            endpoint: Endpoint::Unix { path: socket },
+            api_secret: "shared-daemon-secret-for-apps-tests".to_owned(),
+            user_action_installed: true,
+        };
+        daemon_runtime::write_private(&daemon_runtime::descriptor_path(), &descriptor).unwrap();
+        daemon_runtime::write_user_action_key(&descriptor, &"cd".repeat(32)).unwrap();
+        let identity = descriptor.identity();
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let requests = std::sync::Arc::clone(&seen);
+        tokio::spawn(async move {
+            while let Ok((stream, _)) = listener.accept().await {
+                let identity = identity.clone();
+                let requests = std::sync::Arc::clone(&requests);
+                tokio::spawn(async move {
+                    let service = service_fn(move |request: Request<hyper::body::Incoming>| {
+                        let identity = identity.clone();
+                        let requests = std::sync::Arc::clone(&requests);
+                        async move {
+                            let line = format!("{} {}", request.method(), request.uri().path());
+                            requests.lock().unwrap().push(line.clone());
+                            let path = format!("/apps/beta/?t={}", "ef".repeat(32));
+                            let body = match line.as_str() {
+                                "GET /daemon/identity" => serde_json::to_value(&identity).unwrap(),
+                                "GET /crew/connections" => serde_json::json!([]),
+                                "POST /apps/beta/launch" if names_listener => serde_json::json!({
+                                    "path": path,
+                                    "url": format!("http://127.0.0.1:51851{path}"),
+                                }),
+                                "POST /apps/beta/launch" => serde_json::json!({ "path": path }),
+                                "GET /headless/health" => serde_json::json!({
+                                    "status": "ok",
+                                    "api_base_url": "http://127.0.0.1:51900",
+                                }),
+                                _ => {
+                                    return Ok::<_, std::convert::Infallible>(
+                                        Response::builder()
+                                            .status(404)
+                                            .header("content-type", "text/plain")
+                                            .body(Full::new(Bytes::from_static(b"no such app")))
+                                            .unwrap(),
+                                    )
+                                }
+                            };
+                            Ok(Response::builder()
+                                .header("content-type", "application/json")
+                                .body(Full::new(Bytes::from(body.to_string())))
+                                .unwrap())
+                        }
+                    });
+                    let _ = http1::Builder::new()
+                        .serve_connection(TokioIo::new(stream), service)
+                        .await;
+                });
+            }
+        });
+        (descriptor, seen)
+    }
+
+    #[cfg(unix)]
+    fn forget_shared_daemon() {
+        let _ = fs::remove_file(biorouter::daemon_runtime::descriptor_path());
+        let _ = fs::remove_file(biorouter::daemon_runtime::user_action_key_path());
+    }
+
+    /// With the desktop app open, `apps open` and `apps serve` started a second
+    /// full daemon, keyless and never exiting, beside the profile's shared one.
+    /// They now mint the link on the shared daemon and send the browser to its
+    /// own listener.
+    #[cfg(unix)]
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn apps_open_prefers_the_profiles_shared_daemon() {
+        // `_on(…, None)`, not `shared_daemon_launch`: a test run from a shell
+        // inside a daemon inherits that daemon's BIOROUTER_PORT.
+        forget_shared_daemon();
+        assert_eq!(
+            shared_daemon_launch_on("beta", None).await.unwrap(),
+            None,
+            "with no shared daemon the command starts one of its own"
+        );
+
+        let (_descriptor, seen) = a_shared_daemon(true).await;
+        let link = shared_daemon_launch_on("beta", None).await.unwrap();
+        assert_eq!(
+            link,
+            Some(format!(
+                "http://127.0.0.1:51851/apps/beta/?t={}",
+                "ef".repeat(32)
+            ))
+        );
+        assert!(seen
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|line| line == "POST /apps/beta/launch"));
+        let missing = shared_daemon_launch_on("gone", None)
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(missing.contains("it has no such app"), "{missing}");
+        forget_shared_daemon();
+
+        // A daemon from before the answer named its listener: the listener its
+        // health route names.
+        let (_descriptor, _seen) = a_shared_daemon(false).await;
+        assert_eq!(
+            shared_daemon_launch_on("beta", None).await.unwrap(),
+            Some(format!(
+                "http://127.0.0.1:51900/apps/beta/?t={}",
+                "ef".repeat(32)
+            ))
+        );
+        forget_shared_daemon();
+    }
+
+    /// `BIOROUTER_PORT=8080 biorouter apps serve <id>`, run to match an SSH
+    /// tunnel, printed a link on the shared daemon's own port and returned, with
+    /// nothing listening on 8080. A named port is honoured; `0`, which a shell
+    /// inside a `crew`-started daemon inherits, names none.
+    #[test]
+    fn a_port_the_person_names_is_one_they_mean() {
+        for (value, named) in [
+            (None, None),
+            (Some("0"), None),
+            (Some(""), None),
+            (Some("eighty"), None),
+            (Some("70000"), None),
+            (Some("8080"), Some(8080)),
+            (Some(" 8080\n"), Some(8080)),
+        ] {
+            assert_eq!(named_port(value), named, "{value:?}");
+        }
+        let link = format!("http://127.0.0.1:51851/apps/beta/?t={}", "ef".repeat(32));
+        assert!(on_named_port(&link, None));
+        assert!(on_named_port(&link, Some(51851)));
+        assert!(on_named_port("http://0.0.0.0:51851", Some(51851)));
+        assert!(!on_named_port(&link, Some(8080)));
+        assert!(!on_named_port("not a url", Some(8080)));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn a_named_port_passes_over_a_shared_daemon_on_another() {
+        forget_shared_daemon();
+        // The stand-in's health route names 51900, and so does the link it
+        // mints when its answer names no listener.
+        let (_descriptor, seen) = a_shared_daemon(false).await;
+        assert_eq!(
+            shared_daemon_launch_on("beta", Some(8080)).await.unwrap(),
+            None
+        );
+        assert!(
+            !seen
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|line| line.ends_with("/launch")),
+            "nothing is minted on a daemon the command will not use"
+        );
+        // The shell inside the daemon: its own port is the one named.
+        assert_eq!(
+            shared_daemon_launch_on("beta", Some(51900)).await.unwrap(),
+            Some(format!(
+                "http://127.0.0.1:51900/apps/beta/?t={}",
+                "ef".repeat(32)
+            ))
+        );
+        forget_shared_daemon();
+
+        // A link off the named port is never handed out, whatever health said.
+        let (_descriptor, _seen) = a_shared_daemon(true).await;
+        assert_eq!(
+            shared_daemon_launch_on("beta", Some(51900)).await.unwrap(),
+            None
+        );
+        forget_shared_daemon();
     }
 
     /// What the person is told about a link's lifetime is the daemon's figure,

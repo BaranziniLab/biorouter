@@ -2,6 +2,7 @@ const fs = require('fs');
 const path = require('path');
 const { spawnSync } = require('child_process');
 const { fetchLlamaServer } = require('./fetch-llama-server');
+const { fetchEsbuild } = require('./fetch-esbuild');
 const { stageComputerUse } = require('./computer-use-resources');
 const { npmCommand } = require('./npm-command');
 
@@ -209,9 +210,9 @@ function validateRequiredBinaries(targetPlatform) {
   // Both the server (biorouterd) AND the CLI (biorouter) must ship, so the app
   // can offer "install the Biorouter CLI" from its bundled binary.
   const required = {
-    win32: ['biorouterd.exe', 'biorouter.exe', 'llamacpp/llama-server.exe'],
-    darwin: ['biorouterd', 'biorouter', 'llamacpp/llama-server'],
-    linux: ['biorouterd', 'biorouter', 'llamacpp/llama-server'],
+    win32: ['biorouterd.exe', 'biorouter.exe', 'esbuild.exe', 'llamacpp/llama-server.exe'],
+    darwin: ['biorouterd', 'biorouter', 'esbuild', 'llamacpp/llama-server'],
+    linux: ['biorouterd', 'biorouter', 'esbuild', 'llamacpp/llama-server'],
   };
 
   const requiredForPlatform = required[targetPlatform];
@@ -282,6 +283,11 @@ function preparePlatformBinaries() {
 
   // Bundle the pinned llama-server sidecar for the Llama Server provider
   fetchLlamaServer(targetPlatform, targetArch);
+
+  // Bundle the pinned esbuild Agent Drafter builds apps with. The daemon looks
+  // beside its own executable first; without it, a Finder-launched app found no
+  // esbuild and no npx, and every app went through the fallback bundler.
+  fetchEsbuild(targetPlatform, targetArch);
 
   // Build the browser interface bundle biorouterd serves (BIOROUTER_SERVE_UI)
   buildWebBundle();

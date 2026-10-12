@@ -202,7 +202,12 @@ fn count_user_workflows(directory: &Path) -> u64 {
 }
 
 fn reset_applications(root: &Path) -> Result<u64> {
-    let count = ArtifactStore::new(root.to_path_buf()).list().len() as u64;
+    let store = ArtifactStore::new(root.to_path_buf());
+    // Each app through the store first, so the daemon forgets what it holds for
+    // it (`store::on_app_deleted`). Removing the root alone kept every app's
+    // socket token, cookie, open sockets and vault key for whatever was built
+    // under its id next.
+    let count = store.delete_all()? as u64;
     if root.exists() {
         fs::remove_dir_all(root)?;
     }
@@ -643,5 +648,54 @@ mod tests {
             Some(SOUL_KB_ID)
         );
         assert!(!memory.exists());
+    }
+
+    static FORGOTTEN_APPS: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+
+    fn record_forgotten_app(id: &str) {
+        FORGOTTEN_APPS.lock().unwrap().push(id.to_string());
+    }
+
+    /// A reset removed the store root directly, so the daemon's delete hook
+    /// (`routes::apps::forget_app_runtime`) never ran: every app's socket
+    /// token, cookie, open sockets and vault key survived for whatever was
+    /// built under its id next.
+    #[test]
+    fn resetting_applications_tells_the_daemon_of_every_app() {
+        biorouter_mcp::agent_drafter::store::on_app_deleted(record_forgotten_app);
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("agent_drafter");
+        let store = ArtifactStore::new(root.clone());
+        for id in ["reset-one", "reset-two"] {
+            store
+                .create_with_id(
+                    id,
+                    id,
+                    "",
+                    biorouter_mcp::agent_drafter::store::ArtifactKind::Static,
+                    "index.html",
+                    &[],
+                )
+                .unwrap();
+        }
+
+        fs::create_dir_all(root.join("reset-broken")).unwrap();
+        fs::write(root.join("reset-broken/manifest.json"), "{").unwrap();
+        fs::create_dir_all(root.join("reset-unfinished")).unwrap();
+
+        assert_eq!(reset_applications(&root).unwrap(), 4);
+        assert!(!root.exists());
+        let mut heard = FORGOTTEN_APPS
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|id| id.starts_with("reset-"))
+            .cloned()
+            .collect::<Vec<_>>();
+        heard.sort();
+        assert_eq!(
+            heard,
+            ["reset-broken", "reset-one", "reset-two", "reset-unfinished"]
+        );
     }
 }

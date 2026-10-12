@@ -346,6 +346,26 @@ fn failed_attempt_verdict(attempts: &mut Vec<Instant>, now: Instant) -> StatusCo
 // answers it the same way: that token opens every app below on a serve daemon
 // (`app_access_granted_by`), and it is not single use.
 //
+// ⚠ Every app shares the daemon's one origin (and on `biorouter serve`, the
+// shell that embeds the daemon secret does too). A cookie's `Path` is no
+// boundary between same-origin pages, and a cookie is not scoped by port at
+// all (`redeem_app_launch`). What separates
+// one app's page from another's script today: an app's page is served on a
+// browser credential only as a document navigation (`is_document_navigation`)
+// and cannot be framed, its run-state and model routes want the token only that
+// page holds, and the serve shell refuses anything but a navigation too. A
+// popup is a navigation, so the opener policies are what sever it: an app page
+// is `noopener-allow-popups` (`routes::apps::APP_PAGE_COOP`) and the shell
+// `same-origin` (`routes::web_ui`), so whoever opens either gets a closed
+// handle (measured in Chrome 155). ⚠ All of that needs a secure context: at a
+// plain-HTTP network address a browser sends no Fetch Metadata and ignores
+// opener policies, so neither the shell nor app surfaces are served on a
+// browser credential there (`reached_over_a_secure_context`). ⚠ An engine that does not know
+// `noopener-allow-popups` treats it as `unsafe-none` and keeps the handle; and
+// origin storage (`localStorage`) is shared by every app. Serving each app on
+// its own origin is the follow-up that closes both; see
+// `docs/deployment/browser-access.md`.
+//
 // ⚠ The stores live HERE, in the lib-only `auth`, and not in `routes::apps`:
 // `src/routes/` is compiled twice (`lib.rs`), so a static there exists once for
 // the daemon binary's routes and once for this module, and a link the launch
@@ -412,6 +432,12 @@ impl AppAccess {
         self.cookies.get(app_id).cloned()
     }
 
+    /// Drop `app_id`'s cookie value and every unredeemed link to it.
+    fn forget(&mut self, app_id: &str) {
+        self.cookies.remove(app_id);
+        self.launches.retain(|_, (app, _)| app != app_id);
+    }
+
     /// Compares against a stand-in when `app_id` has no cookie, so the work done
     /// does not say whether a link was ever minted for that app.
     fn cookie_matches(&self, app_id: &str, presented: &str) -> bool {
@@ -463,15 +489,43 @@ pub fn mint_app_launch(app_id: &str) -> String {
 /// for another app gets `None`, and a redeemed one is gone.
 ///
 /// `Path=/apps/{id}` (no trailing slash) covers the redirect route, the page and
-/// everything below it, and no other app. `HttpOnly` keeps the page's own script
-/// from reading it, and `SameSite=Strict` keeps it off every request another site
-/// starts: the two flags `routes::web_ui` sets on the served document's cookie.
+/// everything below it. `HttpOnly` keeps the page's own script from reading it,
+/// and `SameSite=Strict` keeps it off every request another site starts: the
+/// two flags `routes::web_ui` sets on the served document's cookie.
+///
+/// ⚠ `Path` decides which requests the browser attaches the cookie to, and is
+/// NOT a boundary between pages: every app is served from the daemon's one
+/// origin, so app A's script that requests `/apps/B/…` gets B's cookie
+/// attached. What keeps A out of B is that B's page, the one document holding
+/// B's socket token, is served on the cookie only as a navigation
+/// (`check_token`), and that B's socket, run state and model routes want that
+/// token. A popup of B's page is a navigation and is served; B's opener policy
+/// (`routes::apps::APP_PAGE_COOP`) is what leaves A no handle on it, in an
+/// engine that knows the policy. Per-app origins (`http://<id>.localhost:<port>`,
+/// routed by `Host`) are the follow-up that makes all of this structural, and
+/// are not built yet.
+///
+/// ⚠ Nor is a cookie scoped by PORT, and `SameSite` counts every port of
+/// 127.0.0.1 as the same site. A page on another loopback port that requests
+/// `http://127.0.0.1:<that port>/apps/x/` sends this cookie to whoever listens
+/// there, if anyone does. The name ([`app_access_cookie_name`]) and value are
+/// per daemon run, so a captured cookie opens one app until this daemon stops.
+/// That is browser behaviour no flag here changes; it is recorded in
+/// `docs/deployment/browser-access.md`.
 pub fn redeem_app_launch(app_id: &str, presented: &str) -> Option<String> {
     let value = app_access().redeem(app_id, presented, Instant::now())?;
     Some(format!(
         "{}={value}; Path=/apps/{app_id}; HttpOnly; SameSite=Strict",
         app_access_cookie_name()
     ))
+}
+
+/// Forget `app_id`'s access: its cookie value and its unredeemed launch links.
+/// Called when the app is deleted (`routes::apps::forget_app_runtime`), so a
+/// tab of the deleted app cannot reload into an app built under the same id
+/// later; a new launch mints a new cookie value.
+pub fn forget_app_access(app_id: &str) {
+    app_access().forget(app_id);
 }
 
 /// The access cookie a request carries, if any.
@@ -505,8 +559,8 @@ struct AppBrowserGet<'a> {
 }
 
 /// The routes a browser loads for a live app: its page, bundle, assets, model
-/// catalog, run state and agent socket. Recognised by shape, before any handler
-/// runs, so the answer never depends on whether the app exists.
+/// catalog, run state, figure frame and agent socket. Recognised by shape,
+/// before any handler runs, so the answer never depends on whether the app exists.
 fn is_app_browser_get<'a>(method: &axum::http::Method, path: &'a str) -> Option<AppBrowserGet<'a>> {
     if method != axum::http::Method::GET {
         return None;
@@ -527,7 +581,7 @@ fn is_app_browser_get<'a>(method: &axum::http::Method, path: &'a str) -> Option<
     let tail = segments.collect::<Vec<_>>();
     let browser = matches!(
         tail.as_slice(),
-        [] | [""] | ["agent"] | ["models"] | ["runstate"]
+        [] | [""] | ["agent"] | ["models"] | ["runstate"] | ["figure-frame"]
     ) || matches!(tail.as_slice(), ["dist" | "assets", _, ..]);
     browser.then_some(AppBrowserGet {
         id,
@@ -568,6 +622,102 @@ fn app_access_granted_by(
         && launch_token(query).is_some_and(|token| access.pending(app.id, token, Instant::now()))
 }
 
+/// Whether the address a request was sent to is one a browser treats as a
+/// secure context: a loopback address, `localhost` or a name under
+/// `.localhost`, or HTTPS forwarded by a TLS proxy with Fetch Metadata from
+/// the browser (`routes::request_scheme`). A request with no `Host` (nor authority) was not
+/// sent by a browser, and counts as one.
+///
+/// It is what decides whether [`is_document_navigation`] and the opener
+/// policies mean anything. A browser sends Fetch Metadata only to such an
+/// address and ignores `Cross-Origin-Opener-Policy` everywhere else, so at a
+/// plain-HTTP network address (`biorouter serve --host 0.0.0.0`, opened as
+/// `http://192.168.x.y:port`) an app's `fetch` of another app's page, or of the
+/// serve shell, arrives looking exactly like the person opening it, and a popup
+/// stays scriptable. Measured in Chrome: every `fetch`, frame and popup there
+/// arrived with no `Sec-Fetch-*` at all, where on 127.0.0.1 the same script was
+/// told apart and severed.
+///
+/// `X-Forwarded-Proto` alone proves nothing: a page left open from an older
+/// daemon can set it on an HTTP LAN fetch. Such a browser sends no Fetch
+/// Metadata and cannot forge those headers, so forwarded HTTPS also requires
+/// both metadata headers. Secret-header callers do not depend on this gate.
+pub fn reached_over_a_secure_context(
+    headers: &axum::http::HeaderMap,
+    uri: &axum::http::Uri,
+) -> bool {
+    let host = match headers.get(axum::http::header::HOST) {
+        Some(value) => match value.to_str() {
+            Ok(host) => host,
+            // Present and unreadable is not absent.
+            Err(_) => return false,
+        },
+        None => match uri.authority() {
+            Some(authority) => authority.as_str(),
+            None => return true,
+        },
+    };
+    host_is_loopback(host)
+        || (crate::routes::request_scheme(headers) == "https"
+            && ["sec-fetch-mode", "sec-fetch-dest"].iter().all(|name| {
+                headers
+                    .get(*name)
+                    .and_then(|value| value.to_str().ok())
+                    .is_some_and(|value| !value.trim().is_empty())
+            }))
+}
+
+/// Whether a `Host` value names this machine the way a browser counts as
+/// secure: an address in `127.0.0.0/8` or `::1`, `localhost`, or a name under
+/// `.localhost` (a trailing dot allowed). A port is ignored; anything that does
+/// not parse as a host is not loopback.
+fn host_is_loopback(host: &str) -> bool {
+    let host = host.trim();
+    let name = match host.strip_prefix('[') {
+        Some(bracketed) => match bracketed.split_once(']') {
+            Some((address, _port)) => address,
+            None => return false,
+        },
+        None => host.split_once(':').map_or(host, |(name, _port)| name),
+    };
+    if let Ok(address) = name.parse::<std::net::IpAddr>() {
+        return address.is_loopback();
+    }
+    let name = name.strip_suffix('.').unwrap_or(name).to_ascii_lowercase();
+    name == "localhost" || name.ends_with(".localhost")
+}
+
+/// Whether a request is a top-level document navigation, as far as its Fetch
+/// Metadata says: `Sec-Fetch-Mode: navigate` and `Sec-Fetch-Dest: document`.
+///
+/// A request that carries neither header is treated as one. Every client that
+/// is not a browser sends none (the CLI, the desktop's main process, `curl`,
+/// a test), and neither does a browser too old to send them; refusing those
+/// would break them and protect nothing, since only a browser runs a page's
+/// script. A header that is present and cannot be read counts against it.
+///
+/// Used for the documents that hold something a page of the same origin must
+/// not read: an app's page, which embeds its socket token (`check_token`), and
+/// a `biorouter serve` shell, which embeds the daemon secret (`routes::web_ui`).
+/// Script cannot set these headers, so `fetch`, an `<iframe>`, an `<object>`
+/// and a `<script src>` of such a document are each told apart from opening it.
+///
+/// ⚠ Only at an address [`reached_over_a_secure_context`] accepts. A browser
+/// sends no Fetch Metadata anywhere else, so there every request reads as a
+/// navigation; `check_token` serves no app surface at such an address for
+/// that reason. An engine that sends none at all (Safari before 16.4) is the
+/// same everywhere.
+pub fn is_document_navigation(headers: &axum::http::HeaderMap) -> bool {
+    let is = |name: &str, expected: &str| {
+        headers.get(name).is_none_or(|value| {
+            value
+                .to_str()
+                .is_ok_and(|value| value.trim().eq_ignore_ascii_case(expected))
+        })
+    };
+    is("sec-fetch-mode", "navigate") && is("sec-fetch-dest", "document")
+}
+
 /// The refusal an app's browser surface gets without access: the same status and
 /// body for every app id, existing or not, so it answers nothing about which
 /// apps exist. Written for the person who followed an old or bare link.
@@ -585,6 +735,28 @@ fn app_access_refused(status: StatusCode) -> Response {
     );
     response
 }
+
+/// The refusal an app's browser surface gets at an address that is not a
+/// secure context ([`reached_over_a_secure_context`]), with the app's access
+/// in hand. The same for every app id; written for the person, since the fix is
+/// theirs to make.
+fn app_needs_a_secure_address() -> Response {
+    let mut response = app_access_refused(StatusCode::FORBIDDEN);
+    *response.body_mut() = axum::body::Body::from(APP_NEEDS_A_SECURE_ADDRESS_HTML);
+    response
+}
+
+const APP_NEEDS_A_SECURE_ADDRESS_HTML: &str =
+    "<!doctype html><meta charset=utf-8><title>Biorouter app</title>\
+     <body style=\"font:15px system-ui;margin:3rem auto;max-width:32rem\">\
+     <h1 style=\"font-size:1.2rem\">Apps open only on this machine or over HTTPS</h1>\
+     <p>This address does not provide the secure browser request information Biorouter needs. \
+     At a plain-HTTP network address a browser \
+     cannot keep one app's page from reading another's, or the Biorouter page itself, so \
+     apps are not opened at such an address.</p>\
+     <p>Reach Biorouter through an SSH tunnel and open it as <code>localhost</code>, or put \
+     an HTTPS proxy in front of it. Use a current browser, and preserve \
+     <code>Sec-Fetch-*</code> headers through the proxy. The browser interface requires the same protection.</p>";
 
 const APP_ACCESS_REFUSED_HTML: &str =
     "<!doctype html><meta charset=utf-8><title>Biorouter app</title>\
@@ -653,12 +825,37 @@ pub async fn check_token(
     // carries its own tool-approval frames, and its Origin check and socket token
     // (`apps::agent_ws`) were the only gates while the page holding that token
     // was served to every local account.
+    //
+    // ⚠ The page itself (which embeds the app's socket token) is admitted on a
+    // browser credential only as a document NAVIGATION ([`is_document_navigation`]).
+    // Every app shares one origin, and a cookie's `Path` is no boundary between
+    // same-origin documents, so app A's script could `fetch('/apps/B/')` with B's
+    // cookie attached, read B's token, and drive B's agent; an `<iframe>` of B
+    // gave A the same through the DOM. Fetch Metadata names such a request and
+    // script cannot forge it. A `window.open` of B is a navigation and gets
+    // through; B's opener policy, not this gate, leaves A without a handle on it
+    // (`routes::apps::APP_PAGE_COOP`), which is why per-app origins remain the
+    // real fix.
+    //
+    // ⚠ Both need a secure context. At a plain-HTTP network address a browser
+    // sends no Fetch Metadata and ignores the opener policy, so A's `fetch` of
+    // B, or of a serve shell holding the daemon secret, is served as if the
+    // person had opened it. No app surface is served on a browser credential at
+    // such an address ([`reached_over_a_secure_context`]). The shell enforces
+    // the same rule, because an old app tab can remain open during an update.
     let app = is_app_browser_get(request.method(), path);
-    if app
-        .as_ref()
-        .is_some_and(|app| app_access_granted(app, request.uri().query(), request.headers()))
-    {
-        return Ok(next.run(request).await);
+    let mut not_a_navigation = false;
+    let mut insecure_address = false;
+    if let Some(app) = app.as_ref() {
+        if app_access_granted(app, request.uri().query(), request.headers()) {
+            if !reached_over_a_secure_context(request.headers(), request.uri()) {
+                insecure_address = true;
+            } else if !app.page || is_document_navigation(request.headers()) {
+                return Ok(next.run(request).await);
+            } else {
+                not_a_navigation = true;
+            }
+        }
     }
     let app_browser = app.is_some();
 
@@ -694,6 +891,16 @@ pub async fn check_token(
             return Err(StatusCode::CONFLICT);
         }
         return Ok(next.run(request).await);
+    }
+    if insecure_address {
+        // It holds the app's access; where it asked is refused. Not a failed
+        // authentication either.
+        return Ok(app_needs_a_secure_address());
+    }
+    if not_a_navigation {
+        // It holds the app's access; what it asked for is refused. Not a failed
+        // authentication, so not counted against the address.
+        return Ok(app_access_refused(StatusCode::FORBIDDEN));
     }
 
     // Key the throttle on the real peer. `x-forwarded-for` is client-supplied,
@@ -1205,6 +1412,11 @@ mod tests {
         assert!(browser(&Method::GET, "/apps/example/agent"));
         assert!(!browser(&Method::GET, "/apps/example/export"));
         assert!(!browser(&Method::GET, "/apps/example/export/"));
+        // The zip export carries the app's source and, in full mode, its
+        // knowledge bases and skills: the secret, always, whatever the method.
+        assert!(!browser(&Method::POST, "/apps/example/export"));
+        assert!(!browser(&Method::POST, "/apps/example/export/"));
+        assert!(!browser(&Method::HEAD, "/apps/example/export"));
         assert!(!browser(&Method::GET, "/apps/example/future-admin"));
         assert!(!browser(&Method::GET, "/apps/bad%2Fid/"));
         assert!(!browser(&Method::POST, "/apps/example/build"));
@@ -1252,6 +1464,7 @@ mod tests {
             .route("/apps/{id}/", axum::routing::get(stand_in))
             .route("/apps/{id}/agent", axum::routing::get(stand_in))
             .route("/apps/{id}/models", axum::routing::get(stand_in))
+            .route("/apps/{id}/figure-frame", axum::routing::get(stand_in))
             .route("/apps/{id}/dist/{*path}", axum::routing::get(stand_in))
             .route("/apps/{id}/launch", axum::routing::post(stand_in))
             .layer(axum::middleware::from_fn_with_state(
@@ -1320,6 +1533,7 @@ mod tests {
             "/apps/present-app/agent?token=0123",
             "/apps/missing-app/agent",
             "/apps/present-app/models",
+            "/apps/present-app/figure-frame",
             "/apps/present-app/dist/app.js",
         ] {
             let (status, body) = app_request(&app, peer, Method::GET, uri, &[]).await;
@@ -1559,6 +1773,343 @@ mod tests {
         assert!(!access.pending("bound-app", &oldest, t0));
         access.mint("bound-app", t0 + APP_LAUNCH_TTL + Duration::from_secs(1));
         assert_eq!(access.launches.len(), 1, "expired links are dropped");
+    }
+
+    /// Every app shares one origin, so app A's script could `fetch('/apps/B/')`
+    /// with B's cookie attached and read B's socket token out of the page, or
+    /// frame B and read it through the DOM. On a browser credential, the page is
+    /// now served only to a document navigation; its bundle, assets, socket and
+    /// figure frame are not pages and load as before; the secret, and a client
+    /// that sends no Fetch Metadata at all, are unaffected.
+    #[tokio::test]
+    async fn an_apps_page_opens_on_its_cookie_only_as_a_navigation() {
+        let app = guarded_apps();
+        let peer = [198, 51, 100, 45];
+        let cookie = cookie_for("present-app");
+        let page = "/apps/present-app/";
+        let get = |uri: &'static str, mode: Option<&'static str>, dest: Option<&'static str>| {
+            let app = app.clone();
+            let cookie = cookie.clone();
+            async move {
+                let mut headers = vec![("cookie", cookie.as_str())];
+                if let Some(mode) = mode {
+                    headers.push(("sec-fetch-mode", mode));
+                }
+                if let Some(dest) = dest {
+                    headers.push(("sec-fetch-dest", dest));
+                }
+                app_request(&app, peer, Method::GET, uri, &headers).await
+            }
+        };
+
+        for (mode, dest) in [
+            (None, None),
+            (Some("navigate"), Some("document")),
+            (Some("NAVIGATE"), Some("Document")),
+        ] {
+            let (status, body) = get(page, mode, dest).await;
+            assert_eq!(status, StatusCode::OK, "{mode:?} {dest:?}");
+            assert_eq!(body, "reached the app route");
+        }
+        for (mode, dest) in [
+            (Some("cors"), Some("empty")),
+            (Some("no-cors"), Some("empty")),
+            (Some("same-origin"), Some("empty")),
+            (Some("navigate"), Some("iframe")),
+            (Some("navigate"), Some("object")),
+            (Some("nested-navigate"), Some("iframe")),
+            (Some("no-cors"), Some("script")),
+            (Some("cors"), None),
+            (None, Some("iframe")),
+        ] {
+            let (status, body) = get(page, mode, dest).await;
+            assert_eq!(status, StatusCode::FORBIDDEN, "{mode:?} {dest:?}");
+            assert!(body.contains("Open this app from Biorouter"), "{body}");
+            assert!(!body.contains("reached the app route"));
+        }
+        // What a page loads beside itself is not a page.
+        for (uri, mode, dest) in [
+            ("/apps/present-app/dist/app.js", "no-cors", "script"),
+            ("/apps/present-app/agent", "websocket", "websocket"),
+            ("/apps/present-app/models", "cors", "empty"),
+            ("/apps/present-app/figure-frame", "navigate", "iframe"),
+        ] {
+            assert_eq!(
+                get(uri, Some(mode), Some(dest)).await.0,
+                StatusCode::OK,
+                "{uri}"
+            );
+        }
+        // The launch link is a page too, and an unspent one stays unspent.
+        let launch = mint_app_launch("present-app");
+        let link = format!("/apps/present-app/?t={launch}");
+        let fetched = app_request(
+            &app,
+            peer,
+            Method::GET,
+            &link,
+            &[("sec-fetch-mode", "cors"), ("sec-fetch-dest", "empty")],
+        )
+        .await;
+        assert_eq!(fetched.0, StatusCode::FORBIDDEN);
+        assert!(redeem_app_launch("present-app", &launch).is_some());
+        // The secret still opens it whatever the request looks like.
+        assert_eq!(
+            app_request(
+                &app,
+                peer,
+                Method::GET,
+                page,
+                &[
+                    ("x-secret-key", TEST_SECRET),
+                    ("sec-fetch-mode", "cors"),
+                    ("sec-fetch-dest", "empty"),
+                ],
+            )
+            .await
+            .0,
+            StatusCode::OK
+        );
+        // A refused shape is not a failed authentication: thirty of them leave
+        // this address's failure window empty, so a real failure is still a 401.
+        for _ in 0..30 {
+            get(page, Some("cors"), Some("empty")).await;
+        }
+        assert_eq!(
+            app_request(&app, peer, Method::GET, page, &[]).await.0,
+            StatusCode::UNAUTHORIZED
+        );
+    }
+
+    /// At a plain-HTTP network address (`biorouter serve --host 0.0.0.0`,
+    /// opened at its LAN address) a browser sends no Fetch Metadata and ignores
+    /// opener policies, so an app's `fetch` of another app's page, or of the
+    /// serve shell, read like the person opening it. No app surface is served
+    /// on a browser credential there; the secret, which no app's page holds,
+    /// still works.
+    #[tokio::test]
+    async fn an_apps_surfaces_open_only_at_an_address_a_browser_treats_as_secure() {
+        let app = guarded_apps();
+        let peer = [198, 51, 100, 47];
+        let cookie = cookie_for("present-app");
+        let surfaces = [
+            "/apps/present-app/",
+            "/apps/present-app/models",
+            "/apps/present-app/agent",
+            "/apps/present-app/figure-frame",
+            "/apps/present-app/dist/app.js",
+        ];
+        for host in [
+            "192.168.1.5:8765",
+            "10.61.141.198",
+            "biorouter.lan:8765",
+            "127.0.0.1.nip.io:8765",
+            "[fe80::1]:8765",
+            "[::ffff:127.0.0.1]:8765",
+            "localhost.evil.example:8765",
+            "",
+        ] {
+            for uri in surfaces {
+                let (status, body) = app_request(
+                    &app,
+                    peer,
+                    Method::GET,
+                    uri,
+                    &[("cookie", cookie.as_str()), ("host", host)],
+                )
+                .await;
+                assert_eq!(status, StatusCode::FORBIDDEN, "{host} {uri}");
+                assert!(
+                    body.contains("only on this machine or over HTTPS"),
+                    "{body}"
+                );
+                assert!(!body.contains("reached the app route"), "{host} {uri}");
+            }
+        }
+        // A launch link there is refused before it is spent.
+        let launch = mint_app_launch("present-app");
+        let (status, _) = app_request(
+            &app,
+            peer,
+            Method::GET,
+            &format!("/apps/present-app/?t={launch}"),
+            &[("host", "192.168.1.5:8765")],
+        )
+        .await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        assert!(redeem_app_launch("present-app", &launch).is_some());
+
+        // An HTTP LAN page already open during an update can forge this proxy
+        // header on a fetch, but cannot make the browser emit Fetch Metadata.
+        for uri in surfaces {
+            let (status, body) = app_request(
+                &app,
+                peer,
+                Method::GET,
+                uri,
+                &[
+                    ("cookie", cookie.as_str()),
+                    ("host", "192.168.1.5:8765"),
+                    ("x-forwarded-proto", "https"),
+                ],
+            )
+            .await;
+            assert_eq!(status, StatusCode::FORBIDDEN, "forged HTTPS: {uri}");
+            assert!(!body.contains("reached the app route"));
+        }
+
+        // Loopback in every spelling a browser counts as secure, and anything a
+        // TLS proxy forwarded as https.
+        for headers in [
+            vec![("host", "127.0.0.1:8765")],
+            vec![("host", "127.4.5.6")],
+            vec![("host", "localhost:8765")],
+            vec![("host", "LocalHost.:8765")],
+            vec![("host", "[::1]:8765")],
+            vec![("host", "present-app.localhost:8765")],
+            vec![
+                ("host", "biorouter.example.org"),
+                ("x-forwarded-proto", "https"),
+                ("sec-fetch-mode", "navigate"),
+                ("sec-fetch-dest", "document"),
+            ],
+            // No `Host` at all is not a browser.
+            vec![],
+        ] {
+            let mut headers = headers;
+            headers.push(("cookie", cookie.as_str()));
+            for uri in surfaces {
+                let (status, body) = app_request(&app, peer, Method::GET, uri, &headers).await;
+                assert_eq!(status, StatusCode::OK, "{headers:?} {uri}");
+                assert_eq!(body, "reached the app route");
+            }
+        }
+        // The secret opens every surface wherever it was sent.
+        assert_eq!(
+            app_request(
+                &app,
+                peer,
+                Method::GET,
+                "/apps/present-app/",
+                &[("host", "192.168.1.5:8765"), ("x-secret-key", TEST_SECRET)],
+            )
+            .await
+            .0,
+            StatusCode::OK
+        );
+        // Being refused for the address is not a failed authentication.
+        for _ in 0..30 {
+            app_request(
+                &app,
+                peer,
+                Method::GET,
+                "/apps/present-app/",
+                &[("cookie", cookie.as_str()), ("host", "192.168.1.5:8765")],
+            )
+            .await;
+        }
+        assert_eq!(
+            app_request(&app, peer, Method::GET, "/apps/present-app/", &[])
+                .await
+                .0,
+            StatusCode::UNAUTHORIZED
+        );
+    }
+
+    #[test]
+    fn a_request_without_fetch_metadata_counts_as_a_navigation() {
+        use super::is_document_navigation;
+        let headers = |pairs: &[(&str, &[u8])]| {
+            let mut map = axum::http::HeaderMap::new();
+            for (name, value) in pairs {
+                map.insert(
+                    axum::http::HeaderName::from_bytes(name.as_bytes()).unwrap(),
+                    axum::http::HeaderValue::from_bytes(value).unwrap(),
+                );
+            }
+            map
+        };
+        assert!(is_document_navigation(&headers(&[])));
+        assert!(is_document_navigation(&headers(&[
+            ("sec-fetch-mode", b"navigate"),
+            ("sec-fetch-dest", b"document"),
+        ])));
+        assert!(is_document_navigation(&headers(&[(
+            "sec-fetch-mode",
+            b"navigate"
+        )])));
+        assert!(!is_document_navigation(&headers(&[(
+            "sec-fetch-dest",
+            b"empty"
+        )])));
+        // Present and unreadable is not absent.
+        assert!(!is_document_navigation(&headers(&[(
+            "sec-fetch-mode",
+            b"navig\xffate"
+        )])));
+    }
+
+    /// Deleting an app forgets its cookie value and its unredeemed links, so a
+    /// tab of the deleted app cannot reload into the next app built under the
+    /// same id, and a link minted before the delete opens nothing after it.
+    #[tokio::test]
+    async fn a_forgotten_apps_cookie_and_links_open_nothing() {
+        use super::forget_app_access;
+        // Ids no other test uses: the access store is one process-wide static,
+        // and the tests run in parallel. The stand-in answers 404 for any app
+        // but `present-app`, so 404 here means "admitted".
+        let app = guarded_apps();
+        let peer = [198, 51, 100, 46];
+        let cookie = cookie_for("forgotten-app");
+        let kept = cookie_for("kept-on-forget-app");
+        let (status, _) = app_request(
+            &app,
+            peer,
+            Method::GET,
+            "/apps/forgotten-app/",
+            &[("cookie", &cookie)],
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "admitted before the delete");
+        let pending = mint_app_launch("forgotten-app");
+
+        forget_app_access("forgotten-app");
+        for (uri, headers) in [
+            (
+                "/apps/forgotten-app/".to_string(),
+                vec![("cookie", cookie.as_str())],
+            ),
+            (format!("/apps/forgotten-app/?t={pending}"), vec![]),
+        ] {
+            assert_eq!(
+                app_request(&app, peer, Method::GET, &uri, &headers).await.0,
+                StatusCode::UNAUTHORIZED,
+                "{uri}"
+            );
+        }
+        assert_eq!(redeem_app_launch("forgotten-app", &pending), None);
+        // Another app's access is untouched.
+        assert_eq!(
+            app_request(
+                &app,
+                peer,
+                Method::GET,
+                "/apps/kept-on-forget-app/",
+                &[("cookie", &kept)]
+            )
+            .await
+            .0,
+            StatusCode::NOT_FOUND
+        );
+        let mut access = AppAccess::default();
+        let t0 = Instant::now();
+        let kept_link = access.mint("kept-app", t0);
+        access.mint("gone-app", t0);
+        access.forget("gone-app");
+        assert!(access.pending("kept-app", &kept_link, t0));
+        assert_eq!(access.launches.len(), 1);
+        // A launch after the delete mints a new cookie value.
+        assert_ne!(cookie_for("forgotten-app"), cookie);
     }
 
     /// On a `biorouter serve` daemon the browser holding the served document's

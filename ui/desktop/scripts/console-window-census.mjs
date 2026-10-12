@@ -57,11 +57,11 @@
  *
  *   * `windowsHide: true`  — no console window. The right answer almost always.
  *   * `windowsHide: false` — a window is the point (the user asked for a
- *     terminal). Allowed only at a site listed in `VISIBLE_BY_DESIGN`, so
+ *     browser or terminal). Allowed only at a site listed in `VISIBLE_BY_DESIGN`, so
  *     "silence the check" is not a thing anyone can do quietly.
  *
  * Requiring the option rather than requiring `true` is deliberate. A rule that
- * says "always hide" would be wrong at the two sites where the window IS the
+ * says "always hide" would be wrong at the sites where the window IS the
  * feature, and a rule that is wrong somewhere gets an exception, and an
  * exception mechanism nobody reviews is how the flag went missing in the first
  * place. Requiring the author to *say which* costs one line and cannot be
@@ -119,6 +119,12 @@ const SPAWNERS = new Set([
  * point, since the row is the only way to opt out.
  */
 export const VISIBLE_BY_DESIGN = [
+  {
+    file: 'src/utils/appBrowserLaunch.ts',
+    match: 'spawn(file, args',
+    reason:
+      'The user asked to launch an app in their default browser. This starts the browser executable with ignored stdio and must leave its GUI visible; windowsHide: true also requests SW_HIDE for its first window on Windows.',
+  },
   {
     file: 'src/main.ts',
     match: "spawn('cmd.exe', startArgs",

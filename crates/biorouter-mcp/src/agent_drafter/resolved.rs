@@ -27,9 +27,10 @@ use serde_json::{json, Value};
 use super::store::Manifest;
 
 /// Keys the server owns. A caller that writes these is either inventing metadata
-/// (`created_at`) or destroying build state (`built_at`, `sdk_hash`) — the
-/// manifest merge in `update_app` restores all of them, and naming them here is
-/// what tells the model not to try.
+/// (`created_at`), destroying build state (`built_at`, `sdk_hash`) or pointing
+/// the app at another app's conversations (`app_uid`) — the manifest merge in
+/// `update_app` restores all of them, and naming them here is what tells the
+/// model not to try.
 pub const SERVER_MANAGED_KEYS: &[&str] = &[
     "id",
     "created_at",
@@ -37,6 +38,7 @@ pub const SERVER_MANAGED_KEYS: &[&str] = &[
     "built_at",
     "sdk_hash",
     "session_id",
+    "app_uid",
 ];
 
 /// A fully-populated view of `m`: no field is absent merely because it holds its
@@ -160,6 +162,7 @@ mod tests {
             built_at: None,
             sdk_hash: None,
             session_id: None,
+            app_uid: None,
             surface: Default::default(),
             theme: Default::default(),
         }
@@ -231,6 +234,9 @@ mod tests {
         let managed = resolved["_server_managed"].as_array().unwrap();
         assert!(managed.iter().any(|k| k == "created_at"));
         assert!(managed.iter().any(|k| k == "sdk_hash"));
+        // A model that rewrote it could graft one app's conversations onto
+        // another; `update_app` restores it from disk.
+        assert!(managed.iter().any(|k| k == "app_uid"));
     }
 
     #[test]

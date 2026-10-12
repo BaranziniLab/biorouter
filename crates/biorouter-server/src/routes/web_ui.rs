@@ -67,6 +67,25 @@
 //! interface load without a launch link. Every management route under `/apps`
 //! still takes the secret.
 //!
+//! # The shell shares its origin with code an agent wrote
+//!
+//! Those apps are served from this same origin, and the cookie is `Path=/`, so
+//! it rides along on any request an app's script makes here. An app could
+//! `fetch('/')` or frame `/` and read the secret out of the shell. So the shell
+//! is served only to a document navigation (`auth::is_document_navigation`),
+//! cannot be framed, and its opener policy (`SHELL_CSP`) leaves an app that
+//! opens it in a popup with a severed handle. These are defence in depth on one
+//! origin; serving apps on an origin of their own is the follow-up that makes
+//! the question go away (SD-14 in `docs/deployment/serve-decisions.md`).
+//!
+//! ⚠ Both need a secure context. At a plain-HTTP network address (`serve
+//! --host 0.0.0.0` opened at its LAN address) a browser sends no Fetch Metadata
+//! and ignores the opener policy, so an app's `fetch('/')` would be served the
+//! shell. Both shell and app documents are therefore refused at such an
+//! address (`auth::reached_over_a_secure_context`), including the token exchange.
+//! An old app tab can remain open during an update, so refusing new app pages
+//! alone would not protect the shell from code already running there.
+//!
 //! # Why there is no brute-force throttle here
 //!
 //! The token is 32 bytes from the system generator. Guessing it is not a
@@ -82,7 +101,7 @@ use std::path::{Path, PathBuf};
 use axum::{
     body::Body,
     extract::{Query, State},
-    http::{header, HeaderMap, Response, StatusCode},
+    http::{header, HeaderMap, Response, StatusCode, Uri},
     response::IntoResponse,
     routing::get,
     Router,
@@ -237,7 +256,25 @@ async fn index(
     State(ui): State<WebUi>,
     headers: HeaderMap,
     Query(query): Query<IndexQuery>,
+    uri: Uri,
 ) -> Response<Body> {
+    // The shell carries the daemon secret and is the same origin as every
+    // Agent Drafter app this daemon serves, whose code an agent wrote. Its
+    // cookie (`Path=/`) rides along on any same-origin request, so before this
+    // an app's script could `fetch('/')`, or frame `/`, and read the secret out
+    // of the document. Fetch Metadata tells that apart from opening the shell,
+    // and script cannot forge it; a client that sends none is not a browser
+    // running anyone's script and is answered as before. See `SHELL_CSP` for
+    // the other half, and `docs/deployment/serve-decisions.md` SD-14.
+    // An old app tab can remain open across an update. Refusing new app pages
+    // alone therefore cannot keep the secret out of an HTTP LAN fetch.
+    if !biorouter_server::auth::reached_over_a_secure_context(&headers, &uri) {
+        return insecure_address();
+    }
+    if !biorouter_server::auth::is_document_navigation(&headers) {
+        return not_a_navigation();
+    }
+
     // The token in the URL is exchanged for a cookie and the browser is moved
     // on, so it does not linger in the address bar, in the tab's history, or in
     // the `Referer` of anything the page later loads.
@@ -260,8 +297,51 @@ async fn index(
         // The shell carries the daemon secret, so it must never be cached by
         // anything between here and the browser.
         .header(header::CACHE_CONTROL, "no-store")
+        .header(header::CONTENT_SECURITY_POLICY, SHELL_CSP)
+        .header(header::X_FRAME_OPTIONS, "DENY")
+        .header("cross-origin-opener-policy", "same-origin")
         .body(Body::from(ui.index_html.clone()))
         .expect("valid html response")
+}
+
+/// The policy the shell is served under. Only `frame-ancestors`: the shell's
+/// own scripts and styles are whatever the build emitted, and this header is
+/// not the place to restate them.
+///
+/// `frame-ancestors 'none'` (with `X-Frame-Options: DENY` for older engines)
+/// keeps any page, an app of this daemon included, from framing the shell and
+/// reading the secret through the frame's DOM. `Cross-Origin-Opener-Policy:
+/// same-origin`, set beside it, puts the shell in its own browsing-context
+/// group whenever it is opened by, or opens, a page without the same policy,
+/// which every app page is, so neither side keeps a scriptable handle on the
+/// other. The interface still opens an app in a new tab: the tab is opened
+/// blank, sent to the app, and cut off from the shell (`openAppInThisBrowser`).
+const SHELL_CSP: &str = "frame-ancestors 'none'";
+
+fn insecure_address() -> Response<Body> {
+    (
+        StatusCode::FORBIDDEN,
+        [
+            (header::CONTENT_TYPE, "text/plain; charset=utf-8"),
+            (header::CACHE_CONTROL, "no-store"),
+        ],
+        "Open Biorouter through localhost or HTTPS. Use an SSH tunnel or a TLS proxy and a current browser that sends Fetch Metadata.",
+    )
+        .into_response()
+}
+
+/// The answer to a request for the shell that is not a document navigation: a
+/// `fetch`, an `<iframe>`, an `<object>`, a `<script src>`. Carries nothing.
+fn not_a_navigation() -> Response<Body> {
+    (
+        StatusCode::FORBIDDEN,
+        [
+            (header::CONTENT_TYPE, "text/plain; charset=utf-8"),
+            (header::CACHE_CONTROL, "no-store"),
+        ],
+        "Open Biorouter by visiting this address in the browser.",
+    )
+        .into_response()
 }
 
 /// The answer to a valid token: a page of this origin that sets the session
@@ -423,7 +503,13 @@ mod tests {
     #[tokio::test]
     async fn the_shell_is_never_cached() {
         let ui = ui_with(None);
-        let res = index(State(ui), HeaderMap::new(), Query(IndexQuery { t: None })).await;
+        let res = index(
+            State(ui),
+            HeaderMap::new(),
+            Query(IndexQuery { t: None }),
+            Uri::default(),
+        )
+        .await;
         assert_eq!(res.status(), StatusCode::OK);
         assert_eq!(
             res.headers().get(header::CACHE_CONTROL).unwrap(),
@@ -444,6 +530,7 @@ mod tests {
             Query(IndexQuery {
                 t: Some("tok".into()),
             }),
+            Uri::default(),
         )
         .await;
         assert_eq!(res.status(), StatusCode::OK);
@@ -504,12 +591,19 @@ mod tests {
             Query(IndexQuery {
                 t: Some("wrong".into()),
             }),
+            Uri::default(),
         )
         .await;
         assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
 
         // And with no credential at all.
-        let res = index(State(ui), HeaderMap::new(), Query(IndexQuery { t: None })).await;
+        let res = index(
+            State(ui),
+            HeaderMap::new(),
+            Query(IndexQuery { t: None }),
+            Uri::default(),
+        )
+        .await;
         assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
     }
 
@@ -528,6 +622,7 @@ mod tests {
                 Query(IndexQuery {
                     t: Some("tok".into()),
                 }),
+                Uri::default(),
             )
             .await;
             assert_eq!(
@@ -552,7 +647,190 @@ mod tests {
         let ui = ui_with(Some("tok"));
         let mut headers = HeaderMap::new();
         headers.insert(header::COOKIE, "biorouter_session=tok".parse().unwrap());
-        let res = index(State(ui), headers, Query(IndexQuery { t: None })).await;
+        let res = index(
+            State(ui),
+            headers,
+            Query(IndexQuery { t: None }),
+            Uri::default(),
+        )
+        .await;
         assert_eq!(res.status(), StatusCode::OK);
+    }
+
+    /// A request carrying the session cookie, as the shell's own origin sends it,
+    /// with the Fetch Metadata a browser attaches for `mode` and `dest`.
+    fn cookie_request(mode: Option<&str>, dest: Option<&str>) -> HeaderMap {
+        let mut headers = HeaderMap::new();
+        headers.insert(header::COOKIE, "biorouter_session=tok".parse().unwrap());
+        if let Some(mode) = mode {
+            headers.insert("sec-fetch-mode", mode.parse().unwrap());
+        }
+        if let Some(dest) = dest {
+            headers.insert("sec-fetch-dest", dest.parse().unwrap());
+        }
+        headers
+    }
+
+    #[tokio::test]
+    async fn lan_requests_cannot_read_the_shell_or_spoof_a_tls_proxy() {
+        let ui = WebUi {
+            index_html: inject_runtime_config(
+                "<html><head></head><body></body></html>",
+                "lan-secret",
+            ),
+            browser_token: Some("tok".into()),
+        };
+        for forwarded in [None, Some("https")] {
+            for token in [None, Some("tok")] {
+                let mut headers = cookie_request(None, None);
+                headers.insert(header::HOST, "192.168.1.5:8765".parse().unwrap());
+                if let Some(proto) = forwarded {
+                    headers.insert("x-forwarded-proto", proto.parse().unwrap());
+                }
+                let res = index(
+                    State(ui.clone()),
+                    headers,
+                    Query(IndexQuery {
+                        t: token.map(str::to_owned),
+                    }),
+                    Uri::default(),
+                )
+                .await;
+                assert_eq!(res.status(), StatusCode::FORBIDDEN);
+                assert!(res.headers().get(header::SET_COOKIE).is_none());
+                assert_eq!(res.headers()[header::CACHE_CONTROL], "no-store");
+                let body = axum::body::to_bytes(res.into_body(), 64 * 1024)
+                    .await
+                    .unwrap();
+                let body = String::from_utf8_lossy(&body);
+                assert!(body.contains("SSH tunnel"));
+                assert!(!body.contains("lan-secret"));
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn modern_tls_proxy_navigations_can_open_the_shell_and_exchange_tokens() {
+        let ui = ui_with(Some("tok"));
+        for token in [None, Some("tok")] {
+            let mut headers = cookie_request(Some("navigate"), Some("document"));
+            headers.insert(header::HOST, "biorouter.example.org".parse().unwrap());
+            headers.insert("x-forwarded-proto", "https".parse().unwrap());
+            let res = index(
+                State(ui.clone()),
+                headers,
+                Query(IndexQuery {
+                    t: token.map(str::to_owned),
+                }),
+                Uri::default(),
+            )
+            .await;
+            assert_eq!(res.status(), StatusCode::OK);
+            assert_eq!(
+                res.headers().get(header::SET_COOKIE).is_some(),
+                token.is_some()
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn authority_without_a_host_header_still_checks_the_shell_address() {
+        let res = index(
+            State(ui_with(Some("tok"))),
+            cookie_request(None, None),
+            Query(IndexQuery { t: None }),
+            "http://192.168.1.5:8765/".parse().unwrap(),
+        )
+        .await;
+        assert_eq!(res.status(), StatusCode::FORBIDDEN);
+    }
+
+    /// The shell carries the daemon secret and shares its origin with every
+    /// app this daemon serves, so an app's script could `fetch('/')` or frame
+    /// `/` with the cookie attached and read the secret. Only opening it works.
+    #[tokio::test]
+    async fn the_shell_is_served_only_to_a_navigation() {
+        let ui = WebUi {
+            index_html: inject_runtime_config("<html><head></head><body></body></html>", "s3cr3t"),
+            browser_token: Some("tok".into()),
+        };
+        for (mode, dest) in [
+            (Some("cors"), Some("empty")),
+            (Some("no-cors"), Some("empty")),
+            (Some("navigate"), Some("iframe")),
+            (Some("navigate"), Some("object")),
+            (Some("no-cors"), Some("script")),
+            (None, Some("iframe")),
+        ] {
+            let res = index(
+                State(ui.clone()),
+                cookie_request(mode, dest),
+                Query(IndexQuery { t: None }),
+                Uri::default(),
+            )
+            .await;
+            assert_eq!(res.status(), StatusCode::FORBIDDEN, "{mode:?} {dest:?}");
+            let body = axum::body::to_bytes(res.into_body(), 64 * 1024)
+                .await
+                .unwrap();
+            assert!(
+                !String::from_utf8_lossy(&body).contains("s3cr3t"),
+                "{mode:?} {dest:?}"
+            );
+        }
+        // Nor does a fetch of the exchange set the cookie.
+        let res = index(
+            State(ui.clone()),
+            cookie_request(Some("cors"), Some("empty")),
+            Query(IndexQuery {
+                t: Some("tok".into()),
+            }),
+            Uri::default(),
+        )
+        .await;
+        assert_eq!(res.status(), StatusCode::FORBIDDEN);
+        assert!(res.headers().get(header::SET_COOKIE).is_none());
+
+        // Opening it, or asking without Fetch Metadata (not a browser), works.
+        for (mode, dest) in [(Some("navigate"), Some("document")), (None, None)] {
+            let res = index(
+                State(ui.clone()),
+                cookie_request(mode, dest),
+                Query(IndexQuery { t: None }),
+                Uri::default(),
+            )
+            .await;
+            assert_eq!(res.status(), StatusCode::OK, "{mode:?} {dest:?}");
+            let body = axum::body::to_bytes(res.into_body(), 64 * 1024)
+                .await
+                .unwrap();
+            assert!(String::from_utf8_lossy(&body).contains("s3cr3t"));
+        }
+    }
+
+    /// No page may frame the shell, and the shell keeps no scriptable handle
+    /// across to a page without its opener policy (every app page), nor that
+    /// page to it.
+    #[tokio::test]
+    async fn the_shell_cannot_be_framed_and_isolates_its_browsing_context() {
+        let res = index(
+            State(ui_with(Some("tok"))),
+            cookie_request(Some("navigate"), Some("document")),
+            Query(IndexQuery { t: None }),
+            Uri::default(),
+        )
+        .await;
+        assert_eq!(res.status(), StatusCode::OK);
+        let value = |name: &str| {
+            res.headers()
+                .get(name)
+                .unwrap_or_else(|| panic!("no {name} header"))
+                .to_str()
+                .unwrap()
+                .to_string()
+        };
+        assert!(value("content-security-policy").contains("frame-ancestors 'none'"));
+        assert_eq!(value("x-frame-options"), "DENY");
+        assert_eq!(value("cross-origin-opener-policy"), "same-origin");
     }
 }
