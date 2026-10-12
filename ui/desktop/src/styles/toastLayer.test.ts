@@ -209,3 +209,47 @@ describe('a toast slides 8px with no bounce and collapses over 125ms', () => {
     expect(reduced![1]).not.toMatch(/animation:\s*none/);
   });
 });
+
+/**
+ * Vision V1-R7-1. A sticky toast (the extension-load report) sat over the menus that open into
+ * the top-right corner: menus are at `--z-modal-dropdown` and the toast layer at `--z-toast`, so
+ * the tab strip's ▾ filter field and a tab's "Open in new window" could not be pointed at. While
+ * a menu or popover is open the layer drops one step below the menus. Chromium's hit test is
+ * `chatGroups/toastOverMenu.browser.test.tsx`; this holds the two ends at the source: the rule
+ * names the primitives' own `data-slot`s, and each primitive still emits its one.
+ */
+describe('a menu the person opened stands above a toast', () => {
+  const SLOTS: Record<string, string[]> = {
+    '../components/ui/dropdown-menu.tsx': ['dropdown-menu-content', 'dropdown-menu-sub-content'],
+    '../components/ui/context-menu.tsx': ['context-menu-content'],
+    '../components/ui/popover.tsx': ['popover-content'],
+  };
+
+  function yieldRule(): { selector: string; body: string } {
+    const match = CSS.match(/\n(body:has\([\s\S]*?\)\s*\.Toastify__toast-container)\s*\{([^}]*)\}/);
+    if (!match) throw new Error('no toast yield rule in main.css');
+    return { selector: match[1], body: match[2] };
+  }
+
+  it('drops the toast layer below the menus while one is open', () => {
+    const { selector, body } = yieldRule();
+    for (const slot of Object.values(SLOTS).flat()) {
+      expect(selector).toContain(`[data-slot='${slot}']`);
+    }
+    expect(selector).toMatch(/\)\[data-state='open'\]\s*\)/);
+    expect(body).toMatch(/z-index:\s*calc\(var\(--z-modal-dropdown\) - 1\)/);
+  });
+
+  it('keeps the yielded toast above every dialog, and the resting toast above the menus', () => {
+    const z = (name: string) => Number(declaration(name));
+    expect(z('z-modal-dropdown') - 1).toBeGreaterThan(z('z-modal'));
+    expect(z('z-toast')).toBeGreaterThan(z('z-modal-dropdown'));
+  });
+
+  it('names data-slots the menu primitives really emit', () => {
+    for (const [file, slots] of Object.entries(SLOTS)) {
+      const source = readFileSync(join(__dirname, file), 'utf8');
+      for (const slot of slots) expect(source, file).toContain(`data-slot="${slot}"`);
+    }
+  });
+});

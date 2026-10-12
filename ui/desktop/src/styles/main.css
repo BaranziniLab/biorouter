@@ -2527,6 +2527,33 @@ body.biorouter-sidebar-resizing [data-motion-layout] {
   pointer-events: auto;
 }
 
+/* @ws WS-MOTION begin: toast yields to an open menu */
+/* A menu or popover the person opened stands above a toast (vision V1-R7-1).
+   Menus sit at `--z-modal-dropdown` (500) and the toast layer at `--z-toast`
+   (600), so a toast that stays (the extension-load report is sticky) covered
+   the menus that open into the top-right corner: with it standing, the centre
+   of the tab strip's ▾ menu filter field, and a tab's "Open in new window" and
+   "Copy chat ID", hit-tested to the toast and no pointer could reach them.
+   While one is open the layer drops one step below the menus. It is still
+   above every dialog (`--z-modal`, 400), it does not move, and it is back on
+   top the moment the menu closes. The four `data-slot`s are the menu
+   primitives' own (`ui/dropdown-menu.tsx`, `ui/context-menu.tsx`,
+   `ui/popover.tsx`), and `styles/toastLayer.test.ts` holds both ends. Tooltips
+   and info tips are left out on purpose: they open on a hover, and nothing in
+   them is waiting for a click. */
+body:has(
+    :is(
+        [data-slot='dropdown-menu-content'],
+        [data-slot='dropdown-menu-sub-content'],
+        [data-slot='context-menu-content'],
+        [data-slot='popover-content']
+      )[data-state='open']
+  )
+  .Toastify__toast-container {
+  z-index: calc(var(--z-modal-dropdown) - 1);
+}
+/* @ws WS-MOTION end: toast yields to an open menu */
+
 /* @ws WS-MOTION begin: toast close hover */
 /* The ghost hover, 5% ink: the toast is the floating recipe, and its dark ground
    is lifted to `--background-medium`, so a hover in that token vanished there. */
