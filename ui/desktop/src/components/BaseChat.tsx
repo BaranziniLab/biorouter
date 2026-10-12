@@ -58,6 +58,8 @@ import { summaryCopy } from './summary/copy';
 import { useSessionTodos } from '../hooks/useSessionTodos';
 import { summaryRailChat, useSummaryRail } from '../hooks/useSummaryRail';
 import { useLoadingChat } from './summary/useLoadingChat';
+import { useFirstSend } from './summary/useFirstSend';
+import { FirstSendTranscript } from './summary/FirstSendTranscript';
 import { useTranscriptFollow, useTranscriptSettle } from './summary/useTranscriptFollow';
 import { captureScrollAnchor, useColumnGlide } from '../hooks/useColumnGlide';
 import { DUR, EASE_OUT, isWindowResizing, prefersReducedMotion } from '../styles/motion';
@@ -1095,6 +1097,54 @@ export function summaryTokensValue({
   return billed === null ? 'N/A' : formatCompactNumber(billed);
 }
 
+/**
+ * The summary's four figures. A figure the chat does not know yet is an empty
+ * value, never a stand-in that is then replaced: nothing while the transcript
+ * loads, and no Tokens until this chat's ledger has answered (V2-R5-5,
+ * V2-R5-6).
+ *
+ * A chat created here for its first message (`newChat`, `useFirstSend`) is new
+ * and empty, so its counts are its zeros from the send on, through its load.
+ * Its Tokens wait for its own ledger, which needs its session: before that the
+ * counters of no chat read "0", and the ledger then said "N/A" (V2-R8-2).
+ */
+export function summaryFigures({
+  loading,
+  newChat,
+  hasSession,
+  ledgerSettled,
+  billed,
+  toolCalls,
+  artifacts,
+  codeDelta,
+}: {
+  loading: boolean;
+  newChat: boolean;
+  hasSession: boolean;
+  ledgerSettled: boolean;
+  billed: number | null;
+  toolCalls: number;
+  artifacts: number;
+  codeDelta: { added: number; removed: number };
+}): {
+  toolCalls: string | null;
+  billedTokens: string | null;
+  artifacts: string | null;
+  codeDelta: { added: number; removed: number } | null;
+} {
+  const countsPending = loading && !newChat;
+  return {
+    toolCalls: countsPending ? null : toolCalls.toLocaleString(),
+    billedTokens: summaryTokensValue({
+      loading: loading || (newChat && !hasSession),
+      ledgerSettled,
+      billed,
+    }),
+    artifacts: countsPending ? null : artifacts.toLocaleString(),
+    codeDelta: countsPending ? null : codeDelta,
+  };
+}
+
 /** The legacy per-model cost map `ChatInput` still takes beside the rows. */
 type FooterSessionCosts = ReturnType<typeof useCostTracking>['sessionCosts'];
 
@@ -1693,6 +1743,16 @@ function BaseChatContent({
     onStreamFinish,
   });
 
+  // A new chat's first message, from the send until the chat's store holds it:
+  // the transcript shows it at once and the rail knows the chat is new (vision
+  // V2-R8-2). See summary/useFirstSend.ts.
+  const firstSend = useFirstSend({
+    sessionId,
+    messageCount: messages.length,
+    failed: !!turnError || !!sessionLoadError,
+  });
+  const endFirstSend = firstSend.end;
+
   // Crew access (ui-redesign-spec, "Revoke"): a chat whose grant was revoked or ran out is refused
   // by the daemon on every turn. Say so above the composer and hold it, instead of letting the next
   // message fail with a model error. Display only — the daemon decides either way. A turn the
@@ -1892,9 +1952,12 @@ function BaseChatContent({
         }),
       onConsumed: onInitialMessageConsumed,
       // The composer never held this text, so a refusal has nothing to repair
-      // from. Give the message back through the composer instead of dropping it.
-      onRefused: (message, attachments) =>
-        returnInitialMessageToComposer({ sessionId, message, attachments }),
+      // from. Give the message back through the composer instead of dropping it,
+      // and out of the transcript, where the first send had put it (V2-R8-2).
+      onRefused: (message, attachments) => {
+        endFirstSend();
+        returnInitialMessageToComposer({ sessionId, message, attachments });
+      },
     });
   }, [
     session,
@@ -1906,6 +1969,7 @@ function BaseChatContent({
     navigate,
     location,
     onInitialMessageConsumed,
+    endFirstSend,
   ]);
 
   // Resolve session-scoped vision capability whenever the session's bound
@@ -1978,6 +2042,8 @@ function BaseChatContent({
       // handed back.
       if (!(await heldModelMayBeSent(chosenModel, getProviders))) return false;
       setIsCreatingSession(true);
+      // The message is in the transcript from this commit on (V2-R8-2).
+      firstSend.begin(textValue);
       try {
         // #39 — honour the directory picked in the composer before the
         // session existed; default only when none was chosen.
@@ -1987,6 +2053,7 @@ function BaseChatContent({
             allExtensions: extensionsList,
           }
         );
+        firstSend.created(newSession.id);
         // The chat's own model, through the same per-chat bind a started chat's
         // switch uses (user proof included), BEFORE the first message goes
         // anywhere. A refused or failed bind sends nothing: the message would
@@ -1994,6 +2061,7 @@ function BaseChatContent({
         // already said why; `false` hands the text back.
         if (!(await bindHeldChatModel(newSession.id, chosenModel, changeModel))) {
           setIsCreatingSession(false);
+          firstSend.end();
           return false;
         }
         adoptDraftReasoningEffort(effortScope, newSession.id, submittedEffort);
@@ -2015,6 +2083,7 @@ function BaseChatContent({
         return true;
       } catch (err) {
         setIsCreatingSession(false);
+        firstSend.end();
         // `false`: the composer hands the message back to this tab's draft.
         return handleCreateSessionError(err);
       }
@@ -2451,18 +2520,20 @@ function BaseChatContent({
   }, [previewMounted, columnGlide, transcriptFollow]);
 
   // A figure the chat does not know yet is an empty value, never a stand-in the
-  // load then replaces: nothing while the transcript loads, and no Tokens until
-  // this chat's ledger has answered (V2-R5-5, V2-R5-6). The to-do list counts as
-  // still loading too, so its rows arrive at rest with the transcript.
+  // load then replaces (`summaryFigures`: V2-R5-5, V2-R5-6, and a new chat's
+  // first send, V2-R8-2). The to-do list counts as still loading too, so its
+  // rows arrive at rest with the transcript.
   const summaryProps = {
-    toolCalls: chatLoading ? null : sessionToolCallCount.toLocaleString(),
-    billedTokens: summaryTokensValue({
+    ...summaryFigures({
       loading: chatLoading,
+      newChat: firstSend.creating,
+      hasSession: !!session,
       ledgerSettled,
       billed: totalSessionTokens,
+      toolCalls: sessionToolCallCount,
+      artifacts: sessionArtifacts.length,
+      codeDelta,
     }),
-    artifacts: chatLoading ? null : sessionArtifacts.length.toLocaleString(),
-    codeDelta: chatLoading ? null : codeDelta,
     todos: chatLoading ? { ...sessionTodos, loading: true } : sessionTodos,
     hasWorkflow: !!(workflow ?? loadingChatRow?.workflow),
     onWorkflow: handleWorkflowReviewAction,
@@ -3088,11 +3159,23 @@ function BaseChatContent({
                       </div>
                     )}
 
-                    {messages.length > 0 || workflow || turnError ? (
+                    {messages.length > 0 || workflow || turnError || firstSend.message ? (
                       <>
                         <SearchView>
                           <>
-                            {transcriptList}
+                            {/* A new chat's first message while the chat is
+                                created and loaded, then the stored row in its
+                                place (summary/useFirstSend.ts, V2-R8-2). */}
+                            {firstSend.message ? (
+                              <FirstSendTranscript
+                                message={firstSend.message}
+                                sessionId={sessionId}
+                                onOpenArtifact={openArtifactFromTranscript}
+                                workingDir={sessionWorkingDir}
+                              />
+                            ) : (
+                              transcriptList
+                            )}
                             {/* §6.1b: skeleton cards for tool calls whose args
                                 are still streaming. They sit at the tail of the
                                 transcript and vanish as each authoritative

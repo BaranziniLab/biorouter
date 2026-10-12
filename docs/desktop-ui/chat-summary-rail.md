@@ -65,6 +65,18 @@ browser` (`summaryRailVisible`).
   chat's first turn counts from the commit that starts creating the chat, which is the commit in
   which the composer leaves the empty state; the message and the running stream arrive about
   300ms later. Waiting for them made the composer move twice: to the centre, then 140px left.
+- **A new chat's first message is on screen from the send** (`components/summary/useFirstSend.ts`).
+  A message typed into a chat that exists is in the transcript at once, but a chat's first
+  message waits for the chat to be created (`/agent/start`), bound to its model, navigated to
+  and loaded before its store takes it. Measured at 1440, the text left the composer at 81ms and
+  reached the transcript at 753ms, so for 0.67s it was in neither place (vision V2-R8-2). From
+  the commit that starts creating the chat, the transcript draws the text as sent through
+  `FirstSendTranscript`, which is the transcript's own `ProgressiveMessageList`, so the stored row
+  that replaces it is the same row in the same place; that list mounts with the row, so it is
+  drawn at rest and does not play its entrance again. Images are left out of that row: only the
+  store's `createUserMessage` reads their bytes. The send ends when the store holds the message,
+  and also when the chat could not be created or bound, or the first submit is refused (each
+  hands the text back to the composer); a turn error or a failed load withholds the row.
 - **A chat whose transcript is loading** is active when its row says it has messages
   (`knownToHaveMessages`). While a chat loads, `BaseChat` holds no `session`, so it reads the
   row from the session listing, or the row alone (`GET /sessions/{id}?metadata_only=true` with
@@ -168,7 +180,11 @@ and 12px for labels.
   answered (`useCostTracking`'s `ledgerSettled`, `summaryTokensValue`). Before that, the
   accumulated counters stood in, and a ledger row with no certified total then turned "2.2M"
   into "N/A" on every open (vision V2-R5-5). The composer footer's cost waits for the same
-  answer (`footerCostInputs`).
+  answer (`footerCostInputs`). A chat created here for its first message is new and empty, so
+  from the send through its load it shows its zeros (Tool calls 0, Artifacts 0, Code +0 −0),
+  and its Tokens stay empty until its own ledger answers, which needs its session
+  (`summaryFigures`). Before that, the rail read "Tokens 0" from the counters of no chat, then
+  nothing for the load, then "N/A" (vision V2-R8-2).
 - **Footer**: Make workflow (Workflow when the chat has one) and Diagnostics as full-width ghost
   rows.
 - The scrolling body is a focus region with a tab stop (`.biorouter-focus-region`), so a
@@ -255,7 +271,8 @@ or the pointer is over the summary.
 | `components/summary/SummaryHeaderButton.test.tsx` | The button's two modes, its tooltip, focus return, the dot with its count, and which flips of the pressed fill snap (geometry) and which fade (a press, the popover, the first turn) |
 | `components/summary/summaryPopover.browser.test.tsx` | In Chromium, with the whole stylesheet, in a band shaped like BaseChat's header: the old wiring landing on the band line and past the window (the instrument); the popover 4px below the band line and 8px above the window's bottom with its body scrolling, at 1300x900, beside a side preview, at a device pixel ratio of 2 and in a 600px window; a short list at its natural height |
 | `styles/summaryRail.test.ts` | The exact grid templates, the `:not([data-preview-layout])` key, unlayered rules, no condition, transition or animation in the geometry, the card's motion, one rail in BaseChat, the `paddingX={6}` and `const contentClassName = 'px-1';` literals the 56px comes from, and the fill: the card's fill and transparent border, no hairline in the content, the track's ground, the scroll-edge fades, the pressed fill and the dot's ring |
-| `components/BaseChat.summaryRail.test.ts` | BaseChat's wiring: the button, the to-do hook's order and argument, the popover closing for the rail, the composer bar's and the subagent line's gutters, the first turn counted from the commit that creates a new chat, no titlebar padding under the header band, the message list memoised against everything the rail, the popover and the preview change, a loading chat's row reaching the rail, the chip, the placeholder and the ring, the commit before the load counted as loading (rail and empty state), a pending chat's composer bar and subagent line at opacity 0 and never `inert`, the Tokens value and the footer cost waiting for the ledger, and the transcript's follow hook (its arguments, both props, above the early return, the clicked card's hold), and the list settling through `useTranscriptSettle` with no first-settle force of its own |
+| `components/BaseChat.summaryRail.test.ts` | BaseChat's wiring: the button, the to-do hook's order and argument, the popover closing for the rail, the composer bar's and the subagent line's gutters, the first turn counted from the commit that creates a new chat, no titlebar padding under the header band, the message list memoised against everything the rail, the popover and the preview change, a loading chat's row reaching the rail, the chip, the placeholder and the ring, the commit before the load counted as loading (rail and empty state), a pending chat's composer bar and subagent line at opacity 0 and never `inert`, the Tokens value and the footer cost waiting for the ledger, and the transcript's follow hook (its arguments, both props, above the early return, the clicked card's hold), and the list settling through `useTranscriptSettle` with no first-settle force of its own, and the first send: started in the commit that starts creating the chat, the chat named once created, ended wherever the composer gets the text back, drawn in the transcript slot, and the four figures from `summaryFigures` |
+| `components/summary/useFirstSend.test.tsx` | A new chat's first send against a fake daemon (`/agent/start` after 500ms, a 280ms load, the ledger 50ms after the session), on the real hook, `summaryFigures`, `ChatSummary`, `FirstSendTranscript` and `ProgressiveMessageList`: the old wiring leaving the text off screen and reading Tokens "0", nothing, "N/A" (the instrument); the text in the first commit after the send and in every commit after it; Tokens from empty to its answer once, the counts held at zero; the stored row the same markup as the first-send row, at rest. Also the hook's life (begin, created, spent, another chat, a failure, attachments alone) and `summaryFigures`' cases |
 | `components/summary/transcriptSettle.test.ts` | The settle rule: the first settle lands at once while following, nothing for a reader who scrolled up (first settle too), later settles smooth, the first counted at the first settle that has messages and spent on a reader who scrolled up |
 | `components/summary/transcriptSettle.browser.test.tsx` | In Chromium, on the real `ProgressiveMessageList` and `ScrollArea`: the old handler pulling a reader who scrolled up during the load back to the end (the instrument); that reader keeping their rows through the settle and a later message, also when the messages land inside the list's first 50ms; the end reached when the reader did not scroll, came back before the settle, or the chat is short |
 | `components/summary/transcriptFollow.browser.test.tsx` | In Chromium, on the real `ScrollArea`: the old stacked-only wiring ending 32px short when the subagent line mounts (the instrument); the end kept through that line mounting, a shorter window, a shorter and narrower one, and a narrower one that wraps the text taller (also with the layout read in the same task); a reader who scrolled up left where they are; a reader 100px up not pulled down by a width change and keeping their bottom line through a height change; a clicked card's place winning for one width change; a stacked preview still anchoring a reader who scrolled up |

@@ -197,7 +197,12 @@ describe('BaseChat: the transcript does not re-render for the rail or the previe
     expect(memoStart).toBeGreaterThan(-1);
     expect(code.match(/<ProgressiveMessageList\b/g) ?? []).toHaveLength(1);
     expect(element.startsWith('<ProgressiveMessageList')).toBe(true);
-    expect(code.match(/\{transcriptList\}/g) ?? []).toHaveLength(1);
+    // Rendered once: in the transcript slot, unless a new chat's first message
+    // is still on its way there (V2-R8-2).
+    expect(code.match(/\btranscriptList\b/g) ?? []).toHaveLength(2);
+    expect(code).toMatch(
+      /\{firstSend\.message \? \(\s*<FirstSendTranscript[\s\S]*?\/>\s*\) : \(\s*transcriptList\s*\)\}/
+    );
     // Above the early return, so the hook order never changes.
     expect(memoStart).toBeLessThan(code.indexOf('if (sessionLoadError)'));
   });
@@ -285,9 +290,14 @@ describe('BaseChat: a chat that is still loading looks like itself (V2-R5-6)', (
 
   it('shows no figure while loading, and reads the to-do list only once the chat is in', () => {
     const props = summaryPropsBlock();
-    expect(props).toContain('toolCalls: chatLoading ? null :');
-    expect(props).toContain('artifacts: chatLoading ? null :');
-    expect(props).toContain('codeDelta: chatLoading ? null : codeDelta,');
+    // The four figures come from one helper (BaseChat.costLedger.test.tsx,
+    // summary/useFirstSend.test.tsx), fed the loading state and the first send.
+    expect(props).toMatch(
+      /\.\.\.summaryFigures\(\{\s*loading: chatLoading,\s*newChat: firstSend\.creating,\s*hasSession: !!session,\s*ledgerSettled,\s*billed: totalSessionTokens,\s*toolCalls: sessionToolCallCount,\s*artifacts: sessionArtifacts\.length,\s*codeDelta,\s*\}\)/
+    );
+    expect(props).not.toMatch(
+      /toolCalls: chatLoading|artifacts: chatLoading|codeDelta: chatLoading/
+    );
     expect(props).toContain(
       'todos: chatLoading ? { ...sessionTodos, loading: true } : sessionTodos,'
     );
@@ -360,9 +370,8 @@ describe('BaseChat: no figure the usage ledger then withdraws (V2-R5-5)', () => 
     expect(code).toMatch(
       /const \{ sessionCosts, modelRows, ledgerSettled \} = useCostTracking\(\{ session \}\);/
     );
-    expect(summaryPropsBlock()).toMatch(
-      /billedTokens: summaryTokensValue\(\{\s*loading: chatLoading,\s*ledgerSettled,\s*billed: totalSessionTokens,\s*\}\)/
-    );
+    expect(summaryPropsBlock()).toMatch(/\.\.\.summaryFigures\(\{[\s\S]*?ledgerSettled,/);
+    expect(summaryPropsBlock()).not.toContain('summaryTokensValue(');
   });
 
   it('hands the footer only what footerCostInputs allows, once the ledger is in', () => {
@@ -424,5 +433,59 @@ describe('BaseChat: the transcript keeps its newest line through a resize (V2-R6
     expect(effect).toMatch(
       /if \(restore\) \{\s*transcriptFollow\.keepPlaceForWidthChange\(\);\s*restore\(\);\s*\}/
     );
+  });
+});
+
+/**
+ * Vision V2-R8-2: a new chat's first send. The hook and the rail's figures are
+ * exercised in `summary/useFirstSend.test.tsx` on the real list and summary;
+ * this pins how BaseChat starts, binds and ends the send.
+ */
+describe('BaseChat: a new chat’s first message is on screen from the send (V2-R8-2)', () => {
+  const creation = () => {
+    const start = code.indexOf('setIsCreatingSession(true);');
+    return code.slice(start, code.indexOf('if (workflow && textValue.trim())', start));
+  };
+
+  it('reads the first send from the store’s messages and what is on screen, above the early return', () => {
+    expect(code).toMatch(
+      /const firstSend = useFirstSend\(\{\s*sessionId,\s*messageCount: messages\.length,\s*failed: !!turnError \|\| !!sessionLoadError,\s*\}\);/
+    );
+    expect(code.indexOf('useFirstSend(')).toBeLessThan(code.indexOf('if (sessionLoadError) {'));
+  });
+
+  it('starts it in the commit that starts creating the chat, and names the chat once created', () => {
+    const block = creation();
+    expect(block).toMatch(/^setIsCreatingSession\(true\);\s*firstSend\.begin\(textValue\);/);
+    expect(block).toMatch(
+      /const newSession = await createSession\([\s\S]*?\);\s*firstSend\.created\(newSession\.id\);/
+    );
+  });
+
+  it('ends it wherever the composer gets the text back', () => {
+    const block = creation();
+    // A refused bind and a failed start: both hand the text to the composer.
+    expect(block).toMatch(/setIsCreatingSession\(false\);\s*firstSend\.end\(\);\s*return false;/);
+    expect(block).toMatch(
+      /catch \(err\) \{\s*setIsCreatingSession\(false\);\s*firstSend\.end\(\);\s*return handleCreateSessionError\(err\);/
+    );
+    expect(block.match(/setIsCreatingSession\(false\)/g)).toHaveLength(2);
+    expect(block.match(/firstSend\.end\(\)/g)).toHaveLength(2);
+    // A refused first submit gives the text back to the composer.
+    expect(code).toMatch(
+      /onRefused: \(message, attachments\) => \{\s*endFirstSend\(\);\s*returnInitialMessageToComposer\(/
+    );
+  });
+
+  it('draws the row in the transcript slot, from the same list as the stored row', () => {
+    expect(code).toContain(
+      '{messages.length > 0 || workflow || turnError || firstSend.message ? ('
+    );
+    const element = code.slice(
+      code.indexOf('<FirstSendTranscript'),
+      code.indexOf('/>', code.indexOf('<FirstSendTranscript')) + 2
+    );
+    expect(element).toContain('message={firstSend.message}');
+    expect(element).toContain('onOpenArtifact={openArtifactFromTranscript}');
   });
 });
