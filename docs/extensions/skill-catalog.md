@@ -138,6 +138,14 @@ from that list rather than refetching would drift the first time two events
 raced. A monotonic revision that has advanced means "you are stale"; the answer
 to being stale is to refetch.
 
+⚠ **Only the newest read answers.** `useSkillCatalog` numbers every read it issues
+(the first one, a chat switch, a rescan) and commits an answer, a failure or the end
+of `loading` only if it is still the newest. Without that, the read for the chat the
+hook served before could land after the next chat's and replace its view, and the
+composer's Tools chip would show the old chat's skills, then correct itself. A
+write made through `setEnabled` is not a read: it serialises through its own queue
+and commits the daemon's answer to the write it made.
+
 ## The HTTP surface
 
 All three require `X-Secret-Key`, like every other route.
