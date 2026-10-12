@@ -423,14 +423,40 @@ describe('BaseChat: the transcript keeps its newest line through a resize (V2-R6
     // WS-TRANSCRIPT-1: the first settle used to land on the end whatever the
     // reader had done, which pulled a reader who scrolled up during a long
     // chat's load back to the end (transcriptSettle.browser.test.tsx).
-    expect(code).toContain(
-      'const handleRenderingComplete = useTranscriptSettle(scrollRef, messages.length);'
+    expect(code).toMatch(
+      /const handleRenderingComplete = useTranscriptSettle\(\s*scrollRef,\s*messages\.length,\s*transcriptFollow\.isHolding\s*\);/
     );
     expect(code).toContain('onRenderingComplete={handleRenderingComplete}');
     expect(code).not.toContain('initialRenderRef');
     expect(code.indexOf('useTranscriptSettle(')).toBeLessThan(
       code.indexOf('if (sessionLoadError) {')
     );
+    // The settle asks the follow hook, so it is declared after it.
+    expect(code.indexOf('useTranscriptSettle(')).toBeGreaterThan(
+      code.indexOf('const transcriptFollow = useTranscriptFollow(')
+    );
+  });
+
+  it('holds a late restore failure below the fold instead of following it (V2-R9-2)', () => {
+    // summary/lateRowHold.browser.test.tsx measures it; here, the joins.
+    expect(code).toContain(
+      'const turnErrorRow =\n    turnError && !hasVisibleTurnErrorMessage(turnError, messages) ? turnError : null;'
+    );
+    const call = code.slice(
+      code.indexOf('useLateRowHold({'),
+      code.indexOf('});', code.indexOf('useLateRowHold({'))
+    );
+    expect(call).toContain('sessionId,');
+    expect(call).toContain(
+      'transcriptShown: !isCleanConversation && !sessionLoadError && messages.length > 0,'
+    );
+    expect(call).toContain('row: turnErrorRow,');
+    expect(call).toContain('turnRunning: isRunningState(chatState),');
+    expect(call).toContain('follow: transcriptFollow,');
+    expect(code.indexOf('useLateRowHold({')).toBeLessThan(code.indexOf('if (sessionLoadError) {'));
+    // The row drawn is the one the hook decided about, and there is one.
+    expect(code.match(/<ChatTurnError\b/g) ?? []).toHaveLength(1);
+    expect(code).toContain('<ChatTurnError error={turnErrorRow} onRetry={heldRetryTurn} />');
   });
 
   it('lets a clicked card’s restore win over the end for that one width change', () => {

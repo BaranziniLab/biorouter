@@ -36,6 +36,13 @@ describe('settleTranscriptScroll', () => {
     expect(scrollToBottom.mock.calls).toEqual([[]]);
   });
 
+  it('does nothing while a late row is held below the fold (V2-R9-2)', () => {
+    const { scroll, scrollToBottom } = handle(true);
+    settleTranscriptScroll(scroll, true, true);
+    settleTranscriptScroll(scroll, false, true);
+    expect(scrollToBottom).not.toHaveBeenCalled();
+  });
+
   it('does nothing with no scroll area', () => {
     expect(() => settleTranscriptScroll(null, true)).not.toThrow();
     expect(() => settleTranscriptScroll(undefined, false)).not.toThrow();
@@ -62,6 +69,17 @@ describe('useTranscriptSettle', () => {
     result.current();
     expect(scrollToBottom).not.toHaveBeenCalled();
     scroll.isFollowing = true;
+    result.current();
+    expect(scrollToBottom.mock.calls).toEqual([[]]);
+  });
+
+  it('asks the follow hook whether a row is held, at settle time', () => {
+    const { ref, scrollToBottom } = handle(true);
+    let holding = true;
+    const { result } = renderHook(() => useTranscriptSettle(ref, 5, () => holding));
+    result.current();
+    expect(scrollToBottom).not.toHaveBeenCalled();
+    holding = false;
     result.current();
     expect(scrollToBottom.mock.calls).toEqual([[]]);
   });

@@ -61,6 +61,7 @@ import { useLoadingChat } from './summary/useLoadingChat';
 import { composerFollowsUp, useFirstSend } from './summary/useFirstSend';
 import { FirstSendTranscript } from './summary/FirstSendTranscript';
 import { useTranscriptFollow, useTranscriptSettle } from './summary/useTranscriptFollow';
+import { useLateRowHold } from './summary/useLateRowHold';
 import { captureScrollAnchor, useColumnGlide } from '../hooks/useColumnGlide';
 import { DUR, EASE_OUT, isWindowResizing, prefersReducedMotion } from '../styles/motion';
 import { Note } from './ui/note';
@@ -2173,12 +2174,6 @@ function BaseChatContent({
     }
   };
 
-  // When the list settles: back to the end while the reader follows it (the
-  // first settle lands at once), and nowhere once they have scrolled up, the
-  // first settle included: a long chat opens at its end, and a reader who
-  // scrolled up while its older batches loaded keeps their rows.
-  const handleRenderingComplete = useTranscriptSettle(scrollRef, messages.length);
-
   // Gated on agentReady: tools do not exist until the extensions do, and this
   // hook has no other reason to refetch.
   const toolCount = useToolCount(sessionId, agentReady);
@@ -2414,6 +2409,34 @@ function BaseChatContent({
     scrollRef,
     isPreviewStacked: artifactPanel.isStacked,
     transcriptMounted: !isCleanConversation && !sessionLoadError,
+  });
+
+  // When the list settles: back to the end while the reader follows it (the
+  // first settle lands at once), and nowhere once they have scrolled up, the
+  // first settle included: a long chat opens at its end, and a reader who
+  // scrolled up while its older batches loaded keeps their rows. Nor while a
+  // late row is held below the fold (below).
+  const handleRenderingComplete = useTranscriptSettle(
+    scrollRef,
+    messages.length,
+    transcriptFollow.isHolding
+  );
+
+  // The turn error drawn at the end of the transcript, when the transcript
+  // does not already show it as a stored notice.
+  const turnErrorRow =
+    turnError && !hasVisibleTurnErrorMessage(turnError, messages) ? turnError : null;
+
+  // A chat whose model could not be restored learns it from the agent load,
+  // seconds after a long transcript is drawn; that row goes below the fold
+  // instead of moving every card on screen up under the pointer (vision
+  // V2-R9-2). See summary/useLateRowHold.ts.
+  useLateRowHold({
+    sessionId,
+    transcriptShown: !isCleanConversation && !sessionLoadError && messages.length > 0,
+    row: turnErrorRow,
+    turnRunning: isRunningState(chatState),
+    follow: transcriptFollow,
   });
 
   // The composer's own FLIP: from the centred empty state to its place above
@@ -3188,8 +3211,8 @@ function BaseChatContent({
                                 transcript and vanish as each authoritative
                                 request lands (removed by id in the store). */}
                             <PendingToolCallList pending={pendingToolCalls} />
-                            {turnError && !hasVisibleTurnErrorMessage(turnError, messages) && (
-                              <ChatTurnError error={turnError} onRetry={heldRetryTurn} />
+                            {turnErrorRow && (
+                              <ChatTurnError error={turnErrorRow} onRetry={heldRetryTurn} />
                             )}
                             {/* F5: a CONFIRMED Stop's outcome, in the slot a
                                 failed Stop's notice takes. Transient — the
