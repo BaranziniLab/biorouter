@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, fireEvent, act } from '@testing-library/react';
 import { ChatTabStrip, ChatTabStripProps } from './ChatTabStrip';
 import { ChatTab } from './chatGroupsTypes';
+import { createTabStripMemory, type TabStripMemory } from './tabStripMemory';
 
 function tab(over: Partial<ChatTab> = {}): ChatTab {
   return { tabId: 'tab-1', sessionId: 's1', title: 'Cohort query', userSetName: false, ...over };
@@ -269,6 +270,86 @@ describe('the complete active tab is brought into view', () => {
     it('the last tab goes to the end, where the strip stops fading', () => {
       const { strip } = five('tab-5');
       expect(strip.scrollLeft).toBe(305);
+    });
+  });
+
+  // Vision V2-R7-1: the shell keys a tab's chat on the active tab, so every tab switch mounts a
+  // new strip with the group's memory. Each new strip started at scroll 0 and the reveal then
+  // carried the tab just clicked from under the pointer to the strip's end. jsdom lays nothing
+  // out, so the geometry sits on the prototype, in place before the first effect runs: 14 tabs
+  // 117px wide every 120px and an 8px end padding (scrollWidth 1685) in a 700px strip, which
+  // scrolls 0..985. No fade is declared here, so the reveal reads 0.
+  describe('a remount starts where the last mount left the scroll', () => {
+    const FOURTEEN = Array.from({ length: 14 }, (_, i) =>
+      tab({ tabId: `tab-${i + 1}`, sessionId: `s${i + 1}`, title: `Chat ${i + 1}` })
+    );
+    const indexOf = (el: HTMLElement) => Number(el.dataset.tabId?.slice('tab-'.length)) - 1;
+    const isStrip = (el: HTMLElement) => el.getAttribute('role') === 'tablist';
+    beforeEach(() => {
+      vi.spyOn(HTMLElement.prototype, 'clientWidth', 'get').mockImplementation(function (
+        this: HTMLElement
+      ) {
+        return isStrip(this) ? 700 : 0;
+      });
+      vi.spyOn(HTMLElement.prototype, 'scrollWidth', 'get').mockImplementation(function (
+        this: HTMLElement
+      ) {
+        return isStrip(this) ? 13 * 120 + 117 + 8 : 0;
+      });
+      vi.spyOn(HTMLElement.prototype, 'offsetLeft', 'get').mockImplementation(function (
+        this: HTMLElement
+      ) {
+        return this.dataset.tabId ? indexOf(this) * 120 : 0;
+      });
+      vi.spyOn(HTMLElement.prototype, 'offsetWidth', 'get').mockImplementation(function (
+        this: HTMLElement
+      ) {
+        return this.dataset.tabId ? 117 : 0;
+      });
+    });
+    afterEach(() => {
+      vi.restoreAllMocks();
+    });
+
+    const mount = (memory: TabStripMemory, activeTabId: string) => {
+      const rendered = renderStrip({ tabs: FOURTEEN, activeTabId, memory });
+      const strip = rendered.container.querySelector<HTMLElement>('[role="tablist"]')!;
+      return { ...rendered, strip };
+    };
+
+    it('keeps the remembered scroll when the new active tab is already in view', () => {
+      const memory = createTabStripMemory();
+      memory.scrollLeft = 985;
+      // tab-10 (1080..1197) is inside 985..1685: nothing moves.
+      const { strip } = mount(memory, 'tab-10');
+      expect(strip.scrollLeft).toBe(985);
+    });
+
+    it('carries a scroll from one mount to the next, as a tab switch does', () => {
+      const memory = createTabStripMemory();
+      const first = mount(memory, 'tab-14');
+      expect(first.strip.scrollLeft).toBe(985);
+      act(() => {
+        first.strip.scrollLeft = 400;
+        fireEvent.scroll(first.strip);
+      });
+      expect(memory.scrollLeft).toBe(400);
+      // 1685px of tabs in 700px: the ▾ is showing, and the next mount starts with it drawn.
+      expect(memory.overflowMenu).toBe(true);
+      // The person clicks tab-6 (600..717, inside 400..1100): the old strip goes and a new one
+      // mounts with tab-6 active.
+      first.unmount();
+      expect(memory.scrollLeft).toBe(400);
+      const second = mount(memory, 'tab-6');
+      expect(second.strip.scrollLeft).toBe(400);
+    });
+
+    it('still reveals a new active tab that the remembered scroll does not show', () => {
+      const memory = createTabStripMemory();
+      memory.scrollLeft = 0;
+      // "+" opened tab-14 at the end (1560..1677), out of 0..700.
+      const { strip } = mount(memory, 'tab-14');
+      expect(strip.scrollLeft).toBe(985);
     });
   });
 

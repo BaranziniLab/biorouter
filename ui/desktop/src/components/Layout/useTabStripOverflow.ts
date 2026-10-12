@@ -73,9 +73,16 @@ function useWatchedElement(
  *   after the hook does, or be replaced by another element; it is watched wherever
  *   it is as of the latest render.
  * @param tabCount how many tabs it holds
+ * @param initial the answer before the first measure, for a strip that remounts and knows what it
+ *   showed last time (ChatTabStrip's TabStripMemory). The first layout effect corrects a wrong
+ *   one before the first paint either way.
  */
-export function useTabStripOverflow(ref: RefObject<HTMLElement | null>, tabCount: number): boolean {
-  const [overflowing, setOverflowing] = useState(false);
+export function useTabStripOverflow(
+  ref: RefObject<HTMLElement | null>,
+  tabCount: number,
+  initial = false
+): boolean {
+  const [overflowing, setOverflowing] = useState(initial);
 
   const measure = useCallback(() => {
     const el = ref.current;

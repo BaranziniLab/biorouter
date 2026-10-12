@@ -203,6 +203,23 @@ describe('a tab strip list that mounts after the hook, or is replaced', () => {
   });
 });
 
+describe('useTabStripOverflow', () => {
+  // Vision V2-R7-1: a strip that remounts on every tab switch starts from the ▾ it showed last
+  // time, so the scroll it puts back is taken at the same width.
+  it('starts from the answer it is given, until the first measure corrects it', () => {
+    const seen: boolean[] = [];
+    function Remembered() {
+      const ref = useRef<HTMLDivElement | null>(null);
+      seen.push(useTabStripOverflow(ref, 9, true));
+      return <div ref={ref} />;
+    }
+    render(<Remembered />);
+    // jsdom lays nothing out (both widths 0), so the measure finds that the strip fits.
+    expect(seen[0]).toBe(true);
+    expect(seen[seen.length - 1]).toBe(false);
+  });
+});
+
 /**
  * Where a reveal scrolls a strip (vision V2-R4-4). 15 tabs 136px wide every 144px from 8, the
  * strip 728px wide with 8px end padding, fading 32px at an end with tabs past it: the geometry

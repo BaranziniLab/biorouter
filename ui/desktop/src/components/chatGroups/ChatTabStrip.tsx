@@ -188,6 +188,17 @@ function revealedAt(strip: HTMLElement, tab: HTMLElement): string {
   return `${tab.dataset.tabId}|${tab.offsetLeft}|${tab.offsetWidth}|${strip.clientWidth}`;
 }
 
+/**
+ * Caps a tab at the strip's width less its 8px end padding (`--chat-tab-available-width`,
+ * chat-tabs.css), so a strip narrower than one tab shows a whole one. A strip with no width yet
+ * (not laid out) keeps the stylesheet's 240px fallback.
+ */
+function applyAvailableWidth(strip: HTMLElement) {
+  if (strip.clientWidth === 0) return;
+  const available = Math.max(0, strip.clientWidth - 8);
+  strip.style.setProperty('--chat-tab-available-width', `${available}px`);
+}
+
 /** True when a tab title matches the overflow menu's filter (case-insensitive substring). */
 export function tabMatchesFilter(title: string, filter: string): boolean {
   const needle = filter.trim().toLocaleLowerCase();
@@ -493,8 +504,23 @@ export function ChatTabStrip({
   useLayoutEffect(() => {
     const strip = stripRef.current;
     return () => {
-      if (strip?.isConnected) stripMemory.offsets = measureTabOffsets(strip);
+      if (!strip?.isConnected) return;
+      stripMemory.offsets = measureTabOffsets(strip);
+      stripMemory.scrollLeft = strip.scrollLeft;
     };
+  }, [stripMemory]);
+
+  // The strip's scroll outlives the mount too (V2-R7-1): written on every scroll as well as in
+  // the cleanup above, so the record holds even when the strip leaves the document before its
+  // cleanup can read it.
+  useEffect(() => {
+    const strip = stripRef.current;
+    if (!strip) return;
+    const remember = () => {
+      stripMemory.scrollLeft = strip.scrollLeft;
+    };
+    strip.addEventListener('scroll', remember, { passive: true });
+    return () => strip.removeEventListener('scroll', remember);
   }, [stripMemory]);
 
   // The active tab keeps `data-tab-entered` until it stops being active (see
@@ -504,6 +530,22 @@ export function ChatTabStrip({
     if (strip) releaseSettledEntrances(strip);
   }, [activeTabId]);
 
+  // A mount starts where the last one left the strip's scroll (TabStripMemory.scrollLeft), and
+  // it does so BEFORE the first reveal below reads the scroll. A tab switch remounts the strip;
+  // starting from scroll 0, the reveal carried the tab just clicked from under the pointer to
+  // the strip's end, and the next click landed on another tab (vision V2-R7-1, measured with 14
+  // tabs at 1100px: 'Initial greeting' clicked at 347..483 came to rest at 732..868). From the
+  // remembered scroll, a tab already clear of both fades does not move at all. The strip has the
+  // width the scroll was taken at: the ▾ is already drawn (it starts from the memory too, see
+  // useTabStripOverflow below), and the width cap goes on first for a narrow strip's tabs.
+  useLayoutEffect(() => {
+    const strip = stripRef.current;
+    const remembered = stripMemory.scrollLeft;
+    if (!strip || remembered === null) return;
+    applyAvailableWidth(strip);
+    strip.scrollLeft = remembered;
+  }, [stripMemory]);
+
   // Where the active tab was when it was last revealed (see revealedAt).
   const revealedAtRef = useRef<string | null>(null);
 
@@ -511,8 +553,7 @@ export function ChatTabStrip({
     const strip = stripRef.current;
     const tab = activeTabRef.current;
     if (!strip || !tab || strip.clientWidth === 0) return;
-    const available = Math.max(0, strip.clientWidth - 8);
-    strip.style.setProperty('--chat-tab-available-width', `${available}px`);
+    applyAvailableWidth(strip);
     revealedAtRef.current = revealedAt(strip, tab);
     // The whole tab, its close control included, clear of the end fade on the
     // side it is revealed from (V2-R4-4: it stopped 8px from the end, inside
@@ -575,7 +616,10 @@ export function ChatTabStrip({
    * measurement is a SHARED hook because the preview panel runs the same tab
    * language and must not have to re-derive the rule (card Z).
    */
-  const showOverflowMenu = useTabStripOverflow(stripRef, tabs.length);
+  const showOverflowMenu = useTabStripOverflow(stripRef, tabs.length, stripMemory.overflowMenu);
+  useLayoutEffect(() => {
+    stripMemory.overflowMenu = showOverflowMenu;
+  });
   const scrolledEdges = useTabStripScrolledEdges(stripRef);
 
   const handleSelect = useCallback(
