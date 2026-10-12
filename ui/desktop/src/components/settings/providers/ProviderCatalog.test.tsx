@@ -8,7 +8,7 @@ import ProviderCatalog, {
   tabFromHint,
 } from './ProviderCatalog';
 import { getOrderedProviderGroups } from './providerOrdering';
-import { catalogCopy, customProviderCopy, providerPageCopy } from './copy';
+import { catalogCopy, customProviderCopy, providerPageCopy, providerRowSummary } from './copy';
 import { agentCopy } from '../../onboarding/copy';
 import { __resetDisclosureStoreForTests } from '../../privacy/disclosureCopy';
 import type { CodingAgentAuth, CodingAgentAvailability } from '../../onboarding/codingAgentStatus';
@@ -616,15 +616,63 @@ describe('ProviderCatalog — AI agents', () => {
     expect(within(row).queryByText('Ready · signed in on your subscription')).toBeNull();
   });
 
-  it('draws the daemon’s backticked command as inline code, not with the marks', async () => {
+  // FR-R3-4 (principle 3, one family per line): the daemon's backticked command used to be drawn
+  // as a mono run inside a sans line ("Run `biorouter configure` and select copilot"); the line and
+  // its tooltip are now one face, and a one-sentence line drops its closing period.
+  it('draws a daemon description in one face, without the marks or a closing period', async () => {
     const row = provider('anthropic', {}, 'Anthropic');
     row.metadata.description = 'Uses your own installed `claude` command-line app.';
     render(<ProviderCatalog providers={[row]} mode="settings" configuredProvider={null} />);
     clickTab('commercial');
     const description = await screen.findByTestId('provider-description-anthropic');
-    expect(description).toHaveTextContent('Uses your own installed claude command-line app.');
-    expect(description.querySelector('code')).toHaveTextContent('claude');
+    expect(description).toHaveTextContent(/^Uses your own installed claude command-line app$/);
+    expect(description.querySelector('code')).toBeNull();
   });
+
+  // FR-R3-4: the rows UCSF users choose from said two clauses each, with "API Key" capitalised and a
+  // "+"; GitHub Copilot's told a person to run a CLI its own dialog does not need; Xiaomi MiMo's
+  // named an environment variable. Each shows a short line, and the daemon's sentence stays what
+  // the row's control is described by.
+  it.each([
+    [
+      'versa_azure',
+      'Versa API Azure',
+      'institutional',
+      'UCSF ChatGPT via Azure OpenAI. API Key only; endpoint and deployment are pre-configured.',
+    ],
+    [
+      'versa_bedrock',
+      'Versa API Bedrock',
+      'institutional',
+      'UCSF Anthropic models via Amazon Bedrock. Access key + secret only; endpoint and region are pre-configured.',
+    ],
+    [
+      'github_copilot',
+      'GitHub Copilot',
+      'commercial',
+      'GitHub Copilot. Run `biorouter configure` and select copilot to set up.',
+    ],
+    [
+      'xiaomi_mimo',
+      'Xiaomi MiMo',
+      'commercial',
+      'Xiaomi MiMo models via an OpenAI-compatible API. Set XIAOMI_MIMO_HOST to your MiMo endpoint.',
+    ],
+  ] as const)(
+    'gives %s a short line and keeps the daemon sentence as its description',
+    async (name, display, tab, sentence) => {
+      const backend = tab === 'institutional' ? { ...PRIVATE_REMOTE, institutions: UCSF } : {};
+      const row = provider(name, backend, display);
+      row.metadata.description = sentence;
+      render(<ProviderCatalog providers={[row]} mode="settings" configuredProvider={null} />);
+      clickTab(tab);
+      const line = await screen.findByTestId(`provider-description-${name}`);
+      expect(line).toHaveTextContent(providerRowSummary[name]);
+      expect(line).not.toHaveTextContent(/pre-configured|biorouter configure|XIAOMI_MIMO_HOST|\+/);
+      const action = within(screen.getByTestId(`provider-actions-${name}`)).getByRole('button');
+      expect(action).toHaveAccessibleDescription(sentence.replace(/`/g, ''));
+    }
+  );
 
   // FR-R1-8: the daemon's sentence ("Uses the Claude subscription you are already signed in to,
   // through your own installed `claude` command. No API key. Requires …") was cut mid-word, with a

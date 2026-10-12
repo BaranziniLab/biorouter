@@ -46,6 +46,34 @@ export const catalogCopy = {
     'A gateway appears here once Biorouter recognizes its endpoint as private. Anything else can be added under Public with Add custom provider, and is treated as public.',
 } as const;
 
+/**
+ * A row's second line where the daemon's description is not a line (vision FR-R3-4): the two Versa
+ * rows were two clauses each ("API Key only; endpoint and deployment are pre-configured", with a
+ * "+"), GitHub Copilot's was a terminal instruction its own Configure dialog contradicts by asking
+ * for a token, and Xiaomi MiMo's named the variable XIAOMI_MIMO_HOST. Keyed by provider id; the
+ * daemon's sentence stays the row's accessible description (`ProviderCard`'s `summary`), the way
+ * the coding agents' rows already work (`agentCopy.rowSummary`).
+ */
+export const providerRowSummary: Readonly<Record<string, string>> = {
+  versa_azure: 'UCSF · GPT models · API key',
+  versa_bedrock: 'UCSF · Claude models · access key and secret',
+  github_copilot: 'Your GitHub Copilot subscription · token',
+  xiaomi_mimo: 'Xiaomi MiMo models through an OpenAI-compatible API',
+};
+
+/**
+ * A daemon description as one row line, in one face (vision FR-R3-4, principle 3): the command a
+ * description wraps in backticks is drawn as plain text, as the line's tooltip already drew it, and
+ * a one-sentence line drops its closing period, as every label and one-line description does (6 of
+ * 22 public lines ended with one and 16 did not). A description of several sentences keeps its
+ * punctuation, since dropping only the last period would leave the others standing.
+ */
+export function providerRowLine(description: string): string {
+  const text = description.replace(/`/g, '').trim();
+  const oneSentence = !/[.!?]\s+\S/.test(text);
+  return oneSentence && text.endsWith('.') && !text.endsWith('..') ? text.slice(0, -1) : text;
+}
+
 export const customProviderCopy = {
   add: 'Add provider',
   setUp: (name: string) => `Set up ${name}`,

@@ -105,7 +105,22 @@ export const agentCopy = {
 /** The key detector at the top of Public's API providers (`CommercialSetupCard`). */
 export const commercialCopy = {
   apiKey: 'API key',
-  help: (supported: string) => `Paste a key from ${supported} and Biorouter detects the provider.`,
+  /**
+   * The key field's InfoTip. It used to run the whole detectable list into the clause ("…, OpenAI,
+   * z.ai, Xiaomi MiMo and Biorouter detects the provider.", vision FR-R3-4): the first three names
+   * now stand for the rest, and the no-match error still names them all.
+   */
+  help: (supported: readonly string[]) => {
+    const named = supported.slice(0, 3);
+    const more = supported.length > named.length;
+    const list =
+      named.length <= 1
+        ? (named[0] ?? 'a listed provider')
+        : more
+          ? `${named.join(', ')} or another listed provider`
+          : `${named.slice(0, -1).join(', ')} or ${named[named.length - 1]}`;
+    return `Paste a key from ${list}; Biorouter detects which.`;
+  },
   detect: 'Detect provider',
   detecting: 'Detecting…',
   detected: (provider: string) => `Detected ${provider}`,

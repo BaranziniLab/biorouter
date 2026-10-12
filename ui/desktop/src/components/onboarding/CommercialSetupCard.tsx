@@ -7,6 +7,7 @@ import { AlertTriangle, Check } from '../icons/app-icons';
 import { Field } from '../ui/field';
 import { Spinner } from '../ui/spinner';
 import { commercialCopy } from './copy';
+import { PINNED_PUBLIC_PROVIDERS } from '../settings/providers/providerOrdering';
 
 interface CommercialSetupCardProps {
   onSuccess: (setup: DetectedProviderSetup) => void | Promise<void>;
@@ -56,7 +57,23 @@ interface DetectionResult {
 // Fallback list shown if the backend list can't be fetched. The authoritative
 // list comes from GET /config/detectable-providers (single source of truth in
 // the Rust `auto_detect` module).
-const FALLBACK_PROVIDERS = ['OpenAI', 'Anthropic', 'Google', 'Groq', 'xAI', 'z.ai', 'Xiaomi MiMo'];
+const FALLBACK_PROVIDERS = ['Anthropic', 'OpenAI', 'Google', 'Groq', 'xAI', 'z.ai', 'Xiaomi MiMo'];
+
+/**
+ * The detectable providers in the catalog's own order: the pinned three (Anthropic, OpenAI, Google
+ * Gemini) first, as the rows below the field list them, then the rest as the daemon serves them.
+ * The key field's InfoTip names the first three (vision FR-R3-4).
+ */
+const inCatalogOrder = <T extends { name?: string | null }>(providers: T[]): T[] => {
+  const rank = (provider: T) => {
+    const index = PINNED_PUBLIC_PROVIDERS.indexOf(provider.name ?? '');
+    return index === -1 ? PINNED_PUBLIC_PROVIDERS.length : index;
+  };
+  return providers
+    .map((provider, index) => ({ provider, index }))
+    .sort((a, b) => rank(a.provider) - rank(b.provider) || a.index - b.index)
+    .map(({ provider }) => provider);
+};
 
 // Map a backend failure reason code to actionable copy. The no-match case names what IS
 // supported, in the note's own detail: it used to be a hand-drawn "·" list under the note.
@@ -97,7 +114,9 @@ export default function CommercialSetupCard({
     (async () => {
       try {
         const response = await getDetectableProviders();
-        const names = response.data?.providers?.map((p) => p.display_name).filter(Boolean);
+        const names = inCatalogOrder(response.data?.providers ?? [])
+          .map((p) => p.display_name)
+          .filter(Boolean);
         if (!cancelled && names && names.length > 0) {
           setSupported(names);
         }
@@ -172,7 +191,7 @@ export default function CommercialSetupCard({
         <Field
           id="commercial-provider-api-key"
           label={commercialCopy.apiKey}
-          info={commercialCopy.help(supportedLabel)}
+          info={commercialCopy.help(supported)}
         >
           <Input
             ref={inputRef}

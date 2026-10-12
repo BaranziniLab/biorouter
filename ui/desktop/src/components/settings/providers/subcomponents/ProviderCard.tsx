@@ -4,8 +4,7 @@ import DefaultCardButtons from './buttons/DefaultCardButtons';
 import { ProviderDetails, ProviderMetadata } from '../../../../api';
 import { Tooltip, TooltipContent, TooltipTrigger } from '../../../ui/Tooltip';
 import { StatusDot } from '../../../ui/status-dot';
-import { catalogCopy } from '../copy';
-import { InlineCodeText } from './InlineCodeText';
+import { catalogCopy, providerRowLine } from '../copy';
 import '../providers.css';
 
 /**
@@ -43,8 +42,9 @@ type ProviderCardProps = {
   /** A live status line beside the name (the coding agents' auth pill). */
   statusSlot?: React.ReactNode;
   /**
-   * The row's second line, when the daemon's description is a sentence too long for one (the
-   * coding agents'). The description stays the row's accessible description.
+   * The row's second line, when the daemon's description is not a line: the coding agents'
+   * (`agentCopy.rowSummary`) and the rows in `providerRowSummary` (the two Versa gateways, GitHub
+   * Copilot, Xiaomi MiMo). The description stays the row's accessible description.
    */
   summary?: string;
   children?: React.ReactNode;
@@ -145,13 +145,14 @@ export const ProviderCard = function ProviderCard({
               data-testid={`provider-description-${slug}`}
               className="-mx-1.5 -my-1 cursor-default truncate rounded-element px-1.5 py-1 text-supporting text-text-muted biorouter-focus-surface"
             >
-              {summary ?? <InlineCodeText text={metadata.description} />}
+              {summary ?? providerRowLine(metadata.description)}
             </p>
           </TooltipTrigger>
           {/* What is cut off, and only that: the line's own text, in the tooltip's one face (no
-              mono run: a tooltip is one family). An agent's short line was answered with the
-              daemon's three sentences, `claude` in mono, covering the Codex row (FR-R2-7); that
-              sentence is the row's accessible description instead, below. */}
+              mono run: a tooltip is one family, and since FR-R3-4 so is the line). An agent's short
+              line was answered with the daemon's three sentences, `claude` in mono, covering the
+              Codex row (FR-R2-7); that sentence is the row's accessible description instead,
+              below. */}
           <TooltipContent side="bottom" className="max-w-72 text-wrap">
             {summary ?? metadata.description.replace(/`/g, '')}
           </TooltipContent>

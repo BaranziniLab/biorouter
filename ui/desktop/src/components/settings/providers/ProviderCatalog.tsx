@@ -25,7 +25,7 @@ import { Note } from '../../ui/note';
 import { Button } from '../../ui/button';
 import { Skeleton } from '../../ui/skeleton';
 import { llamaServerStore } from '../models/llamaServerStore';
-import { catalogCopy, customProviderCopy, providerPageCopy } from './copy';
+import { catalogCopy, customProviderCopy, providerPageCopy, providerRowSummary } from './copy';
 import './providers.css';
 import {
   RETIRED_AZURE_ENDPOINT_NOTICE,
@@ -697,7 +697,7 @@ export default function ProviderCatalog({
           summary={
             isCodingAgentProviderId(provider.name)
               ? agentCopy.rowSummary(AGENT_SUBSCRIPTION[provider.name])
-              : undefined
+              : providerRowSummary[provider.name]
           }
         >
           {agent ? (

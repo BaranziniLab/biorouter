@@ -38,7 +38,9 @@ describe('CommercialSetupCard', () => {
     render(<CommercialSetupCard onSuccess={vi.fn()} />);
     const field = screen.getByLabelText(commercialCopy.apiKey);
     await waitFor(() =>
-      expect(field).toHaveAccessibleDescription(commercialCopy.help('OpenAI, Anthropic'))
+      expect(field).toHaveAccessibleDescription(
+        'Paste a key from Anthropic or OpenAI; Biorouter detects which.'
+      )
     );
     // A labelled field, not a placeholder doing a label's job.
     expect(field).not.toHaveAttribute('placeholder');
@@ -163,8 +165,9 @@ describe('CommercialSetupCard', () => {
     typeKeyAndSubmit('unknown-key');
 
     await waitFor(() => expect(screen.getByText('Could not detect provider')).toBeInTheDocument());
-    // The supported list is the note's own detail, not a hand-drawn list under it (FR-S-5).
-    await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent('OpenAI, Anthropic'));
+    // The supported list is the note's own detail, not a hand-drawn list under it (FR-S-5), in the
+    // catalog's order (Anthropic, OpenAI, Google Gemini first), as the InfoTip names them (FR-R3-4).
+    await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent('Anthropic, OpenAI'));
     expect(screen.queryByText(/sufficient credits/)).toBeNull();
     expect(screen.queryByText(/use the Local tab/)).toBeNull();
   });
@@ -177,6 +180,47 @@ describe('CommercialSetupCard', () => {
 
     await waitFor(() =>
       expect(screen.getByText('Could not reach the provider')).toBeInTheDocument()
+    );
+  });
+});
+
+/**
+ * Vision FR-R3-4: the key field's InfoTip ran the whole detectable list into its clause ("Paste a
+ * key from Anthropic, Google Gemini, Groq, xAI, OpenAI, z.ai, Xiaomi MiMo and Biorouter detects the
+ * provider."). It names the catalog's first three now, in the catalog's order, and stands the rest
+ * behind "another listed provider".
+ */
+describe('the API key InfoTip', () => {
+  it('names the first three in the catalog order and the rest as another listed provider', async () => {
+    mockGetDetectableProviders.mockResolvedValue({
+      data: {
+        providers: [
+          { name: 'google', display_name: 'Google Gemini' },
+          { name: 'groq', display_name: 'Groq' },
+          { name: 'xai', display_name: 'xAI' },
+          { name: 'openai', display_name: 'OpenAI' },
+          { name: 'anthropic', display_name: 'Anthropic' },
+        ],
+      },
+    });
+    render(<CommercialSetupCard onSuccess={vi.fn()} />);
+    const field = screen.getByLabelText(commercialCopy.apiKey);
+    await waitFor(() =>
+      expect(field).toHaveAccessibleDescription(
+        'Paste a key from Anthropic, OpenAI, Google Gemini or another listed provider; Biorouter detects which.'
+      )
+    );
+  });
+
+  it('reads as a sentence at every length', () => {
+    expect(commercialCopy.help(['Anthropic'])).toBe(
+      'Paste a key from Anthropic; Biorouter detects which.'
+    );
+    expect(commercialCopy.help(['Anthropic', 'OpenAI', 'Google Gemini'])).toBe(
+      'Paste a key from Anthropic, OpenAI or Google Gemini; Biorouter detects which.'
+    );
+    expect(commercialCopy.help([])).toBe(
+      'Paste a key from a listed provider; Biorouter detects which.'
     );
   });
 });
