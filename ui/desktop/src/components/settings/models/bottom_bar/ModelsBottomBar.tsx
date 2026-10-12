@@ -39,7 +39,11 @@ import { disclosureRequiredForTier, useDisclosure } from '../../../privacy/discl
 import { readResolvedProviderTier } from '../../../privacy/useBoundProviderTier';
 import { HostManagedModelNote } from '../../../privacy/HostManagedModelNote';
 import { isBrowserSurface } from '../../../../utils/surface';
-import type { ProviderTier, SessionClassification } from '../../../../api/types.gen';
+import type {
+  ProviderDetails,
+  ProviderTier,
+  SessionClassification,
+} from '../../../../api/types.gen';
 import type { PinnedModelView } from '../../../../hooks/chatStreamStore';
 import { subscribeAppModelSelectionChanges } from '../../../../utils/sessionBindingSync';
 import {
@@ -75,6 +79,46 @@ export const CHAT_KEEPS_ITS_MODEL_NOTE =
 export const NEW_CHATS_MODEL_HEADING = 'Model for new chats';
 export const NEW_CHATS_MODEL_NOTE =
   'New chats in every window start on this model. Existing chats keep their own.';
+
+/**
+ * V2-R8-1. Everything this chip states about a provider, as one catalog row
+ * said it. One row of one read, so the tier, the affiliation, the disclosure
+ * and the display name can never come from two different providers.
+ */
+interface ProviderSample {
+  displayName: string | null;
+  needsDisclosure: boolean;
+  affiliation: ProviderAffiliation | null;
+  tier: ProviderTier | undefined;
+}
+
+const NO_CATALOG_SAMPLES: ReadonlyMap<string, ProviderSample> = new Map();
+
+/**
+ * A provider the catalog does not list, or a read that failed. Fail-safe on the
+ * disclosure means saying more; on the affiliation and the tier it means saying
+ * nothing, because each of those is a claim (whose agreements cover a
+ * transcript; whether the model is private), and a catalog we cannot read is
+ * evidence of neither.
+ */
+const UNVOUCHED_PROVIDER: ProviderSample = {
+  displayName: null,
+  needsDisclosure: true,
+  affiliation: null,
+  tier: undefined,
+};
+
+function sampleProviderRow(row: ProviderDetails): ProviderSample {
+  return {
+    displayName: row.metadata.display_name ?? null,
+    needsDisclosure: disclosureRequiredForTier(row.metadata.tier),
+    // Read off the ROW, never `row.metadata`: the metadata's tier is the
+    // type-level claim, and affiliation is served beside it precisely because
+    // DR-26 requires an instance-resolved value.
+    affiliation: readProviderAffiliation(row),
+    tier: readResolvedProviderTier(row),
+  };
+}
 
 interface ModelsBottomBarProps {
   sessionId: string | null;
@@ -167,53 +211,23 @@ export default function ModelsBottomBar({
   const [isLeadWorkerModalOpen, setIsLeadWorkerModalOpen] = useState(false);
   const [providerDefaultModel, setProviderDefaultModel] = useState<string | null>(null);
   /**
-   * Task 30A (issue #56, DR-17 requirement 3). Does the model bound to this
-   * chat need the one-line disclosure?
+   * V2-R8-1. What the catalog said about each provider, KEYED BY THE PROVIDER
+   * IT WAS READ FOR. The four facts this chip states about its model (the
+   * disclosure, the provider's display name, the affiliation and the tier
+   * padlock) are derived from it below, and only from the entry for the
+   * provider the chip names in THIS render.
    *
-   * ⚠ It hangs off the bound PROVIDER's tier, never off {@link privacyTier}.
-   * That prop is the chat's ratcheted CLASSIFICATION, and a fresh chat on Versa
-   * is classified `public` while its model is emphatically not a public model —
-   * so a line keyed on it would tell the user something false about the one
-   * provider this whole feature exists to make safe to use.
-   *
-   * `null` while unresolved: say nothing rather than guess, in a chip that is
-   * re-rendered on every keystroke in the composer.
+   * ⚠ They used to be four state hooks the effect below overwrote once its read
+   * landed. Between a binding changing and that read, the chip paired the new
+   * model's name with the PREVIOUS provider's padlock: measured after a reload,
+   * Home on a private model, then a public chat (`aws_bedrock`) opened from the
+   * sidebar read "claude-sonnet-4-6" with a Private padlock for about 70 ms,
+   * then dropped it and the name moved 24px. A privacy mark that is false and
+   * then withdrawn is the one thing this chip must never draw. Keyed, a binding
+   * this mount has not read yet has no entry and the chip says nothing.
    */
-  const [needsDisclosure, setNeedsDisclosure] = useState<boolean | null>(null);
-  /**
-   * The display name of the provider this chat is PINNED to, read off the same
-   * catalog row as the tier and affiliation below. `null` until it resolves, and
-   * for a provider the catalog cannot name — in both cases the chip falls back
-   * to the provider's id, which is true rather than invented.
-   */
-  const [pinnedProviderName, setPinnedProviderName] = useState<string | null>(null);
-  /**
-   * Issue #56, DR-26 — *under whose agreements?* for the model bound to this
-   * chat. `null` renders nothing, which is both the "not resolved yet" answer
-   * and the correct answer for a public model.
-   */
-  const [affiliation, setAffiliation] = useState<ProviderAffiliation | null>(null);
-  /**
-   * Issue #56, DR-26 — the bound model's OWN tier, instance-resolved.
-   *
-   * ⚠ This chip is a MODEL chip (a brain glyph and a model name), and until
-   * this field existed the only tier it could state was {@link privacyTier} —
-   * the chat's. So a UCSF Versa model rendered with the chat's public dot
-   * beside its name, above a tooltip reading `gpt-5.5-… · Public chat`, and the
-   * operator read the only available subject: the model. The reasoning was
-   * already written out one state hook above, for the disclosure line, and
-   * simply never applied to the badge or the word.
-   *
-   * Sampled in the SAME row of the SAME fetch as {@link affiliation}, not via
-   * `useBoundProviderTier` — a second fetch here could pair one provider's tier
-   * with another's institution across a model switch, which is the pairing this
-   * chip exists to state.
-   *
-   * `undefined` is *unresolved* and renders nothing. It is the answer for an
-   * unconfigured provider, a construction failure, and a daemon older than the
-   * field — never "public".
-   */
-  const [boundTier, setBoundTier] = useState<ProviderTier | undefined>(undefined);
+  const [catalogSamples, setCatalogSamples] =
+    useState<ReadonlyMap<string, ProviderSample>>(NO_CATALOG_SAMPLES);
 
   /**
    * SD-1 — is this chip's model chosen here, or on the machine running
@@ -411,45 +425,32 @@ export default function ModelsBottomBar({
   // by one endpoint resolution in the daemon (`ProviderAffiliation::of` takes
   // both off a single `&dyn Provider`), and two fetches here could pair one
   // provider's tier with another's institution across a model switch.
+  //
+  // ⚠ V2-R8-1: every row of the read is kept, each under its own provider, so a
+  // later switch to a provider this mount has already read is stated in the
+  // very render that switches, from that provider's own row. Nothing read for
+  // one provider is ever shown under another's name. The sibling effect that
+  // fills `displayProvider` asks the global model context, which by definition
+  // cannot name a provider this chat was pinned to, so the display name comes
+  // off the same row too.
   useEffect(() => {
-    if (!effectiveProvider) {
-      setNeedsDisclosure(null);
-      setAffiliation(null);
-      setBoundTier(undefined);
-      setPinnedProviderName(null);
-      return;
-    }
+    if (!effectiveProvider) return;
     let cancelled = false;
     (async () => {
       try {
         const rows = await getProviders(false);
-        const row = rows.find((candidate) => candidate.name === effectiveProvider);
-        if (!row) throw new Error(`No match for provider: ${effectiveProvider}`);
         if (cancelled) return;
-        // Off the SAME row as the tier and affiliation below. The sibling
-        // effect that fills `displayProvider` asks the global model context,
-        // which by definition cannot name a provider this chat was pinned to.
-        setPinnedProviderName(row.metadata.display_name ?? null);
-        setNeedsDisclosure(disclosureRequiredForTier(row.metadata.tier));
-        // Read off the ROW, never `row.metadata`: the metadata's tier is the
-        // type-level claim, and affiliation is served beside it precisely
-        // because DR-26 requires an instance-resolved value.
-        setAffiliation(readProviderAffiliation(row));
-        setBoundTier(readResolvedProviderTier(row));
-      } catch {
+        const next = new Map<string, ProviderSample>(
+          rows.map((row) => [row.name, sampleProviderRow(row)])
+        );
         // A provider Biorouter cannot classify is one it cannot vouch for.
-        // Fail-safe here means fail towards telling the user.
+        if (!next.has(effectiveProvider)) next.set(effectiveProvider, UNVOUCHED_PROVIDER);
+        setCatalogSamples(next);
+      } catch {
         if (!cancelled) {
-          setPinnedProviderName(null);
-          setNeedsDisclosure(true);
-          // ...but NOT towards claiming an affiliation. Failing safe on the
-          // disclosure means saying more; failing safe on the third axis means
-          // saying nothing, because every value here is a claim about whose
-          // agreements cover a transcript.
-          setAffiliation(null);
-          // Same direction, same reason. A catalog we cannot read is not
-          // evidence that the model is public.
-          setBoundTier(undefined);
+          setCatalogSamples((previous) =>
+            new Map(previous).set(effectiveProvider, UNVOUCHED_PROVIDER)
+          );
         }
       }
     })();
@@ -457,6 +458,58 @@ export default function ModelsBottomBar({
       cancelled = true;
     };
   }, [effectiveProvider, getProviders]);
+
+  // The entry for the provider this render names, or none. No entry is
+  // *unresolved*, and every fact below then says nothing.
+  const boundSample = effectiveProvider ? catalogSamples.get(effectiveProvider) : undefined;
+  /**
+   * Task 30A (issue #56, DR-17 requirement 3). Does the model bound to this
+   * chat need the one-line disclosure?
+   *
+   * ⚠ It hangs off the bound PROVIDER's tier, never off {@link privacyTier}.
+   * That prop is the chat's ratcheted CLASSIFICATION, and a fresh chat on Versa
+   * is classified `public` while its model is emphatically not a public model —
+   * so a line keyed on it would tell the user something false about the one
+   * provider this whole feature exists to make safe to use.
+   *
+   * `null` while unresolved: say nothing rather than guess, in a chip that is
+   * re-rendered on every keystroke in the composer.
+   */
+  const needsDisclosure: boolean | null = boundSample ? boundSample.needsDisclosure : null;
+  /**
+   * The display name of the provider this chat is PINNED to, read off the same
+   * catalog row as the tier and affiliation below. `null` until it resolves, and
+   * for a provider the catalog cannot name — in both cases the chip falls back
+   * to the provider's id, which is true rather than invented.
+   */
+  const pinnedProviderName: string | null = boundSample?.displayName ?? null;
+  /**
+   * Issue #56, DR-26 — *under whose agreements?* for the model bound to this
+   * chat. `null` renders nothing, which is both the "not resolved yet" answer
+   * and the correct answer for a public model.
+   */
+  const affiliation: ProviderAffiliation | null = boundSample?.affiliation ?? null;
+  /**
+   * Issue #56, DR-26 — the bound model's OWN tier, instance-resolved.
+   *
+   * ⚠ This chip is a MODEL chip (a brain glyph and a model name), and until
+   * this field existed the only tier it could state was {@link privacyTier} —
+   * the chat's. So a UCSF Versa model rendered with the chat's public dot
+   * beside its name, above a tooltip reading `gpt-5.5-… · Public chat`, and the
+   * operator read the only available subject: the model. The reasoning was
+   * already written out above, for the disclosure line, and simply never
+   * applied to the badge or the word.
+   *
+   * Sampled in the SAME row of the SAME fetch as {@link affiliation}, not via
+   * `useBoundProviderTier` — a second fetch here could pair one provider's tier
+   * with another's institution across a model switch, which is the pairing this
+   * chip exists to state.
+   *
+   * `undefined` is *unresolved* and renders nothing. It is the answer for an
+   * unconfigured provider, a construction failure, a daemon older than the
+   * field, and a provider this mount has not read yet — never "public".
+   */
+  const boundTier: ProviderTier | undefined = boundSample?.tier;
 
   // ⚠ Unconditional on the master privacy switch — DR-15 turns off enforcement,
   // not the truth. See `privacy/disclosureCopy.ts`.
