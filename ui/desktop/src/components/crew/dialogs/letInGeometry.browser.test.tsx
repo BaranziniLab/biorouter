@@ -127,7 +127,9 @@ const PAINT_ONLY = [
   /^(biorouter-focus-surface|tint-interactive)/,
   // The fill classes (main.css, R-27) set a ground, a custom property or a transparent edge colour;
   // the 1px border width they keep is the `border` utility's, which the table measures.
-  /^br-fill-(surface|rest|hover)$/,
+  // `br-button-inert` (V4-R7-4) is the same kind of class: while a primary is disabled it swaps
+  // the ground and the ink and moves nothing.
+  /^br-(fill-(surface|rest|hover)|button-inert)$/,
   /^border-transparent$/,
   /^lucide/,
 ];

@@ -36,15 +36,20 @@ const buttonVariants = cva(
       // rather than take an overlay"; `link` has no box to tint at all; and the
       // two filled variants below step between two fill tokens.
       variant: {
+        // `br-button-inert` (main.css, beside `.br-button-xs`): a coral or danger button that
+        // cannot act is not coral or red. Disabled, it draws what a disabled `secondary` draws
+        // (the control ground, the default ink, the 50% fade above), so the app has one look for
+        // "not yet" and a person reads colour as "this will do something". A button that is
+        // WORKING says so with `aria-busy` and keeps its colour (the composer's Send).
         default:
-          'bg-background-accent text-text-on-accent hover:bg-background-accent-hover biorouter-focus-surface-accent',
+          'br-button-inert bg-background-accent text-text-on-accent hover:bg-background-accent-hover biorouter-focus-surface-accent',
         // Not a solid red block (§3.1). A translucent danger wash with the deep
         // danger ink on top reads as consequence without shouting, and — because
         // the fill is now translucent rather than opaque — the tint composites
         // correctly. This also retires `hover:opacity-90`, which faded the whole
         // button and let a modal scrim ghost straight through it.
         destructive:
-          'bg-background-danger/22 text-text-danger tint-interactive biorouter-focus-surface',
+          'br-button-inert bg-background-danger/22 text-text-danger tint-interactive biorouter-focus-surface',
         // FILLS BEFORE LINES (owner message 13, R-27, design.md 9.11): the
         // secondary action is a subtle solid fill with no outline. It rests on
         // the control ground (`.br-fill-rest`: `--background-fill`, or the page

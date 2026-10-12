@@ -97,3 +97,43 @@ describe('Button’s data-slot', () => {
     expect(source.indexOf('data-slot="button"')).toBe(slot);
   });
 });
+
+/**
+ * V4-R7-4 (coordinator ruling 22). A primary that cannot act is neutral: `default` and
+ * `destructive` carry `.br-button-inert`, and `main.css` draws a disabled one as a disabled
+ * `secondary`. jsdom runs no stylesheet, so this file holds the two ends of the contract (which
+ * variants carry the class, what the rule says at the source) and
+ * `disabledPrimary.browser.test.tsx` paints it in Chromium, where the rule's layer is proved too:
+ * the same rule written inside `@layer components` loses to the variants' own utilities.
+ */
+describe('Button’s inert look (V4-R7-4)', () => {
+  it('is carried by default and destructive and by no other variant', () => {
+    const variants = ['default', 'destructive', 'secondary', 'outline', 'ghost', 'link'] as const;
+    render(
+      <>
+        {variants.map((variant) => (
+          <Button key={variant} variant={variant} disabled>
+            {variant}
+          </Button>
+        ))}
+      </>
+    );
+    for (const variant of variants) {
+      const carries = variant === 'default' || variant === 'destructive';
+      const button = screen.getByRole('button', { name: variant });
+      expect(button.classList.contains('br-button-inert'), variant).toBe(carries);
+    }
+  });
+
+  it('says in main.css: disabled or aria-disabled, not working, on the ground a secondary rests on', () => {
+    const css = readFileSync(join(__dirname, '../../styles/main.css'), 'utf8');
+    const at = css.indexOf('.br-button-inert:is(');
+    expect(at, 'main.css has the .br-button-inert rule').toBeGreaterThan(-1);
+    const rule = css.slice(at, css.indexOf('}', at) + 1);
+    expect(rule).toContain(':disabled');
+    expect(rule).toContain("[aria-disabled='true']");
+    expect(rule).toContain(":not([aria-busy='true'])");
+    expect(rule).toContain('var(--br-control-ground, var(--background-fill))');
+    expect(rule).toContain('color: var(--text-default)');
+  });
+});

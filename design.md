@@ -2074,6 +2074,14 @@ opens on focus only after a Tab.
   draws the edge. Checkboxes, radios and the switch knob keep their `--border-control` edge. Buttons keep the 24, 28, 32 and 36px ladder, radius 8, 12px
   padding and `text-label`; `secondary` is the default secondary action and `destructive` is a 22% danger wash
   with danger ink.
+- **A button that cannot act is not coloured** (V4-R7-4, coordinator ruling 22). Coral and danger mean "this will
+  do something", so a disabled `default` or `destructive` draws what a disabled `secondary` draws: the control
+  ground, the default ink and the 50% fade every disabled button takes (`.br-button-inert`, `main.css`, applied by
+  the primitive, so no dialog restates it). A primary that can be pressed and has something to say, such as a Save
+  whose click names the missing field, stays `secondary` until it can act and stays enabled (first-run FR-R3-3).
+  A button that is working and says so with `aria-busy="true"` keeps its colour: the composer's Send has only a
+  spinner to say "Sending". A labelled button that is disabled while it works goes neutral and its label carries
+  the progress.
 - **Dialogs and sheets.** A `ModalShell` takes Crew's placement by default: its top edge is pinned at
   `max(10vh, 48px)` so it grows downward only, and a hairline sits under the header. `anchor="center"` is
   the exception, with a reason at the call site. The overlay fades over 250ms; the panel goes from opacity

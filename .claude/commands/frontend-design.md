@@ -131,8 +131,10 @@ Use the primitive in `components/ui/`, never a raw `<button>` or `<input>` with 
   or options that need a line each. `CustomRadio` only in dialogs and forms. Underline `Tabs`.
 - Menus: 32px rows at 13px, a trailing check on the selected item, sentence-case group labels.
 - `Button`: `default` is the one coral button per view, `secondary` the usual second action,
-  `ghost` for icon actions, `destructive` a danger wash. Fields are 32px, filled, with no resting
-  edge; the focus treatment draws it.
+  `ghost` for icon actions, `destructive` a danger wash. A disabled `default` or `destructive` draws
+  the disabled `secondary` (colour means "this will do something"); a primary that must stay
+  clickable to say what is missing is `secondary` until it can act. Fields are 32px, filled, with
+  no resting edge; the focus treatment draws it.
 - `InfoTip` for help: a 14px glyph visible at rest, plain text, at most two sentences, never inside a
   `<label>`. Help text never goes in `title=`.
 - `SettingRow` and `SettingSection`: a label, an InfoTip, one control at the trailing edge; a

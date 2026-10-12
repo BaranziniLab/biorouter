@@ -6087,6 +6087,27 @@ body:has(.biorouter-modal-surface [data-slot='select-content'][data-state='open'
   block-size: 14px;
 }
 
+/* A primary that cannot act is neutral (vision V4-R7-4, coordinator ruling 22; design.md 9.7).
+   `default` (coral) and `destructive` (danger) buttons carry `.br-button-inert` (button.tsx);
+   disabled, they draw what a disabled `secondary` draws: the control ground, the default ink,
+   and the 50% fade `Button` already applies to every disabled variant. Without it the app had
+   two looks for "not yet": the catalog dialogs drew a secondary until their fields were filled
+   (FR-R3-3), while Save changes, Create and run and Reset drew a pale coral or a faded danger
+   wash, so colour did not mean "this will do something".
+
+   The ground is `--br-control-ground`, the variable a secondary rests on, so the inert button
+   steps back to the page inside a filled card and forward on a recessed ground exactly as its
+   neighbour Cancel does (a fill never sits on a fill). Unlayered, because the variant's own
+   `bg-*` and `text-*` utilities live in the `utilities` layer and would win a layered rule. A
+   button that is WORKING (`aria-busy`) keeps its colour: the composer's Send is disabled while a
+   chat starts and must stay the accent with its spinner. `aria-disabled` is named too, for the
+   buttons that fade without the attribute (the Copilot permission check). Forced colours repaint
+   the fill and the ink, so the system button edge is all this leaves to them. */
+.br-button-inert:is(:disabled, [aria-disabled='true']):not([aria-busy='true']) {
+  background-color: var(--br-control-ground, var(--background-fill));
+  color: var(--text-default);
+}
+
 /* Checkbox (`ui/Checkbox.tsx`): a 16px box (radius 4, a 1.5px `--border-control` edge) inside a
    24px hit target; checked or indeterminate, an accent fill carrying a 10px check or an 8×2 bar
    in `--text-on-accent`. The fill eases over `--dur-fast-min`. The transparent input on top is
