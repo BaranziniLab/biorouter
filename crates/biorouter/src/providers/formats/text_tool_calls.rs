@@ -658,7 +658,8 @@ pub fn forged_tool_result(text: &str, tools: &[Tool]) -> Option<ForgedResult> {
 /// with no word that nothing had happened. Several blocks are read because a
 /// corrective retry that repeats the call joins a second block to the first.
 pub fn whole_reply_call_names(text: &str) -> Option<Vec<String>> {
-    let trimmed = text.trim();
+    let notice_text = escape_unknown_json_string_escapes(text);
+    let trimmed = notice_text.trim();
     let mut rest = unwrap_tags(trimmed, ATTEMPT_TAGS).unwrap_or(trimmed).trim();
     let mut names = Vec::new();
     while !rest.is_empty() {
@@ -691,6 +692,38 @@ pub fn whole_reply_call_names(text: &str) -> Option<Vec<String>> {
         }
     }
     (!names.is_empty()).then_some(names)
+}
+
+// Models sometimes embed code with JSON-invalid escapes such as `\d` or
+// `\${n}`. Only the notice detector reads this copy; recovery and retry still
+// require the original arguments to be valid JSON.
+fn escape_unknown_json_string_escapes(text: &str) -> Cow<'_, str> {
+    let mut inside_string = false;
+    let mut escaped = false;
+    let mut changed = false;
+    let mut result = String::with_capacity(text.len());
+    for character in text.chars() {
+        if escaped {
+            if !matches!(
+                character,
+                '"' | '\\' | '/' | 'b' | 'f' | 'n' | 'r' | 't' | 'u'
+            ) {
+                result.push('\\');
+                changed = true;
+            }
+            escaped = false;
+        } else if inside_string && character == '\\' {
+            escaped = true;
+        } else if character == '"' {
+            inside_string = !inside_string;
+        }
+        result.push(character);
+    }
+    if changed {
+        Cow::Owned(result)
+    } else {
+        Cow::Borrowed(text)
+    }
 }
 
 /// The name of one call object as written (S1-S3), or `None` when the object
@@ -2160,6 +2193,45 @@ mod tests {
             "{\"name\": \"shell\", \"arguments\": {}}\n{\"total\": 3}",
         ] {
             assert_eq!(whole_reply_call_names(text), None, "{text}");
+        }
+    }
+
+    #[test]
+    fn the_live_qwen_reply_with_invalid_code_escapes_is_noticed_but_never_run() {
+        let text = include_str!(
+            "../../../tests/fixtures/ollama/diagnostics_20261006_2/qwen-malformed-call.txt"
+        );
+        let tools = [tool("agent_drafter__create_app", json!({"type": "object"}))];
+        assert_eq!(
+            whole_reply_call_names(text),
+            Some(vec!["agent_drafter__create_app".to_string()])
+        );
+        assert_eq!(recover(text, &tools, Tiers::WholeMessage), None);
+        assert_eq!(attempted_calls(text, &tools), None);
+    }
+
+    #[test]
+    fn noticing_invalid_string_escapes_still_requires_a_whole_call_envelope() {
+        let call = r#"{"name": "shell", "arguments": {"command": "printf '\d'"}}"#;
+        for text in [
+            call.to_string(),
+            format!("```json\n{call}\n```"),
+            format!("[{call}]"),
+            format!("<tool_call>{call}</tool_call>"),
+        ] {
+            assert_eq!(whole_reply_call_names(&text), Some(vec!["shell".into()]));
+        }
+        for text in [
+            format!("Here is an example:\n{call}"),
+            format!("{call}\nThis is code for you to run."),
+            format!("```python\n{call}\n```"),
+            r#"{"name": "regex example", "pattern": "\d"}"#.to_string(),
+            r#"{"name": "shell", "arguments": {"command": "printf '\d'"}, "note": "example"}"#
+                .to_string(),
+            format!("{call}\n{{\"count\": 3}}"),
+            r#"{"name": "shell", "arguments": {"command": "\uZZZZ"}}"#.to_string(),
+        ] {
+            assert_eq!(whole_reply_call_names(&text), None, "{text}");
         }
     }
 }

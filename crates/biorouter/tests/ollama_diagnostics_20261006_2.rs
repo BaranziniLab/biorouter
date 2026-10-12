@@ -909,3 +909,119 @@ async fn the_agent_tells_the_person_nothing_ran_and_keeps_it_from_the_model() {
     .to_string();
     assert!(!wire.contains("Nothing ran"), "{wire}");
 }
+
+#[tokio::test]
+async fn the_live_malformed_qwen_reply_gets_a_user_only_notice_without_dispatch() {
+    use biorouter::agents::extension::ExtensionConfig;
+    use biorouter::agents::{Agent, AgentConfig, AgentEvent, SessionConfig};
+
+    let text = include_str!("fixtures/ollama/diagnostics_20261006_2/qwen-malformed-call.txt");
+    let (server, provider) = serve_replies(
+        "llama3.1:8b",
+        &[
+            (200, text_body(text, 31_000, 30_500)),
+            (200, text_body("ok", 31_000, 30_500)),
+        ],
+    )
+    .await;
+    let work = tempfile::TempDir::new().unwrap();
+    let data = tempfile::TempDir::new().unwrap();
+    let permissions = tempfile::TempDir::new().unwrap();
+    let manager = std::sync::Arc::new(biorouter::session::SessionManager::new(
+        data.path().to_path_buf(),
+    ));
+    let agent = Agent::with_config(AgentConfig::new(
+        manager.clone(),
+        std::sync::Arc::new(biorouter::config::permission::PermissionManager::new(
+            permissions.path().to_path_buf(),
+        )),
+        None,
+        biorouter::config::BioRouterMode::Auto,
+    ));
+    let session = manager
+        .create_session(
+            work.path().to_path_buf(),
+            "synthetic malformed qwen replay".to_string(),
+            biorouter::session::session_manager::SessionType::Hidden,
+        )
+        .await
+        .unwrap();
+    agent
+        .update_provider(std::sync::Arc::new(provider), &session.id)
+        .await
+        .unwrap();
+    agent
+        .add_extension(ExtensionConfig::Frontend {
+            name: "notes".to_string(),
+            description: "Read synthetic notes".to_string(),
+            tools: vec![tool("notes__read", json!({"type": "object"}))],
+            instructions: None,
+            bundled: None,
+            available_tools: Vec::new(),
+        })
+        .await
+        .unwrap();
+    let mut shown = Vec::new();
+    for user in ["count urine in the synthetic notes", "thanks"] {
+        let stream = agent
+            .reply(
+                Message::user().with_text(user),
+                SessionConfig {
+                    id: session.id.clone(),
+                    schedule_id: None,
+                    max_turns: Some(3),
+                    max_tool_calls: Some(3),
+                    budget: None,
+                    retry_config: None,
+                    reasoning_effort: None,
+                },
+                None,
+            )
+            .await
+            .unwrap();
+        tokio::pin!(stream);
+        tokio::time::timeout(std::time::Duration::from_secs(30), async {
+            while let Some(event) = stream.next().await {
+                if let AgentEvent::Message(message) = event.unwrap() {
+                    shown.push(message);
+                }
+            }
+        })
+        .await
+        .expect("a bounded fixture replay");
+    }
+    assert!(shown.iter().any(|message| message.as_concat_text() == text));
+    assert!(shown
+        .iter()
+        .all(|message| message.content.iter().all(|content| !matches!(
+            content,
+            MessageContent::ToolRequest(_) | MessageContent::FrontendToolRequest(_)
+        ))));
+    let notices: Vec<_> = shown
+        .iter()
+        .filter(|message| is_unrun_call_notice(message))
+        .collect();
+    assert_eq!(notices.len(), 1, "{shown:?}");
+    assert!(notices[0].is_user_visible() && !notices[0].is_agent_visible());
+    let MessageContent::SystemNotification(note) = &notices[0].content[0] else {
+        unreachable!()
+    };
+    assert!(note.msg.contains("'agent_drafter__create_app'"));
+    let stored = manager
+        .get_session(&session.id, true)
+        .await
+        .unwrap()
+        .conversation
+        .unwrap();
+    let stored_notice = stored
+        .iter()
+        .find(|message| is_unrun_call_notice(message))
+        .expect("the notice remains after reload");
+    assert!(stored_notice.is_user_visible() && !stored_notice.is_agent_visible());
+    let requests = chat_requests(&server).await;
+    assert_eq!(requests.len(), 2, "no corrective retry or tool dispatch");
+    assert!(!requests[1].to_string().contains("Nothing ran"));
+    assert!(requests[1]
+        .to_string()
+        .contains("agent_drafter__create_app"));
+}

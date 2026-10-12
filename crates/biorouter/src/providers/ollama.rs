@@ -72,7 +72,7 @@ use std::io;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, LazyLock, Mutex};
 use std::time::Duration;
-use tokio_util::codec::{FramedRead, LinesCodec};
+use tokio_util::codec::{FramedRead, LinesCodec, LinesCodecError};
 use tokio_util::io::StreamReader;
 use url::Url;
 
@@ -1434,6 +1434,10 @@ fn provider_error(
     if error.chain().any(|cause| {
         cause
             .downcast_ref::<reqwest::Error>()
+            .or_else(|| match cause.downcast_ref::<LinesCodecError>()? {
+                LinesCodecError::Io(error) => error.get_ref()?.downcast_ref::<reqwest::Error>(),
+                _ => None,
+            })
             .is_some_and(reqwest::Error::is_timeout)
     }) {
         return waited_too_long(
