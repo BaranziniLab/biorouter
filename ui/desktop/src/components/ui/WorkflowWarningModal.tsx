@@ -1,12 +1,7 @@
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from './dialog';
+import * as React from 'react';
+import { ModalShell } from '../ModalShell';
 import { Button } from './button';
+import { Note } from './note';
 import MarkdownContent from '../MarkdownContent';
 
 interface WorkflowWarningModalProps {
@@ -21,6 +16,16 @@ interface WorkflowWarningModalProps {
   hasSecurityWarnings?: boolean;
 }
 
+/**
+ * Asked before a workflow the person has not run before (or one carrying hidden characters) runs.
+ *
+ * A `ModalShell` at size `lg` with a scrolling body (spec 2.6; vision round 7, V3-R7-1 named it
+ * among the raw `DialogContent` call sites): pinned at the top edge, the title in the header above
+ * its rule, 16px insets, and the preview scrolling between the header and the footer rules. It
+ * was a raw `DialogContent` 80% of the window wide, centred, with 24px insets. It must be answered
+ * (`purpose="required"`): Escape and an outside press do nothing and there is no ×, as before.
+ * The warning sentence is the dialog's description (`describedBy`), in body text.
+ */
 export function WorkflowWarningModal({
   isOpen,
   onConfirm,
@@ -28,76 +33,61 @@ export function WorkflowWarningModal({
   workflowDetails,
   hasSecurityWarnings = false,
 }: WorkflowWarningModalProps) {
+  const descriptionId = React.useId();
   return (
-    <Dialog open={isOpen}>
-      {/* The shared `DialogContent`, so this dialog opens and closes with the same motion as
-          every other, returns focus to the control that opened it, and is announced as modal.
-          It was a hand-assembled `DialogPrimitive.Content` with `zoom-in-95` and `duration-200`.
-          Not dismissible: the person has to answer (Escape and an outside press do nothing, and
-          there is no close button), as before. */}
-      <DialogContent
-        dismissible={false}
-        className="flex max-h-[80vh] flex-col gap-4 overflow-hidden p-0 sm:max-w-[80vw]"
-      >
-        <DialogHeader className="flex-shrink-0 p-6 pb-0">
-          <DialogTitle>
-            {hasSecurityWarnings ? 'Security warning' : 'New workflow warning'}
-          </DialogTitle>
-          <DialogDescription>
-            {!hasSecurityWarnings &&
-              "You are about to execute a workflow that you haven't run before. "}
-            Only proceed if you trust the source of this workflow.
-          </DialogDescription>
-        </DialogHeader>
-
-        {hasSecurityWarnings && (
-          <div className="px-6">
-            <div className="rounded-container bg-wash-warning p-4">
-              <div className="flex items-start">
-                <div className="ml-3">
-                  <div className="mt-2 text-body text-text-warning">
-                    <p>
-                      This workflow contains hidden characters that will be ignored for your safety,
-                      as they could be used for malicious purposes.
-                    </p>
-                  </div>
-                </div>
-              </div>
-            </div>
-          </div>
-        )}
-
-        <div className="flex-1 overflow-y-auto p-6 pt-4">
-          <div className="biorouter-modal-panel p-4 rounded-container">
-            <h3 className="mb-3 text-label text-text-default">Workflow preview</h3>
-            <div className="space-y-4">
-              {workflowDetails.title && (
-                <p className="text-body text-text-default">
-                  <strong>Title</strong> {workflowDetails.title}
-                </p>
-              )}
-              {workflowDetails.description && (
-                <p className="text-body text-text-default">
-                  <strong>Description</strong> {workflowDetails.description}
-                </p>
-              )}
-              {workflowDetails.instructions && (
-                <div>
-                  <h4 className="mb-1 text-label text-text-default">Instructions</h4>
-                  <MarkdownContent content={workflowDetails.instructions} className="text-body" />
-                </div>
-              )}
-            </div>
-          </div>
-        </div>
-
-        <DialogFooter className="flex-shrink-0 p-6 pt-0">
+    <ModalShell
+      open={isOpen}
+      // Required: nothing dismisses it. If anything ever did, cancelling is the safe answer.
+      onOpenChange={(open) => !open && onCancel()}
+      size="lg"
+      purpose="required"
+      scrollBody
+      title={hasSecurityWarnings ? 'Security warning' : 'New workflow warning'}
+      describedBy={descriptionId}
+      bodyClassName="flex flex-col gap-3 py-3"
+      footer={
+        <>
           <Button variant="secondary" onClick={onCancel}>
             Cancel
           </Button>
           <Button onClick={onConfirm}>Trust and execute</Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
+        </>
+      }
+    >
+      <p id={descriptionId} className="text-body text-text-muted">
+        {!hasSecurityWarnings &&
+          "You are about to execute a workflow that you haven't run before. "}
+        Only proceed if you trust the source of this workflow.
+      </p>
+
+      {hasSecurityWarnings && (
+        <Note tone="warning">
+          This workflow contains hidden characters that will be ignored for your safety, as they
+          could be used for malicious purposes.
+        </Note>
+      )}
+
+      <div className="biorouter-modal-panel p-4 rounded-container">
+        <h3 className="mb-3 text-label text-text-default">Workflow preview</h3>
+        <div className="space-y-4">
+          {workflowDetails.title && (
+            <p className="text-body text-text-default">
+              <strong>Title</strong> {workflowDetails.title}
+            </p>
+          )}
+          {workflowDetails.description && (
+            <p className="text-body text-text-default">
+              <strong>Description</strong> {workflowDetails.description}
+            </p>
+          )}
+          {workflowDetails.instructions && (
+            <div>
+              <h4 className="mb-1 text-label text-text-default">Instructions</h4>
+              <MarkdownContent content={workflowDetails.instructions} className="text-body" />
+            </div>
+          )}
+        </div>
+      </div>
+    </ModalShell>
   );
 }
