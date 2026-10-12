@@ -4,23 +4,23 @@
  * in `main.css`) and a newly written Tailwind utility can silently fail to generate under
  * `BIOROUTER_NO_HMR` (CLAUDE.md, "Desktop shell geometry").
  *
- * THE TABS SIT ON THE TITLE'S LINE. The band centres its 14px title in the 44px bar, while the
- * tab wrapper bottom-aligns a 36px trigger so the underline lands on the band's hairline. That
- * put the tab text 3px under the title's, so "Settings Models Chat App" read as two lines that
- * had slipped. The list now stretches to the band's own height and each trigger fills it:
- * the text centres on the same line as the title, and the underline still sits on the hairline
- * (it is positioned from the list's bottom edge, which has not moved).
+ * THE TABS SIT ON THE TITLE'S LINE, AND THAT IS NOT THIS FILE'S RULE ANY MORE. The band centres
+ * its 14px title in the 44px bar, and the tab wrapper used to bottom-align a 36px trigger, which
+ * put the tab text 3.5px under the title's, so "Settings Models Chat App" read as two lines that
+ * had slipped. Settings drew its own fix (the list stretched, each trigger `height: 100%`) until
+ * the shared rule in `main.css` (`.biorouter-page-header-tabs`, WS-VIEWS-A, V3-R5-2) did the same
+ * for every `PageHeader tabs` list: it stretches the wrapper and every direct trigger of the
+ * list, so the text centres on the title's line and the underline, which hangs from the list's
+ * bottom edge, still sits on the hairline. The two declarations here said it a second time (the
+ * trigger's sat at a lower specificity than the shared rule's, so the shared one decided the
+ * height), so they are gone and there is one rule to change. `settingsBand.browser.test.tsx` measures the band in
+ * Chromium, including the 3.5px it reads if the shared rule is taken away.
  *
- * The 16px margin is added to the bar's 8px gap, so the title and the first tab are 24px apart:
- * far enough that the title reads as the page and the tabs as its switch.
+ * The 16px margin is Settings' own. It is added to the bar's 8px gap, so the title and the first
+ * tab are 24px apart: far enough that the title reads as the page and the tabs as its switch.
  */
 .biorouter-settings-tabs {
-  align-self: stretch;
   margin-inline-start: 16px;
-}
-
-.biorouter-settings-tabs > [role='tab'] {
-  height: 100%;
 }
 
 /*
