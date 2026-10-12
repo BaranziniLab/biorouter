@@ -119,7 +119,7 @@ export function sentenceCase(label: string): string {
  * retired name:
  *
  * - `computer_use_capabilities_version` is the migration marker for Biorouter Copilot, the
- *   product that used to be called Computer Use.
+ *   product that was called Computer Use.
  * - `AWS_ENDPOINT_URL_BEDROCK` and `..._RUNTIME` are the SDK's per-service endpoint variables, with
  *   the service last ("AWS endpoint URL Bedrock"). The person looks for the service first.
  *
