@@ -3,6 +3,7 @@ import ReactSelect, {
   components as selectComponents,
   type ClearIndicatorProps,
   type DropdownIndicatorProps,
+  type GroupHeadingProps,
   type MenuProps,
   type OptionProps,
 } from 'react-select';
@@ -183,6 +184,23 @@ function SelectMenu(props: MenuProps) {
   return <selectComponents.Menu {...props} innerProps={{ ...props.innerProps, ...slot }} />;
 }
 
+/**
+ * A group heading is drawn only where the group is named (spec 2.6: group labels only where a
+ * group is named). react-select renders its `GroupHeading` for every group, label or not, and the
+ * heading's own row (12/16 text, 6px above, 2px below) is 8px of blank above the first option of
+ * an unnamed group: the Switch models Model menu opened 13px below its surface's top against the
+ * Provider menu's 5px, one dialog above it (V4-R8-1). The Model field passes its options as one
+ * unlabeled group, so a menu of one unnamed group now starts where a flat list does: the 4px list
+ * padding and the 1px border. A caller's own `GroupHeading` replaces this, as every override does.
+ */
+function SelectGroupHeading(props: GroupHeadingProps) {
+  const label = props.children;
+  if (label == null || label === false || (typeof label === 'string' && label.trim() === '')) {
+    return null;
+  }
+  return <selectComponents.GroupHeading {...props} />;
+}
+
 function SelectClearIndicator(props: ClearIndicatorProps) {
   return (
     <selectComponents.ClearIndicator {...props}>
@@ -199,6 +217,7 @@ export const Select = (props: React.ComponentProps<typeof ReactSelect>) => {
         Option: SelectOption,
         DropdownIndicator: SelectDropdownIndicator,
         ClearIndicator: SelectClearIndicator,
+        GroupHeading: SelectGroupHeading,
         Menu: SelectMenu,
         ...props.components,
       }}
