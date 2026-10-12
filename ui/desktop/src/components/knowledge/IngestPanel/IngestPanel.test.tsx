@@ -157,13 +157,13 @@ describe('IngestPanel model selection', () => {
     mocks.knowledge.primaryKb = {
       id: 'kb-1',
       name: 'Notes',
-      default_model: { provider: 'ollama', model: 'qwen3.6:latest' },
+      default_model: { provider: 'ollama', model: 'qwen3.8:27b' },
     };
 
     render(<IngestPanel />);
 
     const trigger = await screen.findByTestId('knowledge-model-picker-trigger');
-    await waitFor(() => expect(trigger).toHaveTextContent('ollama / qwen3.6:latest'));
+    await waitFor(() => expect(trigger).toHaveTextContent('ollama / qwen3.8:27b'));
   });
 
   it('says so and blocks digestion when no model can be resolved', async () => {
@@ -242,19 +242,19 @@ describe('IngestPanel model loading state', () => {
     mocks.knowledge.primaryKb = {
       id: 'kb-1',
       name: 'Notes',
-      default_model: { provider: 'ollama', model: 'qwen3.6:latest' },
+      default_model: { provider: 'ollama', model: 'qwen3.8:27b' },
     };
 
     render(<IngestPanel />);
     stageSomeText();
 
     const trigger = await screen.findByTestId('knowledge-model-picker-trigger');
-    expect(trigger).toHaveTextContent('ollama / qwen3.6:latest');
+    expect(trigger).toHaveTextContent('ollama / qwen3.8:27b');
 
     fireEvent.click(screen.getByTestId('knowledge-digest-button'));
     await waitFor(() => expect(mocks.checkModel).toHaveBeenCalled());
     expect(mocks.checkModel).toHaveBeenCalledWith({
-      body: { model: { provider: 'ollama', model: 'qwen3.6:latest' } },
+      body: { model: { provider: 'ollama', model: 'qwen3.8:27b' } },
     });
   });
 
@@ -283,12 +283,12 @@ describe('IngestPanel model freshness', () => {
     mocks.knowledge.primaryKb = {
       id: 'kb-1',
       name: 'Notes',
-      default_model: { provider: 'ollama', model: 'qwen3.6:latest' },
+      default_model: { provider: 'ollama', model: 'qwen3.8:27b' },
     };
 
     const { rerender } = render(<IngestPanel />);
     const trigger = await screen.findByTestId('knowledge-model-picker-trigger');
-    await waitFor(() => expect(trigger).toHaveTextContent('ollama / qwen3.6:latest'));
+    await waitFor(() => expect(trigger).toHaveTextContent('ollama / qwen3.8:27b'));
 
     mocks.pickerValues.length = 0;
     mocks.knowledge.primaryKbId = 'kb-2';
@@ -297,7 +297,7 @@ describe('IngestPanel model freshness', () => {
 
     // Not "settles on the right model eventually" — the base that is no longer
     // primary must never be named once the switch has been committed.
-    expect(modelLabels()).not.toContain('ollama / qwen3.6:latest');
+    expect(modelLabels()).not.toContain('ollama / qwen3.8:27b');
     expect(trigger).toHaveTextContent('versa_azure / gpt-5.5-2026-04-24');
   });
 
@@ -313,9 +313,9 @@ describe('IngestPanel model freshness', () => {
     // fixture, so nothing the resolver reads changes when the base does — the
     // choice must be scoped to kb-1 by construction, not by a dependency array.
     await act(async () => {
-      mocks.pickModel?.({ provider: 'ollama', model: 'qwen3.6:latest' });
+      mocks.pickModel?.({ provider: 'ollama', model: 'qwen3.8:27b' });
     });
-    await waitFor(() => expect(trigger).toHaveTextContent('ollama / qwen3.6:latest'));
+    await waitFor(() => expect(trigger).toHaveTextContent('ollama / qwen3.8:27b'));
 
     mocks.knowledge.primaryKbId = 'kb-2';
     mocks.knowledge.primaryKb = { id: 'kb-2', name: 'Papers', default_model: null };

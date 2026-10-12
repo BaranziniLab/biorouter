@@ -15,8 +15,8 @@ use crate::providers::base::{
 };
 use crate::providers::errors::ProviderError;
 use crate::providers::toolshim::{
-    augment_message_with_tool_calls, convert_tool_messages_to_text,
-    modify_system_prompt_for_tool_json, OllamaInterpreter,
+    convert_tool_messages_to_text, interpret_tool_requests_from_text,
+    modify_system_prompt_for_tool_json, OllamaInterpreter, ToolInterpreter,
 };
 
 use crate::agents::code_execution_extension::EXTENSION_NAME as CODE_EXECUTION_EXTENSION;
@@ -328,17 +328,275 @@ struct PreparedModelToolSurface {
     code_execution_active: bool,
 }
 
-async fn toolshim_postprocess(
-    response: Message,
-    toolshim_tools: &[Tool],
-) -> Result<Message, ProviderError> {
-    let interpreter = OllamaInterpreter::new().map_err(|e| {
-        ProviderError::ExecutionError(format!("Failed to create OllamaInterpreter: {}", e))
-    })?;
+/// What the toolshim has seen of one streamed reply.
+///
+/// OLL-09: the interpreter used to run once PER STREAMED ITEM — one HTTP round
+/// trip to a second model per token, each seeing one token — so a call written
+/// across many deltas was never seen whole, and the shim could not work on any
+/// streaming provider. The reply is now assembled here and interpreted once,
+/// after the stream ends.
+#[derive(Default)]
+struct ToolshimReply {
+    text: String,
+    /// The streamed message id, so the recovered calls fold into the same
+    /// assistant message (`Conversation::push` merges same-id items) exactly as
+    /// a natively decoded text-then-call reply does.
+    message_id: Option<String>,
+    /// The provider already returned a structured call: nothing to interpret.
+    native_call: bool,
+}
 
-    augment_message_with_tool_calls(&interpreter, response, toolshim_tools)
+impl ToolshimReply {
+    fn observe(&mut self, message: &Message) {
+        self.native_call |= message.is_tool_call();
+        for content in &message.content {
+            if let MessageContent::Text(text) = content {
+                self.text.push_str(&text.text);
+            }
+        }
+        if message.id.is_some() {
+            self.message_id.clone_from(&message.id);
+        }
+    }
+
+    /// The recovered calls as one message, or `None` when there are none — or
+    /// when the interpreter failed.
+    ///
+    /// ⚠ A failure here is NOT the reply's failure. This runs after every text
+    /// item has been yielded, so the user already holds the whole answer. As an
+    /// `Err` it was a recoverable `ExecutionError`, and the mistake ladder
+    /// (BR-66) regenerated the ENTIRE reply — minutes on a local 27B — failed
+    /// the same way, and ended the turn as failed with the answer shown twice.
+    /// The reply is kept as the text it is, which is what a chat without the
+    /// shim shows; the misconfigurations that make an interpreter fail every
+    /// time are refused before the model is asked
+    /// ([`OllamaInterpreter::ensure_ready`]). Logged as metadata only: the
+    /// error can quote the reply.
+    async fn interpret<T: ToolInterpreter + Sync>(
+        &self,
+        interpreter: &T,
+        toolshim_tools: &[Tool],
+    ) -> Option<Message> {
+        if self.native_call {
+            return None;
+        }
+        // The requests as the toolshim built them, not re-minted here: a call
+        // the text grammar recovered carries the `recovered_from_text` marker
+        // in its metadata (G9), and rebuilding it from bare call params, as
+        // this did while the toolshim had only an interpreter model, would
+        // silently strip it.
+        let requests = match interpret_tool_requests_from_text(
+            interpreter,
+            &self.text,
+            toolshim_tools,
+        )
         .await
-        .map_err(|e| ProviderError::ExecutionError(format!("Failed to augment message: {}", e)))
+        {
+            Ok(requests) => requests,
+            Err(e) => {
+                tracing::warn!(
+                    error_type = e.telemetry_type(),
+                    error_kind = ?e.kind(),
+                    reply_bytes = self.text.len(),
+                    "tool interpreter failed after the reply streamed; the reply is kept as \
+                     text and no tool call was recovered from it"
+                );
+                return None;
+            }
+        };
+        if requests.is_empty() {
+            return None;
+        }
+        let mut message = Message::assistant();
+        for request in requests {
+            message = message.with_content(request);
+        }
+        if let Some(id) = &self.message_id {
+            message = message.with_id(id.clone());
+        }
+        Some(message)
+    }
+}
+
+/// Unsigned thinking held back until the reasoning phase it belongs to ends,
+/// then handed on as ONE block.
+///
+/// The local decoders hand thinking on while it streams — the native Ollama
+/// one and the OpenAI-compatible one used for Llama Server each yield a batch
+/// every 250 ms (`formats::openai::THINKING_FLUSH_INTERVAL`) — and Codex yields
+/// one message per reasoning delta. No client merges those (measured
+/// 2026-10-10), and each one made two of them worse:
+///
+/// - the desktop renders no `thinking` item at all, while every Message frame
+///   moves `lastMessageAt`, so the "Thinking · 0:42" elapsed chip (shown from
+///   2 s) and the 45 s "still working" nudge never appeared during a minute
+///   of thinking that used to show both;
+/// - the interactive CLI hides its spinner on every message
+///   (`session/mod.rs`), so the first batch, 250 ms in, left the terminal
+///   looking hung until the answer; with `BIOROUTER_CLI_SHOW_THINKING` it
+///   printed a "Thinking:" header over every 400-byte fragment.
+///
+/// Held here, the decoders stay live and every client sees what it already
+/// understands: one block per phase, just before the answer or tool call it
+/// led to. ⚠ Delete this hold once the desktop and the CLI merge same-id
+/// thinking items into one block (and stop treating a thinking-only message as
+/// the end of "Thinking"); then the batches become live progress with no
+/// decoder change.
+///
+/// Signed thinking is never held: its signature covers exactly one block
+/// (Anthropic, Bedrock), and those providers send it whole anyway. Nor is a
+/// message that carries anything besides unsigned thinking; it ends the phase.
+/// The cost: a stream dropped mid-phase (the turn cancelled, or restarted for
+/// a steer) drops the held thinking too, unshown and unstored. Only thinking
+/// that had not yet led to anything is lost; a failure the stream reports
+/// itself still gets it out first.
+#[derive(Default)]
+struct HeldThinking {
+    message: Option<Message>,
+}
+
+impl HeldThinking {
+    /// Whether `message` is nothing but unsigned thinking — the only shape held.
+    fn holds(message: &Message) -> bool {
+        !message.content.is_empty()
+            && message.content.iter().all(
+                |content| matches!(content, MessageContent::Thinking(t) if t.signature.is_empty()),
+            )
+    }
+
+    /// Hold `message` (which [`Self::holds`]), joined onto what is already
+    /// held for the same reply. A different reply's thinking — Codex gives each
+    /// reasoning item its own id — cannot be joined, so the block held for the
+    /// earlier one comes back to be yielded first.
+    fn hold(&mut self, message: Message) -> Option<Message> {
+        let text: String = message
+            .content
+            .iter()
+            .filter_map(|content| match content {
+                MessageContent::Thinking(thinking) => Some(thinking.thinking.as_str()),
+                _ => None,
+            })
+            .collect();
+        if let Some(held) = self.message.as_mut().filter(|held| held.id == message.id) {
+            if let Some(MessageContent::Thinking(block)) = held.content.first_mut() {
+                block.thinking.push_str(&text);
+            }
+            return None;
+        }
+        let mut fresh = message;
+        fresh.content = vec![MessageContent::thinking(text, "")];
+        self.message.replace(fresh).and_then(Self::non_empty)
+    }
+
+    /// The held block, if any: the phase it belongs to has ended.
+    fn release(&mut self) -> Option<Message> {
+        self.message.take().and_then(Self::non_empty)
+    }
+
+    fn non_empty(message: Message) -> Option<Message> {
+        let empty = matches!(
+            message.content.first(),
+            Some(MessageContent::Thinking(block)) if block.thinking.is_empty()
+        );
+        (!empty).then_some(message)
+    }
+}
+
+/// The provider's stream as the agent loop receives it: unsigned thinking held
+/// to one block per phase ([`HeldThinking`]), the toolshim watching the reply
+/// and interpreting it once at the end, and the EXHAUSTED timing marker.
+///
+/// Split out of [`Agent::stream_response_from_provider`] so the request
+/// plumbing and what is done to each item read separately.
+fn agent_facing_stream(
+    mut stream: MessageStream,
+    toolshim_interpreter: Option<OllamaInterpreter>,
+    toolshim_tools: Vec<Tool>,
+    streaming: bool,
+    stream_open_start: std::time::Instant,
+) -> MessageStream {
+    Box::pin(try_stream! {
+        let mut toolshim_reply = ToolshimReply::default();
+        let mut held_thinking = HeldThinking::default();
+        while let Some(result) = stream.next().await {
+            let (message, usage, pending) = match result {
+                Ok(item) => item,
+                Err(e) => {
+                    // What the model thought before the failure is still
+                    // shown, as it was while the decoders' batches went
+                    // straight through.
+                    if let Some(thinking) = held_thinking.release() {
+                        yield (Some(thinking), None, None);
+                    }
+                    Err(e)?
+                }
+            };
+
+            // Store the model information in the global store
+            if let Some(usage) = usage.as_ref() {
+                crate::providers::base::set_current_model(&usage.model);
+            }
+
+            // The toolshim only WATCHES while the reply streams; the text
+            // still reaches the user token by token.
+            if let (Some(message), Some(_)) = (message.as_ref(), toolshim_interpreter.as_ref()) {
+                toolshim_reply.observe(message);
+            }
+
+            // Thinking waits for the end of its phase; see `HeldThinking`.
+            let message = match message {
+                Some(thinking) if HeldThinking::holds(&thinking) => {
+                    if let Some(earlier) = held_thinking.hold(thinking) {
+                        yield (Some(earlier), None, None);
+                    }
+                    if usage.is_none() && pending.is_none() {
+                        continue;
+                    }
+                    None
+                }
+                other => other,
+            };
+            // Anything else ends the phase: the held block goes first, so
+            // it still lands before the output it led to.
+            if let Some(thinking) = held_thinking.release() {
+                yield (Some(thinking), None, None);
+            }
+
+            // `pending` is a display-only tool-call notification. It travels
+            // its own slot, never becoming a `Message`, so it can never be
+            // dispatched. Forwarded verbatim to the agent loop.
+            yield (message, usage, pending);
+        }
+        // A reply that only thought.
+        if let Some(thinking) = held_thinking.release() {
+            yield (Some(thinking), None, None);
+        }
+
+        // One interpretation of the whole reply, after it ended. The calls
+        // arrive as one more message under the reply's id — the shape a
+        // provider's own text-then-call stream has.
+        if let Some(interpreter) = toolshim_interpreter.as_ref() {
+            if let Some(calls) = toolshim_reply.interpret(interpreter, &toolshim_tools).await {
+                yield (Some(calls), None, None);
+            }
+        }
+
+        // The stream is drained: generation is genuinely finished. This is
+        // the marker the old instrumentation lacked entirely, which is why
+        // generation time was invisible and prior investigations attributed
+        // the whole model wait to the (tiny) stream-open span.
+        //
+        // Emitted on BOTH paths — on the non-streaming path this is a
+        // one-element stream and the total duplicates FULL_GENERATION_END.
+        // `streaming` is what makes the two distinguishable; it also lets a
+        // report count OPENED vs EXHAUSTED per path, which is how a turn
+        // aborted before the stream drained (no EXHAUSTED) shows up.
+        debug!(
+            streaming,
+            total_ms = stream_open_start.elapsed().as_millis() as u64,
+            "WAITING_LLM_STREAM_EXHAUSTED"
+        );
+    })
 }
 
 impl Agent {
@@ -476,9 +734,20 @@ impl Agent {
 
         // BR-3: pick the system-prompt variant for this provider/model so small
         // local models get extra scaffolding while strong models stay lean.
+        // The instance's own answer to "does inference run on this machine",
+        // not its registry name: a declarative `ollama_compatible` provider
+        // registers under any name and must be prompted like `ollama` (OLL-20).
+        let runs_on_this_machine = crate::providers::utils::runs_on_this_machine(provider.as_ref());
         let prompt_variant = crate::agents::prompt_manager::PromptVariant::select(
             provider.get_name(),
             &model_config.model_name,
+            runs_on_this_machine,
+        );
+        // A local engine re-reads the whole prompt when its prefix changes, so
+        // its clock is rendered by the day (`prompt_manager::PromptClock::Day`).
+        let local_engine = crate::agents::prompt_manager::is_local_engine(
+            provider.get_name(),
+            runs_on_this_machine,
         );
 
         let is_subagent = matches!(
@@ -514,7 +783,8 @@ impl Agent {
             .with_code_execution_mode(code_execution_active)
             .with_checklist_enforcement(checklist_enforcement)
             .with_enable_subagents(enable_subagents)
-            .with_prompt_variant(prompt_variant);
+            .with_prompt_variant(prompt_variant)
+            .with_local_engine(local_engine);
         let mut system_prompt = if crew_scoped {
             builder.build()
         } else {
@@ -551,6 +821,27 @@ impl Agent {
         steering: Option<ProviderSteerReceiver>,
     ) -> Result<MessageStream, ProviderError> {
         let config = provider.get_model_config();
+
+        // The toolshim interpreter is built and checked BEFORE the model is
+        // asked anything. Building it is where a non-local OLLAMA_HOST or an
+        // Ollama cloud model is refused (OLL-10), and `ensure_ready` is where a
+        // missing Ollama or an unpulled interpreter model is: refused here, the
+        // misconfiguration costs a sentence rather than a whole generation
+        // regenerated and thrown away at the end.
+        let toolshim_interpreter = if config.toolshim {
+            let ready = match OllamaInterpreter::for_model(&config) {
+                Ok(interpreter) => interpreter.ensure_ready().await.map(|()| interpreter),
+                Err(e) => Err(e),
+            };
+            match ready {
+                Ok(interpreter) => Some(interpreter),
+                // In the stream, like every other creation-time failure below,
+                // so the agent's own error handling reports it.
+                Err(e) => return Ok(Box::pin(futures::stream::once(async move { Err(e) }))),
+            }
+        } else {
+            None
+        };
 
         // Convert tool messages to text if toolshim is enabled
         let messages_for_provider = if config.toolshim {
@@ -645,7 +936,7 @@ impl Agent {
         };
 
         // If there was an error creating the stream, return a stream that yields that error
-        let mut stream = match stream_result {
+        let stream = match stream_result {
             Ok(s) => s,
             Err(e) => {
                 // Return a stream that immediately yields the error
@@ -656,42 +947,13 @@ impl Agent {
             }
         };
 
-        Ok(Box::pin(try_stream! {
-            while let Some(result) = stream.next().await {
-                let (mut message, usage, pending) = result?;
-
-                // Store the model information in the global store
-                if let Some(usage) = usage.as_ref() {
-                    crate::providers::base::set_current_model(&usage.model);
-                }
-
-                // Post-process / structure the response only if tool interpretation is enabled
-                if message.is_some() && config.toolshim {
-                    message = Some(toolshim_postprocess(message.unwrap(), &toolshim_tools).await?);
-                }
-
-                // `pending` is a display-only tool-call notification. It travels
-                // its own slot, never becoming a `Message`, so it can never be
-                // dispatched. Forwarded verbatim to the agent loop.
-                yield (message, usage, pending);
-            }
-
-            // The stream is drained: generation is genuinely finished. This is
-            // the marker the old instrumentation lacked entirely, which is why
-            // generation time was invisible and prior investigations attributed
-            // the whole model wait to the (tiny) stream-open span.
-            //
-            // Emitted on BOTH paths — on the non-streaming path this is a
-            // one-element stream and the total duplicates FULL_GENERATION_END.
-            // `streaming` is what makes the two distinguishable; it also lets a
-            // report count OPENED vs EXHAUSTED per path, which is how a turn
-            // aborted before the stream drained (no EXHAUSTED) shows up.
-            debug!(
-                streaming,
-                total_ms = stream_open_start.elapsed().as_millis() as u64,
-                "WAITING_LLM_STREAM_EXHAUSTED"
-            );
-        }))
+        Ok(agent_facing_stream(
+            stream,
+            toolshim_interpreter,
+            toolshim_tools,
+            streaming,
+            stream_open_start,
+        ))
     }
 
     /// Categorize tool requests from the response into different types
@@ -1823,6 +2085,504 @@ mod tests {
         assert!(
             error_seen,
             "Error should have been propagated, not silently ignored"
+        );
+    }
+    /// An interpreter that answers with fixed calls and counts how often, and
+    /// on what text, it was asked.
+    struct ScriptedInterpreter {
+        answer: Vec<&'static str>,
+        asked: std::sync::Mutex<Vec<String>>,
+    }
+
+    #[async_trait]
+    impl ToolInterpreter for ScriptedInterpreter {
+        async fn interpret_to_tool_calls(
+            &self,
+            content: &str,
+            _tools: &[Tool],
+        ) -> Result<Vec<rmcp::model::CallToolRequestParams>, ProviderError> {
+            self.asked.lock().unwrap().push(content.to_string());
+            Ok(self
+                .answer
+                .iter()
+                .map(|name| rmcp::model::CallToolRequestParams {
+                    task: None,
+                    name: name.to_string().into(),
+                    arguments: Some(object!({"command": "ls"})),
+                    meta: None,
+                })
+                .collect())
+        }
+    }
+
+    fn scripted(answer: Vec<&'static str>) -> ScriptedInterpreter {
+        ScriptedInterpreter {
+            answer,
+            asked: std::sync::Mutex::new(Vec::new()),
+        }
+    }
+
+    fn shell_tool() -> Tool {
+        Tool::new(
+            "developer__shell",
+            "run a command",
+            object!({"type": "object", "properties": {"command": {"type": "string"}}}),
+        )
+    }
+
+    /// OLL-09: a reply streamed across many deltas is interpreted ONCE, on the
+    /// whole reply, and the calls arrive under the reply's own id so the agent
+    /// folds them into the same assistant message. Prose the text grammar
+    /// cannot read is what still reaches the interpreter model.
+    #[tokio::test]
+    async fn toolshim_interprets_a_streamed_reply_once_after_it_ends() {
+        let mut reply = ToolshimReply::default();
+        for piece in ["I will list ", "the files with ", "the shell."] {
+            reply.observe(&Message::assistant().with_text(piece).with_id("chatcmpl-7"));
+        }
+        let interpreter = scripted(vec!["developer__shell", "shell"]);
+        let calls = reply
+            .interpret(&interpreter, &[shell_tool()])
+            .await
+            .expect("the offered tool is recovered");
+
+        assert_eq!(
+            *interpreter.asked.lock().unwrap(),
+            ["I will list the files with the shell."],
+            "one interpretation, of the whole text"
+        );
+        assert_eq!(calls.id.as_deref(), Some("chatcmpl-7"));
+        let names: Vec<String> = calls
+            .content
+            .iter()
+            .filter_map(|c| c.as_tool_request())
+            .map(|r| r.tool_call.as_ref().unwrap().name.to_string())
+            .collect();
+        assert_eq!(names, ["developer__shell"], "`shell` was never offered");
+    }
+
+    /// A JSON call streamed across deltas is read by the toolshim's text
+    /// grammar on the whole reply — no second model — and keeps the
+    /// `recovered_from_text` marker (G9) on its way into the reply. This path
+    /// rebuilt every call from bare params, which dropped the marker.
+    #[tokio::test]
+    async fn toolshim_keeps_the_recovered_from_text_marker_on_a_streamed_call() {
+        let mut reply = ToolshimReply::default();
+        for piece in [
+            "{\"name\": \"developer",
+            "__shell\", ",
+            "\"arguments\": {\"command\": \"ls\"}}",
+        ] {
+            reply.observe(&Message::assistant().with_text(piece).with_id("chatcmpl-8"));
+        }
+        let interpreter = scripted(vec!["developer__shell"]);
+        let calls = reply
+            .interpret(&interpreter, &[shell_tool()])
+            .await
+            .expect("the call is recovered");
+
+        assert!(
+            interpreter.asked.lock().unwrap().is_empty(),
+            "the grammar answered; the interpreter model was never asked"
+        );
+        assert_eq!(calls.id.as_deref(), Some("chatcmpl-8"));
+        let requests: Vec<_> = calls
+            .content
+            .iter()
+            .filter_map(|c| c.as_tool_request())
+            .collect();
+        assert_eq!(requests.len(), 1);
+        assert!(
+            crate::providers::formats::text_tool_calls::is_recovered(requests[0]),
+            "{:?}",
+            requests[0]
+        );
+        let call = requests[0].tool_call.as_ref().unwrap();
+        assert_eq!(call.name, "developer__shell");
+        assert_eq!(call.arguments.as_ref().unwrap()["command"], "ls");
+    }
+
+    /// A reply that already carries a structured call, or that names no
+    /// offered tool, adds nothing — and a native call is never re-interpreted.
+    #[tokio::test]
+    async fn toolshim_adds_nothing_to_a_native_call_or_an_unrecognised_reply() {
+        let mut native = ToolshimReply::default();
+        native.observe(&Message::assistant().with_text("calling"));
+        native.observe(&Message::assistant().with_tool_request(
+            "call-1",
+            Ok(rmcp::model::CallToolRequestParams {
+                task: None,
+                name: "developer__shell".into(),
+                arguments: Some(object!({"command": "ls"})),
+                meta: None,
+            }),
+        ));
+        let interpreter = scripted(vec!["developer__shell"]);
+        assert!(native
+            .interpret(&interpreter, &[shell_tool()])
+            .await
+            .is_none());
+        assert!(interpreter.asked.lock().unwrap().is_empty());
+
+        let mut prose = ToolshimReply::default();
+        prose.observe(&Message::assistant().with_text("The answer is 5."));
+        let interpreter = scripted(vec!["noop"]);
+        assert!(prose
+            .interpret(&interpreter, &[shell_tool()])
+            .await
+            .is_none());
+    }
+
+    /// An interpreter that cannot be reached.
+    struct UnreachableInterpreter;
+
+    #[async_trait]
+    impl ToolInterpreter for UnreachableInterpreter {
+        async fn interpret_to_tool_calls(
+            &self,
+            _content: &str,
+            _tools: &[Tool],
+        ) -> Result<Vec<rmcp::model::CallToolRequestParams>, ProviderError> {
+            Err(ProviderError::RequestFailed(
+                "error sending request for url (http://localhost:11434/api/chat)".into(),
+            ))
+        }
+    }
+
+    /// The interpreter runs after the whole reply has streamed, so its failure
+    /// must not fail the reply. As an error it was recoverable, and BR-66
+    /// regenerated the entire reply, failed the same way, and ended the turn as
+    /// failed with the answer shown twice.
+    #[tokio::test]
+    async fn toolshim_keeps_a_delivered_reply_when_the_interpreter_fails() {
+        let mut reply = ToolshimReply::default();
+        // Prose, so the interpreter model is reached: a call the text grammar
+        // reads never asks it.
+        reply.observe(
+            &Message::assistant()
+                .with_text("I will list the files with the shell.")
+                .with_id("chatcmpl-9"),
+        );
+        let failed: Option<Message> = reply
+            .interpret(&UnreachableInterpreter, &[shell_tool()])
+            .await;
+        assert!(failed.is_none(), "no call recovered, and no error raised");
+    }
+
+    /// A provider that counts the requests it was asked to answer.
+    struct CountingToolshimProvider {
+        calls: Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    #[async_trait]
+    impl Provider for CountingToolshimProvider {
+        fn metadata() -> crate::providers::base::ProviderMetadata {
+            crate::providers::base::ProviderMetadata::empty()
+        }
+        fn get_name(&self) -> &str {
+            "counting"
+        }
+        fn get_model_config(&self) -> crate::model::ModelConfig {
+            crate::model::ModelConfig::new_or_fail("qwen3.8:27b")
+                .with_toolshim(true)
+                .with_toolshim_model(Some("local-interpreter".into()))
+        }
+        async fn complete_with_model(
+            &self,
+            _model_config: &crate::model::ModelConfig,
+            _system: &str,
+            _messages: &[Message],
+            _tools: &[Tool],
+        ) -> Result<(Message, ProviderUsage), ProviderError> {
+            self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok((
+                Message::assistant().with_text("a long local reply"),
+                ProviderUsage::new(
+                    "qwen3.8:27b".into(),
+                    crate::providers::base::Usage::new(Some(10), Some(5), Some(15)),
+                ),
+            ))
+        }
+    }
+
+    /// The misconfiguration that makes the interpreter fail EVERY time — no
+    /// Ollama on `OLLAMA_HOST` — is refused before the chat model is asked,
+    /// so it costs one loopback round trip instead of a generation.
+    #[tokio::test]
+    async fn toolshim_refuses_a_missing_interpreter_before_the_model_is_asked() {
+        // A port that was free a moment ago: nothing answers on it.
+        let port = std::net::TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port();
+        let host = format!("http://127.0.0.1:{port}");
+        let _env = env_lock::lock_env([("OLLAMA_HOST", Some(host.as_str()))]);
+
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let provider: Arc<dyn Provider> = Arc::new(CountingToolshimProvider {
+            calls: Arc::clone(&calls),
+        });
+        let mut stream = Agent::stream_response_from_provider(
+            provider,
+            "system",
+            &[Message::user().with_text("list the files")],
+            &[],
+            &[shell_tool()],
+            None,
+        )
+        .await
+        .unwrap();
+        let first = stream.next().await.expect("the stream says why");
+        let error = first.expect_err("refused, not answered").to_string();
+        assert!(error.contains("none answered"), "{error}");
+        assert!(stream.next().await.is_none());
+        assert_eq!(
+            calls.load(std::sync::atomic::Ordering::SeqCst),
+            0,
+            "the chat model must not be asked"
+        );
+    }
+
+    /// A streaming provider that plays back a fixed list of stream items.
+    struct ScriptedStreamProvider {
+        items: std::sync::Mutex<
+            Option<Vec<Result<crate::providers::base::ProviderStreamItem, ProviderError>>>,
+        >,
+    }
+
+    #[async_trait]
+    impl Provider for ScriptedStreamProvider {
+        fn metadata() -> crate::providers::base::ProviderMetadata {
+            crate::providers::base::ProviderMetadata::empty()
+        }
+        fn get_name(&self) -> &str {
+            "scripted"
+        }
+        fn get_model_config(&self) -> ModelConfig {
+            ModelConfig::new_or_fail("qwen3.8:27b")
+        }
+        fn supports_streaming(&self) -> bool {
+            true
+        }
+        async fn complete_with_model(
+            &self,
+            _model_config: &ModelConfig,
+            _system: &str,
+            _messages: &[Message],
+            _tools: &[Tool],
+        ) -> Result<(Message, ProviderUsage), ProviderError> {
+            unreachable!("the scripted provider only streams")
+        }
+        async fn stream(
+            &self,
+            _system: &str,
+            _messages: &[Message],
+            _tools: &[Tool],
+        ) -> Result<MessageStream, ProviderError> {
+            let items = self.items.lock().unwrap().take().expect("streamed once");
+            Ok(Box::pin(futures::stream::iter(items)))
+        }
+    }
+
+    /// What `stream_response_from_provider` hands the agent loop for `items`,
+    /// one entry per yielded item.
+    async fn through_the_agent_stream(
+        items: Vec<Result<crate::providers::base::ProviderStreamItem, ProviderError>>,
+    ) -> Vec<Result<crate::providers::base::ProviderStreamItem, ProviderError>> {
+        let provider: Arc<dyn Provider> = Arc::new(ScriptedStreamProvider {
+            items: std::sync::Mutex::new(Some(items)),
+        });
+        Agent::stream_response_from_provider(
+            provider,
+            "system",
+            &[Message::user().with_text("how many rows?")],
+            &[],
+            &[],
+            None,
+        )
+        .await
+        .unwrap()
+        .collect()
+        .await
+    }
+
+    fn thinking_batch(
+        text: &str,
+        id: &str,
+    ) -> Result<crate::providers::base::ProviderStreamItem, ProviderError> {
+        Ok((
+            Some(
+                Message::assistant()
+                    .with_content(MessageContent::thinking(text, ""))
+                    .with_id(id),
+            ),
+            None,
+            None,
+        ))
+    }
+
+    /// The thinking text and id of an item that must be one unsigned block.
+    fn one_thinking_block(
+        item: &Result<crate::providers::base::ProviderStreamItem, ProviderError>,
+    ) -> (String, Option<String>) {
+        let (Some(message), None, None) = item.as_ref().expect("an item, not an error") else {
+            panic!("expected a lone message: {item:?}");
+        };
+        let [MessageContent::Thinking(block)] = message.content.as_slice() else {
+            panic!("expected one thinking block: {message:?}");
+        };
+        assert!(block.signature.is_empty());
+        (block.thinking.clone(), message.id.clone())
+    }
+
+    fn usage_item() -> Result<crate::providers::base::ProviderStreamItem, ProviderError> {
+        Ok((
+            None,
+            Some(ProviderUsage::new(
+                "qwen3.8:27b".into(),
+                Usage::new(Some(10), Some(5), Some(15)),
+            )),
+            None,
+        ))
+    }
+
+    /// The local decoders hand thinking on in 250 ms batches, and no client
+    /// merges them: the desktop's elapsed timer restarted at every batch and
+    /// the CLI hid its spinner at the first one. The agent loop now receives
+    /// one block per phase, before the answer it led to, under the reply's id.
+    #[tokio::test]
+    async fn thinking_batches_reach_the_agent_as_one_block_before_the_answer() {
+        let out = through_the_agent_stream(vec![
+            thinking_batch("Let me ", "r1"),
+            thinking_batch("count ", "r1"),
+            thinking_batch("the rows.", "r1"),
+            Ok((
+                Some(Message::assistant().with_text("Five").with_id("r1")),
+                None,
+                None,
+            )),
+            usage_item(),
+        ])
+        .await;
+
+        assert_eq!(out.len(), 3, "{out:?}");
+        assert_eq!(
+            one_thinking_block(&out[0]),
+            ("Let me count the rows.".to_string(), Some("r1".to_string()))
+        );
+        let (Some(answer), None, None) = out[1].as_ref().unwrap() else {
+            panic!("the answer second: {:?}", out[1]);
+        };
+        assert_eq!(answer.as_concat_text(), "Five");
+        assert!(matches!(out[2].as_ref().unwrap(), (None, Some(_), None)));
+    }
+
+    /// The phase also ends at a tool call's first notice, at a failure, at the
+    /// end of a reply that only thought, and at usage that rode in with the
+    /// last batch. The held block comes out first each time, so it never
+    /// lands after what it led to, and nothing the model thought is lost.
+    #[tokio::test]
+    async fn held_thinking_comes_out_before_whatever_ends_the_phase() {
+        let pending = crate::providers::base::PendingToolCall {
+            id: "call-1".into(),
+            name: "developer__shell".into(),
+            partial_args: None,
+        };
+        let out = through_the_agent_stream(vec![
+            thinking_batch("a", "r"),
+            thinking_batch("b", "r"),
+            Ok((None, None, Some(pending))),
+        ])
+        .await;
+        assert_eq!(out.len(), 2, "{out:?}");
+        assert_eq!(one_thinking_block(&out[0]).0, "ab");
+        assert!(matches!(out[1].as_ref().unwrap(), (None, None, Some(_))));
+
+        let out = through_the_agent_stream(vec![
+            thinking_batch("half a thought", "r"),
+            Err(ProviderError::ServerError("connection reset".into())),
+        ])
+        .await;
+        assert_eq!(out.len(), 2, "{out:?}");
+        assert_eq!(one_thinking_block(&out[0]).0, "half a thought");
+        assert!(out[1].is_err());
+
+        let out = through_the_agent_stream(vec![
+            thinking_batch("only ", "r"),
+            thinking_batch("this", "r"),
+        ])
+        .await;
+        assert_eq!(out.len(), 1, "{out:?}");
+        assert_eq!(one_thinking_block(&out[0]).0, "only this");
+
+        let (_, usage, _) = usage_item().unwrap();
+        let out = through_the_agent_stream(vec![
+            thinking_batch("x", "r"),
+            Ok((
+                Some(
+                    Message::assistant()
+                        .with_content(MessageContent::thinking("y", ""))
+                        .with_id("r"),
+                ),
+                usage,
+                None,
+            )),
+        ])
+        .await;
+        assert_eq!(out.len(), 2, "{out:?}");
+        assert_eq!(one_thinking_block(&out[0]).0, "xy");
+        assert!(matches!(out[1].as_ref().unwrap(), (None, Some(_), None)));
+    }
+
+    /// Signed thinking passes straight through: a signature covers exactly one
+    /// block. Thinking under different ids (Codex gives each reasoning item its
+    /// own) stays two blocks, in order.
+    #[tokio::test]
+    async fn signed_thinking_and_separate_replies_are_never_merged() {
+        let signed = |text: &str| {
+            Ok((
+                Some(
+                    Message::assistant()
+                        .with_content(MessageContent::thinking(text, "sig"))
+                        .with_id("m"),
+                ),
+                None,
+                None,
+            ))
+        };
+        let out = through_the_agent_stream(vec![signed("one"), signed("two")]).await;
+        assert_eq!(out.len(), 2, "{out:?}");
+        for (item, want) in out.iter().zip(["one", "two"]) {
+            let (Some(message), None, None) = item.as_ref().unwrap() else {
+                panic!("{item:?}");
+            };
+            assert!(matches!(
+                message.content.as_slice(),
+                [MessageContent::Thinking(t)] if t.thinking == want && t.signature == "sig"
+            ));
+        }
+
+        let out = through_the_agent_stream(vec![
+            thinking_batch("first ", "rs_1"),
+            thinking_batch("item", "rs_1"),
+            thinking_batch("second ", "rs_2"),
+            thinking_batch("item", "rs_2"),
+            Ok((
+                Some(Message::assistant().with_text("Done").with_id("msg_3")),
+                None,
+                None,
+            )),
+        ])
+        .await;
+        assert_eq!(out.len(), 3, "{out:?}");
+        assert_eq!(
+            one_thinking_block(&out[0]),
+            ("first item".to_string(), Some("rs_1".to_string()))
+        );
+        assert_eq!(
+            one_thinking_block(&out[1]),
+            ("second item".to_string(), Some("rs_2".to_string()))
         );
     }
 }

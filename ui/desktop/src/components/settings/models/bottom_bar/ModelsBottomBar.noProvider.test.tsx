@@ -104,7 +104,7 @@ describe('the model chip with no provider configured', () => {
   });
 
   it('uses a persisted chat model for the chip guard when the global provider is unset', () => {
-    renderBar({ provider: 'ollama', model: 'qwen3:8b' });
+    renderBar({ provider: 'ollama', model: 'qwen3.8:27b' });
     expect(screen.queryByTestId('model-chip-choose-model')).toBeNull();
   });
 });

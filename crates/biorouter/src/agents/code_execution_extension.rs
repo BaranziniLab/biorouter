@@ -268,6 +268,10 @@ fn infer_type(schema: &Value) -> Option<String> {
 }
 
 fn extract_type_from_schema(schema: &Value) -> Option<String> {
+    if let Some(value) = schema.get("const").and_then(Value::as_str) {
+        return Some(Value::String(value.to_string()).to_string());
+    }
+
     // enum array (github-mcp style)
     if let Some(arr) = schema.get("enum").and_then(|e| e.as_array()) {
         let vals: Vec<_> = arr.iter().filter_map(|v| v.as_str()).collect();
@@ -276,14 +280,13 @@ fn extract_type_from_schema(schema: &Value) -> Option<String> {
         }
     }
 
-    // oneOf with const (schemars enums)
     if let Some(arr) = schema.get("oneOf").and_then(|o| o.as_array()) {
-        let vals: Vec<_> = arr
+        let types = arr
             .iter()
-            .filter_map(|v| v.get("const")?.as_str())
-            .collect();
-        if !vals.is_empty() {
-            return Some(quote_join(&vals));
+            .map(extract_type_from_schema)
+            .collect::<Option<Vec<_>>>()?;
+        if !types.is_empty() {
+            return Some(types.join(" | "));
         }
     }
 
@@ -297,10 +300,10 @@ fn extract_type_from_schema(schema: &Value) -> Option<String> {
             return extract_type_from_schema(non_null[0]).or_else(|| infer_type(non_null[0]));
         }
         if non_null.len() > 1 {
-            let types: Vec<_> = non_null
+            let types = non_null
                 .iter()
-                .filter_map(|v| extract_type_from_schema(v).or_else(|| infer_type(v)))
-                .collect();
+                .map(|v| extract_type_from_schema(v).or_else(|| infer_type(v)))
+                .collect::<Option<Vec<_>>>()?;
             if !types.is_empty() {
                 return Some(types.join(" | "));
             }
@@ -316,6 +319,8 @@ fn extract_type_from_schema(schema: &Value) -> Option<String> {
                 .unwrap_or_else(|| "any".to_string());
             Some(if item_type == "any" {
                 "array".into()
+            } else if item_type.contains(" | ") {
+                format!("({item_type})[]")
             } else {
                 format!("{item_type}[]")
             })
@@ -368,6 +373,11 @@ struct ToolInfo {
     description: String,
     params: Vec<(String, String, bool)>,
     return_type: String,
+    /// Each parameter's own description, by name. Read only to explain a
+    /// failed call (`member_call_hints`): `developer__text_editor` documents
+    /// its `command` values there ("Allowed options are: `view`, `write`, …")
+    /// rather than as a schema `enum`.
+    param_docs: BTreeMap<String, String>,
 }
 
 impl ToolInfo {
@@ -389,6 +399,15 @@ impl ToolInfo {
                     .unwrap_or_else(|| "any".to_string());
                 let required = schema.required.contains(name);
                 (name.clone(), ty, required)
+            })
+            .collect();
+
+        let param_docs = schema
+            .properties
+            .iter()
+            .filter_map(|(name, property)| {
+                let doc = property.get("description")?.as_str()?;
+                Some((name.clone(), doc.to_string()))
             })
             .collect();
 
@@ -414,6 +433,7 @@ impl ToolInfo {
                 .unwrap_or_default(),
             params,
             return_type,
+            param_docs,
         })
     }
 
@@ -611,6 +631,39 @@ thread_local! {
         const { std::cell::RefCell::new(None) };
     static RESULT_CELL: std::cell::RefCell<Option<String>> =
         const { std::cell::RefCell::new(None) };
+    /// What each tool (by full name) handed THIS run's script: text, a parsed
+    /// JSON object or array, or both on different calls. Read only to explain
+    /// a read of a property a string lacks (`string_result_member_hints`), so
+    /// a hint states what the script was actually handed rather than what the
+    /// signature promises — and is made only about a tool whose EVERY result
+    /// in the run was text ([`text_only_tools`]). A per-tool record cannot say
+    /// which call a variable holds, so a tool that returned both kinds is left
+    /// out rather than guessed about.
+    static RESULT_KINDS: std::cell::RefCell<BTreeMap<String, ResultKinds>> =
+        const { std::cell::RefCell::new(BTreeMap::new()) };
+    /// Where the value last passed to `record_result` held `undefined`
+    /// ([`undefined_paths`]): the values `record_result` leaves out.
+    static RECORDED_UNDEFINED: std::cell::RefCell<Vec<String>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// The kinds of value one tool's results reached a script as, in one run.
+#[derive(Debug, Default, Clone, Copy)]
+struct ResultKinds {
+    text: bool,
+    parsed: bool,
+}
+
+/// The tools whose every result in this run reached the script as text.
+fn text_only_tools() -> BTreeSet<String> {
+    RESULT_KINDS.with(|kinds| {
+        kinds
+            .borrow()
+            .iter()
+            .filter(|(_, kinds)| kinds.text && !kinds.parsed)
+            .map(|(tool, _)| tool.clone())
+            .collect()
+    })
 }
 
 /// Build the synthetic module for one MCP server: every tool as a named export,
@@ -794,6 +847,525 @@ fn annotate_opaque_js_error(message: &str) -> String {
     }
 }
 
+/// [`annotate_opaque_js_error`], plus — when the script calls a METHOD on a tool
+/// or a module that has no such member — a sentence naming that call and the
+/// call that works.
+///
+/// Measured (2026-10-10, Gemma 4 31B on Ollama and on Llama Server, the
+/// factorial task): the model wrote `text_editor.write({file, file_text})` and
+/// then `shell.shell({command})`, got the generic "Something you called is not
+/// a function" every time, and repeated the call until the tool-loop guard
+/// stopped the turn. The model had read the export as a namespace of
+/// sub-commands; the generic hint names no callee, so nothing told it that
+/// `text_editor` IS the function and `write` is a value of its `command`
+/// argument. Each hint here is a statement about the script, not a guess about
+/// which call threw: a property the tool function or the module does not have
+/// is `undefined`, so calling it cannot work wherever it runs.
+///
+/// Any `TypeError` also gets [`string_result_member_hints`]: the property the
+/// script read off a tool's STRING result, which is `undefined` on a string.
+fn annotate_js_error_for_script(
+    code: &str,
+    tools: &[ToolInfo],
+    message: &str,
+    string_results: &BTreeSet<String>,
+) -> String {
+    // F13 rerun (GLM 4.7 Flash, 2026-10-12): four scripts in one turn
+    // reported their results with `console.log` and got only Boa's bare
+    // "ReferenceError: console is not defined".
+    if message.contains("console is not defined") {
+        return format!(
+            "{message}. This sandbox has no `console`, and nothing a script prints is shown. \
+             Pass what you want to see to record_result(value) instead, once, at the end; for \
+             several values, record_result({{ first, second }})."
+        );
+    }
+    // F07 rerun (ministral-3:8b, 2026-10-12): scripts called `shell(...)`
+    // without importing it and got only "ReferenceError: shell is not
+    // defined". Named only when the name really is a tool here.
+    if let Some(hint) = unimported_tool_hint(tools, message) {
+        return format!("{message}. {hint}");
+    }
+    let annotated = if !message.contains(BOA_NOT_CALLABLE) {
+        message.to_string()
+    } else {
+        let hints = member_call_hints(code, tools);
+        if hints.is_empty() {
+            annotate_opaque_js_error(message)
+        } else {
+            format!("{message}. {}", hints.join(" "))
+        }
+    };
+    if !message.contains("TypeError") {
+        return annotated;
+    }
+    let hints = string_result_member_hints(code, tools, string_results);
+    if hints.is_empty() {
+        return annotated;
+    }
+    let separator = if annotated.trim_end().ends_with('.') {
+        " "
+    } else {
+        ". "
+    };
+    format!("{}{separator}{}", annotated.trim_end(), hints.join(" "))
+}
+
+/// For "ReferenceError: NAME is not defined" where NAME is a tool of an
+/// importable module, the import that defines it.
+fn unimported_tool_hint(tools: &[ToolInfo], message: &str) -> Option<String> {
+    static UNDEFINED: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
+    let undefined = UNDEFINED.get_or_init(|| {
+        Regex::new(r"ReferenceError: ([A-Za-z_$][\w$]*) is not defined")
+            .expect("static regex compiles")
+    });
+    let name = undefined.captures(message)?.get(1)?.as_str();
+    let mut servers: Vec<&str> = tools
+        .iter()
+        .filter(|tool| tool.tool_name == name)
+        .map(|tool| tool.server_name.as_str())
+        .collect();
+    servers.dedup();
+    let server = servers.first()?;
+    Some(format!(
+        "`{name}` is a tool of the \"{server}\" module, and a script sees only what it \
+         imports: add import {{ {name} }} from \"{server}\"; at the top."
+    ))
+}
+
+/// What a JavaScript string has, so `out.trim()` and `out.length` on a string
+/// result are never flagged.
+const STRING_MEMBERS: &[&str] = &[
+    "length",
+    "at",
+    "charAt",
+    "charCodeAt",
+    "codePointAt",
+    "concat",
+    "endsWith",
+    "includes",
+    "indexOf",
+    "isWellFormed",
+    "lastIndexOf",
+    "localeCompare",
+    "match",
+    "matchAll",
+    "normalize",
+    "padEnd",
+    "padStart",
+    "repeat",
+    "replace",
+    "replaceAll",
+    "search",
+    "slice",
+    "split",
+    "startsWith",
+    "substr",
+    "substring",
+    "toLocaleLowerCase",
+    "toLocaleUpperCase",
+    "toLowerCase",
+    "toString",
+    "toUpperCase",
+    "toWellFormed",
+    "trim",
+    "trimEnd",
+    "trimLeft",
+    "trimRight",
+    "trimStart",
+    "valueOf",
+    "constructor",
+];
+
+/// A sentence for each variable the script assigned a tool's result to and
+/// then read a property of that a string does not have — when EVERY result
+/// that tool handed this run's script was text (`string_results`, from
+/// [`text_only_tools`]).
+///
+/// Measured (2026-10-12, GLM 4.7 Flash on Ollama, the factorial task): the
+/// script wrote the file, ran it for N=5 and N=20 — every call succeeded —
+/// and then read `result5.stdout.trim()`. `shell` hands back its output as
+/// one string, so `result5.stdout` was `undefined`, and the run failed with
+/// Boa's bare "cannot convert 'null' or 'undefined' to object". Nothing named
+/// the read, the model concluded the tools had failed, and it rewrote a
+/// correct script into a broken one. Like [`member_call_hints`], each hint is
+/// a statement about the script and what it was handed, not a guess about
+/// which line threw.
+///
+/// ⚠ Two things make such a statement false, and both are left out rather
+/// than guessed about (review of `acbefe5a`, 2026-10-12, reproduced): a tool
+/// that returned a JSON object on one call and text on another (the caller
+/// passes only text-only tools), and a variable assigned again after its
+/// declaration (`lines = lines.split("\n")` makes `lines.filter` an array's
+/// method, not a string's missing one).
+fn string_result_member_hints(
+    code: &str,
+    tools: &[ToolInfo],
+    string_results: &BTreeSet<String>,
+) -> Vec<String> {
+    static ASSIGN: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
+    if string_results.is_empty() {
+        return Vec::new();
+    }
+    // `const out = shell(`, `let out = await dev.shell(`,
+    // `var out = developer["shell"](`.
+    let assign = ASSIGN.get_or_init(|| {
+        Regex::new(
+            r#"\b(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*(?:await\s+)?([A-Za-z_$][\w$]*)(?:\s*\.\s*([A-Za-z_$][\w$]*)|\s*\[\s*["']([^"']+)["']\s*\])?\s*\("#,
+        )
+        .expect("static regex compiles")
+    });
+    let bindings = script_bindings(code, tools);
+    if bindings.is_empty() {
+        return Vec::new();
+    }
+    let mut hints: Vec<String> = Vec::new();
+    for caps in assign.captures_iter(code) {
+        let variable = &caps[1];
+        let member = caps.get(3).or_else(|| caps.get(4)).map(|m| m.as_str());
+        let info = match (bindings.get(&caps[2]), member) {
+            (Some(ScriptBinding::Tool(info)), None) => Some(*info),
+            (Some(ScriptBinding::Module(server)), Some(member)) => {
+                server_tool(tools, server, member)
+            }
+            _ => None,
+        };
+        let Some(info) = info.filter(|info| string_results.contains(&info.full_name)) else {
+            continue;
+        };
+        if assigned_more_than_once(code, variable) {
+            continue;
+        }
+        let Ok(reads) = Regex::new(&format!(
+            r"(?:^|[^\w$.]){}\s*\??\.\s*([A-Za-z_$][\w$]*)",
+            regex::escape(variable)
+        )) else {
+            continue;
+        };
+        let mut missing: Vec<String> = Vec::new();
+        for access in reads.captures_iter(code) {
+            let property = &access[1];
+            let named = format!("`{variable}.{property}`");
+            if !STRING_MEMBERS.contains(&property) && !missing.contains(&named) {
+                missing.push(named);
+            }
+        }
+        if missing.is_empty() {
+            continue;
+        }
+        let (subject, verb) = if missing.len() == 1 {
+            (missing[0].clone(), "is")
+        } else {
+            let last = missing.pop().unwrap_or_default();
+            (format!("{} and {last}", missing.join(", ")), "are")
+        };
+        let hint = format!(
+            "`{variable}` holds what `{}` returned, and in this run that was a string (the \
+             tool's text output itself, not an object), so {subject} {verb} undefined. Use \
+             the string directly, for example `{variable}.trim()`.",
+            info.tool_name
+        );
+        if !hints.contains(&hint) {
+            hints.push(hint);
+        }
+        if hints.len() == 3 {
+            break;
+        }
+    }
+    hints
+}
+
+/// Whether `variable` is assigned with `=` more than once in `code`, its
+/// declaration included: after a second assignment the script's reads of it
+/// may be of anything. `==`, `===` and `=>` are not assignments, and neither
+/// is `obj.variable = …`.
+fn assigned_more_than_once(code: &str, variable: &str) -> bool {
+    let Ok(assignment) = Regex::new(&format!(
+        r"(?:^|[^\w$.]){}\s*=(?:[^=>]|$)",
+        regex::escape(variable)
+    )) else {
+        // Unreadable means unproven: say nothing about this variable.
+        return true;
+    };
+    let assignments = assignment.find_iter(code).count();
+    assignments > 1
+}
+
+/// What a name the script imported is bound to.
+enum ScriptBinding<'a> {
+    /// A tool's function (`import { shell } from "developer"`).
+    Tool(&'a ToolInfo),
+    /// A module's namespace (`import * as dev from "developer"`, or the
+    /// server-name export `import { developer } from "developer"`).
+    Module(&'a str),
+}
+
+/// The names the script's `import` statements bind, each with what it names.
+/// A specifier that names nothing the module exports is left out: the loader
+/// already refuses those with its own message.
+fn script_bindings<'a>(code: &str, tools: &'a [ToolInfo]) -> BTreeMap<String, ScriptBinding<'a>> {
+    static NAMED: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
+    static STAR: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
+    let named = NAMED.get_or_init(|| {
+        Regex::new(r#"import\s*\{([^}]*)\}\s*from\s*["']([^"']+)["']"#)
+            .expect("static regex compiles")
+    });
+    let star = STAR.get_or_init(|| {
+        Regex::new(r#"import\s*\*\s*as\s+([A-Za-z_$][\w$]*)\s+from\s*["']([^"']+)["']"#)
+            .expect("static regex compiles")
+    });
+    let tool = |server: &str, name: &str| {
+        tools
+            .iter()
+            .find(|t| t.server_name == server && t.tool_name == name)
+    };
+    let mut bindings = BTreeMap::new();
+    for caps in named.captures_iter(code) {
+        let server = &caps[2];
+        for spec in caps[1].split(',') {
+            let mut words = spec.split_whitespace();
+            let Some(name) = words.next() else { continue };
+            let local = match (words.next(), words.next()) {
+                (Some("as"), Some(alias)) => alias,
+                _ => name,
+            };
+            // A tool named like its server (`chatrecall`) is ONE callable
+            // export carrying its siblings; it is read as the module, so a
+            // sibling call through it is not flagged.
+            if let Some(server_tools) = tools.iter().find(|t| t.server_name == server) {
+                if name == server {
+                    bindings.insert(
+                        local.to_string(),
+                        ScriptBinding::Module(server_tools.server_name.as_str()),
+                    );
+                    continue;
+                }
+            }
+            if let Some(info) = tool(server, name) {
+                bindings.insert(local.to_string(), ScriptBinding::Tool(info));
+            }
+        }
+    }
+    for caps in star.captures_iter(code) {
+        if let Some(info) = tools.iter().find(|t| t.server_name == caps[2]) {
+            bindings.insert(
+                caps[1].to_string(),
+                ScriptBinding::Module(info.server_name.as_str()),
+            );
+        }
+    }
+    bindings
+}
+
+/// The values a parameter is documented to take: the quoted literals of its
+/// schema type (`"view" | "write"`), else the backticked words of its
+/// description.
+fn documented_values(info: &ToolInfo, param: &str, ty: &str) -> Vec<String> {
+    static QUOTED: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
+    static TICKED: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
+    let quoted = QUOTED.get_or_init(|| Regex::new(r#""([^"]+)""#).expect("static regex compiles"));
+    let ticked =
+        TICKED.get_or_init(|| Regex::new(r"`([A-Za-z_][\w-]*)`").expect("static regex compiles"));
+    let from_type: Vec<String> = quoted.captures_iter(ty).map(|c| c[1].to_string()).collect();
+    if !from_type.is_empty() {
+        return from_type;
+    }
+    info.param_docs
+        .get(param)
+        .map(|doc| {
+            ticked
+                .captures_iter(doc)
+                .map(|c| c[1].to_string())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// The REQUIRED parameter of `info` that documents `member` as one of its
+/// values — `command` for `text_editor` and `write`. Only a required one: an
+/// optional parameter's description mentions words in backticks for all sorts
+/// of reasons (`shell`'s `working_directory` names `cd` and `command`), and it
+/// is the required selector a sub-command call was reaching for.
+fn selector_for<'a>(info: &'a ToolInfo, member: &str) -> Option<&'a str> {
+    info.params
+        .iter()
+        .find(|(name, ty, required)| {
+            *required
+                && documented_values(info, name, ty)
+                    .iter()
+                    .any(|v| v == member)
+        })
+        .map(|(name, _, _)| name.as_str())
+}
+
+/// The call that does what `callee.member(…)` was reaching for, written the
+/// way the model will copy it: `text_editor({command: "write", path,
+/// file_text})`. When one of the tool's parameters documents `member` as a
+/// value, it is passed there, and every parameter whose description names
+/// `member` (`file_text`: "Required for `write` command.") is listed beside
+/// the required ones.
+fn call_shape(callee: &str, info: &ToolInfo, member: &str) -> String {
+    let selector = selector_for(info, member);
+    let tick = format!("`{member}`");
+    let mut fields: Vec<String> = Vec::new();
+    if let Some(selector) = selector {
+        fields.push(format!("{selector}: \"{member}\""));
+    }
+    // Required arguments first, then the ones this sub-command needs.
+    let others = info
+        .params
+        .iter()
+        .filter(|(name, _, _)| Some(name.as_str()) != selector);
+    for (name, _, required) in others.clone() {
+        if *required {
+            fields.push(name.clone());
+        }
+    }
+    if selector.is_some() {
+        for (name, _, required) in others {
+            if !*required
+                && info
+                    .param_docs
+                    .get(name)
+                    .is_some_and(|doc| doc.contains(&tick))
+            {
+                fields.push(name.clone());
+            }
+        }
+    }
+    format!("{callee}({{{}}})", fields.join(", "))
+}
+
+/// The "`server`" module's tool `name`, if `tools` has one.
+fn server_tool<'a>(tools: &'a [ToolInfo], server: &str, name: &str) -> Option<&'a ToolInfo> {
+    tools
+        .iter()
+        .find(|t| t.server_name == server && t.tool_name == name)
+}
+
+/// Why `callee.member(…)` cannot work when `callee` is the tool `info` itself:
+/// a function with no methods. `member` is either a sibling tool of the same
+/// module (import it) or a value of this tool's own arguments (pass it).
+fn tool_member_hint(callee: &str, info: &ToolInfo, member: &str, tools: &[ToolInfo]) -> String {
+    // `shell.shell(…)` names the tool itself, not a sibling.
+    if let Some(sibling) = server_tool(tools, &info.server_name, member)
+        .filter(|sibling| sibling.tool_name != info.tool_name)
+    {
+        return format!(
+            "`{callee}.{member}(…)` cannot work: `{callee}` is the \"{server}\" tool \
+             `{tool}` itself, a function with no methods, and `{member}` is a separate tool \
+             of the same module. Import it and call it directly: \
+             import {{ {member} }} from \"{server}\"; {shape}.",
+            server = info.server_name,
+            tool = info.tool_name,
+            shape = call_shape(member, sibling, member),
+        );
+    }
+    format!(
+        "`{callee}.{member}(…)` cannot work: `{callee}` is the \"{server}\" tool `{tool}` \
+         itself, a function with no methods, so `{callee}.{member}` is undefined. Call the \
+         tool directly, with an object of its arguments: {shape}. Its full signature: \
+         {signature}.",
+        server = info.server_name,
+        tool = info.tool_name,
+        shape = call_shape(callee, info, member),
+        signature = info.to_signature(),
+    )
+}
+
+/// Why `first.second(…)` cannot work when `first` is the module "`server`" and
+/// it has no tool `second`; `None` when it has one.
+fn module_member_hint(
+    first: &str,
+    second: &str,
+    server: &str,
+    tools: &[ToolInfo],
+) -> Option<String> {
+    if server_tool(tools, server, second).is_some() {
+        return None;
+    }
+    let names: Vec<&str> = tools
+        .iter()
+        .filter(|t| t.server_name == server)
+        .map(|t| t.tool_name.as_str())
+        .collect();
+    // A sub-command the model hoisted to the module (`developer.write(…)`):
+    // name the tool that takes it.
+    let owner = tools
+        .iter()
+        .filter(|t| t.server_name == server)
+        .find(|t| selector_for(t, second).is_some());
+    Some(match owner {
+        Some(owner) => format!(
+            "`{first}.{second}(…)` cannot work: module \"{server}\" has no tool \
+             `{second}`; `{second}` is a value of the `{tool}` tool's arguments. \
+             Call: {shape}.",
+            tool = owner.tool_name,
+            shape = call_shape(&format!("{first}.{}", owner.tool_name), owner, second),
+        ),
+        None => format!(
+            "`{first}.{second}(…)` cannot work: module \"{server}\" has no tool \
+             `{second}`. Its tools: {}.",
+            names.join(", ")
+        ),
+    })
+}
+
+/// One sentence per `x.member(…)` / `x.tool.member(…)` call in `code` that can
+/// never work, at most three.
+fn member_call_hints(code: &str, tools: &[ToolInfo]) -> Vec<String> {
+    static CALL: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
+    let call = CALL.get_or_init(|| {
+        Regex::new(
+            r"([A-Za-z_$][\w$]*)\s*\.\s*([A-Za-z_$][\w$]*)(?:\s*\.\s*([A-Za-z_$][\w$]*))?\s*\(",
+        )
+        .expect("static regex compiles")
+    });
+    // What every function has, so `shell.call(…)` is not flagged.
+    const FUNCTION_MEMBERS: [&str; 4] = ["call", "apply", "bind", "toString"];
+    let bindings = script_bindings(code, tools);
+    if bindings.is_empty() {
+        return Vec::new();
+    }
+    let mut hints: Vec<String> = Vec::new();
+    for caps in call.captures_iter(code) {
+        let whole = caps.get(0).expect("group 0 always matches");
+        // `a.b.c(` read from `b`: a property chain, not a name the script bound.
+        if code
+            .get(..whole.start())
+            .is_some_and(|before| before.trim_end().ends_with('.'))
+        {
+            continue;
+        }
+        let first = &caps[1];
+        let second = &caps[2];
+        let third = caps.get(3).map(|m| m.as_str());
+        let hint = match (bindings.get(first), third) {
+            (Some(ScriptBinding::Tool(info)), None) if !FUNCTION_MEMBERS.contains(&second) => {
+                Some(tool_member_hint(first, info, second, tools))
+            }
+            (Some(ScriptBinding::Module(server)), None) => {
+                module_member_hint(first, second, server, tools)
+            }
+            (Some(ScriptBinding::Module(server)), Some(member)) => {
+                server_tool(tools, server, second)
+                    .filter(|_| !FUNCTION_MEMBERS.contains(&member))
+                    .map(|info| tool_member_hint(&format!("{first}.{second}"), info, member, tools))
+            }
+            _ => None,
+        };
+        if let Some(hint) = hint {
+            if !hints.contains(&hint) {
+                hints.push(hint);
+            }
+        }
+        if hints.len() == 3 {
+            break;
+        }
+    }
+    hints
+}
+
 /// Bash/zsh parameter-expansion shapes (`${!v}`, `${#arr}`, `${VAR:-default}`,
 /// `${VAR%suffix}`, `${VAR/x/y}` …) that are invalid as JS template
 /// substitutions. `${VAR}` alone is deliberately NOT matched — it is valid JS
@@ -910,6 +1482,31 @@ fn parse_error_is_embedded_payload_shaped(code: &str, message: &str) -> bool {
 /// Unrelated parse errors pass through untouched — including an ordinary typo
 /// in a script that also happens to use `String.raw` correctly.
 fn annotate_parse_error(code: &str, message: &str) -> String {
+    // F07 (live 2026-10-12, ministral-3:8b, the factorial task): six scripts
+    // in a row embedded the Python file as `file_text: """#!/usr/bin/env
+    // python3 …"""` and failed with the bare "unterminated string literal"
+    // until the loop guard stopped the turn. JavaScript has no triple quotes:
+    // `""` is an empty string and the third quote opens one that a newline
+    // ends. Said only when the script really contains a triple quote.
+    if message.contains("unterminated string literal")
+        && (code.contains("\"\"\"") || code.contains("'''"))
+    {
+        return format!(
+            "{message}. JavaScript has no triple-quoted strings: in `\"\"\"…\"\"\"` the first \
+             two quotes are an empty string and the third opens a string that the next line \
+             break ends. Put multi-line text in a template literal (`…`, with any backtick or \
+             ${{ inside it escaped as \\` and \\${{) or in a quoted string with \\n escapes."
+        );
+    }
+    // F13 rerun (GLM 4.7 Flash, 2026-10-12): three scripts ended in
+    // `return { … }` and failed with the bare "unexpected token 'return'".
+    if message.contains("unexpected token 'return'") {
+        return format!(
+            "{message}. A script runs as a module, and its top level cannot `return`. Pass the \
+             value to record_result(value) instead; for several values, record_result({{ first, \
+             second }})."
+        );
+    }
     if !parse_error_is_embedded_payload_shaped(code, message) {
         return message.to_string();
     }
@@ -1055,11 +1652,111 @@ impl ModuleLoader for ToolModuleLoader {
     }
 }
 
+/// A tool's result as the script receives it: a parsed object or array when
+/// the result is a JSON object or array, and the result's text, as a string,
+/// otherwise.
+///
+/// ⚠ A JSON *scalar* is text, not a parsed value. A command that prints a
+/// number prints text: `python3 factorial.py 5` hands the script `"120\n"`,
+/// not the number 120. Parsing scalars made the same tool return different
+/// kinds by VALUE: `120\n` became a number and `2432902008176640000\n`
+/// (above 2^53) had to stay text to keep its digits (F13 rerun, GLM 4.7
+/// Flash, 2026-10-12, where 20! came back as `2.43290200817664e+18`). Two
+/// live models were then shown `out5: 120` beside
+/// `out20: "2432902008176640000\n"`, `out5.trim()` threw on one and worked on
+/// the other, and a hint that `shell` returns a string was false for exactly
+/// the outputs that parsed (review of PR #393, reproduced). One rule for every
+/// scalar keeps each tool's results one kind, every digit intact, and
+/// `String`/`Number`/`.trim()` working as they would in any JavaScript.
 fn parse_result_to_js(result: &str, ctx: &mut Context) -> JsValue {
-    serde_json::from_str::<serde_json::Value>(result)
-        .ok()
-        .and_then(|v| JsValue::from_json(&v, ctx).ok())
-        .unwrap_or_else(|| JsValue::from(js_string!(result)))
+    match serde_json::from_str::<serde_json::Value>(result) {
+        Ok(value @ (serde_json::Value::Object(_) | serde_json::Value::Array(_))) => {
+            JsValue::from_json(&value, ctx).unwrap_or_else(|_| JsValue::from(js_string!(result)))
+        }
+        Ok(_) | Err(_) => JsValue::from(js_string!(result)),
+    }
+}
+
+/// Where `value` holds `undefined`, the way `record_result` serialises it:
+/// `""` for the value itself, `outputN5` for a property, `out.stdout` and
+/// `items[0]` deeper down. An object's undefined property is left out of
+/// the JSON and an array's becomes `null`, so these are exactly the values
+/// the recorded result does not show.
+///
+/// Read off each object's own data properties, as Boa's `to_json` reads them,
+/// so no getter runs. Bounded in depth, in properties visited and in paths
+/// returned, because a script may record anything.
+fn undefined_paths(value: &JsValue, ctx: &mut Context) -> Vec<String> {
+    let mut found = Vec::new();
+    let mut budget = 2_000usize;
+    collect_undefined_paths(value, "", 0, ctx, &mut budget, &mut found);
+    found
+}
+
+fn collect_undefined_paths(
+    value: &JsValue,
+    path: &str,
+    depth: usize,
+    ctx: &mut Context,
+    budget: &mut usize,
+    found: &mut Vec<String>,
+) {
+    const MAX_PATHS: usize = 8;
+    const MAX_DEPTH: usize = 4;
+    if found.len() >= MAX_PATHS || *budget == 0 {
+        return;
+    }
+    *budget -= 1;
+    if value.is_undefined() {
+        found.push(path.to_string());
+        return;
+    }
+    if depth >= MAX_DEPTH {
+        return;
+    }
+    let Some(object) = value.as_object() else {
+        return;
+    };
+    if object.is_callable() {
+        return;
+    }
+    let Ok(keys) = object.own_property_keys(ctx) else {
+        return;
+    };
+    let is_array = object.is_array();
+    for key in keys {
+        let name = match &key {
+            boa_engine::property::PropertyKey::Index(index) if is_array => {
+                format!("{path}[{}]", index.get())
+            }
+            boa_engine::property::PropertyKey::Index(index) => {
+                join_property_path(path, &index.get().to_string())
+            }
+            boa_engine::property::PropertyKey::String(name) => {
+                join_property_path(path, &name.to_std_string_escaped())
+            }
+            boa_engine::property::PropertyKey::Symbol(_) => continue,
+        };
+        let child = object
+            .borrow()
+            .properties()
+            .get(&key)
+            .and_then(|descriptor| descriptor.value().cloned());
+        if let Some(child) = child {
+            collect_undefined_paths(&child, &name, depth + 1, ctx, budget, found);
+        }
+        if found.len() >= MAX_PATHS || *budget == 0 {
+            return;
+        }
+    }
+}
+
+fn join_property_path(path: &str, name: &str) -> String {
+    if path.is_empty() {
+        name.to_string()
+    } else {
+        format!("{path}.{name}")
+    }
 }
 
 fn js_string_exceeds_limit(value: &JsValue, limit: usize) -> bool {
@@ -1142,18 +1839,140 @@ fn create_tool_function(full_tool_name: String) -> NativeFunction {
             rx.blocking_recv()
                 .map_err(|e| e.to_string())
                 .and_then(|r| r)
-                .map(|result| parse_result_to_js(&result, ctx))
+                .map(|result| {
+                    let value = parse_result_to_js(&result, ctx);
+                    RESULT_KINDS.with(|kinds| {
+                        let mut kinds = kinds.borrow_mut();
+                        let kinds = kinds.entry(full_name.clone()).or_default();
+                        if value.is_string() {
+                            kinds.text = true;
+                        } else {
+                            kinds.parsed = true;
+                        }
+                    });
+                    value
+                })
                 .map_err(|e| JsNativeError::error().with_message(e).into())
         },
         full_tool_name,
     )
 }
 
+/// What a script that ran to its end handed back.
+#[derive(Debug)]
+struct ScriptOutput {
+    /// What `record_result` was last given, serialised, or `undefined`.
+    text: String,
+    /// Whether the script called `record_result` at all. `false` and `true`
+    /// with `record_result(undefined)` print the same `text`, and only the
+    /// first means the script never tried to hand anything back.
+    recorded: bool,
+    /// Where the value last passed to `record_result` held `undefined`
+    /// ([`undefined_paths`]): the values the recorded result cannot show.
+    undefined: Vec<String>,
+    /// [`string_result_member_hints`] for a script that ran to its END,
+    /// computed only when [`Self::undefined`] says the recorded value really
+    /// lost something.
+    ///
+    /// Reading a property a string lacks only throws when something is then
+    /// called on it (`result5.stdout.trim()`, F13). Read and passed straight
+    /// to `record_result`, it is a silent `undefined`, and an object of
+    /// undefined values serialises as `{}`. Measured (2026-10-12 rerun,
+    /// ministral-3:8b on Ollama, the factorial task): both `shell` runs
+    /// returned their output (9 and 26 bytes, `5! = 120` and 20!), the script
+    /// recorded `{ outputN5: result5.output, outputN20: result20.output }`,
+    /// and the model was shown `Result: {}` ten times with nothing saying
+    /// why, until the task hit its 1,800-second limit.
+    ///
+    /// ⚠ Gated on what `record_result` was given, not on the source alone: a
+    /// script whose recorded value is complete must never be told its values
+    /// were undefined. Before the gate, a correct script that reassigned
+    /// `lines = lines.split("\n")` and recorded `lines.filter(…)`, or that read
+    /// `info.name` off a call whose result was JSON, was told exactly that
+    /// (review of `acbefe5a`, 2026-10-12, reproduced) — the opposite of what
+    /// these notes exist for, which is to stop a model redoing correct work.
+    string_reads: Vec<String>,
+}
+
+/// What the model is told about a script that ran to its end: the recorded
+/// result, plus what it needs when that result cannot show what the script's
+/// tool calls returned.
+fn script_result_text(output: &ScriptOutput, calls: usize) -> String {
+    // F13 rerun (GLM 4.7 Flash, 2026-10-12): scripts that ran both
+    // factorial commands but handed nothing to `record_result`
+    // came back as a bare "Result: undefined", and the model ran
+    // them again and again, unable to see what they printed.
+    let mut text = if !output.recorded && calls > 0 {
+        format!(
+            "Result: {}\nThe script's {calls} tool call(s) completed successfully, \
+             so there is no need to run them again. It did not call record_result, \
+             so nothing they returned was passed back: to see a value, pass it to \
+             record_result(value), for example record_result({{ first, second }}).",
+            output.text
+        )
+    } else {
+        format!("Result: {}", output.text)
+    };
+    // Said only when the recorded value really lost something, and then only
+    // when the reason is known (a string's missing property) or the result
+    // shows nothing at all. An optional field left undefined on purpose in an
+    // otherwise full result is not worth a sentence.
+    let shows_nothing = matches!(output.text.trim(), "{}" | "undefined");
+    if output.recorded
+        && !output.undefined.is_empty()
+        && (!output.string_reads.is_empty() || shows_nothing)
+    {
+        let lead = if calls > 0 {
+            format!("The script's {calls} tool call(s) completed successfully, but record_result")
+        } else {
+            "record_result".to_string()
+        };
+        text.push_str(&format!(
+            "\n{lead} was given undefined{}, and it cannot show an undefined value: it leaves \
+             one out of an object (an object holding only undefined values shows as {{}}) and \
+             writes null for one in an array.",
+            undefined_subject(&output.undefined)
+        ));
+        if !output.string_reads.is_empty() {
+            text.push(' ');
+            text.push_str(&output.string_reads.join(" "));
+        }
+    }
+    text
+}
+
+/// `""` when the recorded value itself was undefined, else " for `a`, `b` and
+/// `c`".
+fn undefined_subject(paths: &[String]) -> String {
+    if paths.iter().any(String::is_empty) {
+        return String::new();
+    }
+    let mut named: Vec<String> = paths.iter().map(|path| format!("`{path}`")).collect();
+    match named.len() {
+        0 => String::new(),
+        1 => format!(" for {}", named[0]),
+        _ => {
+            let last = named.pop().unwrap_or_default();
+            format!(" for {} and {last}", named.join(", "))
+        }
+    }
+}
+
+/// [`run_js_script`]'s text alone: what the engine-level tests compare.
+#[cfg(test)]
 fn run_js_module(
     code: &str,
     tools: &[ToolInfo],
     call_tx: mpsc::UnboundedSender<ToolCallRequest>,
 ) -> Result<String, String> {
+    run_js_script(code, tools, call_tx).map(|output| output.text)
+}
+
+fn run_js_script(
+    code: &str,
+    tools: &[ToolInfo],
+    call_tx: mpsc::UnboundedSender<ToolCallRequest>,
+) -> Result<ScriptOutput, String> {
     if code.len() > MAX_JS_SOURCE_BYTES {
         return Err(format!(
             "JavaScript source exceeds the {} byte limit",
@@ -1163,6 +1982,7 @@ fn run_js_module(
     install_js_panic_hook();
     CALL_TX.with(|tx| *tx.borrow_mut() = Some(call_tx));
     RESULT_CELL.with(|cell| *cell.borrow_mut() = None);
+    clear_result_records();
 
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         run_js_module_inner(code, tools)
@@ -1178,10 +1998,17 @@ fn run_js_module(
     });
     CALL_TX.with(|tx| *tx.borrow_mut() = None);
     RESULT_CELL.with(|cell| *cell.borrow_mut() = None);
+    clear_result_records();
     result
 }
 
-fn run_js_module_inner(code: &str, tools: &[ToolInfo]) -> Result<String, String> {
+/// Forget what the last run's tools returned and what it recorded.
+fn clear_result_records() {
+    RESULT_KINDS.with(|kinds| kinds.borrow_mut().clear());
+    RECORDED_UNDEFINED.with(|paths| paths.borrow_mut().clear());
+}
+
+fn run_js_module_inner(code: &str, tools: &[ToolInfo]) -> Result<ScriptOutput, String> {
     let loader = Rc::new(ToolModuleLoader::default());
     let mut ctx = Context::builder()
         .module_loader(loader.clone())
@@ -1209,7 +2036,9 @@ fn run_js_module_inner(code: &str, tools: &[ToolInfo]) -> Result<String, String>
             }
             None => value.display().to_string(),
         };
+        let undefined = undefined_paths(&value, ctx);
         RESULT_CELL.with(|cell| *cell.borrow_mut() = Some(result_str));
+        RECORDED_UNDEFINED.with(|paths| *paths.borrow_mut() = undefined);
         Ok(value)
     });
 
@@ -1241,6 +2070,7 @@ fn run_js_module_inner(code: &str, tools: &[ToolInfo]) -> Result<String, String>
     match promise.state() {
         PromiseState::Fulfilled(_) => {
             let result = RESULT_CELL.with(|cell| cell.borrow().clone());
+            let recorded = result.is_some();
             let result = result.unwrap_or_else(|| "undefined".to_string());
             if result.len() > MAX_JS_RESULT_BYTES {
                 Err(format!(
@@ -1248,12 +2078,32 @@ fn run_js_module_inner(code: &str, tools: &[ToolInfo]) -> Result<String, String>
                     MAX_JS_RESULT_BYTES
                 ))
             } else {
-                Ok(result)
+                let undefined = if recorded {
+                    RECORDED_UNDEFINED.with(|paths| paths.borrow().clone())
+                } else {
+                    Vec::new()
+                };
+                let string_reads = if undefined.is_empty() {
+                    Vec::new()
+                } else {
+                    string_result_member_hints(code, tools, &text_only_tools())
+                };
+                Ok(ScriptOutput {
+                    text: result,
+                    recorded,
+                    undefined,
+                    string_reads,
+                })
             }
         }
         PromiseState::Rejected(err) => Err(format!(
             "Module error: {}",
-            annotate_opaque_js_error(&err.display().to_string())
+            annotate_js_error_for_script(
+                code,
+                tools,
+                &err.display().to_string(),
+                &text_only_tools()
+            )
         )),
         PromiseState::Pending => Err("Module evaluation did not complete".to_string()),
     }
@@ -1464,6 +2314,60 @@ impl CollectedArtifacts {
             self.app_paths.push(path.clone());
             self.last_app_path = Some(path);
         }
+    }
+
+    /// How many of the script's tool calls completed successfully.
+    fn completed_call_count(&self) -> usize {
+        self.tool_calls
+            .iter()
+            .filter(|record| record.status == "ok")
+            .count()
+    }
+
+    /// The sentence a FAILED script's error ends with when some of its tool
+    /// calls had already completed, or `None` when none had.
+    ///
+    /// The records go to `_meta`, which the model never sees, so a script that
+    /// failed after its calls succeeded read to the model exactly like one
+    /// whose calls failed. Measured (2026-10-12, GLM 4.7 Flash, the factorial
+    /// task): write, chmod and both runs all returned ok, the script then
+    /// threw on its own `result5.stdout.trim()`, and the model — told only
+    /// "TypeError: cannot convert 'null' or 'undefined' to object" — rewrote
+    /// the correct file with escaped newlines and destroyed it. Names and
+    /// counts only: what the calls returned is the script's, and may be large.
+    fn completed_calls_note(&self) -> Option<String> {
+        let mut counts: Vec<(&str, usize)> = Vec::new();
+        for record in self
+            .tool_calls
+            .iter()
+            .filter(|record| record.status == "ok")
+        {
+            match counts.iter_mut().find(|(tool, _)| *tool == record.tool) {
+                Some((_, count)) => *count += 1,
+                None => counts.push((record.tool.as_str(), 1)),
+            }
+        }
+        if counts.is_empty() {
+            return None;
+        }
+        let listed = counts
+            .iter()
+            .map(|(tool, count)| match count {
+                1 => format!("{tool} once"),
+                count => format!("{tool} {count} times"),
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+        let unrecorded = match self.dropped_tool_calls {
+            0 => String::new(),
+            dropped => format!(" ({dropped} more call(s) were not recorded)"),
+        };
+        Some(format!(
+            "Before the script stopped, these tool calls it made had completed successfully: \
+             {listed}{unrecorded}. They ran and their effects (files written, commands run) are \
+             in place, so the error above is not theirs: fix what failed and run only what \
+             still needs to run, rather than redoing their work."
+        ))
     }
 
     fn push_tool_call(&mut self, record: ToolCallRecord) {
@@ -1949,7 +2853,7 @@ impl CodeExecutionClient {
             }
         });
 
-        let js_task = tokio::task::spawn_blocking(move || run_js_module(&code, &tools, call_tx));
+        let js_task = tokio::task::spawn_blocking(move || run_js_script(&code, &tools, call_tx));
         let js_result = tokio::select! {
             result = js_task => result.map_err(|e| format!("JS execution task failed: {e}"))?,
             () = cancellation_token.cancelled() => {
@@ -1964,8 +2868,9 @@ impl CodeExecutionClient {
         let meta = Self::collected_meta(&collected);
 
         match js_result {
-            Ok(r) => {
-                let mut contents = vec![Content::text(format!("Result: {r}"))];
+            Ok(output) => {
+                let text = script_result_text(&output, collected.completed_call_count());
+                let mut contents = vec![Content::text(text)];
                 contents.append(&mut collected.content);
                 let mut result = CallToolResult::success(contents);
                 result.meta = meta;
@@ -1974,9 +2879,14 @@ impl CodeExecutionClient {
             Err(error) => {
                 // Keep the same error text `call_tool` used to produce, but
                 // attach the telemetry meta: a failing run is exactly when the
-                // executed-calls list matters most (issue #28).
-                let mut result =
-                    CallToolResult::error(vec![Content::text(format!("Error: {error}"))]);
+                // executed-calls list matters most (issue #28). The model
+                // never sees the meta, so the calls that did complete are
+                // named in the text too (F13).
+                let text = match collected.completed_calls_note() {
+                    Some(note) => format!("Error: {error}\n{note}"),
+                    None => format!("Error: {error}"),
+                };
+                let mut result = CallToolResult::error(vec![Content::text(text)]);
                 result.meta = meta;
                 Ok(result)
             }
@@ -2135,6 +3045,7 @@ impl CodeExecutionClient {
                     description: String::new(),
                     params: Vec::new(),
                     return_type: String::new(),
+                    param_docs: BTreeMap::new(),
                 };
                 (module_search_match_score(&probe, matcher) > 0).then(|| (*full_name).to_string())
             })
@@ -2254,6 +3165,20 @@ impl CodeExecutionClient {
         };
         if is_error {
             let user_error = user_tool_result_text(&result.content);
+            // A failed call's structured envelope carries only its summary;
+            // what says WHY is in its content. F07 rerun (ministral-3:8b,
+            // 2026-10-12): `shell({command: "run", args: [...]})` failed three
+            // times and the script was handed only `{"error":{"kind":
+            // "tool_failure","message":"[shell: command exited with status
+            // 127]"}}`, while the content held "zsh:1: command not found:
+            // run". A direct call shows the model that content, so a script
+            // gets it too whenever there is any.
+            let value = match assistant_tool_result_text(&result.content, false, false) {
+                Ok(text) if result.structured_content.is_some() && !text.trim().is_empty() => {
+                    Ok(text)
+                }
+                _ => value,
+            };
             // Name the failing tool (issue #28): this string is what the
             // script throws, so an uncaught failure surfaces at the step
             // level already attributed.
@@ -2952,7 +3877,8 @@ impl McpClientTrait for CodeExecutionClient {
                 Those are the only importable modules: there is no Node.js or browser standard library
                 (no "fs", "path", "os", "child_process", "http"); use `import {{ shell, text_editor }} from "developer"`
                 for files and commands. Names are case-sensitive.
-                A tool call returns a parsed object when its result is JSON, a string otherwise.
+                A tool call returns a parsed object or array when its result is a JSON object or array,
+                and its text as a string otherwise: a command that prints 120 returns "120\n".
                 String.raw does NOT make ${{...}} literal: a ${{...}} or backtick inside an embedded
                 shell/markdown payload still breaks the parse; write such payloads to a file instead.
 
@@ -3410,6 +4336,52 @@ mod tests {
             serde_json::to_value(&images).unwrap()
         );
         assert!(collected.encoded_bytes > 0);
+    }
+
+    /// F07 rerun (ministral-3:8b, 2026-10-12): a failed shell call inside a
+    /// script surfaced only its structured envelope's status line, so the
+    /// model never saw "command not found: run" and repeated the call. The
+    /// result here has the exact shape `developer__shell` returns for a
+    /// non-zero exit.
+    #[tokio::test]
+    async fn a_failed_sub_call_hands_the_script_its_output_not_only_its_status() {
+        let output = "zsh:1: command not found: run\n\n[shell: command exited with status 127]";
+        let mut result = CallToolResult::success(vec![
+            Content::text(output).with_audience(vec![Role::Assistant]),
+            Content::text(output)
+                .with_audience(vec![Role::User])
+                .with_priority(0.0),
+        ]);
+        result.is_error = Some(true);
+        result.structured_content = Some(serde_json::json!({
+            "error": {"kind": "tool_failure", "message": "[shell: command exited with status 127]"}
+        }));
+        let collected = Mutex::new(CollectedArtifacts::default());
+        let (value, kind, user_error) = CodeExecutionClient::completed_sub_call_outcome(
+            "developer__shell",
+            &result,
+            &collected,
+        )
+        .await;
+        let error = value.expect_err("a failed call throws in the script");
+        assert_eq!(
+            error,
+            format!("Tool error from developer__shell: {output}"),
+            "the output that says why must reach the script"
+        );
+        assert_eq!(kind, "tool_failure");
+        assert_eq!(user_error.as_deref(), Some(output));
+
+        // A failure with nothing but its envelope still says what it has.
+        let mut bare = CallToolResult::success(vec![]);
+        bare.is_error = Some(true);
+        bare.structured_content = Some(serde_json::json!({
+            "error": {"kind": "tool_failure", "message": "command failed"}
+        }));
+        let (value, _, _) =
+            CodeExecutionClient::completed_sub_call_outcome("developer__shell", &bare, &collected)
+                .await;
+        assert!(value.unwrap_err().contains("command failed"));
     }
 
     #[tokio::test]
@@ -3922,6 +4894,172 @@ mod tests {
         )
     }
 
+    /// `execute_code` through the real handler, against the real Todo
+    /// extension, in a fresh session.
+    async fn execute_with_todo(code: &str) -> CallToolResult {
+        let temp = tempfile::tempdir().unwrap();
+        let session_manager = Arc::new(crate::session::SessionManager::new(
+            temp.path().to_path_buf(),
+        ));
+        let session = session_manager
+            .create_session(
+                temp.path().to_path_buf(),
+                "completed calls".into(),
+                crate::session::SessionType::User,
+            )
+            .await
+            .unwrap();
+        let manager = Arc::new(crate::agents::ExtensionManager::new(
+            Arc::new(Mutex::new(None)),
+            Arc::clone(&session_manager),
+        ));
+        manager
+            .add_extension(crate::agents::extension::ExtensionConfig::Platform {
+                name: "todo".into(),
+                description: "Todo".into(),
+                bundled: Some(true),
+                available_tools: Vec::new(),
+            })
+            .await
+            .unwrap();
+        let client = CodeExecutionClient::new(PlatformExtensionContext {
+            extension_manager: Some(Arc::downgrade(&manager)),
+            session_manager,
+        })
+        .unwrap();
+        client
+            .handle_execute_code(
+                &session.id,
+                crate::privacy::CallCapability::for_test_restricted(),
+                Some(
+                    serde_json::json!({ "code": code })
+                        .as_object()
+                        .unwrap()
+                        .clone(),
+                ),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap()
+    }
+
+    fn result_text(result: &CallToolResult) -> String {
+        result
+            .content
+            .iter()
+            .filter_map(|content| content.as_text().map(|text| text.text.clone()))
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    /// F13 (live 2026-10-12, GLM 4.7 Flash): a script whose calls all
+    /// succeeded and which then threw on its own code read to the model
+    /// exactly like one whose calls had failed — the records went only to
+    /// `_meta` — and the model redid the work and destroyed a correct file.
+    /// The error now names the calls that completed; a script that fails
+    /// before any call claims none.
+    #[tokio::test]
+    async fn a_script_that_fails_after_its_calls_names_the_calls_that_completed() {
+        let result = execute_with_todo(
+            r#"import { todo_write, todo_update } from "todo";
+todo_write({ content: "- [ ] write factorial.py\n- [ ] run it" });
+const updated = todo_update({ id: "1", status: "completed" });
+record_result(updated.stdout.trim());"#,
+        )
+        .await;
+        assert_eq!(result.is_error, Some(true));
+        let text = result_text(&result);
+        assert!(text.starts_with("Error: Module error: TypeError"), "{text}");
+        assert!(
+            text.contains(
+                "these tool calls it made had completed successfully: todo__todo_write once, \
+                 todo__todo_update once"
+            ),
+            "{text}"
+        );
+        assert!(text.contains("the error above is not theirs"), "{text}");
+
+        let early = execute_with_todo(
+            r#"import { todo_write } from "todo";
+const nothing = undefined;
+nothing.trim();
+todo_write({ content: "- [ ] never" });"#,
+        )
+        .await;
+        assert_eq!(early.is_error, Some(true));
+        let text = result_text(&early);
+        assert!(!text.contains("had completed successfully"), "{text}");
+    }
+
+    /// F13 rerun (GLM 4.7 Flash, 2026-10-12): scripts that ran their calls
+    /// and handed nothing to `record_result` came back as a bare "Result:
+    /// undefined", and the model reran them unable to see their output. A
+    /// script that made no call, or that recorded a value, is unchanged.
+    #[tokio::test]
+    async fn a_script_that_records_nothing_after_its_calls_says_so() {
+        let silent = execute_with_todo(
+            r#"import { todo_write } from "todo";
+const out = todo_write({ content: "- [ ] run factorial.py" });"#,
+        )
+        .await;
+        assert_eq!(silent.is_error, Some(false));
+        let text = result_text(&silent);
+        assert!(text.starts_with("Result: undefined\n"), "{text}");
+        assert!(
+            text.contains("did not call record_result")
+                && text.contains("The script's 1 tool call(s) completed successfully")
+                && text.contains("no need to run them again"),
+            "{text}"
+        );
+
+        let recorded = execute_with_todo(
+            r#"import { todo_write } from "todo";
+record_result(todo_write({ content: "- [ ] run factorial.py" }));"#,
+        )
+        .await;
+        let text = result_text(&recorded);
+        assert!(!text.contains("did not call record_result"), "{text}");
+
+        let no_calls = execute_with_todo("const x = 1 + 1;").await;
+        assert_eq!(result_text(&no_calls), "Result: undefined");
+    }
+
+    /// F07 rerun (ministral-3:8b, 2026-10-12), through the real handler: a
+    /// script that ran to its end and recorded a property of a tool's STRING
+    /// result was shown a bare `Result: {}`. It now says the call completed,
+    /// that the property was undefined, and how to read the string.
+    #[tokio::test]
+    async fn a_recorded_property_of_a_string_result_is_explained_not_shown_as_empty() {
+        let read = execute_with_todo(
+            r#"import { todo_write } from "todo";
+const out = todo_write({ content: "- [ ] run factorial.py" });
+record_result({ status: out.output });"#,
+        )
+        .await;
+        assert_eq!(read.is_error, Some(false));
+        let text = result_text(&read);
+        assert!(text.starts_with("Result: {}\n"), "{text}");
+        assert!(
+            text.contains(
+                "The script's 1 tool call(s) completed successfully, but record_result was \
+                 given undefined for `status`"
+            ) && text.contains("`out` holds what `todo_write` returned")
+                && text.contains("`out.output` is undefined")
+                && text.contains("`out.trim()`"),
+            "{text}"
+        );
+
+        let whole = execute_with_todo(
+            r#"import { todo_write } from "todo";
+const out = todo_write({ content: "- [ ] run factorial.py" });
+record_result({ status: out.trim() });"#,
+        )
+        .await;
+        let text = result_text(&whole);
+        assert!(!text.contains("holds what"), "{text}");
+        assert!(!text.contains("was given undefined"), "{text}");
+    }
+
     #[tokio::test]
     async fn nested_todo_metadata_records_real_updates_without_adding_model_content() {
         let temp = tempfile::tempdir().unwrap();
@@ -4236,6 +5374,7 @@ mod tests {
             description: "Execute shell commands".to_string(),
             params: vec![("command".to_string(), "string".to_string(), true)],
             return_type: "string".to_string(),
+            param_docs: BTreeMap::new(),
         }];
 
         // Nothing in the catalogue matches, and the thing the caller wanted can
@@ -4326,6 +5465,7 @@ mod tests {
                 description: "Execute shell commands".to_string(),
                 params: vec![("command".to_string(), "string".to_string(), true)],
                 return_type: "string".to_string(),
+                param_docs: BTreeMap::new(),
             },
             ToolInfo {
                 server_name: "developer".to_string(),
@@ -4334,6 +5474,7 @@ mod tests {
                 description: "Edit text files".to_string(),
                 params: vec![("path".to_string(), "string".to_string(), true)],
                 return_type: "string".to_string(),
+                param_docs: BTreeMap::new(),
             },
             ToolInfo {
                 server_name: "git".to_string(),
@@ -4342,6 +5483,7 @@ mod tests {
                 description: "Commit changes to git".to_string(),
                 params: vec![("message".to_string(), "string".to_string(), true)],
                 return_type: "string".to_string(),
+                param_docs: BTreeMap::new(),
             },
         ];
 
@@ -4421,6 +5563,7 @@ mod tests {
             description: "Search past chat or load session summaries".to_string(),
             params: vec![],
             return_type: "string".to_string(),
+            param_docs: BTreeMap::new(),
         }];
 
         let result = CodeExecutionClient::handle_search(
@@ -4492,6 +5635,7 @@ mod tests {
                     ("url".to_string(), "string".to_string(), true),
                 ],
                 return_type: "string".to_string(),
+                param_docs: BTreeMap::new(),
             },
             ToolInfo {
                 server_name: "cdwagent".to_string(),
@@ -4500,6 +5644,7 @@ mod tests {
                 description: "Search clinical notes".to_string(),
                 params: vec![],
                 return_type: "string".to_string(),
+                param_docs: BTreeMap::new(),
             },
             ToolInfo {
                 server_name: "webdocuments".to_string(),
@@ -4508,6 +5653,7 @@ mod tests {
                 description: "Read and write spreadsheets".to_string(),
                 params: vec![],
                 return_type: "string".to_string(),
+                param_docs: BTreeMap::new(),
             },
         ];
 
@@ -4578,6 +5724,7 @@ mod tests {
             description: "\n    Fetch URLs for web and API research.\n    More detail.".to_string(),
             params: vec![],
             return_type: "string".to_string(),
+            param_docs: BTreeMap::new(),
         };
 
         assert!(tool
@@ -4595,6 +5742,7 @@ mod tests {
                 description: "Execute shell commands".to_string(),
                 params: vec![],
                 return_type: "string".to_string(),
+                param_docs: BTreeMap::new(),
             },
             ToolInfo {
                 server_name: "developer".to_string(),
@@ -4603,6 +5751,7 @@ mod tests {
                 description: "Edit text files".to_string(),
                 params: vec![],
                 return_type: "string".to_string(),
+                param_docs: BTreeMap::new(),
             },
         ];
 
@@ -4728,6 +5877,91 @@ mod tests {
         );
     }
 
+    #[test]
+    fn knowledge_raw_source_signature_preserves_discriminated_input() {
+        use biorouter_mcp::knowledge::server::AddRawSourceParams;
+
+        let input_schema = serde_json::to_value(schema_for!(AddRawSourceParams))
+            .unwrap()
+            .as_object()
+            .unwrap()
+            .clone();
+        let tool = McpTool::new(
+            "knowledge__kb_add_raw_source".to_string(),
+            "Add a raw source (URL or pasted text).".to_string(),
+            input_schema,
+        );
+        let info = ToolInfo::from_mcp_tool(&tool).unwrap();
+        let source_type =
+            "{ kind: \"url\", url: string } | { kind: \"text\", text: string, title?: string }";
+        assert_eq!(
+            info.to_signature(),
+            format!(
+                "knowledge[\"kb_add_raw_source\"]({{kb_id: string, source: {source_type}, txn?: string}}): string - Add a raw source (URL or pasted text)."
+            )
+        );
+        let discovery = render_module_search_results(&[(1, &info)], 1);
+        assert!(discovery.contains(&format!("source: {source_type}")));
+        assert!(!discovery.contains("source: any"));
+    }
+
+    #[test_case("oneOf"; "object oneOf")]
+    #[test_case("anyOf"; "object anyOf")]
+    fn structured_schema_union_preserves_discriminants(composition: &str) {
+        let branches = serde_json::json!([
+            {
+                "type": "object",
+                "properties": {
+                    "kind": { "type": "string", "const": "text" },
+                    "text": { "type": "string" }
+                },
+                "required": ["kind", "text"]
+            },
+            {
+                "type": "object",
+                "properties": {
+                    "kind": { "type": "string", "const": "url" },
+                    "url": { "type": "string" }
+                },
+                "required": ["kind", "url"]
+            }
+        ]);
+        let mut schema = serde_json::Map::new();
+        schema.insert(composition.to_string(), branches);
+        let schema = Value::Object(schema);
+        let expected = "{ kind: \"text\", text: string } | { kind: \"url\", url: string }";
+        assert_eq!(extract_type_from_schema(&schema).as_deref(), Some(expected));
+        assert_eq!(
+            extract_type_from_schema(&serde_json::json!({
+                "type": "array",
+                "items": schema
+            })),
+            Some(format!("({expected})[]"))
+        );
+    }
+
+    #[test]
+    fn discriminant_string_literals_keep_json_escaping() {
+        assert_eq!(
+            extract_type_from_schema(&serde_json::json!({
+                "type": "string",
+                "const": "quoted \"value\""
+            })),
+            Some("\"quoted \\\"value\\\"\"".to_string())
+        );
+    }
+
+    #[test_case("oneOf"; "object oneOf")]
+    #[test_case("anyOf"; "object anyOf")]
+    fn structured_schema_union_does_not_drop_unresolved_alternatives(composition: &str) {
+        let mut schema = serde_json::Map::new();
+        schema.insert(
+            composition.to_string(),
+            serde_json::json!([{ "$ref": "#/$defs/unresolved" }, { "type": "string" }]),
+        );
+        assert_eq!(extract_type_from_schema(&Value::Object(schema)), None);
+    }
+
     fn eval_with_tools(code: &str, tools: &[(&str, &str)]) -> String {
         let mut ctx = Context::default();
         for &(name, response) in tools {
@@ -4770,6 +6004,7 @@ mod tests {
                 description: "A tool".to_string(),
                 params: vec![],
                 return_type: "string".to_string(),
+                param_docs: BTreeMap::new(),
             })
             .collect()
     }
@@ -4879,6 +6114,550 @@ mod tests {
         );
     }
 
+    /// Answer every tool call the sandbox makes with `reply`, from a thread,
+    /// the way the async tool handler would.
+    fn answer_tool_calls_with(reply: &'static str) -> mpsc::UnboundedSender<ToolCallRequest> {
+        let (tx, mut rx) = mpsc::unbounded_channel::<ToolCallRequest>();
+        std::thread::spawn(move || {
+            while let Some((_name, _args, responder)) = rx.blocking_recv() {
+                let _ = responder.send(Ok(reply.to_string()));
+            }
+        });
+        tx
+    }
+
+    /// The script GLM 4.7 Flash wrote (live 2026-10-12, the factorial task),
+    /// paths shortened: every call succeeds, then it reads `.stdout` off the
+    /// string `shell` handed back.
+    const GLM_FACTORIAL_SCRIPT: &str = r#"import { shell, text_editor } from "developer";
+text_editor({ command: "write", path: "factorial.py", file_text: "print(1)\n" });
+shell({ command: "chmod +x factorial.py" });
+const result5 = shell({ command: "./factorial.py 5" });
+const result20 = shell({ command: "./factorial.py 20" });
+record_result({
+  n5_output: result5.stdout.trim(),
+  n5_error: result5.stderr.trim(),
+  n20_output: result20.stdout.trim(),
+});"#;
+
+    /// F13: Boa's "cannot convert 'null' or 'undefined' to object" names
+    /// nothing. The error now says which read cannot work, and why: in this
+    /// run `shell` handed the script a string.
+    #[test]
+    fn reading_stdout_off_a_string_result_names_the_read() {
+        let tools = server_tools("developer", &["shell", "text_editor"]);
+        let error = run_js_module(
+            GLM_FACTORIAL_SCRIPT,
+            &tools,
+            answer_tool_calls_with("5! = 120\n"),
+        )
+        .expect_err("a string has no .stdout");
+
+        assert!(
+            error.contains("cannot convert 'null' or 'undefined' to object"),
+            "the engine's own message must survive, got: {error}"
+        );
+        assert!(
+            error.contains(
+                "`result5` holds what `shell` returned, and in this run that was a string"
+            ) && error.contains("`result5.stdout` and `result5.stderr` are undefined")
+                && error.contains("`result5.trim()`"),
+            "the read and its fix must be named, got: {error}"
+        );
+        assert!(
+            error.contains("`result20.stdout` is undefined"),
+            "every such variable is named, got: {error}"
+        );
+    }
+
+    /// The script ministral-3:8b wrote in the F07 rerun (live 2026-10-12, the
+    /// factorial task), paths shortened: both runs succeed, and it records
+    /// `.output` off the string `shell` handed back, which nothing throws on.
+    const MINISTRAL_FACTORIAL_SCRIPT: &str = r#"import { shell } from "developer";
+
+// Run the script for N=5
+const result5 = shell({
+  command: "python3 factorial.py 5"
+});
+
+// Run the script for N=20
+const result20 = shell({
+  command: "python3 factorial.py 20"
+});
+
+// Return results
+record_result({
+  outputN5: result5.output,
+  outputN20: result20.output
+});"#;
+
+    /// F07 rerun: a script that runs to its end with a property of a string
+    /// result in what it records is told why its result is `{}`, naming every
+    /// such read, after saying its calls completed.
+    #[test]
+    fn recording_a_property_of_a_string_result_explains_the_empty_result() {
+        let tools = one_tool("developer", "shell");
+        let output = run_js_script(
+            MINISTRAL_FACTORIAL_SCRIPT,
+            &tools,
+            answer_tool_calls_with("5! = 120\n"),
+        )
+        .expect("nothing throws on reading a missing property");
+        assert_eq!(output.text, "{}");
+        assert!(output.recorded);
+
+        let text = script_result_text(&output, 2);
+        assert!(text.starts_with("Result: {}\n"), "{text}");
+        assert!(
+            text.contains(
+                "The script's 2 tool call(s) completed successfully, but record_result was \
+                 given undefined for `outputN5` and `outputN20`"
+            ) && text.contains("an object holding only undefined values shows as {}"),
+            "{text}"
+        );
+        assert!(
+            text.contains(
+                "`result5` holds what `shell` returned, and in this run that was a string"
+            ) && text.contains("`result5.output` is undefined")
+                && text.contains("`result20.output` is undefined")
+                && text.contains("`result5.trim()`"),
+            "every read must be named, with the fix, got: {text}"
+        );
+    }
+
+    /// The same script handed JSON objects is reading real properties, and a
+    /// script that records the string itself reads nothing missing: neither
+    /// is told anything beyond its result.
+    #[test]
+    fn a_complete_script_is_not_told_about_reads_that_work() {
+        let tools = one_tool("developer", "shell");
+        let objects = run_js_script(
+            MINISTRAL_FACTORIAL_SCRIPT,
+            &tools,
+            answer_tool_calls_with(r#"{"output": "5! = 120"}"#),
+        )
+        .expect("an object result has the property");
+        assert!(
+            objects.string_reads.is_empty(),
+            "{:?}",
+            objects.string_reads
+        );
+        assert_eq!(
+            script_result_text(&objects, 2),
+            format!("Result: {}", objects.text)
+        );
+
+        let strings = run_js_script(
+            r#"import { shell } from "developer";
+const result5 = shell({ command: "python3 factorial.py 5" });
+record_result({ result5, lines: result5.split("\n").length });"#,
+            &tools,
+            answer_tool_calls_with("5! = 120\n"),
+        )
+        .expect("string members work on a string result");
+        assert!(
+            strings.string_reads.is_empty(),
+            "{:?}",
+            strings.string_reads
+        );
+        assert!(strings.text.contains("5! = 120"), "{}", strings.text);
+    }
+
+    /// A JSON result IS an object, so the hint — a statement about what the
+    /// script was handed — must not be made about one; nor about the members
+    /// a string really has.
+    #[test]
+    fn the_string_result_hint_is_never_made_about_objects_or_string_members() {
+        let tools = one_tool("developer", "shell");
+        let error = run_js_module(
+            r#"import { shell } from "developer";
+const out = shell({ command: "x" });
+record_result(out.stderr.trim());"#,
+            &tools,
+            answer_tool_calls_with(r#"{"stdout": "x"}"#),
+        )
+        .expect_err("the parsed object has no stderr");
+        assert!(error.contains("TypeError"), "got: {error}");
+        assert!(!error.contains("holds what"), "got: {error}");
+
+        let ok = run_js_module(
+            r#"import { shell } from "developer";
+const out = shell({ command: "x" });
+record_result([out.trim(), out.length, out.split("\n").length]);"#,
+            &tools,
+            answer_tool_calls_with("5! = 120\n"),
+        )
+        .expect("string members work on a string result");
+        assert!(ok.contains("5! = 120"), "{ok}");
+
+        assert!(string_result_member_hints(
+            "import { shell } from \"developer\";\nconst out = shell({});\nout.trim().toUpperCase();",
+            &tools,
+            &BTreeSet::from(["developer__shell".to_string()]),
+        )
+        .is_empty());
+    }
+
+    /// F13 rerun (GLM 4.7 Flash, 2026-10-12): the model's script was right —
+    /// `record_result({ result5, result20 })` — and Biorouter rounded 20!,
+    /// because `2432902008176640000` is valid JSON and became a double. A
+    /// number a tool prints is its text, so every digit survives.
+    #[test]
+    fn a_tool_result_too_large_for_a_javascript_number_keeps_every_digit() {
+        let tools = one_tool("developer", "shell");
+        let out = run_js_module(
+            r#"import { shell } from "developer";
+const result20 = shell({ command: "python3 factorial.py 20" });
+record_result({ result20 });"#,
+            &tools,
+            answer_tool_calls_with("2432902008176640000\n"),
+        )
+        .unwrap();
+        assert!(out.contains("2432902008176640000"), "{out}");
+        assert!(!out.contains("e+18"), "{out}");
+
+        // Longer than a u64 too: 30!.
+        let out = run_js_module(
+            r#"import { shell } from "developer"; record_result(shell({}));"#,
+            &tools,
+            answer_tool_calls_with("265252859812191058636308480000000\n"),
+        )
+        .unwrap();
+        assert!(out.contains("265252859812191058636308480000000"), "{out}");
+    }
+
+    /// Review of PR #393 (2026-10-12, reproduced): `120\n` parsed as JSON and
+    /// reached the script as the NUMBER 120, while 20! stayed text, so one
+    /// tool's results were two kinds by value — `out5: 120` beside
+    /// `out20: "2432902008176640000\n"` in two live runs, `.trim()` throwing
+    /// on one and working on the other, and the hint that `shell` returned a
+    /// string false for the outputs that parsed. Every JSON scalar a tool
+    /// returns is its text; only a JSON object or array is parsed.
+    #[test]
+    fn a_tool_result_is_a_parsed_object_or_array_and_otherwise_its_text() {
+        let tools = one_tool("developer", "shell");
+        let kind_of = |reply: &'static str| {
+            run_js_module(
+                r#"import { shell } from "developer";
+const out = shell({});
+record_result([typeof out, Array.isArray(out)]);"#,
+                &tools,
+                answer_tool_calls_with(reply),
+            )
+            .unwrap()
+            .split_whitespace()
+            .collect::<String>()
+        };
+        for scalar in [
+            "120\n",
+            "120",
+            "-3.5",
+            "true",
+            "false\n",
+            "null",
+            "\"quoted\"",
+        ] {
+            assert_eq!(kind_of(scalar), r#"["string",false]"#, "{scalar:?}");
+        }
+        assert_eq!(kind_of(r#"{"stdout": "x"}"#), r#"["object",false]"#);
+        assert_eq!(kind_of("[1, 2]\n"), r#"["object",true]"#);
+
+        // The text is exactly what the tool returned, so string methods and
+        // numeric conversion both work the way they would on any output.
+        let out = run_js_module(
+            r#"import { shell } from "developer";
+const out5 = shell({ command: "python3 factorial.py 5" });
+record_result({ trimmed: out5.trim(), doubled: Number(out5) * 2, raw: out5 });"#,
+            &tools,
+            answer_tool_calls_with("120\n"),
+        )
+        .unwrap();
+        assert!(out.contains(r#""trimmed": "120""#), "{out}");
+        assert!(out.contains(r#""doubled": 240"#), "{out}");
+        assert!(out.contains(r#""raw": "120\n""#), "{out}");
+    }
+
+    /// Answer the sandbox's tool calls with `replies`, one per call in order.
+    fn answer_tool_calls_in_order(
+        replies: &'static [&'static str],
+    ) -> mpsc::UnboundedSender<ToolCallRequest> {
+        let (tx, mut rx) = mpsc::unbounded_channel::<ToolCallRequest>();
+        std::thread::spawn(move || {
+            let mut replies = replies.iter();
+            while let Some((_name, _args, responder)) = rx.blocking_recv() {
+                let reply = replies.next().copied().unwrap_or("");
+                let _ = responder.send(Ok(reply.to_string()));
+            }
+        });
+        tx
+    }
+
+    /// Review of `acbefe5a` (2026-10-12), probe 1, reproduced: one tool
+    /// returned a JSON object on one call and text on the next, and a script
+    /// that read `info.name` off the object and recorded a complete, correct
+    /// result was told `info.name` was undefined. A tool that returned both
+    /// kinds in the run is never the subject of the hint, on either path.
+    #[test]
+    fn a_tool_that_returned_an_object_and_text_is_never_called_a_string() {
+        let tools = one_tool("developer", "shell");
+        let script = r#"import { shell } from "developer";
+const info = shell({ command: "cat package.json" });
+const ver = shell({ command: "node --version" });
+record_result({ name: info.name, node: ver.trim() });"#;
+        let output = run_js_script(
+            script,
+            &tools,
+            answer_tool_calls_in_order(&["{\"name\":\"demo\"}", "v24.0.0\n"]),
+        )
+        .expect("both reads work");
+        let text = script_result_text(&output, 2);
+        assert_eq!(text, format!("Result: {}", output.text), "{text}");
+        assert!(output.text.contains("demo") && output.text.contains("v24.0.0"));
+
+        // The same two calls, and a read that really throws: the engine's
+        // message stands, and no variable is said to hold a string.
+        let error = run_js_module(
+            r#"import { shell } from "developer";
+const info = shell({ command: "cat package.json" });
+const ver = shell({ command: "node --version" });
+record_result(info.name.trim() + ver.stdout.trim());"#,
+            &tools,
+            answer_tool_calls_in_order(&["{\"name\":\"demo\"}", "v24.0.0\n"]),
+        )
+        .expect_err("a string has no stdout");
+        assert!(error.contains("TypeError"), "{error}");
+        assert!(!error.contains("holds what"), "{error}");
+    }
+
+    /// Review of `acbefe5a` (2026-10-12), probe 2, reproduced: the common
+    /// `lines = lines.split("\n")` reassignment made `lines.filter` an array
+    /// method, and the correct array the script recorded came with a note
+    /// that `lines.filter` was undefined.
+    #[test]
+    fn a_reassigned_variable_is_not_said_to_hold_a_string() {
+        let tools = one_tool("developer", "shell");
+        let script = r#"import { shell } from "developer";
+let lines = shell({ command: "ls" });
+lines = lines.split("\n");
+record_result(lines.filter((line) => line.length > 0));"#;
+        let output = run_js_script(script, &tools, answer_tool_calls_with("a.txt\nb.txt\n"))
+            .expect("the reassigned value is an array");
+        assert_eq!(
+            script_result_text(&output, 1),
+            format!("Result: {}", output.text)
+        );
+        assert!(output.text.contains("b.txt"), "{}", output.text);
+        // The rule holds on its own, not only behind the recorded-value gate.
+        assert!(string_result_member_hints(
+            script,
+            &tools,
+            &BTreeSet::from(["developer__shell".to_string()]),
+        )
+        .is_empty());
+        // `==`, `===` and `=>` are not assignments.
+        assert!(!assigned_more_than_once(
+            "const out = shell({});\nif (out == 'x' || out === 'y') {}\n[1].map((out) => out);",
+            "out"
+        ));
+        assert!(assigned_more_than_once(
+            "let out = shell({});\nout = JSON.parse(out);",
+            "out"
+        ));
+    }
+
+    /// Review of PR #393 (2026-10-12), probes (a) and (b), reproduced: when
+    /// `factorial.py` prints only the number, `120\n` was the NUMBER 120, so
+    /// the hint "use `result5.trim()`" was false (and the suggested call
+    /// threw), and with both outputs numbers the script got a bare
+    /// `Result: {}`. Text now, so the hint is true and its fix works.
+    #[test]
+    fn numeric_output_is_explained_as_the_string_it_is() {
+        let tools = one_tool("developer", "shell");
+        let output = run_js_script(
+            MINISTRAL_FACTORIAL_SCRIPT,
+            &tools,
+            answer_tool_calls_in_order(&["120\n", "3628800\n"]),
+        )
+        .expect("nothing throws on reading a missing property");
+        assert_eq!(output.text, "{}");
+        let text = script_result_text(&output, 2);
+        assert!(
+            text.contains("given undefined for `outputN5` and `outputN20`")
+                && text.contains("`result5.output` is undefined")
+                && text.contains("`result5.trim()`"),
+            "{text}"
+        );
+
+        // The fix the hint names works on that output.
+        let fixed = run_js_module(
+            r#"import { shell } from "developer";
+const result5 = shell({ command: "python3 factorial.py 5" });
+record_result({ outputN5: result5.trim() });"#,
+            &tools,
+            answer_tool_calls_with("120\n"),
+        )
+        .expect("a string has trim");
+        assert!(fixed.contains(r#""outputN5": "120""#), "{fixed}");
+
+        // Probe (c), the F13 shape on numeric output: the read is named.
+        let error = run_js_module(
+            GLM_FACTORIAL_SCRIPT,
+            &server_tools("developer", &["shell", "text_editor"]),
+            answer_tool_calls_with("120\n"),
+        )
+        .expect_err("a string has no .stdout");
+        assert!(
+            error.contains("`result5.stdout` and `result5.stderr` are undefined"),
+            "{error}"
+        );
+    }
+
+    /// The note is about what `record_result` really lost: an optional value
+    /// left undefined in an otherwise full result is not mentioned, and an
+    /// empty result whose cause is not a string read still says what was
+    /// undefined.
+    #[test]
+    fn the_undefined_note_follows_what_record_result_was_given() {
+        let tools = one_tool("developer", "shell");
+        let full = run_js_script(
+            r#"import { shell } from "developer";
+const out = shell({ command: "x" });
+record_result({ out: out.trim(), error: undefined });"#,
+            &tools,
+            answer_tool_calls_with("done\n"),
+        )
+        .unwrap();
+        assert_eq!(full.undefined, vec!["error".to_string()]);
+        assert_eq!(
+            script_result_text(&full, 1),
+            format!("Result: {}", full.text)
+        );
+
+        let empty = run_js_script(
+            r#"import { shell } from "developer";
+const out = shell({ command: "x" });
+record_result({ output: out.result.stdout });"#,
+            &tools,
+            answer_tool_calls_with(r#"{"result": {"code": 0}}"#),
+        )
+        .unwrap();
+        let text = script_result_text(&empty, 1);
+        assert!(
+            text.contains("record_result was given undefined for `output`"),
+            "{text}"
+        );
+        assert!(!text.contains("holds what"), "{text}");
+
+        let whole = run_js_script(
+            r#"import { shell } from "developer";
+const out = shell({ command: "x" });
+record_result(out.stdout);"#,
+            &tools,
+            answer_tool_calls_with("done\n"),
+        )
+        .unwrap();
+        let text = script_result_text(&whole, 1);
+        assert!(
+            text.contains("but record_result was given undefined, and")
+                && text.contains("`out.stdout` is undefined"),
+            "{text}"
+        );
+
+        // Arrays and nesting are walked; nothing else is invented.
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let nested = run_js_script(
+            "record_result({ a: [1, undefined], b: { c: undefined, d: 2 }, e: 'x' });",
+            &[],
+            tx,
+        )
+        .unwrap();
+        assert_eq!(
+            nested.undefined,
+            vec!["a[1]".to_string(), "b.c".to_string()]
+        );
+    }
+
+    /// F07 (live 2026-10-12, ministral-3:8b): Python's triple quotes in
+    /// JavaScript, six times, each answered with the bare "unterminated
+    /// string literal". The error now says JavaScript has none.
+    #[test]
+    fn python_triple_quotes_in_a_script_are_named() {
+        let code = "import { text_editor } from \"developer\";\n\
+                    text_editor.write({\n  file_path: \"factorial.py\",\n  \
+                    file_text: \"\"\"#!/usr/bin/env python3\n\"\"\"\nimport sys\n\
+                    print(sys.argv[1])\n\"\"\"\n});";
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let error = run_js_module(code, &one_tool("developer", "text_editor"), tx)
+            .expect_err("JavaScript has no triple-quoted strings");
+        assert!(
+            error.contains("Parse error") && error.contains("unterminated string literal"),
+            "got: {error}"
+        );
+        assert!(
+            error.contains("JavaScript has no triple-quoted strings"),
+            "got: {error}"
+        );
+        assert!(error.contains("template literal"), "got: {error}");
+    }
+
+    /// F13 rerun (GLM 4.7 Flash, 2026-10-12): `console.log` and a top-level
+    /// `return`, the two ways it tried to report a result, each failed with
+    /// an engine message that named neither the cause nor `record_result`.
+    #[test]
+    fn console_and_a_top_level_return_point_at_record_result() {
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let error = run_js_module("const n = 5;\nconsole.log(\"5! = \" + n);", &[], tx)
+            .expect_err("there is no console");
+        assert!(error.contains("console is not defined"), "got: {error}");
+        assert!(
+            error.contains("This sandbox has no `console`") && error.contains("record_result"),
+            "got: {error}"
+        );
+
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let error = run_js_module("const n = 5;\nreturn { n };", &[], tx)
+            .expect_err("a module cannot return");
+        assert!(
+            error.contains("Parse error") && error.contains("unexpected token 'return'"),
+            "got: {error}"
+        );
+        assert!(
+            error.contains("its top level cannot `return`") && error.contains("record_result"),
+            "got: {error}"
+        );
+
+        // A `return` inside a function is ordinary JavaScript.
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let ok = run_js_module("function f() { return 5; }\nrecord_result(f());", &[], tx)
+            .expect("return inside a function works");
+        assert_eq!(ok, "5");
+    }
+
+    /// F07 rerun (ministral-3:8b, 2026-10-12): `shell(...)` without its
+    /// import, answered only with "ReferenceError: shell is not defined".
+    #[test]
+    fn an_unimported_tool_names_its_import() {
+        let tools = server_tools("developer", &["shell", "text_editor"]);
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let error = run_js_module(
+            "import { text_editor } from \"developer\";\nshell({ command: \"ls\" });",
+            &tools,
+            tx,
+        )
+        .expect_err("shell was never imported");
+        assert!(error.contains("shell is not defined"), "got: {error}");
+        assert!(
+            error.contains("import { shell } from \"developer\";"),
+            "got: {error}"
+        );
+
+        // A name that is no tool gets no invented import.
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let error = run_js_module("record_result(missing + 1);", &tools, tx)
+            .expect_err("missing is undefined");
+        assert!(!error.contains("import {"), "got: {error}");
+    }
+
     #[test]
     fn calling_a_plain_object_gets_multi_cause_guidance() {
         let tools = one_tool("developer", "shell");
@@ -4897,6 +6676,133 @@ mod tests {
                 && error.contains("imported module member")
                 && error.contains("One possible cause is a tool result"),
             "the hint must offer checks and possibilities without inventing one cause: {error}"
+        );
+    }
+
+    /// The developer tools exactly as the model sees them: built from the
+    /// shipped parameter structs, so the docs the hint reads (`command`'s
+    /// "Allowed options are: `view`, `write`, …", `file_text`'s "Required for
+    /// `write` command.") are the real ones.
+    fn real_developer_tools() -> Vec<ToolInfo> {
+        use biorouter_mcp::developer::rmcp_developer::{ShellParams, TextEditorParams};
+        let tool = |name: &str, schema: schemars::Schema| {
+            let input_schema = serde_json::to_value(schema)
+                .unwrap()
+                .as_object()
+                .unwrap()
+                .clone();
+            ToolInfo::from_mcp_tool(&McpTool {
+                name: name.to_string().into(),
+                title: None,
+                description: Some("A developer tool".into()),
+                input_schema: Arc::new(input_schema),
+                output_schema: None,
+                annotations: None,
+                icons: None,
+                meta: None,
+            })
+            .unwrap()
+        };
+        vec![
+            tool("developer__text_editor", schema_for!(TextEditorParams)),
+            tool("developer__shell", schema_for!(ShellParams)),
+        ]
+    }
+
+    fn not_callable_error(code: &str) -> String {
+        let tools = real_developer_tools();
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let error = run_js_module(code, &tools, tx).expect_err("the call cannot work");
+        assert!(error.contains(BOA_NOT_CALLABLE), "{error}");
+        error
+    }
+
+    /// Gemma 4 31B's two scripts from the factorial task, which it repeated
+    /// until the tool-loop guard ended the turn. The error now names the
+    /// member that is not callable and gives the call that works, in the
+    /// shape the model copies.
+    #[test]
+    fn a_method_called_on_a_tool_names_the_member_and_the_working_call() {
+        let error = not_callable_error(
+            "import { text_editor } from \"developer\";\n\
+             const code = `print(1)`;\n\
+             text_editor.write({ file: \"factorial.py\", file_text: code });",
+        );
+        assert!(
+            error.contains("`text_editor.write(…)` cannot work"),
+            "{error}"
+        );
+        assert!(
+            error.contains(r#"text_editor({command: "write", path, file_text})"#),
+            "{error}"
+        );
+        assert!(
+            !error.contains("One possible cause is a tool result"),
+            "the specific diagnosis replaces the generic one: {error}"
+        );
+
+        let error = not_callable_error(
+            "import { shell } from \"developer\";\n\
+             shell.shell({ command: \"python3 factorial.py 20\" });",
+        );
+        assert!(error.contains("`shell.shell(…)` cannot work"), "{error}");
+        assert!(
+            error.contains("is the \"developer\" tool `shell` itself"),
+            "{error}"
+        );
+        assert!(error.contains("shell({command})"), "{error}");
+    }
+
+    /// The same mistake through the other import forms, and the sub-command
+    /// hoisted to the module itself.
+    #[test]
+    fn a_member_call_is_explained_through_every_import_form() {
+        let error = not_callable_error(
+            "import * as dev from \"developer\";\n\
+             dev.text_editor.write({ path: \"a.py\", file_text: \"x\" });",
+        );
+        assert!(
+            error.contains("`dev.text_editor.write(…)` cannot work"),
+            "{error}"
+        );
+        assert!(
+            error.contains(r#"dev.text_editor({command: "write", path, file_text})"#),
+            "{error}"
+        );
+
+        let error = not_callable_error(
+            "import { text_editor as te } from \"developer\";\n\
+             te.view({ path: \"a.py\" });",
+        );
+        assert!(error.contains(r#"te({command: "view", path})"#), "{error}");
+
+        let error = not_callable_error(
+            "import { developer } from \"developer\";\n\
+             developer.write({ path: \"a.py\", file_text: \"x\" });",
+        );
+        assert!(
+            error.contains("module \"developer\" has no tool `write`"),
+            "{error}"
+        );
+        assert!(
+            error.contains(r#"developer.text_editor({command: "write", path, file_text})"#),
+            "{error}"
+        );
+
+        let error = not_callable_error(
+            "import * as dev from \"developer\";\n\
+             dev.read_file({ path: \"a.py\" });",
+        );
+        assert!(error.contains("Its tools: text_editor, shell"), "{error}");
+
+        // A sibling tool reached through another tool's name.
+        let error = not_callable_error(
+            "import { text_editor } from \"developer\";\n\
+             text_editor.shell({ command: \"ls\" });",
+        );
+        assert!(
+            error.contains(r#"import { shell } from "developer"; shell({command})"#),
+            "{error}"
         );
     }
 
@@ -5329,6 +7235,7 @@ record_result([
             description: "Get a value".to_string(),
             params: vec![],
             return_type: "string".to_string(),
+            param_docs: BTreeMap::new(),
         }];
 
         let (tx, _rx) = mpsc::unbounded_channel();

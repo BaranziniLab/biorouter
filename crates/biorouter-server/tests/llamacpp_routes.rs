@@ -41,28 +41,29 @@ async fn status_returns_catalog_with_default_first_class() {
     let catalog = v.get("catalog").and_then(|c| c.as_array()).unwrap();
     assert!(!catalog.is_empty(), "catalog must not be empty");
 
-    // Exactly one default, chosen from the machine-tiered Ollama-linked catalog.
+    // Exactly one default, and it is Qwen3.8 27B on every machine.
     let defaults: Vec<_> = catalog
         .iter()
         .filter(|m| m.get("is_default").and_then(|d| d.as_bool()) == Some(true))
         .collect();
     assert_eq!(defaults.len(), 1);
     let default_name = defaults[0].get("name").and_then(|n| n.as_str()).unwrap();
-    // The 35B MoE (qwen3.6) is never a tier default — it is an explicit
-    // opt-in "large" model (issue #35).
-    let allowed_defaults = ["gemma4", "gemma4-12b"];
-    assert!(allowed_defaults.contains(&default_name));
+    assert_eq!(default_name, "qwen3.8-27b");
     assert!(defaults[0]
         .get("context_limit")
         .and_then(|n| n.as_u64())
         .is_some_and(|n| n >= 65_536));
 
+    // 64k or 128k: a 32k window cannot hold Biorouter's instructions and tools.
     let default_context_size = v
         .get("system")
         .and_then(|s| s.get("default_context_size"))
         .and_then(|n| n.as_u64())
         .unwrap();
-    assert!(default_context_size >= 32_768);
+    assert!(
+        [65_536, 131_072].contains(&default_context_size),
+        "{default_context_size}"
+    );
     assert!(
         v.get("system")
             .and_then(|s| s.get("accelerator_memory_kind"))
@@ -88,7 +89,7 @@ async fn status_returns_catalog_with_default_first_class() {
         catalog.iter().all(|m| m
             .get("family")
             .and_then(|family| family.as_str())
-            .is_some_and(|family| ["Gemma 4", "Qwen3.6"].contains(&family))),
+            .is_some_and(|family| ["Qwen3.8", "Gemma 4"].contains(&family))),
         "catalog entries should expose their model family"
     );
     assert!(
@@ -151,33 +152,60 @@ async fn status_returns_catalog_with_default_first_class() {
         catalog.iter().all(|m| m
             .get("suitability_status")
             .and_then(|status| status.as_str())
-            .is_some_and(
-                |status| ["suitable", "above_recommendation", "unknown_resources"]
-                    .contains(&status)
-            )),
+            .is_some_and(|status| [
+                "suitable",
+                "above_recommendation",
+                "below_minimum",
+                "cpu_only",
+                "unknown_resources"
+            ]
+            .contains(&status))),
         "catalog entries should expose a documented suitability status"
     );
 
-    // Both requested families are present.
+    // Exactly the two supported models, the default first.
     let names: Vec<&str> = catalog
         .iter()
         .filter_map(|m| m.get("name").and_then(|n| n.as_str()))
         .collect();
-    assert!(names.contains(&"qwen3.6"));
-    assert!(names.contains(&"gemma4"));
-    assert!(!names.iter().any(|n| n.starts_with("qwen3.5")));
-    let gemma4 = catalog
-        .iter()
-        .find(|m| m.get("name").and_then(|n| n.as_str()) == Some("gemma4"))
-        .expect("Gemma 4 should remain in the catalog");
+    assert_eq!(names, vec!["qwen3.8-27b", "gemma4-31b"]);
+    let entry = |name: &str| {
+        catalog
+            .iter()
+            .find(|m| m.get("name").and_then(|n| n.as_str()) == Some(name))
+            .unwrap()
+    };
+    let field = |name: &str, key: &str| {
+        entry(name)
+            .get(key)
+            .and_then(|v| v.as_str())
+            .map(str::to_string)
+    };
     assert_eq!(
-        gemma4.get("ollama_name").and_then(|spec| spec.as_str()),
-        Some("gemma4:latest")
+        field("qwen3.8-27b", "ollama_name").as_deref(),
+        Some("qwen3.8:27b")
     );
     assert_eq!(
-        gemma4.get("hf_spec").and_then(|spec| spec.as_str()),
-        Some("google/gemma-4-E4B-it-qat-q4_0-gguf:Q4_0")
+        field("qwen3.8-27b", "hf_spec").as_deref(),
+        Some("ggml-org/Qwen3.8-27B-GGUF:Q4_K_M")
     );
+    assert_eq!(
+        field("gemma4-31b", "ollama_name").as_deref(),
+        Some("gemma4:31b")
+    );
+    assert_eq!(
+        field("gemma4-31b", "hf_spec").as_deref(),
+        Some("google/gemma-4-31B-it-qat-q4_0-gguf:Q4_0")
+    );
+    // Launch policy is not part of the catalog the GUI reads.
+    for key in [
+        "gguf_sha256",
+        "sampling_thinking",
+        "spec_type",
+        "ollama_gguf_names",
+    ] {
+        assert!(entry("qwen3.8-27b").get(key).is_none(), "{key} leaked");
+    }
 
     // Sidecar state is one of the documented values.
     let state = v
@@ -207,6 +235,22 @@ async fn ensure_rejects_unknown_model() {
                 .uri("/llamacpp/ensure")
                 .header("content-type", "application/json")
                 .body(Body::from(r#"{"model":"gpt-4o"}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 400);
+}
+
+#[tokio::test]
+async fn ensure_rejects_a_flag_shaped_raw_spec() {
+    let res = app()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/llamacpp/ensure")
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"model":"owner/repo --host 0.0.0.0"}"#))
                 .unwrap(),
         )
         .await
@@ -246,38 +290,77 @@ async fn delete_rejects_unknown_model() {
     assert_eq!(res.status(), 400);
 }
 
-#[tokio::test]
-async fn delete_removes_cached_huggingface_fallback() {
-    let tmp = tempfile::tempdir().unwrap();
-    let tmp_path = tmp.path().to_string_lossy().into_owned();
-    let _guard = env_lock::lock_env([("OLLAMA_MODELS", Some(tmp_path.as_str()))]);
-
-    let repo_dir = tmp
-        .path()
-        .join("models--google--gemma-4-E4B-it-qat-q4_0-gguf");
+fn cached_repo(root: &std::path::Path, repo_dir: &str, file: &str) -> std::path::PathBuf {
+    let repo_dir = root.join(repo_dir);
     let snapshot_dir = repo_dir.join("snapshots").join("rev");
     std::fs::create_dir_all(&snapshot_dir).unwrap();
-    std::fs::write(snapshot_dir.join("gemma-4-E4B-Q4_0.gguf"), b"model").unwrap();
+    std::fs::write(snapshot_dir.join(file), b"GGUF").unwrap();
+    repo_dir
+}
 
+async fn delete(model: &str) -> serde_json::Value {
     let res = app()
         .oneshot(
             Request::builder()
                 .method("POST")
                 .uri("/llamacpp/delete")
                 .header("content-type", "application/json")
-                .body(Body::from(r#"{"model":"gemma4"}"#))
+                .body(Body::from(format!(r#"{{"model":"{model}"}}"#)))
                 .unwrap(),
         )
         .await
         .unwrap();
     assert_eq!(res.status(), 200);
-    let v = body_json(res).await;
+    body_json(res).await
+}
+
+#[tokio::test]
+async fn delete_removes_cached_huggingface_fallback() {
+    let tmp = tempfile::tempdir().unwrap();
+    let tmp_path = tmp.path().to_string_lossy().into_owned();
+    let _guard = env_lock::lock_env([("OLLAMA_MODELS", Some(tmp_path.as_str()))]);
+
+    let repo_dir = cached_repo(
+        tmp.path(),
+        "models--ggml-org--Qwen3.8-27B-GGUF",
+        "Qwen3.8-27B-Q4_K_M.gguf",
+    );
+    let v = delete("qwen3.8-27b").await;
     assert_eq!(
         v.get("deleted_fallback_cache")
             .and_then(|deleted| deleted.as_bool()),
         Some(true)
     );
     assert!(!repo_dir.exists());
+}
+
+/// A retired catalog name deletes ITS OWN orphaned cache. A chat that names
+/// it runs Qwen3.8, but deletion must not follow that alias, or "delete
+/// gemma4" would remove the 19 GB default model instead.
+#[tokio::test]
+async fn deleting_a_retired_model_deletes_its_own_cache_only() {
+    let tmp = tempfile::tempdir().unwrap();
+    let tmp_path = tmp.path().to_string_lossy().into_owned();
+    let _guard = env_lock::lock_env([("OLLAMA_MODELS", Some(tmp_path.as_str()))]);
+
+    let retired = cached_repo(
+        tmp.path(),
+        "models--google--gemma-4-E4B-it-qat-q4_0-gguf",
+        "gemma-4-E4B_q4_0-it.gguf",
+    );
+    let current = cached_repo(
+        tmp.path(),
+        "models--ggml-org--Qwen3.8-27B-GGUF",
+        "Qwen3.8-27B-Q4_K_M.gguf",
+    );
+    let v = delete("gemma4").await;
+    assert_eq!(
+        v.get("deleted_fallback_cache")
+            .and_then(|deleted| deleted.as_bool()),
+        Some(true)
+    );
+    assert!(!retired.exists());
+    assert!(current.exists(), "the default model's cache must survive");
 }
 
 #[tokio::test]

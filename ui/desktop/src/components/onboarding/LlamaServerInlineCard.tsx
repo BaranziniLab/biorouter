@@ -4,6 +4,7 @@ import { toastService } from '../../toasts';
 import { Button } from '../ui/button';
 import { llamacppEnsure, llamacppWarmup, type LlamaCppModel } from '../../api';
 import { llamaServerStore, useLlamaServer } from '../settings/models/llamaServerStore';
+import { llamaMemoryWarning, windowsVramNote } from '../settings/models/localModelMemory';
 import OnboardingCardShell, { type OnboardingCardChrome } from './OnboardingCardShell';
 import { ConfirmationModal } from '../ui/ConfirmationModal';
 
@@ -12,14 +13,6 @@ interface LlamaServerInlineCardProps {
   /** See `OnboardingCardShell`. Defaults to the standalone card. */
   chrome?: OnboardingCardChrome;
 }
-
-const acceleratorMemoryLabel = (kind: string | undefined) =>
-  kind === 'apple_unified' ? 'unified memory' : 'VRAM';
-
-const acceleratorMemoryExplanation = (kind: string | undefined) =>
-  kind === 'apple_unified'
-    ? 'On Apple Silicon, unified memory is the relevant GPU memory budget.'
-    : 'On Intel Macs, Windows, and other discrete-GPU systems, this means VRAM, not regular system RAM.';
 
 const modelDownloadLabel = (model: LlamaCppModel | undefined) => {
   switch (model?.download_status) {
@@ -63,6 +56,22 @@ const fallbackDownloadLabel = (model: LlamaCppModel | undefined) => {
     default:
       return null;
   }
+};
+
+/**
+ * Names the catalog's models rather than promising a "laptop default": the
+ * catalog is two dense 27-31B models now, and the copy is read off it so it
+ * cannot drift from what the picker below offers.
+ */
+const cardDescription = (catalog: LlamaCppModel[]) => {
+  const names = catalog.map((m) => m.display_name);
+  const which =
+    names.length === 0
+      ? 'a built-in local model'
+      : names.length === 1
+        ? names[0]
+        : `${names.slice(0, -1).join(', ')} or ${names[names.length - 1]}`;
+  return `Run ${which} on this computer. Free, private and offline, with nothing else to install; the first start downloads the model.`;
 };
 
 export default function LlamaServerInlineCard({
@@ -243,18 +252,14 @@ export default function LlamaServerInlineCard({
   };
 
   const selectedEntry = catalog.find((m) => m.name === selectedModel);
-  const modelMemoryWarning = useMemo(() => {
-    if (!selectedEntry || !system) return null;
-    const detected = system.accelerator_memory_gib;
-    if (typeof detected === 'number' && detected >= selectedEntry.recommended_gpu_memory_gib) {
-      return null;
-    }
-    const detectedText =
-      typeof detected === 'number'
-        ? `${detected} GiB ${acceleratorMemoryLabel(system.accelerator_memory_kind)}`
-        : `unknown ${acceleratorMemoryLabel(system.accelerator_memory_kind)}`;
-    return `${selectedEntry.display_name} recommends ${selectedEntry.recommended_gpu_memory_gib} GiB GPU-addressable memory. This machine reports ${detectedText}. ${acceleratorMemoryExplanation(system.accelerator_memory_kind)}`;
-  }, [selectedEntry, system]);
+  // From the daemon's `suitability_status`, not re-derived from the raw
+  // numbers: a 64 GiB Intel Mac clears every memory figure, so the old
+  // `detected >= recommended` check started it without a word while the
+  // daemon rated it CPU-only.
+  const modelMemoryWarning = useMemo(
+    () => (selectedEntry && system ? llamaMemoryWarning(selectedEntry, system) : null),
+    [selectedEntry, system]
+  );
 
   const handleStart = (model: string) => {
     if (isStarting || isConnecting) return;
@@ -265,33 +270,16 @@ export default function LlamaServerInlineCard({
     void startModel(model);
   };
 
+  // No "Gemma 4 is the laptop default" line any more: both catalog models
+  // need 32 GiB, so that advice pointed a 16 GB machine at a model that no
+  // longer exists. Such a machine gets the default with an explicit
+  // below-minimum warning instead.
   const resourceWarnings = useMemo(() => {
     if (!system || !selectedEntry) return [];
-
-    const warnings: string[] = [];
-    const detected = system.accelerator_memory_gib;
-    const memoryLabel = acceleratorMemoryLabel(system.accelerator_memory_kind);
-    if (typeof detected === 'number' && detected < selectedEntry.recommended_gpu_memory_gib) {
-      warnings.push(
-        `This machine reports ${detected} GiB ${memoryLabel}; ${selectedEntry.display_name} recommends ${selectedEntry.recommended_gpu_memory_gib} GiB GPU-addressable memory.`
-      );
-    } else if (detected == null) {
-      warnings.push(
-        `Biorouter could not detect VRAM; ${selectedEntry.display_name} recommends ${selectedEntry.recommended_gpu_memory_gib} GiB GPU-addressable memory.`
-      );
-    }
-    if (selectedEntry.recommended_gpu_memory_gib > 16) {
-      warnings.push(
-        `This model is above the 16 GB laptop tier; Gemma 4 is the laptop default. ${acceleratorMemoryExplanation(system.accelerator_memory_kind)}`
-      );
-    }
-    if (system.os.toLowerCase().includes('windows')) {
-      warnings.push(
-        'Windows needs enough free VRAM for the selected model and context window; regular system RAM does not satisfy the GPU memory recommendation.'
-      );
-    }
-    return warnings;
-  }, [selectedEntry, system]);
+    return [modelMemoryWarning, windowsVramNote(system)].filter(
+      (warning): warning is string => !!warning
+    );
+  }, [modelMemoryWarning, selectedEntry, system]);
   const isRunningForSelected = sidecar?.state === 'ready' && sidecar.model === selectedModel;
   const isReadyForSelected = isRunningForSelected && sidecar?.warmed;
   const binaryMissing = sidecar?.state === 'no_binary';
@@ -353,7 +341,7 @@ export default function LlamaServerInlineCard({
         category="local"
         label="Local · Run on your computer"
         title="Llama Server"
-        description="Pick a built-in local model and start chatting in minutes. Free, private, offline, nothing else to install."
+        description={cardDescription(catalog)}
       >
         {isChecking ? (
           <div className="flex items-center gap-2 text-xs text-text-muted">

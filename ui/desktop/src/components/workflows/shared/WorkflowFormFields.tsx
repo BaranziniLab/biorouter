@@ -646,7 +646,7 @@ export function WorkflowFormFields({
                       // A model id, not a model that must exist: the field is
                       // free text and the provider decides. The old example
                       // named a model from a superseded generation.
-                      placeholder="e.g. claude-opus-5, gemma4-12b"
+                      placeholder="e.g. claude-opus-5, qwen3.8-27b"
                       className={inputClass}
                     />
                   </div>

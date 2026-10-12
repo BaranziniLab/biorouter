@@ -39,7 +39,7 @@ In Code Mode the model discovers which tools the enabled capabilities and loaded
 
 ## What Code Mode code looks like
 
-Tools become importable functions grouped by capability or extension module. All calls are synchronous and return strings, and `record_result(value)` is how a script returns a value to the conversation.
+Tools become importable functions grouped by capability or extension module. All calls are synchronous. A call returns a parsed object or array when the tool's result is a JSON object or array, and the result's text as a string otherwise, so a command that prints 120 returns `"120\n"`. `record_result(value)` is how a script returns a value to the conversation; it cannot show an undefined value, so a property read off a string (`out.stdout`) is left out. When that read off a tool's text, or when the result shows nothing at all, the script's result names the values that were undefined.
 
 ```javascript
 import { text_editor } from "developer";

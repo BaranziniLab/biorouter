@@ -75,7 +75,7 @@ const ollama = {
   is_configured: true,
   resolved_tier: 'private',
   affiliation: { kind: 'local', institutions: [] },
-  metadata: { display_name: 'Ollama', known_models: [{ name: 'qwen3.6' }] },
+  metadata: { display_name: 'Ollama', known_models: [{ name: 'qwen3.8:27b' }] },
 };
 const labGateway = {
   name: 'lab_gateway',
@@ -695,13 +695,13 @@ describe('AgentTaskPane', () => {
       expect(within(list).getByRole('option', { name: /^gpt-5\.5/ })).toHaveTextContent(notHere);
       expect(within(list).getByRole('group', { name: /Ollama/ })).not.toHaveTextContent(notHere);
 
-      await user.click(within(list).getByRole('option', { name: /^qwen3\.6/ }));
+      await user.click(within(list).getByRole('option', { name: /^qwen3\.8:27b/ }));
       expect(screen.queryByText(mismatch)).toBeNull();
       fireEvent.change(task, { target: { value: 'sum the columns' } });
       expect(startButton()).toBeEnabled();
       await user.click(startButton());
       await waitFor(() => expect(runPosts()).toHaveLength(1));
-      expect(runPosts()[0][2]).toMatchObject({ provider: 'ollama', model: 'qwen3.6' });
+      expect(runPosts()[0][2]).toMatchObject({ provider: 'ollama', model: 'qwen3.8:27b' });
     });
 
     it('explains a private model that states no institution the same way', async () => {
@@ -771,7 +771,7 @@ describe('AgentTaskPane', () => {
       expect(screen.queryByText(/resolved affiliation/)).toBeNull();
 
       await user.click(screen.getByRole('button', { name: agentCopy.modelChangeName }));
-      await user.click(await screen.findByRole('option', { name: /^qwen3\.6/ }));
+      await user.click(await screen.findByRole('option', { name: /^qwen3\.8:27b/ }));
       await waitFor(() => expect(within(pane).queryByRole('alert')).toBeNull());
       expect(currentCrew().error).toBeNull();
     });

@@ -103,7 +103,7 @@ biorouter run --workflow variants.yaml --params gene=HLA-DRB1
 biorouter run --workflow variants.yaml --explain</code></pre>
 <p>For an unattended run, pin the model and set a limit, as below. The flags are under <a href="#cli-ref-run">Reference</a>, and the exit code says why a run stopped (<a href="#cli-exit-codes">Exit codes</a>).</p>
 <pre>
-<code>biorouter run --no-session --provider llamacpp --model gemma4 \
+<code>biorouter run --no-session --provider llamacpp --model qwen3.8-27b \
   --output-format json --max-turns 10 \
   -t "Check samples.csv for duplicate sample IDs"</code></pre>
 
@@ -199,8 +199,8 @@ biorouter doctor --fix uv</code></pre>
     <tr><td><code>providers</code></td><td>Every provider.</td></tr>
     <tr><td><code>list</code></td><td>The models one provider offers, as <code>models list ollama</code>.</td></tr>
     <tr><td><code>set</code></td><td>Set the default, as <code>--provider P --model M</code>.</td></tr>
-    <tr><td><code>local list</code></td><td>The Llama Server catalog and what is downloaded. Also <code>ls</code>.</td></tr>
-    <tr><td><code>local pull</code></td><td>Download a model ahead of time: a catalog name such as <code>gemma4</code>, or a Hugging Face <code>owner/repo:QUANT</code>.</td></tr>
+    <tr><td><code>local list</code></td><td>The Llama Server catalog, what is downloaded, and which copy it starts from. Also <code>ls</code>.</td></tr>
+    <tr><td><code>local pull</code></td><td>Download a model ahead of time: a catalog name, <code>qwen3.8-27b</code> or <code>gemma4-31b</code>, or a Hugging Face <code>owner/repo:QUANT</code>. A name from an earlier version downloads the model it now runs.</td></tr>
     <tr><td><code>local rm</code></td><td>Delete a downloaded model. Also <code>delete</code>.</td></tr>
   </tbody>
 </table></div>

@@ -102,8 +102,10 @@ resolves public and you get the same `403` as before, so check the spelling agai
 header existed keeps working unchanged, because "absent" and "public" are the same answer.
 
 One caveat: the tier resolved is the provider's **declared** tier, not a live instance's. An
-`ollama` re-pointed off the machine with `OLLAMA_HOST` still declares Private. That residual is
-inherited from how every other surface reasons about provider tiers, not introduced here.
+`ollama` re-pointed off the machine with `OLLAMA_HOST` still declares Private, and so does
+`ollama` serving a cloud model (a `-cloud` tag), which the live instance classifies Public because
+Ollama forwards it to ollama.com. That residual is inherited from how every other surface reasons
+about provider tiers, not introduced here.
 
 ## Recipes
 

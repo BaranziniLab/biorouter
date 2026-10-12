@@ -266,6 +266,17 @@ this section is the ledger.
   chat, a public model's row says why it is unavailable and names History > Make public
   (`PRIVATE_MODEL_IN_PUBLIC_CHAT_TIP` and `PUBLIC_MODEL_IN_PRIVATE_CHAT` in
   `ui/desktop/src/components/settings/models/subcomponents/SwitchModelModal.tsx`).
+- **An Ollama cloud model is Public on a loopback host (added 2026-10-10, after this ledger was
+  written).** Ollama serves a tag that is `cloud` or ends in `-cloud` (`gpt-oss:120b-cloud`) by
+  forwarding the conversation to ollama.com, so a loopback `OLLAMA_HOST` alone no longer makes
+  the `ollama` provider Private: `tier()` is Public, with no affiliation, when the model is such a
+  tag (`providers::utils::is_ollama_cloud_model`) or when `/api/show` reports `remote_host` /
+  `remote_model` (a cloud model renamed with `ollama cp`). This makes the model name a tier input
+  in both directions, as `OLLAMA_HOST` is: a local tag to a cloud tag lowers the tier, and back
+  raises it, which is why `BIOROUTER_MODEL` is in `CAPABILITY_CONFIG_KEYS` (an unproven
+  `/config/upsert` or `/config/remove` of it is refused, like `OLLAMA_HOST`'s). A request for
+  such a model from an instance that already answered Private is refused before anything is
+  sent.
 
 ### Did not ship
 
@@ -2836,7 +2847,7 @@ forward.
 > Versa (versa_azure) since 14 Mar. Private chats only run on private models, so their contents
 > never reach a model hosted outside UCSF.
 > Available private models: **Versa · GPT-5.5**, **Versa · Claude Opus**, **Llama Server ·
-> qwen3.5-4b**.
+> qwen3.8-27b**.
 > To use a public model here, make this chat public first (History → this chat → Make public). That
 > permanently exposes its contents and can't be undone.
 

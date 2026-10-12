@@ -31,8 +31,22 @@ pub fn get_thought_signature(metadata: &Option<ProviderMetadata>) -> Option<&str
 }
 
 /// Convert internal Message format to Google's API message specification
+///
+/// Unsigned thinking is never sent. Gemini's own `Thinking` always carries the
+/// `thoughtSignature` it came with (see `process_response_part_impl`), so an
+/// unsigned block is another provider's — a local Ollama or Llama Server model
+/// earlier in the chat stores what it showed that way. Replayed, it became a
+/// plain `text` part: the other model's private reasoning presented to Gemini
+/// as its own answer, beside an empty `thoughtSignature`.
 #[allow(clippy::too_many_lines)]
 pub fn format_messages(messages: &[Message]) -> Vec<Value> {
+    let without_unsigned;
+    let messages = if messages.iter().any(super::anthropic::has_unsigned_thinking) {
+        without_unsigned = super::anthropic::without_unsigned_thinking(messages);
+        without_unsigned.as_slice()
+    } else {
+        messages
+    };
     let filtered: Vec<_> = messages
         .iter()
         .filter(|m| m.is_agent_visible())
@@ -764,6 +778,38 @@ mod tests {
 
     fn set_up_text_message(text: &str, role: Role) -> Message {
         Message::new(role, 0, vec![MessageContent::text(text.to_string())])
+    }
+
+    /// Unsigned thinking — another provider's, stored by a local model earlier
+    /// in the chat — used to be sent to Gemini as a plain `text` part, i.e. as
+    /// the model's own earlier answer, beside an empty `thoughtSignature`.
+    /// Gemini's own (always signed) thinking still replays.
+    #[test]
+    fn unsigned_thinking_from_another_provider_is_not_sent_as_text() {
+        let messages = vec![
+            Message::user().with_text("first"),
+            Message::assistant().with_thinking("LOCAL-ONLY", ""),
+            Message::assistant()
+                .with_thinking("LOCAL-THOUGHT", "")
+                .with_text("first answer"),
+            Message::user().with_text("second"),
+            Message::assistant()
+                .with_thinking("gemini text", "SIG-GEMINI")
+                .with_text("second answer"),
+            Message::user().with_text("third"),
+        ];
+        let payload = format_messages(&messages);
+        let body = serde_json::to_string(&payload).unwrap();
+        assert!(!body.contains("LOCAL-"), "{body}");
+        assert!(
+            body.contains("gemini text") && body.contains("SIG-GEMINI"),
+            "{body}"
+        );
+        let roles: Vec<&str> = payload
+            .iter()
+            .map(|m| m["role"].as_str().unwrap())
+            .collect();
+        assert_eq!(roles, ["user", "model", "user", "model", "user"]);
     }
 
     /// gemini-3.8-flash rejects `thinkingLevel: "minimal"` with an error, so

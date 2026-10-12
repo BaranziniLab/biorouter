@@ -1,0 +1,94 @@
+{"model":"phi4-mini:3.8b","created_at":"2026-10-10T20:06:54.597247Z","message":{"role":"assistant","content":"\u003c|tool_call|\u003e我"},"done":false}
+{"model":"phi4-mini:3.8b","created_at":"2026-10-10T20:06:54.604802Z","message":{"role":"assistant","content":"正在"},"done":false}
+{"model":"phi4-mini:3.8b","created_at":"2026-10-10T20:06:54.612713Z","message":{"role":"assistant","content":"尝"},"done":false}
+{"model":"phi4-mini:3.8b","created_at":"2026-10-10T20:06:54.623784Z","message":{"role":"assistant","content":"试"},"done":false}
+{"model":"phi4-mini:3.8b","created_at":"2026-10-10T20:06:54.635187Z","message":{"role":"assistant","content":"创建"},"done":false}
+{"model":"phi4-mini:3.8b","created_at":"2026-10-10T20:06:54.646321Z","message":{"role":"assistant","content":"一个"},"done":false}
+{"model":"phi4-mini:3.8b","created_at":"2026-10-10T20:06:54.654781Z","message":{"role":"assistant","content":"名"},"done":false}
+{"model":"phi4-mini:3.8b","created_at":"2026-10-10T20:06:54.663496Z","message":{"role":"assistant","content":"为"},"done":false}
+{"model":"phi4-mini:3.8b","created_at":"2026-10-10T20:06:54.671817Z","message":{"role":"assistant","content":" Foo"},"done":false}
+{"model":"phi4-mini:3.8b","created_at":"2026-10-10T20:06:54.680785Z","message":{"role":"assistant","content":" 的"},"done":false}
+{"model":"phi4-mini:3.8b","created_at":"2026-10-10T20:06:54.689792Z","message":{"role":"assistant","content":"应用"},"done":false}
+{"model":"phi4-mini:3.8b","created_at":"2026-10-10T20:06:54.699871Z","message":{"role":"assistant","content":"，"},"done":false}
+{"model":"phi4-mini:3.8b","created_at":"2026-10-10T20:06:54.709511Z","message":{"role":"assistant","content":"描述"},"done":false}
+{"model":"phi4-mini:3.8b","created_at":"2026-10-10T20:06:54.718649Z","message":{"role":"assistant","content":"为"},"done":false}
+{"model":"phi4-mini:3.8b","created_at":"2026-10-10T20:06:54.726976Z","message":{"role":"assistant","content":" '"},"done":false}
+{"model":"phi4-mini:3.8b","created_at":"2026-10-10T20:06:54.737248Z","message":{"role":"assistant","content":"A"},"done":false}
+{"model":"phi4-mini:3.8b","created_at":"2026-10-10T20:06:54.743126Z","message":{"role":"assistant","content":" test"},"done":false}
+{"model":"phi4-mini:3.8b","created_at":"2026-10-10T20:06:54.751767Z","message":{"role":"assistant","content":" app"},"done":false}
+{"model":"phi4-mini:3.8b","created_at":"2026-10-10T20:06:54.760198Z","message":{"role":"assistant","content":"'"},"done":false}
+{"model":"phi4-mini:3.8b","created_at":"2026-10-10T20:06:54.769564Z","message":{"role":"assistant","content":"。"},"done":false}
+{"model":"phi4-mini:3.8b","created_at":"2026-10-10T20:06:54.778085Z","message":{"role":"assistant","content":"为了"},"done":false}
+{"model":"phi4-mini:3.8b","created_at":"2026-10-10T20:06:54.786105Z","message":{"role":"assistant","content":"实现"},"done":false}
+{"model":"phi4-mini:3.8b","created_at":"2026-10-10T20:06:54.79777Z","message":{"role":"assistant","content":"这一"},"done":false}
+{"model":"phi4-mini:3.8b","created_at":"2026-10-10T20:06:54.807404Z","message":{"role":"assistant","content":"点"},"done":false}
+{"model":"phi4-mini:3.8b","created_at":"2026-10-10T20:06:54.815592Z","message":{"role":"assistant","content":"，我"},"done":false}
+{"model":"phi4-mini:3.8b","created_at":"2026-10-10T20:06:54.825411Z","message":{"role":"assistant","content":"将"},"done":false}
+{"model":"phi4-mini:3.8b","created_at":"2026-10-10T20:06:54.833292Z","message":{"role":"assistant","content":"使用"},"done":false}
+{"model":"phi4-mini:3.8b","created_at":"2026-10-10T20:06:54.844031Z","message":{"role":"assistant","content":" `"},"done":false}
+{"model":"phi4-mini:3.8b","created_at":"2026-10-10T20:06:54.850782Z","message":{"role":"assistant","content":"agent"},"done":false}
+{"model":"phi4-mini:3.8b","created_at":"2026-10-10T20:06:54.860004Z","message":{"role":"assistant","content":"_d"},"done":false}
+{"model":"phi4-mini:3.8b","created_at":"2026-10-10T20:06:54.870266Z","message":{"role":"assistant","content":"ra"},"done":false}
+{"model":"phi4-mini:3.8b","created_at":"2026-10-10T20:06:54.880927Z","message":{"role":"assistant","content":"fter"},"done":false}
+{"model":"phi4-mini:3.8b","created_at":"2026-10-10T20:06:54.890124Z","message":{"role":"assistant","content":"__"},"done":false}
+{"model":"phi4-mini:3.8b","created_at":"2026-10-10T20:06:54.897227Z","message":{"role":"assistant","content":"create"},"done":false}
+{"model":"phi4-mini:3.8b","created_at":"2026-10-10T20:06:54.905141Z","message":{"role":"assistant","content":"_app"},"done":false}
+{"model":"phi4-mini:3.8b","created_at":"2026-10-10T20:06:54.912563Z","message":{"role":"assistant","content":"`"},"done":false}
+{"model":"phi4-mini:3.8b","created_at":"2026-10-10T20:06:54.929696Z","message":{"role":"assistant","content":" 函"},"done":false}
+{"model":"phi4-mini:3.8b","created_at":"2026-10-10T20:06:54.937939Z","message":{"role":"assistant","content":"数"},"done":false}
+{"model":"phi4-mini:3.8b","created_at":"2026-10-10T20:06:54.945512Z","message":{"role":"assistant","content":"如下"},"done":false}
+{"model":"phi4-mini:3.8b","created_at":"2026-10-10T20:06:54.954025Z","message":{"role":"assistant","content":"所"},"done":false}
+{"model":"phi4-mini:3.8b","created_at":"2026-10-10T20:06:54.961728Z","message":{"role":"assistant","content":"示"},"done":false}
+{"model":"phi4-mini:3.8b","created_at":"2026-10-10T20:06:54.970357Z","message":{"role":"assistant","content":"：\n\n"},"done":false}
+{"model":"phi4-mini:3.8b","created_at":"2026-10-10T20:06:54.978376Z","message":{"role":"assistant","content":"```"},"done":false}
+{"model":"phi4-mini:3.8b","created_at":"2026-10-10T20:06:54.987394Z","message":{"role":"assistant","content":"javascript"},"done":false}
+{"model":"phi4-mini:3.8b","created_at":"2026-10-10T20:06:54.995271Z","message":{"role":"assistant","content":"\n"},"done":false}
+{"model":"phi4-mini:3.8b","created_at":"2026-10-10T20:06:55.006105Z","message":{"role":"assistant","content":"agent"},"done":false}
+{"model":"phi4-mini:3.8b","created_at":"2026-10-10T20:06:55.014321Z","message":{"role":"assistant","content":"_d"},"done":false}
+{"model":"phi4-mini:3.8b","created_at":"2026-10-10T20:06:55.022495Z","message":{"role":"assistant","content":"ra"},"done":false}
+{"model":"phi4-mini:3.8b","created_at":"2026-10-10T20:06:55.030863Z","message":{"role":"assistant","content":"fter"},"done":false}
+{"model":"phi4-mini:3.8b","created_at":"2026-10-10T20:06:55.039423Z","message":{"role":"assistant","content":"__"},"done":false}
+{"model":"phi4-mini:3.8b","created_at":"2026-10-10T20:06:55.048244Z","message":{"role":"assistant","content":"create"},"done":false}
+{"model":"phi4-mini:3.8b","created_at":"2026-10-10T20:06:55.056179Z","message":{"role":"assistant","content":"_app"},"done":false}
+{"model":"phi4-mini:3.8b","created_at":"2026-10-10T20:06:55.067041Z","message":{"role":"assistant","content":"({\n"},"done":false}
+{"model":"phi4-mini:3.8b","created_at":"2026-10-10T20:06:55.075273Z","message":{"role":"assistant","content":" "},"done":false}
+{"model":"phi4-mini:3.8b","created_at":"2026-10-10T20:06:55.083458Z","message":{"role":"assistant","content":" name"},"done":false}
+{"model":"phi4-mini:3.8b","created_at":"2026-10-10T20:06:55.092613Z","message":{"role":"assistant","content":":"},"done":false}
+{"model":"phi4-mini:3.8b","created_at":"2026-10-10T20:06:55.101075Z","message":{"role":"assistant","content":" \""},"done":false}
+{"model":"phi4-mini:3.8b","created_at":"2026-10-10T20:06:55.111771Z","message":{"role":"assistant","content":"Foo"},"done":false}
+{"model":"phi4-mini:3.8b","created_at":"2026-10-10T20:06:55.121398Z","message":{"role":"assistant","content":"\",\n"},"done":false}
+{"model":"phi4-mini:3.8b","created_at":"2026-10-10T20:06:55.131366Z","message":{"role":"assistant","content":" "},"done":false}
+{"model":"phi4-mini:3.8b","created_at":"2026-10-10T20:06:55.141682Z","message":{"role":"assistant","content":" description"},"done":false}
+{"model":"phi4-mini:3.8b","created_at":"2026-10-10T20:06:55.151984Z","message":{"role":"assistant","content":":"},"done":false}
+{"model":"phi4-mini:3.8b","created_at":"2026-10-10T20:06:55.161957Z","message":{"role":"assistant","content":" \""},"done":false}
+{"model":"phi4-mini:3.8b","created_at":"2026-10-10T20:06:55.169392Z","message":{"role":"assistant","content":"A"},"done":false}
+{"model":"phi4-mini:3.8b","created_at":"2026-10-10T20:06:55.177699Z","message":{"role":"assistant","content":" test"},"done":false}
+{"model":"phi4-mini:3.8b","created_at":"2026-10-10T20:06:55.189658Z","message":{"role":"assistant","content":" app"},"done":false}
+{"model":"phi4-mini:3.8b","created_at":"2026-10-10T20:06:55.197639Z","message":{"role":"assistant","content":"\"\n"},"done":false}
+{"model":"phi4-mini:3.8b","created_at":"2026-10-10T20:06:55.205511Z","message":{"role":"assistant","content":"});\n"},"done":false}
+{"model":"phi4-mini:3.8b","created_at":"2026-10-10T20:06:55.213422Z","message":{"role":"assistant","content":"``"},"done":false}
+{"model":"phi4-mini:3.8b","created_at":"2026-10-10T20:06:55.221118Z","message":{"role":"assistant","content":"`\n\n"},"done":false}
+{"model":"phi4-mini:3.8b","created_at":"2026-10-10T20:06:55.229581Z","message":{"role":"assistant","content":"这"},"done":false}
+{"model":"phi4-mini:3.8b","created_at":"2026-10-10T20:06:55.237551Z","message":{"role":"assistant","content":"将"},"done":false}
+{"model":"phi4-mini:3.8b","created_at":"2026-10-10T20:06:55.245601Z","message":{"role":"assistant","content":"创建"},"done":false}
+{"model":"phi4-mini:3.8b","created_at":"2026-10-10T20:06:55.25401Z","message":{"role":"assistant","content":"一个"},"done":false}
+{"model":"phi4-mini:3.8b","created_at":"2026-10-10T20:06:55.26138Z","message":{"role":"assistant","content":"名"},"done":false}
+{"model":"phi4-mini:3.8b","created_at":"2026-10-10T20:06:55.270258Z","message":{"role":"assistant","content":"为"},"done":false}
+{"model":"phi4-mini:3.8b","created_at":"2026-10-10T20:06:55.28023Z","message":{"role":"assistant","content":" Foo"},"done":false}
+{"model":"phi4-mini:3.8b","created_at":"2026-10-10T20:06:55.288628Z","message":{"role":"assistant","content":" 的"},"done":false}
+{"model":"phi4-mini:3.8b","created_at":"2026-10-10T20:06:55.296505Z","message":{"role":"assistant","content":"新"},"done":false}
+{"model":"phi4-mini:3.8b","created_at":"2026-10-10T20:06:55.304651Z","message":{"role":"assistant","content":" B"},"done":false}
+{"model":"phi4-mini:3.8b","created_at":"2026-10-10T20:06:55.312447Z","message":{"role":"assistant","content":"ior"},"done":false}
+{"model":"phi4-mini:3.8b","created_at":"2026-10-10T20:06:55.320855Z","message":{"role":"assistant","content":"outer"},"done":false}
+{"model":"phi4-mini:3.8b","created_at":"2026-10-10T20:06:55.329079Z","message":{"role":"assistant","content":" 应"},"done":false}
+{"model":"phi4-mini:3.8b","created_at":"2026-10-10T20:06:55.341335Z","message":{"role":"assistant","content":"用"},"done":false}
+{"model":"phi4-mini:3.8b","created_at":"2026-10-10T20:06:55.349871Z","message":{"role":"assistant","content":"，"},"done":false}
+{"model":"phi4-mini:3.8b","created_at":"2026-10-10T20:06:55.360172Z","message":{"role":"assistant","content":"描述"},"done":false}
+{"model":"phi4-mini:3.8b","created_at":"2026-10-10T20:06:55.367512Z","message":{"role":"assistant","content":"为"},"done":false}
+{"model":"phi4-mini:3.8b","created_at":"2026-10-10T20:06:55.377674Z","message":{"role":"assistant","content":" '"},"done":false}
+{"model":"phi4-mini:3.8b","created_at":"2026-10-10T20:06:55.386136Z","message":{"role":"assistant","content":"A"},"done":false}
+{"model":"phi4-mini:3.8b","created_at":"2026-10-10T20:06:55.397514Z","message":{"role":"assistant","content":" test"},"done":false}
+{"model":"phi4-mini:3.8b","created_at":"2026-10-10T20:06:55.406759Z","message":{"role":"assistant","content":" app"},"done":false}
+{"model":"phi4-mini:3.8b","created_at":"2026-10-10T20:06:55.416957Z","message":{"role":"assistant","content":"'"},"done":false}
+{"model":"phi4-mini:3.8b","created_at":"2026-10-10T20:06:55.426385Z","message":{"role":"assistant","content":"。"},"done":false}
+{"model":"phi4-mini:3.8b","created_at":"2026-10-10T20:06:55.434434Z","message":{"role":"assistant","content":""},"done":true,"done_reason":"stop","total_duration":893374833,"load_duration":4459583,"prompt_eval_count":386,"prompt_eval_cached_count":371,"prompt_eval_duration":36243000,"eval_count":96,"eval_duration":850081000}

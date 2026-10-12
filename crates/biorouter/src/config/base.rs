@@ -863,7 +863,7 @@ impl Config {
     /// ⚠ **This is the hot path of the whole config layer.** Every
     /// [`Self::get_param`] lands here, and `get_param` is how
     /// `ModelConfig::new` resolves `max_tokens`, how the privacy tier resolver
-    /// reads its five capability keys, how the extension map is rebuilt, and
+    /// reads its six capability keys, how the extension map is rebuilt, and
     /// how the agent's turn loop reads its settings — so before this it was one
     /// `read_to_string` plus a full YAML parse per setting per lookup.
     ///

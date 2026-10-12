@@ -71,7 +71,7 @@ const trigger = () => screen.getByRole('button', { name: /^Model/ });
 beforeEach(() => {
   vi.clearAllMocks();
   mocks.getProviderModels.mockImplementation(async (name: string) =>
-    name === 'ollama' ? ['qwen3.6', 'gemma4'] : []
+    name === 'ollama' ? ['qwen3.8:27b', 'gemma4:31b'] : []
   );
 });
 
@@ -192,9 +192,9 @@ describe('CrewModelPicker', () => {
     const onChange = vi.fn();
     render(<Picker onChange={onChange} />);
     await user.click(trigger());
-    await user.click(await screen.findByRole('option', { name: /^qwen3\.6/ }));
-    expect(onChange).toHaveBeenCalledWith({ provider: 'ollama', model: 'qwen3.6' });
-    expect(trigger()).toHaveAccessibleName('Model qwen3.6 · Ollama');
+    await user.click(await screen.findByRole('option', { name: /^qwen3\.8:27b/ }));
+    expect(onChange).toHaveBeenCalledWith({ provider: 'ollama', model: 'qwen3.8:27b' });
+    expect(trigger()).toHaveAccessibleName('Model qwen3.8:27b · Ollama');
     expect(screen.queryByRole('listbox')).toBeNull();
   });
 

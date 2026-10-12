@@ -20,7 +20,7 @@ const statusResponse = (sidecar: Record<string, unknown>) => ({
       warmed: false,
       build: 'test',
       detail: null,
-      model: 'gemma4',
+      model: 'qwen3.8-27b',
       ...sidecar,
     },
     catalog: [],
@@ -54,13 +54,13 @@ describe('llamaServerStore', () => {
   });
 
   it('polls while an operation is in flight, even with zero subscribers', async () => {
-    llamaServerStore.beginOperation('install', 'gemma4', 'Preparing install...');
+    llamaServerStore.beginOperation('install', 'qwen3.8-27b', 'Preparing install...');
 
     await advanceTicks(3);
     expect(mockLlamacppStatus).toHaveBeenCalledTimes(3);
     expect(llamaServerStore.getSnapshot().operation).toMatchObject({
       kind: 'install',
-      model: 'gemma4',
+      model: 'qwen3.8-27b',
     });
     expect(llamaServerStore.getSnapshot().status).not.toBeNull();
   });
@@ -68,7 +68,7 @@ describe('llamaServerStore', () => {
   it('keeps polling after the only subscriber unsubscribes (unmount)', async () => {
     const listener = vi.fn();
     const unsubscribe = llamaServerStore.subscribe(listener);
-    llamaServerStore.beginOperation('install', 'gemma4');
+    llamaServerStore.beginOperation('install', 'qwen3.8-27b');
 
     await advanceTicks(2);
     expect(mockLlamacppStatus).toHaveBeenCalledTimes(2);
@@ -84,7 +84,7 @@ describe('llamaServerStore', () => {
     const b = vi.fn();
     llamaServerStore.subscribe(a);
     llamaServerStore.subscribe(b);
-    llamaServerStore.beginOperation('install', 'gemma4');
+    llamaServerStore.beginOperation('install', 'qwen3.8-27b');
 
     await advanceTicks(1);
     expect(mockLlamacppStatus).toHaveBeenCalledTimes(1);
@@ -93,7 +93,7 @@ describe('llamaServerStore', () => {
   });
 
   it('a late subscriber immediately reads the latest snapshot', async () => {
-    llamaServerStore.beginOperation('install', 'gemma4');
+    llamaServerStore.beginOperation('install', 'qwen3.8-27b');
     mockLlamacppStatus.mockResolvedValue(
       statusResponse({ state: 'starting', detail: 'downloading 42%' })
     );
@@ -106,11 +106,11 @@ describe('llamaServerStore', () => {
   });
 
   it('install operations stop polling once ready with the matching model', async () => {
-    const opId = llamaServerStore.beginOperation('install', 'gemma4');
-    const ready = llamaServerStore.waitForReady('gemma4', opId);
+    const opId = llamaServerStore.beginOperation('install', 'qwen3.8-27b');
+    const ready = llamaServerStore.waitForReady('qwen3.8-27b', opId);
 
     await advanceTicks(1);
-    mockLlamacppStatus.mockResolvedValue(statusResponse({ state: 'ready', model: 'gemma4' }));
+    mockLlamacppStatus.mockResolvedValue(statusResponse({ state: 'ready', model: 'qwen3.8-27b' }));
     await advanceTicks(1);
 
     await expect(ready).resolves.toBeUndefined();
@@ -122,8 +122,8 @@ describe('llamaServerStore', () => {
   });
 
   it('does not treat ready-with-other-model as terminal', async () => {
-    llamaServerStore.beginOperation('install', 'gemma4-12b');
-    mockLlamacppStatus.mockResolvedValue(statusResponse({ state: 'ready', model: 'gemma4' }));
+    llamaServerStore.beginOperation('install', 'gemma4-31b');
+    mockLlamacppStatus.mockResolvedValue(statusResponse({ state: 'ready', model: 'qwen3.8-27b' }));
 
     await advanceTicks(2);
     expect(llamaServerStore.getSnapshot().operation).not.toBeNull();
@@ -131,8 +131,8 @@ describe('llamaServerStore', () => {
   });
 
   it('start operations keep polling past ready until endOperation', async () => {
-    const opId = llamaServerStore.beginOperation('start', 'gemma4');
-    mockLlamacppStatus.mockResolvedValue(statusResponse({ state: 'ready', model: 'gemma4' }));
+    const opId = llamaServerStore.beginOperation('start', 'qwen3.8-27b');
+    mockLlamacppStatus.mockResolvedValue(statusResponse({ state: 'ready', model: 'qwen3.8-27b' }));
 
     await advanceTicks(2);
     expect(llamaServerStore.getSnapshot().operation).not.toBeNull();
@@ -145,8 +145,8 @@ describe('llamaServerStore', () => {
   });
 
   it('stops polling, rejects waiters, and retains lastError on sidecar error', async () => {
-    const opId = llamaServerStore.beginOperation('install', 'gemma4');
-    const ready = llamaServerStore.waitForReady('gemma4', opId);
+    const opId = llamaServerStore.beginOperation('install', 'qwen3.8-27b');
+    const ready = llamaServerStore.waitForReady('qwen3.8-27b', opId);
     const rejection = expect(ready).rejects.toThrow('download failed: boom');
 
     mockLlamacppStatus.mockResolvedValue(
@@ -159,7 +159,7 @@ describe('llamaServerStore', () => {
     expect(llamaServerStore.getSnapshot().lastError).toMatchObject({
       opId,
       kind: 'install',
-      model: 'gemma4',
+      model: 'qwen3.8-27b',
       message: 'download failed: boom',
     });
 
@@ -169,7 +169,7 @@ describe('llamaServerStore', () => {
   });
 
   it('claimErrorToast grants the terminal error exactly once, to the right op', async () => {
-    const opId = llamaServerStore.beginOperation('install', 'gemma4');
+    const opId = llamaServerStore.beginOperation('install', 'qwen3.8-27b');
     mockLlamacppStatus.mockResolvedValue(statusResponse({ state: 'error', detail: 'boom' }));
     await advanceTicks(1);
 
@@ -178,14 +178,14 @@ describe('llamaServerStore', () => {
     expect(llamaServerStore.claimErrorToast(opId)).toBe(false);
 
     // A new operation clears the retained error.
-    llamaServerStore.beginOperation('install', 'gemma4');
+    llamaServerStore.beginOperation('install', 'qwen3.8-27b');
     expect(llamaServerStore.getSnapshot().lastError).toBeNull();
     expect(llamaServerStore.claimErrorToast(opId)).toBe(false);
   });
 
   it('times out after 60 minutes and stops polling', async () => {
-    const opId = llamaServerStore.beginOperation('install', 'gemma4');
-    const ready = llamaServerStore.waitForReady('gemma4', opId);
+    const opId = llamaServerStore.beginOperation('install', 'qwen3.8-27b');
+    const ready = llamaServerStore.waitForReady('qwen3.8-27b', opId);
     const rejection = expect(ready).rejects.toThrow('Timed out waiting for the local model');
 
     await vi.advanceTimersByTimeAsync(
@@ -202,8 +202,8 @@ describe('llamaServerStore', () => {
 
   it('times out even when every status request fails', async () => {
     mockLlamacppStatus.mockRejectedValue(new Error('connection refused'));
-    const opId = llamaServerStore.beginOperation('install', 'gemma4');
-    const ready = llamaServerStore.waitForReady('gemma4', opId);
+    const opId = llamaServerStore.beginOperation('install', 'qwen3.8-27b');
+    const ready = llamaServerStore.waitForReady('qwen3.8-27b', opId);
     const rejection = expect(ready).rejects.toThrow('Timed out waiting for the local model');
 
     await vi.advanceTimersByTimeAsync(
@@ -215,8 +215,8 @@ describe('llamaServerStore', () => {
   });
 
   it('times out a warm-up hung in the ready state (ready branch cannot mask the deadline)', async () => {
-    const opId = llamaServerStore.beginOperation('warmup', 'gemma4');
-    mockLlamacppStatus.mockResolvedValue(statusResponse({ state: 'ready', model: 'gemma4' }));
+    const opId = llamaServerStore.beginOperation('warmup', 'qwen3.8-27b');
+    mockLlamacppStatus.mockResolvedValue(statusResponse({ state: 'ready', model: 'qwen3.8-27b' }));
 
     // Ready-with-matching-model is NOT terminal for warm-up ops: they poll on
     // while the driving warm-up HTTP call runs...
@@ -239,7 +239,7 @@ describe('llamaServerStore', () => {
   });
 
   it('times out poll-less operations (stalled Ollama pull cannot stay busy forever)', async () => {
-    const opId = llamaServerStore.beginOperation('install', 'gemma4', 'Preparing install...', {
+    const opId = llamaServerStore.beginOperation('install', 'qwen3.8-27b', 'Preparing install...', {
       poll: false,
     });
 
@@ -323,7 +323,7 @@ describe('llamaServerStore', () => {
           resolveSlow = resolve;
         })
     );
-    llamaServerStore.beginOperation('install', 'gemma4');
+    llamaServerStore.beginOperation('install', 'qwen3.8-27b');
 
     // Three interval firings, one hung request: no overlapping calls.
     await advanceTicks(3);
@@ -336,7 +336,7 @@ describe('llamaServerStore', () => {
   });
 
   it('waitForReady rejects when no operation is polling', async () => {
-    await expect(llamaServerStore.waitForReady('gemma4', 1)).rejects.toThrow(
+    await expect(llamaServerStore.waitForReady('qwen3.8-27b', 1)).rejects.toThrow(
       'No Llama Server operation is polling'
     );
   });
@@ -351,7 +351,7 @@ describe('llamaServerStore', () => {
   });
 
   it('poll-less operations (Ollama pull) track scoped messages and never poll', async () => {
-    const opId = llamaServerStore.beginOperation('install', 'gemma4', 'Preparing install...', {
+    const opId = llamaServerStore.beginOperation('install', 'qwen3.8-27b', 'Preparing install...', {
       poll: false,
     });
     llamaServerStore.setOperationMessage(opId, 'pulling manifest 10%');

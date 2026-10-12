@@ -616,9 +616,20 @@ pub fn create_request(
     // 2026-08-31) every replayed block is a 400. This request carries no
     // `block_binding` to ask for `drop_block`, so strip them all, as Bedrock
     // and Vertex do; text and tool calls stay.
+    //
+    // And a Claude model on Databricks never gets an UNSIGNED block: those are
+    // another provider's thinking (a local Ollama or Llama Server model earlier
+    // in the chat), which `format_messages` would send as a `reasoning` item
+    // with an empty signature that Claude refuses. Other Databricks models keep
+    // receiving what they always did, including their own unsigned reasoning.
     let stripped;
     let messages = if anthropic_format::uses_preserved_thinking(&model_config.model_name) {
         stripped = anthropic_format::without_replayed_thinking(messages);
+        stripped.as_slice()
+    } else if anthropic_format::requires_signed_thinking(&model_config.model_name)
+        && messages.iter().any(anthropic_format::has_unsigned_thinking)
+    {
+        stripped = anthropic_format::without_unsigned_thinking(messages);
         stripped.as_slice()
     } else {
         messages
@@ -1757,6 +1768,60 @@ mod tests {
             Message::assistant().with_thinking("reasoning three", "SIG-THREE"),
             Message::assistant().with_text("second answer"),
         ]
+    }
+
+    /// A Claude endpoint never receives another provider's UNSIGNED thinking
+    /// (a local model earlier in the chat) as a `reasoning` item with an empty
+    /// signature, which Claude refuses; its own signed reasoning still
+    /// replays. A non-Claude endpoint is unchanged.
+    #[test]
+    fn claude_endpoints_get_no_unsigned_reasoning() -> anyhow::Result<()> {
+        let messages = vec![
+            Message::user().with_text("first"),
+            Message::assistant().with_thinking("LOCAL-THOUGHT-ONLY", ""),
+            Message::assistant()
+                .with_thinking("LOCAL-THOUGHT", "")
+                .with_text("first answer"),
+            Message::user().with_text("second"),
+            Message::assistant()
+                .with_thinking("claude reasoning", "SIG-CLAUDE")
+                .with_text("second answer"),
+            Message::user().with_text("third"),
+        ];
+        let request = create_request(
+            &sampled_model("databricks-claude-sonnet-4-6"),
+            "system",
+            &messages,
+            &[],
+            &ImageFormat::OpenAi,
+        )?;
+        let body = request.to_string();
+        assert!(!body.contains("LOCAL-THOUGHT"), "{body}");
+        assert!(body.contains("SIG-CLAUDE") && body.contains("claude reasoning"));
+        let roles: Vec<&str> = request["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|m| m["role"].as_str().unwrap())
+            .collect();
+        assert_eq!(
+            roles,
+            ["system", "user", "assistant", "user", "assistant", "user"]
+        );
+
+        let other = create_request(
+            &sampled_model("databricks-gpt-oss-120b"),
+            "system",
+            &messages,
+            &[],
+            &ImageFormat::OpenAi,
+        )?
+        .to_string();
+        assert!(
+            other.contains("LOCAL-THOUGHT"),
+            "unchanged off Claude: {other}"
+        );
+        Ok(())
     }
 
     /// Opus 5.5 and Fable 5.1 bind each thinking block to its prefix, which

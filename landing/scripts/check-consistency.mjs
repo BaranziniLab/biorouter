@@ -163,18 +163,49 @@ for (const [path, re, name] of providerChecks) {
   }
 }
 
+// The catalog is read from MODEL_CATALOG itself, not from every `name:` in the
+// file: RETIRED_MODELS carries `name:` fields too, and those models are exactly
+// the ones the site must stop advertising.
 const llamaSource = source('crates/biorouter/src/providers/llamacpp.rs');
-const llamaModels = [...llamaSource.matchAll(/display_name: "([^"]+)"/g)].map((match) => match[1]);
-check(llamaModels.length > 0, 'Llama Server catalog should contain display names');
-for (const model of llamaModels) {
-  includes(docs, model, `docs should include Llama Server model ${model}`);
+const llamaCatalog = capture(
+  llamaSource,
+  /pub const MODEL_CATALOG: &\[CatalogEntry\] = &\[([\s\S]*?)\n\];/,
+  'MODEL_CATALOG in crates/biorouter/src/providers/llamacpp.rs'
+);
+const llamaEntries = [...llamaCatalog.matchAll(/name: "([^"]+)",\s*display_name: "([^"]+)"/g)].map((match) => ({
+  name: match[1],
+  displayName: match[2],
+}));
+check(llamaEntries.length > 0, 'Llama Server catalog should contain named entries');
+for (const { name, displayName } of llamaEntries) {
+  includes(docs, displayName, `docs should include Llama Server model ${displayName}`);
+  includes(docs, `<code>${name}</code>`, `docs should name Llama Server model ${name}`);
 }
-// Memory-tiered defaults from recommended_model_for_memory_gib in
-// crates/biorouter/src/providers/llamacpp.rs: Gemma 4 E4B below 64 GiB,
-// Gemma 4 12B (fast dense) on high-memory systems (issue #35 replaced the
-// Qwen3.6 35B MoE default there).
-for (const recommended of ['Gemma 4 E4B', 'Gemma 4 12B']) {
-  includes(mockups, recommended, `mockups should include memory-tiered Llama Server recommendation ${recommended}`);
+// The default is one model on every memory tier (DEFAULT_MODEL, returned by
+// recommended_model_for_memory_gib), so the mockup names that model. This list
+// used to be hardcoded ('Gemma 4 E4B', 'Gemma 4 12B') and kept passing after
+// the catalog dropped both, because the stale mockup still said them.
+const llamaDefault = capture(llamaSource, /pub const DEFAULT_MODEL: &str = "([^"]+)"/, 'Llama Server DEFAULT_MODEL');
+const llamaDefaultEntry = llamaEntries.find((entry) => entry.name === llamaDefault);
+check(Boolean(llamaDefaultEntry), `Llama Server DEFAULT_MODEL ${llamaDefault} should be a MODEL_CATALOG entry`);
+if (llamaDefaultEntry) {
+  includes(
+    mockups,
+    llamaDefaultEntry.displayName,
+    `mockups should include the Llama Server default model ${llamaDefaultEntry.displayName}`
+  );
+}
+// Ollama's supported pair: the default is checked with the other providers'
+// defaults above; the second tag is the only other literal in the list.
+const ollamaRecommended = [
+  ...capture(
+    source('crates/biorouter/src/providers/ollama.rs'),
+    /pub const OLLAMA_RECOMMENDED_MODELS: &\[RecommendedOllamaModel\] = &\[([\s\S]*?)\n\];/,
+    'OLLAMA_RECOMMENDED_MODELS in crates/biorouter/src/providers/ollama.rs'
+  ).matchAll(/tag: "([^"]+)"/g),
+].map((match) => match[1]);
+for (const tag of ollamaRecommended) {
+  includes(docs, tag, `docs should include the supported Ollama model ${tag}`);
 }
 
 // Derive the rail from the app rather than keeping a third copy of the list.

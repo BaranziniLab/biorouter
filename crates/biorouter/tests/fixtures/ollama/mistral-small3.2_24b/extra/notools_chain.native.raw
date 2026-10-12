@@ -1,0 +1,1 @@
+{"model":"mistral-small3.2:24b","created_at":"2026-10-10T19:00:14.944849Z","message":{"role":"assistant","content":"knowledge_base_search{\"query\": \"beta.csv\"}"},"done":true,"done_reason":"stop","total_duration":439902250,"load_duration":5075333,"prompt_eval_count":93,"prompt_eval_cached_count":92,"prompt_eval_duration":33563000,"eval_count":13,"eval_duration":400023000}

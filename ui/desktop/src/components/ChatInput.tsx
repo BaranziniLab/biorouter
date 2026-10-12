@@ -38,8 +38,9 @@ import { Workflow } from '../workflow';
 import MessageQueue, { canSteerMessage } from './MessageQueue';
 import { steerUnavailableReason } from './privacy/steerUnavailableCopy';
 import { detectInterruption } from '../utils/interruptionDetector';
-import { getSession, llamacppStatus, Message } from '../api';
+import { getSession, Message } from '../api';
 import { userActionHeaders } from '../utils/userAction';
+import { liveContextWindow } from '../utils/liveContextWindow';
 import type { SessionClassification } from '../api/types.gen';
 import { getInitialWorkingDir } from '../utils/workingDir';
 import { getPredefinedModelsFromEnv } from './settings/models/predefinedModelsUtils';
@@ -591,6 +592,10 @@ export default function ChatInput({
       : globalSupportedInputMimeTypes;
   const [tokenLimit, setTokenLimit] = useState<number>(TOKEN_LIMIT_DEFAULT);
   const [isTokenLimitLoaded, setIsTokenLimitLoaded] = useState(false);
+  // Which `loadProviderDetails` call may still write the gauge: only the
+  // newest. See the comment there.
+  const tokenLimitRequestRef = useRef(0);
+  const previousGaugeChatStateRef = useRef(chatState);
   const [sessionWorkingDir, setSessionWorkingDir] = useState<string | null>(null);
 
   // Branch-the-conversation action shared with the message-level Diverge button.
@@ -1480,6 +1485,20 @@ export default function ChatInput({
 
   // Load providers and get current model's token limit
   const loadProviderDetails = async () => {
+    // Every call is one model's answer, and a model switch starts another
+    // before this one settles: the Ollama branch below waits on the daemon's
+    // `/api/show` probe of `OLLAMA_HOST`, up to 15 s against a host that drops
+    // packets. The old answer then landed last and the gauge measured the new
+    // model's usage against the OLD model's window — the mismatch the Gate B
+    // note below exists to prevent. So each call writes only while it is the
+    // newest, checked after every await.
+    const request = ++tokenLimitRequestRef.current;
+    const current = () => request === tokenLimitRequestRef.current;
+    const setLimit = (limit: number, loaded: boolean) => {
+      if (!current()) return;
+      setTokenLimit(limit);
+      setIsTokenLimitLoaded(loaded);
+    };
     try {
       // Reset token limit loaded state
       setIsTokenLimitLoaded(false);
@@ -1493,6 +1512,7 @@ export default function ChatInput({
       // entirely. When nothing is pinned, or the pin names what is already
       // selected, this resolves to exactly what it always did.
       const selected = await getCurrentModelAndProvider();
+      if (!current()) return;
       const model = effectiveModel?.model ?? selected.model;
       const provider = effectiveModel?.provider ?? selected.provider;
       if (!model || !provider) {
@@ -1502,40 +1522,31 @@ export default function ChatInput({
         // chip correctly saying no model was chosen — a precise figure for a
         // model that does not exist. Zero is what the gauge renders its empty
         // state from.
-        setTokenLimit(0);
-        setIsTokenLimitLoaded(false);
+        setLimit(0, false);
         return;
       }
 
-      // Llama Server (local models): the real context window is a live property
-      // of the loaded model, read from the running server's /props. Prefer it
-      // over any static catalog/default so the gauge matches the CLI/backend
-      // (e.g. a 262k model instead of the 128k fallback). Only when the sidecar
-      // has reported a window; otherwise fall through to the static logic.
-      if (provider === 'llamacpp') {
-        try {
-          const status = await llamacppStatus();
-          const ctx = status.data?.sidecar?.context_size;
-          if (typeof ctx === 'number' && ctx > 0) {
-            setTokenLimit(ctx);
-            setIsTokenLimitLoaded(true);
-            return;
-          }
-        } catch (e) {
-          console.warn('Failed to read llama-server context window, using fallback:', e);
-        }
+      // Local models (Llama Server, Ollama): the real context window is a
+      // property of the running server, not of the model's name. Prefer it over
+      // any static catalog/default so the gauge matches what the agent works
+      // with; only when the server has not said does the static logic below run.
+      const live = await liveContextWindow(provider, model);
+      if (!current()) return;
+      if (live !== null) {
+        setLimit(live, true);
+        return;
       }
 
       // First, check predefined models from environment (highest priority)
       const predefinedModels = getPredefinedModelsFromEnv();
       const predefinedModel = predefinedModels.find((m) => m.name === model);
       if (predefinedModel?.context_limit) {
-        setTokenLimit(predefinedModel.context_limit);
-        setIsTokenLimitLoaded(true);
+        setLimit(predefinedModel.context_limit, true);
         return;
       }
 
       const providers = await getProviders(true);
+      if (!current()) return;
 
       // Find the provider details for the current provider
       const currentProvider = providers.find((p) => p.name === provider);
@@ -1543,8 +1554,7 @@ export default function ChatInput({
         // Find the model's token limit from the backend response
         const modelConfig = currentProvider.metadata.known_models.find((m) => m.name === model);
         if (modelConfig?.context_limit) {
-          setTokenLimit(modelConfig.context_limit);
-          setIsTokenLimitLoaded(true);
+          setLimit(modelConfig.context_limit, true);
           return;
         }
       }
@@ -1553,19 +1563,16 @@ export default function ChatInput({
       const modelLimit = await getModelLimits();
       const fallbackLimit = findModelLimit(model as string, modelLimit);
       if (fallbackLimit !== null) {
-        setTokenLimit(fallbackLimit);
-        setIsTokenLimitLoaded(true);
+        setLimit(fallbackLimit, true);
         return;
       }
 
       // If no match found, use the default model limit
-      setTokenLimit(TOKEN_LIMIT_DEFAULT);
-      setIsTokenLimitLoaded(true);
+      setLimit(TOKEN_LIMIT_DEFAULT, true);
     } catch (err) {
       console.error('Error loading providers or token limit:', err);
       // Set default limit on error
-      setTokenLimit(TOKEN_LIMIT_DEFAULT);
-      setIsTokenLimitLoaded(true);
+      setLimit(TOKEN_LIMIT_DEFAULT, true);
     }
   };
 
@@ -1575,6 +1582,21 @@ export default function ChatInput({
     loadProviderDetails();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentModel, currentProvider, effectiveModel?.provider, effectiveModel?.model]);
+
+  useEffect(() => {
+    const previous = previousGaugeChatStateRef.current;
+    previousGaugeChatStateRef.current = chatState;
+    const provider = effectiveModel?.provider ?? currentProvider;
+    // Ollama can lower its automatic window after the runner's first load.
+    if (
+      chatState === ChatState.Idle &&
+      previous !== ChatState.Idle &&
+      (provider === 'ollama' || provider === 'llamacpp')
+    ) {
+      void loadProviderDetails();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [chatState, currentProvider, effectiveModel?.provider]);
 
   // Handle tool count alerts and token usage
   useEffect(() => {

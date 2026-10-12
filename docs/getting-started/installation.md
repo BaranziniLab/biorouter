@@ -73,8 +73,8 @@ Biorouter needs an LLM provider to function. On first launch, you will be prompt
 
 **Option C: local / air-gapped (Ollama)**
 
-- Install [Ollama](https://ollama.com).
-- Pull a model: `ollama pull qwen3`.
+- Install [Ollama](https://ollama.com) 0.32.12 or later, the oldest that runs `qwen3.8:27b`.
+- Pull a model: `ollama pull qwen3.8:27b` (about 18 GB; `gemma4:31b` is the other supported model). Both need about 32 GiB of memory the GPU can use.
 - Select "Ollama" in Biorouter — no API key needed.
 - Data stays entirely on your device.
 

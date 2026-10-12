@@ -1,0 +1,1 @@
+{"model":"mistral-small3.2:24b","created_at":"2026-10-10T18:53:19.362291Z","message":{"role":"assistant","content":""},"done":true,"done_reason":"stop","total_duration":24126164792,"load_duration":3735667,"prompt_eval_count":409,"prompt_eval_cached_count":348,"prompt_eval_duration":722902000,"eval_count":68,"eval_duration":23391892000}

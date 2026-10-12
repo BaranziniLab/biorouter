@@ -41,9 +41,15 @@ fn request_params() -> serde_json::Value {
 }
 
 fn assert_safe_failure(error: anyhow::Error, code: &str) -> String {
+    assert_safe_failure_with_codes(error, &[code])
+}
+
+fn assert_safe_failure_with_codes(error: anyhow::Error, codes: &[&str]) -> String {
     let message = format!("{error:#}");
     assert!(
-        message.contains(&format!("Crew SSH failure [{code}; child_before_cleanup=")),
+        codes.iter().any(|code| {
+            message.contains(&format!("Crew SSH failure [{code}; child_before_cleanup="))
+        }),
         "unexpected transport failure: {message}"
     );
     for sentinel in [
@@ -401,11 +407,13 @@ async fn naturally_exited_peer_reports_safe_exit_status_before_cleanup() {
         )
         .await
         .expect_err("writing to a naturally exited peer must fail");
-    let message = assert_safe_failure(error, "ssh_write_io_broken_pipe");
+    // The independent pipe ends can report closure during either the write or the read.
+    let message = assert_safe_failure_with_codes(error, &["ssh_write_io_broken_pipe", "ssh_eof"]);
     assert!(
         message.contains("child_before_cleanup=exit_23"),
         "{message}"
     );
+    assert!(!transport.is_usable());
 }
 
 #[tokio::test]

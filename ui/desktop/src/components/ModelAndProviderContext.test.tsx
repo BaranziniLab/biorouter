@@ -60,9 +60,9 @@ Object.defineProperty(window, 'electron', {
 });
 
 const llamaModel: Model = {
-  name: 'qwen3.6',
+  name: 'gemma4-31b',
   provider: 'llamacpp',
-  alias: 'Qwen3.6',
+  alias: 'Gemma 4 31B',
   subtext: 'Llama Server',
   context_limit: 131072,
 };
@@ -87,14 +87,14 @@ const statusResponse = {
     sidecar,
     catalog: [
       {
-        name: 'qwen3.6',
-        display_name: 'Qwen3.6 35B',
-        ollama_name: 'qwen3.6:latest',
-        hf_spec: 'unsloth/Qwen3.6-35B-A3B-GGUF:UD-Q4_K_M',
-        download_size: '23 GB',
-        description: 'Large Qwen3.6 MoE model from Ollama library.',
-        min_gpu_memory_gib: 48,
-        recommended_gpu_memory_gib: 64,
+        name: 'gemma4-31b',
+        display_name: 'Gemma 4 31B',
+        ollama_name: 'gemma4:31b',
+        hf_spec: 'google/gemma-4-31B-it-qat-q4_0-gguf:Q4_0',
+        download_size: '18 GB',
+        description: 'Google DeepMind Gemma 4 31B, a dense model.',
+        min_gpu_memory_gib: 32,
+        recommended_gpu_memory_gib: 48,
         context_limit: 262144,
         downloaded: false,
         download_status: 'not_downloaded',
@@ -103,9 +103,9 @@ const statusResponse = {
         fallback_download_status: 'not_downloaded',
         model_path: null,
         suitable: false,
-        suitability_status: 'above_recommendation',
+        suitability_status: 'below_minimum',
         suitability_message:
-          'This model recommends 64 GiB of GPU-addressable memory; this machine reports 8 GiB vram.',
+          'Below the minimum: Gemma 4 31B needs at least 32 GiB of GPU-addressable memory and this machine reports 8 GiB vram.',
         is_default: true,
       },
     ],
@@ -267,11 +267,19 @@ describe('ModelAndProviderProvider Llama Server warm-up', () => {
 
     expect(await screen.findByText('Warm up local model')).toBeInTheDocument();
     expect(screen.getAllByText(/8 GiB VRAM/).length).toBeGreaterThanOrEqual(1);
+    // The daemon's below-minimum verdict, in words — and no longer the "use
+    // Gemma 4 on 16 GB machines" line, which pointed at a retired model.
+    expect(
+      screen.getByText(
+        /Gemma 4 31B needs at least 32 GiB of GPU-addressable memory \(48 GiB recommended\)/
+      )
+    ).toBeInTheDocument();
+    expect(document.body.textContent).not.toMatch(/laptop tier|use Gemma 4/);
     expect(screen.getByText('Needs download')).toBeInTheDocument();
     expect(screen.getByText('Llama Server fallback')).toBeInTheDocument();
     expect(screen.getByText('Fallback may download')).toBeInTheDocument();
     expect(screen.getByText('Ollama model')).toBeInTheDocument();
-    expect(screen.getByText('qwen3.6:latest')).toBeInTheDocument();
+    expect(screen.getByText('gemma4:31b')).toBeInTheDocument();
     expect(screen.getByText('Model store')).toBeInTheDocument();
     expect(screen.getByText('/Users/test/.ollama/models')).toBeInTheDocument();
     expect(screen.getByText(/32,768 tokens/)).toBeInTheDocument();
@@ -546,7 +554,7 @@ describe('ModelAndProviderProvider announces the binding it just wrote', () => {
     mocks.llamacppStatus.mockResolvedValue({
       data: {
         ...statusResponse.data,
-        sidecar: { ...sidecar, state: 'ready', model: 'qwen3.6', warmed: true },
+        sidecar: { ...sidecar, state: 'ready', model: 'gemma4-31b', warmed: true },
       },
     });
     render(

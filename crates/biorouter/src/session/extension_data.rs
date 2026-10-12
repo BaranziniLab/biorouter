@@ -582,39 +582,20 @@ impl TodoState {
 /// `-`, `*`, or `+` bullets; indentation (sub-tasks) is flattened, so a full
 /// rewrite drops nesting as well as ids. Non-checkbox lines are ignored. Ids
 /// are assigned sequentially.
+///
+/// Whitespace around and inside the brackets is not significant: `-  [  ] a`,
+/// `- [ x ] b` and `-[ ]c` are items. Measured (PR #393 F07 rerun,
+/// ministral-3:8b, 2026-10-12): `-  [  ] Create…` and `-   [ ] Create…`
+/// matched nothing, `todo_write` answered "Todo list set: 0 item(s)" five
+/// times, and the repetition guard fired before the model found the spacing
+/// the parser wanted.
 fn parse_markdown_checklist(content: &str) -> Vec<TodoItem> {
     let mut items = Vec::new();
     let mut next: u64 = 1;
     for line in content.lines() {
-        let trimmed = line.trim_start();
-        let Some(body) = trimmed
-            .strip_prefix("- ")
-            .or_else(|| trimmed.strip_prefix("* "))
-            .or_else(|| trimmed.strip_prefix("+ "))
-        else {
+        let Some((status, text)) = parse_checklist_line(line) else {
             continue;
         };
-        let (status, text) = if let Some(rest) = body.strip_prefix("[ ] ") {
-            (TodoStatus::Pending, rest)
-        } else if let Some(rest) = body
-            .strip_prefix("[x] ")
-            .or_else(|| body.strip_prefix("[X] "))
-        {
-            (TodoStatus::Completed, rest)
-        } else if let Some(rest) = body
-            .strip_prefix("[~] ")
-            .or_else(|| body.strip_prefix("[-] "))
-        {
-            (TodoStatus::InProgress, rest)
-        } else if let Some(rest) = body.strip_prefix("[!] ") {
-            (TodoStatus::Blocked, rest)
-        } else {
-            continue;
-        };
-        let text = text.trim();
-        if text.is_empty() {
-            continue;
-        }
         items.push(TodoItem {
             id: next.to_string(),
             text: text.to_string(),
@@ -624,6 +605,23 @@ fn parse_markdown_checklist(content: &str) -> Vec<TodoItem> {
         next += 1;
     }
     items
+}
+
+/// One checklist line's status and text, or `None` when the line is not a
+/// checklist item (or names no task).
+fn parse_checklist_line(line: &str) -> Option<(TodoStatus, &str)> {
+    let rest = line.trim_start().strip_prefix(['-', '*', '+'])?;
+    let rest = rest.trim_start().strip_prefix('[')?;
+    let (marker, text) = rest.split_once(']')?;
+    let status = match marker.trim() {
+        "" => TodoStatus::Pending,
+        "x" | "X" => TodoStatus::Completed,
+        "~" | "-" => TodoStatus::InProgress,
+        "!" => TodoStatus::Blocked,
+        _ => return None,
+    };
+    let text = text.trim();
+    (!text.is_empty()).then_some((status, text))
 }
 
 /// Enabled extensions state implementation for storing which extensions are active
@@ -1115,6 +1113,34 @@ mod tests {
         assert_eq!(todo.items[2].status, TodoStatus::InProgress);
         assert_eq!(todo.items[2].text, "nested in progress");
         assert_eq!(todo.items[3].status, TodoStatus::Completed);
+    }
+
+    /// PR #393 F07 rerun (ministral-3:8b): extra spaces after the bullet and
+    /// inside the brackets matched nothing. They are items now; what is not a
+    /// checkbox (a link, a rule, a numbered line, an empty task) still is not.
+    #[test]
+    fn test_todo_set_from_markdown_tolerates_spacing_around_the_brackets() {
+        let mut todo = TodoState::new();
+        todo.set_from_markdown(
+            "-  [  ] Create factorial.py\n-   [ ] Run it\n- [ x ] Plan\n*[~]Write\n+ [ ! ] Stuck\n\
+             - [link](https://example.com)\n---\n1. [ ] numbered\n- [ ]   \n- [xx] two marks\n",
+        );
+        let parsed: Vec<(&str, TodoStatus)> = todo
+            .items
+            .iter()
+            .map(|item| (item.text.as_str(), item.status))
+            .collect();
+        assert_eq!(
+            parsed,
+            vec![
+                ("Create factorial.py", TodoStatus::Pending),
+                ("Run it", TodoStatus::Pending),
+                ("Plan", TodoStatus::Completed),
+                ("Write", TodoStatus::InProgress),
+                ("Stuck", TodoStatus::Blocked),
+            ]
+        );
+        assert_eq!(todo.items[4].id, "5");
     }
 
     #[test]

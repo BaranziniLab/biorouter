@@ -77,6 +77,42 @@ These variables control biorouter's planning functionality.
 | `BIOROUTER_PLANNER_PROVIDER` | Specifies which provider to use for planning mode | [See available providers](../getting-started/choosing-a-model-provider.md) | Falls back to `BIOROUTER_PROVIDER` |
 | `BIOROUTER_PLANNER_MODEL` | Specifies which model to use for planning mode | Model name (e.g. `"gpt-4"`, `"claude-sonnet-4-20250514"`) | Falls back to `BIOROUTER_MODEL` |
 
+### Local model providers
+
+The two local providers read these from the environment or from `config.yaml`, and an
+environment variable wins. The provider's settings form (**Settings** > **Models** > **Configure
+providers**) shows only some of them: `OLLAMA_HOST`, `OLLAMA_TIMEOUT` and `OLLAMA_NUM_CTX` for
+Ollama, and `LLAMACPP_PORT`, `LLAMACPP_CONTEXT_SIZE`, `LLAMACPP_TIMEOUT`,
+`LLAMACPP_ENABLE_THINKING`, `LLAMACPP_EXTERNAL_HOST` and `LLAMACPP_HF_TOKEN` for Llama Server.
+Set the rest in `config.yaml` or the environment. The form keeps `LLAMACPP_HF_TOKEN` in the
+system credential store, not in `config.yaml`.
+
+**Ollama** (`ollama`). See [context window and settings](../providers/ollama/context-window-and-settings.md).
+
+| Variable | Purpose | Values | Default |
+|----------|---------|---------|---------|
+| `OLLAMA_HOST` | The Ollama server, read as Ollama's own client reads it | Host, `host:port` or URL (a bare host means port 11434) | `localhost` |
+| `OLLAMA_TIMEOUT` | Seconds of silence before a request is abandoned (silence, not the whole reply); never retried | Integer | 600 |
+| `OLLAMA_NUM_CTX` | The context window Biorouter asks for, capped at the model's trained window | Integer (tokens) | 131072 with 64 GiB or more of GPU-addressable memory, else 65536 |
+| `OLLAMA_KEEP_ALIVE` | How long the model stays loaded after a request | Duration (`30m`) or seconds (`-1` keeps it loaded) | `30m` |
+| `OLLAMA_THINK` | What Normal effort sends as `think`, for models that can think | `true`, `false`, or a level the model declares | The model's own default |
+
+**Llama Server** (`llamacpp`). See the [Llama Server model catalog](../providers/llama-server/model-catalog.md).
+
+| Variable | Purpose | Values | Default |
+|----------|---------|---------|---------|
+| `LLAMACPP_CONTEXT_SIZE` | The context window the sidecar allocates | Integer (tokens); `0` means automatic | `0`: 131072 with 48 GiB or more of GPU-addressable memory, else 65536 |
+| `LLAMACPP_TIMEOUT` | Seconds of silence before a request is abandoned; never retried | Integer; `0` means automatic | `0`: 600, or 3600 on a machine without GPU acceleration |
+| `LLAMACPP_ENABLE_THINKING` | Whether Normal effort thinks, and the server's default | `true`, `false` | `false` |
+| `LLAMACPP_PARALLEL` | Requests the server runs at once | Integer | 1 |
+| `LLAMACPP_SPEC_TYPE` | Speculative decoding type | A llama.cpp `--spec-type` value, or `none` | Each model's own default (`ngram-simple`) |
+| `LLAMACPP_EXTRA_ARGS` | Extra `llama-server` flags; only performance and sampling flags are accepted, anything else is dropped with a warning | Space-separated flags | None |
+| `LLAMACPP_HF_TOKEN` | A Hugging Face token passed to the server for downloads; no other token reaches it | Token | None |
+| `LLAMACPP_PORT` | The port the sidecar listens on (loopback only) | Integer | 11543 |
+| `LLAMACPP_STARTUP_TIMEOUT` | Seconds a start (including a first download) may make no progress | Integer | 3600 |
+| `LLAMACPP_EXTERNAL_HOST` | Use a llama-server you run yourself instead of the sidecar | `http` or `https` URL | None |
+| `BIOROUTER_LLAMACPP_BIN` | The `llama-server` binary to run instead of the bundled one | Path | The bundled binary |
+
 ### Provider retries
 
 Configurable retry parameters for LLM providers.
@@ -333,7 +369,6 @@ fi
 
 Some user-facing variables are not listed above and are documented on their own feature pages:
 
-- llama.cpp sidecar variables such as `BIOROUTER_LLAMACPP_BIN`, `LLAMACPP_EXTRA_ARGS`, and `LLAMACPP_EXTERNAL_HOST` — see the [Llama Server model catalog QA checklist](../providers/llama-server/model-catalog-qa-checklist.md).
 - The auto-update feed override `BIOROUTER_UPDATE_FEED_URL` — see the [auto-update test checklist](../releases/auto-update-test-checklist.md).
 
 ## Precedence and caveats

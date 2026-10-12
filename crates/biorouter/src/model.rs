@@ -196,10 +196,17 @@ static MODEL_CONTEXT_WINDOWS: Lazy<HashMap<&'static str, usize>> = Lazy::new(|| 
         ("gemini-3.6-flash", 1_048_576),
         ("gemini-3.7-flash", 1_048_576),
         ("gemini-3.8-flash", 1_048_576),
+        // Llama Server catalog names (`providers/llamacpp.rs`). `gemma4-31b` is
+        // in the catalog; the other `gemma4*` rows are retired catalog names,
+        // which a chat now runs as `qwen3.8-27b` but whose windows stay true.
+        // These are NATIVE windows: what a running server allocated (64k or
+        // 128k) is read back from `/props`, and the provider clamps to it.
         ("gemma4", 131_072),
         ("gemma4-12b", 262_144),
         ("gemma4-26b", 262_144),
         ("gemma4-31b", 262_144),
+        // The Ollama tag of the same model (bare manifest-list tag).
+        ("gemma4:31b", 262_144),
         ("gemma4-e2b", 131_072),
         // ── Meta Llama ──
         ("llama-3.1-8b-instant", 131_072),
@@ -209,6 +216,11 @@ static MODEL_CONTEXT_WINDOWS: Lazy<HashMap<&'static str, usize>> = Lazy::new(|| 
         // ── Qwen ──
         ("qwen/qwen3-coder-next", 262_144),
         ("qwen/qwen3.8-27b", 131_072),
+        // Qwen3.8 27B: 262,144 native (Qwen's model card). The Llama Server
+        // catalog name, and the Ollama tag of the same model. Groq's
+        // `qwen/qwen3.8-27b` above serves it at 131,072.
+        ("qwen3.8-27b", 262_144),
+        ("qwen3.8:27b", 262_144),
         ("qwen3.6", 262_144),
         ("qwen3.6-27b", 262_144),
         ("qwen3.6-35b-a3b", 262_144),
@@ -407,7 +419,11 @@ static MODEL_SPECIFIC_LIMITS: Lazy<Vec<(&'static str, usize)>> = Lazy::new(|| {
         ("gemma-4-e2b", 128_000),
         ("gemma-4-e4b", 128_000),
         ("gemma-4", 256_000),
+        // `gemma4:31b-it-q4_K_M` and other tags of the 31B, before the bare
+        // `gemma4` (whose `:latest` is the 128k E4B).
+        ("gemma4:31b", 262_144),
         ("gemma4", 131_072),
+        ("qwen3.8", 262_144),
         ("qwen3.6", 262_144),
         ("gemma-3-27b", 128_000),
         ("gemma-3-12b", 128_000),

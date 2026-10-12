@@ -86,7 +86,7 @@ Current top-level areas:
 | `extensions/` | the extension system, and `built-in/` for each shipped extension |
 | `integrations/` | adapters that let another host application run a Biorouter agent |
 | `knowledge-base/` | personal knowledge bases |
-| `providers/` | LLM provider integrations |
+| `providers/` | LLM provider integrations; a provider with more than one page gets a sub-folder (`coding-agents/`, `llama-server/`, `ollama/`) |
 | `security/` | permission modes, secrets, managed policy, data handling |
 | `workflows/` | workflow authoring, storage, scheduling |
 | `cli/` | the `biorouter` command-line interface |

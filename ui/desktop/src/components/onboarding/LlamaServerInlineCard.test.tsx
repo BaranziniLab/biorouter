@@ -37,19 +37,19 @@ vi.mock('../../toasts', () => ({
 }));
 
 const catalogEntry = (overrides: Record<string, unknown> = {}) => ({
-  name: 'gemma4',
-  display_name: 'Gemma 4 E4B',
-  family: 'Gemma 4',
-  ollama_name: 'gemma4:latest',
-  official_url: 'https://ollama.com/library/gemma4',
-  hf_spec: 'google/gemma-4-E4B-it-qat-q4_0-gguf:Q4_0',
-  download_size: '9.6 GB',
-  description: 'Laptop default',
-  min_gpu_memory_gib: 16,
-  recommended_gpu_memory_gib: 16,
-  context_limit: 131072,
-  active_params_b: 4,
-  speed_hint: 'Fast — ~4B active parameters',
+  name: 'qwen3.8-27b',
+  display_name: 'Qwen3.8 27B',
+  family: 'Qwen3.8',
+  ollama_name: 'qwen3.8:27b',
+  official_url: 'https://ollama.com/library/qwen3.8:27b',
+  hf_spec: 'ggml-org/Qwen3.8-27B-GGUF:Q4_K_M',
+  download_size: '19 GB',
+  description: 'Default local model',
+  min_gpu_memory_gib: 32,
+  recommended_gpu_memory_gib: 48,
+  context_limit: 262144,
+  active_params_b: 27,
+  speed_hint: 'Moderate, dense 27B; needs 32 GiB of GPU memory, 48 GiB recommended',
   is_default: true,
   downloaded: false,
   download_status: 'not_downloaded',
@@ -76,11 +76,15 @@ const statusResponse = (sidecar: Record<string, unknown> = {}) => ({
     catalog: [
       catalogEntry(),
       catalogEntry({
-        name: 'gemma4-12b',
-        display_name: 'Gemma 4 12B',
-        download_size: '7.6 GB',
-        active_params_b: 12,
-        speed_hint: 'Fast — dense 12B, quick to load',
+        name: 'gemma4-31b',
+        display_name: 'Gemma 4 31B',
+        family: 'Gemma 4',
+        ollama_name: 'gemma4:31b',
+        official_url: 'https://ollama.com/library/gemma4:31b',
+        hf_spec: 'google/gemma-4-31B-it-qat-q4_0-gguf:Q4_0',
+        download_size: '18 GB',
+        active_params_b: 31,
+        speed_hint: 'Moderate, dense 31B; needs 32 GiB of GPU memory, 48 GiB recommended',
         is_default: false,
       }),
     ],
@@ -111,26 +115,83 @@ describe('LlamaServerInlineCard', () => {
   it('preselects the default catalog model', async () => {
     render(<LlamaServerInlineCard onSuccess={vi.fn()} />);
     const select = await screen.findByTestId('llamacpp-model-select');
-    await waitFor(() => expect(select).toHaveValue('gemma4'));
+    await waitFor(() => expect(select).toHaveValue('qwen3.8-27b'));
   });
 
   it('shows download size and expected speed for the selected model (#35)', async () => {
     render(<LlamaServerInlineCard onSuccess={vi.fn()} />);
     const info = await screen.findByTestId('llamacpp-size-speed');
-    expect(info).toHaveTextContent('9.6 GB download · Fast — ~4B active parameters');
+    expect(info).toHaveTextContent(
+      '19 GB download · Moderate, dense 27B; needs 32 GiB of GPU memory, 48 GiB recommended'
+    );
+  });
+
+  it('names the catalog models in its description, read off the catalog', async () => {
+    render(<LlamaServerInlineCard onSuccess={vi.fn()} />);
+    expect(
+      await screen.findByText(/^Run Qwen3\.8 27B or Gemma 4 31B on this computer\./)
+    ).toBeInTheDocument();
+  });
+
+  /**
+   * Both catalog models need 32 GiB. A 16 GiB machine still gets the default,
+   * with the daemon's below-minimum verdict in words — and none of the old
+   * "Gemma 4 is the laptop default" advice, which named a model that is gone.
+   */
+  it('warns a machine below the minimum without pointing it at a laptop model', async () => {
+    const below = statusResponse();
+    below.data.catalog = below.data.catalog.map((entry) => ({
+      ...entry,
+      suitable: false,
+      suitability_status: 'below_minimum',
+    }));
+    below.data.system = { ...below.data.system, accelerator_memory_gib: 16 };
+    mockLlamacppStatus.mockResolvedValue(below);
+    render(<LlamaServerInlineCard onSuccess={vi.fn()} />);
+
+    expect(
+      await screen.findByText(/Qwen3\.8 27B needs at least 32 GiB of GPU-addressable memory/)
+    ).toBeInTheDocument();
+    expect(document.body.textContent).not.toMatch(/laptop/i);
+  });
+
+  /**
+   * An Intel Mac with 64 GiB clears every memory figure; the old raw-number
+   * check started it without a word while the daemon rated it CPU-only.
+   */
+  it('asks before loading on a CPU-only machine, whatever its memory', async () => {
+    const cpu = statusResponse();
+    cpu.data.catalog = cpu.data.catalog.map((entry) => ({
+      ...entry,
+      suitable: false,
+      suitability_status: 'cpu_only',
+    }));
+    cpu.data.system = {
+      ...cpu.data.system,
+      accelerator_memory_gib: 64,
+      accelerator_memory_kind: 'cpu_only',
+    };
+    mockLlamacppStatus.mockResolvedValue(cpu);
+    render(<LlamaServerInlineCard onSuccess={vi.fn()} />);
+
+    fireEvent.click(await screen.findByTestId('llamacpp-start'));
+
+    expect(await screen.findByText('Load Qwen3.8 27B anyway?')).toBeInTheDocument();
+    expect(mockLlamacppEnsure).not.toHaveBeenCalled();
+    expect(screen.getAllByText(/64 GiB system RAM/).length).toBeGreaterThanOrEqual(1);
   });
 
   it('restores the live progress box when remounting during an in-flight download', async () => {
     // A download started earlier (possibly from another surface) is still
     // running in the shared store while this card was unmounted.
     mockLlamacppStatus.mockResolvedValue(
-      statusResponse({ state: 'starting', model: 'gemma4', detail: 'downloading 42%' })
+      statusResponse({ state: 'starting', model: 'qwen3.8-27b', detail: 'downloading 42%' })
     );
-    llamaServerStore.beginOperation('start', 'gemma4', 'downloading 42%');
+    llamaServerStore.beginOperation('start', 'qwen3.8-27b', 'downloading 42%');
 
     const first = render(<LlamaServerInlineCard onSuccess={vi.fn()} />);
     expect(await first.findByTestId('llamacpp-progress')).toHaveTextContent(
-      'Preparing gemma4. Loading or downloading on first use…'
+      'Preparing qwen3.8-27b. Loading or downloading on first use…'
     );
     first.unmount();
 
@@ -142,11 +203,19 @@ describe('LlamaServerInlineCard', () => {
 
   it('runs the start flow through the shared store and connects on success', async () => {
     mockUpsert.mockResolvedValue(undefined);
-    mockLlamacppEnsure.mockResolvedValue(statusResponse({ state: 'starting', model: 'gemma4' }));
+    mockLlamacppEnsure.mockResolvedValue(
+      statusResponse({ state: 'starting', model: 'qwen3.8-27b' })
+    );
     mockLlamacppWarmup.mockResolvedValue({
       data: {
         output: 'OK',
-        sidecar: { state: 'ready', warmed: true, build: 'test', model: 'gemma4', detail: null },
+        sidecar: {
+          state: 'ready',
+          warmed: true,
+          build: 'test',
+          model: 'qwen3.8-27b',
+          detail: null,
+        },
       },
     });
     const onSuccess = vi.fn();
@@ -157,21 +226,23 @@ describe('LlamaServerInlineCard', () => {
 
     await waitFor(() => expect(onSuccess).toHaveBeenCalled());
     expect(mockLlamacppEnsure).toHaveBeenCalledWith({
-      body: { model: 'gemma4' },
+      body: { model: 'qwen3.8-27b' },
       throwOnError: true,
     });
     expect(mockLlamacppWarmup).toHaveBeenCalledWith({
-      body: { model: 'gemma4' },
+      body: { model: 'qwen3.8-27b' },
       throwOnError: true,
     });
-    expect(mockUpsert).toHaveBeenCalledWith('BIOROUTER_MODEL', 'gemma4', false);
+    expect(mockUpsert).toHaveBeenCalledWith('BIOROUTER_MODEL', 'qwen3.8-27b', false);
     // The operation ended, so the shared poll interval is stopped.
     expect(llamaServerStore.getSnapshot().operation).toBeNull();
   });
 
   it('never writes config or navigates from an unmounted card (finding 7)', async () => {
     mockUpsert.mockResolvedValue(undefined);
-    mockLlamacppEnsure.mockResolvedValue(statusResponse({ state: 'starting', model: 'gemma4' }));
+    mockLlamacppEnsure.mockResolvedValue(
+      statusResponse({ state: 'starting', model: 'qwen3.8-27b' })
+    );
     let resolveWarmup!: (value: unknown) => void;
     mockLlamacppWarmup.mockImplementation(
       () =>
@@ -190,7 +261,13 @@ describe('LlamaServerInlineCard', () => {
     resolveWarmup({
       data: {
         output: 'OK',
-        sidecar: { state: 'ready', warmed: true, build: 'test', model: 'gemma4', detail: null },
+        sidecar: {
+          state: 'ready',
+          warmed: true,
+          build: 'test',
+          model: 'qwen3.8-27b',
+          detail: null,
+        },
       },
     });
 
@@ -203,7 +280,9 @@ describe('LlamaServerInlineCard', () => {
 
   it('surfaces a polled sidecar error immediately; the stale flow cannot double-toast or kill a retry (finding 9)', async () => {
     mockUpsert.mockResolvedValue(undefined);
-    mockLlamacppEnsure.mockResolvedValue(statusResponse({ state: 'starting', model: 'gemma4' }));
+    mockLlamacppEnsure.mockResolvedValue(
+      statusResponse({ state: 'starting', model: 'qwen3.8-27b' })
+    );
     let rejectWarmup!: (err: Error) => void;
     mockLlamacppWarmup.mockImplementation(
       () =>
@@ -224,7 +303,7 @@ describe('LlamaServerInlineCard', () => {
     // The next poll tick reports a terminal sidecar error while the warm-up
     // HTTP call is still hanging.
     mockLlamacppStatus.mockResolvedValue(
-      statusResponse({ state: 'error', model: 'gemma4', detail: 'model blew up' })
+      statusResponse({ state: 'error', model: 'qwen3.8-27b', detail: 'model blew up' })
     );
     await act(async () => {
       await vi.advanceTimersByTimeAsync(LLAMA_SERVER_POLL_INTERVAL_MS);
@@ -238,7 +317,7 @@ describe('LlamaServerInlineCard', () => {
 
     // The user retries; when the stale flow's warm-up finally rejects it
     // must neither toast a second time nor end the retry's operation.
-    const retryOp = llamaServerStore.beginOperation('start', 'gemma4');
+    const retryOp = llamaServerStore.beginOperation('start', 'qwen3.8-27b');
     await act(async () => {
       rejectWarmup(new Error('502 Bad Gateway'));
       await vi.advanceTimersByTimeAsync(0);
@@ -278,19 +357,19 @@ describe('LlamaServerInlineCard', () => {
     // The user retries with a DIFFERENT model; a new operation now owns the
     // singleton sidecar.
     const select = screen.getByTestId('llamacpp-model-select');
-    fireEvent.change(select, { target: { value: 'gemma4-12b' } });
+    fireEvent.change(select, { target: { value: 'gemma4-31b' } });
     fireEvent.click(screen.getByTestId('llamacpp-start'));
     await act(async () => {
       await vi.advanceTimersByTimeAsync(0);
     });
     const retryId = llamaServerStore.getSnapshot().operation?.id;
-    expect(llamaServerStore.getSnapshot().operation).toMatchObject({ model: 'gemma4-12b' });
+    expect(llamaServerStore.getSnapshot().operation).toMatchObject({ model: 'gemma4-31b' });
     expect(mockLlamacppEnsure).toHaveBeenCalledTimes(2);
 
     // The STALE ensure finally settles "successfully". The stale flow must
     // abort: no warm-up of the OLD model, no disturbance of the retry.
     await act(async () => {
-      ensureResolvers[0](statusResponse({ state: 'ready', model: 'gemma4' }));
+      ensureResolvers[0](statusResponse({ state: 'ready', model: 'qwen3.8-27b' }));
       await vi.advanceTimersByTimeAsync(0);
     });
     expect(mockLlamacppWarmup).not.toHaveBeenCalled();
@@ -300,7 +379,7 @@ describe('LlamaServerInlineCard', () => {
 
   it('unmounting between config writes stops the remaining writes (re-review 5)', async () => {
     mockLlamacppStatus.mockResolvedValue(
-      statusResponse({ state: 'ready', warmed: true, model: 'gemma4' })
+      statusResponse({ state: 'ready', warmed: true, model: 'qwen3.8-27b' })
     );
     let resolveUpsert!: () => void;
     mockUpsert.mockImplementation(

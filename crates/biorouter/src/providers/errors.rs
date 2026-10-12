@@ -92,10 +92,85 @@ impl ProviderErrorKind {
     }
 }
 
+/// `details` with every URL cut out, so the port or path a request was sent to
+/// cannot be read as the status it got back.
+///
+/// Measured (2026-10): `From<anyhow::Error>` renders a reqwest timeout as
+/// `error sending request for url (http://127.0.0.1:50451/v1/chat/completions)
+/// (timeout)`, and the bundled llama-server falls back to an ephemeral port
+/// when 11543 is taken. Sniffed whole, that `:50451` read as a 504, so a timeout
+/// was classified `Server` — retried, and never seen by `retry::is_timeout` — and
+/// a port like `:54031` read as a 403 and failed the turn as bad credentials.
+fn without_urls(details: &str) -> String {
+    let mut out = String::with_capacity(details.len());
+    let mut rest = details;
+    while let Some(start) = ["http://", "https://"]
+        .iter()
+        .filter_map(|scheme| rest.find(scheme))
+        .min()
+    {
+        // `find` returns char boundaries, so these splits cannot fail.
+        let (before, url) = rest.split_at(start);
+        out.push_str(before);
+        let end = url
+            .find(|c: char| c.is_whitespace() || matches!(c, ')' | '"' | '\'' | '>' | ','))
+            .unwrap_or(url.len());
+        out.push(' ');
+        rest = url.split_at(end).1;
+    }
+    out.push_str(rest);
+    out
+}
+
+/// Whether `code` appears in `details` as a number of its own: not a slice of a
+/// longer number (`50451`), not a host's port (`localhost:504`,
+/// `127.0.0.1:50451`, `[::1]:504`), not part of a dotted number. A URL is
+/// already gone (see [`without_urls`]); this catches the `failed to connect to
+/// 127.0.0.1:50451` form, which has no scheme.
+///
+/// ⚠ A colon alone does not make a port. An error body quoted into the message
+/// says `"code":401` or `status:429`, and those ARE the status: only a colon
+/// after something shaped like a host (dotted, `localhost`, or a bracketed
+/// IPv6 address) is read as one.
+fn mentions_status(details: &str, code: &str) -> bool {
+    details.match_indices(code).any(|(at, _)| {
+        // `match_indices` yields char boundaries, so the split cannot fail.
+        let (head, tail) = details.split_at(at);
+        let before = head.chars().next_back();
+        let mut after = tail.chars().skip(code.chars().count());
+        let next = after.next();
+        let standalone_start = match before {
+            Some(c) if c.is_ascii_digit() || c == '.' => false,
+            Some(':') => !ends_with_host(head.strip_suffix(':').unwrap_or(head)),
+            _ => true,
+        };
+        let standalone_end = match next {
+            Some(c) if c.is_ascii_digit() => false,
+            // `504.` ends a sentence; `504.5` is not a status.
+            Some('.') => !after.next().is_some_and(|c| c.is_ascii_digit()),
+            _ => true,
+        };
+        standalone_start && standalone_end
+    })
+}
+
+/// Whether `text` ends in a host name or address: the token a `:port` follows.
+fn ends_with_host(text: &str) -> bool {
+    if text.ends_with(']') {
+        return true;
+    }
+    let token = text
+        .rsplit(|c: char| !(c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_')))
+        .next()
+        .unwrap_or_default();
+    token == "localhost" || (token.contains('.') && !token.starts_with('.'))
+}
+
 fn classify_provider_details(details: &str) -> ProviderErrorKind {
-    let details = details.to_ascii_lowercase();
-    if details.contains("401")
-        || details.contains("403")
+    let details = without_urls(&details.to_ascii_lowercase());
+    let status = |code: &str| mentions_status(&details, code);
+    if status("401")
+        || status("403")
         || details.contains("unauthorized")
         || details.contains("authentication failed")
         || details.contains("authentication error")
@@ -110,7 +185,7 @@ fn classify_provider_details(details: &str) -> ProviderErrorKind {
         || details.contains("credit balance")
     {
         ProviderErrorKind::Quota
-    } else if details.contains("429") || details.contains("rate_limit") {
+    } else if status("429") || details.contains("rate_limit") {
         ProviderErrorKind::RateLimit
     } else if details.contains("context_length")
         || details.contains("context window")
@@ -124,15 +199,15 @@ fn classify_provider_details(details: &str) -> ProviderErrorKind {
         || details.contains("content blocked")
     {
         ProviderErrorKind::Policy
-    } else if details.contains("404")
+    } else if status("404")
         || details.contains("model_not_found")
         || details.contains("model not found")
         || details.contains("resource not found")
         || details.contains("deployment not found")
     {
         ProviderErrorKind::ModelUnavailable
-    } else if details.contains("400")
-        || details.contains("422")
+    } else if status("400")
+        || status("422")
         || details.contains("bad request")
         || details.contains("invalid_request")
         || details.contains("invalid argument")
@@ -141,15 +216,13 @@ fn classify_provider_details(details: &str) -> ProviderErrorKind {
         || details.contains("not supported")
     {
         ProviderErrorKind::InvalidRequest
-    } else if details.contains("500")
-        || details.contains("502")
-        || details.contains("503")
-        || details.contains("504")
-    {
+    } else if status("500") || status("502") || status("503") || status("504") {
         ProviderErrorKind::Server
     } else if details.contains("timeout")
         || details.contains("timed out")
         || details.contains("connection")
+        // `From<anyhow::Error>`'s own wording for a refused connect.
+        || details.contains("failed to connect")
         || details.contains("dns")
         || details.contains("network")
         || details.contains("failed to fetch")
@@ -302,6 +375,69 @@ mod tests {
             assert_eq!(
                 ProviderError::RequestFailed(message.into()).kind(),
                 expected
+            );
+        }
+    }
+
+    /// A port or a path is not a status. The bundled llama-server falls back to
+    /// an ephemeral port, and the first two shapes are what `From<anyhow::Error>`
+    /// produces for a timeout and a refused connection there; before the fix
+    /// the first read as a 504 (retried, and not a timeout to
+    /// `retry::is_timeout`) and the others as a 403 (the turn failed as bad
+    /// credentials).
+    #[test]
+    fn a_port_or_path_that_contains_a_status_code_is_not_that_status() {
+        let cases = [
+            (
+                "error sending request for url (http://127.0.0.1:50451/v1/chat/completions) (timeout)",
+                ProviderErrorKind::Network,
+            ),
+            (
+                "error sending request for url (http://127.0.0.1:54031/v1/chat/completions) \
+                 (failed to connect to 127.0.0.1:54031, check that the port is correct)",
+                ProviderErrorKind::Network,
+            ),
+            (
+                "error sending request for url (https://gateway.example/deployments/500/chat) (timeout)",
+                ProviderErrorKind::Network,
+            ),
+            ("failed to connect to localhost:4290", ProviderErrorKind::Network),
+            ("failed to connect to [::1]:50451", ProviderErrorKind::Network),
+            ("failed to connect to llama.local:4031", ProviderErrorKind::Network),
+        ];
+        for (message, expected) in cases {
+            assert_eq!(
+                ProviderError::RequestFailed(message.into()).kind(),
+                expected,
+                "{message}"
+            );
+        }
+        assert!(crate::providers::retry::is_timeout(
+            &ProviderError::RequestFailed(cases[0].0.into())
+        ));
+
+        // A status the server really sent still counts, wherever it sits.
+        for (message, expected) in [
+            (
+                "error sending request for url (http://127.0.0.1:50451/api/chat) (status: 403 Forbidden)",
+                ProviderErrorKind::Auth,
+            ),
+            ("Server error 504.", ProviderErrorKind::Server),
+            ("upstream returned 502", ProviderErrorKind::Server),
+            ("HTTP 429 from http://127.0.0.1:11434", ProviderErrorKind::RateLimit),
+            // An error body quoted into the message: a colon before the code
+            // is not a port unless a host stands before it.
+            (
+                r#"Request failed: {"error":{"code":401,"message":"bad"}}"#,
+                ProviderErrorKind::Auth,
+            ),
+            (r#"upstream said {"code":429}"#, ProviderErrorKind::RateLimit),
+            ("status:503", ProviderErrorKind::Server),
+        ] {
+            assert_eq!(
+                ProviderError::RequestFailed(message.into()).kind(),
+                expected,
+                "{message}"
             );
         }
     }

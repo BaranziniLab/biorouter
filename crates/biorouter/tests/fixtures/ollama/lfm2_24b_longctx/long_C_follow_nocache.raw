@@ -1,0 +1,19 @@
+{"model":"lfm2:24b","created_at":"2026-10-10T20:12:20.650163Z","message":{"role":"assistant","content":"Never"},"done":false}
+{"model":"lfm2:24b","created_at":"2026-10-10T20:12:20.664146Z","message":{"role":"assistant","content":" mix"},"done":false}
+{"model":"lfm2:24b","created_at":"2026-10-10T20:12:20.675284Z","message":{"role":"assistant","content":" a"},"done":false}
+{"model":"lfm2:24b","created_at":"2026-10-10T20:12:20.684645Z","message":{"role":"assistant","content":" mix"},"done":false}
+{"model":"lfm2:24b","created_at":"2026-10-10T20:12:20.693876Z","message":{"role":"assistant","content":" with"},"done":false}
+{"model":"lfm2:24b","created_at":"2026-10-10T20:12:20.701289Z","message":{"role":"assistant","content":" never"},"done":false}
+{"model":"lfm2:24b","created_at":"2026-10-10T20:12:20.712962Z","message":{"role":"assistant","content":","},"done":false}
+{"model":"lfm2:24b","created_at":"2026-10-10T20:12:20.72811Z","message":{"role":"assistant","content":" id"},"done":false}
+{"model":"lfm2:24b","created_at":"2026-10-10T20:12:20.738083Z","message":{"role":"assistant","content":" so"},"done":false}
+{"model":"lfm2:24b","created_at":"2026-10-10T20:12:20.745417Z","message":{"role":"assistant","content":","},"done":false}
+{"model":"lfm2:24b","created_at":"2026-10-10T20:12:20.759295Z","message":{"role":"assistant","content":" and"},"done":false}
+{"model":"lfm2:24b","created_at":"2026-10-10T20:12:20.78369Z","message":{"role":"assistant","content":" cite"},"done":false}
+{"model":"lfm2:24b","created_at":"2026-10-10T20:12:48.606813Z","message":{"role":"assistant","content":" never"},"done":false}
+{"model":"lfm2:24b","created_at":"2026-10-10T20:12:48.621201Z","message":{"role":"assistant","content":" never"},"done":false}
+{"model":"lfm2:24b","created_at":"2026-10-10T20:12:48.631607Z","message":{"role":"assistant","content":" never"},"done":false}
+{"model":"lfm2:24b","created_at":"2026-10-10T20:12:48.640417Z","message":{"role":"assistant","content":" never"},"done":false}
+{"model":"lfm2:24b","created_at":"2026-10-10T20:12:48.653183Z","message":{"role":"assistant","content":" never"},"done":false}
+{"model":"lfm2:24b","created_at":"2026-10-10T20:12:48.66527Z","message":{"role":"assistant","content":" never"},"done":false}
+{"error":"prediction aborted, token repeat limit reached"}

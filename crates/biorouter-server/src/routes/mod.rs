@@ -749,6 +749,7 @@ pub mod errors;
 pub mod knowledge;
 pub mod llamacpp;
 pub mod memory;
+pub mod ollama;
 pub mod reply;
 pub mod reset;
 pub mod schedule;
@@ -801,6 +802,7 @@ pub fn configure(state: Arc<crate::state::AppState>, secret_key: String) -> Rout
         .merge(crew_profile::routes(state.clone()))
         .merge(biorouter_server::daemon_service::routes())
         .merge(llamacpp::routes(state.clone()))
+        .merge(ollama::routes(state.clone()))
         .merge(memory::routes(state.clone()))
         // The interface's own endpoints -- the filesystem browser, settings,
         // extension installation. They stood in front of the daemon with no

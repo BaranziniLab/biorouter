@@ -1,6 +1,6 @@
 # Historical records
 
-This folder is BioRouter's archive. Every document in it describes work that is **finished**: designs that were built, plans that were executed, review campaigns that closed, stress tests that ran to completion, and a small number of ideas that were abandoned or later removed. It is kept for the record and for provenance: read it to find out *why* a subsystem is shaped the way it is, never to find out what the code does today. The material spans **May 2026 to September 2026**, and almost all of it shipped.
+This folder is BioRouter's archive. Every document in it describes work that is **finished**: designs that were built, plans that were executed, review campaigns that closed, stress tests that ran to completion, and a small number of ideas that were abandoned or later removed. It is kept for the record and for provenance: read it to find out *why* a subsystem is shaped the way it is, never to find out what the code does today. The material spans **May 2026 to October 2026**, and almost all of it shipped.
 
 The three exceptions are worth knowing up front, because they are the ones most likely to mislead. **Dashboard mode** was built through four generations and then removed from the desktop app on 2026-07-18 — nothing in [`dashboard-mode/`](dashboard-mode/README.md) describes a feature that still exists. **MCP apps** was never a feature this project chose: it was present from the first commit and was removed on 2026-09-08, so [`mcp-apps-removal/`](mcp-apps-removal/README.md) is likewise an archive of something gone. The **extension trait design** in [`legacy-architecture/`](legacy-architecture/extension-trait-design.md) was never shipped either; extensions are MCP servers built on the `rmcp` SDK instead. Everywhere else, a document that has been overtaken says so in its own header and names its successor.
 
@@ -8,7 +8,7 @@ Come here when you are tracing a decision, reconstructing what landed in a relea
 
 > **How to check a document's standing.** Every file here opens with a context header carrying a `Status:` line that states whether the work shipped, was superseded, or was removed, and — where it was superseded — links the document that now holds the truth. Trust that line over the filename.
 
-No documents sit directly in this folder apart from this index. All content sits in the 31 topic subfolders below. One of them, [`agent-loop-campaign/`](agent-loop-campaign/README.md), carries a sub-area of its own, [`cross-platform/`](agent-loop-campaign/cross-platform/README.md) (the campaign's Windows and Linux arm), indexed by that campaign's README as well as here.
+No documents sit directly in this folder apart from this index. All content sits in the topic subfolders below. One of them, [`agent-loop-campaign/`](agent-loop-campaign/README.md), carries a sub-area of its own, [`cross-platform/`](agent-loop-campaign/cross-platform/README.md) (the campaign's Windows and Linux arm), indexed by that campaign's README as well as here.
 
 ## Agent Drafter and the Apps SDK
 
@@ -22,6 +22,7 @@ No documents sit directly in this folder apart from this index. All content sits
 
 | Folder | What it holds |
 |---|---|
+| [local-inference-2026-10](local-inference-2026-10/README.md) | October 2026 local-inference validation concluded 2026-10-12 UTC (2026-10-11 PDT), recording native Ollama context/tool-call fixes, managed Llama Server hardening, scoped checks and retained model-quality failures. Implementation is in unmerged [PR #393](https://github.com/BaranziniLab/biorouter/pull/393); no merge or release is claimed. |
 | [agent-loop-review](agent-loop-review/README.md) | The executive report of the agentic-loop review — a walkthrough of the loop, answers to 14 review questions, a comparison against nine open-source coding agents, and 28 sub-reports. A point-in-time snapshot read against commit `24cdc3a2` on 2026-07-12, now superseded by the campaign it triggered. |
 | [agent-loop-campaign](agent-loop-campaign/README.md) | The plan of record for the `BR-1`…`BR-70` fix campaign that implemented the review's findings: wave conventions, regression gates, and a dated log of every merge decision. Finished and merged to `main` across 86 `BR-`prefixed commits. |
 | [agent-loop-campaign/cross-platform](agent-loop-campaign/cross-platform/README.md) | That campaign's Wave 3 cross-platform arm, kept as a sub-area: the parity audit that coined the `GAP-N` findings, the BR-68 command-safety and BR-70 CI-gate designs, the superseded BR-64 macOS Seatbelt design, and the cluster's verification report. The cluster merged Gate 3 GREEN; three lower-ranked `GAP` findings appear to remain open. |

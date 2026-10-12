@@ -4,7 +4,7 @@ use crate::config::paths::Paths;
 use crate::model::ModelConfig;
 use crate::privacy::ProviderTier;
 use crate::providers::errors::ProviderError;
-use crate::providers::formats::openai::response_to_streaming_message;
+use crate::providers::formats::openai::{decode_streaming_message, ReasoningDisplay};
 use anyhow::{anyhow, Result};
 use async_stream::try_stream;
 use base64::Engine;
@@ -99,9 +99,55 @@ pub fn filter_extensions_from_system_prompt(system: &str) -> String {
     }
 }
 
+/// Whether this provider INSTANCE runs its inference on this machine: the
+/// built-in `ollama` and `llamacpp`, and a declarative `ollama_compatible`
+/// provider under any registry name, while their host is loopback. Never
+/// decided from a name, because a name says nothing about where a repointed
+/// host is.
+///
+/// Read through [`ProviderAffiliation::of`], the one mapping from the instance's
+/// `tier()` and `affiliation()` to what it IS, rather than by comparing
+/// `affiliation()` here. Two reasons. It is Local only while the tier is
+/// Private, which is what loopback means for a self-hosted provider
+/// (`providers::self_hosted_affiliation`). And a `ModelAffiliation` compared
+/// outside `privacy::affiliation` is what
+/// `tests/privacy_capability.rs::compatible_is_the_only_function_that_compares_two_affiliations`
+/// refuses: three hand-written `affiliation() == Some(Local)` checks failed it.
+/// This is not a reach decision (it never asks what a model may touch), only
+/// where the model runs: token calibration, the prompt variant, and whether a
+/// reported usage can be a truncation.
+pub(crate) fn runs_on_this_machine(provider: &dyn super::base::Provider) -> bool {
+    super::base::ProviderAffiliation::of(provider)
+        .is_some_and(|resolved| resolved.kind == super::base::ProviderAffiliationKind::Local)
+}
+
+/// Whether an Ollama model name is one of Ollama's CLOUD models, which a
+/// loopback Ollama does not run but forwards to ollama.com for a signed-in
+/// user (`gpt-oss:120b-cloud`, `glm-4.6:cloud`).
+///
+/// ⚠ A loopback host is therefore not, on its own, proof that text stays on
+/// this machine: the TAG decides where an Ollama request is served. Ollama
+/// spells a cloud model as a tag that is `cloud` or ends in `-cloud`; read from
+/// the last path segment, so a registry host with a port (`host:5000/m:tag`)
+/// is not mistaken for a tag. Case-insensitive, because Ollama's names are.
+/// An alias made with `ollama cp` carries no such tag; a caller that can ask
+/// the server (`/api/show`) should check its answer as well.
+pub fn is_ollama_cloud_model(model: &str) -> bool {
+    let name = model.trim().rsplit('/').next().unwrap_or_default();
+    let Some((_, tag)) = name.rsplit_once(':') else {
+        return false;
+    };
+    let tag = tag.to_ascii_lowercase();
+    tag == "cloud" || tag.ends_with("-cloud")
+}
+
 /// Whether a provider's error sentence says the prompt is over the window.
-/// Shared with the Responses stream decoder, which reads the same sentence out
-/// of a 200 stream (`formats::openai_responses::context_overflow`).
+///
+/// Two callers, and only one of them knows a status: the 400 arm of
+/// [`map_http_error_to_provider_error`], and the Responses stream decoder,
+/// which reads the same sentence out of an error frame inside a 200 stream
+/// (`formats::openai_responses::context_overflow`). So a sentence that only
+/// means "overflow" when it arrives with a 400 does not belong here.
 pub(crate) fn check_context_length_exceeded(text: &str) -> bool {
     let check_phrases = [
         "context_length_exceeded",
@@ -116,9 +162,100 @@ pub(crate) fn check_context_length_exceeded(text: &str) -> bool {
         .iter()
         .any(|phrase| text_lower.contains(phrase))
         || (text_lower.contains("exceed")
-            && ["context length", "context window", "context limit"]
-                .iter()
-                .any(|subject| text_lower.contains(subject)))
+            // "available context" is llama-server's overflow wording ("request
+            // (N tokens) exceeds the available context size (M tokens)").
+            // Without it that 400 read as an ordinary bad request, so the
+            // compaction ladder never ran and the turn just failed.
+            //
+            // ⚠ Deliberately NOT the bare "context size". llama-server's 500
+            // "Context size has been exceeded." is a KV-cache collision between
+            // parallel slots, which compacting this chat cannot fix, and this
+            // function is not only asked about 400s: the Responses stream
+            // decoder (`formats::openai_responses::context_overflow`) asks it
+            // about an in-stream error frame with no status at all. With "context
+            // size" as a subject, that sentence there started the compaction
+            // ladder.
+            && [
+                "context length",
+                "context window",
+                "context limit",
+                "available context",
+            ]
+            .iter()
+            .any(|subject| text_lower.contains(subject)))
+}
+
+/// llama-server's structured overflow error type, sent with HTTP 400 by every
+/// build measured (b9611, b11429) and by Ollama's native `/api/chat` when it is
+/// told `truncate: false` — Ollama wraps llama-server's whole JSON body in a
+/// string: `{"error":"{\"error\":{...}}"}`.
+const EXCEED_CONTEXT_SIZE_ERROR: &str = "exceed_context_size_error";
+
+/// The sentence a context overflow is reported with when the server said how
+/// big the prompt was and how big its window is. llama-server's own wording,
+/// rebuilt from the two numbers rather than copied from the body, so
+/// [`context_overflow_sizes`] can read it back whatever the server's message
+/// looked like.
+pub(crate) fn context_overflow_message(prompt_tokens: u64, context_window: u64) -> String {
+    format!(
+        "request ({prompt_tokens} tokens) exceeds the available context size ({context_window} tokens)"
+    )
+}
+
+/// The `(prompt tokens, context window)` a context-overflow detail names, when
+/// it names both — the shape [`context_overflow_message`] writes and
+/// llama-server sends. `None` for every other provider's wording, whose
+/// numbers (if any) are not reliably in that order.
+pub(crate) fn context_overflow_sizes(detail: &str) -> Option<(u64, u64)> {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    let re = RE.get_or_init(|| {
+        Regex::new(
+            r"(?i)request \((\d+) tokens\) exceeds the available context size \((\d+) tokens\)",
+        )
+        .expect("static regex")
+    });
+    let captures = re.captures(detail)?;
+    let prompt = captures.get(1)?.as_str().parse().ok()?;
+    let window = captures.get(2)?.as_str().parse().ok()?;
+    Some((prompt, window))
+}
+
+/// The error object of an HTTP error body, looking through Ollama's habit of
+/// carrying an upstream JSON body as a STRING in `error`. Returns the inner
+/// `error` object when either layer has one.
+fn structured_error_object(payload: &Value) -> Option<Value> {
+    match payload.get("error")? {
+        error @ Value::Object(_) => Some(error.clone()),
+        Value::String(text) => {
+            let inner: Value = serde_json::from_str(text).ok()?;
+            match inner.get("error") {
+                Some(error @ Value::Object(_)) => Some(error.clone()),
+                _ => inner.is_object().then_some(inner),
+            }
+        }
+        _ => None,
+    }
+}
+
+/// A llama-server `exceed_context_size_error`, as the sentence BioRouter
+/// reports it with. Read from the structured `type`, never from the message, so
+/// a server that rewords its sentence is still recognised; the numbers are
+/// optional because only some builds send them.
+fn llama_server_context_overflow(payload: &Value) -> Option<String> {
+    let error = structured_error_object(payload)?;
+    if error.get("type").and_then(Value::as_str) != Some(EXCEED_CONTEXT_SIZE_ERROR) {
+        return None;
+    }
+    let prompt = error.get("n_prompt_tokens").and_then(Value::as_u64);
+    let window = error.get("n_ctx").and_then(Value::as_u64);
+    Some(match (prompt, window) {
+        (Some(prompt), Some(window)) => context_overflow_message(prompt, window),
+        _ => error
+            .get("message")
+            .and_then(Value::as_str)
+            .map(str::to_string)
+            .unwrap_or_else(|| "the request exceeds the available context size".to_string()),
+    })
 }
 
 fn format_server_error_message(status_code: StatusCode, payload: Option<&Value>) -> String {
@@ -159,6 +296,13 @@ pub fn map_http_error_to_provider_error(
         }
         StatusCode::PAYLOAD_TOO_LARGE => ProviderError::ContextLengthExceeded(extract_message()),
         StatusCode::BAD_REQUEST => {
+            // llama-server's typed overflow first: its `code` is the integer
+            // 400, so the string-code check below never matched it, and Ollama
+            // hands the same body over as a string inside `error`, which no
+            // `error.message` lookup can reach.
+            if let Some(detail) = payload.as_ref().and_then(llama_server_context_overflow) {
+                return log_provider_failure(status, ProviderError::ContextLengthExceeded(detail));
+            }
             let payload_str = extract_message();
             let has_context_code = payload.as_ref().is_some_and(|payload| {
                 payload.pointer("/error/code").and_then(Value::as_str)
@@ -186,6 +330,13 @@ pub fn map_http_error_to_provider_error(
         )),
     };
 
+    log_provider_failure(status, error)
+}
+
+/// The one control-plane warning every mapped HTTP failure gets: status and
+/// error class only, never the payload (a private provider's body can echo the
+/// prompt).
+fn log_provider_failure(status: StatusCode, error: ProviderError) -> ProviderError {
     if !status.is_success() {
         tracing::warn!(
             status = status.as_u16(),
@@ -233,7 +384,38 @@ pub fn azure_chat_completions_path(deployment_name: &str, api_version: &str) -> 
 
 pub fn stream_openai_compat(
     response: Response,
+    log: RequestLog,
+) -> Result<MessageStream, ProviderError> {
+    stream_openai_compat_decoding(response, log, ReasoningDisplay::CaptureOnly)
+}
+
+/// [`stream_openai_compat`], with the host's plain-string thinking
+/// (`reasoning_content`, or Ollama `/v1`'s `reasoning`) yielded as unsigned
+/// thinking blocks WHILE it streams — in batches every
+/// `formats::openai::THINKING_FLUSH_INTERVAL` — instead of only being captured
+/// for replay (OLL-07: qwen3.8 can think for minutes, and the user never saw
+/// any of it). ⚠ What a client is SHOWN is one block per phase, when the phase
+/// ends: the agent's stream wrapper holds the batches until then
+/// (`agents::reply_parts::HeldThinking`), because no client merges them yet.
+///
+/// ⚠ Only for a provider whose request formatter DROPS `Thinking` content —
+/// `formats::openai::format_messages` does — because the blocks this yields
+/// are unsigned and land in the transcript. The default decoder serves
+/// Databricks too, whose formatter replays an unsigned `Thinking` as a
+/// `reasoning` item to its non-Claude models; that is why showing is opt-in
+/// rather than the default. (A chat that later moves to Claude or Gemini is
+/// safe either way: their formatters drop unsigned blocks.)
+pub fn stream_openai_compat_showing_reasoning(
+    response: Response,
+    log: RequestLog,
+) -> Result<MessageStream, ProviderError> {
+    stream_openai_compat_decoding(response, log, ReasoningDisplay::Surface)
+}
+
+fn stream_openai_compat_decoding(
+    response: Response,
     mut log: RequestLog,
+    reasoning_display: ReasoningDisplay,
 ) -> Result<MessageStream, ProviderError> {
     let stream = response.bytes_stream().map_err(io::Error::other);
 
@@ -242,7 +424,7 @@ pub fn stream_openai_compat(
         let framed = FramedRead::new(stream_reader, LinesCodec::new())
             .map_err(anyhow::Error::from);
 
-        let message_stream = response_to_streaming_message(framed);
+        let message_stream = decode_streaming_message(framed, reasoning_display);
         pin!(message_stream);
         while let Some(message) = message_stream.next().await {
             let (message, usage, pending) = message.map_err(|error| {
@@ -1207,6 +1389,417 @@ mod tests {
             }
         }
         assert!(failures.is_empty(), "{}", failures.join("\n"));
+    }
+
+    /// LC-1: llama-server's overflow 400, verbatim from the pinned build and the
+    /// one the pin moves to. Its `code` is the integer 400 and its subject is
+    /// "the available context size", so before this it read as an ordinary bad
+    /// request and the compaction ladder never ran: the turn just failed.
+    #[test]
+    fn llama_server_overflow_400_is_a_context_length_error_naming_both_sizes() {
+        let mut failures = Vec::new();
+        for (build, body, prompt, window) in [
+            (
+                "b9611 (probe, qwen3:1.7b)",
+                r#"{"error":{"code":400,"message":"request (6025 tokens) exceeds the available context size (4096 tokens), try increasing it","type":"exceed_context_size_error","n_prompt_tokens":6025,"n_ctx":4096}}"#,
+                6025,
+                4096,
+            ),
+            (
+                "b9611 and b11429 (Qwen3.8 27B)",
+                r#"{"error":{"code":400,"message":"request (23101 tokens) exceeds the available context size (8192 tokens), try increasing it","type":"exceed_context_size_error","n_prompt_tokens":23101,"n_ctx":8192}}"#,
+                23101,
+                8192,
+            ),
+            (
+                // Ollama 0.40.2 native /api/chat with truncate:false: the same
+                // llama-server body, re-encoded as a STRING in `error`.
+                "Ollama string-wrapped",
+                r#"{"error":"{\"error\":{\"code\":400,\"message\":\"request (22069 tokens) exceeds the available context size (4096 tokens), try increasing it\",\"type\":\"exceed_context_size_error\",\"n_prompt_tokens\":22069,\"n_ctx\":4096}}"}"#,
+                22069,
+                4096,
+            ),
+        ] {
+            let payload: Value = serde_json::from_str(body).unwrap();
+            let error = map_http_error_to_provider_error(StatusCode::BAD_REQUEST, Some(payload));
+            let ProviderError::ContextLengthExceeded(detail) = &error else {
+                failures.push(format!("{build}: {error:?}"));
+                continue;
+            };
+            if context_overflow_sizes(detail) != Some((prompt, window)) {
+                failures.push(format!("{build}: sizes not readable from {detail:?}"));
+            }
+            if !detail.contains(&prompt.to_string()) || !detail.contains(&window.to_string()) {
+                failures.push(format!("{build}: {detail:?} must name both numbers"));
+            }
+        }
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
+    }
+
+    /// The typed error is recognised by its `type`, so a build that sends no
+    /// numbers, or rewords its sentence, still reaches the compaction ladder.
+    #[test]
+    fn llama_server_overflow_type_without_sizes_still_maps_to_context_length() {
+        let error = map_http_error_to_provider_error(
+            StatusCode::BAD_REQUEST,
+            Some(json!({"error": {
+                "code": 400,
+                "type": "exceed_context_size_error",
+                "message": "prompt does not fit"
+            }})),
+        );
+        assert_eq!(
+            error,
+            ProviderError::ContextLengthExceeded("prompt does not fit".into())
+        );
+        assert_eq!(context_overflow_sizes("prompt does not fit"), None);
+    }
+
+    /// The sentence alone, without the typed envelope (a proxy that keeps only
+    /// `message`), is still an overflow: "available context" is a subject.
+    #[test]
+    fn available_context_size_wording_is_an_overflow_subject() {
+        let message = "request (40123 tokens) exceeds the available context size (32768 tokens), try increasing it";
+        assert!(check_context_length_exceeded(message));
+        let error = map_http_error_to_provider_error(
+            StatusCode::BAD_REQUEST,
+            Some(json!({"error": {"message": message}})),
+        );
+        assert_eq!(error, ProviderError::ContextLengthExceeded(message.into()));
+        assert_eq!(context_overflow_sizes(message), Some((40123, 32768)));
+    }
+
+    /// LC-2's failure is NOT an overflow of this chat: two requests collided in
+    /// a KV cache shared between parallel slots. Compacting cannot fix it, so it
+    /// must stay a server error and never start the compaction ladder.
+    #[test]
+    fn llama_server_kv_collision_500_is_not_a_context_length_error() {
+        let error = map_http_error_to_provider_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Some(json!({"error": {
+                "code": 500,
+                "message": "Context size has been exceeded.",
+                "type": "server_error"
+            }})),
+        );
+        assert!(matches!(error, ProviderError::ServerError(_)), "{error:?}");
+    }
+
+    /// Ollama's cloud models, by the tag Ollama gives them, and the local
+    /// names that merely look close.
+    #[test]
+    fn ollama_cloud_models_are_named_by_their_tag() {
+        for cloud in [
+            "gpt-oss:120b-cloud",
+            "gpt-oss:20b-cloud",
+            "glm-4.6:cloud",
+            "qwen3-coder:480b-CLOUD",
+            " deepseek-v3.1:671b-cloud ",
+            "library/kimi-k2:1t-cloud",
+            "registry.example:5000/team/model:cloud",
+        ] {
+            assert!(is_ollama_cloud_model(cloud), "{cloud}");
+        }
+        for local in [
+            "qwen3.8:27b",
+            "gemma4:31b",
+            "qwen3.8:27b-q4_K_M",
+            "mistral-nemo",
+            // A registry port, not a tag.
+            "cloud:5000/qwen3.8",
+            "registry.cloud:5000/qwen3.8:27b",
+            "my-cloud-model",
+            "cloudy:latest",
+            "",
+        ] {
+            assert!(!is_ollama_cloud_model(local), "{local}");
+        }
+    }
+
+    /// "Runs on this machine" is the instance's resolved affiliation, Local
+    /// only together with the Private tier a loopback host gives a self-hosted
+    /// provider; a name, an institution or a public endpoint never is.
+    #[test]
+    fn runs_on_this_machine_reads_the_resolved_instance() {
+        use crate::conversation::message::Message;
+        use crate::privacy::affiliation::{InstitutionId, ModelAffiliation};
+        use crate::providers::base::{Provider, ProviderMetadata, ProviderUsage};
+        use rmcp::model::Tool;
+
+        struct Endpoint(ProviderTier, Option<ModelAffiliation>);
+
+        #[async_trait::async_trait]
+        impl Provider for Endpoint {
+            fn metadata() -> ProviderMetadata {
+                ProviderMetadata::empty()
+            }
+            fn get_name(&self) -> &str {
+                "ollama"
+            }
+            fn tier(&self) -> ProviderTier {
+                self.0
+            }
+            fn affiliation(&self) -> Option<ModelAffiliation> {
+                self.1
+            }
+            fn get_model_config(&self) -> ModelConfig {
+                ModelConfig::new_or_fail("qwen3.8:27b")
+            }
+            async fn complete_with_model(
+                &self,
+                _model_config: &ModelConfig,
+                _system: &str,
+                _messages: &[Message],
+                _tools: &[Tool],
+            ) -> Result<(Message, ProviderUsage), ProviderError> {
+                unreachable!("only asked where it runs")
+            }
+        }
+
+        let ucsf = ModelAffiliation::institution(InstitutionId::new("ucsf"));
+        for (endpoint, expected) in [
+            (
+                Endpoint(ProviderTier::Private, Some(ModelAffiliation::Local)),
+                true,
+            ),
+            // `OLLAMA_HOST` repointed at another machine: Public, no affiliation.
+            (Endpoint(ProviderTier::Public, None), false),
+            (Endpoint(ProviderTier::Private, Some(ucsf)), false),
+            // Incoherent, and not "local": a public tier has no third axis.
+            (
+                Endpoint(ProviderTier::Public, Some(ModelAffiliation::Local)),
+                false,
+            ),
+        ] {
+            assert_eq!(
+                runs_on_this_machine(&endpoint),
+                expected,
+                "{:?} {:?}",
+                endpoint.0,
+                endpoint.1
+            );
+        }
+    }
+
+    /// The same KV-collision sentence where no status says "500": an error
+    /// frame inside a Responses stream, whose decoder asks
+    /// `check_context_length_exceeded` about the message alone. A bare
+    /// "context size" subject made it an overflow there, so the reply loop
+    /// would have spent its compaction ladder on a collision compacting cannot
+    /// fix. The real overflow wording, in the same frame, still is one.
+    #[tokio::test]
+    async fn the_kv_collision_sentence_is_not_an_overflow_in_a_responses_stream() {
+        use crate::providers::formats::openai_responses::responses_api_to_streaming_message;
+
+        assert!(!check_context_length_exceeded(
+            "Context size has been exceeded."
+        ));
+
+        async fn first_error(frame: &str) -> anyhow::Error {
+            let lines = vec![Ok::<_, anyhow::Error>(frame.to_string())];
+            let stream = responses_api_to_streaming_message(tokio_stream::iter(lines));
+            pin!(stream);
+            while let Some(item) = stream.next().await {
+                if let Err(error) = item {
+                    return error;
+                }
+            }
+            panic!("the stream ended without an error: {frame}");
+        }
+
+        let collision = first_error(
+            r#"data: {"type":"error","error":{"code":"server_error","message":"Context size has been exceeded."}}"#,
+        )
+        .await;
+        assert!(
+            !matches!(
+                collision.downcast_ref::<ProviderError>(),
+                Some(ProviderError::ContextLengthExceeded(_))
+            ),
+            "{collision:?}"
+        );
+
+        let overflow = first_error(
+            r#"data: {"type":"error","error":{"code":"invalid_request_error","message":"request (40123 tokens) exceeds the available context size (32768 tokens), try increasing it"}}"#,
+        )
+        .await;
+        assert!(
+            matches!(
+                overflow.downcast_ref::<ProviderError>(),
+                Some(ProviderError::ContextLengthExceeded(_))
+            ),
+            "{overflow:?}"
+        );
+    }
+
+    /// A string `error` that is not llama-server's JSON is left alone: Ollama's
+    /// ordinary string errors keep their old classification here.
+    #[test]
+    fn string_errors_that_are_not_wrapped_overflows_stay_request_failures() {
+        for body in [
+            json!({"error": "model 'qwen3.8:27b' not found, try pulling it first"}),
+            json!({"error": "{\"error\":{\"code\":400,\"type\":\"invalid_request_error\",\"message\":\"bad\"}}"}),
+            json!({"error": "{not json"}),
+        ] {
+            let error = map_http_error_to_provider_error(StatusCode::BAD_REQUEST, Some(body));
+            assert!(
+                matches!(error, ProviderError::RequestFailed(_)),
+                "{error:?}"
+            );
+        }
+    }
+
+    /// Through the real response wrappers both streaming and blocking calls go
+    /// through, with llama-server's body verbatim.
+    #[tokio::test]
+    async fn llama_server_overflow_reaches_callers_through_the_openai_wrappers() {
+        let body = r#"{"error":{"code":400,"message":"request (23101 tokens) exceeds the available context size (8192 tokens), try increasing it","type":"exceed_context_size_error","n_prompt_tokens":23101,"n_ctx":8192}}"#;
+        for streaming in [false, true] {
+            let response = axum::http::Response::builder()
+                .status(StatusCode::BAD_REQUEST)
+                .header("content-type", "application/json")
+                .body(body.to_string())
+                .unwrap();
+            let response = reqwest::Response::from(response);
+            let error = if streaming {
+                handle_status_openai_compat(response).await.err()
+            } else {
+                handle_response_openai_compat(response).await.err()
+            };
+            assert_eq!(
+                error,
+                Some(ProviderError::ContextLengthExceeded(
+                    context_overflow_message(23101, 8192)
+                )),
+                "streaming: {streaming}"
+            );
+        }
+    }
+
+    /// LIVE: thinking from a real OpenAI-compatible server reaches the caller
+    /// WHILE the model is still thinking, in several batches, rather than as
+    /// one block just before the answer. Ollama's `/v1` sends thinking the way
+    /// llama-server does (a plain-string field per delta), so a small local
+    /// thinking model exercises the same decoder path Llama Server uses.
+    ///
+    /// `cargo test -p biorouter --lib -- --ignored
+    /// live_thinking_streams_before_the_phase_ends --nocapture`
+    /// (`BIOROUTER_LIVE_OPENAI_COMPAT_URL`, default Ollama's `/v1`;
+    /// `BIOROUTER_LIVE_THINKING_MODEL`, default `qwen3:1.7b`).
+    #[tokio::test]
+    #[ignore = "needs a local OpenAI-compatible server with a thinking model"]
+    async fn live_thinking_streams_before_the_phase_ends() {
+        let url = std::env::var("BIOROUTER_LIVE_OPENAI_COMPAT_URL")
+            .unwrap_or_else(|_| "http://127.0.0.1:11434/v1/chat/completions".to_string());
+        let model_name = std::env::var("BIOROUTER_LIVE_THINKING_MODEL")
+            .unwrap_or_else(|_| "qwen3:1.7b".to_string());
+        let started = std::time::Instant::now();
+        let response = reqwest::Client::new()
+            .post(&url)
+            .json(&json!({
+                "model": model_name,
+                "stream": true,
+                "messages": [{"role": "user", "content":
+                    "Is 9,991 prime? Reason it through carefully before answering in one word."}],
+            }))
+            .send()
+            .await
+            .expect("the server answers");
+        assert!(response.status().is_success(), "{}", response.status());
+        let dir = tempfile::tempdir().unwrap();
+        let model = ModelConfig::new(&model_name).unwrap();
+        let log =
+            RequestLog::start_in(dir.path(), ProviderTier::Private, &model, &json!({})).unwrap();
+        let mut stream = stream_openai_compat_showing_reasoning(response, log).unwrap();
+        let mut batches: Vec<std::time::Duration> = Vec::new();
+        let mut first_text: Option<std::time::Duration> = None;
+        while let Some(item) = stream.next().await {
+            let (message, _, _) = item.expect("decodes");
+            for content in message.iter().flat_map(|m| m.content.iter()) {
+                match content {
+                    crate::conversation::message::MessageContent::Thinking(_) => {
+                        batches.push(started.elapsed())
+                    }
+                    crate::conversation::message::MessageContent::Text(t)
+                        if !t.text.trim().is_empty() && first_text.is_none() =>
+                    {
+                        first_text = Some(started.elapsed())
+                    }
+                    _ => {}
+                }
+            }
+        }
+        let first_text = first_text.expect("the model answers");
+        println!(
+            "{model_name}: {} thinking batches at {:?}; first answer text at {first_text:?}",
+            batches.len(),
+            batches
+        );
+        assert!(
+            batches.len() >= 2,
+            "thinking arrived as {} block(s)",
+            batches.len()
+        );
+        assert!(
+            batches[0] + std::time::Duration::from_millis(500) < first_text,
+            "the first thinking batch ({:?}) must arrive well before the answer ({first_text:?})",
+            batches[0]
+        );
+    }
+
+    /// OLL-07, end to end through the HTTP-response helper the local providers
+    /// call: Ollama `/v1`'s `reasoning` deltas become ONE thinking block before
+    /// the answer from `stream_openai_compat_showing_reasoning`, and nothing at
+    /// all from `stream_openai_compat`, which every other provider keeps using.
+    #[tokio::test]
+    async fn only_the_showing_helper_surfaces_reasoning_as_thinking() {
+        let body = concat!(
+            "data: {\"id\":\"c\",\"model\":\"qwen3.8:27b\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"\",\"reasoning\":\"Count \"},\"finish_reason\":null}]}\n",
+            "data: {\"id\":\"c\",\"model\":\"qwen3.8:27b\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"\",\"reasoning\":\"them.\"},\"finish_reason\":null}]}\n",
+            "data: {\"id\":\"c\",\"model\":\"qwen3.8:27b\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"Five\"},\"finish_reason\":\"stop\"}]}\n",
+            "data: [DONE]\n",
+        );
+        let dir = tempfile::tempdir().unwrap();
+        let model = ModelConfig::new("qwen3.8:27b").unwrap();
+        for show in [false, true] {
+            let response = axum::http::Response::builder()
+                .status(StatusCode::OK)
+                .header("content-type", "text/event-stream")
+                .body(body.to_string())
+                .unwrap();
+            let response = reqwest::Response::from(response);
+            let log = RequestLog::start_in(dir.path(), ProviderTier::Private, &model, &json!({}))
+                .unwrap();
+            let mut stream = if show {
+                stream_openai_compat_showing_reasoning(response, log)
+            } else {
+                stream_openai_compat(response, log)
+            }
+            .unwrap();
+            let mut thinking = Vec::new();
+            let mut text = String::new();
+            while let Some(item) = stream.next().await {
+                let (message, _, _) = item.unwrap();
+                for content in message.iter().flat_map(|m| m.content.iter()) {
+                    match content {
+                        crate::conversation::message::MessageContent::Thinking(t) => {
+                            assert!(text.is_empty(), "thinking comes before the answer");
+                            thinking.push(t.thinking.clone());
+                        }
+                        crate::conversation::message::MessageContent::Text(t) => {
+                            text.push_str(&t.text)
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            assert_eq!(text, "Five", "show: {show}");
+            if show {
+                assert_eq!(thinking, vec!["Count them.".to_string()]);
+            } else {
+                assert!(thinking.is_empty(), "{thinking:?}");
+            }
+        }
     }
 
     #[test]

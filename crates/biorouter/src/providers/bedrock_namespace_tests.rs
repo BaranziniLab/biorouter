@@ -646,16 +646,19 @@ fn spawn_and_read_environment(
         .output()
         .unwrap();
     let stdout = String::from_utf8_lossy(&output.stdout);
-    let line = stdout
-        .lines()
-        .find_map(|line| line.strip_prefix(REPORT))
-        .unwrap_or_else(|| {
-            panic!(
-                "the spawned half of `{test}` reported nothing.\n--- stdout ---\n{stdout}\n\
+    let line = reported_json(&stdout, test).unwrap_or_else(|| {
+        panic!(
+            "the spawned half of `{test}` reported nothing.\n--- stdout ---\n{stdout}\n\
                  --- stderr ---\n{}",
-                String::from_utf8_lossy(&output.stderr)
-            )
-        });
+            String::from_utf8_lossy(&output.stderr)
+        )
+    });
+    assert!(
+        output.status.success(),
+        "the spawned half of `{test}` failed.\n--- stdout ---\n{stdout}\n\
+         --- stderr ---\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
     serde_json::from_str(line).unwrap()
 }
 
@@ -691,6 +694,48 @@ fn neither_aws_provider_exports_anything_into_the_environment() {
 /// test-private key: no production reader resolves it.
 const CHILD: &str = "BIOROUTER_TEST_BEDROCK_NAMESPACE_CHILD";
 const REPORT: &str = "BEDROCK_NAMESPACE_OBSERVED ";
+
+fn reported_json<'a>(stdout: &'a str, test: &str) -> Option<&'a str> {
+    let libtest_prefix = format!("test providers::bedrock_namespace_tests::{test} ... ");
+    let mut reports = stdout.lines().filter_map(|line| {
+        line.strip_prefix(REPORT)
+            .or_else(|| line.strip_prefix(&libtest_prefix)?.strip_prefix(REPORT))
+    });
+    let report = reports.next()?;
+    assert!(
+        reports.next().is_none(),
+        "the child half of `{test}` reported more than once"
+    );
+    Some(report)
+}
+
+#[test]
+fn the_observation_parser_accepts_standalone_and_single_threaded_libtest_reports() {
+    const PAYLOAD: &str = r#"{"host":"fixture.example","private":true}"#;
+    for stdout in [
+        format!("running 1 test\n{REPORT}{PAYLOAD}\nok\n"),
+        format!("running 1 test\ntest providers::bedrock_namespace_tests::fixture ... {REPORT}{PAYLOAD}\nok\n"),
+    ] {
+        assert_eq!(reported_json(&stdout, "fixture"), Some(PAYLOAD));
+    }
+}
+
+#[test]
+fn the_observation_parser_does_not_accept_an_unrelated_marker() {
+    for stdout in [
+        format!("unrelated output {REPORT}{{}}\n"),
+        format!("test providers::bedrock_namespace_tests::another_test ... {REPORT}{{}}\nok\n"),
+        "running 0 tests\ntest result: ok. 0 passed\n".to_string(),
+    ] {
+        assert_eq!(reported_json(&stdout, "fixture"), None);
+    }
+}
+
+#[test]
+#[should_panic(expected = "reported more than once")]
+fn the_observation_parser_rejects_duplicate_reports() {
+    reported_json(&format!("{REPORT}{{}}\n{REPORT}{{}}\n"), "fixture");
+}
 
 fn child_scenario() -> Option<String> {
     std::env::var(CHILD).ok()
@@ -771,15 +816,12 @@ fn run_child_reporting<T: serde::de::DeserializeOwned>(
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
-    let line = stdout
-        .lines()
-        .find_map(|line| line.strip_prefix(REPORT))
-        .unwrap_or_else(|| {
-            panic!(
-                "the child half of `{test}` reported nothing.\n\
+    let line = reported_json(&stdout, test).unwrap_or_else(|| {
+        panic!(
+            "the child half of `{test}` reported nothing.\n\
                  --- child stdout ---\n{stdout}\n--- child stderr ---\n{stderr}"
-            )
-        });
+        )
+    });
     assert!(
         output.status.success(),
         "the child half of `{test}` failed.\n--- child stdout ---\n{stdout}\n\
