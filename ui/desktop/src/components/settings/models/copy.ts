@@ -30,6 +30,15 @@ const contextAmount = (tokens: number | null | undefined) => {
   return `${Math.round(tokens / 1024).toLocaleString()}k`;
 };
 
+/**
+ * `128 GB`: a memory amount in the unit the download sizes use ("7.6 GB" in a model's option and
+ * its button). The daemon counts memory in GiB, and the first-run panel printed "128 GiB unified
+ * memory, 32 GiB recommended" a line under "Download and start (7.6 GB)" (vision FR-R4-5,
+ * principle 5). A Mac's own About window calls the same 128 GiB "128 GB", so the word is the one
+ * a person already reads. Every memory amount the renderer writes goes through this.
+ */
+const gigabytes = (gib: number) => `${gib} GB`;
+
 export const localModelsCopy = {
   section: 'Local models',
   sectionHelp:
@@ -60,9 +69,13 @@ export const localModelsCopy = {
   /** No reading: "VRAM not detected", "Unified memory not detected". */
   memoryNotDetected: (memory: string) =>
     `${memory.charAt(0).toUpperCase()}${memory.slice(1)} not detected`,
-  /** `128 GiB unified memory`, `24 GiB VRAM`. */
-  memoryAmount: (gib: number, memory: string) => `${gib} GiB ${memory}`,
-  recommendedMemory: (gib: number) => `${gib} GiB recommended`,
+  /** `128 GB`, the unit of every memory amount (see `gigabytes`). */
+  gigabytes,
+  /** `128 GB unified memory`, `24 GB VRAM`. */
+  memoryAmount: (gib: number, memory: string) => `${gigabytes(gib)} ${memory}`,
+  recommendedMemory: (gib: number) => `${gigabytes(gib)} recommended`,
+  /** A row of the info dialog: `32 GB GPU-addressable memory`. */
+  gpuMemory: (gib: number) => `${gigabytes(gib)} GPU-addressable memory`,
   /** Row facts joined with a middle dot: `4.2 GB · 128k context`. */
   contextWindow: (tokens: number | null | undefined) => {
     const amount = contextAmount(tokens);

@@ -217,6 +217,15 @@ describe('LocalModelInventory', () => {
     expect(fit).toHaveTextContent(/^Fits this Mac$/);
     expect(dialog).not.toHaveTextContent('apple_unified');
     expect(dialog).not.toHaveTextContent('Recommended for this machine.');
+    // FR-R4-5: the memory rows say GB, the unit of the Download row beside them.
+    const valueOf = (label: string) => within(dialog).getByText(label).nextElementSibling;
+    expect(valueOf(localModelsCopy.detail.recommendedMemory)).toHaveTextContent(
+      /^\d+ GB GPU-addressable memory$/
+    );
+    expect(valueOf(localModelsCopy.detail.detectedMemory)).toHaveTextContent(
+      /^\d+ GB unified memory$/
+    );
+    expect(dialog).not.toHaveTextContent('GiB');
   });
 
   /// The three machine values of the info dialog (the model id, the Hugging Face spec and the

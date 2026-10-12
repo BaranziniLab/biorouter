@@ -7,7 +7,7 @@ import DefaultProviderSetupForm, {
   type ConfigInput,
 } from './DefaultProviderSetupForm';
 import CustomProviderForm from './CustomProviderForm';
-import { customProviderCopy } from '../../../copy';
+import { customProviderCopy, providerSetupCopy } from '../../../copy';
 import { BROWSER_SURFACE_MARKER } from '../../../../../../utils/surface';
 
 const mocks = vi.hoisted(() => ({ read: vi.fn() }));
@@ -21,7 +21,7 @@ vi.mock('../../../../../ConfigContext', () => ({
  * Secret Access Key as `<input type="text">` with spellcheck on — on screen and
  * in the DOM as it was typed. The fixture is that card's real key set
  * (`versa_bedrock.rs`): two required secrets, two optional non-secrets with
- * defaults behind "Show 2 options".
+ * defaults behind "Advanced".
  */
 const bedrock = {
   name: 'versa_bedrock',
@@ -134,7 +134,7 @@ describe('DefaultProviderSetupForm — secrets are masked', () => {
   // everything — an endpoint URL nobody can read back is its own defect.
   it('leaves a non-secret parameter readable', async () => {
     render(<Harness />);
-    fireEvent.click(await screen.findByText(/Show 2 options/));
+    fireEvent.click(await screen.findByRole('button', { name: providerSetupCopy.advanced }));
 
     expect(screen.getByDisplayValue('us-west-2')).toHaveAttribute('type', 'text');
     expect(screen.getByDisplayValue('https://unified-api.ucsf.edu/general/awsai')).toHaveAttribute(
@@ -300,7 +300,26 @@ describe('DefaultProviderSetupForm — provider-appropriate copy', () => {
     );
   });
 
-  it('counts one option as one option', async () => {
+  // Vision FR-R4-5: the first-run path's disclosures said "Details", "Advanced" and "Show 4
+  // options"; every one now says "Advanced", with its hidden fields' labels joined by "·" as the
+  // closed summary, which is also the trigger's description.
+  it('keeps the optional fields behind Advanced, summarised by their labels', async () => {
+    render(<Harness />);
+    const trigger = await screen.findByRole('button', { name: providerSetupCopy.advanced });
+    const summary = [
+      providerFieldName('versa_bedrock', 'AWS_ENDPOINT_URL_BEDROCK'),
+      providerFieldName('versa_bedrock', 'AWS_REGION'),
+    ].join(' · ');
+    expect(trigger).toHaveAccessibleDescription(summary);
+    expect(screen.queryByText(/Show \d|Hide \d/)).toBeNull();
+
+    fireEvent.click(trigger);
+    // Open, the fields say it themselves.
+    expect(trigger).toHaveAccessibleName(providerSetupCopy.advanced);
+    expect(screen.queryByText(summary)).toBeNull();
+  });
+
+  it('summarises one optional field by its label alone', async () => {
     const one = {
       ...bedrock,
       metadata: {
@@ -312,8 +331,10 @@ describe('DefaultProviderSetupForm — provider-appropriate copy', () => {
       },
     } as unknown as ProviderDetails;
     render(<Harness provider={one} />);
-    expect(await screen.findByText(/Show 1 option\b/)).toBeInTheDocument();
-    expect(screen.queryByText(/1 options/)).toBeNull();
+    expect(
+      await screen.findByRole('button', { name: providerSetupCopy.advanced })
+    ).toHaveAccessibleDescription(providerFieldName('versa_bedrock', 'AWS_REGION'));
+    expect(screen.queryByText(/·/)).toBeNull();
   });
 });
 

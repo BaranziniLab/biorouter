@@ -179,11 +179,13 @@ it('rechecks a failed configuration retry and offers the new sign-in state', asy
 
 it('explains Claude Code subscription setup without asking for an API key', async () => {
   render(<ProviderConfigurationModal provider={provider('claude_code')} onClose={vi.fn()} />);
-  // The explanation is the title's InfoTip (vision FR-R3-2), not a subtitle under the title.
+  // The explanation is the title's InfoTip (vision FR-R3-2), not a subtitle under the title. The
+  // tip is named for the provider, not the title (FR-R4-5).
   const title = providerSetupCopy.configure('Claude Code');
   expect(
-    screen.getByRole('button', { name: uiCopy.infoTipName(title) })
+    screen.getByRole('button', { name: uiCopy.infoTipName('Claude Code') })
   ).toHaveAccessibleDescription(providerSetupCopy.agentIntro('Claude Code'));
+  expect(screen.queryByRole('button', { name: uiCopy.infoTipName(title) })).toBeNull();
   expect(screen.getByRole('dialog', { name: title })).not.toHaveAttribute('aria-describedby');
   expect(screen.queryByText(/Add your API key/)).not.toBeInTheDocument();
 });
@@ -259,11 +261,14 @@ it('does not ask a provider with no secret for an API key', () => {
   render(<ProviderConfigurationModal provider={llama} onClose={vi.fn()} />);
   expect(screen.queryByText(/API key\(s\)/)).not.toBeInTheDocument();
   // Why there is no key field is the title's InfoTip, so every Configure dialog on the first-run
-  // path has the same anatomy: a title over a rule, no subtitle (vision FR-R3-2).
+  // path has the same anatomy: a title over a rule, no subtitle (vision FR-R3-2). The InfoTip is
+  // named for the provider, "About Llama Server", not "About Configure Llama Server" (FR-R4-5).
   const title = providerSetupCopy.configure('Llama Server');
-  expect(
-    screen.getByRole('button', { name: uiCopy.infoTipName(title) })
-  ).toHaveAccessibleDescription('Llama Server needs no API key. Adjust how Biorouter reaches it.');
+  const tip = screen.getByTestId('provider-config-title-info');
+  expect(tip).toHaveAccessibleName(uiCopy.infoTipName('Llama Server'));
+  expect(tip).toHaveAccessibleDescription(
+    'Llama Server needs no API key. Adjust how Biorouter reaches it.'
+  );
   expect(screen.getByRole('dialog', { name: title })).not.toHaveAttribute('aria-describedby');
 });
 

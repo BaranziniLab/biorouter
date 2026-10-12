@@ -85,10 +85,11 @@ export const fitVerdict = (model: LlamaCppModel, system: MachineMemory | null | 
 };
 
 /**
- * The verdict with the two numbers it rests on, in plain words: "Fits this Mac (128 GiB unified
- * memory, 32 GiB recommended)" (vision FR-R2-6). It replaces the daemon's sentence on a reading
- * surface, which said "Recommended for this machine: 128 GiB apple_unified meets the 32 GiB
- * recommendation." under the label "Recommendation": the label twice and a machine id once.
+ * The verdict with the two numbers it rests on, in plain words: "Fits this Mac (128 GB unified
+ * memory, 32 GB recommended)" (vision FR-R2-6; in GB, the download sizes' unit, since FR-R4-5).
+ * It replaces the daemon's sentence on a reading surface, which said "Recommended for this
+ * machine: 128 GiB apple_unified meets the 32 GiB recommendation." under the label
+ * "Recommendation": the label twice and a machine id once.
  */
 export const fitLine = (model: LlamaCppModel, system: MachineMemory | null | undefined) => {
   const gib = system?.accelerator_memory_gib;

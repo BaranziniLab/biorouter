@@ -53,10 +53,13 @@ export const catalogCopy = {
  * for a token, and Xiaomi MiMo's named the variable XIAOMI_MIMO_HOST. Keyed by provider id; the
  * daemon's sentence stays the row's accessible description (`ProviderCard`'s `summary`), the way
  * the coding agents' rows already work (`agentCopy.rowSummary`).
+ *
+ * The Versa lines name no institution: they sit under the institution's own section label, so
+ * "UCSF · GPT models · API key" said UCSF three times in a row (vision FR-R4-5, principle 2).
  */
 export const providerRowSummary: Readonly<Record<string, string>> = {
-  versa_azure: 'UCSF · GPT models · API key',
-  versa_bedrock: 'UCSF · Claude models · access key and secret',
+  versa_azure: 'GPT models · API key',
+  versa_bedrock: 'Claude models · access key and secret',
   github_copilot: 'Your GitHub Copilot subscription · token',
   xiaomi_mimo: 'Xiaomi MiMo models through an OpenAI-compatible API',
 };
@@ -122,6 +125,12 @@ export const providerSetupCopy = {
   goBack: 'Go back',
   loadingValues: 'Loading configuration values…',
   noParameters: 'No configuration parameters for this provider.',
+  /**
+   * The optional fields' disclosure: the first-run path's one disclosure word (Llama Server's and
+   * Versa's say it too), with the hidden fields' labels as its summary (vision FR-R4-5).
+   */
+  advanced: 'Advanced',
+  advancedSummary: (labels: readonly string[]) => labels.join(' · '),
   cancel: 'Cancel',
   remove: 'Remove',
   delete: 'Delete',

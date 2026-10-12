@@ -192,7 +192,7 @@ describe('LlamaServerInlineCard', () => {
   });
 
   // #35 asked for the size and the speed. FR-R2-6: the size is said once in the option and once
-  // in the button, so the Details summary keeps the speed and the context and not a third size.
+  // in the button, so the Advanced summary keeps the speed and the context and not a third size.
   it('shows download size and expected speed for the selected model (#35), the size once each', async () => {
     render(<LlamaServerInlineCard onSuccess={vi.fn()} />);
     const info = await screen.findByTestId('llamacpp-size-speed');
@@ -207,11 +207,11 @@ describe('LlamaServerInlineCard', () => {
   // Vision FR-R1-3 / FR-S-2: the default first screen printed a box of seven lines (description,
   // size and speed, download state, fallback spec, Ollama tag, store path in mono, the fit
   // sentence) and a warning, and pushed the panel's only action below the fold.
-  describe('says one line and keeps the rest behind Details', () => {
+  describe('says one line and keeps the rest behind Advanced', () => {
     it('shows the facts line and the action, with the ids and paths closed away', async () => {
       render(<LlamaServerInlineCard onSuccess={vi.fn()} />);
       await screen.findByTestId('llamacpp-size-speed');
-      expect(screen.getByRole('button', { name: llamaCopy.details })).toHaveAttribute(
+      expect(screen.getByRole('button', { name: llamaCopy.advanced })).toHaveAttribute(
         'aria-expanded',
         'false'
       );
@@ -230,15 +230,15 @@ describe('LlamaServerInlineCard', () => {
       expect(screen.queryByText(/no install needed/)).toBeNull();
     });
 
-    it('opens Details on the description, the fit and the machine values in mono', async () => {
+    it('opens Advanced on the description, the fit and the machine values in mono', async () => {
       render(<LlamaServerInlineCard onSuccess={vi.fn()} />);
-      fireEvent.click(await screen.findByRole('button', { name: llamaCopy.details }));
+      fireEvent.click(await screen.findByRole('button', { name: llamaCopy.advanced }));
       const details = await screen.findByTestId('llamacpp-details');
       expect(details).toHaveTextContent('Laptop default');
       // The fit in plain words with its two numbers, never the daemon's sentence, which repeated
       // the row's label and printed the machine id `apple_unified` (FR-R2-6).
       expect(details).toHaveTextContent(
-        'MemoryFits this Mac (64 GiB unified memory, 16 GiB recommended)'
+        'MemoryFits this Mac (64 GB unified memory, 16 GB recommended)'
       );
       expect(details).not.toHaveTextContent('Recommended for this machine.');
       expect(details).not.toHaveTextContent('apple_unified');
@@ -249,12 +249,12 @@ describe('LlamaServerInlineCard', () => {
       expect(screen.getByText(localModelsCopy.detail.modelStore)).not.toHaveClass('font-mono');
     });
 
-    // Vision FR-R3-6: opening Details replaced the summary "Fast · 128k context" with rows that
-    // never said the context window, and the fallback row's label read as a note ("Fallback GGUF,
-    // may download").
-    it('keeps the context window in Details and names the fallback row plainly', async () => {
+    // Vision FR-R3-6: opening the disclosure (then "Details") replaced the summary "Fast · 128k
+    // context" with rows that never said the context window, and the fallback row's label read as
+    // a note ("Fallback GGUF, may download").
+    it('keeps the context window in Advanced and names the fallback row plainly', async () => {
       render(<LlamaServerInlineCard onSuccess={vi.fn()} />);
-      fireEvent.click(await screen.findByRole('button', { name: llamaCopy.details }));
+      fireEvent.click(await screen.findByRole('button', { name: llamaCopy.advanced }));
       const details = await screen.findByTestId('llamacpp-details');
       expect(details).toHaveTextContent(`${localModelsCopy.detail.context}128k`);
 
@@ -273,7 +273,7 @@ describe('LlamaServerInlineCard', () => {
   });
 
   // Vision FR-R1-4: a model above 16 GB opened with "This model is above the 16 GB laptop tier"
-  // even on the 128 GiB machine the app recommends it for.
+  // even on the 128 GB machine the app recommends it for.
   describe('warns only when this machine is short of the model', () => {
     const roomy = () =>
       mockLlamacppStatus.mockResolvedValue({
@@ -316,11 +316,11 @@ describe('LlamaServerInlineCard', () => {
       expect(await screen.findByTestId('llamacpp-size-speed')).toHaveTextContent(
         localModelsCopy.largeForThisMac
       );
-      // Details says it once, with the numbers, rather than a second shortfall sentence.
-      fireEvent.click(screen.getByRole('button', { name: llamaCopy.details }));
+      // Advanced says it once, with the numbers, rather than a second shortfall sentence.
+      fireEvent.click(screen.getByRole('button', { name: llamaCopy.advanced }));
       const details = await screen.findByTestId('llamacpp-details');
       expect(details).toHaveTextContent(
-        'Large for this Mac (64 GiB unified memory, 96 GiB recommended)'
+        'Large for this Mac (64 GB unified memory, 96 GB recommended)'
       );
       expect(details).not.toHaveTextContent(/This machine reports/);
     });
@@ -339,9 +339,9 @@ describe('LlamaServerInlineCard', () => {
         },
       });
       render(<LlamaServerInlineCard onSuccess={vi.fn()} />);
-      fireEvent.click(await screen.findByRole('button', { name: llamaCopy.details }));
+      fireEvent.click(await screen.findByRole('button', { name: llamaCopy.advanced }));
       const details = await screen.findByTestId('llamacpp-details');
-      expect(details).toHaveTextContent('VRAM not detected (16 GiB recommended)');
+      expect(details).toHaveTextContent('VRAM not detected (16 GB recommended)');
       expect(details).not.toHaveTextContent('unknown_vram');
     });
   });

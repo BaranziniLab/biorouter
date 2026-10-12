@@ -97,7 +97,7 @@ const fallbackDownloadState = (model: LlamaCppModel | undefined) => {
 };
 
 /**
- * One row of the Details list: a sans label and its value. A machine value (a model id, a Hugging
+ * One row of the Advanced list: a sans label and its value. A machine value (a model id, a Hugging
  * Face spec, a path) is set in mono at the supporting size, as the Settings info dialog sets them;
  * everything else is the sans face (principle 3, vision FR-R1-3: the label "Store:" was mono too).
  */
@@ -321,9 +321,12 @@ export default function LlamaServerInlineCard({ onSuccess }: LlamaServerInlineCa
     }
     const detectedText =
       typeof detected === 'number'
-        ? `${detected} GiB ${acceleratorMemoryLabel(system.accelerator_memory_kind)}`
+        ? localModelsCopy.memoryAmount(
+            detected,
+            acceleratorMemoryLabel(system.accelerator_memory_kind)
+          )
         : `unknown ${acceleratorMemoryLabel(system.accelerator_memory_kind)}`;
-    return `${selectedEntry.display_name} recommends ${selectedEntry.recommended_gpu_memory_gib} GiB GPU-addressable memory. This machine reports ${detectedText}. ${acceleratorMemoryExplanation(system.accelerator_memory_kind)}`;
+    return `${selectedEntry.display_name} recommends ${localModelsCopy.gpuMemory(selectedEntry.recommended_gpu_memory_gib)}. This machine reports ${detectedText}. ${acceleratorMemoryExplanation(system.accelerator_memory_kind)}`;
   }, [selectedEntry, system]);
 
   const handleStart = (model: string) => {
@@ -336,7 +339,7 @@ export default function LlamaServerInlineCard({ onSuccess }: LlamaServerInlineCa
   };
 
   /**
-   * What the Details list adds about this machine's memory beyond its Memory row. The Memory row
+   * What the Advanced list adds about this machine's memory beyond its Memory row. The Memory row
    * (`fitLine`) says the fit, the memory reported and the memory recommended in one line, so a
    * shortfall or a reading the daemon could not take is said there once, and the confirmation
    * before a start says it again at the moment of decision; the separate shortfall sentences this
@@ -356,7 +359,7 @@ export default function LlamaServerInlineCard({ onSuccess }: LlamaServerInlineCa
   const isReadyForSelected = isRunningForSelected && sidecar?.warmed;
   const binaryMissing = sidecar?.state === 'no_binary';
   // One verb and the size it will download (FR-S-8). Whether a fallback GGUF may download too is
-  // the Details list's to say, not the button's.
+  // the Advanced list's to say, not the button's.
   const startButtonLabel = (() => {
     if (isStarting) return llamaCopy.settingUp;
     if (isRunningForSelected) return llamaCopy.warmUp;
@@ -433,12 +436,14 @@ export default function LlamaServerInlineCard({ onSuccess }: LlamaServerInlineCa
             </Field>
 
             {/* One facts line, the Settings row's (speed · size · context, and "Large for this
-                Mac" only when it is), as the closed Details' summary; the ids, paths and the fit
-                sentence are behind it (vision FR-R1-3, FR-S-2). It used to be a box of seven
-                lines and a warning, and pushed the panel's only action below the fold. */}
+                Mac" only when it is), as the closed Advanced disclosure's summary; the ids, paths
+                and the fit sentence are behind it (vision FR-R1-3, FR-S-2). It used to be a box
+                of seven lines and a warning, and pushed the panel's only action below the fold.
+                "Advanced" is the first-run path's one disclosure word (FR-R4-5); it read
+                "Details" here alone. */}
             {selectedEntry && (
               <Disclosure
-                label={llamaCopy.details}
+                label={llamaCopy.advanced}
                 summary={
                   <span data-testid="llamacpp-size-speed">
                     {/* No size: the option and the button already say it (FR-R2-6). */}
@@ -459,7 +464,7 @@ export default function LlamaServerInlineCard({ onSuccess }: LlamaServerInlineCa
                       {modelDownloadNote(selectedEntry)}
                     </DetailRow>
                     <DetailRow label={detail.expectedSpeed}>{selectedEntry.speed_hint}</DetailRow>
-                    {/* The summary's one number, kept when Details opens (vision FR-R3-6: the
+                    {/* The summary's one number, kept when Advanced opens (vision FR-R3-6: the
                         rows that replaced "Fast · 256k context" never said the window). */}
                     {localModelsCopy.contextAmount(selectedEntry.context_limit) ? (
                       <DetailRow label={detail.context}>

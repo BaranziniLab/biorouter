@@ -198,14 +198,15 @@ export default function LocalModelInventory() {
 
         const detected =
           typeof system.accelerator_memory_gib === 'number'
-            ? `${system.accelerator_memory_gib} GiB ${acceleratorMemoryLabel(
-                system.accelerator_memory_kind
-              )}`
+            ? localModelsCopy.memoryAmount(
+                system.accelerator_memory_gib,
+                acceleratorMemoryLabel(system.accelerator_memory_kind)
+              )
             : `unknown ${acceleratorMemoryLabel(system.accelerator_memory_kind)}`;
         setPendingResourceConfirm({
           confirmLabel,
           // The same three sentences the OS dialog carried, in the same order.
-          message: `${model.display_name} recommends ${model.recommended_gpu_memory_gib} GiB GPU-addressable memory. This machine reports ${detected}. ${acceleratorMemoryExplanation(system.accelerator_memory_kind)}`,
+          message: `${model.display_name} recommends ${localModelsCopy.gpuMemory(model.recommended_gpu_memory_gib)}. This machine reports ${detected}. ${acceleratorMemoryExplanation(system.accelerator_memory_kind)}`,
           resolve,
         });
       }),
@@ -590,16 +591,17 @@ export default function LocalModelInventory() {
               {formatContext(selectedModel.context_limit)} tokens
             </DetailRow>
             <DetailRow label={detail.minimumMemory}>
-              {selectedModel.min_gpu_memory_gib} GiB GPU-addressable memory
+              {localModelsCopy.gpuMemory(selectedModel.min_gpu_memory_gib)}
             </DetailRow>
             <DetailRow label={detail.recommendedMemory}>
-              {selectedModel.recommended_gpu_memory_gib} GiB GPU-addressable memory
+              {localModelsCopy.gpuMemory(selectedModel.recommended_gpu_memory_gib)}
             </DetailRow>
             <DetailRow label={detail.detectedMemory}>
               {typeof snapshot?.system.accelerator_memory_gib === 'number'
-                ? `${snapshot.system.accelerator_memory_gib} GiB ${acceleratorMemoryLabel(
-                    snapshot.system.accelerator_memory_kind
-                  )}`
+                ? localModelsCopy.memoryAmount(
+                    snapshot.system.accelerator_memory_gib,
+                    acceleratorMemoryLabel(snapshot.system.accelerator_memory_kind)
+                  )
                 : acceleratorMemoryLabel(snapshot?.system.accelerator_memory_kind)}
             </DetailRow>
             {/* The verdict in words; the numbers are the three memory rows above. The daemon's

@@ -24,8 +24,13 @@ export const firstRunCopy = {
 /** Llama Server's panel (`LlamaServerInlineCard`), the row first run opens by default. */
 export const llamaCopy = {
   model: 'Model',
-  /** The disclosure holding what the facts line leaves out: the ids, the paths, the fit. */
-  details: 'Details',
+  /**
+   * The disclosure holding what the facts line leaves out: the ids, the paths, the fit. It says
+   * "Advanced", the one word every disclosure on the first-run path says (Versa's form and every
+   * Configure dialog too), with a `·` summary beside it (vision FR-R4-5: it read "Details" here,
+   * "Advanced" on Versa and "Show 4 options" in a dialog).
+   */
+  advanced: 'Advanced',
   /** Only news is a status: a running server, or one that cannot start. */
   binaryMissing: 'llama-server binary not found',
   running: 'Running · ready',
@@ -56,8 +61,9 @@ export const institutionalCopy = {
   accessKeyId: 'Access key ID',
   secretAccessKey: 'Secret access key',
   advanced: 'Advanced',
-  azureSummary: 'Endpoint, API version',
-  bedrockSummary: 'Endpoint, region',
+  /** What the closed disclosure holds: its fields' labels, joined with `·` as every summary is. */
+  azureSummary: 'Endpoint · API version',
+  bedrockSummary: 'Endpoint · Region',
   endpoint: 'Endpoint',
   apiVersion: 'API version',
   region: 'Region',

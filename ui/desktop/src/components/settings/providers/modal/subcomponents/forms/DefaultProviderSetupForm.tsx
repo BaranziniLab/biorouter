@@ -299,9 +299,13 @@ export default function DefaultProviderSetupForm({
     belowFoldParameters = [];
   }
 
-  const expandCtaText = `${optionalExpanded ? 'Hide' : 'Show'} ${belowFoldParameters.length} ${
-    belowFoldParameters.length === 1 ? 'option' : 'options'
-  }`;
+  // The optional fields sit behind "Advanced", with their labels as the closed summary ("Organization
+  // · Project · Custom headers · Timeout"): the one disclosure word and summary shape of the
+  // first-run path, Llama Server's and Versa's included (vision FR-R4-5). It read "Show 4 options"
+  // and "Hide 4 options" here alone.
+  const advancedSummary = providerSetupCopy.advancedSummary(
+    belowFoldParameters.map((parameter) => getFieldName(parameter))
+  );
 
   return (
     <div ref={fieldsRef} className="flex flex-col gap-4 py-1">
@@ -319,7 +323,8 @@ export default function DefaultProviderSetupForm({
           {renderParametersList(aboveFoldParameters)}
           {belowFoldParameters.length > 0 && (
             <Disclosure
-              label={expandCtaText}
+              label={providerSetupCopy.advanced}
+              summary={advancedSummary}
               open={optionalExpanded}
               onOpenChange={setOptionalExpanded}
             >

@@ -30,7 +30,7 @@ import {
 import { HostManagedModelNote } from '../../../privacy/HostManagedModelNote';
 import { HOST_MANAGED_MODEL_TITLE } from '../../../privacy/hostManagedModelCopy';
 import { isBrowserSurface } from '../../../../utils/surface';
-import { switchModelCopy } from '../copy';
+import { localModelsCopy, switchModelCopy } from '../copy';
 import './model-dialogs.css';
 import {
   llamacppStatus,
@@ -79,7 +79,7 @@ const llamaFitLabel = (model: LlamaCppModel | undefined) => {
     case 'suitable':
       return 'Recommended here';
     case 'above_recommendation':
-      return `Needs ${model.recommended_gpu_memory_gib} GiB GPU memory`;
+      return `Needs ${localModelsCopy.gigabytes(model.recommended_gpu_memory_gib)} GPU memory`;
     case 'unknown_resources':
       return 'VRAM unknown';
     default:

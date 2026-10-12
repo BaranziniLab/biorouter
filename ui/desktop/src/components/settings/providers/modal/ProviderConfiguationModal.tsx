@@ -282,7 +282,13 @@ export default function ProviderConfigurationModal({
         titleClassName={titleInk}
         titleInfo={
           titleHelp ? (
-            <InfoTip label={headerText} help={titleHelp} data-testid="provider-config-title-info" />
+            // Named for the provider ("About Amazon Bedrock"), not the title: "About Configure
+            // Amazon Bedrock" read the dialog's verb as part of the name (vision FR-R4-5).
+            <InfoTip
+              label={provider.metadata.display_name}
+              help={titleHelp}
+              data-testid="provider-config-title-info"
+            />
           ) : undefined
         }
         subtitle={descriptionText}
