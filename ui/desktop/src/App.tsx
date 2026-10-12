@@ -412,8 +412,9 @@ export function AppInner() {
     shownScreen.current = screen;
     dismissScreenToasts();
   }, [screen]);
-  // V2-R7-4. A toast steps below find in chat and left of the Chat summary
-  // instead of covering them; the corner stays theirs while they are open.
+  // V2-R7-4. A toast steps below find in chat and into the docked Chat summary's
+  // column, under its card, instead of covering them; the corner stays theirs
+  // while they are open, and the conversation beside the rail stays uncovered.
   useEffect(() => watchToastClearance(), []);
 
   const [chat, setChat] = useState<ChatType>({
@@ -675,7 +676,13 @@ export function AppInner() {
           extension-load report halfway down the chat pane, which is the bug
           this value closes. The reasoning and the floor live with
           `--toast-inset-top` in main.css; do not re-derive it from a header
-          measurement here. */}
+          measurement here.
+
+          `--toast-clear-width` is unset except while the stack has joined the
+          docked Chat summary's column (`alerts/toastClearance.ts`), where it is
+          the card's width: then min and max are both the card's, so the toast
+          sits in the rail under the card and never hangs over the conversation
+          beside it. Unset, both fall back to the stack's own 280 to 420. */}
       <ToastContainer
         aria-label="Toast notifications"
         toastClassName={() => TOAST_SURFACE_CLASS_NAME}
@@ -687,8 +694,8 @@ export function AppInner() {
             '--toastify-z-index': 'var(--z-toast)',
             top: 'var(--toast-inset-top)',
             width: 'fit-content',
-            minWidth: '280px',
-            maxWidth: 'min(420px, calc(100vw - 32px))',
+            minWidth: 'var(--toast-clear-width, 280px)',
+            maxWidth: 'var(--toast-clear-width, min(420px, calc(100vw - 32px)))',
           } as React.CSSProperties
         }
         position="top-right"

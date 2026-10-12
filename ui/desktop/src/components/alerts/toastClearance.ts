@@ -16,23 +16,33 @@
  *
  * - below find in chat, 8px under the bar (the bar's own gap under the header band). The bar is
  *   short, so the toast stays in the corner, one step down;
- * - beside the summary, 16px to its left. That is the toast's own inset from the window's edge
- *   and find's from the conversation's, so beside the docked rail the toast sits at the
- *   conversation's corner exactly as it sits at the window's, and with find open there its right
- *   edge lines up with the bar's. The rail runs the height of the window, so below it would be
- *   off the screen.
+ * - INTO the docked summary's column (`column`): as wide as the card, its right edge on the
+ *   card's, 8px under it. The rail is the one place on that side of the window that is not the
+ *   conversation. The stack used to step 16px LEFT of the card instead, and the final app check
+ *   (2026-10-12) found what that means: beside the rail is the transcript, and the sticky
+ *   "1 of 2 extensions loaded" stood over the person's own message for minutes ("Toasts do not
+ *   cover transcript content"). When the card fills the rail, so the stack cannot fit under it
+ *   above the window's bottom inset, the stack keeps its corner height over the card's header,
+ *   still in the column: the rail's status line covered for a moment beats the conversation;
+ * - beside the summary popover, 16px to its left. The popover is a menu the person opened, it
+ *   closes on its own, and it stands above the toast anyway ("toast yields to an open menu" in
+ *   main.css).
  *
- * Only what is really in the way counts: the stack's own box is tested against each surface, so
- * a find bar in the left pane of a split, or a rail beside an open preview, moves nothing. The
- * stack only ever moves down or left, so it can never enter the titlebar drag band above it
- * (issue #74). Where stepping left would push the stack off the window, it stays, and the
- * popover stands above it anyway ("toast yields to an open menu" in main.css).
+ * Only what is really in the way counts: the stack's resting box is tested against each surface,
+ * so a find bar in the left pane of a split, or a rail beside an open preview, moves nothing. The
+ * stack never moves up, so it can never enter the titlebar drag band above it (issue #74). It
+ * moves left, and right only to line up with a column it joins (4px: the rail's 12px gutter
+ * against the stack's 16px inset). Where stepping left would push the stack off the window, it
+ * stays, and the popover stands above it anyway.
  *
  * The move is a `translate` set from two custom properties on the container
- * (`--toast-clear-x`, `--toast-clear-y`; main.css "toast clears the corner"). It glides over
- * `--dur-fast-max` once the container has been placed, never on its first frame (a toast that
- * arrives while find is open appears below the bar instead of sliding there), never while the
- * window or the sidebar is being resized, and not under reduced motion.
+ * (`--toast-clear-x`, `--toast-clear-y`; main.css "toast clears the corner"), and a joined
+ * column's width a third (`--toast-clear-width`), which App.tsx's container style reads as its
+ * min and max width. The move glides over `--dur-fast-max` once the container has been placed,
+ * never on its first frame (a toast that arrives while find is open appears below the bar
+ * instead of sliding there), never while the window or the sidebar is being resized, and not
+ * under reduced motion. The width snaps: it changes by at most the 52px between the stack's 280
+ * and the rail's narrowest card.
  */
 
 /** The gap under a surface the stack moves below: the find bar's own gap under the band. */
@@ -44,20 +54,31 @@ export const TOAST_CLEAR_BELOW_GAP = 8;
 export const TOAST_CLEAR_BESIDE_GAP = 16;
 /** The stack never moves closer to the window's left edge than its own inset from the right. */
 export const TOAST_CLEAR_MIN_LEFT = 16;
+/**
+ * Under a column it joins, the stack keeps this far above the window's bottom edge: the same 16
+ * as its inset from the right. Where it cannot, it stays at its corner height, over the column.
+ */
+export const TOAST_CLEAR_MIN_BOTTOM = 16;
 
 export const TOAST_CLEAR_X = '--toast-clear-x';
 export const TOAST_CLEAR_Y = '--toast-clear-y';
+/** The width of the column the stack has joined; unset whenever it has joined none. */
+export const TOAST_CLEAR_WIDTH = '--toast-clear-width';
 /** Set on a container one frame after its first placement; main.css glides only then. */
 export const TOAST_PLACED_ATTRIBUTE = 'data-toast-placed';
 
 const CONTAINER = '.Toastify__toast-container';
 
-export type ToastClearanceSide = 'below' | 'beside';
+/**
+ * How the stack clears a surface: it steps `below` it, steps left `beside` it, or joins its
+ * `column` (as wide as it, right edges aligned, under it when the window has room).
+ */
+export type ToastClearanceSide = 'below' | 'beside' | 'column';
 
 /** The surfaces a toast must not cover, each owned elsewhere (see the file comment). */
 export const TOAST_OBSTACLES: ReadonlyArray<{ selector: string; side: ToastClearanceSide }> = [
   { selector: '.br-find-overlay', side: 'below' },
-  { selector: '.br-summary-card', side: 'beside' },
+  { selector: '.br-summary-card', side: 'column' },
   { selector: '.br-summary-popover', side: 'beside' },
 ];
 
@@ -78,32 +99,59 @@ const overlaps = (a: ClearanceBox, b: ClearanceBox) =>
 
 const hasArea = (b: ClearanceBox) => b.right > b.left && b.bottom > b.top;
 
+export interface ToastClearanceLimits {
+  /** The stack never moves closer to the window's left edge than this. */
+  minLeft?: number;
+  /** The window's bottom edge. The stack goes under a joined column only if it ends 16 above. */
+  bottom?: number;
+}
+
+export interface ToastClearanceMove {
+  /** How far left, in px. Negative only to line up with a column it joins. */
+  x: number;
+  /** How far down, in px, zero or more. */
+  y: number;
+  /** The joined column's width, in px; absent when the stack has joined none. */
+  width?: number;
+}
+
 /**
- * How far the stack moves left (`x`) and down (`y`), in px, both zero or more.
+ * Where the stack goes. `stack` is where it sits with no move (its resting corner).
  *
- * `stack` is where the stack sits with no move (its resting corner). Each surface in the way is
- * cleared in turn, and a move can bring another into the way (stepped left of the rail, the
- * stack meets a find bar open beside it), so this repeats until nothing overlaps.
+ * A column in the way is joined first. Then each surface still in the way is cleared in turn,
+ * and a move can bring another into the way (stepped left of the popover, the stack meets a find
+ * bar open beside it), so this repeats until nothing overlaps.
  */
 export function toastClearance(
   stack: ClearanceBox,
   obstacles: ReadonlyArray<ToastObstacle>,
-  minLeft: number = TOAST_CLEAR_MIN_LEFT
-): { x: number; y: number } {
-  const width = stack.right - stack.left;
+  { minLeft = TOAST_CLEAR_MIN_LEFT, bottom = Infinity }: ToastClearanceLimits = {}
+): ToastClearanceMove {
+  let x = 0;
+  let y = 0;
+  const height = stack.bottom - stack.top;
+  const column = obstacles.find(
+    (o) => o.side === 'column' && hasArea(o.box) && overlaps(stack, o.box)
+  );
+  if (column) {
+    x = stack.right - column.box.right;
+    const under = column.box.bottom + TOAST_CLEAR_BELOW_GAP;
+    if (under + height <= bottom - TOAST_CLEAR_MIN_BOTTOM) y = under - stack.top;
+  }
+  const joined = column ? column.box.right - column.box.left : undefined;
+  const width = joined ?? stack.right - stack.left;
   const usable = obstacles.filter(
     (o) =>
+      o.side !== 'column' &&
       hasArea(o.box) &&
       (o.side === 'below' || o.box.left - TOAST_CLEAR_BESIDE_GAP - width >= minLeft)
   );
-  let x = 0;
-  let y = 0;
   for (let pass = 0; pass <= usable.length * 2; pass++) {
     const at = {
-      left: stack.left - x,
+      left: stack.right - width - x,
       right: stack.right - x,
       top: stack.top + y,
-      bottom: stack.bottom + y,
+      bottom: stack.top + height + y,
     };
     const hit = usable.find((o) => overlaps(at, o.box));
     if (!hit) break;
@@ -113,7 +161,7 @@ export function toastClearance(
       y = Math.max(y, hit.box.bottom + TOAST_CLEAR_BELOW_GAP - stack.top);
     }
   }
-  return { x, y };
+  return joined === undefined ? { x, y } : { x, y, width: joined };
 }
 
 /**
@@ -152,14 +200,25 @@ export function watchToastClearance(doc: Document = document): () => void {
         return { side, box: { left: r.left, top: r.top, right: r.right, bottom: r.bottom } };
       })
     );
-    const { x, y } = toastClearance(stack, obstacles);
+    const { x, y, width } = toastClearance(stack, obstacles, {
+      bottom: doc.documentElement.clientHeight,
+    });
     const nextX = `${x}px`;
     const nextY = `${y}px`;
+    const nextWidth = width === undefined ? '' : `${width}px`;
     if (container.style.getPropertyValue(TOAST_CLEAR_X) !== nextX) {
       container.style.setProperty(TOAST_CLEAR_X, nextX);
     }
     if (container.style.getPropertyValue(TOAST_CLEAR_Y) !== nextY) {
       container.style.setProperty(TOAST_CLEAR_Y, nextY);
+    }
+    // A new width rewraps the stack, so its height changes, and this write is itself a mutation
+    // the page observer sees: the next frame measures again at the new width. Joining a column
+    // does not depend on that height (only going under it does, at one fixed width), so the
+    // width and the height cannot chase each other.
+    if (container.style.getPropertyValue(TOAST_CLEAR_WIDTH) !== nextWidth) {
+      if (nextWidth) container.style.setProperty(TOAST_CLEAR_WIDTH, nextWidth);
+      else container.style.removeProperty(TOAST_CLEAR_WIDTH);
     }
     if (placed !== container) {
       // A new container lands where it belongs; only later moves glide.

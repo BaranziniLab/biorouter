@@ -2529,11 +2529,16 @@ body.biorouter-sidebar-resizing [data-motion-layout] {
 
 /* @ws WS-MOTION begin: toast clears the corner */
 /* A toast steps out of the way of what already sits in its corner (vision
-   V2-R7-4, checklist 15): below find in chat, left of the docked Chat summary
-   and of its popover. `components/alerts/toastClearance.ts` measures what is
-   really in the stack's way and writes how far to move on the container;
-   this turns it into a `translate`, so `top` stays `--toast-inset-top` and the
-   move is only ever down or left, never into the drag band (issue #74).
+   V2-R7-4, checklist 15): below find in chat, into the docked Chat summary's
+   column under its card (never left of it: that is the conversation, and a
+   sticky toast there covered the person's own message, final app check), and
+   left of the summary popover. `components/alerts/toastClearance.ts` measures
+   what is really in the stack's way and writes how far to move on the
+   container, plus the joined column's width (`--toast-clear-width`, read by
+   App.tsx's container style); this turns the move into a `translate`, so `top`
+   stays `--toast-inset-top` and the move is never up, never into the drag band
+   (issue #74). It goes right only by the 4px that lines the stack up with the
+   card it joins.
 
    It glides over `--dur-fast-max` only once the container has been placed
    (`data-toast-placed`, set a frame after its first placement), so a toast
