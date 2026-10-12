@@ -137,13 +137,18 @@ export default function ExportAppDialog({
   );
   const [running, setRunning] = useState(false);
   const [lint, setLint] = useState<LintAnswer | null>(null);
-  const mounted = useRef(true);
-  useEffect(
-    () => () => {
+  // ⚠ Set true IN the effect, not by the ref's initial value. React.StrictMode (renderer.tsx)
+  // runs every effect's cleanup once and then the effect again on mount in development: a ref
+  // that started true and was only ever cleared stayed false for the dialog's whole life, so
+  // `run` returned before `onClose` or the lint face, and the dialog sat on "Exporting…" after
+  // the export had finished. `ExportAppDialog.test.tsx` renders it under StrictMode for this.
+  const mounted = useRef(false);
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
       mounted.current = false;
-    },
-    []
-  );
+    };
+  }, []);
 
   // The findings take focus when they arrive. The button that asked turned disabled while the
   // export ran, which drops focus to <body> in Chromium, so a keyboard or screen reader user would

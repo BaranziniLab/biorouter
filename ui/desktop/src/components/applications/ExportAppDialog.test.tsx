@@ -1,7 +1,7 @@
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { ReactNode } from 'react';
+import { StrictMode, type ReactNode } from 'react';
 import { MemoryRouter } from 'react-router-dom';
 import ApplicationsView from './ApplicationsView';
 import ExportAppDialog from './ExportAppDialog';
@@ -66,10 +66,17 @@ const exported = (target = '/Users/me/Desktop/cohort-explorer'): AppExportResult
   },
 });
 
-function renderDialog(onExport = vi.fn(async () => exported()), browser = false) {
+function renderDialog(
+  onExport = vi.fn(async () => exported()),
+  browser = false,
+  { strict = false }: { strict?: boolean } = {}
+) {
   const onClose = vi.fn();
   const user = userEvent.setup();
-  render(<ExportAppDialog app={app} onExport={onExport} onClose={onClose} browser={browser} />);
+  const dialog = (
+    <ExportAppDialog app={app} onExport={onExport} onClose={onClose} browser={browser} />
+  );
+  render(strict ? <StrictMode>{dialog}</StrictMode> : dialog);
   return { user, onExport, onClose };
 }
 
@@ -262,6 +269,63 @@ describe('ExportAppDialog', () => {
     expect(onExport).not.toHaveBeenCalled();
   });
 
+  /**
+   * The development renderer mounts under `React.StrictMode` (renderer.tsx), which runs every
+   * effect's cleanup and then the effect again on mount. An "is it still mounted" ref that only
+   * the cleanup ever wrote stayed false after that, so the dialog dropped the export's answer:
+   * it sat on "Exporting…" after the folder was written, and never showed the app check's face.
+   * The cases above render without StrictMode, which is why they passed through it.
+   */
+  describe('under React.StrictMode, as the development renderer mounts it', () => {
+    it('closes once the export answers', async () => {
+      const { user, onExport, onClose } = renderDialog(undefined, false, { strict: true });
+      await user.click(screen.getByRole('button', { name: copy.export }));
+      await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1));
+      expect(onExport).toHaveBeenCalledTimes(1);
+    });
+
+    it('turns to the app check’s face, and Export anyway closes it', async () => {
+      const onExport = vi
+        .fn()
+        .mockResolvedValueOnce({
+          status: 'lint',
+          message: 'harness ERRORs block export',
+          findings: ['index.html: #missing is not in the page', 'inline script is blocked'],
+          retry: 'token-1',
+        })
+        .mockResolvedValueOnce(exported());
+      const { user, onClose } = renderDialog(onExport, false, { strict: true });
+      await user.click(screen.getByRole('button', { name: copy.export }));
+
+      const findings = await screen.findByRole('list', { name: copy.problemsFound });
+      expect(within(findings).getAllByRole('listitem')).toHaveLength(2);
+      await waitFor(() => expect(findings).toHaveFocus());
+      expect(onClose).not.toHaveBeenCalled();
+
+      await user.click(screen.getByRole('button', { name: copy.exportAnyway }));
+      await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1));
+      expect(requestOf(onExport, 1)).toEqual({
+        mode: 'launcher',
+        bundleDaemon: false,
+        allowLintErrors: true,
+        retry: 'token-1',
+      });
+    });
+
+    it('closes when the export throws, rather than staying busy', async () => {
+      // A failure the dialog does not keep: the view says why in a toast.
+      const { user, onClose } = renderDialog(
+        vi.fn(async () => {
+          throw new Error('ipc gone');
+        }),
+        false,
+        { strict: true }
+      );
+      await user.click(screen.getByRole('button', { name: copy.export }));
+      await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1));
+    });
+  });
+
   it('offers no daemon binary in a browser, which downloads a zip', async () => {
     const { user, onExport } = renderDialog(
       vi.fn(async () => exported('cohort-explorer.zip')),
@@ -310,10 +374,14 @@ describe('ApplicationsView export', () => {
 
   async function exportFromView() {
     const user = userEvent.setup();
+    // Under StrictMode, as the development renderer mounts the view: the dialog closing below
+    // is what a StrictMode remount used to break.
     render(
-      <MemoryRouter>
-        <ApplicationsView />
-      </MemoryRouter>
+      <StrictMode>
+        <MemoryRouter>
+          <ApplicationsView />
+        </MemoryRouter>
+      </StrictMode>
     );
     // Radix opens a dropdown on pointerdown, not click.
     fireEvent.pointerDown(
