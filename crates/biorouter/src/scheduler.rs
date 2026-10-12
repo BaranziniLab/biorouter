@@ -3050,6 +3050,17 @@ fn finish_scheduled_run(
     }
 }
 
+/// Fold one stream item into the run's transcript, or fail the run.
+///
+/// ⚠ **`TurnAborted` fails the run.** The agent ends a turn that did not do
+/// its work (the model call failed, the loop guard stopped it, the store
+/// failed) with a "Ran into this error" message and then this event, and the
+/// stream ends normally. Read as a completed run, that cleared `last_error`
+/// and advanced `last_run`, which for `daily-meditation` is the Chat Recall
+/// cursor: each night the model could not answer, a day of the person's chats
+/// was skipped and the schedule reported success. Found re-running the Daily
+/// Meditation of diagnostics 20261006_2 once its skill check passed, against a
+/// local model that was not running.
 fn apply_scheduled_stream_item(
     conversation: &mut Conversation,
     item: Result<AgentEvent>,
@@ -3057,6 +3068,13 @@ fn apply_scheduled_stream_item(
     match item? {
         AgentEvent::Message(message) => conversation.push(message),
         AgentEvent::HistoryReplaced(updated) => *conversation = updated,
+        AgentEvent::TurnAborted { code, message } => {
+            return Err(anyhow!(
+                "the run stopped before it did its work ({}), and the schedule's last-run \
+                 cursor was not advanced: {message}",
+                code.wire_code()
+            ));
+        }
         _ => {}
     }
     Ok(())
@@ -4999,6 +5017,43 @@ mod tests {
         assert!(error
             .to_string()
             .contains("fixture scheduled stream failed"));
+    }
+
+    /// A turn the agent aborted (here, the model call failed) ends its stream
+    /// normally, after the "Ran into this error" message. Before this, the run
+    /// was then classified a success: `last_error` cleared and, for Daily
+    /// Meditation, the Chat Recall cursor advanced past a day nobody digested.
+    #[test]
+    fn an_aborted_turn_fails_the_scheduled_run() {
+        let mut conversation = Conversation::default();
+        apply_scheduled_stream_item(
+            &mut conversation,
+            Ok(AgentEvent::Message(Message::assistant().with_text(
+                "Ran into this error: Request failed: error sending request for url \
+                 (http://127.0.0.1:9/api/chat) (failed to connect to 127.0.0.1:9).",
+            ))),
+        )
+        .unwrap();
+        let error = apply_scheduled_stream_item(
+            &mut conversation,
+            Ok(AgentEvent::TurnAborted {
+                code: crate::agents::turn_abort::TurnAbortCode::ProviderFailure {
+                    kind: crate::providers::errors::ProviderErrorKind::Network,
+                },
+                message: "Request failed: failed to connect to 127.0.0.1:9".to_string(),
+            }),
+        )
+        .expect_err("an aborted turn must fail the scheduled run");
+        let error = error.to_string();
+        assert!(
+            error.contains("provider_failure")
+                && error.contains("failed to connect to 127.0.0.1:9")
+                && error.contains("cursor was not advanced"),
+            "{error}"
+        );
+        // The person-facing explanation the agent wrote is still in the run's
+        // transcript.
+        assert_eq!(conversation.len(), 1);
     }
 
     #[test]
