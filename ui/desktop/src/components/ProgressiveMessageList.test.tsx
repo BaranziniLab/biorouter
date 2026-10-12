@@ -586,6 +586,29 @@ describe('ProgressiveMessageList opens a long live chat at its end (vision V2-R7
     expect(settled).toHaveBeenCalledTimes(1);
   });
 
+  it('settles only after the last batch, when the messages arrive inside the empty list’s 50 ms', () => {
+    // The empty first render arms the settle timer; messages that land before
+    // it fires start batches, and that timer must not fire into the load with
+    // 40 of 60 rows drawn (WS-SUMMARY-2-FYI: it ran with 20 drawn, then at 60).
+    vi.useFakeTimers();
+    const drawnAtSettle: number[] = [];
+    const settled = vi.fn(() => drawnAtSettle.push(rows(document.body).length));
+    const props = {
+      ...long,
+      chatState: ChatState.LoadingConversation,
+      onRenderingComplete: settled,
+    };
+    const { container, rerender } = render(<ProgressiveMessageList {...props} messages={[]} />);
+    act(() => vi.advanceTimersByTime(10));
+    rerender(<ProgressiveMessageList {...props} messages={chat60} />);
+    expect(shown(container)).toHaveLength(20);
+    // One frame of 5 ms at a time: each timer's state update commits (and its
+    // effects run) before the next timer is due, as they do in the app.
+    for (let elapsed = 0; elapsed < 200; elapsed += 5) act(() => vi.advanceTimersByTime(5));
+    expect(shown(container)).toHaveLength(60);
+    expect(drawnAtSettle).toEqual([60]);
+  });
+
   it('keeps the old order on a saved transcript, which reads top down', () => {
     vi.useFakeTimers();
     const { container } = render(<ProgressiveMessageList {...long} messages={chat60} />);

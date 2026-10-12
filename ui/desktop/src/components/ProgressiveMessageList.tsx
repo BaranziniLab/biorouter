@@ -243,10 +243,14 @@ export default function ProgressiveMessageList({
   // "The transcript has settled": 50ms after the last batch lands, and after
   // every change in the number of messages once none is hidden. Re-armed, not
   // cancelled, by a change inside the window, so a stream settles once it
-  // pauses; only unmounting cancels it.
+  // pauses. Cancelled by two things only: unmounting, and batches starting. A
+  // chat whose messages arrive inside the 50ms of the empty first render would
+  // otherwise be reported settled with a batch or two drawn and the rest still
+  // to come (WS-SUMMARY-2-FYI); "settled" means the last batch landed.
   useEffect(() => {
-    if (isLoading) return;
     window.clearTimeout(completionTimeoutRef.current ?? undefined);
+    completionTimeoutRef.current = null;
+    if (isLoading) return;
     completionTimeoutRef.current = window.setTimeout(() => {
       completionTimeoutRef.current = null;
       onRenderingCompleteRef.current?.();
