@@ -2,6 +2,7 @@ import './pickers.css';
 import { useEffect, useRef, useState } from 'react';
 import type { SessionClassification } from '../../api/types.gen';
 import { ChevronDown } from '../icons/app-icons';
+import { readComposerHandOff, useComposerHandOff } from '../composer/composerHandOff';
 import { Popover, PopoverContent, PopoverTrigger } from '../ui/popover';
 import { SegmentedControl, type SegmentedOption } from '../ui/segmented-control';
 import { Tooltip, TooltipContent, TooltipTrigger } from '../ui/Tooltip';
@@ -46,7 +47,21 @@ export interface ToolsChipProps {
    * which the extension list reads itself (issue #56).
    */
   privacyTier?: SessionClassification;
+  /**
+   * The composer's lasting identity (`ChatInput`'s hand-off key), under which
+   * the settled number is handed to the composer that replaces this one: a new
+   * chat's first send remounts the composer (`composer/composerHandOff.ts`).
+   */
+  handOffKey?: string;
 }
+
+/** The three figures the chip last stated, and the chat they were for. */
+interface SettledTools {
+  chat: string | null;
+  counts: readonly [extensions: number, skills: number, knowledge: number];
+}
+
+const TOOLS_HAND_OFF = 'tools-chip';
 
 export type ToolsSegment = 'extensions' | 'skills' | 'knowledge';
 
@@ -71,7 +86,7 @@ const SEGMENTS: ReadonlyArray<SegmentedOption<ToolsSegment>> = [
  */
 export const TOOLS_POPOVER_COLLISION_PADDING = { top: 52, right: 8, bottom: 8, left: 8 } as const;
 
-export function ToolsChip({ sessionId }: ToolsChipProps) {
+export function ToolsChip({ sessionId, handOffKey }: ToolsChipProps) {
   const [open, setOpen] = useState(false);
   const [segment, setSegment] = useState<ToolsSegment>('extensions');
   const inputRef = useRef<HTMLInputElement>(null);
@@ -110,7 +125,6 @@ export function ToolsChip({ sessionId }: ToolsChipProps) {
   const skills = useSkillPicker(sessionId, { open: open && segment === 'skills' });
   const knowledge = useKnowledgePicker({ open: open && segment === 'knowledge' });
 
-  const total = extensions.activeCount + skills.activeCount + knowledge.visibleCount;
   const counts = [extensions.activeCount, skills.activeCount, knowledge.visibleCount] as const;
 
   // ⚠ **The number is shown only once all three lists have answered for THIS
@@ -119,23 +133,38 @@ export function ToolsChip({ sessionId }: ToolsChipProps) {
   // turn. A number shown and then withdrawn is the class V2-R5-5 fixed for the
   // summary rail. So the chip reads "Tools" alone until it can state a fact.
   //
-  // Two cases keep the last settled number instead of hiding it:
+  // Two cases keep the last settled figures instead of hiding them:
   // - the same chat, when one list goes back to asking (the knowledge selection
   //   follows the window's focused chat, which moves between split panes);
   //   the number changes once, when the answer lands;
   // - a chat that THIS composer has just started (the first message of a new
-  //   tab, which keeps its mount): it was created with what the chip counted.
+  //   tab): it was created with what the chip counted.
+  //
+  // ⚠ V2-R8-3: that first message also REMOUNTS the composer (it moves from
+  // the empty chat's centre to the bar under the transcript), so the settled
+  // figures are handed to the new mount (`composer/composerHandOff.ts`). Kept in
+  // state alone, the new chip started from nothing: "Tools 5", "Tools", then
+  // "Tools 5" again within 35 ms of Enter.
   const chat = sessionId || null;
   const ready = extensions.answered && skills.answered && knowledge.answered;
-  const [settled, setSettled] = useState<{ chat: string | null; total: number } | null>(null);
-  if (ready && (settled === null || settled.chat !== chat || settled.total !== total)) {
-    setSettled({ chat, total });
+  const [settled, setSettled] = useState<SettledTools | null>(() =>
+    readComposerHandOff<SettledTools>(handOffKey, TOOLS_HAND_OFF)
+  );
+  if (
+    ready &&
+    (settled === null || settled.chat !== chat || settled.counts.some((n, i) => n !== counts[i]))
+  ) {
+    setSettled({ chat, counts });
   }
-  const shownTotal = ready
-    ? total
+  useComposerHandOff(handOffKey, TOOLS_HAND_OFF, settled);
+  // The figures the chip states, or none. The number, the accessible name and
+  // the tooltip all say the same figures: a carried number is named as one.
+  const shown: SettledTools['counts'] | null = ready
+    ? counts
     : settled !== null && (settled.chat === chat || (settled.chat === null && chat !== null))
-      ? settled.total
+      ? settled.counts
       : null;
+  const shownTotal = shown === null ? null : shown[0] + shown[1] + shown[2];
 
   const onOpenChange = (next: boolean) => {
     setOpen(next);
@@ -155,7 +184,7 @@ export function ToolsChip({ sessionId }: ToolsChipProps) {
               type="button"
               data-testid="composer-tools-chip"
               className="br-picker-chip"
-              aria-label={ready ? TOOLS_COPY.chipLabel(...counts) : TOOLS_COPY.chip}
+              aria-label={shown !== null ? TOOLS_COPY.chipLabel(...shown) : TOOLS_COPY.chip}
             >
               <span>{TOOLS_COPY.chip}</span>
               {shownTotal !== null && <span className="br-picker-chip__count">{shownTotal}</span>}
@@ -163,7 +192,9 @@ export function ToolsChip({ sessionId }: ToolsChipProps) {
             </button>
           </PopoverTrigger>
         </TooltipTrigger>
-        {ready && <TooltipContent side="top">{TOOLS_COPY.chipTooltip(...counts)}</TooltipContent>}
+        {shown !== null && (
+          <TooltipContent side="top">{TOOLS_COPY.chipTooltip(...shown)}</TooltipContent>
+        )}
       </Tooltip>
       <PopoverContent
         side="top"

@@ -46,6 +46,7 @@ import type {
 } from '../../../../api/types.gen';
 import type { PinnedModelView } from '../../../../hooks/chatStreamStore';
 import { subscribeAppModelSelectionChanges } from '../../../../utils/sessionBindingSync';
+import { readComposerHandOff, useComposerHandOff } from '../../../composer/composerHandOff';
 import {
   DEFAULT_LEAD_TURNS,
   leadWorkerChip,
@@ -136,6 +137,31 @@ function sampleProviderRow(row: ProviderDetails): ProviderSample {
   };
 }
 
+/** Every row of one catalog read, each under the provider it was read for. */
+function sampleCatalog(
+  rows: ReadonlyArray<ProviderDetails> | undefined
+): ReadonlyMap<string, ProviderSample> {
+  if (!rows || rows.length === 0) return NO_CATALOG_SAMPLES;
+  return new Map(rows.map((row) => [row.name, sampleProviderRow(row)]));
+}
+
+/** The lead/worker selection as one read of its four keys. */
+interface LeadWorkerRead {
+  leadModel: string;
+  leadProvider: string;
+  activeModel: string;
+  turns: number;
+}
+
+const NO_PAIR_READ: LeadWorkerRead = {
+  leadModel: '',
+  leadProvider: '',
+  activeModel: '',
+  turns: DEFAULT_LEAD_TURNS,
+};
+
+const LEAD_WORKER_HAND_OFF = 'lead-worker';
+
 interface ModelsBottomBarProps {
   sessionId: string | null;
   /** Legacy: nothing reads it. Kept optional so older callers still compile. */
@@ -188,6 +214,12 @@ interface ModelsBottomBarProps {
    * a non-default level; omitted, the chip is a model picker only.
    */
   reasoningScope?: string;
+  /**
+   * The composer's lasting identity (`ChatInput`'s hand-off key), under which
+   * the lead/worker read is handed to the chip that replaces this one: a new
+   * chat's first send remounts the composer (`composer/composerHandOff.ts`).
+   */
+  handOffKey?: string;
 }
 
 export default function ModelsBottomBar({
@@ -199,6 +231,7 @@ export default function ModelsBottomBar({
   privacyTier,
   effectiveModel,
   reasoningScope,
+  handOffKey,
 }: ModelsBottomBarProps) {
   const effort = useReasoningEffortValue(reasoningScope);
   const notesId = useInfoTipId();
@@ -212,7 +245,7 @@ export default function ModelsBottomBar({
     getCurrentModelDisplayName,
     getCurrentProviderDisplayName,
   } = useModelAndProvider();
-  const { read, getProviders } = useConfig();
+  const { read, getProviders, providersList } = useConfig();
   /**
    * W2-PRV-6. A chat that has not been sent yet is still a chat: its switch
    * holds a model for it (see `pendingChatModel.ts`) instead of rewriting the
@@ -241,9 +274,18 @@ export default function ModelsBottomBar({
    * then dropped it and the name moved 24px. A privacy mark that is false and
    * then withdrawn is the one thing this chip must never draw. Keyed, a binding
    * this mount has not read yet has no entry and the chip says nothing.
+   *
+   * ⚠ V2-R8-3: a mount starts from the catalog the app already holds. The
+   * effect's own read is `getProviders(false)`, which answers from that very
+   * list whenever it holds one (`ConfigContext`), so this is the same rows one
+   * commit sooner, not an older answer. It matters because a new chat's first
+   * send REMOUNTS the composer (`composer/composerHandOff.ts`): started empty,
+   * the new chip drew the model without its padlock until its read landed, and
+   * the padlock went and came back within 50 ms of Enter.
    */
-  const [catalogSamples, setCatalogSamples] =
-    useState<ReadonlyMap<string, ProviderSample>>(NO_CATALOG_SAMPLES);
+  const [catalogSamples, setCatalogSamples] = useState<ReadonlyMap<string, ProviderSample>>(() =>
+    sampleCatalog(providersList)
+  );
 
   /**
    * SD-1 — is this chip's model chosen here, or on the machine running
@@ -260,10 +302,22 @@ export default function ModelsBottomBar({
   // `BIOROUTER_MODEL` IS the worker while a pair is on, so there is no
   // "which half is live" key to read — see `leadWorkerLabel.ts` for what that
   // leaves knowable, and for the false `(worker)` it used to produce.
-  const [leadModelName, setLeadModelName] = useState<string>('');
-  const [leadProviderName, setLeadProviderName] = useState<string>('');
-  const [currentActiveModel, setCurrentActiveModel] = useState<string>('');
-  const [leadTurns, setLeadTurns] = useState<number>(DEFAULT_LEAD_TURNS);
+  //
+  // ⚠ V2-R8-3: one state, handed to the chip that replaces this one when a new
+  // chat's first send remounts the composer (`composer/composerHandOff.ts`).
+  // Started from nothing, the new chip named the worker until its own read
+  // landed and then the lead again. `null` is "not read yet", which states no
+  // pair, as the four empty answers it replaces did; only a read is handed on.
+  const [pairRead, setPairRead] = useState<LeadWorkerRead | null>(() =>
+    readComposerHandOff<LeadWorkerRead>(handOffKey, LEAD_WORKER_HAND_OFF)
+  );
+  useComposerHandOff(handOffKey, LEAD_WORKER_HAND_OFF, pairRead);
+  const {
+    leadModel: leadModelName,
+    leadProvider: leadProviderName,
+    activeModel: currentActiveModel,
+    turns: leadTurns,
+  } = pairRead ?? NO_PAIR_READ;
 
   /**
    * One read for the whole lead/worker question: is a pair configured, what are
@@ -285,16 +339,21 @@ export default function ModelsBottomBar({
         read('BIOROUTER_MODEL', false),
         read('BIOROUTER_LEAD_TURNS', false),
       ]);
-      setLeadModelName((leadModel as string) || '');
-      setLeadProviderName((leadProvider as string) || '');
-      setCurrentActiveModel((activeModel as string) || '');
-      setLeadTurns(readLeadTurns(turns));
+      setPairRead({
+        leadModel: (leadModel as string) || '',
+        leadProvider: (leadProvider as string) || '',
+        activeModel: (activeModel as string) || '',
+        turns: readLeadTurns(turns),
+      });
     } catch (error) {
       console.error('Error reading the lead/worker selection:', error);
       // A selection we could not read is not a pair, and must not leave a stale
       // `(lead)` on a name from the last successful read.
-      setLeadModelName('');
-      setLeadProviderName('');
+      setPairRead((previous) => ({
+        ...(previous ?? NO_PAIR_READ),
+        leadModel: '',
+        leadProvider: '',
+      }));
     }
   }, [read]);
 
@@ -456,9 +515,7 @@ export default function ModelsBottomBar({
       try {
         const rows = await getProviders(false);
         if (cancelled) return;
-        const next = new Map<string, ProviderSample>(
-          rows.map((row) => [row.name, sampleProviderRow(row)])
-        );
+        const next = new Map(sampleCatalog(rows));
         // A provider Biorouter cannot classify is one it cannot vouch for.
         if (!next.has(effectiveProvider)) next.set(effectiveProvider, UNVOUCHED_PROVIDER);
         setCatalogSamples(next);

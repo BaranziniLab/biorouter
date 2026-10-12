@@ -25,6 +25,11 @@ export interface ModelEffortChipProps {
   privacyTier?: SessionClassification;
   /** Opens the provider catalog when no model is configured. */
   setView: (view: View, options?: ViewOptions) => void;
+  /**
+   * The composer's lasting identity, under which the chip hands what it has
+   * read to the chip that replaces it (`composer/composerHandOff.ts`).
+   */
+  handOffKey?: string;
 }
 
 export function ModelEffortChip({
@@ -33,6 +38,7 @@ export function ModelEffortChip({
   effectiveModel,
   privacyTier,
   setView,
+  handOffKey,
 }: ModelEffortChipProps) {
   return (
     <div data-testid="composer-model-chip" className="flex min-w-0 items-center">
@@ -42,6 +48,7 @@ export function ModelEffortChip({
         privacyTier={privacyTier}
         setView={setView}
         reasoningScope={reasoningScope}
+        handOffKey={handOffKey}
         hideAlertPopover
       />
     </div>

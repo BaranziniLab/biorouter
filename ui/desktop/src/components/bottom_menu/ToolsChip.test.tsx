@@ -384,5 +384,55 @@ describe('ToolsChip', () => {
       await flush();
       expect(numbers).toEqual(['15']);
     });
+
+    it('names a carried number by its parts, as it names an answered one', async () => {
+      const { rerender } = render(<ToolsChip sessionId="chat-1" />);
+      const chip = screen.getByTestId('composer-tools-chip');
+      hooks.knowledge = { count: 5, answered: false };
+      rerender(<ToolsChip sessionId="chat-1" />);
+      await flush();
+      // The number on screen is the settled one, and so is the name (V2-R8-3).
+      expect(chip).toHaveTextContent('Tools15');
+      expect(chip).toHaveAccessibleName('Tools: 4 extensions, 9 skills, 2 knowledge bases');
+    });
+
+    it('hands its number to the chip that replaces it when the composer remounts (V2-R8-3)', async () => {
+      // A new chat's first send moves the composer from the centre of the empty
+      // chat to the bar under the transcript: a second mount, in one commit.
+      function Seat({ centre, sessionId }: { centre: boolean; sessionId: string | null }) {
+        const chip = <ToolsChip sessionId={sessionId} handOffKey="tab-1" />;
+        return (
+          <div>
+            {centre ? <section>{chip}</section> : <p />}
+            {!centre && <footer>{chip}</footer>}
+          </div>
+        );
+      }
+      const { rerender } = render(<Seat centre sessionId={null} />);
+      const first = screen.getByTestId('composer-tools-chip');
+      expect(first).toHaveTextContent('Tools15');
+
+      // The new mount's lists have not answered yet, for "no chat" or the chat.
+      hooks.extensions = { count: 4, answered: false };
+      hooks.skills = { count: 9, answered: false };
+      rerender(<Seat centre={false} sessionId={null} />);
+      const second = screen.getByTestId('composer-tools-chip');
+      expect(second).not.toBe(first);
+      const numbers = recordNumbers(second);
+      expect(second).toHaveAccessibleName('Tools: 4 extensions, 9 skills, 2 knowledge bases');
+
+      rerender(<Seat centre={false} sessionId="chat-new" />);
+      await flush();
+      hooks.extensions = { count: 4, answered: true };
+      hooks.skills = { count: 9, answered: true };
+      rerender(<Seat centre={false} sessionId="chat-new" />);
+      await flush();
+      expect(numbers).toEqual(['15']);
+
+      // Not for another chat: a remount onto a different chat starts from nothing.
+      hooks.extensions = { count: 4, answered: false };
+      rerender(<Seat centre sessionId="chat-other" />);
+      expect(screen.getByTestId('composer-tools-chip')).toHaveTextContent(/^Tools$/);
+    });
   });
 });

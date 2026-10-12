@@ -508,10 +508,17 @@ export default function ChatInput({
   // no binding, and the lookup meanwhile measures the model for new chats.
   const contextModel = contextWindowModelKey(effectiveModel, currentProvider, currentModel);
   const [tokenLimitModel, setTokenLimitModel] = useState<string | null>(null);
+  // V2-R8-3. This composer's lasting identity: the same from an empty chat to
+  // the chat its first message starts. That message REMOUNTS the composer
+  // (`BaseChat` draws it centred in an empty chat and in the bar under a
+  // transcript), so what the Tools chip, the model chip and the folder state is
+  // handed to the new mount under this key (`composer/composerHandOff.ts`).
+  // `draftKey` comes second: `BaseChat` re-keys it to the chat once one exists.
+  const handOffKey = reasoningDraftKey ?? draftKey;
   // The footer's folder: this chat's own, never the app default standing in
   // for it while the row loads (V2-R7-3; see the hook).
   const { workingDir: composerWorkingDir, setWorkingDir: setComposerWorkingDir } =
-    useSessionWorkingDir(sessionId);
+    useSessionWorkingDir(sessionId, handOffKey);
 
   // Branch-the-conversation action shared with the message-level Diverge button.
   const { diverge } = useDiverge();
@@ -2911,7 +2918,11 @@ export default function ChatInput({
             answers, and Send at the end, Crew's `.crew-compose-controls`. */}
         <div data-testid="chat-input-toolbar" className="br-composer-controls">
           <ComposerPlusMenu onAttachFiles={attachPickedFiles} onInsertTrigger={insertTrigger} />
-          <ToolsChip sessionId={sessionId} privacyTier={sessionPrivacyTier} />
+          <ToolsChip
+            sessionId={sessionId}
+            privacyTier={sessionPrivacyTier}
+            handOffKey={handOffKey}
+          />
           <span className="br-composer-controls__spacer" />
           <div ref={modelSlotRef} className="br-composer-controls__model">
             <ModelEffortChip
@@ -2924,6 +2935,7 @@ export default function ChatInput({
               effectiveModel={effectiveModel}
               privacyTier={sessionPrivacyTier}
               setView={setView}
+              handOffKey={handOffKey}
             />
           </div>
           {sendOrStop}
