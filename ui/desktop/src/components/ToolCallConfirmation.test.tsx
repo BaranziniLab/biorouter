@@ -494,3 +494,107 @@ describe('ToolCallConfirmation shape (spec 3.6 cards)', () => {
     expect(screen.queryByRole('button')).toBeNull();
   });
 });
+
+/**
+ * Final check, /bug (2026-10-12): the report approval card promised a body the
+ * person could not read.
+ *
+ * `platform__report_bug` sends its arguments as one `arguments` preview, and the
+ * body (the text that becomes a world-readable GitHub issue) arrived as a
+ * single escaped JSON line: 7,662 characters in a 724px box, about 90 of them
+ * visible, with literal `\n`. The card above it says "Read the body below".
+ */
+describe('ToolCallConfirmation for a /bug report (final check)', () => {
+  const body =
+    '**Describe the bug**\n\nIn this chat, the assistant created a new markdown file.\n\n' +
+    '**Steps to reproduce**\n\n1. Open a chat.\n2. Ask for a file.\n\n' +
+    'The summary rail kept saying +0 -0 after the file was written. '.repeat(100);
+  const args = {
+    repository: 'github.com/BaranziniLab/biorouter',
+    title: 'Chat summary Code delta stays +0 -0 after file creation',
+    body,
+    labels: ['bug'],
+    chatPrivacyTier: 'private',
+  };
+  const reportCard = (overrides: Parameters<typeof actionRequired>[0] = {}) =>
+    renderCard({
+      toolName: 'platform__report_bug',
+      risk: 'high',
+      arguments: args,
+      preview: { kind: 'arguments', json: JSON.stringify(args, null, 2), truncated: false },
+      prompt: 'Publish this bug report to the public issue tracker? Read the body below.',
+      ...overrides,
+    });
+
+  it('shows the body as the exact text, with real line breaks, in the wrapping text style', () => {
+    reportCard();
+    const shown = screen.getByTestId('tool-preview-value-body');
+    // The exact text that will be published: real newlines, no JSON escapes.
+    expect(shown.textContent).toBe(body);
+    expect(shown.textContent).not.toContain('\\n');
+    // Wrapping is authored CSS (tool-call.css), not a utility class.
+    expect(shown).toHaveClass('br-tool-preview-text');
+    expect(screen.getByTestId('tool-preview-value-title')).toHaveTextContent(args.title);
+    // Every field is named, in the order the backend sent them.
+    expect(
+      screen.getAllByTestId('tool-preview-field').map((f) => f.querySelector('dt')!.textContent)
+    ).toEqual(['repository', 'title', 'body', 'labels', 'chatPrivacyTier']);
+    // A value that is not a string stays JSON, so `["bug"]` is not read as prose.
+    expect(screen.getByTestId('tool-preview-value-labels').textContent).toBe('[\n  "bug"\n]');
+  });
+
+  it('collapses a long body behind "Show more" so the decision stays in reach', () => {
+    reportCard();
+    expect(screen.getByTestId('tool-preview-body').className).toContain('max-h-52');
+    fireEvent.click(screen.getByRole('button', { name: 'Show more' }));
+    expect(screen.getByTestId('tool-preview-body').className).not.toContain('max-h-52');
+  });
+
+  it('collapses a single long line, which a newline count alone would leave open', () => {
+    const oneLine = { body: 'x'.repeat(4000) };
+    renderCard({
+      toolName: 'platform__report_bug',
+      preview: { kind: 'arguments', json: JSON.stringify(oneLine, null, 2), truncated: false },
+    });
+    expect(screen.getByRole('button', { name: 'Show more' })).toBeInTheDocument();
+  });
+
+  it('wraps a clipped argument blob it cannot parse, and still says it was clipped', () => {
+    const json = JSON.stringify(args, null, 2).slice(0, 300);
+    reportCard({ preview: { kind: 'arguments', json, truncated: true } });
+    expect(screen.queryByTestId('tool-preview-field')).toBeNull();
+    const raw = screen.getByTestId('tool-preview-raw');
+    expect(raw.textContent).toBe(json);
+    expect(raw).toHaveClass('br-tool-preview-text');
+    expect(screen.getByText('Truncated')).toBeInTheDocument();
+  });
+
+  it('draws one warning glyph: a leading ⚠ in the prompt is not repeated beside the icon', () => {
+    for (const glyph of ['⚠ ', '\u26A0\uFE0F ', '  ⚠  ']) {
+      const { unmount } = reportCard({
+        prompt: `${glyph}This chat is PRIVATE: it ran on a private model. Read the body below.`,
+      });
+      const finding = screen.getByTestId('tool-security-finding');
+      expect(finding.textContent).toBe(
+        'This chat is PRIVATE: it ran on a private model. Read the body below.'
+      );
+      // The icon is the one glyph.
+      expect(finding.querySelectorAll('svg')).toHaveLength(1);
+      // Still a finding: "Always allow" stays withheld.
+      expect(screen.queryByRole('button', { name: /Always allow/i })).toBeNull();
+      unmount();
+    }
+  });
+
+  it('keeps a warning glyph that is not the lead, and a prompt that is only a glyph', () => {
+    const { unmount } = reportCard({
+      prompt: 'Publish this? ⚠ "Describe the bug" is YOUR last message.',
+    });
+    expect(screen.getByTestId('tool-security-finding').textContent).toBe(
+      'Publish this? ⚠ "Describe the bug" is YOUR last message.'
+    );
+    unmount();
+    reportCard({ prompt: '⚠' });
+    expect(screen.getByTestId('tool-security-finding').textContent).toBe('⚠');
+  });
+});

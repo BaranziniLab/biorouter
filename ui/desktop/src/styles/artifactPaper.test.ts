@@ -172,8 +172,10 @@ describe('artifact panel paper', () => {
 
   it('keeps fenced code in the well with a right-edge fade while it scrolls', () => {
     expect(ruleBody('.br-md-code')).toContain('background-color: var(--background-well);');
+    // The fade is as wide as what is still past the edge, at most 40px
+    // (`--br-overflow-fade`, WS-TRANSCRIPT final check 2026-10-12).
     expect(css).toMatch(
-      /\.br-md-code-body\[data-overflow='true'\],\s*\.br-md-table-scroll\[data-overflow='true'\]\s*\{\s*mask-image: linear-gradient\(to right, black calc\(100% - 40px\), transparent\);/
+      /\.br-md-code-body\[data-overflow='true'\],\s*\.br-md-table-scroll\[data-overflow='true'\]\s*\{\s*mask-image: linear-gradient\(\s*to right,\s*black calc\(100% - var\(--br-overflow-fade, 40px\)\),\s*transparent\s*\);/
     );
   });
 

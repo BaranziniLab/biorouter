@@ -137,9 +137,21 @@ describe("Crew's code block and table, promoted", () => {
     // One fade for both boxes; a table no longer closes its cut with a hairline.
     expect(block('md recipes').replace(/\/\*[\s\S]*?\*\//g, '')).not.toMatch(/border-right/);
     expect(ruleBody('.br-md-table-scroll')).toContain('border-radius: var(--radius-element);');
-    expect(
-      ruleBody(".br-md-code-body[data-overflow='true'],\n.br-md-table-scroll[data-overflow='true']")
-    ).toContain('mask-image: linear-gradient(to right, black calc(100% - 40px), transparent);');
+    // The fade is as wide as what is still out of view, at most 40px
+    // (`--br-overflow-fade`, written by `useOverflowsSideways`). A fixed 40px
+    // dimmed a right-aligned last column to nothing when only 10px lay past
+    // the edge (final check, 2026-10-12).
+    // Whitespace is Prettier's to choose, so it is folded before comparing.
+    const fade = ruleBody(
+      ".br-md-code-body[data-overflow='true'],\n.br-md-table-scroll[data-overflow='true']"
+    )!
+      .replace(/\(\s+/g, '(')
+      .replace(/\s+\)/g, ')')
+      .replace(/\s+/g, ' ');
+    expect(fade).toContain(
+      'mask-image: linear-gradient(to right, black calc(100% - var(--br-overflow-fade, 40px)), transparent);'
+    );
+    expect(fade).not.toContain('calc(100% - 40px)');
     expect(
       ruleBody(
         ".br-md-code-body[data-overflow='true']:focus-visible,\n.br-md-table-scroll[data-overflow='true']:focus-visible"

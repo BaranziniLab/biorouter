@@ -321,7 +321,7 @@ const CodeBlock = memo(function CodeBlock({
         </div>
       </div>
       {/* A region a keyboard can reach only while it scrolls (Crew's rule), and
-          the right-edge fade while there is more to its right. */}
+          the right-edge fade while there is more to its right, sized to it. */}
       <div
         ref={measureBody}
         className="br-md-code-body biorouter-md-code-body w-full"
@@ -927,7 +927,9 @@ function MarkdownListItem({ children, node: _node, ...props }: SlotProps<'li'>) 
  * radius 8 with no frame, rules between rows only, a muted 12px header, 13px
  * tabular cells. The scroll box is a
  * region a keyboard can reach only while the table is wider than the column,
- * and fades at its right edge while there is more to see.
+ * and fades at its right edge while there is more to see, the fade no wider
+ * than what is still past the edge (`--br-overflow-fade`), so a table that
+ * nearly fits keeps its last column readable.
  */
 function MarkdownTable({ node: _node, className, ...props }: SlotProps<'table'>) {
   const [measure, overflow] = useOverflowsSideways<HTMLDivElement>();

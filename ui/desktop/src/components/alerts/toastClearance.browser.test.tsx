@@ -5,14 +5,17 @@
  * In the running app "Chat ID copied" sat at 1004,44 to 1284,109 at 1300 wide, over the open
  * find bar (844,52 to 1284,94): its count, info tip, Aa, both arrows and Close were hidden. At
  * 1440 the same toast covered the docked summary rail's "To do" header and progress bar.
- * `toastClearance.ts` moves the stack below find and left of the summary.
+ * `toastClearance.ts` moves the stack below find, left of the summary popover, and into the
+ * docked rail's column under its card. Stepped left of the rail it had covered the person's own
+ * message instead (final app check, "Toasts do not cover transcript content").
  *
  * jsdom has no layout, so the real find bar (`SearchBar`, with `styles/search.css`), the real
  * react-toastify container as App.tsx configures it, and the watcher App.tsx starts are bundled
  * with esbuild, `styles/main.css` is compiled by Tailwind (the vendored ReactToastify.css after
  * it, as App imports them), and Chromium measures. The rail card and the popover are boxes with
  * their real class names and the geometry the app gives them (a 280px rail under the 44px
- * header with a 12px gutter; a 280px popover 4px under the band, 16px in from the right).
+ * header with a 12px gutter, its card as tall as its content or, `tall`, as the rail; a 280px
+ * popover 4px under the band, 16px in from the right).
  */
 import { readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
@@ -35,8 +38,8 @@ import { TooltipProvider } from '../ui/Tooltip';
 import { NotificationContent, TOAST_SURFACE_CLASS_NAME } from './NotificationSurface';
 import { watchToastClearance } from './toastClearance';
 
-type Layout = { find: boolean; rail: boolean; popover: boolean; split: boolean };
-const NONE: Layout = { find: false, rail: false, popover: false, split: false };
+type Layout = { find: boolean; rail: boolean; tall: boolean; popover: boolean; split: boolean };
+const NONE: Layout = { find: false, rail: false, tall: false, popover: false, split: false };
 
 function Find() {
   return (
@@ -69,8 +72,22 @@ function Harness() {
             {layout.find && !layout.split && <Find />}
           </div>
           {layout.rail && (
-            <aside style={{ width: 280, padding: '12px 12px 12px 0', display: 'flex' }}>
-              <div className="br-summary-card" data-state="open" style={{ flex: 1, padding: 16 }}>
+            <aside
+              style={{
+                width: 280,
+                padding: '12px 12px 12px 0',
+                display: 'flex',
+                flexDirection: 'column',
+                minHeight: 0,
+                boxSizing: 'border-box',
+              }}
+            >
+              <div
+                className="br-summary-card"
+                data-state="open"
+                data-entered=""
+                style={{ flex: layout.tall ? 1 : 'none', height: layout.tall ? undefined : 194, padding: 16 }}
+              >
                 To do 5 of 15
               </div>
             </aside>
@@ -91,8 +108,8 @@ function Harness() {
           '--toastify-z-index': 'var(--z-toast)',
           top: 'var(--toast-inset-top)',
           width: 'fit-content',
-          minWidth: '280px',
-          maxWidth: 'min(420px, calc(100vw - 32px))',
+          minWidth: 'var(--toast-clear-width, 280px)',
+          maxWidth: 'var(--toast-clear-width, min(420px, calc(100vw - 32px)))',
         } as React.CSSProperties}
         position="top-right"
         newestOnTop={false}
@@ -354,7 +371,7 @@ describe('a toast steps out of the way of find in chat and the Chat summary (V2-
     }
   });
 
-  it('beside the docked summary rail the toast sits 16px left of the card, in line with find (1440)', async (ctx) => {
+  it('with the summary rail docked the toast joins its column, under the card, never over the conversation (1440)', async (ctx) => {
     if (!browser) return ctx.skip();
     const page = await open(1440);
     try {
@@ -362,23 +379,55 @@ describe('a toast steps out of the way of find in chat and the Chat summary (V2-
       await showToast(page);
       await settle(page);
       const card = await box(page, CARD);
+      const conversation = await box(page, '#cell');
       expect(card.top).toBeCloseTo(56, 0);
+      expect(card.bottom).toBeCloseTo(250, 0);
       const toast = await box(page, TOAST);
-      expect(toast.right).toBeCloseTo(card.left - 16, 0);
-      expect(toast.top).toBeCloseTo(44, 0);
+      expect(toast.top).toBeCloseTo(card.bottom + 8, 0);
+      expect(toast.left).toBeCloseTo(card.left, 0);
+      expect(toast.right).toBeCloseTo(card.right, 0);
       expect(overlaps(toast, card)).toBe(false);
+      expect(overlaps(toast, conversation), 'the toast stays off the conversation').toBe(false);
 
-      // Find opened in the conversation beside the rail: the toast clears both.
+      // Find opened in the conversation beside the rail: the toast is already clear of it.
       await setLayout(page, { find: true });
       await page.waitForSelector(FIND);
       await settle(page, 300);
       const bar = await box(page, FIND);
       const both = await box(page, TOAST);
-      expect(both.right).toBeCloseTo(card.left - 16, 0);
-      expect(both.right, 'right edge in line with the find bar').toBeCloseTo(bar.right, 0);
-      expect(both.top).toBeCloseTo(bar.bottom + 8, 0);
+      expect(both).toEqual(toast);
       expect(overlaps(both, bar)).toBe(false);
-      expect(overlaps(both, card)).toBe(false);
+      for (const control of await findControlsReachable(page)) {
+        expect(control.itself, `${control.what} hit ${control.hit}`).toBe(true);
+      }
+
+      // The rail folds away: the toast goes back to its corner, at its own width again.
+      await setLayout(page, { rail: false, find: false });
+      await settle(page, 300);
+      const back = await box(page, TOAST);
+      expect(back.top).toBeCloseTo(44, 0);
+      expect(back.right).toBeCloseTo(1424, 0);
+      expect(back.right - back.left).toBeGreaterThanOrEqual(280);
+    } finally {
+      await page.close();
+    }
+  });
+
+  it('over a card that fills the rail the toast stays at the rail top, in the column (1440)', async (ctx) => {
+    if (!browser) return ctx.skip();
+    const page = await open(1440);
+    try {
+      await setLayout(page, { rail: true, tall: true });
+      await showToast(page);
+      await settle(page);
+      const card = await box(page, CARD);
+      const conversation = await box(page, '#cell');
+      expect(card.bottom).toBeCloseTo(888, 0);
+      const toast = await box(page, TOAST);
+      expect(toast.top).toBeCloseTo(44, 0);
+      expect(toast.left).toBeCloseTo(card.left, 0);
+      expect(toast.right).toBeCloseTo(card.right, 0);
+      expect(overlaps(toast, conversation), 'the toast stays off the conversation').toBe(false);
     } finally {
       await page.close();
     }

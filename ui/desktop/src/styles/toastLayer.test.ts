@@ -286,10 +286,11 @@ describe('a menu the person opened stands above a toast', () => {
 /**
  * Vision V2-R7-4, checklist 15. A toast covered find in chat's count and buttons, and the
  * docked Chat summary's first rows, because all three dock in the same corner. The stack now
- * steps below find and left of the summary (`components/alerts/toastClearance.ts`, whose own
- * test holds the geometry; Chromium's is `alerts/toastClearance.browser.test.tsx`). This holds
- * the two ends that live elsewhere: the stylesheet turns the measured move into a `translate`
- * that leaves `top` alone, and App starts the watcher.
+ * steps below find and into the summary rail's column, under its card
+ * (`components/alerts/toastClearance.ts`, whose own test holds the geometry; Chromium's is
+ * `alerts/toastClearance.browser.test.tsx`). This holds the ends that live elsewhere: the
+ * stylesheet turns the measured move into a `translate` that leaves `top` alone, App's container
+ * takes the joined column's width, and App starts the watcher.
  */
 describe('a toast steps out of the way of find in chat and the Chat summary', () => {
   function rule(selector: string): string {
@@ -317,6 +318,17 @@ describe('a toast steps out of the way of find in chat and the Chat summary', ()
     expect(CSS).toMatch(
       /@media \(prefers-reduced-motion: reduce\)\s*\{\s*\.Toastify__toast-container\[data-toast-placed\]\s*\{\s*transition:\s*none;/
     );
+  });
+
+  /**
+   * Final app check: stepped LEFT of the docked rail, a sticky toast stood over the person's own
+   * message. In the rail's column it must also be no wider than the card, or a 420px toast
+   * would hang 150px back over the conversation. Both bounds read the one variable the watcher
+   * writes, and fall back to the stack's own 280 to 420 when it is unset.
+   */
+  it('takes the joined column width as both its min and max width', () => {
+    expect(APP).toContain("minWidth: 'var(--toast-clear-width, 280px)'");
+    expect(APP).toContain("maxWidth: 'var(--toast-clear-width, min(420px, calc(100vw - 32px)))'");
   });
 
   it('starts the watcher once, beside the container', () => {

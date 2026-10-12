@@ -138,6 +138,20 @@ has not read yet is brought in by a head re-read, and a page already in flight w
 lands does not put the row back (`applyNamesDuringLoad`). The rename route answers with no body, so
 the time is the renderer's clock until the next re-read carries the daemon's own.
 
+A turn does not wait for one either. Running a turn is activity (R-30), so the moment the running
+registry reports a turn in a chat, the sidebar raises that row's `updated_at` to the time it saw the
+turn start, with no request, as a saved rename does (`turnSessionIds`, built by `sessionsInTurn`:
+running, not finished, and not an agent restart). A restart is what a folder change shows as
+running, and it is not a turn: whether the folder change stamps the chat is the daemon's to decide
+(see "What moves a chat"), so the list leaves that row to the daemon's order. The raise is applied to every page read while the turn runs (`applyTurnRaises`), so a head
+page the daemon answered before it stored the person's message does not move the chat back down.
+It is dropped when the turn ends, and the read a finished turn starts carries the daemon's own time,
+so a turn the daemon refused before storing anything leaves the chat where it was. A running chat
+the list has not read yet is brought in by a head re-read, 250 ms after the start and again after
+2 s. Until the final check of 2026-10-12 the list moved a running chat only when its turn finished:
+it kept its place, spinner and all, for the whole turn. Opening a chat used to raise it, which hid
+that until R-30.
+
 ### What moves a chat
 
 Last activity is the daemon's `updated_at`. Since R-30 it moves when something is done to the
@@ -320,7 +334,8 @@ buttons below.
 
 ### Rows hold still under the pointer
 
-Under Last activity a running chat moves to the top. While the pointer is over the list, or a row is
+Under Last activity a running chat moves to the top when its turn starts (see "Keeping the list
+current"). While the pointer is over the list, or a row is
 being renamed, the list keeps the order it had (`applyHeldArrangement`), and the live order applies
 when the pointer leaves. A row that was removed goes, a new name shows, and rows that arrive below
 every held row come in; a row that would land above or between held rows waits.
@@ -497,6 +512,7 @@ tab stop, so Tab reaches them from the row.
 |---|---|
 | `BioRouterSidebar/sidebarChatView.test.ts` | All nine views, folder labels and collisions, the stored view, the held order, `windowSidebarRows`; `sidebarRowTitle` and the name sort by the shown title; the drawn range: `sliceSidebarLines` (gaps of exact line counts, kept rows, a kept folder header or Show more, headers outside the range), `sidebarLinesInView` (lines from group boxes by binary search) and `nextSidebarDrawRange` (a range that holds still while it covers the view) |
 | `BioRouterSidebar/useSidebarSessions.test.ts` | Paging, and `loadAll` reading the rest in one request with the proof (or page by page from an older daemon), into a buffer shown once, stopping at the cap; `isLoadingAll` reported for the first full read only (not a later tail re-read, but again after a failed read); the head re-read on a new open chat, on focus and on a meta change |
+| `BioRouterSidebar/useSidebarSessions.turnActivity.test.tsx` | A chat moving to the top when its turn starts (no request, and not again for an equal set), waiting under the pointer and moving when it leaves, staying on top over a head page read before the daemon stamped the turn, letting go when the turn ends (a refused turn goes back, a stored one stays), a running chat past the first page brought in by a head read, and `sessionsInTurn` leaving out a finished turn and an agent restart |
 | `BioRouterSidebar/RecentChats.test.tsx`, `.folders.test.tsx` | The header, the buckets, the rows, Group by Folder (and where focus goes after Show more or Show less from the keyboard, and after a pointer's click; the current chat past the first five drawn sixth, Show less collapsing to it, no toggle when nothing is hidden, and that row held under the pointer); a scheduled run's row showing its job id (its names and delete sentence too) with the rename starting from the stored name; a stored view drawn only once its read lands, a switch keeping the default arrangement until then, the complete list held from then on, and a first load held from its own rows |
 | `BioRouterSidebar/RecentChats.window.test.tsx` | The first 60 lines of the whole arranged list, growth on scroll before another page is asked for, a restart on a view change, a list whose box grew asking for the next page, and `⌘⌥R` drawing the current chat's row |
 | `BioRouterSidebar/RecentChats.switchCost.test.tsx` | A view switch mounts each drawn row once, also after a scroll; a row builds a menu only when it opens; a list re-render (pointer, rename keystroke) re-renders no other row; a measured list draws its height plus the overscan |

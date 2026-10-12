@@ -55,6 +55,7 @@ import { AlertCircle, Terminal } from './icons/app-icons';
 import { ChatSummaryRail } from './summary/ChatSummaryRail';
 import { SummaryHeaderButton } from './summary/SummaryHeaderButton';
 import { summaryCopy } from './summary/copy';
+import { collectCodeDelta } from './summary/codeDelta';
 import { useSessionTodos } from '../hooks/useSessionTodos';
 import { summaryRailChat, useSummaryRail } from '../hooks/useSummaryRail';
 import { useLoadingChat } from './summary/useLoadingChat';
@@ -1248,84 +1249,6 @@ export function countSessionToolCalls(messages: Message[]): number {
   }
 
   return total;
-}
-
-function visitStrings(
-  value: unknown,
-  visitor: (text: string) => void,
-  seen = new WeakSet<object>()
-) {
-  if (typeof value === 'string') {
-    visitor(value);
-    return;
-  }
-  if (!value || typeof value !== 'object') return;
-  if (seen.has(value)) return;
-  seen.add(value);
-  if (Array.isArray(value)) {
-    value.forEach((item) => visitStrings(item, visitor, seen));
-    return;
-  }
-  Object.values(value as Record<string, unknown>).forEach((item) =>
-    visitStrings(item, visitor, seen)
-  );
-}
-
-function countPatchLines(text: string) {
-  let added = 0;
-  let removed = 0;
-  for (const line of text.split(/\r?\n/)) {
-    if (line.startsWith('+++') || line.startsWith('---')) continue;
-    if (line.startsWith('+')) added += 1;
-    if (line.startsWith('-')) removed += 1;
-  }
-  return { added, removed };
-}
-
-function collectCodeDelta(messages: Message[]) {
-  let added = 0;
-  let removed = 0;
-  const seenMatches = new Set<string>();
-  const compactDiffRe = /\+([0-9][\d,]*)\s+[-−]([0-9][\d,]*)/g;
-  const gitDiffRe = /([0-9][\d,]*)\s+insertions?\(\+\)(?:,\s*([0-9][\d,]*)\s+deletions?\(-\))?/gi;
-  const codeFenceRe = /```[^\n]*\n([\s\S]*?)```/g;
-
-  for (const message of messages) {
-    visitStrings(message.content, (text) => {
-      if (!text.trim()) return;
-
-      for (const match of text.matchAll(compactDiffRe)) {
-        const key = `compact:${match[0]}`;
-        if (seenMatches.has(key)) continue;
-        seenMatches.add(key);
-        added += Number(match[1].replace(/,/g, '')) || 0;
-        removed += Number(match[2].replace(/,/g, '')) || 0;
-      }
-
-      for (const match of text.matchAll(gitDiffRe)) {
-        const key = `git:${match[0]}`;
-        if (seenMatches.has(key)) continue;
-        seenMatches.add(key);
-        added += Number(match[1].replace(/,/g, '')) || 0;
-        removed += Number(match[2]?.replace(/,/g, '') ?? 0) || 0;
-      }
-
-      if (text.includes('*** Begin Patch') || text.includes('diff --git')) {
-        const delta = countPatchLines(text);
-        added += delta.added;
-        removed += delta.removed;
-      }
-
-      for (const match of text.matchAll(codeFenceRe)) {
-        const key = `fence:${match[0].slice(0, 120)}:${match[0].length}`;
-        if (seenMatches.has(key)) continue;
-        seenMatches.add(key);
-        added += match[1].split(/\r?\n/).filter((line) => line.trim()).length;
-      }
-    });
-  }
-
-  return { added, removed };
 }
 
 /** Module-level, so the message list's memoised element keeps one identity. */

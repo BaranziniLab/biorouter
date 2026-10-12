@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { listSidebarSessions, type SessionSummary } from '../../api';
+import type { RunningChatEntry } from '../../hooks/chatStreamStore';
+import { ChatState } from '../../types/chatState';
 import { userActionHeaders } from '../../utils/userAction';
 import { laterActivity, subscribeSessionNameChanges } from '../../utils/sessionNameSync';
 import { subscribeSessionListChanges, subscribeSessionRemoved } from '../../utils/sessionListCache';
@@ -30,6 +32,16 @@ export const SIDEBAR_SESSION_LOAD_ALL_CAP = 2_000;
  * older `biorouter serve` host or dev binary) still stamps the open.
  */
 const OPEN_REFRESH_FOLLOW_UP_MS = 2_000;
+
+/**
+ * How long after a turn starts in a chat this list has not read yet it reads
+ * the head a second time. The first read follows the start by 250 ms, and the
+ * daemon can store the person's message after it (a cold chat waits for its
+ * extensions first), so the chat is not yet first in the daemon's order.
+ */
+const TURN_START_REFRESH_FOLLOW_UP_MS = 2_000;
+
+const NO_TURNS: ReadonlySet<string> = new Set();
 
 export interface SidebarSessionsOptions {
   /**
@@ -63,6 +75,59 @@ export interface SidebarSessionsOptions {
    * `activityAt`). Leaving for a page that is not a chat reads nothing.
    */
   openSessionId?: string | null;
+  /**
+   * The chats with a turn in progress in this window ({@link sessionsInTurn}).
+   * Running a turn is activity (R-30), so under "Last activity" a running chat
+   * moves to the top, and it moves when the turn STARTS: the list raises the
+   * row's `updated_at` to the moment it saw the turn begin, with no request,
+   * as a saved rename does. The list used to re-read only when a turn
+   * finished, so a running chat sat where it was, spinner and all, for the
+   * whole turn (final check, 2026-10-12). The raise is kept over every page
+   * read while the turn runs, because a head page the daemon answered before
+   * it stored the person's message carries the old time; when the turn ends it
+   * is dropped, and the read that follows a finished turn carries the daemon's
+   * own time. A chat the list has not read yet is brought in by a head read.
+   * The move still waits while the pointer is over the list (RecentChats'
+   * hold, `applyHeldArrangement`).
+   */
+  turnSessionIds?: ReadonlySet<string>;
+}
+
+/**
+ * The chats with a turn in progress, from the running registry's entries: not
+ * finished, and not restarting the agent. A restart (a folder change) draws the
+ * spinner but is not a turn. Whether a folder change stamps the chat is the
+ * daemon's to decide (R-30: it does for an empty chat), so the list leaves
+ * that row to the daemon's own order rather than raising it here.
+ */
+export function sessionsInTurn(entries: readonly RunningChatEntry[]): Set<string> {
+  return new Set(
+    entries
+      .filter((entry) => !entry.completedAt && entry.chatState !== ChatState.RestartingAgent)
+      .map((entry) => entry.sessionId)
+  );
+}
+
+/**
+ * Raise each running chat's `updated_at` to its turn's start (the later of the
+ * two), so a page read before the daemon stored the turn's message does not
+ * move the chat back down. Returns `rows` itself when nothing changes.
+ */
+export function applyTurnRaises(
+  rows: SessionSummary[],
+  raises: ReadonlyMap<string, string>
+): SessionSummary[] {
+  if (raises.size === 0) return rows;
+  let changed = false;
+  const next = rows.map((row) => {
+    const raise = raises.get(row.id);
+    if (!raise) return row;
+    const updatedAt = laterActivity(row.updated_at, raise);
+    if (updatedAt === row.updated_at) return row;
+    changed = true;
+    return { ...row, updated_at: updatedAt };
+  });
+  return changed ? next : rows;
 }
 
 export interface SidebarSessionsState {
@@ -137,6 +202,7 @@ export default function useSidebarSessions(
 ): SidebarSessionsState {
   const loadAll = options.loadAll ?? false;
   const openSessionId = options.openSessionId ?? null;
+  const turnSessionIds = options.turnSessionIds ?? NO_TURNS;
   const [sessions, setSessions] = useState<SessionSummary[]>([]);
   const [hasMore, setHasMore] = useState(true);
   const [isLoading, setIsLoading] = useState(true);
@@ -170,6 +236,10 @@ export default function useSidebarSessions(
   // the rename carries the chat's old name and, for a saved rename, its old
   // `updated_at`; merging it as it is would put both back (R-30).
   const namesDuringLoadRef = useRef(new Map<string, NameDuringLoad>());
+  // The chats with a turn running, by id, with the time the list saw the turn
+  // start (see `turnSessionIds`). Applied to every page as it is merged.
+  const turnRaisesRef = useRef(new Map<string, string>());
+  const turnFollowUpRef = useRef<number | undefined>(undefined);
   // Read by `loadPage` at request time, so a view change takes effect on the
   // next page without re-creating the loader (and its subscriptions).
   const pageSizeRef = useRef(loadAll ? SIDEBAR_SESSION_FULL_PAGE_SIZE : SIDEBAR_SESSION_PAGE_SIZE);
@@ -179,6 +249,10 @@ export default function useSidebarSessions(
     mountedRef.current = true;
     return () => {
       mountedRef.current = false;
+      if (turnFollowUpRef.current !== undefined) {
+        window.clearTimeout(turnFollowUpRef.current);
+        turnFollowUpRef.current = undefined;
+      }
     };
   }, []);
 
@@ -208,9 +282,12 @@ export default function useSidebarSessions(
       const page = response.data;
       const mergedSessions = appendSessionPage(
         sessionsRef.current,
-        applyNamesDuringLoad(
-          settleRowsReadDuringFetch(page.sessions, rowsReadDuringLoadRef.current, false),
-          namesDuringLoadRef.current
+        applyTurnRaises(
+          applyNamesDuringLoad(
+            settleRowsReadDuringFetch(page.sessions, rowsReadDuringLoadRef.current, false),
+            namesDuringLoadRef.current
+          ),
+          turnRaisesRef.current
         )
       );
       const pageHasMore =
@@ -407,6 +484,42 @@ export default function useSidebarSessions(
     return () => window.clearTimeout(followUp);
   }, [openSessionId]);
 
+  // A turn started in a chat: raise its row now (see `turnSessionIds`). The set
+  // is rebuilt whenever a running entry changes (thinking, then streaming), so
+  // a start is an id the list holds no raise for, not a new set.
+  useEffect(() => {
+    const raises = turnRaisesRef.current;
+    for (const sessionId of [...raises.keys()]) {
+      if (!turnSessionIds.has(sessionId)) raises.delete(sessionId);
+    }
+    const started = [...turnSessionIds].filter((sessionId) => !raises.has(sessionId));
+    if (started.length === 0) return;
+    const at = new Date().toISOString();
+    for (const sessionId of started) raises.set(sessionId, at);
+
+    if (pendingAllRef.current) {
+      pendingAllRef.current = applyTurnRaises(pendingAllRef.current, raises);
+    }
+    const raised = applyTurnRaises(sessionsRef.current, raises);
+    if (raised !== sessionsRef.current) {
+      sessionsRef.current = raised;
+      setSessions(raised);
+    }
+
+    // A chat past the pages read so far: the head read brings it in once the
+    // daemon lists it first, which it does when it has stored the message.
+    const listed = (sessionId: string) =>
+      sessionsRef.current.some((session) => session.id === sessionId) ||
+      (pendingAllRef.current?.some((session) => session.id === sessionId) ?? false);
+    if (started.every(listed)) return;
+    scheduleRefreshRef.current();
+    if (turnFollowUpRef.current !== undefined) window.clearTimeout(turnFollowUpRef.current);
+    turnFollowUpRef.current = window.setTimeout(() => {
+      turnFollowUpRef.current = undefined;
+      scheduleRefreshRef.current();
+    }, TURN_START_REFRESH_FOLLOW_UP_MS);
+  }, [turnSessionIds]);
+
   const loadMore = useCallback(() => {
     void loadPage(false);
   }, [loadPage]);
@@ -446,9 +559,12 @@ export default function useSidebarSessions(
         const page = response.data;
         pendingAllRef.current = appendSessionPage(
           pendingAllRef.current ?? [],
-          applyNamesDuringLoad(
-            settleRowsReadDuringFetch(page.sessions, rowsReadDuringLoadRef.current, false),
-            namesDuringLoadRef.current
+          applyTurnRaises(
+            applyNamesDuringLoad(
+              settleRowsReadDuringFetch(page.sessions, rowsReadDuringLoadRef.current, false),
+              namesDuringLoadRef.current
+            ),
+            turnRaisesRef.current
           )
         );
         cursor = page.next_cursor ?? null;

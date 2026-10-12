@@ -11,6 +11,9 @@ pub mod budget;
 // file it on the public issue tracker.
 pub mod bug_report;
 pub(crate) mod chatrecall_extension;
+// The Chat summary's Code figure for a script's file edits, measured from the
+// sub-calls' full arguments (their records are truncated).
+pub(crate) mod code_delta;
 pub(crate) mod code_execution_extension;
 // BR-48: a deterministic done-ness gate for interactive chat — reuses the
 // workflow `SuccessCheck` machinery to keep a turn working until its checks

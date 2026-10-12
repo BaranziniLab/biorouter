@@ -1,3 +1,4 @@
+use crate::agents::code_delta::{CodeDeltaTally, CODE_DELTA_META_KEY};
 use crate::agents::extension::PlatformExtensionContext;
 use crate::agents::extension_manager::get_parameter_names;
 use crate::agents::mcp_client::{Error, McpClientTrait, McpMeta};
@@ -2272,6 +2273,10 @@ struct CollectedArtifacts {
     /// `MAX_TOOL_CALL_META_TOTAL_BYTES`.
     tool_call_bytes: usize,
     dropped_tool_calls: usize,
+    /// Lines the script's successful `text_editor` edits changed, measured
+    /// from their FULL arguments — a record's `args` is truncated and a record
+    /// past the budget is dropped, so the records cannot be summed for this.
+    code_delta: CodeDeltaTally,
 }
 
 impl CollectedArtifacts {
@@ -2368,6 +2373,16 @@ impl CollectedArtifacts {
              in place, so the error above is not theirs: fix what failed and run only what \
              still needs to run, rather than redoing their work."
         ))
+    }
+
+    /// A finished sub-call: its record, and, when it succeeded, the file edit
+    /// it made, measured from its FULL arguments (the record keeps them
+    /// truncated, and may itself be dropped past the budget).
+    fn record_call(&mut self, record: ToolCallRecord, tool_name: &str, arguments: &str) {
+        if record.status == "ok" {
+            self.code_delta.observe(tool_name, arguments);
+        }
+        self.push_tool_call(record);
     }
 
     fn push_tool_call(&mut self, record: ToolCallRecord) {
@@ -2770,6 +2785,10 @@ impl CodeExecutionClient {
                     Value::from(collected.dropped_tool_calls),
                 );
             }
+        }
+        // Read by the Chat summary's Code figure (`summary/codeDelta.ts`).
+        if let Some(delta) = collected.code_delta.meta_value() {
+            meta.insert(CODE_DELTA_META_KEY.to_string(), delta);
         }
         (!meta.is_empty()).then_some(rmcp::model::Meta(meta))
     }
@@ -3644,7 +3663,10 @@ impl CodeExecutionClient {
                         failure_kind,
                     ),
                 };
-                collected_artifacts.lock().await.push_tool_call(record);
+                collected_artifacts
+                    .lock()
+                    .await
+                    .record_call(record, &tool_name, &arguments);
             }
             let _ = response_tx.send(result);
         }

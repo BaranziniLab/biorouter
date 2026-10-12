@@ -9,6 +9,7 @@ import {
   Globe,
   Image,
 } from '../icons/app-icons';
+import { ENTITY_ICONS } from '../icons/entity-icons';
 import type { ArtifactSource } from './artifactTypes';
 import { iconForArtifact } from './ArtifactViewer';
 
@@ -62,5 +63,29 @@ describe('the glyph a preview tab draws (V2-R3-3)', () => {
       Globe
     );
     expect(iconForArtifact(null)).toBe(File);
+  });
+
+  it('draws an Agent Drafter app with the application glyph its transcript card draws', () => {
+    // One entity, one glyph (design.md §3.9): the app's card in the build chat
+    // draws the registry's application glyph, so its preview tab draws the same
+    // one rather than the figure glyph every other `ui://` resource takes.
+    const html = (sourceUri: string): ArtifactSource => ({
+      kind: 'html',
+      title: 'a',
+      html: '<p>x</p>',
+      sourceUri,
+    });
+    expect(iconForArtifact(html('ui://agent-drafter/lab-notebook'))).toBe(ENTITY_ICONS.application);
+    expect(iconForArtifact(html('UI://Agent_Drafter/lab-notebook'))).toBe(ENTITY_ICONS.application);
+    expect(
+      iconForArtifact({
+        kind: 'mcpResource',
+        title: 'a',
+        resource: { uri: 'ui://agent-drafter/lab-notebook', text: '' },
+      })
+    ).toBe(ENTITY_ICONS.application);
+    // Auto Visualiser figures and reports keep the figure glyph.
+    expect(iconForArtifact(html('ui://autovisualiser/chart'))).toBe(ChartColumn);
+    expect(iconForArtifact(html('ui://dashboard/report'))).toBe(ChartColumn);
   });
 });
