@@ -52,7 +52,7 @@ export default function ExtensionInfoFields({
           required
           error={submitAttempted && !isNameValid() ? COPY.nameRequired : undefined}
         >
-          <Input value={name} onChange={(e) => onChange('name', e.target.value)} />
+          <Input machine value={name} onChange={(e) => onChange('name', e.target.value)} />
         </Field>
 
         <Field id={TYPE_FIELD_ID} label={COPY.typeLabel} info={COPY.typeHelp}>

@@ -100,6 +100,7 @@ export default function HeadersSection({
         {headers.map((header, index) => (
           <React.Fragment key={index}>
             <Input
+              machine
               value={header.key}
               onChange={(e) => onChange(index, 'key', e.target.value)}
               placeholder={COPY.headerName}
@@ -108,6 +109,7 @@ export default function HeadersSection({
               className="w-full"
             />
             <Input
+              machine
               value={header.value}
               onChange={(e) => onChange(index, 'value', e.target.value)}
               placeholder={COPY.value}
@@ -128,6 +130,7 @@ export default function HeadersSection({
 
         {/* Empty row with Add button */}
         <Input
+          machine
           value={newKey}
           onChange={(e) => {
             setNewKey(e.target.value);
@@ -140,6 +143,7 @@ export default function HeadersSection({
           className="w-full"
         />
         <Input
+          machine
           value={newValue}
           onChange={(e) => {
             setNewValue(e.target.value);

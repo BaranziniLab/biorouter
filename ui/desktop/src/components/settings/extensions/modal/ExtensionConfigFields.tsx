@@ -35,6 +35,7 @@ export default function ExtensionConfigFields({
             value class, and it is body font everywhere else too (e.g. LocalModelInventory's
             "Official URL"). The error edge is `aria-invalid`, which Field sets and Input draws. */}
         <Input
+          machine
           value={full_cmd}
           onChange={(e) => onChange('cmd', e.target.value)}
           placeholder={COPY.commandPlaceholder}
@@ -51,6 +52,7 @@ export default function ExtensionConfigFields({
       error={invalid ? COPY.endpointRequired : undefined}
     >
       <Input
+        machine
         value={endpoint}
         onChange={(e) => onChange('endpoint', e.target.value)}
         placeholder={COPY.endpointPlaceholder}

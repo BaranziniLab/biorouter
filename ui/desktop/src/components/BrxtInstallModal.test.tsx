@@ -390,6 +390,24 @@ describe('BrxtInstallModal — the dialog', () => {
     expect(label.querySelector('[aria-hidden="true"]')).toHaveTextContent('*');
   });
 
+  it('does not spellcheck a configuration value, secret or not (V4-R7-5)', async () => {
+    // An entry is a URL, a path or an id: the red dotted line Chromium draws under one tells a
+    // person the correct value is wrong. jsdom has no spellchecker, so the markup is what is read.
+    const user = userEvent.setup({ delay: null });
+    withManifest([ENV({ key: 'TEST_KEY' }), ENV({ key: 'BASE_URL', secret: false })]);
+    open();
+    await user.click(await screen.findByRole('button', { name: 'Next: configure' }));
+
+    const entries = [await screen.findByLabelText(/TEST_KEY/), screen.getByLabelText(/BASE_URL/)];
+    expect(entries[0]).toHaveAttribute('type', 'password');
+    expect(entries[1]).toHaveAttribute('type', 'text');
+    for (const entry of entries) {
+      expect(entry).toHaveAttribute('spellcheck', 'false');
+      expect(entry).toHaveAttribute('autocorrect', 'off');
+      expect(entry).toHaveAttribute('autocapitalize', 'off');
+    }
+  });
+
   it('says which value is missing when Install is pressed, instead of sitting grey', async () => {
     const user = userEvent.setup({ delay: null });
     const install = vi.fn(async () => ({ installDir: '/tmp/x' }));

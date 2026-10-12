@@ -381,6 +381,91 @@ describe('ExtensionModal — the dialog and its form', () => {
   });
 });
 
+/**
+ * Vision V4-R7-5. Chromium draws a red dotted line under a value its spellchecker does not know,
+ * and an extension dialog is nothing but such values: a command (`uvx`), a URL, a variable or
+ * header name. A line under a correct value says something is wrong with it. `<Input machine />`
+ * sets the three attributes the engine reads; jsdom has no spellchecker, so what is pinned here is
+ * the markup, and the primitive's own cases (`ui/input.test.tsx`) pin that the engine honours it.
+ *
+ * The rule is per field, not per dialog: the Name is the extension's key, a machine string, but the
+ * Description is a person's own words and keeps its spellcheck. The timeout is a number of seconds.
+ */
+describe('ExtensionModal: fields that hold a machine string do not spellcheck', () => {
+  const renderModal = (data: ExtensionFormData) =>
+    render(
+      <ExtensionModal
+        title="Update extension"
+        initialData={data}
+        onClose={vi.fn()}
+        onSubmit={vi.fn()}
+        onDelete={vi.fn()}
+        submitLabel="Save changes"
+        modalType="edit"
+      />
+    );
+
+  const expectMachine = (field: HTMLElement) => {
+    expect(field).toHaveAttribute('spellcheck', 'false');
+    expect(field).toHaveAttribute('autocorrect', 'off');
+    expect(field).toHaveAttribute('autocapitalize', 'off');
+  };
+
+  const expectPlain = (field: HTMLElement) => {
+    expect(field).not.toHaveAttribute('spellcheck');
+    expect(field).not.toHaveAttribute('autocorrect');
+    expect(field).not.toHaveAttribute('autocapitalize');
+  };
+
+  it('a command extension: Name, Command and both variable rows are machine; Description is not', () => {
+    renderModal(
+      stdio({
+        description: 'Reads the knowledge graph',
+        envVars: [{ key: 'API_URL', value: 'https://example.com', isEdited: true }],
+      })
+    );
+    const dialog = screen.getByRole('dialog');
+
+    expectMachine(within(dialog).getByLabelText(COPY.nameLabel));
+    expectMachine(within(dialog).getByLabelText(COPY.commandLabel));
+    // One saved row and the add row beneath it, a name and a value in each.
+    const names = within(dialog).getAllByLabelText(COPY.variableName);
+    const values = within(dialog).getAllByLabelText(COPY.value);
+    expect(names).toHaveLength(2);
+    expect(values).toHaveLength(2);
+    [...names, ...values].forEach(expectMachine);
+
+    expectPlain(within(dialog).getByLabelText(COPY.descriptionLabel));
+  });
+
+  it('an HTTP extension: Name, Endpoint and both header rows are machine; Description is not', () => {
+    renderModal(
+      stdio({
+        type: 'streamable_http',
+        cmd: '',
+        endpoint: 'https://example.com/mcp',
+        headers: [{ key: 'Authorization', value: 'Bearer abc', isEdited: true }],
+      })
+    );
+    const dialog = screen.getByRole('dialog');
+
+    expectMachine(within(dialog).getByLabelText(COPY.nameLabel));
+    expectMachine(within(dialog).getByLabelText(COPY.endpointLabel));
+    const names = within(dialog).getAllByLabelText(COPY.headerName);
+    const values = within(dialog).getAllByLabelText(COPY.value);
+    expect(names).toHaveLength(2);
+    expect(values).toHaveLength(2);
+    [...names, ...values].forEach(expectMachine);
+
+    expectPlain(within(dialog).getByLabelText(COPY.descriptionLabel));
+  });
+
+  it('leaves the timeout, a number of seconds, as it was', () => {
+    renderModal(stdio());
+    expectPlain(screen.getByLabelText(COPY.timeoutLabel));
+  });
+});
+
 describe('ExtensionTimeoutField', () => {
   it('says the whole sentence, in the field’s own flow, when the timeout is not a positive number', () => {
     render(<ExtensionTimeoutField timeout={0} onChange={vi.fn()} submitAttempted />);

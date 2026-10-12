@@ -115,6 +115,7 @@ export default function EnvVarsSection({
           return (
             <React.Fragment key={index}>
               <Input
+                machine
                 value={envVar.key}
                 onChange={(e) => onChange(index, 'key', e.target.value)}
                 placeholder={COPY.variableName}
@@ -123,6 +124,7 @@ export default function EnvVarsSection({
                 className="w-full"
               />
               <Input
+                machine
                 value={envVar.value}
                 readOnly={saved}
                 onChange={(e) => {
@@ -155,6 +157,7 @@ export default function EnvVarsSection({
 
         {/* Empty row with Add button */}
         <Input
+          machine
           value={newKey}
           onChange={(e) => {
             setNewKey(e.target.value);
@@ -167,6 +170,7 @@ export default function EnvVarsSection({
           className="w-full"
         />
         <Input
+          machine
           value={newValue}
           onChange={(e) => {
             setNewValue(e.target.value);

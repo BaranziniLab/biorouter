@@ -516,6 +516,7 @@ export function BrxtInstallModal({ onClose, onInstalled, preloadedFilePath, orig
       }
     >
       <Input
+        machine
         type={entry.secret ? 'password' : 'text'}
         // The manifest's description of the variable is the hint inside the empty field: third-party
         // text of any length, so not a line under every field and not a second labelled control.
