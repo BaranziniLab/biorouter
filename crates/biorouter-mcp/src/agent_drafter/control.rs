@@ -588,11 +588,10 @@ pub struct ConsultRequest {
 struct BridgeInner {
     /// Outbound half of the *current* connection. `None` between connections.
     tx: Mutex<Option<mpsc::UnboundedSender<Value>>>,
-    /// Monotonic id of the current connection. Bumped by every `attach`; a
-    /// `detach` only tears down when it still owns this generation, so a stale
-    /// connection closing *after* a reload can't kill the fresh connection's
-    /// channel or cancel its parked `ui_ask`.
-    generation: AtomicU64,
+    /// Serializes the complete attach/detach lifecycle. A generation check
+    /// outside this lock could pass before a reload and then clear its new
+    /// sender or cancel its freshly parked tools.
+    generation: Mutex<u64>,
     /// `requestId` → responder for a parked `ui_ask`.
     pending: Mutex<HashMap<String, oneshot::Sender<Value>>>,
     /// `callId` → responder for a parked `app_call`. Separate from [`Self::pending`]
@@ -678,7 +677,7 @@ impl UiBridge {
         Self {
             inner: Arc::new(BridgeInner {
                 tx: Mutex::new(None),
-                generation: AtomicU64::new(0),
+                generation: Mutex::new(0),
                 pending: Mutex::new(HashMap::new()),
                 pending_calls: Mutex::new(HashMap::new()),
                 consult_tx: Mutex::new(None),
@@ -707,9 +706,13 @@ impl UiBridge {
     /// the reloaded page has none of it. The semantic `state` bag survives and is
     /// re-emitted so the fresh page rehydrates.
     pub fn attach(&self) -> (mpsc::UnboundedReceiver<Value>, ConnToken) {
-        // Claim the next generation first: any concurrent stale detach now sees a
-        // newer generation and becomes a no-op.
-        let gen = self.inner.generation.fetch_add(1, Ordering::AcqRel) + 1;
+        let mut generation = self
+            .inner
+            .generation
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        *generation += 1;
+        let gen = *generation;
         self.cancel_all();
         let (tx, rx) = mpsc::unbounded_channel();
         if let Ok(mut slot) = self.inner.tx.lock() {
@@ -744,7 +747,12 @@ impl UiBridge {
     /// a stale connection closing *after* a reload cannot tear down the fresh
     /// one. Parked `ui_ask` calls are unblocked so no tool outlives its socket.
     pub fn detach(&self, token: ConnToken) {
-        if self.inner.generation.load(Ordering::Acquire) != token.0 {
+        let generation = self
+            .inner
+            .generation
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        if *generation != token.0 {
             return; // a newer connection owns the bridge now
         }
         if let Ok(mut slot) = self.inner.tx.lock() {
@@ -5192,6 +5200,47 @@ mod tests {
                 .is_err(),
             "a stale detach must not cancel the fresh connection's parked ask"
         );
+    }
+
+    #[test]
+    fn a_detach_paused_at_its_sender_cannot_clear_a_concurrent_reattach() {
+        let bridge = UiBridge::new();
+        let (_old_frames, old_token) = bridge.attach();
+
+        // Force detach to pause after claiming the connection lifecycle, while
+        // a reload tries to install a new sender and park a new UI request.
+        let sender = bridge.inner.tx.lock().unwrap();
+        let closing = bridge.clone();
+        let detached = std::thread::spawn(move || closing.detach(old_token));
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        loop {
+            if matches!(
+                bridge.inner.generation.try_lock(),
+                Err(std::sync::TryLockError::WouldBlock)
+            ) {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "detach did not claim the lifecycle lock"
+            );
+            std::thread::yield_now();
+        }
+
+        let reloading = bridge.clone();
+        let attached = std::thread::spawn(move || {
+            let (frames, token) = reloading.attach();
+            let answer = reloading.register_ask("concurrent-reconnect-ask".to_string());
+            assert!(reloading.emit_frame(json!({"message":"fresh connection"})));
+            (frames, token, answer)
+        });
+        drop(sender);
+        detached.join().unwrap();
+        let (mut frames, token, mut answer) = attached.join().unwrap();
+        assert_eq!(frames.try_recv().unwrap()["message"], "fresh connection");
+        assert!(bridge.resolve("concurrent-reconnect-ask", json!({"answer":"kept"})));
+        assert_eq!(answer.try_recv().unwrap(), json!({"answer":"kept"}));
+        bridge.detach(token);
     }
 
     /// Panels are per-connection (the reloaded DOM has none), but the semantic

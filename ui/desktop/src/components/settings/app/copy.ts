@@ -63,6 +63,8 @@ export const aboutCopy = {
   failed: 'Could not complete the update',
   downloadFromSite: 'Download from Biorouter',
   feedback: 'Feedback',
+  /** The in-chat reporter, behind the Feedback row's InfoTip. */
+  feedbackHelp: 'To report a bug from a chat, type /bug there.',
   reportBug: 'Report a bug',
   requestFeature: 'Request a feature',
   /** The accessible description of a control that leaves the app, as the glyph says it to the eye. */

@@ -1,186 +1,238 @@
 #!/usr/bin/env node
 /*
- * Agent Drafter — in-app PREVIEW runtime test (Playwright).
+ * Verify authored scripts and handlers in a real daemon-served app, under its
+ * actual CSP. Runtime HTML must not reuse an authored handler or binder marker.
+ * Replaces the obsolete iframe bridge test: previews now load the served app.
  *
- * Exercises the "bridge" transport + auto-resize that power the in-app preview
- * (the `ui://` resource rendered in Biorouter's sandboxed MCP-UI iframe), which
- * the existing acp-ws loop test never touches. It builds the *real* assembled
- * preview HTML (the actual templates/agent.js + theme.css, mirroring
- * render.rs::assemble) and drives it inside a faithful emulation of the host:
- *
- *   - the host listens for `{type:"ui-size-change", payload:{width,height}}` and
- *     resizes the iframe (exactly like @mcp-ui/client autoResizeIframe);
- *   - any other message is treated as a UI action and answered with
- *     `{type:"ui-message-response", messageId, payload:{response}}` (exactly like
- *     the @mcp-ui renderer dispatching onUIAction). A "prompt" action is the one
- *     Biorouter's MCPUIResourceRenderer routes into chat.
- *
- * Two cases, asserting the behaviors the code review flagged:
- *   1. STATIC, tall content  -> the iframe must auto-grow (host gets ui-size-change).
- *   2. AGENTIC, send a chat message -> the prompt must reach the host as a
- *      "prompt" action AND the typing indicator must clear (no infinite hang).
- *
- * Usage: node scripts/agent-drafter/preview-runtime-test.mjs
+ * BIOROUTER_TEST_BIN=/path/to/biorouterd node scripts/agent-drafter/preview-runtime-test.mjs
+ * PW_EXEC=/path/to/chromium overrides the default system Google Chrome.
+ * BIOROUTER_PLAYWRIGHT_MODULE=/path/to/playwright/index.js selects a dependency
+ * installation outside the current checkout. No model or credentials are used.
  */
-import { readFileSync } from 'node:fs';
-import { fileURLToPath, pathToFileURL } from 'node:url';
-import { dirname, join } from 'node:path';
+import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
+import { once } from "node:events";
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { createServer } from "node:net";
+import { tmpdir } from "node:os";
+import { dirname, join, resolve } from "node:path";
+import { randomBytes } from "node:crypto";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
-const HERE = dirname(fileURLToPath(import.meta.url));
-// Resolve playwright from ui/desktop/node_modules (not this script's dir).
-const _pw = await import(
-  pathToFileURL(join(HERE, '../../ui/desktop/node_modules/playwright/index.js')).href
+const root = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
+const playwright = await import(
+  pathToFileURL(
+    process.env.BIOROUTER_PLAYWRIGHT_MODULE ||
+      join(root, "ui/desktop/node_modules/playwright/index.js"),
+  ).href
 );
-const chromium = _pw.chromium || (_pw.default && _pw.default.chromium);
-const TPL = join(HERE, '../../crates/biorouter-mcp/src/agent_drafter/templates');
-const AGENT_JS = readFileSync(join(TPL, 'agent.js'), 'utf8');
-const THEME_CSS = readFileSync(join(TPL, 'theme.css'), 'utf8');
-const RESIZE_JS = readFileSync(join(TPL, 'resize.js'), 'utf8');
+const chromium = playwright.chromium || playwright.default.chromium;
+const daemonBin =
+  process.env.BIOROUTER_TEST_BIN || join(root, "target/debug/biorouterd");
+const sandbox = mkdtempSync(join(tmpdir(), "biorouter-app-policy-"));
+process.once("exit", () => rmSync(sandbox, { recursive: true, force: true }));
+const appDir = join(sandbox, "config/agent_drafter/inline-policy-test");
+const secret = randomBytes(32).toString("hex");
+const handler = "record(this.dataset.q); return false";
+const html = `<!doctype html><html><head><title>Inline policy regression</title></head>
+<body onload="document.body.dataset.loaded = 'yes'">
+<script>window.__hits = []; window.__inlineRan = true;
+function record(q) { window.__hits.push(q); document.getElementById('out').textContent = window.__hits.join(','); }
+</script>
+<button id="authored" data-q="authored" onclick="${handler}">Authored</button>
+<a id="cancel" href="#unexpected" onclick="return false">Cancel navigation</a>
+<form><input name="amount" value="7"><button id="scope" onclick="document.getElementById('scoped').textContent = amount.value; return false">Form scope</button></form>
+<p id="out"></p><p id="scoped"></p><div id="sink"></div>
+<template id="template"><button onclick="${handler}" data-q="template">Template</button></template>
+</body></html>`;
+mkdirSync(appDir, { recursive: true });
+writeFileSync(
+  join(appDir, "manifest.json"),
+  JSON.stringify({
+    id: "inline-policy-test",
+    title: "Inline policy regression",
+    kind: "static",
+    entry: "index.html",
+  }),
+);
+writeFileSync(join(appDir, "index.html"), html);
 
-const log = (...a) => console.log('[preview-test]', ...a);
-let failures = 0;
-function check(name, cond, detail) {
-  if (cond) log(`PASS — ${name}`);
-  else { failures++; console.error(`[preview-test] FAIL — ${name}${detail ? ': ' + detail : ''}`); }
+const portProbe = createServer();
+portProbe.listen(0, "127.0.0.1");
+await once(portProbe, "listening");
+const port = portProbe.address().port;
+await new Promise((done) => portProbe.close(done));
+const origin = `http://127.0.0.1:${port}`;
+const childEnv = {
+  PATH: process.env.PATH,
+  BIOROUTER_PATH_ROOT: sandbox,
+  BIOROUTER_HOST: "127.0.0.1",
+  BIOROUTER_PORT: String(port),
+  BIOROUTER_SERVER__SECRET_KEY: secret,
+};
+for (const name of ["HOME", "USERPROFILE", "SystemRoot", "TMPDIR", "TEMP", "TMP", "LANG"]) {
+  if (process.env[name]) childEnv[name] = process.env[name];
 }
+const daemon = spawn(daemonBin, ["agent"], {
+  env: childEnv,
+  cwd: sandbox,
+  stdio: "ignore",
+});
+const exited = once(daemon, "exit").catch(() => undefined);
+let spawnError;
+daemon.on("error", (error) => {
+  spawnError = error;
+});
+let browser;
+let assertions = 0;
+function check(label, actual, expected = true) {
+  assert.deepEqual(actual, expected, label);
+  assertions++;
+  console.log(`[app-policy] PASS ${label}`);
+}
+const pause = (ms) => new Promise((done) => setTimeout(done, ms));
 
-// --- mirror render.rs::assemble (bridge transport, no endpoint) --------------
-function injectBefore(html, needle, insert, appendIfMissing) {
-  const i = html.toLowerCase().indexOf(needle.toLowerCase());
-  if (i !== -1) return html.slice(0, i) + insert + html.slice(i);
-  return appendIfMissing ? html + insert : insert + html;
-}
-function agentConfigScript(agent) {
-  const cfg = {
-    transport: 'bridge',
-    endpoint: null,
-    systemPrompt: agent.systemPrompt || '',
-    greeting: agent.greeting ?? null,
-    tools: agent.tools || [],
-  };
-  const json = JSON.stringify(cfg).replace(/</g, '\\u003c');
-  return `<script>window.BIOROUTER_AGENT_CONFIG = ${json};</script>\n`;
-}
-function assemblePreview(entryHtml, { agentic, agent } = {}) {
-  const style = `<style id="biorouter-theme">\n${THEME_CSS}\n</style>\n`;
-  let html = injectBefore(entryHtml, '</head>', style, false);
-  // Auto-resize reporter for EVERY artifact (mirrors render.rs::assemble).
-  html = injectBefore(html, '</body>', `<script>\n${RESIZE_JS}\n</script>\n`, true);
-  if (agentic) {
-    let block = agentConfigScript(agent || {});
-    if (!html.toLowerCase().includes('data-br-chat')) {
-      block += '<div class="br-container"><div class="br-card" data-br-chat style="margin-top:24px"></div></div>\n';
+try {
+  let ready = false;
+  for (let attempt = 0; attempt < 100; attempt++) {
+    if (spawnError) throw spawnError;
+    if (daemon.exitCode !== null)
+      throw new Error("test daemon exited before readiness");
+    try {
+      const status = await fetch(`${origin}/status`, {
+        headers: { "x-secret-key": secret },
+        signal: AbortSignal.timeout(1000),
+      });
+      if (status.ok) {
+        ready = true;
+        break;
+      }
+    } catch {
+      /* daemon is still starting */
     }
-    block += `<script>\n${AGENT_JS}\n</script>\n`;
-    html = injectBefore(html, '</body>', block, true);
+    await pause(100);
   }
-  return html;
-}
-
-// --- the host page: emulates @mcp-ui renderer + Biorouter action routing -----
-const HOST_PAGE = `<!doctype html><html><head><meta charset=utf-8><style>
-  html,body{margin:0;height:100%} #frame{width:900px;height:560px;border:1px solid #ccc;display:block}
-</style></head><body>
-<iframe id="frame" sandbox="allow-scripts"></iframe>
-<script>
-  window.__sizes = [];      // every ui-size-change height the host received
-  window.__actions = [];    // every UI action (prompt/tool/...) the host received
-  const frame = document.getElementById('frame');
-  window.addEventListener('message', (ev) => {
-    if (ev.source !== frame.contentWindow) return;
-    const d = ev.data;
-    if (!d || typeof d !== 'object') return;
-    if (d.type === 'ui-size-change') {
-      const h = d.payload && d.payload.height;
-      if (h) { frame.style.height = h + 'px'; window.__sizes.push(h); }
-      return;
-    }
-    // Any non-size message == a UI action; @mcp-ui replies with ui-message-response
-    // keyed by messageId after running onUIAction. Biorouter routes "prompt" to chat.
-    window.__actions.push(d);
-    const ok = d.type === 'prompt';
-    frame.contentWindow.postMessage({
-      type: 'ui-message-response',
-      messageId: d.messageId,
-      payload: { response: ok
-        ? { status: 'success', message: 'Prompt sent to chat successfully' }
-        : { status: 'error', error: { code: 'UNKNOWN_ACTION', message: 'Unknown action type' } } },
-    }, '*');
+  assert.ok(ready, "test daemon became ready");
+  const launched = await fetch(`${origin}/apps/inline-policy-test/launch`, {
+    method: "POST",
+    headers: { "x-secret-key": secret },
   });
-  window.__load = (html) => { frame.srcdoc = html; };
-</script></body></html>`;
-
-async function newHost(browser) {
+  assert.equal(launched.status, 200, "launch route succeeded");
+  const { path } = await launched.json();
+  browser = await chromium.launch(
+    process.env.PW_EXEC
+      ? { executablePath: process.env.PW_EXEC, headless: true }
+      : { channel: "chrome", headless: true },
+  );
   const page = await browser.newPage();
-  await page.setContent(HOST_PAGE);
-  return page;
-}
-// the artifact frame (child of the host page)
-function artifactFrame(page) {
-  // child frames of the host; the srcdoc artifact is the only one
-  return page.frames().find((f) => f !== page.mainFrame());
-}
+  await page.addInitScript(() => {
+    window.__violations = [];
+    document.addEventListener("securitypolicyviolation", (event) => {
+      window.__violations.push(event.effectiveDirective);
+    });
+  });
+  await page.goto(new URL(path, origin).href);
+  await page.waitForFunction(() => window.__inlineRan === true);
+  await page.waitForFunction(() => document.body.dataset.loaded === "yes");
+  const appUrl = `${origin}/apps/inline-policy-test/`;
+  const response = await page.reload();
+  await page.waitForFunction(() => window.__inlineRan === true);
+  await page.waitForFunction(() => document.body.dataset.loaded === "yes");
+  check("launched page uses its daemon origin", page.url(), appUrl);
+  const csp = response.headers()["content-security-policy"];
+  const scriptPolicy = /(?:^|;)\s*script-src\s+([^;]+)/.exec(csp)?.[1] || "";
+  check(
+    "actual response CSP hashes authored scripts",
+    scriptPolicy.includes("'sha256-"),
+  );
+  check(
+    "actual response CSP avoids handler hash gadgets",
+    !scriptPolicy.includes("unsafe-hashes") &&
+      !scriptPolicy.includes("unsafe-inline"),
+  );
+  check(
+    "authored inline script runs",
+    await page.evaluate(() => window.__inlineRan),
+  );
+  check(
+    "body onload is bound to the window",
+    await page.locator("body").getAttribute("data-loaded"),
+    "yes",
+  );
+  await page.click("#authored");
+  check(
+    "authored onclick runs with the authored element as this",
+    await page.locator("#out").textContent(),
+    "authored",
+  );
+  await page.click("#cancel");
+  check("return false cancels navigation", page.url(), appUrl);
+  await page.click("#scope");
+  check(
+    "handler names resolve through their form",
+    await page.locator("#scoped").textContent(),
+    "7",
+  );
+  check(
+    "binder removes its markers",
+    await page.locator("[data-br-on-click]").count(),
+    0,
+  );
 
-async function main() {
-  const launchOpts = process.env.PW_EXEC
-    ? { executablePath: process.env.PW_EXEC, headless: true }
-    : { channel: 'chrome', headless: true }; // use system Google Chrome
-  const browser = await chromium.launch(launchOpts);
-  try {
-    // ---- Case 1: STATIC tall artifact must auto-grow ------------------------
-    {
-      const tall = `<!doctype html><html><head><title>Tall</title></head><body>
-        <main class="br-container"><h1>Tall static artifact</h1>
-        <div style="height:1800px;background:linear-gradient(#fafafa,#eee)">spacer</div>
-        <p id="end">END</p></main></body></html>`;
-      const html = assemblePreview(tall, { agentic: false });
-      const page = await newHost(browser);
-      await page.evaluate((h) => window.__load(h), html);
-      await page.waitForTimeout(1200);
-      const sizes = await page.evaluate(() => window.__sizes);
-      const maxH = sizes.length ? Math.max(...sizes) : 0;
-      log(`static: host received ${sizes.length} ui-size-change msgs, maxHeight=${maxH}`);
-      check('static artifact reports its height (auto-resize works)',
-        sizes.length > 0 && maxH > 1000,
-        `got ${sizes.length} msgs, maxHeight=${maxH} (tall content ~1900px should be reported)`);
-      await page.close();
+  await page.evaluate((code) => {
+    const img = document.createElement("img");
+    img.src = "assets/missing.png";
+    img.dataset.q = "injected";
+    img.setAttribute("onerror", code);
+    document.getElementById("sink").append(img);
+  }, handler);
+  await page.waitForFunction(() =>
+    window.__violations.includes("script-src-attr"),
+  );
+  check(
+    "injected onerror cannot reuse the authored onclick body",
+    await page.evaluate(() => window.__hits),
+    ["authored"],
+  );
+
+  await page.evaluate(() => {
+    const binder = document.getElementById("biorouter-inline-handlers");
+    const nonce = /var nonce = "([^"]+)"/.exec(binder.textContent)[1];
+    const late = document.createElement("button");
+    late.id = "late";
+    late.dataset.q = "late";
+    late.setAttribute("data-br-on-click", `${nonce}.0`);
+    document.getElementById("sink").append(late);
+    const replay = document.createElement("script");
+    replay.textContent = binder.textContent;
+    document.body.append(replay);
+    late.click();
+  });
+  check(
+    "replaying the allowed binder does not bind runtime markers",
+    await page.evaluate(() => window.__hits),
+    ["authored"],
+  );
+  await page.evaluate(() => {
+    const clone = document.getElementById("template").content.cloneNode(true);
+    document.getElementById("sink").append(clone);
+    document.querySelector('#sink button[data-q="template"]').click();
+  });
+  check(
+    "a cloned template handler remains blocked",
+    await page.evaluate(() => window.__hits),
+    ["authored"],
+  );
+  console.log(`[app-policy] ${assertions} browser assertions passed`);
+} finally {
+  await browser?.close();
+  if (daemon.exitCode === null && !spawnError) {
+    daemon.kill("SIGTERM");
+    await Promise.race([exited, pause(5000)]);
+    if (daemon.exitCode === null) {
+      daemon.kill("SIGKILL");
+      await exited;
     }
-
-    // ---- Case 2: AGENTIC chat prompt must route + not hang ------------------
-    {
-      const html = assemblePreview('<!doctype html><html><head></head><body></body></html>',
-        { agentic: true, agent: { systemPrompt: 'You are helpful.', greeting: 'Hi!', tools: [] } });
-      const page = await newHost(browser);
-      page.on('console', (m) => { const t = m.text(); if (/sandbox|form|block/i.test(t)) log('  [console] ' + t); });
-      await page.evaluate((h) => window.__load(h), html);
-      await page.waitForTimeout(400);
-      const af = artifactFrame(page);
-      check('agentic artifact mounts a chat input', !!(af && await af.$('.br-chat__form .br-input')),
-        'no chat input found');
-      // type + click Send (button is type=button; form submit is sandbox-blocked)
-      await af.fill('.br-chat__form .br-input', 'What is 2+2?');
-      await af.click('.br-chat__form button');
-      await page.waitForTimeout(1500);
-
-      const actions = await page.evaluate(() => window.__actions);
-      const promptActions = actions.filter((a) => a.type === 'prompt');
-      log(`agentic: host received ${actions.length} action msgs; prompt actions: ${promptActions.length}; raw types: ${JSON.stringify(actions.map(a=>a.type ?? a.method ?? '(none)'))}`);
-      check('chat prompt reaches the host as a routable "prompt" action',
-        promptActions.length === 1 && promptActions[0].payload && promptActions[0].payload.prompt === 'What is 2+2?',
-        `prompt actions=${promptActions.length}`);
-
-      // typing indicator must have cleared (promise settled), not spin forever
-      const typingDots = await af.$$('.br-typing');
-      const userMsgs = await af.$$('.br-msg--user');
-      check('user message is rendered', userMsgs.length === 1, `userMsgs=${userMsgs.length}`);
-      check('typing indicator clears (no infinite hang)', typingDots.length === 0,
-        `${typingDots.length} typing indicators still present after 1.5s`);
-      await page.close();
-    }
-  } finally {
-    await browser.close();
   }
-  log(failures === 0 ? 'ALL PASS' : `${failures} FAILURE(S)`);
-  process.exit(failures === 0 ? 0 : 1);
+  rmSync(sandbox, { recursive: true, force: true });
 }
-main().catch((e) => { console.error('[preview-test] ERROR', e); process.exit(2); });

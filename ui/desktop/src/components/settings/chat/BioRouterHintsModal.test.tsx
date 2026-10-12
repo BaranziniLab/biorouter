@@ -1,5 +1,5 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { BioRouterHintsModal } from './BioRouterHintsModal';
 import { hintsDialogCopy } from './copy';
 
@@ -14,10 +14,12 @@ beforeEach(() => {
   Object.assign(window, { electron });
 });
 
+afterEach(() => vi.restoreAllMocks());
+
 describe('Project hints dialog', () => {
   it('loads the file into one labelled field and saves it back', async () => {
     electron.readFile.mockResolvedValue({ file: 'Use R 4.4.', found: true, error: null });
-    electron.writeFile.mockResolvedValue(undefined);
+    electron.writeFile.mockResolvedValue(true);
     render(<BioRouterHintsModal directory="/work/proj" setIsBioRouterHintsModalOpen={vi.fn()} />);
 
     const dialog = await screen.findByRole('dialog', { name: hintsDialogCopy.title });
@@ -78,5 +80,32 @@ describe('Project hints dialog', () => {
     render(<BioRouterHintsModal directory="/work/proj" setIsBioRouterHintsModalOpen={vi.fn()} />);
     expect(await screen.findByRole('alert')).toHaveTextContent(hintsDialogCopy.readError('EACCES'));
     expect(screen.queryByRole('textbox')).toBeNull();
+  });
+});
+
+describe('saving project hints', () => {
+  // `writeFile` answers whether the file landed; a refused write must never read as saved.
+  it.each([false, true])('reports the actual file write result: %s', async (written) => {
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    electron.readFile.mockResolvedValue({ file: 'original', found: false, error: '' });
+    electron.writeFile.mockResolvedValue(written);
+    render(<BioRouterHintsModal directory="/tmp/project" setIsBioRouterHintsModalOpen={vi.fn()} />);
+    const dialog = await screen.findByRole('dialog', { name: hintsDialogCopy.title });
+    fireEvent.change(await screen.findByDisplayValue('original'), {
+      target: { value: 'updated' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: hintsDialogCopy.save }));
+
+    await waitFor(() =>
+      expect(electron.writeFile).toHaveBeenCalledWith('/tmp/project/.biorouterhints', 'updated')
+    );
+    if (written) {
+      expect(await screen.findByRole('status')).toHaveTextContent(hintsDialogCopy.saved);
+      expect(dialog).toHaveTextContent(hintsDialogCopy.found);
+    } else {
+      expect(await screen.findByRole('alert')).toHaveTextContent(hintsDialogCopy.saveFailed);
+      expect(screen.queryByText(hintsDialogCopy.saved)).not.toBeInTheDocument();
+      expect(dialog).not.toHaveTextContent(hintsDialogCopy.found);
+    }
   });
 });

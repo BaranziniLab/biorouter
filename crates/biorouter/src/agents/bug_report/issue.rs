@@ -14,7 +14,11 @@
 //!   passing through Biorouter. It is used only when `gh auth status` succeeds
 //!   **non-interactively**; a `gh` that would prompt is treated as absent.
 //! * [`Filer::ComposeUrl`] — a prefilled `…/issues/new?body=…` opened in the
-//!   user's browser. The report is complete and the user's click is the submit.
+//!   user's browser ([`open_in_browser`]), with the link handed back as well in
+//!   case no browser could be opened. The report is complete and the user's
+//!   click is the submit. It is the ONLY path from a chat classified private:
+//!   `gh` publishes on approval, and from a private chat the user's own Submit
+//!   on GitHub must be the disclosure (see the parent module's privacy ruling).
 //!
 //! Not a third option: a token Biorouter stores. It would need the credential
 //! store, a scope the user has to reason about, and a revocation story, to
@@ -89,6 +93,13 @@ pub struct Draft {
     pub steps: Vec<String>,
     /// **Expected behavior**.
     pub expected: String,
+    /// **Suspected cause**: the reporting agent's diagnosis, kept apart from
+    /// the description so observation and hypothesis can be told apart by the
+    /// maintainer or debugging agent who takes the report over. Optional as an
+    /// ARGUMENT, and not one of `redact::REQUIRED_SECTIONS` (a report written by
+    /// hand from the template may leave it out), but the section is always
+    /// rendered: see [`NO_SUSPECTED_CAUSE`].
+    pub suspected_cause: Option<String>,
     /// **Additional context**.
     pub additional: Option<String>,
 }
@@ -100,7 +111,13 @@ pub struct Draft {
 /// drifted — different heading wording, and two dead links built by pasting
 /// repo-relative documentation paths after a `github.com/<org>/<repo>/` prefix.
 /// A second copy of a template is a copy that will disagree with it.
-pub fn render_body(draft: &Draft, evidence: &Evidence) -> String {
+///
+/// `private` is the filing chat's privacy (`treat_as_private`). It changes the
+/// footer only: a private chat's body does not invite the reader to attach the
+/// diagnostics bundle, which is that chat's transcript, unredacted. Nothing in
+/// the body says the chat was private — that is itself a fact about the user's
+/// work, and the body is public.
+pub fn render_body(draft: &Draft, evidence: &Evidence, private: bool) -> String {
     let mut body = String::new();
 
     body.push_str("**Describe the bug**\n\n");
@@ -124,6 +141,28 @@ pub fn render_body(draft: &Draft, evidence: &Evidence) -> String {
     } else {
         draft.expected.trim()
     });
+
+    // After the observation, before the environment: the order a reader takes
+    // a report over in. Labelled as unconfirmed, because a hypothesis rendered
+    // in the same voice as the description reads as established fact.
+    //
+    // ⚠ ALWAYS rendered. A report is meant to hand over to a debugging agent,
+    // and a missing section cannot be told apart from a section somebody forgot
+    // — so a report with no diagnosis says so, in a fixed line.
+    body.push_str("\n\n---\n\n**Suspected cause**\n\n");
+    match draft
+        .suspected_cause
+        .as_deref()
+        .map(str::trim)
+        .filter(|cause| !cause.is_empty())
+    {
+        Some(cause) => body.push_str(&format!(
+            "_From the reporting agent's analysis of the session, the documentation and the \
+             source at v{}. Not yet confirmed by a maintainer._\n\n{cause}",
+            evidence.app_version
+        )),
+        None => body.push_str(NO_SUSPECTED_CAUSE),
+    }
 
     body.push_str("\n\n---\n\n**Please provide the following information**\n");
     body.push_str(&format!(
@@ -182,13 +221,29 @@ pub fn render_body(draft: &Draft, evidence: &Evidence) -> String {
     body.push_str(
         "\n---\n\n<sub>Filed by Biorouter's own bug reporter from an in-app chat. The \
          environment and failure list above are read from the reporting session; home \
-         paths, usernames and credential-shaped strings are removed before posting. A \
-         full diagnostics bundle (transcript, redacted config, logs) can be attached \
-         from **Chat summary → Diagnostics → Generate diagnostics**.</sub>\n",
+         paths, usernames and credential-shaped strings are removed before posting.",
     );
+    // ⚠ Not from a private chat: the bundle IS that chat's transcript,
+    // unredacted, and this body is the page the user reads on github.com just
+    // before pressing Submit. The receipt tells them not to attach it.
+    if !private {
+        body.push_str(
+            " A full diagnostics bundle (transcript, redacted config, logs) can be attached \
+             from **Chat summary → Diagnostics → Generate diagnostics**.",
+        );
+    }
+    body.push_str("</sub>\n");
 
     body
 }
+
+/// The **Suspected cause** line of a report that supplied no diagnosis.
+///
+/// A fixed sentence rather than an absent section, so whoever takes the issue
+/// over knows the reporting agent did not diagnose it, rather than wondering
+/// whether the section was dropped.
+pub const NO_SUSPECTED_CAUSE: &str =
+    "Not determined by the reporting agent (no diagnosis was supplied).";
 
 /// The prefilled compose URL, or `None` when the body cannot fit in one.
 ///
@@ -207,12 +262,33 @@ pub fn compose_url(repo: &str, title: &str, body: &str) -> Option<String> {
 /// so the card can say which.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Filer {
-    /// `gh` is installed and already authenticated non-interactively.
+    /// `gh` is installed and already authenticated non-interactively. Never
+    /// chosen for a chat treated as private (`choose_filer` in the parent
+    /// module), because approving it publishes with no further look.
     GhCli,
     /// Open a prefilled compose page; the user presses Submit.
     ComposeUrl(String),
-    /// Neither: no `gh`, and the report is too large for a URL.
-    Manual,
+    /// Neither: the report is too large for a URL, and `gh` was either found
+    /// unavailable or, from a chat treated as private, never considered.
+    Manual {
+        /// `gh` was probed and is not installed or not signed in. `false` from
+        /// a private chat, where it is never probed: there, "not signed in"
+        /// would be a claim nobody checked.
+        gh_unavailable: bool,
+    },
+}
+
+/// Why a [`Filer::Manual`] report is handed back rather than filed, as one
+/// clause the card ([`Filer::describe`]) and the receipt share, so the two
+/// cannot disagree about it. It names `gh` only when `gh` really was found
+/// unavailable.
+pub fn manual_reason(gh_unavailable: bool) -> &'static str {
+    if gh_unavailable {
+        "it is too large for a prefilled link and the GitHub CLI (`gh`) is not installed \
+         or not signed in on this machine"
+    } else {
+        "it is too large for a prefilled link and is not filed automatically"
+    }
 }
 
 impl Filer {
@@ -224,14 +300,20 @@ impl Filer {
                 "This will CREATE a public issue on github.com/{repo} immediately, using \
                  your own signed-in GitHub CLI account."
             ),
+            // "or …" because `open_in_browser` can fail (no browser on this
+            // machine, a headless host); the link is handed back either way.
             Self::ComposeUrl(_) => format!(
-                "This will open a prefilled new-issue page for github.com/{repo} in your \
-                 browser. Nothing is posted until you press Submit there."
+                "Approving opens a prefilled new-issue page for github.com/{repo} in your \
+                 browser, or gives you its link if no browser can be opened. Nothing is \
+                 posted until you press Submit there."
             ),
-            Self::Manual => format!(
-                "The report is too large for a prefilled link and `gh` is not signed in, \
-                 so it will be handed back to you to paste into github.com/{repo} yourself. \
-                 Nothing is posted."
+            // ⚠ `gh` is named only when it was probed and failed: from a
+            // private chat it is never probed, so "not signed in" would be
+            // untrue there.
+            Self::Manual { gh_unavailable } => format!(
+                "The report will be handed back to you to paste into github.com/{repo} \
+                 yourself, because {}. Nothing is posted.",
+                manual_reason(*gh_unavailable)
             ),
         }
     }
@@ -325,6 +407,30 @@ fn running_under_test() -> bool {
             .and_then(Path::file_name)
             .is_some_and(|dir| dir == "deps")
     })
+}
+
+/// Open the prefilled compose page in the user's browser. `true` when a
+/// browser accepted it.
+///
+/// ⚠ Without this the compose path only RETURNED the link, for the model to
+/// relay — and the link is up to [`MAX_COMPOSE_URL_CHARS`] of percent-encoded
+/// body, which is exactly the kind of string models truncate or "tidy". The
+/// approval card already promised a page would open. The caller hands the link
+/// back as well, because `false` is an ordinary outcome: a headless host, no
+/// default browser, a daemon on another machine.
+///
+/// Runs on the blocking pool: `webbrowser::open` waits for `xdg-open` on Linux.
+/// Never opens anything from a test binary, for the same reason
+/// [`file_with_gh`] never posts: a test that approved a card would otherwise
+/// pop a browser on whatever machine ran it.
+pub async fn open_in_browser(url: &str) -> bool {
+    if running_under_test() {
+        return false;
+    }
+    let url = url.to_string();
+    tokio::task::spawn_blocking(move || webbrowser::open(&url).is_ok())
+        .await
+        .unwrap_or(false)
 }
 
 /// Create the issue with the user's own `gh`.
@@ -438,8 +544,104 @@ mod tests {
             description: "Running `cargo build` fails with os error 2.".into(),
             steps: vec!["Open a chat".into(), "Ask it to build".into()],
             expected: "The build runs.".into(),
+            suspected_cause: None,
             additional: None,
         }
+    }
+
+    /// The diagnosis gets its own section, between the observation and the
+    /// environment, labelled as unconfirmed — and the body still passes the
+    /// harness, because the section is optional rather than required.
+    #[test]
+    fn a_suspected_cause_is_rendered_between_expected_and_the_environment() {
+        let draft = Draft {
+            suspected_cause: Some(
+                "`developer/shell.rs` resolves the command against the daemon's own \
+                 working directory, not the chat's (`fn validate_shell_command(cwd: \
+                 String)`). Confidence: medium."
+                    .into(),
+            ),
+            ..draft()
+        };
+        let body = render_body(&draft, &evidence(), false);
+        let expected = body.find("**Expected behavior**").unwrap();
+        let cause = body
+            .find("**Suspected cause**")
+            .unwrap_or_else(|| panic!("no Suspected cause section: {body}"));
+        let environment = body
+            .find("**Please provide the following information**")
+            .unwrap();
+        assert!(expected < cause && cause < environment, "{body}");
+        assert!(
+            body.contains("the source at v1.90.0. Not yet confirmed by a maintainer."),
+            "{body}"
+        );
+        assert!(body.contains("Confidence: medium."), "{body}");
+        let violations = redact::validate_issue(&draft.title, &body, None);
+        assert!(violations.is_empty(), "{violations:#?}\n---\n{body}");
+    }
+
+    /// No cause still gets the section, saying so in a fixed line, so a
+    /// debugging agent can tell "not diagnosed" from "section dropped" — and a
+    /// blank cause is no cause. The body still passes the harness.
+    #[test]
+    fn without_a_suspected_cause_the_section_says_none_was_supplied() {
+        for cause in [None, Some("   \n".to_string())] {
+            let draft = Draft {
+                suspected_cause: cause,
+                ..draft()
+            };
+            let body = render_body(&draft, &evidence(), false);
+            let section = body
+                .find("**Suspected cause**")
+                .unwrap_or_else(|| panic!("no Suspected cause section: {body}"));
+            let line = body
+                .find(NO_SUSPECTED_CAUSE)
+                .unwrap_or_else(|| panic!("no fallback line: {body}"));
+            let environment = body
+                .find("**Please provide the following information**")
+                .unwrap();
+            assert!(section < line && line < environment, "{body}");
+            assert!(
+                !body.contains("Not yet confirmed by a maintainer"),
+                "no analysis to attribute: {body}"
+            );
+            let violations = redact::validate_issue(&draft.title, &body, None);
+            assert!(violations.is_empty(), "{violations:#?}\n---\n{body}");
+        }
+    }
+
+    /// ⚠ A private chat's body is the page the user reads on github.com before
+    /// pressing Submit, and it must not invite them to attach the diagnostics
+    /// bundle, which is that chat's transcript, unredacted. Nor may it say the
+    /// chat was private: that is a fact about the user's work, on a public page.
+    #[test]
+    fn a_private_chat_s_body_does_not_invite_the_diagnostics_bundle() {
+        let public = render_body(&draft(), &evidence(), false);
+        assert!(
+            public.contains(
+                "A full diagnostics bundle (transcript, redacted config, logs) can be attached"
+            ),
+            "{public}"
+        );
+
+        let private = render_body(&draft(), &evidence(), true);
+        for needle in ["diagnostics bundle", "Generate diagnostics", "private"] {
+            assert!(
+                !private.contains(needle),
+                "`{needle}` in a private body: {private}"
+            );
+        }
+        assert!(private.trim_end().ends_with("</sub>"), "{private}");
+        let violations = redact::validate_issue(&draft().title, &private, None);
+        assert!(violations.is_empty(), "{violations:#?}\n---\n{private}");
+    }
+
+    /// A test binary must never open a browser, for the same reason it must
+    /// never run `gh issue create`.
+    #[tokio::test]
+    async fn the_compose_page_is_never_opened_from_a_test() {
+        assert!(!open_in_browser("https://example.invalid/never-opened").await);
     }
 
     /// The rendered body satisfies the harness. This is the pairing that
@@ -447,14 +649,14 @@ mod tests {
     /// refuses its own output.
     #[test]
     fn a_rendered_body_passes_the_validator() {
-        let body = render_body(&draft(), &evidence());
+        let body = render_body(&draft(), &evidence(), false);
         let violations = redact::validate_issue(&draft().title, &body, None);
         assert!(violations.is_empty(), "{violations:#?}\n---\n{body}");
     }
 
     #[test]
     fn the_body_carries_the_environment_the_template_asks_for() {
-        let body = render_body(&draft(), &evidence());
+        let body = render_body(&draft(), &evidence(), false);
         assert!(body.contains("**Version:** v1.90.0"), "{body}");
         assert!(body.contains("macos 27.0.0 (aarch64)"), "{body}");
         assert!(body.contains("versa_azure – gpt-5.5"), "{body}");
@@ -463,7 +665,7 @@ mod tests {
 
     #[test]
     fn the_failure_list_is_rendered_with_its_counts_and_arguments() {
-        let body = render_body(&draft(), &evidence());
+        let body = render_body(&draft(), &evidence(), false);
         assert!(body.contains("2 of 7 calls"), "{body}");
         assert!(body.contains("`developer__shell` ×2"), "{body}");
         assert!(body.contains("cargo build"), "{body}");
@@ -479,7 +681,7 @@ mod tests {
             expected: String::new(),
             ..draft()
         };
-        let body = render_body(&draft, &evidence());
+        let body = render_body(&draft, &evidence(), false);
         assert!(redact::validate_issue(&draft.title, &body, None).is_empty());
         assert!(body.contains("**To Reproduce**"), "{body}");
         assert!(body.contains("Not stated by the reporter"), "{body}");
@@ -532,6 +734,42 @@ mod tests {
         assert!(compose
             .describe(DEFAULT_REPO)
             .contains("Nothing is posted until you press Submit"));
-        assert!(!Filer::Manual.publishes_on_approval());
+        // True whether or not a browser could be opened.
+        assert!(compose
+            .describe(DEFAULT_REPO)
+            .contains("gives you its link"));
+        for gh_unavailable in [true, false] {
+            let manual = Filer::Manual { gh_unavailable };
+            assert!(!manual.publishes_on_approval());
+            assert!(manual.describe(DEFAULT_REPO).contains("Nothing is posted"));
+        }
+    }
+
+    /// The hand-back names `gh` only when `gh` was probed and failed. From a
+    /// private chat it is never probed, and "not signed in" there would be a
+    /// claim nobody checked (and is often false).
+    #[test]
+    fn the_hand_back_blames_gh_only_when_gh_was_found_unavailable() {
+        let probed = Filer::Manual {
+            gh_unavailable: true,
+        }
+        .describe(DEFAULT_REPO);
+        assert!(probed.contains("GitHub CLI"), "{probed}");
+        assert!(
+            probed.contains("too large for a prefilled link"),
+            "{probed}"
+        );
+
+        let never_probed = Filer::Manual {
+            gh_unavailable: false,
+        }
+        .describe(DEFAULT_REPO);
+        for needle in ["GitHub CLI", "`gh`", "signed in"] {
+            assert!(!never_probed.contains(needle), "{never_probed}");
+        }
+        assert!(
+            never_probed.contains("too large for a prefilled link and is not filed automatically"),
+            "{never_probed}"
+        );
     }
 }

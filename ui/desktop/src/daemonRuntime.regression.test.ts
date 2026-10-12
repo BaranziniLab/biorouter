@@ -379,6 +379,57 @@ describe.sequential('shared daemon runtime and pinned Unix proxy', () => {
       proxy.close();
     }
   });
+
+  /**
+   * W2-HRD-1: a built app's browser traffic never goes through the proxy. The proxy adds the
+   * daemon's secret to what it forwards, so admitting an app's page, launch link or agent socket
+   * here would hand any local page that app's socket token and an authenticated agent, with no
+   * cookie at all. "Launch in browser" is fixed by sending the browser to the daemon's own
+   * listener (`POST /apps/{id}/launch` answers `url`), not by opening this door; this pins it
+   * shut, whatever the browser sends.
+   */
+  it('refuses a browser’s app page, launch link and agent socket, and never forwards them', async () => {
+    const current = (fixture = await unixFixture());
+    const proxy = await createDaemonProxy(
+      current.runtime,
+      DESKTOP_SECRET,
+      undefined,
+      undefined,
+      RENDERER_ORIGIN
+    );
+    const port = new URL(proxy.baseUrl).port;
+    const token = 'ab'.repeat(32);
+    try {
+      for (const target of [
+        '/apps/demo/',
+        `/apps/demo/?t=${token}`,
+        '/apps/demo',
+        '/apps/demo/dist/app.js',
+        '/apps/demo/runstate?session=s',
+      ]) {
+        for (const headers of [
+          {},
+          { Origin: proxy.baseUrl, Cookie: 'biorouter_app_x=y' },
+          { Host: `127.0.0.1:${port}`, Origin: `http://127.0.0.1:${port}` },
+        ]) {
+          const answer = await responseText(proxy.baseUrl + target, {
+            headers: headers as Record<string, string>,
+          });
+          expect(answer.response.status, `${target} ${JSON.stringify(headers)}`).toBe(403);
+          expect(answer.body).toBe('');
+        }
+      }
+      const wsBase = proxy.baseUrl.replace(/^http/, 'ws');
+      await expectClosed(`${wsBase}/apps/demo/agent?client_id=c&token=t`);
+      await expectClosed(`${wsBase}/apps/demo/agent?client_id=c&token=t`, {
+        origin: proxy.baseUrl,
+      });
+      expect(current.upstreamRequests.filter(({ path }) => path.startsWith('/apps'))).toEqual([]);
+      expect(current.upgrades.filter((url) => url.startsWith('/apps'))).toEqual([]);
+    } finally {
+      proxy.close();
+    }
+  });
 });
 
 /**

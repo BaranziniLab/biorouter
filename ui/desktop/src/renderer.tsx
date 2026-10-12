@@ -23,6 +23,7 @@ import { BROWSER_SURFACE_BODY_CLASS, BROWSER_SURFACE_MARKER } from './utils/surf
 import { installViewportPinWarning } from './utils/viewportPin';
 import { readRegistryDownload } from './utils/registryDownloadResult';
 import { openAppInThisBrowser } from './utils/appLaunchLink';
+import { exportAppInThisBrowser } from './utils/appExportRequest';
 
 const App = lazy(() => import('./App'));
 
@@ -223,6 +224,11 @@ if (needsHeadlessElectron || typeof window.appConfig === 'undefined') {
       // the app's one-time launch link goes straight to a new tab (W2-HRD-1).
       openAppInBrowser: (appId: string) =>
         openAppInThisBrowser(headlessConfig.apiBaseUrl, appId, headlessConfig.secretKey),
+      // Applications ▸ Export. There is no folder on THIS computer to write into from here, so
+      // the daemon's zip is downloaded; nothing is written on the server, and no server path is
+      // ever asked for (the generic directoryChooser below prompts for one).
+      exportApp: (appId: string, request: unknown) =>
+        exportAppInThisBrowser(headlessConfig.apiBaseUrl, headlessConfig.secretKey, appId, request),
       openInChrome: (url: string) => window.open(url, '_blank', 'noopener,noreferrer'),
       fetchMetadata: async (url: string) => {
         const response = await fetch(url);

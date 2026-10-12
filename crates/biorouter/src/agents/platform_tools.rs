@@ -456,14 +456,23 @@ pub fn manage_workflow_tool(can_ask_a_person: bool) -> Tool {
 /// text, not its truth) and the approval card (which asks a person to read a
 /// paragraph they did not ask for). The cheapest place to prevent a fabricated
 /// bug report is here.
+///
+/// "Rather than guess" is about the PROBLEM, not the cause: a diagnosis is
+/// wanted, in `suspected_cause`, kept apart from the observed `description`
+/// and grounded in what the transcript, the source and the documentation show.
+///
+/// ⚠ No URLs here, deliberately. The system prompt carries the repository and
+/// documentation addresses once, and the `analyze` result carries the ones
+/// pinned to the user's version — which is the only place that version is
+/// known. A third copy here would be paid for on every turn of every chat.
 pub fn report_bug_tool() -> Tool {
     Tool::new(
         PLATFORM_REPORT_BUG_TOOL_NAME.to_string(),
         indoc! {r#"
             Report a bug in Biorouter itself to its issue tracker.
 
-            Use this when the user says "report a bug", "file an issue",
-            "something is broken in Biorouter", or describes Biorouter
+            Use this when the user types `/bug`, says "report a bug", "file an
+            issue", "something is broken in Biorouter", or describes Biorouter
             misbehaving and asks you to tell someone. This is for defects in
             Biorouter — the app, the agent, an extension, the interface — not
             for problems in the user's own code or data.
@@ -472,27 +481,33 @@ pub fn report_bug_tool() -> Tool {
 
             1. `action: "analyze"` first, always. It reads this chat's own
                record of failed tool calls, grades them, and hands back the
-               environment and the failure list. It files nothing.
+               environment, the failure list, and how to check the behaviour
+               against Biorouter's documentation and source code before you
+               write. It files nothing.
                - If it says it cannot tell what went wrong, ASK THE USER what
-                 they want to report and wait for their answer. Do not invent a
-                 report from the failures it listed. Ask a specific question
-                 naming what you can see.
+                 they want to report and wait for their answer, then call
+                 `analyze` again with their words as `description`. Do not
+                 invent a report from the failures it listed. Ask a specific
+                 question naming what you can see.
                - If a failure is labelled as a deliberate refusal, that is
                  Biorouter's privacy or permission boundary working. Do not
                  file it unless the user says the wrong thing was refused.
 
             2. `action: "file"` with the report you wrote: `title`,
-               `description` (what happened and why it is wrong), `steps` to
-               reproduce, `expected`, and `additional` context. Write what was
-               actually observed; do not pad it with guesses about the cause.
+               `description` (what was observed: facts only), `steps` to
+               reproduce, `expected`, `suspected_cause` (your diagnosis,
+               grounded in evidence; if nothing grounds one, say so there,
+               with what you checked and could not check, rather than
+               guess), and `additional` context.
 
             Biorouter adds the version, OS, provider, model, enabled extensions
             and the failure list itself — do not repeat them. It removes home
             paths, usernames and anything credential-shaped, refuses the report
             if identifying material survives, and requires the user to approve
             the exact text before anything is published. A GitHub issue is
-            public and permanent; a chat classified private will not be filed
-            from at all.
+            public and permanent. From a chat classified private nothing is
+            posted automatically: the user gets a prefilled GitHub page and
+            decides whether to submit.
         "#}
         .to_string(),
         object!({
@@ -504,13 +519,14 @@ pub fn report_bug_tool() -> Tool {
                     "description": "`analyze` reads this chat and reports what it finds, filing nothing. `file` submits the report you wrote. Omitting this analyses unless both `title` and `description` are present."
                 },
                 "title": {"type": "string", "description": "One line a maintainer can recognise in a list of issues"},
-                "description": {"type": "string", "description": "What happened and why it is wrong. Becomes the report's `Describe the bug` section. With `action: \"analyze\"`, the user's own words for the problem, if they gave any."},
+                "description": {"type": "string", "description": "What was observed: what happened and why it is wrong. Facts only; the diagnosis goes in `suspected_cause`. Becomes the report's `Describe the bug` section. With `action: \"analyze\"`, the user's own words for the problem, if they gave any."},
                 "steps": {
                     "type": "array",
                     "items": {"type": "string"},
                     "description": "Steps to reproduce, one per entry. Omit rather than invent."
                 },
                 "expected": {"type": "string", "description": "What should have happened instead"},
+                "suspected_cause": {"type": "string", "description": "Markdown. The diagnosis, for the maintainer or debugging agent who takes this over: the likely files and functions (linked at the version tag), the hypothesis, the evidence (what the transcript shows, what the code does, what the documentation says, where the documentation and the code disagree), and your confidence (low, medium or high). About 100 to 300 words. Always give it: if nothing grounds a diagnosis, say so here instead of guessing, naming what you checked and what you could not check (for example, no web-fetch or shell tool), with confidence low."},
                 "additional": {"type": "string", "description": "Anything else that helps: what the user was trying to do, when it started, what is different about this machine"}
             }
         }),

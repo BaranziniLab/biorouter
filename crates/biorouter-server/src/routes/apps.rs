@@ -70,15 +70,13 @@ use biorouter::permission::{Permission, PermissionConfirmation};
 // comment.
 use biorouter::session::SessionType;
 use biorouter_mcp::agent_drafter::control::{
-    ConsultRequest, StateWriteError, UiBridge, APP_PAYLOAD_MAX, CATALOG_VERSION,
+    ConnToken, ConsultRequest, StateWriteError, UiBridge, APP_PAYLOAD_MAX, CATALOG_VERSION,
 };
 use biorouter_mcp::agent_drafter::manifest::{PiiMode, SignalDecl, UiCapability};
 use biorouter_mcp::agent_drafter::store::{
     validate_artifact_id, AgentConfig, ArtifactStore, Manifest,
 };
-use biorouter_mcp::agent_drafter::{
-    bundle_is_stale, default_root, export_scaffold, rebuild_and_stamp,
-};
+use biorouter_mcp::agent_drafter::{default_root, ensure_bundle_fresh, rebuild_and_stamp};
 use biorouter_mcp::knowledge::service::KnowledgeService;
 
 use crate::state::AppState;
@@ -115,46 +113,208 @@ fn store() -> ArtifactStore {
 ///   WebSocket. `'self'` covers same-origin ws in modern browsers, but the explicit
 ///   loopback `ws:` sources are belt-and-suspenders across engines and the desktop
 ///   app's ephemeral loopback port.
-/// - `frame-src 'self' data:` — autovis `ui://` figures render as sandboxed `srcdoc`
-///   iframes (exempt from `frame-src`, but `'self' data:` is harmless and covers
-///   `data:` frames).
-/// - `form-action 'none'`, `base-uri 'self'`, `frame-ancestors 'self'` — no form
-///   posts, the `<base href="/apps/<id>/">` stays same-origin, framed same-origin only.
-const APP_CSP: &str = "default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:; connect-src 'self' ws://localhost:* ws://127.0.0.1:*; frame-src 'self' data:; form-action 'none'; base-uri 'self'; frame-ancestors 'self'";
+/// - `frame-src 'self' data:` — the app's own figure frames
+///   (`/apps/<id>/figure-frame`, which carry their own policy) and `data:` frames.
+/// - `form-action 'none'`, `base-uri 'self'` — no form posts, and the
+///   `<base href="/apps/<id>/">` stays same-origin.
+/// - `frame-ancestors 'none'` — nothing frames an app page. ⚠ It was `'self'`,
+///   and every app shares this daemon's origin, so one app's page could frame
+///   another's and read its socket token out of the frame's DOM. Nothing frames
+///   an app on purpose: the desktop preview loads it top-level in its own view,
+///   and a browser opens it in a tab.
+///
+/// The page's `script-src` additionally names, by hash, the inline scripts its
+/// author wrote and the one script holding its `on…=` handlers
+/// ([`app_page_csp`], `render::bind_inline_handlers`); nothing else inline
+/// runs, and `'unsafe-hashes'` is never sent.
+const APP_CSP: &str = "default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:; connect-src 'self' ws://localhost:* ws://127.0.0.1:*; frame-src 'self' data:; form-action 'none'; base-uri 'self'; frame-ancestors 'none'";
 
-/// Attach [`APP_CSP`] to a served-app response. Applied by `serve_index` and the
-/// `dist`/`assets` file responses so every byte a browser loads for a live app
-/// carries the strict policy (the NOT_FOUND paths deliberately omit it).
-fn with_app_csp(mut resp: Response) -> Response {
-    resp.headers_mut().insert(
+/// The policy for an app's `dist/` and `assets/` files: [`APP_CSP`], except that
+/// an app may frame its OWN static documents (an `assets/*.html` in an iframe).
+/// An asset holds no socket token, so that frame reveals nothing.
+const APP_FILE_CSP: &str = "default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:; connect-src 'self' ws://localhost:* ws://127.0.0.1:*; frame-src 'self' data:; form-action 'none'; base-uri 'self'; frame-ancestors 'self'";
+
+/// The opener policy of an app page.
+///
+/// `noopener-allow-popups` puts the page in a browsing-context group of its own
+/// whenever anything opens it, even a page of the same origin — and every app,
+/// and on `biorouter serve` the shell, IS the same origin. So another app's
+/// `window.open('/apps/<id>/')` gets no handle to read the opened page's socket
+/// token through. It also differs from the shell's `same-origin`
+/// (`routes::web_ui`), which is what severs an app page from a shell it opens.
+/// ⚠ Do not change this to `same-origin`: two documents with the SAME value on
+/// one origin share a group, so an app could script a shell it opened again. An
+/// engine that does not know the value treats it as `unsafe-none`, which still
+/// differs from the shell's.
+const APP_PAGE_COOP: &str = "noopener-allow-popups";
+
+/// Attach [`APP_FILE_CSP`] (and `nosniff`) to a `dist`/`assets` file response, so
+/// every byte a browser loads for a live app carries the strict policy (the
+/// NOT_FOUND paths deliberately omit it).
+fn with_app_file_csp(mut resp: Response) -> Response {
+    let headers = resp.headers_mut();
+    headers.insert(
         header::CONTENT_SECURITY_POLICY,
-        header::HeaderValue::from_static(APP_CSP),
+        header::HeaderValue::from_static(APP_FILE_CSP),
+    );
+    headers.insert(
+        header::X_CONTENT_TYPE_OPTIONS,
+        header::HeaderValue::from_static("nosniff"),
     );
     resp
 }
 
+/// [`APP_CSP`] with `extra` (from `render::inline_script_sources`) added to
+/// `script-src`.
+fn app_page_csp(extra: &[String]) -> String {
+    if extra.is_empty() {
+        return APP_CSP.to_string();
+    }
+    APP_CSP.replacen(
+        "script-src 'self';",
+        &format!("script-src 'self' {};", extra.join(" ")),
+        1,
+    )
+}
+
+/// An app page (or its build-failure page) with every header an app page
+/// carries: its policy, its opener policy, `nosniff`, and `no-store` — the page
+/// embeds this daemon run's socket token, which nothing should keep.
+fn app_page_response(status: StatusCode, html: String, csp: &str) -> Response {
+    let policy = header::HeaderValue::from_str(csp)
+        .unwrap_or_else(|_| header::HeaderValue::from_static(APP_CSP));
+    let mut resp = (
+        status,
+        [(header::CONTENT_TYPE, "text/html; charset=utf-8")],
+        html,
+    )
+        .into_response();
+    let headers = resp.headers_mut();
+    headers.insert(header::CONTENT_SECURITY_POLICY, policy);
+    headers.insert(
+        header::HeaderName::from_static("cross-origin-opener-policy"),
+        header::HeaderValue::from_static(APP_PAGE_COOP),
+    );
+    headers.insert(
+        header::X_CONTENT_TYPE_OPTIONS,
+        header::HeaderValue::from_static("nosniff"),
+    );
+    headers.insert(
+        header::CACHE_CONTROL,
+        header::HeaderValue::from_static("no-store"),
+    );
+    resp
+}
+
+/// How much of a build log the failure page shows: the tail, where esbuild puts
+/// the error that matters.
+const BUILD_LOG_SHOWN: usize = 8000;
+
+/// The page an app that cannot run without a bundle gets when it has none and
+/// its build failed, instead of a blank page whose only clue was a line in the
+/// daemon's log. A `500`, under the app page's own policy; it runs nothing.
+fn build_failure_page(title: &str, log: &str) -> Response {
+    fn escape(s: &str) -> String {
+        s.replace('&', "&amp;")
+            .replace('<', "&lt;")
+            .replace('>', "&gt;")
+            .replace('"', "&quot;")
+    }
+    let mut start = log.len().saturating_sub(BUILD_LOG_SHOWN);
+    while !log.is_char_boundary(start) {
+        start += 1;
+    }
+    let shown = if start > 0 {
+        format!("…{}", log.split_at(start).1)
+    } else {
+        log.to_string()
+    };
+    let title = escape(title);
+    let page = format!(
+        "<!doctype html><html><head><meta charset=\"utf-8\">\
+         <meta name=\"color-scheme\" content=\"light dark\">\
+         <title>{title} could not be built</title></head>\
+         <body style=\"font:15px/1.5 system-ui,sans-serif;margin:3rem auto;max-width:46rem;padding:0 1rem\">\
+         <h1 style=\"font-size:20px\">{title} could not be built</h1>\
+         <p>This app's code did not build, so there is nothing to run yet. Ask the agent \
+         in the chat where the app was built to fix it (it can run <code>build_app</code> \
+         to see this error), then reload this page.</p>\
+         <pre style=\"white-space:pre-wrap;background:rgba(127,127,127,.12);padding:12px;\
+         border-radius:8px;font-size:12px;overflow:auto\">{}</pre></body></html>",
+        escape(&shown)
+    );
+    app_page_response(StatusCode::INTERNAL_SERVER_ERROR, page, APP_CSP)
+}
+
 fn mime_for(path: &str) -> &'static str {
-    match path.rsplit('.').next().unwrap_or("") {
-        "html" => "text/html; charset=utf-8",
+    match path
+        .rsplit('.')
+        .next()
+        .unwrap_or("")
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "html" | "htm" => "text/html; charset=utf-8",
         "js" | "mjs" => "text/javascript; charset=utf-8",
         "css" => "text/css; charset=utf-8",
-        "json" => "application/json",
+        "json" | "map" => "application/json",
+        "txt" | "md" => "text/plain; charset=utf-8",
+        "csv" => "text/csv; charset=utf-8",
         "svg" => "image/svg+xml",
         "png" => "image/png",
         "jpg" | "jpeg" => "image/jpeg",
         "gif" => "image/gif",
         "webp" => "image/webp",
+        "avif" => "image/avif",
         "ico" => "image/x-icon",
         "woff2" => "font/woff2",
         "woff" => "font/woff",
+        "ttf" => "font/ttf",
+        "otf" => "font/otf",
+        "mp3" => "audio/mpeg",
+        "wav" => "audio/wav",
+        "mp4" => "video/mp4",
+        "webm" => "video/webm",
+        "pdf" => "application/pdf",
         "wasm" => "application/wasm",
         _ => "application/octet-stream",
     }
 }
 
-/// GET /apps — list all app manifests.
-async fn list_apps() -> Json<Vec<Manifest>> {
-    Json(store().list())
+/// GET /apps — list all app manifests, newest first.
+///
+/// An app whose manifest cannot be loaded is listed too, as a row with only an
+/// `id`, the `id` again as its `title`, `kind: "static"`, and a `broken`
+/// sentence saying what is wrong ([`broken_app_row`]). It used to be dropped,
+/// which hid it from Applications while its folder kept the id, so nothing
+/// could delete it; `DELETE /apps/{id}` removes it. Additive: a client that
+/// does not know `broken` sees an app it cannot open, which is the truth.
+async fn list_apps() -> Json<Vec<serde_json::Value>> {
+    let (apps, broken) = store().list_with_broken();
+    let mut rows: Vec<serde_json::Value> = apps
+        .iter()
+        .filter_map(|manifest| serde_json::to_value(manifest).ok())
+        .collect();
+    rows.extend(broken.iter().map(broken_app_row));
+    rows.sort_by_key(|row| {
+        std::cmp::Reverse(row.get("updated_at").and_then(serde_json::Value::as_u64))
+    });
+    Json(rows)
+}
+
+/// The `GET /apps` row for an app whose manifest does not load. Shaped like a
+/// manifest, so a client that reads only the manifest fields still renders it.
+fn broken_app_row(app: &biorouter_mcp::agent_drafter::store::BrokenApp) -> serde_json::Value {
+    json!({
+        "id": app.id,
+        "title": app.id,
+        "description": "",
+        "kind": "static",
+        "entry": "index.html",
+        "created_at": app.modified_at,
+        "updated_at": app.modified_at,
+        "broken": format!("This app cannot be opened: {}.", app.error),
+    })
 }
 
 /// GET /apps/{id} — redirect to the trailing-slash form so relative URLs resolve.
@@ -165,15 +325,66 @@ async fn redirect_to_slash(Path(id): Path<String>) -> Response {
     Redirect::temporary(&format!("/apps/{id}/")).into_response()
 }
 
+/// The origin a browser on this machine reaches the daemon's own listener at,
+/// from `base`: the address `commands::agent` publishes as
+/// `BIOROUTER_APP_BASE_URL` once that listener is bound (`http://<bound
+/// address>`). `None` when `base` is not a bare http(s) origin.
+///
+/// A daemon bound to every interface publishes `0.0.0.0` or `[::]`. That is an
+/// address to listen on, not one to visit (Chrome refuses `0.0.0.0`), so it
+/// becomes the loopback address of the same family.
+fn app_browser_origin(base: &str) -> Option<String> {
+    let mut url = url::Url::parse(base).ok()?;
+    if !matches!(url.scheme(), "http" | "https")
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || url.path() != "/"
+        || url.query().is_some()
+        || url.fragment().is_some()
+    {
+        return None;
+    }
+    let loopback = match url.host()? {
+        url::Host::Ipv4(ip) if ip.is_unspecified() => Some("127.0.0.1"),
+        url::Host::Ipv6(ip) if ip.is_unspecified() => Some("[::1]"),
+        _ => None,
+    };
+    if let Some(host) = loopback {
+        url.set_host(Some(host)).ok()?;
+    }
+    Some(url.origin().ascii_serialization())
+}
+
+/// The body of a launch answer for `path`, given the daemon's published base
+/// URL (`None` when it has none, as in an in-process test).
+fn launch_answer(path: &str, base: Option<&str>) -> serde_json::Value {
+    let mut answer = json!({ "path": path });
+    if let Some(origin) = base.and_then(app_browser_origin) {
+        answer["url"] = json!(format!("{origin}{path}"));
+    }
+    answer
+}
+
 /// POST /apps/{id}/launch — the address a browser opens this app at, once.
 ///
 /// Requires the secret: this is how a caller that holds it hands a browser,
 /// which cannot send it, access to one app. The address carries a launch token
 /// that works once and for a few minutes (`auth::mint_app_launch`). Whoever
 /// opens it first gets the app, so a caller must never put it on a command line
-/// (see [`launch_bounce`]). The answer is a path, not a URL, because the daemon
-/// does not know which address the browser will use (a loopback port, a `serve`
-/// host, an exported app's proxy).
+/// (see [`launch_bounce`]).
+///
+/// The answer carries the address twice. `path` is the page alone, for a caller
+/// that knows the browser already reaches this daemon at the caller's own origin:
+/// a `biorouter serve` tab (whose host may be a LAN or proxied address this
+/// daemon cannot name) and every client older than `url`. `url` is that path on
+/// this daemon's OWN listener ([`app_browser_origin`]), for a caller that reached
+/// the daemon some other way. The desktop does, through its local proxy, and that
+/// proxy admits only requests carrying the desktop's secret, which a browser
+/// never sends: a link built on the proxy's origin answered every browser with an
+/// empty 403 ("Access to 127.0.0.1 was denied"). ⚠ The fix is this field, not a
+/// hole in the proxy: the proxy adds the daemon's secret to what it forwards, so
+/// letting browser requests through it would hand any local page an app's socket
+/// token and agent. `url` is left out when the daemon published no base.
 async fn launch_app_route(Path(id): Path<String>) -> Response {
     if validate_artifact_id(&id).is_err() {
         return (StatusCode::BAD_REQUEST, "invalid app id").into_response();
@@ -182,7 +393,12 @@ async fn launch_app_route(Path(id): Path<String>) -> Response {
         return (StatusCode::NOT_FOUND, "no such app").into_response();
     }
     let token = biorouter_server::auth::mint_app_launch(&id);
-    Json(json!({ "path": format!("/apps/{id}/?t={token}") })).into_response()
+    let base = std::env::var("BIOROUTER_APP_BASE_URL").ok();
+    Json(launch_answer(
+        &format!("/apps/{id}/?t={token}"),
+        base.as_deref(),
+    ))
+    .into_response()
 }
 
 #[derive(Deserialize)]
@@ -252,22 +468,45 @@ async fn serve_index(Path(id): Path<String>, Query(query): Query<PageQuery>) -> 
         return launch_bounce(&id, cookie);
     }
     let st = store();
+    if st.load_manifest(&id).is_err() {
+        return (StatusCode::NOT_FOUND, "no such app").into_response();
+    }
+    // Build on demand when the bundle is stale (`ensure_bundle_fresh` holds the
+    // rules: never built, sources edited since, a fallback bundle esbuild can
+    // now replace, or an older App SDK). Builds of one app are serialised and
+    // an identical failed build is not re-run on every load.
+    let st2 = st.clone();
+    let id2 = id.clone();
+    let check = match tokio::task::spawn_blocking(move || ensure_bundle_fresh(&st2, &id2)).await {
+        Ok(Ok(check)) => Some(check),
+        Ok(Err(error)) => {
+            warn!(app = %id, "could not check the app's bundle: {error}");
+            None
+        }
+        Err(error) => {
+            warn!(app = %id, "the app's bundle check did not finish: {error}");
+            None
+        }
+    };
+    // Reloaded: a build stamps the manifest.
     let manifest = match st.load_manifest(&id) {
         Ok(m) => m,
         Err(_) => return (StatusCode::NOT_FOUND, "no such app").into_response(),
     };
-    // Build on demand when the app has no bundle — or when its bundle predates
-    // the App SDK this daemon ships. Apps vendor their own `src/sdk.ts`, so
-    // without the second check an app authored before a protocol addition keeps
-    // running the old runtime and silently ignores frames we now send.
-    if bundle_is_stale(&st, &id, &manifest) {
-        let st2 = st.clone();
-        let id2 = id.clone();
-        if let Ok(Ok(r)) = tokio::task::spawn_blocking(move || rebuild_and_stamp(&st2, &id2)).await
-        {
-            if !r.ok {
-                warn!(app = %id, "on-demand build failed: {}", r.log);
-            }
+    if let Some(check) = &check {
+        if let Some(build) = check.build.as_ref().filter(|b| !b.ok && !check.remembered) {
+            warn!(
+                app = %id,
+                "on-demand build failed ({}): {}",
+                check.stale_because.unwrap_or("stale"),
+                build.log
+            );
+        }
+        // An app that cannot run without a bundle and has none says why,
+        // rather than serving a page that does nothing. One that still has an
+        // older bundle keeps serving it.
+        if let Some(log) = check.missing_bundle_log() {
+            return build_failure_page(&manifest.title, &log);
         }
     }
     let entry_html = match st.read_file(&id, &manifest.entry) {
@@ -277,15 +516,23 @@ async fn serve_index(Path(id): Path<String>, Query(query): Query<PageQuery>) -> 
     let base_href = format!("/apps/{id}/");
     // Embed this daemon's per-app socket token so the served page can
     // authenticate its agent WebSocket (checked in `agent_ws`).
-    let ws_token = ws_token_for(&id);
-    let html = biorouter_mcp::agent_drafter::render::assemble_app(
+    let ws_token = ws_token_for(&id, manifest.app_uid.as_deref());
+    // Fresh for every response: the page's `on…=` handlers are bound by a
+    // script to markers carrying it, so markup injected later, which never
+    // sees it, is never bound (`render::bind_inline_handlers`).
+    let handler_nonce = uuid::Uuid::new_v4().simple().to_string();
+    let html = biorouter_mcp::agent_drafter::render::assemble_app_page(
         &manifest,
         &entry_html,
         Some(&base_href),
-        None,
         Some(&ws_token),
+        st.file_exists(&id, "dist/app.js"),
+        &handler_nonce,
     );
-    with_app_csp(([(header::CONTENT_TYPE, "text/html; charset=utf-8")], html).into_response())
+    // The inline scripts the author wrote, and the one holding their handlers,
+    // run, pinned by hash; anything injected later does not.
+    let csp = app_page_csp(&biorouter_mcp::agent_drafter::render::inline_script_sources(&html));
+    app_page_response(StatusCode::OK, html, &csp)
 }
 
 /// GET /apps/{id}/dist/{*path} and /apps/{id}/assets/{*path} — serve a file.
@@ -293,7 +540,17 @@ async fn serve_file(Path((id, sub)): Path<(String, String)>, prefix: &str) -> Re
     let rel = format!("{prefix}/{sub}");
     match store().read_bytes(&id, &rel) {
         Ok(bytes) => {
-            with_app_csp(([(header::CONTENT_TYPE, mime_for(&rel))], bytes).into_response())
+            let mut resp = with_app_file_csp(
+                ([(header::CONTENT_TYPE, mime_for(&rel))], bytes).into_response(),
+            );
+            if prefix == "dist" {
+                // A rebuild replaces the bundle under the same name.
+                resp.headers_mut().insert(
+                    header::CACHE_CONTROL,
+                    header::HeaderValue::from_static("no-cache"),
+                );
+            }
+            resp
         }
         Err(_) => (StatusCode::NOT_FOUND, "not found").into_response(),
     }
@@ -316,38 +573,744 @@ async fn build_app_route(Path(id): Path<String>) -> Response {
     let st2 = st.clone();
     let id2 = id.clone();
     match tokio::task::spawn_blocking(move || rebuild_and_stamp(&st2, &id2)).await {
-        Ok(Ok(report)) => {
-            Json(json!({ "ok": report.ok, "used": report.used, "log": report.log })).into_response()
-        }
-        _ => (StatusCode::INTERNAL_SERVER_ERROR, "build error").into_response(),
+        // `fallback` is additive: a client that reads only `ok`/`used`/`log`
+        // is unaffected, and one that knows it can warn that the type-stripper
+        // built this bundle.
+        Ok(Ok(report)) => Json(json!({
+            "ok": report.ok,
+            "used": report.used,
+            "log": report.log,
+            "fallback": report.is_fallback(),
+        }))
+        .into_response(),
+        Ok(Err(error)) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("build error: {error}"),
+        )
+            .into_response(),
+        Err(_) => (StatusCode::INTERNAL_SERVER_ERROR, "build error").into_response(),
     }
 }
 
-/// GET /apps/{id}/export — return the standalone export scaffold as a JSON file
-/// map ({ files: { "<path>": "<content>" } }). The caller writes the files,
-/// `npm run build`, `npm start`, and runs a `biorouterd` for the agent backend.
+/// GET /apps/{id}/export — the launcher-only export as a JSON map of text
+/// files, `{ id, files: { "<path>": "<content>" }, skipped_binary, skipped }`.
+///
+/// ⚠ **Kept for version skew, and nothing new should call it.** A desktop from
+/// before `POST /apps/{id}/export` asks this and writes the map itself. It now
+/// carries what every export carries (the raw authored entry, a manifest
+/// without the author's chat id), and answers a missing app 404, a bad id 400
+/// and an app it cannot export 409 rather than 404 for everything. A JSON string
+/// map cannot hold a binary file, so those are named in `skipped_binary`
+/// instead of vanishing without a word; the full export, payload and bundled
+/// daemon are `POST`'s alone.
 async fn export_app_route(Path(id): Path<String>) -> Response {
-    // export_scaffold may run esbuild (blocking) when a bundle is stale, so do
-    // it off the async runtime to keep the server responsive under load.
     let id2 = id.clone();
-    let result =
-        tokio::task::spawn_blocking(move || export_scaffold(&default_root(), &id2, None)).await;
+    // A stale bundle is rebuilt first, which runs esbuild: off the runtime.
+    let result = tokio::task::spawn_blocking(move || {
+        biorouter_mcp::agent_drafter::export::legacy_export_map(&default_root(), &id2)
+    })
+    .await;
     match result {
-        Ok(Ok(files)) => {
-            let map: serde_json::Map<String, serde_json::Value> = files
+        Ok(Ok(export)) => {
+            let map: serde_json::Map<String, serde_json::Value> = export
+                .files
                 .into_iter()
                 .map(|(p, c)| (p, serde_json::Value::String(c)))
                 .collect();
-            Json(json!({ "id": id, "files": map })).into_response()
+            Json(json!({
+                "id": id,
+                "files": map,
+                "skipped_binary": export.skipped_binary,
+                "skipped": export.skipped,
+            }))
+            .into_response()
         }
-        _ => (StatusCode::NOT_FOUND, "no such app").into_response(),
+        Ok(Err(error)) => export_error_response(error),
+        Err(_) => (StatusCode::INTERNAL_SERVER_ERROR, "The export failed.").into_response(),
     }
 }
 
-/// DELETE /apps/{id} — delete the app.
+/// The body of `POST /apps/{id}/export`. Every key is optional: an empty body
+/// is a launcher export. Unknown keys are ignored, so a newer desktop's extra
+/// option reaches an older daemon as "not honoured" rather than as a 400.
+#[derive(Debug, Default, Deserialize)]
+struct ExportBody {
+    /// `"launcher"` (the default) or `"full"`.
+    #[serde(default)]
+    mode: Option<String>,
+    /// Full mode's selection, `{knowledge_bases, skills, extensions}`. A key
+    /// that is absent means everything the app references; `[]` means none.
+    #[serde(default)]
+    include: Option<serde_json::Value>,
+    /// `"none"` (the default) or `"current"`: this daemon's own binary under
+    /// `payload/bin/`.
+    #[serde(default)]
+    bundle_daemon: Option<String>,
+    /// Export despite harness ERRORs. The desktop sends it only after the person
+    /// was shown the findings of a `422` and chose to export anyway.
+    #[serde(default)]
+    allow_lint_errors: bool,
+}
+
+fn parse_export_body(
+    body: &[u8],
+) -> Result<biorouter_mcp::agent_drafter::export::ExportRequest, String> {
+    use biorouter_mcp::agent_drafter::export::{ExportMode, ExportRequest, ExportSelection};
+    let body: ExportBody = if body.iter().all(u8::is_ascii_whitespace) {
+        ExportBody::default()
+    } else {
+        serde_json::from_slice(body)
+            .map_err(|error| format!("The export request is not valid JSON: {error}"))?
+    };
+    let mode = match body.mode.as_deref() {
+        None => ExportMode::Launcher,
+        Some(value) => ExportMode::parse(value)
+            .ok_or_else(|| format!("mode must be \"launcher\" or \"full\", not \"{value}\"."))?,
+    };
+    let bundle_daemon = match body.bundle_daemon.as_deref() {
+        None | Some("none") => false,
+        Some("current") => true,
+        Some(value) => {
+            return Err(format!(
+                "bundle_daemon must be \"none\" or \"current\", not \"{value}\"."
+            ))
+        }
+    };
+    Ok(ExportRequest {
+        mode,
+        include: ExportSelection::from_json(body.include.as_ref())?,
+        bundle_daemon,
+        allow_lint_errors: body.allow_lint_errors,
+    })
+}
+
+/// What an HTTP export may carry out of the machine, decided for the caller
+/// that asked: each knowledge base by [`HttpCaller::reach_knowledge_base`], the
+/// decision `gate_knowledge_base` gives `GET /knowledge/bases/{id}/export`, so
+/// the zip can never hand out a base that route would refuse; each skill from
+/// the daemon's own catalog.
+///
+/// [`HttpCaller::reach_knowledge_base`]: crate::routes::session_reach::HttpCaller::reach_knowledge_base
+struct HttpExportPayload {
+    caller: crate::routes::session_reach::HttpCaller,
+    knowledge: Arc<KnowledgeService>,
+}
+
+impl biorouter_mcp::agent_drafter::export::PayloadAccess for HttpExportPayload {
+    fn reach_kb(&self, kb_id: &str) -> Result<(), String> {
+        self.caller
+            .reach_knowledge_base(self.knowledge.root(), kb_id)
+            .map_err(|refusal| refusal.message.to_string())
+    }
+
+    fn export_kb(&self, kb_id: &str) -> Result<Vec<u8>, String> {
+        self.knowledge
+            .export_brkb(kb_id)
+            .map_err(|error| error.to_string())
+    }
+
+    fn knowledge_root(&self) -> Option<std::path::PathBuf> {
+        Some(self.knowledge.root().to_path_buf())
+    }
+
+    fn skill_dir(&self, name: &str) -> Option<biorouter_mcp::agent_drafter::export::SkillLocation> {
+        use biorouter_mcp::agent_drafter::export as app_export;
+        // The catalog knows every root the daemon reads skills from (bundles,
+        // extensions' roots), keyed by the name an app's manifest uses. The
+        // export still checks the folder sits inside the root it was found in.
+        if let Some(skill) = biorouter::agents::skill_catalog::current()
+            .skills()
+            .get(name)
+        {
+            return Some(app_export::SkillLocation {
+                dir: skill.directory.clone(),
+                root: skill.source_root.clone(),
+            });
+        }
+        app_export::skill_in_root(&app_export::skills_root_for_export(), name)
+    }
+
+    /// The seeder's own answer, which `export`'s copy of the list is tested
+    /// against: neither a shipped skill nor its seeded bundle travels in a zip.
+    fn is_shipped_skill(&self, name: &str) -> bool {
+        biorouter::agents::skills_extension::is_shipped_entry_name(&name.to_ascii_lowercase())
+    }
+}
+
+/// POST /apps/{id}/export — the app as a zip of a folder that runs on another
+/// machine, built by the one export implementation the `export_app` tool uses
+/// (`agent_drafter::export`). Body: [`ExportBody`].
+///
+/// - `200 application/zip`: everything under one top-level `<id>/` folder, the
+///   launchers and a bundled daemon marked executable in each entry's unix
+///   mode, `Content-Disposition: attachment; filename="<id>.zip"`, and the
+///   export's report in `X-Biorouter-Export-Report` (base64url JSON: mode,
+///   files, kbs, skills, extensions, daemon, notes, lint_warnings, skipped).
+/// - `400` a request it cannot read, `404` no such app, `409` an app that
+///   cannot be exported as it stands, `422` harness ERRORs (JSON
+///   `{error, findings}`; send `allow_lint_errors: true` to export anyway),
+///   `500` a failure reading or writing, each with a sentence.
+///
+/// The folder is built in a temporary directory of the daemon's own and never
+/// at a path the caller names: the desktop extracts the zip into the folder the
+/// person picked, and a `biorouter serve` browser downloads it. A knowledge base
+/// the caller may not reach is left out and named in the report's notes, not
+/// refused as a whole export.
+async fn export_app_zip_route(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+    headers: axum::http::HeaderMap,
+    body: axum::body::Bytes,
+) -> Response {
+    let caller = crate::routes::session_reach::http_caller(&headers).await;
+    export_zip_response(
+        default_root(),
+        state.knowledge_service.clone(),
+        caller,
+        id,
+        &body,
+    )
+    .await
+}
+
+/// [`export_app_zip_route`] past its extractors, so tests can drive it with a
+/// store and a caller of their own.
+async fn export_zip_response(
+    store_root: std::path::PathBuf,
+    knowledge: Arc<KnowledgeService>,
+    caller: crate::routes::session_reach::HttpCaller,
+    id: String,
+    body: &[u8],
+) -> Response {
+    use biorouter_mcp::agent_drafter::export as app_export;
+    let request = match parse_export_body(body) {
+        Ok(request) => request,
+        Err(message) => return (StatusCode::BAD_REQUEST, message).into_response(),
+    };
+    if validate_artifact_id(&id).is_err() {
+        return (StatusCode::BAD_REQUEST, format!("'{id}' is not an app id.")).into_response();
+    }
+    let zip_id = id.clone();
+    // A stale bundle is rebuilt, a fat export copies a ~100 MB binary, and the
+    // folder is compressed: all of it off the async runtime.
+    let built = tokio::task::spawn_blocking(move || {
+        let temp = tempfile::Builder::new()
+            .prefix("biorouter-app-export-")
+            .tempdir()
+            .map_err(|error| {
+                app_export::ExportError::Io(format!("could not make a temporary folder: {error}"))
+            })?;
+        let out = temp.path().join(&zip_id);
+        let access = HttpExportPayload { caller, knowledge };
+        let report = app_export::export_to_staging(&store_root, &zip_id, &request, &access, &out)?;
+        let zip = zip_export_folder(&out, &zip_id).map_err(|error| {
+            app_export::ExportError::Io(format!("could not package the export: {error}"))
+        })?;
+        Ok::<_, app_export::ExportError>((report, zip))
+    })
+    .await;
+    let (report, zip) = match built {
+        Ok(Ok(built)) => built,
+        Ok(Err(error)) => return export_error_response(error),
+        Err(_) => {
+            return (StatusCode::INTERNAL_SERVER_ERROR, "The export failed.").into_response();
+        }
+    };
+    let encoded = {
+        use base64::Engine as _;
+        base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .encode(report.header_json().to_string().as_bytes())
+    };
+    let mut response = (StatusCode::OK, zip).into_response();
+    let headers = response.headers_mut();
+    headers.insert(
+        header::CONTENT_TYPE,
+        header::HeaderValue::from_static("application/zip"),
+    );
+    headers.insert(
+        header::CACHE_CONTROL,
+        header::HeaderValue::from_static("no-store"),
+    );
+    // The id is a validated slug ([A-Za-z0-9_-]), so it needs no quoting rules.
+    if let Ok(value) = header::HeaderValue::from_str(&format!("attachment; filename=\"{id}.zip\""))
+    {
+        headers.insert(header::CONTENT_DISPOSITION, value);
+    }
+    if let Ok(value) = header::HeaderValue::from_str(&encoded) {
+        headers.insert(EXPORT_REPORT_HEADER, value);
+    }
+    response
+}
+
+/// The response header carrying an HTTP export's report.
+const EXPORT_REPORT_HEADER: &str = "x-biorouter-export-report";
+
+/// Each export failure as the status its door documents, with its sentence.
+fn export_error_response(error: biorouter_mcp::agent_drafter::export::ExportError) -> Response {
+    use biorouter_mcp::agent_drafter::export::ExportError;
+    match error {
+        ExportError::NotFound(message) => (StatusCode::NOT_FOUND, message).into_response(),
+        ExportError::BadRequest(message) => (StatusCode::BAD_REQUEST, message).into_response(),
+        ExportError::Unexportable(message) => (StatusCode::CONFLICT, message).into_response(),
+        ExportError::Lint { message, findings } => (
+            StatusCode::UNPROCESSABLE_ENTITY,
+            Json(json!({ "error": message, "findings": findings })),
+        )
+            .into_response(),
+        ExportError::Io(message) => (StatusCode::INTERNAL_SERVER_ERROR, message).into_response(),
+    }
+}
+
+/// Zip the export folder `dir` with every entry under `<id>/`, in a stable
+/// order, each with its unix mode, so an extracted `run.command` is still
+/// double-clickable. Where the filesystem has no modes (Windows), the export's
+/// own list of executable paths decides.
+fn zip_export_folder(dir: &std::path::Path, id: &str) -> std::io::Result<Vec<u8>> {
+    use std::io::Write as _;
+    fn walk(
+        base: &std::path::Path,
+        dir: &std::path::Path,
+        out: &mut Vec<(String, std::path::PathBuf)>,
+    ) -> std::io::Result<()> {
+        for entry in std::fs::read_dir(dir)? {
+            let entry = entry?;
+            let kind = entry.file_type()?;
+            if kind.is_dir() {
+                walk(base, &entry.path(), out)?;
+            } else if kind.is_file() {
+                let path = entry.path();
+                let rel = path
+                    .strip_prefix(base)
+                    .map_err(std::io::Error::other)?
+                    .to_string_lossy()
+                    .replace('\\', "/");
+                out.push((rel, path));
+            }
+        }
+        Ok(())
+    }
+    let mut files = Vec::new();
+    walk(dir, dir, &mut files)?;
+    files.sort();
+    let mut writer = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+    for (rel, path) in files {
+        let mode = file_mode(&path, &rel)?;
+        let options = zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Deflated)
+            .unix_permissions(mode)
+            .large_file(std::fs::metadata(&path)?.len() >= u32::MAX as u64);
+        writer
+            .start_file(format!("{id}/{rel}"), options)
+            .map_err(std::io::Error::other)?;
+        writer.write_all(&std::fs::read(&path)?)?;
+    }
+    Ok(writer.finish().map_err(std::io::Error::other)?.into_inner())
+}
+
+#[cfg(unix)]
+fn file_mode(path: &std::path::Path, _rel: &str) -> std::io::Result<u32> {
+    use std::os::unix::fs::PermissionsExt;
+    Ok(std::fs::metadata(path)?.permissions().mode() & 0o777)
+}
+
+#[cfg(not(unix))]
+fn file_mode(_path: &std::path::Path, rel: &str) -> std::io::Result<u32> {
+    Ok(
+        if biorouter_mcp::agent_drafter::export::is_executable_export_path(rel) {
+            0o755
+        } else {
+            0o644
+        },
+    )
+}
+
+#[cfg(test)]
+mod export_route_tests {
+    //! `POST /apps/{id}/export` and the legacy `GET`, driven past their
+    //! extractors (`export_zip_response`, `export_app_route`) so each test owns
+    //! its app store and knowledge store. The privacy arm installs this
+    //! binary's one user-action key (`session::diverge_tests`), hence `serial`.
+    use super::*;
+    use crate::routes::session::diverge_tests::{
+        install_test_user_action_key, TEST_USER_ACTION_KEY,
+    };
+    use biorouter_mcp::agent_drafter::store::ArtifactKind;
+    use std::io::Read as _;
+    use tempfile::TempDir;
+
+    const PNG: &[u8] = &[
+        0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0xFF, 0xFE,
+    ];
+
+    struct Stores {
+        _dir: TempDir,
+        apps: std::path::PathBuf,
+        knowledge: Arc<KnowledgeService>,
+    }
+
+    fn stores() -> Stores {
+        let dir = TempDir::new().unwrap();
+        let apps = dir.path().join("agent_drafter");
+        let knowledge = dir.path().join("knowledge");
+        std::fs::create_dir_all(&apps).unwrap();
+        std::fs::create_dir_all(&knowledge).unwrap();
+        Stores {
+            apps,
+            knowledge: Arc::new(KnowledgeService::new(knowledge)),
+            _dir: dir,
+        }
+    }
+
+    /// A static app with a binary asset and runtime data that must stay home.
+    fn app(stores: &Stores, id: &str, html: &str) {
+        let store = ArtifactStore::new(stores.apps.clone());
+        let mut manifest = store
+            .create_with_id(
+                id,
+                "Exported",
+                "",
+                ArtifactKind::Static,
+                "index.html",
+                &[("index.html".to_string(), html.to_string())],
+            )
+            .unwrap();
+        manifest.session_id = Some("20261010_7".to_string());
+        store.save_manifest(&manifest).unwrap();
+        let dir = store.artifact_dir(id).unwrap();
+        std::fs::create_dir_all(dir.join("assets")).unwrap();
+        std::fs::write(dir.join("assets/logo.png"), PNG).unwrap();
+        std::fs::create_dir_all(dir.join("workspace/.vault")).unwrap();
+        std::fs::write(dir.join("workspace/.vault/KEY.enc"), [0xFF, 0x00, 0x13]).unwrap();
+    }
+
+    const PAGE: &str = "<html><head></head><body><main>hi</main></body></html>";
+
+    async fn caller(proof: Option<&str>) -> crate::routes::session_reach::HttpCaller {
+        let mut headers = axum::http::HeaderMap::new();
+        if let Some(proof) = proof {
+            headers.insert("X-User-Action", proof.parse().unwrap());
+        }
+        crate::routes::session_reach::http_caller(&headers).await
+    }
+
+    async fn post(
+        stores: &Stores,
+        id: &str,
+        body: serde_json::Value,
+        proof: Option<&str>,
+    ) -> Response {
+        export_zip_response(
+            stores.apps.clone(),
+            stores.knowledge.clone(),
+            caller(proof).await,
+            id.to_string(),
+            body.to_string().as_bytes(),
+        )
+        .await
+    }
+
+    async fn body_bytes(response: Response) -> Vec<u8> {
+        axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap()
+            .to_vec()
+    }
+
+    fn report(response: &Response) -> serde_json::Value {
+        use base64::Engine as _;
+        let raw = response.headers()[EXPORT_REPORT_HEADER].to_str().unwrap();
+        let json = base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .decode(raw)
+            .unwrap();
+        serde_json::from_slice(&json).unwrap()
+    }
+
+    /// Every entry of the zip, as (name, unix mode, bytes).
+    fn entries(zip: &[u8]) -> Vec<(String, Option<u32>, Vec<u8>)> {
+        let mut archive = zip::ZipArchive::new(std::io::Cursor::new(zip)).unwrap();
+        (0..archive.len())
+            .map(|i| {
+                let mut file = archive.by_index(i).unwrap();
+                let mut bytes = Vec::new();
+                file.read_to_end(&mut bytes).unwrap();
+                (file.name().to_string(), file.unix_mode(), bytes)
+            })
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn a_launcher_export_is_a_zip_of_one_folder_with_executable_launchers() {
+        let stores = stores();
+        app(&stores, "zip-demo", PAGE);
+        let response = post(&stores, "zip-demo", serde_json::json!({}), None).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.headers()[header::CONTENT_TYPE], "application/zip");
+        assert_eq!(
+            response.headers()[header::CONTENT_DISPOSITION],
+            "attachment; filename=\"zip-demo.zip\""
+        );
+        let summary = report(&response);
+        assert_eq!(summary["mode"], "launcher");
+        assert!(summary["files"].as_u64().unwrap() > 5);
+
+        let files = entries(&body_bytes(response).await);
+        assert!(files
+            .iter()
+            .all(|(name, _, _)| name.starts_with("zip-demo/")));
+        let find = |rel: &str| {
+            files
+                .iter()
+                .find(|(name, _, _)| name == &format!("zip-demo/{rel}"))
+                .unwrap_or_else(|| panic!("{rel} is missing"))
+        };
+        for launcher in biorouter_mcp::agent_drafter::render::EXECUTABLE_EXPORT_FILES {
+            assert_eq!(
+                find(launcher).1.map(|m| m & 0o777),
+                Some(0o755),
+                "{launcher}"
+            );
+        }
+        assert_eq!(find("index.html").2, PAGE.as_bytes(), "the raw entry");
+        assert_eq!(find("assets/logo.png").2, PNG, "binary files survive");
+        let manifest = String::from_utf8(find("manifest.json").2.clone()).unwrap();
+        assert!(
+            !manifest.contains("20261010_7"),
+            "the author's chat stays home"
+        );
+        assert!(files
+            .iter()
+            .all(|(name, _, _)| !name.contains("workspace/")));
+        assert!(files.iter().all(|(name, _, _)| !name.contains(".vault")));
+    }
+
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn a_private_base_is_left_out_for_a_secret_only_caller_and_carried_for_the_user() {
+        install_test_user_action_key();
+        let stores = stores();
+        stores
+            .knowledge
+            .create_base("pub-kb", "Public notes", None)
+            .unwrap();
+        stores
+            .knowledge
+            .create_base("priv-kb", "Cohort", None)
+            .unwrap();
+        biorouter_mcp::knowledge::tier::raise_unlocked(stores.knowledge.root(), "priv-kb", true)
+            .unwrap();
+        app(&stores, "kb-demo", PAGE);
+        let body = serde_json::json!({
+            "mode": "full",
+            "include": { "knowledge_bases": ["pub-kb", "priv-kb"], "skills": [], "extensions": [] },
+        });
+
+        // Holding the daemon secret is not being the user: the private base is
+        // skipped with a note, the rest of the export still arrives.
+        let secret_only = post(&stores, "kb-demo", body.clone(), None).await;
+        assert_eq!(secret_only.status(), StatusCode::OK);
+        let summary = report(&secret_only);
+        assert_eq!(summary["kbs"], serde_json::json!(["pub-kb"]));
+        assert!(
+            summary["notes"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|n| n.as_str().unwrap().contains("priv-kb")),
+            "{summary}"
+        );
+        let names: Vec<String> = entries(&body_bytes(secret_only).await)
+            .into_iter()
+            .map(|(name, _, _)| name)
+            .collect();
+        assert!(names.contains(&"kb-demo/payload/knowledge/pub-kb.brkb".to_string()));
+        assert!(!names.iter().any(|name| name.contains("priv-kb")));
+        assert!(names.contains(&"kb-demo/export.json".to_string()));
+
+        let proven = post(&stores, "kb-demo", body, Some(TEST_USER_ACTION_KEY)).await;
+        assert_eq!(proven.status(), StatusCode::OK);
+        assert_eq!(
+            report(&proven)["kbs"],
+            serde_json::json!(["priv-kb", "pub-kb"])
+        );
+    }
+
+    #[tokio::test]
+    async fn harness_errors_answer_422_with_findings_until_a_person_exports_anyway() {
+        let stores = stores();
+        app(
+            &stores,
+            "lint-demo",
+            "<html><body><script src=\"https://cdn.example/x.js\"></script></body></html>",
+        );
+        let refused = post(&stores, "lint-demo", serde_json::json!({}), None).await;
+        assert_eq!(refused.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        let answer: serde_json::Value = serde_json::from_slice(&body_bytes(refused).await).unwrap();
+        assert!(
+            !answer["findings"].as_array().unwrap().is_empty(),
+            "{answer}"
+        );
+        assert!(answer["error"].as_str().unwrap().contains("lint-demo"));
+
+        let anyway = post(
+            &stores,
+            "lint-demo",
+            serde_json::json!({ "allow_lint_errors": true }),
+            None,
+        )
+        .await;
+        assert_eq!(anyway.status(), StatusCode::OK);
+        assert!(report(&anyway)["lint_warnings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|w| w.as_str().unwrap().starts_with("ERROR:")));
+    }
+
+    #[tokio::test]
+    async fn each_failure_has_its_own_status_and_sentence() {
+        let stores = stores();
+        app(&stores, "status-demo", PAGE);
+        let call = |id: &'static str, body: &'static [u8]| {
+            let apps = stores.apps.clone();
+            let knowledge = stores.knowledge.clone();
+            async move {
+                export_zip_response(apps, knowledge, caller(None).await, id.to_string(), body).await
+            }
+        };
+        assert_eq!(call("status-demo", b"").await.status(), StatusCode::OK);
+        assert_eq!(
+            call("status-demo", b"{").await.status(),
+            StatusCode::BAD_REQUEST
+        );
+        assert_eq!(
+            call("status-demo", br#"{"mode":"fat"}"#).await.status(),
+            StatusCode::BAD_REQUEST
+        );
+        assert_eq!(
+            call("status-demo", br#"{"bundle_daemon":"all"}"#)
+                .await
+                .status(),
+            StatusCode::BAD_REQUEST
+        );
+        assert_eq!(
+            call("status-demo", br#"{"include":["x"]}"#).await.status(),
+            StatusCode::BAD_REQUEST
+        );
+        assert_eq!(call("../x", b"").await.status(), StatusCode::BAD_REQUEST);
+        let missing = call("no-such-app", b"").await;
+        assert_eq!(missing.status(), StatusCode::NOT_FOUND);
+        assert!(String::from_utf8(body_bytes(missing).await)
+            .unwrap()
+            .contains("no-such-app"));
+    }
+
+    /// An older desktop asks `GET` and writes the map itself: it still answers,
+    /// now with the raw entry and the binary files it cannot carry named.
+    #[tokio::test]
+    async fn the_legacy_get_still_answers_and_names_what_it_cannot_carry() {
+        let suffix: String = uuid::Uuid::new_v4()
+            .simple()
+            .to_string()
+            .chars()
+            .take(8)
+            .collect();
+        let id = format!("legacy-{suffix}");
+        let store = store();
+        store
+            .create_with_id(
+                &id,
+                "Legacy",
+                "",
+                ArtifactKind::Static,
+                "index.html",
+                &[("index.html".to_string(), PAGE.to_string())],
+            )
+            .unwrap();
+        let dir = store.artifact_dir(&id).unwrap();
+        std::fs::create_dir_all(dir.join("assets")).unwrap();
+        std::fs::write(dir.join("assets/logo.png"), PNG).unwrap();
+
+        let response = export_app_route(Path(id.clone())).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let answer: serde_json::Value =
+            serde_json::from_slice(&body_bytes(response).await).unwrap();
+        assert_eq!(answer["files"]["index.html"], PAGE);
+        assert!(answer["files"]["run.command"].is_string());
+        assert_eq!(
+            answer["skipped_binary"],
+            serde_json::json!(["assets/logo.png"])
+        );
+        store.delete(&id).unwrap();
+
+        let missing = export_app_route(Path("no-such-legacy-app".to_string())).await;
+        assert_eq!(missing.status(), StatusCode::NOT_FOUND);
+        let bad = export_app_route(Path("..".to_string())).await;
+        assert_eq!(bad.status(), StatusCode::BAD_REQUEST);
+    }
+
+    /// The zip left a skill Biorouter ships to the export's copy of the list;
+    /// it asks the seeder's own now, and the two must name the same skills.
+    #[tokio::test]
+    async fn a_zip_never_carries_a_skill_biorouter_ships() {
+        use biorouter_mcp::agent_drafter::export::PayloadAccess as _;
+        let stores = stores();
+        let payload = HttpExportPayload {
+            caller: caller(None).await,
+            knowledge: stores.knowledge.clone(),
+        };
+        for name in biorouter_mcp::agent_drafter::render::SHIPPED_SKILL_NAMES {
+            assert!(payload.is_shipped_skill(name), "{name}");
+            assert!(
+                payload.is_shipped_skill(&name.to_ascii_uppercase()),
+                "{name}"
+            );
+        }
+        assert!(!payload.is_shipped_skill("ggplot-visualization"));
+        assert!(!payload.is_shipped_skill("Knowledge-Bases-Of-Mine"));
+
+        app(&stores, "shipped-skills-demo", PAGE);
+        let names: Vec<String> = biorouter_mcp::agent_drafter::render::SHIPPED_SKILL_NAMES
+            .iter()
+            .flat_map(|name| [name.to_string(), name.to_ascii_uppercase()])
+            .collect();
+        let response = post(
+            &stores,
+            "shipped-skills-demo",
+            serde_json::json!({
+                "mode": "full",
+                "include": { "knowledge_bases": [], "skills": names, "extensions": [] },
+            }),
+            None,
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let summary = report(&response);
+        assert_eq!(summary["skills"], serde_json::json!([]));
+        let notes = summary["notes"].as_array().unwrap();
+        for name in names {
+            assert!(
+                notes.iter().any(|note| note
+                    .as_str()
+                    .unwrap()
+                    .contains(&format!("skill '{name}' ships with Biorouter"))),
+                "{summary}"
+            );
+        }
+        assert!(entries(&body_bytes(response).await)
+            .iter()
+            .all(|(name, _, _)| !name.contains("/payload/skills/")));
+    }
+}
+
+/// DELETE /apps/{id} — delete the app, including one `GET /apps` lists as broken.
+///
+/// The store tells [`forget_app_runtime`] once the folder is gone, so the app's
+/// socket token, access cookie, launch links and vault key go with it, and a
+/// page of the deleted app left open cannot reconnect to whatever is
+/// built under the same id next.
 async fn delete_app_route(Path(id): Path<String>) -> Response {
     let st = store();
-    if !st.exists(&id) {
+    if !st.has_entry(&id) {
         return (StatusCode::NOT_FOUND, "no such app").into_response();
     }
     match st.delete(&id) {
@@ -380,7 +1343,11 @@ async fn agent_ws(
     // daemon run reconnects with a stale token → 403 and must reload.
     let upgrade = super::UpgradeOrigin::from_headers(&headers);
     let origin = upgrade.origin;
-    let expected = ws_token_for(&id);
+    // Take both from the same app generation: a concurrent delete retires this
+    // socket even if its upgrade or setup has not finished yet.
+    let access = served_page_access(&id);
+    let retired = app_socket_retirement(access.as_ref());
+    let expected = page_token_or_standin(access.as_ref());
     if let Err(reason) = check_ws_auth(&upgrade, params.get("token").map(String::as_str), &expected)
     {
         tracing::warn!(origin = origin.unwrap_or("<none>"), app = %id, "rejected app agent WebSocket: {reason}");
@@ -391,13 +1358,16 @@ async fn agent_ws(
         Ok(m) => m,
         Err(_) => return (StatusCode::NOT_FOUND, "no such app").into_response(),
     };
+    if !access.is_some_and(|access| access.belongs_to(&manifest)) {
+        return app_page_token_refused();
+    }
     // Stable per-client handle for durable, resumable sessions (the SDK persists
     // it in localStorage and passes it as ?client_id=…).
     let client_id = params
         .get("client_id")
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty());
-    ws.on_upgrade(move |socket| handle_agent_socket(socket, state, manifest, client_id))
+    ws.on_upgrade(move |socket| handle_agent_socket(socket, state, manifest, client_id, retired))
 }
 
 #[derive(Deserialize)]
@@ -612,24 +1582,170 @@ fn ui_bridge_for(session_id: &str) -> UiBridge {
 /// serving (sdk_hash drift), so every page this daemon serves carries this
 /// run's token. A page left open from a *previous* daemon run reconnects with a
 /// stale token and gets 403 — it must reload to pick up the current one.
-static APP_WS_TOKENS: LazyLock<Mutex<std::collections::HashMap<String, String>>> =
+#[derive(Clone)]
+struct AppPageAccess {
+    token: String,
+    app_uid: Option<String>,
+    retired: CancellationToken,
+}
+
+impl AppPageAccess {
+    fn new(app_uid: Option<&str>) -> Self {
+        Self {
+            token: hex::encode(rand::random::<[u8; 16]>()),
+            app_uid: app_uid.map(str::to_owned),
+            retired: CancellationToken::new(),
+        }
+    }
+
+    fn belongs_to(&self, manifest: &Manifest) -> bool {
+        !self.retired.is_cancelled() && self.app_uid == manifest.app_uid
+    }
+}
+
+static APP_WS_TOKENS: LazyLock<Mutex<std::collections::HashMap<String, AppPageAccess>>> =
     LazyLock::new(|| Mutex::new(std::collections::HashMap::new()));
 
-/// The agent-socket token for `app_id`, generating a random 32-hex-char one on
-/// first use and returning the cached value afterwards.
-fn ws_token_for(app_id: &str) -> String {
+/// The agent-socket token for this app instance. A changed manifest uid retires
+/// the previous generation before minting its replacement.
+fn ws_token_for(app_id: &str, app_uid: Option<&str>) -> String {
     let mut map = match APP_WS_TOKENS.lock() {
         Ok(m) => m,
         Err(p) => p.into_inner(),
     };
     map.entry(app_id.to_string())
-        .or_insert_with(|| {
-            // 16 random bytes → 32 hex chars, matching the crate's existing
-            // token convention (see `tunnel::generate_secret`).
-            let bytes: [u8; 16] = rand::random();
-            hex::encode(bytes)
+        .and_modify(|access| {
+            if access.app_uid.as_deref() != app_uid {
+                access.retired.cancel();
+                *access = AppPageAccess::new(app_uid);
+            }
         })
+        .or_insert_with(|| AppPageAccess::new(app_uid))
+        .token
         .clone()
+}
+
+/// The access of a page this daemon served, without minting anything. Token
+/// comparisons use a random stand-in when this returns none.
+///
+/// ⚠ Never [`ws_token_for`] there. That MINTS a token for an id it has not
+/// seen, and these routes are reached before anything checks that the app
+/// exists: on a `biorouter serve` daemon the served document's cookie admits
+/// `/apps/<any id>/…`, and it rides along with every request an app's page
+/// makes, so a page looping over random ids grew [`APP_WS_TOKENS`] by one entry
+/// a request, kept until the daemon stopped. Only `serve_index`, which has just
+/// loaded the app's manifest, mints. A page from a previous daemon run is
+/// refused either way, as it always was: a fresh token would not match it.
+fn served_page_access(app_id: &str) -> Option<AppPageAccess> {
+    APP_WS_TOKENS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .get(app_id)
+        .cloned()
+}
+
+fn page_token_or_standin(access: Option<&AppPageAccess>) -> String {
+    static NEVER_SERVED: LazyLock<String> =
+        LazyLock::new(|| hex::encode(rand::random::<[u8; 16]>()));
+    access.map_or_else(|| NEVER_SERVED.clone(), |access| access.token.clone())
+}
+
+/// Whether `presented` is `app_id`'s page token: the one [`ws_token_for`] mints,
+/// `serve_index` embeds in the page, and the agent socket takes as `?token=`.
+///
+/// `/apps/{id}/runstate` and `/apps/{id}/models` ask for it too. `check_token`
+/// admits them on the app's access cookie, and every app lives on the same
+/// origin, so the cookie alone admitted any other app's page that fetched them
+/// (a cookie's `Path` is not a boundary between same-origin documents). Only
+/// the app's own page holds the token, now that another app's page can no
+/// longer fetch it (the Fetch Metadata gate in `auth::check_token`).
+fn app_page_token_matches(app_id: &str, presented: Option<&str>) -> bool {
+    let access = served_page_access(app_id);
+    presented
+        .is_some_and(|token| super::secret_matches(token, &page_token_or_standin(access.as_ref())))
+        && access.is_some_and(|access| {
+            store()
+                .load_manifest(app_id)
+                .is_ok_and(|manifest| access.belongs_to(&manifest))
+        })
+}
+
+/// The answer to an app route that needs the page token and did not get it.
+fn app_page_token_refused() -> Response {
+    (
+        StatusCode::FORBIDDEN,
+        "missing or invalid app page token; reload the app",
+    )
+        .into_response()
+}
+
+/// Unknown ids never allocate cached runtime state. Their cancelled lifetime
+/// also closes an upgrade if a caller somehow presents the fixed stand-in.
+fn app_socket_retirement(access: Option<&AppPageAccess>) -> CancellationToken {
+    access.map_or_else(
+        || {
+            let retired = CancellationToken::new();
+            retired.cancel();
+            retired
+        },
+        |access| access.retired.clone(),
+    )
+}
+
+/// Forget what this daemon holds for an app that was just deleted: its socket
+/// token, its access cookie and unredeemed launch links
+/// (`auth::forget_app_access`) and its vault key, and close every agent socket
+/// it still has open.
+///
+/// Registered with the store (`store::on_app_deleted`) by [`routes`], so it runs
+/// for every way this process deletes an app: `DELETE /apps/{id}`, the
+/// `delete_app` tool, `create_app` replacing an app at its id, and a factory
+/// reset of applications (`ArtifactStore::delete_all`). Before it, a re-created
+/// app inherited all of these, and a tab of the deleted app left open
+/// reconnected to whatever was built under the same id next.
+///
+/// Open sockets are CLOSED, not left to run out. Their agents were configured
+/// from the deleted manifest, and their files, data and compute tools are bound
+/// to the path `<store>/<id>/workspace`, not to the app: left open, the deleted
+/// app's page could keep reading and writing the workspace of whatever is built
+/// under the id next. The socket ends exactly as if its page had gone away, so
+/// a running turn is cancelled and parked `ui_ask`s are released.
+///
+/// ⚠ The session's [`UiBridge`] is deliberately KEPT. The session's agent stays
+/// cached and its `appcontrol` server holds that bridge; an export keeps the
+/// app's `app_uid`, so reinstalling it here gives the same browser the same
+/// durable session, and a new bridge would leave its `ui_*` tools writing into
+/// one no socket reads.
+fn forget_app_runtime(app_id: &str) {
+    if let Some(access) = APP_WS_TOKENS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .remove(app_id)
+    {
+        access.retired.cancel();
+    }
+    biorouter_server::auth::forget_app_access(app_id);
+    // ⚠ Never from a test binary: `Config::global()` there may read the
+    // developer's real keychain, which can hang the run on a prompt. The rule
+    // itself is `forget_vault_key`, tested against a file-backed config.
+    #[cfg(not(test))]
+    forget_vault_key(biorouter::config::Config::global(), app_id);
+}
+
+/// Remove `app_id`'s vault key (`brsdk_vault_key_<id>`, [`load_or_create_vault_key`])
+/// from `config`'s secret store, best-effort. The sealed secrets lived in the
+/// app's `workspace/.vault`, which went with the app, so the key unlocks nothing
+/// now; left behind, it would be handed to the next app built under the same id.
+///
+/// Read first, so deleting an app that never used the vault does not rewrite
+/// the secret store, which on macOS is a keychain write.
+fn forget_vault_key(config: &biorouter::config::Config, app_id: &str) {
+    let key_id = format!("brsdk_vault_key_{app_id}");
+    if config.get_secret::<serde_json::Value>(&key_id).is_ok() {
+        if let Err(e) = config.delete_secret(&key_id) {
+            warn!(app = %app_id, "could not remove the deleted app's vault key: {e}");
+        }
+    }
 }
 
 /// Validate an app-agent WebSocket upgrade. Two independent gates, both required:
@@ -2357,11 +3473,32 @@ async fn validate_profiles(app: &AgentConfig) -> ValidatedProfiles {
 }
 
 /// The durable session key for a worker profile, or `None` for the ephemeral
-/// (per-connection) case. Mirrors the main key `app:<id>:<client-id>` with the
-/// profile appended, so a reload resumes the same per-profile conversation.
-fn worker_session_key(app_id: &str, client_id: Option<&str>, profile: &str) -> Option<String> {
+/// (per-connection) case. Mirrors the main key ([`durable_app_session_key`]) with
+/// the profile appended, so a reload resumes the same per-profile conversation.
+/// `scope` is [`app_session_scope`]'s answer, not the bare app id.
+fn worker_session_key(scope: &str, client_id: Option<&str>, profile: &str) -> Option<String> {
     let cid = client_id.map(str::trim).filter(|s| !s.is_empty())?;
-    Some(format!("app:{app_id}:{cid}:{profile}"))
+    Some(format!("app:{scope}:{cid}:{profile}"))
+}
+
+/// Which app a durable session key belongs to: `<id>:<app_uid>`, or the bare
+/// `<id>` for an app created before `app_uid` existed.
+///
+/// The uid is what keeps two apps that shared an id apart. The browser's client
+/// id lives in the page's `localStorage` under the app id, so a re-created app
+/// presents the same client id the deleted one did, and keyed on the id alone it
+/// resumed the deleted app's conversation, history and shared state. A legacy
+/// app keeps the key it always had, so its conversations still resume.
+fn app_session_scope(manifest: &Manifest) -> String {
+    match manifest.app_uid.as_deref().filter(|uid| !uid.is_empty()) {
+        Some(uid) => format!("{}:{uid}", manifest.id),
+        None => manifest.id.clone(),
+    }
+}
+
+/// The external key binding a client's durable main-agent session to `manifest`'s app.
+fn durable_app_session_key(manifest: &Manifest, client_id: &str) -> String {
+    format!("app:{}:{client_id}", app_session_scope(manifest))
 }
 
 /// Size-cap a plain worker answer at [`APP_PAYLOAD_MAX`] bytes so a runaway reply
@@ -2853,7 +3990,7 @@ async fn build_worker(
     let name = format!("app:{}:{}", manifest.id, profile_name);
     let session = match (
         durable,
-        worker_session_key(&manifest.id, client_id, profile_name),
+        worker_session_key(&app_session_scope(manifest), client_id, profile_name),
     ) {
         (true, Some(key)) => {
             state
@@ -4307,7 +5444,14 @@ fn ui_resource_html(result: &rmcp::model::CallToolResult) -> Option<String> {
 /// figure into the app's results region (design §3.4 tool-resource bridge). The
 /// `figure` node is privileged, but we construct it here (like `ui_figure` does),
 /// so it needs no client validation.
+///
+/// The figure came from an Auto Visualiser tool call, and the desktop runs the
+/// daemon in CDN mode (`BIOROUTER_AUTOVIS_CDN=1`), so its libraries arrive as
+/// remote `<script src>` tags. The app shows it in [`figure_frame`], whose policy
+/// allows no remote host, so the tags are swapped for the vendored copies here.
+/// (`ui_figure` renders with inlining forced and needs no such step.)
 fn tool_figure_frame(html: String, tool: &str) -> serde_json::Value {
+    let html = biorouter_mcp::autovisualiser::inline_pinned_cdn_assets(&html);
     json!({
         "type": "ui",
         "v": CATALOG_VERSION,
@@ -4316,6 +5460,522 @@ fn tool_figure_frame(html: String, tool: &str) -> serde_json::Value {
         "mode": "replace",
         "body": [{ "t": "figure", "html": html, "tool": tool }],
     })
+}
+
+/// The policy [`figure_frame`] is served under: the desktop's artifact policy
+/// (`ui/desktop/src/utils/artifactSecurity.ts`), which is what Auto Visualiser
+/// figures are written against, plus `sandbox` and same-origin framing only.
+///
+/// A figure used to be a `srcdoc` iframe, and a `srcdoc` document inherits its
+/// parent's policy: the app page's `script-src 'self'` refused every inline
+/// script in it, so every figure pushed into an app drew nothing, its own error
+/// card included. A document fetched from a URL gets the policy its response
+/// carries instead.
+///
+/// - `sandbox allow-scripts` gives the document an opaque origin even if
+///   something loads it at the top level, so it can read no cookie, storage or
+///   page of the app's origin.
+/// - Scripts run inline only (`'unsafe-eval'` and `blob:` as the desktop grants
+///   them); `connect-src 'none'` and no remote host anywhere, so a figure reaches
+///   no network. Libraries are inlined before a figure gets here
+///   ([`tool_figure_frame`]; `ui_figure` renders inline).
+/// - `frame-ancestors 'self'`: only a page of this daemon may frame it.
+const FIGURE_FRAME_CSP: &str = "sandbox allow-scripts; default-src 'none'; \
+     script-src 'unsafe-inline' 'unsafe-eval' blob:; style-src 'unsafe-inline'; \
+     img-src data: blob:; font-src data:; media-src data: blob:; worker-src blob:; \
+     connect-src 'none'; frame-src 'none'; object-src 'none'; form-action 'none'; \
+     base-uri 'none'; frame-ancestors 'self'";
+
+/// The figure shell. It tells its parent it is ready, takes ONE figure document
+/// from the parent by `postMessage`, and replaces itself with it. `document.open`
+/// keeps the same document, so the figure runs under [`FIGURE_FRAME_CSP`] and not
+/// under the app page's policy. Messages from anything but its parent are ignored.
+const FIGURE_FRAME_HTML: &str = "<!doctype html><html><head><meta charset=\"utf-8\">\
+<title>Figure</title><script>(function(){var shown=false;\
+function show(e){if(shown||e.source!==window.parent)return;var d=e.data;\
+if(!d||d.type!==\"biorouter-figure\"||typeof d.html!==\"string\")return;shown=true;\
+window.removeEventListener(\"message\",show);\
+document.open();document.write(d.html);document.close();}\
+window.addEventListener(\"message\",show);\
+if(window.parent!==window)window.parent.postMessage({type:\"biorouter-figure-ready\"},\"*\");\
+})();</script></head><body></body></html>";
+
+/// GET /apps/{id}/figure-frame — the document an app's SDK frames an Auto
+/// Visualiser figure in (`renderFigure` in `templates/sdk.ts`), served under its
+/// own policy, [`FIGURE_FRAME_CSP`]. The same for every app and holding nothing
+/// of any; it sits under `/apps/{id}/` so the app's access cookie admits it
+/// (`auth::is_app_browser_get`) and its origin is the app page's.
+async fn figure_frame(Path(id): Path<String>) -> Response {
+    if validate_artifact_id(&id).is_err() {
+        return (StatusCode::BAD_REQUEST, "invalid app id").into_response();
+    }
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, "text/html; charset=utf-8")
+        .header(header::CONTENT_SECURITY_POLICY, FIGURE_FRAME_CSP)
+        .header(header::X_CONTENT_TYPE_OPTIONS, "nosniff")
+        .header(header::REFERRER_POLICY, "no-referrer")
+        .header(header::CACHE_CONTROL, "no-store")
+        .body(axum::body::Body::from(FIGURE_FRAME_HTML))
+        .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
+}
+
+/// The isolation and lifecycle rules of this file, through the handlers
+/// themselves: the page token on `runstate`/`models`, the figure shell, what a
+/// delete forgets, the durable key of a re-created app, and broken manifests.
+/// (The Fetch Metadata page gate is in `auth`'s tests; the explicit-id refusal
+/// of `create_app` in `agent_drafter`'s.)
+///
+/// Every test uses app ids of its own: the store, the token map and the access
+/// store are process-wide and the tests run in parallel.
+#[cfg(test)]
+mod app_isolation_and_lifecycle_tests {
+    use super::*;
+    use biorouter_mcp::agent_drafter::store::{on_app_deleted, ArtifactKind};
+
+    async fn body_of(resp: Response) -> String {
+        let bytes = axum::body::to_bytes(resp.into_body(), 1 << 20)
+            .await
+            .unwrap();
+        String::from_utf8_lossy(&bytes).into_owned()
+    }
+
+    fn query(pairs: &[(&str, &str)]) -> Query<std::collections::HashMap<String, String>> {
+        Query(
+            pairs
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect(),
+        )
+    }
+
+    fn create(id: &str, kind: ArtifactKind) -> Manifest {
+        store()
+            .create_with_id(id, id, "", kind, "index.html", &[])
+            .unwrap()
+    }
+
+    #[test]
+    fn rejecting_unknown_socket_ids_never_caches_runtime_state() {
+        for n in 0..128 {
+            let id = format!("iso-unserved-socket-{n}");
+            let access = served_page_access(&id);
+            assert!(access.is_none());
+            assert!(app_socket_retirement(access.as_ref()).is_cancelled());
+            assert!(!app_page_token_matches(&id, Some("wrong-token")));
+            assert!(served_page_access(&id).is_none());
+        }
+    }
+
+    #[test]
+    fn a_late_deleted_page_cannot_authenticate_a_replacement_app() {
+        on_app_deleted(forget_app_runtime);
+        let id = "iso-late-deleted-page";
+        let first = create(id, ArtifactKind::Agentic);
+        ws_token_for(id, first.app_uid.as_deref());
+        let first_access = served_page_access(id).unwrap();
+        store().delete(id).unwrap();
+        let replacement = create(id, ArtifactKind::Agentic);
+        assert!(first_access.retired.is_cancelled());
+
+        // A page response can finish after its manifest has been deleted.
+        let late_token = ws_token_for(id, first.app_uid.as_deref());
+        let late_access = served_page_access(id).unwrap();
+        assert!(!late_access.belongs_to(&replacement));
+        assert!(!app_page_token_matches(id, Some(&late_token)));
+
+        let replacement_token = ws_token_for(id, replacement.app_uid.as_deref());
+        assert!(late_access.retired.is_cancelled());
+        assert_ne!(replacement_token, late_token);
+        assert!(app_page_token_matches(id, Some(&replacement_token)));
+        assert!(served_page_access(id).unwrap().belongs_to(&replacement));
+        store().delete(id).unwrap();
+    }
+
+    #[tokio::test]
+    async fn deleting_an_app_interrupts_socket_work_outside_the_event_loops() {
+        let retired = CancellationToken::new();
+        let turn = retired.child_token();
+        let bridge = ui_bridge_for("iso-retired-await-bridge");
+        let (mut frames, token) = bridge.attach();
+        let (started, waiting) = tokio::sync::oneshot::channel();
+        let attached = bridge.clone();
+        let lifetime = retired.clone();
+        let work = tokio::spawn(async move {
+            run_until_app_retired(&lifetime, async move {
+                let _connection = UiConnection {
+                    bridge: attached,
+                    token,
+                };
+                let _ = started.send(());
+                std::future::pending::<()>().await;
+            })
+            .await;
+        });
+        waiting.await.unwrap();
+        retired.cancel();
+        tokio::time::timeout(Duration::from_secs(2), work)
+            .await
+            .expect("a stalled socket operation must not outlive app deletion")
+            .unwrap();
+        assert!(turn.is_cancelled());
+        assert!(
+            frames.recv().await.is_none(),
+            "the socket bridge was detached"
+        );
+
+        let (mut resumed, resumed_token) = ui_bridge_for("iso-retired-await-bridge").attach();
+        assert!(bridge.emit_frame(json!({"type":"ui","cmd":"notify","message":"resumed"})));
+        assert_eq!(resumed.recv().await.unwrap()["message"], "resumed");
+        bridge.detach(resumed_token);
+    }
+
+    #[tokio::test]
+    async fn retired_socket_cleanup_does_not_detach_a_new_connection() {
+        let bridge = UiBridge::new();
+        let (_old_frames, old_token) = bridge.attach();
+        let old = UiConnection {
+            bridge: bridge.clone(),
+            token: old_token,
+        };
+        let (mut frames, token) = bridge.attach();
+        drop(old);
+        assert!(bridge.emit_frame(json!({"type":"ui","cmd":"notify","message":"fresh"})));
+        assert_eq!(frames.recv().await.unwrap()["message"], "fresh");
+        bridge.detach(token);
+    }
+
+    /// Every app shares one origin, so the access cookie alone admitted any
+    /// other app's page that fetched these routes. They want the token only the
+    /// app's own page holds, and refuse without it before looking at anything,
+    /// so the refusal says nothing about whether the app exists.
+    #[tokio::test]
+    async fn run_state_and_models_want_the_page_token() {
+        let id = "iso-token-gated";
+        let manifest = create(id, ArtifactKind::Agentic);
+        let token = ws_token_for(id, manifest.app_uid.as_deref());
+        let another_apps = ws_token_for("iso-token-gated-other", None);
+        let state = crate::state::AppState::new().await.unwrap();
+
+        for presented in [None, Some("0".repeat(32)), Some(another_apps.clone())] {
+            let mut pairs = vec![("session", "iso-no-such-session")];
+            if let Some(t) = presented.as_deref() {
+                pairs.push(("token", t));
+            }
+            let models = list_models(Path(id.to_string()), query(&pairs)).await;
+            assert_eq!(models.status(), StatusCode::FORBIDDEN, "{presented:?}");
+            assert!(body_of(models).await.contains("reload the app"));
+            let run =
+                get_run_state(Path(id.to_string()), query(&pairs), State(state.clone())).await;
+            assert_eq!(run.status(), StatusCode::FORBIDDEN, "{presented:?}");
+            // An app that does not exist is refused the same way.
+            let missing = list_models(Path("iso-not-an-app".to_string()), query(&pairs)).await;
+            assert_eq!(missing.status(), StatusCode::FORBIDDEN, "{presented:?}");
+            let missing = get_run_state(
+                Path("iso-not-an-app".to_string()),
+                query(&pairs),
+                State(state.clone()),
+            )
+            .await;
+            assert_eq!(missing.status(), StatusCode::FORBIDDEN, "{presented:?}");
+        }
+        // Checking a token mints none: a page looping over made-up ids on a
+        // serve daemon grew the token map by one entry a request.
+        assert!(!APP_WS_TOKENS
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .contains_key("iso-not-an-app"));
+
+        let with_token = [
+            ("session", "iso-no-such-session"),
+            ("token", token.as_str()),
+        ];
+        let models = list_models(Path(id.to_string()), query(&with_token)).await;
+        assert_eq!(models.status(), StatusCode::OK);
+        assert!(body_of(models).await.contains("\"providers\""));
+        let run = get_run_state(
+            Path(id.to_string()),
+            query(&with_token),
+            State(state.clone()),
+        )
+        .await;
+        assert_eq!(run.status(), StatusCode::OK);
+        assert_eq!(body_of(run).await, r#"{"pending":false}"#);
+    }
+
+    /// A figure used to be a `srcdoc` frame, which inherits the app page's
+    /// `script-src 'self'` and so ran none of the figure's inline script. The
+    /// shell is fetched instead and carries a policy of its own: inline scripts,
+    /// no network, an opaque origin, framed only by this daemon's pages.
+    #[tokio::test]
+    async fn the_figure_shell_is_served_under_its_own_policy() {
+        let resp = figure_frame(Path("iso-any-app".to_string())).await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        let header = |name: header::HeaderName| {
+            resp.headers()
+                .get(name)
+                .map(|value| value.to_str().unwrap().to_string())
+                .unwrap_or_default()
+        };
+        let policy = header(header::CONTENT_SECURITY_POLICY);
+        assert_eq!(policy, FIGURE_FRAME_CSP);
+        for directive in [
+            "sandbox allow-scripts",
+            "default-src 'none'",
+            "connect-src 'none'",
+            "frame-ancestors 'self'",
+        ] {
+            assert!(policy.contains(directive), "{directive}: {policy}");
+        }
+        let script_src = policy
+            .split(';')
+            .map(str::trim)
+            .find(|d| d.starts_with("script-src"))
+            .unwrap();
+        assert!(script_src.contains("'unsafe-inline'"), "{script_src}");
+        assert!(!script_src.contains("http"), "no remote host: {script_src}");
+        // `sandbox` without `allow-same-origin`: the figure can read nothing of
+        // the app's origin.
+        assert!(!policy.contains("allow-same-origin"), "{policy}");
+        assert_eq!(header(header::CACHE_CONTROL), "no-store");
+        assert_eq!(header(header::X_CONTENT_TYPE_OPTIONS), "nosniff");
+        let body = body_of(resp).await;
+        assert_eq!(body, FIGURE_FRAME_HTML);
+        assert!(body.contains("biorouter-figure-ready"));
+        assert!(
+            body.contains("e.source!==window.parent"),
+            "only the parent is heard"
+        );
+
+        // The app page that frames it must allow framing its own origin, or the
+        // shell never loads.
+        assert!(APP_CSP.contains("frame-src 'self'"), "{APP_CSP}");
+
+        assert_eq!(
+            figure_frame(Path("../etc".to_string())).await.status(),
+            StatusCode::BAD_REQUEST
+        );
+    }
+
+    /// The figure shell allows no remote host, and the desktop runs the daemon
+    /// in Auto Visualiser CDN mode, so a figure a tool returned arrives with
+    /// remote library tags. They are swapped for the vendored copies before the
+    /// frame leaves the daemon, or the chart would be blank.
+    #[test]
+    fn a_tool_figure_reaches_the_app_with_its_libraries_inlined() {
+        let cdn_figure = "<html><head><script \
+            src=\"https://cdn.jsdelivr.net/npm/d3@7.9.0/dist/d3.min.js\" \
+            crossorigin=\"anonymous\"></script>\n</head><body><script>draw()</script></body></html>";
+        let frame = tool_figure_frame(cdn_figure.to_string(), "render_volcano");
+        let html = frame["body"][0]["html"].as_str().unwrap();
+        assert!(!html.contains("cdn.jsdelivr.net"), "a remote tag survived");
+        assert!(!html.contains("<script src="), "a remote tag survived");
+        assert!(html.contains("<script>draw()</script>"));
+        assert!(html.len() > cdn_figure.len() + 100_000, "d3 is inlined");
+    }
+
+    /// A browser's client id lives under the APP id, so a re-created app
+    /// presents the id the deleted one did. Keyed on `<id>:<client>` alone, it
+    /// resumed the deleted app's conversation and shared state. The uid keeps
+    /// them apart, and an app from before the uid keeps the key it always had.
+    #[test]
+    fn a_recreated_app_never_resumes_the_deleted_ones_conversations() {
+        let id = "iso-recreated";
+        let first = create(id, ArtifactKind::Agentic);
+        store().delete(id).unwrap();
+        let second = create(id, ArtifactKind::Agentic);
+        assert_eq!(first.id, second.id);
+
+        let (old_key, new_key) = (
+            durable_app_session_key(&first, "client-1"),
+            durable_app_session_key(&second, "client-1"),
+        );
+        assert_ne!(old_key, new_key);
+        assert_eq!(
+            new_key,
+            format!("app:{id}:{}:client-1", second.app_uid.as_deref().unwrap())
+        );
+        assert_ne!(
+            worker_session_key(&app_session_scope(&first), Some("client-1"), "analyst"),
+            worker_session_key(&app_session_scope(&second), Some("client-1"), "analyst"),
+        );
+
+        // Replaced through `create_with_id` (what `create_app {id, replace}`
+        // does) is a new app too.
+        let replaced = create(id, ArtifactKind::Agentic);
+        assert_ne!(durable_app_session_key(&replaced, "client-1"), new_key);
+
+        // An app created before `app_uid` existed: the key it has always had,
+        // so its conversations still resume after an upgrade.
+        let mut legacy = replaced.clone();
+        legacy.app_uid = None;
+        assert_eq!(
+            durable_app_session_key(&legacy, "client-1"),
+            format!("app:{id}:client-1")
+        );
+        assert_eq!(
+            worker_session_key(&app_session_scope(&legacy), Some("client-1"), "analyst"),
+            Some(format!("app:{id}:client-1:analyst"))
+        );
+        legacy.app_uid = Some(String::new());
+        assert_eq!(
+            durable_app_session_key(&legacy, "client-1"),
+            format!("app:{id}:client-1")
+        );
+    }
+
+    /// Deleting an app made the daemon forget nothing it held for the id, so
+    /// the next app built under it inherited the old socket token (a tab of
+    /// the deleted app reconnected to the new one) and any unredeemed launch
+    /// link, and the deleted app's open socket kept its agent, whose file tools
+    /// are bound to the workspace path the next app takes over.
+    #[tokio::test]
+    async fn deleting_an_app_forgets_what_the_daemon_held_for_it() {
+        // What `routes` registers; idempotent.
+        on_app_deleted(forget_app_runtime);
+        let id = "iso-forgotten";
+        let kept = "iso-forgotten-kept";
+        let manifest = create(id, ArtifactKind::Agentic);
+        let kept_manifest = create(kept, ArtifactKind::Agentic);
+        let token = ws_token_for(id, manifest.app_uid.as_deref());
+        let kept_token = ws_token_for(kept, kept_manifest.app_uid.as_deref());
+        // What an open socket of each app watches (`agent_ws`).
+        let open_socket = app_socket_retirement(served_page_access(id).as_ref());
+        let kept_socket = app_socket_retirement(served_page_access(kept).as_ref());
+        let session = "iso-forgotten-session";
+        let bridge = ui_bridge_for(session);
+        bridge.seed_state(json!({"kept": true}), 3);
+        let pending = biorouter_server::auth::mint_app_launch(id);
+
+        let resp = delete_app_route(Path(id.to_string())).await;
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        assert!(
+            open_socket.is_cancelled(),
+            "the deleted app's socket is closed"
+        );
+        assert!(!kept_socket.is_cancelled(), "another app's socket is not");
+        assert!(
+            app_socket_retirement(served_page_access(id).as_ref()).is_cancelled(),
+            "an id without a served page cannot start a socket"
+        );
+        assert!(
+            !app_page_token_matches(id, Some(&token)),
+            "the deleted app's page token opens nothing"
+        );
+        let next = create(id, ArtifactKind::Agentic);
+        assert_ne!(
+            ws_token_for(id, next.app_uid.as_deref()),
+            token,
+            "a new token for whatever comes next"
+        );
+        assert!(!app_socket_retirement(served_page_access(id).as_ref()).is_cancelled());
+        assert_eq!(
+            ws_token_for(kept, kept_manifest.app_uid.as_deref()),
+            kept_token,
+            "another app keeps its own"
+        );
+        // The session's bridge is the one its cached agent's `ui_*` tools hold,
+        // so a later socket for the same session must get that one back.
+        assert_eq!(
+            ui_bridge_for(session).state_snapshot(),
+            (json!({"kept": true}), 3)
+        );
+        assert_eq!(
+            biorouter_server::auth::redeem_app_launch(id, &pending),
+            None,
+            "a link minted before the delete opens nothing after it"
+        );
+        store().delete(id).unwrap();
+        assert_eq!(
+            delete_app_route(Path(id.to_string())).await.status(),
+            StatusCode::NOT_FOUND
+        );
+        store().delete(kept).unwrap();
+    }
+
+    /// The vault key outlived the app and was handed to the next app built
+    /// under the same id. It is removed only when present, so deleting an app
+    /// that never used the vault does not rewrite the secret store (on macOS,
+    /// a keychain write).
+    #[test]
+    fn deleting_an_app_forgets_its_vault_key_and_only_its_own() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let secrets = dir.path().join("secrets.yaml");
+        let cfg = biorouter::config::Config::new_with_file_secrets(
+            dir.path().join("config.yaml"),
+            &secrets,
+        )
+        .unwrap();
+        cfg.set_secret("brsdk_vault_key_iso-vault-gone", &vec![7u8; 32])
+            .unwrap();
+        cfg.set_secret("brsdk_vault_key_iso-vault-kept", &vec![9u8; 32])
+            .unwrap();
+
+        forget_vault_key(&cfg, "iso-vault-gone");
+        assert!(matches!(
+            cfg.get_secret::<Vec<u8>>("brsdk_vault_key_iso-vault-gone"),
+            Err(biorouter::config::ConfigError::NotFound(_))
+        ));
+        assert_eq!(
+            cfg.get_secret::<Vec<u8>>("brsdk_vault_key_iso-vault-kept")
+                .unwrap(),
+            vec![9u8; 32]
+        );
+
+        let before = std::fs::read(&secrets).unwrap();
+        let modified = std::fs::metadata(&secrets).unwrap().modified().unwrap();
+        forget_vault_key(&cfg, "iso-vault-never-used");
+        assert_eq!(std::fs::read(&secrets).unwrap(), before);
+        assert_eq!(
+            std::fs::metadata(&secrets).unwrap().modified().unwrap(),
+            modified
+        );
+    }
+
+    /// An app whose manifest does not load used to vanish from `GET /apps`
+    /// while its folder kept the id, so nothing could delete it. It is listed
+    /// as a `broken` row shaped like a manifest, and `DELETE` removes it.
+    #[tokio::test]
+    async fn a_broken_app_is_listed_and_deletable() {
+        let id = "iso-broken";
+        create(id, ArtifactKind::Static);
+        create("iso-healthy", ArtifactKind::Static);
+        std::fs::write(
+            store().root().join(id).join("manifest.json"),
+            "{ \"id\": \"iso-broken\", ",
+        )
+        .unwrap();
+
+        let Json(rows) = list_apps().await;
+        let row = rows
+            .iter()
+            .find(|row| row["id"] == id)
+            .expect("the broken app is listed");
+        assert_eq!(row["title"], id);
+        assert_eq!(row["kind"], "static");
+        let broken = row["broken"].as_str().unwrap();
+        assert!(broken.contains("manifest.json"), "{broken}");
+        assert!(row["updated_at"].as_u64().is_some());
+        let healthy = rows.iter().find(|row| row["id"] == "iso-healthy").unwrap();
+        assert!(healthy.get("broken").is_none(), "{healthy}");
+        assert!(healthy["app_uid"]
+            .as_str()
+            .is_some_and(|uid| uid.len() == 32));
+
+        assert_eq!(
+            delete_app_route(Path(id.to_string())).await.status(),
+            StatusCode::OK
+        );
+        let Json(rows) = list_apps().await;
+        assert!(rows.iter().all(|row| row["id"] != id));
+        assert!(!store().root().join(id).exists());
+        assert_eq!(
+            delete_app_route(Path(id.to_string())).await.status(),
+            StatusCode::NOT_FOUND
+        );
+        store().delete("iso-healthy").unwrap();
+    }
 }
 
 /// Cap on app→agent signals buffered between turns. Signals never start a turn;
@@ -4660,21 +6320,61 @@ fn handle_midturn_frame(
     }
 }
 
-#[allow(clippy::too_many_lines)]
 async fn handle_agent_socket(
     socket: WebSocket,
     state: Arc<AppState>,
     manifest: Manifest,
     client_id: Option<String>,
+    retired: CancellationToken,
+) {
+    let connection = retired.child_token();
+    let _cancel_on_close = connection.clone().drop_guard();
+    run_until_app_retired(
+        &connection,
+        handle_agent_socket_inner(socket, state, manifest, client_id, connection.clone()),
+    )
+    .await;
+}
+
+async fn run_until_app_retired(
+    retired: &CancellationToken,
+    work: impl std::future::Future<Output = ()>,
+) {
+    tokio::select! {
+        biased;
+        () = retired.cancelled() => {},
+        () = work => {},
+    }
+}
+
+struct UiConnection {
+    bridge: UiBridge,
+    token: ConnToken,
+}
+
+impl Drop for UiConnection {
+    fn drop(&mut self) {
+        self.bridge.detach(self.token);
+    }
+}
+
+#[allow(clippy::too_many_lines)]
+async fn handle_agent_socket_inner(
+    socket: WebSocket,
+    state: Arc<AppState>,
+    manifest: Manifest,
+    client_id: Option<String>,
+    retired: CancellationToken,
 ) {
     // Split so the loop can await agent events, agent-issued UI commands, and
     // inbound client frames at the same time. A `ui_ask` tool call parks *inside*
     // `agent.reply`, so its answer has to be readable while that stream is pending.
     let (mut socket_tx, mut socket_rx) = socket.split();
     // BRSDK durable sessions: when the app opts in (default) and the client sent
-    // a stable client_id, bind the session to "app:<id>:<client-id>" so a reload
-    // RESUMES the same conversation. Otherwise fall back to a fresh per-connection
-    // session (the pre-BRSDK behavior).
+    // a stable client_id, bind the session to "app:<id>:<app_uid>:<client-id>"
+    // ([`durable_app_session_key`]) so a reload RESUMES the same conversation.
+    // Otherwise fall back to a fresh per-connection session (the pre-BRSDK
+    // behavior).
     let durable = manifest
         .agent
         .as_ref()
@@ -4685,7 +6385,7 @@ async fn handle_agent_socket(
 
     let (session, resumed) = match (durable, client_id.as_ref()) {
         (true, Some(cid)) => {
-            let key = format!("app:{}:{}", manifest.id, cid);
+            let key = durable_app_session_key(&manifest, cid);
             match state
                 .session_manager()
                 .get_or_create_by_external_key(&key, workdir, name, SessionType::User)
@@ -4757,6 +6457,12 @@ async fn handle_agent_socket(
     }
 
     let (mut ui_rx, conn_token) = ui_bridge.attach();
+    // Cancellation can interrupt setup, a consult, or a KB request as well as
+    // the event loops. Preserve the cached bridge and detach this generation.
+    let _ui_connection = UiConnection {
+        bridge: ui_bridge.clone(),
+        token: conn_token,
+    };
 
     // Validate declared worker profiles (design §3.8) up front, so the main
     // agent's `consult` tool can be armed and the survivors advertised in `ready`.
@@ -4892,6 +6598,8 @@ async fn handle_agent_socket(
                 let next = loop {
                     let woken = tokio::select! {
                         biased;
+                        // The app was deleted: as if the page went away.
+                        () = retired.cancelled() => TurnWake::Client(None),
                         Some(cmd) = ui_rx.recv() => TurnWake::Ui(cmd),
                         inbound = socket_rx.next() => TurnWake::Client(inbound),
                     };
@@ -5485,7 +7193,7 @@ async fn handle_agent_socket(
                 retry_config: None,
                 reasoning_effort: None,
             };
-            let cancel = CancellationToken::new();
+            let cancel = retired.child_token();
             let mut stream = match turn_agent
                 .reply(turn_message.clone(), session_config, Some(cancel.clone()))
                 .await
@@ -5515,6 +7223,9 @@ async fn handle_agent_socket(
                 // borrow the socket and the stream freely.
                 let woken = tokio::select! {
                     biased;
+                    // The app was deleted: as if the page went away, which
+                    // cancels this turn.
+                    () = retired.cancelled() => TurnWake::Client(None),
                     Some(cmd) = ui_rx.recv() => TurnWake::Ui(cmd),
                     Some(req) = consult_rx.recv() => TurnWake::Consult(req),
                     inbound = socket_rx.next() => TurnWake::Client(inbound),
@@ -6524,13 +8235,18 @@ async fn put_vault_secret(Path(id): Path<String>, Json(body): Json<VaultPut>) ->
     }
 }
 
-/// GET /apps/{id}/runstate?session=<sid> — the current paused-run snapshot so a
-/// reconnecting app can re-surface a pending approval. `{pending:false}` if none.
+/// GET /apps/{id}/runstate?session=<sid>&token=<page token> — the current
+/// paused-run snapshot so a reconnecting app can re-surface a pending approval.
+/// `{pending:false}` if none. Needs the page token ([`app_page_token_matches`]),
+/// because the snapshot carries the pending tool's arguments.
 async fn get_run_state(
     Path(id): Path<String>,
     Query(q): Query<std::collections::HashMap<String, String>>,
     State(state): State<Arc<AppState>>,
 ) -> Response {
+    if !app_page_token_matches(&id, q.get("token").map(String::as_str)) {
+        return app_page_token_refused();
+    }
     if !store().exists(&id) {
         return (StatusCode::NOT_FOUND, "no such app").into_response();
     }
@@ -6554,9 +8270,18 @@ async fn get_run_state(
     }
 }
 
-/// GET /apps/{id}/models — the provider/model catalog for the per-app model
-/// surface (`br.model.list()`).
-async fn list_models(Path(id): Path<String>) -> Response {
+/// GET /apps/{id}/models?token=<page token> — the provider/model catalog for
+/// the per-app model surface (`br.model.list()`). Needs the page token
+/// ([`app_page_token_matches`]); a page built before the SDK sent it is
+/// rebuilt on its next load (`serve_index`), and until then `br.model.list()`
+/// answers `[]`.
+async fn list_models(
+    Path(id): Path<String>,
+    Query(q): Query<std::collections::HashMap<String, String>>,
+) -> Response {
+    if !app_page_token_matches(&id, q.get("token").map(String::as_str)) {
+        return app_page_token_refused();
+    }
     if !store().exists(&id) {
         return (StatusCode::NOT_FOUND, "no such app").into_response();
     }
@@ -6564,6 +8289,10 @@ async fn list_models(Path(id): Path<String>) -> Response {
 }
 
 pub fn routes(state: Arc<AppState>) -> Router {
+    // Idempotent. Registered where the router is built rather than once at
+    // startup because `src/routes/` is compiled twice (`lib.rs`): each copy
+    // forgets what its own statics hold.
+    biorouter_mcp::agent_drafter::store::on_app_deleted(forget_app_runtime);
     Router::new()
         .route("/apps", get(list_apps))
         .route(
@@ -6577,9 +8306,13 @@ pub fn routes(state: Arc<AppState>) -> Router {
         .route("/apps/{id}/launch", post(launch_app_route))
         .route("/apps/{id}/vault", post(put_vault_secret))
         .route("/apps/{id}/build", post(build_app_route))
-        .route("/apps/{id}/export", get(export_app_route))
+        .route(
+            "/apps/{id}/export",
+            get(export_app_route).post(export_app_zip_route),
+        )
         .route("/apps/{id}/dist/{*path}", get(serve_dist))
         .route("/apps/{id}/assets/{*path}", get(serve_assets))
+        .route("/apps/{id}/figure-frame", get(figure_frame))
         .with_state(state)
 }
 
@@ -7343,6 +9076,56 @@ mod tests {
         super::store().delete("hrd1-launch").unwrap();
     }
 
+    /// The launch answer names the link on the daemon's own listener as well as
+    /// the bare path. The desktop reaches the daemon through a proxy that refuses
+    /// every request without its secret, so a link it built on the proxy's
+    /// origin answered the browser with an empty 403. Exercised through the pure
+    /// helpers rather than the route, because the route reads a process-global
+    /// variable a test must not set.
+    #[test]
+    fn a_launch_answer_names_the_daemons_own_browser_origin() {
+        let token = "ab".repeat(32);
+        let path = format!("/apps/demo/?t={token}");
+        let answer = super::launch_answer(&path, Some("http://127.0.0.1:51851"));
+        assert_eq!(answer["path"], path.as_str());
+        assert_eq!(
+            answer["url"],
+            format!("http://127.0.0.1:51851{path}").as_str()
+        );
+        // An in-process daemon that bound nothing names no origin, and an older
+        // client reads `path` exactly as before.
+        let bare = super::launch_answer(&path, None);
+        assert_eq!(bare, serde_json::json!({ "path": path }));
+        assert_eq!(super::launch_answer(&path, Some("not a url")), bare);
+
+        for (published, origin) in [
+            ("http://127.0.0.1:5555", Some("http://127.0.0.1:5555")),
+            ("http://127.0.0.1:5555/", Some("http://127.0.0.1:5555")),
+            // An address to listen on is not one to visit.
+            ("http://0.0.0.0:5555", Some("http://127.0.0.1:5555")),
+            ("http://[::]:5555", Some("http://[::1]:5555")),
+            ("http://[::1]:5555", Some("http://[::1]:5555")),
+            ("http://localhost:5555", Some("http://localhost:5555")),
+            (
+                "https://apps.example.test:8443",
+                Some("https://apps.example.test:8443"),
+            ),
+            ("ftp://127.0.0.1:5555", None),
+            ("file:///tmp/daemon.sock", None),
+            ("http://user:pw@127.0.0.1:5555", None),
+            ("http://127.0.0.1:5555/below", None),
+            ("http://127.0.0.1:5555/?x=1", None),
+            ("http://127.0.0.1:5555/#x", None),
+            ("", None),
+        ] {
+            assert_eq!(
+                super::app_browser_origin(published).as_deref(),
+                origin,
+                "{published}"
+            );
+        }
+    }
+
     #[test]
     fn pii_policy_off_passes_through_even_with_phi() {
         let out = apply_pii_policy("SSN 123-45-6789".to_string(), PiiMode::Off);
@@ -7457,7 +9240,13 @@ mod tests {
         // binding injection classes v2 introduces) fails a test rather than shipping.
         assert_eq!(
             super::APP_CSP,
-            "default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:; connect-src 'self' ws://localhost:* ws://127.0.0.1:*; frame-src 'self' data:; form-action 'none'; base-uri 'self'; frame-ancestors 'self'"
+            "default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:; connect-src 'self' ws://localhost:* ws://127.0.0.1:*; frame-src 'self' data:; form-action 'none'; base-uri 'self'; frame-ancestors 'none'"
+        );
+        // A file may be framed by its own app; a page by nothing. They differ in
+        // exactly that directive.
+        assert_eq!(
+            super::APP_FILE_CSP,
+            super::APP_CSP.replace("frame-ancestors 'none'", "frame-ancestors 'self'")
         );
         // script-src is 'self' only — never 'unsafe-inline'.
         assert!(super::APP_CSP.contains("script-src 'self';"));
@@ -7466,28 +9255,61 @@ mod tests {
         assert!(super::APP_CSP.contains("connect-src 'self' ws://localhost:* ws://127.0.0.1:*"));
         // Theme <style> block and runtime inline styles need style 'unsafe-inline'.
         assert!(super::APP_CSP.contains("style-src 'self' 'unsafe-inline'"));
+        // Hashes are added to script-src only, and never 'unsafe-inline'.
+        let with_hashes = super::app_page_csp(&["'sha256-abc='".to_string()]);
+        assert!(
+            with_hashes.contains("script-src 'self' 'sha256-abc=';"),
+            "{with_hashes}"
+        );
+        let script_src = with_hashes
+            .split(';')
+            .find(|d| d.trim_start().starts_with("script-src"))
+            .unwrap();
+        assert!(!script_src.contains("unsafe-inline"), "{with_hashes}");
+        // Everything but script-src is the base policy, untouched.
+        assert_eq!(
+            with_hashes.replace(" 'sha256-abc='", ""),
+            super::APP_CSP,
+            "{with_hashes}"
+        );
+        assert_eq!(super::app_page_csp(&[]), super::APP_CSP);
     }
 
     #[test]
     fn serve_index_and_dist_responses_carry_the_app_csp() {
-        use axum::http::header;
+        use axum::http::{header, StatusCode};
         use axum::response::IntoResponse;
         // Exercise the exact response builders serve_index (HTML) and serve_file
-        // (dist/assets) use, asserting the header is present with the verbatim policy.
-        let html = super::with_app_csp(
-            (
-                [(header::CONTENT_TYPE, "text/html; charset=utf-8")],
-                "<html></html>",
-            )
-                .into_response(),
-        );
+        // (dist/assets) use, asserting the headers are present with the verbatim
+        // policies.
+        let html = super::app_page_response(StatusCode::OK, "<html></html>".into(), super::APP_CSP);
+        let header_of = |resp: &axum::response::Response, name: &str| {
+            resp.headers()
+                .get(name)
+                .and_then(|v| v.to_str().ok())
+                .map(str::to_string)
+        };
         assert_eq!(
-            html.headers()
-                .get(header::CONTENT_SECURITY_POLICY)
-                .and_then(|v| v.to_str().ok()),
+            header_of(&html, "content-security-policy").as_deref(),
             Some(super::APP_CSP)
         );
-        let dist = super::with_app_csp(
+        // Opened by anything — another app's page included — an app page gets a
+        // browsing-context group of its own; and its value differs from the serve
+        // shell's `same-origin`, so neither can script the other.
+        assert_eq!(
+            header_of(&html, "cross-origin-opener-policy").as_deref(),
+            Some("noopener-allow-popups")
+        );
+        assert_ne!(super::APP_PAGE_COOP, "same-origin");
+        assert_eq!(
+            header_of(&html, "cache-control").as_deref(),
+            Some("no-store")
+        );
+        assert_eq!(
+            header_of(&html, "x-content-type-options").as_deref(),
+            Some("nosniff")
+        );
+        let dist = super::with_app_file_csp(
             (
                 [(header::CONTENT_TYPE, "text/javascript; charset=utf-8")],
                 vec![1u8, 2, 3],
@@ -7495,11 +9317,187 @@ mod tests {
                 .into_response(),
         );
         assert_eq!(
-            dist.headers()
-                .get(header::CONTENT_SECURITY_POLICY)
-                .and_then(|v| v.to_str().ok()),
-            Some(super::APP_CSP)
+            header_of(&dist, "content-security-policy").as_deref(),
+            Some(super::APP_FILE_CSP)
         );
+        assert_eq!(
+            header_of(&dist, "x-content-type-options").as_deref(),
+            Some("nosniff")
+        );
+    }
+
+    fn sha256_source(text: &str) -> String {
+        use base64::Engine as _;
+        use sha2::Digest as _;
+        format!(
+            "'sha256-{}'",
+            base64::engine::general_purpose::STANDARD.encode(sha2::Sha256::digest(text.as_bytes()))
+        )
+    }
+
+    async fn served_page(id: &str) -> (axum::http::StatusCode, axum::http::HeaderMap, String) {
+        let resp = super::serve_index(
+            axum::extract::Path(id.to_string()),
+            axum::extract::Query(super::PageQuery { t: None }),
+        )
+        .await;
+        let status = resp.status();
+        let headers = resp.headers().clone();
+        let body = axum::body::to_bytes(resp.into_body(), 4 << 20)
+            .await
+            .unwrap();
+        (status, headers, String::from_utf8_lossy(&body).into_owned())
+    }
+
+    /// A static page's own `<script>` and `onclick=` run in the launched app:
+    /// the script is named by hash, and the handler moves into a script of its
+    /// own (also named by hash) that binds it to a marker carrying a nonce fresh
+    /// for each response. There is no `'unsafe-inline'` and no
+    /// `'unsafe-hashes'`, so code injected later stays blocked, handlers
+    /// included. Before, both were refused while the chat preview ran them. And
+    /// a static page with no bundle gets no `dist/app.js` tag, which only 404'd.
+    #[tokio::test]
+    async fn a_static_page_runs_exactly_the_inline_code_its_author_wrote() {
+        use biorouter_mcp::agent_drafter::store::ArtifactKind;
+        let script = "\n  document.getElementById('out').textContent = 'ready';\n";
+        let handler = "document.getElementById('out').textContent = 'clicked'";
+        let page = format!(
+            "<!doctype html><html><head><title>t</title></head><body>\
+             <div id=\"out\" class=\"br-output\"></div>\
+             <button class=\"br-btn\" onclick=\"{handler}\">Go</button>\
+             <script>{script}</script>\
+             <script type=\"application/json\" id=\"data\">{{\"a\":1}}</script>\
+             </body></html>"
+        );
+        super::store()
+            .create_with_id(
+                "csp-inline-static",
+                "CSP inline static",
+                "",
+                ArtifactKind::Static,
+                "index.html",
+                &[("index.html".to_string(), page)],
+            )
+            .unwrap();
+
+        let (status, headers, body) = served_page("csp-inline-static").await;
+        assert_eq!(status, axum::http::StatusCode::OK, "{body}");
+        let policy = headers
+            .get("content-security-policy")
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_string();
+        let script_src = policy
+            .split(';')
+            .map(str::trim)
+            .find(|d| d.starts_with("script-src"))
+            .unwrap()
+            .to_string();
+        assert!(script_src.contains(&sha256_source(script)), "{script_src}");
+        assert!(
+            !script_src.contains(&sha256_source(handler)),
+            "{script_src}"
+        );
+        assert!(!script_src.contains("'unsafe-hashes'"), "{script_src}");
+        assert!(!script_src.contains("'unsafe-inline'"), "{script_src}");
+        // The handler is in the binder script, pinned like the author's own,
+        // and its button carries this response's marker instead of `onclick`.
+        let binder = body
+            .split("<script id=\"biorouter-inline-handlers\">")
+            .nth(1)
+            .and_then(|rest| rest.split("</script>").next())
+            .expect("a binder script");
+        assert!(binder.contains(handler), "{binder}");
+        assert!(script_src.contains(&sha256_source(binder)), "{script_src}");
+        assert!(!body.contains("onclick="), "{body}");
+        let marker = |body: &str| {
+            body.split("data-br-on-click=\"")
+                .nth(1)
+                .and_then(|rest| rest.split('"').next())
+                .map(str::to_string)
+                .expect("a marker")
+        };
+        let first = marker(&body);
+        let (_, _, again) = served_page("csp-inline-static").await;
+        assert_ne!(first, marker(&again), "a fresh nonce for every response");
+        // The JSON data block is not code, and gets no hash.
+        assert!(
+            !script_src.contains(&sha256_source("{\"a\":1}")),
+            "{script_src}"
+        );
+        assert!(policy.contains("frame-ancestors 'none'"), "{policy}");
+        assert_eq!(
+            headers
+                .get("cross-origin-opener-policy")
+                .and_then(|v| v.to_str().ok()),
+            Some(super::APP_PAGE_COOP)
+        );
+        assert!(
+            !body.contains("dist/app.js"),
+            "no bundle, so no bundle tag: {body}"
+        );
+        assert_eq!(body.matches("id=\"biorouter-app-config\"").count(), 1);
+    }
+
+    /// An app that cannot run without a bundle, and whose build fails, gets a
+    /// `500` page naming the error — not a blank page with the reason buried in
+    /// the daemon log. The build is made to fail the same way under esbuild
+    /// ("Could not resolve") and under the fallback bundler (which refuses a
+    /// second local module), so the test does not depend on which one exists.
+    #[tokio::test]
+    async fn an_app_whose_build_fails_gets_a_page_that_says_why() {
+        use biorouter_mcp::agent_drafter::store::ArtifactKind;
+        super::store()
+            .create_with_id(
+                "build-fails-page",
+                "Build <Fails>",
+                "",
+                ArtifactKind::Agentic,
+                "index.html",
+                &[
+                    (
+                        "index.html".to_string(),
+                        "<html><head></head><body><div data-br-chat></div></body></html>"
+                            .to_string(),
+                    ),
+                    (
+                        "src/sdk.ts".to_string(),
+                        biorouter_mcp::agent_drafter::bundle::sdk_template().to_string(),
+                    ),
+                    (
+                        "src/main.ts".to_string(),
+                        "import { createApp } from \"./sdk\";\nimport { helper } from \"./missing-helper\";\ncreateApp();\nhelper();\n"
+                            .to_string(),
+                    ),
+                ],
+            )
+            .unwrap();
+
+        for attempt in 0..2 {
+            let (status, headers, body) = served_page("build-fails-page").await;
+            assert_eq!(
+                status,
+                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                "attempt {attempt}: {body}"
+            );
+            assert!(body.contains("could not be built"), "{body}");
+            assert!(
+                body.contains("Build &lt;Fails&gt;"),
+                "the title is escaped: {body}"
+            );
+            assert!(
+                body.contains("missing-helper"),
+                "the log names the problem: {body}"
+            );
+            assert!(body.contains("build_app"), "{body}");
+            assert_eq!(
+                headers.get("cache-control").and_then(|v| v.to_str().ok()),
+                Some("no-store")
+            );
+            assert!(headers.get("content-security-policy").is_some());
+        }
+        assert!(!super::store().file_exists("build-fails-page", "dist/app.js"));
     }
 
     // --- data-source jail boundary (the security boundary of the data feature) ---
@@ -7634,6 +9632,7 @@ mod tests {
             built_at: None,
             sdk_hash: None,
             session_id: None,
+            app_uid: None,
             surface: Default::default(),
             theme: Default::default(),
         }
@@ -8295,9 +10294,9 @@ mod tests {
     #[test]
     fn ws_token_for_is_stable_per_app_and_distinct_across_apps() {
         use super::ws_token_for;
-        let a1 = ws_token_for("wsauth-app-a");
-        let a2 = ws_token_for("wsauth-app-a");
-        let b = ws_token_for("wsauth-app-b");
+        let a1 = ws_token_for("wsauth-app-a", None);
+        let a2 = ws_token_for("wsauth-app-a", None);
+        let b = ws_token_for("wsauth-app-b", None);
         assert_eq!(a1, a2, "the same app must get the same token");
         assert_ne!(a1, b, "different apps must get different tokens");
         // 16 random bytes → 32 lowercase hex chars.
@@ -10133,6 +12132,7 @@ mod tests {
                 built_at: None,
                 sdk_hash: None,
                 session_id: None,
+                app_uid: None,
                 surface: Default::default(),
                 theme: Default::default(),
             }
@@ -10573,6 +12573,7 @@ mod tests {
                 built_at: None,
                 sdk_hash: None,
                 session_id: None,
+                app_uid: None,
                 surface: Default::default(),
                 theme: Default::default(),
             }
@@ -11354,6 +13355,7 @@ mod tests {
                 built_at: None,
                 sdk_hash: None,
                 session_id: None,
+                app_uid: None,
                 surface: Default::default(),
                 theme: Default::default(),
             }
@@ -11797,6 +13799,7 @@ mod tests {
                 built_at: None,
                 sdk_hash: None,
                 session_id: None,
+                app_uid: None,
                 surface: Default::default(),
                 theme: Default::default(),
             }
@@ -12704,6 +14707,7 @@ mod opening_is_not_activity_app_tests {
             built_at: None,
             sdk_hash: None,
             session_id: None,
+            app_uid: None,
             surface: Default::default(),
             theme: Default::default(),
         }
@@ -12863,7 +14867,9 @@ mod opening_is_not_activity_app_tests {
     }
 
     /// One page load of an app over its real socket (`GET /apps/{id}/agent`),
-    /// as the SDK makes it: connect with the page's stable `client_id`, read up
+    /// as the SDK makes it: take the page token `serve_index` embeds (minted for
+    /// the app's current `app_uid`, which the socket checks against the
+    /// manifest), connect with the page's stable `client_id`, read up
     /// to `ready`, optionally write the shared state the way a click on the page
     /// does, then close the page. Returns the chat's session id once the daemon
     /// has finished with the close: the close arm saves the state document
@@ -12877,10 +14883,13 @@ mod opening_is_not_activity_app_tests {
         use futures::{SinkExt, StreamExt};
         use tokio_tungstenite::tungstenite::Message as ClientMessage;
 
-        let url = format!(
-            "ws://{addr}/apps/{app}/agent?token={}&client_id={client_id}",
-            super::ws_token_for(app)
-        );
+        // What serving the page does: mint the socket token for the app's
+        // current instance. A token minted for another `app_uid` is refused.
+        let manifest = super::store()
+            .load_manifest(app)
+            .expect("the app exists before its page loads");
+        let token = super::ws_token_for(app, manifest.app_uid.as_deref());
+        let url = format!("ws://{addr}/apps/{app}/agent?token={token}&client_id={client_id}");
         let (mut ws, _) = tokio_tungstenite::connect_async(url)
             .await
             .expect("the app socket accepts the page");

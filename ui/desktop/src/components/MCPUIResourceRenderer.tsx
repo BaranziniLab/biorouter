@@ -6,6 +6,7 @@ import { ENTITY_ICONS } from './icons/entity-icons';
 import type { ArtifactSource } from './artifacts/artifactTypes';
 import { artifactSourceFromResource, titleFromResourceUri } from './artifacts/artifactUtils';
 import { ARTIFACT_CARD_COPY } from './toolCallCopy';
+import { openInBrowser } from '../utils/openInBrowser';
 
 interface MCPUIResourceRendererProps {
   content: EmbeddedResource & { type: 'resource' };
@@ -75,7 +76,7 @@ export default function MCPUIResourceRenderer({
     // An external URL is a live web page we do not hold a copy of, so it belongs
     // in the user's own browser rather than in the panel.
     if (artifactSource.kind === 'externalUrl') {
-      await window.electron.openExternal(artifactSource.url);
+      await openInBrowser(artifactSource.url);
       return;
     }
     onOpenArtifact(artifactSource);

@@ -15,6 +15,7 @@ const mocks = vi.hoisted(() => ({
   scheduleWorkflow: vi.fn(),
   toastSuccess: vi.fn(),
   toastError: vi.fn(),
+  workflowToYaml: vi.fn(),
 }));
 
 vi.mock('../../workflow/workflow_management', () => ({
@@ -28,6 +29,7 @@ vi.mock('../../api', async (importOriginal) => ({
   setWorkflowSlashCommand: mocks.setWorkflowSlashCommand,
   startAgent: mocks.startAgent,
   scheduleWorkflow: mocks.scheduleWorkflow,
+  workflowToYaml: mocks.workflowToYaml,
 }));
 vi.mock('../../toasts', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../toasts')>()),
@@ -226,6 +228,53 @@ describe('WorkflowsView loading transition', () => {
       disableAnimation: true,
       resumeSessionId: 'workflow-session',
     });
+  });
+
+  it('reports a refused file write without saying the workflow was exported', async () => {
+    vi.stubGlobal(
+      'ResizeObserver',
+      class {
+        observe() {}
+        unobserve() {}
+        disconnect() {}
+      }
+    );
+    mocks.listSavedWorkflows.mockResolvedValueOnce([
+      {
+        id: 'workflow-1',
+        file_path: '/tmp/workflow.yaml',
+        last_modified: '2026-07-11',
+        workflow: { title: 'Cohort Review', description: 'Review cohort results' },
+      },
+    ]);
+    mocks.workflowToYaml.mockResolvedValueOnce({ data: { yaml: 'title: Cohort Review' } });
+    const writeFile = vi.fn().mockResolvedValue(false);
+    const errorLog = vi.spyOn(console, 'error').mockImplementation(() => {});
+    window.electron = {
+      showSaveDialog: vi
+        .fn()
+        .mockResolvedValue({ canceled: false, filePath: '/Volumes/export.yaml' }),
+      writeFile,
+    } as unknown as typeof window.electron;
+    try {
+      render(
+        <MemoryRouter>
+          <WorkflowsView />
+        </MemoryRouter>
+      );
+      await chooseFromRowMenu('Cohort Review', copy.exportToFile);
+      await waitFor(() =>
+        expect(mocks.toastError).toHaveBeenCalledWith({
+          title: copy.couldNotExport,
+          msg: copy.couldNotWriteFile,
+        })
+      );
+      expect(writeFile).toHaveBeenCalledWith('/Volumes/export.yaml', 'title: Cohort Review');
+      expect(mocks.toastSuccess).not.toHaveBeenCalled();
+    } finally {
+      errorLog.mockRestore();
+      vi.unstubAllGlobals();
+    }
   });
 });
 

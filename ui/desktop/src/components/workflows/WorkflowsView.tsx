@@ -261,7 +261,9 @@ export default function WorkflowsView() {
       });
 
       if (!result.canceled && result.filePath) {
-        await window.electron.writeFile(result.filePath, response.data.yaml);
+        // `writeFile` answers false when the main process refused the path or the write failed.
+        const written = await window.electron.writeFile(result.filePath, response.data.yaml);
+        if (!written) throw new Error(copy.couldNotWriteFile);
         toastSuccess({ title: copy.savedTo(result.filePath) });
       }
     } catch (error) {

@@ -29,6 +29,7 @@ VERSION="${1:?usage: build-cli-linux-packages.sh <version>}"
 REL="target/x86_64-unknown-linux-gnu/release"
 DESK="ui/desktop"
 WEB="$DESK/src/web"
+ESBUILD_DIR="target/cli-helpers/linux-x64"
 OUT="dist/cli"
 DEB="$OUT/biorouter-cli_${VERSION}_amd64.deb"
 RPM="$OUT/biorouter-cli-${VERSION}-1.x86_64.rpm"
@@ -45,6 +46,7 @@ br_require_command docker "The deb and rpm are built inside a container."
 docker info >/dev/null 2>&1 || br_dependency_die docker "docker daemon is not running" \
   "The docker CLI is installed but cannot reach a daemon. Start Docker Desktop (or dockerd) and retry."
 br_require_command npm "The browser interface bundle is built with npm run build:web."
+br_require_command node "The pinned esbuild helper is verified and staged with Node."
 [ -f "$REL/biorouter" ]  || die "missing $REL/biorouter — run: scripts/release.sh backends $VERSION"
 [ -f "$REL/biorouterd" ] || die "missing $REL/biorouterd — run: scripts/release.sh backends $VERSION"
 [ -f "$REL/biorouter-crew" ] || die "missing $REL/biorouter-crew — run: scripts/release.sh backends $VERSION"
@@ -66,6 +68,13 @@ log "building browser interface bundle ($WEB)"
 ( cd "$DESK" && npm run build:web )
 [ -s "$WEB/index.html" ] || die "npm run build:web produced no $WEB/index.html"
 [ -d "$WEB/assets" ] || die "npm run build:web produced no $WEB/assets — the bundle would serve a blank page"
+
+log "staging verified esbuild for Linux x64 ($ESBUILD_DIR)"
+node - "$ESBUILD_DIR" <<'NODE'
+const { fetchEsbuild } = require('./ui/desktop/scripts/fetch-esbuild');
+fetchEsbuild('linux', 'x64', { binDir: process.argv[2] });
+NODE
+[ -x "$ESBUILD_DIR/esbuild" ] || die "esbuild was not staged executable"
 
 # ── 1. Build deb + rpm with nfpm (no root needed) ─────────────────────────────
 log "building deb + rpm with nfpm ($VERSION)"
@@ -91,6 +100,11 @@ docker run --rm --platform linux/amd64 -v "$ROOT/$OUT":/pkg debian:bookworm-slim
   command -v biorouter && command -v biorouterd && command -v biorouter-crew
   biorouter --version
   biorouterd --version
+  test -x /usr/libexec/biorouter/esbuild
+  test "$(/usr/libexec/biorouter/esbuild --version)" = "'"$(node -p "require('./ui/desktop/scripts/fetch-esbuild').ESBUILD_VERSION")"'"
+  printf "console.log(1);\n" >/tmp/app.ts
+  /usr/libexec/biorouter/esbuild /tmp/app.ts --bundle --outfile=/tmp/app.js
+  test -s /tmp/app.js
   crew_version=$(biorouter-crew --version)
   case "$crew_version" in "biorouter-crew "*) ;; *) exit 1 ;; esac
   biorouter-crew --help
@@ -112,6 +126,11 @@ docker run --rm --platform linux/amd64 -v "$ROOT/$OUT":/pkg rockylinux:9 bash -e
   command -v biorouter && command -v biorouterd && command -v biorouter-crew
   biorouter --version
   biorouterd --version
+  test -x /usr/libexec/biorouter/esbuild
+  test "$(/usr/libexec/biorouter/esbuild --version)" = "'"$(node -p "require('./ui/desktop/scripts/fetch-esbuild').ESBUILD_VERSION")"'"
+  printf "console.log(1);\n" >/tmp/app.ts
+  /usr/libexec/biorouter/esbuild /tmp/app.ts --bundle --outfile=/tmp/app.js
+  test -s /tmp/app.js
   crew_version=$(biorouter-crew --version)
   case "$crew_version" in "biorouter-crew "*) ;; *) exit 1 ;; esac
   biorouter-crew --help

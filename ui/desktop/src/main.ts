@@ -46,6 +46,7 @@ import {
   checkServerStatus,
   startBiorouterd,
   getBiorouterCliBinaryPath,
+  type BiorouterdResult,
   type SharedDaemonLink,
 } from './biorouterd';
 import { loadNodePtyFrom, type NodePtyModule } from './nodePtyLoader';
@@ -112,6 +113,7 @@ import {
   shareDroppedFile,
 } from './utils/crewSharePath';
 import { CREW_SHARE_DROPPED_FILE_CHANNEL } from './utils/crewSharePathBridge';
+import { EXPORT_PICKER_OPTIONS, exportAppToFolder, replacePrompt } from './utils/appExport';
 import {
   AttentionBadges,
   AttentionThrottle,
@@ -120,6 +122,8 @@ import {
 } from './components/crew/attention/attentionMain';
 import { inlineArtifactCdnAssets } from './utils/artifactCdnAssets';
 import { isFilePathAllowedForPreview, previewFileRoots } from './utils/pathContainment';
+import { writeFileWithinRoots } from './utils/writeFileWithinRoots';
+import { attachedDaemonKey } from './utils/attachedDaemonKey';
 import { findBrxtArgument, isBrxtFile } from './utils/launchArguments';
 import log, { logStartupFailure } from './utils/logger';
 import { reportFatalStartupError } from './utils/fatalStartupError';
@@ -191,9 +195,21 @@ import {
   type EmbeddedBrowserBounds,
 } from './utils/embeddedBrowser';
 import { heicToPng } from './utils/heicConvert';
-import { bindManagedAppPreviewBackend } from './utils/managedAppPreviewBackend';
-import { openAppInSystemBrowser } from './utils/appBrowserLaunch';
 import {
+  bindManagedAppPreviewBackend,
+  fetchDaemonAppOrigin,
+} from './utils/managedAppPreviewBackend';
+import {
+  findDefaultBrowser,
+  launchFile,
+  openAppInSystemBrowser,
+  openPageInBrowser,
+  runFile,
+  type DefaultBrowserOpener,
+} from './utils/appBrowserLaunch';
+import {
+  localAppLinkId,
+  localAppPageId,
   managedAppPreviewScope,
   type ManagedAppPreviewBackend,
 } from './utils/managedAppPreviewPolicy';
@@ -1319,7 +1335,21 @@ let appConfig = {
 const windowMap = new Map<number, BrowserWindow>();
 const copilotPermissionSettings = new CopilotPermissionSettings();
 const biorouterdClients = new Map<number, Client>();
+/**
+ * What each window's daemon client was created with: the address it talks to, the secret it
+ * sends, the proof of a person that daemon was started with, and the attach result. Authentication,
+ * opening and exporting an app read this record: a person can save Settings ▸ External
+ * Backend under a running window, and the secret and key the settings name then belong to a
+ * daemon this window is not attached to (`openAppForWindow`, `apps:export`).
+ */
+const windowDaemons = new Map<
+  number,
+  { baseUrl: string; secretKey: string; userActionKey: string; result: BiorouterdResult }
+>();
+/** Each window's managed app preview backend, once bound (`bindWindowAppPreview`). */
 const managedAppPreviewBackends = new Map<number, ManagedAppPreviewBackend>();
+/** The binding each window's backend is being made by: what a caller awaits. */
+const managedAppPreviewBindings = new Map<number, Promise<ManagedAppPreviewBackend | undefined>>();
 /**
  * The window a Save or Open panel may be attached to, or `undefined` for an app-modal panel. On
  * macOS AppKit neither shows nor queues a panel asked for while the window already has a sheet,
@@ -1531,6 +1561,91 @@ const daemonReattach = createDaemonReattachController({
   },
 });
 
+/**
+ * The lifetime of every managed app preview on the shared daemon: aborted when that daemon is
+ * lost, renewed when one answers. A shared daemon outlives this app, so its handle never
+ * reports an exit, and a preview left open across a restart reached the new instance without
+ * that instance's access cookie and showed its refusal ("Open this app from Biorouter").
+ */
+let sharedAppPreviewLifetime = new AbortController();
+/** The instance `sharedAppPreviewLifetime` was opened for, once one has answered. */
+let sharedAppPreviewInstance: string | undefined;
+
+/**
+ * Bind `window`'s managed app preview backend to the daemon its client talks to, replacing
+ * any earlier binding (W2-HRD-1).
+ *
+ * A per-window daemon serves apps where the window reaches it. A shared daemon does not: the
+ * window talks to the desktop's local proxy, which refuses every request without the desktop's
+ * secret, and the daemon serves apps on its own listener, whose port is new on every start. So
+ * that listener is asked for first, and until it answers the window has no preview backend: a
+ * link to an app then shows as an external page, rather than as a preview sent to the proxy.
+ */
+const bindWindowAppPreview = (window: BrowserWindow) => {
+  const windowId = window.id;
+  const daemon = windowDaemons.get(windowId);
+  const binding = (async () => {
+    if (!daemon || window.isDestroyed()) return undefined;
+    if (!daemon.result.sharedDaemon)
+      return bindManagedAppPreviewBackend(daemon.result, window, daemon.secretKey);
+    const lifetime = sharedAppPreviewLifetime.signal;
+    const appOrigin = await fetchDaemonAppOrigin(daemon.baseUrl, daemon.secretKey);
+    if (!appOrigin || window.isDestroyed()) return undefined;
+    return bindManagedAppPreviewBackend(
+      daemon.result,
+      window,
+      daemon.secretKey,
+      appOrigin,
+      lifetime
+    );
+  })();
+  managedAppPreviewBindings.set(windowId, binding);
+  void binding.then((backend) => {
+    if (managedAppPreviewBindings.get(windowId) !== binding) return;
+    if (backend && !window.isDestroyed()) managedAppPreviewBackends.set(windowId, backend);
+    else managedAppPreviewBackends.delete(windowId);
+  });
+  return binding;
+};
+
+/**
+ * `window`'s managed app preview backend, once its binding settles.
+ *
+ * A shared daemon's binding that found no app listener (the daemon was busy or restarting as
+ * the window opened) is tried again here, once per ask. Otherwise the window had no preview
+ * backend until the daemon next restarted, and every app link in it opened as an external page.
+ * Not while the daemon is lost: the binding after it answers is `rebindSharedAppPreviews`'.
+ */
+const windowAppPreviewBackend = async (
+  window: BrowserWindow
+): Promise<ManagedAppPreviewBackend | undefined> => {
+  const backend = await managedAppPreviewBindings.get(window.id);
+  if (
+    backend ||
+    window.isDestroyed() ||
+    !windowDaemons.get(window.id)?.result.sharedDaemon ||
+    sharedAppPreviewLifetime.signal.aborted
+  )
+    return backend;
+  return bindWindowAppPreview(window);
+};
+
+/**
+ * A shared daemon answered as `instanceId`. Previews bound to an earlier instance, or revoked
+ * by a loss, are replaced: the new instance listens on another port and sets other cookies.
+ */
+const rebindSharedAppPreviews = (instanceId: string) => {
+  if (!sharedAppPreviewLifetime.signal.aborted && sharedAppPreviewInstance === instanceId) return;
+  sharedAppPreviewLifetime.abort();
+  sharedAppPreviewLifetime = new AbortController();
+  sharedAppPreviewInstance = instanceId;
+  for (const [windowId, daemon] of windowDaemons) {
+    const window = BrowserWindow.fromId(windowId);
+    if (daemon.result.sharedDaemon && window && !window.isDestroyed())
+      void bindWindowAppPreview(window);
+  }
+};
+
 /** Watch a shared attachment, once. */
 const watchSharedDaemon = (link: SharedDaemonLink) => {
   sharedDaemonLink = link;
@@ -1539,9 +1654,13 @@ const watchSharedDaemon = (link: SharedDaemonLink) => {
   link.onConnection((event) => {
     if (event.kind === 'lost') {
       log.warn(`[daemon] the attached instance was lost (${event.reason})`);
+      // Open previews show "The app backend stopped" and close, rather than reach a daemon
+      // that is gone or, after a restart, one that does not know their cookie.
+      sharedAppPreviewLifetime.abort();
       void daemonReattach.lost();
     } else {
       daemonReattach.answered();
+      rebindSharedAppPreviews(event.instanceId);
     }
   });
 };
@@ -1788,12 +1907,20 @@ const createChat = async (
     })
   );
   biorouterdClients.set(mainWindow.id, biorouterdClient);
-  const managedPreviewBackend = bindManagedAppPreviewBackend(
-    biorouterdResult,
-    mainWindow,
-    serverSecret
-  );
-  if (managedPreviewBackend) managedAppPreviewBackends.set(mainWindow.id, managedPreviewBackend);
+  windowDaemons.set(mainWindow.id, {
+    baseUrl,
+    secretKey: serverSecret,
+    userActionKey,
+    result: biorouterdResult,
+  });
+  {
+    const daemonWindowId = mainWindow.id;
+    mainWindow.once('closed', () => {
+      windowDaemons.delete(daemonWindowId);
+      managedAppPreviewBindings.delete(daemonWindowId);
+    });
+  }
+  void bindWindowAppPreview(mainWindow);
   // With a shared daemon the backend is app-lifetime (killed only in
   // startBiorouterd's own `will-quit` sweep), so windows must NOT ref-count it —
   // closing one window must not tear the daemon out from under the others. The
@@ -3024,37 +3151,158 @@ ipcMain.on('window:toggle-zoom', (event) => {
   else win.maximize();
 });
 
+/**
+ * Ask the person, over `window`, to copy app `appId`'s one-time link for a default browser that
+ * cannot read a launch page, and put it on the clipboard on a yes (`openAppInSystemBrowser`).
+ */
+const appLinkToCopy = (window: BrowserWindow, appId: string) => ({
+  confirm: async () => {
+    if (window.isDestroyed()) return false;
+    const { response } = await dialog.showMessageBox(window, {
+      type: 'info',
+      buttons: ['Cancel', 'Copy link'],
+      defaultId: 1,
+      cancelId: 0,
+      noLink: true,
+      message: `Copy a link to open “${appId}”?`,
+      detail:
+        'Your default browser is a snap, and its sandbox cannot read the page Biorouter uses to ' +
+        'open apps in it. Copy a link instead, and paste it into the browser’s address bar. ' +
+        'It works once, within five minutes.',
+    });
+    return response === 1;
+  },
+  copy: (link: string) => clipboard.writeText(link),
+});
+
+/**
+ * Open app `appId` in the system browser for `window` (W2-HRD-1). Every way an app is opened in
+ * the browser comes here: Applications' "Launch in browser", and an app link the renderer asks
+ * `open-external` to open.
+ *
+ * The one-time launch link is minted on the daemon this window talks to, with the secret this
+ * window's client was created with (`windowDaemons`). For a daemon Biorouter runs, the browser is
+ * then sent to that daemon's own listener: for a shared daemon the window talks to a local proxy
+ * that refuses a browser, which answered every launch with an empty 403 ("Access to 127.0.0.1 was
+ * denied"). The link reaches the browser through a page only this account can read, opened in the
+ * default web browser, never on an opener's command line; or, for a browser that cannot read that
+ * page, through the clipboard once the person agrees (`appLinkToCopy`). See
+ * `utils/appBrowserLaunch`.
+ */
+const openAppForWindow = async (window: BrowserWindow, appId: unknown): Promise<void> => {
+  const daemon = windowDaemons.get(window.id);
+  if (!daemon) throw new Error('The local daemon is not available.');
+  if (typeof appId !== 'string') throw new Error('That is not an app name.');
+  // The listener learned at attach, for a daemon too old to name its own in the launch answer.
+  const backend = daemon.result.managed ? await windowAppPreviewBackend(window) : undefined;
+  const opener: DefaultBrowserOpener = {
+    platform: process.platform,
+    applicationForProtocol: (url) => app.getApplicationInfoForProtocol(url),
+    run: runFile,
+    launch: launchFile,
+    openPath: (target) => shell.openPath(target),
+  };
+  const browser = await findDefaultBrowser(opener);
+  await openAppInSystemBrowser({
+    baseUrl: daemon.baseUrl,
+    appId,
+    secretKey: daemon.secretKey,
+    daemonListener: daemon.result.managed,
+    appOrigin: backend?.appOrigin,
+    directory: path.join(app.getPath('userData'), 'app-launch'),
+    openPage: (page) => openPageInBrowser(page, browser, opener),
+    // A snap browser (stock Ubuntu's Firefox and Chromium) cannot read the launch page, and the
+    // handoff "succeeded" while it showed "Access denied". The person takes the link over instead.
+    copyLink: browser.kind === 'confined' ? appLinkToCopy(window, appId) : undefined,
+  });
+};
+
+/**
+ * The renderer's "Open in browser" (artifact panel, live preview toolbar, link cards).
+ *
+ * A link to one of this machine's apps is routed BEFORE the public-site path, which refuses
+ * every literal IP and used to drop such a link with nothing but a log line. Such a link is
+ * never handed to the browser as it is: the browser holds no access cookie, so the daemon would
+ * answer "Open this app from Biorouter", and its port can be one an earlier run of the daemon
+ * had. It names the app, which is opened through a fresh launch link (`openAppForWindow`), and
+ * the answer says what went wrong, for the renderer to show. Any other URL answers nothing.
+ */
 ipcMain.handle('open-external', async (event, url: string) => {
   try {
     const window = BrowserWindow.fromWebContents(event.sender);
-    if (window) await openExternalBrowserNavigation(window, url);
+    if (!window) return undefined;
+    const appId = localAppLinkId(url);
+    if (appId) {
+      try {
+        await openAppForWindow(window, appId);
+        return { ok: true };
+      } catch (error) {
+        log.warn('[apps] could not open an app link in the browser:', error);
+        return {
+          ok: false,
+          message:
+            error instanceof Error && error.message
+              ? error.message
+              : 'Could not open the app in your browser.',
+        };
+      }
+    }
+    await openExternalBrowserNavigation(window, url);
   } catch (err) {
     console.error('open-external blocked:', err);
   }
+  return undefined;
 });
 
-// Applications' "Launch in browser" (W2-HRD-1). The renderer names the app and
-// nothing else: the one-time launch link is minted here, with the secret, and
-// handed to the system browser through a page only this account can read,
-// never on an opener's command line. See `utils/appBrowserLaunch`.
+// Applications' "Launch in browser" (W2-HRD-1). The renderer names the app and nothing else:
+// `openAppForWindow` mints the link here and throws the reason it could not, which
+// Applications shows.
 ipcMain.handle('apps:open-in-browser', async (event, appId: unknown) => {
   const owner = BrowserWindow.fromWebContents(event.sender);
-  const baseUrl = owner && biorouterdClients.get(owner.id)?.getConfig().baseUrl;
-  if (!owner || !baseUrl) throw new Error('The local daemon is not available.');
-  if (typeof appId !== 'string') throw new Error('That is not an app name.');
-  await openAppInSystemBrowser({
-    baseUrl,
-    appId,
-    secretKey: getServerSecret(loadSettings()),
-    directory: path.join(app.getPath('userData'), 'app-launch'),
-    openPath: (page) => shell.openPath(page),
-  });
+  if (!owner) throw new Error('The local daemon is not available.');
+  await openAppForWindow(owner, appId);
 });
 
 ipcMain.handle('directory-chooser', async () => {
   return dialog.showOpenDialog({
     properties: ['openDirectory', 'createDirectory'],
     defaultPath: os.homedir(),
+  });
+});
+
+// Applications ▸ Export (`utils/appExport.ts`). The folder is picked FIRST and a cancel sends
+// nothing; this window's daemon builds the export (with the proof of a person, so a private
+// knowledge base the person asked for can travel) and answers a zip, unpacked into
+// `<folder>/<app id>` with its launchers executable. A folder already there is replaced only on
+// a yes, and moved to the Trash. The renderer never names a path.
+ipcMain.handle('apps:export', async (event, appId: unknown, request: unknown) => {
+  const owner = BrowserWindow.fromWebContents(event.sender);
+  const daemon = owner ? windowDaemons.get(owner.id) : undefined;
+  if (!owner || !daemon) return { status: 'failed', message: 'The local daemon is not available.' };
+  return exportAppToFolder(appId, request, {
+    baseUrl: daemon.baseUrl,
+    secretKey: daemon.secretKey,
+    // The key this window's daemon was attached with, as its secret is: one read from the
+    // settings now could be another daemon's, and every private base asked for would be left
+    // out as if no person had asked.
+    userActionKey: daemon.userActionKey,
+    chooseDirectory: async () => {
+      const parent = panelParent(owner);
+      const options = { ...EXPORT_PICKER_OPTIONS, defaultPath: app.getPath('desktop') };
+      const picked = parent
+        ? await dialog.showOpenDialog(parent, options)
+        : await dialog.showOpenDialog(options);
+      return picked.canceled ? undefined : picked.filePaths[0];
+    },
+    confirmReplace: async (target) => {
+      const parent = panelParent(owner);
+      const prompt = replacePrompt(target);
+      const answer = parent
+        ? await dialog.showMessageBox(parent, prompt)
+        : await dialog.showMessageBox(prompt);
+      return answer.response === 0;
+    },
+    trash: (target) => shell.trashItem(target),
   });
 });
 
@@ -3089,18 +3337,22 @@ ipcMain.handle('save-settings', (_event, settings) => {
   }
 });
 
-ipcMain.handle('get-secret-key', () => {
-  const settings = loadSettings();
-  return getServerSecret(settings);
+ipcMain.handle('get-secret-key', (event) => {
+  const windowId = BrowserWindow.fromWebContents(event.sender)?.id;
+  return attachedDaemonKey(windowDaemons, windowId, 'secretKey', () =>
+    getServerSecret(loadSettings())
+  );
 });
 
 // Issue #56 DR-16. The renderer IS the user's surface, so it is the one holder
 // of the raw key besides this process. It attaches it to the three tier-raising
 // requests only — never as a default header on every request, which would make
 // the proof as ambient as the daemon secret it is meant to be stronger than.
-ipcMain.handle('get-user-action-key', () => {
-  const settings = loadSettings();
-  return getUserActionKey(settings);
+ipcMain.handle('get-user-action-key', (event) => {
+  const windowId = BrowserWindow.fromWebContents(event.sender)?.id;
+  return attachedDaemonKey(windowDaemons, windowId, 'userActionKey', () =>
+    getUserActionKey(loadSettings())
+  );
 });
 
 ipcMain.handle('get-biorouterd-host-port', async (event) => {
@@ -3740,10 +3992,17 @@ ipcMain.handle(
 // Every handler resolves the owning window from the *event sender*. The main
 // registry keys renderer view ids by that owner, so an identical React id in a
 // second window cannot drive, read, capture, or destroy the first window's view.
-ipcMain.handle('embedded-browser:is-managed-app-url', (event, payload: { url: string }) => {
+//
+// An app link is answered once this window's preview backend is bound, which for a shared
+// daemon waits on the daemon naming its own listener (`bindWindowAppPreview`): a chat reopened
+// as the window starts would otherwise show its app as an external page. ⚠ `create` below stays
+// synchronous and reads the bound backend as it is: the renderer asks this first, and sends
+// `set-visible` and `set-bounds` right behind `create`, which must find the view already made.
+ipcMain.handle('embedded-browser:is-managed-app-url', async (event, payload: { url: string }) => {
   const window = BrowserWindow.fromWebContents(event.sender);
-  if (!window || typeof payload?.url !== 'string') return false;
-  return Boolean(managedAppPreviewScope(payload.url, managedAppPreviewBackends.get(window.id)));
+  if (!window || typeof payload?.url !== 'string' || !localAppPageId(payload.url)) return false;
+  const backend = await windowAppPreviewBackend(window);
+  return Boolean(managedAppPreviewScope(payload.url, backend));
 });
 
 ipcMain.handle(
@@ -4151,21 +4410,11 @@ ipcMain.handle('check-file-paths', async (event, requests: unknown) => {
   );
 });
 
-ipcMain.handle('write-file', async (_event, filePath, content) => {
+ipcMain.handle('write-file', async (event, filePath: unknown, content: unknown) => {
   try {
+    if (typeof filePath !== 'string') return false;
     const expandedPath = expandBiorouterPath(filePath);
-    await fs.mkdir(path.dirname(expandedPath), { recursive: true });
-    // Atomic replace via a uniquely named temp file + rename, so a concurrent
-    // reader (e.g. the CLI reading skills-config.json) never observes a
-    // truncated half-written file, and two writers never share a temp path.
-    const tmpPath = `${expandedPath}.${process.pid}.${Date.now()}.${Math.random().toString(36).slice(2)}.tmp`;
-    await fs.writeFile(tmpPath, content, { encoding: 'utf8' });
-    try {
-      await fs.rename(tmpPath, expandedPath);
-    } catch (renameError) {
-      await fs.unlink(tmpPath).catch(() => {});
-      throw renameError;
-    }
+    await writeFileWithinRoots(expandedPath, content, allowedFileRoots(workingDirForSender(event)));
     return true;
   } catch (error) {
     console.error('Error writing to file:', error);

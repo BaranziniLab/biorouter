@@ -415,6 +415,20 @@ this section is the ledger.
 - **Every open question in §17.** They are open questions, not resolved ones, and several
   (5 — institutional versus hosted Ollama; 9 — skills carry no classification) describe live
   permissiveness in the shipped system.
+- **Agent Drafter app routes have no reach gate.** `POST /apps/{id}/launch`, `GET
+  /apps/{id}/export`, `DELETE /apps/{id}`, `POST /apps/{id}/vault` and `POST /apps/{id}/build`
+  check only the daemon secret and that the app exists; nothing in
+  `crates/biorouter-server/src/routes/apps.rs` asks `routes::session_reach`. A public chat's shell
+  that recovers the secret (`ps eww`, as above) can therefore mint a launch link for an app bound
+  to a private model or a private data source, connect to its agent with the page's token, and
+  read what that agent answers; it can also delete apps and overwrite their vault entries. The
+  renderer sends only the secret on these calls (`ApplicationsView.tsx`, `appManagement.ts`), never
+  `userActionHeaders()`. Closing it needs an app classification that does not exist yet: an app
+  would be private when its manifest model or a route provider is private, when a data source or
+  knowledge-base grant is private, or when any of its `app:<id>:*` sessions is. Then these routes
+  would ask a `session_reach`-style decision that wants the user-action proof for a private app,
+  with rows in `privacy_guard_wiring`. Recorded here rather than built, by decision (2026-10-09):
+  a gate without that classification would guess.
 
 ### What the verification does and does not prove
 

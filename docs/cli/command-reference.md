@@ -908,7 +908,9 @@ List, open, and serve the Biorouter apps built by Agent Drafter. Apps open in a 
 - **`open <ID>`**: Open an app in your default browser. A daemon this command starts keeps running after it returns, so the app stays open
 - **`serve <ID>`**: Serve an app in the foreground until `Ctrl-C`, then stop the daemon it started. When a daemon it can use is already running, it prints a link and returns instead
 
-**Which daemon they use.** Both commands look for a `biorouterd` on the configured port (`BIOROUTER_PORT`, default 3000) and start one when nothing is listening. A daemon only opens an app for a caller holding its secret key, so they use a running daemon only when they know its key: a daemon `apps open` or `apps serve` started (they record its key in a file only your account can read), or one whose key `BIOROUTER_SERVER__SECRET_KEY` names. Any other daemon on the port, such as one you started by hand, is refused with a message saying so; set `BIOROUTER_SERVER__SECRET_KEY` to its key, or set `BIOROUTER_PORT` to a free port so the command starts its own.
+**Which daemon they use.** When this profile's shared daemon is running (the one the desktop app and `biorouter crew` use), both commands open the app there and start nothing. They reach it the way every `crew` command does, and send the browser to that daemon's own address. `serve` then prints the link and returns, because that daemon keeps running on its own. A shared daemon they cannot use, for example one an older Biorouter started, is passed over with a line saying why. A port you name in `BIOROUTER_PORT` keeps its meaning: with `BIOROUTER_PORT=8080` set, the shared daemon is used only if it listens on port 8080, and otherwise the commands work on port 8080 as described below. (`BIOROUTER_PORT=0` names no port.)
+
+Otherwise they look for a `biorouterd` from the configured port (`BIOROUTER_PORT`, default 3000) up, and start one on the first free port. Only a server whose `/status` answers `ok` counts as a Biorouter daemon; a port held by anything else, such as a web development server, is passed over for the next one, up to six ports. A daemon only opens an app for a caller holding its secret key, so they use a running daemon only when they know its key: a daemon `apps open` or `apps serve` started (they record its key in a file only your account can read), or one whose key `BIOROUTER_SERVER__SECRET_KEY` names. Any other daemon on the configured port, such as one you started by hand, is refused with a message saying so; set `BIOROUTER_SERVER__SECRET_KEY` to its key, or set `BIOROUTER_PORT` to a free port so the command starts its own. On Windows, the daemon `open` leaves running has no console of its own, so pressing `Ctrl-C` at that prompt later, or closing the window, does not stop it.
 
 **The link opens the app once.** The address is `http://127.0.0.1:<port>/apps/<id>/?t=<token>`. It works once and for five minutes: opening it gives that browser the app, and the plain `http://127.0.0.1:<port>/apps/<id>/` address keeps working in that browser until the daemon stops or the browser is closed. `open` never hands the link to a command line, where other accounts on the machine could read it and use it first. It writes the link into a page only your account can read and opens that page. It also prints the link, for a browser that cannot open the page (a snap packaged browser cannot read hidden folders).
 
@@ -1094,6 +1096,7 @@ The desktop composer, terminal UI (TUI), and classic CLI share these agent comma
 | `/goal <condition>` or `/goal clear` | Work toward a condition, or clear the goal. |
 | `/loop <interval> <prompt>` | Run a prompt repeatedly; use `/loop` for status and stop syntax. |
 | `/schedule <schedule> <prompt>` | Schedule a recurring prompt; use `/schedule list` to inspect jobs. |
+| `/bug [description]` | Report a Biorouter bug. The agent investigates the chat, the documentation and the source, then drafts an issue you approve before anything is filed. See [Diagnostics and bug reports](../troubleshooting/diagnostics-and-bug-reports.md#asking-biorouter-to-report-the-bug). |
 | `/<workflow-command> [arguments]` | Run a configured workflow shortcut. A missing or invalid workflow reports an error. |
 
 Type `/` to browse commands in the desktop or TUI; the classic CLI uses Tab completion.
@@ -1120,6 +1123,10 @@ normal runtime, OS permissions, and per-task approval.
 The desktop also offers `/knowledge` as a Knowledge reference shortcut and `/diverge`
 to continue an existing conversation in a new chat. The message action is also labelled
 **Diverge**. Start a chat before using it.
+
+In the desktop composer, `/bug` followed by a space becomes a **Report a bug** chip at the
+start of the message. The chip is only how the composer draws it: the message is still
+sent as `/bug <text>`.
 
 The TUI and classic CLI additionally support `/help` (alias `/?`), `/exit` (alias `/quit`),
 `/rename <name>`, and `/diverge [name]`. The following commands are **classic CLI only**;

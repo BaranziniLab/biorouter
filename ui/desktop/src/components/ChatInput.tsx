@@ -53,6 +53,13 @@ import {
   removeComposerRefAt,
   splitComposerText,
 } from '../utils/composerRefs';
+import {
+  CHIP_COMMANDS,
+  chipCommandOfInsert,
+  composerTextOfSent,
+  joinLeadingCommand,
+  splitLeadingCommand,
+} from '../utils/composerCommand';
 import { findRefTags } from '../utils/resourceRefs';
 import { RESTORE_CHAT_INPUT_EVENT, composerRestoreIsFor } from '../utils/composerRestore';
 import {
@@ -84,11 +91,14 @@ import {
  * Queued messages as a draft, for a composer with no chat to keep a queue for.
  * Every image a queued message carries is a temp file the composer staged
  * (`canUploadDroppedImage` requires a staged path), so each comes back as one.
+ * A chip-only `/bug` was trimmed when it was queued, and is given its space
+ * back (`composerTextOfSent`) so it returns as the chip: a give-back stored
+ * while no composer is mounted is adopted later without passing `takeBack`.
  */
 function draftOfQueuedMessages(messages: readonly QueuedMessage[]): ComposerDraft {
   return {
     text: messages
-      .map((message) => message.content.trim())
+      .map((message) => composerTextOfSent(message.content.trim()))
       .filter(Boolean)
       .join('\n\n'),
     images: messages.flatMap((message) =>
@@ -1050,7 +1060,13 @@ export default function ChatInput({
           );
           setDisplayValue((current) => {
             const context = annotationContextText(annotation);
-            return current.trim() ? `${current.trimEnd()}\n\n${context}\n` : `${context}\n`;
+            // After the prose, not over a `/bug ` chip: trimming the whole text
+            // would eat the space that makes the command a chip.
+            const { command, prose } = splitLeadingCommand(current);
+            return joinLeadingCommand(
+              command,
+              prose.trim() ? `${prose.trimEnd()}\n\n${context}\n` : `${context}\n`
+            );
           });
         })
         .catch(() => {
@@ -1156,10 +1172,18 @@ export default function ChatInput({
     [setLocalDroppedFiles]
   );
 
-  /** Merge a message this composer did not keep back into the box. */
+  /**
+   * Merge a message this composer did not keep back into the box. A sent
+   * chip-only `/bug` comes back trimmed; it is given its space back BEFORE the
+   * merge (`composerTextOfSent`), since merged behind typed text it would no
+   * longer be a bare `/bug` for anything to recognise.
+   */
   const takeBack = useCallback(
     (returned: ComposerDraft): ComposerDraft => {
-      const next = mergeComposerDraft(heldDraft(), returned);
+      const next = mergeComposerDraft(heldDraft(), {
+        ...returned,
+        text: composerTextOfSent(returned.text),
+      });
       showDraft(next);
       return next;
     },
@@ -1523,6 +1547,14 @@ export default function ChatInput({
     () => splitComposerText(displayValue),
     [displayValue]
   );
+  // The body's own split: a leading `/bug ` is drawn as a chip in the rail, and
+  // the textarea binds to the PROSE after it (`utils/composerCommand.ts`). The
+  // message keeps the command at its start, where the daemon reads it, so this
+  // is presentation only. Every textarea offset is a prose offset.
+  const { command: composerCommand, prose: composerProse } = useMemo(
+    () => splitLeadingCommand(composerBody),
+    [composerBody]
+  );
 
   const setComposerText = useCallback(
     (next: string) => {
@@ -1548,11 +1580,28 @@ export default function ChatInput({
     [sessionId, setComposerText]
   );
 
-  /** Replace the prose, keeping whatever references are attached. */
+  /** Replace the body, keeping whatever references are attached. */
   const setComposerBody = useCallback(
     (body: string) => setComposerText(joinComposerText(body, composerRefs)),
     [composerRefs, setComposerText]
   );
+
+  /**
+   * Replace what the textarea shows, keeping the command chip and the references.
+   *
+   * With no chip, prose that starts with `/bug ` becomes the body as is, and the
+   * split claims it: that is how typing `/bug ` converts to the chip.
+   */
+  const setComposerProse = useCallback(
+    (prose: string) => setComposerBody(joinLeadingCommand(composerCommand, prose)),
+    [composerCommand, setComposerBody]
+  );
+
+  /** The chip's ×, and Backspace at the start of the prose: the prose stays. */
+  const handleRemoveCommand = useCallback(() => {
+    setComposerBody(composerProse);
+    textAreaRef.current?.focus();
+  }, [composerProse, setComposerBody]);
 
   const handleRemoveReference = useCallback(
     (index: number) => {
@@ -1564,13 +1613,24 @@ export default function ChatInput({
 
   const handleChange = (evt: React.ChangeEvent<HTMLTextAreaElement>) => {
     const val = evt.target.value;
-    const cursorPosition = evt.target.selectionStart;
+    let cursorPosition = evt.target.selectionStart;
 
-    setComposerBody(val);
+    // `/bug ` typed at the start of a box with no chip yet becomes the chip, and
+    // the textarea loses the command's characters. React would leave the caret
+    // at the end of the new value, so put it back where the user was typing.
+    const converted = composerCommand ? null : splitLeadingCommand(val);
+    const shown = converted?.command ? converted.prose : val;
+    if (converted?.command) {
+      cursorPosition = Math.max(0, cursorPosition - (val.length - shown.length));
+      const caret = cursorPosition;
+      setTimeout(() => textAreaRef.current?.setSelectionRange(caret, caret), 0);
+    }
+
+    setComposerProse(val);
     setHasUserTyped(true);
-    // The textarea's offsets are body offsets, and so is everything the mention
+    // The textarea's offsets are prose offsets, and so is everything the mention
     // popover computes from them.
-    checkForMentionOrSlash(val, cursorPosition, evt.target);
+    checkForMentionOrSlash(shown, cursorPosition, evt.target);
   };
 
   const checkForMentionOrSlash = (
@@ -1858,8 +1918,11 @@ export default function ChatInput({
         setDisplayValue(savedInput || '');
         setValue(savedInput || '');
       } else {
-        setDisplayValue(newValue || '');
-        setValue(newValue || '');
+        // History holds sent messages, trimmed: a chip-only `/bug` is stored
+        // as a bare `/bug` and comes back as the chip it was sent as.
+        const recalled = composerTextOfSent(newValue || '');
+        setDisplayValue(recalled);
+        setValue(recalled);
       }
       // Reset hasUserTyped when we populate from history
       setHasUserTyped(false);
@@ -2352,6 +2415,23 @@ export default function ChatInput({
       openCrew();
       return;
     }
+    // Backspace at the very start of the prose takes the command chip, the way
+    // it would take the character before the caret. Not with a selection: that
+    // Backspace deletes the selected text.
+    if (
+      evt.key === 'Backspace' &&
+      composerCommand &&
+      !isComposing &&
+      !evt.altKey &&
+      !evt.metaKey &&
+      !evt.ctrlKey &&
+      evt.currentTarget.selectionStart === 0 &&
+      evt.currentTarget.selectionEnd === 0
+    ) {
+      evt.preventDefault();
+      handleRemoveCommand();
+      return;
+    }
     // If mention popover is open, handle arrow keys and enter
     if (mentionPopover.isOpen && mentionPopoverRef.current) {
       if (evt.key === 'ArrowDown') {
@@ -2474,13 +2554,38 @@ export default function ChatInput({
   };
 
   const handleMentionItemSelect = (itemText: string) => {
-    const beforeMention = composerBody.slice(0, mentionPopover.mentionStart);
-    const afterMention = composerBody.slice(
+    // Prose offsets: the popover's `mentionStart` was measured in the textarea.
+    const beforeMention = composerProse.slice(0, mentionPopover.mentionStart);
+    const afterMention = composerProse.slice(
       mentionPopover.mentionStart + 1 + mentionPopover.query.length
     );
 
-    if (`${beforeMention}${itemText}${afterMention}`.trim() === '/crew') {
+    // The whole body, chip included, as the submit path reads it: behind a
+    // `/bug` chip, `/crew` is part of the report and Enter sends it as one.
+    if (
+      joinLeadingCommand(composerCommand, `${beforeMention}${itemText}${afterMention}`).trim() ===
+      '/crew'
+    ) {
       openCrew();
+      return;
+    }
+
+    // A chip command picked anywhere in the prose becomes the chip at the start
+    // of the message, where the daemon reads it, and the `/bu…` the user typed
+    // to find it disappears from the prose.
+    const pickedCommand = chipCommandOfInsert(itemText);
+    if (pickedCommand) {
+      setComposerText(
+        joinComposerText(
+          joinLeadingCommand(pickedCommand, `${beforeMention}${afterMention}`),
+          composerRefs
+        )
+      );
+      setMentionPopover((prev) => ({ ...prev, isOpen: false }));
+      textAreaRef.current?.focus();
+      setTimeout(() => {
+        textAreaRef.current?.setSelectionRange(beforeMention.length, beforeMention.length);
+      }, 0);
       return;
     }
 
@@ -2492,8 +2597,8 @@ export default function ChatInput({
     const inserted = findRefTags(itemText);
     const isReference = inserted.length === 1 && inserted[0].raw === itemText.trim();
 
-    const nextBody = `${beforeMention}${isReference ? '' : itemText}${afterMention}`;
-    const nextText = joinComposerText(nextBody, composerRefs);
+    const nextProse = `${beforeMention}${isReference ? '' : itemText}${afterMention}`;
+    const nextText = joinComposerText(joinLeadingCommand(composerCommand, nextProse), composerRefs);
     setComposerText(
       isReference
         ? appendComposerRef(nextText, inserted[0].kind, inserted[0].value, inserted[0].label)
@@ -2666,24 +2771,27 @@ export default function ChatInput({
     textAreaRef.current?.focus();
   };
 
-  /** `@` or `/` at the caret, with the menu it opens, as if typed. */
+  /**
+   * `@` or `/` at the caret, with the menu it opens, as if typed. The caret is a
+   * prose offset, so the trigger goes into the prose after a `/bug` chip.
+   */
   const insertTrigger = (trigger: ComposerTrigger) => {
     const textArea = textAreaRef.current;
-    const start = textArea?.selectionStart ?? composerBody.length;
+    const start = textArea?.selectionStart ?? composerProse.length;
     const end = textArea?.selectionEnd ?? start;
-    const before = composerBody.slice(0, start);
+    const before = composerProse.slice(0, start);
     // A command only opens at the start of a word.
     const insert = `${before && !/\s$/.test(before) ? ' ' : ''}${trigger}`;
-    const nextBody = `${before}${insert}${composerBody.slice(end)}`;
+    const nextProse = `${before}${insert}${composerProse.slice(end)}`;
     const caret = before.length + insert.length;
-    setComposerBody(nextBody);
+    setComposerProse(nextProse);
     setHasUserTyped(true);
     setTimeout(() => {
       const current = textAreaRef.current;
       if (!current) return;
       current.focus();
       current.setSelectionRange(caret, caret);
-      checkForMentionOrSlash(nextBody, caret, current);
+      checkForMentionOrSlash(nextProse, caret, current);
     }, 0);
   };
 
@@ -2866,9 +2974,11 @@ export default function ChatInput({
           </div>
         )}
 
-        {/* What goes with the message, in one row above the text: references
-            (issue #65), images and files. */}
+        {/* What goes with the message, in one row above the text: the `/bug`
+            command chip first, then references (issue #65), images and files. */}
         <ComposerChips
+          command={composerCommand}
+          onRemoveCommand={handleRemoveCommand}
           refs={composerRefs}
           images={pastedImages}
           files={allDroppedFiles}
@@ -2892,13 +3002,19 @@ export default function ChatInput({
             // An invitation, never an instruction: "Ask a follow-up" once the
             // chat has messages, the open question before that. `followUp` is
             // the caller's word for a message it already shows.
+            // With the `/bug` chip in the row above, the empty prose says what
+            // goes after it.
             placeholder={
               crewHold?.placeholder ??
-              ((followUp ?? (messagesLength ?? 0) > 0)
-                ? COMPOSER_COPY.placeholderFollowUp
-                : COMPOSER_COPY.placeholderEmpty)
+              (composerCommand
+                ? CHIP_COMMANDS[composerCommand].placeholder
+                : (followUp ?? (messagesLength ?? 0) > 0)
+                  ? COMPOSER_COPY.placeholderFollowUp
+                  : COMPOSER_COPY.placeholderEmpty)
             }
-            value={composerBody}
+            // The prose after the command chip: every textarea offset is a
+            // prose offset (`utils/composerCommand.ts`).
+            value={composerProse}
             onChange={handleChange}
             onCompositionStart={handleCompositionStart}
             onCompositionEnd={handleCompositionEnd}

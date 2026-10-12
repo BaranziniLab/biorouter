@@ -168,6 +168,11 @@ A clear and concise description of what you expected to happen.
 
 ---
 
+**Suspected cause**
+If you have an idea where the problem is (a file, a setting, a step that behaves differently from the documentation), describe it here. Optional.
+
+---
+
 **Screenshots**
 If applicable, add screenshots to help explain your problem.
 
@@ -225,7 +230,7 @@ Add any other context about the problem here.
         // (spec principle 2). The words stay in the page for a screen reader.
         <InfoTip
           label="Report a problem"
-          help="Say “report a bug” in the chat and Biorouter writes the report, removes paths and credentials, and shows you the exact text before anything is published."
+          help="Type /bug or say “report a bug” in the chat. Biorouter writes the report, removes paths and credentials, and shows you the exact text before anything is published."
           data-testid="diagnostics-agent-hint"
         />
       }

@@ -19,12 +19,16 @@ pub mod catalog;
 pub mod control;
 pub mod declare;
 pub mod evidence;
+pub mod export;
 pub mod manifest;
 pub mod render;
 pub mod resolved;
 pub mod store;
 pub mod validate;
 pub mod vault;
+
+/// The legacy launcher-only file map, under the name `routes::apps` imports.
+pub use export::export_scaffold;
 
 use crate::developer::shell::strip_daemon_private_env_std;
 use crate::knowledge::caller::KbCaller;
@@ -107,12 +111,19 @@ pub struct ModelParam {
 pub struct CreateAppParams {
     /// Human-readable title; also used to derive the app id when `id` is omitted.
     pub title: String,
-    /// Optional explicit app id (slugified). If given and an app already exists
-    /// at that id, it is REPLACED — so re-creating the same app is idempotent
-    /// and the app stays addressable. Omit to auto-derive a unique id from the
-    /// title.
+    /// Optional explicit app id (slugified). Omit to auto-derive a unique id from
+    /// the title. If an app already exists at that id and THIS chat created it,
+    /// it is replaced, so re-creating your own app is idempotent. An app another
+    /// chat created is never replaced unless `replace` is true: use update_app
+    /// or configure_app to change it, or pick another id.
     #[serde(default)]
     pub id: Option<String>,
+    /// Replace an existing app at `id` even though another chat created it.
+    /// Replacing DELETES that app first, including its workspace data, and the
+    /// new app starts with none of its conversations. Only set this when the
+    /// user asked for that app to be replaced.
+    #[serde(default)]
+    pub replace: bool,
     /// Short description of what the app does.
     #[serde(default)]
     pub description: String,
@@ -844,9 +855,26 @@ pub struct AppIdParams {
 pub struct ExportAppParams {
     /// App id.
     pub id: String,
-    /// Destination directory (created if missing).
+    /// Absolute path of a NEW (or empty) folder to export into, such as
+    /// `/Users/you/Desktop/my-app`. Created if missing. A folder that already
+    /// holds files is refused unless `replace` is true and it is an earlier
+    /// export of this same app. Only below the user's Desktop, Documents or Downloads:
+    /// never inside Biorouter's own settings, the app store, the knowledge
+    /// store, a hidden folder or a folder code is imported from
+    /// (`node_modules`, `site-packages`).
     pub target_dir: String,
-    /// Override the agent WebSocket endpoint the exported app connects to.
+    /// Replace an earlier export of this same app at `target_dir`. The new
+    /// export is built beside it and swapped in whole, so nothing stale
+    /// survives, and the earlier one is kept beside it as
+    /// `<folder>.replaced-<time>` (the result names it). An export that has
+    /// since gained anything the export does not write (a `.git`,
+    /// `node_modules`, the user's own files) is refused, as is any other
+    /// non-empty folder: pick a new folder then.
+    #[serde(default)]
+    pub replace: bool,
+    /// No longer used. The exported page is always served by a local daemon,
+    /// which gives it the endpoint and socket token of the run that serves it;
+    /// a value here is ignored, with a note.
     #[serde(default)]
     pub endpoint: Option<String>,
     /// Export mode: `"launcher"` (default) ships only the app + launch scripts,
@@ -857,10 +885,11 @@ pub struct ExportAppParams {
     #[serde(default)]
     pub mode: Option<String>,
     /// Full-mode payload selection: `{"knowledge_bases": [ids], "skills":
-    /// [names], "extensions": [names]}`. Any omitted key falls back to what the
-    /// app's agent config references (KB → `agent.knowledge_base`; skills →
-    /// `agent.skills`; extensions → `agent.extensions` minus built-ins). Ignored
-    /// in launcher mode.
+    /// [names], "extensions": [names]}`. An omitted key means everything the
+    /// app references (knowledge bases: the agent's, its `knowledge` data
+    /// sources' and its memory bases; skills: `agent.skills`; extensions:
+    /// `agent.extensions` minus built-ins); an empty list means none. Skill and
+    /// extension entries are plain names, never paths. Ignored in launcher mode.
     #[serde(default)]
     pub include: Option<serde_json::Value>,
     /// Bundle the daemon binary for a self-contained ("fat") export:
@@ -923,9 +952,22 @@ fn run_smoke(dir: &Path) -> Result<String, String> {
         return Ok("smoke check skipped (BIOROUTER_APP_SMOKE=off)".to_string());
     }
 
-    let script = smoke_script_path().ok_or_else(|| "app-smoke.mjs not found".to_string())?;
-    let mut command = std::process::Command::new("node");
+    let script = smoke_script_path().ok_or_else(|| {
+        "the smoke harness (scripts/agent-drafter/app-smoke.mjs) is not part of this \
+         Biorouter install; it ships only with a source checkout"
+            .to_string()
+    })?;
+    // `node` is looked up on the login shell's PATH too: a daemon the desktop
+    // app starts has launchd's PATH, which holds no Homebrew or nvm node.
+    let node = bundle::resolve_tool("node").ok_or_else(|| {
+        "Node.js (`node`) was not found on this machine's PATH or the login shell's PATH"
+            .to_string()
+    })?;
+    let mut command = std::process::Command::new(&node.path);
     command.arg(&script).arg(dir);
+    if let Some(path) = node.child_path.as_deref() {
+        command.env("PATH", path);
+    }
     // Last, so nothing set above can leave a daemon credential in the child.
     prepare_agent_drafter_child(&mut command);
     let out = command
@@ -979,21 +1021,49 @@ pub(crate) fn printenv_bin() -> &'static str {
         .unwrap_or("printenv")
 }
 
+const SMOKE_SCRIPT: &str = "scripts/agent-drafter/app-smoke.mjs";
+
 /// Locate the smoke script relative to the running binary or the source tree.
+///
+/// ⚠ The compile-time source path is consulted only in a debug build. A
+/// release binary embedded the path of the checkout it was built in — on a
+/// shipped build, the release maintainer's — so the tool worked on that one
+/// machine while that checkout existed, and nowhere else.
 fn smoke_script_path() -> Option<PathBuf> {
-    let rel = "scripts/agent-drafter/app-smoke.mjs";
-    // Dev tree: walk up from CARGO_MANIFEST_DIR.
-    let src = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()?
-        .parent()?
-        .join(rel);
-    if src.exists() {
-        return Some(src);
+    #[cfg(debug_assertions)]
+    {
+        let src = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()?
+            .parent()?
+            .join(SMOKE_SCRIPT);
+        if src.exists() {
+            return Some(src);
+        }
     }
-    // Installed: next to the executable.
     let exe = std::env::current_exe().ok()?;
-    let near = exe.parent()?.join(rel);
-    near.exists().then_some(near)
+    smoke_script_near(exe.parent()?)
+}
+
+/// The smoke script next to the binary in `exe_dir`, or in the checkout that
+/// binary was built in (`<checkout>/target/<profile>/biorouterd`). The ascent
+/// is three directories at most and stops at the checkout root (the first
+/// ancestor holding `.git`), so an installed binary never picks up a script
+/// from some unrelated directory above it.
+fn smoke_script_near(exe_dir: &Path) -> Option<PathBuf> {
+    let beside = exe_dir.join(SMOKE_SCRIPT);
+    if beside.is_file() {
+        return Some(beside);
+    }
+    for d in exe_dir.ancestors().skip(1).take(3) {
+        let candidate = d.join(SMOKE_SCRIPT);
+        if candidate.is_file() {
+            return Some(candidate);
+        }
+        if d.join(".git").exists() {
+            return None;
+        }
+    }
+    None
 }
 
 fn err(code: ErrorCode, msg: impl Into<String>) -> ErrorData {
@@ -1084,6 +1154,9 @@ fn create_app_files(
         None if use_starter => archetype
             .index_html(&p.title, &p.description)
             .unwrap_or_else(|| render::starter(&p.title, &p.description)),
+        // A static app has no agent, so it does not get the chat card and the
+        // agent notes the agentic starter carries — it showed an empty chat box.
+        None if kind == ArtifactKind::Static => render::static_starter(&p.title, &p.description),
         None => render::starter(&p.title, &p.description),
     };
     let mut files = vec![(entry.to_string(), entry_html)];
@@ -1108,6 +1181,20 @@ fn create_app_files(
             .map(|file| (file.path.clone(), file.content.clone())),
     );
     (use_starter, files)
+}
+
+/// Write the default agentic sources (`src/sdk.ts`, `src/main.ts`) an app does
+/// not have yet, never replacing one it has. Returns the paths written.
+fn seed_missing_sources(store: &ArtifactStore, id: &str) -> std::io::Result<Vec<String>> {
+    let mut written = Vec::new();
+    for (path, content) in bundle::default_sources() {
+        let path = path.to_string_lossy().replace('\\', "/");
+        if !store.file_exists(id, &path) {
+            store.write_file(id, &path, &content)?;
+            written.push(path);
+        }
+    }
+    Ok(written)
 }
 
 fn created_agent_config(p: &mut CreateAppParams) -> Result<AgentConfig, ErrorData> {
@@ -1203,137 +1290,375 @@ fn now_secs() -> u64 {
         .unwrap_or(0)
 }
 
-/// Directories inside an app that must never leave the author's machine. The
-/// vault holds AES-sealed secrets whose key lives in the author's OS keyring —
-/// worthless to a recipient, and not ours to copy around.
-const EXPORT_EXCLUDED_DIRS: &[&str] = &[".vault/", ".git/"];
+/// Whether `id`'s bundle needs rebuilding before it can be served. See
+/// [`bundle_staleness`] for the rules.
+pub fn bundle_is_stale(store: &ArtifactStore, id: &str, manifest: &Manifest) -> bool {
+    store
+        .artifact_dir(id)
+        .is_ok_and(|dir| bundle_staleness(&dir, manifest).is_some())
+}
 
-/// Recursively collect an app's files (relative path → contents).
+/// Why the app in `dir` needs rebuilding, `None` when it does not.
 ///
-/// `manifest.json` is skipped here and re-emitted by `scaffold_standalone` from
-/// the parsed [`Manifest`], so the export always carries a canonical one.
-fn collect_files(base: &std::path::Path, dir: &std::path::Path, out: &mut Vec<(String, String)>) {
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return;
+/// Any app with a `src/main.ts` is built, static or agentic: a static page may
+/// keep its code there too. It is stale when:
+///
+/// - it has no `dist/app.js` yet;
+/// - `built_at` is unset — `update_app` clears it when it edits `src/`;
+/// - a file under `src/` changed since the bundle was built: by content, against
+///   the [`bundle::sources_fingerprint`] its banner records, or, for a bundle
+///   with no such record, by being newer than `dist/app.js`. ⚠ An edit made
+///   with the developer shell or text editor never touches `built_at`, and the
+///   launched app kept serving the old bundle after the agent said "try it now";
+/// - the bundle came from the fallback bundler and esbuild can run here, so a
+///   real build replaces the guess (this heals bundles a packaged daemon with
+///   no esbuild made before one shipped);
+/// - it was built against a different App SDK — each app vendors its own
+///   `src/sdk.ts`, so without this an app authored before a protocol addition
+///   kept the old runtime forever and silently dropped frames the server now
+///   sends — UNLESS a newer Biorouter built it. ⚠ Two daemons of different
+///   versions serving one store (the desktop's and a leftover
+///   `biorouter apps open` one) used to rebuild each app back and forth, the
+///   older one downgrading its SDK each time; the bundle's banner records whose
+///   SDK it carries, and this binary never rebuilds down to its own older SDK.
+fn bundle_staleness(dir: &Path, manifest: &Manifest) -> Option<&'static str> {
+    let dist = dir.join("dist/app.js");
+    if !dir.join("src/main.ts").is_file() {
+        // Nothing to build from. An agentic app with no bundle is still stale,
+        // so the attempt is made and its "src/main.ts not found" reaches
+        // whoever is looking instead of a blank page.
+        return (manifest.kind == ArtifactKind::Agentic && !dist.is_file())
+            .then_some("it has no bundle and no src/main.ts");
+    }
+    if !dist.is_file() {
+        return Some("it has never been built");
+    }
+    if manifest.built_at.is_none() {
+        return Some("its sources were edited after the last build");
+    }
+    let banner = bundle::read_bundle_banner(&dist);
+    match banner.as_ref().and_then(|b| b.src.as_deref()) {
+        // The bundle names the sources it was built from: compare contents.
+        Some(built_from) => {
+            if bundle::sources_fingerprint(dir) != built_from {
+                return Some("a file under src/ changed since the bundle was built");
+            }
+        }
+        // A bundle from before that record, or from a custom build script:
+        // the modification times are all there is.
+        None => {
+            let bundled_at = std::fs::metadata(&dist).and_then(|m| m.modified()).ok();
+            if newest_mtime(&dir.join("src"), 0) > bundled_at {
+                return Some("a file under src/ is newer than the bundle");
+            }
+        }
+    }
+    let stamp = manifest.sdk_hash.as_deref().unwrap_or("");
+    let (stamped_fallback, stamped_sdk) = match stamp.strip_prefix("fallback:") {
+        Some(sdk) => (true, sdk),
+        None => (false, stamp),
     };
-    for entry in entries.flatten() {
-        let path = entry.path();
-        let Ok(file_type) = entry.file_type() else {
+    let built_by_fallback = stamped_fallback || banner.as_ref().is_some_and(|b| b.is_fallback());
+    if built_by_fallback && bundle::esbuild_available() {
+        return Some("the fallback bundler built it, and esbuild is available now");
+    }
+    let bundles_sdk = manifest.kind == ArtifactKind::Agentic || dir.join("src/sdk.ts").is_file();
+    if bundles_sdk && stamped_sdk != bundle::sdk_fingerprint() {
+        // Whose SDK it carries, not who built it: an older daemon that rebuilt
+        // the app and KEPT a newer SDK is the builder of a bundle whose SDK is
+        // still the newer one's (`BundleBanner::sdk_version`).
+        let newer_sdk = banner.as_ref().is_some_and(|b| {
+            bundle::version_is_newer(b.sdk_version(), bundle::biorouter_version())
+        });
+        if !newer_sdk {
+            return Some("it was built against a different App SDK");
+        }
+    }
+    None
+}
+
+/// The newest modification time under `dir` (symlinks skipped, bounded depth).
+fn newest_mtime(dir: &Path, depth: usize) -> Option<std::time::SystemTime> {
+    if depth > 8 {
+        return None;
+    }
+    let mut newest = None;
+    for entry in std::fs::read_dir(dir).ok()?.flatten() {
+        let Ok(kind) = entry.file_type() else {
             continue;
         };
-        if file_type.is_symlink() {
-            continue;
-        }
-        if file_type.is_dir() {
-            collect_files(base, &path, out);
-        } else if let Ok(rel) = path.strip_prefix(base) {
-            let rel = rel.to_string_lossy().replace('\\', "/");
-            if rel == "manifest.json" || EXPORT_EXCLUDED_DIRS.iter().any(|d| rel.starts_with(d)) {
+        let found = if kind.is_dir() {
+            newest_mtime(&entry.path(), depth + 1)
+        } else if kind.is_file() {
+            entry.metadata().and_then(|m| m.modified()).ok()
+        } else {
+            None
+        };
+        newest = newest.max(found);
+    }
+    newest
+}
+
+/// One lock per app directory, held for a whole build-and-stamp.
+///
+/// ⚠ Two loads of one app — the in-app preview and a browser tab, right after
+/// an upgrade changed the SDK — used to run two builds at once, both rewriting
+/// `src/sdk.ts` and `dist/app.js` while the browser fetched the bundle. Every
+/// build path goes through here: [`ensure_bundle_fresh`] (serving, launch,
+/// export) and [`rebuild_and_stamp`] (an explicit build).
+fn with_app_build_lock<T>(dir: &Path, f: impl FnOnce() -> T) -> T {
+    type Locks =
+        std::sync::Mutex<std::collections::HashMap<PathBuf, std::sync::Arc<std::sync::Mutex<()>>>>;
+    static LOCKS: std::sync::LazyLock<Locks> = std::sync::LazyLock::new(Default::default);
+    let lock = LOCKS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .entry(dir.to_path_buf())
+        .or_default()
+        .clone();
+    let _held = lock.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    f()
+}
+
+/// The last failed build of each app, keyed by a fingerprint of everything
+/// that decides its outcome ([`build_inputs_fingerprint`]).
+///
+/// ⚠ Serving rebuilds a stale app before answering, and a failed build leaves
+/// it stale, so an app whose `main.ts` no longer compiled re-ran the bundler —
+/// up to a minute through `npx` — on every page load. Unchanged inputs now get
+/// the remembered answer; any edit is a new fingerprint and a new attempt.
+type FailedBuilds =
+    std::sync::Mutex<std::collections::HashMap<PathBuf, (u64, bundle::BuildReport)>>;
+static FAILED_BUILDS: std::sync::LazyLock<FailedBuilds> =
+    std::sync::LazyLock::new(Default::default);
+
+fn build_inputs_fingerprint(dir: &Path, manifest: &Manifest) -> u64 {
+    use std::hash::{Hash, Hasher};
+    fn walk(dir: &Path, base: &Path, depth: usize, h: &mut impl Hasher) {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return;
+        };
+        let mut entries: Vec<_> = entries.flatten().collect();
+        entries.sort_by_key(|e| e.file_name());
+        for entry in entries {
+            let Ok(kind) = entry.file_type() else {
                 continue;
-            }
-            if let Ok(content) = std::fs::read_to_string(&path) {
-                out.push((rel, content));
+            };
+            if kind.is_dir() && depth < 8 {
+                walk(&entry.path(), base, depth + 1, h);
+            } else if kind.is_file() {
+                entry.path().strip_prefix(base).ok().hash(h);
+                if let Ok(meta) = entry.metadata() {
+                    meta.len().hash(h);
+                    meta.modified().ok().hash(h);
+                }
             }
         }
     }
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    walk(&dir.join("src"), dir, 0, &mut h);
+    std::fs::metadata(dir.join("dist/app.js"))
+        .and_then(|m| m.modified())
+        .ok()
+        .hash(&mut h);
+    manifest.built_at.hash(&mut h);
+    manifest.sdk_hash.hash(&mut h);
+    bundle::sdk_fingerprint().hash(&mut h);
+    bundle::esbuild_available().hash(&mut h);
+    h.finish()
 }
 
-/// Whether `id`'s bundle needs rebuilding before it can be served: it has never
-/// been built, or it was built against an older App SDK than this binary ships.
-///
-/// The second case matters because each app vendors its own `src/sdk.ts`. Without
-/// this, an app authored before a protocol addition keeps running the old runtime
-/// forever and silently drops frames the server now sends (e.g. the `ui` commands
-/// that let the agent drive the page).
-pub fn bundle_is_stale(store: &ArtifactStore, id: &str, manifest: &Manifest) -> bool {
-    if manifest.kind != ArtifactKind::Agentic {
-        return false;
+/// Record how a build of the app in `dir` went. A failure is keyed by the
+/// inputs as they are AFTER the attempt: a build that failed may still have
+/// refreshed `src/sdk.ts`, and keying it by the state before would make the
+/// next request see "new" inputs and run the same failing build once more.
+fn remember_build(store: &ArtifactStore, id: &str, dir: &Path, report: &bundle::BuildReport) {
+    let mut failed = FAILED_BUILDS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if report.ok {
+        failed.remove(dir);
+    } else if let Ok(manifest) = store.load_manifest(id) {
+        let inputs = build_inputs_fingerprint(dir, &manifest);
+        failed.insert(dir.to_path_buf(), (inputs, report.clone()));
     }
-    if !store.file_exists(id, "dist/app.js") {
-        return true;
-    }
-    manifest.sdk_hash.as_deref() != Some(&bundle::sdk_fingerprint())
 }
 
-/// Rebuild `id` and stamp the manifest with the build time + SDK fingerprint.
-/// Blocking (runs esbuild); callers on an async runtime must `spawn_blocking`.
-///
-pub fn rebuild_and_stamp(store: &ArtifactStore, id: &str) -> std::io::Result<bundle::BuildReport> {
-    // `build_app` refreshes the vendored `src/sdk.ts` before bundling, so the
-    // fingerprint we stamp below always describes what actually went into
-    // `dist/app.js` — never a current hash over a stale runtime.
-    let report = bundle::build_app(&store.artifact_dir(id)?)?;
+/// Build and stamp, with the app's build lock already held.
+fn build_and_stamp_locked(
+    store: &ArtifactStore,
+    id: &str,
+    dir: &Path,
+) -> std::io::Result<bundle::BuildReport> {
+    // Keep a vendored SDK that a NEWER Biorouter put there: its bundle's banner
+    // names that version and the very SDK the app still vendors. Refreshing it
+    // would rebuild the app down to this binary's older runtime. The version
+    // asked is the SDK's (`sdkv=`), not the builder's, and the build records
+    // it again, so the protection outlives this one build: ⚠ it once lasted
+    // exactly one, because the banner then named this older binary as builder
+    // and the next load "found" SDK drift and downgraded after all.
+    let banner = bundle::read_bundle_banner(&dir.join("dist/app.js"));
+    let keep_sdk_from = banner
+        .as_ref()
+        .filter(|b| {
+            bundle::version_is_newer(b.sdk_version(), bundle::biorouter_version())
+                && bundle::vendored_sdk_fingerprint(dir).as_deref() == Some(b.sdk.as_str())
+        })
+        .map(|b| b.sdk_version().to_string());
+    let mut report = bundle::build_app_with(
+        dir,
+        bundle::BuildOptions {
+            keep_sdk_from: keep_sdk_from.clone(),
+        },
+    )?;
+    if let Some(kept) = keep_sdk_from {
+        report.log = format!(
+            "Kept src/sdk.ts: it is the App SDK of Biorouter {kept}, which is newer than this one ({}).\n{}",
+            bundle::biorouter_version(),
+            report.log
+        );
+    }
+    // The stamp describes what actually went into `dist/app.js`: the SDK the
+    // bundle carries, or `fallback:<sdk>` for a fallback bundle — never the
+    // current fingerprint over a bundle that does not have it.
     if report.ok {
         if let Ok(mut m) = store.load_manifest(id) {
             m.built_at = Some(now_secs());
-            m.sdk_hash = Some(bundle::sdk_fingerprint());
+            m.sdk_hash = report.stamp.clone();
             let _ = store.save_manifest(&m);
         }
     }
     Ok(report)
 }
 
-/// Give a written export file the exec bit (owner+group+other rx, owner w).
-/// No-op on Windows, where executability isn't a file mode.
-fn make_executable(path: &std::path::Path) {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755));
-    }
-    #[cfg(not(unix))]
-    let _ = path;
+/// Rebuild `id` now and stamp the manifest with the build time and what was
+/// bundled. Blocking (runs esbuild); callers on an async runtime must
+/// `spawn_blocking`. For "build it if it needs it", use [`ensure_bundle_fresh`].
+pub fn rebuild_and_stamp(store: &ArtifactStore, id: &str) -> std::io::Result<bundle::BuildReport> {
+    let dir = store.artifact_dir(id)?;
+    with_app_build_lock(&dir, || {
+        let report = build_and_stamp_locked(store, id, &dir)?;
+        remember_build(store, id, &dir, &report);
+        Ok(report)
+    })
 }
 
-/// Gather an app's files and produce the standalone export scaffold (a file map
-/// of relative-path → contents). Shared by the `export_app` tool and the
-/// server's `GET /apps/{id}/export` route. `endpoint` overrides the agent
-/// WebSocket the exported app connects to (None → derived from the page origin,
-/// with a loopback fallback).
-pub fn export_scaffold(
-    root: &std::path::Path,
-    id: &str,
-    endpoint: Option<&str>,
-) -> std::io::Result<Vec<(String, String)>> {
-    let store = ArtifactStore::new(root.to_path_buf());
-    let manifest = store.load_manifest(id)?;
-    let dir = store.artifact_dir(id)?;
-    let mut all_files = Vec::new();
-    collect_files(&dir, &dir, &mut all_files);
-    let entry_html = all_files
-        .iter()
-        .find(|(p, _)| p == &manifest.entry)
-        .map(|(_, c)| c.clone())
-        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "entry file missing"))?;
-    let src_files: Vec<(String, String)> = all_files
-        .iter()
-        .filter(|(p, _)| p.starts_with("src/"))
-        .cloned()
-        .collect();
-    let extra_files: Vec<(String, String)> = all_files
-        .iter()
-        .filter(|(p, _)| p != &manifest.entry && !p.starts_with("src/") && !p.starts_with("dist/"))
-        .cloned()
-        .collect();
-    let mut scaffold =
-        render::scaffold_standalone(&manifest, &entry_html, &src_files, &extra_files, endpoint);
-    // Ship a prebuilt bundle so the export is directly runnable with no build
-    // step (the launcher / a static server can serve it as-is). Build on demand.
-    if manifest.kind == ArtifactKind::Agentic {
-        // Ship a bundle built from the CURRENT SDK, not a stale one the app
-        // happens to have on disk — an export is the copy that leaves the machine.
-        if bundle_is_stale(&store, id, &manifest) {
-            let _ = rebuild_and_stamp(&store, id);
+/// What [`ensure_bundle_fresh`] found, and did.
+#[derive(Debug, Clone)]
+pub struct BundleCheck {
+    /// Why the bundle was stale, `None` when it was fresh.
+    pub stale_because: Option<&'static str>,
+    /// The build that ran — or the remembered result of an identical earlier
+    /// attempt — when the bundle was stale.
+    pub build: Option<bundle::BuildReport>,
+    /// Whether `build` is that remembered result rather than a new attempt.
+    pub remembered: bool,
+    /// Whether `dist/app.js` exists now.
+    pub has_bundle: bool,
+    /// Whether the app cannot work without one: it is agentic, or it has a
+    /// `src/main.ts`.
+    pub needs_bundle: bool,
+}
+
+impl BundleCheck {
+    /// The failed build behind a missing bundle, when that is the situation:
+    /// the app needs a bundle, has none, and the build said why.
+    pub fn missing_bundle_log(&self) -> Option<String> {
+        if !self.needs_bundle || self.has_bundle {
+            return None;
         }
-        if let Ok(js) = store.read_file(id, "dist/app.js") {
-            scaffold.push(("dist/app.js".to_string(), js));
-        }
+        Some(
+            self.build
+                .as_ref()
+                .map(|b| b.log.clone())
+                .unwrap_or_else(|| "dist/app.js is missing and nothing could rebuild it.".into()),
+        )
     }
-    Ok(scaffold)
+}
+
+/// Build `id` if it is stale, under its build lock, re-checking staleness once
+/// the lock is held (a concurrent request may just have built it).
+pub fn ensure_bundle_fresh(store: &ArtifactStore, id: &str) -> std::io::Result<BundleCheck> {
+    let dir = store.artifact_dir(id)?;
+    with_app_build_lock(&dir, || {
+        let manifest = store.load_manifest(id)?;
+        let needs_bundle =
+            manifest.kind == ArtifactKind::Agentic || dir.join("src/main.ts").is_file();
+        let stale_because = bundle_staleness(&dir, &manifest);
+        let mut remembered = false;
+        let build = match stale_because {
+            None => None,
+            Some(_) => {
+                let inputs = build_inputs_fingerprint(&dir, &manifest);
+                let earlier = FAILED_BUILDS
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .get(&dir)
+                    .filter(|(seen, _)| *seen == inputs)
+                    .map(|(_, report)| report.clone());
+                match earlier {
+                    Some(report) => {
+                        remembered = true;
+                        Some(report)
+                    }
+                    None => {
+                        let report = build_and_stamp_locked(store, id, &dir)?;
+                        remember_build(store, id, &dir, &report);
+                        Some(report)
+                    }
+                }
+            }
+        };
+        Ok(BundleCheck {
+            stale_because,
+            build,
+            remembered,
+            has_bundle: dir.join("dist/app.js").is_file(),
+            needs_bundle,
+        })
+    })
+}
+
+/// The browser address `launch_app` reports for `path`: the daemon's own
+/// listener (`BIOROUTER_APP_BASE_URL`, `base`), else loopback on
+/// `BIOROUTER_PORT` (`port`), else `:3000`.
+///
+/// A daemon bound to every interface publishes `0.0.0.0` or `[::]`. That is an
+/// address to listen on, not one to visit — Chrome refuses `0.0.0.0` — so it
+/// becomes the loopback address of the same family, as the server's launch
+/// route does (`routes::apps::app_browser_origin`).
+fn launch_browser_url(base: Option<&str>, port: Option<&str>, path: &str) -> String {
+    base.and_then(|base| url::Url::parse(base.trim()).ok())
+        .filter(|base| {
+            matches!(base.scheme(), "http" | "https")
+                && base.host_str().is_some()
+                && base.username().is_empty()
+                && base.password().is_none()
+                && base.query().is_none()
+                && base.fragment().is_none()
+        })
+        .and_then(|mut base| {
+            match base.host() {
+                Some(url::Host::Ipv4(ip)) if ip.is_unspecified() => {
+                    base.set_host(Some("127.0.0.1")).ok()?
+                }
+                Some(url::Host::Ipv6(ip)) if ip.is_unspecified() => {
+                    base.set_host(Some("[::1]")).ok()?
+                }
+                _ => {}
+            }
+            Some(format!("{}{}", base.as_str().trim_end_matches('/'), path))
+        })
+        .unwrap_or_else(|| {
+            let port = port
+                .and_then(|value| value.trim().parse::<u16>().ok())
+                .unwrap_or(3000);
+            format!("http://127.0.0.1:{port}{path}")
+        })
 }
 
 // ---------------------------------------------------------------------------
-// Full-export payload staging (design §3.9 — Task 2/3)
+// Built-in extensions (the export's payload staging lives in `export.rs`)
 // ---------------------------------------------------------------------------
 
 /// The biorouter-mcp built-in MCP server names (see `BUILTIN_EXTENSIONS` in
@@ -1353,359 +1678,6 @@ pub(crate) const BUILTIN_EXTENSION_NAMES: &[&str] = &[
 
 fn is_builtin_extension(name: &str) -> bool {
     BUILTIN_EXTENSION_NAMES.contains(&name)
-}
-
-/// Resolve a `KnowledgeService` for reading the author's knowledge bases while
-/// staging a full export. Honours `BIOROUTER_KNOWLEDGE_DIR` (an override used by
-/// tests and power users); otherwise the canonical store the `/knowledge` routes
-/// use. `None` when the store can't be opened → the caller notes the KBs were
-/// skipped rather than failing the export.
-fn knowledge_service_for_export() -> Option<crate::knowledge::service::KnowledgeService> {
-    use crate::knowledge::service::KnowledgeService;
-    if let Ok(dir) = std::env::var("BIOROUTER_KNOWLEDGE_DIR") {
-        if !dir.trim().is_empty() {
-            return Some(KnowledgeService::new(PathBuf::from(dir)));
-        }
-    }
-    KnowledgeService::new_default().ok()
-}
-
-/// The installed-skills directory (`<config>/skills`). Honours
-/// `BIOROUTER_SKILLS_DIR` as a test/override hook, mirroring [`default_root`]'s
-/// config-dir resolution.
-fn skills_root_for_export() -> PathBuf {
-    if let Ok(dir) = std::env::var("BIOROUTER_SKILLS_DIR") {
-        if !dir.trim().is_empty() {
-            return PathBuf::from(dir);
-        }
-    }
-    crate::paths::in_config_dir("skills")
-}
-
-/// Locate a `biorouterd` binary to bundle for a fat export. This code runs
-/// inside `biorouterd` (GUI) **or** `biorouter` (CLI), so `current_exe` is not
-/// necessarily the daemon — we look next to it (the GUI ships them side by
-/// side), then on `PATH`. `BIOROUTERD_BIN` overrides (and is the test hook).
-/// `None` → the caller falls back to a thin export.
-fn find_biorouterd_binary() -> Option<PathBuf> {
-    let exe_name = if cfg!(windows) {
-        "biorouterd.exe"
-    } else {
-        "biorouterd"
-    };
-    if let Ok(p) = std::env::var("BIOROUTERD_BIN") {
-        let pb = PathBuf::from(p);
-        return pb.is_file().then_some(pb);
-    }
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(dir) = exe.parent() {
-            let cand = dir.join(exe_name);
-            if cand.is_file() {
-                return Some(cand);
-            }
-        }
-    }
-    if let Ok(path) = std::env::var("PATH") {
-        for dir in std::env::split_paths(&path) {
-            let cand = dir.join(exe_name);
-            if cand.is_file() {
-                return Some(cand);
-            }
-        }
-    }
-    None
-}
-
-/// Recursively copy `src` into `dst` (used to stage a skill directory tree).
-fn copy_dir_recursive(src: &std::path::Path, dst: &std::path::Path) -> std::io::Result<()> {
-    std::fs::create_dir_all(dst)?;
-    for entry in std::fs::read_dir(src)? {
-        let entry = entry?;
-        let from = entry.path();
-        let to = dst.join(entry.file_name());
-        if from.is_dir() {
-            copy_dir_recursive(&from, &to)?;
-        } else {
-            std::fs::copy(&from, &to)?;
-        }
-    }
-    Ok(())
-}
-
-/// Extract a `Vec<String>` from `include[key]` when it is an array of strings.
-/// `None` (key absent) means the caller falls back to the agent-config default;
-/// `Some(vec![])` (key present but empty) means "select none".
-fn selected_list(include: Option<&serde_json::Value>, key: &str) -> Option<Vec<String>> {
-    let arr = include?.get(key)?.as_array()?;
-    Some(
-        arr.iter()
-            .filter_map(|v| v.as_str().map(str::to_string))
-            .collect(),
-    )
-}
-
-/// The pieces staged for a full export, recorded in `export.json` and surfaced
-/// as notes in the tool result.
-struct StagedPayload {
-    /// `{id, file, bytes}` per staged `.brkb`.
-    knowledge_bases: Vec<serde_json::Value>,
-    /// `{name, path}` per staged skill directory.
-    skills: Vec<serde_json::Value>,
-    /// `{name, source:"registry", note}` per external extension.
-    extensions: Vec<serde_json::Value>,
-    /// Human-readable notes (skips, failures) — never fatal.
-    notes: Vec<String>,
-}
-
-impl StagedPayload {
-    fn empty() -> Self {
-        Self {
-            knowledge_bases: Vec::new(),
-            skills: Vec::new(),
-            extensions: Vec::new(),
-            notes: Vec::new(),
-        }
-    }
-}
-
-/// Stage the app's server-side payload under `<target>/payload/` (full mode).
-///
-/// Selection is per-item: an explicit `include` list wins; an omitted key falls
-/// back to what the app's agent config references (KB → `agent.knowledge_base`,
-/// skills → `agent.skills`, extensions → `agent.extensions` minus built-ins).
-/// A missing KB / skill is skipped with a note — it never fails the export.
-fn stage_full_payload(
-    manifest: &Manifest,
-    target: &std::path::Path,
-    include: Option<&serde_json::Value>,
-    // Issue #56 (CP4). The capability of the session that asked for the export —
-    // BOTH axes as one value (issue #56 DR-26 / Task 50, and finding 17's
-    // lesson): a signature that took them separately let one call site pass one
-    // caller's tier and another's institution, and the wrong one compiles.
-    caller: &KbCaller,
-) -> StagedPayload {
-    let agent = manifest.agent.clone().unwrap_or_default();
-
-    let mut kb_ids = selected_list(include, "knowledge_bases")
-        .unwrap_or_else(|| agent.knowledge_base.clone().into_iter().collect());
-    let mut skill_names = selected_list(include, "skills").unwrap_or_else(|| agent.skills.clone());
-    let mut ext_names = selected_list(include, "extensions").unwrap_or_else(|| {
-        agent
-            .extensions
-            .iter()
-            .filter(|e| !is_builtin_extension(e))
-            .cloned()
-            .collect()
-    });
-    // Deterministic, deduped ordering so the export is auditable + reproducible.
-    for v in [&mut kb_ids, &mut skill_names, &mut ext_names] {
-        v.sort();
-        v.dedup();
-    }
-
-    let payload_dir = target.join("payload");
-    let mut out = StagedPayload::empty();
-
-    // ── Knowledge bases → payload/knowledge/<id>.brkb ──────────────────────
-    if !kb_ids.is_empty() {
-        match knowledge_service_for_export() {
-            Some(svc) => {
-                let kdir = payload_dir.join("knowledge");
-                for kb in &kb_ids {
-                    // Issue #56 (CP4), Task 10C. `export_brkb` writes the WHOLE
-                    // base into the payload, and `kb_ids` comes from the
-                    // model-supplied `include.knowledge_bases` — a strictly
-                    // wider `kb_export` that never touches `KnowledgeServer`, so
-                    // CP1 cannot see it. Skip-and-note rather than fail the
-                    // export, matching `search_visible_bases`: the rest of the
-                    // payload is still useful and the user is told what was left
-                    // out.
-                    if let Err(e) = caller.assert_reachable(svc.root(), kb) {
-                        out.notes
-                            .push(format!("skipped knowledge base '{kb}': {e}"));
-                        continue;
-                    }
-                    match svc.export_brkb(kb) {
-                        Ok(bytes) => {
-                            let fname = format!("{kb}.brkb");
-                            let ok = std::fs::create_dir_all(&kdir).is_ok()
-                                && std::fs::write(kdir.join(&fname), &bytes).is_ok();
-                            if ok {
-                                out.knowledge_bases.push(serde_json::json!({
-                                    "id": kb,
-                                    "file": format!("payload/knowledge/{fname}"),
-                                    "bytes": bytes.len(),
-                                }));
-                            } else {
-                                out.notes.push(format!(
-                                    "could not write knowledge base '{kb}' into the payload; skipped"
-                                ));
-                            }
-                        }
-                        Err(e) => out
-                            .notes
-                            .push(format!("skipped knowledge base '{kb}': {e}")),
-                    }
-                }
-            }
-            None => out.notes.push(format!(
-                "knowledge store unavailable; skipped {} knowledge base(s)",
-                kb_ids.len()
-            )),
-        }
-    }
-
-    // ── Skills → payload/skills/<name>/ (plain directory copy) ─────────────
-    // A plain recursive copy is used rather than a marketplace-format zip: it is
-    // simpler, needs no extra crate, and the launcher installs it with a plain
-    // dir copy into the skills dir. (The design allows either.)
-    if !skill_names.is_empty() {
-        let skills_root = skills_root_for_export();
-        let sdir = payload_dir.join("skills");
-        for name in &skill_names {
-            let src = skills_root.join(name);
-            if src.is_dir() {
-                let dst = sdir.join(name);
-                if copy_dir_recursive(&src, &dst).is_ok() {
-                    out.skills.push(serde_json::json!({
-                        "name": name,
-                        "path": format!("payload/skills/{name}"),
-                    }));
-                } else {
-                    out.notes.push(format!(
-                        "could not copy skill '{name}' into the payload; skipped"
-                    ));
-                }
-            } else {
-                out.notes
-                    .push(format!("skill '{name}' not installed; skipped"));
-            }
-        }
-    }
-
-    // ── External extensions → recorded as registry references only ─────────
-    // Staging installed `.brxt` bundles (the installed-bundle layout) is out of
-    // scope; a full export records external extensions as pinned registry
-    // references the first-run installer resolves from BAAM.
-    for name in &ext_names {
-        out.extensions.push(serde_json::json!({
-            "name": name,
-            "source": "registry",
-            "note": "install from the BAAM registry on the target; .brxt bundle staging is out of scope",
-        }));
-    }
-
-    out
-}
-
-/// Assemble the deterministic `export.json` payload manifest (design §3.9 —
-/// Task 3). `required_credentials` and `runtime_requirements` are empty: the app
-/// manifest does not carry the extensions' declared credential env keys or
-/// runtime prerequisites (those live in each extension's own bundle metadata /
-/// the BAAM registry, not in the app manifest), so they cannot be enumerated
-/// here without the registry. The first-run credential dialog (§3.9 item 3)
-/// resolves what a specific extension needs.
-fn build_export_json(
-    id: &str,
-    mode: &str,
-    staged: &StagedPayload,
-    bundled_daemon: Option<&serde_json::Value>,
-) -> serde_json::Value {
-    serde_json::json!({
-        "version": 1,
-        "app": id,
-        "mode": mode,
-        "knowledge_bases": staged.knowledge_bases,
-        "skills": staged.skills,
-        "extensions": staged.extensions,
-        "bundled_daemon": bundled_daemon,
-        "required_credentials": [],
-        "runtime_requirements": [],
-    })
-}
-
-/// The assistant-facing summary `export_app` returns, split out of
-/// `export_app_inner` so that function stays under `clippy::too_many_lines`
-/// (issue #56, review round 5). No behaviour change.
-fn export_summary(
-    id: &str,
-    mode: &str,
-    target: &Path,
-    scaffold_files: usize,
-    staged: &StagedPayload,
-    wrote_manifest: bool,
-    notes: &[String],
-) -> String {
-    let mut msg = format!(
-        "Exported '{}' ({mode} mode) to {} ({} scaffold files). \
-         To run it: double-click run.command (macOS), `bash run.sh` (Linux), or run.bat (Windows). \
-         That installs the app, starts a biorouterd if one isn't already up, and opens it in the browser, with \
-         no npm install and no build step.",
-        id,
-        target.display(),
-        scaffold_files
-    );
-    if mode == "full" {
-        msg.push_str(&format!(
-            "\nPayload: {} knowledge base(s), {} skill(s), {} external extension reference(s).",
-            staged.knowledge_bases.len(),
-            staged.skills.len(),
-            staged.extensions.len()
-        ));
-    }
-    if wrote_manifest {
-        msg.push_str(" Wrote export.json (audit manifest).");
-    }
-    for n in notes {
-        msg.push_str(&format!("\n- {n}"));
-    }
-    msg
-}
-
-/// Stage the current-platform `biorouterd` under `payload/bin/` for a fat
-/// export. Returns the `export.json` record on success (or `None` → thin), plus
-/// a note either way.
-fn stage_current_daemon(target: &std::path::Path) -> (Option<serde_json::Value>, String) {
-    let bin_name = if cfg!(windows) {
-        "biorouterd.exe"
-    } else {
-        "biorouterd"
-    };
-    match find_biorouterd_binary() {
-        Some(bin) => {
-            let dst = target.join("payload").join("bin").join(bin_name);
-            if let Some(parent) = dst.parent() {
-                let _ = std::fs::create_dir_all(parent);
-            }
-            match std::fs::copy(&bin, &dst) {
-                Ok(bytes) => {
-                    make_executable(&dst);
-                    let rec = serde_json::json!({
-                        "platform": std::env::consts::OS,
-                        "arch": std::env::consts::ARCH,
-                        "file": format!("payload/bin/{bin_name}"),
-                        "bytes": bytes,
-                    });
-                    (
-                        Some(rec),
-                        format!(
-                            "bundled the {}-{} daemon at payload/bin/{bin_name} (fat export)",
-                            std::env::consts::OS,
-                            std::env::consts::ARCH
-                        ),
-                    )
-                }
-                Err(e) => (
-                    None,
-                    format!("could not copy biorouterd into the payload ({e}); thin export instead"),
-                ),
-            }
-        }
-        None => (
-            None,
-            "biorouterd not found for a fat export; thin export instead (the launcher locates or installs a daemon at run time)".to_string(),
-        ),
-    }
 }
 
 /// Issue #56 (CP4/CP5). `export_app`, `configure_app` and `update_app` gained a
@@ -1812,7 +1784,16 @@ impl AgentDrafterServer {
             Two kinds:
             - "agentic" (default): a UI plus a live Biorouter agent + chat. Use this
               for assistants, dashboards that reason over results, search tools, etc.
-            - "static": a plain interactive page with no agent.
+              Its code belongs in `src/main.ts`: the SDK (`createApp`, `br.*`)
+              exists only inside the bundle, so an inline script cannot reach the
+              agent. Run `build_app` after editing `src/`.
+            - "static": a plain interactive page with no agent. Write it in
+              `index.html`. Inline `<script>` blocks and `onclick="…"`-style
+              handlers you write there DO run when the app is launched (the
+              daemon allows exactly those, and nothing else); code that inserts
+              a script or handler at runtime, a handler inside a `<template>`,
+              and `javascript:` URLs are blocked. A static app needs
+              `build_app` only if you give it a `src/main.ts`.
 
             CAPABILITY TERMINOLOGY. Biorouter-shipped tool surfaces are capabilities;
             third-party or user-installed connectors are extensions. The app manifest's
@@ -2000,7 +1981,8 @@ impl AgentDrafterServer {
               is shown to the user.
             2. Author the UI: `update_app` the entry HTML and `src/main.ts`.
             3. `configure_app` to change the model/extensions/skills/knowledge/persona.
-            4. `build_app` to bundle the TypeScript.
+            4. `build_app` to bundle the TypeScript (a static app with no
+              `src/main.ts` has nothing to build and skips this).
             5. `launch_app` to open it in the browser (returns the URL).
             6. `export_app` for a standalone runnable project.
 
@@ -2234,6 +2216,40 @@ impl AgentDrafterServer {
         let archetype = create_app_archetype(&p)?;
         let (use_starter, files) = create_app_files(&p, kind, archetype);
         let store = self.store();
+        // An explicit id that is taken. Replacing deletes the app there, its
+        // workspace data included, and this used to happen to whichever app held
+        // the id, so chat B's `create_app {id: "dashboard"}` destroyed chat A's
+        // dashboard without a word. Re-authoring an app from the chat that made
+        // it stays idempotent; anything else needs `replace: true`.
+        if let Some(explicit) = p.id.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+            let id = store::slugify(explicit);
+            if store.has_entry(&id) && !p.replace {
+                let existing = store.load_manifest(&id).ok();
+                let same_chat = match (
+                    existing.as_ref().and_then(|m| m.session_id.as_deref()),
+                    session_id.as_deref(),
+                ) {
+                    (Some(owner), Some(caller)) => owner == caller,
+                    _ => false,
+                };
+                if !same_chat {
+                    let what = existing.map_or_else(
+                        || "one whose manifest cannot be read".to_string(),
+                        |m| format!("\"{}\"", m.title),
+                    );
+                    return Err(err(
+                        ErrorCode::INVALID_PARAMS,
+                        format!(
+                            "an app with id '{id}' already exists ({what}) and was not created in \
+                             this chat. To change it, use update_app or configure_app. To make a \
+                             new app, omit `id` or choose another. Pass `replace: true` only if \
+                             the user asked to replace that app: replacing deletes it, its \
+                             workspace data included."
+                        ),
+                    ));
+                }
+            }
+        }
         let mut manifest = match p.id.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
             Some(explicit) => store.create_with_id(
                 explicit,
@@ -2258,15 +2274,23 @@ impl AgentDrafterServer {
             caller,
         )?;
 
-        let arch_note = if kind == ArtifactKind::Agentic {
-            format!(" [{} archetype]", archetype.as_str())
+        // ⚠ Kind-specific. Every app used to be told to "author src/main.ts …
+        // then build_app", and a static app has no src/ — build_app failed, and
+        // the model flipped the app to agentic to make it build.
+        let next = if kind == ArtifactKind::Agentic {
+            format!(
+                " [{} archetype]. Author src/main.ts and index.html, then build_app + launch_app.",
+                archetype.as_str()
+            )
         } else {
-            String::new()
+            ". Author index.html; scripts and onclick handlers written in it run when the app is \
+             launched. Then launch_app. (Only if you add a src/main.ts does it need build_app.)"
+                .to_string()
         };
         self.card_result(
             &manifest,
             &format!(
-                "Created {kind:?} app '{}' (id: {}){arch_note}. Author src/main.ts and index.html, then build_app + launch_app.",
+                "Created {kind:?} app '{}' (id: {}){next}",
                 manifest.title, manifest.id
             ),
         )
@@ -2297,6 +2321,14 @@ impl AgentDrafterServer {
         let mut manifest = store
             .load_manifest(&p.id)
             .map_err(|_| err(ErrorCode::INVALID_PARAMS, format!("no app '{}'", p.id)))?;
+        // Turning a static page agentic gives it the sources an agentic app is
+        // built from — the SDK and a starter main.ts — wherever it lacks them,
+        // and leaves its index.html alone. ⚠ It used to flip the kind and
+        // nothing else: the next launch failed "src/main.ts not found", and
+        // every page load retried that build and served a page with no agent.
+        // Seeded only once everything below validated, so a refused call
+        // leaves the app exactly as it was.
+        let converting = manifest.kind != ArtifactKind::Agentic;
         manifest.kind = ArtifactKind::Agentic;
         let mut agent = manifest.agent.take().unwrap_or_default();
         if let Some(sp) = p.system_prompt {
@@ -2357,9 +2389,24 @@ impl AgentDrafterServer {
             agent.durable_session = Some(durable);
         }
         manifest.agent = Some(agent);
+        let seeded = if converting {
+            seed_missing_sources(&store, &p.id).map_err(internal)?
+        } else {
+            Vec::new()
+        };
         store.save_manifest(&manifest).map_err(internal)?;
         store.touch(&p.id).map_err(internal)?;
-        self.card_result(&manifest, &format!("Configured app '{}'.", p.id))
+        let note = if seeded.is_empty() {
+            format!("Configured app '{}'.", p.id)
+        } else {
+            format!(
+                "Configured app '{}'; it is agentic now. Added {} (index.html is unchanged): \
+                 wire src/main.ts to the page, then build_app + launch_app.",
+                p.id,
+                seeded.join(" and ")
+            )
+        };
+        self.card_result(&manifest, &note)
     }
 
     #[tool(
@@ -2488,6 +2535,7 @@ impl AgentDrafterServer {
             parsed.built_at = on_disk.built_at;
             parsed.sdk_hash = on_disk.sdk_hash.clone();
             parsed.session_id = on_disk.session_id.clone();
+            parsed.app_uid = on_disk.app_uid.clone();
 
             // Same write-boundary rule as create/configure: a manifest cannot name
             // a knowledge base, skill, or extension that does not exist here.
@@ -2542,7 +2590,7 @@ impl AgentDrafterServer {
 
     #[tool(
         name = "build_app",
-        description = "Bundle the app's TypeScript (src/main.ts → dist/app.js) with esbuild. Run after editing src/. Returns the build log."
+        description = "Bundle the app's TypeScript (src/main.ts → dist/app.js) with esbuild. Run after editing src/. Returns the build log, and says so when only the limited fallback bundler was available."
     )]
     pub async fn build_app(
         &self,
@@ -2574,12 +2622,22 @@ impl AgentDrafterServer {
             // self-correct (SDK-wired, self-contained, on-theme).
             let app_dir = store.artifact_dir(&p.id).map_err(internal)?;
             let lint = bundle::lint_app(&app_dir);
+            // A fallback bundle is a warning even when it built: the stripper
+            // is not a compiler, and the model should know its result is a
+            // best effort before telling anyone the app works.
+            let fallback_warning = if report.is_fallback() {
+                "\n⚠ WARNING: esbuild was not available, so this bundle came from the \
+                 limited fallback bundler. Launch the app and check it works before \
+                 saying it does."
+            } else {
+                ""
+            };
             // A fresh bundle is a new visible state: show the rebuilt app, don't
             // just tell the user it compiled.
             Ok(CallToolResult::success(vec![
                 self.card_content(&manifest)?,
                 Content::text(format!(
-                    "Built '{}' with {} → dist/app.js.\n{}\n\n{}",
+                    "Built '{}' with {} → dist/app.js.{fallback_warning}\n{}\n\n{}",
                     p.id,
                     report.used,
                     bundle::format_lint(&lint),
@@ -2627,27 +2685,45 @@ impl AgentDrafterServer {
     ) -> Result<CallToolResult, ErrorData> {
         let p = params.0;
         let store = self.store();
-        let mut manifest = store
+        let manifest = store
             .load_manifest(&p.id)
             .map_err(|_| err(ErrorCode::INVALID_PARAMS, format!("no app '{}'", p.id)))?;
 
-        // Ensure a fresh bundle exists.
-        if manifest.kind == ArtifactKind::Agentic
-            && (manifest.built_at.is_none() || !store.file_exists(&p.id, "dist/app.js"))
-        {
-            let dir = store.artifact_dir(&p.id).map_err(internal)?;
-            let report = tokio::task::spawn_blocking(move || bundle::build_app(&dir))
-                .await
-                .map_err(internal)?
-                .map_err(internal)?;
-            if !report.ok {
+        // Ensure a fresh bundle exists, by the same rule the daemon serves by
+        // (`bundle_staleness`). ⚠ This tool used to keep its own predicate —
+        // "agentic and never built" — and call the bare bundler: it missed src
+        // edits made without `update_app`, never built a static app's
+        // `src/main.ts`, and stamped no SDK fingerprint, so the first page load
+        // rebuilt the app it had just built.
+        let store2 = store.clone();
+        let id2 = p.id.clone();
+        let check = tokio::task::spawn_blocking(move || ensure_bundle_fresh(&store2, &id2))
+            .await
+            .map_err(internal)?
+            .map_err(internal)?;
+        // A failed rebuild blocks the launch only when there is nothing to
+        // serve. With an earlier bundle on disk the daemon serves that one, as
+        // `serve_index` does, so the address works and the agent is told that
+        // it carries none of the latest changes. ⚠ It used to refuse, so a
+        // daemon with no esbuild, which can never rebuild an app another
+        // daemon built with one, would not launch an app it served fine.
+        let mut build_warning = String::new();
+        if let Some(report) = check.build.as_ref().filter(|r| !r.ok) {
+            let why = check.stale_because.unwrap_or("the bundle was stale");
+            if !check.has_bundle {
                 return Err(err(
                     ErrorCode::INTERNAL_ERROR,
-                    format!("build failed before launch:\n{}", report.log),
+                    format!("build failed before launch ({why}):\n{}", report.log),
                 ));
             }
-            manifest.built_at = Some(now_secs());
-            store.save_manifest(&manifest).map_err(internal)?;
+            build_warning = format!(
+                "\n⚠ The rebuild FAILED ({why}), so the browser gets the PREVIOUS bundle, \
+                 without the latest changes. Fix this and launch again before telling the \
+                 user it is ready:\n{}",
+                report.log
+            );
+        } else if check.build.as_ref().is_some_and(|r| r.is_fallback()) {
+            build_warning = "\n⚠ It was bundled by the limited fallback bundler (no esbuild here); check it works.".to_string();
         }
 
         let app_dir = store.artifact_dir(&p.id).map_err(internal)?;
@@ -2664,25 +2740,11 @@ impl AgentDrafterServer {
         }
 
         let path = format!("/apps/{}/", manifest.id);
-        let browser_url = std::env::var("BIOROUTER_APP_BASE_URL")
-            .ok()
-            .and_then(|base| url::Url::parse(base.trim()).ok())
-            .filter(|base| {
-                matches!(base.scheme(), "http" | "https")
-                    && base.host_str().is_some()
-                    && base.username().is_empty()
-                    && base.password().is_none()
-                    && base.query().is_none()
-                    && base.fragment().is_none()
-            })
-            .map(|base| format!("{}{}", base.as_str().trim_end_matches('/'), path))
-            .unwrap_or_else(|| {
-                let port = std::env::var("BIOROUTER_PORT")
-                    .ok()
-                    .and_then(|value| value.parse::<u16>().ok())
-                    .unwrap_or(3000);
-                format!("http://127.0.0.1:{port}{path}")
-            });
+        let browser_url = launch_browser_url(
+            std::env::var("BIOROUTER_APP_BASE_URL").ok().as_deref(),
+            std::env::var("BIOROUTER_PORT").ok().as_deref(),
+            &path,
+        );
 
         // Surface a launch marker clients can turn into a user-initiated preview,
         // plus a human URL line that also works in plain terminals.
@@ -2698,7 +2760,7 @@ impl AgentDrafterServer {
         let mut content = vec![Content::resource_link(link).with_audience(vec![Role::User])];
         content.push(
             Content::text(format!(
-                "App '{}' is ready at {}\n(The desktop GUI shows a click-only preview link that opens it. The address alone answers \"Open this app from Biorouter\" in a browser that has not opened it that way; in a terminal, run `biorouter apps open {}`.)",
+                "App '{}' is ready at {}{build_warning}\n(A browser can open this address only through a one-time launch link: the user opens the app from its preview in this chat or with \"Launch in browser\" in Applications. Pasted on its own, the address answers \"Open this app from Biorouter\". In a terminal, run `biorouter apps open {}`.)",
                 manifest.id, browser_url, manifest.id
             ))
             .with_audience(vec![Role::Assistant]),
@@ -2977,7 +3039,7 @@ impl AgentDrafterServer {
 
     #[tool(
         name = "smoke_app",
-        description = "EXECUTE the app in a real browser against a mock daemon and report what                        actually happens. This is the check that catches what lint cannot: a                        control that fires and delivers NO turn (the handler completes, the                        console is clean, and nothing reaches the agent), a bound KPI that renders                        blank before any turn, a slider no arrow key can move, a drag surface only                        a human mouse can drive, and progress that displaces the result. Run it                        after build_app. A finding here is a real defect a user would hit."
+        description = "EXECUTE the app in a real browser against a mock daemon and report what                        actually happens. This is the check that catches what lint cannot: a                        control that fires and delivers NO turn (the handler completes, the                        console is clean, and nothing reaches the agent), a bound KPI that renders                        blank before any turn, a slider no arrow key can move, a drag surface only                        a human mouse can drive, and progress that displaces the result. It is                        OPTIONAL and needs Node.js plus Playwright's Chromium on this machine; when                        they are missing it says so, and that says nothing about the app. A finding                        here is a real defect a user would hit."
     )]
     pub async fn smoke_app(
         &self,
@@ -2996,12 +3058,19 @@ impl AgentDrafterServer {
                 format!("no app '{}'", params.0.id),
             ));
         }
+        // ⚠ The failure text used to tell the model to `npx playwright install
+        // chromium`. On an installed Biorouter the harness is not even shipped,
+        // so that sent the model off installing a browser to run a script that
+        // is not there. Say exactly what is missing, and that the check is
+        // optional.
         let text = match run_smoke(&dir) {
             Ok(text) => text,
             Err(e) => format!(
-                "smoke check could not run: {e}\n\nThis is NOT a pass: the app was never \
-                 executed. Install a browser (`npx playwright install chromium`) or set \
-                 BIOROUTER_APP_SMOKE=off to skip deliberately."
+                "smoke check could not run: {e}\n\nThis check is optional. The app was not \
+                 executed, so treat it as UNVERIFIED (not as broken, and not as passing). \
+                 Do not install Node.js or Playwright to run it: launch the app with \
+                 launch_app and let the user try it. Setting BIOROUTER_APP_SMOKE=off \
+                 skips this check deliberately."
             ),
         };
         Ok(CallToolResult::success(vec![Content::text(text)]))
@@ -3040,7 +3109,10 @@ impl AgentDrafterServer {
         &self,
         params: Parameters<ListAppsParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        let filter = match params.0.kind.as_deref() {
+        // A blank kind is "no filter": models fill optional strings with "".
+        // ⚠ `ArtifactKind::parse("")` is `None` (it once meant Static, which
+        // silently hid every agentic app here), so it must not reach it.
+        let filter = match params.0.kind.as_deref().filter(|k| !k.trim().is_empty()) {
             Some(k) => Some(ArtifactKind::parse(k).ok_or_else(|| {
                 err(
                     ErrorCode::INVALID_PARAMS,
@@ -3049,18 +3121,19 @@ impl AgentDrafterServer {
             })?),
             None => None,
         };
-        let list: Vec<Manifest> = self
-            .store()
-            .list()
+        let (apps, broken) = self.store().list_with_broken();
+        let list: Vec<Manifest> = apps
             .into_iter()
             .filter(|m| filter.map(|k| k == m.kind).unwrap_or(true))
             .collect();
-        if list.is_empty() {
+        // A broken app has no kind to filter on, so it is listed only unfiltered.
+        let broken = if filter.is_some() { Vec::new() } else { broken };
+        if list.is_empty() && broken.is_empty() {
             return Ok(CallToolResult::success(vec![Content::text(
                 "No apps yet.".to_string(),
             )]));
         }
-        let lines: Vec<String> = list
+        let mut lines: Vec<String> = list
             .iter()
             .map(|m| {
                 let model = m
@@ -3072,6 +3145,12 @@ impl AgentDrafterServer {
                 format!("- {} [{:?}, model: {}]: {}", m.id, m.kind, model, m.title)
             })
             .collect();
+        lines.extend(broken.iter().map(|b| {
+            format!(
+                "- {} [broken: {}]. It cannot be opened or edited; delete_app removes it.",
+                b.id, b.error
+            )
+        }));
         Ok(CallToolResult::success(vec![Content::text(
             lines.join("\n"),
         )]))
@@ -3143,10 +3222,13 @@ impl AgentDrafterServer {
         name = "export_app",
         description = "Export an app as a standalone folder the user can just run: double-click \
                        `run.command` (macOS) or `bash run.sh`. The launcher installs the app into \
-                       the local Biorouter store, starts or reuses a `biorouterd`, and opens it, with \
-                       no npm install and no build step (`dist/app.js` ships prebuilt). \
-                       `npm start` additionally serves the folder and proxies the agent, for \
-                       editing `src/`."
+                       the local Biorouter store (never over a different app), starts or reuses a \
+                       `biorouterd`, and opens it, with no npm install and no build step \
+                       (`dist/app.js` ships prebuilt). `target_dir` must be an absolute path to a \
+                       new or empty folder below the user's Desktop, Documents or Downloads; \
+                       pass `replace: true` only to replace an earlier export of this \
+                       same app, which is then kept beside the new one. `npm start` additionally \
+                       serves the app and proxies the agent, for editing `src/`."
     )]
     pub async fn export_app(
         &self,
@@ -3161,116 +3243,93 @@ impl AgentDrafterServer {
         // delegate so there is exactly one.
         //
         // Split into an `_inner` exactly like `create_app`/`create_app_inner`
-        // above: the eight unit tests below drive the body without fabricating a
+        // above: the unit tests below drive the body without fabricating a
         // `RequestContext`, and the capability still enters at the one seam.
         self.export_app_inner(params.0, &Self::caller(&context))
             .await
     }
 
+    /// The tool's half of the one export implementation (`export.rs`): it
+    /// parses the model's arguments, and `export::export_to_dir` validates the
+    /// target, lints, builds the folder beside it and swaps it in. The harness
+    /// lint is never waived here; only a person can export anyway, from the
+    /// desktop.
     async fn export_app_inner(
         &self,
         p: ExportAppParams,
         caller: &KbCaller,
     ) -> Result<CallToolResult, ErrorData> {
-        let store = self.store();
-        if !store.exists(&p.id) {
-            return Err(err(ErrorCode::INVALID_PARAMS, format!("no app '{}'", p.id)));
-        }
-        let app_dir = store.artifact_dir(&p.id).map_err(internal)?;
-        let lint = bundle::lint_app(&app_dir);
-        if lint.iter().any(|f| f.level == bundle::LintLevel::Error) {
-            return Err(err(
-                ErrorCode::INTERNAL_ERROR,
-                format!(
-                    "harness ERRORs block export for '{}':\n{}",
-                    p.id,
-                    bundle::format_lint(&lint)
-                ),
-            ));
-        }
-        let scaffold = export_scaffold(self.root(), &p.id, p.endpoint.as_deref())
-            .map_err(|_| err(ErrorCode::INVALID_PARAMS, format!("no app '{}'", p.id)))?;
-
-        let target = PathBuf::from(&p.target_dir);
-        for (rel, content) in &scaffold {
-            let full = target.join(rel);
-            if let Some(parent) = full.parent() {
-                std::fs::create_dir_all(parent).map_err(internal)?;
-            }
-            std::fs::write(&full, content).map_err(internal)?;
-            // The whole point of `run.command` is that a user can double-click
-            // it. Written without the exec bit, it opens in a text editor.
-            if render::EXECUTABLE_EXPORT_FILES.contains(&rel.as_str()) {
-                make_executable(&full);
-            }
-        }
-
-        // ── Standalone export v2 (design §3.9): mode + payload + fat daemon ──
-        // Launcher mode = today's scaffold exactly (above). Full mode also
-        // stages the app's server-side payload and writes an audit manifest.
-        let mode = match p.mode.as_deref() {
-            Some("full") => "full",
-            _ => "launcher", // default; unknown values degrade to launcher
-        };
         let mut notes: Vec<String> = Vec::new();
-        // Re-load the manifest to resolve the payload selection from the agent
-        // config; export_scaffold already validated the app exists.
-        let manifest = store.load_manifest(&p.id).map_err(internal)?;
-
-        let staged = if mode == "full" {
-            stage_full_payload(&manifest, &target, p.include.as_ref(), caller)
-        } else {
-            StagedPayload::empty()
+        let mode = match p.mode.as_deref() {
+            None => export::ExportMode::Launcher,
+            Some(value) => export::ExportMode::parse(value).unwrap_or_else(|| {
+                notes.push(format!(
+                    "unknown mode \"{value}\"; exported in launcher mode"
+                ));
+                export::ExportMode::Launcher
+            }),
         };
-        notes.extend(staged.notes.iter().cloned());
-
         // Fat export: bundle the current-platform daemon (both modes may opt in).
-        let bundle_mode = p.bundle_daemon.as_deref().unwrap_or("none");
-        let daemon_record = match bundle_mode {
-            "none" => None,
-            other => {
-                if other == "all" {
-                    notes.push(
-                        "bundle_daemon=\"all\" (universal) is out of scope in this build; \
-                         staging the current platform's daemon instead"
-                            .to_string(),
-                    );
-                } else if other != "current" {
-                    notes.push(format!(
-                        "unknown bundle_daemon=\"{other}\"; treating it as \"current\""
-                    ));
-                }
-                let (rec, note) = stage_current_daemon(&target);
-                notes.push(note);
-                rec
+        let bundle_daemon = match p.bundle_daemon.as_deref() {
+            None | Some("none") => false,
+            Some("current") => true,
+            Some("all") => {
+                notes.push(
+                    "bundle_daemon=\"all\" (universal) is out of scope in this build; \
+                     staging the current platform's daemon instead"
+                        .to_string(),
+                );
+                true
+            }
+            Some(other) => {
+                notes.push(format!(
+                    "unknown bundle_daemon=\"{other}\"; treating it as \"current\""
+                ));
+                true
             }
         };
-
-        // Write export.json whenever the export carries a payload: full mode, or
-        // a bundled daemon in launcher mode (a "fat launcher").
-        let wrote_manifest = if mode == "full" || daemon_record.is_some() {
-            let ejson = build_export_json(&p.id, mode, &staged, daemon_record.as_ref());
-            let ejpath = target.join("export.json");
-            std::fs::write(
-                &ejpath,
-                serde_json::to_string_pretty(&ejson).unwrap_or_default(),
-            )
-            .map_err(internal)?;
-            true
-        } else {
-            false
+        if p.endpoint.is_some() {
+            notes.push(
+                "`endpoint` is no longer used: the exported page takes its endpoint and socket \
+                 token from the daemon that serves it"
+                    .to_string(),
+            );
+        }
+        let include = export::ExportSelection::from_json(p.include.as_ref())
+            .map_err(|message| err(ErrorCode::INVALID_PARAMS, message))?;
+        let request = export::ExportRequest {
+            mode,
+            include,
+            bundle_daemon,
+            allow_lint_errors: false,
         };
-
+        let root = self.root().to_path_buf();
+        let caller = caller.clone();
+        let target = PathBuf::from(&p.target_dir);
+        let id = p.id.clone();
+        let replace = p.replace;
+        // A rebuild runs esbuild and a fat export copies a ~100 MB binary: off
+        // the async runtime.
+        let exported = tokio::task::spawn_blocking(move || {
+            let access = export::DrafterPayload::new(&caller);
+            export::export_to_dir(&root, &id, &request, &access, &target, replace)
+        })
+        .await
+        .map_err(internal)?;
+        let mut report = exported.map_err(|error| match error {
+            export::ExportError::NotFound(_) => {
+                err(ErrorCode::INVALID_PARAMS, format!("no app '{}'", p.id))
+            }
+            export::ExportError::BadRequest(message)
+            | export::ExportError::Unexportable(message) => err(ErrorCode::INVALID_PARAMS, message),
+            export::ExportError::Lint { message, .. } | export::ExportError::Io(message) => {
+                err(ErrorCode::INTERNAL_ERROR, message)
+            }
+        })?;
+        notes.append(&mut report.notes);
+        report.notes = notes;
         Ok(CallToolResult::success(vec![Content::text(
-            export_summary(
-                &p.id,
-                mode,
-                &target,
-                scaffold.len(),
-                &staged,
-                wrote_manifest,
-                &notes,
-            ),
+            report.summary(),
         )]))
     }
 
@@ -3284,7 +3343,11 @@ impl AgentDrafterServer {
     ) -> Result<CallToolResult, ErrorData> {
         let p = params.0;
         let store = self.store();
-        if !store.exists(&p.id) {
+        // `has_entry`, not `exists`: an app whose manifest no longer loads is
+        // listed as broken (`list_apps`) and must still be deletable. The store
+        // then tells the daemon, which forgets the app's socket token, access
+        // cookie and vault key (`store::on_app_deleted`).
+        if !store.has_entry(&p.id) {
             return Err(err(ErrorCode::INVALID_PARAMS, format!("no app '{}'", p.id)));
         }
         store.delete(&p.id).map_err(internal)?;
@@ -3488,6 +3551,7 @@ mod tests {
         CreateAppParams {
             title: title.into(),
             id: None,
+            replace: false,
             description: String::new(),
             surface: None,
             theme: None,
@@ -3568,6 +3632,164 @@ mod tests {
             s.store().load_manifest("nosession").unwrap().session_id,
             None
         );
+    }
+
+    /// `create_app {id}` used to delete whatever app held that id. Another
+    /// chat's app is now refused unless the call says `replace: true`; the chat
+    /// that made the app may still re-create it, as before.
+    #[tokio::test]
+    async fn create_app_refuses_to_replace_another_chats_app_unless_told() {
+        let (_d, s) = server();
+        let caller = KbCaller::restricted();
+        let with_id = |title: &str, replace: bool| {
+            let mut p = create(title, Some("static"));
+            p.id = Some("Dashboard".into());
+            p.replace = replace;
+            p
+        };
+        s.create_app_inner(with_id("First", false), Some("chat-a".into()), &caller)
+            .await
+            .unwrap();
+        s.store()
+            .write_file("dashboard", "workspace/data.csv", "a,b\n1,2\n")
+            .unwrap();
+        let first_uid = s.store().load_manifest("dashboard").unwrap().app_uid;
+
+        // Another chat, and a call with no chat at all: refused, nothing touched.
+        for other in [Some("chat-b".to_string()), None] {
+            let refused = s
+                .create_app_inner(with_id("Second", false), other.clone(), &caller)
+                .await
+                .expect_err("another chat's app is not replaced silently");
+            assert_eq!(refused.code, ErrorCode::INVALID_PARAMS, "{other:?}");
+            assert!(refused.message.contains("\"First\""), "{}", refused.message);
+            assert!(
+                refused.message.contains("replace: true"),
+                "{}",
+                refused.message
+            );
+        }
+        let kept = s.store().load_manifest("dashboard").unwrap();
+        assert_eq!(kept.title, "First");
+        assert_eq!(kept.session_id.as_deref(), Some("chat-a"));
+        assert!(s.store().file_exists("dashboard", "workspace/data.csv"));
+
+        // The chat that made it re-creates it, idempotently, as a new app.
+        s.create_app_inner(
+            with_id("First again", false),
+            Some("chat-a".into()),
+            &caller,
+        )
+        .await
+        .unwrap();
+        let again = s.store().load_manifest("dashboard").unwrap();
+        assert_eq!(again.title, "First again");
+        assert_ne!(again.app_uid, first_uid, "a replaced app is a new app");
+
+        // Told to, another chat replaces it.
+        s.create_app_inner(with_id("Second", true), Some("chat-b".into()), &caller)
+            .await
+            .unwrap();
+        let replaced = s.store().load_manifest("dashboard").unwrap();
+        assert_eq!(replaced.title, "Second");
+        assert_eq!(replaced.session_id.as_deref(), Some("chat-b"));
+
+        // A new id needs no permission at all.
+        let mut fresh = create("Fresh", Some("static"));
+        fresh.id = Some("fresh-one".into());
+        s.create_app_inner(fresh, Some("chat-b".into()), &caller)
+            .await
+            .unwrap();
+    }
+
+    /// `update_app` restores `app_uid` from disk like the other server-owned
+    /// fields: a manifest that drops it, or names another, must not move the
+    /// app's conversations.
+    #[tokio::test]
+    async fn update_app_keeps_the_apps_uid() {
+        let (_d, s) = server();
+        s.create_app_inner(
+            create("Uid Kept", Some("static")),
+            None,
+            &KbCaller::restricted(),
+        )
+        .await
+        .unwrap();
+        let uid = s.store().load_manifest("uid-kept").unwrap().app_uid;
+        assert!(uid.is_some());
+        let mut raw: serde_json::Value =
+            serde_json::to_value(s.store().load_manifest("uid-kept").unwrap()).unwrap();
+        raw["app_uid"] = serde_json::json!("0".repeat(32));
+        raw["title"] = serde_json::json!("Renamed");
+        s.update_app_public(Parameters(UpdateAppParams {
+            id: "uid-kept".into(),
+            path: Some("manifest.json".into()),
+            content: Some(serde_json::to_string(&raw).unwrap()),
+            old_str: None,
+            new_str: None,
+        }))
+        .await
+        .unwrap();
+        let after = s.store().load_manifest("uid-kept").unwrap();
+        assert_eq!(after.title, "Renamed");
+        assert_eq!(after.app_uid, uid);
+    }
+
+    /// An app whose manifest no longer loads is listed (unfiltered) and deleted
+    /// by the tools rather than hidden from them.
+    #[tokio::test]
+    async fn list_apps_reports_and_delete_app_removes_a_broken_app() {
+        let (_d, s) = server();
+        s.create_app_inner(
+            create("Healthy", Some("static")),
+            None,
+            &KbCaller::restricted(),
+        )
+        .await
+        .unwrap();
+        s.create_app_inner(
+            create("Broken One", Some("static")),
+            None,
+            &KbCaller::restricted(),
+        )
+        .await
+        .unwrap();
+        std::fs::write(
+            s.store().root().join("broken-one").join("manifest.json"),
+            "{\"id\": \"broken-one\"",
+        )
+        .unwrap();
+
+        let all = text_of(
+            &s.list_apps(Parameters(ListAppsParams { kind: None }))
+                .await
+                .unwrap(),
+        );
+        assert!(all.contains("- healthy ["), "{all}");
+        assert!(all.contains("- broken-one [broken: "), "{all}");
+        assert!(all.contains("delete_app"), "{all}");
+        let only_static = text_of(
+            &s.list_apps(Parameters(ListAppsParams {
+                kind: Some("static".into()),
+            }))
+            .await
+            .unwrap(),
+        );
+        assert!(!only_static.contains("broken-one"), "{only_static}");
+
+        s.delete_app(Parameters(AppIdParams {
+            id: "broken-one".into(),
+        }))
+        .await
+        .unwrap();
+        assert!(!s.store().has_entry("broken-one"));
+        let missing = s
+            .delete_app(Parameters(AppIdParams {
+                id: "broken-one".into(),
+            }))
+            .await
+            .expect_err("nothing left to delete");
+        assert_eq!(missing.code, ErrorCode::INVALID_PARAMS);
     }
 
     #[tokio::test]
@@ -4199,6 +4421,714 @@ br.run("hello", "#missing");
         assert!(text_of(&res).contains("/apps/launchy/"));
     }
 
+    // --- build freshness, the build lock, and what a build is stamped with ---
+
+    /// An app store in a temp dir holding one agentic app, `id`, with the
+    /// default sources and `main` as its `src/main.ts`.
+    fn agentic_app(id: &str, main: &str) -> (TempDir, ArtifactStore) {
+        let dir = TempDir::new().unwrap();
+        let store = ArtifactStore::new(dir.path().to_path_buf());
+        store
+            .create_with_id(
+                id,
+                id,
+                "",
+                ArtifactKind::Agentic,
+                "index.html",
+                &[
+                    (
+                        "index.html".to_string(),
+                        "<html><head></head><body><div data-br-chat></div></body></html>"
+                            .to_string(),
+                    ),
+                    ("src/sdk.ts".to_string(), bundle::sdk_template().to_string()),
+                    ("src/main.ts".to_string(), main.to_string()),
+                ],
+            )
+            .unwrap();
+        (dir, store)
+    }
+
+    const DEFAULT_MAIN: &str = include_str!("templates/main.ts");
+
+    /// Move `path`'s modification time `secs` into the future, as an edit made
+    /// after the last build would.
+    fn touch_later(path: &Path, secs: u64) {
+        std::fs::File::options()
+            .write(true)
+            .open(path)
+            .unwrap()
+            .set_modified(std::time::SystemTime::now() + std::time::Duration::from_secs(secs))
+            .unwrap();
+    }
+
+    fn staleness(store: &ArtifactStore, id: &str) -> Option<&'static str> {
+        let dir = store.artifact_dir(id).unwrap();
+        bundle_staleness(&dir, &store.load_manifest(id).unwrap())
+    }
+
+    /// ⚠ An edit made with the developer shell or text editor never touches
+    /// `built_at`, so the launched app kept serving the old bundle after the
+    /// agent said "try it now". A source that changed since the build is stale
+    /// too, judged by content: a FUTURE modification time with nothing changed
+    /// used to make an app rebuild on every page load.
+    #[test]
+    fn bundle_is_stale_after_src_update() {
+        bundle::tests_without_esbuild::run(|| {
+            let (_d, store) = agentic_app("fresh-check", DEFAULT_MAIN);
+            assert_eq!(
+                staleness(&store, "fresh-check"),
+                Some("it has never been built")
+            );
+            let report = rebuild_and_stamp(&store, "fresh-check").unwrap();
+            assert!(report.ok, "{}", report.log);
+            assert_eq!(staleness(&store, "fresh-check"), None);
+            assert!(!bundle_is_stale(
+                &store,
+                "fresh-check",
+                &store.load_manifest("fresh-check").unwrap()
+            ));
+
+            // A timestamp in the future, contents untouched: not an edit.
+            let main = store
+                .artifact_dir("fresh-check")
+                .unwrap()
+                .join("src/main.ts");
+            touch_later(&main, 3600);
+            assert_eq!(staleness(&store, "fresh-check"), None);
+
+            // Edited behind the tool's back: built_at is still set.
+            std::fs::write(&main, format!("{DEFAULT_MAIN}\nconsole.log(1);\n")).unwrap();
+            assert!(store
+                .load_manifest("fresh-check")
+                .unwrap()
+                .built_at
+                .is_some());
+            assert_eq!(
+                staleness(&store, "fresh-check"),
+                Some("a file under src/ changed since the bundle was built")
+            );
+            // A new file counts as well as an edited one.
+            rebuild_and_stamp(&store, "fresh-check").unwrap();
+            assert_eq!(staleness(&store, "fresh-check"), None);
+            store
+                .write_file("fresh-check", "src/extra.ts", "export {};\n")
+                .unwrap();
+            assert_eq!(
+                staleness(&store, "fresh-check"),
+                Some("a file under src/ changed since the bundle was built")
+            );
+            std::fs::remove_file(main.with_file_name("extra.ts")).unwrap();
+
+            // Edited through update_app: built_at is cleared.
+            let mut m = store.load_manifest("fresh-check").unwrap();
+            m.built_at = None;
+            store.save_manifest(&m).unwrap();
+            assert_eq!(
+                staleness(&store, "fresh-check"),
+                Some("its sources were edited after the last build")
+            );
+        });
+    }
+
+    /// A bundle that records no sources (built before the banner said, or by a
+    /// custom build script) falls back to comparing modification times.
+    #[test]
+    fn a_bundle_without_a_sources_record_is_judged_by_mtime() {
+        let (_d, store) = agentic_app("old-bundle", DEFAULT_MAIN);
+        fake_bundle(&store, "old-bundle", "esbuild", bundle::biorouter_version());
+        let dir = store.artifact_dir("old-bundle").unwrap();
+        assert_eq!(staleness(&store, "old-bundle"), None);
+        touch_later(&dir.join("src/main.ts"), 3600);
+        assert_eq!(
+            staleness(&store, "old-bundle"),
+            Some("a file under src/ is newer than the bundle")
+        );
+    }
+
+    /// A fallback build is stamped `fallback:<sdk>`, and a daemon that can run
+    /// esbuild rebuilds it properly rather than trusting it forever.
+    #[test]
+    fn rebuild_does_not_stamp_fallback() {
+        let (_d, store) = agentic_app("stamped", DEFAULT_MAIN);
+        let report = bundle::tests_without_esbuild::run(|| {
+            let report = rebuild_and_stamp(&store, "stamped").unwrap();
+            // Without esbuild, rebuilding the guess again buys nothing.
+            assert_eq!(staleness(&store, "stamped"), None);
+            report
+        });
+        assert!(report.ok && report.is_fallback(), "{}", report.log);
+        let stamp = store.load_manifest("stamped").unwrap().sdk_hash.unwrap();
+        assert_eq!(stamp, format!("fallback:{}", bundle::sdk_fingerprint()));
+        assert_ne!(stamp, bundle::sdk_fingerprint());
+        if bundle::esbuild_available() {
+            assert_eq!(
+                staleness(&store, "stamped"),
+                Some("the fallback bundler built it, and esbuild is available now")
+            );
+        }
+    }
+
+    /// Write a bundle claiming `builder`, `version` and the app's vendored SDK.
+    fn fake_bundle(store: &ArtifactStore, id: &str, builder: &str, version: &str) {
+        let dir = store.artifact_dir(id).unwrap();
+        let sdk = bundle::vendored_sdk_fingerprint(&dir).unwrap();
+        let path = dir.join("dist/app.js");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(
+            &path,
+            format!("/* biorouter-app-bundle builder={builder} sdk={sdk} biorouter={version} */\n(()=>{{}})();\n"),
+        )
+        .unwrap();
+        touch_later(&path, 5);
+        let mut m = store.load_manifest(id).unwrap();
+        m.built_at = Some(now_secs());
+        m.sdk_hash = Some(sdk);
+        store.save_manifest(&m).unwrap();
+    }
+
+    /// ⚠ Two daemons of different versions serving one store used to rebuild
+    /// each app back and forth, the older one downgrading its SDK each time.
+    /// An app a NEWER Biorouter built is never rebuilt to this binary's SDK; an
+    /// app an older one built is.
+    #[test]
+    fn an_app_is_never_rebuilt_down_to_an_older_sdk() {
+        let newer_sdk = "export function createApp() { return \"from a newer Biorouter\"; }\n";
+        let (_d, store) = agentic_app(
+            "newer",
+            "import { createApp } from \"./sdk\";\ncreateApp();\n",
+        );
+        let dir = store.artifact_dir("newer").unwrap();
+        std::fs::write(dir.join("src/sdk.ts"), newer_sdk).unwrap();
+        fake_bundle(&store, "newer", "esbuild", "999.0.0");
+        assert_eq!(staleness(&store, "newer"), None, "a newer SDK is not drift");
+
+        // Asked to rebuild anyway, it keeps the vendored SDK.
+        let report =
+            bundle::tests_without_esbuild::run(|| rebuild_and_stamp(&store, "newer").unwrap());
+        assert!(report.log.contains("Kept src/sdk.ts"), "{}", report.log);
+        assert_eq!(
+            std::fs::read_to_string(dir.join("src/sdk.ts")).unwrap(),
+            newer_sdk
+        );
+
+        // The same app, built by an OLDER Biorouter, is brought up to this SDK.
+        // (A fallback bundle, which the fallback may replace: it never replaces
+        // an esbuild one, and leaves the SDK alone when it builds nothing.)
+        fake_bundle(&store, "newer", "fallback", "0.1.0");
+        bundle::tests_without_esbuild::run(|| {
+            assert_eq!(
+                staleness(&store, "newer"),
+                Some("it was built against a different App SDK")
+            );
+            let report = rebuild_and_stamp(&store, "newer").unwrap();
+            assert!(report.ok, "{}", report.log);
+        });
+        assert_eq!(
+            std::fs::read_to_string(dir.join("src/sdk.ts")).unwrap(),
+            bundle::sdk_template()
+        );
+    }
+
+    /// ⚠ The protection used to last one build. An older daemon that rebuilt
+    /// the app (an explicit build_app, a source edit) KEPT the newer SDK but
+    /// wrote its own version into the banner, so on its next load the SDK
+    /// looked like drift and it rebuilt down to its own after all. The banner
+    /// now records whose SDK the bundle carries.
+    #[cfg(unix)]
+    #[test]
+    fn a_kept_newer_sdk_outlives_the_older_daemons_own_build() {
+        let newer_sdk = "export function createApp() { return \"from a newer Biorouter\"; }\n";
+        let (_d, store) = agentic_app(
+            "kept",
+            "import { createApp } from \"./sdk\";\ncreateApp();\n",
+        );
+        let dir = store.artifact_dir("kept").unwrap();
+        std::fs::write(dir.join("src/sdk.ts"), newer_sdk).unwrap();
+        fake_bundle(&store, "kept", "esbuild", "999.0.0");
+        let stubs = TempDir::new().unwrap();
+        let stub = bundle::tests_without_esbuild::write_stub(stubs.path());
+        bundle::tests_without_esbuild::run_with_stub(&stub, || {
+            // This, older, daemon builds the app, and succeeds...
+            let report = rebuild_and_stamp(&store, "kept").unwrap();
+            assert!(report.ok, "{}", report.log);
+            assert!(report.log.contains("Kept src/sdk.ts"), "{}", report.log);
+            let banner = bundle::read_bundle_banner(&dir.join("dist/app.js")).unwrap();
+            assert_eq!(banner.version, bundle::biorouter_version(), "it built it");
+            assert_eq!(banner.sdk_version(), "999.0.0", "with the newer SDK");
+            // ...and its next load finds nothing stale, nor does a second build
+            // trade the SDK in.
+            assert_eq!(staleness(&store, "kept"), None);
+            let again = rebuild_and_stamp(&store, "kept").unwrap();
+            assert!(
+                again.ok && again.log.contains("Kept src/sdk.ts"),
+                "{}",
+                again.log
+            );
+            assert_eq!(staleness(&store, "kept"), None);
+        });
+        assert_eq!(
+            std::fs::read_to_string(dir.join("src/sdk.ts")).unwrap(),
+            newer_sdk
+        );
+        assert_eq!(
+            store.load_manifest("kept").unwrap().sdk_hash,
+            bundle::vendored_sdk_fingerprint(&dir)
+        );
+    }
+
+    /// Builds of one app are serialised, and the second of two concurrent
+    /// requests finds the first one's bundle instead of building again.
+    #[test]
+    fn concurrent_builds_of_one_app_serialise() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+        let (_d, store) = agentic_app("racy", DEFAULT_MAIN);
+        let dir = store.artifact_dir("racy").unwrap();
+
+        let active = Arc::new(AtomicUsize::new(0));
+        let peak = Arc::new(AtomicUsize::new(0));
+        let workers: Vec<_> = (0..4)
+            .map(|_| {
+                let (dir, active, peak) = (dir.clone(), active.clone(), peak.clone());
+                std::thread::spawn(move || {
+                    with_app_build_lock(&dir, || {
+                        let now = active.fetch_add(1, Ordering::SeqCst) + 1;
+                        peak.fetch_max(now, Ordering::SeqCst);
+                        std::thread::sleep(std::time::Duration::from_millis(20));
+                        active.fetch_sub(1, Ordering::SeqCst);
+                    })
+                })
+            })
+            .collect();
+        for worker in workers {
+            worker.join().unwrap();
+        }
+        assert_eq!(peak.load(Ordering::SeqCst), 1);
+
+        let builds: Vec<bool> = (0..3)
+            .map(|_| {
+                let store = store.clone();
+                std::thread::spawn(move || {
+                    bundle::tests_without_esbuild::run(|| {
+                        ensure_bundle_fresh(&store, "racy").unwrap().build.is_some()
+                    })
+                })
+            })
+            .collect::<Vec<_>>()
+            .into_iter()
+            .map(|t| t.join().unwrap())
+            .collect();
+        assert_eq!(
+            builds.iter().filter(|built| **built).count(),
+            1,
+            "{builds:?}"
+        );
+        assert!(dir.join("dist/app.js").is_file());
+    }
+
+    /// A build that failed is remembered against its inputs, so serving an app
+    /// whose code does not compile does not re-run the bundler on every page
+    /// load; any edit is a new attempt.
+    #[test]
+    fn an_unchanged_failed_build_is_not_run_again() {
+        bundle::tests_without_esbuild::run(|| {
+            let (_d, store) = agentic_app(
+                "broken-build",
+                "import { createApp } from \"./sdk\";\nimport { helper } from \"./helper\";\ncreateApp();\n",
+            );
+            // An older vendored SDK: a build that installs nothing leaves it as
+            // it was, and that must not count as an edit either.
+            let dir = store.artifact_dir("broken-build").unwrap();
+            let older_sdk = "export function createApp() {}\n";
+            std::fs::write(dir.join("src/sdk.ts"), older_sdk).unwrap();
+            let first = ensure_bundle_fresh(&store, "broken-build").unwrap();
+            assert!(!first.remembered);
+            assert_eq!(
+                std::fs::read_to_string(dir.join("src/sdk.ts")).unwrap(),
+                older_sdk
+            );
+            assert!(first.build.as_ref().is_some_and(|b| !b.ok));
+            let log = first
+                .missing_bundle_log()
+                .expect("no bundle, and it says why");
+            assert!(log.contains("./helper"), "{log}");
+
+            let second = ensure_bundle_fresh(&store, "broken-build").unwrap();
+            assert!(second.remembered, "unchanged inputs are not rebuilt");
+            assert_eq!(second.missing_bundle_log(), Some(log));
+
+            let main = store
+                .artifact_dir("broken-build")
+                .unwrap()
+                .join("src/main.ts");
+            std::fs::write(&main, DEFAULT_MAIN).unwrap();
+            let third = ensure_bundle_fresh(&store, "broken-build").unwrap();
+            assert!(!third.remembered, "an edit is a new attempt");
+            assert!(third.build.as_ref().is_some_and(|b| b.ok), "{third:?}");
+            assert_eq!(third.missing_bundle_log(), None);
+            assert_eq!(staleness(&store, "broken-build"), None);
+        });
+    }
+
+    /// A static page with no `src/main.ts` needs no bundle and is never
+    /// "stale"; one that has a `src/main.ts` is built like an agentic app.
+    #[test]
+    fn static_apps_are_built_only_when_they_have_code_to_build() {
+        let dir = TempDir::new().unwrap();
+        let store = ArtifactStore::new(dir.path().to_path_buf());
+        store
+            .create_with_id(
+                "plain",
+                "Plain",
+                "",
+                ArtifactKind::Static,
+                "index.html",
+                &[(
+                    "index.html".to_string(),
+                    "<html><body>hi</body></html>".to_string(),
+                )],
+            )
+            .unwrap();
+        let check = ensure_bundle_fresh(&store, "plain").unwrap();
+        assert!(check.stale_because.is_none() && check.build.is_none());
+        assert!(!check.needs_bundle);
+        assert_eq!(check.missing_bundle_log(), None);
+
+        store
+            .write_file(
+                "plain",
+                "src/main.ts",
+                "document.body.dataset.ready = \"1\";\n",
+            )
+            .unwrap();
+        let check = ensure_bundle_fresh(&store, "plain").unwrap();
+        assert_eq!(check.stale_because, Some("it has never been built"));
+        assert!(check.build.as_ref().is_some_and(|b| b.ok), "{check:?}");
+        assert!(check.has_bundle && check.needs_bundle);
+        assert!(
+            !store.file_exists("plain", "src/sdk.ts"),
+            "a page that does not import the SDK is not given one"
+        );
+    }
+
+    /// `launch_app` reports an address a browser can visit: a daemon bound to
+    /// every interface publishes `0.0.0.0` / `[::]`, which Chrome refuses.
+    #[test]
+    fn launch_browser_url_names_a_visitable_loopback_address() {
+        let path = "/apps/demo/";
+        for (base, port, want) in [
+            (
+                Some("http://0.0.0.0:4123"),
+                None,
+                "http://127.0.0.1:4123/apps/demo/",
+            ),
+            (
+                Some("http://[::]:4123/"),
+                None,
+                "http://[::1]:4123/apps/demo/",
+            ),
+            (
+                Some("http://127.0.0.1:5555"),
+                None,
+                "http://127.0.0.1:5555/apps/demo/",
+            ),
+            (
+                Some("https://lab.example.org"),
+                None,
+                "https://lab.example.org/apps/demo/",
+            ),
+            (None, Some("4931"), "http://127.0.0.1:4931/apps/demo/"),
+            (None, None, "http://127.0.0.1:3000/apps/demo/"),
+            (
+                Some("not a url"),
+                Some("4931"),
+                "http://127.0.0.1:4931/apps/demo/",
+            ),
+            (
+                Some("http://u:p@127.0.0.1:1/"),
+                Some("7"),
+                "http://127.0.0.1:7/apps/demo/",
+            ),
+            (
+                Some("file:///tmp/x"),
+                Some("8"),
+                "http://127.0.0.1:8/apps/demo/",
+            ),
+        ] {
+            assert_eq!(
+                launch_browser_url(base, port, path),
+                want,
+                "{base:?} {port:?}"
+            );
+        }
+    }
+
+    /// An installed binary finds the smoke harness beside it, or in the
+    /// checkout it was built in, and never in some directory above a checkout.
+    #[test]
+    fn smoke_script_is_found_beside_the_binary_or_in_its_checkout_only() {
+        let root = TempDir::new().unwrap();
+        let exe_dir = root.path().join("repo/target/release");
+        std::fs::create_dir_all(&exe_dir).unwrap();
+        assert_eq!(smoke_script_near(&exe_dir), None);
+
+        // A script above the checkout root is not this build's.
+        let above = root.path().join(SMOKE_SCRIPT);
+        std::fs::create_dir_all(above.parent().unwrap()).unwrap();
+        std::fs::write(&above, "").unwrap();
+        std::fs::create_dir_all(root.path().join("repo/.git")).unwrap();
+        assert_eq!(smoke_script_near(&exe_dir), None);
+
+        let in_checkout = root.path().join("repo").join(SMOKE_SCRIPT);
+        std::fs::create_dir_all(in_checkout.parent().unwrap()).unwrap();
+        std::fs::write(&in_checkout, "").unwrap();
+        assert_eq!(smoke_script_near(&exe_dir), Some(in_checkout));
+
+        let beside = exe_dir.join(SMOKE_SCRIPT);
+        std::fs::create_dir_all(beside.parent().unwrap()).unwrap();
+        std::fs::write(&beside, "").unwrap();
+        assert_eq!(smoke_script_near(&exe_dir), Some(beside));
+    }
+
+    /// Turning a static page agentic gives it the sources an agentic app is
+    /// built from and leaves its page alone; it used to flip the kind and
+    /// nothing else, and the next launch failed "src/main.ts not found".
+    #[tokio::test]
+    async fn configure_app_seeds_sources_when_a_static_app_becomes_agentic() {
+        let (_d, s) = server();
+        let mut p = create("Was Static", Some("static"));
+        p.html = Some("<html><body><p id=\"mine\">mine</p></body></html>".into());
+        s.create_app_inner(p, None, &KbCaller::restricted())
+            .await
+            .unwrap();
+        // An author's own main.ts is never replaced.
+        s.store()
+            .write_file("was-static", "src/main.ts", "console.log(\"mine\");\n")
+            .unwrap();
+        let res = s
+            .configure_app_public(Parameters(ConfigureAppParams {
+                id: "was-static".into(),
+                system_prompt: Some("Help.".into()),
+                greeting: None,
+                model: None,
+                extensions: None,
+                skills: None,
+                knowledge_base: None,
+                max_turns: None,
+                capabilities: None,
+                guardrails: None,
+                reliability: None,
+                orchestration: None,
+                output_type: None,
+                durable_session: None,
+                requires: None,
+            }))
+            .await
+            .unwrap();
+        let text = text_of(&res);
+        assert!(
+            text.contains("agentic now") && text.contains("src/sdk.ts"),
+            "{text}"
+        );
+        assert!(!text.contains("src/main.ts and"), "{text}");
+        let store = s.store();
+        assert_eq!(
+            store.load_manifest("was-static").unwrap().kind,
+            ArtifactKind::Agentic
+        );
+        assert_eq!(
+            store.read_file("was-static", "src/sdk.ts").unwrap(),
+            bundle::sdk_template()
+        );
+        assert_eq!(
+            store.read_file("was-static", "src/main.ts").unwrap(),
+            "console.log(\"mine\");\n"
+        );
+        assert!(store
+            .read_file("was-static", "index.html")
+            .unwrap()
+            .contains("id=\"mine\""));
+    }
+
+    /// A static app is told what a static app needs (no `build_app` unless it
+    /// has a `src/main.ts`) and gets a starter with no empty chat card; a blank
+    /// `kind` is refused rather than silently meaning "static".
+    #[tokio::test]
+    async fn create_app_guidance_and_starter_follow_the_kind() {
+        let (_d, s) = server();
+        let static_res = s
+            .create_app_inner(
+                create("Plain Page", Some("static")),
+                None,
+                &KbCaller::restricted(),
+            )
+            .await
+            .unwrap();
+        let text = text_of(&static_res);
+        assert!(!text.contains("build_app +"), "{text}");
+        assert!(
+            text.contains("launch_app") && text.contains("onclick"),
+            "{text}"
+        );
+        let page = s.store().read_file("plain-page", "index.html").unwrap();
+        assert!(!page.contains("data-br-chat"), "{page}");
+        assert!(page.contains("Plain Page"));
+
+        let agentic_res = s
+            .create_app_inner(create("Agent Page", None), None, &KbCaller::restricted())
+            .await
+            .unwrap();
+        assert!(text_of(&agentic_res).contains("build_app + launch_app"));
+
+        for blank in ["", "  "] {
+            let refused = s
+                .create_app_inner(
+                    create("Blank Kind", Some(blank)),
+                    None,
+                    &KbCaller::restricted(),
+                )
+                .await
+                .expect_err("a blank kind names no kind");
+            assert_eq!(refused.code, ErrorCode::INVALID_PARAMS);
+        }
+        assert_eq!(ArtifactKind::parse(""), None);
+        assert_eq!(
+            ArtifactKind::parse(" Agentic "),
+            Some(ArtifactKind::Agentic)
+        );
+    }
+
+    /// `launch_app` builds by the rule the daemon serves by: a static page's
+    /// own `src/main.ts` is built too, and a stale bundle is rebuilt and
+    /// stamped (it used to keep a predicate of its own and stamp no SDK).
+    #[tokio::test]
+    async fn launch_app_builds_a_static_apps_code_and_stamps_it() {
+        let (_d, s) = server();
+        s.create_app_inner(
+            create("Static Code", Some("static")),
+            None,
+            &KbCaller::restricted(),
+        )
+        .await
+        .unwrap();
+        s.store()
+            .write_file(
+                "static-code",
+                "src/main.ts",
+                "document.title = \"ready\";\n",
+            )
+            .unwrap();
+        let res = s
+            .launch_app(Parameters(AppIdParams {
+                id: "static-code".into(),
+            }))
+            .await
+            .unwrap();
+        assert!(text_of(&res).contains("/apps/static-code/"));
+        assert!(s.store().file_exists("static-code", "dist/app.js"));
+        let m = s.store().load_manifest("static-code").unwrap();
+        assert!(m.built_at.is_some() && m.sdk_hash.is_some());
+        assert_eq!(staleness(&s.store(), "static-code"), None);
+    }
+
+    /// A rebuild that fails blocks the launch only when there is no bundle to
+    /// serve. With one, the address works (the daemon serves that bundle) and
+    /// the agent is told the latest changes are not in it.
+    #[tokio::test]
+    async fn launch_app_serves_the_previous_bundle_when_a_rebuild_fails() {
+        let (_d, s) = server();
+        s.create_app_inner(
+            create("Kept Going", Some("agentic")),
+            None,
+            &KbCaller::restricted(),
+        )
+        .await
+        .unwrap();
+        let store = s.store();
+        fake_bundle(&store, "kept-going", "esbuild", bundle::biorouter_version());
+        // An edit that no bundler here can build: esbuild cannot resolve the
+        // module, and the fallback refuses a second module.
+        let main = store
+            .artifact_dir("kept-going")
+            .unwrap()
+            .join("src/main.ts");
+        let authored = std::fs::read_to_string(&main).unwrap();
+        std::fs::write(
+            &main,
+            format!("import {{ gone }} from \"./gone\";\n{authored}\ngone();\n"),
+        )
+        .unwrap();
+        touch_later(&main, 60);
+        let res = s
+            .launch_app(Parameters(AppIdParams {
+                id: "kept-going".into(),
+            }))
+            .await
+            .expect("an app with a bundle to serve still launches");
+        let text = text_of(&res);
+        assert!(text.contains("/apps/kept-going/"), "{text}");
+        assert!(text.contains("PREVIOUS bundle"), "{text}");
+
+        // With no bundle at all there is nothing to launch.
+        std::fs::remove_file(
+            store
+                .artifact_dir("kept-going")
+                .unwrap()
+                .join("dist/app.js"),
+        )
+        .unwrap();
+        let refused = s
+            .launch_app(Parameters(AppIdParams {
+                id: "kept-going".into(),
+            }))
+            .await
+            .expect_err("nothing to serve");
+        assert!(
+            refused.message.contains("build failed before launch"),
+            "{refused:?}"
+        );
+    }
+
+    /// Models fill optional strings with "": a blank `kind` lists every app.
+    #[tokio::test]
+    async fn list_apps_treats_a_blank_kind_as_no_filter() {
+        let (_d, s) = server();
+        s.create_app_inner(
+            create("Plain Page", Some("static")),
+            None,
+            &KbCaller::restricted(),
+        )
+        .await
+        .unwrap();
+        s.create_app_inner(
+            create("Live Agent", Some("agentic")),
+            None,
+            &KbCaller::restricted(),
+        )
+        .await
+        .unwrap();
+        for blank in ["", "  "] {
+            let all = text_of(
+                &s.list_apps(Parameters(ListAppsParams {
+                    kind: Some(blank.into()),
+                }))
+                .await
+                .unwrap_or_else(|e| panic!("kind {blank:?}: {e:?}")),
+            );
+            assert!(
+                all.contains("plain-page") && all.contains("live-agent"),
+                "{all}"
+            );
+        }
+        assert!(s
+            .list_apps(Parameters(ListAppsParams {
+                kind: Some("widget".into()),
+            }))
+            .await
+            .is_err());
+    }
+
     #[tokio::test]
     async fn list_read_delete() {
         let (_d, s) = server();
@@ -4261,10 +5191,18 @@ br.run("hello", "#missing");
         ] {
             assert!(out.path().join(f).exists(), "export is missing {f}");
         }
+        // The authored page as written: the daemon that serves the installed
+        // copy adds the config island (with that run's socket token) and the
+        // bundle tag. A page assembled here carried a token-less island the SDK
+        // read first, so an exported agentic app could never reach its agent.
         let index = std::fs::read_to_string(out.path().join("index.html")).unwrap();
-        assert!(index.contains("dist/app.js"));
-        // Config is the non-executable JSON island (CSP parity with served apps).
-        assert!(index.contains("<script type=\"application/json\" id=\"biorouter-app-config\">"));
+        assert_eq!(
+            index,
+            s.store().read_file("exporter", "index.html").unwrap(),
+            "the export carries the raw entry"
+        );
+        assert!(!index.contains("biorouter-app-config"));
+        assert!(out.path().join("dist/app.js").is_file() || text_of(&res).contains("bundle"));
 
         // The exported manifest is what registers the app with a daemon.
         let m: Manifest = serde_json::from_str(
@@ -4629,16 +5567,71 @@ br.run("hello", "#missing");
         );
     }
 
-    /// `bundle_daemon="current"` copies a `biorouterd` (located via the
-    /// `BIOROUTERD_BIN` hook) into `payload/bin/` and records it in export.json.
+    fn native_export_compiler_fixture() -> Option<PathBuf> {
+        if let Some(explicit) = std::env::var_os("BIOROUTER_ESBUILD_BIN").filter(|p| !p.is_empty())
+        {
+            return Some(PathBuf::from(explicit));
+        }
+        let compiler_name = if cfg!(windows) {
+            "esbuild.exe"
+        } else {
+            "esbuild"
+        };
+        let mut candidates = Vec::new();
+        if let Ok(executable) = std::env::current_exe() {
+            // Cargo's test executable is under target/<profile>/deps; a QA
+            // build's packaged compiler is beside the daemon one level up.
+            if let Some(profile) = executable.parent().and_then(Path::parent) {
+                candidates.push(profile.join(compiler_name));
+            }
+        }
+        let desktop = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../ui/desktop");
+        candidates.push(desktop.join("src/bin").join(compiler_name));
+        let platform = match std::env::consts::OS {
+            "macos" => "darwin",
+            "windows" => "win32",
+            os => os,
+        };
+        let arch = match std::env::consts::ARCH {
+            "aarch64" => "arm64",
+            "x86_64" => "x64",
+            "x86" => "ia32",
+            arch => arch,
+        };
+        let package = desktop.join(format!("node_modules/@esbuild/{platform}-{arch}"));
+        candidates.push(if cfg!(windows) {
+            package.join(compiler_name)
+        } else {
+            package.join("bin").join(compiler_name)
+        });
+        candidates.into_iter().find(|path| path.is_file())
+    }
+
+    /// CI stages a pinned native compiler and supplies its explicit path, so
+    /// every OS must exercise the real public fat export path. A local Rust-only
+    /// checkout without one instead verifies the missing-helper thin contract.
     #[tokio::test]
     #[serial_test::serial]
-    async fn export_bundle_daemon_current_stages_binary() {
+    async fn export_bundle_daemon_current_checks_packaged_compiler_contract() {
         // A fake daemon binary on disk; find_biorouterd_binary honours BIOROUTERD_BIN first.
         let bin_dir = TempDir::new().unwrap();
-        let fake = bin_dir.path().join("biorouterd");
+        let bin_name = if cfg!(windows) {
+            "biorouterd.exe"
+        } else {
+            "biorouterd"
+        };
+        let compiler_name = if cfg!(windows) {
+            "esbuild.exe"
+        } else {
+            "esbuild"
+        };
+        let fake = bin_dir.path().join(bin_name);
         std::fs::write(&fake, "#!/bin/sh\nexit 0\n").unwrap();
         let _bg = EnvGuard::set("BIOROUTERD_BIN", &fake);
+        let compiler = native_export_compiler_fixture();
+        if let Some(source) = &compiler {
+            std::fs::copy(source, bin_dir.path().join(compiler_name)).unwrap();
+        }
 
         let (_d, s) = server();
         let mut p = create("Fat", None);
@@ -4659,13 +5652,33 @@ br.run("hello", "#missing");
             .await
             .unwrap();
 
-        let bin_name = if cfg!(windows) {
-            "biorouterd.exe"
-        } else {
-            "biorouterd"
-        };
         let staged = out.path().join("payload/bin").join(bin_name);
+        let Some(compiler) = compiler else {
+            assert!(
+                !staged.exists(),
+                "missing compiler never publishes a partial daemon"
+            );
+            assert!(
+                !out.path().join("export.json").exists(),
+                "thin launcher has no bundled-daemon metadata"
+            );
+            let text = text_of(&res);
+            assert!(
+                text.contains("no packaged esbuild") && text.contains("thin export"),
+                "{text}"
+            );
+            return;
+        };
         assert!(staged.exists(), "daemon staged under payload/bin");
+        assert_eq!(
+            std::fs::read(&staged).unwrap(),
+            std::fs::read(&fake).unwrap()
+        );
+        let staged_compiler = out.path().join("payload/bin").join(compiler_name);
+        assert_eq!(
+            std::fs::read(&staged_compiler).unwrap(),
+            std::fs::read(&compiler).unwrap()
+        );
         // A fat launcher still writes export.json recording the bundled daemon.
         let ej: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(out.path().join("export.json")).unwrap())
@@ -4678,7 +5691,60 @@ br.run("hello", "#missing");
             ej["bundled_daemon"]["file"],
             format!("payload/bin/{bin_name}")
         );
+        assert_eq!(
+            ej["bundled_daemon"]["esbuild"]["file"],
+            format!("payload/bin/{compiler_name}")
+        );
+        assert_eq!(
+            ej["bundled_daemon"]["esbuild"]["bytes"],
+            std::fs::metadata(staged_compiler).unwrap().len()
+        );
+        assert_eq!(
+            ej["bundled_daemon"]["esbuild"]["version"],
+            bundle::ESBUILD_VERSION
+        );
         assert!(text_of(&res).contains("fat export"));
+    }
+
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn export_bundle_daemon_missing_packaged_compiler_is_explicitly_thin() {
+        let bin_dir = TempDir::new().unwrap();
+        let fake = bin_dir.path().join(if cfg!(windows) {
+            "biorouterd.exe"
+        } else {
+            "biorouterd"
+        });
+        std::fs::write(&fake, "#!/bin/sh\nexit 0\n").unwrap();
+        let _bg = EnvGuard::set("BIOROUTERD_BIN", &fake);
+        let (_d, s) = server();
+        let mut p = create("Missing Compiler", None);
+        p.html = Some("<html><head></head><body>hi</body></html>".into());
+        s.create_app_inner(p, None, &KbCaller::restricted())
+            .await
+            .unwrap();
+        let out = TempDir::new().unwrap();
+        let res = s
+            .export_app_public(Parameters(ExportAppParams {
+                id: "missing-compiler".into(),
+                target_dir: out.path().to_string_lossy().to_string(),
+                mode: Some("full".into()),
+                bundle_daemon: Some("current".into()),
+                ..Default::default()
+            }))
+            .await
+            .unwrap();
+        assert!(!out.path().join("payload/bin").exists());
+        let ej: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(out.path().join("export.json")).unwrap())
+                .unwrap();
+        assert!(ej["bundled_daemon"].is_null());
+        let text = text_of(&res);
+        assert!(
+            text.contains("no packaged esbuild") && text.contains("thin export"),
+            "{text}"
+        );
+        assert!(!text.contains("fat export"), "{text}");
     }
 
     /// When no daemon can be found, `bundle_daemon="current"` degrades to a thin

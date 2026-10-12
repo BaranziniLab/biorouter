@@ -1,8 +1,9 @@
 import type { DroppedFile } from '../../hooks/useFileDrop';
 import type { QuoteReference } from '../../utils/quotedText';
+import type { ChipCommand } from '../../utils/composerCommand';
 import type { RefSpan } from '../../utils/resourceRefs';
 import { File, Image, RotateCcw, X } from '../icons/app-icons';
-import { ResourceRefChip } from '../ResourceRefChip';
+import { CommandChip, ResourceRefChip } from '../ResourceRefChip';
 import { Badge } from '../ui/badge';
 import { Button } from '../ui/button';
 import { InfoTip } from '../ui/info-tip';
@@ -144,11 +145,13 @@ function FailedChip({
 
 /**
  * What goes with the message, in one row above the text (Crew's
- * `ComposerChips`): the references, then the images as 48px thumbnails, then
- * the files as chips. Renders nothing when there is nothing to show, so an
- * empty composer has no empty row.
+ * `ComposerChips`): the `/bug` command chip, then the references, then the
+ * images as 48px thumbnails, then the files as chips. Renders nothing when there
+ * is nothing to show, so an empty composer has no empty row.
  */
 export function ComposerChips({
+  command = null,
+  onRemoveCommand,
   refs,
   images,
   files,
@@ -157,6 +160,10 @@ export function ComposerChips({
   onRetryImage,
   onRemoveFile,
 }: {
+  /** The chip command the message starts with (`utils/composerCommand.ts`), or `null`. */
+  command?: ChipCommand | null;
+  /** The command chip's remove control, and nothing else: the prose stays. */
+  onRemoveCommand?: () => void;
   refs: readonly (RefSpan | QuoteReference)[];
   images: readonly ComposerImage[];
   files: readonly DroppedFile[];
@@ -165,14 +172,16 @@ export function ComposerChips({
   onRetryImage: (id: string) => void;
   onRemoveFile: (id: string) => void;
 }) {
-  if (refs.length === 0 && images.length === 0 && files.length === 0) return null;
+  if (!command && refs.length === 0 && images.length === 0 && files.length === 0) return null;
 
   return (
     <ul className="br-composer-chips" data-testid="composer-chips">
-      {refs.length > 0 && (
+      {(command || refs.length > 0) && (
         // The reference chips keep their own test id: they are still the rail
-        // a reference lands on.
+        // a reference lands on. The command rides first: it is the first thing
+        // in the message, and what the rest of it is for.
         <li className="br-composer-chips__refs" data-testid="composer-reference-rail">
+          {command && <CommandChip command={command} onRemove={onRemoveCommand} />}
           {refs.map((ref, index) => (
             <ResourceRefChip
               key={`${index}:${ref.kind}:${ref.value}`}

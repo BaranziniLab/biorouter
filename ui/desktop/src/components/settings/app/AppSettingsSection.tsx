@@ -210,7 +210,7 @@ export default function AppSettingsSection() {
             valueMono
           />
         )}
-        <SettingRow label={aboutCopy.feedback}>
+        <SettingRow label={aboutCopy.feedback} help={aboutCopy.feedbackHelp}>
           <FeedbackLinks />
         </SettingRow>
       </SettingSection>

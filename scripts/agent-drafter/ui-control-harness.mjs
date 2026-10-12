@@ -137,7 +137,8 @@ const server = createServer(async (req, res) => {
     return;
   }
   // The SDK's model surface; keeps `listModels()` from erroring in the console.
-  if (url.endsWith("/models")) {
+  // (It carries the page token as `?token=`, as the daemon requires.)
+  if (url.split("?")[0].endsWith("/models")) {
     res.writeHead(200, { "Content-Type": "application/json" });
     res.end(JSON.stringify({ providers: [] }));
     return;
@@ -659,11 +660,62 @@ async function runSelftest() {
   await waitFor(() => doc.querySelector("[data-br-iid='h1'] .br-sanit") && doc.querySelector("[data-br-iid='fig1'] iframe"));
   check("html node lands its (server-sanitized) innerHTML", !!doc.querySelector("[data-br-iid='h1'] .br-sanit"));
   {
+    // Framed from the daemon's figure shell, never `srcdoc`: a srcdoc document
+    // inherits the app page's CSP, which refuses the figure's inline scripts.
+    // (jsdom runs no frame, so the ready/figure handshake is checked in a real
+    // browser, not here.)
     const fr = doc.querySelector("[data-br-iid='fig1'] iframe");
     check(
-      "figure node creates a sandboxed iframe with srcdoc",
-      !!fr && fr.getAttribute("sandbox") === "allow-scripts" && (fr.getAttribute("srcdoc") || "").indexOf("fig") >= 0,
-      fr && fr.getAttribute("sandbox")
+      "figure node frames the app's figure shell, sandboxed, without srcdoc",
+      !!fr &&
+        fr.getAttribute("sandbox") === "allow-scripts" &&
+        fr.getAttribute("src") === "/apps/" + encodeURIComponent(APP_ID) + "/figure-frame" &&
+        !fr.hasAttribute("srcdoc"),
+      fr && fr.outerHTML.slice(0, 200)
+    );
+    // A figure reports its height as `{ payload: { height } }` (`reportSize` in
+    // the autovis `_common.js`), and the frame grows to it. The SDK read a bare
+    // `height`, which no figure sends, so every figure stayed clipped at the
+    // frame's minimum (measured in Chrome).
+    const fwin = fr && fr.contentWindow;
+    if (fwin) {
+      win.dispatchEvent(
+        new win.MessageEvent("message", {
+          data: { type: "ui-size-change", payload: { height: 640 } },
+          source: fwin,
+        })
+      );
+    }
+    check(
+      "a figure's reported height grows its frame",
+      !!fwin && fr.style.height === "640px",
+      fr && `contentWindow=${!!fwin} height=${fr.style.height}`
+    );
+    // The shell is sent the figure each time it says it is ready. A frame
+    // moved in the DOM (`ui_layout` moving a panel) reloads, and the SDK used to
+    // answer only the first ready, so the reloaded shell stayed empty.
+    const posted = [];
+    if (fwin) {
+      fwin.postMessage = (message, target) => posted.push({ message, target });
+      for (let i = 0; i < 2; i++) {
+        win.dispatchEvent(
+          new win.MessageEvent("message", { data: { type: "biorouter-figure-ready" }, source: fwin })
+        );
+      }
+      // A ready from any other window is not the frame's, and is not answered.
+      win.dispatchEvent(new win.MessageEvent("message", { data: { type: "biorouter-figure-ready" }, source: win }));
+    }
+    check(
+      "a figure frame that reloads is sent its figure again",
+      posted.length === 2 &&
+        posted.every(
+          (p) =>
+            p.target === "*" &&
+            p.message &&
+            p.message.type === "biorouter-figure" &&
+            p.message.html === "<!doctype html><body>fig</body>"
+        ),
+      JSON.stringify(posted)
     );
   }
 
@@ -1450,6 +1502,16 @@ async function runSelftest() {
   const zRows = () =>
     Array.from(winZ.document.querySelectorAll("#tl .br-run-step")).map((r) => r.textContent || "");
 
+  const injectedTool = '<img id="injected-tool" src=x onerror="alert(1)">';
+  send({ type: "tool", name: injectedTool, status: "running" });
+  await waitFor(() => winZ.document.querySelector("#tl .br-run-answer")?.textContent.includes(injectedTool));
+  check(
+    "tool names render as text without injecting markup",
+    !winZ.document.querySelector("#injected-tool") &&
+      winZ.document.querySelector("#tl .br-run-answer")?.textContent.includes(injectedTool),
+    winZ.document.querySelector("#tl .br-run-answer")?.innerHTML
+  );
+
   // The `approval` frame is the control: it already had a row before this fix,
   // so a failure below is about `approval_refused`, not about the timeline.
   send({ type: "approval", requestId: "req-z1", tool: "developer__shell" });
@@ -1665,6 +1727,23 @@ async function runSelftest() {
     winZ.eval("window.__z") === "partial answer",
     JSON.stringify(winZ.eval("window.__z"))
   );
+
+  const injectedError = '<img id="injected-error" src=x onerror="alert(1)">';
+  winZ.__injectedError = injectedError;
+  winZ.eval(
+    "window.__promptBeforeError = window.Biorouter.prompt;" +
+      "window.Biorouter.prompt = function () { return Promise.reject(new Error(window.__injectedError)); };" +
+      "window.__errorFinished = false;" +
+      "window.Biorouter.run('fail', '#tl', { progress: false }).catch(function () { window.__errorFinished = true; });"
+  );
+  await waitFor(() => winZ.__errorFinished);
+  check(
+    "run errors render as text without injecting markup",
+    !winZ.document.querySelector("#injected-error") &&
+      winZ.document.querySelector("#tl .br-run-answer")?.textContent.includes(injectedError),
+    winZ.document.querySelector("#tl .br-run-answer")?.innerHTML
+  );
+  winZ.eval("window.Biorouter.prompt = window.__promptBeforeError;");
   domZ.window.close();
 
   // ── Scenario Z2: the known-kind list covers the AgentEvent union exactly ────

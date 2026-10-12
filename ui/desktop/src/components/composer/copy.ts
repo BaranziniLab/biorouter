@@ -103,6 +103,23 @@ export const COMPOSER_COPY = {
     diverge: 'Continue in a new chat with the full history',
   },
 
+  /**
+   * The slash commands drawn as a chip (`utils/composerCommand.ts` keys its
+   * registry on these): what the chip reads as, what it says on hover, and the
+   * textarea's placeholder while the chip is there and the prose is empty.
+   */
+  chipCommands: {
+    bug: {
+      label: 'Report a bug',
+      title: '/bug: Biorouter investigates this chat and drafts an issue for you to approve',
+      placeholder: 'Describe what went wrong (optional)',
+    },
+  },
+  /** A command chip's words for a screen reader, before its label. */
+  chipCommandSpoken: (token: string) => `Command ${token}: `,
+  /** A command chip's remove control. Removing it keeps the prose. */
+  removeChipCommand: (token: string) => `Remove command ${token}`,
+
   /** Why a pasted or dropped image did not attach; each sits behind the chip's help. */
   imageErrors: {
     undecodable: 'Image preview could not be decoded.',

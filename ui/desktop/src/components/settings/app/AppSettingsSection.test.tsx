@@ -354,6 +354,13 @@ describe('Feedback exits', () => {
     }
   });
 
+  it("names the in-chat reporter, /bug, behind the Feedback row's InfoTip", async () => {
+    render(<AppSettingsSection />);
+    const tip = await screen.findByRole('button', { name: `About ${aboutCopy.feedback}` });
+    expect(tip).toHaveAccessibleDescription(aboutCopy.feedbackHelp);
+    expect(aboutCopy.feedbackHelp).toContain('/bug');
+  });
+
   it('keeps the group the row names, with one hidden description for both exits', async () => {
     const { container } = render(<AppSettingsSection />);
     const reportBug = await screen.findByRole('button', { name: aboutCopy.reportBug });

@@ -472,6 +472,40 @@ pub fn asset_html(assets: &[Asset]) -> String {
     out
 }
 
+/// `html` with every library tag CDN mode emits replaced by the vendored copy
+/// it stands in for, so the document runs with no network at all.
+///
+/// The Rust twin of the desktop's `artifactCdnAssets.ts`, for a figure that
+/// was rendered in CDN mode and is about to be shown where no rewriter runs: an
+/// Agent Drafter app's figure frame, whose policy allows inline scripts and no
+/// remote host (`routes::apps::FIGURE_FRAME_CSP` in `biorouter-server`). A
+/// figure rendered in this process matches the tags [`asset_html`] writes byte
+/// for byte; anything else is left as it is.
+pub fn inline_pinned_cdn_assets(html: &str) -> String {
+    let leaflet_css_link = format!("<link rel=\"stylesheet\" href=\"{CDN_LEAFLET_CSS}\"/>\n");
+    if !html.contains("https://cdn.jsdelivr.net/npm/") {
+        return html.to_string();
+    }
+    let mut out = html.replace(
+        &leaflet_css_link,
+        &format!("<style>{LEAFLET_CSS}</style>\n"),
+    );
+    for (url, source) in [
+        (CDN_D3, D3_MIN),
+        (CDN_D3_SANKEY, D3_SANKEY),
+        (CDN_CHART, CHART_MIN),
+        (CDN_LEAFLET_JS, LEAFLET_JS),
+        (CDN_MARKERCLUSTER_JS, MARKERCLUSTER_JS),
+        (CDN_MERMAID, MERMAID_MIN),
+    ] {
+        let tag = script_src(url);
+        if out.contains(&tag) {
+            out = out.replace(&tag, &script_inline(source));
+        }
+    }
+    out
+}
+
 // ---------------------------------------------------------------------------
 // Template assembly + result construction
 // ---------------------------------------------------------------------------
@@ -661,5 +695,53 @@ pub fn parse_keyword<E: serde::de::Error>(raw: &str, accepted: &[&str]) -> Resul
             "unknown value '{raw}', expected one of: {}",
             accepted.join(", ")
         )))
+    }
+}
+
+#[cfg(test)]
+mod inline_cdn_tests {
+    use super::*;
+
+    /// A figure rendered in CDN mode leaves this function with no remote
+    /// reference at all, and with the vendored bytes in its place: an app's
+    /// figure frame allows no remote host, so a tag left behind is a blank chart.
+    #[test]
+    fn every_cdn_tag_becomes_its_vendored_copy() {
+        let cdn_page = format!(
+            "<html><head>{}{}{}{}<link rel=\"stylesheet\" href=\"{CDN_LEAFLET_CSS}\"/>\n{}{}{}</head>\
+             <body><div id=chart></div></body></html>",
+            script_src(CDN_D3),
+            script_src(CDN_D3_SANKEY),
+            script_src(CDN_CHART),
+            script_src(CDN_MERMAID),
+            script_src(CDN_LEAFLET_JS),
+            script_src(CDN_MARKERCLUSTER_JS),
+            "<script>draw()</script>",
+        );
+        let inlined = inline_pinned_cdn_assets(&cdn_page);
+        assert!(
+            !inlined.contains("cdn.jsdelivr.net"),
+            "a remote reference survived"
+        );
+        assert!(
+            !inlined.contains("<script src="),
+            "a remote reference survived"
+        );
+        for source in [
+            D3_MIN,
+            D3_SANKEY,
+            CHART_MIN,
+            MERMAID_MIN,
+            LEAFLET_JS,
+            MARKERCLUSTER_JS,
+        ] {
+            assert!(inlined.contains(&script_inline(source)));
+        }
+        assert!(inlined.contains(&format!("<style>{LEAFLET_CSS}</style>")));
+        assert!(inlined.contains("<script>draw()</script>"));
+
+        // A document with nothing to inline comes back unchanged.
+        let plain = "<html><body><script>1</script></body></html>";
+        assert_eq!(inline_pinned_cdn_assets(plain), plain);
     }
 }

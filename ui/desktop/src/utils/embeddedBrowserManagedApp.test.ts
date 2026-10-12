@@ -201,6 +201,56 @@ describe('managed app preview handoff', () => {
     expect(JSON.stringify(answered.mock.calls)).not.toContain('daemon-secret');
   });
 
+  it('opens a launch_app link on another loopback port as this backend’s managed app', async () => {
+    // A link from an earlier run of the daemon, whose port is gone.
+    const context = backend();
+    const state = createEmbeddedBrowser(
+      owner,
+      'stale-port',
+      'http://127.0.0.1:50001/apps/queue-workbench/',
+      vi.fn(),
+      context,
+      true
+    );
+    expect(state?.managedApp).toBe(true);
+    await vi.waitFor(() =>
+      expect(electron.views[0].webContents.loadURL).toHaveBeenCalledWith(
+        launchUrlFor(`${context.baseUrl}/apps/queue-workbench/`)
+      )
+    );
+    expect(startManagedAppPreviewProxy).toHaveBeenCalledWith(64005, expect.anything());
+  });
+
+  /**
+   * The shared daemon's case, the default on macOS and Linux: the window talks to a local proxy
+   * that refuses a page, and `launch_app`'s link names the daemon's own listener. The link is
+   * minted through the proxy, and the page, its transport and its navigation stay on the daemon.
+   */
+  it('mints through the proxy and shows the app from the shared daemon’s own listener', async () => {
+    const lifetime = new AbortController();
+    lifetimes.push(lifetime);
+    const shared = {
+      baseUrl: 'http://127.0.0.1:51852',
+      appOrigin: 'http://127.0.0.1:51851',
+      signal: lifetime.signal,
+      secretKey: 'daemon-secret',
+    };
+    const link = 'http://127.0.0.1:51851/apps/queue-workbench/';
+    const state = createEmbeddedBrowser(owner, 'shared', link, vi.fn(), shared, true);
+    expect(state?.managedApp).toBe(true);
+    await vi.waitFor(() =>
+      expect(electron.views[0].webContents.loadURL).toHaveBeenCalledWith(launchUrlFor(link))
+    );
+    expect(vi.mocked(fetch).mock.calls[0][0]).toBe(
+      'http://127.0.0.1:51852/apps/queue-workbench/launch'
+    );
+    expect(startManagedAppPreviewProxy).toHaveBeenCalledWith(51851, expect.anything());
+    expect(
+      navigateEmbeddedBrowser(owner, 'shared', 'http://127.0.0.1:51852/apps/queue-workbench/')
+    ).toBe(false);
+    expect(navigateEmbeddedBrowser(owner, 'shared', link)).toBe(true);
+  });
+
   it('keeps the spent launch token out of the address it reports', async () => {
     const context = backend();
     const url = `${context.baseUrl}/apps/queue-workbench/`;

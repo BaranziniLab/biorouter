@@ -51,6 +51,7 @@ export const workflowsCopy = {
   couldNotCopyLink: 'Couldn’t copy the link',
   couldNotCopyYaml: 'Couldn’t copy the YAML',
   couldNotExport: 'Couldn’t export the workflow',
+  couldNotWriteFile: 'The file couldn’t be written to that location.',
   couldNotDelete: (title: string) => `Couldn’t delete ${title}`,
   exportDialogTitle: 'Export workflow',
   yamlFiles: 'YAML files',
