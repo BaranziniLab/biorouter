@@ -1,5 +1,5 @@
-import { describe, expect, it, vi } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { act, fireEvent, render, screen } from '@testing-library/react';
 import ProgressiveMessageList from './ProgressiveMessageList';
 import { ChatState } from '../types/chatState';
 import type { Message } from '../api';
@@ -529,5 +529,138 @@ describe('ProgressiveMessageList rhythm (spec 3.6)', () => {
     );
     expect(screen.getByText(transcriptCopy.activity.loadingMessages)).toBeInTheDocument();
     expect(screen.queryByText(/Cmd\/Ctrl\+F/)).toBeNull();
+  });
+});
+
+describe('ProgressiveMessageList opens a long live chat at its end (vision V2-R7-2)', () => {
+  // A long chat used to draw its OLDEST batch first and append below, so a tab
+  // switch painted its first question, then its middle, then its end. A live
+  // chat now draws its newest batch first and adds older batches above.
+  const chat60 = Array.from({ length: 60 }, (_, i) =>
+    text(`m${i}`, i % 2 ? 'assistant' : 'user', `message number ${i}`)
+  );
+  const shown = (container: HTMLElement) =>
+    rows(container).map((row) => row.textContent?.match(/message number (\d+)/)?.[1]);
+  const long = {
+    ...liveProps,
+    batchSize: 20,
+    batchDelay: 20,
+    showLoadingThreshold: 50,
+    onOpenArtifact: noopOpenArtifact,
+  };
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('draws the newest batch in its first commit, with the loading line above it', () => {
+    vi.useFakeTimers();
+    const { container } = render(
+      <ProgressiveMessageList {...long} messages={chat60} chatState={ChatState.Idle} />
+    );
+    expect(shown(container)).toEqual(Array.from({ length: 20 }, (_, i) => String(40 + i)));
+    const line = screen.getByTestId('transcript-loading-line');
+    // Above every row: that is where the batches are being added.
+    expect(line.compareDocumentPosition(rows(container)[0])).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
+  });
+
+  it('adds older batches above until the whole chat is drawn, then settles once', () => {
+    vi.useFakeTimers();
+    const settled = vi.fn();
+    const { container } = render(
+      <ProgressiveMessageList
+        {...long}
+        messages={chat60}
+        chatState={ChatState.Idle}
+        onRenderingComplete={settled}
+      />
+    );
+    act(() => vi.advanceTimersByTime(20));
+    expect(shown(container)[0]).toBe('20');
+    expect(shown(container)[shown(container).length - 1]).toBe('59');
+    act(() => vi.advanceTimersByTime(20));
+    expect(shown(container)).toEqual(Array.from({ length: 60 }, (_, i) => String(i)));
+    expect(screen.queryByTestId('transcript-loading-line')).toBeNull();
+    expect(settled).not.toHaveBeenCalled();
+    act(() => vi.advanceTimersByTime(50));
+    expect(settled).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps the old order on a saved transcript, which reads top down', () => {
+    vi.useFakeTimers();
+    const { container } = render(<ProgressiveMessageList {...long} messages={chat60} />);
+    expect(shown(container)).toEqual(Array.from({ length: 20 }, (_, i) => String(i)));
+    const line = screen.getByTestId('transcript-loading-line');
+    expect(line.compareDocumentPosition(rows(container)[rows(container).length - 1])).toBe(
+      Node.DOCUMENT_POSITION_PRECEDING
+    );
+    act(() => vi.advanceTimersByTime(20));
+    act(() => vi.advanceTimersByTime(20));
+    expect(shown(container)).toEqual(Array.from({ length: 60 }, (_, i) => String(i)));
+  });
+
+  it('starts from the end when the messages arrive after the list mounted', () => {
+    vi.useFakeTimers();
+    const { container, rerender } = render(
+      <ProgressiveMessageList {...long} messages={[]} chatState={ChatState.LoadingConversation} />
+    );
+    rerender(
+      <ProgressiveMessageList
+        {...long}
+        messages={chat60}
+        chatState={ChatState.LoadingConversation}
+      />
+    );
+    // Not all 60 in one commit, and not the first 20.
+    expect(shown(container)).toEqual(Array.from({ length: 20 }, (_, i) => String(40 + i)));
+  });
+
+  it('draws a message streamed in during the load at once, and takes no drawn row away', () => {
+    vi.useFakeTimers();
+    const { container, rerender } = render(
+      <ProgressiveMessageList {...long} messages={chat60} chatState={ChatState.Streaming} />
+    );
+    rerender(
+      <ProgressiveMessageList
+        {...long}
+        messages={[...chat60, text('m60', 'assistant', 'message number 60')]}
+        chatState={ChatState.Streaming}
+      />
+    );
+    expect(shown(container)).toEqual(Array.from({ length: 21 }, (_, i) => String(40 + i)));
+  });
+
+  it('hands a custom renderer each message with its place in the whole chat', () => {
+    vi.useFakeTimers();
+    const renderMessage = vi.fn((message: Message, index: number) => (
+      <p key={message.id ?? index}>{index}</p>
+    ));
+    render(
+      <ProgressiveMessageList
+        {...long}
+        messages={chat60}
+        chatState={ChatState.Idle}
+        renderMessage={renderMessage}
+      />
+    );
+    const indices = renderMessage.mock.calls.map(([message, index]) => [message.id, index]);
+    expect(indices[0]).toEqual(['m40', 40]);
+    expect(indices[indices.length - 1]).toEqual(['m59', 59]);
+  });
+
+  it('draws the rest at once for find', () => {
+    vi.useFakeTimers();
+    const electron = (window as unknown as { electron?: unknown }).electron;
+    (window as unknown as { electron: { platform: string } }).electron = { platform: 'darwin' };
+    try {
+      const { container } = render(
+        <ProgressiveMessageList {...long} messages={chat60} chatState={ChatState.Idle} />
+      );
+      fireEvent.keyDown(window, { key: 'f', metaKey: true });
+      expect(shown(container)).toHaveLength(60);
+      expect(screen.queryByTestId('transcript-loading-line')).toBeNull();
+    } finally {
+      (window as unknown as { electron?: unknown }).electron = electron;
+    }
   });
 });
