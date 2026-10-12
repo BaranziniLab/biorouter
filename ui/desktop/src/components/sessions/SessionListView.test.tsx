@@ -116,7 +116,10 @@ describe('SessionListView loading and cache', () => {
     );
   });
 
-  it('renders cached history immediately while a return visit revalidates in the background', async () => {
+  // A return visit reads a fresh page and draws THAT. The cached rows are not painted first,
+  // and are not even built under the hidden layer (V1-R3-2): they were never shown, and
+  // building them held the request back.
+  it('reads a fresh page on a return visit and draws the cached rows only through it', async () => {
     const session = {
       id: 'session-1',
       name: 'Cached conversation',
@@ -149,7 +152,7 @@ describe('SessionListView loading and cache', () => {
       </MemoryRouter>
     );
 
-    expect(screen.getByText('Cached conversation')).toBeInTheDocument();
+    expect(screen.queryByText('Cached conversation')).not.toBeInTheDocument();
     expect(screen.queryByRole('status', { name: 'Loading chat history' })).not.toBeInTheDocument();
     // The revalidation leaves one async hop after mount — it waits for the
     // user's proof, which it must carry — so it is awaited rather than assumed.
@@ -161,6 +164,7 @@ describe('SessionListView loading and cache', () => {
     await act(async () => {
       finishRefresh?.({ data: { sessions: [session] } });
     });
+    expect(await screen.findByText('Cached conversation')).toBeInTheDocument();
   });
 
   it('limits the first history render to sixteen sessions', async () => {
@@ -504,12 +508,15 @@ describe('SessionListView row actions', () => {
   // module-global, so a second History pane (or Home) can publish subagent rows
   // into a pane whose own toggle is off. The toggle governs what is FETCHED;
   // each pane still has to say what it will SHOW.
-  it('never paints subagent runs from a warm shared cache while the toggle is off', () => {
-    mocks.listSessions.mockReturnValue(new Promise(() => {}));
-    updateCachedSessionList([
+  it('never paints subagent runs from a warm shared cache while the toggle is off', async () => {
+    const warm = [
       row({ id: 'p1', name: 'Parent', session_type: 'user' }),
       row({ id: 'c1', name: 'Subagent task', session_type: 'sub_agent', parent_session_id: 'p1' }),
-    ]);
+    ];
+    // The sibling's rows are in the cache, and the page this pane reads lands on top of them
+    // (the daemon answers a page of whatever the cache holds, children included).
+    updateCachedSessionList(warm);
+    mocks.listSessions.mockResolvedValue({ data: { sessions: warm } });
 
     render(
       <MemoryRouter>
@@ -517,7 +524,7 @@ describe('SessionListView row actions', () => {
       </MemoryRouter>
     );
 
-    expect(screen.getByText('Parent')).toBeInTheDocument();
+    await screen.findByText('Parent');
     expect(screen.queryByText('Subagent task')).not.toBeInTheDocument();
   });
 

@@ -9,6 +9,16 @@ import {
 
 let cachedSessions: Session[] | null = null;
 let inFlightRequest: Promise<Session[]> | null = null;
+// The newest-rows read (`refreshSessionListHead`). It never overlaps a full
+// read: a head read waits for one in flight, and a full read waits for a head
+// read, because both settle against the same "published while in flight" maps
+// below and a read that cleared them under the other would lose a rename or a
+// raise the other still has to apply.
+let inFlightHead: Promise<SessionListHead> | null = null;
+// When a full read last landed (epoch ms). A head read leaves the rows after
+// its page as the cache held them, so this is how long they have gone unchecked.
+let lastFullReadAt = 0;
+let staleReadTimer: ReturnType<typeof setTimeout> | null = null;
 // BR-71: the `include_subagents` query key is part of the cache identity, or a
 // toggle serves the stale list and never refetches.
 let cachedIncludeSubagents = false;
@@ -87,7 +97,9 @@ export function placeRenamedSession(
 // the cache does not hold yet (a list read before the chat had its first
 // message) is brought in by re-reading the list instead.
 subscribeSessionNameChanges(({ sessionId, name, userSetName, activityAt }) => {
-  if (inFlightRequest) namesPublishedDuringFetch.set(sessionId, { name, userSetName, activityAt });
+  if (inFlightRequest || inFlightHead) {
+    namesPublishedDuringFetch.set(sessionId, { name, userSetName, activityAt });
+  }
   if (!cachedSessions) return;
   const idx = cachedSessions.findIndex((s) => s.id === sessionId);
   if (idx === -1) {
@@ -122,7 +134,7 @@ const rowsReadDuringFetch = new Map<string, SessionRowFacts>();
 // the list is still right.
 subscribeSessionRowChanges((facts) => {
   const { sessionId, privacy_tier, privacy_reason } = facts;
-  if (inFlightRequest) rowsReadDuringFetch.set(sessionId, facts);
+  if (inFlightRequest || inFlightHead) rowsReadDuringFetch.set(sessionId, facts);
   if (!cachedSessions) return;
   const idx = cachedSessions.findIndex((s) => s.id === sessionId);
   if (idx === -1) return;
@@ -272,6 +284,7 @@ export async function refreshSessionList(includeSubagents?: boolean): Promise<Se
     cachedIncludeSubagents = includeSubagents;
     cachedSessions = null;
     inFlightRequest = null;
+    inFlightHead = null;
     requestGeneration += 1;
   }
   if (inFlightRequest) return inFlightRequest;
@@ -285,18 +298,22 @@ export async function refreshSessionList(includeSubagents?: boolean): Promise<Se
   // proof's async hop: a flag change in that gap orphans this request, and
   // an orphan must still ask for the list it was issued for.
   const issuedFor = cachedIncludeSubagents;
-  // This request's answer supersedes every name it is about to carry — except
-  // the ones announced from HERE on. See {@link namesPublishedDuringFetch}.
-  namesPublishedDuringFetch.clear();
-  rowsReadDuringFetch.clear();
-  inFlightRequest = userActionHeaders()
-    .then((headers) =>
+  const send = () => {
+    // This request's answer supersedes every name it is about to carry — except
+    // the ones announced from HERE on. See {@link namesPublishedDuringFetch}.
+    namesPublishedDuringFetch.clear();
+    rowsReadDuringFetch.clear();
+    return userActionHeaders().then((headers) =>
       listSessions<true>({
         throwOnError: true,
         headers,
         query: { include_subagents: issuedFor },
       })
-    )
+    );
+  };
+  // Behind a head read in flight, never beside it. See {@link inFlightHead}.
+  const behindHead = inFlightHead;
+  inFlightRequest = (behindHead ? behindHead.then(send, send) : send())
     .then((response) => {
       // Superseded while in flight: hand the answer back to whoever awaited
       // this exact call, but publish nothing — the cache and its subscribers
@@ -307,6 +324,7 @@ export async function refreshSessionList(includeSubagents?: boolean): Promise<Se
         rowsReadDuringFetch,
         true
       );
+      lastFullReadAt = Date.now();
       emitChange();
       return cachedSessions;
     })
@@ -317,6 +335,156 @@ export async function refreshSessionList(includeSubagents?: boolean): Promise<Se
   return inFlightRequest;
 }
 
+/**
+ * How many of the newest chats a head read asks for. History shows 16 rows and
+ * adds 20 as the reader scrolls, so this covers the first three screens; the
+ * rows after it come from the cache.
+ */
+export const SESSION_LIST_HEAD_SIZE = 40;
+/**
+ * How long the rows a head read left as the cache held them may go unchecked
+ * before the next one also schedules a quiet full read. A full read is what
+ * notices a chat deleted from the terminal and a roster changed by housekeeping,
+ * neither of which moves a chat into the newest page.
+ */
+export const SESSION_LIST_STALE_AFTER_MS = 60_000;
+const STALE_READ_DELAY_MS = 1_500;
+
+/** What {@link refreshSessionListHead} answers. */
+export interface SessionListHead {
+  /** The list to show now. */
+  sessions: Session[];
+  /**
+   * `true` when `sessions` is only the newest page: the cache was cold, so the
+   * page could not become it, and the full read that fills it has been started.
+   * Its arrival reaches the caller through {@link subscribeSessionList}.
+   */
+  partial: boolean;
+}
+
+/**
+ * The cached list with a fresh page of its newest rows laid over it, in the
+ * daemon's order.
+ *
+ * Every row the page holds replaces the cached copy of that chat. A cached row
+ * that sorts BEFORE the page's last row but is not in the page is dropped: the
+ * page is the daemon's whole answer for that stretch of the ordering, so such a
+ * chat is gone (deleted) or no longer listed to this caller. Rows after the page
+ * stay as the cache held them.
+ *
+ * A row whose `updated_at` cannot be read is kept: a list that shows a chat it
+ * should not is repaired by the next full read, and one that hides a chat is
+ * not. So is a row in `keep`, the chats this window was told something about
+ * while the page was in flight: a saved rename raised its cached `updated_at`
+ * past a page issued before it, and that page not holding the chat says nothing
+ * about the chat.
+ */
+export function mergeSessionListHead(
+  cached: Session[],
+  head: Session[],
+  keep: ReadonlySet<string> = new Set()
+): Session[] {
+  const last = head[head.length - 1];
+  if (!last) return head;
+  const headIds = new Set(head.map((session) => session.id));
+  const boundary = Date.parse(last.updated_at);
+  const tail = cached.filter((session) => {
+    if (headIds.has(session.id)) return false;
+    if (keep.has(session.id)) return true;
+    const at = Date.parse(session.updated_at);
+    if (Number.isNaN(at) || Number.isNaN(boundary)) return true;
+    // The daemon's order is `updated_at` newest first, then `id` ascending.
+    return at < boundary || (at === boundary && session.id > last.id);
+  });
+  return head.concat(tail);
+}
+
+function scheduleStaleRead(): void {
+  if (staleReadTimer !== null) return;
+  if (Date.now() - lastFullReadAt < SESSION_LIST_STALE_AFTER_MS) return;
+  staleReadTimer = setTimeout(() => {
+    staleReadTimer = null;
+    void refreshSessionList().catch(() => undefined);
+  }, STALE_READ_DELAY_MS);
+}
+
+/** Settle a head page against what was published while it was in flight. */
+function settleHead(page: Session[], more: boolean): SessionListHead {
+  const settle = (rows: Session[]) =>
+    settleRowsReadDuringFetch(applyNamesPublishedDuringFetch(rows), rowsReadDuringFetch, true);
+  if (!more) {
+    // The page IS the list: a short store, or a daemon that ignores `limit`.
+    cachedSessions = settle(page);
+    lastFullReadAt = Date.now();
+    emitChange();
+    return { sessions: cachedSessions, partial: false };
+  }
+  if (cachedSessions === null) {
+    // Cold (the first sidebar read has not landed, or the cache was cleared). A
+    // page of the newest rows cannot be the cache that Home, the tab strip and
+    // the sidebar read, so it is handed back alone and the full read is started.
+    const rows = settle(page);
+    void refreshSessionList().catch(() => undefined);
+    return { sessions: rows, partial: true };
+  }
+  cachedSessions = settle(
+    mergeSessionListHead(cachedSessions, page, new Set(namesPublishedDuringFetch.keys()))
+  );
+  emitChange();
+  scheduleStaleRead();
+  return { sessions: cachedSessions, partial: false };
+}
+
+/**
+ * Read the newest rows of the listing and lay them over the cache: the fast way
+ * to open History on a list that is current at the top (V1-R3-2).
+ *
+ * The full read is one request for every chat on the machine (5,542 on the
+ * store this was measured on: 6 MB, 0.5 to 0.8 s before the rows could be
+ * drawn), and almost all of it is old chats that nothing has touched. A chat
+ * only moves in the order when something happens in it (R-30), and anything that
+ * happens in it puts it among the newest, so the newest page is where a change
+ * shows up. The rows after it keep what the cache held, which is the last full
+ * read plus every rename, privacy change and removal this window was told of.
+ *
+ * Not the head of the identity this cache holds? A list with sub-agent runs
+ * nests each under its parent, which can sit anywhere in the order, so that and
+ * any change of identity go to {@link refreshSessionList}. A full read already
+ * in flight is waited for rather than raced.
+ */
+export async function refreshSessionListHead(includeSubagents?: boolean): Promise<SessionListHead> {
+  const wanted = includeSubagents ?? cachedIncludeSubagents;
+  if (wanted || wanted !== cachedIncludeSubagents) {
+    return { sessions: await refreshSessionList(includeSubagents), partial: false };
+  }
+  if (inFlightRequest) return { sessions: await inFlightRequest, partial: false };
+  if (inFlightHead) return inFlightHead;
+
+  const generation = requestGeneration;
+  namesPublishedDuringFetch.clear();
+  rowsReadDuringFetch.clear();
+  const request: Promise<SessionListHead> = userActionHeaders()
+    .then((headers) =>
+      listSessions<true>({
+        throwOnError: true,
+        headers,
+        query: { include_subagents: false, limit: SESSION_LIST_HEAD_SIZE },
+      })
+    )
+    .then((response) => {
+      const page = response.data.sessions;
+      const more = response.data.has_more === true;
+      // Superseded while in flight: hand the page back, publish nothing.
+      if (generation !== requestGeneration) return { sessions: page, partial: more };
+      return settleHead(page, more);
+    })
+    .finally(() => {
+      if (inFlightHead === request) inFlightHead = null;
+    });
+  inFlightHead = request;
+  return request;
+}
+
 export function preloadSessionList(): void {
   if (cachedSessions !== null) return;
   void refreshSessionList().catch(() => undefined);
@@ -325,6 +493,10 @@ export function preloadSessionList(): void {
 export function clearSessionListCache(): void {
   cachedSessions = null;
   inFlightRequest = null;
+  inFlightHead = null;
+  lastFullReadAt = 0;
+  if (staleReadTimer !== null) clearTimeout(staleReadTimer);
+  staleReadTimer = null;
   cachedIncludeSubagents = false;
   // Same orphaning as a flag change: a request issued before the clear must not
   // repopulate the cache we just emptied.

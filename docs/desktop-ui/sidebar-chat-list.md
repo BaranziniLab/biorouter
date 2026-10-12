@@ -54,6 +54,37 @@ such rows: 115 ms of the 310 ms History took to draw its first row after the lis
 in Chromium over the real component (vision V1-R3-2). A test holds the result equal to
 `groupByChatDate` over random instants and counts the formatters built.
 
+History opens on the newest page of the listing, not on every chat. Its first paint used to wait for
+`GET /sessions` in full: 5,542 chats, 6 MB, 0.73 to 0.87 s in the debug daemon, to draw sixteen rows
+(vision V1-R3-2). Now `refreshSessionListHead` in `utils/sessionListCache.ts` asks for
+`GET /sessions?limit=40`, which answers 125 KB in 22 to 45 ms, and lays the page over the shared
+cache. The route is the full listing a page at a time, with the sidebar's keyset cursor and the
+sidebar's SQL filters (`keyset_listing_scope`), so a chat a caller may not open never shortens a page
+or moves a cursor. Without `limit` the answer is the one it always was.
+
+Measured in Chromium over the real component against a daemon on a copy of that store, in the
+development build, with the cache warm: the rows are on screen 914 to 1,181 ms after the click before,
+and 142 to 166 ms after. At 4x CPU throttle: 1.67 s before, about 0.58 s after. Most of what is left
+is React's development build drawing sixteen rows.
+
+- **Why the rows after the page can stay as the cache has them.** A chat moves in the order only when
+  something happens in it (R-30), and anything that happens in it puts it among the newest. So the
+  page is where a change shows up. `mergeSessionListHead` keeps the cached rows that sort after the
+  page, replaces the chats the page holds, and drops a cached row that sorts inside the page's range
+  but is not in it, because the daemon no longer lists that chat. A chat renamed while the page was
+  in flight is kept (its cached time is past a page issued before the rename).
+- **A full read still happens when it is needed.** The sub-agent toggle, a change of the list's
+  identity and a cold cache take the full read. A cold cache gets the page first, drawn at once, while
+  the full read that fills the cache starts behind it. Rows the page left as cached are re-read in the
+  background when more than a minute has passed since the last full read, which is what notices a chat
+  deleted from the terminal.
+- **A head read and a full read never run together.** Both settle against the renames and privacy
+  changes announced while they were in flight, and a read that cleared those under the other would
+  undo a rename or draw a raised chat public. The later one waits for the earlier.
+- **Nothing is drawn from the cache.** History starts with an empty list and draws the first fresh
+  page. The cached rows used to be built under the hidden layer and never shown, which made the request
+  wait 120 ms behind a first build; it leaves 14 ms after the click now. A failed read puts the cache in.
+
 The view is stored in `biorouter:sidebar-chat-view` as `{"v":1,"groupBy":"date","sortBy":"activity"}`.
 It is clamped field by field on read, every storage access is wrapped, and a change in one window
 reaches the others through the `storage` event.

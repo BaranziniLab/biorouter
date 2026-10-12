@@ -62,7 +62,7 @@ import { DECLASSIFY_NEEDS_HOST_REASON, declassifyBrowserReason } from './declass
 import {
   getCachedSessionList,
   notifySessionListChanged,
-  refreshSessionList,
+  refreshSessionListHead,
   subscribeSessionList,
   updateCachedSessionList,
 } from '../../utils/sessionListCache';
@@ -634,7 +634,20 @@ const SessionListView: React.FC<SessionListViewProps> = React.memo(({ onSelectSe
   // its first fresh page and appears at rest. A warm open shows nothing for
   // `HISTORY_SKELETON_DELAY_MS`, then the skeleton; a cold one shows the
   // skeleton at once; the cache is the fallback if the fetch fails.
-  const [sessions, setSessions] = useState<Session[]>(initialSessions ?? []);
+  //
+  // That page is the NEWEST rows of the listing (`refreshSessionListHead`), laid
+  // over the cache, not every chat on the machine: the full read took 0.7 to 1 s
+  // on a store of 5,542 to show sixteen rows (vision V1-R3-2), and a change to a
+  // chat shows up among the newest, so the rows after the page can stay as the
+  // cache has them. The page usually lands inside the skeleton delay.
+  //
+  // The list starts EMPTY, not as the cache. The cached rows were rendered here
+  // under the hidden layer and never shown: sixteen rows of menus and tooltips
+  // built, then built again when the page replaced them, and the request waited
+  // behind the first build (120 ms before it left, 14 ms now, in the development
+  // build on the machine this was measured on). A failed read puts the cache in
+  // (`loadSessions`).
+  const [sessions, setSessions] = useState<Session[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [showSkeleton, setShowSkeleton] = useState(initialSessions === null);
   const [showContent, setShowContent] = useState(false);
@@ -854,7 +867,10 @@ const SessionListView: React.FC<SessionListViewProps> = React.memo(({ onSelectSe
       setError(null);
     }
     try {
-      const refreshedSessions = await refreshSessionList(showSubagents);
+      // `partial`: the cache was cold, so this is only the newest page and the full
+      // read that fills the cache is on its way; `subscribeSessionList` below
+      // swaps the rest in when it lands, under the same hold as any live change.
+      const { sessions: refreshedSessions } = await refreshSessionListHead(showSubagents);
       // The fresh rows and the end of loading commit TOGETHER: an urgent
       // `setIsLoading(false)` beside a transition would reveal the stale rows
       // for the frames before the transition lands.
@@ -868,8 +884,11 @@ const SessionListView: React.FC<SessionListViewProps> = React.memo(({ onSelectSe
       if (!hasCachedSessions) {
         setError(HISTORY_LOAD_ERROR);
         setSessions([]);
+      } else {
+        // With a cached list the reader gets it rather than an error.
+        const cached = getCachedSessionList();
+        if (cached) startTransition(() => setSessions(cached));
       }
-      // With a cached list the reader gets it rather than an error.
       setIsLoading(false);
     }
   }, [showSubagents]);
