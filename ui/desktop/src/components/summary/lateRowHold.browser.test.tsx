@@ -14,66 +14,21 @@
  * `useTranscriptFollow`, `useTranscriptSettle` and `useLateRowHold` are bundled
  * with esbuild and driven in Chromium, in a frame shaped like BaseChat's
  * column, with a 62px stand-in for the error row (24px above it, 38px tall).
- * The first case is the instrument: today's wiring, given the same steps, moves
- * the rows in view.
+ * The first case is the instrument: the old wiring (no hold, no
+ * `followGrowth`), given the same steps, moves the rows in view.
  *
- * `ScrollArea`'s `followGrowth` is requested from WS-PRIMITIVES
- * (requests/WS-PRIMITIVES/WS-SUMMARY-3.md). Until it lands, the bundle applies
- * exactly that diff to the file it reads (`withFollowGrowth`), and a file that
- * already has it is bundled as it is.
+ * `ScrollArea`'s `followGrowth` came from WS-PRIMITIVES (dded680d3, asked
+ * for in WS-SUMMARY-3); the bundle reads the file as it is. An assertion that
+ * the end is reached waits for that condition first (`reachesEnd`), so a slow
+ * machine's later smooth scroll is not read as a missed follow.
  */
-import { readFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { build, type Plugin } from 'esbuild';
+import { build } from 'esbuild';
 import { chromium, type Browser, type Page } from 'playwright';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
 const here = dirname(fileURLToPath(import.meta.url));
-
-/** The requested `ScrollArea` change, verbatim (WS-SUMMARY-3). */
-const FOLLOW_GROWTH_DIFF: ReadonlyArray<readonly [string, string]> = [
-  [
-    '  anchorBottomOnResize?: () => boolean;\n}',
-    '  anchorBottomOnResize?: () => boolean;\n  followGrowth?: () => boolean;\n}',
-  ],
-  [
-    '      anchorBottomOnResize,\n      ...props',
-    '      anchorBottomOnResize,\n      followGrowth,\n      ...props',
-  ],
-  [
-    '    const BOTTOM_SCROLL_THRESHOLD = 200;',
-    '    const followGrowthRef = React.useRef(followGrowth);\n    followGrowthRef.current = followGrowth;\n\n    const BOTTOM_SCROLL_THRESHOLD = 200;',
-  ],
-  [
-    '        !isActivelyScrollingRef.current\n      ) {',
-    '        !isActivelyScrollingRef.current &&\n        (followGrowthRef.current?.() ?? true)\n      ) {',
-  ],
-  [
-    '          if (viewportRef.current && !isActivelyScrollingRef.current) {',
-    '          if (\n            viewportRef.current &&\n            !isActivelyScrollingRef.current &&\n            (followGrowthRef.current?.() ?? true)\n          ) {',
-  ],
-];
-
-const withFollowGrowth: Plugin = {
-  name: 'scroll-area-follow-growth',
-  setup(pluginBuild) {
-    pluginBuild.onLoad({ filter: /[\\/]ui[\\/]scroll-area\.tsx$/ }, async (args) => {
-      let contents = await readFile(args.path, 'utf8');
-      if (!contents.includes('followGrowth')) {
-        for (const [from, to] of FOLLOW_GROWTH_DIFF) {
-          if (contents.split(from).length !== 2) {
-            throw new Error(
-              `scroll-area.tsx changed: the requested diff no longer applies at ${from}`
-            );
-          }
-          contents = contents.replace(from, to);
-        }
-      }
-      return { contents, loader: 'tsx' };
-    });
-  },
-};
 
 /** The app's Tailwind classes on these elements, as plain rules. */
 const PAGE_CSS = `
@@ -237,7 +192,6 @@ describe('a late row the person did not cause moves nothing on screen', () => {
       format: 'iife',
       jsx: 'automatic',
       platform: 'browser',
-      plugins: [withFollowGrowth],
       define: { 'process.env.NODE_ENV': '"production"', 'import.meta.env': '{}' },
       loader: { '.css': 'empty', '.svg': 'dataurl', '.png': 'dataurl' },
       logLevel: 'silent',
@@ -273,6 +227,29 @@ describe('a late row the person did not cause moves nothing on screen', () => {
       const viewport = document.querySelector<HTMLElement>('.br-scroll-viewport')!;
       return Math.round(viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight);
     });
+
+  /**
+   * Until the content's end is within 1px of the viewport's bottom, or 4s: the
+   * condition the end assertions read (coordinator ruling 6). A later settle
+   * scrolls smoothly, and under load it can still be on its way after
+   * `settled`'s beat. A follow that never comes still fails, on the same bound.
+   */
+  const reachesEnd = (tab: Page) =>
+    tab
+      .waitForFunction(
+        () => {
+          const viewport = document.querySelector<HTMLElement>('.br-scroll-viewport')!;
+          return (
+            Math.round(viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight) <= 1
+          );
+        },
+        undefined,
+        { timeout: 4000 }
+      )
+      .then(
+        () => undefined,
+        () => undefined
+      );
 
   /** The last message's top edge in the viewport. */
   const lastTop = (tab: Page, count: number) =>
@@ -333,7 +310,7 @@ describe('a late row the person did not cause moves nothing on screen', () => {
 
   const fail = (tab: Page) => tab.evaluate(() => (window as unknown as ChatWindow).chat.fail());
 
-  it('today’s wiring moves every row 62px up when the row lands', async (ctx) => {
+  it('the old wiring moves every row 62px up when the row lands', async (ctx) => {
     if (!browser) return ctx.skip();
     const tab = await open({ legacy: true });
     await settled(tab, 60);
@@ -341,6 +318,7 @@ describe('a late row the person did not cause moves nothing on screen', () => {
     const before = await lastTop(tab, 60);
     const tops = await watchLastTop(tab, 60, 300, () => fail(tab));
     expect(tops, 'the instrument moved the rows in view').toContain(before - 62);
+    await reachesEnd(tab);
     expect(await gap(tab), 'and followed the row into view').toBeLessThanOrEqual(1);
     await tab.close();
   }, 20_000);
@@ -391,6 +369,7 @@ describe('a late row the person did not cause moves nothing on screen', () => {
     expect(await gap(tab)).toBeLessThanOrEqual(1);
     await tab.evaluate(() => (window as unknown as ChatWindow).chat.append());
     await settled(tab, 61, 2);
+    await reachesEnd(tab);
     expect(await gap(tab), 'new content is followed as before').toBeLessThanOrEqual(1);
     await tab.close();
   }, 20_000);
@@ -405,6 +384,7 @@ describe('a late row the person did not cause moves nothing on screen', () => {
     await frames(tab, 3);
     await tab.evaluate(() => (window as unknown as ChatWindow).chat.send());
     await tab.waitForTimeout(700);
+    await reachesEnd(tab);
     expect(await gap(tab)).toBeLessThanOrEqual(1);
     await tab.close();
   }, 20_000);
@@ -416,6 +396,7 @@ describe('a late row the person did not cause moves nothing on screen', () => {
     await fail(tab);
     await tab.waitForSelector('#error-row');
     await settled(tab, 60);
+    await reachesEnd(tab);
     expect(await gap(tab), 'the row joined the open, in view').toBeLessThanOrEqual(1);
     await tab.close();
   }, 20_000);
@@ -435,11 +416,19 @@ describe('a late row the person did not cause moves nothing on screen', () => {
     });
     expect(inView).toBe(true);
     // A row in view holds nothing: what arrives next is followed as before,
-    // also once the chat grows past the viewport.
+    // also once the chat grows past the viewport. One message at a time, each
+    // followed before the next: a burst of several in one frame is a
+    // different question (ScrollArea reads its own follow's scroll event, if
+    // more than 200px has landed since, as the reader scrolling up; measured
+    // under load at 432px, with no hold involved).
     for (let i = 0; i < 8; i++) {
       await tab.evaluate(() => (window as unknown as ChatWindow).chat.append());
+      await tab.waitForSelector(`#row-${4 + i}`);
+      await reachesEnd(tab);
+      expect(await gap(tab), `message ${4 + i} is followed`).toBeLessThanOrEqual(1);
     }
     await settled(tab, 12, 2);
+    await reachesEnd(tab);
     expect(await gap(tab), 'later content is followed').toBeLessThanOrEqual(1);
     await tab.close();
   }, 20_000);

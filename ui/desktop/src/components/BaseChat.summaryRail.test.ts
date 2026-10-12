@@ -454,6 +454,8 @@ describe('BaseChat: the transcript keeps its newest line through a resize (V2-R6
     expect(call).toContain('turnRunning: isRunningState(chatState),');
     expect(call).toContain('follow: transcriptFollow,');
     expect(code.indexOf('useLateRowHold({')).toBeLessThan(code.indexOf('if (sessionLoadError) {'));
+    // The hold reaches ScrollArea's own growth follow, not only the settle.
+    expect(scrollAreaElement()).toContain('followGrowth={transcriptFollow.followGrowth}');
     // The row drawn is the one the hook decided about, and there is one.
     expect(code.match(/<ChatTurnError\b/g) ?? []).toHaveLength(1);
     expect(code).toContain('<ChatTurnError error={turnErrorRow} onRetry={heldRetryTurn} />');

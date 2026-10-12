@@ -3161,6 +3161,10 @@ function BaseChatContent({
                   // otherwise while the reader follows the newest line (V2-R6-1).
                   anchorBottomOnResize={transcriptFollow.anchorBottomOnResize}
                   onScrollChange={transcriptFollow.onScrollChange}
+                  // A row the person did not cause, landing after they could be
+                  // reading (a model that failed to restore), is added below the
+                  // fold instead of following it there (useLateRowHold, V2-R9-2).
+                  followGrowth={transcriptFollow.followGrowth}
                   onDrop={handleDrop}
                   onDragOver={handleDragOver}
                   data-drop-zone="true"
