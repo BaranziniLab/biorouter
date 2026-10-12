@@ -462,10 +462,45 @@ describe('OllamaInlineCard', () => {
     expect(await screen.findByTestId('ollama-model-select')).toBeInTheDocument();
     expect(mocks.checkOllamaStatus).toHaveBeenCalledWith('http://127.0.0.1:11434');
     expect(screen.getByTestId('ollama-public-note')).toBeInTheDocument();
-    expect(screen.getByTestId('ollama-tier-label').closest('.br-status-pill')).toHaveTextContent(
-      `${ollamaCopy.publicTier} · ${ollamaCopy.running()}`
-    );
     expect(document.body.textContent).not.toMatch(/Free, private, offline/);
+  });
+
+  /**
+   * The words name the server the user configured, never the address the renderer probes it at.
+   * The note was handed the probe address, so `OLLAMA_HOST=0.0.0.0` read "treats the Ollama server
+   * at http://127.0.0.1:11434 as public, not private: it counts only localhost, 127.0.0.1 and ::1
+   * as this computer", which contradicts itself, over a status line that named no host at all.
+   */
+  it.each([
+    ['running', true, ollamaCopy.running],
+    ['not running', false, ollamaCopy.notDetected],
+  ])(
+    'names a listen-everywhere host as configured when Ollama is %s',
+    async (_state, isRunning, words) => {
+      mocks.getOllamaSetup.mockResolvedValue(
+        setup(
+          { base_url: 'http://0.0.0.0:11434/', host_configured: true, tier: 'public' },
+          'http://127.0.0.1:11434'
+        )
+      );
+      mocks.checkOllamaStatus.mockImplementation(async (host: string) => ({ isRunning, host }));
+      render(<OllamaInlineCard onSuccess={vi.fn()} />);
+
+      const note = await screen.findByTestId('ollama-public-note');
+      expect(note).toHaveTextContent(ollamaCopy.publicNote('http://0.0.0.0:11434'));
+      expect(note).not.toHaveTextContent('http://127.0.0.1:11434');
+      expect(screen.getByTestId('ollama-tier-label').closest('.br-status-pill')).toHaveTextContent(
+        `${ollamaCopy.publicTier} · ${words('http://0.0.0.0:11434')}`
+      );
+      expect(document.body.textContent).not.toMatch(/127\.0\.0\.1:11434/);
+    }
+  );
+
+  it('does not name the default server on this computer', async () => {
+    render(<OllamaInlineCard onSuccess={vi.fn()} />);
+
+    expect(await screen.findByText(ollamaCopy.running())).toBeInTheDocument();
+    expect(document.body.textContent).not.toMatch(/localhost|127\.0\.0\.1/);
   });
 
   /**

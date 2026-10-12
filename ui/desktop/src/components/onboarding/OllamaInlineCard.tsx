@@ -58,9 +58,27 @@ const modelOptionsFor = (
   }));
 
 /**
+ * The configured server as the user wrote it (`base_url`, `OLLAMA_HOST` resolved by the daemon),
+ * without its trailing slash: the address every word on the panel names. `OllamaSetup.host` is
+ * where the renderer PROBES that server, which turns `0.0.0.0` and `localhost` into 127.0.0.1 for
+ * the CSP. Naming the probe address made the public note say Biorouter "treats the Ollama server
+ * at http://127.0.0.1:11434 as public ... it counts only localhost, 127.0.0.1 and ::1 as this
+ * computer" for `OLLAMA_HOST=0.0.0.0`, which contradicts itself.
+ */
+function configuredHost(baseUrl: string): string {
+  try {
+    const url = new URL(baseUrl);
+    return `${url.origin}${url.pathname}`.replace(/\/+$/, '');
+  } catch {
+    return baseUrl.replace(/\/+$/, '');
+  }
+}
+
+/**
  * A warning in the panel: the shared Note's warning recipe (a wash, never a coloured border), kept
  * as a plain `role="note"` block because the public-server note is frozen privacy copy whose role
- * and test id stay as they are (class-only changes, ruling 15).
+ * and test id stay as they are (class-only changes, ruling 15). Its words are unchanged; the host
+ * it names is the configured one (`configuredHost`).
  */
 function WarningNote({ testId, children }: { testId: string; children: React.ReactNode }) {
   return (
@@ -156,7 +174,10 @@ export default function OllamaInlineCard({ onSuccess }: OllamaInlineCardProps) {
   }, [load]);
 
   const recommendations = setup?.recommendations ?? null;
+  // Where the renderer probes the server, for fetches only (see `configuredHost`).
   const host = setup?.host ?? DEFAULT_OLLAMA_HOST;
+  // The server the user configured: the one every status line and note names.
+  const shownHost = recommendations ? configuredHost(recommendations.base_url) : host;
   const selectedModel =
     recommendations?.models.find((model) => model.tag === selectedTag) ??
     recommendations?.models[0] ??
@@ -251,9 +272,6 @@ export default function OllamaInlineCard({ onSuccess }: OllamaInlineCardProps) {
     }
   };
 
-  // A host the user chose is named, so "not detected" says WHERE it looked.
-  const namedHost = host !== DEFAULT_OLLAMA_HOST ? host : undefined;
-
   // Privacy is the provider's tier, from the daemon, never inferred here: the
   // card promised "Free, private, offline" on "your own machine" over a
   // server on another computer — and over `0.0.0.0`, which reaches this one —
@@ -261,6 +279,11 @@ export default function OllamaInlineCard({ onSuccess }: OllamaInlineCardProps) {
   // not use the model the user had just been told was private. Until the
   // daemon has answered, neither claim is made.
   const isPublicServer = setup !== null && !setup.private;
+
+  // A host the user chose is named, so "not detected" says WHERE it looked. Only the default
+  // server (this computer's, at 11434) goes unnamed. `0.0.0.0` probes at that same address, so a
+  // public server is always named: its status line said "Public · Ollama running" with no host.
+  const namedHost = host !== DEFAULT_OLLAMA_HOST || isPublicServer ? shownHost : undefined;
 
   // The row this panel opens sits under Local, whose tier line says nothing leaves this machine,
   // so a public server's status line says "Public" first, and the note under it says what that
@@ -282,7 +305,7 @@ export default function OllamaInlineCard({ onSuccess }: OllamaInlineCardProps) {
   );
 
   const publicNote = isPublicServer ? (
-    <WarningNote testId="ollama-public-note">{ollamaCopy.publicNote(host)}</WarningNote>
+    <WarningNote testId="ollama-public-note">{ollamaCopy.publicNote(shownHost)}</WarningNote>
   ) : null;
 
   // Below 32 GB, or an Intel Mac: the default is still offered (there is no
@@ -379,7 +402,7 @@ export default function OllamaInlineCard({ onSuccess }: OllamaInlineCardProps) {
         <div className="space-y-3">
           {status(
             'info',
-            setup.private ? ollamaCopy.atHost(host) : ollamaCopy.onAnotherComputer(host)
+            setup.private ? ollamaCopy.atHost(shownHost) : ollamaCopy.onAnotherComputer(shownHost)
           )}
           {publicNote}
           {modelSelect}
