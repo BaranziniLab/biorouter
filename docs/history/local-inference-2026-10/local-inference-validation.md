@@ -710,6 +710,60 @@ actual attempts remain failed in the evidence record. They exposed native model-
 runner-observer compatibility gaps, a reload-observation race, and cleanup ordering in the
 test harness. The corrected harness retains those failures and the rejected cleanup proposal.
 
+## Follow-up on the 14 failed attempts
+
+After delivery at `98fd881b`, two independent reviews read the archived evidence for each of
+the 14 raw FAIL attempts (sessions, verdicts, daemon logs, per-request usage logs and
+`/api/show` provenance under `~/biorouter-runs/local-inference-resume-2026-10-11/live`).
+Where they disagreed, the code and the logs decided. Four attempts (F10, F11, F12, F13)
+traced to Biorouter defects, and the reruns found five more in the same Code Execution
+reporting path. All are fixed on this branch with tests that fail without the fix. The other
+attempts are model limitations or harness observations; three of them (F04/F05, F06, F07)
+still led to Biorouter changes, because Biorouter had hidden from the model or the reader
+what was going on.
+
+The reruns used fresh debug builds of the commits named below, the same task prompts, a new
+owned one-slot Ollama on port 11445 (version 0.40.3; the original campaign ran 0.40.2), one
+model at a time, and never-used pair tags. The last code commit is `35954e31`; the
+"final head" results below were run on its build. Evidence, binaries and their SHA-256 sums
+are in `~/biorouter-runs/pr393-failed-attempt-reruns-2026-10-12/harness/` (`source_head.txt`
+maps each round to its commit).
+
+| Attempt | Model and task | Finding | Change | Rerun |
+| --- | --- | --- | --- | --- |
+| F01 | Gemma 4 31B survey | Harness: the bootstrap fixture was too small for Gemma's tokenizer | `dfd0db50` (earlier) | PASS earlier, 39,096 prompt tokens |
+| F02 | llama3.1:8b factorial | Model: Python sent to a JavaScript tool, with invented parameters, written as text | None | Not rerun; no change reaches it |
+| F03 | llama3.1:8b urine | Model, at a deliberate boundary: an 85-character preamble that echoes the model's own template, then one valid call. Calls inside prose are neither run nor asked about, because a quote and an intent cannot be told apart and asking once was measured not to help this model. Widening that rule is a security decision for the maintainers | None | Not rerun |
+| F04, F05 | qwen2.5-coder:7b factorial, urine | Model, plus a Biorouter gap: after one call, whole replies imitated Biorouter's own tool-result frame and were accepted as answers, so the model was never told that nothing had run | `b672d90b`: one corrective retry for such a reply; a reply that relays a real result is left alone | At `b672d90b` and at the final head the retry fired (2 and 3 times, daemon logs). Both tasks still FAIL: after it the model answered in prose or wrote a JSON-text call |
+| F06 | gpt-oss:20b factorial | Model: a malformed Harmony call after a checklist, inside prose. It contradicted a module doc that said Harmony never reaches Biorouter as text | `49f519e9`: doc corrected | Not rerun |
+| F07 | ministral-3:8b factorial | Model, plus opaque errors: Python triple quotes in JavaScript, six times, each answered only with "unterminated string literal" | `359f0323` (triple quotes named), `0e38ef20` (a failed call's output reaches the script), `21fd6649` (an unimported tool names its import), `35954e31` (a script that returned nothing says its calls succeeded) | Still FAIL. At `4010c2f9` the file was written and runs, but `shell({command: "run", args: [...]})` failed three times while the script saw only "exited with status 127", never "command not found: run". At `21fd6649` the model kept its triple quotes through three explained errors, then wrote a tool call whose JSON Ollama could not parse (a backslash before a backtick, an invalid escape), which ended the turn with that error |
+| F08 | granite4:tiny-h factorial | Model: wrong `todo_write` arguments repeated until the loop guard stopped the turn | None | Not rerun |
+| F09 | phi4-mini:3.8b factorial | Model: answered from memory without a tool call | None | Not rerun |
+| F10 | lfm2:24b factorial | Biorouter: Biorouter's prompt and tools overflow a 32,768-token window. The turn ended as an ordinary `stop` with the reason neither printed by `session send` nor stored | `f28ca994`: an unrecoverable overflow ends the turn as a stored, typed `context_length` failure; `session send`, `watch` and `attach` print inline notices | Task FAIL as expected, now with the sentence on screen and in the chat: 7.0 s, and 6.5 s at the final head |
+| F11 | deepseek-r1:8b factorial | Biorouter: Ollama lists `tools`, but neither of the model's templates renders them, so the model never saw a tool definition (19,094 prompt tokens where phi4-mini read the same request as 29,997) | `5b879a69`: such a model is refused before it loads, with a sentence naming the template | Refused before the model loaded: 0.16 s, and 0.13 s at the final head; task FAIL by design. Each pair's cleanup check counted the previous model's Ollama runner, still exiting, as a sidecar; the owned daemon was gone |
+| F12 | command-r7b:7b factorial | Biorouter: as F10, with an 8,192-token window | `f28ca994` | Task FAIL as expected, sentence shown and stored: 5.5 s, and 5.1 s at the final head |
+| F13 | glm-4.7-flash factorial | Biorouter: the script's four calls succeeded, then it read `.stdout` off the string `shell` returns. The error named nothing and never said the calls had worked, and the model destroyed its correct file | `359f0323`, `d281bd6b`, `4010c2f9` | **PASS** at `4010c2f9` (402 s) and again at the final head (463 s): 120 and 2432902008176640000. See below |
+| F14 | gemma3:4b factorial (planned negative) | Expected refusal. The case's remaining checks counted Ollama's own runner as a Biorouter sidecar and expected a loaded model that a correct refusal never loads | None | Not rerun |
+
+F13 took three rounds, each finding a further defect in how Code Execution reports back:
+
+1. At `b672d90b` the error named the completed calls, so the model kept its correct file. It
+   still had no answer: it reported values with `console.log` and a top-level `return`, both
+   answered by bare engine errors, and scripts that never passed a value to `record_result`
+   came back as a bare `Result: undefined`. The loop guard ended the turn.
+2. At `d281bd6b` those three cases name `record_result`. The model then called
+   `record_result({ result5, result20 })`, exactly right, and Biorouter reported 20! as
+   `2.43290200817664e+18`: the shell printed `2432902008176640000`, which parses as JSON and
+   became a double.
+3. At `4010c2f9` an integer result a JavaScript number cannot hold stays the tool's text, and
+   the task passed every check. It passed again on the final-head build.
+
+Two results stay open for the maintainers. `biorouter session send` still exits 0 when a turn
+ends on an error frame; the frame is now printed, but the exit status is a CLI contract
+decision. And Biorouter's fixed prompt is about 29,000 to 32,000 tokens, which no model with a
+32,768-token window or less can run; that is a product decision about a smaller tool set for
+small windows.
+
 ## Limits to preserve in the final result
 
 - The automatic memory reduction happens after a native reply starts. A load that fails before
