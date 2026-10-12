@@ -13,6 +13,13 @@
  * jsdom has no pointer model and no layout, so this runs the real component in Chromium, as the
  * other `*.browser.test.tsx` files do. The first case is the instrument check: hovering a field
  * the person is not in opens the hint, so a case that sees no tooltip is not blind.
+ *
+ * The shortcut is spelled per platform (`uiCopy.findShortcut()`: ⌘F on macOS, Ctrl+F elsewhere),
+ * so the History fixture builds its placeholder the way History does, from that spelling, and the
+ * "said once" case runs as a Mac and as Linux on every runner: `isMacPlatform` reads
+ * `window.electron.platform` before `navigator`, so the page is given the platform the desktop
+ * preload would give it. A fixture that wrote "⌘F" passed on a Mac and failed on CI's Linux
+ * runner, where the hint correctly read "Search history · Ctrl+F".
  */
 import { dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -27,6 +34,8 @@ import * as React from 'react';
 import { createRoot } from 'react-dom/client';
 import { FilterInput } from './filter-input';
 import { AppTooltipProvider } from './Tooltip';
+import { uiCopy } from './copy';
+import { historySearchPlaceholder } from '../sessions/copy';
 
 function Field({ id, placeholder, label, findShortcut }) {
   const [value, setValue] = React.useState('');
@@ -49,7 +58,11 @@ function App() {
       <div style={{ padding: 40, display: 'grid', gap: 48, justifyItems: 'start' }}>
         <button id="before" type="button">Before</button>
         <Field id="plain" />
-        <Field id="history" label="Search history" placeholder="Search history… ⌘F" />
+        <Field
+          id="history"
+          label="Search history"
+          placeholder={historySearchPlaceholder(uiCopy.findShortcut())}
+        />
         <Field id="noshortcut" findShortcut={false} />
       </div>
       <div id="far" style={{ height: 300 }} />
@@ -101,11 +114,21 @@ describe('the filter field’s tooltip is a hover hint for a field the person is
     await browser?.close();
   }, 120_000);
 
-  async function open(): Promise<Page> {
+  /**
+   * A page with the fixture mounted. `platform` is what the desktop preload reports as
+   * `window.electron.platform`; without it the page reads the runner's own `navigator`.
+   */
+  async function open(platform?: 'darwin' | 'linux'): Promise<Page> {
     const tab = await browser!.newPage({ viewport: { width: 600, height: 700 } });
     await tab.setContent(
       '<!doctype html><html><head></head><body style="margin:0"><div id="root"></div></body></html>'
     );
+    // Before the bundle runs: the platform is read while the fixture renders.
+    if (platform)
+      await tab.evaluate((p) => {
+        // Only the field the fixture reads: this page has no preload and no other bridge.
+        (window as unknown as { electron?: { platform: string } }).electron = { platform: p };
+      }, platform);
     await tab.addScriptTag({ content: script });
     await tab.waitForSelector('#plain input');
     return tab;
@@ -189,18 +212,33 @@ describe('the filter field’s tooltip is a hover hint for a field the person is
     }
   });
 
-  it('says the shortcut once: a placeholder that carries it has no tooltip', async (ctx) => {
-    if (!browser) return ctx.skip();
-    const tab = await open();
-    try {
-      expect(await tab.getAttribute('#history input', 'placeholder')).toBe('Search history… ⌘F');
-      await tab.hover('#history input');
-      await tab.waitForTimeout(PAST_DELAY);
-      expect(await tooltip(tab)).toBeNull();
-    } finally {
-      await tab.close();
+  it.for([
+    ['darwin', '⌘F', 'Meta+F'],
+    ['linux', 'Ctrl+F', 'Control+F'],
+  ] as const)(
+    'says the shortcut once: a placeholder that carries it has no tooltip (%s)',
+    async ([platform, shortcut, keys], ctx) => {
+      if (!browser) return ctx.skip();
+      const tab = await open(platform);
+      try {
+        // The instrument: the page took the platform it was given.
+        expect(await tab.getAttribute('#history input', 'aria-keyshortcuts')).toBe(keys);
+        expect(await tab.getAttribute('#history input', 'placeholder')).toBe(
+          `Search history… ${shortcut}`
+        );
+        await tab.hover('#history input');
+        await tab.waitForTimeout(PAST_DELAY);
+        expect(await tooltip(tab)).toBeNull();
+        // Not blind: on the same page a field whose placeholder does not carry the shortcut
+        // opens the hint, spelled for this platform.
+        await tab.hover('#plain input');
+        await tab.waitForTimeout(PAST_DELAY);
+        expect(await tooltip(tab)).toBe(`Filter · ${shortcut}`);
+      } finally {
+        await tab.close();
+      }
     }
-  });
+  );
 
   it('promises no shortcut it does not have: with ⌘F off there is no hint and no key', async (ctx) => {
     if (!browser) return ctx.skip();
