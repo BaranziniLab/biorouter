@@ -3885,6 +3885,21 @@ pub struct Agent {
     /// session in the instance, which a rebuild throws away. After a refusal
     /// there is nothing in it worth keeping.
     pub(super) credentials_refused: AtomicBool,
+    /// The last reply loop ended on a provider failure (a typed
+    /// `TurnAbortCode::ProviderFailure`): the model was refused, overflowed,
+    /// or could not be reached. Read by [`Agent::maybe_rename_session`], which
+    /// then titles the chat without calling the model.
+    ///
+    /// Measured (PR #393 rerun, 2026-10-12, isolated Ollama's own log): a turn
+    /// refused BEFORE the model loaded (deepseek-r1:8b, whose template never
+    /// shows tools; gemma3:4b, which has no tool support) was followed within
+    /// a second by the chat-title request, which carries no tools, so it
+    /// passed the refusal and loaded the refused model anyway (a `/api/chat`
+    /// the harness then cut off as 499). lfm2:24b's only request in an
+    /// overflow-refused turn was that title call. A second call to a provider
+    /// that just failed, only for a title, repeats the failure or does the
+    /// very load the refusal existed to avoid.
+    pub(super) provider_failed_last_turn: AtomicBool,
     pub(super) final_output_tool: Arc<Mutex<Option<FinalOutputTool>>>,
     pub(super) frontend_tools: Mutex<HashMap<String, FrontendTool>>,
     pub(super) frontend_instructions: Mutex<Option<String>>,
@@ -5007,6 +5022,7 @@ impl Agent {
             subagent_runtime_sessions: Mutex::new(HashSet::new()),
             subagent_tool_enabled: AtomicBool::new(true),
             credentials_refused: AtomicBool::new(false),
+            provider_failed_last_turn: AtomicBool::new(false),
             final_output_tool: Arc::new(Mutex::new(None)),
             frontend_tools: Mutex::new(HashMap::new()),
             frontend_instructions: Mutex::new(None),
@@ -10989,6 +11005,7 @@ impl Agent {
             );
             let mut native_supervision_required = false;
             let mut deferred_turn_abort: Option<(TurnAbortCode, String)> = None;
+            self.provider_failed_last_turn.store(false, Ordering::SeqCst);
             // A dropped stream is reissued to apply a direct user steer. It is
             // still the same logical action, including when that action already
             // occupies the final `max_turns` slot.
@@ -13160,6 +13177,9 @@ impl Agent {
 
             self.loop_phase.enter(crate::agents::loop_phase::LoopPhase::Idle);
             if let Some((code, message)) = deferred_turn_abort {
+                if matches!(code, TurnAbortCode::ProviderFailure { .. }) {
+                    self.provider_failed_last_turn.store(true, Ordering::SeqCst);
+                }
                 yield AgentEvent::TurnAborted { code, message };
             }
 
@@ -13199,7 +13219,24 @@ impl Agent {
     /// "New chat" placeholder. `maybe_update_name` is itself idempotent and
     /// guarded (it skips user-named sessions and stops after the first few
     /// exchanges), so calling it once per reply is cheap and correct.
+    ///
+    /// After a turn that ended on a provider failure the title comes from the
+    /// first message instead ([`Self::provider_failed_last_turn`]): the
+    /// model is not called again only to name the chat. A later turn that
+    /// reaches the model still renames it, because a title the user did not
+    /// set is regenerated during the first few exchanges.
     pub async fn maybe_rename_session(&self, session_id: &str) {
+        if self.provider_failed_last_turn.load(Ordering::SeqCst) {
+            if let Err(e) = self
+                .config
+                .session_manager
+                .maybe_update_name_without_model(session_id)
+                .await
+            {
+                warn!("Failed to name the session after a provider failure: {}", e);
+            }
+            return;
+        }
         let provider = match self.provider().await {
             Ok(provider) => provider,
             Err(e) => {
@@ -24594,6 +24631,159 @@ mod fixed_prompt_compaction_tests {
             "the verdict must be stored: {:?}",
             stored.messages()
         );
+
+        // F10 (PR #393 rerun review, isolated Ollama's log): lfm2:24b's only
+        // request in this refused turn was the chat-title call that followed
+        // it, which loaded the model the turn never sent anything to. After a
+        // provider failure the title comes from the first message.
+        let before = calls.load(Ordering::SeqCst);
+        agent.maybe_rename_session(&session.id).await;
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            before,
+            "the chat was titled by calling the model that just overflowed"
+        );
+    }
+
+    /// A local server that refuses every request before the model loads, the
+    /// way Ollama's R19 preflight refuses a tools request to a model without
+    /// tool support. The chat-title request carries no tools, so a real
+    /// server would have loaded the model for it; this one counts it.
+    struct RefusingProvider {
+        calls: Arc<AtomicUsize>,
+    }
+
+    #[async_trait]
+    impl Provider for RefusingProvider {
+        fn metadata() -> ProviderMetadata {
+            ProviderMetadata::new(
+                "refusing",
+                "Refusing",
+                "",
+                "refused-model",
+                vec![],
+                "",
+                vec![],
+            )
+        }
+
+        fn get_name(&self) -> &str {
+            "refusing"
+        }
+
+        async fn complete_with_model(
+            &self,
+            _model_config: &ModelConfig,
+            _system: &str,
+            _messages: &[Message],
+            _tools: &[Tool],
+        ) -> Result<(Message, ProviderUsage), ProviderError> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            Err(crate::providers::formats::ollama::template_without_tools_error("deepseek-r1:8b"))
+        }
+
+        fn get_model_config(&self) -> ModelConfig {
+            ModelConfig::new_or_fail("refused-model")
+        }
+    }
+
+    /// F11 and F14 (PR #393 rerun review): the isolated Ollama's own log
+    /// showed deepseek-r1:8b and gemma3:4b loading about a second after their
+    /// turns were refused BEFORE load, for a `/api/chat` that was the
+    /// chat-title call. A refused turn is titled from its first message, with
+    /// no further model call; an earlier title the model wrote is kept; and a
+    /// turn that reaches the model names the chat as before.
+    #[tokio::test]
+    async fn a_turn_the_provider_refused_is_titled_without_calling_it_again() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let session_manager = Arc::new(SessionManager::new(dir.path().to_path_buf()));
+        let permission_manager = Arc::new(PermissionManager::new(dir.path().to_path_buf()));
+        let agent = Agent::with_config(AgentConfig::new(
+            session_manager,
+            permission_manager,
+            None,
+            BioRouterMode::Auto,
+        ));
+        let session = agent
+            .config
+            .session_manager
+            .create_session(
+                std::path::PathBuf::from("."),
+                "New chat".to_string(),
+                SessionType::User,
+            )
+            .await
+            .unwrap();
+        let calls = Arc::new(AtomicUsize::new(0));
+        agent
+            .update_provider(
+                Arc::new(RefusingProvider {
+                    calls: Arc::clone(&calls),
+                }),
+                &session.id,
+            )
+            .await
+            .unwrap();
+        let config = SessionConfig {
+            id: session.id.clone(),
+            schedule_id: None,
+            max_turns: Some(4),
+            max_tool_calls: None,
+            budget: None,
+            retry_config: None,
+            reasoning_effort: None,
+        };
+        let mut stream = agent
+            .reply(
+                Message::user().with_text("write factorial.py and run it"),
+                config,
+                None,
+            )
+            .await
+            .unwrap();
+        let mut aborted = None;
+        while let Some(event) = stream.next().await {
+            if let Ok(AgentEvent::TurnAborted { code, .. }) = event {
+                aborted = Some(code);
+            }
+        }
+        drop(stream);
+        assert!(
+            matches!(aborted, Some(TurnAbortCode::ProviderFailure { .. })),
+            "{aborted:?}"
+        );
+
+        let before = calls.load(Ordering::SeqCst);
+        assert!(before > 0, "the turn itself asked the provider");
+        agent.maybe_rename_session(&session.id).await;
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            before,
+            "the refused model was called again to title the chat"
+        );
+        let sm = &agent.config.session_manager;
+        let named = sm.get_session(&session.id, false).await.unwrap();
+        assert_eq!(named.name, "write factorial.py and run it");
+
+        // A title the model wrote on an earlier turn is not replaced by the
+        // first-message one.
+        sm.update(&session.id)
+            .system_generated_name("Factorial script runs".to_string())
+            .apply()
+            .await
+            .unwrap();
+        agent.maybe_rename_session(&session.id).await;
+        let kept = sm.get_session(&session.id, false).await.unwrap();
+        assert_eq!(kept.name, "Factorial script runs");
+        assert_eq!(calls.load(Ordering::SeqCst), before);
+
+        // Once a turn ends without a provider failure, naming asks the model
+        // again (and, with this provider, falls back to the first message).
+        agent
+            .provider_failed_last_turn
+            .store(false, Ordering::SeqCst);
+        agent.maybe_rename_session(&session.id).await;
+        assert!(calls.load(Ordering::SeqCst) > before);
     }
 
     /// A local server that answers, and reports what a 32k window under the

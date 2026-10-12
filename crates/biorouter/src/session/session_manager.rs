@@ -3054,6 +3054,18 @@ impl SessionManager {
     }
 
     pub async fn maybe_update_name(&self, id: &str, provider: Arc<dyn Provider>) -> Result<()> {
+        self.update_name_with(id, Some(provider)).await
+    }
+
+    /// [`Self::maybe_update_name`] without a model call: the title is derived
+    /// from the first user message. For a turn whose provider just failed,
+    /// where a naming call would repeat the failure (or load a local model the
+    /// turn was refused before loading).
+    pub async fn maybe_update_name_without_model(&self, id: &str) -> Result<()> {
+        self.update_name_with(id, None).await
+    }
+
+    async fn update_name_with(&self, id: &str, provider: Option<Arc<dyn Provider>>) -> Result<()> {
         let session = self.get_session(id, true).await?;
 
         // The user explicitly named the session — never override.
@@ -3091,6 +3103,16 @@ impl SessionManager {
         if user_message_count > MSG_COUNT_FOR_SESSION_NAME_GENERATION && !still_default {
             return Ok(());
         }
+
+        // Without a model only the placeholder is replaced: a title an earlier
+        // turn's model wrote is better than one cut from the first message.
+        let Some(provider) = provider else {
+            let name = Self::fallback_session_name(&conversation);
+            if !still_default || name.trim().is_empty() {
+                return Ok(());
+            }
+            return self.update(id).system_generated_name(name).apply().await;
+        };
 
         // Prefer the LLM-generated, content-derived name. The naming call is
         // best-effort: if the provider errors (rate limit, auth, model issue)
