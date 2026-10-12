@@ -843,6 +843,16 @@ fn annotate_js_error_for_script(
     message: &str,
     string_results: &BTreeSet<String>,
 ) -> String {
+    // F13 rerun (GLM 4.7 Flash, 2026-10-12): four scripts in one turn
+    // reported their results with `console.log` and got only Boa's bare
+    // "ReferenceError: console is not defined".
+    if message.contains("console is not defined") {
+        return format!(
+            "{message}. This sandbox has no `console`, and nothing a script prints is shown. \
+             Pass what you want to see to record_result(value) instead, once, at the end; for \
+             several values, record_result({{ first, second }})."
+        );
+    }
     let annotated = if !message.contains(BOA_NOT_CALLABLE) {
         message.to_string()
     } else {
@@ -1406,6 +1416,15 @@ fn annotate_parse_error(code: &str, message: &str) -> String {
              ${{ inside it escaped as \\` and \\${{) or in a quoted string with \\n escapes."
         );
     }
+    // F13 rerun (GLM 4.7 Flash, 2026-10-12): three scripts ended in
+    // `return { … }` and failed with the bare "unexpected token 'return'".
+    if message.contains("unexpected token 'return'") {
+        return format!(
+            "{message}. A script runs as a module, and its top level cannot `return`. Pass the \
+             value to record_result(value) instead; for several values, record_result({{ first, \
+             second }})."
+        );
+    }
     if !parse_error_is_embedded_payload_shaped(code, message) {
         return message.to_string();
     }
@@ -1653,11 +1672,32 @@ fn create_tool_function(full_tool_name: String) -> NativeFunction {
     )
 }
 
+/// What a script that ran to its end handed back.
+#[derive(Debug)]
+struct ScriptOutput {
+    /// What `record_result` was last given, serialised, or `undefined`.
+    text: String,
+    /// Whether the script called `record_result` at all. `false` and `true`
+    /// with `record_result(undefined)` print the same `text`, and only the
+    /// first means the script never tried to hand anything back.
+    recorded: bool,
+}
+
+/// [`run_js_script`]'s text alone: what the engine-level tests compare.
+#[cfg(test)]
 fn run_js_module(
     code: &str,
     tools: &[ToolInfo],
     call_tx: mpsc::UnboundedSender<ToolCallRequest>,
 ) -> Result<String, String> {
+    run_js_script(code, tools, call_tx).map(|output| output.text)
+}
+
+fn run_js_script(
+    code: &str,
+    tools: &[ToolInfo],
+    call_tx: mpsc::UnboundedSender<ToolCallRequest>,
+) -> Result<ScriptOutput, String> {
     if code.len() > MAX_JS_SOURCE_BYTES {
         return Err(format!(
             "JavaScript source exceeds the {} byte limit",
@@ -1687,7 +1727,7 @@ fn run_js_module(
     result
 }
 
-fn run_js_module_inner(code: &str, tools: &[ToolInfo]) -> Result<String, String> {
+fn run_js_module_inner(code: &str, tools: &[ToolInfo]) -> Result<ScriptOutput, String> {
     let loader = Rc::new(ToolModuleLoader::default());
     let mut ctx = Context::builder()
         .module_loader(loader.clone())
@@ -1747,6 +1787,7 @@ fn run_js_module_inner(code: &str, tools: &[ToolInfo]) -> Result<String, String>
     match promise.state() {
         PromiseState::Fulfilled(_) => {
             let result = RESULT_CELL.with(|cell| cell.borrow().clone());
+            let recorded = result.is_some();
             let result = result.unwrap_or_else(|| "undefined".to_string());
             if result.len() > MAX_JS_RESULT_BYTES {
                 Err(format!(
@@ -1754,7 +1795,10 @@ fn run_js_module_inner(code: &str, tools: &[ToolInfo]) -> Result<String, String>
                     MAX_JS_RESULT_BYTES
                 ))
             } else {
-                Ok(result)
+                Ok(ScriptOutput {
+                    text: result,
+                    recorded,
+                })
             }
         }
         PromiseState::Rejected(err) => Err(format!(
@@ -1975,6 +2019,14 @@ impl CollectedArtifacts {
             self.app_paths.push(path.clone());
             self.last_app_path = Some(path);
         }
+    }
+
+    /// How many of the script's tool calls completed successfully.
+    fn completed_call_count(&self) -> usize {
+        self.tool_calls
+            .iter()
+            .filter(|record| record.status == "ok")
+            .count()
     }
 
     /// The sentence a FAILED script's error ends with when some of its tool
@@ -2506,7 +2558,7 @@ impl CodeExecutionClient {
             }
         });
 
-        let js_task = tokio::task::spawn_blocking(move || run_js_module(&code, &tools, call_tx));
+        let js_task = tokio::task::spawn_blocking(move || run_js_script(&code, &tools, call_tx));
         let js_result = tokio::select! {
             result = js_task => result.map_err(|e| format!("JS execution task failed: {e}"))?,
             () = cancellation_token.cancelled() => {
@@ -2521,8 +2573,24 @@ impl CodeExecutionClient {
         let meta = Self::collected_meta(&collected);
 
         match js_result {
-            Ok(r) => {
-                let mut contents = vec![Content::text(format!("Result: {r}"))];
+            Ok(output) => {
+                // F13 rerun (GLM 4.7 Flash, 2026-10-12): scripts that ran both
+                // factorial commands but handed nothing to `record_result`
+                // came back as a bare "Result: undefined", and the model ran
+                // them again and again, unable to see what they printed.
+                let calls = collected.completed_call_count();
+                let text = if !output.recorded && calls > 0 {
+                    format!(
+                        "Result: {}\nThe script did not call record_result, so nothing its \
+                         {calls} completed tool call(s) returned was passed back. They ran; to \
+                         see what they returned, pass it to record_result(value), for example \
+                         record_result({{ first, second }}).",
+                        output.text
+                    )
+                } else {
+                    format!("Result: {}", output.text)
+                };
+                let mut contents = vec![Content::text(text)];
                 contents.append(&mut collected.content);
                 let mut result = CallToolResult::success(contents);
                 result.meta = meta;
@@ -4582,6 +4650,38 @@ todo_write({ content: "- [ ] never" });"#,
         assert!(!text.contains("had completed successfully"), "{text}");
     }
 
+    /// F13 rerun (GLM 4.7 Flash, 2026-10-12): scripts that ran their calls
+    /// and handed nothing to `record_result` came back as a bare "Result:
+    /// undefined", and the model reran them unable to see their output. A
+    /// script that made no call, or that recorded a value, is unchanged.
+    #[tokio::test]
+    async fn a_script_that_records_nothing_after_its_calls_says_so() {
+        let silent = execute_with_todo(
+            r#"import { todo_write } from "todo";
+const out = todo_write({ content: "- [ ] run factorial.py" });"#,
+        )
+        .await;
+        assert_eq!(silent.is_error, Some(false));
+        let text = result_text(&silent);
+        assert!(text.starts_with("Result: undefined\n"), "{text}");
+        assert!(
+            text.contains("did not call record_result")
+                && text.contains("its 1 completed tool call(s)"),
+            "{text}"
+        );
+
+        let recorded = execute_with_todo(
+            r#"import { todo_write } from "todo";
+record_result(todo_write({ content: "- [ ] run factorial.py" }));"#,
+        )
+        .await;
+        let text = result_text(&recorded);
+        assert!(!text.contains("did not call record_result"), "{text}");
+
+        let no_calls = execute_with_todo("const x = 1 + 1;").await;
+        assert_eq!(result_text(&no_calls), "Result: undefined");
+    }
+
     #[tokio::test]
     async fn nested_todo_metadata_records_real_updates_without_adding_model_content() {
         let temp = tempfile::tempdir().unwrap();
@@ -5748,6 +5848,39 @@ record_result([out.trim(), out.length, out.split("\n").length]);"#,
             "got: {error}"
         );
         assert!(error.contains("template literal"), "got: {error}");
+    }
+
+    /// F13 rerun (GLM 4.7 Flash, 2026-10-12): `console.log` and a top-level
+    /// `return`, the two ways it tried to report a result, each failed with
+    /// an engine message that named neither the cause nor `record_result`.
+    #[test]
+    fn console_and_a_top_level_return_point_at_record_result() {
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let error = run_js_module("const n = 5;\nconsole.log(\"5! = \" + n);", &[], tx)
+            .expect_err("there is no console");
+        assert!(error.contains("console is not defined"), "got: {error}");
+        assert!(
+            error.contains("This sandbox has no `console`") && error.contains("record_result"),
+            "got: {error}"
+        );
+
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let error = run_js_module("const n = 5;\nreturn { n };", &[], tx)
+            .expect_err("a module cannot return");
+        assert!(
+            error.contains("Parse error") && error.contains("unexpected token 'return'"),
+            "got: {error}"
+        );
+        assert!(
+            error.contains("its top level cannot `return`") && error.contains("record_result"),
+            "got: {error}"
+        );
+
+        // A `return` inside a function is ordinary JavaScript.
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let ok = run_js_module("function f() { return 5; }\nrecord_result(f());", &[], tx)
+            .expect("return inside a function works");
+        assert_eq!(ok, "5");
     }
 
     #[test]
