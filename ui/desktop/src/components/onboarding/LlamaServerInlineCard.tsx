@@ -4,7 +4,12 @@ import { toastService } from '../../toasts';
 import { errorMessage } from '../../utils/conversionUtils';
 import { Button } from '../ui/button';
 import { Select } from '../ui/Select';
-import { llamacppEnsure, llamacppWarmup, type LlamaCppModel } from '../../api';
+import {
+  llamacppEnsure,
+  llamacppWarmup,
+  type LlamaCppModel,
+  type LlamaCppStatusResponse,
+} from '../../api';
 import { llamaServerStore, useLlamaServer } from '../settings/models/llamaServerStore';
 import { Disclosure } from '../ui/disclosure';
 import { Field } from '../ui/field';
@@ -21,6 +26,18 @@ interface LlamaServerInlineCardProps {
 }
 
 type ModelOption = { value: string; label: string };
+
+/**
+ * The model the panel offers before anyone picks one: the model the server runs, else the
+ * catalog's default, else its first entry. Empty only while there is no status at all.
+ */
+const initialModelFor = (status: LlamaCppStatusResponse | null): string =>
+  status
+    ? status.sidecar.model ||
+      status.catalog.find((m) => m.is_default)?.name ||
+      status.catalog[0]?.name ||
+      ''
+    : '';
 
 const acceleratorMemoryLabel = (kind: string | undefined) =>
   kind === 'apple_unified' ? 'unified memory' : 'VRAM';
@@ -110,7 +127,14 @@ export default function LlamaServerInlineCard({ onSuccess }: LlamaServerInlineCa
   const [isChecking, setIsChecking] = useState(
     () => llamaServerStore.getSnapshot().status === null
   );
-  const [selectedModel, setSelectedModel] = useState<string>('');
+  // The pick sticks once made (or once a status first supplies one), and until then the panel reads
+  // the model straight from the status. Seeded only from an effect, it was '' for the first commit
+  // of every remount: "Download and start" mounted disabled and its 125 ms opacity transition faded
+  // it in from half on each tab switch (vision FR-R3-1; principle 9, an async value does not
+  // animate). With the read-through, the primary is drawn enabled in the frame it first appears.
+  const [pickedModel, setSelectedModel] = useState<string>(() =>
+    initialModelFor(llamaServerStore.getSnapshot().status)
+  );
   const [isConnecting, setIsConnecting] = useState(false);
   const [pendingModelStart, setPendingModelStart] = useState<string | null>(null);
   const connectingRef = useRef(false);
@@ -126,6 +150,7 @@ export default function LlamaServerInlineCard({ onSuccess }: LlamaServerInlineCa
     };
   }, []);
 
+  const selectedModel = pickedModel || initialModelFor(status);
   const sidecar = status?.sidecar ?? null;
   const catalog = useMemo(() => status?.catalog ?? [], [status]);
   const system = status?.system ?? null;
@@ -198,9 +223,7 @@ export default function LlamaServerInlineCard({ onSuccess }: LlamaServerInlineCa
 
   useEffect(() => {
     if (!status) return;
-    const defaultModel =
-      status.catalog.find((m) => m.is_default)?.name ?? status.catalog[0]?.name ?? '';
-    setSelectedModel((prev) => prev || status.sidecar.model || defaultModel);
+    setSelectedModel((prev) => prev || initialModelFor(status));
   }, [status]);
 
   // Surface a polled terminal failure (sidecar error / deadline timeout)
