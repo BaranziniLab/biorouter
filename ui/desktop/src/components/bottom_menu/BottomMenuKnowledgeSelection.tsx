@@ -12,6 +12,12 @@ type KnowledgeBase = ReturnType<typeof useKnowledge>['bases'][number];
 export interface KnowledgePicker {
   /** Visible bases, the chip's share of the Tools count. */
   visibleCount: number;
+  /**
+   * Whether `visibleCount` stands: the base list has been read, and this
+   * scope's selection has settled. Until then the Tools chip shows no number
+   * (V2-R7-3).
+   */
+  answered: boolean;
   query: string;
   setQuery: (query: string) => void;
   bases: KnowledgeBase[];
@@ -30,6 +36,7 @@ export interface KnowledgePicker {
  *   window changes nothing this renderer can hear.
  */
 export function useKnowledgePicker({ open }: { open: boolean }): KnowledgePicker {
+  const knowledge = useKnowledge();
   const {
     bases,
     visibleBases,
@@ -39,8 +46,20 @@ export function useKnowledgePicker({ open }: { open: boolean }): KnowledgePicker
     hideAllKnowledgeBases,
     showAllKnowledgeBases,
     refresh,
-  } = useKnowledge();
+    loading,
+  } = knowledge;
   const [searchQuery, setSearchQuery] = useState('');
+
+  // The list counts once it has been read at all: a later re-read (`loading`
+  // again, after every turn) must not take a number already shown away.
+  const [basesRead, setBasesRead] = useState(!loading);
+  if (!basesRead && !loading) setBasesRead(true);
+  // Whether the selection (which bases are hidden) is this scope's answer and
+  // not the previous chat's or this renderer's cached guess. Read as optional:
+  // `KnowledgeContext` (WS-KNOWLEDGE) gains the field through request
+  // WS-COMPOSER-4; until it does there is nothing to wait for.
+  const selectionSettled =
+    (knowledge as Partial<{ selectionSettled: boolean }>).selectionSettled ?? true;
 
   useEffect(() => {
     if (open) void refresh();
@@ -87,6 +106,7 @@ export function useKnowledgePicker({ open }: { open: boolean }): KnowledgePicker
 
   return {
     visibleCount: visibleBases.length,
+    answered: basesRead && selectionSettled,
     query: searchQuery,
     setQuery: setSearchQuery,
     bases: filteredBases,

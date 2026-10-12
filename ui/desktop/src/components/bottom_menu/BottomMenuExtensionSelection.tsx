@@ -23,6 +23,8 @@ import {
 import { EXTENSIONS_COPY, TOOLS_COPY } from './copy';
 import { PickerPanel, PickerRow } from './PickerPanel';
 
+const NO_EXTENSIONS: ExtensionConfig[] = [];
+
 /** What the extensions list needs from its picker state (see `useExtensionPicker`). */
 export interface ExtensionPicker {
   sessionId: string | null;
@@ -30,6 +32,13 @@ export interface ExtensionPicker {
   isHubView: boolean;
   /** The chip's number: extensions the user added, shipped capabilities excluded. */
   activeCount: number;
+  /**
+   * Whether `activeCount` is this chat's own figure: its extensions have been
+   * read (or the read failed, leaving the fallback as the best there is). Home
+   * counts the configuration, which is always to hand. Until then the Tools
+   * chip shows no number (V2-R7-3).
+   */
+  answered: boolean;
   query: string;
   setQuery: (query: string) => void;
   rows: ExtensionRow[];
@@ -89,8 +98,27 @@ export function useExtensionPicker(
   useEffect(() => {
     onOpenRequestRef.current = onOpenRequest;
   }, [onOpenRequest]);
-  const [sessionExtensions, setSessionExtensions] = useState<ExtensionConfig[]>([]);
-  const [sessionExtensionsLoaded, setSessionExtensionsLoaded] = useState(false);
+  // This chat's own extensions, KEYED by the chat they were read for, so a list
+  // read for the previous chat is never counted under this one, not even for
+  // the one frame before an effect could clear it (V2-R7-3).
+  const [sessionRead, setSessionRead] = useState<{
+    sessionId: string;
+    extensions: ExtensionConfig[];
+  } | null>(null);
+  // The chat whose first read has settled, answered or failed.
+  const [settledFor, setSettledFor] = useState<string | null>(null);
+  const sessionExtensionsLoaded = sessionRead !== null && sessionRead.sessionId === sessionId;
+  const sessionExtensions = sessionExtensionsLoaded ? sessionRead.extensions : NO_EXTENSIONS;
+  // A read that lands after the chat changed is dropped: written into the one
+  // slot, it would replace the new chat's list with the old chat's.
+  const currentSessionRef = useRef(sessionId);
+  useEffect(() => {
+    currentSessionRef.current = sessionId;
+  }, [sessionId]);
+  const adoptSessionExtensions = useCallback((readFor: string, extensions: ExtensionConfig[]) => {
+    if (currentSessionRef.current !== readFor) return;
+    setSessionRead({ sessionId: readFor, extensions });
+  }, []);
   const [hubUpdateTrigger, setHubUpdateTrigger] = useState(0);
   const [sessionOverrides, setSessionOverrides] = useState<Map<string, boolean>>(new Map());
   const [pendingExtensionNames, setPendingExtensionNames] = useState<Set<string>>(new Set());
@@ -139,8 +167,6 @@ export function useExtensionPicker(
 
   useEffect(() => {
     sessionToggleChainsRef.current.clear();
-    setSessionExtensions([]);
-    setSessionExtensionsLoaded(false);
     setSessionOverrides(new Map());
     setPendingExtensionNames(new Set());
   }, [sessionId]);
@@ -162,12 +188,14 @@ export function useExtensionPicker(
           headers: await userActionHeaders(),
         });
 
-        if (current && response.data?.extensions) {
-          setSessionExtensions(response.data.extensions);
-          setSessionExtensionsLoaded(true);
+        if (!current) return;
+        if (response.data?.extensions) {
+          adoptSessionExtensions(sessionId, response.data.extensions);
         }
+        setSettledFor(sessionId);
       } catch (error) {
         console.error('Failed to fetch session extensions:', error);
+        if (current) setSettledFor(sessionId);
       }
     };
 
@@ -176,7 +204,7 @@ export function useExtensionPicker(
     return () => {
       current = false;
     };
-  }, [sessionId, isOpen, refreshTrigger]);
+  }, [sessionId, isOpen, refreshTrigger, adoptSessionExtensions]);
 
   const handleToggle = useCallback(
     (extensionConfig: FixedExtensionEntry, requestedState?: boolean) => {
@@ -235,8 +263,7 @@ export function useExtensionPicker(
           });
           if (sessionToggleChainsRef.current.get(name) !== operation) return;
           if (response.data?.extensions) {
-            setSessionExtensions(response.data.extensions);
-            setSessionExtensionsLoaded(true);
+            adoptSessionExtensions(sessionId, response.data.extensions);
           }
         } catch {
           toastService.error({
@@ -260,7 +287,7 @@ export function useExtensionPicker(
         }
       });
     },
-    [isHubView, sessionId]
+    [isHubView, sessionId, adoptSessionExtensions]
   );
 
   // Merge all available extensions with session-specific or hub override state
@@ -369,9 +396,11 @@ export function useExtensionPicker(
    *
    * Before the session fetch lands there is nothing session-specific to count,
    * so it falls back to the enabled config — the same fallback `GET
-   * /sessions/{id}/extensions` applies server-side, so the chip does not flash
-   * `0` on the way to the real number. `sessionOverrides` is layered on top so a
-   * toggle moves the chip immediately rather than after the refetch.
+   * /sessions/{id}/extensions` applies server-side. The chip does not SHOW that
+   * fallback while the read is out (`answered`, V2-R7-3: it read "Tools 2" and
+   * then "Tools 5" on every chat switch); it stands only when the read failed.
+   * `sessionOverrides` is layered on top so a toggle moves the chip immediately
+   * rather than after the refetch.
    */
   const activeCount = useMemo(() => {
     const hubOverrides = getExtensionOverrides();
@@ -469,8 +498,7 @@ export function useExtensionPicker(
         headers: await userActionHeaders(),
       });
       if (response.data?.extensions) {
-        setSessionExtensions(response.data.extensions);
-        setSessionExtensionsLoaded(true);
+        adoptSessionExtensions(sessionId, response.data.extensions);
       }
     } catch {
       toastService.error({
@@ -492,6 +520,7 @@ export function useExtensionPicker(
     visibleEnabledCount,
     isHubView,
     sessionId,
+    adoptSessionExtensions,
   ]);
 
   const rows = useMemo<ExtensionRow[]>(
@@ -533,6 +562,7 @@ export function useExtensionPicker(
     sessionId,
     isHubView,
     activeCount,
+    answered: isHubView || settledFor === sessionId,
     query: searchQuery,
     setQuery: setSearchQuery,
     rows,

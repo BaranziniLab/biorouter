@@ -109,6 +109,7 @@ function BottomMenuSkillSelection({ sessionId }: { sessionId: string | null }) {
       <button
         type="button"
         aria-label={`Manage skills (${picker.activeCount} enabled)`}
+        data-answered={String(picker.answered)}
         onClick={() => setOpen((current) => !current)}
       />
       {open && <SkillsPanel picker={picker} />}
@@ -517,6 +518,78 @@ describe('BottomMenuSkillSelection', () => {
     render(<BottomMenuSkillSelection sessionId={null} />);
     fireEvent.click(screen.getByLabelText(/Manage skills/));
     expect(await screen.findByText(/Could not read the skill catalog/)).toBeInTheDocument();
+  });
+
+  /**
+   * V2-R7-3: the Tools chip shows its number only once every list has answered
+   * for THIS chat. The catalog hook keeps its previous view until the next
+   * chat's read commits, so `answered` must not read that view as this chat's.
+   */
+  describe('answered for this chat (V2-R7-3)', () => {
+    const twoSkills = view({ skills: [skill('alpha'), skill('beta')] });
+
+    it('has not answered until the chat’s catalog lands', async () => {
+      let resolveRead: ((value: unknown) => void) | undefined;
+      mocks.skillCatalogHandler.mockReturnValue(
+        new Promise((resolve) => {
+          resolveRead = resolve;
+        })
+      );
+      render(<BottomMenuSkillSelection sessionId="chat-1" />);
+      const chip = screen.getByLabelText(/Manage skills/);
+      expect(chip).toHaveAttribute('data-answered', 'false');
+
+      await act(async () => {
+        resolveRead?.({ data: twoSkills });
+        await Promise.resolve();
+      });
+      expect(chip).toHaveAttribute('data-answered', 'true');
+      expect(chip).toHaveAccessibleName('Manage skills (2 enabled)');
+    });
+
+    it('has answered for a catalog that resolves before React renders the read', async () => {
+      // The read's `loading: true` and its answer land in one batch here, so a
+      // check that waited to see `loading` go true would never answer.
+      render(<BottomMenuSkillSelection sessionId="chat-1" />);
+      await waitFor(() =>
+        expect(screen.getByLabelText(/Manage skills/)).toHaveAttribute('data-answered', 'true')
+      );
+    });
+
+    it('has not answered for the next chat until its own catalog lands', async () => {
+      serve(twoSkills);
+      const { rerender } = render(<BottomMenuSkillSelection sessionId="chat-a" />);
+      const chip = screen.getByLabelText(/Manage skills/);
+      await waitFor(() => expect(chip).toHaveAttribute('data-answered', 'true'));
+      expect(chip).toHaveAccessibleName('Manage skills (2 enabled)');
+
+      let resolveNext: ((value: unknown) => void) | undefined;
+      mocks.skillCatalogHandler.mockReturnValue(
+        new Promise((resolve) => {
+          resolveNext = resolve;
+        })
+      );
+      rerender(<BottomMenuSkillSelection sessionId="chat-b" />);
+      // In the very commit: chat A's catalog is still the hook's view.
+      expect(chip).toHaveAttribute('data-answered', 'false');
+      await act(async () => {});
+      expect(chip).toHaveAttribute('data-answered', 'false');
+
+      await act(async () => {
+        resolveNext?.({ data: view({ skills: [skill('gamma')] }) });
+        await Promise.resolve();
+      });
+      expect(chip).toHaveAttribute('data-answered', 'true');
+      expect(chip).toHaveAccessibleName('Manage skills (1 enabled)');
+    });
+
+    it('has answered when the catalog cannot be read', async () => {
+      mocks.skillCatalogHandler.mockRejectedValue(new Error('daemon is down'));
+      render(<BottomMenuSkillSelection sessionId="chat-1" />);
+      await waitFor(() =>
+        expect(screen.getByLabelText(/Manage skills/)).toHaveAttribute('data-answered', 'true')
+      );
+    });
   });
 });
 

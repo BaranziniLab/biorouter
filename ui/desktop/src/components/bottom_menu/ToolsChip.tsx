@@ -113,6 +113,30 @@ export function ToolsChip({ sessionId }: ToolsChipProps) {
   const total = extensions.activeCount + skills.activeCount + knowledge.visibleCount;
   const counts = [extensions.activeCount, skills.activeCount, knowledge.visibleCount] as const;
 
+  // ⚠ **The number is shown only once all three lists have answered for THIS
+  // chat** (V2-R7-3, principle 10). Summed as each arrived, a chat switch read
+  // "Tools 2", then 5, then 4: the configuration's fallback, then each list in
+  // turn. A number shown and then withdrawn is the class V2-R5-5 fixed for the
+  // summary rail. So the chip reads "Tools" alone until it can state a fact.
+  //
+  // Two cases keep the last settled number instead of hiding it:
+  // - the same chat, when one list goes back to asking (the knowledge selection
+  //   follows the window's focused chat, which moves between split panes);
+  //   the number changes once, when the answer lands;
+  // - a chat that THIS composer has just started (the first message of a new
+  //   tab, which keeps its mount): it was created with what the chip counted.
+  const chat = sessionId || null;
+  const ready = extensions.answered && skills.answered && knowledge.answered;
+  const [settled, setSettled] = useState<{ chat: string | null; total: number } | null>(null);
+  if (ready && (settled === null || settled.chat !== chat || settled.total !== total)) {
+    setSettled({ chat, total });
+  }
+  const shownTotal = ready
+    ? total
+    : settled !== null && (settled.chat === chat || (settled.chat === null && chat !== null))
+      ? settled.total
+      : null;
+
   const onOpenChange = (next: boolean) => {
     setOpen(next);
     if (!next) {
@@ -131,15 +155,15 @@ export function ToolsChip({ sessionId }: ToolsChipProps) {
               type="button"
               data-testid="composer-tools-chip"
               className="br-picker-chip"
-              aria-label={TOOLS_COPY.chipLabel(...counts)}
+              aria-label={ready ? TOOLS_COPY.chipLabel(...counts) : TOOLS_COPY.chip}
             >
               <span>{TOOLS_COPY.chip}</span>
-              <span className="br-picker-chip__count">{total}</span>
+              {shownTotal !== null && <span className="br-picker-chip__count">{shownTotal}</span>}
               <ChevronDown className="br-picker-chip__chevron" aria-hidden="true" />
             </button>
           </PopoverTrigger>
         </TooltipTrigger>
-        <TooltipContent side="top">{TOOLS_COPY.chipTooltip(...counts)}</TooltipContent>
+        {ready && <TooltipContent side="top">{TOOLS_COPY.chipTooltip(...counts)}</TooltipContent>}
       </Tooltip>
       <PopoverContent
         side="top"

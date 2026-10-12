@@ -20,6 +20,7 @@ function BottomMenuExtensionSelection({ sessionId }: { sessionId: string | null 
       <button
         type="button"
         aria-label={`Manage extensions (${picker.activeCount} added)`}
+        data-answered={String(picker.answered)}
         onClick={() => setOpen((current) => !current)}
       />
       {open && <ExtensionsPanel picker={picker} />}
@@ -311,6 +312,80 @@ describe('BottomMenuExtensionSelection', () => {
     // (autovisualiser, code_execution) and do not count; two are the user's own
     // (spoke, workspace) and do.
     expect(screen.getByLabelText('Manage extensions (2 added)')).toBeInTheDocument();
+  });
+
+  /**
+   * V2-R7-3: the Tools chip shows its number only once every list has answered
+   * for THIS chat. The fallback above is still the count while the read is out;
+   * `answered` is what tells the chip not to show it.
+   */
+  it('has not answered while the chat’s read is out, and has once it lands', async () => {
+    let resolveRead: ((value: unknown) => void) | undefined;
+    mocks.getSessionExtensions.mockReturnValue(
+      new Promise((resolve) => {
+        resolveRead = resolve;
+      }) as never
+    );
+    render(<BottomMenuExtensionSelection sessionId="session-1" />);
+    const chip = screen.getByLabelText(/Manage extensions/);
+    expect(chip).toHaveAttribute('data-answered', 'false');
+
+    await act(async () => {
+      resolveRead?.({ data: { extensions: [{ type: 'stdio', name: 'example' }] } });
+      await Promise.resolve();
+    });
+    expect(chip).toHaveAttribute('data-answered', 'true');
+    expect(chip).toHaveAccessibleName('Manage extensions (1 added)');
+  });
+
+  it('has answered when the chat’s read fails, so the chip is not left without a number', async () => {
+    const quiet = vi.spyOn(console, 'error').mockImplementation(() => {});
+    mocks.getSessionExtensions.mockRejectedValue(new Error('offline') as never);
+    render(<BottomMenuExtensionSelection sessionId="session-1" />);
+    await waitFor(() =>
+      expect(screen.getByLabelText(/Manage extensions/)).toHaveAttribute('data-answered', 'true')
+    );
+    quiet.mockRestore();
+  });
+
+  it('has not answered for the next chat in the commit that switches to it', async () => {
+    mocks.getSessionExtensions.mockResolvedValueOnce({
+      data: {
+        extensions: [
+          { type: 'stdio', name: 'spoke' },
+          { type: 'stdio', name: 'notetaker' },
+          { type: 'stdio', name: 'example' },
+        ],
+      },
+    } as never);
+    const { rerender } = render(<BottomMenuExtensionSelection sessionId="chat-a" />);
+    const chip = screen.getByLabelText(/Manage extensions/);
+    await waitFor(() => expect(chip).toHaveAccessibleName('Manage extensions (3 added)'));
+    expect(chip).toHaveAttribute('data-answered', 'true');
+
+    let resolveNext: ((value: unknown) => void) | undefined;
+    mocks.getSessionExtensions.mockReturnValueOnce(
+      new Promise((resolve) => {
+        resolveNext = resolve;
+      }) as never
+    );
+    // The same mount binds another chat. Read in the very commit: chat A's list
+    // must not count for chat B, not even until an effect clears it.
+    rerender(<BottomMenuExtensionSelection sessionId="chat-b" />);
+    expect(chip).toHaveAttribute('data-answered', 'false');
+    expect(chip).not.toHaveAccessibleName('Manage extensions (3 added)');
+
+    await act(async () => {
+      resolveNext?.({ data: { extensions: [{ type: 'stdio', name: 'example' }] } });
+      await Promise.resolve();
+    });
+    expect(chip).toHaveAttribute('data-answered', 'true');
+    expect(chip).toHaveAccessibleName('Manage extensions (1 added)');
+  });
+
+  it('has answered at once on Home, where the configuration is the count', () => {
+    render(<BottomMenuExtensionSelection sessionId={null} />);
+    expect(screen.getByLabelText(/Manage extensions/)).toHaveAttribute('data-answered', 'true');
   });
 
   it('moves the chip the moment a row is toggled, before the refetch', async () => {

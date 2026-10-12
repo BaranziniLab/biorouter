@@ -17,6 +17,7 @@ function BottomMenuKnowledgeSelection({ inChat = true }: { inChat?: boolean }) {
       <button
         type="button"
         aria-label={`Manage knowledge bases (${picker.visibleCount} visible)`}
+        data-answered={String(picker.answered)}
         onClick={() => setOpen((current) => !current)}
       />
       {open && <KnowledgePanel picker={picker} inChat={inChat} />}
@@ -36,6 +37,13 @@ const mocks = vi.hoisted(() => ({
   showAllKnowledgeBases: vi.fn(),
   refresh: vi.fn(async () => {}),
   state: { bases: [] as { id: string; name: string }[], hiddenKbIds: [] as string[] },
+  /** The context's `loading` (the base list is being read). */
+  loading: false,
+  /**
+   * The context's `selectionSettled`, or `undefined` for a context that does
+   * not report it (WS-COMPOSER-4 asks `KnowledgeContext` to).
+   */
+  selectionSettled: undefined as boolean | undefined,
 }));
 
 // A faithful stand-in for the real context, because the defect is in *how* the
@@ -69,6 +77,8 @@ vi.mock('../knowledge/KnowledgeContext', () => ({
         commit([]);
       },
       refresh: mocks.refresh,
+      loading: mocks.loading,
+      ...(mocks.selectionSettled === undefined ? {} : { selectionSettled: mocks.selectionSettled }),
     };
   },
 }));
@@ -103,6 +113,8 @@ describe('BottomMenuKnowledgeSelection', () => {
     vi.clearAllMocks();
     mocks.state.bases = [...DEFAULT_BASES];
     mocks.state.hiddenKbIds = [];
+    mocks.loading = false;
+    mocks.selectionSettled = undefined;
   });
 
   it('uses the one picker shell: a search field, a scope line and option rows', async () => {
@@ -212,5 +224,44 @@ describe('BottomMenuKnowledgeSelection', () => {
 
     expect(mocks.state.hiddenKbIds).toEqual(['soul']);
     expect(contextWrites()).toBe(1);
+  });
+
+  /**
+   * V2-R7-3: the Tools chip shows its number only once every list has answered.
+   * This list stands once the bases have been read at all and the selection is
+   * this scope's own answer.
+   */
+  describe('answered (V2-R7-3)', () => {
+    const chip = () => screen.getByRole('button', { name: /Manage knowledge bases/ });
+
+    it('has not answered before the base list is first read, and keeps its answer through re-reads', () => {
+      mocks.loading = true;
+      const { rerender } = render(<BottomMenuKnowledgeSelection />);
+      expect(chip()).toHaveAttribute('data-answered', 'false');
+
+      mocks.loading = false;
+      rerender(<BottomMenuKnowledgeSelection />);
+      expect(chip()).toHaveAttribute('data-answered', 'true');
+
+      // The context re-reads after every turn: a number already shown stays.
+      mocks.loading = true;
+      rerender(<BottomMenuKnowledgeSelection />);
+      expect(chip()).toHaveAttribute('data-answered', 'true');
+    });
+
+    it('waits for the selection when the context says it has not settled', () => {
+      mocks.selectionSettled = false;
+      const { rerender } = render(<BottomMenuKnowledgeSelection />);
+      expect(chip()).toHaveAttribute('data-answered', 'false');
+
+      mocks.selectionSettled = true;
+      rerender(<BottomMenuKnowledgeSelection />);
+      expect(chip()).toHaveAttribute('data-answered', 'true');
+    });
+
+    it('has answered when the context does not report the selection’s state', () => {
+      render(<BottomMenuKnowledgeSelection />);
+      expect(chip()).toHaveAttribute('data-answered', 'true');
+    });
   });
 });

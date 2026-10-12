@@ -17,6 +17,12 @@ export interface SkillPicker {
   sessionId: string | null;
   /** Enabled skills, the chip's share of the Tools count. */
   activeCount: number;
+  /**
+   * Whether `activeCount` is this chat's: the catalog has answered (or failed)
+   * since the chat came into view. Until then the Tools chip shows no number
+   * (V2-R7-3).
+   */
+  answered: boolean;
   query: string;
   setQuery: (query: string) => void;
   entries: SkillCatalogEntry[];
@@ -88,6 +94,19 @@ export function useSkillPicker(sessionId: string | null, { open }: { open: boole
   );
 
   const activeCount = useMemo(() => entries.filter((e) => e.enabled).length, [entries]);
+
+  // Whether the catalog has answered for THIS chat (V2-R7-3). `useSkillCatalog`
+  // keeps what it last held (the previous chat's view, or an empty one at
+  // first) until the new chat's read commits, and `loading` cannot say which
+  // read settled. So the chat counts as answered once a view, or an error,
+  // newer than the one it came into view with has been committed.
+  const [openedOn, setOpenedOn] = useState(() => ({ sessionId, entries, error: catalog.error }));
+  if (openedOn.sessionId !== sessionId) {
+    setOpenedOn({ sessionId, entries, error: catalog.error });
+  }
+  const answered =
+    openedOn.sessionId === sessionId &&
+    (entries !== openedOn.entries || (catalog.error !== null && catalog.error !== openedOn.error));
   const visibleEnabledCount = useMemo(
     () => filteredEntries.filter((e) => e.enabled).length,
     [filteredEntries]
@@ -116,6 +135,7 @@ export function useSkillPicker(sessionId: string | null, { open }: { open: boole
   return {
     sessionId,
     activeCount,
+    answered,
     query: searchQuery,
     setQuery: setSearchQuery,
     entries: filteredEntries,

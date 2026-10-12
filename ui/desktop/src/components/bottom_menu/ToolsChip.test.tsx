@@ -4,6 +4,7 @@ import userEvent from '@testing-library/user-event';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ToolsChip } from './ToolsChip';
 import { TOOLS_COPY } from './copy';
+import { TOOLTIP_DELAY_MS } from '../ui/Tooltip';
 
 /**
  * Spec 3.7: ONE Tools chip ("Tools" and a sum) opening ONE popover, with a
@@ -19,6 +20,10 @@ const hooks = vi.hoisted(() => ({
   setExtensionsQuery: vi.fn(),
   setSkillsQuery: vi.fn(),
   setKnowledgeQuery: vi.fn(),
+  // What each list reports: its count, and whether it has answered for the chat.
+  extensions: { count: 4, answered: true },
+  skills: { count: 9, answered: true },
+  knowledge: { count: 2, answered: true },
 }));
 
 vi.mock('./BottomMenuExtensionSelection', () => ({
@@ -28,7 +33,11 @@ vi.mock('./BottomMenuExtensionSelection', () => ({
   ) => {
     hooks.extensionsOpen.push(open);
     hooks.requestOpen = onOpenRequest ?? null;
-    return { activeCount: 4, setQuery: hooks.setExtensionsQuery };
+    return {
+      activeCount: hooks.extensions.count,
+      answered: hooks.extensions.answered,
+      setQuery: hooks.setExtensionsQuery,
+    };
   },
   ExtensionsPanel: ({ inputRef }: { inputRef?: React.Ref<HTMLInputElement> }) => (
     <input data-testid="extensions-panel" ref={inputRef} aria-label="extensions search" />
@@ -37,7 +46,11 @@ vi.mock('./BottomMenuExtensionSelection', () => ({
 vi.mock('./BottomMenuSkillSelection', () => ({
   useSkillPicker: (_sessionId: string | null, { open }: { open: boolean }) => {
     hooks.skillsOpen.push(open);
-    return { activeCount: 9, setQuery: hooks.setSkillsQuery };
+    return {
+      activeCount: hooks.skills.count,
+      answered: hooks.skills.answered,
+      setQuery: hooks.setSkillsQuery,
+    };
   },
   SkillsPanel: ({ inputRef }: { inputRef?: React.Ref<HTMLInputElement> }) => (
     <input data-testid="skills-panel" ref={inputRef} aria-label="skills search" />
@@ -46,7 +59,11 @@ vi.mock('./BottomMenuSkillSelection', () => ({
 vi.mock('./BottomMenuKnowledgeSelection', () => ({
   useKnowledgePicker: ({ open }: { open: boolean }) => {
     hooks.knowledgeOpen.push(open);
-    return { visibleCount: 2, setQuery: hooks.setKnowledgeQuery };
+    return {
+      visibleCount: hooks.knowledge.count,
+      answered: hooks.knowledge.answered,
+      setQuery: hooks.setKnowledgeQuery,
+    };
   },
   KnowledgePanel: ({
     inChat,
@@ -81,6 +98,9 @@ beforeEach(() => {
   hooks.skillsOpen = [];
   hooks.knowledgeOpen = [];
   hooks.requestOpen = null;
+  hooks.extensions = { count: 4, answered: true };
+  hooks.skills = { count: 9, answered: true };
+  hooks.knowledge = { count: 2, answered: true };
   vi.clearAllMocks();
 });
 
@@ -244,5 +264,125 @@ describe('ToolsChip', () => {
     fireEvent.click(screen.getByTestId('composer-tools-chip'));
     fireEvent.click(await screen.findByRole('radio', { name: 'Knowledge' }));
     expect(await screen.findByTestId('knowledge-panel')).toHaveAttribute('data-in-chat', 'false');
+  });
+
+  describe('the number states this chat’s tools, or nothing (V2-R7-3)', () => {
+    /**
+     * Every number the chip has shown, in order, from the first commit on. The
+     * observer reports in a microtask, so each step is flushed before the next.
+     */
+    function recordNumbers(chip: HTMLElement): string[] {
+      const seen: string[] = [];
+      const note = () => {
+        const shown = chip.querySelector('.br-picker-chip__count')?.textContent ?? '';
+        if (seen[seen.length - 1] !== shown) seen.push(shown);
+      };
+      note();
+      new MutationObserver(note).observe(chip, {
+        childList: true,
+        subtree: true,
+        characterData: true,
+      });
+      return seen;
+    }
+    const flush = () => act(async () => {});
+
+    it('shows no number until all three lists have answered, then the total once', async () => {
+      const user = userEvent.setup();
+      hooks.extensions = { count: 2, answered: false };
+      hooks.skills = { count: 0, answered: false };
+      hooks.knowledge = { count: 1, answered: false };
+      const { rerender } = render(<ToolsChip sessionId="chat-1" />);
+      const chip = screen.getByTestId('composer-tools-chip');
+      const numbers = recordNumbers(chip);
+
+      expect(chip).toHaveTextContent(/^Tools$/);
+      expect(chip).toHaveAccessibleName(TOOLS_COPY.chip);
+      // Nothing to say on hover either: the parts are not known. (Held past the
+      // delay a ready chip's tooltip takes, so the check cannot pass early.)
+      await user.hover(chip);
+      await act(() => new Promise((resolve) => setTimeout(resolve, TOOLTIP_DELAY_MS + 200)));
+      expect(screen.queryByRole('tooltip')).toBeNull();
+      await user.unhover(chip);
+
+      // The lists answer one at a time, as they did on a chat switch: the
+      // configuration's fallback first, then the chat's own figures.
+      hooks.knowledge = { count: 0, answered: true };
+      rerender(<ToolsChip sessionId="chat-1" />);
+      await flush();
+      hooks.skills = { count: 3, answered: true };
+      rerender(<ToolsChip sessionId="chat-1" />);
+      await flush();
+      expect(chip).toHaveTextContent(/^Tools$/);
+      hooks.extensions = { count: 1, answered: true };
+      rerender(<ToolsChip sessionId="chat-1" />);
+      await flush();
+
+      expect(chip).toHaveTextContent('Tools4');
+      expect(chip).toHaveAccessibleName('Tools: 1 extension, 3 skills, 0 knowledge bases');
+      // Never 2, 5 or 3 on the way: nothing, then the total.
+      expect(numbers).toEqual(['', '4']);
+    });
+
+    it('never shows the previous chat’s number under the next one', async () => {
+      const { rerender } = render(<ToolsChip sessionId="chat-a" />);
+      const chip = screen.getByTestId('composer-tools-chip');
+      expect(chip).toHaveTextContent('Tools15');
+      const numbers = recordNumbers(chip);
+
+      // The tab keeps its mount and binds another chat: the lists still hold
+      // chat A's figures until chat B's answers land.
+      hooks.extensions = { count: 4, answered: false };
+      hooks.skills = { count: 9, answered: false };
+      rerender(<ToolsChip sessionId="chat-b" />);
+      await flush();
+      expect(chip).toHaveTextContent(/^Tools$/);
+
+      hooks.extensions = { count: 1, answered: true };
+      hooks.skills = { count: 2, answered: true };
+      rerender(<ToolsChip sessionId="chat-b" />);
+      await flush();
+      expect(chip).toHaveTextContent('Tools5');
+      expect(numbers).toEqual(['15', '', '5']);
+    });
+
+    it('keeps the number while one list re-asks for the same chat, and moves it once', async () => {
+      const { rerender } = render(<ToolsChip sessionId="chat-1" />);
+      const chip = screen.getByTestId('composer-tools-chip');
+      const numbers = recordNumbers(chip);
+
+      // The knowledge selection follows the window's focused chat, which moves
+      // between split panes: it asks again, and its cached guess is not shown.
+      hooks.knowledge = { count: 5, answered: false };
+      rerender(<ToolsChip sessionId="chat-1" />);
+      await flush();
+      expect(chip).toHaveTextContent('Tools15');
+
+      hooks.knowledge = { count: 3, answered: true };
+      rerender(<ToolsChip sessionId="chat-1" />);
+      await flush();
+      expect(chip).toHaveTextContent('Tools16');
+      expect(numbers).toEqual(['15', '16']);
+    });
+
+    it('carries the count into a chat this composer has just started', async () => {
+      // A new tab's composer: no chat yet, counting what the next chat gets.
+      const { rerender } = render(<ToolsChip sessionId={null} />);
+      const chip = screen.getByTestId('composer-tools-chip');
+      const numbers = recordNumbers(chip);
+
+      // The first message creates the chat; its lists have not answered yet.
+      hooks.extensions = { count: 4, answered: false };
+      hooks.skills = { count: 9, answered: false };
+      rerender(<ToolsChip sessionId="chat-new" />);
+      await flush();
+      expect(chip).toHaveTextContent('Tools15');
+
+      hooks.extensions = { count: 4, answered: true };
+      hooks.skills = { count: 9, answered: true };
+      rerender(<ToolsChip sessionId="chat-new" />);
+      await flush();
+      expect(numbers).toEqual(['15']);
+    });
   });
 });
