@@ -281,11 +281,23 @@ export default function ExtensionModal({
   };
 
   /**
+   * Whether a press would go through, which is when the submit button is the coral primary
+   * (vision V3-R9-5, coordinator ruling 22; the same rule the provider dialog's Save follows).
+   * Add custom extension opens on an empty Name and Command, and a coral button that can only
+   * answer "Name is required" says "this will do something" when it will not. It is the one
+   * decision `handleSubmit` itself asks, so the colour and the press cannot disagree: Name and
+   * Command (or Endpoint) filled, no half-filled variable or header row, a timeout above zero.
+   * An edit opens with all of that already true, so its button is coral from the first frame.
+   */
+  const ready = isFormValid();
+
+  /**
    * Submit. The button is enabled whenever nothing is being saved (Crew's dialogs, the reference):
    * it used to be disabled while the form was invalid, so the messages a failed validation draws
    * under the fields (`submitAttempted`) could never appear, and a person facing a grey button
    * had to guess what was missing. Now a press that cannot go through says what is wrong under
-   * the field and puts the keyboard on the first one that is.
+   * the field and puts the keyboard on the first one that is. Until the form can go through the
+   * button is `secondary`, still pressable (see `ready`).
    */
   const handleSubmit = async () => {
     if (submitting) return;
@@ -426,6 +438,7 @@ export default function ExtensionModal({
               </Button>
               <Button
                 data-testid="extension-submit-btn"
+                variant={ready ? 'default' : 'secondary'}
                 onClick={handleSubmit}
                 disabled={submitting}
               >

@@ -399,6 +399,123 @@ describe('ExtensionTimeoutField', () => {
   });
 });
 
+/**
+ * Vision V3-R9-5 (coordinator ruling 22, design.md 9.7): Add custom extension opened on an empty
+ * Name and Command with "Add extension" coral and enabled, and its click could only answer "Name
+ * is required". Coral means "this will do something", so the button is `secondary` until a press
+ * would go through, and it stays pressable so the press can still say what is missing. An edit
+ * opens with every required field filled, so it is coral from the first frame.
+ */
+describe('ExtensionModal: the submit button is the coral primary only when a press would go through', () => {
+  const isCoral = (button: HTMLElement) => button.classList.contains('bg-background-accent');
+  const submit = () => screen.getByTestId('extension-submit-btn');
+  const mount = (
+    initialData: ExtensionFormData,
+    props: Partial<React.ComponentProps<typeof ExtensionModal>> = {}
+  ) =>
+    render(
+      <ExtensionModal
+        title="Add custom extension"
+        initialData={initialData}
+        onClose={vi.fn()}
+        onSubmit={vi.fn()}
+        submitLabel="Add extension"
+        modalType="add"
+        {...props}
+      />
+    );
+
+  it('opens an empty Add form neutral and still pressable', () => {
+    mount(stdio({ name: '', cmd: '' }));
+
+    expect(submit()).toBeEnabled();
+    expect(isCoral(submit())).toBe(false);
+  });
+
+  it('turns coral when Name and Command are both filled, and not before', async () => {
+    const user = userEvent.setup({ delay: null });
+    mount(stdio({ name: '', cmd: '' }));
+
+    await user.type(screen.getByLabelText(COPY.nameLabel), 'Test MCP');
+    expect(isCoral(submit()), 'a name alone').toBe(false);
+
+    await user.type(screen.getByLabelText(COPY.commandLabel), 'npx -y server');
+    expect(isCoral(submit()), 'name and command').toBe(true);
+    expect(submit()).toBeEnabled();
+
+    await user.clear(screen.getByLabelText(COPY.nameLabel));
+    expect(isCoral(submit()), 'the name cleared again').toBe(false);
+  });
+
+  it('counts spaces as nothing: a blank name or command is not ready', () => {
+    mount(stdio({ name: '   ', cmd: 'node server.js' }));
+    expect(isCoral(submit()), 'blank name').toBe(false);
+  });
+
+  it('asks for an endpoint, not a command, when the type is HTTP', async () => {
+    const user = userEvent.setup({ delay: null });
+    mount(stdio({ name: 'remote', cmd: 'a command left over from the other type' }));
+    expect(isCoral(submit()), 'command type, command filled').toBe(true);
+
+    await user.click(
+      within(screen.getByRole('radiogroup', { name: COPY.typeLabel })).getByRole('radio', {
+        name: COPY.typeHttp,
+      })
+    );
+    expect(isCoral(submit()), 'HTTP, no endpoint yet').toBe(false);
+
+    await user.type(screen.getByLabelText(COPY.endpointLabel), 'https://foo.bar.com/mcp/');
+    expect(isCoral(submit()), 'HTTP with an endpoint').toBe(true);
+  });
+
+  it('stays neutral while a variable row is half filled or the timeout is zero', () => {
+    const { unmount } = mount(
+      stdio({ name: 'x', cmd: 'node server.js', envVars: [{ key: 'API_KEY', value: '' }] })
+    );
+    expect(isCoral(submit()), 'a variable with no value').toBe(false);
+    unmount();
+
+    mount(stdio({ name: 'x', cmd: 'node server.js', timeout: 0 }));
+    expect(isCoral(submit()), 'a timeout of zero').toBe(false);
+  });
+
+  it('still names what is missing when the neutral button is pressed', async () => {
+    const user = userEvent.setup({ delay: null });
+    const onSubmit = vi.fn();
+    mount(stdio({ name: '', cmd: '' }), { onSubmit });
+
+    await user.click(submit());
+
+    expect(await screen.findByText(COPY.nameRequired)).toBeVisible();
+    expect(screen.getByText(COPY.commandRequired)).toBeVisible();
+    expect(onSubmit).not.toHaveBeenCalled();
+    expect(isCoral(submit())).toBe(false);
+  });
+
+  it('opens an edit of a filled extension coral, and neutral once its command is cleared', async () => {
+    const user = userEvent.setup({ delay: null });
+    mount(stdio({ name: 'developer', cmd: 'developer-server' }), {
+      title: 'Update extension',
+      submitLabel: 'Save changes',
+      modalType: 'edit',
+    });
+    expect(isCoral(submit())).toBe(true);
+
+    await user.clear(screen.getByLabelText(COPY.commandLabel));
+    expect(isCoral(submit())).toBe(false);
+    expect(submit()).toBeEnabled();
+  });
+
+  it('opens an edit of a built-in coral', () => {
+    mount(stdio({ type: 'builtin', name: 'memory', cmd: undefined }), {
+      title: 'Update extension',
+      submitLabel: 'Save changes',
+      modalType: 'edit',
+    });
+    expect(isCoral(submit())).toBe(true);
+  });
+});
+
 describe('ExtensionModal: pressing the submit button', () => {
   const add = (props: Partial<React.ComponentProps<typeof ExtensionModal>> = {}) =>
     render(
