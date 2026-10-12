@@ -2536,21 +2536,35 @@ body.biorouter-sidebar-resizing [data-motion-layout] {
    "Copy chat ID", hit-tested to the toast and no pointer could reach them.
    While one is open the layer drops one step below the menus. It is still
    above every dialog (`--z-modal`, 400), it does not move, and it is back on
-   top the moment the menu closes. The four `data-slot`s are the menu
+   top the moment the menu closes. The five `data-slot`s are the menu
    primitives' own (`ui/dropdown-menu.tsx`, `ui/context-menu.tsx`,
-   `ui/popover.tsx`), and `styles/toastLayer.test.ts` holds both ends. Tooltips
-   and info tips are left out on purpose: they open on a hover, and nothing in
-   them is waiting for a click. */
+   `ui/popover.tsx`, and the shared `ui/Select.tsx`, which names its open
+   react-select menu as a Radix Select would), and `styles/toastLayer.test.ts`
+   holds both ends. Tooltips and info tips are left out on purpose: they open
+   on a hover, and nothing in them is waiting for a click. */
 body:has(
     :is(
         [data-slot='dropdown-menu-content'],
         [data-slot='dropdown-menu-sub-content'],
         [data-slot='context-menu-content'],
-        [data-slot='popover-content']
+        [data-slot='popover-content'],
+        [data-slot='select-content']
       )[data-state='open']
   )
   .Toastify__toast-container {
   z-index: calc(var(--z-modal-dropdown) - 1);
+}
+
+/* A Select that opens its menu INSIDE a dialog (no portal: the model switcher,
+   the lead and worker settings, a custom provider's form) is not reached by
+   the rule above. The dialog box is `fixed`, at `--z-modal` and transformed, so
+   it is a stacking context: the menu's own 500 counts only inside it, and the
+   whole dialog competes at 400 in the page, under the yielded toast (499).
+   While such a menu is open the toast steps behind the dialog instead, and
+   comes back on top the moment the menu closes (WS-PRIMITIVES-2). */
+body:has(.biorouter-modal-surface [data-slot='select-content'][data-state='open'])
+  .Toastify__toast-container {
+  z-index: calc(var(--z-modal) - 1);
 }
 /* @ws WS-MOTION end: toast yields to an open menu */
 

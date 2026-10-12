@@ -3,6 +3,7 @@ import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 import { TOAST_SURFACE_CLASS_NAME } from '../components/alerts/NotificationSurface';
+import { SELECT_MENU_SLOT } from '../components/ui/Select';
 
 /**
  * Where notifications appear, and in what order they pile up.
@@ -223,6 +224,9 @@ describe('a menu the person opened stands above a toast', () => {
     '../components/ui/dropdown-menu.tsx': ['dropdown-menu-content', 'dropdown-menu-sub-content'],
     '../components/ui/context-menu.tsx': ['context-menu-content'],
     '../components/ui/popover.tsx': ['popover-content'],
+    // react-select's menu, named by the shared wrapper (WS-PRIMITIVES-2). The name is set in an
+    // object (`'data-slot': SELECT_MENU_SLOT`), not as JSX, so its row is matched by the constant.
+    '../components/ui/Select.tsx': ['select-content'],
   };
 
   function yieldRule(): { selector: string; body: string } {
@@ -249,7 +253,32 @@ describe('a menu the person opened stands above a toast', () => {
   it('names data-slots the menu primitives really emit', () => {
     for (const [file, slots] of Object.entries(SLOTS)) {
       const source = readFileSync(join(__dirname, file), 'utf8');
-      for (const slot of slots) expect(source, file).toContain(`data-slot="${slot}"`);
+      for (const slot of slots) {
+        if (file.endsWith('Select.tsx')) {
+          expect(SELECT_MENU_SLOT).toBe(slot);
+          expect(source, file).toMatch(/'data-slot': SELECT_MENU_SLOT, 'data-state': 'open'/);
+        } else {
+          expect(source, file).toContain(`data-slot="${slot}"`);
+        }
+      }
     }
+  });
+
+  /**
+   * WS-PRIMITIVES-2. A Select whose menu stays inside a dialog (no portal) is stacked inside the
+   * dialog box's own context, which competes at `--z-modal` in the page, so the yielded toast
+   * (one under the menus) still covered it. While one is open the toast steps behind the dialog.
+   */
+  it('steps behind a dialog while a Select inside it is open', () => {
+    const match = CSS.match(
+      /\nbody:has\(\.biorouter-modal-surface \[data-slot='select-content'\]\[data-state='open'\]\)\s*\.Toastify__toast-container\s*\{([^}]*)\}/
+    );
+    expect(match, 'no rule for a Select open inside a dialog').not.toBeNull();
+    expect(match![1]).toMatch(/z-index:\s*calc\(var\(--z-modal\) - 1\)/);
+    const z = (name: string) => Number(declaration(name));
+    expect(z('z-modal') - 1).toBeGreaterThan(0);
+    // The dialog box really is the surface the rule names.
+    const dialog = readFileSync(join(__dirname, '../components/ui/dialog.tsx'), 'utf8');
+    expect(dialog).toMatch(/'biorouter-modal-surface [^']*fixed[^']*z-\[var\(--z-modal\)\]/);
   });
 });
