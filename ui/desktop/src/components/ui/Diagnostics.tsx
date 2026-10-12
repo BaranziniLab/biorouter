@@ -269,17 +269,17 @@ Add any other context about the problem here.
           </ul>
         </div>
         <p>
-          <strong className="text-text-default">Warning:</strong> If your chat contains sensitive
-          information, do not share the diagnostics file publicly.
+          <strong className="font-semibold text-text-default">Warning:</strong> If your chat
+          contains sensitive information, do not share the diagnostics file publicly.
         </p>
         {isPrivateChat && (
           <p
             className="rounded-container bg-wash-warning px-3 py-2.5 text-text-default"
             data-testid="diagnostics-private-warning"
           >
-            <strong>This chat is private.</strong> The diagnostics file includes its messages and
-            its log files. Read the file before you send it to anyone, and take out anything that
-            should not leave this machine.
+            <strong className="font-semibold">This chat is private.</strong> The diagnostics file
+            includes its messages and its log files. Read the file before you send it to anyone, and
+            take out anything that should not leave this machine.
           </p>
         )}
       </div>

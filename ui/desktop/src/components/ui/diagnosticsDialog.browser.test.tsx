@@ -227,6 +227,33 @@ describe('Report a problem is the shared dialog (V4-R4-2)', () => {
     }
   });
 
+  // V4-R7-6: a bare <strong> is `bolder`, which computes to 700. The type system allows 400 and 600
+  // only, so both warning leads carry `font-semibold`, and nothing in the dialog is heavier.
+  it('draws no weight above 600: both warning leads are 600, not 700', async (ctx) => {
+    if (!browser) return ctx.skip();
+    const tab = await open();
+    try {
+      await tab.evaluate(() => (globalThis as { __releaseTier?: () => void }).__releaseTier?.());
+      await tab.waitForSelector('[data-testid="diagnostics-private-warning"]');
+      const weights = await tab.evaluate(() => {
+        const panel = document.querySelector('[role="dialog"]')!;
+        const strong = [...panel.querySelectorAll('strong')].map((el) => ({
+          text: el.textContent,
+          weight: getComputedStyle(el).fontWeight,
+        }));
+        const all = [...panel.querySelectorAll('*')].map((el) =>
+          parseInt(getComputedStyle(el).fontWeight, 10)
+        );
+        return { strong, max: Math.max(...all) };
+      });
+      expect(weights.strong.map((s) => s.text)).toEqual(['Warning:', 'This chat is private.']);
+      for (const { text, weight } of weights.strong) expect(weight, text ?? '').toBe('600');
+      expect(weights.max).toBeLessThanOrEqual(600);
+    } finally {
+      await tab.close();
+    }
+  });
+
   it('draws the header rule, and the title starts at the gutter with no tile before it', async (ctx) => {
     if (!browser) return ctx.skip();
     const tab = await open();

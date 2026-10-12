@@ -188,8 +188,9 @@ export function CrossAffiliationAcceptCard({
               that is untested. Promising a dialog that does not appear teaches
               the user that a silent approval is normal, which is exactly the
               wrong lesson for the prompt that gates enforcement. */}
-          This machine&rsquo;s privacy policy is set to <strong>strict</strong>, so your operating
-          system may ask you to confirm it is you before this is recorded.
+          This machine&rsquo;s privacy policy is set to{' '}
+          <strong className="font-semibold">strict</strong>, so your operating system may ask you to
+          confirm it is you before this is recorded.
         </p>
       )}
       {/*

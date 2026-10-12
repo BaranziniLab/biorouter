@@ -43,13 +43,13 @@ export function DisclosureProse({
  * than as a stray `**`.
  */
 function emphasise(paragraph: string): ReactNode[] {
-  return paragraph
-    .split('**')
-    .map((segment, index) =>
-      index % 2 === 1 ? (
-        <strong key={`${index}-${segment.slice(0, 24)}`}>{segment}</strong>
-      ) : (
-        <Fragment key={`${index}-${segment.slice(0, 24)}`}>{segment}</Fragment>
-      )
-    );
+  return paragraph.split('**').map((segment, index) =>
+    index % 2 === 1 ? (
+      <strong key={`${index}-${segment.slice(0, 24)}`} className="font-semibold">
+        {segment}
+      </strong>
+    ) : (
+      <Fragment key={`${index}-${segment.slice(0, 24)}`}>{segment}</Fragment>
+    )
+  );
 }

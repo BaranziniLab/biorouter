@@ -285,6 +285,21 @@ describe('DiagnosticsModal', () => {
     error.mockRestore();
   });
 
+  /**
+   * V4-R7-6: a bare `<strong>` computes to `bolder`, 700, and the type system draws only 400 and
+   * 600. Both warning leads wear `font-semibold`; `diagnosticsDialog.browser.test.tsx` measures the
+   * computed weight.
+   */
+  it('sets both warning leads at the strong weight, 600', () => {
+    render(
+      <DiagnosticsModal isOpen onClose={vi.fn()} sessionId="20260716_27" privacyTier="private" />
+    );
+    const dialog = screen.getByRole('dialog', { name: 'Report a problem' });
+    const leads = [...dialog.querySelectorAll('strong')];
+    expect(leads.map((el) => el.textContent)).toEqual(['Warning:', 'This chat is private.']);
+    for (const el of leads) expect(el).toHaveClass('font-semibold');
+  });
+
   it('does not warn on a chat that is not private', () => {
     const { rerender } = render(
       <DiagnosticsModal isOpen onClose={vi.fn()} sessionId="20260716_27" privacyTier="public" />
