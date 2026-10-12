@@ -197,6 +197,94 @@ describe('the two provider forms mask a key the same way', () => {
 });
 
 /**
+ * Vision V4-R7-5: Configure Claude Code opened with its "Claude CLI command" field focused on
+ * `claude`, and Chromium drew a red dotted misspelling line under it. Every parameter of a provider
+ * is a machine string (a command, an endpoint, a region, a profile), so none is spellchecked,
+ * auto-corrected or auto-capitalised, secret or not, above Advanced or inside it.
+ */
+const claudeCode = {
+  name: 'claude_code',
+  is_configured: false,
+  provider_type: 'Builtin',
+  metadata: {
+    name: 'claude_code',
+    display_name: 'Claude Code',
+    description: '',
+    default_model: '',
+    known_models: [],
+    model_doc_link: '',
+    config_keys: [
+      { name: 'CLAUDE_CODE_COMMAND', required: true, secret: false, default: 'claude' },
+    ],
+  },
+} as unknown as ProviderDetails;
+
+const MACHINE_ATTRIBUTES = { spellcheck: 'false', autocorrect: 'off', autocapitalize: 'off' };
+
+function expectMachineString(input: HTMLElement) {
+  for (const [attribute, value] of Object.entries(MACHINE_ATTRIBUTES)) {
+    expect(input, `${input.id} ${attribute}`).toHaveAttribute(attribute, value);
+  }
+}
+
+describe('DefaultProviderSetupForm: machine strings are not spellchecked (V4-R7-5)', () => {
+  it("leaves the coding agent's command field alone", async () => {
+    const { container } = render(<Harness provider={claudeCode} />);
+    await screen.findByDisplayValue('claude');
+    const command = container.querySelector<HTMLInputElement>(
+      '#provider-config-CLAUDE_CODE_COMMAND'
+    );
+    expect(command).not.toBeNull();
+    expect(command).toHaveValue('claude');
+    expectMachineString(command!);
+  });
+
+  it('leaves every field of a provider alone, the ones behind Advanced and the secrets too', async () => {
+    const { container } = render(<Harness />);
+    fireEvent.click(await screen.findByRole('button', { name: providerSetupCopy.advanced }));
+
+    const fields = Array.from(container.querySelectorAll<HTMLInputElement>('input'));
+    // Two secrets, an endpoint and a region.
+    expect(fields).toHaveLength(4);
+    for (const field of fields) expectMachineString(field);
+  });
+});
+
+describe('CustomProviderForm: machine strings are not spellchecked (V4-R7-5)', () => {
+  it('leaves the name, the URL, the key and the model list alone', () => {
+    const { container } = render(
+      <CustomProviderForm onSubmit={vi.fn()} onCancel={vi.fn()} initialData={null} isEditable />
+    );
+    for (const id of ['display-name', 'api-url', 'api-key', 'available-models']) {
+      const field = container.querySelector<HTMLInputElement>(`#${id}`);
+      expect(field, id).not.toBeNull();
+      expectMachineString(field!);
+    }
+  });
+
+  it('keeps the same attributes on an edit', () => {
+    const { container } = render(
+      <CustomProviderForm
+        onSubmit={vi.fn()}
+        onCancel={vi.fn()}
+        isEditable
+        initialData={{
+          engine: 'openai',
+          display_name: 'My provider',
+          api_url: 'https://api.example.com/v1',
+          api_key: '',
+          models: ['model-a'],
+          supports_streaming: true,
+        }}
+      />
+    );
+    for (const id of ['display-name', 'api-url', 'available-models']) {
+      expectMachineString(container.querySelector<HTMLInputElement>(`#${id}`)!);
+    }
+  });
+});
+
+/**
  * PROVIDERS-4 of the 2026-09-27 Crew QA audit. The public Azure OpenAI card is
  * for the user's OWN Azure resource, but its endpoint field came up filled in
  * with UCSF's Versa gateway, and a field left alone is saved. A non-UCSF user

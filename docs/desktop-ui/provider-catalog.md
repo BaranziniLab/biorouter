@@ -271,6 +271,24 @@ still read what a field is for. `LeadWorkerSettings.fill.browser.test.tsx` reads
 Chromium (0.5 for every field, 1 for every label, light and dark) and puts the old rule back to prove it
 would see the defect.
 
+## A machine string is not spellchecked
+
+Chromium underlines any word its dictionary does not know, and the fields in the Configure dialogs, the Add
+provider form and the Configuration editor hold nothing else: a command (`claude`), an endpoint, a region, a
+profile, a model id (`gpt-5.5-2026-04-24`), a config value (`versa_azure`). Configure Claude Code opened with
+its command field focused and `claude` already underlined, which reads as a mistake the person made. Every one of
+those fields now spreads `machineStringProps` (`settings/config/machineString.ts`): `spellCheck={false}`,
+`autoCorrect="off"` and `autoCapitalize="off"`. A secret field already has spellcheck off through `SecretInput`
+and takes the same spread so the rule has one spelling. A field that holds a person's own words keeps its
+spellcheck, and the Chat tab's switch still decides the composer's.
+
+The tests read the property the engine reads, not the markup alone: `customProviderForm.browser.test.tsx` and
+`capabilities/settingsBFill.browser.test.tsx` check `input.spellcheck` in Chromium against a bare input that
+reports `true`, and the jsdom suites (`DefaultProviderSetupForm.test.tsx`, `ConfigSettings.privacy.test.tsx`)
+check all three attributes on every field. Take the spread off any of the three components and a case fails.
+Other forms that hold machine strings (the extension dialogs, First run's Institutional card, Lead/worker) are
+not covered by this and belong to their own owners.
+
 ## The page band
 
 `ProviderSettingsPage.tsx` (`#/configure-providers`, and `#/welcome` on first run) is one 44px `PageHeader`

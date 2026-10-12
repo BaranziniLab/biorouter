@@ -10,6 +10,7 @@ import { isBrowserSurface } from '../../../../../../utils/surface';
 import { HostManagedModelNote } from '../../../../../privacy/HostManagedModelNote';
 import { isDestinationConfigKey } from '../../../../destinationConfigKeys';
 import { sentenceCase } from '../../../../config/configLabels';
+import { machineStringProps } from '../../../../config/machineString';
 import { providerSetupCopy } from '../../../copy';
 import { useHandFocusOnReady } from '../../../../models/dialogFocus';
 
@@ -265,6 +266,10 @@ export default function DefaultProviderSetupForm({
         required: parameter.required,
         disabled: hostOwned,
         'aria-describedby': hostOwned ? HOST_OWNED_NOTE_ID : undefined,
+        // Every parameter is a machine string (a command, an endpoint, a region, a profile name),
+        // so none of them is spellchecked: Configure Claude Code opened with `claude` underlined
+        // (V4-R7-5).
+        ...machineStringProps,
       };
 
       return (

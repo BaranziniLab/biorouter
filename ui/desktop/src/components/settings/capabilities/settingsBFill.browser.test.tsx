@@ -422,6 +422,41 @@ describe('Copilot result and the Configuration editor under the fill rule (R-27)
     }
   }, 120_000);
 
+  // V4-R7-5: Chromium underlines what its dictionary does not know, and an editor of config values
+  // (`versa_azure`, `auto`, a model id, an endpoint) is nothing but such words. The engine's own
+  // answer is the `spellcheck` property, so it is read there, with a bare input as the control
+  // that reports it on.
+  it('does not offer the editor’s values to the spellchecker', async (ctx) => {
+    if (!browser) return ctx.skip();
+    const tab = await open('light');
+    try {
+      await openEditor(tab);
+      const read = await tab.evaluate(() => {
+        const fields = [
+          ...document.querySelectorAll<HTMLInputElement>('[role="dialog"] .br-config-row input'),
+        ];
+        return {
+          fields: fields.map((input) => ({
+            id: input.id,
+            spellcheck: input.spellcheck,
+            autocorrect: input.getAttribute('autocorrect'),
+            autocapitalize: input.getAttribute('autocapitalize'),
+          })),
+          bareInput: document.createElement('input').spellcheck,
+        };
+      });
+      expect(read.bareInput, 'a bare input is spellchecked, so the probe can see it').toBe(true);
+      expect(read.fields.length).toBeGreaterThanOrEqual(3);
+      for (const field of read.fields) {
+        expect(field.spellcheck, `${field.id} spellcheck`).toBe(false);
+        expect(field.autocorrect, `${field.id} autocorrect`).toBe('off');
+        expect(field.autocapitalize, `${field.id} autocapitalize`).toBe('off');
+      }
+    } finally {
+      await tab.close();
+    }
+  }, 120_000);
+
   it('keeps the editor’s edges for forced colours: the fields and the well still have a border box', async (ctx) => {
     if (!browser) return ctx.skip();
     const tab = await open('light');

@@ -10,6 +10,8 @@
  *   in ModalShell's footer under its rule and stay put while the fields scroll (they used to scroll
  *   inside the body at 1048x700), the footer's button still submits the form, and the fields whose
  *   meaning is not in their name carry an InfoTip.
+ * - Vision V4-R7-5: the name, URL, key and model-list fields are not offered to the spellchecker
+ *   (the engine's `spellcheck` property reads false on each).
  *
  * jsdom computes no layout, so the real `CustomProviderForm` is bundled with esbuild, `main.css` is
  * compiled by Tailwind with the classes the bundle uses, `providers.css` is appended as authored,
@@ -255,6 +257,35 @@ describe('the Add provider form (V4-R4-5)', () => {
       await tab.click('[aria-label="About Provider supports streaming responses"]');
       expect(await tab.isChecked('#supports-streaming')).toBe(true);
       await tab.waitForSelector('text=Replies appear as they are written');
+    } finally {
+      await tab.close();
+    }
+  });
+
+  // Vision V4-R7-5: the engine's own answer for each field is the `spellcheck` property. A bare
+  // input reports true, so the probe is shown able to see a field that would be underlined.
+  it('does not offer the name, the URL, the key or the model list to the spellchecker', async (ctx) => {
+    if (!browser) return ctx.skip();
+    const tab = await open('light');
+    try {
+      const read = await tab.evaluate(() => ({
+        fields: ['display-name', 'api-url', 'api-key', 'available-models'].map((id) => {
+          const input = document.getElementById(id) as HTMLInputElement;
+          return {
+            id,
+            spellcheck: input.spellcheck,
+            autocorrect: input.getAttribute('autocorrect'),
+            autocapitalize: input.getAttribute('autocapitalize'),
+          };
+        }),
+        bareInput: document.createElement('input').spellcheck,
+      }));
+      expect(read.bareInput, 'a bare input is spellchecked, so the probe can see it').toBe(true);
+      for (const field of read.fields) {
+        expect(field.spellcheck, `${field.id} spellcheck`).toBe(false);
+        expect(field.autocorrect, `${field.id} autocorrect`).toBe('off');
+        expect(field.autocapitalize, `${field.id} autocapitalize`).toBe('off');
+      }
     } finally {
       await tab.close();
     }

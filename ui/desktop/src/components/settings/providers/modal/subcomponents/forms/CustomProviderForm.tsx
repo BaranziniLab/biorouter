@@ -13,6 +13,7 @@ import { SecureStorageNotice } from '../SecureStorageNotice';
 import { UpdateCustomProviderRequest } from '../../../../../../api';
 import { isBrowserSurface } from '../../../../../../utils/surface';
 import { HOST_MANAGED_CUSTOM_URL } from '../../../../../privacy/hostManagedModelCopy';
+import { machineStringProps } from '../../../../config/machineString';
 import { customProviderCopy } from '../../../copy';
 import '../../../providers.css';
 
@@ -247,6 +248,7 @@ export default function CustomProviderForm({
                 value={displayName}
                 onChange={(e) => setDisplayName(e.target.value)}
                 placeholder="Your provider name"
+                {...machineStringProps}
               />
             </Field>
             <Field
@@ -264,6 +266,7 @@ export default function CustomProviderForm({
                 value={apiUrl}
                 onChange={(e) => setApiUrl(e.target.value)}
                 placeholder="https://api.example.com/v1"
+                {...machineStringProps}
               />
             </Field>
           </>
@@ -276,6 +279,7 @@ export default function CustomProviderForm({
             <SecretInput
               revealLabel={customProviderCopy.apiKey}
               value={apiKey}
+              {...machineStringProps}
               onChange={(e) => setApiKey(e.target.value)}
               placeholder={keepsSavedKey ? 'Leave blank to keep existing key' : 'Your API key'}
               disabled={isLocalModel}
@@ -316,6 +320,7 @@ export default function CustomProviderForm({
                 value={models}
                 onChange={(e) => setModels(e.target.value)}
                 placeholder="model-a, model-b, model-c"
+                {...machineStringProps}
               />
             </Field>
             <div className="br-provider-check-row" data-testid="custom-provider-streaming-row">

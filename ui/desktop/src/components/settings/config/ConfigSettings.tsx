@@ -17,6 +17,7 @@ import { ModalShell } from '../../ModalShell';
 import { SETTINGS_SECTION_IDS } from '../settingsSections';
 import { configCopy } from './copy';
 import { configFieldLabel } from './configLabels';
+import { machineStringProps } from './machineString';
 import './config.css';
 import type { ProviderDetails } from '../../../api';
 import type { ConfigData, ConfigValue } from '../../../types/config';
@@ -394,6 +395,9 @@ export default function ConfigSettings() {
                           value={String(configValues[key] || '')}
                           onChange={(e) => handleChange(key, e.target.value)}
                           disabled={fixedByHost}
+                          // Every value here is a machine string (`versa_azure`, `auto`, a model id,
+                          // an endpoint), so the browser does not spellcheck it (V4-R7-5).
+                          {...machineStringProps}
                           // ⚠ Only the modified-key marker survives, and it is a FILL. An edit
                           // that is not saved yet washes the field in the info tone; it used to
                           // draw a blue 1px outline (`border-border-info`), which is a line on a

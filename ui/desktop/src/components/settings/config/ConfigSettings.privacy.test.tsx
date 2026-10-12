@@ -139,6 +139,29 @@ describe('ConfigSettings and the privacy settings', () => {
   });
 });
 
+// Vision V4-R7-5: every value in the editor is a machine string (`auto`, `versa_azure`, a model id,
+// an endpoint), and Chromium drew a red dotted misspelling line under each. A field the person can
+// type in is not spellchecked, auto-corrected or auto-capitalised; a structured value is not a
+// field at all.
+describe('ConfigSettings editor: values are not spellchecked (V4-R7-5)', () => {
+  it('turns spellcheck, auto-correct and auto-capitalise off on every value field', async () => {
+    mocks.config = {
+      ...served,
+      BIOROUTER_PROVIDER: 'versa_azure',
+      BIOROUTER_MODEL: 'gpt-5.5-2026-04-24',
+      AWS_ENDPOINT_URL_BEDROCK: 'https://unified-api.ucsf.edu/general/awsai',
+    };
+    const dialog = await openEditor();
+    const fields = within(dialog).getAllByRole('textbox');
+    expect(fields.length).toBeGreaterThanOrEqual(4);
+    for (const field of fields) {
+      expect(field, field.id).toHaveAttribute('spellcheck', 'false');
+      expect(field, field.id).toHaveAttribute('autocorrect', 'off');
+      expect(field, field.id).toHaveAttribute('autocapitalize', 'off');
+    }
+  });
+});
+
 // Spec 3.14: the editor is a ModalShell, titled "Configuration", with no icon and no lowercase
 // brand, and its fields are named by their labels.
 describe('ConfigSettings editor', async () => {
