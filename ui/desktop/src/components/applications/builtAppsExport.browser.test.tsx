@@ -95,6 +95,23 @@ const APPS = [
   },
 ];
 
+/**
+ * Points at a deleted build chat and names neither model nor knowledge base, so its meta line is
+ * its description, long enough to pass the row's measure at any window. The note used to sit
+ * after it in one truncated line, past the ellipsis: out of sight at rest.
+ */
+const RENAL = {
+  id: 'renal-dosing',
+  title: 'Renal Dosing Assistant',
+  description:
+    'Adjusts renally cleared drug doses from a creatinine clearance estimate, flags agents to ' +
+    'avoid below a threshold, and drafts the dosing note for the chart with its references.',
+  kind: 'static',
+  session_id: 'session-renal-gone',
+  created_at: APP_CREATED,
+  updated_at: APP_CREATED + 200,
+};
+
 /** A build chat that spans the app's creation, so the row leads to it. */
 const SESSION_ROW = {
   id: 'session-1',
@@ -163,16 +180,23 @@ describe('Built apps and its export dialog, in Chromium', () => {
 
   /**
    * The view at a window size and mode, the daemon answered at the network and the main process
-   * stubbed. `lint` makes the first export answer the app check's findings.
+   * stubbed. `lint` makes the first export answer the app check's findings; `apps` replaces the
+   * list `GET /apps` answers.
    */
   async function open(
     options: {
       mode?: 'light' | 'dark';
       size?: { width: number; height: number };
       lint?: boolean;
+      apps?: unknown[];
     } = {}
   ): Promise<Page> {
-    const { mode = 'light', size = { width: 1440, height: 900 }, lint = false } = options;
+    const {
+      mode = 'light',
+      size = { width: 1440, height: 900 },
+      lint = false,
+      apps = APPS,
+    } = options;
     const tab = await browser!.newPage({ viewport: size });
     await tab.route(`${ORIGIN}/**`, (route) => {
       const url = new URL(route.request().url());
@@ -188,7 +212,7 @@ describe('Built apps and its export dialog, in Chromium', () => {
             `</body></html>`,
         });
       }
-      if (url.pathname === '/apps') return json(APPS);
+      if (url.pathname === '/apps') return json(apps);
       if (url.pathname === '/sessions/session-1') return json(SESSION_ROW);
       if (url.pathname.startsWith('/sessions/')) return json({ message: 'not found' }, 404);
       return json({}, 404);
@@ -285,6 +309,70 @@ describe('Built apps and its export dialog, in Chromium', () => {
         await shot(tab, `rows-${mode}`);
       } finally {
         await tab.close();
+      }
+    }
+  }, 180_000);
+
+  it('keeps a deleted build chat’s note on the line at rest when the description is long', async (ctx) => {
+    if (!browser) return ctx.skip();
+    for (const mode of ['light', 'dark'] as const) {
+      for (const size of [
+        { width: 1048, height: 600 },
+        { width: 1440, height: 900 },
+      ]) {
+        const label = `${mode} ${size.width}x${size.height}`;
+        const tab = await open({ mode, size, apps: [COHORT, RENAL] });
+        try {
+          await tab.waitForTimeout(200);
+          // At rest: the pointer is away from every row, and nothing has focus.
+          await tab.mouse.move(0, 0);
+          const read = await tab.evaluate(() => {
+            const rows = [...document.querySelectorAll<HTMLElement>('[data-testid="app-row"]')];
+            const row = rows.find((r) => r.textContent?.includes('Renal Dosing Assistant'))!;
+            const line = row.querySelector<HTMLElement>('[data-testid="app-row-meta"]')!;
+            const note = row.querySelector<HTMLElement>('[data-testid="app-build-chat-note"]')!;
+            const description = line.firstElementChild as HTMLElement;
+            const box = (el: Element) => el.getBoundingClientRect();
+            const n = box(note);
+            const hit = document.elementFromPoint(n.left + n.width / 2, n.top + n.height / 2);
+            return {
+              heights: rows.map((r) => box(r).height),
+              line: { left: box(line).left, right: box(line).right },
+              note: { left: n.left, right: n.right },
+              noteText: note.textContent,
+              noteWhole: note.scrollWidth <= Math.ceil(n.width),
+              descriptionRight: box(description).right,
+              descriptionTruncated: description.scrollWidth > description.clientWidth,
+              descriptionEllipsis: getComputedStyle(description).textOverflow,
+              hitIsNote: hit === note || note.contains(hit),
+              lineText: line.textContent,
+            };
+          });
+          expect(read.noteText, label).toBe('Build chat deleted');
+          // Inside the line it belongs to, whole, and the thing painted at its own centre.
+          expect(read.note.left, `${label} note starts inside the line`).toBeGreaterThanOrEqual(
+            read.line.left
+          );
+          expect(read.note.right, `${label} note ends inside the line`).toBeLessThanOrEqual(
+            read.line.right + 0.5
+          );
+          expect(read.noteWhole, `${label} the note is not clipped`).toBe(true);
+          expect(read.hitIsNote, `${label} the note is what is painted there`).toBe(true);
+          // The description is what gives way, with an ellipsis, before the separator.
+          expect(read.descriptionTruncated, `${label} the description gives way`).toBe(true);
+          expect(read.descriptionEllipsis, label).toBe('ellipsis');
+          expect(read.descriptionRight, `${label} no overlap`).toBeLessThanOrEqual(read.note.left);
+          // The line still reads as one: description, separator, note.
+          expect(read.lineText, label).toBe(`${RENAL.description} · Build chat deleted`);
+          // Still a two-line row, the height of the other.
+          expect(
+            Math.abs(read.heights[1] - read.heights[0]),
+            `${label} row height`
+          ).toBeLessThanOrEqual(1);
+          await shot(tab, `deleted-chat-long-description-${mode}-${size.width}`);
+        } finally {
+          await tab.close();
+        }
       }
     }
   }, 180_000);

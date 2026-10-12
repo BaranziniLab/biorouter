@@ -570,12 +570,24 @@ export function ApplicationItem({
             )}
           </div>
           {(meta || chatNote) && (
-            <p className="min-w-0 truncate text-supporting text-text-muted">
-              {meta}
-              {meta && chatNote ? ' · ' : null}
+            // A row of two runs, not one truncated line: the meta gives way (ellipsis) and the
+            // note never does. As one `truncate` line, a long description pushed the note past
+            // the line's end, where the ellipsis hid it (measured: the note at x 1390 against a
+            // line ending at 1130). `builtAppsExport.browser.test.tsx` pins it inside the line.
+            <p
+              className="flex min-w-0 overflow-hidden whitespace-nowrap text-supporting text-text-muted"
+              data-testid="app-row-meta"
+            >
+              {meta ? <span className="min-w-0 truncate">{meta}</span> : null}
               {/* Visible at rest: the menu is out of sight until the row is hovered, so an
-                  unavailable item alone would not tell anyone the chat is gone. */}
-              {chatNote ? <span data-testid="app-build-chat-note">{chatNote}</span> : null}
+                  unavailable item alone would not tell anyone the chat is gone. `whitespace-pre`
+                  keeps the separator's spaces, which a flex item's edges would otherwise drop. */}
+              {chatNote ? (
+                <span className="shrink-0 whitespace-pre">
+                  {meta ? ' · ' : null}
+                  <span data-testid="app-build-chat-note">{chatNote}</span>
+                </span>
+              ) : null}
             </p>
           )}
         </div>

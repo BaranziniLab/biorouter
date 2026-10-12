@@ -134,9 +134,12 @@ describe('ApplicationItem', () => {
       },
     });
 
-    const meta = screen.getByText('claude-sonnet-4-5 · ms-cohort');
-    expect(meta.tagName).toBe('P');
-    expect(meta.closest('.font-mono')).toBeNull();
+    // The line is one paragraph; the facts are its first run (a build-chat note would follow).
+    const line = screen.getByTestId('app-row-meta');
+    expect(line.tagName).toBe('P');
+    expect(line.textContent).toBe('claude-sonnet-4-5 · ms-cohort');
+    expect(within(line).getByText('claude-sonnet-4-5 · ms-cohort')).toBeInTheDocument();
+    expect(line.closest('.font-mono')).toBeNull();
     // The description gives way to the facts; the row has two lines.
     expect(screen.queryByText('Explore a paired cohort.')).toBeNull();
     // At rest the row shows its relative time in the meta slot, not a date line.
