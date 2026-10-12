@@ -2915,6 +2915,20 @@ impl CodeExecutionClient {
         };
         if is_error {
             let user_error = user_tool_result_text(&result.content);
+            // A failed call's structured envelope carries only its summary;
+            // what says WHY is in its content. F07 rerun (ministral-3:8b,
+            // 2026-10-12): `shell({command: "run", args: [...]})` failed three
+            // times and the script was handed only `{"error":{"kind":
+            // "tool_failure","message":"[shell: command exited with status
+            // 127]"}}`, while the content held "zsh:1: command not found:
+            // run". A direct call shows the model that content, so a script
+            // gets it too whenever there is any.
+            let value = match assistant_tool_result_text(&result.content, false, false) {
+                Ok(text) if result.structured_content.is_some() && !text.trim().is_empty() => {
+                    Ok(text)
+                }
+                _ => value,
+            };
             // Name the failing tool (issue #28): this string is what the
             // script throws, so an uncaught failure surfaces at the step
             // level already attributed.
@@ -4071,6 +4085,52 @@ mod tests {
             serde_json::to_value(&images).unwrap()
         );
         assert!(collected.encoded_bytes > 0);
+    }
+
+    /// F07 rerun (ministral-3:8b, 2026-10-12): a failed shell call inside a
+    /// script surfaced only its structured envelope's status line, so the
+    /// model never saw "command not found: run" and repeated the call. The
+    /// result here has the exact shape `developer__shell` returns for a
+    /// non-zero exit.
+    #[tokio::test]
+    async fn a_failed_sub_call_hands_the_script_its_output_not_only_its_status() {
+        let output = "zsh:1: command not found: run\n\n[shell: command exited with status 127]";
+        let mut result = CallToolResult::success(vec![
+            Content::text(output).with_audience(vec![Role::Assistant]),
+            Content::text(output)
+                .with_audience(vec![Role::User])
+                .with_priority(0.0),
+        ]);
+        result.is_error = Some(true);
+        result.structured_content = Some(serde_json::json!({
+            "error": {"kind": "tool_failure", "message": "[shell: command exited with status 127]"}
+        }));
+        let collected = Mutex::new(CollectedArtifacts::default());
+        let (value, kind, user_error) = CodeExecutionClient::completed_sub_call_outcome(
+            "developer__shell",
+            &result,
+            &collected,
+        )
+        .await;
+        let error = value.expect_err("a failed call throws in the script");
+        assert_eq!(
+            error,
+            format!("Tool error from developer__shell: {output}"),
+            "the output that says why must reach the script"
+        );
+        assert_eq!(kind, "tool_failure");
+        assert_eq!(user_error.as_deref(), Some(output));
+
+        // A failure with nothing but its envelope still says what it has.
+        let mut bare = CallToolResult::success(vec![]);
+        bare.is_error = Some(true);
+        bare.structured_content = Some(serde_json::json!({
+            "error": {"kind": "tool_failure", "message": "command failed"}
+        }));
+        let (value, _, _) =
+            CodeExecutionClient::completed_sub_call_outcome("developer__shell", &bare, &collected)
+                .await;
+        assert!(value.unwrap_err().contains("command failed"));
     }
 
     #[tokio::test]
