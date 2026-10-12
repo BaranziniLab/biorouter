@@ -301,6 +301,12 @@ buttons below.
   there is no API that starts an in-window chat in another folder (the Crew folder has none).
   `⋯` offers Copy folder path.
 - A folder shows its first five chats, then a quiet "Show more" row on the label column.
+- The current chat is never hidden behind Show more: when it is further down, it is drawn sixth,
+  after the first five, and Show more and Show less act on the rest. A folder of six whose sixth is
+  the current chat has nothing to show and draws no toggle. While the list is held (the pointer on
+  it, a rename, a row menu), a chat that stops being current keeps that sixth line until the hold
+  ends, so opening another chat moves no row under the pointer (vision V1-R7-2; before it, the
+  current chat opened the whole folder, and its Show less, which could not close it, did nothing).
 - The toggle moves when it acts: below every chat it showed, often past the lines drawn so far, or
   back up under the first five. So from the keyboard (Enter or Space, a click with `detail` 0),
   Show more moves focus to the first chat it showed, on the line the toggle held, and Show less
@@ -479,7 +485,7 @@ tab stop, so Tab reaches them from the row.
 |---|---|
 | `BioRouterSidebar/sidebarChatView.test.ts` | All nine views, folder labels and collisions, the stored view, the held order, `windowSidebarRows`; `sidebarRowTitle` and the name sort by the shown title; the drawn range: `sliceSidebarLines` (gaps of exact line counts, kept rows, a kept folder header or Show more, headers outside the range), `sidebarLinesInView` (lines from group boxes by binary search) and `nextSidebarDrawRange` (a range that holds still while it covers the view) |
 | `BioRouterSidebar/useSidebarSessions.test.ts` | Paging, and `loadAll` reading the rest in one request with the proof (or page by page from an older daemon), into a buffer shown once, stopping at the cap; `isLoadingAll` reported for the first full read only (not a later tail re-read, but again after a failed read); the head re-read on a new open chat, on focus and on a meta change |
-| `BioRouterSidebar/RecentChats.test.tsx`, `.folders.test.tsx` | The header, the buckets, the rows, Group by Folder (and where focus goes after Show more or Show less from the keyboard, and after a pointer's click); a scheduled run's row showing its job id (its names and delete sentence too) with the rename starting from the stored name; a stored view drawn only once its read lands, a switch keeping the default arrangement until then, the complete list held from then on, and a first load held from its own rows |
+| `BioRouterSidebar/RecentChats.test.tsx`, `.folders.test.tsx` | The header, the buckets, the rows, Group by Folder (and where focus goes after Show more or Show less from the keyboard, and after a pointer's click; the current chat past the first five drawn sixth, Show less collapsing to it, no toggle when nothing is hidden, and that row held under the pointer); a scheduled run's row showing its job id (its names and delete sentence too) with the rename starting from the stored name; a stored view drawn only once its read lands, a switch keeping the default arrangement until then, the complete list held from then on, and a first load held from its own rows |
 | `BioRouterSidebar/RecentChats.window.test.tsx` | The first 60 lines of the whole arranged list, growth on scroll before another page is asked for, a restart on a view change, a list whose box grew asking for the next page, and `⌘⌥R` drawing the current chat's row |
 | `BioRouterSidebar/RecentChats.switchCost.test.tsx` | A view switch mounts each drawn row once, also after a scroll; a row builds a menu only when it opens; a list re-render (pointer, rename keystroke) re-renders no other row; a measured list draws its height plus the overscan |
 | `BioRouterSidebar/RecentChats.drawRange.test.tsx` | The right-click menu leaving `<body>` alone (not modal), a list that cannot be measured drawing every line it reaches with no placeholder, and `scrollRowIntoView` showing a header only for its group's first line |

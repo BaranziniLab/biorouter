@@ -74,8 +74,29 @@ import './sidebar.css';
 
 const LOAD_MORE_THRESHOLD_PX = 64;
 const RECENTS_EXPANDED_STORAGE_KEY = 'biorouter:sidebar-recents-expanded';
-/** A folder group shows this many chats, then a "Show more" row. */
+/**
+ * A folder group shows this many chats (and the current chat, when it is
+ * further down), then a "Show more" row.
+ */
 export const FOLDER_PREVIEW_COUNT = 5;
+
+/**
+ * The chats a folder's preview keeps past its first five. At rest, only the
+ * current chat. While the list is held (principle 9), every chat that has been
+ * current since the hold began, so a row drawn for the last one does not leave
+ * from under the pointer. Returns `kept` itself when nothing changes.
+ */
+export function keepInFolderPreview(
+  kept: readonly string[],
+  activeSessionId: string | null,
+  holding: boolean
+): readonly string[] {
+  if (holding) {
+    return !activeSessionId || kept.includes(activeSessionId) ? kept : [...kept, activeSessionId];
+  }
+  if (!activeSessionId) return kept.length === 0 ? kept : [];
+  return kept.length === 1 && kept[0] === activeSessionId ? kept : [activeSessionId];
+}
 /** The hover card waits for intent (Astryx §4.1 item 6). */
 export const CHAT_HOVER_CARD_DELAY_MS = 700;
 /**
@@ -1007,9 +1028,22 @@ export default function RecentChats({
     keys: readonly string[];
   }>({ sessionId: null, keys: [] });
 
+  // The chats a folder's preview draws past its first five: the current chat,
+  // so it is never hidden behind Show more (vision V1-R7-2: the folder used to
+  // open in full for it, and its Show less, which could not close it, did
+  // nothing). Held like the order (principle 9): while the list is held, a chat
+  // that stops being current keeps its line until the hold ends, so opening
+  // another chat moves no row under the pointer.
+  const [previewChats, setPreviewChats] = useState<readonly string[]>(() =>
+    activeSessionId ? [activeSessionId] : []
+  );
+  const nextPreviewChats = keepInFolderPreview(previewChats, activeSessionId ?? null, holding);
+  if (nextPreviewChats !== previewChats) setPreviewChats(nextPreviewChats);
+
   // What each group actually shows: a collapsed folder shows no rows (unless it
   // holds the current chat, which opens it without touching the stored choice),
-  // and an open folder shows five rows before "Show more".
+  // and an open folder shows five rows (and the current chat, when it is further
+  // down) before "Show more".
   const shown = useMemo(
     () =>
       groups.map((group) => {
@@ -1020,6 +1054,7 @@ export default function RecentChats({
             holdsActive: false,
             rows: group.sessions,
             more: null as null | 'more' | 'less',
+            firstRevealed: null as SessionSummary | null,
           };
         }
         const activeIndex = group.sessions.findIndex((session) => session.id === activeSessionId);
@@ -1028,19 +1063,42 @@ export default function RecentChats({
           closedWithActive.keys.includes(group.key);
         const collapsed = (collapsedFolders.has(group.key) && activeIndex < 0) || closedByPerson;
         if (collapsed) {
-          return { group, collapsed, holdsActive: activeIndex >= 0, rows: [], more: null };
+          return {
+            group,
+            collapsed,
+            holdsActive: activeIndex >= 0,
+            rows: [],
+            more: null,
+            firstRevealed: null,
+          };
         }
-        const long = group.sessions.length > FOLDER_PREVIEW_COUNT;
-        const expanded = expandedFolders.has(group.key) || activeIndex >= FOLDER_PREVIEW_COUNT;
+        const preview =
+          group.sessions.length > FOLDER_PREVIEW_COUNT
+            ? group.sessions.filter(
+                (session, index) =>
+                  index < FOLDER_PREVIEW_COUNT || previewChats.includes(session.id)
+              )
+            : group.sessions;
+        // Show more is drawn only when it has rows to show: a folder of six whose
+        // sixth is the current chat has none.
+        const foldable = preview.length < group.sessions.length;
+        const expanded = expandedFolders.has(group.key);
         return {
           group,
           collapsed,
           holdsActive: activeIndex >= 0,
-          rows: long && !expanded ? group.sessions.slice(0, FOLDER_PREVIEW_COUNT) : group.sessions,
-          more: !long ? null : expanded ? ('less' as const) : ('more' as const),
+          rows: foldable && !expanded ? preview : group.sessions,
+          more: !foldable ? null : expanded ? ('less' as const) : ('more' as const),
+          // Where keyboard focus goes after Show more: the first chat it shows.
+          firstRevealed: foldable
+            ? (group.sessions.find(
+                (session, index) =>
+                  index >= FOLDER_PREVIEW_COUNT && !previewChats.includes(session.id)
+              ) ?? null)
+            : null,
         };
       }),
-    [groups, collapsedFolders, expandedFolders, closedWithActive, activeSessionId]
+    [groups, collapsedFolders, expandedFolders, closedWithActive, activeSessionId, previewChats]
   );
 
   // A rename the person made: declared here because the row it names is always
@@ -1657,7 +1715,16 @@ export default function RecentChats({
                 data-view-changed={viewGeneration > 0 ? 'true' : undefined}
               >
                 {windowed.entries.map(
-                  ({ group, collapsed, holdsActive, lines, more, headerDrawn, rowsLine }) => (
+                  ({
+                    group,
+                    collapsed,
+                    holdsActive,
+                    lines,
+                    more,
+                    firstRevealed,
+                    headerDrawn,
+                    rowsLine,
+                  }) => (
                     <section
                       key={group.key}
                       className="br-sidebar-group"
@@ -1743,10 +1810,9 @@ export default function RecentChats({
                                     // follows what the toggle did (above); a pointer's click
                                     // moves no focus, or a row would show its ⋯.
                                     if (event.detail === 0) {
-                                      const firstShown = group.sessions[FOLDER_PREVIEW_COUNT];
                                       setFocusAfterToggle(
-                                        more === 'more' && firstShown
-                                          ? chatKey(firstShown.id)
+                                        more === 'more' && firstRevealed
+                                          ? chatKey(firstRevealed.id)
                                           : moreKey(group)
                                       );
                                     }

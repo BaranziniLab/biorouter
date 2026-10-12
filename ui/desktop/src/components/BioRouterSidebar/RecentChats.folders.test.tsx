@@ -155,6 +155,107 @@ describe('Group by Folder', () => {
     expect(more).toHaveFocus();
   });
 
+  // Vision V1-R7-2: the current chat past the first five used to open the whole
+  // folder, and Show less, which could not close it, did nothing.
+  it('draws the current chat past the first five as a sixth row, and Show less collapses to it', () => {
+    renderFolders({ activeSessionId: 'p5' });
+    const more = screen.getByTestId(`sidebar-folder-more-folder:${PROJECT}`);
+    expect(screen.getByTestId('recent-chat-p4')).toBeInTheDocument();
+    expect(screen.getByTestId('recent-chat-p5')).toHaveAttribute('aria-current', 'page');
+    expect(screen.queryByTestId('recent-chat-p6')).toBeNull();
+    expect(more).toHaveTextContent(sidebarCopy.chats.showMore);
+    expect(more).toHaveAttribute('aria-expanded', 'false');
+
+    // Show more by key: focus goes to the first chat it showed, not the current one.
+    more.focus();
+    fireEvent.click(more, { detail: 0 });
+    expect(screen.getByTestId('recent-chat-p6')).toHaveFocus();
+    expect(more).toHaveTextContent(sidebarCopy.chats.showLess);
+    expect(more).toHaveAttribute('aria-expanded', 'true');
+
+    fireEvent.click(more);
+    expect(screen.queryByTestId('recent-chat-p6')).toBeNull();
+    expect(screen.getByTestId('recent-chat-p5')).toHaveAttribute('aria-current', 'page');
+    expect(more).toHaveTextContent(sidebarCopy.chats.showMore);
+    expect(more).toHaveAttribute('aria-expanded', 'false');
+  });
+
+  it('opened in full, a folder whose current chat is past the first five still shows less', () => {
+    const props = {
+      sessions: SESSIONS,
+      runningSessionIds: new Set<string>(),
+      hasMore: false,
+      isLoadingMore: false,
+      onLoadMore: vi.fn(),
+      onOpen: vi.fn(),
+      onViewAll: vi.fn(),
+      view: FOLDER_VIEW,
+      onViewChange: vi.fn(),
+      homeDir: '/Users/x',
+    };
+    const { rerender } = render(
+      <SidebarProvider>
+        <RecentChats {...props} />
+      </SidebarProvider>
+    );
+    fireEvent.click(screen.getByTestId(`sidebar-folder-more-folder:${PROJECT}`));
+    // The person opens the sixth chat from the opened folder (the report's case).
+    rerender(
+      <SidebarProvider>
+        <RecentChats {...props} activeSessionId="p5" />
+      </SidebarProvider>
+    );
+    const toggle = screen.getByTestId(`sidebar-folder-more-folder:${PROJECT}`);
+    expect(toggle).toHaveTextContent(sidebarCopy.chats.showLess);
+    fireEvent.click(toggle);
+    expect(screen.queryByTestId('recent-chat-p6')).toBeNull();
+    expect(screen.getByTestId('recent-chat-p5')).toHaveAttribute('aria-current', 'page');
+    expect(toggle).toHaveTextContent(sidebarCopy.chats.showMore);
+  });
+
+  it('draws no Show more in a folder of six whose sixth chat is the current one', () => {
+    renderFolders({
+      sessions: SESSIONS.filter((session) => session.id !== 'p6'),
+      activeSessionId: 'p5',
+    });
+    expect(screen.getByTestId('recent-chat-p5')).toHaveAttribute('aria-current', 'page');
+    expect(screen.queryByTestId(`sidebar-folder-more-folder:${PROJECT}`)).toBeNull();
+  });
+
+  it('keeps the sixth row of a chat no longer current while the pointer is over the list', () => {
+    const props = {
+      sessions: SESSIONS,
+      runningSessionIds: new Set<string>(),
+      hasMore: false,
+      isLoadingMore: false,
+      onLoadMore: vi.fn(),
+      onOpen: vi.fn(),
+      onViewAll: vi.fn(),
+      view: FOLDER_VIEW,
+      onViewChange: vi.fn(),
+      homeDir: '/Users/x',
+    };
+    const { rerender } = render(
+      <SidebarProvider>
+        <RecentChats {...props} activeSessionId="p5" />
+      </SidebarProvider>
+    );
+    const list = screen.getByTestId('recent-chat-scroll');
+    fireEvent.pointerEnter(list);
+    // A chat in the folder below is opened: the rows under the pointer hold still.
+    rerender(
+      <SidebarProvider>
+        <RecentChats {...props} activeSessionId="n0" />
+      </SidebarProvider>
+    );
+    expect(screen.getByTestId('recent-chat-p5')).not.toHaveAttribute('aria-current');
+    expect(screen.queryByTestId('recent-chat-p6')).toBeNull();
+
+    fireEvent.pointerLeave(list);
+    expect(screen.queryByTestId('recent-chat-p5')).toBeNull();
+    expect(screen.getByTestId('recent-chat-n0')).toHaveAttribute('aria-current', 'page');
+  });
+
   it('collapses a folder and remembers it', () => {
     const { unmount } = renderFolders();
     fireEvent.click(toggleOf(NOTES));
