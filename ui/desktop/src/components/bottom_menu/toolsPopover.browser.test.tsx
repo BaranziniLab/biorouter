@@ -99,7 +99,9 @@ import * as React from 'react';
 import { PickerPanel, PickerRow } from './PickerPanel';
 
 export function ${hook}() {
-  return { activeCount: 1, visibleCount: 1, setQuery: () => {} };
+  // answered: the real hooks report it (V2-R7-3), and the chip shows no number
+  // and no tooltip until all three have. The stand-in chip is the app's chip.
+  return { activeCount: 1, visibleCount: 1, answered: true, setQuery: () => {} };
 }
 
 export function ${panel}({ inputRef }: { inputRef?: React.Ref<HTMLInputElement> }) {
@@ -348,6 +350,9 @@ describe('the Tools popover keeps its segmented control above the chip (R-25)', 
       const tab = await open(height);
       try {
         const first = await measure(tab, 'extensions');
+        // The stand-in chip is the app's own: the three lists have answered, so it
+        // states their sum (1 + 1 + 1) and the popover is measured against that width.
+        expect(await tab.textContent('[data-testid="composer-tools-chip"]')).toBe('Tools3');
         for (const segment of SEGMENTS) {
           const { frames, under } =
             segment === 'extensions'

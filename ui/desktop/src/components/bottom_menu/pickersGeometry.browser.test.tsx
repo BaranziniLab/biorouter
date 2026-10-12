@@ -173,6 +173,12 @@ function App() {
           <button type="button" className="br-footline__item" id="cost">$0.42</button>
         </div>
       </div>
+      {/* A chat that is still loading: its folder is not known (V2-R7-3) and the ring and the
+          cost have nothing to say yet, so ComposerFooter renders two empty sides. */}
+      <div className="br-footline" id="footline-bare" style={{ width: 600, marginTop: 16 }}>
+        <div className="br-footline__side" />
+        <div className="br-footline__side" data-side="end" />
+      </div>
     </div>
   );
 }
@@ -412,6 +418,24 @@ describe('the composer pickers in a real layout engine (spec 3.7, 5.7)', () => {
       await tab.close();
     }
   });
+
+  it('keeps the footer line its 24px while a chat has no folder, ring or cost yet', async (ctx) => {
+    if (!browser) return ctx.skip();
+    const tab = await open();
+    try {
+      const m = await tab.evaluate(() => {
+        const box = (id: string) => document.getElementById(id)!.getBoundingClientRect();
+        return { bare: box('footline-bare').height, full: box('footline').height };
+      });
+      // The composer must not grow or shrink under the person's eyes when the
+      // folder arrives: the empty line already holds the height it will keep.
+      near(m.bare, 24, 'empty footer line');
+      near(m.bare, m.full, 'empty line against the full one');
+    } finally {
+      await tab.close();
+    }
+  });
+
   it('holds the ground and turns the chevron of a chip whose popover or menu is open', async (ctx) => {
     if (!browser) return ctx.skip();
     const tab = await open();

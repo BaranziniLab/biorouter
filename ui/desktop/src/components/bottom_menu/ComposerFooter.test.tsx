@@ -80,6 +80,49 @@ describe('ComposerFooter (spec 3.7)', () => {
     expect(screen.queryByText('$0.00')).toBeNull();
   });
 
+  // V2-R7-3: an existing chat whose folder is not known yet names no folder,
+  // rather than the app's default it does not use. The rest of the line is the
+  // chat's own and stays, and the folder's arrival changes nothing beside it.
+  describe('a chat whose folder is not known yet (workingDir null)', () => {
+    it('leaves the folder out and keeps both sides of the line', async () => {
+      render(<ComposerFooter {...BASE} workingDir={null} />);
+      await settle();
+      const footer = screen.getByTestId('composer-footer');
+      const sides = footer.querySelectorAll('.br-footline__side');
+      expect(sides).toHaveLength(2);
+      expect(sides[0]).toBeEmptyDOMElement();
+      expect(screen.queryByText('Desktop')).toBeNull();
+      // The ring and the cost are about the chat, not its folder.
+      expect(screen.getByTestId('context-window-indicator')).toBeInTheDocument();
+      expect(screen.getByTestId('chat-cost')).toHaveTextContent('$0.42');
+    });
+
+    it('draws the folder when it arrives and leaves the ring and cost nodes alone', async () => {
+      const { rerender } = render(<ComposerFooter {...BASE} workingDir={null} />);
+      await settle();
+      const ring = screen.getByTestId('context-window-indicator');
+      const arc = screen.getByTestId('context-ring-arc');
+      const cost = screen.getByTestId('chat-cost');
+
+      rerender(<ComposerFooter {...BASE} workingDir="/Users/wgu/Desktop" />);
+      await settle();
+      expect(screen.getByText('Desktop')).toBeInTheDocument();
+      // Same elements, not remounted ones: a remount would re-arm the arc's
+      // first-reading rule and the cost's pricing fetch beside a folder name.
+      expect(screen.getByTestId('context-window-indicator')).toBe(ring);
+      expect(screen.getByTestId('context-ring-arc')).toBe(arc);
+      expect(screen.getByTestId('chat-cost')).toBe(cost);
+    });
+
+    it('still draws nothing but the folder for a composer that has no chat', async () => {
+      render(<ComposerFooter {...BASE} sessionId={null} workingDirLocked={false} />);
+      await settle();
+      const footer = screen.getByTestId('composer-footer');
+      expect(footer.querySelectorAll('.br-footline__side')).toHaveLength(1);
+      expect(screen.getByText('Desktop')).toBeInTheDocument();
+    });
+  });
+
   it('hides a $0.00 cost inside a chat', async () => {
     render(
       <ComposerFooter {...BASE} modelCostRows={[{ ...BASE.modelCostRows![0], totalCost: 0 }]} />
