@@ -43,6 +43,19 @@
  * instead of sliding there), never while the window or the sidebar is being resized, and not
  * under reduced motion. The width snaps: it changes by at most the 52px between the stack's 280
  * and the rail's narrowest card.
+ *
+ * The page's own actions are the one case where the stack stays and the page steps aside. Below
+ * about 1600 wide the 760px reading column reaches under the stack's corner, so a page whose first
+ * line carries actions at its trailing edge has them under the stack: the final smoke (2026-10-12)
+ * found the sticky "1 of 2 extensions loaded" over the Extensions page's load-failure notice, the
+ * right 32px of "Copy error" and all of its dismiss mark. There the stack has nowhere to go that
+ * covers nothing: under the notice is the list's first switch, left of the actions is the error
+ * itself. So a group of such actions says so (`data-toast-aside`), and while the stack stands
+ * beside it the watcher writes how far it moves left (`--toast-aside`: out from under the stack
+ * and 16px clear of it, but never closer than 8px to the element before it, the title its row
+ * names). main.css "toast clears the corner" turns that into a `translate`, so nothing else on the
+ * page moves or rewraps. It snaps, and it never goes back from under a pointer resting on it: it
+ * returns once the pointer leaves.
  */
 
 /** The gap under a surface the stack moves below: the find bar's own gap under the band. */
@@ -66,6 +79,12 @@ export const TOAST_CLEAR_Y = '--toast-clear-y';
 export const TOAST_CLEAR_WIDTH = '--toast-clear-width';
 /** Set on a container one frame after its first placement; main.css glides only then. */
 export const TOAST_PLACED_ATTRIBUTE = 'data-toast-placed';
+/** Marks a group of in-page trailing actions that steps left, out from under the stack. */
+export const TOAST_ASIDE_ATTRIBUTE = 'data-toast-aside';
+/** Written on such a group while the stack stands beside it: how far left it moves, in px. */
+export const TOAST_ASIDE = '--toast-aside';
+/** A group stepping aside stops this far short of the element before it on its row. */
+export const TOAST_ASIDE_SIBLING_GAP = 8;
 
 const CONTAINER = '.Toastify__toast-container';
 
@@ -165,26 +184,88 @@ export function toastClearance(
 }
 
 /**
+ * How far a group of in-page actions moves left, from where it rests (`group`), so none of it sits
+ * under the stack or within the 16px gap the stack keeps beside a surface. Zero when the stack
+ * (where it stands, after its own moves) is not beside the group, or there is no stack. Never so
+ * far that it comes within 8px of `before`, the element before it, when that shares its row: a
+ * group squeezed against its title stops there, even if the stack still reaches it.
+ */
+export function toastAside(
+  stack: ClearanceBox | null,
+  group: ClearanceBox,
+  before: ClearanceBox | null = null
+): number {
+  if (!stack || !hasArea(stack) || !hasArea(group)) return 0;
+  if (!overlaps(stack, { ...group, right: group.right + TOAST_CLEAR_BESIDE_GAP })) return 0;
+  const clear = group.right - (stack.left - TOAST_CLEAR_BESIDE_GAP);
+  const sameRow = before && before.top < group.bottom && group.top < before.bottom;
+  const room = sameRow ? group.left - (before.right + TOAST_ASIDE_SIBLING_GAP) : Infinity;
+  return Math.max(0, Math.min(clear, room));
+}
+
+/**
  * Keep the toast container clear of the corner's surfaces for as long as it exists. Returns the
  * cleanup. App.tsx calls it once, beside the `ToastContainer`.
  *
  * Nothing is watched while there is no toast: an observer on the toast layer notices the
  * container arrive and leave, and only while it is there does a second one follow the page
- * (find opening, the rail docking, the popover opening, a resize, an animation ending), each
- * coalesced into one measurement per frame.
+ * (find opening, the rail docking, the popover opening, a resize, an animation ending, a scroll),
+ * each coalesced into one measurement per frame. When it leaves, one last pass gives the page's
+ * actions their place back, and so does the cleanup.
  */
 export function watchToastClearance(doc: Document = document): () => void {
   const win = doc.defaultView;
   if (!win || typeof MutationObserver === 'undefined' || !doc.body) return () => {};
 
   let frame = 0;
+  let stopped = false;
   let placed: HTMLElement | null = null;
   let page: MutationObserver | null = null;
+  const held = new WeakSet<Element>();
+
+  /**
+   * Step each `data-toast-aside` group out from under the stack where it stands (`at`), or back
+   * when it is gone (`null`). A group under a resting pointer stays where it is until the pointer
+   * leaves it, so it never moves out from under a click (checklist 14).
+   */
+  const stepAside = (at: ClearanceBox | null) => {
+    for (const group of doc.querySelectorAll<HTMLElement>(`[${TOAST_ASIDE_ATTRIBUTE}]`)) {
+      const now = parseFloat(group.style.getPropertyValue(TOAST_ASIDE)) || 0;
+      // Where it rests: its box, less the move it already makes.
+      const r = group.getBoundingClientRect();
+      const rest = { left: r.left + now, top: r.top, right: r.right + now, bottom: r.bottom };
+      const prev = group.previousElementSibling?.getBoundingClientRect();
+      const before = prev
+        ? { left: prev.left, top: prev.top, right: prev.right, bottom: prev.bottom }
+        : null;
+      const next = toastAside(at, rest, before);
+      if (Math.abs(next - now) < 0.5) continue;
+      if (next < now && group.matches(':hover')) {
+        if (!held.has(group)) {
+          held.add(group);
+          group.addEventListener(
+            'pointerleave',
+            () => {
+              held.delete(group);
+              schedule();
+            },
+            { once: true }
+          );
+        }
+        continue;
+      }
+      if (next > 0) group.style.setProperty(TOAST_ASIDE, `${next}px`);
+      else group.style.removeProperty(TOAST_ASIDE);
+    }
+  };
 
   const place = () => {
     frame = 0;
     const container = doc.querySelector<HTMLElement>(CONTAINER);
-    if (!container) return;
+    if (!container) {
+      stepAside(null);
+      return;
+    }
     const style = win.getComputedStyle(container);
     const right = doc.documentElement.clientWidth - (parseFloat(style.right) || 0);
     const top = parseFloat(style.top) || 0;
@@ -225,11 +306,23 @@ export function watchToastClearance(doc: Document = document): () => void {
       placed = container;
       win.requestAnimationFrame(() => container.setAttribute(TOAST_PLACED_ATTRIBUTE, ''));
     }
+    // Where the stack stands once moved (its target, not a frame of the glide), at the width it
+    // is taking: the page's actions step aside from that.
+    const span = width ?? stack.right - stack.left;
+    stepAside({
+      left: stack.right - x - span,
+      right: stack.right - x,
+      top: stack.top + y,
+      bottom: stack.bottom + y,
+    });
   };
 
-  const schedule = () => {
-    if (!frame) frame = win.requestAnimationFrame(place);
-  };
+  // Hoisted, as a held group's `pointerleave` above calls it; `view` carries the narrowing a
+  // hoisted function does not see on `win`.
+  const view: Window = win;
+  function schedule() {
+    if (!frame && !stopped) frame = view.requestAnimationFrame(place);
+  }
 
   const follow = () => {
     if (page) return;
@@ -238,6 +331,8 @@ export function watchToastClearance(doc: Document = document): () => void {
     win.addEventListener('resize', schedule);
     doc.addEventListener('animationend', schedule, true);
     doc.addEventListener('transitionend', schedule, true);
+    // Actions scrolled into, or out from beside, a standing stack.
+    doc.addEventListener('scroll', schedule, true);
   };
 
   const unfollow = () => {
@@ -247,6 +342,7 @@ export function watchToastClearance(doc: Document = document): () => void {
     win.removeEventListener('resize', schedule);
     doc.removeEventListener('animationend', schedule, true);
     doc.removeEventListener('transitionend', schedule, true);
+    doc.removeEventListener('scroll', schedule, true);
   };
 
   const sync = () => {
@@ -255,6 +351,8 @@ export function watchToastClearance(doc: Document = document): () => void {
       schedule();
     } else {
       unfollow();
+      // One more pass with no stack, if one stood: the page's actions go back.
+      if (placed) schedule();
       placed = null;
     }
   };
@@ -269,9 +367,13 @@ export function watchToastClearance(doc: Document = document): () => void {
   sync();
 
   return () => {
+    stopped = true;
     layer.disconnect();
     unfollow();
     if (frame) win.cancelAnimationFrame(frame);
     frame = 0;
+    for (const group of doc.querySelectorAll<HTMLElement>(`[${TOAST_ASIDE_ATTRIBUTE}]`)) {
+      group.style.removeProperty(TOAST_ASIDE);
+    }
   };
 }

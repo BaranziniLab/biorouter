@@ -94,10 +94,13 @@ describe('ExtensionLoadFailureNotice', () => {
 
   /**
    * Compact (spec 3.11): ONE danger note holds the title, the error and every action. The two
-   * text actions and the round X share the note's trailing slot, with no second row of buttons
-   * under the error, and the note is followed by 16px, not 24.
+   * text actions and the round X share one group at the trailing edge, on the title's row, with
+   * no second row of buttons under the error, and the note is followed by 16px, not 24. The
+   * group sits in the notice's own grid rather than in the Note's action slot so that it can
+   * step aside from a toast standing over the column's right end, as far as the title before it
+   * allows (final smoke; `data-toast-aside`, `alerts/toastAside.browser.test.tsx` measures it).
    */
-  it('keeps its actions in the one trailing slot: two quiet text actions and a round X', () => {
+  it('keeps its actions in one group after the title: two quiet text actions and a round X', () => {
     recordExtensionLoadResults([{ name: 'cdwagent', success: false, error: 'spawn ENOENT' }]);
     const { container } = render(<ExtensionLoadFailureNotice onAskBiorouter={vi.fn()} />);
 
@@ -108,9 +111,13 @@ describe('ExtensionLoadFailureNotice', () => {
       COPY.copyError,
       COPY.dismiss,
     ]);
-    // All three sit in the note's action slot, which is its last child; none is under the text.
-    const slot = alert.lastElementChild as HTMLElement;
-    for (const button of buttons) expect(slot).toContainElement(button);
+    // All three sit in the one group that steps aside from a toast, right after the title (the
+    // element it stops short of); none is under the error.
+    const group = alert.querySelector('[data-toast-aside]') as HTMLElement;
+    for (const button of buttons) expect(group).toContainElement(button);
+    expect(group.previousElementSibling).toHaveTextContent(COPY.failedToLoad('CDWAgent'));
+    expect(group.nextElementSibling).toHaveTextContent('spawn ENOENT');
+    expect(group.nextElementSibling?.querySelector('button')).toBeNull();
     // Quiet: ghost, not the `secondary` wash the second row used to carry.
     expect(buttons[0].className).toMatch(/bg-transparent/);
     expect(buttons[1].className).toMatch(/bg-transparent/);

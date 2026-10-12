@@ -74,15 +74,23 @@ export function ExtensionLoadFailureNotice({
   return (
     <div className="mb-4 flex flex-col gap-2" data-testid="extension-load-failures">
       {failures.map((failure) => (
-        <Note
-          key={failure.name}
-          tone="danger"
-          role="alert"
-          icon={AlertCircle}
-          action={
-            // Two quiet text actions and a round X, in the Note's one trailing slot: the notice
-            // is a line and its error, not a card with a second row of buttons under it.
-            <div className="br-ext-notice-actions">
+        <Note key={failure.name} tone="danger" role="alert" icon={AlertCircle}>
+          {/* A line and its error, with the actions in a column at the trailing edge: two quiet
+              text actions and a round X, centred on the title, with no second row of buttons
+              under the error, which wraps before them. The Note's own action slot did this, but
+              its slot cannot see the title beside it, and the actions now step aside: below about
+              1600 wide the toast layer's corner reaches over the reading column's right end, and
+              the sticky extension-load report there covered Copy error and the X (final smoke).
+              While a toast stands beside them, `data-toast-aside` moves them left, out from under
+              it, as far as the title allows (`alerts/toastClearance.ts`); the error and
+              everything below stay put. */}
+          <div className="br-ext-notice-body">
+            {/* The extension's name as the catalogue spells it (CDWAgent), never its config key
+                title-cased (Cdwagent): principle 10, and the name the Extensions row uses. */}
+            <div className="br-ext-notice-name text-label text-text-default">
+              {LOAD_FAILURE_COPY.failedToLoad(extensionDisplayName(failure.name))}
+            </div>
+            <div className="br-ext-notice-actions" data-toast-aside="">
               {onAskBiorouter && (
                 <Button
                   size="sm"
@@ -116,17 +124,11 @@ export function ExtensionLoadFailureNotice({
                 onSelect={() => dismissExtensionLoadFailure(failure.name)}
               />
             </div>
-          }
-        >
-          {/* The extension's name as the catalogue spells it (CDWAgent), never its config key
-              title-cased (Cdwagent): principle 10, and the name the Extensions row uses. */}
-          <div className="text-label text-text-default">
-            {LOAD_FAILURE_COPY.failedToLoad(extensionDisplayName(failure.name))}
+            {/* The error, which the Note clamps behind "Show more" past its ceiling. This
+                surface has room, and the toast's hard truncation is what sent people looking
+                for details in the first place. */}
+            <div className="br-ext-notice-error mt-1 [overflow-wrap:anywhere]">{failure.error}</div>
           </div>
-          {/* The error, which the Note clamps behind "Show more" past its ceiling. This
-              surface has room, and the toast's hard truncation is what sent people looking for
-              details in the first place. */}
-          <div className="mt-1 [overflow-wrap:anywhere]">{failure.error}</div>
         </Note>
       ))}
     </div>

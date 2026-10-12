@@ -2563,6 +2563,18 @@ body.biorouter-sidebar-resizing .Toastify__toast-container {
     transition: none;
   }
 }
+
+/* The page's own actions are the one thing the stack does not step around: below about 1600 wide
+   the reading column reaches under its corner, and there is nowhere for it to go that covers
+   nothing (final smoke: the Extensions page's load-failure notice had "Copy error" and its
+   dismiss mark under the sticky extension-load report, with the list's first switch under the
+   notice). So a group of trailing actions is marked `data-toast-aside`, and while the stack
+   stands beside it `toastClearance.ts` writes how far to move left, out from under the stack
+   and 16px clear of it, never past the element before it, as `--toast-aside`. A `translate`, so
+   nothing else on the page moves or rewraps; it snaps, as the stack's own first placement does. */
+[data-toast-aside] {
+  translate: calc(-1 * var(--toast-aside, 0px)) 0;
+}
 /* @ws WS-MOTION end: toast clears the corner */
 
 /* @ws WS-MOTION begin: toast yields to an open menu */
