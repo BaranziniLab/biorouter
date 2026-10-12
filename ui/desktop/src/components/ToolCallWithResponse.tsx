@@ -270,7 +270,7 @@ function getToolResultContent(toolResult: unknown): Content[] {
     return [];
   }
 
-  return (
+  return collapseRepeatedUnaddressedText(
     value.content
       .filter((item): item is Content => {
         if (!recordOf(item)) return false;
@@ -287,6 +287,38 @@ function getToolResultContent(toolResult: unknown): Content[] {
       // function.
       .map(unwrapGuardrailFrameInContent)
   );
+}
+
+/** A plain text block's text when it names no audience, else null. */
+function unaddressedText(content: Content): string | null {
+  const record = content as Record<string, unknown>;
+  if (typeof record.text !== 'string' || 'data' in record || 'resource' in record) return null;
+  const annotations = recordOf(record.annotations);
+  return annotations?.audience ? null : record.text;
+}
+
+/**
+ * Folds a text block that repeats the block just before it, when neither names
+ * an audience, so a person reads one output once (V2-R7-5).
+ *
+ * The developer shell answers twice, once addressed to the model and once to
+ * the person, and the audience filter above keeps only the second. A bridged
+ * coding-agent call whose child's echo is stored in place of Biorouter's own
+ * result (`stored_bridged_result` in `coding_agent/mirror.rs` falls back to it)
+ * keeps both texts and drops both labels, so the well drew two identical
+ * "Output" sections. Only an unlabelled repeat folds: blocks a tool addressed
+ * on purpose, blocks that differ, and anything that is not plain text stay as
+ * the tool sent them.
+ */
+function collapseRepeatedUnaddressedText(contents: Content[]): Content[] {
+  const kept: Content[] = [];
+  for (const content of contents) {
+    const text = unaddressedText(content);
+    const previous = kept.length > 0 ? unaddressedText(kept[kept.length - 1]) : null;
+    if (text !== null && previous !== null && text.trim() === previous.trim()) continue;
+    kept.push(content);
+  }
+  return kept;
 }
 
 function displayError(error: unknown): string {

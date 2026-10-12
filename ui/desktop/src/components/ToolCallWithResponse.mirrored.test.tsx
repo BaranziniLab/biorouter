@@ -261,3 +261,108 @@ describe('parity with an API-provider tool call', () => {
     expect(plain).not.toContain('not gated by Biorouter');
   });
 });
+
+/**
+ * V2-R7-5. A bridged `claude_code` shell call whose child's echo was stored in
+ * place of Biorouter's own result (`stored_bridged_result`'s fallback) carries
+ * the shell's two blocks, the model's and the person's, as two identical texts
+ * with no audience. The well drew the same "Output" section twice. The payload
+ * below has the kdps chat's shape: one command, its output twice, unlabelled.
+ */
+describe('a bridged result whose two blocks lost their audience', () => {
+  const COMMAND = 'which R Rscript git 2>&1; R --version 2>&1 | head -3';
+  const OUTPUT =
+    '/usr/local/bin/R\n/usr/local/bin/Rscript\n/usr/bin/git\n' +
+    'R version 4.4.1 (2024-06-14)\n' +
+    'Platform: aarch64-apple-darwin20\n';
+
+  const renderWith = (
+    content: Array<Record<string, unknown>>,
+    { isError = false }: { isError?: boolean } = {}
+  ) => {
+    const view = render(
+      <ToolCallWithResponse
+        isCancelledMessage={false}
+        toolRequest={mirroredRequest('bridged', {
+          toolCall: {
+            status: 'success',
+            value: { name: 'developer__shell', arguments: { command: COMMAND } },
+          },
+        })}
+        toolResponse={
+          {
+            type: 'toolResponse',
+            id: 'toolu_1',
+            toolResult: { status: 'success', value: { content, isError } },
+            metadata: { biorouterProviderExecuted: 'bridged' },
+          } as never
+        }
+        onOpenArtifact={noopOpenArtifact}
+      />
+    );
+    fireEvent.click(screen.getByText(/^(Ran|Failed to run) /).closest('button') as HTMLElement);
+    return view;
+  };
+
+  const occurrences = (haystack: string, needle: string) => haystack.split(needle).length - 1;
+
+  it('shows the output once, under one Output label', () => {
+    const { container } = renderWith([
+      { type: 'text', text: OUTPUT },
+      { type: 'text', text: OUTPUT },
+    ]);
+
+    expect(screen.getAllByText('Output')).toHaveLength(1);
+    expect(occurrences(container.textContent ?? '', 'R version 4.4.1')).toBe(1);
+  });
+
+  it('folds a repeat that differs only by a trailing newline, and any further repeats', () => {
+    const { container } = renderWith([
+      { type: 'text', text: OUTPUT },
+      { type: 'text', text: OUTPUT.trimEnd() },
+      { type: 'text', text: OUTPUT, annotations: { priority: 0 } },
+    ]);
+
+    expect(screen.getAllByText('Output')).toHaveLength(1);
+    expect(occurrences(container.textContent ?? '', 'R version 4.4.1')).toBe(1);
+  });
+
+  it('shows a failure message once when it arrives twice', () => {
+    renderWith(
+      [
+        { type: 'text', text: 'Rscript: command not found' },
+        { type: 'text', text: 'Rscript: command not found' },
+      ],
+      { isError: true }
+    );
+
+    expect(screen.getByText('Tool call failed')).toBeInTheDocument();
+    expect(screen.getAllByText('Rscript: command not found')).toHaveLength(1);
+  });
+
+  it('keeps blocks that differ, and a repeat a tool addressed to the person', () => {
+    renderWith([
+      { type: 'text', text: 'first pass: 3 files' },
+      { type: 'text', text: 'second pass: 3 files' },
+      { type: 'text', text: 'second pass: 3 files', annotations: { audience: ['user'] } },
+      { type: 'text', text: 'summary', annotations: { audience: ['user'] } },
+      { type: 'text', text: 'summary', annotations: { audience: ['user'] } },
+    ]);
+
+    expect(screen.getAllByText('Output')).toHaveLength(5);
+    expect(screen.getByText('first pass: 3 files')).toBeInTheDocument();
+    expect(screen.getAllByText('second pass: 3 files')).toHaveLength(2);
+    expect(screen.getAllByText('summary')).toHaveLength(2);
+  });
+
+  it('keeps a repeat that is not next to the block it repeats', () => {
+    renderWith([
+      { type: 'text', text: 'checked' },
+      { type: 'text', text: 'between' },
+      { type: 'text', text: 'checked' },
+    ]);
+
+    expect(screen.getAllByText('Output')).toHaveLength(3);
+    expect(screen.getAllByText('checked')).toHaveLength(2);
+  });
+});
