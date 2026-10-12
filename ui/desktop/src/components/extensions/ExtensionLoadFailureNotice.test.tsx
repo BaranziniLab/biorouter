@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import { render, screen, fireEvent, within } from '@testing-library/react';
+import { act, render, screen, fireEvent, within } from '@testing-library/react';
 import fs from 'node:fs';
 import path from 'node:path';
 import { ExtensionLoadFailureNotice } from './ExtensionLoadFailureNotice';
@@ -8,7 +8,14 @@ import {
   recordExtensionLoadResults,
   resetExtensionLoadFailuresForTests,
   getExtensionLoadFailures,
+  isExtensionLoadFailureNoticeShown,
 } from '../../utils/extensionLoadFailures';
+import { withdrawExtensionFailureToasts } from '../../utils/extensionErrorUtils';
+
+vi.mock('../../utils/extensionErrorUtils', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../utils/extensionErrorUtils')>()),
+  withdrawExtensionFailureToasts: vi.fn(),
+}));
 
 /**
  * Defect 1, second half. The recurring toast pointed at the Extensions page and
@@ -26,6 +33,31 @@ function shownText(button: HTMLElement): string {
 describe('ExtensionLoadFailureNotice', () => {
   beforeEach(() => {
     resetExtensionLoadFailuresForTests();
+    vi.mocked(withdrawExtensionFailureToasts).mockClear();
+  });
+
+  // Final check (2026-10-12): the corner's sticky report of the same failure stood over the page,
+  // over Copy error and, once the notice was dismissed, over the list's first switch.
+  it('takes the place of the failure toast while the page is open', () => {
+    const { unmount } = render(<ExtensionLoadFailureNotice />);
+    expect(isExtensionLoadFailureNoticeShown()).toBe(true);
+    expect(withdrawExtensionFailureToasts).not.toHaveBeenCalled();
+
+    // A failure recorded while the page is open is shown here, and its toast taken down.
+    act(() => {
+      recordExtensionLoadResults([{ name: 'cdwagent', success: false, error: 'spawn ENOENT' }]);
+    });
+    expect(screen.getByText(COPY.failedToLoad('CDWAgent'))).toBeInTheDocument();
+    expect(withdrawExtensionFailureToasts).toHaveBeenCalled();
+
+    unmount();
+    expect(isExtensionLoadFailureNoticeShown()).toBe(false);
+  });
+
+  it('withdraws the failure toast when the page opens on a standing failure', () => {
+    recordExtensionLoadResults([{ name: 'cdwagent', success: false, error: 'spawn ENOENT' }]);
+    render(<ExtensionLoadFailureNotice />);
+    expect(withdrawExtensionFailureToasts).toHaveBeenCalled();
   });
 
   it('renders nothing when nothing has failed', () => {

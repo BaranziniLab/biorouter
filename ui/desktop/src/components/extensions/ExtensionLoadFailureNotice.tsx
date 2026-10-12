@@ -7,10 +7,14 @@ import { extensionDisplayName } from '../settings/extensions/extensionDisplayNam
 import {
   dismissExtensionLoadFailure,
   getExtensionLoadFailures,
+  showingExtensionLoadFailureNotice,
   subscribeExtensionLoadFailures,
   type ExtensionLoadFailure,
 } from '../../utils/extensionLoadFailures';
-import { createExtensionRecoverHints } from '../../utils/extensionErrorUtils';
+import {
+  createExtensionRecoverHints,
+  withdrawExtensionFailureToasts,
+} from '../../utils/extensionErrorUtils';
 import { useTransientValue } from '../../hooks/useTransientFlag';
 import { LOAD_FAILURE_COPY } from './copy';
 import './extension-notice.css';
@@ -68,6 +72,15 @@ export function ExtensionLoadFailureNotice({
     setFailures(getExtensionLoadFailures());
     return subscribeExtensionLoadFailures(() => setFailures(getExtensionLoadFailures()));
   }, []);
+
+  // While this page is open it is where a load failure is announced, including one recorded while
+  // it is open, and the corner's report of the same failure is taken down rather than left over
+  // the page's controls: once this notice was dismissed, the sticky "1 of 2 extensions loaded"
+  // covered the list's first switch (final check, 2026-10-12). See `extensionLoadFailures.ts`.
+  useEffect(() => showingExtensionLoadFailureNotice(), []);
+  useEffect(() => {
+    if (failures.length > 0) withdrawExtensionFailureToasts();
+  }, [failures]);
 
   if (failures.length === 0) return null;
 
