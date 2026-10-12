@@ -24,9 +24,10 @@
  * The REAL `ExtensionsView` is bundled with esbuild and rendered in Chromium, with the real
  * Browse, Install from file and Custom extension dialogs. Only the data edges are stubbed (the
  * config hook, the extension list and the marketplace feed). Each case drives the keyboard the
- * way the finding does: focus Add, Enter, arrow to the item, Enter, Escape. A pick or a close
- * made with the pointer gives no focus back, which is the primitive's rule (a script-focused Add
- * would wear a keyboard ring after a mouse click), and two cases pin it.
+ * way the finding does: focus Add, Enter, arrow to the item, Enter, Escape. The primitive's rule
+ * is that the CLOSE decides (V1-R8-1): Escape returns to Add however the item was picked, and a
+ * close made with the pointer gives none back (a script-focused Add would wear a keyboard ring
+ * after a mouse click). One case pins each.
  *
  * "The instrument" proves a case can fail: Browse is also read with the dialog primitive's
  * "return focus to the opener" removed, which must leave focus on `<body>`. A mutation that
@@ -265,8 +266,10 @@ describe('keyboard focus returns to Add after a dialog closes (V3-R3-2)', () => 
     });
   }
 
-  // The primitive's rule, kept: a script-focused Add would wear a keyboard ring after a mouse click.
-  it('Browse picked with the mouse is not given a keyboard focus back on Escape', async (ctx) => {
+  // The primitive's rule since 758e8975f (V1-R8-1): the CLOSE decides, not the pick. A menu item
+  // clicked open and left with Escape gives focus back to Add, ringed, because a key closed it;
+  // before, this case read BODY and the next Tab began at the top of the window.
+  it('Browse picked with the mouse and closed with Escape gives focus back to Add, ringed', async (ctx) => {
     if (!browser) return ctx.skip();
     const tab = await open(fixed);
     try {
@@ -275,7 +278,14 @@ describe('keyboard focus returns to Add after a dialog closes (V3-R3-2)', () => 
       await tab.getByRole('dialog').waitFor();
       await tab.waitForFunction(() => Boolean(document.activeElement?.closest('[role="dialog"]')));
       await closeWithEscape(tab);
-      expect((await focused(tab)).tag).toBe('BODY');
+      const now = await focused(tab);
+      expect(now.tag, 'focus must not fall to the page').toBe('BUTTON');
+      expect(now.text).toBe(EXTENSIONS_COPY.add);
+      expect(now.insideDialog).toBe(false);
+      expect(
+        await tab.evaluate(() => document.activeElement?.matches(':focus-visible')),
+        'a key closed it, so the keyboard ring shows'
+      ).toBe(true);
     } finally {
       await tab.close();
     }
