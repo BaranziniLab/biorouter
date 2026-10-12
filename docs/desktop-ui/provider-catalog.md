@@ -421,8 +421,13 @@ on their machine.
 
 ## Onboarding mode
 
-Each row opens **in place** into that provider's own setup UI, one at a time, with Llama
-Server open by default.
+Each row opens **in place** into that provider's own setup UI, with Llama Server open by
+default. Rows open and close independently: opening one never closes another (FR-R4-2). The
+catalog used to keep one open row, so a click on Codex with Claude Code open above it closed
+that panel in the same frame and moved Codex 84px up, leaving the pointer on its "Use Codex"
+button. The page sits at scroll position 0 there, so no scroll correction could hold the row
+still. Principle 9 says a row never moves under the pointer, and a row only moves when
+something above it changes.
 
 The setup bodies are not duplicated. Each one is a plain column the catalog opens under its
 row (the standalone card chrome, `OnboardingCardShell` and its section label, and the unused

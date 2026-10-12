@@ -740,10 +740,22 @@ describe('ProviderCatalog — modes', () => {
     expect(await screen.findByTestId('provider-row-panel-llamacpp')).toBeInTheDocument();
     expect(screen.queryByTestId('provider-row-panel-ollama')).toBeNull();
 
-    // One at a time: opening the second closes the first.
+    // Each row opens on its own: opening the second leaves the first open, because closing a
+    // panel above the clicked row moved that row out from under the pointer (vision FR-R4-2).
     fireEvent.click(screen.getByTestId('provider-row-toggle-ollama'));
     expect(screen.getByTestId('provider-row-panel-ollama')).toBeInTheDocument();
+    expect(screen.getByTestId('provider-row-panel-llamacpp')).toBeInTheDocument();
+    expect(screen.getByTestId('provider-row-toggle-llamacpp')).toHaveAttribute(
+      'aria-expanded',
+      'true'
+    );
+
+    // And each closes on its own.
+    fireEvent.click(screen.getByTestId('provider-row-toggle-llamacpp'));
     expect(screen.queryByTestId('provider-row-panel-llamacpp')).toBeNull();
+    expect(screen.getByTestId('provider-row-panel-ollama')).toBeInTheDocument();
+    fireEvent.click(screen.getByTestId('provider-row-toggle-ollama'));
+    expect(screen.queryByTestId('provider-row-panel-ollama')).toBeNull();
   });
 
   it('leaves local rows as click-to-configure in settings mode', () => {

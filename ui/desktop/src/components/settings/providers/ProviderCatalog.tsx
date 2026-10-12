@@ -507,14 +507,29 @@ export default function ProviderCatalog({
     });
   }, [hasLlamaServer, isOnboarding]);
 
-  const [openRow, setOpenRow] = useState<string | null>(() => {
-    // The recommended local provider opens by default in onboarding: it is the
-    // zero-setup path, and an accordion that starts entirely closed reads as an
-    // empty screen on the one page a first-run user has no context for.
-    return mode === 'onboarding' ? 'llamacpp' : null;
-  });
+  /**
+   * The rows that are open, each on its own. The recommended local provider opens by default in
+   * onboarding: it is the zero-setup path, and an accordion that starts entirely closed reads as an
+   * empty screen on the one page a first-run user has no context for.
+   *
+   * ⚠ **Opening a row never closes another** (vision FR-R4-2, principle 9: never move a row under
+   * the pointer). It used to be one `openRow`, so a click on Codex with Claude Code open above it
+   * closed that panel in the same frame and Codex jumped 84px up, leaving the unmoved pointer on
+   * its coral "Use Codex" (a second click, meant to close the row, chose Codex as the provider). On
+   * Local, Ollama jumped 162px. The page is at scrollTop 0 there, so no scroll compensation could
+   * hold the row; a row only moves when something ABOVE it changes, and now nothing above a
+   * clicked row changes.
+   */
+  const [openRows, setOpenRows] = useState<ReadonlySet<string>>(
+    () => new Set(mode === 'onboarding' ? ['llamacpp'] : [])
+  );
   const toggleRow = useCallback(
-    (name: string) => setOpenRow((current) => (current === name ? null : name)),
+    (name: string) =>
+      setOpenRows((current) => {
+        const next = new Set(current);
+        if (!next.delete(name)) next.add(name);
+        return next;
+      }),
     []
   );
 
@@ -687,7 +702,7 @@ export default function ProviderCatalog({
           }}
           isOnboarding={isOnboarding}
           expandable={expandable}
-          expanded={expandable && openRow === provider.name}
+          expanded={expandable && openRows.has(provider.name)}
           onToggle={() => toggleRow(provider.name)}
           statusSlot={
             showAgentPill ? (
