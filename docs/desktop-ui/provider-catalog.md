@@ -104,6 +104,9 @@ Three details keep one list reading as one list (V4-26):
   ("Your GitHub Copilot subscription · token"; the daemon's told a person to run `biorouter configure`, while its
   Configure dialog asks for a token) and Xiaomi MiMo (the daemon's named `XIAOMI_MIMO_HOST`). The daemon's
   sentence stays the row control's accessible description, as for the coding agents. Daemon strings are unchanged.
+  That sentence is an sr-only span BESIDE the row's toggle, never inside it (FR-R4-3): a button's accessible name
+  is computed from its content, sr-only text included, so inside the toggle it made an agent row's name about 200
+  characters long and the description read the same sentences again. The name is the title and the short line.
 
 An open agent's panel keeps its buttons at the `sm` size and shows one line in one shape for both vendors
 (FR-R3-6): "Version 2.1.283 · Max plan · ada@example.edu" and "Version 0.157.1". `agentVersionNumber` takes the

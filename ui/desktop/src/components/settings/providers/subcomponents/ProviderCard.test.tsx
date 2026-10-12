@@ -337,5 +337,28 @@ describe('ProviderCard keyboard access', () => {
     expect(toggle).toHaveAccessibleDescription(
       'A description long enough that the row truncates it in a narrow window'
     );
+    // Named by the title and the short line only (vision FR-R4-3): the sentence it describes
+    // itself with sat inside the button as sr-only text, so the name carried it too and a screen
+    // reader read it twice.
+    expect(toggle).toHaveAccessibleName('Versa API Azure Your plan · no API key');
+    expect(toggle.textContent).not.toContain('A description long enough');
+  });
+
+  it('keeps the daemon sentence beside a click-to-configure row, describing its action', () => {
+    render(
+      <TooltipProvider>
+        <ProviderCard
+          provider={provider(false)}
+          onConfigure={vi.fn()}
+          onLaunch={vi.fn()}
+          isOnboarding={false}
+          summary="UCSF gateway · API key"
+        />
+      </TooltipProvider>
+    );
+    const action = screen.getByRole('button', { name: /^Configure / });
+    expect(action).toHaveAccessibleDescription(
+      'A description long enough that the row truncates it in a narrow window'
+    );
   });
 });

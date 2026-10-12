@@ -158,15 +158,27 @@ export const ProviderCard = function ProviderCard({
           </TooltipContent>
         </Tooltip>
       )}
-      {/* The daemon's own sentence, for assistive tech, when the line shows a short summary in
-          its place (the coding agents'). */}
-      {metadata.description && summary ? (
-        <span id={fullDescriptionId} className="sr-only">
-          {metadata.description.replace(/`/g, '')}
-        </span>
-      ) : null}
     </div>
   );
+
+  /**
+   * The daemon's own sentence, for assistive tech, when the line shows a short summary in its
+   * place (the coding agents', and the rows in `providerRowSummary`). The row's action, or its
+   * toggle, is DESCRIBED by it.
+   *
+   * ⚠ **It sits beside the toggle, never inside it** (vision FR-R4-3, principle 12). A button's
+   * accessible name is computed from its content, sr-only text included, so inside the toggle it
+   * made Claude Code's name about 200 characters ("Claude Code Your Claude subscription · no API
+   * key Uses the Claude subscription you are already signed in to …"), and the description then
+   * read the same sentences again. Beside it, the name is the title and the short line, as on
+   * every other row, and `aria-describedby` still reaches it by id.
+   */
+  const fullDescription =
+    metadata.description && summary ? (
+      <span id={fullDescriptionId} className="sr-only">
+        {metadata.description.replace(/`/g, '')}
+      </span>
+    ) : null;
 
   /**
    * The configured status and the action button, in one cell: Crew's `meta` recipe
@@ -253,6 +265,7 @@ export const ProviderCard = function ProviderCard({
           >
             {identity}
           </button>
+          {fullDescription}
           {actions}
         </div>
         {expanded && (
@@ -275,6 +288,7 @@ export const ProviderCard = function ProviderCard({
       className="biorouter-settings-row br-setting-row cursor-pointer"
     >
       {identity}
+      {fullDescription}
       {actions}
     </div>
   );
