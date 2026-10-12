@@ -2,7 +2,7 @@ import { act, fireEvent, render, screen, waitFor, within } from '@testing-librar
 import userEvent from '@testing-library/user-event';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest';
 import type { CrewMessage } from '../crewApi';
 import { identityCopy } from '../identity';
 import { useCrew } from '../state/CrewControllerContext';
@@ -1078,8 +1078,12 @@ describe('older history', () => {
    * that no longer reaches the newest message offers "Newer messages".
    */
   it('adds older pages above without a single row rising in or a jump to the bottom (QA M6)', () => {
+    // Pages of the size the observer asks for, which the timeline honors (`pageSize`): what is
+    // asserted holds for any size, and three pages of HISTORY_PAGE_SIZE rows made every role
+    // query below walk hundreds of rows (6 s alone, over 30 s in a loaded full run).
+    const pageSize = 20;
     const pageOf = (label: string) =>
-      Array.from({ length: HISTORY_PAGE_SIZE }, (_, index) =>
+      Array.from({ length: pageSize }, (_, index) =>
         message({
           id: `${label}-${index}`,
           body: `${label} ${index}`,
@@ -1088,9 +1092,20 @@ describe('older history', () => {
       );
     const older = pageOf('older');
     const live = pageOf('live');
+    const newestLive = `live ${pageSize - 1}`;
     const arrivingRows = () => document.querySelectorAll('[data-arriving="true"]').length;
+    // jsdom lays nothing out and the file's ResizeObserver stub never reports a size, so the
+    // scroll area's bottom anchor would read the reader's scroll below (to a viewport given its
+    // height after it mounted) as a resize still to come, and keep following. Without an observer
+    // the scroll is the reader's, as in a browser whose observer has seen the height. Set here,
+    // not left to an earlier test's unstub, so the case passes alone; put back as it was after.
+    const resizeObserver = globalThis.ResizeObserver;
+    onTestFinished(() => {
+      vi.stubGlobal('ResizeObserver', resizeObserver);
+    });
+    vi.stubGlobal('ResizeObserver', undefined);
 
-    const controller = makeController({ messages: live });
+    const controller = makeController({ messages: live, pageSize });
     const { rerenderWith } = renderWithController(<Timeline />, controller);
     const viewport = document.querySelector<HTMLElement>('[data-radix-scroll-area-viewport]');
     if (!viewport) throw new Error('no viewport');
@@ -1106,11 +1121,11 @@ describe('older history', () => {
     // 1. The page is on its way: the sentinel says so; the list is untouched.
     rerenderWith({ ...controller, messages: live, historyLoading: 'older' });
     expect(screen.getByRole('button', { name: timelineCopy.loadingOlder })).toBeDisabled();
-    expect(screen.getByText('live 199')).toBeInTheDocument();
+    expect(screen.getByText(newestLive)).toBeInTheDocument();
     // 2. It lands above: both pages are drawn, nothing jumps or rises in, and nothing is "new".
     rerenderWith({ ...controller, messages: [...older, ...live], historyLoading: null });
     expect(screen.getByText('older 0')).toBeInTheDocument();
-    expect(screen.getByText('live 199')).toBeInTheDocument();
+    expect(screen.getByText(newestLive)).toBeInTheDocument();
     expect(scrollTo).not.toHaveBeenCalled();
     expect(arrivingRows()).toBe(0);
     expect(screen.queryByText(/new messages?$/)).toBeNull();
@@ -1118,8 +1133,9 @@ describe('older history', () => {
 
     // 3. The window is full and its newest end gives way: still no jump, and "Newer messages" and
     // the history pill show.
-    const window = [...pageOf('oldest'), ...older, ...live.slice(0, 100)];
-    rerenderWith({ ...controller, messages: window, historyBefore: live[100].sequence });
+    const kept = pageSize / 2;
+    const window = [...pageOf('oldest'), ...older, ...live.slice(0, kept)];
+    rerenderWith({ ...controller, messages: window, historyBefore: live[kept].sequence });
     expect(scrollTo).not.toHaveBeenCalled();
     expect(arrivingRows()).toBe(0);
     expect(screen.getByText(timelineCopy.viewingEarlier)).toBeInTheDocument();
