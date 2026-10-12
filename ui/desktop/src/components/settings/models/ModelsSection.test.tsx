@@ -1,5 +1,6 @@
 import { render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import { renderToString } from 'react-dom/server';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import ModelsSection from './ModelsSection';
 import { defaultModelCopy, modelsDangerCopy } from './copy';
@@ -15,12 +16,20 @@ const mocks = vi.hoisted(() => ({
   read: vi.fn(),
   getProviders: vi.fn(),
   predefined: false,
+  /** What the app already holds: the provider list and the model in force. */
+  providersList: [] as unknown[],
+  currentModel: 'gpt-5.6-sol' as string | null,
+  currentProvider: 'versa_azure' as string | null,
+  /** The daemon's two reads, with identities that hold still across renders. */
+  getCurrentModelDisplayName: vi.fn(),
+  getCurrentProviderDisplayName: vi.fn(),
 }));
 
 vi.mock('../../ConfigContext', () => ({
   useConfig: () => ({
     read: mocks.read,
     getProviders: mocks.getProviders,
+    providersList: mocks.providersList,
     remove: vi.fn(),
   }),
 }));
@@ -29,10 +38,10 @@ vi.mock('../../ModelAndProviderContext', () => ({
   UNKNOWN_PROVIDER_TITLE: 'Unknown provider',
   UNKNOWN_PROVIDER_MSG: 'Unknown provider message',
   useModelAndProvider: () => ({
-    getCurrentModelDisplayName: async () => 'gpt-5.6-sol',
-    getCurrentProviderDisplayName: async () => 'Versa Azure',
-    currentModel: 'gpt-5.6-sol',
-    currentProvider: 'versa_azure',
+    getCurrentModelDisplayName: mocks.getCurrentModelDisplayName,
+    getCurrentProviderDisplayName: mocks.getCurrentProviderDisplayName,
+    currentModel: mocks.currentModel,
+    currentProvider: mocks.currentProvider,
   }),
 }));
 
@@ -47,14 +56,21 @@ vi.mock('./LocalModelInventory', () => ({
 vi.mock('./predefinedModelsUtils', () => ({
   getPredefinedModelsFromEnv: () => [],
   shouldShowPredefinedModels: () => mocks.predefined,
+  getModelDisplayName: (name: string) => name,
+  getProviderDisplayName: () => '',
 }));
 
 describe('ModelsSection', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mocks.predefined = false;
+    mocks.providersList = [];
+    mocks.currentModel = 'gpt-5.6-sol';
+    mocks.currentProvider = 'versa_azure';
     mocks.read.mockResolvedValue('');
     mocks.getProviders.mockResolvedValue([]);
+    mocks.getCurrentModelDisplayName.mockResolvedValue('gpt-5.6-sol');
+    mocks.getCurrentProviderDisplayName.mockResolvedValue('Versa Azure');
   });
 
   it('holds three sections whose ids the Settings deep links scroll to', async () => {
@@ -114,5 +130,92 @@ describe('ModelsSection', () => {
       screen.getByRole('button', { name: `About ${defaultModelCopy.section}` })
     ).toBeInTheDocument();
     expect(container.querySelector('.biorouter-settings-row p')).toBeNull();
+  });
+
+  describe('the Model row on a tab switch (V4-R7-1, principle 9)', () => {
+    const provider = (name: string, display: string) => ({
+      name,
+      metadata: { display_name: display },
+    });
+    const skeletons = (container: HTMLElement) =>
+      container.querySelectorAll('[data-slot="skeleton"]');
+    /** A daemon that has not answered yet, so only what the app already holds can be on screen. */
+    const daemonSilent = () => {
+      mocks.getCurrentModelDisplayName.mockReturnValue(new Promise(() => {}));
+      mocks.getCurrentProviderDisplayName.mockReturnValue(new Promise(() => {}));
+    };
+
+    it('paints the model and provider in the first render, with no skeleton, before the daemon answers', () => {
+      mocks.providersList = [provider('versa_azure', 'Versa Azure')];
+      daemonSilent();
+      const { container } = render(<ModelsSection setView={vi.fn()} />);
+
+      // Read synchronously: nothing has awaited, so this is the first committed frame.
+      expect(screen.getByText('gpt-5.6-sol · Versa Azure')).toBeInTheDocument();
+      expect(skeletons(container)).toHaveLength(0);
+    });
+
+    it('has the value in the render itself, not set by an effect after the first frame', () => {
+      // `render` flushes effects inside `act`, so it cannot tell a value drawn in the first frame
+      // from one an effect wrote right after it. A server render runs no effects: what it returns
+      // is exactly what the first frame holds.
+      mocks.providersList = [provider('versa_azure', 'Versa Azure')];
+      daemonSilent();
+      const html = renderToString(<ModelsSection setView={vi.fn()} />);
+
+      expect(html).toContain('gpt-5.6-sol · Versa Azure');
+      expect(html).not.toContain('data-slot="skeleton"');
+
+      mocks.providersList = [];
+      expect(renderToString(<ModelsSection setView={vi.fn()} />)).toContain('data-slot="skeleton"');
+    });
+
+    it('keeps the same value on screen when the daemon then answers with the same words', async () => {
+      mocks.providersList = [provider('versa_azure', 'Versa Azure')];
+      const { container } = render(<ModelsSection setView={vi.fn()} />);
+      const value = screen.getByText('gpt-5.6-sol · Versa Azure');
+
+      await vi.waitFor(() => expect(mocks.getCurrentProviderDisplayName).toHaveBeenCalled());
+      await Promise.resolve();
+      // The same node, not a skeleton and then a new one.
+      expect(screen.getByText('gpt-5.6-sol · Versa Azure')).toBe(value);
+      expect(skeletons(container)).toHaveLength(0);
+    });
+
+    it('waits on a skeleton only when the app cannot say yet, then shows the daemon’s answer', async () => {
+      mocks.providersList = [];
+      const { container } = render(<ModelsSection setView={vi.fn()} />);
+
+      expect(skeletons(container)).toHaveLength(1);
+      expect(await screen.findByText('gpt-5.6-sol · Versa Azure')).toBeInTheDocument();
+      expect(skeletons(container)).toHaveLength(0);
+    });
+
+    it('waits on a skeleton for a provider the list does not know, not half a sentence', () => {
+      mocks.providersList = [provider('anthropic', 'Anthropic')];
+      daemonSilent();
+      const { container } = render(<ModelsSection setView={vi.fn()} />);
+
+      expect(skeletons(container)).toHaveLength(1);
+      expect(screen.queryByText(/gpt-5.6-sol/)).not.toBeInTheDocument();
+    });
+
+    it('changes the words at once when the model in force changes, never the old model beside the new', () => {
+      mocks.providersList = [
+        provider('versa_azure', 'Versa Azure'),
+        provider('anthropic', 'Anthropic'),
+      ];
+      daemonSilent();
+      const { rerender, container } = render(<ModelsSection setView={vi.fn()} />);
+      expect(screen.getByText('gpt-5.6-sol · Versa Azure')).toBeInTheDocument();
+
+      mocks.currentModel = 'claude-opus-5';
+      mocks.currentProvider = 'anthropic';
+      rerender(<ModelsSection setView={vi.fn()} />);
+
+      expect(screen.getByText('claude-opus-5 · Anthropic')).toBeInTheDocument();
+      expect(screen.queryByText(/gpt-5.6-sol/)).not.toBeInTheDocument();
+      expect(skeletons(container)).toHaveLength(0);
+    });
   });
 });

@@ -150,16 +150,29 @@ const STUBS: Array<{ filter: RegExp; contents: string }> = [
   {
     filter: /\/ConfigContext$/,
     contents: `
-      const api = { read: async () => '', remove: async () => {}, getProviders: async () => [] };
+      // The provider list the app already holds when a person opens Settings.
+      const providersList = [{ name: 'versa_azure', metadata: { display_name: 'Versa Azure' } }];
+      const api = {
+        read: async () => '',
+        remove: async () => {},
+        getProviders: async () => providersList,
+        providersList,
+      };
       export const useConfig = () => api;
     `,
   },
   {
     filter: /\/ModelAndProviderContext$/,
     contents: `
+      // The daemon's two config reads. A page sets __daemonDelayMs to make them slow, so a value
+      // that is on screen before they answer can only have come from what the app already held.
+      const answerLate = (text) => async () => {
+        await new Promise((done) => setTimeout(done, window.__daemonDelayMs || 0));
+        return text;
+      };
       const value = {
-        getCurrentModelDisplayName: async () => 'gpt-5.6-sol',
-        getCurrentProviderDisplayName: async () => 'Versa Azure',
+        getCurrentModelDisplayName: answerLate('gpt-5.6-sol'),
+        getCurrentProviderDisplayName: answerLate('Versa Azure'),
         currentModel: 'gpt-5.6-sol',
         currentProvider: 'versa_azure',
       };
@@ -297,6 +310,80 @@ describe('the Models tab rows in a real layout engine (spec 3.13, 5.7)', () => {
         height: row.getBoundingClientRect().height,
       }));
     }, section);
+
+  it('draws the Model row’s value in the first commit and every frame after it, never a skeleton bar (V4-R7-1)', async (ctx) => {
+    if (!browser) return ctx.skip();
+    // A tab switch mounts the section at once, and the daemon's two config reads land 100 to
+    // 250 ms later. Here they land 600 ms later, so everything before that is the app's own.
+    const tab = await browser.newPage({ viewport: { width: 800, height: 1000 } });
+    type Sample = { at: number; hasRow: boolean; text: string | null; pulse: boolean };
+    type Probe = { commits: Sample[]; frames: Sample[] };
+    try {
+      await tab.setContent(
+        `<!doctype html><html><head><style>${css}</style></head><body><div id="root"></div></body></html>`
+      );
+      // Installed before the section mounts. Two views of the same row: `commits` samples the DOM
+      // at the end of every task that changed it (a MutationObserver callback), so no state React
+      // committed is skipped, and `frames` samples it in every animation frame, the state about to
+      // be painted. A skeleton that a quick re-render replaced before the next frame would hide
+      // from `frames` on a fast machine and show on a loaded one, so `commits` is the stricter
+      // view and `frames` is the one a person sees.
+      await tab.addScriptTag({
+        content: `
+          window.__daemonDelayMs = 600;
+          const probe = { commits: [], frames: [] };
+          window.__probe = probe;
+          const sample = () => {
+            const row = document.querySelector('#settings-default-model .br-setting-row-value');
+            return {
+              at: performance.now(),
+              hasRow: Boolean(row),
+              text: row ? row.textContent : null,
+              pulse: Boolean(document.querySelector('#settings-default-model .animate-pulse')),
+            };
+          };
+          new MutationObserver(() => probe.commits.push(sample())).observe(document.body, {
+            subtree: true, childList: true, characterData: true, attributes: true,
+          });
+          const tick = () => {
+            probe.frames.push(sample());
+            if (probe.frames.length < 400) requestAnimationFrame(tick);
+          };
+          requestAnimationFrame(tick);
+        `,
+      });
+      await tab.addScriptTag({ content: script });
+      // Long enough for the daemon's answers (600 ms) to land and the row to settle after them.
+      await tab.waitForFunction(() => {
+        const { frames } = (window as unknown as { __probe: Probe }).__probe;
+        const first = frames.find((frame) => frame.hasRow);
+        return Boolean(first) && frames[frames.length - 1].at - first!.at > 900;
+      });
+      const probe = await tab.evaluate(() => (window as unknown as { __probe: Probe }).__probe);
+      const WORDS = 'gpt-5.6-sol · Versa Azure';
+
+      // The first commit that has the Model row already holds the words and no skeleton.
+      const commits = probe.commits.slice(probe.commits.findIndex((sample) => sample.hasRow));
+      expect(commits.length).toBeGreaterThan(0);
+      expect(commits[0].pulse, 'a skeleton in the first commit').toBe(false);
+      expect(commits[0].text).toBe(WORDS);
+      // Neither does any later commit, including the ones either side of the daemon answering.
+      for (const sample of commits) {
+        expect(sample.pulse).toBe(false);
+        expect(sample.text).toBe(WORDS);
+      }
+
+      // And so does every frame painted from the first one with the row.
+      const frames = probe.frames.slice(probe.frames.findIndex((sample) => sample.hasRow));
+      expect(frames.length).toBeGreaterThan(20);
+      for (const sample of frames) {
+        expect(sample.pulse).toBe(false);
+        expect(sample.text).toBe(WORDS);
+      }
+    } finally {
+      await tab.close();
+    }
+  });
 
   it('draws the Model, Providers and Reset rows as one 40px line each', async (ctx) => {
     if (!browser) return ctx.skip();
