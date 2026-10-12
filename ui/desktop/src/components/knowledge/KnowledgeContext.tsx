@@ -98,6 +98,16 @@ interface KnowledgeContextType {
    * chat's* bases, and it is not what the chat already shows.
    */
   canFollowDefaultPrimary: boolean;
+  /**
+   * Whether `hiddenKbIds` and `primaryKbId` are this scope's settled answer:
+   * the daemon's answer for the current `sessionId` has landed (the hydrate, or
+   * a write or re-read that took its place), or the last confirmed selection
+   * stands in for it after a failed read. False from the render that changes
+   * the scope until then, so a consumer never reads the previous chat's
+   * selection, or this renderer's cached guess, as this chat's. The composer's
+   * Tools chip waits for it before showing a number (V2-R7-3).
+   */
+  selectionSettled: boolean;
   refreshDefaultPrimary: () => Promise<void>;
   /** Drop this chat's own primary so it follows the machine-wide default again. */
   followDefaultPrimary: () => void;
@@ -154,6 +164,10 @@ export function KnowledgeProvider({
   // surface that offers the way back to it needs it, and hydrating it eagerly
   // would spend a request per chat switch on a value most chats never show.
   const [defaultPrimaryKbId, setDefaultPrimaryKbId] = useState<string | null>(null);
+  // The scope whose selection has settled (see `selectionSettled`). Wrapped so
+  // that `null` means "no scope has", while `{ scope: null }` is the machine
+  // scope having settled: a bare `string | null` cannot say both.
+  const [settledScope, setSettledScope] = useState<{ scope: string | null } | null>(null);
   const graphRefreshRef = useRef<(() => Promise<void>) | null>(null);
   // Every selection round-trip a USER starts — a write, its recovery read, the
   // hydrate on a chat switch — takes a generation. Only the newest may write
@@ -187,6 +201,27 @@ export function KnowledgeProvider({
       localStorage.setItem(hiddenStorageKey, JSON.stringify(hidden));
     },
     [hiddenStorageKey]
+  );
+
+  /**
+   * Record that the daemon's answer for THIS scope has landed, or that the last
+   * confirmed selection stands in for it after a read that failed. Called
+   * wherever one of those is adopted, under the same stale-answer guards, so it
+   * can never mark a scope the user has already left. Idempotent: a scope that
+   * has settled keeps its state object, so a later re-read costs no render.
+   *
+   * The hydrate is not the only way a scope settles. A write the user makes
+   * while the hydrate is out bumps the generation, which discards the hydrate's
+   * answer; the write's own answer (or its recovery read) is then the one that
+   * lands, and without marking it here the scope would stay unsettled until the
+   * next chat switch.
+   */
+  const markSettled = useCallback(
+    () =>
+      setSettledScope((current) =>
+        current !== null && current.scope === sessionId ? current : { scope: sessionId }
+      ),
+    [sessionId]
   );
 
   /** Put back the last selection the daemon confirmed for this scope. */
@@ -225,12 +260,13 @@ export function KnowledgeProvider({
       applyPrimary(readPrimary(data));
       const hidden = readHidden(data);
       if (hidden) applyHidden(hidden);
+      markSettled();
     } catch (err) {
       // A failed read changes nothing on screen: it is not evidence the
       // selection moved, and the next refresh or hydrate asks again.
       console.warn('Knowledge selection not re-read:', briefSelectionFailure(err));
     }
-  }, [applyHidden, applyPrimary, sessionId]);
+  }, [applyHidden, applyPrimary, markSettled, sessionId]);
 
   const refreshBases = useCallback(async () => {
     setLoading(true);
@@ -283,6 +319,7 @@ export function KnowledgeProvider({
         applyPrimary(readPrimary(data));
         const hidden = readHidden(data);
         if (hidden) applyHidden(hidden);
+        markSettled();
       } catch (err) {
         if (generation !== selectionGenerationRef.current) return;
         console.warn(
@@ -290,9 +327,10 @@ export function KnowledgeProvider({
           briefSelectionFailure(err)
         );
         restoreConfirmedSelection();
+        markSettled();
       }
     },
-    [applyHidden, applyPrimary, refreshBases, restoreConfirmedSelection, sessionId]
+    [applyHidden, applyPrimary, markSettled, refreshBases, restoreConfirmedSelection, sessionId]
   );
 
   /**
@@ -388,9 +426,10 @@ export function KnowledgeProvider({
         // that is not a member of its own visible set.
         const appliedHidden = readHidden(data);
         if (appliedHidden) applyHidden(appliedHidden);
+        markSettled();
       })();
     },
-    [applyHidden, applyPrimary, recoverFromFailedWrite, sessionId]
+    [applyHidden, applyPrimary, markSettled, recoverFromFailedWrite, sessionId]
   );
 
   const setPrimaryKbId = useCallback(
@@ -553,6 +592,7 @@ export function KnowledgeProvider({
         if (cancelled || generation !== selectionGenerationRef.current) return;
         applyPrimary(readPrimary(data));
         applyHidden(readHidden(data) ?? []);
+        markSettled();
       } catch (err) {
         if (cancelled) return;
         // ⚠ One quiet line, deliberately: the gate's refusal is ~900
@@ -573,12 +613,15 @@ export function KnowledgeProvider({
         console.warn('Knowledge selection not hydrated:', briefSelectionFailure(err));
         setPrimaryKbIdState(local);
         setHiddenKbIdsState(localHidden);
+        // The last confirmed selection is the answer this scope will have until
+        // a read lands, so a failed hydrate must not leave the scope waiting.
+        markSettled();
       }
     })();
     return () => {
       cancelled = true;
     };
-  }, [applyHidden, applyPrimary, hiddenStorageKey, sessionId, storageKey]);
+  }, [applyHidden, applyPrimary, hiddenStorageKey, markSettled, sessionId, storageKey]);
 
   // A pointer at a base the list does not hold is shown as no primary — the
   // view, the ingest target and the graph must never aim at a base that is gone
@@ -616,6 +659,18 @@ export function KnowledgeProvider({
     [defaultPrimaryKb, hiddenKbIds, primaryKbId]
   );
 
+  // A scope other than the one that settled has taken over: forget the old
+  // answer in THIS render (the pattern React documents for resetting state when
+  // a prop changes; it re-renders before anything is committed). Without it,
+  // going A to B to A before B's hydrate lands would find A's earlier settle
+  // still standing, and report B's selection, still in state, as A's settled one.
+  if (settledScope !== null && settledScope.scope !== sessionId) {
+    setSettledScope(null);
+  }
+  // Compared with the prop here, not reset by an effect, so it is false in the
+  // very render that changes the scope, before any effect has run.
+  const selectionSettled = settledScope !== null && settledScope.scope === sessionId;
+
   const value: KnowledgeContextType = {
     bases,
     visibleBases,
@@ -626,6 +681,7 @@ export function KnowledgeProvider({
     hiddenKbIds,
     defaultPrimaryKb,
     canFollowDefaultPrimary,
+    selectionSettled,
     refreshDefaultPrimary,
     followDefaultPrimary,
     setPrimaryKbId,
