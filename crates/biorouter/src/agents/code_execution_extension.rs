@@ -853,6 +853,12 @@ fn annotate_js_error_for_script(
              several values, record_result({{ first, second }})."
         );
     }
+    // F07 rerun (ministral-3:8b, 2026-10-12): scripts called `shell(...)`
+    // without importing it and got only "ReferenceError: shell is not
+    // defined". Named only when the name really is a tool here.
+    if let Some(hint) = unimported_tool_hint(tools, message) {
+        return format!("{message}. {hint}");
+    }
     let annotated = if !message.contains(BOA_NOT_CALLABLE) {
         message.to_string()
     } else {
@@ -876,6 +882,28 @@ fn annotate_js_error_for_script(
         ". "
     };
     format!("{}{separator}{}", annotated.trim_end(), hints.join(" "))
+}
+
+/// For "ReferenceError: NAME is not defined" where NAME is a tool of an
+/// importable module, the import that defines it.
+fn unimported_tool_hint(tools: &[ToolInfo], message: &str) -> Option<String> {
+    static UNDEFINED: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
+    let undefined = UNDEFINED.get_or_init(|| {
+        Regex::new(r"ReferenceError: ([A-Za-z_$][\w$]*) is not defined")
+            .expect("static regex compiles")
+    });
+    let name = undefined.captures(message)?.get(1)?.as_str();
+    let mut servers: Vec<&str> = tools
+        .iter()
+        .filter(|tool| tool.tool_name == name)
+        .map(|tool| tool.server_name.as_str())
+        .collect();
+    servers.dedup();
+    let server = servers.first()?;
+    Some(format!(
+        "`{name}` is a tool of the \"{server}\" module, and a script sees only what it \
+         imports: add import {{ {name} }} from \"{server}\"; at the top."
+    ))
 }
 
 /// What a JavaScript string has, so `out.trim()` and `out.length` on a string
@@ -6014,6 +6042,31 @@ record_result({ result20 });"#,
         let ok = run_js_module("function f() { return 5; }\nrecord_result(f());", &[], tx)
             .expect("return inside a function works");
         assert_eq!(ok, "5");
+    }
+
+    /// F07 rerun (ministral-3:8b, 2026-10-12): `shell(...)` without its
+    /// import, answered only with "ReferenceError: shell is not defined".
+    #[test]
+    fn an_unimported_tool_names_its_import() {
+        let tools = server_tools("developer", &["shell", "text_editor"]);
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let error = run_js_module(
+            "import { text_editor } from \"developer\";\nshell({ command: \"ls\" });",
+            &tools,
+            tx,
+        )
+        .expect_err("shell was never imported");
+        assert!(error.contains("shell is not defined"), "got: {error}");
+        assert!(
+            error.contains("import { shell } from \"developer\";"),
+            "got: {error}"
+        );
+
+        // A name that is no tool gets no invented import.
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let error = run_js_module("record_result(missing + 1);", &tools, tx)
+            .expect_err("missing is undefined");
+        assert!(!error.contains("import {"), "got: {error}");
     }
 
     #[test]
