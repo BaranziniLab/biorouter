@@ -41,6 +41,15 @@ function extractScript(html: string): string {
   return match[1];
 }
 
+/** The theme script that runs ahead of the stylesheet, lifted out of the shipped page. */
+function extractThemeScript(html: string): string {
+  const match = html.match(
+    /<script>\s*\/\/ Initialize theme before any content loads([\s\S]*?)<\/script>/
+  );
+  if (!match) throw new Error('theme init script not found in index.html');
+  return match[1];
+}
+
 const THRESHOLD_MS = 400;
 /** The longest the first frame waits for the brand face (the script's FONT_WAIT_MS). */
 const FONT_WAIT_MS = 250;
@@ -353,6 +362,101 @@ describe('boot splash', () => {
       // must at least be named there, or it can never be applied before paint.
       const missing = families.filter((f) => f !== 'parchment' && !html.includes(`'${f}'`));
       expect(missing, `theme script never mentions: ${missing.join(', ')}`).toEqual([]);
+    });
+  });
+
+  /**
+   * ThemeContext tells a theme CHANGE from a mount by looking at the mode class this script
+   * leaves on <html>, and a change stills every transition on the page for two frames. A light
+   * page used to carry NO class, so every light mount read as a change from nothing, and the
+   * boot splash's own 260 ms fade-out was one of the transitions it stilled (vision FR-R4-1:
+   * the wordmark vanished in a frame and the empty loader showed before the band painted).
+   * So the script says which mode it chose, in all three of its branches.
+   */
+  describe('the pre-React theme script stamps the mode (FR-R4-1)', () => {
+    function stubSystem(prefersDark: boolean) {
+      vi.spyOn(window, 'matchMedia').mockImplementation(
+        (query: string) =>
+          ({
+            matches: query.includes('dark') && prefersDark,
+            media: query,
+            addEventListener: () => undefined,
+            removeEventListener: () => undefined,
+          }) as unknown as MediaQueryList
+      );
+    }
+
+    /** Runs the shipped script over a fresh <html> and reports the classes it left. */
+    function runThemeScript(): string[] {
+      document.documentElement.className = '';
+      new Function(extractThemeScript(readIndexHtml()))();
+      return [...document.documentElement.classList].sort();
+    }
+
+    beforeEach(() => {
+      localStorage.clear();
+    });
+
+    afterEach(() => {
+      vi.restoreAllMocks();
+      localStorage.clear();
+    });
+
+    it('stamps exactly one mode class for a saved choice, light or dark, whatever the OS says', () => {
+      for (const systemDark of [false, true]) {
+        stubSystem(systemDark);
+        for (const saved of ['light', 'dark'] as const) {
+          localStorage.setItem('use_system_theme', 'false');
+          localStorage.setItem('theme', saved);
+          expect(runThemeScript(), `saved ${saved}, system dark ${systemDark}`).toEqual([saved]);
+        }
+      }
+    });
+
+    it('follows the OS when asked to, and for a fresh install that saved nothing', () => {
+      for (const systemDark of [false, true]) {
+        stubSystem(systemDark);
+        const want = [systemDark ? 'dark' : 'light'];
+        localStorage.clear();
+        expect(runThemeScript(), `nothing saved, system dark ${systemDark}`).toEqual(want);
+        localStorage.setItem('use_system_theme', 'true');
+        localStorage.setItem('theme', systemDark ? 'light' : 'dark');
+        expect(runThemeScript(), `system theme on, system dark ${systemDark}`).toEqual(want);
+      }
+    });
+
+    it('stamps a mode when storage throws on every read, and when there is no storage at all', () => {
+      for (const systemDark of [false, true]) {
+        stubSystem(systemDark);
+        const want = [systemDark ? 'dark' : 'light'];
+
+        // A storage object whose every read throws, as a locked-down profile's does.
+        const blocked = {
+          getItem: () => {
+            throw new Error('storage is blocked');
+          },
+        } as unknown as Storage;
+        const read = vi.spyOn(window, 'localStorage', 'get').mockReturnValue(blocked);
+        const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+        expect(runThemeScript(), `blocked storage, system dark ${systemDark}`).toEqual(want);
+        expect(warn, 'the script says why it fell back').toHaveBeenCalled();
+        read.mockRestore();
+        warn.mockRestore();
+
+        const gone = vi.spyOn(window, 'localStorage', 'get').mockReturnValue(undefined as never);
+        expect(runThemeScript(), `no storage, system dark ${systemDark}`).toEqual(want);
+        gone.mockRestore();
+      }
+    });
+
+    it('takes the opposite class off when it runs a second time with a different answer', () => {
+      stubSystem(false);
+      localStorage.setItem('use_system_theme', 'false');
+      localStorage.setItem('theme', 'dark');
+      expect(runThemeScript()).toEqual(['dark']);
+      localStorage.setItem('theme', 'light');
+      new Function(extractThemeScript(readIndexHtml()))();
+      expect([...document.documentElement.classList]).toEqual(['light']);
     });
   });
 

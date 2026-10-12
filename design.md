@@ -421,6 +421,15 @@ component's measured numbers and to the same pixels. The splash waits for Inter 
 the first frame is the whole logo rather than a bar with letters following. A launch that finishes inside 400 ms
 shows nothing.
 
+**The hand-off (2026-10-11, FR-R4-1).** The splash fades out over 260 ms in the frame the app mounts, in light as well
+as in dark. That depends on `<html>` carrying a mode class before React runs: the theme script in `index.html`
+stamps `dark` or `light`, never neither, and `ThemeContext` decides whether a mount is a theme change by asking
+whether the page is dark. A mount that counted as a change would put `biorouter-theme-switching` on `<html>` for two
+frames, and that class stills every transition on the page, the splash's own fade included, so the wordmark would
+vanish in one frame and the empty loader would show before the band painted. That is what a light launch did until
+this fix, because a light page had no class to match. `bootSplash.browser.test.ts` mounts the real `ThemeProvider`
+and the dismissal that `renderer.tsx` runs after it, and asserts the opacity transition is running.
+
 | Token | Light | Dark | Role |
 |---|---|---|---|
 | `--br-bg` | `#ffffff` | `#131312` | The ground, **`--background-canvas`**: the ground the first-run page, Home and the loader paint, so the splash fades onto its own colour. It was `--background-muted`, one step off the page, and a launch that crossed the threshold flashed grey before the white. Shared by every family. |

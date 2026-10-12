@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ThemeProvider } from './ThemeContext';
 import ThemeSelector from '../components/BioRouterSidebar/ThemeSelector';
@@ -57,8 +57,6 @@ describe('ThemeContext stills transitions for a theme change', () => {
 
   it('suspends for the frame a mode click lands in, and only until the second frame', () => {
     renderProvider();
-    // Mounting the page's own theme over an empty <html> is not a change the person made, but it is
-    // a real flip of the class, so settle it before looking at the click.
     act(() => {
       runFrame();
       runFrame();
@@ -91,6 +89,56 @@ describe('ThemeContext stills transitions for a theme change', () => {
       runFrame();
     });
     expect(switching()).toBe(false);
+  });
+
+  it('starts nothing when a light page mounts, with or without a light class on <html> (FR-R4-1)', () => {
+    // The boot splash fades out in the frame the app mounts. A mount that stills every transition
+    // on <html> stills that fade too, so a light page must not look like a change from nothing.
+    // index.html stamps `light` itself now; a bare <html> is the same page and must read the same.
+    for (const stamped of [[], ['light']]) {
+      root().className = '';
+      stamped.forEach((name) => root().classList.add(name));
+      root().setAttribute('data-theme', 'parchment');
+      frames = [];
+      const view = renderProvider();
+      expect(switching(), `classes ${JSON.stringify(stamped)}`).toBe(false);
+      expect(frames, `classes ${JSON.stringify(stamped)}`).toHaveLength(0);
+      expect(root().classList.contains('light')).toBe(true);
+      expect(root().classList.contains('dark')).toBe(false);
+      view.unmount();
+    }
+  });
+
+  it('starts nothing when a dark page mounts over the dark class index.html stamped', () => {
+    localStorage.setItem('theme', 'dark');
+    root().classList.add('dark');
+    root().setAttribute('data-theme', 'parchment');
+    renderProvider();
+    expect(switching()).toBe(false);
+    expect(frames).toHaveLength(0);
+  });
+
+  it('still suspends when a mount really lands on the other mode than the page was stamped with', () => {
+    // The page says dark and the saved choice is light (a choice made in another window, say):
+    // the mode does change on mount, and a change is a jump.
+    root().classList.add('dark');
+    root().setAttribute('data-theme', 'parchment');
+    renderProvider();
+    expect(root().classList.contains('light')).toBe(true);
+    expect(switching()).toBe(true);
+    act(() => {
+      runFrame();
+      runFrame();
+    });
+    expect(switching()).toBe(false);
+
+    // And the other way: a bare <html> is a light page, so a dark choice over it is a change.
+    root().className = '';
+    localStorage.setItem('theme', 'dark');
+    cleanup();
+    renderProvider();
+    expect(root().classList.contains('dark')).toBe(true);
+    expect(switching()).toBe(true);
   });
 
   it('starts nothing when the mode or the palette is already what the page shows', () => {

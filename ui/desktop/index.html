@@ -50,6 +50,20 @@
           }
         }
 
+        // Stamp the page's mode on <html> as a class, `dark` OR `light`, never
+        // neither. ThemeContext tells a theme CHANGE from a mount by asking
+        // whether the class it is about to apply is already there; a light page
+        // used to carry no class at all, so every light mount looked like a
+        // change and stilled every transition on <html> for two frames, which
+        // included the boot splash's own 260 ms fade-out (vision FR-R4-1). The
+        // two branches below and ThemeContext's answer to "which mode?" must
+        // stay the same question, as loadThemePreference there already says.
+        function applyMode(isDark) {
+          const root = document.documentElement;
+          root.classList.add(isDark ? 'dark' : 'light');
+          root.classList.remove(isDark ? 'light' : 'dark');
+        }
+
         function initializeTheme() {
           initializeThemeFamily();
           try {
@@ -57,25 +71,13 @@
               const useSystemTheme = localStorage.getItem('use_system_theme') === 'true';
               const systemPrefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
               const savedTheme = localStorage.getItem('theme');
-              const isDark = useSystemTheme ? systemPrefersDark : (savedTheme ? savedTheme === 'dark' : systemPrefersDark);
-
-              if (isDark) {
-                document.documentElement.classList.add('dark');
-              } else {
-                document.documentElement.classList.remove('dark');
-              }
+              applyMode(useSystemTheme ? systemPrefersDark : (savedTheme ? savedTheme === 'dark' : systemPrefersDark));
             } else {
-              const systemPrefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
-              if (systemPrefersDark) {
-                document.documentElement.classList.add('dark');
-              }
+              applyMode(window.matchMedia('(prefers-color-scheme: dark)').matches);
             }
           } catch (error) {
             console.warn('Failed to initialize theme from localStorage, using system preference:', error);
-            const systemPrefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
-            if (systemPrefersDark) {
-              document.documentElement.classList.add('dark');
-            }
+            applyMode(window.matchMedia('(prefers-color-scheme: dark)').matches);
           }
         }
 

@@ -100,7 +100,14 @@ function applyThemeToDocument(theme: ResolvedTheme): void {
   // A theme change is a jump, not an element changing: still every transition for the frame it
   // lands in, or buttons and rows walk to the new colours over 95 to 125ms (vision V4-15). Only
   // when the mode really changes, so a mount and the effect that follows a click start none.
-  if (!root.classList.contains(theme)) suspendTransitionsForThemeChange(root);
+  //
+  // "The mode" is whether the page is dark, which is the one class the stylesheet reads. Asking
+  // whether `theme`'s own class is present instead made a light page with no `light` class (a
+  // bare <html>, or one stamped by an older index.html) look like a change on every mount, and
+  // the frame that stilled every transition included the boot splash's 260ms fade-out (vision
+  // FR-R4-1). index.html now stamps `light` too; this does not depend on it.
+  const isDarkNow = root.classList.contains('dark');
+  if (isDarkNow !== (theme === 'dark')) suspendTransitionsForThemeChange(root);
   const toRemove = theme === 'dark' ? 'light' : 'dark';
   root.classList.add(theme);
   root.classList.remove(toRemove);

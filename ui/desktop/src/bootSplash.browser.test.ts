@@ -15,7 +15,10 @@
  *   threshold fades onto the page with no grey flash;
  * - it appears at rest, whole in the first frame, with the brand face already loaded;
  * - its ink sits at the window's centre, with the sweep a fixed distance below;
- * - under forced colours and reduced motion it still reads and stays still.
+ * - under forced colours and reduced motion it still reads and stays still;
+ * - when the app mounts (the real `ThemeProvider`, then the dismissal `renderer.tsx` runs after
+ *   it) the splash fades out over its 260 ms in light as well as in dark, because the page's mode
+ *   is stamped before React so a mount is never a theme change (FR-R4-1).
  *
  * It needs a Chromium; with none installed it warns and passes, like the other `.browser.test`
  * files.
@@ -58,6 +61,31 @@ createRoot(document.getElementById('root')!).render(
 );
 `;
 
+/**
+ * What `renderer.tsx` mounts, reduced to the two parts that matter to the hand-off: the app's real
+ * `ThemeProvider`, and `DismissBootSplash` as its SIBLING, which React runs after the provider's
+ * own effect. A copy of either would test the copy.
+ */
+const MOUNT_ENTRY = `
+import * as React from 'react';
+import { createRoot } from 'react-dom/client';
+import { ThemeProvider } from './contexts/ThemeContext';
+function DismissBootSplash() {
+  React.useEffect(() => {
+    window.__brBootSplash?.dismiss();
+  }, []);
+  return null;
+}
+createRoot(document.getElementById('root')!).render(
+  <>
+    <ThemeProvider>
+      <div />
+    </ThemeProvider>
+    <DismissBootSplash />
+  </>
+);
+`;
+
 const noCss: Plugin = {
   name: 'nocss',
   setup(b) {
@@ -73,6 +101,7 @@ describe('The boot splash draws the wordmark at rest on the page ground (FR-R1-7
   let browser: Browser | null = null;
   let css = '';
   let wordmarkScript = '';
+  let mountScript = '';
   let indexHtml = '';
 
   beforeAll(async () => {
@@ -98,6 +127,23 @@ describe('The boot splash draws the wordmark at rest on the page ground (FR-R1-7
       logLevel: 'silent',
     });
     wordmarkScript = bundle.outputFiles[0].text;
+    const mount = await build({
+      stdin: {
+        contents: MOUNT_ENTRY,
+        loader: 'tsx',
+        resolveDir: here,
+        sourcefile: 'mount.tsx',
+      },
+      bundle: true,
+      write: false,
+      format: 'iife',
+      jsx: 'automatic',
+      platform: 'browser',
+      define: { 'process.env.NODE_ENV': '"production"' },
+      plugins: [noCss],
+      logLevel: 'silent',
+    });
+    mountScript = mount.outputFiles[0].text;
     const { compile } = await import(requireFromDesktop.resolve('@tailwindcss/node'));
     const { Scanner } = requireFromDesktop('@tailwindcss/oxide');
     const compiler = await compile(readFileSync(resolve(STYLES, 'main.css'), 'utf8'), {
@@ -133,6 +179,9 @@ describe('The boot splash draws the wordmark at rest on the page ground (FR-R1-7
       family?: (typeof FAMILIES)[number];
       media?: { forcedColors?: 'active'; reducedMotion?: 'reduce' };
       scale?: number;
+      /** `stored`: a saved choice (the default). `none`: a fresh install, so the OS decides.
+       *  `blocked`: storage that throws on every read. */
+      storage?: 'stored' | 'none' | 'blocked';
     } = {}
   ): Promise<Page> {
     const {
@@ -142,6 +191,7 @@ describe('The boot splash draws the wordmark at rest on the page ground (FR-R1-7
       family = 'parchment',
       media,
       scale,
+      storage = 'stored',
     } = options;
     const ctx = await browser!.newContext({
       viewport: { width, height },
@@ -151,14 +201,22 @@ describe('The boot splash draws the wordmark at rest on the page ground (FR-R1-7
       ...(media?.reducedMotion ? { reducedMotion: media.reducedMotion } : {}),
     });
     const tab = await ctx.newPage();
-    await tab.addInitScript(
-      ([fam, isDark]) => {
-        localStorage.setItem('theme_family', fam as string);
-        localStorage.setItem('theme', isDark ? 'dark' : 'light');
-        localStorage.setItem('use_system_theme', 'false');
-      },
-      [family, dark] as const
-    );
+    if (storage === 'stored') {
+      await tab.addInitScript(
+        ([fam, isDark]) => {
+          localStorage.setItem('theme_family', fam as string);
+          localStorage.setItem('theme', isDark ? 'dark' : 'light');
+          localStorage.setItem('use_system_theme', 'false');
+        },
+        [family, dark] as const
+      );
+    } else if (storage === 'blocked') {
+      await tab.addInitScript(() => {
+        Storage.prototype.getItem = () => {
+          throw new Error('storage is blocked');
+        };
+      });
+    }
     await tab.route('http://splash.test/', (route) =>
       route.fulfill({ body: indexHtml, contentType: 'text/html' })
     );
@@ -549,4 +607,99 @@ describe('The boot splash draws the wordmark at rest on the page ground (FR-R1-7
     await moving.context().close();
     expect(calmBox).toEqual(movingBox);
   }, 60_000);
+
+  /** The classes <html> carries once the page's own theme script has run, nothing else added. */
+  const modeClasses = (tab: Page) =>
+    tab.evaluate(() => [...document.documentElement.classList].sort());
+
+  it('stamps the mode on <html> before React, light as well as dark, whatever storage holds (FR-R4-1)', async () => {
+    if (!browser) return;
+    // The theme provider decides "did the mode change?" from this class. A light page used to
+    // carry no class at all, so every light mount looked like a change from nothing to light.
+    const cases = [
+      { storage: 'stored', dark: false, want: ['light'] },
+      { storage: 'stored', dark: true, want: ['dark'] },
+      { storage: 'none', dark: false, want: ['light'] },
+      { storage: 'none', dark: true, want: ['dark'] },
+      { storage: 'blocked', dark: false, want: ['light'] },
+      { storage: 'blocked', dark: true, want: ['dark'] },
+    ] as const;
+    for (const { storage, dark, want } of cases) {
+      const tab = await openSplash({ storage, dark });
+      expect(
+        await modeClasses(tab),
+        `${storage} storage, ${dark ? 'dark' : 'light'} system`
+      ).toEqual(want);
+      // The theme script retries once the document is parsed; that second run changes nothing.
+      await tab.waitForTimeout(120);
+      expect(await modeClasses(tab), `${storage} storage, after the retry`).toEqual(want);
+      await tab.context().close();
+    }
+  }, 90_000);
+
+  it('fades out over its 260ms when the app mounts, in light and in dark, with the mode saved or not (FR-R4-1)', async () => {
+    if (!browser) return;
+    // Every launch path: a saved choice, a fresh install following the OS, in both modes.
+    const cases = [
+      { storage: 'stored', dark: false },
+      { storage: 'stored', dark: true },
+      { storage: 'none', dark: false },
+      { storage: 'none', dark: true },
+    ] as const;
+    for (const { storage, dark } of cases) {
+      const label = `${storage} storage, ${dark ? 'dark' : 'light'}`;
+      const tab = await openSplash({ storage, dark });
+      await firstFrame(tab);
+
+      // Read in the same task as the dismissal, before any frame: what the style engine makes of
+      // `br-out` is decided by what <html> carries at that moment, so this is the whole question.
+      await tab.evaluate(() => {
+        const splash = window.__brBootSplash!;
+        const real = splash.dismiss;
+        splash.dismiss = () => {
+          real();
+          const el = document.getElementById('br-boot')!;
+          const root = document.documentElement;
+          (window as unknown as { __dismissProbe: unknown }).__dismissProbe = {
+            switching: root.classList.contains('biorouter-theme-switching'),
+            transitionDuration: getComputedStyle(el).transitionDuration,
+            fades: el
+              .getAnimations()
+              .filter(
+                (a) =>
+                  (a as unknown as { transitionProperty?: string }).transitionProperty === 'opacity'
+              )
+              .map((a) => Number(a.effect!.getTiming().duration)),
+          };
+        };
+      });
+      await tab.addScriptTag({ content: mountScript });
+      // React commits on its own schedule; the probe exists once the dismissal has run.
+      await tab.waitForFunction(
+        () => (window as unknown as { __dismissProbe?: unknown }).__dismissProbe !== undefined,
+        null,
+        { timeout: 10_000 }
+      );
+      const probe = await tab.evaluate(
+        () =>
+          (
+            window as unknown as {
+              __dismissProbe: { switching: boolean; transitionDuration: string; fades: number[] };
+            }
+          ).__dismissProbe
+      );
+
+      expect(probe.switching, `${label}: the mount is not a theme change`).toBe(false);
+      expect(probe.transitionDuration, `${label}: the fade keeps its duration`).toBe('0.26s');
+      expect(probe.fades, `${label}: an opacity transition is running on the splash`).toEqual([
+        260,
+      ]);
+
+      // And it still takes itself down once the fade has run.
+      await tab.waitForFunction(() => !document.getElementById('br-boot'), null, {
+        timeout: 10_000,
+      });
+      await tab.context().close();
+    }
+  }, 120_000);
 });
