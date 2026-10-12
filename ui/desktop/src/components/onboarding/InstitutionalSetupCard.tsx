@@ -9,6 +9,7 @@ import { Input } from '../ui/input';
 import { Note } from '../ui/note';
 import { Spinner } from '../ui/spinner';
 import { institutionalCopy } from './copy';
+import { useViewPrimaryVariant } from './viewPrimary';
 
 interface InstitutionalSetupCardProps {
   /** Which gateway the row that opened this form is. */
@@ -90,6 +91,7 @@ export default function InstitutionalSetupCard({
       ? bedrockAccessKey.trim().length > 0 && bedrockSecretKey.trim().length > 0
       : azureApiKey.trim().length > 0;
   const canSubmit = !isLoading && hasKeys;
+  const saveVariant = useViewPrimaryVariant(hasKeys);
 
   const handleSubmit = async () => {
     if (!canSubmit) return;
@@ -250,10 +252,11 @@ export default function InstitutionalSetupCard({
           the button with no name and half its width (FR-S-6, FR-R1-11). Secondary until the keys
           it needs are in, coral once it can act: Public's "Detect provider" rule, so the catalog
           has one look for a primary that is not ready yet (FR-R2-5). Disabled coral was a pale
-          coral in light and a muddy brown in dark. */}
+          coral in light and a muddy brown in dark. Secondary too while another open panel in the
+          tab holds the view's one coral button (FR-R5-2). */}
       <div className="mt-4 flex flex-wrap items-center gap-2">
         <Button
-          variant={hasKeys ? 'default' : 'secondary'}
+          variant={saveVariant}
           onClick={handleSubmit}
           disabled={!canSubmit}
           data-testid="institutional-connect"

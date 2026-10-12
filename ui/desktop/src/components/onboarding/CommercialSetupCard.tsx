@@ -8,6 +8,7 @@ import { Field } from '../ui/field';
 import { Spinner } from '../ui/spinner';
 import { commercialCopy } from './copy';
 import { PINNED_PUBLIC_PROVIDERS } from '../settings/providers/providerOrdering';
+import { useViewPrimaryVariant } from './viewPrimary';
 
 interface CommercialSetupCardProps {
   onSuccess: (setup: DetectedProviderSetup) => void | Promise<void>;
@@ -179,6 +180,7 @@ export default function CommercialSetupCard({
 
   const hasInput = apiKey.trim().length > 0;
   const canSubmit = hasInput && !isLoading;
+  const detectVariant = useViewPrimaryVariant(hasInput);
   const supportedLabel = supported.join(', ');
   const failure = errorReason ? messageForReason(errorReason, supportedLabel) : null;
 
@@ -205,10 +207,11 @@ export default function CommercialSetupCard({
           />
         </Field>
         {/* Secondary until there is a key to detect: an empty field's disabled coral button was a
-            second coral fill beside an open agent's "Use" (principle 7, FR-R1-11). */}
+            second coral fill beside an open agent's "Use" (principle 7, FR-R1-11). Secondary too
+            while an open agent's panel holds the tab's one coral button (FR-R5-2). */}
         <div className="flex flex-wrap items-center gap-2">
           <Button
-            variant={hasInput ? 'default' : 'secondary'}
+            variant={detectVariant}
             onClick={testApiKey}
             disabled={!canSubmit}
             data-testid="commercial-detect"

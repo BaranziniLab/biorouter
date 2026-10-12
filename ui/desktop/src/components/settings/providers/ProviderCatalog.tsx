@@ -63,6 +63,11 @@ import {
   type CodingAgentAvailability,
 } from '../../onboarding/codingAgentStatus';
 import { agentCopy } from '../../onboarding/copy';
+import {
+  ViewPrimaryParticipant,
+  engageViewPrimary,
+  viewPrimaryOwner,
+} from '../../onboarding/viewPrimary';
 
 export type ProviderCatalogMode = 'settings' | 'onboarding';
 
@@ -186,6 +191,17 @@ const ONBOARDING_SETUP: Record<string, 'llamacpp' | 'ollama'> = {
   llamacpp: 'llamacpp',
   ollama: 'ollama',
 };
+
+/**
+ * The rows open when the catalog mounts. The recommended local provider opens by default in
+ * onboarding: it is the zero-setup path, and an accordion that starts entirely closed reads as an
+ * empty screen on the one page a first-run user has no context for.
+ */
+const defaultOpenRows = (mode: ProviderCatalogMode): string[] =>
+  mode === 'onboarding' ? ['llamacpp'] : [];
+
+/** The key box's place in a tab's order of panels (`viewPrimary`); no provider id has a space. */
+const KEY_BOX_PANEL = 'paste a key';
 
 /** The tab a `?tab=` hint names, or `null` when it names nothing we have. */
 export function tabFromHint(hint: string | null | undefined): ProviderGroupKey | null {
@@ -510,9 +526,7 @@ export default function ProviderCatalog({
   }, [hasLlamaServer, isOnboarding]);
 
   /**
-   * The rows that are open, each on its own. The recommended local provider opens by default in
-   * onboarding: it is the zero-setup path, and an accordion that starts entirely closed reads as an
-   * empty screen on the one page a first-run user has no context for.
+   * The rows that are open, each on its own, starting from {@link defaultOpenRows}.
    *
    * ⚠ **Opening a row never closes another** (vision FR-R4-2, principle 9: never move a row under
    * the pointer). It used to be one `openRow`, so a click on Codex with Claude Code open above it
@@ -523,16 +537,30 @@ export default function ProviderCatalog({
    * clicked row changes.
    */
   const [openRows, setOpenRows] = useState<ReadonlySet<string>>(
-    () => new Set(mode === 'onboarding' ? ['llamacpp'] : [])
+    () => new Set(defaultOpenRows(mode))
+  );
+  /**
+   * The order the person turned to the panels, most recent last: opening a row, or moving focus
+   * into a panel or the key box. With rows open on their own, two panels drew two coral primaries
+   * in one tab; the latest one present holds the tab's one coral button and the others draw it as
+   * secondary (vision FR-R5-2, principle 7, `onboarding/viewPrimary.tsx`).
+   */
+  const [engaged, setEngaged] = useState<readonly string[]>(() => defaultOpenRows(mode));
+  const engage = useCallback(
+    (key: string) => setEngaged((current) => engageViewPrimary(current, key)),
+    []
   );
   const toggleRow = useCallback(
-    (name: string) =>
+    (name: string) => {
       setOpenRows((current) => {
         const next = new Set(current);
         if (!next.delete(name)) next.add(name);
         return next;
-      }),
-    []
+      });
+      // A row that closes leaves the tab's participants, so engaging it on close changes nothing.
+      engage(name);
+    },
+    [engage]
   );
 
   const openModal = useCallback(
@@ -656,12 +684,31 @@ export default function ProviderCatalog({
     }
   };
 
-  const renderRow = (provider: ProviderDetails) => {
+  /**
+   * Whether a row opens in place. A coding-agent row is an accordion on BOTH surfaces: its content
+   * is a live status and the guidance for it, which a modal cannot carry and which a settings user
+   * needs exactly as much as a first-run user does.
+   */
+  const opensInPlace = (provider: ProviderDetails) =>
+    agentsByProviderId.has(provider.name) || setupPanelFor(provider) !== null;
+
+  /**
+   * The panels in a tab that can hold its one coral button (`viewPrimary`): the key box, then
+   * every open row's panel, in the order they are drawn.
+   */
+  const viewPrimaryPanels = (group: OrderedProviderGroup): string[] =>
+    group.sections.flatMap((section) => [
+      ...(isOnboarding && group.key === 'commercial' && section.key === 'api'
+        ? [KEY_BOX_PANEL]
+        : []),
+      ...section.providers
+        .filter((provider) => openRows.has(provider.name) && opensInPlace(provider))
+        .map((provider) => provider.name),
+    ]);
+
+  const renderRow = (provider: ProviderDetails, primaryPanel: string | null) => {
     const agent = agentsByProviderId.get(provider.name);
     const setupPanel = setupPanelFor(provider);
-    // A coding-agent row is an accordion on BOTH surfaces: its content is a live
-    // status and the guidance for it, which a modal cannot carry and which a
-    // settings user needs exactly as much as a first-run user does.
     const expandable = agent !== undefined || setupPanel !== null;
     const retiredEndpointNotice =
       provider.name === 'azure_openai' && azureOnRetiredEndpoint ? (
@@ -717,14 +764,21 @@ export default function ProviderCatalog({
               : providerRowSummary[provider.name]
           }
         >
-          {agent ? (
-            <div className="space-y-3">
-              <CodingAgentProvenance agent={agent} />
-              <CodingAgentBody agent={agent} controls={agentControls} />
-            </div>
-          ) : (
-            setupPanel
-          )}
+          {expandable ? (
+            <ViewPrimaryParticipant
+              holds={primaryPanel === provider.name}
+              onEngage={() => engage(provider.name)}
+            >
+              {agent ? (
+                <div className="space-y-3">
+                  <CodingAgentProvenance agent={agent} />
+                  <CodingAgentBody agent={agent} controls={agentControls} />
+                </div>
+              ) : (
+                setupPanel
+              )}
+            </ViewPrimaryParticipant>
+          ) : null}
         </ProviderCard>
         {retiredEndpointNotice}
       </React.Fragment>
@@ -733,6 +787,8 @@ export default function ProviderCatalog({
 
   const renderSection = (group: OrderedProviderGroup, section: OrderedProviderSection) => {
     const isApiSection = group.key === 'commercial' && section.key === 'api';
+    // A tab is one view: the panel the person turned to last holds its one coral button.
+    const primaryPanel = viewPrimaryOwner(engaged, viewPrimaryPanels(group));
 
     const rows = (
       <>
@@ -754,13 +810,18 @@ export default function ProviderCatalog({
         */}
         {isOnboarding && isApiSection && (
           <div className="br-provider-inset mb-4">
-            <CommercialSetupCard
-              onSuccess={handleCommercialDetected}
-              onStartTesting={onStartTesting}
-            />
+            <ViewPrimaryParticipant
+              holds={primaryPanel === KEY_BOX_PANEL}
+              onEngage={() => engage(KEY_BOX_PANEL)}
+            >
+              <CommercialSetupCard
+                onSuccess={handleCommercialDetected}
+                onStartTesting={onStartTesting}
+              />
+            </ViewPrimaryParticipant>
           </div>
         )}
-        {section.providers.map(renderRow)}
+        {section.providers.map((provider) => renderRow(provider, primaryPanel))}
         {isApiSection && <AddCustomProviderRow onClick={() => setShowCustomProviderModal(true)} />}
       </>
     );

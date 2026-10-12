@@ -17,6 +17,7 @@ import './onboarding.css';
 import { Spinner } from '../ui/spinner';
 import { ollamaCopy } from './copy';
 import { StatusPill } from './StatusPill';
+import { useViewPrimaryVariant } from './viewPrimary';
 
 interface OllamaInlineCardProps {
   onSuccess: () => void;
@@ -26,6 +27,8 @@ type ModelStatus = 'checking' | 'available' | 'not-available' | 'downloading';
 
 export default function OllamaInlineCard({ onSuccess }: OllamaInlineCardProps) {
   const { upsert } = useConfig();
+  // Coral unless another open panel in the tab holds the view's primary (FR-R5-2).
+  const primaryVariant = useViewPrimaryVariant();
   const [isChecking, setIsChecking] = useState(true);
   const [ollamaDetected, setOllamaDetected] = useState(false);
   const [isPolling, setIsPolling] = useState(false);
@@ -177,7 +180,11 @@ export default function OllamaInlineCard({ onSuccess }: OllamaInlineCardProps) {
               </Button>
             )}
             {modelStatus === 'available' && (
-              <Button onClick={handleConnectOllama} disabled={isConnecting}>
+              <Button
+                variant={primaryVariant}
+                onClick={handleConnectOllama}
+                disabled={isConnecting}
+              >
                 {isConnecting ? ollamaCopy.connecting : ollamaCopy.use}
               </Button>
             )}

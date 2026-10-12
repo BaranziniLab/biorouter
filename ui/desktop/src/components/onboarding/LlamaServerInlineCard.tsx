@@ -20,6 +20,7 @@ import './onboarding.css';
 import { ConfirmationModal } from '../ui/ConfirmationModal';
 import { Spinner } from '../ui/spinner';
 import { StatusPill } from './StatusPill';
+import { useViewPrimaryVariant } from './viewPrimary';
 
 interface LlamaServerInlineCardProps {
   onSuccess: () => void;
@@ -127,6 +128,8 @@ function DetailRow({
 export default function LlamaServerInlineCard({ onSuccess }: LlamaServerInlineCardProps) {
   const { upsert } = useConfig();
   const { status, operation, lastError } = useLlamaServer();
+  // Coral unless another open panel in the tab holds the view's primary (FR-R5-2).
+  const primaryVariant = useViewPrimaryVariant();
   // Skip the "Checking…" state when the shared store already has a status
   // (e.g. remounting while a download started elsewhere is still running).
   const [isChecking, setIsChecking] = useState(
@@ -531,6 +534,7 @@ export default function LlamaServerInlineCard({ onSuccess }: LlamaServerInlineCa
             <div className="flex flex-wrap items-center gap-2">
               {isReadyForSelected ? (
                 <Button
+                  variant={primaryVariant}
                   onClick={() => connect(selectedModel)}
                   disabled={isConnecting}
                   data-testid="llamacpp-connect"
@@ -539,6 +543,7 @@ export default function LlamaServerInlineCard({ onSuccess }: LlamaServerInlineCa
                 </Button>
               ) : (
                 <Button
+                  variant={primaryVariant}
                   onClick={() => handleStart(selectedModel)}
                   disabled={isStarting || isConnecting || !selectedModel}
                   data-testid="llamacpp-start"

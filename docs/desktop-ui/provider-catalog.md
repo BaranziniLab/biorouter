@@ -454,6 +454,19 @@ button. The page sits at scroll position 0 there, so no scroll correction could 
 still. Principle 9 says a row never moves under the pointer, and a row only moves when
 something above it changes.
 
+Independent rows meant two open panels drew two coral primaries in one tab ("Download and
+start" beside "Use Ollama", "Use Claude Code" beside "Use Codex"). A tab is one view, and a
+view has one coral button (principle 7, FR-R5-2): the panel the person turned to last, by
+opening its row or by moving focus into it, holds it, and every other open panel draws the
+same action as a secondary button, still enabled. Public's key box takes part on first run, so
+typing a key gives Detect provider the coral button and a click back in an agent's panel gives
+it back. Closing the panel that holds it hands it to the latest one still open. The catalog
+decides this at render (`onboarding/viewPrimary.tsx`, `ProviderCatalog.viewPrimary.test.tsx`)
+from what it already knows, so no button changes colour a frame late; the cost is that a tab
+whose latest panel has no primary to offer (Ollama not installed) shows no coral button until
+the person turns to another. The same rule holds in Settings > Providers, where the agents'
+panels open in place too.
+
 The setup bodies are not duplicated. Each one is a plain column the catalog opens under its
 row (the standalone card chrome, `OnboardingCardShell` and its section label, and the unused
 `CodingAgentInlineCard` were deleted, FR-S-12), and the coding agents' whole state machine is

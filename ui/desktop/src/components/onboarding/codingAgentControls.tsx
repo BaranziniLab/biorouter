@@ -20,6 +20,7 @@ import {
 } from './codingAgentStatus';
 import './onboarding.css';
 import { StatusPill, type PillTone } from './StatusPill';
+import { useViewPrimaryVariant } from './viewPrimary';
 
 /**
  * The last coding-agent status this renderer probed, shared by every surface.
@@ -425,6 +426,8 @@ export function CodingAgentBody({
   onRetryConfiguration?: () => void;
   isRetrying?: boolean;
 }) {
+  // "Use <agent>" is coral unless another open panel in the tab holds the view's primary (FR-R5-2).
+  const primaryVariant = useViewPrimaryVariant();
   switch (agent.auth.state) {
     // 1. Nothing installed. The install command is SHOWN, never run: installing
     //    another vendor's toolchain is the user's decision, and Anthropic's
@@ -496,6 +499,7 @@ export function CodingAgentBody({
         <Actions>
           <Button
             type="button"
+            variant={primaryVariant}
             onClick={() =>
               onRetryConfiguration ? onRetryConfiguration() : void controls.connect(agent)
             }
