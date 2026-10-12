@@ -277,8 +277,10 @@ Chromium underlines any word its dictionary does not know, and the fields in the
 provider form and the Configuration editor hold nothing else: a command (`claude`), an endpoint, a region, a
 profile, a model id (`gpt-5.5-2026-04-24`), a config value (`versa_azure`). Configure Claude Code opened with
 its command field focused and `claude` already underlined, which reads as a mistake the person made. Every one of
-those fields now spreads `machineStringProps` (`settings/config/machineString.ts`): `spellCheck={false}`,
-`autoCorrect="off"` and `autoCapitalize="off"`. A secret field already has spellcheck off through `SecretInput`
+those fields now carries `machineStringProps`: `spellCheck={false}`, `autoCorrect="off"` and
+`autoCapitalize="off"`. The definition lives with the field primitive (`<Input machine />`, `ui/input.tsx`, see
+[shared-controls.md](shared-controls.md)); `settings/config/machineString.ts` re-exports it for the three components
+that already import it. A secret field already has spellcheck off through `SecretInput`
 and takes the same spread so the rule has one spelling. A field that holds a person's own words keeps its
 spellcheck, and the Chat tab's switch still decides the composer's.
 
@@ -286,8 +288,8 @@ The tests read the property the engine reads, not the markup alone: `customProvi
 `capabilities/settingsBFill.browser.test.tsx` check `input.spellcheck` in Chromium against a bare input that
 reports `true`, and the jsdom suites (`DefaultProviderSetupForm.test.tsx`, `ConfigSettings.privacy.test.tsx`)
 check all three attributes on every field. Take the spread off any of the three components and a case fails.
-Other forms that hold machine strings (the extension dialogs, First run's Institutional card, Lead/worker) are
-not covered by this and belong to their own owners.
+Other forms that hold machine strings (the extension dialogs, First run's Institutional card, Lead/worker, the Add
+skill and New schedule dialogs) take the same `<Input machine />` in their own files.
 
 ## The page band
 
