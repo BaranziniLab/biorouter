@@ -271,6 +271,19 @@ still read what a field is for. `LeadWorkerSettings.fill.browser.test.tsx` reads
 Chromium (0.5 for every field, 1 for every label, light and dark) and puts the old rule back to prove it
 would see the defect.
 
+## Save settings waits for a change
+
+Lead/worker's Save is disabled while it would write back what is saved, so the shared Button draws it like Cancel
+(`.br-button-inert`, [shared-controls.md](shared-controls.md), "A Button that cannot act") and it turns coral the
+moment a change exists (V4-R7-4, ruling 22). The load keeps one snapshot of the eight values it set, and "changed"
+is what Save would write: with the pair on, the seven upserted values; with it off, only the removal, so a pair that
+was off and is off again is no change even if the inert fields were touched. A load that failed leaves the baseline
+unknown and Save enabled, because a dialog that could not read the config should not claim there is nothing to save.
+`LeadWorkerSettings.save.test.tsx` holds the rules, and `LeadWorkerSettings.fill.browser.test.tsx` reads Save's
+ground and ink in Chromium (Cancel's on open, the accent after a change, Cancel's again when it is changed back).
+`hostManagedSettings.browserSurface.test.tsx` makes a change before it reads Save, so its browser-surface cases
+are disabled for the surface and not for want of a change.
+
 ## A machine string is not spellchecked
 
 Chromium underlines any word its dictionary does not know, and the fields in the Configure dialogs, the Add
