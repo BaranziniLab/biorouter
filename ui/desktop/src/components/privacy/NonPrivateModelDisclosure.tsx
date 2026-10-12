@@ -1,5 +1,5 @@
 import { useRef } from 'react';
-import { Dialog, DialogContent, DialogHeader, DialogTitle } from '../ui/dialog';
+import { ModalShell } from '../ModalShell';
 import { Button } from '../ui/button';
 import { disclosureTitle, type DisclosureCopy } from './disclosureCopy';
 import { DisclosureProse } from './DisclosureProse';
@@ -35,10 +35,12 @@ export interface NonPrivateModelDisclosureProps {
  * The one-time blocking disclosure (issue #56, DR-17 requirement 3).
  *
  * ⚠ **It cannot be dismissed.** No Escape, no overlay click, no close button —
- * `dismissible={false}` on `DialogContent` prevents the first two and suppresses
- * the third. A disclosure a user can flick away without reading is a disclosure
- * that did not happen, and this one has no *action* to gate: there is no safer
- * alternative on offer at this moment, only a fact to convey.
+ * `purpose="required"` on `ModalShell` is what says so: the shell passes
+ * `dismissible={false}` to `DialogContent`, which prevents the first two and
+ * suppresses the third. A disclosure a user can flick away without reading is a
+ * disclosure that did not happen, and this one has no *action* to gate: there is
+ * no safer alternative on offer at this moment, only a fact to convey.
+ * `NonPrivateModelDisclosure.required.test.tsx` fails the day the purpose changes.
  *
  * ⚠ **No key acknowledges it.** Task 29's `DangerousConfirmDialog` established
  * the discipline and the reason is the same here: "type, Enter" ends every other
@@ -62,60 +64,70 @@ export function NonPrivateModelDisclosure({
   const bodyRef = useRef<HTMLDivElement>(null);
 
   return (
-    <Dialog open={open}>
-      <DialogContent
-        data-testid="non-private-model-disclosure"
-        aria-describedby={undefined}
-        dismissible={false}
-        className="sm:max-w-[560px]"
-        // Focus lands on the prose, not on the way out of it. Radix's default
-        // would focus the first focusable node, which here is the only button —
-        // and an acknowledgement one keystroke away from the dialog opening is
-        // the receipt this task exists to avoid.
-        onOpenAutoFocus={(event) => {
-          event.preventDefault();
-          bodyRef.current?.focus();
-        }}
-      >
-        <DialogHeader>
-          <DialogTitle>{disclosureTitle(copy, providerDisplayName)}</DialogTitle>
-        </DialogHeader>
+    // The shared dialog (spec 2.6, ruling 23): top anchor, header rule, a scrolling body and the
+    // footer row, like every other dialog on the first run path. Privacy UI presentation only: the
+    // copy, the props, the test id (`testId` puts it on the `role="dialog"` node, where it was), the
+    // focus rule and the one way out are what they were.
+    <ModalShell
+      open={open}
+      // Nothing can call this: a `required` shell draws no ×, and it refuses Escape and a press on
+      // the backdrop. The dialog closes when the gate stops passing `open`, once the
+      // acknowledgement settles.
+      onOpenChange={() => {}}
+      size="lg"
+      purpose="required"
+      testId="non-private-model-disclosure"
+      title={disclosureTitle(copy, providerDisplayName)}
+      scrollBody
+      // Focus lands on the prose, not on the way out of it. Radix's default
+      // would focus the first focusable node, which here is the only button —
+      // and an acknowledgement one keystroke away from the dialog opening is
+      // the receipt this task exists to avoid.
+      onOpenAutoFocus={(event) => {
+        event.preventDefault();
+        bodyRef.current?.focus();
+      }}
+      footer={
+        <>
+          {/* A failure notice in the app's notice tier, not a quieter paragraph.
+              This was a bare `<p>` in `text-text-muted` — LOWER contrast than the
+              explanatory body directly above it — with no icon, no colour and no
+              separation, while the button silently changed from "I understand" to
+              "Continue". A failure rendered less prominently than the prose it
+              follows is read as more boilerplate, which is exactly the outcome
+              the button relabelling is trying to avoid. `NotificationSurface` is
+              the shared banner primitive; `warning`, not `error`, because the
+              person is not blocked — the sentence's whole job is to say what was
+              not recorded before they go on.
 
-        <div
-          ref={bodyRef}
-          tabIndex={-1}
-          className="space-y-3 text-sm text-text-default outline-none max-h-[50vh] overflow-y-auto"
-        >
-          <DisclosureProse text={copy.long} paragraphClassName="min-w-0 [overflow-wrap:anywhere]" />
-        </div>
-
-        {/* A failure notice in the app's notice tier, not a quieter paragraph.
-            This was a bare `<p>` in `text-text-muted` — LOWER contrast than the
-            explanatory body directly above it — with no icon, no colour and no
-            separation, while the button silently changed from "I understand" to
-            "Continue". A failure rendered less prominently than the prose it
-            follows is read as more boilerplate, which is exactly the outcome
-            the button relabelling is trying to avoid. `NotificationSurface` is
-            the shared banner primitive; `warning`, not `error`, because the
-            person is not blocked — the sentence's whole job is to say what was
-            not recorded before they go on. */}
-        {acknowledgeError && (
-          <div data-testid="disclosure-ack-error">
-            <NotificationSurface
-              role="status"
-              status="warning"
-              message={acknowledgeError}
-              className="min-w-0 [overflow-wrap:anywhere]"
-            />
-          </div>
-        )}
-
-        <div className="flex justify-end pt-2">
+              It sits in the footer, on a row of its own above the button, so it
+              stays outside the scrolling body, as it sat outside the old
+              scroller. At the end of the scrolled prose, in a short window or at
+              a large text size, it would arrive out of view while the button
+              beside it changed its word. */}
+          {acknowledgeError && (
+            <div data-testid="disclosure-ack-error" className="w-full min-w-0">
+              <NotificationSurface
+                role="status"
+                status="warning"
+                message={acknowledgeError}
+                className="min-w-0 [overflow-wrap:anywhere]"
+              />
+            </div>
+          )}
           <Button type="button" variant="default" disabled={busy} onClick={onAcknowledge}>
             {acknowledgeError ? 'Continue' : 'I understand'}
           </Button>
-        </div>
-      </DialogContent>
-    </Dialog>
+        </>
+      }
+    >
+      <div
+        ref={bodyRef}
+        tabIndex={-1}
+        className="space-y-3 py-3 text-sm text-text-default outline-none"
+      >
+        <DisclosureProse text={copy.long} paragraphClassName="min-w-0 [overflow-wrap:anywhere]" />
+      </div>
+    </ModalShell>
   );
 }
