@@ -80,6 +80,38 @@ const renderLeadWorkerOption = (rawOption: unknown, meta: { context: 'menu' | 'v
   );
 };
 
+/** The eight values the dialog reads from the config and Save writes back. */
+type LeadWorkerValues = {
+  isEnabled: boolean;
+  leadModel: string;
+  leadProvider: string;
+  workerModel: string;
+  workerProvider: string;
+  leadTurns: number;
+  failureThreshold: number;
+  fallbackTurns: number;
+};
+
+/**
+ * Whether Save would leave the config as it found it (V4-R7-4, ruling 22: Save waits for a
+ * change, and a disabled primary draws neutral). Switched off, Save only removes the lead keys,
+ * so while the pair is off now and was off when the dialog opened, the inert fields do not
+ * count: turning it on, picking two models and turning it off again is no change.
+ */
+function sameEffect(loaded: LeadWorkerValues, current: LeadWorkerValues): boolean {
+  if (loaded.isEnabled !== current.isEnabled) return false;
+  if (!current.isEnabled) return true;
+  return (
+    loaded.leadModel === current.leadModel &&
+    loaded.leadProvider === current.leadProvider &&
+    loaded.workerModel === current.workerModel &&
+    loaded.workerProvider === current.workerProvider &&
+    loaded.leadTurns === current.leadTurns &&
+    loaded.failureThreshold === current.failureThreshold &&
+    loaded.fallbackTurns === current.fallbackTurns
+  );
+}
+
 export function LeadWorkerSettings({ isOpen, onClose }: LeadWorkerSettingsProps) {
   const { read, upsert, getProviders, getProviderModels, remove } = useConfig();
   // The switch hears its explanation when it is reached, not only when the glyph is hovered.
@@ -98,6 +130,10 @@ export function LeadWorkerSettings({ isOpen, onClose }: LeadWorkerSettingsProps)
   const [isEnabled, setIsEnabled] = useState(false);
   const [modelOptions, setModelOptions] = useState<LeadWorkerModelOption[]>([]);
   const [isLoading, setIsLoading] = useState(true);
+  // What the last load read, so Save can tell a change from the values it found. Null while
+  // loading and after a load that failed: a dialog that could not read the config does not
+  // claim there is nothing to save.
+  const [loaded, setLoaded] = useState<LeadWorkerValues | null>(null);
 
   // Load current configuration
   useEffect(() => {
@@ -106,6 +142,7 @@ export function LeadWorkerSettings({ isOpen, onClose }: LeadWorkerSettingsProps)
     const loadConfig = async () => {
       try {
         setIsLoading(true);
+        setLoaded(null);
         const [
           leadModelConfig,
           leadProviderConfig,
@@ -120,38 +157,33 @@ export function LeadWorkerSettings({ isOpen, onClose }: LeadWorkerSettingsProps)
           read('BIOROUTER_LEAD_FALLBACK_TURNS', false),
         ]);
 
-        if (leadModelConfig) {
-          setLeadModel(leadModelConfig as string);
-          setIsEnabled(true);
-        } else {
-          setLeadModel('');
-          setIsEnabled(false);
-        }
-        if (leadProviderConfig) setLeadProvider(leadProviderConfig as string);
-        else setLeadProvider('');
-        if (leadTurnsConfig) setLeadTurns(Number(leadTurnsConfig));
-        else setLeadTurns(3);
-        if (failureThresholdConfig) setFailureThreshold(Number(failureThresholdConfig));
-        else setFailureThreshold(2);
-        if (fallbackTurnsConfig) setFallbackTurns(Number(fallbackTurnsConfig));
-        else setFallbackTurns(2);
-
-        // Set worker model to current model or from config
+        // Worker model: from config, else the current model
         const workerModelConfig = await read('BIOROUTER_MODEL', false);
-        if (workerModelConfig) {
-          setWorkerModel(workerModelConfig as string);
-        } else if (currentModel) {
-          setWorkerModel(currentModel as string);
-        } else {
-          setWorkerModel('');
-        }
-
         const workerProviderConfig = await read('BIOROUTER_PROVIDER', false);
-        if (workerProviderConfig) {
-          setWorkerProvider(workerProviderConfig as string);
-        } else {
-          setWorkerProvider('');
-        }
+
+        const values: LeadWorkerValues = {
+          isEnabled: !!leadModelConfig,
+          leadModel: leadModelConfig ? (leadModelConfig as string) : '',
+          leadProvider: leadProviderConfig ? (leadProviderConfig as string) : '',
+          leadTurns: leadTurnsConfig ? Number(leadTurnsConfig) : 3,
+          failureThreshold: failureThresholdConfig ? Number(failureThresholdConfig) : 2,
+          fallbackTurns: fallbackTurnsConfig ? Number(fallbackTurnsConfig) : 2,
+          workerModel: workerModelConfig
+            ? (workerModelConfig as string)
+            : currentModel
+              ? (currentModel as string)
+              : '',
+          workerProvider: workerProviderConfig ? (workerProviderConfig as string) : '',
+        };
+        setIsEnabled(values.isEnabled);
+        setLeadModel(values.leadModel);
+        setLeadProvider(values.leadProvider);
+        setLeadTurns(values.leadTurns);
+        setFailureThreshold(values.failureThreshold);
+        setFallbackTurns(values.fallbackTurns);
+        setWorkerModel(values.workerModel);
+        setWorkerProvider(values.workerProvider);
+        setLoaded(values);
 
         // Load available models
         const options: LeadWorkerModelOption[] = [];
@@ -258,6 +290,21 @@ export function LeadWorkerSettings({ isOpen, onClose }: LeadWorkerSettingsProps)
   // Only what is actually in force: the fields are inert while the pair is off.
   const barred = isEnabled && !!(leadUnavailable || workerUnavailable);
 
+  // Nothing to save is a disabled Save, which the primitive draws neutral (`.br-button-inert`);
+  // it turns coral the moment a change makes it able to act.
+  const changed =
+    loaded === null ||
+    !sameEffect(loaded, {
+      isEnabled,
+      leadModel,
+      leadProvider,
+      workerModel,
+      workerProvider,
+      leadTurns,
+      failureThreshold,
+      fallbackTurns,
+    });
+
   const handleSave = async () => {
     if (hostManaged) return;
     // The button below is already disabled on this verdict; this is its
@@ -336,7 +383,9 @@ export function LeadWorkerSettings({ isOpen, onClose }: LeadWorkerSettingsProps)
           </Button>
           <Button
             onClick={handleSave}
-            disabled={hostManaged || barred || (isEnabled && (!leadModel || !workerModel))}
+            disabled={
+              hostManaged || barred || !changed || (isEnabled && (!leadModel || !workerModel))
+            }
             // The name is set here so AppTooltipLayer does not turn the reason into it (it copies
             // a `title` into `aria-label` on a control that has neither a label nor a name).
             aria-label={leadWorkerCopy.save}

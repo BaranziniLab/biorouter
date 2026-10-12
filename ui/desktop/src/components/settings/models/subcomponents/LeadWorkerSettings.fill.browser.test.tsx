@@ -347,6 +347,86 @@ describe('the Lead/worker dialog with its mode off (V4-R3-3)', () => {
     }
   });
 
+  /**
+   * V4-R7-4's note: Save settings was coral on open, offering to write back what is saved. It now
+   * waits for a change (disabled), and a disabled primary draws what Cancel draws
+   * (`.br-button-inert`, ruling 22); a change turns it coral, and changing it back returns it.
+   */
+  it('draws Save like Cancel until something changes, then in the accent, light and dark', async (ctx) => {
+    if (!browser) return ctx.skip();
+    const look = (tab: Page) =>
+      tab.evaluate(() => {
+        const footer = [...document.querySelectorAll('[role="dialog"] button')];
+        const save = footer.find((b) => b.getAttribute('aria-label') === 'Save settings')!;
+        const cancel = footer.find((b) => b.textContent === 'Cancel')!;
+        // The accent as this sheet resolves it, read off a probe with the variant's own class.
+        const probe = document.createElement('div');
+        probe.className = 'bg-background-accent';
+        document.body.appendChild(probe);
+        const accent = getComputedStyle(probe).backgroundColor;
+        probe.remove();
+        const s = getComputedStyle(save);
+        const c = getComputedStyle(cancel);
+        return {
+          disabled: (save as HTMLButtonElement).disabled,
+          ground: s.backgroundColor,
+          ink: s.color,
+          cancelGround: c.backgroundColor,
+          cancelInk: c.color,
+          accent,
+        };
+      });
+    // The button eases its colours (`--dur-fast`), so wait for the end colour (the accent, or
+    // Cancel's ground), not merely for a colour that is no longer the start one. A Save that never
+    // gets there fails on the expect below, with the colour it held.
+    const settled = (tab: Page, wantAccent: boolean) =>
+      tab
+        .waitForFunction(
+          (want) => {
+            const buttons = [...document.querySelectorAll('[role="dialog"] button')];
+            const save = buttons.find((b) => b.getAttribute('aria-label') === 'Save settings')!;
+            const cancel = buttons.find((b) => b.textContent === 'Cancel')!;
+            const probe = document.createElement('div');
+            probe.className = 'bg-background-accent';
+            document.body.appendChild(probe);
+            const accent = getComputedStyle(probe).backgroundColor;
+            probe.remove();
+            const target = want ? accent : getComputedStyle(cancel).backgroundColor;
+            return getComputedStyle(save).backgroundColor === target;
+          },
+          wantAccent,
+          { timeout: 3000 }
+        )
+        .catch(() => undefined);
+
+    for (const mode of ['light', 'dark'] as const) {
+      const tab = await open(mode, { enabled: true });
+      try {
+        await tab.waitForTimeout(300);
+        const atRest = await look(tab);
+        expect(atRest.disabled, `${mode} nothing to save on open`).toBe(true);
+        expect(atRest.ground, `${mode} ground on open`).toBe(atRest.cancelGround);
+        expect(atRest.ink, `${mode} ink on open`).toBe(atRest.cancelInk);
+        expect(atRest.ground, `${mode} not the accent on open`).not.toBe(atRest.accent);
+
+        await tab.fill('#lead-turns', '4');
+        await settled(tab, true);
+        const changed = await look(tab);
+        expect(changed.disabled, `${mode} a change can be saved`).toBe(false);
+        expect(changed.ground, `${mode} accent after a change`).toBe(changed.accent);
+        await shoot(tab, `lead-worker-save-changed-${mode}`);
+
+        await tab.fill('#lead-turns', '3');
+        await settled(tab, false);
+        const back = await look(tab);
+        expect(back.disabled, `${mode} changed back`).toBe(true);
+        expect(back.ground, `${mode} ground when changed back`).toBe(back.cancelGround);
+      } finally {
+        await tab.close();
+      }
+    }
+  });
+
   it('sees the old defect: the group rule back makes a field 0.25', async (ctx) => {
     if (!browser) return ctx.skip();
     const tab = await open('dark', {

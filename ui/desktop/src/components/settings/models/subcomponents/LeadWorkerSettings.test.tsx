@@ -109,14 +109,16 @@ describe('LeadWorkerSettings', () => {
     expect(leadInput.value).toBe('my-custom-lead');
     expect(workerInput.value).toBe('my-custom-worker');
 
-    // Save settings
+    // Save waits for a change: the saved pair as it was is nothing to write.
     const saveBtn = screen.getByRole('button', { name: 'Save settings' });
+    expect(saveBtn).toBeDisabled();
+    fireEvent.change(leadInput, { target: { value: 'my-custom-lead-2' } });
     expect(saveBtn).toBeEnabled();
     fireEvent.click(saveBtn);
 
     // Assert upserts for models (providers are optional but present in this setup)
     await waitFor(() => {
-      expect(mockUpsert).toHaveBeenCalledWith('BIOROUTER_LEAD_MODEL', 'my-custom-lead', false);
+      expect(mockUpsert).toHaveBeenCalledWith('BIOROUTER_LEAD_MODEL', 'my-custom-lead-2', false);
       expect(mockUpsert).toHaveBeenCalledWith('BIOROUTER_MODEL', 'my-custom-worker', false);
       expect(mockUpsert).toHaveBeenCalledWith('BIOROUTER_LEAD_PROVIDER', 'anthropic', false);
       expect(mockUpsert).toHaveBeenCalledWith('BIOROUTER_PROVIDER', 'openai', false);
