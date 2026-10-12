@@ -11,6 +11,7 @@ import { createNavigationHandler } from '../utils/navigationUtils';
 import { isBrowserSurface } from '../utils/surface';
 import { HostManagedModelPanel } from './privacy/HostManagedModelPanel';
 import { useFirstRunNoticeHold } from './privacy/firstRunNoticeDecision';
+import { markFirstPageDrawn } from './privacy/firstRunNoticeHandoff';
 import { getTitlebarControlInset } from './Layout/TitlebarControls';
 import { InfoTip } from './ui/info-tip';
 import { Button } from './ui/button';
@@ -191,7 +192,22 @@ export default function ProviderGuard({ didSelectProvider, children }: ProviderG
   const resumingSession =
     location.pathname === '/pair' &&
     Boolean(new URLSearchParams(location.search).get('resumeSessionId')?.trim());
-  if (location.pathname === '/crew' || resumingSession) return <>{children}</>;
+  const passesThrough = location.pathname === '/crew' || resumingSession;
+
+  /**
+   * The launch's first page has drawn once this guard stops showing its empty loader: the
+   * first-run band is committed, or the application is let through (Crew and a resume link never
+   * show the loader). The day-one notice waits for exactly this before it opens, so it lands on
+   * a page and not on the bare ground behind the fading splash (FR-R5-1). An effect, so the mark
+   * comes after the commit that drew the page; the latch is one way, so a remount later takes
+   * nothing back.
+   */
+  const firstPageDrawn = passesThrough || !isChecking;
+  useEffect(() => {
+    if (firstPageDrawn) markFirstPageDrawn();
+  }, [firstPageDrawn]);
+
+  if (passesThrough) return <>{children}</>;
 
   if (isChecking) {
     /**

@@ -10,6 +10,10 @@ import {
   startFirstRunNoticeCount,
 } from './privacy/firstRunNoticeDecision';
 import { FirstRunPrivacyNoticeGate } from './privacy/FirstRunPrivacyNoticeGate';
+import {
+  holdFirstRunNoticeForFirstPage,
+  resetFirstRunNoticeHandoffForTests,
+} from './privacy/firstRunNoticeHandoff';
 import type { Session } from '../api';
 
 const mocks = vi.hoisted(() => ({
@@ -118,6 +122,7 @@ describe('ProviderGuard', () => {
     mocks.getProviders.mockResolvedValue([]);
     localStorage.clear();
     resetFirstRunNoticeDecisionForTests();
+    resetFirstRunNoticeHandoffForTests();
     mocks.listSessions.mockResolvedValue({ data: { sessions: [] } });
   });
 
@@ -342,6 +347,106 @@ describe('ProviderGuard', () => {
       await countInFlight();
       renderGuard();
       expect(await screen.findByText('Application')).toBeInTheDocument();
+    });
+  });
+
+  // FR-R5-1: on a slower launch the boot's count lands while this guard is still reading the
+  // provider, and the dialog opened at once, over the empty loader, with the band popping in behind
+  // its blur. The gate now waits for the page this guard draws. The boot declares the wait
+  // (`renderer.tsx`); this guard clears it from an effect once it stops showing the loader.
+  describe('the day-one notice waits for this page (FR-R5-1)', () => {
+    const DUE = [
+      {
+        id: 's1',
+        privacy_tier: 'private',
+        privacy_reason: 'backfill:versa_azure',
+        provider_name: 'versa_azure',
+      },
+    ] as unknown as Session[];
+
+    /**
+     * How long the dialog gets once the page has drawn. Well under the hand-off's bound
+     * (`FIRST_RUN_NOTICE_HANDOFF_WAIT_MS`, 3 s): a guard that never said it had drawn would still
+     * see the dialog open, 3 s late, and a wait as long as the bound would call that a pass.
+     */
+    const PROMPT = { timeout: 1000 };
+
+    /** The provider read, settled by hand: the guard shows its loader until it is. */
+    function slowRead(answer: { provider?: string }) {
+      let release!: () => void;
+      const reading = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      mocks.read.mockImplementation(async (key: string) => {
+        await reading;
+        return key === ONBOARDING_SKIPPED_KEY ? false : (answer.provider ?? '');
+      });
+      return release;
+    }
+
+    /** The launch as the boot starts it: the count is answered (the order that raced) and the page is awaited. */
+    async function answeredAndAwaiting() {
+      mocks.listSessions.mockResolvedValue({ data: { sessions: DUE } });
+      startFirstRunNoticeCount();
+      holdFirstRunNoticeForFirstPage();
+      await waitFor(() => expect(mocks.listSessions).toHaveBeenCalled());
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+
+    function renderGuardAndGate() {
+      return render(
+        <>
+          <ProviderGuard didSelectProvider={false}>
+            <div>Application</div>
+          </ProviderGuard>
+          <FirstRunPrivacyNoticeGate />
+        </>
+      );
+    }
+
+    it('does not open over the loader, and opens once the first-run band is drawn', async () => {
+      await answeredAndAwaiting();
+      const release = slowRead({});
+      renderGuardAndGate();
+
+      // The count is in, the notice is due, and the guard is still reading: the empty loader only.
+      expect(screen.getByTestId('provider-guard-loading')).toBeInTheDocument();
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(screen.queryByTestId('first-run-privacy-notice')).toBeNull();
+
+      release();
+      await screen.findByTestId('first-run-privacy-notice', {}, PROMPT);
+      // The commit the dialog appeared in is after the band's: the page is under it, not behind it.
+      expect(screen.getByTestId('first-run-band')).toBeInTheDocument();
+      expect(screen.queryByTestId('provider-guard-loading')).toBeNull();
+    });
+
+    it('opens over the application when the install already has a provider', async () => {
+      await answeredAndAwaiting();
+      const release = slowRead({ provider: 'versa_azure' });
+      renderGuardAndGate();
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(screen.queryByTestId('first-run-privacy-notice')).toBeNull();
+
+      release();
+      await screen.findByTestId('first-run-privacy-notice', {}, PROMPT);
+      expect(screen.getByText('Application')).toBeInTheDocument();
+    });
+
+    it('draws at once on Crew, which never shows the loader', async () => {
+      mocks.location.pathname = '/crew';
+      await answeredAndAwaiting();
+      renderGuardAndGate();
+      expect(screen.getByText('Application')).toBeInTheDocument();
+      await screen.findByTestId('first-run-privacy-notice', {}, PROMPT);
+    });
+
+    it('keeps the hold while the guard has not read its provider, however long that takes', async () => {
+      await answeredAndAwaiting();
+      slowRead({}); // never released
+      renderGuardAndGate();
+      await new Promise((resolve) => setTimeout(resolve, 60));
+      expect(screen.queryByTestId('first-run-privacy-notice')).toBeNull();
     });
   });
 

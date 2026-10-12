@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { readFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { GENERATED_THEMES, THEME_FAMILY_IDS } from './styles/themes.generated';
+import { BOOT_SPLASH_GONE_EVENT } from './components/privacy/firstRunNoticeHandoff';
 
 /**
  * These tests run the boot splash's REAL source, extracted out of
@@ -614,6 +615,79 @@ describe('boot splash', () => {
       vi.advanceTimersByTime(400);
       expect(() => window.__brBootSplash?.dismiss()).not.toThrow();
       expect(splashEl()).toBeNull();
+    });
+
+    // FR-R5-1: the app asks the splash "are you off the screen?" before it opens a dialog, because
+    // a dialog opened mid-fade had the wordmark drawn across its text. `isGone` is the answer and
+    // the event is the moment it changes; gone means removed, not merely transparent.
+    describe('says when it has left the screen (FR-R5-1)', () => {
+      let announced: number;
+      const onGone = () => {
+        announced += 1;
+      };
+
+      beforeEach(() => {
+        announced = 0;
+        window.addEventListener(BOOT_SPLASH_GONE_EVENT, onGone);
+      });
+
+      afterEach(() => {
+        window.removeEventListener(BOOT_SPLASH_GONE_EVENT, onGone);
+      });
+
+      it('is not gone while it waits, while it is drawn, or before anyone dismisses it', () => {
+        mountSplash();
+        expect(window.__brBootSplash?.isGone()).toBe(false);
+        vi.advanceTimersByTime(THRESHOLD_MS);
+        expect(window.__brBootSplash?.isShown()).toBe(true);
+        expect(window.__brBootSplash?.isGone()).toBe(false);
+        expect(announced).toBe(0);
+      });
+
+      it('is gone at once when the boot beat the threshold, and says so once', () => {
+        mountSplash();
+        vi.advanceTimersByTime(THRESHOLD_MS - 100);
+        window.__brBootSplash?.dismiss();
+        expect(window.__brBootSplash?.isGone()).toBe(true);
+        expect(announced).toBe(1);
+      });
+
+      it('is gone only after the fade when it was on screen', () => {
+        mountSplash();
+        vi.advanceTimersByTime(THRESHOLD_MS);
+        window.__brBootSplash?.dismiss();
+
+        // Mid-fade the wordmark is still drawn: a dialog opened now would sit under it.
+        expect(splashEl()?.classList.contains('br-out')).toBe(true);
+        vi.advanceTimersByTime(200);
+        expect(window.__brBootSplash?.isGone()).toBe(false);
+        expect(announced).toBe(0);
+
+        vi.advanceTimersByTime(200);
+        expect(splashEl()).toBeNull();
+        expect(window.__brBootSplash?.isGone()).toBe(true);
+        expect(announced).toBe(1);
+      });
+
+      it('says it once when the fade ends and the fallback timer fires too', () => {
+        mountSplash();
+        vi.advanceTimersByTime(THRESHOLD_MS);
+        window.__brBootSplash?.dismiss();
+        splashEl()?.dispatchEvent(new Event('transitionend'));
+        expect(announced).toBe(1);
+        vi.advanceTimersByTime(1000);
+        window.__brBootSplash?.dismiss();
+        expect(announced).toBe(1);
+        expect(window.__brBootSplash?.isGone()).toBe(true);
+      });
+
+      it('is gone in the app the way the app reads it, under the name the app listens for', () => {
+        // The inline script cannot import the constant, so it restates the spelling; this is the
+        // line that fails if the two drift (the listener above would then never hear it).
+        expect(extractScript(readIndexHtml())).toContain(
+          `var GONE_EVENT = '${BOOT_SPLASH_GONE_EVENT}';`
+        );
+      });
     });
 
     it('takes the sweep down with the element, so nothing keeps running after the app is up', () => {

@@ -8,6 +8,7 @@ import {
   startFirstRunNoticeCount,
   useFirstRunNoticeDecision,
 } from './firstRunNoticeDecision';
+import { useFirstRunNoticeMayOpen } from './firstRunNoticeHandoff';
 
 /**
  * Where the acknowledgement is recorded, and why it is not in the daemon, is written beside the key
@@ -46,6 +47,11 @@ export { FIRST_RUN_NOTICE_ACK_KEY };
 export function FirstRunPrivacyNoticeGate() {
   const { extensionsList } = useConfig();
   const decision = useFirstRunNoticeDecision();
+  // Due is not the same as ready to open: on a slower launch the boot's count lands before the
+  // splash has left and before the first page has drawn, and a dialog opened then sat over the
+  // fading wordmark and an empty ground (FR-R5-1). Nothing waits on a surface the boot did not
+  // reach, and the wait is bounded.
+  const mayOpen = useFirstRunNoticeMayOpen(decision.status === 'show');
 
   // The boot starts the count as soon as the daemon is reachable (`renderer.tsx`), so by now it is
   // usually running or answered. This is for a surface the boot did not reach, and it is a no-op
@@ -54,7 +60,7 @@ export function FirstRunPrivacyNoticeGate() {
     startFirstRunNoticeCount();
   }, []);
 
-  if (decision.status !== 'show') return null;
+  if (decision.status !== 'show' || !mayOpen) return null;
 
   return (
     <FirstRunPrivacyNotice

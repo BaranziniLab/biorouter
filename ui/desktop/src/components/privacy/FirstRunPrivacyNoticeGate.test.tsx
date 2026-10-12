@@ -1,4 +1,4 @@
-import { cleanup, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -32,6 +32,13 @@ import {
   resetFirstRunNoticeDecisionForTests,
   startFirstRunNoticeCount,
 } from './firstRunNoticeDecision';
+import {
+  BOOT_SPLASH_GONE_EVENT,
+  FIRST_RUN_NOTICE_HANDOFF_WAIT_MS,
+  holdFirstRunNoticeForFirstPage,
+  markFirstPageDrawn,
+  resetFirstRunNoticeHandoffForTests,
+} from './firstRunNoticeHandoff';
 import type { Session } from '../../api';
 
 function row(id: string, tier: 'private' | 'public', provider: string | null, reason?: string) {
@@ -66,11 +73,17 @@ beforeEach(() => {
   localStorage.clear();
   // The count is a launch's state (FR-R4-4), so each test starts a launch.
   resetFirstRunNoticeDecisionForTests();
+  resetFirstRunNoticeHandoffForTests();
+  delete window.__brBootSplash;
   mocks.extensionsList = [];
   mocks.listSessions.mockResolvedValue(served(BACKFILLED));
 });
 
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  vi.useRealTimers();
+  delete window.__brBootSplash;
+});
 
 describe('FirstRunPrivacyNoticeGate', () => {
   it('shows the notice on the first launch after the migration marked chats', async () => {
@@ -152,6 +165,79 @@ describe('FirstRunPrivacyNoticeGate', () => {
     // The first render already holds the notice: nothing is fetched, nothing is waited for.
     expect(screen.getByTestId('first-run-privacy-notice')).toBeInTheDocument();
     expect(mocks.listSessions).toHaveBeenCalledTimes(1);
+  });
+
+  // FR-R5-1: due is not the same as ready. The boot's count can land before the splash has left and
+  // before the first page has drawn, and the dialog used to open at once: over the fading wordmark,
+  // on an empty ground, with the page popping in behind its blur.
+  describe('opens when the launch has handed off (FR-R5-1)', () => {
+    /** The boot's count, answered before the gate mounts: the order that raced. */
+    async function answeredBeforeMount() {
+      startFirstRunNoticeCount();
+      await waitFor(() => expect(mocks.listSessions).toHaveBeenCalled());
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+
+    it('waits for the first page the boot declared, then opens', async () => {
+      holdFirstRunNoticeForFirstPage();
+      await answeredBeforeMount();
+      render(<FirstRunPrivacyNoticeGate />);
+      // The count is in and the notice is due; the page has not drawn.
+      expect(screen.queryByTestId('first-run-privacy-notice')).toBeNull();
+
+      act(() => markFirstPageDrawn());
+      expect(screen.getByTestId('first-run-privacy-notice')).toBeInTheDocument();
+    });
+
+    it('waits for the boot splash to leave, then opens', async () => {
+      let gone = false;
+      window.__brBootSplash = {
+        dismiss: () => undefined,
+        isShown: () => true,
+        isGone: () => gone,
+      };
+      await answeredBeforeMount();
+      render(<FirstRunPrivacyNoticeGate />);
+      expect(screen.queryByTestId('first-run-privacy-notice')).toBeNull();
+
+      act(() => {
+        gone = true;
+        window.dispatchEvent(new Event(BOOT_SPLASH_GONE_EVENT));
+      });
+      expect(screen.getByTestId('first-run-privacy-notice')).toBeInTheDocument();
+    });
+
+    it('opens the moment the count lands when the page and the splash are already done', async () => {
+      // The other order of the race: a slow count, a page that drew long ago.
+      holdFirstRunNoticeForFirstPage();
+      markFirstPageDrawn();
+      render(<FirstRunPrivacyNoticeGate />);
+      expect(screen.queryByTestId('first-run-privacy-notice')).toBeNull();
+      await screen.findByTestId('first-run-privacy-notice');
+    });
+
+    it('opens anyway when nothing clears the hold, because the notice is a disclosure', async () => {
+      holdFirstRunNoticeForFirstPage(); // and nothing ever draws
+      await answeredBeforeMount();
+      vi.useFakeTimers();
+      render(<FirstRunPrivacyNoticeGate />);
+      expect(screen.queryByTestId('first-run-privacy-notice')).toBeNull();
+
+      act(() => vi.advanceTimersByTime(FIRST_RUN_NOTICE_HANDOFF_WAIT_MS - 1));
+      expect(screen.queryByTestId('first-run-privacy-notice')).toBeNull();
+      act(() => vi.advanceTimersByTime(1));
+      expect(screen.getByTestId('first-run-privacy-notice')).toBeInTheDocument();
+    });
+
+    it('does not open for a notice that is not due, whatever has handed off', async () => {
+      mocks.listSessions.mockResolvedValue(served([row('s1', 'public', 'anthropic')]));
+      holdFirstRunNoticeForFirstPage();
+      markFirstPageDrawn();
+      render(<FirstRunPrivacyNoticeGate />);
+      await waitFor(() => expect(mocks.listSessions).toHaveBeenCalled());
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(screen.queryByTestId('first-run-privacy-notice')).toBeNull();
+    });
   });
 
   // ⚠ The one assertion in this file that a render cannot make. Every test above

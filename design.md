@@ -430,6 +430,16 @@ vanish in one frame and the empty loader would show before the band painted. Tha
 this fix, because a light page had no class to match. `bootSplash.browser.test.ts` mounts the real `ThemeProvider`
 and the dismissal that `renderer.tsx` runs after it, and asserts the opacity transition is running.
 
+**Nothing opens over the splash (2026-10-11, FR-R5-1).** The splash is the topmost thing on the page
+(`z-index: 2147483000`) until it is removed, which is up to about 300 ms after the app mounts, so a dialog opened in
+that window had the wordmark drawn across its body text. The controller therefore says when it has left:
+`window.__brBootSplash.isGone()` is false until the element is removed (after the fade, or at once when the splash was
+never drawn), and `window` gets one `br-boot-splash-gone` event at that moment. `components/privacy/firstRunNoticeHandoff.ts`
+reads both; the day-one privacy notice is the one dialog that can be due at launch, and it waits for the splash and
+for the first page to draw (the guard stopping its empty loader) before it opens, with a 3 s bound so a missed signal
+cannot hide a disclosure. Any other surface that can open at launch asks the same question. `index.html` and the
+module restate the event's spelling, and `boot-splash.test.ts` pins them together.
+
 | Token | Light | Dark | Role |
 |---|---|---|---|
 | `--br-bg` | `#ffffff` | `#131312` | The ground, **`--background-canvas`**: the ground the first-run page, Home and the loader paint, so the splash fades onto its own colour. It was `--background-muted`, one step off the page, and a launch that crossed the threshold flashed grey before the white. Shared by every family. |

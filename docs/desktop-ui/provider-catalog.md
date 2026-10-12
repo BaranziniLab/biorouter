@@ -320,6 +320,21 @@ an acknowledged one does no work. An install that already has a provider has no 
 is not delayed. The notice's copy, props and rule are unchanged; the counting rules moved verbatim to
 `privacy/noticeCounts.ts` so the boot can import them without the dialog.
 
+Starting the count at boot made it win the race on a slower launch, and the dialog then opened the moment its
+answer was `show`: over the boot splash's fading wordmark, on the guard's empty loader, with the band and its
+skeleton popping in behind the blur (FR-R5-1, measured at 3x and 4x CPU in light and dark). Due is not the same as
+ready to open. The gate now also asks `privacy/firstRunNoticeHandoff.ts` whether the launch has handed off: the
+boot splash has left (`window.__brBootSplash.isGone()`, see `design.md`) and `ProviderGuard` has drawn its first
+page, meaning its first-run band, or the application it lets through, from an effect once it stops showing the
+loader. The boot declares that a first page is coming (`holdFirstRunNoticeForFirstPage()`, next to the count),
+because the guard mounts in the same commit as the gate and could not take the hold in time. Both orders of the race
+come out the same: a fast count waits for the page, and a slow count finds the page already drawn and opens at once.
+The wait is bounded at 3 s from the moment the gate has a dialog to open (`FIRST_RUN_NOTICE_HANDOFF_WAIT_MS`),
+because a route outside the guard (`#/welcome`) or a signal that never comes must not keep a one-way-door notice from
+opening; past it the dialog opens as it did before. `firstRunNoticeHandoff.browser.test.tsx` runs the shipped
+`index.html` with the real guard and gate under CPU throttling and asserts the dialog never exists while `#br-boot`
+is in the document or the loader is showing.
+
 Both routes are **outside the app shell** (`routeOwnsTopBand`), so they have no sidebar and none of the
 shell's top-band bookkeeping, and the page does that bookkeeping itself. The band starts at **y=0** and is
 the window-drag region, as every band is (principle 1); there is no spacer under the strip. It used to

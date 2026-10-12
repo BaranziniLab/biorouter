@@ -342,6 +342,11 @@
         var THRESHOLD_MS = 400; // below this, a boot is fast enough to show nothing
         var FONT_WAIT_MS = 250; // the longest the first frame waits for the brand face
         var FADE_OUT_MS = 260;
+        // Dispatched on `window` once, when the splash is no longer on screen. The app reads it
+        // (`components/privacy/firstRunNoticeHandoff.ts` keeps the same spelling and
+        // boot-splash.test.ts pins the two together) so a dialog never opens under, or through,
+        // the fading wordmark (vision FR-R5-1).
+        var GONE_EVENT = 'br-boot-splash-gone';
 
         var el = document.getElementById('br-boot');
         if (!el) return;
@@ -350,6 +355,7 @@
         var removeTimer = null;
         var shown = false;
         var finished = false;
+        var gone = false;
 
         // The splash appears at REST (spec principle 9, vision FR-R1-7): the
         // wordmark is drawn whole in the first frame, so there is nothing to
@@ -400,6 +406,13 @@
             removeTimer = null;
           }
           if (el && el.parentNode) el.parentNode.removeChild(el);
+          if (gone) return;
+          gone = true;
+          try {
+            window.dispatchEvent(new Event(GONE_EVENT));
+          } catch (e) {
+            // No Event constructor: nothing was listening for it either. `isGone()` still answers.
+          }
         }
 
         // Called by renderer.tsx once React has actually mounted the app.
@@ -426,6 +439,12 @@
           dismiss: dismiss,
           isShown: function () {
             return shown;
+          },
+          // True once the splash has left the screen: removed after its fade, or taken down
+          // before it was ever drawn. False from the first script run until then, so "not gone"
+          // covers the fade as well as the wait.
+          isGone: function () {
+            return gone;
           },
         };
       })();
