@@ -17,7 +17,7 @@ export const MAX_ERROR_MESSAGE_LENGTH = 70;
 //
 // One lived at this spot, reading `bundled-extensions.json` for entries typed
 // `builtin` — seven of them — while the composer's extension menu asked the
-// capability catalog, which has twelve. Two answers to one question, five
+// capability catalog, which had twelve then. Two answers to one question, five
 // extensions apart, on two surfaces the user reads against each other. The
 // catalog (`isCapabilityExtension`) is the only definition now, and it lives
 // with the list the menu renders, so a capability added there cannot silently
@@ -136,8 +136,8 @@ export function showExtensionLoadResults(
   //
   // This filter used to ask `isBuiltinExtension`, whose set is the SEVEN entries
   // of `bundled-extensions.json` with `type: "builtin"`. The composer's
-  // extension menu asks `isCapabilityExtension`, whose set is the TWELVE entries
-  // of the capability catalog. The five in the gap — code_execution,
+  // extension menu asks `isCapabilityExtension`, whose set was then the TWELVE
+  // entries of the capability catalog (fourteen since Crew joined it). The five in the gap — code_execution,
   // extensionmanager, skills, todo, chatrecall — ship with Biorouter, are hidden
   // by the chip, and were counted here as if the user had installed them.
   //
