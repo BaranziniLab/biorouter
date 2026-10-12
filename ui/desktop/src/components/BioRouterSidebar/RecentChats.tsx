@@ -31,7 +31,7 @@ import {
 } from '../chats/ChatRowContextMenu';
 import { ChatRowRenameInput } from '../chats/ChatRowRenameInput';
 import { chatRowCopy } from '../chats/copy';
-import { keepFocusOffAfterPointerClose } from '../chats/menuFocusReturn';
+import { keepFocusOffAfterPointerClose, returnFocusAfterKeyClose } from '../chats/menuFocusReturn';
 import { ChevronRight, Folder, History, MoreHorizontal, Plus } from '../icons/app-icons';
 import { Button } from '../ui/button';
 import { ConfirmationModal } from '../ui/ConfirmationModal';
@@ -1352,6 +1352,18 @@ export default function RecentChats({
 
   // Delete, behind one confirmation for the list.
   const [pendingDelete, setPendingDelete] = useState<SessionSummary | null>(null);
+  // Which control the Delete was asked from, so a dialog closed with a key gives focus back to it
+  // (V1-R8-1): the row for the list's right-click menu, the row's ⋯ for its own menu. Cleared once
+  // the chat is deleted, as there is no row left to go back to.
+  const deleteAskedFrom = useRef<{ sessionId: string; control: 'row' | 'more' } | null>(null);
+  const askDelete = useCallback((session: SessionSummary, control: 'row' | 'more') => {
+    deleteAskedFrom.current = { sessionId: session.id, control };
+    setPendingDelete(session);
+  }, []);
+  const askDeleteFromMore = useCallback(
+    (session: SessionSummary) => askDelete(session, 'more'),
+    [askDelete]
+  );
 
   // The right-click menu: ONE for the list, opened on the row the event came
   // from (R-28, vision V1-R2-2). A Radix menu root in every drawn row put a
@@ -1379,6 +1391,7 @@ export default function RecentChats({
     setDeleting(true);
     try {
       await deleteConversation(session.id);
+      deleteAskedFrom.current = null;
       setPendingDelete(null);
       // History's toast, word for word: the title alone, no sentence under it.
       toastSuccess({ title: chatRowCopy.deleteDialog.deleted });
@@ -1589,7 +1602,7 @@ export default function RecentChats({
       }}
       onDiverge={canDivergeChat(menuRow) ? () => divergeRow(menuRow.id) : undefined}
       onExport={() => void exportConversation(menuRow.id, storedTitle(menuRow), { scope: 'app' })}
-      onDelete={() => setPendingDelete(menuRow)}
+      onDelete={() => askDelete(menuRow, 'row')}
       onCloseAutoFocus={(event: Event) => {
         const renameId = renameAfterRowMenu.current;
         if (!renameId) {
@@ -1619,7 +1632,7 @@ export default function RecentChats({
     onLineMenuChange,
     onOpen: openChat,
     onStartRename: startRenameRow,
-    onRequestDelete: setPendingDelete,
+    onRequestDelete: askDeleteFromMore,
     onDiverge: divergeRow,
     contextMenuOpen: rowMenuOpen && menuRowId === session.id,
     editingDraft: editing?.sessionId === session.id ? editing.draft : null,
@@ -1861,6 +1874,20 @@ export default function RecentChats({
         onConfirm={() => void handleDelete()}
         onCancel={() => {
           if (!deleting) setPendingDelete(null);
+        }}
+        onCloseAutoFocus={(event: Event) => {
+          const asked = deleteAskedFrom.current;
+          deleteAskedFrom.current = null;
+          if (!asked) return;
+          const row =
+            scrollContainerRef.current?.querySelector<HTMLElement>(
+              `[data-row="${CSS.escape(chatKey(asked.sessionId))}"]`
+            ) ?? null;
+          const more =
+            asked.control === 'more'
+              ? row?.closest('[data-row-item]')?.querySelector<HTMLElement>('.br-chat-row-more')
+              : null;
+          returnFocusAfterKeyClose(event, more ?? row);
         }}
       />
     </div>

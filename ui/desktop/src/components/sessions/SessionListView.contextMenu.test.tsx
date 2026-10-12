@@ -11,6 +11,7 @@ import { MAKE_CHAT_PUBLIC, RENAME_TITLE } from './copy';
 
 const mocks = vi.hoisted(() => ({
   listSessions: vi.fn(),
+  deleteSession: vi.fn(),
   exportSession: vi.fn(),
   divergeSession: vi.fn(),
   toastSuccess: vi.fn(),
@@ -19,7 +20,7 @@ const mocks = vi.hoisted(() => ({
 
 vi.mock('../../api', () => ({
   listSessions: mocks.listSessions,
-  deleteSession: vi.fn(),
+  deleteSession: mocks.deleteSession,
   exportSession: mocks.exportSession,
   divergeSession: mocks.divergeSession,
   importSession: vi.fn(),
@@ -312,5 +313,70 @@ describe('History row menus', () => {
     const row = document.querySelector('.session-item');
     expect(row).not.toBeNull();
     expect(row?.parentElement?.className).toContain('session-grid');
+  });
+});
+
+/**
+ * Vision V1-R8-1: a Delete chosen with the pointer and dismissed with Escape left focus on
+ * `<body>`, and the next Tab began at the top of the window. The row's menu item is gone when the
+ * dialog closes; the row knows which of its controls opened the menu.
+ */
+describe('focus when History’s Delete dialog closes (V1-R8-1)', () => {
+  /** The close-focus handler runs on a timer once the dialog's content has gone. */
+  const dialogGone = async () => {
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  };
+  const openButton = () => screen.getByRole('button', { name: 'Open chat Excel research' });
+  const more = () => screen.getByLabelText('More actions for Excel research');
+
+  it('gives it back to the row after a pointer pick in the right-click menu and Escape', async () => {
+    await renderHistory();
+    fireEvent.pointerDown(openButton(), { button: 2 });
+    fireEvent.contextMenu(screen.getByText('Excel research'));
+    fireEvent.click(await screen.findByRole('menuitem', { name: chatRowCopy.menu.delete }));
+    const dialog = await screen.findByRole('dialog');
+    fireEvent.keyDown(dialog, { key: 'Escape' });
+    await dialogGone();
+    expect(openButton()).toHaveFocus();
+    expect(mocks.deleteSession).not.toHaveBeenCalled();
+  });
+
+  it('gives it back to the row’s ⋯ after a pointer pick in the ⋯ menu and Escape', async () => {
+    await renderHistory();
+    fireEvent.pointerDown(more(), { button: 0, ctrlKey: false });
+    fireEvent.click(await screen.findByRole('menuitem', { name: chatRowCopy.menu.delete }));
+    const dialog = await screen.findByRole('dialog');
+    fireEvent.keyDown(dialog, { key: 'Escape' });
+    await dialogGone();
+    expect(more()).toHaveFocus();
+  });
+
+  it('leaves it where it was after Cancel clicked with the pointer', async () => {
+    await renderHistory();
+    fireEvent.pointerDown(openButton(), { button: 2 });
+    fireEvent.contextMenu(screen.getByText('Excel research'));
+    fireEvent.click(await screen.findByRole('menuitem', { name: chatRowCopy.menu.delete }));
+    const cancel = await screen.findByRole('button', { name: chatRowCopy.deleteDialog.cancel });
+    fireEvent.pointerDown(cancel, { button: 0 });
+    fireEvent.click(cancel);
+    await dialogGone();
+    expect(openButton()).not.toHaveFocus();
+  });
+
+  it('gives nothing back to a row whose chat is being deleted', async () => {
+    let finish: () => void = () => {};
+    mocks.deleteSession.mockReturnValue(new Promise<void>((resolve) => (finish = resolve)));
+    await renderHistory();
+    fireEvent.pointerDown(openButton(), { button: 2 });
+    fireEvent.contextMenu(screen.getByText('Excel research'));
+    fireEvent.click(await screen.findByRole('menuitem', { name: chatRowCopy.menu.delete }));
+    const confirm = await screen.findByRole('button', { name: chatRowCopy.deleteDialog.confirm });
+    fireEvent.keyDown(confirm, { key: 'Enter' });
+    fireEvent.click(confirm);
+    await dialogGone();
+    // The delete is still in flight, so the row is still drawn: it must not take focus.
+    expect(openButton()).not.toHaveFocus();
+    finish();
   });
 });

@@ -15,6 +15,9 @@
  * listeners installed once when that module loads), which the dialogs a menu
  * item opens ask too, so a menu and its dialog can never disagree about how the
  * person got there.
+ *
+ * A dialog a menu item opened has the same question when it closes, and the
+ * same answer: see `returnFocusAfterKeyClose`.
  */
 import { lastInputWasKey } from '../ui/inputTrail';
 
@@ -27,4 +30,29 @@ export { lastInputWasKey };
  */
 export function keepFocusOffAfterPointerClose(event: Event): void {
   if (!lastInputWasKey()) event.preventDefault();
+}
+
+/**
+ * An `onCloseAutoFocus` handler for a dialog that a row's menu opened (Delete chat…): a dialog
+ * closed with a KEY (Escape, or Enter or Space on Cancel) gives focus to `target`, the control the
+ * menu was opened from (V1-R8-1).
+ *
+ * The shared dialog layer (`ui/dialog.tsx`) gives focus back after a menu pick only when the pick
+ * was a key press as well. A Delete chosen with the pointer and then dismissed with Escape left
+ * focus on `<body>`, and the next Tab started again at the top of the window. The menu item that
+ * held focus is gone by then, but the row still knows which control opened its menu.
+ *
+ * A dialog closed with the pointer leaves focus alone, for the reason above: a focused row keeps
+ * its hover-revealed ⋯ on screen (`:focus-within`) after the pointer has left it. The browser
+ * decides the ring: after a key press the returned focus is keyboard focus. `preventScroll`: the row
+ * is still where it was when its menu opened.
+ *
+ * The caller finds `target` when the dialog closes, so a row that re-rendered meanwhile is found
+ * again. `null` (a deleted chat, a row no longer drawn) leaves the shared rule to decide. It runs
+ * before that rule, which stands aside once this one has placed focus.
+ */
+export function returnFocusAfterKeyClose(event: Event, target: HTMLElement | null): void {
+  if (event.defaultPrevented || !lastInputWasKey() || !target?.isConnected) return;
+  event.preventDefault();
+  target.focus({ preventScroll: true });
 }

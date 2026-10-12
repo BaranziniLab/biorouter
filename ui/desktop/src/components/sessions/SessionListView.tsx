@@ -45,6 +45,7 @@ import {
   type ChatRowMenuHandlers,
 } from '../chats/ChatRowContextMenu';
 import { chatRowCopy } from '../chats/copy';
+import { returnFocusAfterKeyClose } from '../chats/menuFocusReturn';
 import { Skeleton } from '../ui/skeleton';
 import { ConfirmationModal } from '../ui/ConfirmationModal';
 import { ImportSessionModal } from './ImportSessionModal';
@@ -333,7 +334,8 @@ interface HistoryRowProps {
   /** id → name, so a diverged row can name its lineage parent. */
   sessionNameById: Map<string, string>;
   onRename: (session: Session) => void;
-  onDelete: (session: Session) => void;
+  /** `control`: the menu Delete was chosen in, the row's right-click menu or its `⋯`. */
+  onDelete: (session: Session, control: 'row' | 'more') => void;
   onExport: (session: Session) => void;
   onDiverge: (session: Session) => void;
   onDeclassify: (session: Session) => void;
@@ -397,7 +399,7 @@ const HistoryRow = React.memo(function HistoryRow({
       onRename: () => onRename(session),
       onDiverge: canDiverge ? () => onDiverge(session) : undefined,
       onExport: () => onExport(session),
-      onDelete: () => onDelete(session),
+      onDelete: () => onDelete(session, 'row'),
       extraItems:
         session.privacy_tier === 'private'
           ? [
@@ -415,6 +417,12 @@ const HistoryRow = React.memo(function HistoryRow({
           : [],
     };
   }, [session, onRename, onDiverge, onExport, onDelete, onDeclassify, declassifyOnHost]);
+  // The `⋯` menu's Delete says so, so the dialog it opens can give focus back to the `⋯`
+  // (V1-R8-1); every other item is the same.
+  const moreHandlers = useMemo<ChatRowMenuHandlers>(
+    () => ({ ...handlers, onDelete: () => onDelete(session, 'more') }),
+    [handlers, onDelete, session]
+  );
 
   const handleKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
     const target = event.target;
@@ -596,7 +604,7 @@ const HistoryRow = React.memo(function HistoryRow({
                   </TooltipTrigger>
                   <TooltipContent side="top">{MORE_ACTIONS}</TooltipContent>
                 </Tooltip>
-                <ChatRowDropdownMenuContent target={target} {...handlers} />
+                <ChatRowDropdownMenuContent target={target} {...moreHandlers} />
               </DropdownMenu>
             </div>
           </div>
@@ -765,6 +773,9 @@ const SessionListView: React.FC<SessionListViewProps> = React.memo(({ onSelectSe
 
   const [renameTarget, setRenameTarget] = useState<Session | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<Session | null>(null);
+  // Which control the Delete was asked from, so a dialog closed with a key gives focus back to it
+  // (V1-R8-1): the row's open button for its right-click menu, the row's `⋯` for its own menu.
+  const deleteAskedFrom = useRef<{ sessionId: string; control: 'row' | 'more' } | null>(null);
   const [showImportModal, setShowImportModal] = useState(false);
   // Issue #56 §12.1: declassification is attached to the History ROW. The
   // dialog is mounted here rather than inside a row so a row re-render can
@@ -930,7 +941,10 @@ const SessionListView: React.FC<SessionListViewProps> = React.memo(({ onSelectSe
   }, [isLoading, showSkeleton, showContent]);
 
   const handleRename = useCallback((session: Session) => setRenameTarget(session), []);
-  const handleDelete = useCallback((session: Session) => setDeleteTarget(session), []);
+  const handleDelete = useCallback((session: Session, control: 'row' | 'more') => {
+    deleteAskedFrom.current = { sessionId: session.id, control };
+    setDeleteTarget(session);
+  }, []);
   const handleDeclassify = useCallback((session: Session) => setDeclassifyTarget(session), []);
   const handleDiverge = useCallback((session: Session) => void diverge(session.id), [diverge]);
   // About THIS screen's row, so a refusal toast goes when the person leaves
@@ -944,6 +958,8 @@ const SessionListView: React.FC<SessionListViewProps> = React.memo(({ onSelectSe
   const handleConfirmDelete = useCallback(async () => {
     if (!deleteTarget) return;
     const target = deleteTarget;
+    // The row is on its way out: nothing to give focus back to.
+    deleteAskedFrom.current = null;
     setDeleteTarget(null);
 
     try {
@@ -1201,6 +1217,19 @@ const SessionListView: React.FC<SessionListViewProps> = React.memo(({ onSelectSe
         confirmVariant="destructive"
         onConfirm={handleConfirmDelete}
         onCancel={() => setDeleteTarget(null)}
+        onCloseAutoFocus={(event: Event) => {
+          const asked = deleteAskedFrom.current;
+          deleteAskedFrom.current = null;
+          if (!asked) return;
+          const row = contentRef.current?.querySelector<HTMLElement>(
+            `[data-session-id="${CSS.escape(asked.sessionId)}"]`
+          );
+          const control =
+            asked.control === 'more'
+              ? row?.querySelector<HTMLElement>('[data-slot="row-actions"] [aria-haspopup="menu"]')
+              : row?.querySelector<HTMLElement>('.br-history-row-open');
+          returnFocusAfterKeyClose(event, control ?? null);
+        }}
       />
 
       {/* Mounted only while a row is targeted, so a closed dialog holds no

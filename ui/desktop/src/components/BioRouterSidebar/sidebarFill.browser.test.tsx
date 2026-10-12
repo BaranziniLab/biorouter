@@ -653,6 +653,94 @@ describe('the app sidebar under the whole stylesheet (R-27)', () => {
   });
 
   /**
+   * Vision V1-R8-1: Delete chosen with the pointer, then the dialog closed. Escape (or Cancel
+   * pressed with a key) left focus on `<body>`, so the next Tab began at "Toggle sidebar". It now
+   * goes back to the control the menu came from, ringed; a pointer Cancel leaves it alone, so no
+   * row keeps its ⋯ pinned once the pointer has gone.
+   */
+  it('gives focus back to the row after a pointer Delete is dismissed with a key, and not after a click', async (ctx) => {
+    if (!browser) return ctx.skip();
+    const focus = (tab: Page) =>
+      tab.evaluate(() => {
+        const el = document.activeElement as HTMLElement;
+        return {
+          testId: el?.getAttribute('data-testid') ?? el?.tagName ?? null,
+          ringed: el ? el.matches(':focus-visible') : false,
+        };
+      });
+    const moreShown = (tab: Page) =>
+      tab.evaluate(
+        () =>
+          getComputedStyle(document.querySelector('[data-testid="recent-chat-more-s4"]')!).opacity
+      );
+    const askDelete = async (tab: Page, from: 'right-click' | 'more') => {
+      if (from === 'right-click') {
+        await tab.click('[data-testid="recent-chat-s4"]', { button: 'right' });
+      } else {
+        await tab.hover('[data-testid="recent-chat-s4"]');
+        await settle(tab);
+        await tab.click('[data-testid="recent-chat-more-s4"]');
+      }
+      await tab.getByRole('menuitem', { name: 'Delete chat…' }).click();
+      await tab.getByRole('dialog').waitFor();
+      await settle(tab);
+    };
+    const dialogGone = async (tab: Page) => {
+      await tab.getByRole('dialog').waitFor({ state: 'detached' });
+      await tab.waitForTimeout(400);
+    };
+    for (const mode of ['light', 'dark'] as const) {
+      const tab = await open(mode);
+      tab.setDefaultTimeout(8_000);
+      try {
+        // Right-click, Delete chat…, Escape: the row, with its ring, and the next Tab stays in it.
+        await askDelete(tab, 'right-click');
+        await tab.keyboard.press('Escape');
+        await dialogGone(tab);
+        expect(await focus(tab), `${mode}: right-click, Escape`).toEqual({
+          testId: 'recent-chat-s4',
+          ringed: true,
+        });
+        if (SHOTS) {
+          await tab.screenshot({
+            path: resolve(SHOTS, `sidebar-delete-escape-${mode}.png`),
+            clip: { x: 0, y: 120, width: 360, height: 300 },
+          });
+        }
+        await tab.keyboard.press('Tab');
+        expect((await focus(tab)).testId, `${mode}: the next Tab`).toBe('recent-chat-more-s4');
+
+        // The row's ⋯, Delete chat…, then Cancel pressed with a key: back on the ⋯.
+        await tab.mouse.click(1190, 890);
+        await askDelete(tab, 'more');
+        const onCancel = () => tab.evaluate(() => document.activeElement?.textContent?.trim());
+        for (let step = 0; step < 4 && (await onCancel()) !== 'Cancel'; step += 1) {
+          await tab.keyboard.press('Tab');
+        }
+        expect(await onCancel(), `${mode}: keys reach Cancel`).toBe('Cancel');
+        await tab.keyboard.press('Enter');
+        await dialogGone(tab);
+        expect(await focus(tab), `${mode}: ⋯, Cancel by key`).toEqual({
+          testId: 'recent-chat-more-s4',
+          ringed: true,
+        });
+
+        // Cancel clicked: focus is left alone, and the ⋯ goes once the pointer leaves the row.
+        await tab.mouse.click(1190, 890);
+        await askDelete(tab, 'right-click');
+        await tab.getByRole('button', { name: 'Cancel' }).click();
+        await dialogGone(tab);
+        await away(tab);
+        await settle(tab);
+        expect((await focus(tab)).testId, `${mode}: right-click, Cancel clicked`).toBe('BODY');
+        expect(await moreShown(tab), `${mode}: no ⋯ pinned after a click`).toBe('0');
+      } finally {
+        await tab.close();
+      }
+    }
+  });
+
+  /**
    * WS-TOKENS-10 (vision V1-R2-5): a nav row is one ink. Its icon wears `--sidebar-icon`, the
    * muted label ink, at rest, and the label's own ink once the row is lit; the icon used to stay
    * muted beside a default-ink label on hover and on the current row.

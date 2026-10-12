@@ -370,3 +370,86 @@ describe('deleting a chat from the sidebar', () => {
     expect(screen.getByRole('button', { name: 'Delete' })).toBeInTheDocument();
   });
 });
+
+/**
+ * Vision V1-R8-1: a Delete chosen with the pointer and dismissed with Escape left focus on
+ * `<body>`, and the next Tab began at the top of the window. The menu item that held focus is gone
+ * when the dialog closes, and the shared dialog rule gives focus back after a pointer pick only
+ * when the pick was a key; the list knows which control the menu came from.
+ */
+describe('focus when the Delete dialog closes (V1-R8-1)', () => {
+  /** The close-focus handler runs on a timer once the dialog's content has gone. */
+  const dialogGone = async () => {
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  };
+
+  it('gives it back to the row after a pointer pick in the right-click menu and Escape', async () => {
+    renderRecents();
+    const row = screen.getByTestId('recent-chat-20260823_2');
+    fireEvent.pointerDown(row, { button: 2 });
+    fireEvent.contextMenu(row);
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Delete chat…' }));
+    const dialog = await screen.findByRole('dialog');
+    fireEvent.keyDown(dialog, { key: 'Escape' });
+    await dialogGone();
+    expect(row).toHaveFocus();
+    expect(mocks.deleteConversation).not.toHaveBeenCalled();
+  });
+
+  it('gives it back to the row’s ⋯ after a pointer pick in the ⋯ menu and Escape', async () => {
+    renderRecents();
+    fireEvent.pointerDown(screen.getByTestId('recent-chat-more-20260823_2'), {
+      button: 0,
+      ctrlKey: false,
+    });
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Delete chat…' }));
+    const dialog = await screen.findByRole('dialog');
+    fireEvent.keyDown(dialog, { key: 'Escape' });
+    await dialogGone();
+    expect(screen.getByTestId('recent-chat-more-20260823_2')).toHaveFocus();
+  });
+
+  it('gives it back after Cancel pressed with a key', async () => {
+    renderRecents();
+    const row = screen.getByTestId('recent-chat-20260823_2');
+    fireEvent.pointerDown(row, { button: 2 });
+    fireEvent.contextMenu(row);
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Delete chat…' }));
+    const cancel = await screen.findByRole('button', { name: 'Cancel' });
+    fireEvent.keyDown(cancel, { key: 'Enter' });
+    fireEvent.click(cancel);
+    await dialogGone();
+    expect(row).toHaveFocus();
+  });
+
+  it('leaves it off the row after Cancel clicked with the pointer, so no ⋯ is pinned', async () => {
+    renderRecents();
+    const row = screen.getByTestId('recent-chat-20260823_2');
+    fireEvent.pointerDown(row, { button: 2 });
+    fireEvent.contextMenu(row);
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Delete chat…' }));
+    const cancel = await screen.findByRole('button', { name: 'Cancel' });
+    fireEvent.pointerDown(cancel, { button: 0 });
+    fireEvent.click(cancel);
+    await dialogGone();
+    expect(row).not.toHaveFocus();
+    expect(screen.getByTestId('recent-chat-more-20260823_2')).not.toHaveFocus();
+  });
+
+  it('gives nothing back to a chat the dialog deleted', async () => {
+    mocks.deleteConversation.mockResolvedValue(undefined);
+    renderRecents();
+    const row = screen.getByTestId('recent-chat-20260823_2');
+    fireEvent.pointerDown(row, { button: 2 });
+    fireEvent.contextMenu(row);
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Delete chat…' }));
+    const confirm = await screen.findByRole('button', { name: 'Delete' });
+    fireEvent.keyDown(confirm, { key: 'Enter' });
+    fireEvent.click(confirm);
+    await waitFor(() => expect(mocks.deleteConversation).toHaveBeenCalledWith('20260823_2'));
+    await dialogGone();
+    // The list here is a fixed prop, so the row is still drawn: it must not take focus.
+    expect(row).not.toHaveFocus();
+  });
+});
