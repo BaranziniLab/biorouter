@@ -17,8 +17,13 @@ import { DirSwitcher } from './DirSwitcher';
 export interface ComposerFooterProps {
   /** The focused chat, or `null` on Home and in a chat that has not started. */
   sessionId: string | null;
-  /** The folder the agent works in (full path; the footer shows its basename). */
-  workingDir: string;
+  /**
+   * The folder the agent works in (full path; the footer shows its basename),
+   * or `null` while an existing chat's folder is not known yet. The folder is
+   * then left out rather than named by a default the chat does not use
+   * (V2-R7-3); the line keeps its height.
+   */
+  workingDir: string | null;
   /** #44: the folder is choosable only until the chat's first message. */
   workingDirLocked: boolean;
   onWorkingDirChange: (newDir: string) => void;
@@ -73,14 +78,16 @@ export function ComposerFooter({
   return (
     <div data-testid="composer-footer" className={cn('br-footline', className)}>
       <div className="br-footline__side">
-        <DirSwitcher
-          sessionId={sessionId ?? undefined}
-          locked={workingDirLocked}
-          workingDir={workingDir}
-          onWorkingDirChange={onWorkingDirChange}
-          onRestartStart={onRestartStart}
-          onRestartEnd={onRestartEnd}
-        />
+        {workingDir !== null && (
+          <DirSwitcher
+            sessionId={sessionId ?? undefined}
+            locked={workingDirLocked}
+            workingDir={workingDir}
+            onWorkingDirChange={onWorkingDirChange}
+            onRestartStart={onRestartStart}
+            onRestartEnd={onRestartEnd}
+          />
+        )}
       </div>
       {inChat && (
         <div className="br-footline__side" data-side="end">

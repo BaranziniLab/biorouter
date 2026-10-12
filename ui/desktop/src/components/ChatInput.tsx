@@ -9,6 +9,7 @@ import Stop from './ui/Stop';
 import { ChatState } from '../types/chatState';
 import { LocalMessageStorage } from '../utils/localMessageStorage';
 import { ToolsChip } from './bottom_menu/ToolsChip';
+import { useSessionWorkingDir } from './bottom_menu/useSessionWorkingDir';
 import { ModelEffortChip } from './bottom_menu/ModelEffortChip';
 import { ComposerFooter } from './bottom_menu/ComposerFooter';
 import { contextWindowModelKey } from './ContextWindowIndicator';
@@ -37,7 +38,6 @@ import { detectInterruption } from '../utils/interruptionDetector';
 import { getSession, llamacppStatus, Message } from '../api';
 import { userActionHeaders } from '../utils/userAction';
 import type { SessionClassification } from '../api/types.gen';
-import { getInitialWorkingDir } from '../utils/workingDir';
 import { getPredefinedModelsFromEnv } from './settings/models/predefinedModelsUtils';
 import { getSteerShortcutText } from '../utils/keyboardShortcuts';
 import { COMPOSER_COPY } from './composer/copy';
@@ -490,35 +490,13 @@ export default function ChatInput({
   // no binding, and the lookup meanwhile measures the model for new chats.
   const contextModel = contextWindowModelKey(effectiveModel, currentProvider, currentModel);
   const [tokenLimitModel, setTokenLimitModel] = useState<string | null>(null);
-  const [sessionWorkingDir, setSessionWorkingDir] = useState<string | null>(null);
+  // The footer's folder: this chat's own, never the app default standing in
+  // for it while the row loads (V2-R7-3; see the hook).
+  const { workingDir: composerWorkingDir, setWorkingDir: setComposerWorkingDir } =
+    useSessionWorkingDir(sessionId);
 
   // Branch-the-conversation action shared with the message-level Diverge button.
   const { diverge } = useDiverge();
-
-  useEffect(() => {
-    if (!sessionId) {
-      return;
-    }
-
-    const fetchSessionWorkingDir = async () => {
-      try {
-        const response = await getSession({
-          path: { session_id: sessionId },
-          // The row, not the transcript: `working_dir` is all this reads.
-          query: { metadata_only: true },
-          // Issue #56 Task 58: reading a private chat needs the proof-of-user.
-          headers: await userActionHeaders(),
-        });
-        if (response.data?.working_dir) {
-          setSessionWorkingDir(response.data.working_dir);
-        }
-      } catch (error) {
-        console.error('[ChatInput] Failed to fetch session working dir:', error);
-      }
-    };
-
-    fetchSessionWorkingDir();
-  }, [sessionId]);
 
   /**
    * The chat's privacy tier, for the two composer surfaces that need it
@@ -572,8 +550,8 @@ export default function ChatInput({
       const response = await getSession({
         path: { session_id: sessionId },
         // The row, not the transcript: `privacy_tier` is all this reads, and the
-        // same query as the working-directory read above, so a mount's two reads
-        // share one request (`utils/sessionReadCoalescing.ts`).
+        // same query as the folder's read (`useSessionWorkingDir`), so a mount's
+        // two reads share one request (`utils/sessionReadCoalescing.ts`).
         query: { metadata_only: true },
         // Issue #56 Task 58: and this read is *about* the tier, so it is
         // exactly the read the gate refuses without the header.
@@ -2939,10 +2917,10 @@ export default function ChatInput({
       <ComposerFooter
         className="br-composer-footer"
         sessionId={sessionId}
-        workingDir={sessionWorkingDir ?? getInitialWorkingDir()}
+        workingDir={composerWorkingDir}
         workingDirLocked={workingDirIsLocked}
         onWorkingDirChange={(newDir) => {
-          setSessionWorkingDir(newDir);
+          setComposerWorkingDir(newDir);
           onWorkingDirChange?.(newDir);
         }}
         onRestartStart={() => setChatState?.(ChatState.RestartingAgent)}
@@ -2971,7 +2949,7 @@ export default function ChatInput({
         onSelectedIndexChange={(index) =>
           setMentionPopover((prev) => ({ ...prev, selectedIndex: index }))
         }
-        workingDir={sessionWorkingDir ?? getInitialWorkingDir()}
+        workingDir={composerWorkingDir ?? undefined}
         sessionId={sessionId}
       />
     </div>
