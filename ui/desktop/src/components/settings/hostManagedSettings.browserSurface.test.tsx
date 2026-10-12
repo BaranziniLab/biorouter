@@ -159,15 +159,32 @@ describe('Settings > Models — Reset provider and model', () => {
 
 describe('Settings > Models — Lead/Worker', () => {
   /**
+   * The dialog opens with a pair saved and the person switches it off, which is a
+   * change Save can write (the removal branch). Save also waits for a change
+   * (V4-R7-4 follow-up, LeadWorkerSettings), so on a dialog nobody touched a
+   * disabled Save would prove nothing about the browser surface.
+   */
+  async function openSavedPairAndSwitchItOff() {
+    mocks.read.mockImplementation(async (key: string) =>
+      key === 'BIOROUTER_LEAD_MODEL' ? 'gpt-5.5' : ''
+    );
+    render(<LeadWorkerSettings isOpen onClose={vi.fn()} />);
+    const toggle = await screen.findByRole('switch', { name: 'Lead/worker mode' });
+    expect(toggle).toHaveAttribute('aria-checked', 'true');
+    fireEvent.click(toggle);
+    expect(toggle).toHaveAttribute('aria-checked', 'false');
+    return screen.getByRole('button', { name: 'Save settings' });
+  }
+
+  /**
    * ⚠ Fails against today's code: Save is enabled whenever the mode is off
    * (the existing `disabled` only covers the enabled-but-incomplete case), so a
    * browser user can click it and fire five refused config writes at once.
    */
   it('disables Save with a reason on a browser surface', async () => {
     browser();
-    render(<LeadWorkerSettings isOpen onClose={vi.fn()} />);
+    const save = await openSavedPairAndSwitchItOff();
 
-    const save = await screen.findByRole('button', { name: 'Save settings' });
     expect(save).toBeDisabled();
     expect(screen.getByTestId('host-managed-model-note')).toBeInTheDocument();
   });
@@ -178,9 +195,7 @@ describe('Settings > Models — Lead/Worker', () => {
    */
   it('performs no config write if Save is clicked anyway', async () => {
     browser();
-    render(<LeadWorkerSettings isOpen onClose={vi.fn()} />);
-
-    fireEvent.click(await screen.findByRole('button', { name: 'Save settings' }));
+    fireEvent.click(await openSavedPairAndSwitchItOff());
     await waitFor(() => expect(mocks.read).toHaveBeenCalled());
     expect(mocks.upsert).not.toHaveBeenCalled();
     expect(mocks.remove).not.toHaveBeenCalled();
@@ -193,14 +208,13 @@ describe('Settings > Models — Lead/Worker', () => {
    * everyone.
    */
   it('still saves in the desktop application', async () => {
-    render(<LeadWorkerSettings isOpen onClose={vi.fn()} />);
+    const save = await openSavedPairAndSwitchItOff();
 
-    const save = await screen.findByRole('button', { name: 'Save settings' });
     expect(save).toBeEnabled();
     expect(screen.queryByTestId('host-managed-model-note')).toBeNull();
 
     fireEvent.click(save);
-    // Mode is off (no lead model configured), so Save takes the removal branch.
+    // The pair was saved and is now off, so Save takes the removal branch.
     await waitFor(() => expect(mocks.remove).toHaveBeenCalledWith('BIOROUTER_LEAD_MODEL', false));
   });
 });
