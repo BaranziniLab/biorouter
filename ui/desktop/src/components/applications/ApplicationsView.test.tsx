@@ -236,6 +236,62 @@ describe('ApplicationsView', () => {
     expect(screen.getByRole('heading', { name: appsCopy.noMatchTitle })).toBeInTheDocument();
   });
 
+  /**
+   * V3-R7-2: a filter that matches nothing is the compact tile, as Workflows and Extensions draw
+   * it, not the full empty state's `min-h-[clamp(17rem,48vh,25rem)]` box. The full box centred
+   * its tile 84 to 92 px lower than the same state on the sibling views (Chromium measures the
+   * real offset in `ApplicationsView.noMatch.browser.test.tsx`; jsdom has no layout).
+   */
+  it('draws a filter with no match as the compact tile, not the full empty state', async () => {
+    const user = userEvent.setup();
+    renderView();
+    expect(await screen.findByText('Cohort Explorer')).toBeInTheDocument();
+
+    await user.type(screen.getByRole('searchbox', { name: appsCopy.filterLabel }), 'nothing');
+
+    const title = screen.getByRole('heading', { level: 2, name: appsCopy.noMatchTitle });
+    const section = title.closest('section') as HTMLElement;
+    expect(section).toHaveAccessibleDescription(appsCopy.noMatchDescription);
+    expect(section.className).toContain('py-12');
+    expect(section.className).not.toMatch(/min-h-/);
+    // The empty state is the other state: it never shows beside a no-match.
+    expect(screen.queryByRole('heading', { name: appsCopy.emptyTitle })).toBeNull();
+  });
+
+  /**
+   * V3-R7-2, the other half: with nothing built there is nothing for a filter to miss, so the
+   * empty state stays whatever is typed (Workflows decides it the same way), and keeps its full
+   * height.
+   */
+  it('keeps the empty state when nothing is built, whatever the filter says', async () => {
+    const user = userEvent.setup();
+    fetchMock.mockResolvedValue(okJson([]));
+    renderView();
+    const title = await screen.findByRole('heading', { level: 2, name: appsCopy.emptyTitle });
+
+    await user.type(screen.getByRole('searchbox', { name: appsCopy.filterLabel }), 'nothing');
+
+    const kept = screen.getByRole('heading', { level: 2, name: appsCopy.emptyTitle });
+    expect(kept).toBe(title);
+    expect(kept.closest('section')).toHaveAccessibleDescription(appsCopy.emptyDescription);
+    expect(kept.closest('section')?.className).toMatch(/min-h-/);
+    expect(screen.queryByRole('heading', { name: appsCopy.noMatchTitle })).toBeNull();
+  });
+
+  it('brings the rows back when the filter is cleared', async () => {
+    const user = userEvent.setup();
+    renderView();
+    expect(await screen.findByText('Cohort Explorer')).toBeInTheDocument();
+
+    const filter = screen.getByRole('searchbox', { name: appsCopy.filterLabel });
+    await user.type(filter, 'nothing');
+    expect(screen.queryByText('Cohort Explorer')).toBeNull();
+    await user.clear(filter);
+
+    expect(screen.getByText('Cohort Explorer')).toBeInTheDocument();
+    expect(screen.queryByRole('heading', { name: appsCopy.noMatchTitle })).toBeNull();
+  });
+
   it('shows skeleton rows while the first load is in flight, not a line of prose', async () => {
     let release: (value: Response) => void = () => {};
     fetchMock.mockImplementationOnce(

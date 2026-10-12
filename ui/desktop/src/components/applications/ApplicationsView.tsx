@@ -220,11 +220,25 @@ export default function ApplicationsView() {
                 </div>
               )}
 
-              {!loading && !error && filtered.length === 0 && (
+              {/* Two states, decided by what there is to filter, as Workflows decides them
+                  (V3-R7-2). With no apps at all the empty state stands whatever is typed in the
+                  filter: a filter over nothing has nothing to say "no match" about. With apps
+                  and a filter that matches none, the no-match tile is compact, so it sits where
+                  the sibling views' no-match tiles sit and does not jump 84 px between them. */}
+              {!loading && !error && apps.length === 0 && (
                 <EmptyState
                   icon={ENTITY_ICONS.application}
-                  title={searchTerm ? copy.noMatchTitle : copy.emptyTitle}
-                  description={searchTerm ? copy.noMatchDescription : copy.emptyDescription}
+                  title={copy.emptyTitle}
+                  description={copy.emptyDescription}
+                />
+              )}
+
+              {!loading && !error && apps.length > 0 && filtered.length === 0 && (
+                <EmptyState
+                  icon={ENTITY_ICONS.application}
+                  title={copy.noMatchTitle}
+                  description={copy.noMatchDescription}
+                  compact
                 />
               )}
 
