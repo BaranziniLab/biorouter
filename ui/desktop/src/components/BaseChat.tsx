@@ -57,7 +57,7 @@ import { SummaryHeaderButton } from './summary/SummaryHeaderButton';
 import { summaryCopy } from './summary/copy';
 import { useSessionTodos } from '../hooks/useSessionTodos';
 import { summaryRailChat, useSummaryRail } from '../hooks/useSummaryRail';
-import { useLoadingChatRow } from './summary/useLoadingChatRow';
+import { useLoadingChat } from './summary/useLoadingChat';
 import { useTranscriptFollow } from './summary/useTranscriptFollow';
 import { captureScrollAnchor, useColumnGlide } from '../hooks/useColumnGlide';
 import { DUR, EASE_OUT, isWindowResizing, prefersReducedMotion } from '../styles/motion';
@@ -2044,10 +2044,29 @@ function BaseChatContent({
   // While a chat's transcript loads there is no `session`, and the chat looked
   // new: no rail, the empty composer's placeholder, the new-chat model on the
   // chip and an empty context ring (vision V2-R5-6). Its row, from the listing
-  // or a read of the row alone, says what the load will say.
-  const chatLoading = chatState === ChatState.LoadingConversation;
-  const loadingChatRow = useLoadingChatRow(sessionId, chatLoading);
-  const loadingChatKnownMessages = loadingChatRow?.message_count ?? 0;
+  // or a read of the row alone, says what the load will say. Loading counts
+  // from the commit before the store starts the load, and until the row has
+  // answered the column paints nothing rather than a guess (`pending`; round 7,
+  // the first open after a reload). See summary/useLoadingChat.ts.
+  const loadingChat = useLoadingChat({
+    sessionId,
+    session,
+    hasLoadError: !!sessionLoadError,
+    chatState,
+    messageCount: messages.length,
+    creatingChat: isCreatingSession,
+    startingWithCargo: !!initialMessage || (initialAttachments?.length ?? 0) > 0,
+  });
+  const chatLoading = loadingChat.loading;
+  const loadingChatRow = loadingChat.row;
+  const loadingChatKnownMessages = loadingChat.knownMessages;
+  const chatPending = loadingChat.look === 'pending';
+  // What the column holds (the composer and the subagent line) is painted only
+  // once the chat's look is known. Opacity alone: the composer keeps the focus
+  // it takes on mount and stays reachable by keyboard and screen reader.
+  const chatPendingStyle: React.CSSProperties | undefined = chatPending
+    ? { opacity: 0, pointerEvents: 'none' }
+    : undefined;
 
   const workflow = session?.workflow;
 
@@ -2322,12 +2341,15 @@ function BaseChatContent({
   }
 
   const initialPrompt = workflowPrompt;
+  // `!chatLoading`: the commit before a named chat's load starts is `Idle` with
+  // nothing in it, and is not the empty state either (round 7).
   const isCleanConversation =
     !suppressEmptyState &&
     messages.length === 0 &&
     !workflow &&
     !initialPrompt &&
     chatState === ChatState.Idle &&
+    !chatLoading &&
     !isCreatingSession;
 
   // The newest line stays against the composer when the transcript changes
@@ -2389,7 +2411,7 @@ function BaseChatContent({
   const summaryRailChatState = summaryRailChat({
     clean: isCleanConversation,
     messageCount: messages.length,
-    loading: chatState === ChatState.LoadingConversation,
+    loading: chatLoading,
     running: isRunningState(chatState),
     creatingChat: isCreatingSession,
     knownToHaveMessages: loadingChatKnownMessages > 0,
@@ -2989,7 +3011,11 @@ function BaseChatContent({
                 // `px-1` is the scroll root's: with the header's own `px-6` the
                 // line gets the transcript's 28px a side, so it starts on the
                 // column's left edge at every width (vision V2-R2-3).
-                <div data-preview-area="subheader" className="flex-shrink-0 px-1">
+                <div
+                  data-preview-area="subheader"
+                  className="flex-shrink-0 px-1"
+                  style={chatPendingStyle}
+                >
                   <SubagentTabHeader
                     sessionId={sessionId}
                     parentSessionId={subagent.parentSessionId}
@@ -3134,7 +3160,8 @@ function BaseChatContent({
               <div
                 data-preview-area="composer"
                 className="biorouter-chat-composer-bar flex-shrink-0 pb-6 pt-7 bg-background-canvas"
-                style={{ paddingInline: CHAT_COLUMN_CHROME / 2 }}
+                style={{ paddingInline: CHAT_COLUMN_CHROME / 2, ...chatPendingStyle }}
+                aria-busy={chatPending || undefined}
               >
                 {renderChatInput()}
               </div>

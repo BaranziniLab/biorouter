@@ -65,7 +65,8 @@ describe('BaseChat: the summary button and the rail', () => {
       code.indexOf('});', code.indexOf('summaryRailChat({'))
     );
     expect(state).toContain('clean: isCleanConversation,');
-    expect(state).toContain('loading: chatState === ChatState.LoadingConversation,');
+    // `LoadingConversation` and the commit before it (summary/useLoadingChat.ts).
+    expect(state).toContain('loading: chatLoading,');
     expect(state).toContain('running: isRunningState(chatState),');
     expect(code).toMatch(/const summaryActive = summaryRailChatState\.active;/);
   });
@@ -108,7 +109,7 @@ describe('BaseChat: one left edge for the column, the composer and the subagent 
 
   it('gives the composer bar half the column chrome a side, from the constant (V2-R2-1)', () => {
     const bar = openingTag('composer');
-    expect(bar).toContain('style={{ paddingInline: CHAT_COLUMN_CHROME / 2 }}');
+    expect(bar).toContain('style={{ paddingInline: CHAT_COLUMN_CHROME / 2, ...chatPendingStyle }}');
     // No utility can override or race it: a responsive `px-4 sm:px-6` made the
     // composer 8px wider than the column below an 816px cell.
     expect(bar).not.toMatch(/\bp[xlr]-|\bsm:p[xlr]-/);
@@ -252,12 +253,13 @@ const summaryPropsBlock = () =>
 
 describe('BaseChat: a chat that is still loading looks like itself (V2-R5-6)', () => {
   it('reads the chat’s row while the transcript loads, above the early return', () => {
-    expect(code).toMatch(/const chatLoading = chatState === ChatState\.LoadingConversation;/);
-    expect(code).toMatch(/const loadingChatRow = useLoadingChatRow\(sessionId, chatLoading\);/);
-    expect(code.indexOf('useLoadingChatRow(')).toBeLessThan(code.indexOf('if (sessionLoadError)'));
-    expect(code).toMatch(
-      /const loadingChatKnownMessages = loadingChatRow\?\.message_count \?\? 0;/
-    );
+    // One hook decides loading, the row and the look (summary/useLoadingChat.ts).
+    expect(code.match(/useLoadingChat\(/g) ?? []).toHaveLength(1);
+    expect(code).not.toMatch(/useLoadingChatRow\(/);
+    expect(code.indexOf('useLoadingChat(')).toBeLessThan(code.indexOf('if (sessionLoadError)'));
+    expect(code).toMatch(/const chatLoading = loadingChat\.loading;/);
+    expect(code).toMatch(/const loadingChatRow = loadingChat\.row;/);
+    expect(code).toMatch(/const loadingChatKnownMessages = loadingChat\.knownMessages;/);
   });
 
   it('keeps the rail for a loading chat its row says has messages', () => {
@@ -295,6 +297,61 @@ describe('BaseChat: a chat that is still loading looks like itself (V2-R5-6)', (
       code.indexOf(');', code.indexOf('useSessionTodos('))
     );
     expect(todos).toMatch(/!chatLoading &&/);
+  });
+});
+
+/**
+ * Round 7: the first open after a reload. The look is decided in
+ * `summary/useLoadingChat.ts` (tested there); this pins how BaseChat feeds it
+ * and what it does with `pending`.
+ */
+describe('BaseChat: a chat with no row yet paints nothing, not a new chat (V2-R5-6, round 7)', () => {
+  const hookCall = () =>
+    code.slice(
+      code.indexOf('useLoadingChat({'),
+      code.indexOf('});', code.indexOf('useLoadingChat({'))
+    );
+
+  it('feeds the hook the store’s state and the cargo a new chat arrives with', () => {
+    const call = hookCall();
+    expect(call).toContain('sessionId,');
+    expect(call).toContain('session,');
+    expect(call).toContain('hasLoadError: !!sessionLoadError,');
+    expect(call).toContain('chatState,');
+    expect(call).toContain('messageCount: messages.length,');
+    expect(call).toContain('creatingChat: isCreatingSession,');
+    expect(call).toContain(
+      'startingWithCargo: !!initialMessage || (initialAttachments?.length ?? 0) > 0,'
+    );
+    expect(code).toMatch(/const chatPending = loadingChat\.look === 'pending';/);
+  });
+
+  it('counts the commit before the load as loading, for the rail and the empty state', () => {
+    const state = code.slice(
+      code.indexOf('summaryRailChat({'),
+      code.indexOf('});', code.indexOf('summaryRailChat({'))
+    );
+    expect(state).toContain('loading: chatLoading,');
+    const clean = code.slice(
+      code.indexOf('const isCleanConversation ='),
+      code.indexOf(';', code.indexOf('const isCleanConversation ='))
+    );
+    expect(clean).toContain('!chatLoading &&');
+  });
+
+  it('holds the composer bar and the subagent line at opacity 0, reachable, while pending', () => {
+    expect(code).toMatch(
+      /const chatPendingStyle: React\.CSSProperties \| undefined = chatPending\s*\?\s*\{ opacity: 0, pointerEvents: 'none' \}\s*:\s*undefined;/
+    );
+    const tag = (area: string) => {
+      const at = code.indexOf(`data-preview-area="${area}"`);
+      return code.slice(code.lastIndexOf('<', at), code.indexOf('>', at) + 1);
+    };
+    expect(tag('composer')).toContain('...chatPendingStyle');
+    expect(tag('composer')).toContain('aria-busy={chatPending || undefined}');
+    expect(tag('subheader')).toContain('style={chatPendingStyle}');
+    // Never hidden from the keyboard or a screen reader (spec principle 12).
+    expect(code).not.toMatch(/chatPending[^;\n]*(inert|aria-hidden|visibility)/);
   });
 });
 
