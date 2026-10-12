@@ -107,9 +107,10 @@ export function extensionDisplayName(
 
   if (type === 'builtin') {
     // The catalogue's name beats a stored one: a chat records the extensions it ran with, display
-    // names included, so one from before a rename still says `Computer Controller` where the
-    // Extensions page, Settings and the pickers say `Biorouter Copilot` (V3-R2-6). A stored name
-    // is kept only for a bundled entry the catalogue does not know, so it keeps its own name.
+    // names included, so one from before a rename still says the legacy Computer Controller name
+    // where the Extensions page, Settings and the pickers say `Biorouter Copilot` (V3-R2-6). A
+    // stored name is kept only for a bundled entry the catalogue does not know, so it keeps its
+    // own name.
     const catalogued = builtInNameFor(entry.name);
     if (catalogued) return catalogued;
     if (entry.display_name) return formatExtensionName(entry.display_name);
