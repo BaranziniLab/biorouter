@@ -3,6 +3,7 @@ import { render, screen, fireEvent, act, cleanup } from '@testing-library/react'
 import UpdateSection from './UpdateSection';
 import { aboutCopy } from './copy';
 import type { UpdaterEventPayload } from '../../../utils/updaterState';
+import { BUNDLED_BIOROUTER_VERSION, registerAppVersionIpc } from '../../../utils/biorouterVersion';
 
 let emit: (p: UpdaterEventPayload) => void = () => {};
 let installUpdate: ReturnType<typeof vi.fn>;
@@ -181,5 +182,42 @@ describe('Settings > App > About > Version: one-click flow', () => {
     expect(screen.getByText(aboutCopy.ready('1.86.0'))).toBeTruthy();
     fireEvent.click(installBtn);
     expect(installUpdate).toHaveBeenCalledTimes(1);
+  });
+});
+
+/**
+ * A development launch that hands Electron `.vite/build/main.js` directly reports Electron's own
+ * version from `app.getVersion()`, and the row read 39.8.10. The renderer asks the main process
+ * synchronously (preload: `ipcRenderer.sendSync('get-app-version')`), so this wires the row to the
+ * real main-process handler, given an app reporting Electron's version.
+ */
+describe('Settings > App > About > Version: Biorouter’s version, never Electron’s', () => {
+  const ELECTRON_VERSION = '39.8.10';
+
+  function wireRowToMainProcess() {
+    const handlers = new Map<string, (event: { returnValue?: unknown }) => void>();
+    const ipcMain = {
+      on: (channel: string, handler: (event: { returnValue?: unknown }) => void) => {
+        handlers.set(channel, handler);
+        return ipcMain;
+      },
+    };
+    registerAppVersionIpc(
+      ipcMain as never,
+      { getVersion: () => ELECTRON_VERSION },
+      ELECTRON_VERSION
+    );
+    (window as unknown as { electron: { getVersion: () => string } }).electron.getVersion = () => {
+      const event: { returnValue?: unknown } = {};
+      handlers.get('get-app-version')?.(event);
+      return String(event.returnValue ?? '');
+    };
+  }
+
+  it('shows the version Biorouter was built at in a development launch', () => {
+    wireRowToMainProcess();
+    render(<UpdateSection />);
+    expect(screen.getByText(BUNDLED_BIOROUTER_VERSION)).toBeTruthy();
+    expect(screen.queryByText(ELECTRON_VERSION)).toBeNull();
   });
 });

@@ -8,6 +8,7 @@ import { Readable, Transform } from 'stream';
 import { pipeline } from 'stream/promises';
 import log from './logger';
 import { safeJsonParse } from './conversionUtils';
+import { biorouterVersion } from './biorouterVersion';
 
 interface GitHubRelease {
   tag_name: string;
@@ -57,7 +58,7 @@ export class GitHubUpdater {
     try {
       log.info('=== GitHubUpdater: STARTING UPDATE CHECK ===');
       log.info(`GitHubUpdater: API URL: ${this.apiUrl}`);
-      log.info(`GitHubUpdater: Current app version: ${app.getVersion()}`);
+      log.info(`GitHubUpdater: Current app version: ${biorouterVersion(app)}`);
       log.info(`GitHubUpdater: Timestamp: ${new Date().toISOString()}`);
 
       log.info('GitHubUpdater: Initiating fetch request...');
@@ -70,7 +71,7 @@ export class GitHubUpdater {
       const response = await fetch(this.apiUrl, {
         headers: {
           Accept: 'application/vnd.github.v3+json',
-          'User-Agent': `Biorouter-Desktop/${app.getVersion()}`,
+          'User-Agent': `Biorouter-Desktop/${biorouterVersion(app)}`,
         },
         signal: controller.signal,
       });
@@ -96,7 +97,7 @@ export class GitHubUpdater {
       log.info(`GitHubUpdater: Release assets count: ${release.assets.length}`);
 
       const latestVersion = release.tag_name.replace(/^v/, ''); // Remove 'v' prefix if present
-      const currentVersion = app.getVersion();
+      const currentVersion = biorouterVersion(app);
 
       log.info(
         `GitHubUpdater: Current version: ${currentVersion}, Latest version: ${latestVersion}`

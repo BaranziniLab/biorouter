@@ -18,6 +18,7 @@ import * as path from 'path';
 import * as fs from 'fs';
 import log from './logger';
 import { getBiorouterCliBinaryPath } from '../biorouterd';
+import { biorouterVersion } from './biorouterVersion';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -801,7 +802,7 @@ export function registerDependencyIpcHandlers(): void {
     return {
       platform: process.platform,
       arch: process.arch,
-      appVersion: app.getVersion(),
+      appVersion: biorouterVersion(app),
       osRelease: (unameOut?.stdout ?? '').trim() || os.release(),
       augmentedPath: AUGMENTED_PATH,
       inheritedPath: process.env.PATH ?? '',
