@@ -402,6 +402,20 @@ describe('BaseChat: the transcript keeps its newest line through a resize (V2-R6
     );
   });
 
+  it('settles the list through useTranscriptSettle, with no first-settle force of its own', () => {
+    // WS-TRANSCRIPT-1: the first settle used to land on the end whatever the
+    // reader had done, which pulled a reader who scrolled up during a long
+    // chat's load back to the end (transcriptSettle.browser.test.tsx).
+    expect(code).toContain(
+      'const handleRenderingComplete = useTranscriptSettle(scrollRef, messages.length);'
+    );
+    expect(code).toContain('onRenderingComplete={handleRenderingComplete}');
+    expect(code).not.toContain('initialRenderRef');
+    expect(code.indexOf('useTranscriptSettle(')).toBeLessThan(
+      code.indexOf('if (sessionLoadError) {')
+    );
+  });
+
   it('lets a clicked card’s restore win over the end for that one width change', () => {
     const effect = code.slice(
       code.indexOf('const restore = scrollAnchorRestoreRef.current;'),

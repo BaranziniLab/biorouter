@@ -122,3 +122,48 @@ export function useTranscriptFollow({
     [onScrollChange, anchorBottomOnResize, keepPlaceForWidthChange]
   );
 }
+
+/**
+ * What the live transcript does each time its list settles
+ * (`ProgressiveMessageList`'s `onRenderingComplete`): back to the end while the
+ * reader follows it, and nowhere while they have scrolled up.
+ *
+ * The first settle that has messages lands on the end at once (`'auto'`: a
+ * smooth scroll across a whole transcript is a multi-second animation that
+ * makes the chat feel slow to open); later ones scroll smoothly.
+ *
+ * The first settle used to land on the end whatever the reader had done. It is
+ * 50ms after the last batch of a long chat lands, and the list opened at the
+ * top, so that was the moment the chat first reached its end. A live chat now
+ * opens at its end and adds older batches above it (V2-R7-2), so by then the
+ * only thing that force did was pull a reader who had scrolled up while the
+ * older batches loaded (a few hundred ms on a long chat, seconds on one full
+ * of figures) back to the end, off the rows they were reading. A short chat
+ * has no batches, so nothing can scroll it before its first settle, and it
+ * still lands on the end.
+ */
+export function settleTranscriptScroll(
+  scroll: Pick<ScrollAreaHandle, 'scrollToBottom' | 'isFollowing'> | null | undefined,
+  first: boolean
+): void {
+  if (!scroll?.isFollowing) return;
+  if (first) scroll.scrollToBottom('auto');
+  else scroll.scrollToBottom();
+}
+
+/**
+ * BaseChat's `onRenderingComplete`: `settleTranscriptScroll`, with the first
+ * settle counted once, at the first one that has messages (a chat's messages
+ * arrive after it mounts).
+ */
+export function useTranscriptSettle(
+  scrollRef: RefObject<ScrollAreaHandle | null>,
+  messageCount: number
+): () => void {
+  const firstRef = useRef(true);
+  return useCallback(() => {
+    const first = firstRef.current && messageCount > 0;
+    if (first) firstRef.current = false;
+    settleTranscriptScroll(scrollRef.current, first);
+  }, [scrollRef, messageCount]);
+}

@@ -58,7 +58,7 @@ import { summaryCopy } from './summary/copy';
 import { useSessionTodos } from '../hooks/useSessionTodos';
 import { summaryRailChat, useSummaryRail } from '../hooks/useSummaryRail';
 import { useLoadingChat } from './summary/useLoadingChat';
-import { useTranscriptFollow } from './summary/useTranscriptFollow';
+import { useTranscriptFollow, useTranscriptSettle } from './summary/useTranscriptFollow';
 import { captureScrollAnchor, useColumnGlide } from '../hooks/useColumnGlide';
 import { DUR, EASE_OUT, isWindowResizing, prefersReducedMotion } from '../styles/motion';
 import { Note } from './ui/note';
@@ -382,11 +382,10 @@ export function requestScrollToBottom(sessionId: string): void {
 /**
  * The user's own submit ALWAYS returns them to the bottom.
  *
- * `handleRenderingComplete` force-scrolls only on the first render and
- * otherwise defers to `isFollowing`, which scrolling up clears (see
- * ui/scroll-area.tsx). So a user reading back through history who then typed a
- * message was left stranded mid-transcript, with no evidence of where their
- * prompt had landed.
+ * `handleRenderingComplete` (`useTranscriptSettle`) scrolls only while
+ * `isFollowing`, which scrolling up clears (see ui/scroll-area.tsx). So a user
+ * reading back through history who then typed a message was left stranded
+ * mid-transcript, with no evidence of where their prompt had landed.
  *
  * This is scoped to the SUBMIT, not to incoming content, which is the whole
  * point: a user who scrolls up mid-stream must still NOT be yanked down by the
@@ -2105,25 +2104,11 @@ function BaseChatContent({
     }
   };
 
-  // Track if this is the initial render for session resuming
-  const initialRenderRef = useRef(true);
-
-  // Auto-scroll when messages are loaded (for session resuming)
-  const handleRenderingComplete = React.useCallback(() => {
-    // Only force scroll on the very first render
-    if (initialRenderRef.current && messages.length > 0) {
-      initialRenderRef.current = false;
-      if (scrollRef.current?.scrollToBottom) {
-        // Land instantly on resume — a smooth scroll across a full transcript is
-        // a multi-second animation that makes the session feel slow to open.
-        scrollRef.current.scrollToBottom('auto');
-      }
-    } else if (scrollRef.current?.isFollowing) {
-      if (scrollRef.current?.scrollToBottom) {
-        scrollRef.current.scrollToBottom();
-      }
-    }
-  }, [messages.length]);
+  // When the list settles: back to the end while the reader follows it (the
+  // first settle lands at once), and nowhere once they have scrolled up, the
+  // first settle included: a long chat opens at its end, and a reader who
+  // scrolled up while its older batches loaded keeps their rows.
+  const handleRenderingComplete = useTranscriptSettle(scrollRef, messages.length);
 
   // Gated on agentReady: tools do not exist until the extensions do, and this
   // hook has no other reason to refetch.
