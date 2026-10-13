@@ -1,5 +1,6 @@
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
+& (Join-Path $PSScriptRoot 'normal-release-cleanup.test.ps1')
 $tokens = $null
 $errors = $null
 $source = Join-Path $PSScriptRoot 'normal-release-smoke.ps1'
