@@ -504,8 +504,17 @@ function Harness() {
   // dot-directories, so utility classes written here would never be generated.
   // Everything inside ArtifactViewer still gets its classes from src/.
   return (
-    <div style={{ display: 'flex', height: '100vh', width: '100vw' }}>
-      <div style={{ width: 220, flexShrink: 0, borderRight: '1px solid #ddd', padding: 8 }}>
+    <div style={{ display: 'flex', position: 'fixed', inset: 0, overflow: 'hidden' }}>
+      <div
+        style={{
+          width: 220,
+          flexShrink: 0,
+          minHeight: 0,
+          overflowY: 'auto',
+          borderRight: '1px solid #ddd',
+          padding: 8,
+        }}
+      >
         {ARTIFACTS.map((entry) => (
           <button
             key={entry.label}
@@ -529,7 +538,7 @@ function Harness() {
           </button>
         ))}
       </div>
-      <div style={{ flex: 1, minWidth: 0, height: '100%' }} data-testid="panel-host">
+      <div style={{ flex: 1, minWidth: 0, minHeight: 0, height: '100%' }} data-testid="panel-host">
         {artifact ? (
           <ArtifactViewer
             artifact={artifact}
