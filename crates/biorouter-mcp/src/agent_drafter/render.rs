@@ -4178,7 +4178,9 @@ setTimeout(()=>process.exit(0),120000).unref();
                         "no recovery advice: {printed}"
                     );
                     let after = std::fs::read_to_string(root.join("requests.jsonl")).unwrap();
-                    let added = &after[before.len()..];
+                    let added = after
+                        .strip_prefix(&before)
+                        .expect("requests retain their prefix");
                     let requests: Vec<serde_json::Value> = added
                         .lines()
                         .map(|line| serde_json::from_str(line).unwrap())
