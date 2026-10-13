@@ -172,4 +172,6 @@ require_fresh_windows_smoke "$VERSION" "$LATEST_DRAFT_ASSET_UPDATED_AT"
 RELEASES_JSON="$BAD_RELEASES_JSON"
 expect_failure "uploaded digest mismatch check" verify_remote_release_assets "$VERSION"
 
+python3 "$SOURCE_ROOT/scripts/test-mac-release-smoke.py"
+
 printf 'release hardening tests passed\n'

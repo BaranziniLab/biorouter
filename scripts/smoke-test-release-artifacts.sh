@@ -14,12 +14,81 @@ require_file() {
   [ -f "$1" ] || die "missing artifact: $1"
 }
 
-smoke_mac() {
-  local arch="$1" dmg="$2" mount tmp runner=(/usr/bin/env)
+smoke_mac() (
+  local arch="$1" dmg="$2" mount="" tmp="" runner=(/usr/bin/env)
+  local pid="" daemon_pid="" failure="" mounted=false
+  mac_descendants() {
+    local c
+    for c in $(pgrep -P "$1" 2>/dev/null || true); do
+      printf '%s\n' "$c"
+      mac_descendants "$c"
+    done
+  }
+  cleanup_mac() {
+    local child tree=""
+    if [ -n "$pid" ]; then
+      tree="$(mac_descendants "$pid" | tr '\n' ' ')"
+      kill -TERM "$pid" 2>/dev/null || true
+      for _ in $(seq 1 40); do
+        ps -o stat= -p "$pid" 2>/dev/null | grep -qv Z || break
+        sleep 0.5
+      done
+      if ps -o stat= -p "$pid" 2>/dev/null | grep -qv Z; then
+        [ -n "$failure" ] || failure="$arch desktop did not exit within 20 s of SIGTERM"
+        kill -KILL "$pid" 2>/dev/null || true
+      fi
+      wait "$pid" 2>/dev/null || true
+      for child in $tree; do
+        [ "$child" = "$daemon_pid" ] && continue
+        kill -KILL "$child" 2>/dev/null || true
+      done
+      pid=""
+    fi
+    if [ -n "$daemon_pid" ] && [ "$(ps -o comm= -p "$daemon_pid" 2>/dev/null | xargs basename 2>/dev/null)" = biorouterd ]; then
+      kill -TERM "$daemon_pid" 2>/dev/null || true
+      for _ in $(seq 1 30); do
+        ps -o stat= -p "$daemon_pid" 2>/dev/null | grep -qv Z || break
+        sleep 0.5
+      done
+      if ps -o stat= -p "$daemon_pid" 2>/dev/null | grep -qv Z; then
+        [ -n "$failure" ] || failure="$arch shared daemon did not stop within 15 s"
+        [ "$(ps -o comm= -p "$daemon_pid" 2>/dev/null | xargs basename 2>/dev/null)" != biorouterd ] \
+          || kill -KILL "$daemon_pid" 2>/dev/null || true
+      fi
+      daemon_pid=""
+    fi
+    if [ "$mounted" = true ]; then
+      if hdiutil detach "$mount" >/dev/null 2>&1 || {
+        sleep 2
+        hdiutil detach -force "$mount" >/dev/null
+      }; then
+        mounted=false
+      else
+        [ -n "$failure" ] || failure="$arch smoke mount did not detach"
+      fi
+    fi
+    if [ -n "$failure" ] && [ -n "$tmp" ]; then
+      if [ -f "$tmp/app.log" ]; then sed -n '1,160p' "$tmp/app.log" >&2 || true; fi
+      if [ -f "${main_log:-}" ]; then sed -n '1,160p' "$main_log" >&2 || true; fi
+    fi
+    # Hermit can leave read-only package caches in the disposable HOME.
+    if [ -n "$tmp" ]; then
+      chmod -R u+w "$tmp" 2>/dev/null || true
+      rm -rf "$tmp" 2>/dev/null || true
+      tmp=""
+    fi
+    if [ -n "$mount" ] && [ "$mounted" = false ]; then
+      chmod -R u+w "$mount" 2>/dev/null || true
+      rm -rf "$mount" 2>/dev/null || true
+      mount=""
+    fi
+  }
+  trap 'smoke_status=$?; trap - EXIT; cleanup_mac; exit "$smoke_status"' EXIT
   require_file "$dmg"
   mount="$(mktemp -d "/tmp/biorouter-${arch}-mount.XXXXXX")"
   tmp="$(mktemp -d "/tmp/biorouter-${arch}-smoke.XXXXXX")"
   hdiutil attach -nobrowse -readonly -mountpoint "$mount" "$dmg" >/dev/null
+  mounted=true
   local app="$mount/Biorouter.app"
   [ -d "$app" ] || die "$arch DMG does not contain Biorouter.app"
   python3 "$ROOT/scripts/computer-use-runtime.py" verify "darwin-$arch" --directory "$app/Contents/Resources/computer-use" --require-signed
@@ -34,32 +103,18 @@ smoke_mac() {
     || die "$arch CLI architecture mismatch"
   "${runner[@]}" "$app/Contents/Resources/bin/biorouter" --version | grep -q "$VERSION"
   "${runner[@]}" "$app/Contents/Resources/bin/biorouterd" --version | grep -q "$VERSION"
-  # ⚠ **Give the throwaway HOME a keychain, or macOS interrupts whoever is at
-  # the machine.** `BIOROUTER_DISABLE_KEYRING` only silences OUR keyring use;
-  # Electron's own `safeStorage` still reaches for the Keychain. With HOME
-  # pointed at an empty temp dir there is no `login.keychain-db`, and macOS puts
-  # up a modal — "A keychain cannot be found to store Biorouter" — whose buttons
-  # are Cancel and **Reset To Defaults**. A verification run must not put a
-  # button that resets someone's keychain search list in front of them. This
-  # happened to the operator during a real verify run.
-  #
-  # An empty keychain in the temp HOME satisfies the lookup and is thrown away
-  # with the directory. Failure is not fatal: the smoke test's subject is the
-  # artifact, not the keychain.
-  mkdir -p "$tmp/Library/Keychains"
-  security create-keychain -p "" "$tmp/Library/Keychains/login.keychain-db" 2>/dev/null || true
   # ⚠ **`--user-data-dir`, because HOME does not move it.** On macOS Electron resolves userData
   # through the system (~/Library/Application Support/Biorouter), not through $HOME, so without
   # it the smoke run wrote into the operator's real profile, beside an app they may be using.
   # The app sets no userData path of its own, and Electron honours the switch (measured on the
   # Linux build: main.log and the whole profile moved into the given directory).
   HOME="$tmp" BIOROUTER_DISABLE_KEYRING=true XDG_STATE_HOME="$tmp/.local/state" \
-    /usr/bin/env -u BIOROUTER_PATH_ROOT -u BIOROUTER_DEV_PROFILE_ROOT "${runner[@]}" "$app/Contents/MacOS/Biorouter" --disable-gpu --user-data-dir="$tmp/userData" \
+    /usr/bin/env -u BIOROUTER_PATH_ROOT -u BIOROUTER_DEV_PROFILE_ROOT "${runner[@]}" "$app/Contents/MacOS/Biorouter" --use-mock-keychain --user-data-dir="$tmp/userData" \
     >"$tmp/app.log" 2>&1 &
-  local pid=$!
-  local main_log="$tmp/userData/logs/main.log" failure="" tree="" prompt="" child
+  pid=$!
+  local main_log="$tmp/userData/logs/main.log" prompt=""
   local runtime="$tmp/.local/state/biorouter/daemon/runtime.json"
-  local key="$tmp/.local/state/biorouter/daemon/user-action-key.json" daemon_pid=""
+  local key="$tmp/.local/state/biorouter/daemon/user-action-key.json"
   for _ in $(seq 1 60); do
     prompt="$(pgrep -P "$pid" -x osascript 2>/dev/null | head -n 1 || true)"
     if [ -n "$prompt" ]; then
@@ -96,61 +151,11 @@ PYKEY
       failure="$arch desktop did not save a private matching daemon key"
     fi
   fi
-  # Keep the descendant list for bounded cleanup if the app fails to quit.
-  mac_descendants() {
-    local c
-    for c in $(pgrep -P "$1" 2>/dev/null || true); do
-      printf '%s\n' "$c"
-      mac_descendants "$c"
-    done
-  }
-  tree="$(mac_descendants "$pid" | tr '\n' ' ')"
-  # Let the app quit before cleaning up its remaining descendants.
-  kill -TERM "$pid" 2>/dev/null || true
-  for _ in $(seq 1 40); do
-    ps -o stat= -p "$pid" 2>/dev/null | grep -qv Z || break
-    sleep 0.5
-  done
-  if ps -o stat= -p "$pid" 2>/dev/null | grep -qv Z; then
-    [ -n "$failure" ] || failure="$arch desktop did not exit within 20 s of SIGTERM"
-    kill -KILL "$pid" 2>/dev/null || true
-  fi
-  wait "$pid" 2>/dev/null || true
-  for child in $tree; do
-    [ "$child" = "$daemon_pid" ] && continue
-    kill -KILL "$child" 2>/dev/null || true
-  done
-  if [ -n "$daemon_pid" ] && [ "$(ps -o comm= -p "$daemon_pid" 2>/dev/null | xargs basename 2>/dev/null)" = biorouterd ]; then
-    kill -TERM "$daemon_pid" 2>/dev/null || true
-    for _ in $(seq 1 30); do
-      ps -o stat= -p "$daemon_pid" 2>/dev/null | grep -qv Z || break
-      sleep 0.5
-    done
-    if ps -o stat= -p "$daemon_pid" 2>/dev/null | grep -qv Z; then
-      [ -n "$failure" ] || failure="$arch shared daemon did not stop within 15 s"
-      [ "$(ps -o comm= -p "$daemon_pid" 2>/dev/null | xargs basename 2>/dev/null)" != biorouterd ] \
-        || kill -KILL "$daemon_pid" 2>/dev/null || true
-    fi
-  fi
-  if [ -n "$failure" ]; then
-    sed -n '1,160p' "$tmp/app.log" >&2
-    if [ -f "$main_log" ]; then sed -n '1,160p' "$main_log" >&2; fi
-  fi
-  hdiutil detach "$mount" >/dev/null 2>&1 || {
-    sleep 2
-    hdiutil detach -force "$mount" >/dev/null
-  }
-  # ⚠ `chmod` first, and never let cleanup decide the verdict. The app runs with
-  # HOME="$tmp", and anything it invokes that touches hermit writes a READ-ONLY
-  # package cache in there — `rm -rf` then fails with "Permission denied" /
-  # "Directory not empty", returns non-zero, and under `set -e` sinks the entire
-  # verification even though every artifact passed. That happened: a green
-  # release reported "verification failed" because it could not tidy up.
-  chmod -R u+w "$mount" "$tmp" 2>/dev/null || true
-  rm -rf "$mount" "$tmp" 2>/dev/null || true
+  cleanup_mac
+  trap - EXIT
   [ -z "$failure" ] || die "$failure"
   log "macOS $arch DMG, CLI, daemon, silent shared startup, and desktop shutdown passed"
-}
+)
 
 # Both packages use the same bounded silent-startup, replacement, fatal-error shutdown,
 # and per-window checks. `timeout` also bounds the whole container run.
