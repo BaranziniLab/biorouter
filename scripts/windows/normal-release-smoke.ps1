@@ -73,7 +73,8 @@ function Stop-NormalOwnedProcess {
         try {
             $process = Get-Process -Id $Identity.ProcessId -ErrorAction Stop
             # Keep the native process handle open so Kill cannot target a reused PID.
-            $null = $process.Handle
+            # Property reads suppress getter errors in PowerShell; the accessor call preserves them.
+            $null = $process.get_Handle()
         } catch {
             $failure = $_.Exception
             while ($failure.InnerException) { $failure = $failure.InnerException }

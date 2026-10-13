@@ -17,7 +17,7 @@ if ($calls.Count -ne 1) { throw 'Normal teardown must use the tested owned-proce
 if ($IsWindows) {
     $self = Get-Process -Id $PID -ErrorAction Stop
     try {
-        $null = $self.Handle
+        if ($self.get_Handle() -eq [IntPtr]::Zero) { throw 'The native process getter did not retain a handle' }
         $nativeIdentity = Get-CimInstance Win32_Process -Filter "ProcessId=$PID"
         if ($self.StartTime.ToUniversalTime().ToString('yyyyMMddHHmmssffffff') -cne
             $nativeIdentity.CreationDate.ToUniversalTime().ToString('yyyyMMddHHmmssffffff')) {
@@ -104,7 +104,7 @@ foreach ($case in $cases) {
     $start = $script:identity.CreationDate.AddTicks($case.ticks)
     if ($case.local) { $start = $start.ToLocalTime() }
     $script:process = [pscustomobject]@{ Id = $case.capturedId; StartTime = $start; HasExited = $case.exited }
-    $script:process | Add-Member ScriptProperty Handle {
+    $script:process | Add-Member ScriptMethod get_Handle {
         $script:state.handles++
         $script:state.current = $script:state.case.after
         switch ($script:state.case.handleError) {
