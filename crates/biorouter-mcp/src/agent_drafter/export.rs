@@ -693,6 +693,12 @@ fn prepare(
     // races a page load's build, and a build that failed on these very inputs
     // is not run again.
     match super::ensure_bundle_fresh(&store, id) {
+        Ok(super::BundleCheck {
+            quality_error: Some(error),
+            ..
+        }) => {
+            return Err(ExportError::Unexportable(error));
+        }
         Ok(check) if check.build.as_ref().is_some_and(|build| !build.ok) => {
             report.notes.push(if check.has_bundle {
                 "the app's bundle could not be rebuilt; the export carries the last one that \
@@ -2285,6 +2291,34 @@ mod tests {
 
     fn out(report: &ExportReport) -> PathBuf {
         PathBuf::from(&report.target)
+    }
+
+    #[test]
+    fn a_broken_page_is_not_exported_even_with_the_lint_override() {
+        let f = fixture();
+        let app = f.app("broken-page", ArtifactKind::Static);
+        std::fs::write(
+            app.join("index.html"),
+            "<html><body><script>const value = ;</script></body></html>",
+        )
+        .unwrap();
+
+        let error = f
+            .export(
+                "broken-page",
+                &ExportRequest {
+                    allow_lint_errors: true,
+                    ..Default::default()
+                },
+            )
+            .unwrap_err();
+        assert!(matches!(error, ExportError::Unexportable(_)), "{error}");
+        assert!(error.to_string().contains("index.html"), "{error}");
+        assert_eq!(std::fs::read_dir(&f.work).unwrap().count(), 0);
+
+        let error = legacy_export_map(&f.store_root, "broken-page").unwrap_err();
+        assert!(matches!(error, ExportError::Unexportable(_)), "{error}");
+        assert!(error.to_string().contains("index.html"), "{error}");
     }
 
     #[test]

@@ -689,7 +689,7 @@ prompt: |
   1. Call `agent_drafter__list_apps`. If that exact app id already exists or matches the preview id `{{ preview_app_id }}`, stop this phase and report the collision without modifying any app. Do not overwrite, reuse, or remove a prior run's app.
   2. Call `create_app` with that id, kind `agentic`, archetype `dashboard`, a concise title and description, and a system prompt that updates dashboard metrics through the declared action.
   3. Call `read_app` and verify the resolved manifest has the dashboard state schema, `set_metric` action, `refresh_requested` signal, and nonblank `surface.state_initial` metric labels. Missing measurements must be explicitly unavailable, not invented zero values. Keep declared initial state as the source of first-load values; do not add duplicate imperative initialization to work around the smoke harness.
-  4. Call `build_app`; require a successful bundle.
+  4. Call `build_app`; require a successful bundle and a passing default browser-free page check. This checks page files and JavaScript structure; it does not establish browser execution. A quality-check error must fail the build rather than produce a success card.
   5. Call `build_app` with `check_only: true`; require zero ERROR findings.
   6. Call `smoke_app`; require the real-browser harness to execute successfully. A missing browser or skipped execution is a failure, not a pass.
   7. Record setup, manifest assertions, build output, lint output, and smoke output in {{ workspace_dir }}/phase2b_apps.md.
