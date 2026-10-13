@@ -63,6 +63,43 @@ function Update-OwnedProcesses {
     } while ($added)
 }
 
+function Stop-NormalOwnedProcess {
+    param($Identity)
+    $current = Get-CimInstance Win32_Process -Filter "ProcessId=$($Identity.ProcessId)"
+    if (-not $current -or $current.CreationDate -ne $Identity.CreationDate -or
+        $current.ExecutablePath -ne $Identity.ExecutablePath) { return }
+    $process = $null
+    try {
+        try {
+            $process = Get-Process -Id $Identity.ProcessId -ErrorAction Stop
+            # Keep the native process handle open so Kill cannot target a reused PID.
+            $null = $process.Handle
+        } catch {
+            $failure = $_.Exception
+            while ($failure.InnerException) { $failure = $failure.InnerException }
+            $notFound = $_.FullyQualifiedErrorId.Split(',')[0] -eq 'NoProcessFoundForGivenId'
+            if (-not ($notFound -or $failure -is [InvalidOperationException] -or
+                ($failure -is [ComponentModel.Win32Exception] -and $failure.NativeErrorCode -eq 87))) { throw }
+            $current = Get-CimInstance Win32_Process -Filter "ProcessId=$($Identity.ProcessId)"
+            if ($current -and $current.CreationDate -eq $Identity.CreationDate -and
+                $current.ExecutablePath -eq $Identity.ExecutablePath) { throw }
+            return
+        }
+        $current = Get-CimInstance Win32_Process -Filter "ProcessId=$($Identity.ProcessId)"
+        if (-not $current -or $current.CreationDate -ne $Identity.CreationDate -or
+            $current.ExecutablePath -ne $Identity.ExecutablePath) { return }
+        # CIM creation dates have microsecond precision; native FILETIME also has a 100ns digit.
+        if ($process.Id -ne $Identity.ProcessId -or
+            $process.StartTime.ToUniversalTime().ToString('yyyyMMddHHmmssffffff') -cne
+            $Identity.CreationDate.ToUniversalTime().ToString('yyyyMMddHHmmssffffff')) {
+            throw 'Captured normal-start process identity differs from the owned process'
+        }
+        if (-not $process.HasExited) { $process.Kill() }
+    } finally {
+        if ($null -ne $process) { $process.Dispose() }
+    }
+}
+
 function Invoke-CDP {
     param([string]$Socket, [string]$Method, [hashtable]$Parameters)
     $websocket = [Net.WebSockets.ClientWebSocket]::new()
@@ -315,9 +352,7 @@ try {
     try {
         Update-OwnedProcesses
         foreach ($identity in @($owned.Values | Sort-Object CreationDate -Descending)) {
-            $current = Get-CimInstance Win32_Process -Filter "ProcessId=$($identity.ProcessId)"
-            if ($current -and $current.CreationDate -eq $identity.CreationDate -and
-                $current.ExecutablePath -eq $identity.ExecutablePath) { Stop-Process -Id $identity.ProcessId -Force }
+            Stop-NormalOwnedProcess -Identity $identity
         }
         Start-Sleep -Seconds 2
         foreach ($identity in $owned.Values) {
