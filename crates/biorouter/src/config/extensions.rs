@@ -230,6 +230,8 @@ pub fn bundled_extension_display_name(name: &str) -> Option<&'static str> {
         "code_execution" => return Some("Code Execution"),
         "skills" => return Some("Skills"),
         "todo" => return Some("Todo"),
+        // A capability in the desktop's Settings, named as its row there names it.
+        "crew" => return Some("Crew"),
         _ => {}
     }
     BUILTIN_EXTENSION_METADATA

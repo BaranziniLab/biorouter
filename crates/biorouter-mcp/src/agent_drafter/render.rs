@@ -476,7 +476,7 @@ const HANDLER_BINDER_ID: &str = "biorouter-inline-handlers";
 const HANDLER_MARKER: &str = "data-br-on-";
 
 /// Whether an attribute name is an `on…` event handler's.
-fn is_handler_name(key: &str) -> bool {
+pub(crate) fn is_handler_name(key: &str) -> bool {
     key.len() > 2 && key.starts_with("on")
 }
 
@@ -692,20 +692,20 @@ const JS_MIME_TYPES: &[&str] = &[
 
 /// One attribute of a start tag, as the tokenizer reads it.
 #[derive(Debug, Clone)]
-struct TagAttr {
+pub(crate) struct TagAttr {
     /// Lowercase name.
-    key: String,
+    pub(crate) key: String,
     /// Decoded value.
-    value: String,
+    pub(crate) value: String,
     /// Where the whole attribute, name through value, sits in the page.
-    span: std::ops::Range<usize>,
+    pub(crate) span: std::ops::Range<usize>,
     /// A later attribute of the same name on the same tag, which a browser
     /// drops (the first occurrence wins).
-    duplicate: bool,
+    pub(crate) duplicate: bool,
 }
 
 /// A tag as [`scan_tags`] reports it.
-enum Tag<'a> {
+pub(crate) enum Tag<'a> {
     Start {
         /// Lowercase name.
         name: String,
@@ -727,7 +727,7 @@ enum Tag<'a> {
 /// It is deliberately a scanner, not a parser, and errs toward MISSING code
 /// (which then stays blocked, as it always was) rather than inventing it: a
 /// hash can only ever allow text that is really in the page.
-fn scan_tags<'a>(html: &'a str, mut visit: impl FnMut(Tag<'a>)) {
+pub(crate) fn scan_tags<'a>(html: &'a str, mut visit: impl FnMut(Tag<'a>)) {
     let bytes = html.as_bytes();
     let mut i = 0;
     while i < bytes.len() {
@@ -864,7 +864,7 @@ pub fn authored_inline_code(html: &str) -> InlineCode {
     code
 }
 
-fn script_is_executable(type_attr: Option<&str>, language: Option<&str>) -> bool {
+pub(crate) fn script_is_executable(type_attr: Option<&str>, language: Option<&str>) -> bool {
     let mime = match (type_attr.map(str::trim), language.map(str::trim)) {
         (Some(t), _) if !t.is_empty() => t.to_ascii_lowercase(),
         (Some(_), _) => return true,
@@ -1619,28 +1619,30 @@ port_alive() { curl -sf -o /dev/null --max-time 1 "http://127.0.0.1:$1/status" 2
 # ── 3. A daemon whose secret this launcher knows ──────────────────────────
 # A daemon serves an app's page only to a browser holding that app's access
 # cookie, and the one-time link that sets the cookie is handed only to a caller
-# holding the daemon's secret. So this launcher uses a daemon it started (its
-# port and secret are kept, readable by you alone, in $LAUNCHER_STATE) or one you
-# name with BIOROUTERD_PORT and BIOROUTER_SERVER__SECRET_KEY. It cannot open the
-# app on any other daemon, whatever answers /status.
+# holding the daemon's secret. The profile's verified background service comes
+# first, then a daemon this launcher started or one you explicitly name.
 LAUNCHER_STATE="$LAUNCHER_HOME/daemon"
 SECRET=""
 LOG=""
+SHARED_SOCKET=""
+SHARED_IDENTITY=""
 
 new_secret() { od -An -N32 -tx1 /dev/urandom | tr -d ' \n'; }
 
 # Every request that carries the secret hands it to curl on stdin, never on a
 # command line, where other accounts on this machine can read it.
 secret_ok() {
+  if [ -n "$SHARED_SOCKET" ]; then shared_daemon apps >/dev/null; return; fi
   printf 'X-Secret-Key: %s\n' "$2" \
     | curl -sf -o /dev/null --max-time 2 -H @- "http://127.0.0.1:$1/apps" 2>/dev/null
 }
 
 # The path of this app's one-time launch link, from the daemon on :$1.
 launch_path() {
-  printf 'X-Secret-Key: %s\n' "$2" \
-    | curl -sf --max-time 5 -X POST -H @- "http://127.0.0.1:$1/apps/$APP_ID/launch" 2>/dev/null \
-    | sed -n 's|.*"path":"\(/apps/[A-Za-z0-9_-]*/?t=[0-9a-f]*\)".*|\1|p'
+  { if [ -n "$SHARED_SOCKET" ]; then shared_daemon launch "$APP_ID"
+    else printf 'X-Secret-Key: %s\n' "$2" \
+      | curl -sf --max-time 5 -X POST -H @- "http://127.0.0.1:$1/apps/$APP_ID/launch" 2>/dev/null; fi
+  } | sed -n 's|.*"path":"\(/apps/[A-Za-z0-9_-]*/?t=[0-9a-f]*\)".*|\1|p'
 }
 
 save_daemon() {
@@ -1650,11 +1652,144 @@ save_daemon() {
   ) || echo "  (could not remember this daemon; the next run starts another)" >&2
 }
 
+# Read the existing shared-daemon protocol, not a port scan. Python is optional:
+# an installation without it keeps the standalone launcher path below.
+shared_daemon() {
+  command -v python3 >/dev/null 2>&1 || return 1
+  python3 - "$CFG" "$SHARED_IDENTITY" "$@" <<'PY'
+import hashlib, http.client, json, os, re, socket, stat, sys
+from urllib.parse import urlsplit
+
+def private(path, kind):
+    s = os.lstat(path)
+    valid = {'file': stat.S_ISREG, 'directory': stat.S_ISDIR, 'socket': stat.S_ISSOCK}[kind]
+    if not valid(s.st_mode) or s.st_uid != os.getuid() or s.st_mode & 0o7777 != (0o700 if kind == 'directory' else 0o600):
+        raise ValueError('private metadata required')
+    return s
+
+def record(path):
+    private(path, 'file')
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    try:
+        s = os.fstat(fd)
+        if not stat.S_ISREG(s.st_mode) or s.st_uid != os.getuid() or s.st_mode & 0o7777 != 0o600 or s.st_nlink != 1 or s.st_size > 16384:
+            raise ValueError('invalid metadata')
+        with os.fdopen(fd, 'rb', closefd=False) as f:
+            data = f.read(16385)
+        if len(data) > 16384:
+            raise ValueError('oversized metadata')
+        return json.loads(data)
+    finally:
+        os.close(fd)
+
+try:
+    root = os.environ.get('BIOROUTER_PATH_ROOT', '')
+    xdg = os.environ.get('XDG_STATE_HOME', '')
+    state = os.path.join(root, 'state') if root.strip() else os.path.join(xdg if os.path.isabs(xdg) else os.path.expanduser('~/.local/state'), 'biorouter')
+    directory = os.path.join(state, 'daemon')
+    private(directory, 'directory')
+    config = os.path.realpath(sys.argv[1])
+    profile = record(os.path.join(config, 'daemon-profile.json'))
+    runtime = record(os.path.join(directory, 'runtime.json'))
+    uuid = re.compile(r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$', re.I)
+    if profile.get('version') != 1 or not isinstance(profile.get('profile_id'), str) or not uuid.fullmatch(profile['profile_id']) or profile.get('config_dir') != config:
+        raise ValueError('profile mismatch')
+    endpoint = runtime.get('endpoint', {})
+    path = endpoint.get('path')
+    secret = runtime.get('api_secret')
+    if runtime.get('version') != 1 or runtime.get('profile_id') != profile['profile_id'] or not isinstance(runtime.get('instance_id'), str) or not uuid.fullmatch(runtime['instance_id']) or type(runtime.get('pid')) is not int or runtime['pid'] < 1 or type(runtime.get('user_action_installed')) is not bool or endpoint.get('kind') != 'unix' or path != os.path.join(directory, 'daemon.sock') or not os.path.isabs(path) or '\n' in path or not isinstance(secret, str) or len(secret) < 32 or not re.fullmatch(r'[A-Za-z0-9._~+/=-]+', secret):
+        raise ValueError('runtime mismatch')
+    expected = {key: runtime[key] for key in ('version', 'profile_id', 'instance_id', 'pid', 'user_action_installed')}
+    pinned = json.loads(sys.argv[2]) if sys.argv[2] else None
+    if pinned and (pinned['identity'] != expected or pinned['key_digest'] != hashlib.sha256(secret.encode()).hexdigest()):
+        raise ValueError('daemon instance changed')
+    private(path, 'socket')
+    class Connection(http.client.HTTPConnection):
+        connected = False
+        def connect(self):
+            if self.connected:
+                raise ValueError('daemon connection changed')
+            self.connected = True
+            private(path, 'socket')
+            self.sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            self.sock.settimeout(2)
+            self.sock.connect(path)
+    connection = Connection('localhost', timeout=2)
+    def request(route):
+        connection.request('GET', route, headers={'X-Secret-Key': secret})
+        response = connection.getresponse()
+        body = response.read(16385)
+        if response.status != 200 or len(body) > 16384:
+            raise ValueError('daemon refused')
+        return json.loads(body)
+    identity = request('/daemon/identity')
+    if identity != expected:
+        raise ValueError('identity mismatch')
+    origin = urlsplit(request('/headless/health').get('api_base_url', ''))
+    if origin.scheme != 'http' or origin.hostname not in ('127.0.0.1', 'localhost', '0.0.0.0') or origin.username or origin.password or origin.path not in ('', '/') or origin.query or origin.fragment or not origin.port:
+        raise ValueError('not a local listener')
+    named = os.environ.get('BIOROUTERD_PORT')
+    if (named and int(named) != origin.port) or (pinned and pinned['port'] != origin.port):
+        raise ValueError('another port was requested')
+    if len(sys.argv) == 3:
+        print(origin.port)
+        print(secret)
+        print(path)
+        print(json.dumps({'identity': expected, 'port': origin.port, 'key_digest': hashlib.sha256(secret.encode()).hexdigest()}, separators=(',', ':')))
+    else:
+        operation = sys.argv[3]
+        if operation == 'import':
+            archive = sys.argv[4]
+            source = os.path.basename(archive)[:-5]
+            if not re.fullmatch(r'[a-z0-9][a-z0-9-]{0,79}', source):
+                raise ValueError('invalid archive filename')
+            size = os.stat(archive).st_size
+            if size > 128 * 1024 * 1024:
+                raise ValueError('oversized archive')
+            boundary = 'biorouter-' + os.urandom(16).hex()
+            header = (f'--{boundary}\r\nContent-Disposition: form-data; name="file"; filename="{source}.brkb"\r\nContent-Type: application/octet-stream\r\n\r\n').encode()
+            footer = f'\r\n--{boundary}--\r\n'.encode()
+            connection.sock.settimeout(120)
+            connection.putrequest('POST', '/knowledge/bases/import')
+            connection.putheader('X-Secret-Key', secret)
+            connection.putheader('Content-Type', f'multipart/form-data; boundary={boundary}')
+            connection.putheader('Content-Length', str(len(header) + size + len(footer)))
+            connection.endheaders(header)
+            with open(archive, 'rb') as stream:
+                while True:
+                    chunk = stream.read(65536)
+                    if not chunk:
+                        break
+                    connection.send(chunk)
+            connection.send(footer)
+        else:
+            route = '/apps' if operation == 'apps' else '/apps/' + sys.argv[4] + '/launch'
+            connection.request('GET' if operation == 'apps' else 'POST', route, headers={'X-Secret-Key': secret})
+        response = connection.getresponse()
+        body = response.read(1024 * 1024 + 1)
+        if response.status != 200 or len(body) > 1024 * 1024:
+            raise ValueError('daemon refused')
+        print(body.decode('utf-8'))
+    connection.close()
+except Exception:
+    if sys.argv[2]:
+        print("Biorouter's background service changed or closed; run the launcher again.", file=sys.stderr)
+    sys.exit(1)
+PY
+}
+
 start_daemon() {
   if [ -n "${BIOROUTER_SERVER__SECRET_KEY:-}" ] && [ -n "${BIOROUTERD_PORT:-}" ] \
     && secret_ok "$BIOROUTERD_PORT" "$BIOROUTER_SERVER__SECRET_KEY"; then
     PORT="$BIOROUTERD_PORT"; SECRET="$BIOROUTER_SERVER__SECRET_KEY"
     echo "Using the Biorouter daemon on :$PORT"
+    return 0
+  fi
+  shared="$(shared_daemon)" || shared=""
+  if [ -n "$shared" ]; then
+    { IFS= read -r PORT; IFS= read -r SECRET; IFS= read -r shared_socket; IFS= read -r SHARED_IDENTITY; } <<< "$shared"
+    SHARED_SOCKET="$shared_socket"
+    echo "Using this profile's Biorouter background service on :$PORT"
     return 0
   fi
   if [ -f "$LAUNCHER_STATE" ]; then
@@ -1890,9 +2025,13 @@ import_knowledge_archive() {
   [ -n "$PORT" ] && [ -n "$SECRET" ] || return 1
   [ "$(wc -c < "$f")" -le 134217728 ] || return 1
   escaped="${f//\\/\\\\}"; escaped="${escaped//\"/\\\"}"
-  response="$(printf 'X-Secret-Key: %s\n' "$SECRET" | curl -fsS --max-time 120 -H @- \
-    -F "file=@\"$escaped\";filename=\"$source.brkb\";type=application/octet-stream" \
-    "http://127.0.0.1:$PORT/knowledge/bases/import")" || return 1
+  if [ -n "$SHARED_SOCKET" ]; then
+    response="$(shared_daemon import "$f")" || return 1
+  else
+    response="$(printf 'X-Secret-Key: %s\n' "$SECRET" | curl -fsS --max-time 120 -H @- \
+      -F "file=@\"$escaped\";filename=\"$source.brkb\";type=application/octet-stream" \
+      "http://127.0.0.1:$PORT/knowledge/bases/import")" || return 1
+  fi
   imported="$(printf '%s' "$response" | sed -n 's/^[[:space:]]*{[[:space:]]*"id"[[:space:]]*:[[:space:]]*"\([a-z0-9-]*\)"[[:space:]]*}[[:space:]]*$/\1/p')"
   knowledge_id_ok "$imported" || return 1
   printf '%s\n' "$imported"
@@ -2519,7 +2658,8 @@ function Test-Port([int]$Port) {
 # cookie, and the one-time link that sets it is handed only to a caller holding
 # the daemon's secret. So this launcher uses a daemon it started (its port and
 # secret are kept in $StateFile, under your profile) or one you name with
-# BIOROUTERD_PORT and BIOROUTER_SERVER__SECRET_KEY, and no other.
+# BIOROUTERD_PORT and BIOROUTER_SERVER__SECRET_KEY. Windows has no shared
+# background-service discovery transport in this Biorouter build.
 $StateFile = Join-Path $LauncherHome "daemon"
 
 function New-Secret {
@@ -2672,10 +2812,11 @@ const SERVE_MJS_TEMPLATE: &str = r##"// Dev server for the exported Biorouter ap
 // daemon, including the agent WebSocket at /apps/<id>/agent, so the page and its
 // agent share an origin and no port is ever hard-coded. The app's dist/ and
 // authored files are safely installed on refresh and served by the daemon.
-import { createServer, request as httpRequest } from "node:http";
+import { Agent as HttpAgent, createServer, request as httpRequest } from "node:http";
+import { createConnection } from "node:net";
 import { spawn, spawnSync } from "node:child_process";
 import { readFile, writeFile, rename, mkdir, cp, rm, access } from "node:fs/promises";
-import { readdirSync, lstatSync, statSync, readFileSync, realpathSync, createReadStream, constants } from "node:fs";
+import { readdirSync, lstatSync, statSync, fstatSync, openSync, closeSync, readSync, readFileSync, realpathSync, createReadStream, constants } from "node:fs";
 import { randomBytes, createHash } from "node:crypto";
 import { join, dirname, isAbsolute, win32, posix } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -2742,10 +2883,10 @@ const STORE = join(CFG, "agent_drafter", APP_ID);
 const LAUNCHER_HOME = join(CFG, "app-launcher");
 // A daemon serves an app's page only to a browser holding that app's access
 // cookie, and the one-time link that sets it is handed only to a caller holding
-// the daemon's secret. So this server uses a daemon it (or run.sh) started, whose
-// port and secret are kept here readable by you alone, or one you name with
-// BIOROUTERD_PORT and BIOROUTER_SERVER__SECRET_KEY, and no other.
+// the daemon's secret. Prefer this profile's verified background service, then
+// a daemon started for these apps. Explicit daemon settings take precedence.
 const LAUNCHER_STATE = join(LAUNCHER_HOME, "daemon");
+let sharedDaemon;
 const APP_PREFIX = `/apps/${APP_ID}/`;
 const PAYLOAD_STATE = join(LAUNCHER_HOME, "payload", APP_ID, SOURCE_DIGEST);
 const exists = (p) => access(p, constants.F_OK).then(() => true, () => false);
@@ -3013,26 +3154,132 @@ function probe(port) {
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+function daemonTransport(port, connection) {
+  return connection && connection.socketPath && (connection.port === undefined || connection.port === port)
+    ? { socketPath: connection.socketPath, agent: connection.agent }
+    : { host: "127.0.0.1", port };
+}
+
+async function verifiedDaemonConnection(port, secret) {
+  if (!sharedDaemon || sharedDaemon.port !== port) return;
+  const connection = await profileDaemon(sharedDaemon.identity);
+  if (!connection || connection.port !== port || connection.secret !== secret) {
+    connection?.agent.destroy();
+    throw new Error("Biorouter's background service changed or closed; run the launcher again.");
+  }
+  return connection;
+}
+
 /** One request to the daemon on `port` carrying its secret; resolves to { status, body }. */
-function withSecret(port, secret, method, path) {
-  return new Promise((res) => {
+async function withSecret(port, secret, method, path, connection) {
+  const owned = connection === undefined;
+  if (owned) connection = await verifiedDaemonConnection(port, secret);
+  try { return await new Promise((res) => {
     const r = httpRequest(
-      { host: "127.0.0.1", port, path, method, timeout: 5000, headers: { "X-Secret-Key": secret } },
+      { ...daemonTransport(port, connection), path, method, timeout: 5000, headers: { "X-Secret-Key": secret } },
       (resp) => {
         let body = "";
         resp.setEncoding("utf8");
-        resp.on("data", (chunk) => { body += chunk; });
+        resp.on("data", (chunk) => {
+          body += chunk;
+          if (connection && connection.metadata && body.length > 16384) resp.destroy();
+        });
+        resp.on("error", () => res({ status: 0, body: "" }));
+        resp.on("close", () => { if (!resp.complete) res({ status: 0, body: "" }); });
         resp.on("end", () => res({ status: resp.statusCode, body }));
       }
     );
     r.on("error", () => res({ status: 0, body: "" }));
     r.on("timeout", () => { r.destroy(); res({ status: 0, body: "" }); });
     r.end();
-  });
+  }); } finally { if (owned) connection?.agent.destroy(); }
 }
 
 const secretWorks = async (port, secret) =>
   (await withSecret(port, secret, "GET", "/apps")).status === 200;
+
+function privateOwned(path, kind) {
+  const s = lstatSync(path);
+  const valid = kind === "directory" ? s.isDirectory() : kind === "socket" ? s.isSocket() : s.isFile();
+  if (!valid || s.uid !== process.getuid() || (s.mode & 0o7777) !== (kind === "directory" ? 0o700 : 0o600)) {
+    throw new Error("Invalid private daemon metadata");
+  }
+}
+
+function privateRecord(path) {
+  privateOwned(path, "file");
+  const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+  try {
+    const s = fstatSync(fd);
+    if (!s.isFile() || s.uid !== process.getuid() || (s.mode & 0o7777) !== 0o600 || s.nlink !== 1 || s.size > 16384) {
+      throw new Error("Invalid private daemon metadata");
+    }
+    const bytes = Buffer.alloc(16385);
+    const count = readSync(fd, bytes, 0, bytes.length, 0);
+    if (count > 16384) throw new Error("Invalid private daemon metadata");
+    return JSON.parse(bytes.subarray(0, count).toString("utf8"));
+  } finally { closeSync(fd); }
+}
+
+async function profileDaemon(expectedIdentity) {
+  // Shared daemon IPC has no Windows transport in this Biorouter build.
+  if (process.platform === "win32") return;
+  const root = process.env.BIOROUTER_PATH_ROOT;
+  const xdg = process.env.XDG_STATE_HOME;
+  const state = root && root.trim() ? join(root, "state")
+    : join(xdg && isAbsolute(xdg) ? xdg : join(homedir(), ".local", "state"), "biorouter");
+  const directory = join(state, "daemon");
+  const location = join(directory, "runtime.json");
+  try { lstatSync(location); } catch (error) { if (error.code === "ENOENT") return; }
+  let agent;
+  try {
+    privateOwned(directory, "directory");
+    const config = realpathSync.native(CFG);
+    const profile = privateRecord(join(config, "daemon-profile.json"));
+    const runtime = privateRecord(location);
+    const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+    if (!profile || profile.version !== 1 || typeof profile.profile_id !== "string" || !uuid.test(profile.profile_id) || profile.config_dir !== config) {
+      throw new Error("Daemon profile mismatch");
+    }
+    if (!runtime || runtime.version !== 1 || runtime.profile_id !== profile.profile_id || typeof runtime.instance_id !== "string" || !uuid.test(runtime.instance_id)
+      || !Number.isSafeInteger(runtime.pid) || runtime.pid < 1 || typeof runtime.user_action_installed !== "boolean"
+      || runtime.endpoint?.kind !== "unix" || runtime.endpoint.path !== join(directory, "daemon.sock") || !isAbsolute(runtime.endpoint.path)
+      || typeof runtime.api_secret !== "string" || runtime.api_secret.length < 32 || !/^[A-Za-z0-9._~+/=-]+$/.test(runtime.api_secret)) {
+      throw new Error("Daemon runtime mismatch");
+    }
+    const keys = ["version", "profile_id", "instance_id", "pid", "user_action_installed"];
+    if (expectedIdentity && keys.some(key => expectedIdentity[key] !== runtime[key])) {
+      throw new Error("Daemon instance changed");
+    }
+    privateOwned(runtime.endpoint.path, "socket");
+    agent = new HttpAgent({ keepAlive: true, maxSockets: 1 });
+    let connected = false;
+    agent.createConnection = () => {
+      if (connected) throw new Error("Biorouter's background service connection closed; run the launcher again.");
+      connected = true;
+      privateOwned(runtime.endpoint.path, "socket");
+      return createConnection({ path: runtime.endpoint.path });
+    };
+    const connection = { socketPath: runtime.endpoint.path, agent, metadata: true };
+    const identityReply = await withSecret(0, runtime.api_secret, "GET", "/daemon/identity", connection);
+    const identity = JSON.parse(identityReply.body);
+    if (identityReply.status !== 200 || !identity || Object.keys(identity).length !== keys.length || keys.some(key => identity[key] !== runtime[key])) {
+      throw new Error("Daemon identity mismatch");
+    }
+    const healthReply = await withSecret(0, runtime.api_secret, "GET", "/headless/health", connection);
+    const origin = new URL(JSON.parse(healthReply.body).api_base_url);
+    const port = Number(origin.port);
+    if (healthReply.status !== 200 || origin.protocol !== "http:" || !["127.0.0.1", "localhost", "0.0.0.0"].includes(origin.hostname)
+      || origin.username || origin.password || origin.pathname !== "/" || origin.search || origin.hash || !Number.isInteger(port) || port < 1 || port > 65535) {
+      throw new Error("Daemon has no local listener");
+    }
+    if (process.env.BIOROUTERD_PORT && Number(process.env.BIOROUTERD_PORT) !== port) { agent.destroy(); return; }
+    return { port, secret: runtime.api_secret, socketPath: runtime.endpoint.path, agent, identity };
+  } catch {
+    agent?.destroy();
+    if (!expectedIdentity) console.warn("This profile's background service could not be verified; using the standalone launcher.");
+  }
+}
 
 async function rememberDaemon(port, secret) {
   try {
@@ -3052,6 +3299,12 @@ async function ensureDaemon() {
   if (named && process.env.BIOROUTERD_PORT && (await secretWorks(preferred, named))) {
     console.log(`Using the Biorouter daemon on :${preferred}`);
     return { port: preferred, secret: named };
+  }
+  sharedDaemon = await profileDaemon();
+  if (sharedDaemon) {
+    sharedDaemon.agent.destroy();
+    console.log(`Using this profile's Biorouter background service on :${sharedDaemon.port}`);
+    return sharedDaemon;
   }
   try {
     const [port, secret] = (await readFile(LAUNCHER_STATE, "utf8")).trim().split(/\s+/);
@@ -3228,10 +3481,12 @@ async function importPayloadKnowledge(port, secret, kb) {
   const boundary = `biorouter-${randomBytes(16).toString("hex")}`;
   const header = Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="${kb.source}.brkb"\r\nContent-Type: application/octet-stream\r\n\r\n`);
   const footer = Buffer.from(`\r\n--${boundary}--\r\n`);
-  const response = await new Promise((resolve, reject) => {
+  const connection = await verifiedDaemonConnection(port, secret);
+  let response;
+  try { response = await new Promise((resolve, reject) => {
     const stream = createReadStream(kb.path);
     const request = httpRequest({
-      host: "127.0.0.1", port, path: "/knowledge/bases/import", method: "POST", timeout: 120000,
+      ...daemonTransport(port, connection), path: "/knowledge/bases/import", method: "POST", timeout: 120000,
       headers: { "X-Secret-Key": secret, "Content-Type": `multipart/form-data; boundary=${boundary}`, "Content-Length": header.length + size + footer.length },
     }, (reply) => {
       let body = "";
@@ -3249,7 +3504,7 @@ async function importPayloadKnowledge(port, secret, kb) {
     request.write(header);
     stream.pipe(request, { end: false });
     stream.on("end", () => request.end(footer));
-  });
+  }); } finally { connection?.agent.destroy(); }
   if (response.status !== 200) throw new Error(`daemon returned HTTP ${response.status}`);
   let allocated;
   try { allocated = JSON.parse(response.body).id; } catch { }
@@ -3460,8 +3715,8 @@ That's the whole thing. The launcher:
 1. installs the app into your local Biorouter store (`manifest.json` and all),
 2. installs any first-run payload this export carries (`payload/`: knowledge
    bases and skills, with your consent; `export.json` lists them),
-3. reuses the `biorouterd` it started last time, or starts one on the first
-   free port,
+3. reuses your profile's running Biorouter background service when available,
+   otherwise reuses its earlier daemon or starts one on the first free port,
 4. asks that daemon for a one-time link to the app, and
 5. opens the link in your web browser, and prints it in the terminal too.
 
@@ -3477,9 +3732,13 @@ put there.
 
 A daemon serves an app only to a browser that opened such a link, and hands one
 out only to a caller that knows the daemon's secret, so another account on the
-same computer cannot open your app. That is why the launcher starts a daemon of
-its own rather than using one that happens to be running: it keeps that
-daemon's port and secret, readable by you alone, in `app-launcher/daemon` in
+same computer cannot open your app. On macOS and Linux, the launcher verifies
+your profile's private discovery records and the running service's identity
+before using it. Closing the launcher never stops that shared service. The
+shell launchers use Python 3 for this optional discovery; without it, they use
+the standalone path. Windows uses the standalone path because this build has
+no shared-service discovery transport there. When starting its own daemon,
+the launcher keeps its port and secret, readable by you alone, in `app-launcher/daemon` in
 your Biorouter folder (`~/.config/biorouter` on macOS and Linux,
 `%APPDATA%\{windows_author}\{windows_app}\config` on Windows (or the older
 Biorouter folder in `%APPDATA%`, until Biorouter has moved it), or
@@ -3584,6 +3843,417 @@ mod tests {
     #[cfg(not(windows))]
     fn find_usable_bash(work_dir: &Path) -> Option<PathBuf> {
         find_command("bash", work_dir)
+    }
+
+    #[cfg(unix)]
+    struct LauncherFixture(std::process::Child);
+
+    #[cfg(unix)]
+    impl Drop for LauncherFixture {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn generated_launchers_reuse_verified_profile_without_owning_it() {
+        use std::os::unix::fs::PermissionsExt;
+        use std::process::{Command, Stdio};
+
+        let directory = tempfile::Builder::new()
+            .prefix("br-launch-")
+            .tempdir_in("/tmp")
+            .unwrap();
+        let Some(node) = find_command("node", directory.path()) else {
+            eprintln!("skipped: no node for shared launcher lifecycle test");
+            return;
+        };
+        let root = directory.path().join("profile");
+        let folder = directory.path().join("export");
+        std::fs::create_dir_all(&folder).unwrap();
+        let m = manifest(ArtifactKind::Static);
+        for (name, content) in launcher_files(&m, None) {
+            std::fs::write(folder.join(name), content).unwrap();
+        }
+        std::fs::write(folder.join("manifest.json"), exported_manifest_json(&m)).unwrap();
+        std::fs::write(folder.join("index.html"), "<html>exported copy</html>").unwrap();
+        std::fs::create_dir_all(folder.join("payload/knowledge")).unwrap();
+        std::fs::write(
+            folder.join("payload/knowledge/demo-kb.brkb"),
+            "test archive",
+        )
+        .unwrap();
+        std::fs::write(folder.join("export.json"), "{}").unwrap();
+        let fixture_script = directory.path().join("daemon.cjs");
+        std::fs::write(
+            &fixture_script,
+            r#"const http = require('node:http'), fs = require('node:fs'), path = require('node:path');
+const root = process.env.BIOROUTER_PATH_ROOT;
+const config = path.join(root, 'config'), directory = path.join(root, 'state/daemon');
+fs.mkdirSync(config, {recursive:true});fs.mkdirSync(directory, {recursive:true, mode:0o700});fs.chmodSync(directory, 0o700);
+const profile = 'aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaaa';
+const instance = 'bbbbbbbb-bbbb-4bbb-bbbb-bbbbbbbbbbbb';
+const secret = 'dd'.repeat(32), explicit = 'ee'.repeat(32);
+const socket = path.join(directory, 'daemon.sock');
+const identity = {version:1, profile_id:profile, instance_id:instance, pid:process.pid, user_action_installed:true};
+const controlPath = path.join(root, 'control.json');fs.writeFileSync(controlPath, '{}');
+let port;
+const handle = transport => (req, res) => {
+  const control = JSON.parse(fs.readFileSync(controlPath));
+  fs.appendFileSync(path.join(root, 'requests.jsonl'), JSON.stringify({transport, route:req.url, shared_secret:req.headers['x-secret-key']===secret})+'\n');
+  const json = value => {res.setHeader('content-type','application/json');res.end(JSON.stringify(value));};
+  if (transport==='http' && req.url==='/status') return res.end('ok');
+  if (transport==='http' && req.url.startsWith('/apps/demo/?t=') && !req.headers['x-secret-key']) return res.end(fs.readFileSync(path.join(config, 'agent_drafter/demo/index.html')));
+  if (req.headers['x-secret-key'] !== (transport==='unix' ? secret : explicit)) {res.writeHead(401);return res.end();}
+  if (req.url==='/daemon/identity') return json(control.badIdentity ? {...identity,pid:identity.pid+1} : identity);
+  if (req.url==='/headless/health') {
+    if (control.closeAfterHealth) {
+      fs.writeFileSync(controlPath, '{}');
+      res.setHeader('connection','close');
+      res.on('finish', () => {
+        if (control.changedDescriptor) {
+          const record = JSON.parse(fs.readFileSync(path.join(directory, 'runtime.json')));
+          record.instance_id = 'cccccccc-cccc-4ccc-cccc-cccccccccccc';
+          fs.writeFileSync(path.join(directory, 'runtime.json'), JSON.stringify(record));
+        }
+        if (control.replaceAfterHealth) {
+          unix.close(() => {
+            if (fs.existsSync(socket)) fs.unlinkSync(socket);
+            fs.writeFileSync(controlPath, JSON.stringify({badIdentity:true}));
+            unix = http.createServer(handle('unix'));
+            unix.listen(socket, () => {fs.chmodSync(socket,0o600);fs.writeFileSync(path.join(root,'lifecycle-ready'),'ready');});
+          });
+        } else fs.writeFileSync(path.join(root,'lifecycle-ready'),'ready');
+      });
+    }
+    return json({api_base_url:control.origin || `http://127.0.0.1:${port}`});
+  }
+  if (req.url==='/apps') return json([]);
+  if (req.method==='POST' && req.url==='/knowledge/bases/import') {
+    let body='';req.on('data',chunk=>body+=chunk);req.on('end',()=> {
+      if (!body.includes('filename="demo-kb.brkb"') || !body.includes('test archive')) {res.writeHead(400);return res.end();}
+      json({id:'demo-kb'});
+    });return;
+  }
+  if (req.method==='POST' && req.url==='/apps/demo/launch') return json({path:'/apps/demo/?t='+'ab'.repeat(32)});
+  res.writeHead(404);res.end();
+};
+const tcp = http.createServer(handle('http'));
+let unix = http.createServer(handle('unix'));
+tcp.listen(0, '127.0.0.1', () => {
+  port = tcp.address().port;
+  unix.listen(socket, () => {
+    fs.chmodSync(socket, 0o600);
+    fs.writeFileSync(path.join(config, 'daemon-profile.json'),JSON.stringify({version:1,profile_id:profile,config_dir:fs.realpathSync(config)}),{mode:0o600});
+    fs.writeFileSync(path.join(directory, 'runtime.json'),JSON.stringify({...identity,endpoint:{kind:'unix',path:socket},api_secret:secret}),{mode:0o600});
+    fs.writeFileSync(path.join(root, 'ready'),String(port));
+  });
+});
+setTimeout(()=>process.exit(0),120000).unref();
+"#,
+        )
+        .unwrap();
+        let mut fixture = LauncherFixture(
+            Command::new(&node)
+                .arg(&fixture_script)
+                .env("BIOROUTER_PATH_ROOT", &root)
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+                .unwrap(),
+        );
+        let ready = root.join("ready");
+        for _ in 0..100 {
+            if ready.exists() {
+                break;
+            }
+            assert!(fixture.0.try_wait().unwrap().is_none(), "fixture exited");
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        let port: u16 = std::fs::read_to_string(&ready)
+            .expect("shared fixture ready")
+            .parse()
+            .unwrap();
+        let runtime_path = root.join("state/daemon/runtime.json");
+        let original = std::fs::read_to_string(&runtime_path).unwrap();
+        let (definitions, _) = serve_mjs("demo", 5123, "")
+            .split_once("\nlet daemonPort;")
+            .map(|(prefix, suffix)| (prefix.to_string(), suffix.to_string()))
+            .unwrap();
+        let probe = folder.join("probe.mjs");
+        std::fs::write(
+            &probe,
+            format!(
+                "{definitions}\ndaemonPaths = () => [];\ntry {{ await installApp(); const daemon = await ensureDaemon(); if(process.env.LAUNCHER_TEST_LIFECYCLE==='1') {{const marker=join(process.env.BIOROUTER_PATH_ROOT,'lifecycle-ready');for(let i=0;!payloadKind(marker)?.isFile()&&i<100;i++)await sleep(10);if(!payloadKind(marker)?.isFile())throw Error('lifecycle fixture not ready');}} await installPayload(daemon.port,daemon.secret); const launch = await launchPath(daemon.port,daemon.secret); console.log('SELECTED:'+daemon.port+':'+(sharedDaemon?'socket':'http')); if(sharedDaemon) {{ const page = await new Promise((resolve,reject)=>{{ const request=httpRequest({{host:'127.0.0.1',port:daemon.port,path:launch}},response=>{{let body='';response.on('data',chunk=>body+=chunk);response.on('end',()=>resolve(body));}});request.on('error',reject);request.end();}});if(!page.includes('exported copy'))throw Error('not exported app'); }} }} catch(error) {{console.error(error.message);process.exitCode=1;}} finally {{sharedDaemon?.agent.destroy();}}\n"
+            ),
+        )
+        .unwrap();
+        let bash = find_usable_bash(&folder).unwrap();
+        let shell_probe = folder.join("probe.sh");
+        std::fs::write(
+            &shell_probe,
+            "set -euo pipefail\n. ./biorouter-launch.sh\nfind_biorouterd() { echo standalone-fallback >&2; return 1; }\ninstall_app\nstart_daemon\nif [ \"${LAUNCHER_TEST_LIFECYCLE:-}\" = 1 ]; then for i in {1..100}; do [ -f \"$BIOROUTER_PATH_ROOT/lifecycle-ready\" ] && break; sleep 0.01; done; [ -f \"$BIOROUTER_PATH_ROOT/lifecycle-ready\" ]; fi\ninstall_payload\nlaunch_url\nprintf 'SELECTED:%s:%s\\n' \"$PORT\" \"${SHARED_SOCKET:+socket}\"\n",
+        )
+        .unwrap();
+        let python = find_command("python3", &folder);
+        let run = |backend: &str, env: &[(&str, String)]| {
+            let mut command = Command::new(if backend == "node" { &node } else { &bash });
+            command
+                .arg(if backend == "node" {
+                    &probe
+                } else {
+                    &shell_probe
+                })
+                .current_dir(&folder)
+                .env("BIOROUTER_PATH_ROOT", &root)
+                .env("BIOROUTER_EXPORT_YES", "1")
+                .env_remove("BIOROUTERD_PORT")
+                .env_remove("BIOROUTER_SERVER__SECRET_KEY")
+                .env_remove("BIOROUTERD_BIN")
+                .stdin(Stdio::null());
+            for (key, value) in env {
+                command.env(key, value);
+            }
+            let out = command.output().unwrap();
+            let printed = format!(
+                "{}{}",
+                String::from_utf8_lossy(&out.stdout),
+                String::from_utf8_lossy(&out.stderr)
+            );
+            assert!(!printed.contains(&"dd".repeat(32)), "shared secret printed");
+            assert!(
+                !printed.contains(&"ee".repeat(32)),
+                "explicit secret printed"
+            );
+            (out.status.success(), printed)
+        };
+        let import_count = || {
+            std::fs::read_to_string(root.join("requests.jsonl"))
+                .unwrap_or_default()
+                .lines()
+                .filter(|line| {
+                    serde_json::from_str::<serde_json::Value>(line).unwrap()["route"]
+                        == "/knowledge/bases/import"
+                })
+                .count()
+        };
+        let backends: Vec<&str> = if python.is_some() {
+            vec!["node", "bash"]
+        } else {
+            vec!["node"]
+        };
+        for backend in &backends {
+            let _ = std::fs::remove_dir_all(root.join("config/app-launcher/payload"));
+            let before_imports = import_count();
+            let (ok, printed) = run(backend, &[]);
+            assert!(ok, "{backend}: {printed}");
+            assert_eq!(
+                import_count() - before_imports,
+                1,
+                "{backend} duplicated the shared payload import"
+            );
+            assert!(
+                printed.contains(&format!("SELECTED:{port}:socket")),
+                "{printed}"
+            );
+            assert!(
+                printed.contains("Payload installed."),
+                "{backend} did not import full payload: {printed}"
+            );
+            assert!(
+                fixture.0.try_wait().unwrap().is_none(),
+                "launcher killed reused daemon"
+            );
+        }
+        for case in [
+            "wrong-profile",
+            "wrong-identity",
+            "unsafe-record",
+            "unsafe-socket",
+            "remote-origin",
+            "named-other-port",
+            "stale-record",
+            "oversized-record",
+            "wrong-socket",
+        ] {
+            let mut descriptor: serde_json::Value = serde_json::from_str(&original).unwrap();
+            let mut control = serde_json::json!({});
+            let mut env = Vec::new();
+            match case {
+                "wrong-profile" => {
+                    descriptor["profile_id"] = "cccccccc-cccc-4ccc-cccc-cccccccccccc".into()
+                }
+                "wrong-identity" => control["badIdentity"] = true.into(),
+                "unsafe-record" => {
+                    std::fs::set_permissions(&runtime_path, std::fs::Permissions::from_mode(0o644))
+                        .unwrap()
+                }
+                "unsafe-socket" => std::fs::set_permissions(
+                    root.join("state/daemon/daemon.sock"),
+                    std::fs::Permissions::from_mode(0o666),
+                )
+                .unwrap(),
+                "remote-origin" => control["origin"] = "http://example.test:1234".into(),
+                "named-other-port" => env.push((
+                    "BIOROUTERD_PORT",
+                    (if port == 65535 { port - 1 } else { port + 1 }).to_string(),
+                )),
+                "stale-record" => std::fs::remove_file(&runtime_path).unwrap(),
+                "oversized-record" => descriptor["padding"] = "x".repeat(16385).into(),
+                "wrong-socket" => {
+                    descriptor["endpoint"]["path"] = root
+                        .join("another.sock")
+                        .to_string_lossy()
+                        .into_owned()
+                        .into()
+                }
+                _ => unreachable!(),
+            }
+            if case != "stale-record" {
+                std::fs::write(&runtime_path, serde_json::to_vec(&descriptor).unwrap()).unwrap();
+            }
+            std::fs::write(
+                root.join("control.json"),
+                serde_json::to_vec(&control).unwrap(),
+            )
+            .unwrap();
+            for backend in &backends {
+                let (ok, printed) = run(backend, &env);
+                assert!(!ok, "{backend} reused {case}: {printed}");
+                assert!(
+                    printed.contains(if *backend == "bash" {
+                        "standalone-fallback"
+                    } else {
+                        "Could not find or start biorouterd"
+                    }),
+                    "{backend} did not reach standalone fallback for {case}: {printed}"
+                );
+                assert!(
+                    fixture.0.try_wait().unwrap().is_none(),
+                    "refusal killed shared daemon"
+                );
+            }
+            std::fs::write(&runtime_path, &original).unwrap();
+            std::fs::set_permissions(&runtime_path, std::fs::Permissions::from_mode(0o600))
+                .unwrap();
+            std::fs::set_permissions(
+                root.join("state/daemon/daemon.sock"),
+                std::fs::Permissions::from_mode(0o600),
+            )
+            .unwrap();
+            std::fs::write(root.join("control.json"), "{}").unwrap();
+        }
+        for case in ["idle-close", "replacement-socket", "changed-descriptor"] {
+            for backend in &backends {
+                let before = std::fs::read_to_string(root.join("requests.jsonl")).unwrap();
+                let _ = std::fs::remove_file(root.join("lifecycle-ready"));
+                let _ = std::fs::remove_dir_all(root.join("config/app-launcher/payload"));
+                std::fs::write(
+                    root.join("control.json"),
+                    serde_json::to_vec(&serde_json::json!({
+                        "closeAfterHealth": true,
+                        "replaceAfterHealth": case == "replacement-socket",
+                        "changedDescriptor": case == "changed-descriptor",
+                    }))
+                    .unwrap(),
+                )
+                .unwrap();
+                let before_imports = import_count();
+                let (ok, printed) = run(backend, &[("LAUNCHER_TEST_LIFECYCLE", "1".to_string())]);
+                if case == "idle-close" {
+                    assert!(ok, "idle-close did not reverify and recover: {printed}");
+                    assert!(printed.contains("Payload installed."), "{printed}");
+                    assert_eq!(
+                        import_count() - before_imports,
+                        1,
+                        "{backend} duplicated the idle-close import"
+                    );
+                } else {
+                    assert!(!ok, "stale connection followed {case}: {printed}");
+                    assert!(
+                        printed.contains("run the launcher again"),
+                        "no recovery advice: {printed}"
+                    );
+                    let after = std::fs::read_to_string(root.join("requests.jsonl")).unwrap();
+                    let added = after
+                        .strip_prefix(&before)
+                        .expect("requests retain their prefix");
+                    let requests: Vec<serde_json::Value> = added
+                        .lines()
+                        .map(|line| serde_json::from_str(line).unwrap())
+                        .collect();
+                    assert!(
+                        requests
+                            .iter()
+                            .all(|request| request["route"] == "/daemon/identity"
+                                || request["route"] == "/headless/health"),
+                        "an app request reached the replacement service: {added}"
+                    );
+                    if case == "changed-descriptor" {
+                        assert_eq!(
+                            requests.len(),
+                            2,
+                            "secret sent after descriptor changed: {added}"
+                        );
+                    }
+                }
+                assert!(
+                    fixture.0.try_wait().unwrap().is_none(),
+                    "connection change killed shared daemon"
+                );
+                std::fs::write(root.join("control.json"), "{}").unwrap();
+                std::fs::write(&runtime_path, &original).unwrap();
+            }
+        }
+        for backend in &backends {
+            let _ = std::fs::remove_dir_all(root.join("config/app-launcher/payload"));
+            let before_imports = import_count();
+            let (ok, printed) = run(
+                backend,
+                &[
+                    ("BIOROUTERD_PORT", port.to_string()),
+                    ("BIOROUTER_SERVER__SECRET_KEY", "ee".repeat(32)),
+                ],
+            );
+            assert!(ok, "explicit daemon configuration: {backend}: {printed}");
+            assert_eq!(
+                import_count() - before_imports,
+                1,
+                "{backend} duplicated the explicit HTTP import"
+            );
+            assert!(
+                !printed.contains("background service"),
+                "explicit daemon lost precedence: {printed}"
+            );
+            assert!(
+                printed.contains("Payload installed."),
+                "explicit HTTP payload import failed: {printed}"
+            );
+        }
+        let requests = std::fs::read_to_string(root.join("requests.jsonl")).unwrap();
+        let mut imports = 0;
+        for line in requests.lines() {
+            let request: serde_json::Value = serde_json::from_str(line).unwrap();
+            if request["route"] == "/knowledge/bases/import" {
+                imports += 1;
+            }
+            assert!(
+                request["transport"] != "http" || request["shared_secret"] != true,
+                "shared secret left private socket"
+            );
+        }
+        assert_eq!(
+            imports,
+            backends.len() * 3,
+            "one full payload import per backend for shared, recovered and explicit transports"
+        );
+        assert!(
+            fixture.0.try_wait().unwrap().is_none(),
+            "launcher exit killed shared daemon"
+        );
     }
 
     #[cfg(windows)]

@@ -51,14 +51,14 @@ class ToastService {
     }
   }
 
-  error(props: ToastErrorProps): void {
-    if (!this.silent) {
-      toastError(props);
-    }
+  /** Answers the toast's id, so a caller can take it down again; undefined while silent. */
+  error(props: ToastErrorProps): string | number | undefined {
+    const id = this.silent ? undefined : toastError(props);
 
     if (this.shouldThrow) {
       throw new Error(props.msg);
     }
+    return id;
   }
 
   loading({ title, msg }: { title: string; msg: string }): string | number | undefined {
@@ -86,6 +86,16 @@ class ToastService {
 
   dismiss(toastId?: string | number): void {
     if (toastId) toast.dismiss(toastId);
+  }
+
+  /**
+   * Take down the grouped extension report if it is reporting a FAILURE. Progress is left alone,
+   * and so is a clean run, which expires on its own. See `withdrawExtensionFailureToasts`.
+   */
+  dismissExtensionFailureReport(): void {
+    if (this.extensionToastHasErrors && toast.isActive(EXTENSION_TOAST_ID)) {
+      toast.dismiss(EXTENSION_TOAST_ID);
+    }
   }
 
   /**

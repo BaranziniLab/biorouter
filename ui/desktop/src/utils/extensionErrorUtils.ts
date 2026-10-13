@@ -6,6 +6,7 @@ import { ExtensionLoadResult } from '../api/types.gen';
 import { toastService, ExtensionLoadingStatus } from '../toasts';
 import { isCapabilityExtension } from '../components/settings/capabilities/capabilities';
 import {
+  isExtensionLoadFailureNoticeShown,
   markExtensionLoadFailuresAnnounced,
   recordExtensionLoadResults,
 } from './extensionLoadFailures';
@@ -16,7 +17,7 @@ export const MAX_ERROR_MESSAGE_LENGTH = 70;
 //
 // One lived at this spot, reading `bundled-extensions.json` for entries typed
 // `builtin` — seven of them — while the composer's extension menu asked the
-// capability catalog, which has twelve. Two answers to one question, five
+// capability catalog, which had twelve then. Two answers to one question, five
 // extensions apart, on two surfaces the user reads against each other. The
 // catalog (`isCapabilityExtension`) is the only definition now, and it lives
 // with the list the menu renders, so a capability added there cannot silently
@@ -57,6 +58,9 @@ let focusedChatSessionId: string | null = null;
 /** True while the extension toast currently on screen is reporting a failure. */
 let extensionToastIsFailure = false;
 
+/** Single-failure reports from every chat, so the standing notice can take them all down. */
+const singleFailureToastIds = new Set<string | number>();
+
 /**
  * Called by the chat shell as the active group changes. Readiness is only news
  * for the chat you are reading; see `showExtensionLoadResults`.
@@ -69,6 +73,24 @@ export function setFocusedChatSession(sessionId: string | null): void {
 export function resetExtensionToastState(): void {
   focusedChatSessionId = null;
   extensionToastIsFailure = false;
+  singleFailureToastIds.clear();
+}
+
+/**
+ * Take down the toasts that reported an extension load failure. The Extensions page's standing
+ * notice calls it whenever it shows failures: from then on the page carries that news, with the
+ * error and its actions, and the corner's report of it would only stand over the page's controls
+ * (`isExtensionLoadFailureNoticeShown` in `extensionLoadFailures.ts` has the case). A progress or
+ * clean-run report is not a failure report, and is left alone.
+ */
+export function withdrawExtensionFailureToasts(): void {
+  for (const id of singleFailureToastIds) toastService.dismiss(id);
+  singleFailureToastIds.clear();
+  if (extensionToastIsFailure) {
+    toastService.dismissExtensionFailureReport();
+    // Nothing on screen reports a failure now, so rule 2 has nothing left to protect.
+    extensionToastIsFailure = false;
+  }
 }
 
 /**
@@ -112,8 +134,8 @@ export function showExtensionLoadResults(
   //
   // This filter used to ask `isBuiltinExtension`, whose set is the SEVEN entries
   // of `bundled-extensions.json` with `type: "builtin"`. The composer's
-  // extension menu asks `isCapabilityExtension`, whose set is the TWELVE entries
-  // of the capability catalog. The five in the gap — code_execution,
+  // extension menu asks `isCapabilityExtension`, whose set was then the TWELVE
+  // entries of the capability catalog (fourteen since Crew joined it). The five in the gap — code_execution,
   // extensionmanager, skills, todo, chatrecall — ship with Biorouter, are hidden
   // by the chip, and were counted here as if the user had installed them.
   //
@@ -155,6 +177,14 @@ export function showExtensionLoadResults(
   // overwritten by a later clean run. It is only excluded from the *ratio*.
   const anyFailure = failedExtensions.length > 0 || shippedFailures.length > 0;
 
+  if (anyFailure && isExtensionLoadFailureNoticeShown()) {
+    // The Extensions page is open, and the record written above has already put these failures
+    // in its notice, with the error and something to do about it. That is their announcement; a
+    // toast saying the same thing would stand over the page's own controls.
+    markExtensionLoadFailuresAnnounced(unannounced.map((entry) => entry.name));
+    return;
+  }
+
   if (anyFailure && unannounced.length === 0) {
     // Every failure here has already had its one announcement. Repeating it is
     // the recurrence this rule exists to stop; the Extensions page still shows
@@ -185,12 +215,13 @@ export function showExtensionLoadResults(
     const recoverHints = createExtensionRecoverHints(errorMsg);
     const displayMsg = formatExtensionErrorMessage(errorMsg, 'Failed to load extension');
 
-    toastService.error({
+    const id = toastService.error({
       title: failed.name,
       msg: displayMsg,
       traceback: errorMsg,
       recoverHints,
     });
+    if (id !== undefined) singleFailureToastIds.add(id);
     // Only now — a failure that was never rendered has not been announced, and
     // must keep its one announcement for the load that does render it.
     markExtensionLoadFailuresAnnounced([failed.name]);

@@ -404,6 +404,43 @@ pub fn count_user_skills() -> usize {
         .count()
 }
 
+/// Skills Biorouter itself renamed: (old name, current name). A workflow saved
+/// before the rename still names the old one.
+///
+/// Diagnostics 20261006_2: a Daily Meditation copied in v1.85.2 named
+/// `soul-writer`, which v1.85.3 renamed to `update-soul` (and startup deletes
+/// the old folder), so once workflow skills became required every run failed
+/// with "requires skill 'soul-writer'", a skill nothing can install. A stock
+/// copy is now upgraded at startup (`knowledge::soul`); this covers a copy the
+/// person edited, which startup leaves alone.
+const RENAMED_SKILLS: &[(&str, &str)] = &[(
+    crate::knowledge::soul::SOUL_SKILL_DIR_LEGACY,
+    crate::knowledge::soul::SOUL_SKILL_DIR,
+)];
+
+/// `name`, or the current name of a skill Biorouter renamed when the old name
+/// is neither a skill nor a bundle here. An installed skill that happens to
+/// carry an old name keeps it.
+fn current_skill_name(name: &str, view: &skill_catalog::CatalogView) -> String {
+    let installed = view.skills.iter().any(|skill| skill.name == name)
+        || view.bundles.iter().any(|bundle| bundle.name == name);
+    if !installed {
+        if let Some((_, current)) = RENAMED_SKILLS.iter().find(|(old, _)| *old == name) {
+            return (*current).to_string();
+        }
+    }
+    name.to_string()
+}
+
+/// The refusal for a workflow skill this machine does not have, saying what
+/// the person can do about it.
+fn missing_workflow_skill(name: &str) -> anyhow::Error {
+    anyhow::anyhow!(
+        "workflow requires skill '{name}', but it is not installed. Add the skill under Skills, \
+         or remove '{name}' from the workflow's skills."
+    )
+}
+
 /// Resolve workflow-declared skills to the exact installed bodies visible to
 /// one session. This is intentionally stricter than the model-facing search:
 /// a workflow names required procedure, so missing or disabled instructions
@@ -436,6 +473,7 @@ pub async fn workflow_skill_instructions(
     let expanded: Vec<String> = {
         let mut out: Vec<String> = Vec::new();
         for name in requested {
+            let name = &current_skill_name(name, &view);
             match view.bundles.iter().find(|bundle| bundle.name == *name) {
                 Some(bundle) => {
                     if bundle.skills.is_empty() {
@@ -460,17 +498,15 @@ pub async fn workflow_skill_instructions(
             .skills
             .iter()
             .find(|entry| entry.name == *name)
-            .ok_or_else(|| {
-                anyhow::anyhow!("workflow requires skill '{name}', but it is not installed")
-            })?;
+            .ok_or_else(|| missing_workflow_skill(name))?;
         if !visible.state.effective {
             anyhow::bail!(
                 "workflow requires skill '{name}', but it is disabled for this conversation"
             );
         }
-        let skill = skills.get(name).ok_or_else(|| {
-            anyhow::anyhow!("workflow requires skill '{name}', but it is not installed")
-        })?;
+        let skill = skills
+            .get(name)
+            .ok_or_else(|| missing_workflow_skill(name))?;
 
         if !rendered.is_empty() {
             rendered.push_str("\n\n");
@@ -6296,6 +6332,70 @@ Working dir biorouter content
                 .await
                 .unwrap_err();
         assert!(error.to_string().contains("disabled"), "{error:#}");
+
+        skill_catalog::invalidate();
+    }
+
+    /// Diagnostics 20261006_2: a Daily Meditation saved in v1.85.2 names
+    /// `soul-writer`, the Soul skill's name before v1.85.3, and startup deletes
+    /// that folder. A stock copy is upgraded at startup; a copy the person
+    /// edited is not, and failed every night with a skill nothing can install.
+    /// The old name now loads the skill it became, and a skill that really is
+    /// missing is refused with what to do about it.
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_workflow_naming_the_renamed_soul_skill_loads_update_soul() {
+        if !crate::test_sandbox::in_a_process_of_its_own() {
+            return;
+        }
+        let temp = TempDir::new().unwrap();
+        let _env = crate::test_sandbox::relocate_path_root(temp.path().to_str().unwrap());
+        crate::knowledge::soul::ensure_soul_skill(&Paths::config_dir()).unwrap();
+        skill_catalog::invalidate();
+
+        let manager = SessionManager::new(temp.path().join("sessions"));
+        let session = manager
+            .create_session(
+                temp.path().to_path_buf(),
+                "Scheduled job: daily-meditation".into(),
+                crate::session::SessionType::Scheduled,
+            )
+            .await
+            .unwrap();
+
+        let rendered = workflow_skill_instructions(
+            &manager,
+            &session.id,
+            &[crate::knowledge::soul::SOUL_SKILL_DIR_LEGACY.to_string()],
+        )
+        .await
+        .expect("the Soul skill's old name must load the renamed skill");
+        assert!(
+            rendered.contains("# Required workflow skill: update-soul"),
+            "{rendered}"
+        );
+        assert!(rendered.contains("# Writing the Soul"), "{rendered}");
+
+        // Naming both inlines the skill once.
+        let both = workflow_skill_instructions(
+            &manager,
+            &session.id,
+            &["soul-writer".to_string(), "update-soul".to_string()],
+        )
+        .await
+        .unwrap();
+        assert_eq!(both.matches("# Writing the Soul").count(), 1, "{both}");
+
+        let error =
+            workflow_skill_instructions(&manager, &session.id, &["no-such-skill".to_string()])
+                .await
+                .unwrap_err()
+                .to_string();
+        assert!(
+            error.contains("requires skill 'no-such-skill', but it is not installed")
+                && error.contains("Add the skill under Skills")
+                && error.contains("remove 'no-such-skill' from the workflow's skills"),
+            "{error}"
+        );
 
         skill_catalog::invalidate();
     }

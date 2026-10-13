@@ -1,0 +1,67 @@
+version: 1.0.0
+title: Meditation
+description: >-
+  Reflect on the user's recent BioRouter interactions and digest them into the
+  built-in "Soul" knowledge base — capturing how they approach scientific
+  questions, the tools and commands they use, the tool responses they act on,
+  and durable personal details (name, occupation, preferences). Runs daily at
+  3:00 AM by default as "Daily Meditation".
+instructions: |-
+  You are maintaining the user's personal "Soul" knowledge base (id: soul).
+  Follow the `soul-writer` skill exactly.
+
+  Goal: turn the user's recent interaction history into durable, high-signal,
+  personalised knowledge about THE USER — not a summary of every chat.
+
+  Procedure:
+  1. Find the user's recent REAL chat sessions with the `chatrecall` tool
+     (search mode, with a recent date range and broad queries). Collect their
+     session ids. Skip scheduled-job sessions (names starting with
+     "Scheduled job:") — especially this very session.
+  2. Call `platform__ingest_conversation` with EXPLICIT `session_ids` for the
+     most relevant recent session(s), targeting the `soul` knowledge base.
+     Never omit `session_ids`: omitting it defaults to the current scheduled
+     session, which contains nothing about the user. Prefer sessions since
+     the last Meditation. If chatrecall surfaces no real user sessions, stop
+     and make no changes.
+  3. Prioritise capturing:
+       - the way the user approaches different scientific questions,
+       - the tools and extensions they use and how they call them,
+       - the commands they run and the responses they rely on,
+       - personal information they reveal: name, role/occupation, affiliations,
+         stated preferences and working style.
+  4. Explicitly DISCARD low-value noise: greetings, chit-chat, one-off
+     irrelevant details, and anything that would not help a future assistant
+     serve this user better.
+  5. Keep the Soul coherent: link related entities/concepts with [[wiki-links]],
+     avoid duplicating facts already present, and prefer updating an existing
+     page over creating a near-duplicate.
+
+  If there is nothing new worth recording, say so and make no changes.
+extensions:
+- type: platform
+  name: skills
+  description: Load and use skills from relevant directories
+  bundled: true
+  available_tools: []
+- type: platform
+  name: todo
+  description: Enable a todo list for biorouter so it can keep track of what it is doing
+  bundled: true
+  available_tools: []
+- type: platform
+  name: chatrecall
+  description: Search past conversations and load session summaries for contextual memory
+  bundled: true
+  available_tools: []
+knowledge_bases:
+  default: soul
+  visible:
+  - soul
+skills:
+- soul-writer
+activities:
+- Update my Soul from recent interactions
+- Learn my preferences and working style
+- Record the tools and commands I use
+parameters: []

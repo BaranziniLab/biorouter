@@ -21,6 +21,7 @@ pub mod declare;
 pub mod evidence;
 pub mod export;
 pub mod manifest;
+mod page_check;
 pub mod render;
 pub mod resolved;
 pub mod store;
@@ -1463,6 +1464,7 @@ fn build_inputs_fingerprint(dir: &Path, manifest: &Manifest) -> u64 {
         .hash(&mut h);
     manifest.built_at.hash(&mut h);
     manifest.sdk_hash.hash(&mut h);
+    page_check::inputs_fingerprint(dir, &manifest.entry).hash(&mut h);
     bundle::sdk_fingerprint().hash(&mut h);
     bundle::esbuild_available().hash(&mut h);
     h.finish()
@@ -1490,6 +1492,36 @@ fn build_and_stamp_locked(
     id: &str,
     dir: &Path,
 ) -> std::io::Result<bundle::BuildReport> {
+    let manifest = store.load_manifest(id)?;
+    let findings = page_check::findings(dir, &manifest.entry, true);
+    if !findings.is_empty() {
+        return Ok(bundle::BuildReport::not_built(
+            "none",
+            format!(
+                "Browser-free page check failed:\n{}",
+                bundle::format_lint(&findings)
+            ),
+        ));
+    }
+    if manifest.kind == ArtifactKind::Static && !dir.join("src/main.ts").is_file() {
+        let findings = page_check::findings(dir, &manifest.entry, false);
+        return Ok(if findings.is_empty() {
+            bundle::BuildReport {
+                ok: true,
+                used: "none".into(),
+                log: page_check::PASSED.into(),
+                stamp: None,
+            }
+        } else {
+            bundle::BuildReport::not_built(
+                "none",
+                format!(
+                    "Browser-free page check failed:\n{}",
+                    bundle::format_lint(&findings)
+                ),
+            )
+        });
+    }
     // Keep a vendored SDK that a NEWER Biorouter put there: its bundle's banner
     // names that version and the very SDK the app still vendors. Refreshing it
     // would rebuild the app down to this binary's older runtime. The version
@@ -1511,6 +1543,20 @@ fn build_and_stamp_locked(
             keep_sdk_from: keep_sdk_from.clone(),
         },
     )?;
+    if report.ok {
+        let findings = page_check::findings(dir, &manifest.entry, false);
+        if findings.is_empty() {
+            report.log = format!("{}\n{}", report.log, page_check::PASSED);
+        } else {
+            report.ok = false;
+            report.stamp = None;
+            report.log = format!(
+                "Browser-free page check failed:\n{}\n{}",
+                bundle::format_lint(&findings),
+                report.log
+            );
+        }
+    }
     if let Some(kept) = keep_sdk_from {
         report.log = format!(
             "Kept src/sdk.ts: it is the App SDK of Biorouter {kept}, which is newer than this one ({}).\n{}",
@@ -1546,6 +1592,8 @@ pub fn rebuild_and_stamp(store: &ArtifactStore, id: &str) -> std::io::Result<bun
 /// What [`ensure_bundle_fresh`] found, and did.
 #[derive(Debug, Clone)]
 pub struct BundleCheck {
+    /// A proven page defect, independent of advisory/source lint findings.
+    pub quality_error: Option<String>,
     /// Why the bundle was stale, `None` when it was fresh.
     pub stale_because: Option<&'static str>,
     /// The build that ran — or the remembered result of an identical earlier
@@ -1564,6 +1612,9 @@ impl BundleCheck {
     /// The failed build behind a missing bundle, when that is the situation:
     /// the app needs a bundle, has none, and the build said why.
     pub fn missing_bundle_log(&self) -> Option<String> {
+        if let Some(error) = &self.quality_error {
+            return Some(error.clone());
+        }
         if !self.needs_bundle || self.has_bundle {
             return None;
         }
@@ -1609,7 +1660,15 @@ pub fn ensure_bundle_fresh(store: &ArtifactStore, id: &str) -> std::io::Result<B
                 }
             }
         };
+        let findings = page_check::findings(&dir, &manifest.entry, false);
+        let quality_error = (!findings.is_empty()).then(|| {
+            format!(
+                "Browser-free page check failed:\n{}",
+                bundle::format_lint(&findings)
+            )
+        });
         Ok(BundleCheck {
+            quality_error,
             stale_because,
             build,
             remembered,
@@ -2608,6 +2667,18 @@ impl AgentDrafterServer {
         if p.check_only.unwrap_or(false) {
             return self.lint_app(Parameters(AppIdParams { id: p.id })).await;
         }
+        let app_dir = store.artifact_dir(&p.id).map_err(internal)?;
+        let lint = bundle::lint_app(&app_dir);
+        if lint.iter().any(|f| f.level == bundle::LintLevel::Error) {
+            return Err(err(
+                ErrorCode::INTERNAL_ERROR,
+                format!(
+                    "harness ERRORs block build for '{}':\n{}",
+                    p.id,
+                    bundle::format_lint(&lint)
+                ),
+            ));
+        }
         let store2 = store.clone();
         let id2 = p.id.clone();
         let report = tokio::task::spawn_blocking(move || rebuild_and_stamp(&store2, &id2))
@@ -2632,14 +2703,17 @@ impl AgentDrafterServer {
             } else {
                 ""
             };
+            let outcome = if report.used == "none" {
+                format!("Checked '{}' (no TypeScript bundle needed).", p.id)
+            } else {
+                format!("Built '{}' with {} → dist/app.js.", p.id, report.used)
+            };
             // A fresh bundle is a new visible state: show the rebuilt app, don't
             // just tell the user it compiled.
             Ok(CallToolResult::success(vec![
                 self.card_content(&manifest)?,
                 Content::text(format!(
-                    "Built '{}' with {} → dist/app.js.{fallback_warning}\n{}\n\n{}",
-                    p.id,
-                    report.used,
+                    "{outcome}{fallback_warning}\n{}\n\n{}",
                     bundle::format_lint(&lint),
                     report.log
                 ))
@@ -2701,6 +2775,9 @@ impl AgentDrafterServer {
             .await
             .map_err(internal)?
             .map_err(internal)?;
+        if let Some(error) = check.quality_error.as_ref() {
+            return Err(err(ErrorCode::INTERNAL_ERROR, error.clone()));
+        }
         // A failed rebuild blocks the launch only when there is nothing to
         // serve. With an earlier bundle on disk the daemon serves that one, as
         // `serve_index` does, so the address works and the agent is told that
@@ -2760,7 +2837,7 @@ impl AgentDrafterServer {
         let mut content = vec![Content::resource_link(link).with_audience(vec![Role::User])];
         content.push(
             Content::text(format!(
-                "App '{}' is ready at {}{build_warning}\n(A browser can open this address only through a one-time launch link: the user opens the app from its preview in this chat or with \"Launch in browser\" in Applications. Pasted on its own, the address answers \"Open this app from Biorouter\". In a terminal, run `biorouter apps open {}`.)",
+                "App '{}' can be opened at {}{build_warning}\nBrowser-free page check passed; runtime behavior was not verified.\n(A browser can open this address only through a one-time launch link: the user opens the app from its preview in this chat or with \"Launch in browser\" in Applications. Pasted on its own, the address answers \"Open this app from Biorouter\". In a terminal, run `biorouter apps open {}`.)",
                 manifest.id, browser_url, manifest.id
             ))
             .with_audience(vec![Role::Assistant]),
@@ -4290,7 +4367,7 @@ run.addEventListener("click", async () => {
     }
 
     #[tokio::test]
-    async fn harness_errors_block_launch_and_export() {
+    async fn harness_errors_block_build_launch_and_export() {
         let (_d, s) = server();
         let mut p = create("Broken Harness", None);
         p.html = Some(
@@ -4315,8 +4392,8 @@ br.run("hello", "#missing");
                 check_only: None,
             }))
             .await
-            .unwrap();
-        let build_text = text_of(&build);
+            .unwrap_err();
+        let build_text = build.message;
         assert!(build_text.contains("ERROR"));
         assert!(build_text.contains("#missing"));
 
@@ -4404,6 +4481,7 @@ br.run("hello", "#missing");
             .await
             .unwrap();
         assert!(text_of(&res).contains("dist/app.js"));
+        assert!(text_of(&res).contains(page_check::PASSED));
         assert!(s.store().file_exists("launchy", "dist/app.js"));
         assert!(s
             .store()
@@ -4419,6 +4497,136 @@ br.run("hello", "#missing");
             .await
             .unwrap();
         assert!(text_of(&res).contains("/apps/launchy/"));
+        assert!(text_of(&res).contains("runtime behavior was not verified"));
+    }
+
+    #[tokio::test]
+    async fn browser_free_checks_block_broken_static_pages_without_a_bundler() {
+        let (_d, s) = server();
+        let mut p = create("Broken static", Some("static"));
+        p.html = Some("<p>Page</p><script>const value = ;</script>".into());
+        s.create_app_inner(p, None, &KbCaller::restricted())
+            .await
+            .unwrap();
+        let check = ensure_bundle_fresh(&s.store(), "broken-static").unwrap();
+        assert!(!check.needs_bundle && check.build.is_none());
+        assert!(check.quality_error.as_ref().unwrap().contains("index.html"));
+        assert_eq!(check.missing_bundle_log(), check.quality_error);
+        let build = s
+            .build_app(Parameters(BuildAppParams {
+                id: "broken-static".into(),
+                check_only: None,
+            }))
+            .await
+            .unwrap_err();
+        assert!(build.message.contains("index.html"));
+        let launch = s
+            .launch_app(Parameters(AppIdParams {
+                id: "broken-static".into(),
+            }))
+            .await
+            .unwrap_err();
+        assert!(launch.message.contains("invalid browser JavaScript"));
+        assert!(s
+            .store()
+            .load_manifest("broken-static")
+            .unwrap()
+            .built_at
+            .is_none());
+    }
+
+    #[tokio::test]
+    async fn browser_free_checks_allow_static_pages_with_advisory_lint_warnings() {
+        let (_d, s) = server();
+        let mut p = create("Checked static", Some("static"));
+        p.html = Some("<p style=\"color:red\">Static content</p>".into());
+        s.create_app_inner(p, None, &KbCaller::restricted())
+            .await
+            .unwrap();
+        let findings = bundle::lint_app(&s.store().artifact_dir("checked-static").unwrap());
+        assert!(findings.iter().any(|f| f.level == bundle::LintLevel::Warn));
+        assert!(!findings.iter().any(|f| f.level == bundle::LintLevel::Error));
+        let result = s
+            .build_app(Parameters(BuildAppParams {
+                id: "checked-static".into(),
+                check_only: None,
+            }))
+            .await
+            .unwrap();
+        assert!(text_of(&result).contains("no TypeScript bundle needed"));
+        assert!(text_of(&result).contains(page_check::PASSED));
+        assert!(!s.store().file_exists("checked-static", "dist/app.js"));
+        assert!(s
+            .launch_app(Parameters(AppIdParams {
+                id: "checked-static".into()
+            }))
+            .await
+            .is_ok());
+    }
+
+    #[test]
+    fn page_edits_retry_a_failed_build_and_preserve_the_previous_bundle() {
+        bundle::tests_without_esbuild::run(|| {
+            let (_d, store) = agentic_app("page-fix", DEFAULT_MAIN);
+            let first = rebuild_and_stamp(&store, "page-fix").unwrap();
+            assert!(first.ok, "{}", first.log);
+            let original = store.read_file("page-fix", "dist/app.js").unwrap();
+            store
+                .write_file("page-fix", "index.html", "<script>const x = ;</script>")
+                .unwrap();
+            let broken = ensure_bundle_fresh(&store, "page-fix").unwrap();
+            assert!(broken.quality_error.is_some());
+            assert_eq!(
+                store.read_file("page-fix", "dist/app.js").unwrap(),
+                original
+            );
+            store
+                .write_file("page-fix", "index.html", "<p>Fixed page</p>")
+                .unwrap();
+            let fixed = ensure_bundle_fresh(&store, "page-fix").unwrap();
+            assert!(fixed.quality_error.is_none());
+            assert!(fixed.missing_bundle_log().is_none());
+
+            store
+                .write_file(
+                    "page-fix",
+                    "src/main.ts",
+                    "import { createApp } from \"./sdk\";\ncreateApp();\n",
+                )
+                .unwrap();
+            store
+                .write_file(
+                    "page-fix",
+                    "index.html",
+                    "<script src=\"assets/helper.js\"></script>",
+                )
+                .unwrap();
+            let missing = ensure_bundle_fresh(&store, "page-fix").unwrap();
+            assert!(missing.build.as_ref().is_some_and(|b| !b.ok));
+            store
+                .write_file("page-fix", "assets/helper.js", "const value = 1;")
+                .unwrap();
+            let added = ensure_bundle_fresh(&store, "page-fix").unwrap();
+            assert!(!added.remembered);
+            assert!(added.build.as_ref().is_some_and(|b| b.ok), "{added:?}");
+        });
+    }
+
+    #[test]
+    fn a_corrupted_fresh_bundle_is_blocked_without_rebuilding_it() {
+        let (_d, store) = agentic_app("corrupt", DEFAULT_MAIN);
+        fake_bundle(&store, "corrupt", "esbuild", bundle::biorouter_version());
+        store
+            .write_file("corrupt", "dist/app.js", "(()=>{const value = ;")
+            .unwrap();
+        let check = ensure_bundle_fresh(&store, "corrupt").unwrap();
+        assert!(check.build.is_none());
+        assert!(check
+            .quality_error
+            .as_ref()
+            .unwrap()
+            .contains("dist/app.js"));
+        assert_eq!(check.missing_bundle_log(), check.quality_error);
     }
 
     // --- build freshness, the build lock, and what a build is stamped with ---

@@ -21,6 +21,7 @@ import {
   updateRequiresQuitFirst,
 } from './assistedUpdateInstructions';
 import { githubUpdater } from './githubUpdater';
+import { biorouterVersion } from './biorouterVersion';
 import { loadRecentDirs } from './recentDirs';
 import { scheduleUpdateChecks, type AutomaticUpdateCheckReason } from './updateCheckSchedule';
 
@@ -66,7 +67,7 @@ export function registerUpdateIpcHandlers() {
 
   // IPC handlers for renderer process
   ipcMain.handle('check-for-updates', async () => {
-    const currentVersion = autoUpdater.currentVersion?.version || app.getVersion();
+    const currentVersion = autoUpdater.currentVersion?.version || biorouterVersion(app);
     const checkStartTime = Date.now();
 
     try {
@@ -329,7 +330,7 @@ export function setupAutoUpdater(tray?: Tray) {
   autoUpdaterConfigured = true;
 
   log.info('Setting up auto-updater...');
-  log.info(`Current app version: ${app.getVersion()}`);
+  log.info(`Current app version: ${biorouterVersion(app)}`);
   log.info(`Platform: ${process.platform}, Arch: ${process.arch}`);
   log.info(`ENABLE_DEV_UPDATES: ${process.env.ENABLE_DEV_UPDATES}`);
   log.info(`App is packaged: ${app.isPackaged}`);

@@ -30,6 +30,21 @@ pub enum ProviderError {
 
     #[error("Unsupported operation: {0}")]
     NotImplemented(String),
+
+    /// A local inference server sent nothing for the provider's idle bound
+    /// (`OLLAMA_TIMEOUT`). The text is a whole sentence naming the setting to
+    /// raise.
+    ///
+    /// Its own variant because it must not be re-sent by ANYONE. The provider
+    /// already hands a timeout straight back (`retry::TimeoutRetry::GiveUp`):
+    /// the server is still reading the abandoned request, and a second copy
+    /// queues behind it. As a `RequestFailed` it was classed a network blip
+    /// and the agent re-sent the whole prompt once anyway. Diagnostics
+    /// 20261006_2: on an Intel Mac reading about 25 prompt tokens a second, a
+    /// first prompt of about 37,000 tokens outlasts a 600-second bound, so the
+    /// person waited twenty minutes for "error sending request ... (timeout)".
+    #[error("{0}")]
+    IdleTimeout(String),
 }
 
 /// The coarse class of a provider failure — enough for a caller to decide
@@ -252,6 +267,7 @@ impl ProviderError {
             | ProviderError::ExecutionError(details)
             | ProviderError::UsageError(details) => classify_provider_details(details),
             ProviderError::NotImplemented(_) => ProviderErrorKind::InvalidRequest,
+            ProviderError::IdleTimeout(_) => ProviderErrorKind::Network,
         }
     }
 
@@ -265,6 +281,7 @@ impl ProviderError {
             ProviderError::ExecutionError(_) => "execution",
             ProviderError::UsageError(_) => "usage",
             ProviderError::NotImplemented(_) => "not_implemented",
+            ProviderError::IdleTimeout(_) => "timeout",
         }
     }
 }

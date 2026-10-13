@@ -315,8 +315,10 @@ export default function ProviderGuard({ didSelectProvider, children }: ProviderG
           </div>
         </header>
 
+        {/* `br-page-headroom`: the clear space under the band at the top, the one Settings
+            keeps too (`--page-headroom`). */}
         <ScrollArea className="w-full flex-1">
-          <div className="mx-auto w-full max-w-measure-chat px-6 py-6">
+          <div className="br-page-headroom mx-auto w-full max-w-measure-chat px-6 pb-6">
             {hostManaged ? (
               <HostManagedModelPanel />
             ) : (

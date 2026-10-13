@@ -186,6 +186,9 @@ pub fn is_recoverable(error: &ProviderError) -> bool {
                 | crate::providers::errors::ProviderErrorKind::Network
                 | crate::providers::errors::ProviderErrorKind::Other
         ),
+        // Already given up on by the provider, for a reason a re-send cannot
+        // change: the local server is still reading the first copy.
+        ProviderError::IdleTimeout(_) => false,
         ProviderError::Authentication(_)
         | ProviderError::RateLimitExceeded { .. }
         | ProviderError::NotImplemented(_)

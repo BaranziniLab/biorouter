@@ -617,6 +617,35 @@ describe('BottomMenuExtensionSelection', () => {
     expect(example).not.toHaveAttribute('title');
   });
 
+  /**
+   * UI defect 3 (final check, 2026-10-12): each row's switch is named by the
+   * row's name, as every switch on the Extensions page is, and it stays out of
+   * the accessibility tree so a screen reader hears each row once (the option).
+   */
+  it('names each row’s switch by the row’s name, and keeps the row the one control', async () => {
+    render(<BottomMenuExtensionSelection sessionId="session-1" />);
+    toggleList();
+    const rows = await screen.findAllByRole('option');
+    expect(screen.queryAllByRole('switch')).toHaveLength(0);
+    expect(screen.getAllByRole('switch', { hidden: true })).toHaveLength(rows.length);
+    for (const name of ['Example', 'Spoke']) {
+      const row = screen.getByRole('option', { name });
+      const picture = screen.getByRole('switch', { name, hidden: true });
+      expect(row).toContainElement(picture);
+      expect(picture).toHaveAttribute('aria-checked', row.getAttribute('aria-selected'));
+    }
+
+    // The row is still what a click toggles, and the named switch follows it.
+    fireEvent.click(screen.getByRole('option', { name: 'Example' }));
+    await waitFor(() =>
+      expect(screen.getByRole('switch', { name: 'Example', hidden: true })).toHaveAttribute(
+        'aria-checked',
+        'true'
+      )
+    );
+    await waitFor(() => expect(mocks.addToAgent).toHaveBeenCalledTimes(1));
+  });
+
   it('filters as the person types, with focus staying in the field', async () => {
     render(<BottomMenuExtensionSelection sessionId="session-1" />);
     toggleList();

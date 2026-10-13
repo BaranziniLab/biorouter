@@ -147,6 +147,7 @@ pub enum TimeoutRetry {
 /// reqwest timeout `(timeout)`; a body read that stalls says "timed out".
 pub fn is_timeout(error: &ProviderError) -> bool {
     match error {
+        ProviderError::IdleTimeout(_) => true,
         ProviderError::RequestFailed(details) | ProviderError::ExecutionError(details) => {
             let details = details.to_ascii_lowercase();
             error.kind() == super::errors::ProviderErrorKind::Network

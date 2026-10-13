@@ -81,6 +81,11 @@ pub fn lint_app(project_dir: &Path) -> Vec<LintFinding> {
     let manifest: Option<Manifest> = std::fs::read_to_string(project_dir.join("manifest.json"))
         .ok()
         .and_then(|s| serde_json::from_str(&s).ok());
+    out.extend(super::page_check::findings(
+        project_dir,
+        manifest.as_ref().map_or("index.html", |m| m.entry.as_str()),
+        true,
+    ));
     let is_agentic = manifest
         .as_ref()
         .is_none_or(|manifest| manifest.kind == ArtifactKind::Agentic);
@@ -934,7 +939,7 @@ pub fn format_lint(findings: &[LintFinding]) -> String {
         s.push_str(&format!("  {tag}: {}\n", f.msg));
     }
     if findings.iter().any(|f| f.level == LintLevel::Error) {
-        s.push_str("Fix the ERRORs (they break backend access or portability), then rebuild.");
+        s.push_str("Fix the ERRORs, then rebuild.");
     }
     s
 }
@@ -958,7 +963,7 @@ pub struct BuildReport {
 }
 
 impl BuildReport {
-    fn not_built(used: &str, log: impl Into<String>) -> Self {
+    pub(super) fn not_built(used: &str, log: impl Into<String>) -> Self {
         Self {
             ok: false,
             used: used.to_string(),
@@ -1741,6 +1746,15 @@ impl BundleMaking<'_> {
             let staging = Staging::new(&dist)?;
             match run_esbuild(&cmd, &entry, &staging.0.join("app.js")) {
                 Ok(mut report) if report.ok => {
+                    let js = std::fs::read_to_string(staging.0.join("app.js"))?;
+                    if let Some(finding) =
+                        super::page_check::javascript_error(&js, "dist/app.js", false)
+                    {
+                        return Ok(BuildReport::not_built("esbuild", finding.msg));
+                    }
+                    if let Some(error) = staged_page_error(self.project_dir, &staging.0, true) {
+                        return Ok(BuildReport::not_built("esbuild", error));
+                    }
                     let banner = BundleBanner {
                         builder: "esbuild".into(),
                         sdk: self.sdk.clone(),
@@ -1780,6 +1794,23 @@ impl BundleMaking<'_> {
         }
         Ok(report)
     }
+}
+
+fn staged_page_error(project_dir: &Path, staging: &Path, replaces_css: bool) -> Option<String> {
+    let manifest: Option<Manifest> = std::fs::read_to_string(project_dir.join("manifest.json"))
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok());
+    if manifest.is_none() && !project_dir.join("index.html").is_file() {
+        return None;
+    }
+    let entry = manifest.as_ref().map_or("index.html", |m| m.entry.as_str());
+    let findings = super::page_check::staged_findings(project_dir, entry, staging, replaces_css);
+    (!findings.is_empty()).then(|| {
+        format!(
+            "Browser-free page check failed:\n{}",
+            format_lint(&findings)
+        )
+    })
 }
 
 /// A fresh hidden directory in `dist/` for esbuild to write into, removed when
@@ -2186,6 +2217,16 @@ fn fallback_bundle(
         strip_module_syntax(&sdk_source),
         strip_module_syntax(main)
     );
+    if let Some(finding) =
+        super::page_check::javascript_error(&js, "dist/app.js fallback output", false)
+    {
+        return Ok(BuildReport::not_built("fallback", format!("The fallback bundler's output does not parse, so it was not installed:\n{}\n{FALLBACK_NEEDS_ESBUILD}", finding.msg)));
+    }
+    let staging = Staging::new(out.parent().unwrap_or(project_dir))?;
+    write_atomic(&staging.0.join("app.js"), js.as_bytes())?;
+    if let Some(error) = staged_page_error(project_dir, &staging.0, false) {
+        return Ok(BuildReport::not_built("fallback", error));
+    }
     let verified = match node_check(&js, out.parent().unwrap_or(project_dir)) {
         Ok(None) => "It passed `node --check`.",
         Ok(Some(error)) => {
@@ -3035,6 +3076,104 @@ mod tests {
         assert_eq!(names, vec!["app.js".to_string()]);
     }
 
+    #[test]
+    #[cfg(unix)]
+    fn a_page_check_failure_keeps_the_previous_javascript_and_stylesheet() {
+        let dir = TempDir::new().unwrap();
+        std::fs::create_dir_all(dir.path().join("src")).unwrap();
+        std::fs::write(
+            dir.path().join("src/main.ts"),
+            "document.body.dataset.ready = 'new';",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("index.html"),
+            r#"<link rel="stylesheet" href="dist/app.css"><p>App</p>"#,
+        )
+        .unwrap();
+        let dist = dir.path().join("dist");
+        std::fs::create_dir(&dist).unwrap();
+        std::fs::write(dist.join("app.js"), "old();\n").unwrap();
+        std::fs::write(dist.join("app.css"), "body{color:red}\n").unwrap();
+        let make = || BundleMaking {
+            project_dir: dir.path(),
+            main: "document.body.dataset.ready = 'new';",
+            includes_sdk: false,
+            sdk: "none".into(),
+            sdk_version: None,
+        };
+        let compiler = || {
+            EsbuildCommand {
+            program: "/bin/sh".into(),
+            lead: vec!["-c".into(), r#"for arg in "$@"; do case "$arg" in --outfile=*) printf 'updated();\n' > "${arg#--outfile=}";; esac; done"#.into(), "fixture-compiler".into()],
+            child_path: None,
+            source: "fixture",
+        }
+        };
+        let failed = make().build(Some(compiler())).unwrap();
+        assert!(
+            !failed.ok && failed.log.contains("dist/app.css"),
+            "{}",
+            failed.log
+        );
+        assert_eq!(
+            std::fs::read_to_string(dist.join("app.js")).unwrap(),
+            "old();\n"
+        );
+        assert_eq!(
+            std::fs::read_to_string(dist.join("app.css")).unwrap(),
+            "body{color:red}\n"
+        );
+        std::fs::write(dir.path().join("index.html"), "<p>No stylesheet needed</p>").unwrap();
+        assert!(make().build(Some(compiler())).unwrap().ok);
+        assert!(!dist.join("app.css").exists());
+    }
+
+    #[test]
+    fn a_failed_fallback_page_check_does_not_replace_its_previous_bundle() {
+        let dir = project(None, "document.body.dataset.ready = 'old';\n");
+        let first = fallback_of(&dir);
+        assert!(first.ok, "{}", first.log);
+        let old = std::fs::read_to_string(dir.path().join("dist/app.js")).unwrap();
+        std::fs::write(dir.path().join("dist/app.css"), "body{color:red}\n").unwrap();
+        std::fs::write(
+            dir.path().join("index.html"),
+            r#"<link rel="stylesheet" href="dist/app.css"><script src="assets/missing.js"></script><p>App</p>"#,
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("src/main.ts"),
+            "document.body.dataset.ready = 'new';\n",
+        )
+        .unwrap();
+        let report = fallback_of(&dir);
+        assert!(
+            !report.ok && report.log.contains("assets/missing.js"),
+            "{}",
+            report.log
+        );
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("dist/app.js")).unwrap(),
+            old
+        );
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("dist/app.css")).unwrap(),
+            "body{color:red}\n"
+        );
+        std::fs::create_dir(dir.path().join("assets")).unwrap();
+        std::fs::write(dir.path().join("assets/missing.js"), "const value = 1;").unwrap();
+        let fixed = fallback_of(&dir);
+        assert!(fixed.ok, "{}", fixed.log);
+        assert_ne!(
+            std::fs::read_to_string(dir.path().join("dist/app.js")).unwrap(),
+            old
+        );
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("dist/app.css")).unwrap(),
+            "body{color:red}\n"
+        );
+    }
+
     /// ⚠ esbuild used to write straight to a hidden temp outfile, and it puts
     /// an imported stylesheet beside the outfile with the extension swapped, so
     /// `dist/app.css` was never written and hidden `.css` files piled up. Needs
@@ -3345,6 +3484,54 @@ mod tests {
             method.starts_with("  run(a") && method.ends_with('{'),
             "{method}"
         );
+    }
+
+    /// Issue #386, the input that was reported. Without esbuild the stripper
+    /// turned `{ omop_rules: OMOP_RULES, required_outputs: Object.keys(patient) }`
+    /// into `{ omop_rules , required_outputs , … }`, and dropped the local
+    /// modules `./prevent` and `./preventData` without a word. The literal on
+    /// one line now keeps its values and builds; the same literal across lines
+    /// and the local modules are refused, by line, with nothing written.
+    #[test]
+    fn the_reported_literal_keeps_its_values_and_local_modules_are_refused() {
+        let literal =
+            "const req = { omop_rules: OMOP_RULES, required_outputs: Object.keys(patient) };";
+        assert_eq!(strip_colon_types(literal), literal);
+        let call = "  br.agent.send({ omop_rules: OMOP_RULES, required_outputs: Object.keys(p) });";
+        assert_eq!(strip_colon_types(call), call);
+
+        let sdk = "export function createApp(x: unknown) { globalThis.req = x; }\n";
+        let main = format!(
+            "import {{ createApp }} from \"./sdk\";\nconst OMOP_RULES = [\"r1\"];\n\
+             const patient = {{ age: 1 }};\n{literal}\ncreateApp(req);\n"
+        );
+        let dir = project(Some(sdk), &main);
+        let report = fallback_of(&dir);
+        assert!(report.ok, "{}", report.log);
+        let js = std::fs::read_to_string(dir.path().join("dist/app.js")).unwrap();
+        assert!(js.contains(literal), "{js}");
+        if let Some(parsed) = node_parses(&js) {
+            parsed.expect("the fallback bundle parses");
+        }
+
+        for (main, expect) in [
+            (
+                "import { createApp } from \"./sdk\";\nimport { risk } from \"./prevent\";\n\
+                 import { OMOP_RULES } from \"./preventData\";\ncreateApp(risk(OMOP_RULES));\n",
+                "./prevent\"",
+            ),
+            (
+                "import { createApp } from \"./sdk\";\nconst req = {\n  omop_rules: OMOP_RULES,\n  \
+                 required_outputs: Object.keys(patient),\n};\ncreateApp(req);\n",
+                "line 3",
+            ),
+        ] {
+            let dir = project(Some(sdk), main);
+            let report = fallback_of(&dir);
+            assert!(!report.ok, "refused: {main}");
+            assert!(report.log.contains(expect), "{main}\n---\n{}", report.log);
+            assert!(!dir.path().join("dist/app.js").exists(), "{main}");
+        }
     }
 
     /// The banner is the bundle's own record of what built it, read back from

@@ -3,14 +3,21 @@ import {
   showExtensionLoadResults,
   setFocusedChatSession,
   resetExtensionToastState,
+  withdrawExtensionFailureToasts,
 } from './extensionErrorUtils';
-import { resetExtensionLoadFailuresForTests } from './extensionLoadFailures';
+import {
+  getExtensionLoadFailures,
+  resetExtensionLoadFailuresForTests,
+  showingExtensionLoadFailureNotice,
+} from './extensionLoadFailures';
 import { toastService } from '../toasts';
 
 vi.mock('../toasts', () => ({
   toastService: {
     extensionLoading: vi.fn(),
     error: vi.fn(),
+    dismiss: vi.fn(),
+    dismissExtensionFailureReport: vi.fn(),
     isExtensionToastActive: vi.fn(() => false),
   },
 }));
@@ -268,5 +275,99 @@ describe('a failure is announced once, not on every renderer load', () => {
     showExtensionLoadResults([ok('medcp'), bad('cdwagent')], 'chat-a');
 
     expect(toastService.extensionLoading).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * Final check (2026-10-12). With the Extensions page open, the sticky "1 of 2 extensions loaded"
+ * stood in the corner over the page: first over the notice's Copy error, and once the notice was
+ * dismissed, over the list's first switch. The page already says the same thing with the error
+ * and its actions, so while its notice is on screen the notice is the announcement, and the
+ * corner's report of the same failure is taken down.
+ */
+describe("the Extensions page announces a failure in the toast's place", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    resetExtensionToastState();
+    resetExtensionLoadFailuresForTests();
+    vi.mocked(toastService.isExtensionToastActive).mockReturnValue(false);
+  });
+
+  it('raises no toast while the notice is on screen, and counts the failure announced', () => {
+    const release = showingExtensionLoadFailureNotice();
+    showExtensionLoadResults([ok('medcp'), bad('cdwagent')], 'chat-a');
+    showExtensionLoadResults([bad('notion-mcp')], 'chat-a');
+
+    expect(toastService.extensionLoading).not.toHaveBeenCalled();
+    expect(toastService.error).not.toHaveBeenCalled();
+    expect(getExtensionLoadFailures().map((f) => [f.name, f.announced])).toEqual(
+      expect.arrayContaining([
+        ['cdwagent', true],
+        ['notion-mcp', true],
+      ])
+    );
+
+    // Leaving the page does not bring it back as a toast on the next load: it was announced.
+    release();
+    showExtensionLoadResults([ok('medcp'), bad('cdwagent')], 'chat-a');
+    expect(toastService.extensionLoading).not.toHaveBeenCalled();
+  });
+
+  it('toasts a new failure again once the page has closed, and a release counts once', () => {
+    const release = showingExtensionLoadFailureNotice();
+    const second = showingExtensionLoadFailureNotice();
+    release();
+    release();
+    showExtensionLoadResults([bad('notion-mcp')], 'chat-a');
+    expect(toastService.error).not.toHaveBeenCalled();
+
+    second();
+    showExtensionLoadResults([bad('cdwagent')], 'chat-a');
+    expect(toastService.error).toHaveBeenCalledTimes(1);
+  });
+
+  it('withdraws the toasts that reported a failure', () => {
+    vi.mocked(toastService.error).mockReturnValue('single-failure');
+    showExtensionLoadResults([bad('notion-mcp')], 'chat-a');
+    withdrawExtensionFailureToasts();
+    expect(toastService.dismiss).toHaveBeenCalledWith('single-failure');
+
+    vi.mocked(toastService.dismiss).mockClear();
+    vi.mocked(toastService.dismissExtensionFailureReport).mockClear();
+    showExtensionLoadResults([ok('medcp'), bad('cdwagent')], 'chat-a');
+    withdrawExtensionFailureToasts();
+    expect(toastService.dismissExtensionFailureReport).toHaveBeenCalledTimes(1);
+    expect(toastService.dismiss).not.toHaveBeenCalled();
+
+    // Each is taken down once; a second withdrawal has nothing left to take.
+    withdrawExtensionFailureToasts();
+    expect(toastService.dismissExtensionFailureReport).toHaveBeenCalledTimes(1);
+    expect(toastService.dismiss).not.toHaveBeenCalled();
+  });
+
+  it('withdraws every distinct single-extension failure across chats', () => {
+    vi.mocked(toastService.error)
+      .mockReturnValueOnce('chat-a-failure')
+      .mockReturnValueOnce('chat-b-failure');
+    showExtensionLoadResults([bad('notion-mcp')], 'chat-a');
+    showExtensionLoadResults([bad('cdwagent')], 'chat-b');
+
+    withdrawExtensionFailureToasts();
+
+    expect(vi.mocked(toastService.dismiss).mock.calls).toEqual([
+      ['chat-a-failure'],
+      ['chat-b-failure'],
+    ]);
+    withdrawExtensionFailureToasts();
+    expect(toastService.dismiss).toHaveBeenCalledTimes(2);
+  });
+
+  it('leaves a progress or clean-run report alone', () => {
+    setFocusedChatSession('chat-a');
+    showExtensionLoadResults([ok('medcp'), ok('cdwagent')], 'chat-a');
+    withdrawExtensionFailureToasts();
+
+    expect(toastService.dismiss).not.toHaveBeenCalled();
+    expect(toastService.dismissExtensionFailureReport).not.toHaveBeenCalled();
   });
 });

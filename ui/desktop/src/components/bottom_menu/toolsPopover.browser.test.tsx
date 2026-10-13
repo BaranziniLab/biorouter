@@ -107,6 +107,10 @@ export function ${hook}() {
 export function ${panel}({ inputRef }: { inputRef?: React.Ref<HTMLInputElement> }) {
   const [query, setQuery] = React.useState('');
   const count = (window as unknown as { __rows: Record<string, number> }).__rows['${segment}'];
+  // A test may give a row a note or a label (the knowledge list's state-saying name).
+  const extras = (
+    window as unknown as { __extras?: Record<string, Array<{ note?: string; label?: string }>> }
+  ).__extras?.['${segment}'];
   return (
     <PickerPanel
       listLabel="${segment}"
@@ -121,7 +125,13 @@ export function ${panel}({ inputRef }: { inputRef?: React.Ref<HTMLInputElement> 
       data-testid="panel-${segment}"
     >
       {Array.from({ length: count }, (_, i) => (
-        <PickerRow key={i} name={'${segment} ' + (i + 1)} checked={i % 2 === 0} onToggle={() => {}} />
+        <PickerRow
+          key={i}
+          name={'${segment} ' + (i + 1)}
+          checked={i % 2 === 0}
+          onToggle={() => {}}
+          {...extras?.[i]}
+        />
       ))}
     </PickerPanel>
   );
@@ -235,7 +245,11 @@ describe('the Tools popover keeps its segmented control above the chip (R-25)', 
   }, 120_000);
 
   /** The page with the chip, not yet open. `rows` replaces the lists' lengths. */
-  async function load(height: number, rows?: Record<string, number>): Promise<Page> {
+  async function load(
+    height: number,
+    rows?: Record<string, number>,
+    extras?: Record<string, Array<{ note?: string; label?: string }>>
+  ): Promise<Page> {
     const tab = await browser!.newPage({ viewport: { width: 900, height } });
     // The open keyframe moves the surface 4px; measure the layout, not the motion.
     await tab.emulateMedia({ reducedMotion: 'reduce' });
@@ -246,6 +260,11 @@ describe('the Tools popover keeps its segmented control above the chip (R-25)', 
       await tab.evaluate((r) => {
         (window as unknown as { __rows: Record<string, number> }).__rows = r;
       }, rows);
+    }
+    if (extras) {
+      await tab.evaluate((e) => {
+        (window as unknown as { __extras: typeof e }).__extras = e;
+      }, extras);
     }
     await tab.addScriptTag({ content: script });
     await tab.waitForSelector('[data-testid="composer-tools-chip"]');
@@ -422,6 +441,79 @@ describe('the Tools popover keeps its segmented control above the chip (R-25)', 
     expect(tall.knowledge).toBeLessThan(tall.skills);
     // In the short window the cap is the room above the chip, not the 480px ceiling.
     expect(heights[480].skills).toBeLessThan(tall.skills);
+  });
+
+  /**
+   * UI defect 3 (final check, 2026-10-12): every row's switch, in all three
+   * lists, is named by the row's name, and Chromium's own accessibility tree
+   * (what a screen reader is handed) still has one node per row: the option,
+   * named once, with no switch beside it.
+   */
+  it('names every switch by its row, and leaves one announcement per row in Chromium’s tree', async (ctx) => {
+    if (!browser) return ctx.skip();
+    const NOTE = 'Unavailable in this chat (public model)';
+    // The knowledge list names a row by a label that says its state.
+    const label = (i: number) =>
+      `knowledge ${i}, ${i % 2 === 1 ? 'visible to' : 'hidden from'} this chat`;
+    const tab = await load(
+      900,
+      { extensions: 3, skills: 2, knowledge: 2 },
+      { extensions: [{}, { note: NOTE }], knowledge: [{ label: label(1) }, { label: label(2) }] }
+    );
+    try {
+      const cdp = await tab.context().newCDPSession(tab);
+      await cdp.send('Accessibility.enable');
+      await tab.click('[data-testid="composer-tools-chip"]');
+      await tab.waitForSelector('[data-testid="composer-tools-tabs"]');
+      await settle(tab);
+      for (const [segment, count] of [
+        ['extensions', 3],
+        ['skills', 2],
+        ['knowledge', 2],
+      ] as const) {
+        if (segment !== 'extensions') await clickAndWatch(tab, segment);
+        const panel = tab.getByTestId(`panel-${segment}`);
+        // Out of the tree: no switch is reachable as one...
+        expect(await panel.getByRole('switch').count(), `${segment}: switches`).toBe(0);
+        expect(await panel.getByRole('option').count(), `${segment}: rows`).toBe(count);
+        const { nodes } = await cdp.send('Accessibility.getFullAXTree');
+        const exposed = nodes.filter((node) => !node.ignored);
+        expect(
+          exposed.filter((node) => node.role?.value === 'switch'),
+          `${segment}: switches Chromium exposes`
+        ).toHaveLength(0);
+        for (let i = 1; i <= count; i++) {
+          const name = `${segment} ${i}`;
+          // ...and yet each is named by its row, in a real engine.
+          const picture = panel.getByRole('switch', { name, exact: true, includeHidden: true });
+          expect(await picture.count(), `the switch named ${name}`).toBe(1);
+          expect(
+            await picture.evaluate((el) => el.closest('[role="option"]')?.textContent),
+            name
+          ).toMatch(new RegExp(`^${name}`));
+          // One announcement: one node carries the row's name, and it is the option,
+          // which says it once (with its note, or as its label says it).
+          const option =
+            segment === 'knowledge'
+              ? label(i)
+              : segment === 'extensions' && i === 2
+                ? `${name} ${NOTE}`
+                : name;
+          const named = exposed.filter(
+            (node) =>
+              typeof node.name?.value === 'string' &&
+              node.name.value.includes(name) &&
+              !['StaticText', 'InlineTextBox'].includes(String(node.role?.value))
+          );
+          expect(
+            named.map((node) => [node.role?.value, node.name?.value]),
+            `${segment}: nodes named ${name}`
+          ).toEqual([['option', option]]);
+        }
+      }
+    } finally {
+      await tab.close();
+    }
   });
 
   it('opens above the chip from its first painted frame, even short of room with a long list', async (ctx) => {

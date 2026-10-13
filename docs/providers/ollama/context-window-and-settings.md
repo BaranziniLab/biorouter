@@ -191,13 +191,18 @@ tools were offered, the turn ends with an error saying the model returned reason
   loaded.
 - **Timeouts.** `OLLAMA_TIMEOUT` (default 600 seconds) limits silence between pieces of the
   reply, not the whole reply, because a local model can stream for longer than any fixed
-  deadline. A timeout is never retried: the original inference may still be running, so
-  resending can duplicate work or queue behind it, depending on Ollama's parallel slots.
-  Connection failures before a reply starts are still retried.
+  deadline. A timeout is never retried, by the provider or by the agent: the original
+  inference may still be running, so resending can duplicate work or queue behind it,
+  depending on Ollama's parallel slots. Connection failures before a reply starts are still
+  retried.
 
 > **Note.** The first piece of a reply arrives only after the model has read the whole prompt.
-> On a slow machine a cold ~31,000-token prompt can take longer than `OLLAMA_TIMEOUT`; raise it
-> if a first reply times out.
+> On a slow machine a cold ~31,000-token prompt can take longer than `OLLAMA_TIMEOUT`. When it
+> does, the error says how long Biorouter waited, the prompt's rough size in tokens and the
+> setting to raise (`OLLAMA_TIMEOUT`, or `timeout_seconds` for a custom Ollama provider).
+> Diagnostics 20261006_2 measured about 25 prompt tokens a second for `llama3.1:8b` on an
+> Intel Mac, so a 37,000-token first prompt needs `OLLAMA_TIMEOUT` well above 1,500 seconds
+> there, or a shorter prompt.
 
 ### A timeout with two models loaded and parallel slots
 

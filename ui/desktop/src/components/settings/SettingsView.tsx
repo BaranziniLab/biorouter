@@ -227,9 +227,11 @@ export default function SettingsView({
         {/* `biorouter-scroll-fade-top` fades the clipped top edge only while the scroller is
             scrolled, so a row cut off at the band's hairline does not read as a second rule.
             Guarded at the source by `styles/settingsScrollFade.test.ts`, because jsdom computes
-            no `mask-image`. */}
+            no `mask-image`. `br-page-headroom` is the page's clear space under the band at the
+            top (`--page-headroom`, shared with the setup page), so the column takes only its
+            bottom padding here; `settings/pageHeadroom.browser.test.tsx` measures both. */}
         <ScrollArea className="biorouter-scroll-fade-top flex-1" paddingX={1}>
-          <ReadableContent size="chat" className="br-rows-flat px-6 py-5">
+          <ReadableContent size="chat" className="br-page-headroom br-rows-flat px-6 pb-5">
             {/* `tabIndex={-1}` on all three panels (vision V4-05): Radix makes a panel a Tab stop,
                 and a panel has no focus treatment by design, so Tab from the tab list landed on an
                 invisible stop before the first control. Every Settings panel opens with a control,

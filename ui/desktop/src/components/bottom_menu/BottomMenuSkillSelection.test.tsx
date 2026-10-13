@@ -332,6 +332,64 @@ describe('BottomMenuSkillSelection', () => {
     expect(screen.getByText('BiorOffice')).toBeInTheDocument();
   });
 
+  /**
+   * UI defect 3 (final check, 2026-10-12): each row's switch is named by the
+   * row's name alone (not its badge, its source or a bundle's count), as every
+   * switch on the Extensions page is, and it stays out of the accessibility tree
+   * so a screen reader hears each row once (the option).
+   */
+  it('names each row’s switch by the row’s name, and keeps the row the one control', async () => {
+    const catalog = (exampleOn: boolean) =>
+      view({
+        skills: [
+          skill('example-skill', {
+            state: {
+              machineEnabled: exampleOn,
+              session: 'default',
+              sessionViaBundle: false,
+              hiddenContext: false,
+              effective: exampleOn,
+            },
+          }),
+          skill('r-scripting', { builtin: true }),
+          skill('word', {
+            sourceRoot: '/extensions/BiorOffice/skills',
+            source: { kind: 'extension', extension: 'BiorOffice', label: 'BiorOffice' },
+          }),
+        ],
+        bundles: [
+          bundle('hyperframes', ['hyperframes', 'media-use'], { displayName: 'HyperFrames' }),
+        ],
+      });
+    serve(catalog(true));
+    render(<BottomMenuSkillSelection sessionId={null} />);
+    const rows = await openMenu();
+    expect(rows).toHaveLength(4);
+    expect(screen.queryAllByRole('switch')).toHaveLength(0);
+    expect(screen.getAllByRole('switch', { hidden: true })).toHaveLength(4);
+    for (const name of ['example-skill', 'r-scripting', 'word', 'HyperFrames']) {
+      const picture = screen.getByRole('switch', { name, hidden: true });
+      expect(picture.closest('[role="option"]')).toHaveAttribute('aria-selected', 'true');
+      expect(picture).toHaveAttribute('aria-checked', 'true');
+    }
+
+    // The row is still what a click toggles, and the named switch follows it (the
+    // machine-wide write reads the catalog back, so the next read says off).
+    serve(catalog(false));
+    fireEvent.click(
+      screen
+        .getByRole('switch', { name: 'example-skill', hidden: true })
+        .closest('[role="option"]')!
+    );
+    await waitFor(() =>
+      expect(screen.getByRole('switch', { name: 'example-skill', hidden: true })).toHaveAttribute(
+        'aria-checked',
+        'false'
+      )
+    );
+    expect(mocks.overrides.get('example-skill')).toBe(false);
+  });
+
   it('asks the daemon to rescan when the menu opens, so an install made elsewhere shows up', async () => {
     render(<BottomMenuSkillSelection sessionId={null} />);
     await openMenu();

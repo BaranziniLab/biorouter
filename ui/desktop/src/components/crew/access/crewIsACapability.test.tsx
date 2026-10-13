@@ -6,14 +6,14 @@ import {
   useExtensionPicker,
 } from '../../bottom_menu/BottomMenuExtensionSelection';
 import { useChatCrewAccess } from './chatCrewAccess';
-import { accessCopy } from './copy';
 import { connection, grantRow } from './testing';
 
 /**
- * The chat's extension menu must not let the Crew row read as "removed" while the chat's grant is
- * still active (NOVICE-BASELINE F3: "crew · Extension removed" left `expired: false`). The row stays
- * on, says where Revoke is, and Disable all leaves it alone. It reads the chat's own lookup, so the
- * menu itself asks the daemon nothing.
+ * Crew ships with Biorouter, so it is a capability: it is switched on or off in Settings → Chat →
+ * Capabilities and is not one of the chat's extensions. The Tools popover used to list it, and then
+ * had to lock its row while a grant was active (NOVICE-BASELINE F3: "crew · Extension removed" left
+ * the grant standing). The row is gone, so neither the row nor Disable all can touch a granted
+ * chat's Crew tools, and only Revoke ends that access.
  */
 
 const mocks = vi.hoisted(() => ({
@@ -36,7 +36,7 @@ vi.mock('../../ConfigContext', () => ({
       { name: 'versa_azure', is_configured: true, resolved_tier: 'private' },
     ],
     extensionsList: [
-      { type: 'platform', name: 'crew', description: 'Crew', enabled: true },
+      { type: 'platform', name: 'crew', description: 'Crew', bundled: true, enabled: true },
       { type: 'stdio', name: 'spoke', description: 'Spoke', cmd: 'spoke', args: [], enabled: true },
     ],
   }),
@@ -54,37 +54,35 @@ vi.mock('../../settings/extensions/agent-api', () => ({
 }));
 vi.mock('../../../toasts', () => ({ toastService: { success: vi.fn(), error: vi.fn() } }));
 
-function ChatWithMenu({ grant }: { grant: boolean }) {
-  // What BaseChat does: the chat looks its grant up; the menu only reads the answer.
-  const access = useChatCrewAccess(grant ? 'chat-1' : null);
+function ChatWithMenu({ sessionId }: { sessionId: string | null }) {
+  // What BaseChat does: the chat looks its grant up.
+  const access = useChatCrewAccess(sessionId);
   // The Tools popover's extensions list, as ToolsChip holds it (spec 3.7).
-  const picker = useExtensionPicker('chat-1', { open: true });
+  const picker = useExtensionPicker(sessionId, { open: true });
   return (
     <>
       <p data-testid="state">{access.state}</p>
+      <p data-testid="count">{picker.answered ? picker.activeCount : ''}</p>
       <ExtensionsPanel picker={picker} />
     </>
   );
 }
 
-function renderMenu(grants: unknown[], lookUp = true) {
+function renderMenu(sessionId: string | null) {
   mocks.crewHttp.mockImplementation(async (path: string) => {
     if (path === '/connections') return { connections: [connection] };
-    if (path === '/connections/conn-1/grants') return { grants };
+    if (path === '/connections/conn-1/grants')
+      return { grants: [grantRow({ session_id: 'chat-1' })] };
     return {};
   });
   render(
     <MemoryRouter>
-      <ChatWithMenu grant={lookUp} />
+      <ChatWithMenu sessionId={sessionId} />
     </MemoryRouter>
   );
 }
 
-async function openMenu() {
-  return screen.findByRole('option', { name: /^Crew/ });
-}
-
-describe('the Crew row of a chat’s extension menu', () => {
+describe('Crew in the Tools popover', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mocks.getSessionExtensions.mockResolvedValue({
@@ -97,38 +95,27 @@ describe('the Crew row of a chat’s extension menu', () => {
     });
   });
 
-  it('stays on and points to Revoke while the chat’s grant is active', async () => {
-    renderMenu([grantRow({ session_id: 'chat-1' })]);
+  it('lists no Crew row in a granted chat, and Disable all leaves its tools alone', async () => {
+    renderMenu('chat-1');
     await waitFor(() => expect(screen.getByTestId('state')).toHaveTextContent('active'));
-    const crew = await openMenu();
-    await waitFor(() => expect(crew).toHaveAttribute('aria-selected', 'true'));
-    expect(crew).toHaveAttribute('aria-disabled', 'true');
-    expect(crew).toHaveTextContent(accessCopy.extensionLocked);
+    const spoke = await screen.findByRole('option', { name: /^spoke/i });
+    await waitFor(() => expect(spoke).toHaveAttribute('aria-selected', 'true'));
+    expect(screen.queryByRole('option', { name: /crew/i })).toBeNull();
+    expect(screen.getAllByRole('option')).toHaveLength(1);
 
-    fireEvent.click(crew);
-    expect(mocks.removeFromAgent).not.toHaveBeenCalled();
+    // The chip counts what the person added: spoke, not the Crew capability the chat also holds.
+    await waitFor(() => expect(screen.getByTestId('count')).toHaveTextContent('1'));
 
-    // Disable all leaves the Crew row alone.
     fireEvent.click(screen.getByRole('button', { name: 'Disable all (1)' }));
     await waitFor(() => expect(mocks.removeFromAgent).toHaveBeenCalledTimes(1));
     expect(mocks.removeFromAgent).toHaveBeenCalledWith('spoke', 'chat-1', true);
+    expect(mocks.removeFromAgent).not.toHaveBeenCalledWith('crew', expect.anything(), true);
   });
 
-  it('toggles as before once the grant is revoked', async () => {
-    renderMenu([grantRow({ session_id: 'chat-1', expired: true })]);
-    await waitFor(() => expect(screen.getByTestId('state')).toHaveTextContent('revoked'));
-    const crew = await openMenu();
-    await waitFor(() => expect(crew).toHaveAttribute('aria-selected', 'true'));
-    expect(crew).not.toHaveAttribute('aria-disabled', 'true');
-    fireEvent.click(crew);
-    await waitFor(() => expect(mocks.removeFromAgent).toHaveBeenCalledWith('crew', 'chat-1', true));
-  });
-
-  it('toggles as before in a chat that never looked anything up', async () => {
-    renderMenu([grantRow({ session_id: 'chat-1' })], false);
-    const crew = await openMenu();
-    await waitFor(() => expect(crew).toHaveAttribute('aria-selected', 'true'));
-    expect(crew).not.toHaveAttribute('aria-disabled', 'true');
-    expect(mocks.crewHttp).not.toHaveBeenCalled();
+  it('lists no Crew row on Home either, and does not count it for the next chat', async () => {
+    renderMenu(null);
+    await screen.findByRole('option', { name: /^spoke/i });
+    expect(screen.queryByRole('option', { name: /crew/i })).toBeNull();
+    expect(screen.getByTestId('count')).toHaveTextContent('1');
   });
 });

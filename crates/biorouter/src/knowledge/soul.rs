@@ -69,7 +69,41 @@ pub const MEDITATION_CRON: &str = "0 0 3 * * *";
 pub const SOUL_COLOR: &str = "#9c6b3f";
 
 const SOUL_RECONCILE_LOCK: &str = ".soul-reconcile.lock";
+/// The SHA-256 of every Meditation workflow text Biorouter shipped before the
+/// current [`MEDITATION_WORKFLOW_YAML`]. A library or schedule copy whose bytes
+/// hash to one of these is stock, and startup replaces it with the current
+/// text; any other copy is the person's own and is left alone.
+///
+/// ⚠ Each entry is the hash of REAL shipped bytes, and a test reads every one
+/// of those texts back from `tests/fixtures/meditation/` and hashes it
+/// (`every_meditation_text_biorouter_shipped_is_recognised_as_stock`). Until
+/// diagnostics 20261006_2 this list held only the last two entries, which
+/// match no text ever committed, so no install was ever upgraded. A v1.85.2
+/// copy kept requiring `soul-writer`, the skill v1.85.3 renamed to
+/// `update-soul`, and once v1.90.0 made a workflow's skills required, Daily
+/// Meditation failed every night with "requires skill 'soul-writer'". The
+/// upgrade tests used made-up hashes, so nothing tied this list to what had
+/// shipped.
+///
+/// When [`MEDITATION_WORKFLOW_YAML`] changes, add the outgoing text's hash
+/// here and its bytes as a fixture; the test that pins the current hash fails
+/// until both are done.
 const PREVIOUS_MEDITATION_WORKFLOW_SHA256: &[&str] = &[
+    // 6ba0bf201, before v1.85.2: requires `soul-writer`.
+    "e457b997531525b0c023b9b6929e12c4045aa037649f9268296b572433af0fb8",
+    // v1.85.2 (60703d513): requires `soul-writer`. The copy in diagnostics
+    // 20261006_2, byte for byte.
+    "b03af2d3bf2143573ac1229eee7d56e22ba92a9577ac598c4099c22623124bab",
+    // v1.85.3 (6151978bb): the skill renamed to `update-soul`.
+    "c1dcdbd5268789e8dd1e612c4508ed32de65fdf2d620a1dc9581e6acff823ab5",
+    // 8c1ea5d34, before v1.89.0.
+    "7d316d31f17e6d4e8599b971f90c3bd2d9614221bba14d83d9eb6cdb2ad68656",
+    // v1.89.0 (cd7de3504).
+    "573f3f9c6ce2c9b821632d77a64ee029d525db7aaa832562cebb7d5d7cb397d1",
+    // v1.89.7 (eb594ded3).
+    "c060d3b563139f2d1a7fa8c8425fec1f3d178241cb939482e95b1959f2db762c",
+    // Listed before any of the above, and matching no text ever committed on
+    // any ref. Kept: a hash that matches nothing upgrades nothing.
     "142edbf98aca3e521649ddec05ed156ab16936303cc42cbe8cce1bc79c630772",
     "a0558805057ffae5257fa805b73253a1b615300bec563a0126f4a23884f9884c",
 ];
@@ -1334,6 +1368,145 @@ mod tests {
             Some(false)
         );
         assert_eq!(std::fs::read_to_string(scheduled_copy).unwrap(), customized);
+    }
+
+    /// Every Meditation text Biorouter has shipped, as the bytes it wrote to
+    /// disk, with where it came from. Read back from
+    /// `tests/fixtures/meditation/`, extracted from soul.rs at each commit that
+    /// changed the text.
+    const SHIPPED_MEDITATION_TEXTS: &[(&str, &[u8])] = &[
+        (
+            "6ba0bf201, before v1.85.2",
+            include_bytes!("../../tests/fixtures/meditation/e457b997.yaml"),
+        ),
+        (
+            "v1.85.2 (60703d513), diagnostics 20261006_2",
+            include_bytes!("../../tests/fixtures/meditation/b03af2d3.yaml"),
+        ),
+        (
+            "v1.85.3 (6151978bb)",
+            include_bytes!("../../tests/fixtures/meditation/c1dcdbd5.yaml"),
+        ),
+        (
+            "8c1ea5d34, before v1.89.0",
+            include_bytes!("../../tests/fixtures/meditation/7d316d31.yaml"),
+        ),
+        (
+            "v1.89.0 (cd7de3504)",
+            include_bytes!("../../tests/fixtures/meditation/573f3f9c.yaml"),
+        ),
+        (
+            "v1.89.7 (eb594ded3)",
+            include_bytes!("../../tests/fixtures/meditation/c060d3b5.yaml"),
+        ),
+    ];
+
+    /// The hash of [`MEDITATION_WORKFLOW_YAML`] as it ships today (v1.90.0,
+    /// f81f5d64c). Changing the text fails this pin, and the message says what
+    /// else has to move with it.
+    const CURRENT_MEDITATION_WORKFLOW_SHA256: &str =
+        "4c3e2f773574c46a7ed4572aabf475fd90bf197020a83fdd86fb02084c0a1ac1";
+
+    fn sha256_hex(bytes: &[u8]) -> String {
+        format!("{:x}", Sha256::digest(bytes))
+    }
+
+    /// Diagnostics 20261006_2: the stock-copy list held two hashes that match
+    /// no Meditation text ever committed, so every install kept whatever text
+    /// it was first given. This holds the list to the real bytes.
+    #[test]
+    fn every_meditation_text_biorouter_shipped_is_recognised_as_stock() {
+        for (shipped, bytes) in SHIPPED_MEDITATION_TEXTS {
+            let hash = sha256_hex(bytes);
+            assert!(
+                PREVIOUS_MEDITATION_WORKFLOW_SHA256.contains(&hash.as_str()),
+                "the Meditation text shipped in {shipped} ({hash}) is not in \
+                 PREVIOUS_MEDITATION_WORKFLOW_SHA256, so an install that has it is never upgraded"
+            );
+            // A fixture that is the current text would make this test pass
+            // while proving nothing about an older install.
+            assert_ne!(bytes, &MEDITATION_WORKFLOW_YAML.as_bytes(), "{shipped}");
+        }
+        let current = sha256_hex(MEDITATION_WORKFLOW_YAML.as_bytes());
+        assert_eq!(
+            current, CURRENT_MEDITATION_WORKFLOW_SHA256,
+            "MEDITATION_WORKFLOW_YAML changed. Add the outgoing text's hash \
+             ({CURRENT_MEDITATION_WORKFLOW_SHA256}) to PREVIOUS_MEDITATION_WORKFLOW_SHA256, save \
+             its bytes as tests/fixtures/meditation/<first 8 hex>.yaml and list it in \
+             SHIPPED_MEDITATION_TEXTS, then update this pin"
+        );
+        assert!(
+            !PREVIOUS_MEDITATION_WORKFLOW_SHA256.contains(&current.as_str()),
+            "the current text must not be listed as a previous one, or every startup rewrites it"
+        );
+    }
+
+    /// Diagnostics 20261006_2, end to end on the reporter's own bytes: the
+    /// v1.85.2 text in both the workflow library and the schedule's copy.
+    /// Startup must replace both with today's text, which needs `update-soul`,
+    /// and keep the schedule's bookkeeping. Before the fix both copies kept
+    /// `skills: [soul-writer]` and the job failed every night.
+    #[test]
+    fn a_v1_85_2_meditation_copy_is_upgraded_in_the_library_and_the_schedule() {
+        let reporter_copy = SHIPPED_MEDITATION_TEXTS[1].1;
+        assert!(String::from_utf8_lossy(reporter_copy).contains("soul-writer"));
+        let tmp = tempfile::tempdir().unwrap();
+
+        let library = tmp.path().join("workflows").join(MEDITATION_WORKFLOW_FILE);
+        std::fs::create_dir_all(library.parent().unwrap()).unwrap();
+        std::fs::write(&library, reporter_copy).unwrap();
+        assert_eq!(ensure_meditation_workflow(tmp.path()).unwrap(), library);
+        assert_eq!(
+            std::fs::read_to_string(&library).unwrap(),
+            MEDITATION_WORKFLOW_YAML
+        );
+
+        let scheduled_copy = tmp.path().join("daily-meditation.yaml");
+        std::fs::write(&scheduled_copy, reporter_copy).unwrap();
+        let jobs = vec![ScheduledJob {
+            id: MEDITATION_SCHEDULE_ID.to_string(),
+            source: scheduled_copy.to_string_lossy().into_owned(),
+            cron: MEDITATION_CRON.to_string(),
+            last_run: Some(chrono::Utc::now()),
+            currently_running: false,
+            paused: false,
+            current_session_id: None,
+            process_start_time: None,
+            run_count: 94,
+            max_runs: None,
+            creator_session_id: None,
+            last_error: Some(
+                "workflow requires skill 'soul-writer', but it is not installed".to_string(),
+            ),
+            owns_source: None,
+            armed_with_private_reach: None,
+        }];
+        let metadata_before = serde_json::to_value(&jobs[0]).unwrap();
+        assert_eq!(
+            upgrade_existing_meditation_workflow(
+                &jobs,
+                MEDITATION_WORKFLOW_YAML,
+                PREVIOUS_MEDITATION_WORKFLOW_SHA256,
+            )
+            .unwrap(),
+            Some(true)
+        );
+        let upgraded = std::fs::read_to_string(&scheduled_copy).unwrap();
+        assert_eq!(upgraded, MEDITATION_WORKFLOW_YAML);
+        assert_eq!(serde_json::to_value(&jobs[0]).unwrap(), metadata_before);
+        let workflow: Workflow = serde_yaml::from_str(&upgraded).unwrap();
+        assert_eq!(workflow.skills, Some(vec![SOUL_SKILL_DIR.to_string()]));
+
+        // The next startup finds today's text and leaves it alone.
+        assert_eq!(
+            upgrade_existing_meditation_workflow(
+                &jobs,
+                MEDITATION_WORKFLOW_YAML,
+                PREVIOUS_MEDITATION_WORKFLOW_SHA256,
+            )
+            .unwrap(),
+            Some(false)
+        );
     }
 
     fn make_legacy(svc: &KnowledgeService, id: &str, name: &str) {

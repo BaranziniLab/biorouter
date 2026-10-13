@@ -239,6 +239,67 @@ describe('ScrollArea scrollbar visibility', () => {
     expect(root).not.toHaveAttribute('data-scrolling');
   });
 
+  /**
+   * The 2026-10-12 defect: `scrollIntoView` scrolled the `overflow: hidden` root along with the
+   * viewport, the wheel returned only the viewport to 0, and the page's first lines stayed under
+   * the band. Chromium is where the root stops having anything to scroll
+   * (`settings/pageHeadroom.browser.test.tsx`); this is the component's own promise that a root
+   * which does scroll is put back.
+   */
+  it('puts its root back at the origin whenever anything scrolls it', () => {
+    const { container } = render(
+      <ScrollArea>
+        <div />
+      </ScrollArea>
+    );
+    const root = container.querySelector<HTMLElement>('.br-scroll-root')!;
+    const offset = { top: 0, left: 0 };
+    Object.defineProperty(root, 'scrollTop', {
+      configurable: true,
+      get: () => offset.top,
+      set: (value: number) => {
+        offset.top = value;
+      },
+    });
+    Object.defineProperty(root, 'scrollLeft', {
+      configurable: true,
+      get: () => offset.left,
+      set: (value: number) => {
+        offset.left = value;
+      },
+    });
+    offset.top = 435;
+    offset.left = 12;
+    act(() => {
+      root.dispatchEvent(new Event('scroll'));
+    });
+    expect(offset).toEqual({ top: 0, left: 0 });
+  });
+
+  it('counts a whole pixel as scrolled, so a fractional rest at the top keeps no fade', () => {
+    const { container } = render(
+      <ScrollArea>
+        <div />
+      </ScrollArea>
+    );
+    const root = container.querySelector('.br-scroll-root')!;
+    const viewport = container.querySelector<HTMLElement>('.br-scroll-viewport')!;
+    const state = scriptViewport(viewport, { height: 100, content: 1000 });
+    const scrollTo = (top: number) =>
+      act(() => {
+        state.top = top;
+        viewport.dispatchEvent(new Event('scroll'));
+      });
+    scrollTo(40);
+    expect(root).toHaveAttribute('data-scrolled', 'true');
+    scrollTo(0.5);
+    expect(root).toHaveAttribute('data-scrolled', 'false');
+    scrollTo(1);
+    expect(root).toHaveAttribute('data-scrolled', 'true');
+    scrollTo(0);
+    expect(root).toHaveAttribute('data-scrolled', 'false');
+  });
+
   it('hides the thumb at rest and shows it on hover or while scrolling, in main.css', async () => {
     const { readFileSync } = await import('node:fs');
     const { resolve } = await import('node:path');

@@ -2710,8 +2710,7 @@ fn app_platform_tools(name: &str) -> Option<&'static [&'static str]> {
     None
 }
 
-/// The extension config an app arms `name` with, or `None` when an app may not
-/// have it at all.
+/// The extension config an app arms `name` with, or why it is not armed.
 ///
 /// Scoped HERE and not at the auto-arm call sites, because both app paths build
 /// their configs through this one function — the main agent's
@@ -2721,26 +2720,109 @@ fn app_platform_tools(name: &str) -> Option<&'static [&'static str]> {
 /// comment: `arm_extensions` is the only caller of `Agent::add_extension` in
 /// this file, and `an_app_arms_extensions_through_exactly_one_call_site` reads
 /// this file's own source to keep it that way.
-fn manifest_extension_config(name: &str) -> Option<ExtensionConfig> {
+fn manifest_extension_config(name: &str) -> Result<ExtensionConfig, UnarmedExtension> {
+    resolve_manifest_extension(name, configured_extension)
+}
+
+/// Why an extension an app named was not armed, worded for the daemon log.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum UnarmedExtension {
+    /// A platform extension outside [`app_platform_tools`].
+    Platform,
+    /// Not built in, and nothing on this machine is configured under the name.
+    NotInstalled,
+    /// Configured on this machine, and turned off there.
+    TurnedOff,
+    /// Configured as a kind an app may not arm (named).
+    Kind(&'static str),
+}
+
+impl UnarmedExtension {
+    fn reason(self) -> String {
+        match self {
+            Self::Platform => {
+                "refused: an app may not arm this platform extension (see `app_platform_tools`)"
+                    .to_string()
+            }
+            Self::NotInstalled => "not armed: it is not built in and no extension with this name \
+                 is installed on this machine; install it under the same name"
+                .to_string(),
+            Self::TurnedOff => "not armed: the extension with this name is turned off on this \
+                 machine; turn it on under Extensions in Biorouter"
+                .to_string(),
+            Self::Kind(kind) => {
+                format!("refused: the extension with this name is a {kind} entry, which an app may not arm")
+            }
+        }
+    }
+}
+
+/// The extension an app arms for `name`, from Biorouter's own servers or from
+/// `configured`, this machine's extension configuration.
+///
+/// Issue #386. A manifest names an extension and nothing else: no command, path,
+/// address or credential, so it reads the same on the author's machine and on a
+/// recipient's. A name that is neither a platform extension nor one of
+/// Biorouter's built-in servers is therefore an extension the person installed,
+/// and it resolves against what THIS machine has configured under that name,
+/// with this machine's own command and credentials. It used to be armed as a
+/// built-in server whatever it was, so an installed stdio extension the app
+/// catalog offered (`ucsfomopagent`) failed every time with "Unknown builtin
+/// extension".
+///
+/// An entry the person turned off is not armed: an app is not a way around
+/// their switch. Nor is a platform entry (that would side-step
+/// [`app_platform_tools`]) or a frontend one (its tools run in a desktop
+/// window, which an app's page is not).
+fn resolve_manifest_extension(
+    name: &str,
+    configured: impl FnOnce(&str) -> Option<biorouter::config::ExtensionEntry>,
+) -> Result<ExtensionConfig, UnarmedExtension> {
     if PLATFORM_EXTENSIONS.contains_key(name) {
-        return Some(ExtensionConfig::Platform {
+        let tools = app_platform_tools(name).ok_or(UnarmedExtension::Platform)?;
+        return Ok(ExtensionConfig::Platform {
             name: name.to_string(),
             bundled: None,
             description: name.to_string(),
-            available_tools: app_platform_tools(name)?
-                .iter()
-                .map(|t| (*t).to_string())
-                .collect(),
+            available_tools: tools.iter().map(|t| (*t).to_string()).collect(),
         });
     }
-    Some(ExtensionConfig::Builtin {
-        name: name.to_string(),
-        display_name: None,
-        timeout: None,
-        bundled: None,
-        description: name.to_string(),
-        available_tools: Vec::new(),
-    })
+    if biorouter_mcp::BUILTIN_EXTENSIONS.contains_key(name) {
+        return Ok(ExtensionConfig::Builtin {
+            name: name.to_string(),
+            display_name: None,
+            timeout: None,
+            bundled: None,
+            description: name.to_string(),
+            available_tools: Vec::new(),
+        });
+    }
+    let entry = configured(name).ok_or(UnarmedExtension::NotInstalled)?;
+    if !entry.enabled {
+        return Err(UnarmedExtension::TurnedOff);
+    }
+    match entry.config {
+        config @ (ExtensionConfig::Stdio { .. }
+        | ExtensionConfig::StreamableHttp { .. }
+        | ExtensionConfig::Sse { .. }
+        | ExtensionConfig::InlinePython { .. }) => Ok(config),
+        ExtensionConfig::Platform { .. } => Err(UnarmedExtension::Kind("platform")),
+        ExtensionConfig::Frontend { .. } => Err(UnarmedExtension::Kind("frontend")),
+        ExtensionConfig::Builtin { .. } => Err(UnarmedExtension::Kind("built-in")),
+    }
+}
+
+/// The entry this machine's configuration holds for the extension `name`: by
+/// its exact name, else by the key the configuration files it under (case and
+/// spaces folded), which is how an installer names it.
+fn configured_extension(name: &str) -> Option<biorouter::config::ExtensionEntry> {
+    if let Some(entry) = biorouter::config::get_extension_entry_by_name(name) {
+        return Some(entry);
+    }
+    let key = biorouter::config::extensions::name_to_key(name);
+    biorouter::config::get_all_extensions()
+        .into_iter()
+        .find(|entry| biorouter::config::extensions::name_to_key(&entry.config.name()) == key)
 }
 
 /// Arm one app agent's extensions. The **only** `Agent::add_extension` call site
@@ -2754,14 +2836,17 @@ async fn arm_extensions(
     names: Vec<String>,
 ) {
     for name in names {
-        let Some(config) = manifest_extension_config(&name) else {
-            // Refused, and said out loud: a silently missing toolset is
-            // indistinguishable from a broken extension.
-            warn!(
-                app = %manifest.id, profile = ?profile, extension = %name,
-                "refused: an app may not arm this platform extension (see `app_platform_tools`)"
-            );
-            continue;
+        let config = match manifest_extension_config(&name) {
+            Ok(config) => config,
+            Err(unarmed) => {
+                // Refused, and said out loud: a silently missing toolset is
+                // indistinguishable from a broken extension.
+                warn!(
+                    app = %manifest.id, profile = ?profile, extension = %name,
+                    "{}", unarmed.reason()
+                );
+                continue;
+            }
         };
         if let Err(e) = agent.add_extension(config).await {
             warn!(app = %manifest.id, profile = ?profile, extension = %name, "add_extension failed: {e}");
@@ -12890,7 +12975,7 @@ mod tests {
                     continue;
                 }
                 assert!(
-                    manifest_extension_config(name).is_none(),
+                    manifest_extension_config(name).is_err(),
                     "an app was armed with the platform extension `{name}`; \
                      `available_tools: Vec::new()` means ALL of its tools"
                 );
@@ -12905,7 +12990,7 @@ mod tests {
 
             // `skills` is armed, and bounded.
             match manifest_extension_config(skills) {
-                Some(ExtensionConfig::Platform {
+                Ok(ExtensionConfig::Platform {
                     available_tools, ..
                 }) => assert_eq!(
                     available_tools,
@@ -12923,7 +13008,7 @@ mod tests {
             assert!(
                 matches!(
                     manifest_extension_config("developer"),
-                    Some(ExtensionConfig::Builtin { .. })
+                    Ok(ExtensionConfig::Builtin { .. })
                 ),
                 "a builtin MCP extension must still arm for an app"
             );
@@ -12958,6 +13043,107 @@ mod tests {
             assert!(
                 sites[0].contains("agent.add_ext"),
                 "the one call site changed shape unexpectedly: {sites:?}"
+            );
+        }
+
+        /// Issue #386. An app that names an extension the person installed
+        /// (`ucsfomopagent`, a stdio server in their configuration) is armed with
+        /// THAT entry: its command, arguments and credential keys come from this
+        /// machine, never from the manifest. It used to be armed as a built-in
+        /// server whatever it was, and failed every time with "Unknown builtin
+        /// extension: ucsfomopagent".
+        #[test]
+        fn an_app_arms_an_installed_extension_from_this_machines_configuration() {
+            use super::super::{resolve_manifest_extension, UnarmedExtension};
+            use biorouter::agents::ExtensionConfig;
+            use biorouter::config::ExtensionEntry;
+
+            let entry = |value: serde_json::Value| -> ExtensionEntry {
+                serde_json::from_value(value).expect("a config.yaml extension entry")
+            };
+            let installed = |enabled: bool| {
+                entry(serde_json::json!({
+                    "enabled": enabled,
+                    "type": "stdio",
+                    "name": "ucsfomopagent",
+                    "description": "UCSF OMOP",
+                    "cmd": "uvx",
+                    "args": ["ucsf-omop-agent"],
+                    "env_keys": ["UCSFOMOP_PASSWORD"],
+                    "timeout": 300
+                }))
+            };
+            let only = |want: &'static str, found: ExtensionEntry| {
+                move |name: &str| (name == want).then(|| found.clone())
+            };
+
+            match resolve_manifest_extension(
+                "ucsfomopagent",
+                only("ucsfomopagent", installed(true)),
+            ) {
+                Ok(ExtensionConfig::Stdio {
+                    name,
+                    cmd,
+                    args,
+                    env_keys,
+                    ..
+                }) => {
+                    assert_eq!(name, "ucsfomopagent");
+                    assert_eq!(cmd, "uvx");
+                    assert_eq!(args, vec!["ucsf-omop-agent".to_string()]);
+                    assert_eq!(env_keys, vec!["UCSFOMOP_PASSWORD".to_string()]);
+                }
+                other => panic!("an installed stdio extension must arm as itself: {other:?}"),
+            }
+
+            // The person's off switch holds: an app is not a way around it.
+            assert_eq!(
+                resolve_manifest_extension(
+                    "ucsfomopagent",
+                    only("ucsfomopagent", installed(false))
+                ),
+                Err(UnarmedExtension::TurnedOff)
+            );
+            // Nothing installed under the name: said as that, not as a broken
+            // built-in server.
+            assert_eq!(
+                resolve_manifest_extension("ucsfomopagent", |_: &str| None),
+                Err(UnarmedExtension::NotInstalled)
+            );
+            assert!(UnarmedExtension::NotInstalled
+                .reason()
+                .contains("install it under the same name"));
+
+            // A configured entry may not smuggle in what the platform allow-list
+            // refuses, nor tools that only a desktop window can run.
+            let platform = entry(serde_json::json!({
+                "enabled": true, "type": "platform", "name": "mytools", "description": ""
+            }));
+            assert_eq!(
+                resolve_manifest_extension("mytools", only("mytools", platform)),
+                Err(UnarmedExtension::Kind("platform"))
+            );
+            let frontend = entry(serde_json::json!({
+                "enabled": true, "type": "frontend", "name": "panel", "description": "",
+                "tools": [], "instructions": null
+            }));
+            assert_eq!(
+                resolve_manifest_extension("panel", only("panel", frontend)),
+                Err(UnarmedExtension::Kind("frontend"))
+            );
+
+            // Biorouter's own servers and the platform allow-list are decided
+            // before the configuration is read at all.
+            let unread = |name: &str| -> Option<ExtensionEntry> {
+                panic!("the configuration was read for `{name}`")
+            };
+            assert!(matches!(
+                resolve_manifest_extension("autovisualiser", unread),
+                Ok(ExtensionConfig::Builtin { .. })
+            ));
+            assert_eq!(
+                resolve_manifest_extension("workspace", unread),
+                Err(UnarmedExtension::Platform)
             );
         }
 

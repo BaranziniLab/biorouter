@@ -258,7 +258,7 @@ describe('the Chat tab rows in a real layout engine (spec 3.14, 5.7)', () => {
           (row) => row.getBoundingClientRect().height
         )
       );
-      expect(heights).toHaveLength(13);
+      expect(heights).toHaveLength(14);
       for (const height of heights) near(height, 40, 'capability row');
     } finally {
       await tab.close();

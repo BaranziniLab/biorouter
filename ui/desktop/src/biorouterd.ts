@@ -14,6 +14,7 @@ import { status } from './api';
 import { Client } from './api/client';
 import { ExternalBiorouterdConfig } from './utils/settings';
 import { isSharedDaemonEnabled } from './biorouterdSingleton';
+import { biorouterVersion } from './utils/biorouterVersion';
 import {
   createDaemonProxy,
   daemonLossOf,
@@ -493,7 +494,7 @@ async function inspectExistingDaemon(app: App, runtime: DaemonRuntime): Promise<
   }
   if (!runtime.user_action_installed)
     return { kind: 'unusable', why: 'it was started without a user-action key' };
-  const appVersion = typeof app.getVersion === 'function' ? app.getVersion() : undefined;
+  const appVersion = typeof app.getVersion === 'function' ? biorouterVersion(app) : undefined;
   if (appVersion) {
     let version: string;
     try {

@@ -231,6 +231,15 @@ import {
 } from './utils/diagnosticsExport';
 import { Client, createClient, createConfig } from './api/client';
 import installExtension, { REACT_DEVELOPER_TOOLS } from 'electron-devtools-installer';
+import {
+  adoptBiorouterVersion,
+  biorouterVersion,
+  registerAppVersionIpc,
+} from './utils/biorouterVersion';
+
+// Before anything reads the version: a launch handed `.vite/build/main.js` directly reports
+// Electron's own version, and electron-updater reads it when first used.
+adoptBiorouterVersion(app);
 
 // Updater functions (moved here to keep updates.ts minimal for release replacement)
 function shouldSetupUpdater(): boolean {
@@ -1152,7 +1161,7 @@ app.on('will-finish-launching', () => {
   if (process.platform === 'darwin') {
     app.setAboutPanelOptions({
       applicationName: 'Biorouter',
-      applicationVersion: app.getVersion(),
+      applicationVersion: biorouterVersion(app),
     });
   }
 });
@@ -6160,7 +6169,7 @@ function buildApplicationMenu() {
           },
         },
         { type: 'separator' as const },
-        { label: `v${version || app.getVersion()}`, enabled: false },
+        { label: `v${version || biorouterVersion(app)}`, enabled: false },
       ],
     },
 
@@ -7059,10 +7068,8 @@ async function appMain() {
     notification.show();
   });
 
-  // Handler for getting app version
-  ipcMain.on('get-app-version', (event) => {
-    event.returnValue = app.getVersion();
-  });
+  // Biorouter's version for Settings > App > Version, never Electron's.
+  registerAppVersionIpc(ipcMain, app);
 
   ipcMain.handle('open-directory-in-explorer', async (event, dirPath: string) => {
     try {

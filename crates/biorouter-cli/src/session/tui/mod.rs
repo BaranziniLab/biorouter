@@ -1590,33 +1590,17 @@ fn count_skills() -> usize {
     count_user_skills_in(&list_skills())
 }
 
-/// The six foundational built-ins surfaced as their own "Capabilities" section
-/// in the GUI and intentionally excluded from the extension list/count there
-/// (see ui/desktop/.../capabilities/capabilities.ts). The CLI status line was
-/// counting them as extensions, so it showed e.g. 11 where the GUI shows 5.
-/// Keys are normalized like the GUI's `nameToKey` (whitespace removed, lowercased).
-const CAPABILITY_KEYS: [&str; 6] = [
-    "developer",
-    "extensionmanager",
-    "skills",
-    "todo",
-    "memory",
-    "knowledge",
-];
-
-fn name_to_key(name: &str) -> String {
-    name.chars()
-        .filter(|c| !c.is_whitespace())
-        .collect::<String>()
-        .to_lowercase()
-}
-
-/// Enabled extensions, excluding the foundational capabilities — matches the
-/// count the GUI shows.
+/// Enabled extensions, excluding Biorouter's own capabilities, which the GUI
+/// lists in Settings → Chat → Capabilities and leaves out of every extension
+/// count (`ui/desktop/.../capabilities/capabilities.ts`). It asks
+/// `ExtensionConfig::is_capability`, the daemon's own classification, rather
+/// than a list of keys here: the list this replaced named six of the fourteen
+/// capabilities, so the status line counted Biorouter Copilot, Crew, Workspace
+/// Control and five more as extensions the person had installed.
 fn count_non_capability_extensions() -> usize {
     biorouter::config::get_enabled_extensions()
         .iter()
-        .filter(|ext| !CAPABILITY_KEYS.contains(&name_to_key(&ext.name()).as_str()))
+        .filter(|ext| !ext.is_capability())
         .count()
 }
 
@@ -2411,7 +2395,7 @@ mod tests {
     /// (#77). The five Contexts are seeded into the same directory on every
     /// start, so before this exclusion the terminal reported "5 skills" on a
     /// machine with none and disagreed with the GUI chip about the same word —
-    /// the drift `CAPABILITY_KEYS` already fixes for extensions.
+    /// the drift `count_non_capability_extensions` already fixes for extensions.
     ///
     /// Nothing asserted it. `count_skills` reads the real config directory, and
     /// on the common machine (contexts seeded, no user skills) the filtered and

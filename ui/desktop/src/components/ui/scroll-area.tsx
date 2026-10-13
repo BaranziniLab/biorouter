@@ -226,7 +226,11 @@ const ScrollArea = React.forwardRef<ScrollAreaHandle, ScrollAreaProps>(
         onScrollChange?.(true);
       }
 
-      setIsScrolled(scrollTop > 0);
+      // A whole pixel, not "above 0": where the engine keeps sub-pixel scroll offsets, a scroller
+      // can come to rest a fraction short of its top, and "> 0" then left the top fade on over a
+      // page that reads as at its top. Under a page's headroom (`--page-headroom`, taller than the
+      // fade) the first pixels of fade cover no row either way.
+      setIsScrolled(scrollTop >= 1);
 
       if (handleScrollProp) {
         handleScrollProp(viewport);
@@ -368,6 +372,28 @@ const ScrollArea = React.forwardRef<ScrollAreaHandle, ScrollAreaProps>(
         viewport.removeEventListener('scroll', onScroll);
         if (timer !== null) window.clearTimeout(timer);
       };
+    }, []);
+
+    // THE ROOT NEVER SCROLLS; the viewport does. The root is `overflow: hidden`, which stops a
+    // wheel but not `scrollIntoView` or focus scrolling, and nothing a person can do scrolls it
+    // back. That is the 2026-10-12 defect: opening Settings at a section scrolled the root along
+    // with the viewport, the wheel returned only the viewport to 0, and the page's first lines
+    // stayed under the band. Its cause, absolutely positioned content measured against the root,
+    // is closed in `main.css` (`.br-scroll-viewport`, `position: relative`), which leaves the root
+    // nothing to scroll. This puts it back if anything ever does, in the frame it moved (scroll
+    // events run before paint); with the CSS half removed, it alone holds the top through a smooth
+    // `scrollIntoView` (`settings/pageHeadroom.browser.test.tsx`, the instrument). Scroll events
+    // do not bubble, so the viewport's own never reach this listener.
+    React.useEffect(() => {
+      const root = rootRef.current;
+      if (!root) return;
+      const pin = () => {
+        if (root.scrollTop !== 0) root.scrollTop = 0;
+        if (root.scrollLeft !== 0) root.scrollLeft = 0;
+      };
+      pin();
+      root.addEventListener('scroll', pin, { passive: true });
+      return () => root.removeEventListener('scroll', pin);
     }, []);
 
     return (

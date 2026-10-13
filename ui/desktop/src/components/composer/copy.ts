@@ -98,8 +98,8 @@ export const COMPOSER_COPY = {
     crew: 'Connect this chat to a Crew channel',
     /** `/crew` in a chat with no session yet: Enter can only say to send a message first. */
     crewBeforeFirstMessage: 'Connect this chat to a Crew channel after your first message',
-    /** The Crew extension's row, when a query reaches it without the `/crew` command. */
-    crewExtension: 'Crew tools extension (advanced)',
+    /** The Crew capability's `/ext:` row, when a query reaches it without the `/crew` command. */
+    crewExtension: 'Crew tools (advanced)',
     diverge: 'Continue in a new chat with the full history',
   },
 

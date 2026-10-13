@@ -39,6 +39,7 @@ Additional in-process capabilities:
 | **Chat Recall** | Search conversation content across all session history | Disabled |
 | **Code Execution** | Execute JavaScript in a sandboxed environment for tool discovery and calling | Enabled |
 | **Workspace Control** | Work across conversations and delegate to visible subagents | Enabled |
+| **Crew** | Lets a chat you connect with `/crew` read its Crew channels and post updates there. A chat has Crew tools only once you grant it access, and only Revoke ends that access. | Enabled |
 
 ### The Extensions page
 

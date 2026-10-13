@@ -5,15 +5,38 @@
  * to generate (CLAUDE.md, "Desktop shell geometry").
  */
 
-/* A Note centres its action on a 16px first line (`.br-note-action`, calibrated for 12px prose).
-   This notice opens with a 20px title line (`text-label`), so the buttons sat 2px above the title's
-   middle (measured: 78 against 80, with the glyph already on 80). The 2px of top padding moves
-   the row's middle to the title's, and the notice keeps its height. */
+/* The name and its error in the first column, the actions in a second at the trailing edge, on the
+   name's row: the layout the Note's action slot gave this notice, 8px apart as the Note spaces its
+   slot, so the error wraps before the actions. The actions live in this grid rather than in that
+   slot so they can step aside from a toast standing over the column's right end
+   (`data-toast-aside`, main.css "toast clears the corner"), at most as far as the name before
+   them: the name keeps its own width (`justify-self: start`), which is what the watcher measures
+   that limit against. */
+.br-ext-notice-body {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  column-gap: 8px;
+  align-items: center;
+}
+
+.br-ext-notice-name {
+  grid-area: 1 / 1;
+  justify-self: start;
+}
+
+.br-ext-notice-error {
+  grid-area: 2 / 1;
+}
+
+/* Centred on the 20px name row, as the glyph is (the Note's slot centred on a 16px first line, 2px
+   above the name's middle). A 28px control on a 20px row is pulled in by half the difference on
+   both sides, so the row stays 20px and the notice stays as tall as its text. */
 .br-ext-notice-actions {
+  grid-area: 1 / 2;
   display: flex;
   align-items: center;
   gap: 4px;
-  padding-top: 2px;
+  margin-block: calc((var(--text-label--line-height, 20px) - var(--control-sm, 28px)) / 2);
 }
 
 /* A label that swaps for another in place (the Copy error button, `StableLabel`): both labels share

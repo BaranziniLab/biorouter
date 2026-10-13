@@ -240,6 +240,7 @@ describe('ExtensionsView — the band', () => {
       { type: 'stdio', name: 'spokeagent', description: 'SPOKE graph', enabled: false },
       // A shipped capability has no row here, so it is not counted.
       { type: 'platform', name: 'Workspace', description: 'Workspace Control', enabled: true },
+      { type: 'platform', name: 'crew', description: 'Crew', bundled: true, enabled: true },
     ];
     renderView();
 

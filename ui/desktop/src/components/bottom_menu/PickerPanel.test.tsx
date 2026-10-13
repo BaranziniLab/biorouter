@@ -1,5 +1,5 @@
 import * as React from 'react';
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import BuiltInBadge from '../ui/BuiltInBadge';
@@ -98,14 +98,101 @@ describe('the picker shell', () => {
   it('draws each switch as the picture of its row: out of the accessibility tree and the tab order', () => {
     render(<Harness initial={ROWS} />);
     // The row is the control. A live switch inside it would be a second tab stop
-    // and a second name for one thing.
+    // and a second announcement for one thing.
     expect(screen.queryAllByRole('switch')).toHaveLength(0);
     const pictures = document.querySelectorAll('.br-switch');
     expect(pictures).toHaveLength(ROWS.length);
     pictures.forEach((picture) => {
-      expect(picture).toHaveAttribute('aria-hidden', 'true');
+      // Its wrapper hides it. The switch carries no `aria-hidden` of its own: an
+      // element hidden by its own attribute has no name at all (below).
+      expect(picture.closest('.br-picker-row__switch')).toHaveAttribute('aria-hidden', 'true');
+      expect(picture).not.toHaveAttribute('aria-hidden');
       expect(picture).toHaveAttribute('tabindex', '-1');
     });
+  });
+
+  /**
+   * UI defect 3 (final check, 2026-10-12): the switches had no name, where every
+   * switch on the Extensions page is named by its row's title. A picture is still
+   * a switch to anything that reads the DOM, so it is named the same way: by the
+   * row's visible name, through `aria-labelledby`. The row stays the one thing a
+   * screen reader announces: the switch is out of the tree, and its name does not
+   * fold into the option's a second time.
+   */
+  it('names each switch by its row, and still announces each row once', () => {
+    render(<Harness initial={ROWS} />);
+    for (const row of ROWS) {
+      const option = screen.getByRole('option', { name: new RegExp(`^${row.name}`) });
+      const picture = screen.getByRole('switch', { name: row.name, hidden: true });
+      expect(option).toContainElement(picture);
+      expect(picture).toHaveAttribute('aria-checked', String(row.on));
+      // The visible name, referenced: not a second copy of it.
+      expect(picture).not.toHaveAttribute('aria-label');
+      expect(document.getElementById(picture.getAttribute('aria-labelledby')!)).toHaveTextContent(
+        row.name
+      );
+      // One announcement per row: nothing inside the option is exposed on its own,
+      // and the option says its name once.
+      expect(within(option).queryAllByRole('switch')).toHaveLength(0);
+      expect(within(option).queryAllByRole('checkbox')).toHaveLength(0);
+      expect(option).not.toHaveAccessibleName(new RegExp(`${row.name}.*${row.name}`));
+      // ...because it is named BY REFERENCE, to its visible text, and never from
+      // its content: Chromium reads the hidden switch's name into a name built from
+      // content (a focusable button, a `::after`), which jsdom never shows. The
+      // Chromium half is in toolsPopover.browser.test.tsx; this pins what it rests on.
+      const parts = option.getAttribute('aria-labelledby')!.split(' ');
+      expect(parts.map((id) => document.getElementById(id)!.className)).toEqual(
+        row.note ? ['br-picker-row__title', 'br-picker-row__note'] : ['br-picker-row__title']
+      );
+    }
+    expect(screen.getByRole('option', { name: /^gamma/ })).toHaveAccessibleName(
+      'gamma Unavailable in this chat (public model)'
+    );
+    expect(screen.getByRole('option', { name: 'alpha' })).toBeInTheDocument();
+    expect(screen.getByRole('option', { name: 'delta' })).toBeInTheDocument();
+  });
+
+  it('keeps a switch’s name when the row’s own label says its state', () => {
+    // The knowledge list's row label changes with the state ("Soul, visible to this
+    // chat"); a switch's name never does (spec 2.6), so it is the row's name alone.
+    function Base() {
+      const [visible, setVisible] = React.useState(true);
+      return (
+        <PickerPanel
+          listLabel="Knowledge bases"
+          searchPlaceholder="Search knowledge bases…"
+          query=""
+          onQueryChange={() => {}}
+          scopeLabel="This chat"
+          scopeHelp="Help."
+          emptyText="None"
+        >
+          <PickerRow
+            name="Soul"
+            checked={visible}
+            label={`Soul, ${visible ? 'visible to' : 'hidden from'} this chat`}
+            badge={<BuiltInBadge />}
+            onToggle={() => setVisible((value) => !value)}
+          />
+        </PickerPanel>
+      );
+    }
+    render(<Base />);
+    expect(screen.getByRole('switch', { name: 'Soul', hidden: true })).toHaveAttribute(
+      'aria-checked',
+      'true'
+    );
+    // The label names the row on its own: `aria-labelledby` would win over it.
+    expect(screen.getByRole('option')).not.toHaveAttribute('aria-labelledby');
+    fireEvent.click(screen.getByRole('option', { name: 'Soul, visible to this chat' }));
+    expect(screen.getByRole('option', { name: 'Soul, hidden from this chat' })).toHaveAttribute(
+      'aria-selected',
+      'false'
+    );
+    expect(screen.getByRole('switch', { name: 'Soul', hidden: true })).toHaveAttribute(
+      'aria-checked',
+      'false'
+    );
   });
 
   it('moves the highlight with the arrow keys and toggles the highlighted row on Enter', async () => {

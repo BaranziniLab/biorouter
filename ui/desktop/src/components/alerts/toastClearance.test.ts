@@ -11,7 +11,11 @@ import {
   TOAST_CLEAR_Y,
   TOAST_OBSTACLES,
   TOAST_PLACED_ATTRIBUTE,
+  TOAST_ASIDE,
+  TOAST_ASIDE_ATTRIBUTE,
+  TOAST_ASIDE_SIBLING_GAP,
   toastClearance,
+  toastAside,
   watchToastClearance,
   type ClearanceBox,
 } from './toastClearance';
@@ -205,6 +209,54 @@ describe('toastClearance: where the stack goes', () => {
   });
 });
 
+/**
+ * Final smoke (2026-10-12), the Extensions page at 1440: the sticky "1 of 2 extensions loaded"
+ * report at 1144,44 to 1424,146 stood over the load-failure notice's actions, which end at the
+ * note's 12px inner edge (1208): Copy error ran 1086 to 1176, the dismiss mark after it. The
+ * notice's name, "CDWAgent failed to load", ends at 697 on the same row.
+ */
+const REPORT_1440 = box(1144, 44, 1424, 146);
+const NOTICE_ACTIONS_1440 = box(975, 66, 1208, 94);
+const NOTICE_NAME_1440 = box(544, 70, 697, 90);
+
+describe('toastAside: how far a group of page actions steps aside', () => {
+  it('moves out from under the stack and 16px clear of it (the finding at 1440)', () => {
+    expect(toastAside(REPORT_1440, NOTICE_ACTIONS_1440, NOTICE_NAME_1440)).toBe(
+      NOTICE_ACTIONS_1440.right - (REPORT_1440.left - TOAST_CLEAR_BESIDE_GAP)
+    );
+    expect(toastAside(REPORT_1440, NOTICE_ACTIONS_1440, NOTICE_NAME_1440)).toBe(80);
+  });
+
+  it('is zero with no stack, or one with no area', () => {
+    expect(toastAside(null, NOTICE_ACTIONS_1440)).toBe(0);
+    expect(toastAside(box(1144, 44, 1144, 44), NOTICE_ACTIONS_1440)).toBe(0);
+  });
+
+  it('is zero for actions above or below the stack, however far right they reach', () => {
+    expect(toastAside(REPORT_1440, box(975, 150, 1208, 178))).toBe(0);
+    expect(toastAside(box(1144, 102, 1424, 204), NOTICE_ACTIONS_1440)).toBe(0);
+  });
+
+  it('keeps the gap for actions that end just short of the stack, and leaves them alone past it', () => {
+    expect(toastAside(REPORT_1440, box(903, 66, 1136, 94))).toBe(8);
+    expect(toastAside(REPORT_1440, box(895, 66, 1128, 94))).toBe(0);
+  });
+
+  it('stops 8px short of the name before them on their row, even with the stack still there', () => {
+    const longName = box(544, 70, 920, 90);
+    expect(toastAside(REPORT_1440, NOTICE_ACTIONS_1440, longName)).toBe(
+      NOTICE_ACTIONS_1440.left - (longName.right + TOAST_ASIDE_SIBLING_GAP)
+    );
+    expect(toastAside(REPORT_1440, NOTICE_ACTIONS_1440, longName)).toBe(47);
+    // Already touching: nowhere to go, and never right.
+    expect(toastAside(REPORT_1440, NOTICE_ACTIONS_1440, box(544, 70, 980, 90))).toBe(0);
+  });
+
+  it('is not held back by an element on another row', () => {
+    expect(toastAside(REPORT_1440, NOTICE_ACTIONS_1440, box(544, 96, 1200, 128))).toBe(80);
+  });
+});
+
 describe('TOAST_OBSTACLES names surfaces that exist', () => {
   /**
    * The selectors are other owners' class names (find in chat, the summary rail and popover),
@@ -229,6 +281,31 @@ describe('TOAST_OBSTACLES names surfaces that exist', () => {
       const source = readFileSync(join(__dirname, SOURCES[selector]), 'utf8');
       expect(source, SOURCES[selector]).toMatch(new RegExp(`className="${selector.slice(1)}[" ]`));
     }
+  });
+});
+
+describe('the page actions that step aside, and the rule that moves them', () => {
+  /**
+   * The attribute is written in another owner's component and read here and in main.css, so a
+   * rename on any side would silently put the toast back over the notice's actions.
+   */
+  it('the load-failure notice marks its actions, right after its name', () => {
+    const source = readFileSync(
+      join(__dirname, '../extensions/ExtensionLoadFailureNotice.tsx'),
+      'utf8'
+    );
+    expect(source).toContain(`<div className="br-ext-notice-actions" ${TOAST_ASIDE_ATTRIBUTE}="">`);
+    // The name is the element before them: the one the step stops short of.
+    expect(source.indexOf('br-ext-notice-name')).toBeLessThan(
+      source.indexOf('br-ext-notice-actions')
+    );
+  });
+
+  it('main.css turns the step into a translate, so nothing else moves', () => {
+    const css = readFileSync(join(__dirname, '../../styles/main.css'), 'utf8');
+    expect(css).toContain(
+      `[${TOAST_ASIDE_ATTRIBUTE}] {\n  translate: calc(-1 * var(${TOAST_ASIDE}, 0px)) 0;\n}`
+    );
   });
 });
 
@@ -347,6 +424,94 @@ describe('watchToastClearance', () => {
     expect(el.style.getPropertyValue(TOAST_CLEAR_WIDTH)).toBe('');
     expect(el.style.getPropertyValue(TOAST_CLEAR_X)).toBe('0px');
     expect(el.style.getPropertyValue(TOAST_CLEAR_Y)).toBe('0px');
+  });
+
+  /**
+   * The final smoke's page at 1440: the notice's name and its actions, and the report standing
+   * over them. The actions' box follows their own `translate`, as the browser's does.
+   */
+  function smokePage() {
+    Object.defineProperty(document.documentElement, 'clientWidth', {
+      configurable: true,
+      value: 1440,
+    });
+    Object.defineProperty(document.documentElement, 'clientHeight', {
+      configurable: true,
+      value: BOTTOM,
+    });
+    const section = layer();
+    const row = document.createElement('div');
+    row.appendChild(sized(document.createElement('div'), NOTICE_NAME_1440));
+    const actions = document.createElement('div');
+    actions.getBoundingClientRect = () => {
+      const shift = parseFloat(actions.style.getPropertyValue(TOAST_ASIDE)) || 0;
+      const r = NOTICE_ACTIONS_1440;
+      return {
+        left: r.left - shift,
+        right: r.right - shift,
+        top: r.top,
+        bottom: r.bottom,
+        x: r.left - shift,
+        y: r.top,
+        width: r.right - r.left,
+        height: r.bottom - r.top,
+      } as DOMRect;
+    };
+    actions.setAttribute(TOAST_ASIDE_ATTRIBUTE, '');
+    row.appendChild(actions);
+    document.body.appendChild(row);
+    const report = () => {
+      const el = sized(document.createElement('div'), REPORT_1440);
+      el.className = 'Toastify__toast-container Toastify__toast-container--top-right';
+      el.style.top = '44px';
+      el.style.right = '16px';
+      section.appendChild(el);
+      return el;
+    };
+    return { actions, report };
+  }
+
+  it('steps a page’s actions aside while a toast stands beside them, and back when it goes', async () => {
+    const { actions, report } = smokePage();
+    stop = watchToastClearance();
+    await frames();
+    expect(actions.style.getPropertyValue(TOAST_ASIDE)).toBe('');
+    const el = report();
+    await frames();
+    expect(actions.style.getPropertyValue(TOAST_ASIDE)).toBe('80px');
+    el.remove();
+    await frames();
+    expect(actions.style.getPropertyValue(TOAST_ASIDE)).toBe('');
+  });
+
+  it('keeps the actions under a resting pointer when the toast goes, until the pointer leaves', async () => {
+    const { actions, report } = smokePage();
+    let hovered = false;
+    actions.matches = (selector: string) =>
+      selector === ':hover' ? hovered : Element.prototype.matches.call(actions, selector);
+    stop = watchToastClearance();
+    const el = report();
+    await frames();
+    expect(actions.style.getPropertyValue(TOAST_ASIDE)).toBe('80px');
+    hovered = true;
+    el.remove();
+    await frames();
+    expect(actions.style.getPropertyValue(TOAST_ASIDE)).toBe('80px');
+    hovered = false;
+    actions.dispatchEvent(new Event('pointerleave'));
+    await frames();
+    expect(actions.style.getPropertyValue(TOAST_ASIDE)).toBe('');
+  });
+
+  it('gives the actions back when it stops watching', async () => {
+    const { actions, report } = smokePage();
+    stop = watchToastClearance();
+    report();
+    await frames();
+    expect(actions.style.getPropertyValue(TOAST_ASIDE)).toBe('80px');
+    stop();
+    stop = null;
+    expect(actions.style.getPropertyValue(TOAST_ASIDE)).toBe('');
   });
 
   it('stops following the page once the last toast has gone', async () => {

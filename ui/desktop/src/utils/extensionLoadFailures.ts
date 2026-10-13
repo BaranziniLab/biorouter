@@ -171,6 +171,34 @@ export function markExtensionLoadFailuresAnnounced(names: readonly string[]): vo
   write(current.map((entry) => (wanted.has(entry.name) ? { ...entry, announced: true } : entry)));
 }
 
+/**
+ * How many standing notices are on screen: the Extensions page's, from mount to unmount.
+ *
+ * While one is, the page is where a failure is announced. It lists every failure in this record,
+ * including one recorded while it is open (it subscribes), with the error text and something to do
+ * about it, so the corner's report of the same failure adds nothing and stands over the page's own
+ * controls. The final check (2026-10-12) found exactly that: once the notice's Dismiss had taken
+ * the notice away, the sticky "1 of 2 extensions loaded" covered the list's first switch, at 1440
+ * and at 1048 wide. `showExtensionLoadResults` asks this before it raises a failure toast.
+ */
+let noticesOnScreen = 0;
+
+/** The notice calls this on mount; the function it answers takes the presence back, once. */
+export function showingExtensionLoadFailureNotice(): () => void {
+  noticesOnScreen += 1;
+  let released = false;
+  return () => {
+    if (released) return;
+    released = true;
+    noticesOnScreen -= 1;
+  };
+}
+
+/** Whether a standing notice is on screen to announce a failure in the toast's place. */
+export function isExtensionLoadFailureNoticeShown(): boolean {
+  return noticesOnScreen > 0;
+}
+
 /** Drop one extension's record — the Dismiss control on the standing notice. */
 export function dismissExtensionLoadFailure(name: string): void {
   const current = read();
@@ -181,6 +209,7 @@ export function dismissExtensionLoadFailure(name: string): void {
 /** Test seam — the record is persistent by design, so it must be cleared explicitly. */
 export function resetExtensionLoadFailuresForTests(): void {
   cache = null;
+  noticesOnScreen = 0;
   try {
     localStorage.removeItem(STORAGE_KEY);
   } catch {

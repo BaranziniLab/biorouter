@@ -72,7 +72,7 @@ use std::io;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, LazyLock, Mutex};
 use std::time::Duration;
-use tokio_util::codec::{FramedRead, LinesCodec};
+use tokio_util::codec::{FramedRead, LinesCodec, LinesCodecError};
 use tokio_util::io::StreamReader;
 use url::Url;
 
@@ -127,6 +127,21 @@ const BUILTIN_WINDOW_SETTING: &str = "OLLAMA_NUM_CTX";
 /// provider's server), but it does honour a context limit set on its model,
 /// which `BIOROUTER_CONTEXT_LIMIT` is the way to set.
 const CUSTOM_WINDOW_SETTING: &str = "BIOROUTER_CONTEXT_LIMIT";
+
+/// The setting that bounds how long the built-in provider waits on a silent
+/// server.
+const BUILTIN_TIMEOUT_SETTING: &str = "OLLAMA_TIMEOUT";
+/// The same for an Ollama-engine provider declared in a `custom_providers`
+/// file: that file's `timeout_seconds`.
+const CUSTOM_TIMEOUT_SETTING: &str = "timeout_seconds";
+
+/// The settings a provider's errors tell the person to change: the built-in
+/// provider's, or a custom provider's.
+#[derive(Clone, Copy)]
+struct SettingNames {
+    window: &'static str,
+    timeout: &'static str,
+}
 
 /// An output budget below this is spent on reasoning before an answer begins,
 /// so a request that pins one gets thinking off unless Deep effort asked for it.
@@ -1234,31 +1249,56 @@ fn echoes_conversation(
 /// tells the model to run anything, and it never claims what did or did not
 /// run before — only that text is not a call.
 fn attempted_call_nudge(
-    call: &super::formats::text_tool_calls::AttemptedCall,
+    calls: &[super::formats::text_tool_calls::AttemptedCall],
     tools: &[Tool],
 ) -> String {
-    let meant = call
-        .meant
+    let quoted = |names: &[String], joiner: &str| {
+        names
+            .iter()
+            .map(|name| format!("'{name}'"))
+            .collect::<Vec<_>>()
+            .join(joiner)
+    };
+    let written = quoted(
+        &calls
+            .iter()
+            .map(|call| call.name.clone())
+            .collect::<Vec<_>>(),
+        " and ",
+    );
+    let meant = calls
         .iter()
-        .map(|name| format!("'{name}'"))
+        .map(|call| quoted(&call.meant, " or "))
         .collect::<Vec<_>>()
-        .join(" or ");
-    if call.meant.len() == 1 && call.meant[0] == call.name {
-        format!(
-            "Your last reply was a call to '{}' written as text, and text in a reply is never \
-             run as a tool call. If you intended to call {meant}, make it as a tool call with \
-             arguments that match its parameters; otherwise answer in text.",
-            call.name
-        )
-    } else {
-        format!(
-            "Your last reply was a call to '{}' written as text, and text in a reply is never \
-             run as a tool call; there is also no tool with that name. If you intended to call \
-             {meant}, make it as a tool call; otherwise answer in text. The tools you can call \
-             are: {}.",
-            call.name,
+        .join(" and ");
+    let exact = calls
+        .iter()
+        .all(|call| call.meant.len() == 1 && call.meant[0] == call.name);
+    match (calls.len(), exact) {
+        (1, true) => format!(
+            "Your last reply was a call to {written} written as text, and text in a reply is \
+             never run as a tool call. If you intended to call {meant}, make it as a tool call \
+             with arguments that match its parameters; otherwise answer in text."
+        ),
+        (1, false) => format!(
+            "Your last reply was a call to {written} written as text, and text in a reply is \
+             never run as a tool call; there is also no tool with that name. If you intended to \
+             call {meant}, make it as a tool call; otherwise answer in text. The tools you can \
+             call are: {}.",
             correction_tool_names(tools)
-        )
+        ),
+        (_, true) => format!(
+            "Your last reply was calls to {written} written as text, and text in a reply is \
+             never run as a tool call. If you intended to call {meant}, make them as tool calls \
+             with arguments that match their parameters; otherwise answer in text."
+        ),
+        (_, false) => format!(
+            "Your last reply was calls to {written} written as text, and text in a reply is \
+             never run as a tool call; not every one of those names is a tool. If you intended \
+             to call {meant}, make them as tool calls; otherwise answer in text. The tools you \
+             can call are: {}.",
+            correction_tool_names(tools)
+        ),
     }
 }
 
@@ -1385,7 +1425,28 @@ async fn collect_reply(
 
 /// An error out of the format module: the [`ProviderError`] it carries, or a
 /// decode failure.
-fn provider_error(error: anyhow::Error) -> ProviderError {
+fn provider_error(
+    error: anyhow::Error,
+    idle: Duration,
+    timeout_setting: &str,
+    text_bytes: usize,
+) -> ProviderError {
+    if error.chain().any(|cause| {
+        cause
+            .downcast_ref::<reqwest::Error>()
+            .or_else(|| match cause.downcast_ref::<LinesCodecError>()? {
+                LinesCodecError::Io(error) => error.get_ref()?.downcast_ref::<reqwest::Error>(),
+                _ => None,
+            })
+            .is_some_and(reqwest::Error::is_timeout)
+    }) {
+        return waited_too_long(
+            ProviderError::RequestFailed("response body read timed out".to_string()),
+            idle,
+            timeout_setting,
+            text_bytes,
+        );
+    }
     error.downcast::<ProviderError>().unwrap_or_else(|error| {
         ProviderError::RequestFailed(format!("Stream decode error: {error}"))
     })
@@ -1484,6 +1545,9 @@ fn decode_native(
     mut log: RequestLog,
     options: DecodeOptions,
     unknown_tool: Arc<Mutex<Option<UnknownToolCalled>>>,
+    idle: Duration,
+    timeout_setting: &'static str,
+    text_bytes: usize,
 ) -> MessageStream {
     let bytes = response.bytes_stream().map_err(io::Error::other);
     Box::pin(try_stream! {
@@ -1501,7 +1565,7 @@ fn decode_native(
                         }
                         mapped
                     }
-                    Err(error) => provider_error(error),
+                    Err(error) => provider_error(error, idle, timeout_setting, text_bytes),
                 };
                 let _ = log.provider_error(&error);
                 error
@@ -1520,6 +1584,8 @@ struct NativeTurn {
     model_config: ModelConfig,
     check: TurnCheck,
     window_setting: &'static str,
+    idle: Duration,
+    timeout_setting: &'static str,
     /// Every item of the turn, retry included, carries this id, so the agent
     /// folds them into one assistant message.
     message_id: String,
@@ -1555,6 +1621,8 @@ fn native_turn(turn: NativeTurn, first: Response, first_log: RequestLog) -> Mess
             model_config,
             mut check,
             window_setting,
+            idle,
+            timeout_setting,
             message_id,
             tools,
             mut retried,
@@ -1591,6 +1659,9 @@ fn native_turn(turn: NativeTurn, first: Response, first_log: RequestLog) -> Mess
                     message_id: Some(message_id.clone()),
                 },
                 unknown_tool.clone(),
+                idle,
+                timeout_setting,
+                check.text_bytes,
             );
             let mut recovered = recover_leaked_tool_calls(
                 decoded,
@@ -1704,11 +1775,13 @@ fn native_turn(turn: NativeTurn, first: Response, first_log: RequestLog) -> Mess
                     && !called_a_tool
                     && guard.finish_reason.as_deref() != Some("length"))
                 .then(|| {
-                    super::formats::text_tool_calls::attempted_call(&shown_text, &tools)
-                        .filter(|call| !echoes_conversation(&payload, call))
-                        .map(|call| {
+                    super::formats::text_tool_calls::attempted_calls(&shown_text, &tools)
+                        .filter(|calls| {
+                            !calls.iter().any(|call| echoes_conversation(&payload, call))
+                        })
+                        .map(|calls| {
                             (
-                                attempted_call_nudge(&call, &tools),
+                                attempted_call_nudge(&calls, &tools),
                                 "the model's whole reply was a tool call written as text; asking \
                                  it once more to make it as a call",
                             )
@@ -1838,6 +1911,13 @@ pub struct OllamaProvider {
     /// nothing.
     #[serde(skip)]
     window_setting: &'static str,
+    /// How long this server may stay silent before a request is given up on,
+    /// and the setting that changes it, both named when that happens
+    /// ([`waited_too_long`]).
+    #[serde(skip)]
+    idle: Duration,
+    #[serde(skip)]
+    timeout_setting: &'static str,
     /// The `num_ctx` chosen per model, once. Only filled from a resolution that
     /// had `/api/show`'s answer, so a server that was briefly unreachable is
     /// asked again rather than pinned to a window chosen without the model's
@@ -1882,7 +1962,10 @@ impl OllamaProvider {
             true,
             Self::metadata().name,
             read_settings(config),
-            BUILTIN_WINDOW_SETTING,
+            SettingNames {
+                window: BUILTIN_WINDOW_SETTING,
+                timeout: BUILTIN_TIMEOUT_SETTING,
+            },
         )
     }
 
@@ -1904,7 +1987,10 @@ impl OllamaProvider {
             config.supports_streaming.unwrap_or(true),
             config.name.clone(),
             OllamaSettings::defaults(),
-            CUSTOM_WINDOW_SETTING,
+            SettingNames {
+                window: CUSTOM_WINDOW_SETTING,
+                timeout: CUSTOM_TIMEOUT_SETTING,
+            },
         )
     }
 
@@ -1915,7 +2001,7 @@ impl OllamaProvider {
         supports_streaming: bool,
         name: String,
         settings: OllamaSettings,
-        window_setting: &'static str,
+        names: SettingNames,
     ) -> Result<Self> {
         let auth = AuthMethod::Custom(Box::new(NoAuth));
         let resolved_base_url = base_url.to_string();
@@ -1931,7 +2017,9 @@ impl OllamaProvider {
             name,
             resolved_base_url,
             settings,
-            window_setting,
+            window_setting: names.window,
+            idle,
+            timeout_setting: names.timeout,
             windows: Mutex::new(HashMap::new()),
             live_context_limit: AtomicUsize::new(0),
             openai_compat: AtomicBool::new(false),
@@ -2373,6 +2461,7 @@ impl OllamaProvider {
                 .await
             })
             .await
+            .map_err(|e| waited_too_long(e, self.idle, self.timeout_setting, check.text_bytes))
             .inspect_err(|e| {
                 let _ = log.provider_error(e);
             })?;
@@ -2382,6 +2471,8 @@ impl OllamaProvider {
             model_config: model_config.clone(),
             check,
             window_setting: self.window_setting,
+            idle: self.idle,
+            timeout_setting: self.timeout_setting,
             message_id: format!("ollama_{}", uuid::Uuid::new_v4().simple()),
             tools: tools.to_vec(),
             retried: false,
@@ -2552,11 +2643,18 @@ impl OllamaProvider {
             })
             .await
             .map_err(|e| v1_capability_error(e, &self.model.model_name))
+            .map_err(|e| waited_too_long(e, self.idle, self.timeout_setting, check.text_bytes))
             .inspect_err(|e| {
                 let _ = log.provider_error(e);
             })?;
         let decoded = recover_leaked_tool_calls(
-            stream_openai_compat_checked(response, log),
+            stream_openai_compat_checked(
+                response,
+                log,
+                self.idle,
+                self.timeout_setting,
+                check.text_bytes,
+            ),
             RecoveryContext {
                 tools: tools.to_vec(),
                 provider: "ollama",
@@ -2570,6 +2668,50 @@ impl OllamaProvider {
             !tools.is_empty(),
         ))
     }
+}
+
+/// A request this server answered with nothing at all for `idle`, as the error
+/// the person reads; any other error is returned as it came.
+///
+/// Ollama sends no byte while it reads a prompt, so the first sign of a prompt
+/// too long for this computer is this bound firing before the reply begins.
+/// It used to arrive as "Request failed: error sending request for url
+/// (.../api/chat) (timeout)", which names neither the bound nor the prompt, and
+/// as a network blip the agent re-sent the whole prompt once more behind the
+/// first. Diagnostics 20261006_2: an Intel Mac reading about 25 prompt tokens a
+/// second against a first prompt of about 37,000 tokens and a 600-second
+/// bound. [`ProviderError::IdleTimeout`] is re-sent by nobody.
+///
+/// The token count is the request's text at four bytes a token, rounded: an
+/// order of magnitude to act on, not a measurement.
+fn waited_too_long(
+    error: ProviderError,
+    idle: Duration,
+    timeout_setting: &str,
+    text_bytes: usize,
+) -> ProviderError {
+    if !super::retry::is_timeout(&error) || matches!(error, ProviderError::IdleTimeout(_)) {
+        return error;
+    }
+    let tokens = ((text_bytes / 4 + 500) / 1000).max(1) * 1000;
+    let tokens = tokens
+        .to_string()
+        .as_bytes()
+        .rchunks(3)
+        .rev()
+        .map(|digits| String::from_utf8_lossy(digits).into_owned())
+        .collect::<Vec<_>>()
+        .join(",");
+    let waited = match idle.as_secs() {
+        1 => "1 second".to_string(),
+        seconds => format!("{seconds} seconds"),
+    };
+    ProviderError::IdleTimeout(format!(
+        "Ollama sent nothing back for {waited}, so Biorouter stopped waiting. This request's \
+         prompt is about {tokens} tokens, and a computer without a fast GPU can take longer \
+         than that just to read it. Raise {timeout_setting}, or turn off extensions this chat \
+         does not need so the prompt is shorter."
+    ))
 }
 
 /// R19 on the `/v1` fallback: OpenAI's error shape carries the same sentence
@@ -2593,7 +2735,13 @@ fn v1_capability_error(error: ProviderError, model: &str) -> ProviderError {
 /// Measured on Ollama 0.40.2: when ministral-3:8b called an undeclared tool
 /// after streaming text, `/v1` silently dropped the error and just ended the
 /// body, which the generic decoder handed on as a complete, successful reply.
-fn stream_openai_compat_checked(response: Response, mut log: RequestLog) -> MessageStream {
+fn stream_openai_compat_checked(
+    response: Response,
+    mut log: RequestLog,
+    idle: Duration,
+    timeout_setting: &'static str,
+    text_bytes: usize,
+) -> MessageStream {
     let bytes = response.bytes_stream().map_err(io::Error::other);
     Box::pin(try_stream! {
         let ended = Arc::new(AtomicBool::new(false));
@@ -2616,7 +2764,7 @@ fn stream_openai_compat_checked(response: Response, mut log: RequestLog) -> Mess
         tokio::pin!(decoded);
         while let Some(item) = decoded.next().await {
             let item = item.map_err(|error| {
-                let error = provider_error(error);
+                let error = provider_error(error, idle, timeout_setting, text_bytes);
                 let _ = log.provider_error(&error);
                 error
             })?;
@@ -5357,5 +5505,67 @@ mod tests {
             .to_string();
         assert!(text.contains("reasoning only"), "{text}");
         assert!(!text.contains("could not parse"), "{text}");
+    }
+
+    /// Diagnostics 20261006_2: what the reporter would read when the built-in
+    /// provider's 600-second bound fires before Ollama has read their 164,005
+    /// bytes of prompt. Anything that is not a timeout passes through as it
+    /// came.
+    #[test]
+    fn a_timeout_before_the_reply_names_the_setting_and_the_prompt_size() {
+        let timed_out = ProviderError::RequestFailed(
+            "error sending request for url (http://127.0.0.1:11434/api/chat) (timeout)".to_string(),
+        );
+        let error = waited_too_long(
+            timed_out,
+            Duration::from_secs(OLLAMA_TIMEOUT),
+            BUILTIN_TIMEOUT_SETTING,
+            164_005,
+        );
+        let ProviderError::IdleTimeout(text) = &error else {
+            panic!("{error:?}");
+        };
+        assert_eq!(
+            text,
+            "Ollama sent nothing back for 600 seconds, so Biorouter stopped waiting. This \
+             request's prompt is about 41,000 tokens, and a computer without a fast GPU can take \
+             longer than that just to read it. Raise OLLAMA_TIMEOUT, or turn off extensions this \
+             chat does not need so the prompt is shorter."
+        );
+        assert!(!crate::agents::mistakes::is_recoverable(&error));
+        assert!(super::super::retry::is_timeout(&error));
+
+        let others = || {
+            [
+                ProviderError::RequestFailed(
+                    "error sending request for url (http://127.0.0.1:9/api/chat) (failed to \
+                     connect to 127.0.0.1:9)"
+                        .to_string(),
+                ),
+                ProviderError::ServerError("502".to_string()),
+                ProviderError::IdleTimeout("already said".to_string()),
+            ]
+        };
+        for (other, unchanged) in others().into_iter().zip(others()) {
+            assert_eq!(
+                waited_too_long(other, Duration::from_secs(600), "X", 10),
+                unchanged
+            );
+        }
+    }
+
+    #[test]
+    fn a_decode_error_that_mentions_timeout_keeps_its_original_classification() {
+        let error = provider_error(
+            anyhow::anyhow!("invalid JSON in a reply about a timeout"),
+            Duration::from_secs(600),
+            BUILTIN_TIMEOUT_SETTING,
+            160_000,
+        );
+        assert!(matches!(error, ProviderError::RequestFailed(_)));
+        assert_eq!(
+            error.to_string(),
+            "Request failed: Stream decode error: invalid JSON in a reply about a timeout"
+        );
     }
 }

@@ -142,6 +142,50 @@ describe('the settings scroll-edge fade', () => {
    */
   it('keeps the data-scrolled attribute the selector depends on', () => {
     expect(SCROLL_AREA).toContain('data-scrolled={isScrolled}');
-    expect(SCROLL_AREA).toContain('setIsScrolled(scrollTop > 0)');
+    // A whole pixel: a scroller resting a fraction short of its top is at its top, and the fade
+    // must be off there (the 2026-10-12 report's "including fractional scrollTop values").
+    expect(SCROLL_AREA).toContain('setIsScrolled(scrollTop >= 1)');
+  });
+});
+
+/**
+ * The page's headroom (`--page-headroom`), the clear space under the band while the page is at
+ * its top (2026-10-12: "leave plenty of headroom at the top"). Measured in Chromium by
+ * `components/settings/pageHeadroom.browser.test.tsx`; what only the source can say is that it is
+ * ONE value, that it clears the fade, and that both pages read it rather than a padding literal.
+ */
+describe('the page headroom under the band', () => {
+  const px = (name: string) => {
+    const match = CSS.match(new RegExp(`--${name}:\\s*(\\d+)px;`));
+    if (!match) throw new Error(`main.css declares no --${name} in px`);
+    return Number(match[1]);
+  };
+
+  it('is at least 24px, and taller than the top fade, so a resting fade covers no row', () => {
+    expect(px('page-headroom')).toBeGreaterThanOrEqual(24);
+    expect(px('page-headroom')).toBeGreaterThan(px('scroll-fade-top'));
+  });
+
+  it('is declared once and read by one authored rule', () => {
+    expect(CSS.match(/--page-headroom:/g)).toHaveLength(1);
+    expect(CSS).toMatch(/\n\.br-page-headroom \{\s*padding-top: var\(--page-headroom\);\s*\}/);
+  });
+
+  it('is what Settings and the two provider pages start their column with', () => {
+    const read = (rel: string) => readFileSync(join(__dirname, '../components', rel), 'utf8');
+    const bodies: Record<string, string | undefined> = {
+      'settings/SettingsView.tsx': SETTINGS_VIEW.match(
+        /<ReadableContent size="chat" className="([^"]+)"/
+      )?.[1],
+    };
+    for (const rel of ['ProviderGuard.tsx', 'settings/providers/ProviderSettingsPage.tsx']) {
+      bodies[rel] = read(rel).match(/<ScrollArea[^>]*>\s*<div className="([^"]+)"/)?.[1];
+    }
+    for (const [rel, classes] of Object.entries(bodies)) {
+      expect(classes?.split(' '), rel).toContain('br-page-headroom');
+      // The top is the rule's alone: a `py-*` or `pt-*` beside it would be a second opinion
+      // that the unlayered rule silently overrules.
+      expect(classes, rel).not.toMatch(/\bp[ty]-\d/);
+    }
   });
 });

@@ -5,9 +5,11 @@
  * A `Note` centres its action on a 16px first line (`.br-note-action`, calibrated for 12px
  * prose). This notice opens with a 20px title line, so its two text actions and the dismiss mark
  * hung 2px above the title's middle (78 against 80 in the browser), with the glyph already on 80.
- * jsdom has no layout, so the middle of the title and the middle of each action can only be
- * compared here. This renders the real `ExtensionLoadFailureNotice` to markup and lays it out in
- * Chromium with the Note's own action rule cut from `main.css` and `extension-notice.css`.
+ * They now sit in the notice's own grid, on the title's row (so they can step aside from a
+ * toast, final smoke), centred on it with the row kept at 20px. jsdom has no layout, so the
+ * middle of the title and the middle of each action can only be compared here. This renders the
+ * real `ExtensionLoadFailureNotice` to markup and lays it out in Chromium with the Note's own
+ * action rule cut from `main.css` and `extension-notice.css`.
  *
  * Second case (vision round 6, V3-R4-5): Copy error turned into the narrower Copied for two
  * seconds and Ask Biorouter, beside it, slid 22px right and back. That one needs the click, so

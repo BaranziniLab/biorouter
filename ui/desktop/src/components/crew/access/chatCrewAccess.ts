@@ -140,16 +140,15 @@ export function forgetChannelLabels(): void {
 }
 
 // ── The per-chat answer, shared with controls that must not fetch on their own ──────────────
-// The chat's extension menu reads this so its Crew row can refuse to look switched off while the
-// grant stays active. It only ever reads what the chat's own lookup published.
+// The model picker reads this so a chat with Crew access says up front that its model is fixed
+// (`SwitchModelModal`). It only ever reads what the chat's own lookup published.
 
 type Listener = () => void;
 const published = new Map<string, { token: object; state: ChatCrewAccessState }>();
 
 /**
- * What the extension menu is told: whether the grant stands, not how the bar words it. An offline
- * chat's grant is still active — switching the Crew extension off would not end it — so the menu
- * keeps the Crew row locked on.
+ * What a reader is told: whether the grant stands, not how the bar words it. An offline chat's
+ * grant is still active, so it is published as active.
  */
 function publishedState(state: ChatCrewAccessState): ChatCrewAccessState {
   return state === 'offline' ? 'active' : state;
@@ -187,11 +186,6 @@ export function useChatCrewAccessState(
     () => (sessionId ? (published.get(sessionId)?.state ?? null) : null),
     () => null
   );
-}
-
-/** The extension key the Crew platform extension is registered under. */
-export function isCrewExtensionName(name: string): boolean {
-  return name.trim().toLowerCase() === 'crew';
 }
 
 // ── The lookup ───────────────────────────────────────────────────────────────────────────────

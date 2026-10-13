@@ -297,7 +297,7 @@ describe('keyboard focus returns to Add after a dialog closes (V3-R3-2)', () => 
     try {
       await pickByKeyboard(tab, EXTENSIONS_COPY.browse);
       // A press on the scrim dismisses an `info` dialog; the window corner is the scrim.
-      await tab.mouse.click(5, 5);
+      await tab.locator('[data-slot="dialog-overlay"]').click({ position: { x: 5, y: 5 } });
       await tab.getByRole('dialog').waitFor({ state: 'detached' });
       await tab.waitForTimeout(150);
       expect((await focused(tab)).tag).toBe('BODY');
