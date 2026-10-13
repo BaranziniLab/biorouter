@@ -99,10 +99,103 @@ try {
     await page.getByTestId('artifact-viewer').waitFor({ state: 'visible' });
   };
   const screenshot = async (name) => {
-    await page.screenshot({ path: path.join(outputDir, `${name}.png`) });
+    const png = await page.screenshot({ path: path.join(outputDir, `${name}.png`) });
+    if (name === 'image') {
+      const paintedPixels = await app.evaluate(
+        ({ nativeImage }, { encoded, bounds, viewport }) => {
+          const image = nativeImage.createFromBuffer(Buffer.from(encoded, 'base64'));
+          const size = image.getSize();
+          const pixels = image.toBitmap();
+          const scaleX = size.width / viewport.width;
+          const scaleY = size.height / viewport.height;
+          const left = Math.max(0, Math.ceil(bounds.x * scaleX));
+          const right = Math.min(size.width, Math.floor((bounds.x + bounds.width) * scaleX));
+          const top = Math.max(0, Math.ceil(bounds.y * scaleY));
+          const bottom = Math.min(size.height, Math.floor((bounds.y + bounds.height) * scaleY));
+          let count = 0;
+          for (let y = top; y < bottom; y++) {
+            for (let x = left; x < right; x++) {
+              const offset = (y * size.width + x) * 4;
+              if (
+                pixels[offset + 3] > 0 &&
+                Math.min(pixels[offset], pixels[offset + 1], pixels[offset + 2]) < 225
+              ) {
+                count++;
+              }
+            }
+          }
+          return count;
+        },
+        {
+          encoded: png.toString('base64'),
+          bounds: contentBounds.image.visible,
+          viewport: contentBounds.image.viewport,
+        }
+      );
+      assert(
+        paintedPixels >= 256,
+        `image screenshot has no meaningful painted content: ${paintedPixels}`
+      );
+      contentBounds.image.paintedPixels = paintedPixels;
+    }
   };
   const contentBounds = {};
   const assertVisibleContent = async (name, content, scroller) => {
+    await page.waitForFunction(() => {
+      const viewer = document.querySelector('[data-testid="artifact-viewer"]');
+      if (!viewer) return false;
+      const current = viewer.querySelector('[data-preview-layer="current"]')?.firstElementChild;
+      if (!current) return false;
+      for (let node = current; node; node = node.parentElement) {
+        if (
+          node
+            .getAnimations()
+            .some((animation) => animation.pending || animation.playState === 'running')
+        )
+          return false;
+      }
+      return true;
+    });
+    await content.evaluate(async (element) => {
+      const animations = [];
+      for (let node = element; node; node = node.parentElement) {
+        animations.push(...node.getAnimations());
+      }
+      await Promise.all(animations.map((animation) => animation.finished.catch(() => undefined)));
+    });
+    await page.evaluate(
+      () =>
+        new Promise((resolve) => {
+          requestAnimationFrame(() => requestAnimationFrame(resolve));
+        })
+    );
+    const motion = await content.evaluate((element) => {
+      const animations = [];
+      for (let node = element; node; node = node.parentElement) {
+        animations.push(...node.getAnimations());
+      }
+      return {
+        animations: animations.map((animation) => ({
+          playState: animation.playState,
+          pending: animation.pending,
+        })),
+      };
+    });
+    motion.marker = await page.getByTestId('artifact-viewer').getAttribute('data-preview-motion');
+    assert(
+      motion.animations.every(
+        (animation) => !animation.pending && animation.playState !== 'running'
+      ),
+      `${name} preview animation restarted`
+    );
+    const opacity = await content.evaluate((element) => {
+      let opacity = 1;
+      for (let node = element; node; node = node.parentElement) {
+        opacity *= Number.parseFloat(getComputedStyle(node).opacity);
+      }
+      return opacity;
+    });
+    assert(opacity >= 0.99, `${name} content is still faded: ${opacity}`);
     const viewport = await page.evaluate(() => ({
       width: window.innerWidth,
       height: window.innerHeight,
@@ -126,6 +219,8 @@ try {
       `${name} viewer is outside the native viewport: ${JSON.stringify({ viewer, viewport })}`
     );
     const visible = {
+      x: Math.max(bounds.x, clip.x, viewer.x, 0),
+      y: Math.max(bounds.y, clip.y, viewer.y, 0),
       width:
         Math.min(
           bounds.x + bounds.width,
@@ -148,7 +243,15 @@ try {
         visible.height >= Math.min(bounds.height, 32),
       `${name} content is outside the visible viewer: ${JSON.stringify({ bounds, visible })}`
     );
-    contentBounds[name] = { viewport, viewer, scroller: clip, content: bounds, visible };
+    contentBounds[name] = {
+      viewport,
+      viewer,
+      scroller: clip,
+      content: bounds,
+      visible,
+      opacity,
+      motion,
+    };
   };
 
   await open('open-volcano.png');
