@@ -142,6 +142,63 @@ pub(super) fn staged_findings(
     findings_with(root, entry, false, Some(staging), replaces_css)
 }
 
+fn authored_asset<'a>(
+    name: &str,
+    attrs: &'a [TagAttr],
+    script_text: Option<&str>,
+    entry: &str,
+    script_number: &mut usize,
+    out: &mut Vec<LintFinding>,
+) -> Option<(&'a str, bool, bool)> {
+    for handler in attrs
+        .iter()
+        .filter(|a| !a.duplicate && is_handler_name(&a.key))
+    {
+        let source = format!("function __handler(event){{\n{}\n}}", handler.value);
+        if let Some(finding) =
+            javascript_error(&source, &format!("{entry} {} handler", handler.key), false)
+        {
+            out.push(finding);
+        }
+    }
+    if name == "script" {
+        let kind = attr(attrs, "type");
+        if !script_is_executable(kind, attr(attrs, "language")) {
+            return None;
+        }
+        if kind.is_some_and(|t| t.trim().eq_ignore_ascii_case("importmap")) {
+            if let Err(e) =
+                serde_json::from_str::<serde_json::Value>(script_text.unwrap_or_default())
+            {
+                out.push(error(format!(
+                    "{entry} importmap: invalid JSON ({e}). Fix the import map before launch."
+                )));
+            }
+            return None;
+        }
+        let module = kind.is_some_and(|t| t.trim().eq_ignore_ascii_case("module"));
+        if let Some(src) = attr(attrs, "src") {
+            return Some((src, true, module));
+        }
+        *script_number += 1;
+        if let Some(finding) = javascript_error(
+            script_text.unwrap_or_default(),
+            &format!("{entry} inline script {script_number}"),
+            module,
+        ) {
+            out.push(finding);
+        }
+    } else if name == "link"
+        && attr(attrs, "rel").is_some_and(|rel| {
+            rel.split_ascii_whitespace()
+                .any(|word| word.eq_ignore_ascii_case("stylesheet"))
+        })
+    {
+        return attr(attrs, "href").map(|href| (href, false, false));
+    }
+    None
+}
+
 fn findings_with(
     root: &Path,
     entry: &str,
@@ -179,56 +236,15 @@ fn findings_with(
         if template_depth > 0 {
             return;
         }
-        for handler in attrs
-            .iter()
-            .filter(|a| !a.duplicate && is_handler_name(&a.key))
-        {
-            let source = format!("function __handler(event){{\n{}\n}}", handler.value);
-            if let Some(finding) =
-                javascript_error(&source, &format!("{entry} {} handler", handler.key), false)
-            {
-                out.push(finding);
-            }
-        }
-        let mut asset = None;
-        let mut module = false;
-        if name == "script" {
-            let kind = attr(&attrs, "type");
-            if !script_is_executable(kind, attr(&attrs, "language")) {
-                return;
-            }
-            if kind.is_some_and(|t| t.trim().eq_ignore_ascii_case("importmap")) {
-                if let Err(e) =
-                    serde_json::from_str::<serde_json::Value>(script_text.unwrap_or_default())
-                {
-                    out.push(error(format!(
-                        "{entry} importmap: invalid JSON ({e}). Fix the import map before launch."
-                    )));
-                }
-                return;
-            }
-            module = kind.is_some_and(|t| t.trim().eq_ignore_ascii_case("module"));
-            if let Some(src) = attr(&attrs, "src") {
-                asset = Some((src, true));
-            } else {
-                script_number += 1;
-                if let Some(finding) = javascript_error(
-                    script_text.unwrap_or_default(),
-                    &format!("{entry} inline script {script_number}"),
-                    module,
-                ) {
-                    out.push(finding);
-                }
-            }
-        } else if name == "link"
-            && attr(&attrs, "rel").is_some_and(|rel| {
-                rel.split_ascii_whitespace()
-                    .any(|word| word.eq_ignore_ascii_case("stylesheet"))
-            })
-        {
-            asset = attr(&attrs, "href").map(|href| (href, false));
-        }
-        if let Some((url, script)) = asset {
+        let asset = authored_asset(
+            &name,
+            &attrs,
+            script_text,
+            entry,
+            &mut script_number,
+            &mut out,
+        );
+        if let Some((url, script, module)) = asset {
             match local_asset(root, url) {
                 Ok(Some(path)) => {
                     let generated =
