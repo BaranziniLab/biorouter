@@ -22,6 +22,12 @@ def require(condition, message):
         raise RuntimeError(message)
 
 
+def stable_version(value):
+    if not re.fullmatch(r"(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)", value):
+        raise argparse.ArgumentTypeError("Release version must be stable major.minor.patch without a v prefix")
+    return value
+
+
 class ArtifactRedirectHandler(urllib.request.HTTPRedirectHandler):
     def redirect_request(self, request, fp, code, message, headers, new_url):
         destination = urllib.parse.urlsplit(new_url)
@@ -191,7 +197,7 @@ def cleanup(alice, bob, binary, state, runtime):
                         "Exact broker cleanup failed")
 
 
-def accept(binary, root, report, source_sha, run_id):
+def accept(binary, root, report, source_sha, run_id, version):
     require(os.geteuid() == 0 and os.uname().machine == "x86_64", "Native root-owned Linux CI required")
     require(not root.exists(), "Acceptance root must be fresh")
     root.mkdir(mode=0o755)
@@ -199,7 +205,8 @@ def accept(binary, root, report, source_sha, run_id):
     RUN_DIAGNOSTICS = root / "diagnostics"
     RUN_DIAGNOSTICS.mkdir(mode=0o700)
     require(binary.is_file() and not binary.is_symlink(), "Exact broker file required")
-    require(run([str(binary), "--version"]).stdout.strip() == b"biorouter-crew 1.92.0", "Broker version mismatch")
+    require(run([str(binary), "--version"]).stdout.strip() == ("biorouter-crew " + version).encode(),
+            "Broker version mismatch")
     binary_hash = hashlib.sha256(binary.read_bytes()).hexdigest()
     alice = create_person("crew_ci_alice", 64001, root)
     bob = create_person("crew_ci_bob", 64002, root)
@@ -278,7 +285,7 @@ def accept(binary, root, report, source_sha, run_id):
                 "Remote execution did not prove revoked-grant refusal")
         require(hashlib.sha256(database.read_bytes()).hexdigest() == database_hash, "Read-only SQLite fixture changed")
         evidence = dict(scope="native-signed-protocol-and-confinement-no-model",
-                                        sourceSha=source_sha, releaseRunId=run_id, brokerSha256=binary_hash,
+                                        version=version, sourceSha=source_sha, releaseRunId=run_id, brokerSha256=binary_hash,
                                         realUnixAccounts=True, explicitSignedUserGrant=True,
                                         actualRemoteJobReceipt={"job_id": job["job_id"], "status": job["status"],
                                                                 "exit_code": job["exit_code"], "stdout": job["stdout"],
@@ -308,5 +315,6 @@ if __name__ == "__main__":
     parser.add_argument("--report", type=Path, required=True)
     parser.add_argument("--source-sha", required=True)
     parser.add_argument("--release-run-id", required=True)
+    parser.add_argument("--version", type=stable_version, required=True)
     args = parser.parse_args()
-    accept(args.broker.absolute(), args.root, args.report, args.source_sha, args.release_run_id)
+    accept(args.broker.absolute(), args.root, args.report, args.source_sha, args.release_run_id, args.version)

@@ -2,6 +2,9 @@ name: Native Crew protocol and SQLite acceptance
 'on':
   workflow_call:
     inputs:
+      version:
+        required: true
+        type: string
       release_run_id:
         required: true
         type: string
@@ -10,6 +13,10 @@ name: Native Crew protocol and SQLite acceptance
         type: string
   workflow_dispatch:
     inputs:
+      version:
+        description: Stable release version without the v prefix
+        required: true
+        type: string
       release_run_id:
         description: Successful Linux GUI packages run containing the exact release broker
         required: true
@@ -34,6 +41,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           RELEASE_RUN: ${{ inputs.release_run_id }}
           SOURCE_SHA: ${{ inputs.source_sha }}
+          VERSION: ${{ inputs.version }}
         run: |
           python3 - <<'PY'
           import hashlib,importlib.util,json,os,re,shutil,urllib.request,zipfile
@@ -42,7 +50,7 @@ jobs:
           acceptance=importlib.util.module_from_spec(spec);spec.loader.exec_module(acceptance)
           opener=urllib.request.build_opener(acceptance.ArtifactRedirectHandler())
           repo='BaranziniLab/biorouter'
-          run=os.environ['RELEASE_RUN']; sha=os.environ['SOURCE_SHA']
+          run=os.environ['RELEASE_RUN']; sha=os.environ['SOURCE_SHA']; version=acceptance.stable_version(os.environ['VERSION'])
           assert re.fullmatch(r'[1-9][0-9]*',run) and re.fullmatch(r'[0-9a-f]{40}',sha)
           def api(path):
             request=urllib.request.Request('https://api.github.com/repos/'+repo+path,headers={'Authorization':'Bearer '+os.environ['GH_TOKEN'],'Accept':'application/vnd.github+json'})
@@ -51,7 +59,7 @@ jobs:
           assert metadata['head_sha']==sha and metadata['conclusion']=='success' and metadata['status']=='completed'
           assert metadata['path']=='.github/workflows/linux-gui-packages.yml'
           artifacts=json.load(api('/actions/runs/'+run+'/artifacts?per_page=100'))['artifacts']
-          matches=[a for a in artifacts if a['name']=='linux-backend-1.92.0' and not a['expired']]
+          matches=[a for a in artifacts if a['name']=='linux-backend-'+version and not a['expired']]
           assert len(matches)==1
           artifact=matches[0]; assert re.fullmatch(r'sha256:[0-9a-f]{64}',artifact['digest'])
           root=Path(os.environ['RUNNER_TEMP']); archive=root/'exact-release-backend.zip'; digest=hashlib.sha256()
@@ -65,12 +73,13 @@ jobs:
             members=[i for i in z.infolist() if i.filename=='biorouter-crew']
             assert len(members)==1 and 0<members[0].file_size<128*1024**2
             with z.open(members[0]) as data, (root/'exact-biorouter-crew').open('xb') as out: shutil.copyfileobj(data,out)
-          (root/'broker-artifact-proof.json').write_text(json.dumps({'sourceSha':sha,'releaseRunId':run,'artifactId':artifact['id'],'artifactSha256':digest.hexdigest(),'brokerSha256':hashlib.sha256((root/'exact-biorouter-crew').read_bytes()).hexdigest()},indent=2)+'\n')
+          (root/'broker-artifact-proof.json').write_text(json.dumps({'version':version,'sourceSha':sha,'releaseRunId':run,'artifactId':artifact['id'],'artifactSha256':digest.hexdigest(),'brokerSha256':hashlib.sha256((root/'exact-biorouter-crew').read_bytes()).hexdigest()},indent=2)+'\n')
           PY
       - name: Run native signed grants, confined SQLite, denial controls and Bob history
         env:
           SOURCE_SHA: ${{ inputs.source_sha }}
           RELEASE_RUN: ${{ inputs.release_run_id }}
+          VERSION: ${{ inputs.version }}
         run: |
           set -euo pipefail
           test "$(stat -c %u:%g:%a /var/lib)" = 0:0:755
@@ -80,7 +89,7 @@ jobs:
             --broker /var/lib/biorouter-native-acceptance-bin/biorouter-crew \
             --root /var/lib/biorouter-native-acceptance-fixture \
             --report "$RUNNER_TEMP/native-crew-acceptance.json" \
-            --source-sha "$SOURCE_SHA" --release-run-id "$RELEASE_RUN"
+            --source-sha "$SOURCE_SHA" --release-run-id "$RELEASE_RUN" --version "$VERSION"
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -101,6 +110,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           RELEASE_RUN: ${{ inputs.release_run_id }}
           SOURCE_SHA: ${{ inputs.source_sha }}
+          VERSION: ${{ inputs.version }}
         run: |
           python3 - <<'PY'
           import hashlib,importlib.util,json,os,re,stat,urllib.request,zipfile
@@ -108,14 +118,14 @@ jobs:
           spec=importlib.util.spec_from_file_location('acceptance',Path('scripts/crew-native-linux-acceptance.py'))
           acceptance=importlib.util.module_from_spec(spec);spec.loader.exec_module(acceptance)
           opener=urllib.request.build_opener(acceptance.ArtifactRedirectHandler())
-          run=os.environ['RELEASE_RUN'];sha=os.environ['SOURCE_SHA']
+          run=os.environ['RELEASE_RUN'];sha=os.environ['SOURCE_SHA'];version=acceptance.stable_version(os.environ['VERSION'])
           assert re.fullmatch(r'[1-9][0-9]*',run) and re.fullmatch(r'[0-9a-f]{40}',sha)
           def api(path):
             req=urllib.request.Request('https://api.github.com/repos/BaranziniLab/biorouter'+path,headers={'Authorization':'Bearer '+os.environ['GH_TOKEN'],'Accept':'application/vnd.github+json'})
             return opener.open(req,timeout=60)
           metadata=json.load(api('/actions/runs/'+run))
           assert metadata['head_sha']==sha and metadata['conclusion']=='success' and metadata['status']=='completed' and metadata['path']=='.github/workflows/linux-gui-packages.yml'
-          matches=[a for a in json.load(api('/actions/runs/'+run+'/artifacts?per_page=100'))['artifacts'] if a['name']=='linux-packages-1.92.0' and not a['expired']]
+          matches=[a for a in json.load(api('/actions/runs/'+run+'/artifacts?per_page=100'))['artifacts'] if a['name']=='linux-packages-'+version and not a['expired']]
           assert len(matches)==1
           artifact=matches[0];assert 0<artifact['size_in_bytes']<=2*1024**3 and re.fullmatch(r'sha256:[0-9a-f]{64}',artifact['digest'])
           root=Path(os.environ['RUNNER_TEMP'])/'native-linux-packages';root.mkdir(mode=0o700)
@@ -124,7 +134,7 @@ jobs:
             while block:=source.read(1048576):
               total+=len(block);assert total<=artifact['size_in_bytes'];digest.update(block);out.write(block)
           assert total==artifact['size_in_bytes'] and 'sha256:'+digest.hexdigest()==artifact['digest']
-          expected={'biorouter_1.92.0_amd64.deb','Biorouter-1.92.0-1.x86_64.rpm','biorouter-cli_1.92.0_amd64.deb','biorouter-cli-1.92.0-1.x86_64.rpm'}
+          expected={f'biorouter_{version}_amd64.deb',f'Biorouter-{version}-1.x86_64.rpm',f'biorouter-cli_{version}_amd64.deb',f'biorouter-cli-{version}-1.x86_64.rpm'}
           packages={}
           with zipfile.ZipFile(archive) as z:
             for name in sorted(expected):
@@ -140,14 +150,16 @@ jobs:
               packages[name]={'sha256':h.hexdigest(),'size':size}
           archive.unlink()
           (root/'packages.sha256').write_text(''.join(value['sha256']+'  '+name+'\n' for name,value in sorted(packages.items())))
-          (root/'source-proof.json').write_text(json.dumps(dict(sourceSha=sha,releaseRunId=run,artifactId=artifact['id'],artifactSha256=digest.hexdigest(),packages=packages),indent=2)+'\n')
+          (root/'source-proof.json').write_text(json.dumps(dict(version=version,sourceSha=sha,releaseRunId=run,artifactId=artifact['id'],artifactSha256=digest.hexdigest(),packages=packages),indent=2)+'\n')
           PY
       - name: Install and launch exact GUI and CLI DEBs on native Ubuntu
+        env:
+          VERSION: ${{ inputs.version }}
         run: |
           set -euo pipefail
           test "$(uname -m)" = x86_64
           sudo env -i PATH=/usr/sbin:/usr/bin:/sbin:/bin bash scripts/smoke-native-linux-packages.sh \
-            deb "$RUNNER_TEMP/native-linux-packages" "$GITHUB_WORKSPACE/scripts/smoke-linux-desktop.sh" | tee "$RUNNER_TEMP/native-linux-packages/deb-smoke.log"
+            deb "$RUNNER_TEMP/native-linux-packages" "$GITHUB_WORKSPACE/scripts/smoke-linux-desktop.sh" "$VERSION" | tee "$RUNNER_TEMP/native-linux-packages/deb-smoke.log"
           python3 - <<'PY'
           import json,os
           from pathlib import Path
@@ -156,6 +168,8 @@ jobs:
           (root/'deb-runtime.json').write_text(json.dumps(dict(**proof,distro='ubuntu-24.04',architecture='native-x86_64',uid=64011,chromiumSandbox=modes[0],status='PASS',checks=['GUI silent shared startup','shared reuse','missing-key replacement','fatal startup shutdown','per-window startup/shutdown','installed CLI/daemon/Crew versions','terminal help']),indent=2)+'\n')
           PY
       - name: Install and launch exact GUI and CLI RPMs on native x86 Rocky Linux
+        env:
+          VERSION: ${{ inputs.version }}
         run: |
           set -euo pipefail
           test "$(uname -m)" = x86_64
@@ -163,7 +177,7 @@ jobs:
             -v "$RUNNER_TEMP/native-linux-packages:/pkg:ro" \
             -v "$GITHUB_WORKSPACE/scripts/smoke-native-linux-packages.sh:/smoke/packages.sh:ro" \
             -v "$GITHUB_WORKSPACE/scripts/smoke-linux-desktop.sh:/smoke/desktop.sh:ro" \
-            rockylinux:9 bash /smoke/packages.sh rpm /pkg /smoke/desktop.sh | tee "$RUNNER_TEMP/native-linux-packages/rpm-smoke.log"
+            rockylinux:9 bash /smoke/packages.sh rpm /pkg /smoke/desktop.sh "$VERSION" | tee "$RUNNER_TEMP/native-linux-packages/rpm-smoke.log"
           python3 - <<'PY'
           import json,os
           from pathlib import Path

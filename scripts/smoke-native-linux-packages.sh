@@ -1,9 +1,15 @@
 #!/usr/bin/env bash
 # Native package installs share the canonical desktop assertions.
 set -euo pipefail
-FORMAT="${1:?usage: smoke-native-linux-packages.sh deb|rpm <package-dir> <smoke-script>}"
+FORMAT="${1:?usage: smoke-native-linux-packages.sh deb|rpm <package-dir> <smoke-script> <version>}"
 PACKAGES="${2:?package directory required}"
 SMOKE="${3:?desktop smoke script required}"
+VERSION="${4:?release version required}"
+if [[ ! "$VERSION" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+  printf '%s\n' 'Release version must be stable major.minor.patch without a v prefix' >&2
+  exit 2
+fi
+VERSION_PATTERN="${VERSION//./\\.}"
 [ "$(uname -m)" = x86_64 ]
 [ "$(id -u)" = 0 ]
 (cd "$PACKAGES" && sha256sum --check packages.sha256)
@@ -33,27 +39,27 @@ printf 'CHROMIUM_SANDBOX_MODE=%s\n' "$sandbox_mode"
 case "$FORMAT" in
   deb)
     apt-get update -qq
-    apt-get install -y -qq "$PACKAGES/biorouter_1.92.0_amd64.deb" xvfb
+    apt-get install -y -qq "$PACKAGES/biorouter_${VERSION}_amd64.deb" xvfb
     resources=/usr/lib/biorouter/resources/bin
-    qa "$resources/biorouter" --version | grep -Eq '(^| )1\.92\.0$'
-    qa "$resources/biorouterd" --version | grep -Eq '(^| )1\.92\.0$'
+    qa "$resources/biorouter" --version | grep -Eq "(^| )${VERSION_PATTERN}$"
+    qa "$resources/biorouterd" --version | grep -Eq "(^| )${VERSION_PATTERN}$"
     qa timeout -k 10 600 env BR_SMOKE_DISABLE_CHROMIUM_SANDBOX="$sandbox_switch" bash "$SMOKE" /usr/bin/biorouter
     dpkg --remove biorouter
-    apt-get install -y -qq "$PACKAGES/biorouter-cli_1.92.0_amd64.deb"
+    apt-get install -y -qq "$PACKAGES/biorouter-cli_${VERSION}_amd64.deb"
     ;;
   rpm)
-    dnf install -y -q "$PACKAGES/Biorouter-1.92.0-1.x86_64.rpm" xorg-x11-server-Xvfb
+    dnf install -y -q "$PACKAGES/Biorouter-${VERSION}-1.x86_64.rpm" xorg-x11-server-Xvfb
     resources=/usr/lib/Biorouter/resources/bin
-    qa "$resources/biorouter" --version | grep -Eq '(^| )1\.92\.0$'
-    qa "$resources/biorouterd" --version | grep -Eq '(^| )1\.92\.0$'
+    qa "$resources/biorouter" --version | grep -Eq "(^| )${VERSION_PATTERN}$"
+    qa "$resources/biorouterd" --version | grep -Eq "(^| )${VERSION_PATTERN}$"
     qa timeout -k 10 600 env BR_SMOKE_DISABLE_CHROMIUM_SANDBOX="$sandbox_switch" bash "$SMOKE" /usr/bin/Biorouter
     rpm --erase Biorouter
-    dnf install -y -q "$PACKAGES/biorouter-cli-1.92.0-1.x86_64.rpm"
+    dnf install -y -q "$PACKAGES/biorouter-cli-${VERSION}-1.x86_64.rpm"
     ;;
   *) exit 2 ;;
 esac
-qa biorouter --version | grep -Eq '(^| )1\.92\.0$'
-qa biorouterd --version | grep -Eq '(^| )1\.92\.0$'
-qa biorouter-crew --version | grep -Fx 'biorouter-crew 1.92.0'
+qa biorouter --version | grep -Eq "(^| )${VERSION_PATTERN}$"
+qa biorouterd --version | grep -Eq "(^| )${VERSION_PATTERN}$"
+qa biorouter-crew --version | grep -Fx "biorouter-crew $VERSION"
 qa biorouter term --help >/dev/null
 printf 'NATIVE_LINUX_PACKAGE_ACCEPTANCE_OK %s\n' "$FORMAT"
