@@ -125,9 +125,9 @@ Save the invitation your host sent, or only its `brcrew1:` line, in a file such 
 1. Run `biorouter crew connections join-invitation ./lab.txt --preview`. It saves nothing. `You'll join as` shows how your computer will treat the workspace. Your host can compare the fingerprint.
 2. Run it again without `--preview`. Type `y` and press Enter. It prints `Saved lab.` and the next commands to run.
 3. Run `biorouter crew setup`. It signs in, asking for your password or code in the terminal if the server wants one, installs Crew in your server account if it is missing, gives agents full access with a work folder as the desktop's Join does ([Set up Crew on a server](#set-up-crew-on-a-server)), and connects. It ends with `Connected.`
-4. Run `biorouter crew join`. It prints `Send Alice this code: 7QK2-M9XA-3JTP-WZ4D` and waits. When Crew is missing from your server account, `join` sets it up first, the same way.
+4. Run `biorouter crew join`. It prints `Send Alice this code: 7QK2-M9XA-3JTP-WZ4D` and waits. When Crew is missing from your server account, or the server wants you to sign in at the terminal, `join` runs the same setup first. If this computer has never connected to the workspace, that setup also gives agents full access, as step 3 does, and warns you once. If it has connected before, `join` keeps what agents may do there.
 5. Send the code to your host, for example by Slack or email.
-6. When the host enters it, `join` prints `You're in lab.`
+6. When the host enters it, `join` prints `You're in lab.` If agents still have no access on the server, it adds ``Your agent can't work on hpc yet. To let it, run biorouter crew --connection lab connections set-access full.`` ([Agent access](#agent-access)).
 
 To paste the invitation, pass `-`, end with Ctrl+D, and add `--yes`. If saving fails, the message names the option to add. One computer cannot use two institutions on one server.
 
@@ -137,7 +137,7 @@ For a workspace this computer already has, the preview says ``This computer alre
 
 If the server takes this computer's SSH key alone, step 3 can also be `auth` (which signs in and connects) or `connect`, followed by `setup` when Crew is not there yet.
 
-`--mode`, `--institution`, `--username` and `--name` override the invitation's values. `--ssh-target` uses a login from your SSH settings and ignores the invitation's port and jump host. `--port`, `--identity-file` and `--proxy-jump` set SSH details. A relative `--identity-file`, or one starting with `~/`, is made absolute, and an empty `--proxy-jump` means none. `--remote-root PATH` gives agents a server work folder, for private models only, and `--remote-execution` lets them run commands there. To give them full access instead, run `setup` or `connections set-access full` after saving ([Agent access](#agent-access)). See [Administration](administration.md).
+`--mode`, `--institution`, `--username` and `--name` override the invitation's values. `--ssh-target` uses a login from your SSH settings and ignores the invitation's port and jump host. Without `--ssh-target`, `--port` or `--proxy-jump`, the login saved is your username at the invitation's server, such as `bob@hpc.example.edu`. When a `Host` entry in your `~/.ssh/config` signs in as that same account to the same server on the same port, Crew saves the entry's name instead, so the key and jump host you set there apply. An entry Crew could not connect through, such as one with a `ProxyCommand` or a `RemoteCommand`, is passed over. `--port`, `--identity-file` and `--proxy-jump` set SSH details. A relative `--identity-file`, or one starting with `~/`, is made absolute, and an empty `--proxy-jump` means none. `--remote-root PATH` gives agents a server work folder, for private models only, and `--remote-execution` lets them run commands there. To give them full access instead, run `setup` or `connections set-access full` after saving ([Agent access](#agent-access)). See [Administration](administration.md).
 
 While `join` waits:
 

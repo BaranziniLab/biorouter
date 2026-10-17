@@ -3143,11 +3143,7 @@ async fn join_until(
             Ok(status) => status,
             Err(error) if !set_up && join_needs_setup(&error, api.interactive) => {
                 set_up = true;
-                if api.text() {
-                    let server = server_label(&api.connection().await?);
-                    print_lines(&[join_setup_line(&error, &server)])?;
-                }
-                member_setup(api, false, MemberAccess::Unchanged, &mut interrupt).await?;
+                set_up_for_join(api, &error, &mut interrupt).await?;
                 continue;
             }
             Err(error) => return Err(error),
@@ -3156,10 +3152,7 @@ async fn join_until(
         let code = status["code"].as_str().map(str::to_owned);
         let changed = shown.as_ref() != Some(&(state.clone(), code.clone()));
         match state.as_str() {
-            "joined" => {
-                api.stream(&status, &joined_lines(&status))?;
-                return Ok(Reply::Streamed);
-            }
+            "joined" => return say_joined(api, &status).await,
             "approved" => {
                 // Claim first and speak after (T-13): "approved" only means the host saved a
                 // code, and a claim refused because it isn't this computer's must never have
@@ -3172,8 +3165,7 @@ async fn join_until(
                         claimed = claim(api, &path) => claimed?,
                     };
                     if let Some(joined) = claimed {
-                        api.stream(&joined, &joined_lines(&joined))?;
-                        return Ok(Reply::Streamed);
+                        return say_joined(api, &joined).await;
                     }
                     rechecking = true;
                     continue;
@@ -3234,13 +3226,88 @@ fn join_needs_setup(error: &anyhow::Error, interactive: bool) -> bool {
     }
 }
 
-/// What `crew join` says before it sets Crew up ([`join_needs_setup`]).
-fn join_setup_line(error: &anyhow::Error, server: &str) -> String {
-    if error_code(error).as_deref() == Some("crew_bridge_missing") {
-        format!("Crew isn't set up in your account on {server} yet, so Biorouter sets it up first. That doesn't change what agents may do there.")
+/// The member setup `crew join` runs itself ([`join_needs_setup`]), after saying why. A
+/// connection never set up from this computer ([`never_set_up`]) gets the access `crew setup`
+/// gives it, since nobody has chosen yet (L8); one set up here before keeps what agents may do
+/// there, whatever the person chose (C10).
+async fn set_up_for_join(
+    api: &Api,
+    error: &anyhow::Error,
+    interrupt: impl std::future::Future<Output = std::io::Result<()>>,
+) -> Result<()> {
+    let connection = api.connection().await?;
+    let access = if never_set_up(&connection) {
+        MemberAccess::JoinDefault
     } else {
-        format!("{server} asks you to sign in. Biorouter signs in with setup, which also installs Crew in your account there if it's missing.")
+        MemberAccess::Unchanged
+    };
+    if api.text() {
+        let changes = member_agent_access(access, &connection).is_some();
+        let server = server_label(&connection);
+        print_lines(&[join_setup_line(error, &server, changes)])?;
     }
+    member_setup(api, false, access, interrupt).await?;
+    Ok(())
+}
+
+/// Whether `connection` has never been set up from this computer (L8): it has never connected
+/// (`node_id`, which the first verified connect pins, is null) and no bridge of this person
+/// answered for it in this daemon (`server_access` is null). One that connected once keeps its
+/// node, so a later choice of off stands. A daemon that does not report `node_id` is not taken
+/// to say never.
+fn never_set_up(connection: &Value) -> bool {
+    connection.get("node_id").is_some_and(Value::is_null) && connection["server_access"].is_null()
+}
+
+/// What `crew join` says before it sets Crew up ([`join_needs_setup`]); `changes` is whether
+/// that setup also sets what agents may do there ([`set_up_for_join`]).
+fn join_setup_line(error: &anyhow::Error, server: &str, changes: bool) -> String {
+    let access = if changes {
+        ", as biorouter crew setup does."
+    } else {
+        ". That doesn't change what agents may do there."
+    };
+    if error_code(error).as_deref() == Some("crew_bridge_missing") {
+        format!("Crew isn't set up in your account on {server} yet, so Biorouter sets it up first{access}")
+    } else {
+        format!("{server} asks you to sign in. Biorouter signs in with setup, which also installs Crew in your account there if it's missing{access}")
+    }
+}
+
+/// Say that this computer joined, adding, in text, what to run when agents still can't work on
+/// the server through the connection ([`no_server_access_line`], L8). The JSON value is the
+/// join status, as before.
+async fn say_joined(api: &Api, joined: &Value) -> Result<Reply> {
+    let mut lines = joined_lines(joined);
+    if api.text() {
+        if let Ok(connection) = api.connection().await {
+            lines.extend(no_server_access_line(&connection));
+        }
+    }
+    api.stream(joined, &lines)?;
+    Ok(Reply::Streamed)
+}
+
+/// The line `crew join` ends with when `connection` gives agents nothing on its server (no work
+/// folder: off), naming the command that turns it on: full access, or a folder where the
+/// connection says full access isn't available there.
+fn no_server_access_line(connection: &Value) -> Option<String> {
+    let has_folder = connection["remote_root"]
+        .as_str()
+        .is_some_and(|root| !root.trim().is_empty());
+    if has_folder {
+        return None;
+    }
+    let server = server_label(connection);
+    let name = safe_text(&shell_word(&connection_name(connection)));
+    let level = if connection["server_access"]["full_access_available"].as_bool() == Some(false) {
+        "folder --folder /path/on/the/server"
+    } else {
+        "full"
+    };
+    Some(format!(
+        "Your agent can't work on {server} yet. To let it, run biorouter crew --connection {name} connections set-access {level}."
+    ))
 }
 
 /// `GET …/join`, connecting first when the connection is not up.
@@ -3470,9 +3537,13 @@ enum MemberAccess {
     /// connection that has no work folder yet (OW-6: the setup flow's default), and otherwise
     /// nothing, so a folder or level the person chose stays as it is.
     Asked(Option<AgentAccess>),
-    /// A setup another command needed (`crew join` on a server without Crew): it installs and
-    /// connects, and never changes what agents may do there (C10). That was chosen when the
-    /// connection was saved, or is chosen with `connections set-access`.
+    /// The setup `crew join` needed on a connection never set up from this computer
+    /// ([`never_set_up`], L8): the setup flow's default, as `Asked(None)` gives it, since
+    /// nobody has chosen yet. `join` takes no level, so its warning names `set-access`.
+    JoinDefault,
+    /// The setup `crew join` needed on a connection set up from this computer before: it
+    /// installs and connects, and never changes what agents may do there (C10). That was
+    /// chosen then, or with `connections set-access`.
     Unchanged,
 }
 
@@ -3480,7 +3551,7 @@ enum MemberAccess {
 fn member_agent_access(access: MemberAccess, connection: &Value) -> Option<AgentAccess> {
     match access {
         MemberAccess::Asked(Some(level)) => Some(level),
-        MemberAccess::Asked(None) => {
+        MemberAccess::Asked(None) | MemberAccess::JoinDefault => {
             let has_folder = connection["remote_root"]
                 .as_str()
                 .is_some_and(|root| !root.trim().is_empty());
@@ -3488,6 +3559,30 @@ fn member_agent_access(access: MemberAccess, connection: &Value) -> Option<Agent
         }
         MemberAccess::Unchanged => None,
     }
+}
+
+/// The one warning a member's setup gives when it sets full access by default (OW-6), with how
+/// to choose otherwise: `crew setup` takes `--agent-access`, and `crew join` does not, so it
+/// names `set-access`. `None` when the level was named or nothing is set.
+fn full_access_notice(
+    access: MemberAccess,
+    level: Option<AgentAccess>,
+    connection: &Value,
+) -> Option<String> {
+    let otherwise = match access {
+        MemberAccess::Asked(None) => {
+            "To choose otherwise, add --agent-access folder or --agent-access off.".to_owned()
+        }
+        MemberAccess::JoinDefault => format!(
+            "To choose otherwise afterwards, run biorouter crew --connection {} connections set-access folder, or set-access off.",
+            safe_text(&shell_word(&connection_name(connection)))
+        ),
+        MemberAccess::Asked(Some(_)) | MemberAccess::Unchanged => return None,
+    };
+    let server = server_label(connection);
+    (level == Some(AgentAccess::Full)).then(|| format!(
+        "Setup lets your agent work as you on {server}: it can run any command your account can there, starting in a work folder it makes in your home folder. Public models never get this access. {otherwise}"
+    ))
 }
 
 /// A member's setup of the selected saved connection (OW-9): install or update Crew in the
@@ -3516,11 +3611,8 @@ async fn member_setup(
     }
     // OW-6: full access by default is said once, before anything is done, with how to choose
     // otherwise.
-    if access == MemberAccess::Asked(None) && level == Some(AgentAccess::Full) && api.text() {
-        let server = server_label(&connection);
-        print_lines(&[format!(
-            "Setup lets your agent work as you on {server}: it can run any command your account can there, starting in a work folder it makes in your home folder. Public models never get this access. To choose otherwise, add --agent-access folder or --agent-access off."
-        )])?;
+    if let Some(notice) = full_access_notice(access, level, &connection).filter(|_| api.text()) {
+        print_lines(&[notice])?;
     }
     let (status, mut lines) = run_setup(api, request, &login, interrupt).await?;
     // What agents may do is what the connection says now, not what the job could have set.
@@ -13520,9 +13612,42 @@ mod tests {
             ),
             Some(AgentAccess::Folder)
         );
-        // A setup another command needed never sets it.
+        // A setup `join` needed on a connection set up before never sets it.
         assert_eq!(
             member_agent_access(MemberAccess::Unchanged, &json!({"remote_root": null})),
+            None
+        );
+        // On one never set up here (L8) it is setup's default: full without a folder, and a
+        // folder saved with the invitation stays as it is.
+        assert_eq!(
+            member_agent_access(MemberAccess::JoinDefault, &json!({"remote_root": null})),
+            Some(AgentAccess::Full)
+        );
+        assert_eq!(
+            member_agent_access(MemberAccess::JoinDefault, &own_connection()),
+            None
+        );
+        // The one warning says how to choose otherwise in the command that gave it.
+        let full = Some(AgentAccess::Full);
+        let warned = |access| full_access_notice(access, full, &connection_with_levels());
+        let setup = warned(MemberAccess::Asked(None)).expect("warned");
+        assert!(
+            setup.starts_with("Setup lets your agent work as you on hpc: "),
+            "{setup}"
+        );
+        assert!(
+            setup.ends_with("add --agent-access folder or --agent-access off."),
+            "{setup}"
+        );
+        let join = warned(MemberAccess::JoinDefault).expect("warned");
+        assert!(
+            join.ends_with("run biorouter crew --connection 'UCSF HPC' connections set-access folder, or set-access off."),
+            "{join}"
+        );
+        assert_eq!(warned(MemberAccess::Asked(full)), None);
+        assert_eq!(warned(MemberAccess::Unchanged), None);
+        assert_eq!(
+            full_access_notice(MemberAccess::JoinDefault, None, &own_connection()),
             None
         );
     }
@@ -13531,8 +13656,10 @@ mod tests {
         json!({"remote_root": "/scratch/bob/proj"})
     }
 
-    /// L5: `crew join` on a server without Crew in the account sets it up (changing nothing
-    /// about agent access), then joins, in one command.
+    /// L5: `crew join` on a server without Crew in the account sets it up, then joins, in one
+    /// command. `standard`'s connection does not say whether it ever connected, so the setup
+    /// changes nothing about agent access (L8 is
+    /// `join_sets_a_new_connection_up_with_setup_s_access_and_keeps_a_chosen_one`).
     #[tokio::test]
     async fn join_sets_crew_up_when_the_server_has_none_then_joins() {
         let installed = Arc::new(AtomicBool::new(false));
@@ -13608,6 +13735,131 @@ mod tests {
             &refuse(409, Some("crew_ssh_unreachable"), "x"),
             true
         ));
+    }
+
+    /// A daemon whose saved connection is `connection` and whose server has no Crew in the
+    /// person's account until a member setup runs; then `join` finds the person joined.
+    fn joining_a_server_without_crew(
+        connection: Value,
+    ) -> impl Fn(&str, &str, Option<&Value>) -> Result<Value> {
+        let installed = AtomicBool::new(false);
+        let finished = setup_status(
+            "member",
+            "finished",
+            json!({"outcome": {"installed_version": "1.93.0", "reused": false, "connection_id": CONNECTION}}),
+        );
+        let daemon = setup_daemon(vec![finished]);
+        move |method: &str, path: &str, body: Option<&Value>| -> Result<Value> {
+            if method == "POST" && path == "/crew/setup" {
+                installed.store(true, Ordering::SeqCst);
+            }
+            match (method, path) {
+                ("GET", "/crew/connections") => Ok(json!({"connections": [connection.clone()]})),
+                ("GET", path) if path.ends_with("/join") && !installed.load(Ordering::SeqCst) => {
+                    Err(refuse(409, Some(NOT_CONNECTED), "Not connected."))
+                }
+                ("GET", path) if path.ends_with("/join") => {
+                    Ok(json!({"status": "joined", "workspace_name": "lab", "add_device": false}))
+                }
+                ("POST", path) if path.ends_with("/connect") => Err(refuse(
+                    409,
+                    Some("crew_bridge_missing"),
+                    "Crew isn't installed on the server.",
+                )),
+                _ => daemon(method, path, body),
+            }
+        }
+    }
+
+    /// L8: `crew join` setting Crew up on a connection never set up from this computer (saved
+    /// from an invitation, never connected) gives agents the access `crew setup` gives, full
+    /// where there is no work folder. One that connected before and whose person chose off
+    /// keeps off (C10), whatever the daemon has heard since it started.
+    #[tokio::test]
+    async fn join_sets_a_new_connection_up_with_setup_s_access_and_keeps_a_chosen_one() {
+        let mut saved = connection_with_levels();
+        saved["status"] = json!("disconnected");
+        saved["node_id"] = Value::Null;
+        saved["server_access"] = Value::Null;
+        assert!(never_set_up(&saved));
+        for format in [OutputFormat::Text, OutputFormat::StreamJson] {
+            let (api, fake) = api_with(format, joining_a_server_without_crew(saved.clone()));
+            run(&api, CrewCommand::Join(JoinArgs { no_wait: true }))
+                .await
+                .expect("joined");
+            let requests = setup_requests(&fake);
+            assert_eq!(requests.len(), 1, "{requests:?}");
+            assert_eq!(requests[0]["agent_access"], "full", "{requests:?}");
+        }
+
+        // Set to off after it connected once: its node is pinned, so nothing is sent.
+        let mut chosen = saved.clone();
+        chosen["node_id"] = json!("ab".repeat(32));
+        assert!(!never_set_up(&chosen));
+        let (api, fake) = api_with(OutputFormat::Text, joining_a_server_without_crew(chosen));
+        run(&api, CrewCommand::Join(JoinArgs { no_wait: true }))
+            .await
+            .expect("joined");
+        let requests = setup_requests(&fake);
+        assert_eq!(requests.len(), 1, "{requests:?}");
+        assert!(requests[0].get("agent_access").is_none(), "{requests:?}");
+
+        // A bridge this daemon heard from, or a daemon that does not report the node, is not
+        // taken to say never.
+        let mut heard = saved.clone();
+        heard["server_access"] = json!({"full_access_available": true});
+        assert!(!never_set_up(&heard));
+        let mut older = saved.clone();
+        older.as_object_mut().expect("object").remove("node_id");
+        assert!(!never_set_up(&older));
+    }
+
+    /// L8: what `join` says before it sets Crew up names whether that also sets agent access.
+    #[test]
+    fn join_says_whether_its_setup_sets_agent_access() {
+        let missing = refuse(409, Some("crew_bridge_missing"), "x");
+        let auth = refuse(401, Some("crew_ssh_auth_required"), "x");
+        assert_eq!(
+            join_setup_line(&missing, "hpc", true),
+            "Crew isn't set up in your account on hpc yet, so Biorouter sets it up first, as biorouter crew setup does."
+        );
+        assert_eq!(
+            join_setup_line(&missing, "hpc", false),
+            "Crew isn't set up in your account on hpc yet, so Biorouter sets it up first. That doesn't change what agents may do there."
+        );
+        assert_eq!(
+            join_setup_line(&auth, "hpc", true),
+            "hpc asks you to sign in. Biorouter signs in with setup, which also installs Crew in your account there if it's missing, as biorouter crew setup does."
+        );
+        assert_eq!(
+            join_setup_line(&auth, "hpc", false),
+            "hpc asks you to sign in. Biorouter signs in with setup, which also installs Crew in your account there if it's missing. That doesn't change what agents may do there."
+        );
+    }
+
+    /// L8: a joined connection that still gives agents nothing on the server (no work folder)
+    /// ends `join` with the command that turns it on; one with a folder or full access does not.
+    #[test]
+    fn join_ends_with_how_to_turn_agent_access_on_only_while_it_is_off() {
+        let off = connection_with_levels();
+        assert_eq!(
+            no_server_access_line(&off).as_deref(),
+            Some("Your agent can't work on hpc yet. To let it, run biorouter crew --connection 'UCSF HPC' connections set-access full.")
+        );
+        // Where full access isn't available, a folder is what turns it on.
+        let mut no_full = off.clone();
+        no_full["server_access"]["full_access_available"] = json!(false);
+        assert_eq!(
+            no_server_access_line(&no_full).as_deref(),
+            Some("Your agent can't work on hpc yet. To let it, run biorouter crew --connection 'UCSF HPC' connections set-access folder --folder /path/on/the/server.")
+        );
+        let mut folder = off.clone();
+        folder["remote_root"] = json!("/scratch/bob/proj");
+        assert_eq!(no_server_access_line(&folder), None);
+        let mut full = folder;
+        full["remote_access"] = json!("full");
+        full["remote_execution"] = json!(true);
+        assert_eq!(no_server_access_line(&full), None);
     }
 
     /// C24: a workspace from before names is deleted by its connection's name, the name the
