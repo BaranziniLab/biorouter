@@ -92,6 +92,23 @@ If a local model answers with text such as `{"name": "developer__shell", "argume
 
 [Context window and settings](../providers/ollama/context-window-and-settings.md) explains how biorouter sizes the window and catches a cut prompt.
 
+### "Provider reported an error while streaming" with Llama Server
+
+A chat on the Llama Server provider stops with this message, sometimes after part of the answer has appeared, and a later message in the same chat may work:
+
+```text
+Ran into this error: Request failed: Provider reported an error while streaming. Contact your provider administrator.
+
+Retrying will not help: this one returns the same way until its cause changes.
+```
+
+**Cause.** Biorouter 1.92.1 and earlier started `llama-server` with its default of four request slots sharing one context cache, 64k tokens on most computers. Every Biorouter request carries about 31k tokens of instructions and tool descriptions, so requests with different prompts running at the same time can fill that cache: two chats in different folders, a subagent or an app's agent beside a chat, or a scheduled job that runs during a chat. When they do not fit, `llama-server` stops every request it is running with `Context size has been exceeded.`, and those versions reported that as the message above. Nothing about your setup has to be wrong, and retrying does help once the other requests finish.
+
+**Fix.**
+
+1. **Update biorouter** to 1.93.0 or later. Llama Server then runs one request at a time and queues the rest, so requests cannot collide in the cache.
+2. **If it still happens**, the server is most likely one you started yourself: check whether `LLAMACPP_EXTERNAL_HOST` points at a `llama-server` running with its default settings, which share one cache between four slots. Start that server with `--parallel 1`, or give it a larger `--ctx-size`. Newer versions of biorouter name this failure ("ran out of room in its shared context cache") and retry it instead of giving up.
+
 ### Connection error with the Ollama provider on WSL
 
 If you encounter an error like this when setting up Ollama as the provider in biorouter:
