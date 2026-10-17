@@ -144,10 +144,22 @@ export type DialogIntent =
   | { kind: 'confirm'; confirm: ConfirmIntent };
 export type DialogKind = DialogIntent['kind'];
 
+/**
+ * What Ask my agent opens with when the composer opens it for `@agent` (OW-10): the task's words
+ * without the trigger, the whole draft they came from (cleared on success only while it is still
+ * that draft), and whether to open the model picker at once (the model was blocked or missing).
+ * Memory only: `rememberPaneIntent` keeps no agent intent, so task words never reach storage.
+ */
+export interface AgentPaneSeed {
+  task: string;
+  draft: string;
+  pickModel?: boolean;
+}
+
 /** The one non-modal details pane has one mode at a time. */
 export type PaneIntent =
   | { mode: 'details'; tab?: DetailsTab }
-  | { mode: 'agent' }
+  | { mode: 'agent'; seed?: AgentPaneSeed }
   | { mode: 'chat-access'; sessionId?: string };
 export type PaneMode = PaneIntent['mode'];
 
@@ -185,6 +197,12 @@ export interface CrewActionError {
    * connection verifies again, so it is dismissed then instead of staying under "Connected".
    */
   transport?: boolean;
+  /**
+   * What the person was doing when it failed, where the surface words it differently: `task-start`
+   * is an agent task started from the composer with `@agent` (OW-10), which the composer leads with
+   * "Couldn't start your agent." rather than "Couldn't send."
+   */
+  action?: 'task-start';
 }
 
 /**
@@ -201,10 +219,14 @@ export interface LostDraft {
   body: string;
 }
 
-/** What an error may say beyond its words: the composer it belongs to, and whether it is the link's. */
+/**
+ * What an error may say beyond its words: the composer it belongs to, whether it is the link's, and
+ * what the person was doing (`CrewActionError.action`).
+ */
 export interface ErrorDetails {
   destination?: string;
   transport?: boolean;
+  action?: 'task-start';
 }
 
 /**
@@ -259,6 +281,24 @@ export interface StartOwnedRunInput {
    * `clearBodyIfEquals(seed)` after a start.
    */
   clearBody?: boolean;
+  /**
+   * Which surface started it, and so where a failure is told: `pane` (the default) in Ask my
+   * agent's slot, `composer` in the composer's note with its own lead (`@agent`, OW-10). Never sent
+   * to the daemon.
+   */
+  surface?: 'pane' | 'composer';
+}
+
+/**
+ * `@agent` from the composer (OW-10): the task's words without the trigger, the draft they came
+ * from, the model the consent line showed (started exactly as shown, never re-read at Enter) and
+ * the channels it reads besides this one.
+ */
+export interface AskAgentInput {
+  prompt: string;
+  draftBody: string;
+  model: { provider: string; model: string };
+  contextChannels: string[];
 }
 
 /**
@@ -484,8 +524,18 @@ export interface CrewController {
   dismissLostDraft?(id: number): void;
 
   // Owned runs (module-scoped unknown-outcome lock, C10)
-  /** Records its error under `pane:agent`; resolves true only when the start was accepted. */
+  /**
+   * Records its error under `pane:agent`, or the composer's for `surface: 'composer'`; resolves
+   * true only when the start was accepted.
+   */
   startOwnedRun(input: StartOwnedRunInput): Promise<boolean>;
+  /**
+   * Start the person's agent from the composer (`@agent`, `/agent`, `/task`; OW-10): the same
+   * request as Ask my agent's, with its errors in the composer. On success the submitted words
+   * leave the draft and words typed since stay. Absent on a stand-in controller, where the composer
+   * opens Ask my agent instead.
+   */
+  askAgent?(input: AskAgentInput): Promise<boolean>;
   /** Where a start whose outcome is unknown went, while that lock holds; else null. */
   unknownRunDestination: UnknownRunDestination | null;
   inspectedPriorRun: boolean;

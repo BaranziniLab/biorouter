@@ -10,6 +10,7 @@ import {
 import type { Channel, CrewConnection, Snapshot, Team } from '../crewApi';
 import {
   connectionNames,
+  connectionServer,
   identityCopy,
   institutionLabel,
   isMachineIdShaped,
@@ -551,6 +552,168 @@ export function publicModelRefusal({
     .map((id) => snapshot.channels.find((item) => item.id === id))
     .find((item): item is Channel => item?.classification === 'restricted');
   return restricted ? agentCopy.publicRestricted(channelLabel(restricted)) : null;
+}
+
+/** What a task started here would be refused for before it reaches the daemon, as far as Crew sees. */
+export interface TaskStartCheck {
+  /** The task's context is protected, so only a private model can run it (`protectedRunContext`). */
+  privateOnly: boolean;
+  /** The institution a private model must be approved for, when the daemon will ask. */
+  institution: RunInstitution | null;
+  /** The model is not approved for that institution, in the panes' words. */
+  mismatchText: string | null;
+  /** A public model where the daemon refuses one, in the panes' words. */
+  publicText: string | null;
+  /** Either of the two: what Start would be disabled for. */
+  blockText: string | null;
+}
+
+/**
+ * The checks Ask my agent makes before Start, as one pure function: the pane runs it on the model
+ * it shows, and the composer runs it on the model `@agent` would start, so the two can never
+ * disagree about a model (OW-10). A conservative mirror, like each check it is made of: it can miss
+ * a refusal the daemon makes (a restricted message, an earlier grant), never invent one, and it
+ * decides only whether to start at once or to open the pane. The daemon and the broker decide.
+ *
+ * `model` is the model's display name for the sentences (`modelDisplay`), or `null` while no model
+ * is chosen, when there is no institution sentence to say.
+ */
+export function taskStartCheck({
+  provider,
+  providers,
+  connection,
+  snapshot,
+  channel,
+  contextChannels,
+  workspace,
+  channelLabel,
+  model,
+}: {
+  provider: ProviderDetails | undefined;
+  providers: readonly ProviderDetails[] | null;
+  connection: CrewConnection | null;
+  snapshot: Snapshot | null;
+  channel: Channel | null;
+  contextChannels: readonly string[];
+  workspace: string;
+  channelLabel(channel: Channel): string;
+  model: string | null;
+}): TaskStartCheck {
+  const privateOnly = protectedRunContext({ connection, snapshot, channel, contextChannels });
+  const institution = runInstitution({
+    connection,
+    snapshot,
+    channel,
+    contextChannels,
+    known: knownInstitutions(providers),
+  });
+  const mismatch = modelMismatch(provider, institution);
+  const mismatchText =
+    mismatch && institution && model !== null
+      ? mismatch.affiliation
+        ? agentCopy.institutionMismatch(model, mismatch.affiliation, workspace, institution.label)
+        : agentCopy.institutionUnstated(model, workspace, institution.label)
+      : null;
+  // A public model where the daemon refuses one (AG-F4): said before Start, which it disables, as a
+  // model the institution has not approved is.
+  const publicText = publicModelRefusal({
+    provider,
+    connection,
+    snapshot,
+    channel,
+    contextChannels,
+    workspace,
+    channelLabel,
+  });
+  return {
+    privateOnly,
+    institution,
+    mismatchText,
+    publicText,
+    blockText: mismatchText ?? publicText,
+  };
+}
+
+/** The broker reads up to 100 source channels for a run (design OW-3, `wide_runs_v1`). */
+export const WIDE_RUNS_CAPABILITY = 'wide_runs_v1';
+/** How many channels a wide run reads besides the one it posts in. */
+export const WIDE_RUN_EXTRA_CHANNELS = 99;
+
+/**
+ * Whether the workspace is open (design OW-1): every member manages its teams and channels. Read
+ * from a broker that says so; one that says nothing (before `open_governance_v1`) is managed.
+ */
+export function workspaceIsOpen(snapshot: Snapshot | null | undefined): boolean {
+  const workspace = snapshot?.workspace as { governance?: unknown } | undefined;
+  return workspace?.governance === 'open';
+}
+
+/**
+ * The channels a task started in `channel` reads by default besides it, or `null` where a task
+ * reads only what the person adds (every managed workspace, and an open one whose broker cannot
+ * take more than 20 sources). In an open workspace whose broker advertises `wide_runs_v1`, a task
+ * reads every channel the person is in and that is not archived, in the snapshot's order, up to
+ * {@link WIDE_RUN_EXTRA_CHANNELS} of them: an open workspace trusts its members with one another's
+ * channels, and the person could read each of them anyway. The pane lets them untick any.
+ *
+ * Presentation only. The broker checks the person's membership of every source when the run is
+ * created, and the daemon still refuses a public model for any Restricted one among them.
+ */
+export function wideRunChannels({
+  snapshot,
+  channel,
+  capabilities,
+}: {
+  snapshot: Snapshot | null;
+  channel: Channel | null;
+  capabilities: readonly string[] | null | undefined;
+}): string[] | null {
+  if (!snapshot || !channel || !workspaceIsOpen(snapshot)) return null;
+  if (!Array.isArray(capabilities) || !capabilities.includes(WIDE_RUNS_CAPABILITY)) return null;
+  const me = snapshot.actor.id;
+  return snapshot.channels
+    .filter(
+      (item) =>
+        item.id !== channel.id &&
+        !item.archived &&
+        Array.isArray(item.members) &&
+        item.members.includes(me)
+    )
+    .slice(0, WIDE_RUN_EXTRA_CHANNELS)
+    .map((item) => item.id);
+}
+
+/**
+ * What a connection lets the person's agent do on the server (design OW-6), from a daemon that
+ * says so: `full` only when the connection says `remote_access: "full"`, `folder` for any other
+ * connection with a work folder, and `null` without one. An older daemon sends no `remote_access`,
+ * which reads as the confined folder it always was.
+ */
+export function connectionRemoteAccess(
+  connection: CrewConnection | null | undefined
+): 'full' | 'folder' | null {
+  if (!connection?.remote_root) return null;
+  return (connection as { remote_access?: unknown }).remote_access === 'full' ? 'full' : 'folder';
+}
+
+/**
+ * The line Ask my agent and the composer's consent say about the server, or `null` without a work
+ * folder: "Can run commands as you on leo, starting in ~/crew-work/lab" (full access), "Can run
+ * commands in …" or "Can read …" (the confined folder). The server is named as the sidebar names
+ * it (`serverLabel`): the person's own alias for it, else the host. Only a private model gets any
+ * of it (the daemon sends no folder for a public one, and refuses a public model wherever there is
+ * a folder).
+ */
+export function remoteAccessText(connection: CrewConnection | null | undefined): string | null {
+  const root = connection?.remote_root;
+  const access = connectionRemoteAccess(connection);
+  if (!connection || !root || !access) return null;
+  if (access === 'full')
+    return agentCopy.fullAccess(
+      sanitizeDisplayText(connection.server_label) || connectionServer(connection),
+      root
+    );
+  return connection.remote_execution ? agentCopy.folderExec(root) : agentCopy.folderRead(root);
 }
 
 /**

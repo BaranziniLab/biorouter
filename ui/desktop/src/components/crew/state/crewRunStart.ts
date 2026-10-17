@@ -15,7 +15,7 @@ import { crewHttp, CrewHttpError, type Channel, type ObservedRun, type Snapshot 
 import { channelName, teamName } from '../identity/objectNames';
 import { crewActionCopy } from './copy';
 import { postDestination } from './crewSend';
-import { resetBetweenTests } from './draftStash';
+import { forgetStashedDraft, resetBetweenTests, stashedDraft } from './draftStash';
 import {
   draftScope,
   draftScopeChanged,
@@ -27,6 +27,7 @@ import {
 import type {
   ActionKey,
   ActOptions,
+  AskAgentInput,
   ErrorDetails,
   ErrorSource,
   ObservedPrivacy,
@@ -157,6 +158,11 @@ export interface CrewRunStartContext {
   generation: MutableRefObject<number>;
   setBody: Dispatch<SetStateAction<string>>;
   /**
+   * Take what was submitted out of the composer's body, leaving words typed since (QA M8), as a
+   * send does. `askAgent` calls it after a start from the composer; absent, the body stays.
+   */
+  clearSentBody?(sent: string): void;
+  /**
    * Observe again without clearing what is on screen: the verified view stays until the new
    * observation's first frame replaces it, or its end clears it.
    */
@@ -177,6 +183,7 @@ export interface CrewRunStartContext {
 
 export interface CrewRunStart {
   startOwnedRun(input: StartOwnedRunInput): Promise<boolean>;
+  askAgent(input: AskAgentInput): Promise<boolean>;
   unknownRunDestination: UnknownRunDestination | null;
   inspectedPriorRun: boolean;
   setInspectedPriorRun: Dispatch<SetStateAction<boolean>>;
@@ -225,6 +232,7 @@ export function useCrewRunStart(context: CrewRunStartContext): CrewRunStart {
     runs,
     generation,
     setBody,
+    clearSentBody,
     restartObservation,
     resetSurfaces,
     act,
@@ -385,11 +393,15 @@ export function useCrewRunStart(context: CrewRunStartContext): CrewRunStart {
   };
 
   /**
-   * A failed start, told where the person is (MSG2-N10): in the pane's slot while they are still
-   * on the channel the task was for, else in the connection bar, naming that channel. A failure of
-   * the link is marked so, so the connection verifying again takes it away instead of leaving it
-   * red under "Connected". Unless the task may have started (the gate above handles that), its
-   * words are kept for that channel's Ask my agent, which offers them again.
+   * A failed start, told where the person is (MSG2-N10): in the slot of the surface that started
+   * it while they are still on the channel the task was for — Ask my agent's, or the composer's for
+   * `@agent` (OW-10), marked `task-start` so it leads "Couldn't start your agent." and names the
+   * draft it answers — else in the connection bar, naming that channel. A failure of the link is
+   * marked so, so the connection verifying again takes it away instead of leaving it red under
+   * "Connected". Unless the task may have started (the gate above handles that), a pane task's
+   * words are kept for that channel's Ask my agent, which offers them again. A composer task's
+   * words are still the draft (put aside with the channel when the person moves on), so they are
+   * not kept twice.
    */
   const tellStartFailure = (
     failure: unknown,
@@ -401,12 +413,22 @@ export function useCrewRunStart(context: CrewRunStartContext): CrewRunStart {
   ) => {
     const outcomeUnknown =
       failure instanceof CrewHttpError && failure.code === 'crew_start_outcome_unknown';
-    if (!outcomeUnknown && frame) keepFailedTask(forConnection, forChannel, input.prompt, frame);
+    const composer = input.surface === 'composer';
+    if (!outcomeUnknown && frame && !composer)
+      keepFailedTask(forConnection, forChannel, input.prompt, frame);
     const message = failureMessage(failure, crewActionCopy.actionFallback);
     const code = failureCode(failure);
     const details = isTransportFailure(failure) ? { transport: true } : undefined;
     const now = view.current;
     if (now.connectionId === forConnection && now.channelId === forChannel) {
+      if (composer) {
+        reportError(message, 'composer', code, {
+          ...details,
+          destination: postDestination(forConnection, forChannel),
+          action: 'task-start',
+        });
+        return;
+      }
       reportError(message, 'pane:agent', code, details);
       return;
     }
@@ -425,8 +447,10 @@ export function useCrewRunStart(context: CrewRunStartContext): CrewRunStart {
     const forChannel = channelId;
     const channelLabel = channelName(channel);
     const frame = viewScopeFrame(connectionId, snapshot, observedPrivacy);
+    // One pending key for both surfaces, so the pane and the composer cannot start two at once.
+    const source = input.surface === 'composer' ? 'composer' : 'pane:agent';
     return (
-      (await act('pane:agent', 'run.start', async () => {
+      (await act(source, 'run.start', async () => {
         try {
           return await submitOwnedRun(input);
         } catch (failure) {
@@ -437,8 +461,35 @@ export function useCrewRunStart(context: CrewRunStartContext): CrewRunStart {
     );
   };
 
+  /**
+   * `@agent` from the composer (OW-10): the pane's request exactly — the same verified epochs,
+   * `posting_grant`, idempotency and unknown-outcome lock — with its failures told in the
+   * composer. On success what was submitted leaves the draft, and words typed since stay; a draft
+   * put aside for the channel meanwhile (the person moved on while it started) is forgotten while it
+   * is still those words, so coming back cannot offer to start the same task again.
+   */
+  const askAgent = async ({ prompt, draftBody, model, contextChannels }: AskAgentInput) => {
+    const forConnection = connectionId;
+    const forChannel = channelId;
+    const started = await startOwnedRun({
+      prompt,
+      provider: model.provider,
+      model: model.model,
+      contextChannels,
+      surface: 'composer',
+    });
+    if (!started) return false;
+    const now = view.current;
+    if (now.connectionId === forConnection && now.channelId === forChannel)
+      clearSentBody?.(draftBody);
+    if (stashedDraft(forConnection, forChannel)?.body === draftBody)
+      forgetStashedDraft(forConnection, forChannel);
+    return true;
+  };
+
   return {
     startOwnedRun,
+    askAgent,
     unknownRunDestination,
     inspectedPriorRun,
     setInspectedPriorRun,
