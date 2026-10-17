@@ -116,7 +116,7 @@ fn store() -> ArtifactStore {
 /// - `frame-src 'self' data:` — the app's own figure frames
 ///   (`/apps/<id>/figure-frame`, which carry their own policy) and `data:` frames.
 /// - `form-action 'none'`, `base-uri 'self'` — no form posts, and the
-///   `<base href="/apps/<id>/">` stays same-origin.
+///   `<base href="./">` (the app root, which the page is served at) stays same-origin.
 /// - `frame-ancestors 'none'` — nothing frames an app page. ⚠ It was `'self'`,
 ///   and every app shares this daemon's origin, so one app's page could frame
 ///   another's and read its socket token out of the frame's DOM. Nothing frames
@@ -322,7 +322,11 @@ async fn redirect_to_slash(Path(id): Path<String>) -> Response {
     if validate_artifact_id(&id).is_err() {
         return (StatusCode::BAD_REQUEST, "invalid app id").into_response();
     }
-    Redirect::temporary(&format!("/apps/{id}/")).into_response()
+    // Relative, so it stays under a reverse proxy's path prefix, which the
+    // daemon never sees (issue #402): `/apps/x` resolves `./x/` to `/apps/x/`,
+    // and `/<prefix>/apps/x` to `/<prefix>/apps/x/`. The id is letters, digits,
+    // `-` and `_` only, so it cannot turn the reference into anything else.
+    Redirect::temporary(&format!("./{id}/")).into_response()
 }
 
 /// The origin a browser on this machine reaches the daemon's own listener at,
@@ -408,8 +412,8 @@ struct PageQuery {
 }
 
 /// The answer to a launch link: a page of the app's own origin that sets the
-/// access cookie (when the token redeemed) and moves the browser on to
-/// `/apps/{id}/`, replacing the tokenised address in its history.
+/// access cookie (when the token redeemed) and moves the browser on to the app's
+/// page, replacing the tokenised address in its history.
 ///
 /// ⚠ A `200` page that navigates, not a `303`. The cookie is `SameSite=Strict`,
 /// and a navigation another site started stays cross-site through its
@@ -422,16 +426,15 @@ struct PageQuery {
 /// site. The navigation this page starts is same-site, so the cookie goes with
 /// it. A meta refresh rather than a script, because the page's policy allows no
 /// script at all.
-///
-/// The id is a validated app name, so it needs no escaping in the markup.
-fn launch_bounce(id: &str, cookie: Option<String>) -> Response {
-    let page = format!(
-        "<!doctype html><meta charset=utf-8>\
-         <meta http-equiv=\"refresh\" content=\"0;url=/apps/{id}/\">\
+fn launch_bounce(cookie: Option<String>) -> Response {
+    // `./` rather than `/apps/{id}/`: the link is redeemed at the page's own
+    // address, `/apps/{id}/?t=…`, so `./` is that page, and it stays so under a
+    // reverse proxy's path prefix the daemon never sees (issue #402).
+    let page = "<!doctype html><meta charset=utf-8>\
+         <meta http-equiv=\"refresh\" content=\"0;url=./\">\
          <title>Opening Biorouter app</title>\
          <body style=\"font:15px system-ui;margin:3rem auto;max-width:32rem\">\
-         <p>Opening the app. If nothing happens, <a href=\"/apps/{id}/\">open it here</a>.</p>"
-    );
+         <p>Opening the app. If nothing happens, <a href=\"./\">open it here</a>.</p>";
     let mut bounce = Response::builder()
         .status(StatusCode::OK)
         .header(header::CONTENT_TYPE, "text/html; charset=utf-8")
@@ -465,7 +468,7 @@ async fn serve_index(Path(id): Path<String>, Query(query): Query<PageQuery>) -> 
             return (StatusCode::BAD_REQUEST, "invalid app id").into_response();
         }
         let cookie = biorouter_server::auth::redeem_app_launch(&id, token);
-        return launch_bounce(&id, cookie);
+        return launch_bounce(cookie);
     }
     let st = store();
     if st.load_manifest(&id).is_err() {
@@ -513,7 +516,11 @@ async fn serve_index(Path(id): Path<String>, Query(query): Query<PageQuery>) -> 
         Ok(h) => h,
         Err(_) => return (StatusCode::NOT_FOUND, "entry missing").into_response(),
     };
-    let base_href = format!("/apps/{id}/");
+    // Relative: the page is served only at `/apps/{id}/`, so `./` is the app's
+    // root, and it stays so under a reverse proxy's path prefix, which the
+    // daemon never sees (issue #402). `/apps/{id}/` sent the browser to the
+    // proxy's root for the bundle and every asset.
+    let base_href = "./";
     // Embed this daemon's per-app socket token so the served page can
     // authenticate its agent WebSocket (checked in `agent_ws`).
     let ws_token = ws_token_for(&id, manifest.app_uid.as_deref());
@@ -524,7 +531,7 @@ async fn serve_index(Path(id): Path<String>, Query(query): Query<PageQuery>) -> 
     let html = biorouter_mcp::agent_drafter::render::assemble_app_page(
         &manifest,
         &entry_html,
-        Some(&base_href),
+        Some(base_href),
         Some(&ws_token),
         st.file_exists(&id, "dist/app.js"),
         &handler_nonce,
@@ -9038,7 +9045,7 @@ mod tests {
                 .headers()
                 .get(header::LOCATION)
                 .and_then(|value| value.to_str().ok()),
-            Some("/apps/safe-app_2/")
+            Some("./safe-app_2/")
         );
     }
 
@@ -9129,8 +9136,10 @@ mod tests {
             .await
             .unwrap();
         let bounce = String::from_utf8_lossy(&bounce);
+        // Relative: the link is redeemed at the page's own address, so `./` is
+        // the page, under a reverse proxy's path prefix too (issue #402).
         assert!(
-            bounce.contains(r#"<meta http-equiv="refresh" content="0;url=/apps/hrd1-launch/">"#),
+            bounce.contains(r#"<meta http-equiv="refresh" content="0;url=./">"#),
             "the page moves on to the app, and the token leaves the address bar: {bounce}"
         );
         assert!(!bounce.contains(&token), "{bounce}");
@@ -9139,9 +9148,14 @@ mod tests {
             !cookie.contains(&token),
             "the cookie is not the launch token"
         );
-        for flag in ["Path=/apps/hrd1-launch;", "HttpOnly", "SameSite=Strict"] {
+        for flag in ["HttpOnly", "SameSite=Strict"] {
             assert!(cookie.contains(flag), "{flag} missing from {cookie}");
         }
+        // No `Path`: the browser scopes the cookie to the directory of the
+        // address it redeemed the link at, `/apps/hrd1-launch` at the root and
+        // `/<prefix>/apps/hrd1-launch` behind a proxy that strips a prefix. A
+        // fixed `Path=/apps/hrd1-launch` was never sent back through one.
+        assert!(!cookie.contains("Path="), "{cookie}");
 
         // Spent, it sets nothing; nor does a token that was never minted.
         let spent = exchange(Some(token)).await;
@@ -10231,6 +10245,7 @@ mod tests {
             host,
             scheme: "http",
             renderer: None,
+            public: None,
         }
     }
 

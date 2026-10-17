@@ -576,6 +576,18 @@ prompt both catalog models made structured tool calls reliably.
   second request waits in-process instead of on a silent socket that the idle
   timeout would cut, and a model switch waits for in-flight leases. A streamed
   reply releases its lease when generation ends, never across a tool approval.
+  ⚠ The collision needs llama-server's DEFAULT slots (`--parallel` auto, one
+  unified cache); an explicit `--parallel N` splits the window N ways instead
+  (b11429: `n_ctx_slot = 16384` at 64k/4), which fails a large prompt up front
+  as `exceed_context_size_error`. So it now reaches Biorouter from an
+  `LLAMACPP_EXTERNAL_HOST` server started with defaults, and once a stream has
+  started it arrives as an in-stream `{"error":…}` frame, not a 500. Both forms
+  map to the same retryable `ServerError` (`LLAMA_SERVER_CACHE_FULL` in
+  `providers/utils.rs`), as does every other in-stream code-500 `server_error`
+  frame (`IN_STREAM_SERVER_FAULT`, its text withheld, and never the
+  "Compute error." marker that discards a GPU backend); the in-stream one used to read "Provider reported an
+  error while streaming" plus "Retrying will not help", which is how v1.92.1's
+  default-slot sidecar showed it (#401, measured on b9611 and b11429).
 - **Security:** a fresh random API key per launch, written 0600 to
   `<data>/llamacpp/run/<pid>.key` and passed with `--api-key-file` after the
   extra args; the provider sends it as Bearer and `/health` stays public (the
@@ -2039,7 +2051,12 @@ replaced a standalone `biorouter-headless` binary and its Linux tarball, both de
   `routes::UpgradeOrigin::is_this_daemons` — the `Origin` must match the request's own `Host`
   in **scheme, host and port** (`origin_matches_host`), which is what lets a browser reach the
   daemon at a LAN address nobody enumerated. The scheme is `http` unless a proxy in front says
-  `X-Forwarded-Proto: https`, so a TLS proxy must forward both `Host` and that header. The one
+  `X-Forwarded-Proto: https`, so a TLS proxy must forward both `Host` and that header. Beside it,
+  the gates admit the origin of the address `biorouter serve --public-url` declares
+  (`BIOROUTER_PUBLIC_URL`, `routes::PublicUrl`), which is how a proxy chain that rewrites `Host`
+  or appends `http` to `X-Forwarded-Proto` (JupyterHub's configurable-http-proxy, issue #402)
+  still reaches the live views. Chrome sends no Fetch Metadata on a WebSocket handshake (measured
+  2026-10-16), so the browser cannot vouch for a socket the way it does for a page. The one
   other origin admitted is a renderer the launcher declares in `BIOROUTER_RENDERER_ORIGIN`:
   `main.ts` declares the dev renderer's vite origin (loopback `http`) or, packaged, the literal
   `file://`, and `just debug-server` declares vite's default. ⚠ **`file://` is admitted by NAME
@@ -2066,11 +2083,27 @@ replaced a standalone `biorouter-headless` binary and its Linux tarball, both de
   pass it from the desktop.
 - ⚠ **Three traps.** The app uses a **HashRouter**, so its routes live in the fragment and
   never reach the daemon — that is the only reason `/sessions/{id}` (a real API route) does
-  not collide with the app's own; a history router would break pages silently. The bundle must
-  be **root-base** (`npm run build:web` → `ui/desktop/src/web`), because Forge forces a
-  *relative* base and a relative bundle served at `/` breaks deep links while the landing page
-  looks fine. And `<exe>/../web` resolves for the packaged app and Windows zip but **not** for
-  deb/rpm (`/usr/bin/../web` = `/usr/web`), hence `/usr/share/biorouter/web`.
+  not collide with the app's own; a history router would break pages silently. The bundle is
+  **relative** (`npm run build:web` passes `--base ./` → `ui/desktop/src/web`), and that is safe
+  only because `routes::web_ui` writes `<base href>` (`mount_href`: `./`, `../`, …) as the first
+  element of the shell's head: without it a path that falls through to the shell asks for
+  `/a/assets/...` and gets the shell back. It used to be **root-base** for exactly that reason,
+  which made every reverse proxy path prefix 404 its assets (issue #402, SD-15 supersedes SD-4);
+  do not go back, and do not drop the `<base>`. The renderer derives its API base from the same
+  base URI, so nothing in the served page may assume it lives at `/`. And `<exe>/../web` resolves
+  for the packaged app and Windows zip but **not** for deb/rpm (`/usr/bin/../web` = `/usr/web`),
+  hence `/usr/share/biorouter/web`.
+- **A proxied address counts as secure on the browser's word** (SD-15).
+  `auth::reached_over_a_secure_context` admits a non-loopback `Host` when the request carries
+  `Sec-Fetch-Mode` and `Sec-Fetch-Dest`, which a browser sends only to an https or loopback URL
+  and script cannot forge. It no longer asks `X-Forwarded-Proto`: requiring it beside the metadata
+  added nothing and refused JupyterHub, whose chain reports `https,http`. A plain-HTTP LAN
+  address is still refused, because Chrome sends no Fetch Metadata there. ⚠ Chrome sends no Fetch
+  Metadata on a WebSocket handshake ANYWHERE, so a handshake counts when its `Origin` is `https`
+  (`is_a_websocket_upgrade_from_an_https_page`); without that arm every app's agent socket was
+  refused behind an HTTPS proxy. Built apps under a prefix: the page gets `<base href="./">`, the
+  launch bounce goes to `./`, the app cookie carries no `Path`, and `sdk.ts` reads the prefix off
+  its own address (`proxyPrefix`). Don't reintroduce a root-absolute `/apps/{id}/` in any of them.
 - **Tests:** `cargo test -p biorouter-server --lib -- routes::web_ui routes::shell` (the `--`
   is required: cargo takes one filter before it and rejects a second with a usage error),
   `cargo test -p biorouter-cli --lib commands::serve`, the `serve` job in

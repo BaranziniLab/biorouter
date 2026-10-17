@@ -1475,6 +1475,17 @@ struct ServeOptions {
     )]
     web_dir: Option<std::path::PathBuf>,
 
+    /// The address a reverse proxy serves the interface at
+    #[arg(
+        long,
+        value_name = "URL",
+        help = "The https:// address a reverse proxy serves the interface at, path prefix \
+                included (for example https://hub.example.org/user/me/proxy/8765/). The proxy \
+                must strip the prefix. Printed with the access token, and admitted by the \
+                live views' origin check. Takes precedence over BIOROUTER_PUBLIC_URL."
+    )]
+    public_url: Option<String>,
+
     /// Configure a separate approval key for Biorouter Copilot tasks in the browser
     #[arg(
         long,
@@ -1495,6 +1506,7 @@ impl ServeOptions {
             self.token,
             self.no_token,
             self.web_dir,
+            self.public_url,
             self.open,
             self.computer_use_approval,
         )

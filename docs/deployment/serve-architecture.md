@@ -71,8 +71,10 @@ When it is set, the daemon mounts two things:
 | Hashed static assets | `/assets/*` and other built files | None — they carry no secrets |
 | The interface's own endpoints | `/headless/*` | The ordinary secret-key header |
 
-The shell is served at the root and nowhere else (SD-4), so the bundle's baked-in
-root-absolute asset URLs are correct as built and nothing rewrites them.
+The bundle is relative and the shell names its mount in a `<base href>`, so it works at the root
+of a hostname and under a path prefix a reverse proxy removes, and nothing rewrites it
+([SD-15](serve-decisions.md#sd-15-behind-a-reverse-proxy-at-the-root-or-under-a-path), which
+supersedes SD-4; see [Where the bundle comes from](#where-the-bundle-comes-from)).
 
 ### The interface's routes never reach the daemon
 
@@ -95,7 +97,7 @@ Two consequences worth knowing before changing anything here:
 > above real, and it would surface as a handful of pages that 401 while the rest work. If that
 > change is ever made, the API needs a path prefix of its own first.
 
-### The one thing injected into the shell
+### The two things injected into the shell
 
 The renderer already knows how to run outside Electron. `ui/desktop/src/renderer.tsx` reads a
 global the server places in the document:
@@ -104,9 +106,11 @@ global the server places in the document:
 const globalConfig = window.__BIOROUTER_HEADLESS_CONFIG__ ?? {};
 ```
 
-and derives its API base, its interface-endpoint base and its secret from it, falling back to
-query parameters and `sessionStorage`. The daemon's only job is to populate that global before
-handing over the document. Everything downstream — the ninety-six-method shim that stands in for
+and takes its secret from it, falling back to query parameters and `sessionStorage`. Its API base
+and interface endpoint base come from the other injection, the `<base href>` that names where the
+interface is mounted (`new URL('./', document.baseURI)`), because the daemon does not know the
+address the browser used and a proxy may have removed a path prefix from it. The daemon's only job
+is to write those two things into the document before handing it over. Everything downstream — the ninety-six-method shim that stands in for
 `window.electron`, the API client, the secret handling — already exists and is unchanged.
 
 > **Why this matters for scope.** There is no second frontend and there never was. One Vite
@@ -121,7 +125,8 @@ cannot gate the initial document. The exchange is therefore:
 
 1. `biorouter serve` mints a random browser token for the launch and prints it in the URL.
 2. `GET /?t=<token>` validates it, sets an `httpOnly`, `SameSite=Strict` session cookie, and
-   answers a short page of the daemon's own origin that moves the browser on to `/`. It is a page
+   answers a short page of the daemon's own origin that moves the browser on to the interface's
+   mount (`./`, so it stays under a proxy's path prefix). It is a page
    and not a redirect because a redirect keeps a `SameSite=Strict` cookie off a navigation another
    site started, and `serve --open` starts one from a `file:` page (below).
 3. `GET /` with that cookie returns the shell, with the daemon's secret injected into it.
@@ -286,15 +291,23 @@ daemon, and the resolution of where the web directory lives.
 
 ## Where the bundle comes from
 
-The bundle the daemon serves is built by Vite with the default root base. That build already
-exists — `scripts/build-headless-linux.sh` runs it inside a container — and becomes an ordinary
-package script so every platform's packaging can call it.
+The bundle the daemon serves is built by Vite from `vite.renderer.config.mts` with a relative base
+(`npm run build:web`, which passes `--base ./`), and every platform's packaging calls that script.
 
-> **Warning.** Electron Forge forces a *relative* base for the bundle it packages. A relative-base
-> bundle served at the root resolves its assets against the current path, so a deep link breaks
-> while the landing page appears to work. The bundle the daemon serves must be built with the
-> root base, from `vite.renderer.config.mts` directly. Reusing the packaged Electron bundle is not
-> a shortcut; it is a different artifact.
+A relative bundle holds no address of its own. The shell names `./assets/...`, the code split
+chunks resolve against `import.meta.url`, and the stylesheets name their fonts relative to
+themselves. So the same bundle works at the root of a hostname and under a path prefix that a
+reverse proxy removes before forwarding (issue #402).
+
+> **Warning.** A relative bundle resolves its assets against the document's address, and every
+> path the daemon does not route falls through to the shell. Opened at `/a/b`, it would ask for
+> `/a/assets/...` and receive the shell again. The daemon closes this by writing
+> `<base href>` as the first element of the shell's head, naming the mount relative to the path
+> the request landed on (`routes::web_ui::mount_href`): `./` at the mount, `../` one directory
+> below it. The bundle used to be built with the root base for this reason, which broke every
+> path prefix; see [SD-15](serve-decisions.md#sd-15-behind-a-reverse-proxy-at-the-root-or-under-a-path).
+> The renderer reads its API address from the same base (`renderer.tsx`), so nothing in the
+> served page assumes it is at `/`.
 
 A directory named explicitly — `--web-dir`, or else `BIOROUTER_SERVE_UI` — is used as given or
 refused with the same error, never skipped. The variable used to be only the first candidate of

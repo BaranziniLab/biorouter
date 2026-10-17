@@ -193,15 +193,17 @@ reaching the port as equivalent to a shell account.
 
 - **There is no transport encryption.** `biorouter serve` speaks plain HTTP. On anything but a
   trusted local network, terminate TLS in front of it — bind loopback (`--host 127.0.0.1`) and put
-  nginx, Caddy or another reverse proxy on the public port. Serve it at the **root of a hostname**,
-  not under a path prefix; the interface is served at `/` and a subpath is not supported
-  ([decision SD-4](serve-decisions.md)).
+  nginx, Caddy or another reverse proxy on the public port, and pass the address people open to
+  `serve` with `--public-url`. The interface works at the root of a hostname or under a path
+  prefix that the proxy removes before forwarding
+  ([decision SD-15](serve-decisions.md#sd-15-behind-a-reverse-proxy-at-the-root-or-under-a-path)).
 
-  The proxy must also pass WebSocket upgrades through, forward the browser's original `Host`,
-  and set `X-Forwarded-Proto`. The daemon's socket gates admit a page only from the origin the
-  browser reached it at, in scheme, host and port, and the scheme is `http` unless that header
-  says `https` — so without it, the interface loads over `https` and its live views never
-  connect. Caddy does all three by default. For nginx:
+  The proxy must also pass WebSocket upgrades through and leave the browser's `Sec-Fetch-*`
+  request headers in place. The daemon's socket gates admit a page only from the origin the
+  browser reached it at, in scheme, host and port. `--public-url` names that origin. Without it,
+  the daemon reads it from the original `Host` and `X-Forwarded-Proto`, so the proxy must forward
+  both, or the interface loads over `https` and its live views never connect. Caddy does all of
+  this by default. For nginx:
 
   ```nginx
   location / {
@@ -214,11 +216,16 @@ reaching the port as equivalent to a shell account.
   }
   ```
 
+  For a path prefix, end both the `location` and the `proxy_pass` address with a slash, which
+  makes nginx remove the prefix: `location /biorouter/ { proxy_pass http://127.0.0.1:8765/; ... }`,
+  with `--public-url https://example.org/biorouter/`.
+
   `$http_host` rather than `$host`, which drops a non-default port and so no longer matches the
   page's origin. `proxy_set_header` **replaces** the header, which is what you want: where a proxy
   chain appends instead, the daemon reads the last value — the one the proxy nearest it wrote — so
   an inner proxy that overwrites a correct `https` with its own `http` will refuse every WebSocket
-  upgrade. Have inner proxies pass the value through rather than re-derive it.
+  upgrade. Have inner proxies pass the value through rather than re-derive it, or pass
+  `--public-url`, which the socket gates accept whatever the chain reports.
 - **Restrict the source addresses.** Scope a cloud security group or a host firewall rule to the
   addresses that need it, rather than relying on the token alone:
 

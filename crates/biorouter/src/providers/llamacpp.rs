@@ -2210,8 +2210,35 @@ mod tests {
             |error, port| async move { after_failure(error, Some(*port)).await },
         );
         let error = stream.next().await.unwrap().unwrap_err();
-        assert!(matches!(&error, ProviderError::RequestFailed(_)));
+        assert!(
+            matches!(&error, ProviderError::ServerError(message) if !llamacpp_sidecar::is_compute_error(message)),
+            "a server fault that is not a compute failure: {error:?}"
+        );
         assert!(!error.to_string().contains("SECRET_PROVIDER_PAYLOAD"));
+        assert_eq!(
+            llamacpp_sidecar::current_api_key().as_deref(),
+            Some(key.as_str())
+        );
+
+        // #401: requests that overflowed a shared cache together are retried,
+        // and the server is kept, since nothing is wrong with it once the
+        // other requests finish.
+        let (_server, decoded) = http_error_stream(json!({
+            "code": 500,
+            "type": "server_error",
+            "message": "Context size has been exceeded."
+        }))
+        .await;
+        let mut stream = hold_lease_while_generating_with_recovery(
+            decoded,
+            Some(port),
+            |error, port| async move { after_failure(error, Some(*port)).await },
+        );
+        assert!(matches!(
+            stream.next().await.unwrap(),
+            Err(ProviderError::ServerError(message))
+                if message == crate::providers::utils::LLAMA_SERVER_CACHE_FULL_EXPLAINED
+        ));
         assert_eq!(
             llamacpp_sidecar::current_api_key().as_deref(),
             Some(key.as_str())

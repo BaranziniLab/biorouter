@@ -82,7 +82,7 @@ let cfg = {
   // plugin composes with this value rather than replacing it.
   asar: { unpack: '**/node_modules/node-pty/**' },
   ignore: (file) => !keepInPackage(file),
-  // `src/web` is the ROOT-BASE build of the same renderer (`npm run build:web`),
+  // `src/web` is the relative-base build of the same renderer (`npm run build:web`),
   // which `biorouterd` serves to a browser when pointed at it with
   // BIOROUTER_SERVE_UI. It has to be an extraResource rather than a bundled
   // asset for one reason: the daemon is a separate process that reads it off
