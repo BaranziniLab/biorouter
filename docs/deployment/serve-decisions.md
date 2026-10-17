@@ -145,6 +145,10 @@ readiness poll and both header allowlists all go.
 
 ## SD-4 — One serving shape: the interface is served at the root
 
+> **Superseded by [SD-15](#sd-15-behind-a-reverse-proxy-at-the-root-or-under-a-path) (2026-10-16).**
+> The interface works under a path prefix again, without the rewriting described below: the
+> bundle is relative and the daemon names its mount in a `<base href>`.
+
 **Ruling.** The interface is served at `/`. Serving it under a path prefix is not supported.
 
 **Why.** The prefix mode existed to sit behind a reverse proxy at a subpath, and it cost a
@@ -1176,10 +1180,89 @@ shell. Both the cookie-bearing shell load and its token exchange now require loo
 `localhost` or a name under `.localhost`, or HTTPS forwarded by a TLS proxy with the browser's
 Fetch Metadata preserved (`auth::reached_over_a_secure_context`). `X-Forwarded-Proto: https` alone
 is refused because old HTTP page code can forge that header; it cannot forge `Sec-Fetch-Mode` or
-`Sec-Fetch-Dest`. Refusals give SSH tunnel or TLS guidance and carry no secret. Explicit secret-header
+`Sec-Fetch-Dest`. (Amended 2026-10-16 by [SD-15](#sd-15-behind-a-reverse-proxy-at-the-root-or-under-a-path):
+the forwarded case no longer asks for `X-Forwarded-Proto` at all. The metadata was always the
+evidence, and requiring the header beside it refused real proxy chains.) Refusals give SSH tunnel or TLS guidance and carry no secret. Explicit secret-header
 API callers remain supported. Missing headers remain accepted on loopback for non-browser clients,
 so an engine that sends no Fetch Metadata at all (Safari before 16.4) is still not isolated there;
 such engines are refused through a non-loopback HTTPS proxy. Per-app origins remain the complete fix.
+
+---
+
+## SD-15: Behind a reverse proxy, at the root or under a path
+
+**Ruling (2026-10-16, issue #402).** Three changes, taken together because one deployment needed
+all three: JupyterHub, where each person's server is reached at
+`https://hub.example.org/user/<name>/proxy/<port>/` through a TLS terminator,
+configurable-http-proxy and jupyter-server-proxy.
+
+1. **The browser says whether an address is secure.** A request whose `Host` is not loopback
+   counts as reaching a secure address when the browser attached Fetch Metadata to it
+   (`Sec-Fetch-Mode` and `Sec-Fetch-Dest`). `X-Forwarded-Proto` is no longer part of that decision
+   (`auth::reached_over_a_secure_context`).
+2. **The interface works under a path prefix that a proxy strips.** `npm run build:web` builds
+   the bundle with a relative base (`--base ./`), and the daemon writes `<base href>` into the
+   shell, naming the mount relative to the path each request landed on
+   (`routes::web_ui::mount_href`): `./` at the mount, `../` one directory below it. The renderer
+   takes its API and interface endpoint addresses from the same base (`renderer.tsx`). The token
+   exchange moves the browser to that relative address rather than to `/`. SD-4 is superseded.
+3. **`biorouter serve --public-url <address>` names the address a browser uses.** `serve` prints
+   that address with the access token. The daemon admits its origin on the WebSocket gates
+   (`routes::PublicUrl`, `UpgradeOrigin::is_this_daemons`) and scopes the session cookie's `Path`
+   to its path. `BIOROUTER_PUBLIC_URL` in the shell is read when the flag is absent.
+
+**Why.** Version 1.93.0 refused every JupyterHub deployment of `serve`, and lost the path prefix
+support that 1.89 had (issue #9).
+
+- The secure address check of SD-14 required `X-Forwarded-Proto: https` beside the metadata. In
+  JupyterHub's chain, configurable-http-proxy appends its own scheme after the TLS terminator's,
+  so the daemon reads `https,http`, whose last value is `http` (`routes::request_scheme` reads the
+  last value). JupyterHub's documented nginx configuration sends `X-Scheme` and no
+  `X-Forwarded-Proto` at all. In both cases the browser had sent Fetch Metadata and was told to
+  use "a TLS proxy and a current browser that sends Fetch Metadata", which it was doing. The
+  header added no protection. The Fetch Metadata specification has a browser attach these
+  headers only to a potentially trustworthy URL (https, or loopback), and script cannot write a
+  `Sec-` header, so the metadata alone answers the question the check asks. The header only made
+  the answer depend on how each hop of a proxy chain was configured.
+- SD-4 dropped the prefix because the root base bundle bakes `/assets/...` into its HTML,
+  JavaScript and stylesheets, and supporting a prefix meant rewriting all three. A relative bundle
+  holds no such URL: Vite resolves its chunks against `import.meta.url` and its fonts against the
+  stylesheet. What a relative bundle could not do alone was load on a path that is not the mount,
+  since every unmatched path falls through to the shell; that is why the bundle was root base.
+  The `<base href>` closes that. It needs no configuration, because a proxy that strips a prefix
+  leaves the part of the path below the mount unchanged, so the distance back up is the same on
+  both sides of the proxy.
+- The live views connect over a WebSocket whose gate compares the page's `Origin` with the `Host`
+  and the scheme from `X-Forwarded-Proto`. Through the same chain that comparison refuses the
+  interface's own socket, so the page loads and every live view stays empty. Chrome sends no Fetch
+  Metadata on a WebSocket handshake (measured 2026-10-16), so the browser cannot vouch for the
+  socket the way it does for the page. An address the operator declares can.
+
+**Displaced alternatives.**
+
+- *Read the first `X-Forwarded-Proto` value, or accept `https` anywhere in the list.* Not needed
+  for the page check, which asks no proxy header now. For the socket check it would reverse the
+  reading recorded on `routes::request_scheme` on the strength of one proxy's behaviour, where the
+  declared address depends on none.
+- *Read `X-Forwarded-Prefix`.* Some proxies send it and most do not, and the relative bundle does
+  not need the prefix. The cookie path, the one thing that does, comes from the declared address.
+- *Restore the rewriting the retired `biorouter-headless` did.* Rejected for the reasons SD-4
+  gives.
+
+**Consequences to accept.**
+
+- The proxy must strip the prefix before forwarding. A proxy that forwards `/prefix/...` unchanged
+  reaches the shell fallback, and the assets it asks for miss.
+- The address is opened with its trailing slash, because the relative bundle resolves against it.
+  `serve` prints it that way. Opened as `https://hub.example.org/prefix` with no slash, the browser
+  asks for the assets one directory up, unless the proxy redirects to the slash first.
+- Without `--public-url`, a chain whose `X-Forwarded-Proto` does not end in `https`, or a proxy
+  that rewrites `Host`, still loads the page and still refuses the live views' socket. The
+  troubleshooting entry in [browser access](browser-access.md#troubleshooting) says to pass the
+  flag.
+- The session cookie is scoped to the declared path only. Without `--public-url`, a token cookie
+  is set at `/` on the proxy's hostname, as it always was. With `--no-token`, as JupyterHub
+  deployments use it behind the hub's own login, there is no cookie at all.
 
 ---
 

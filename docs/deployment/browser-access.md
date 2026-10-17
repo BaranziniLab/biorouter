@@ -57,7 +57,7 @@ place.
 ## The command and its options
 
 ```bash
-biorouter serve [--host <addr>] [--port <n>] [--token <t>] [--no-token] [--web-dir <dir>] [--open]
+biorouter serve [--host <addr>] [--port <n>] [--token <t>] [--no-token] [--web-dir <dir>] [--public-url <url>] [--open]
 ```
 
 | Option | What it does | Default |
@@ -67,6 +67,7 @@ biorouter serve [--host <addr>] [--port <n>] [--token <t>] [--no-token] [--web-d
 | `--token <t>` | Use this access token instead of generating a fresh one. The flag stays on the command line, where other accounts can read it, and `serve` prints a note saying so; `BIOROUTER_BROWSER_TOKEN` does not. | A new random token each launch |
 | `--no-token` | Serve with no access token. Refused for a non-loopback bind, and cannot be combined with `--token`. | Off |
 | `--web-dir <dir>` | Directory holding the built interface. It must contain an `index.html`, or `serve` refuses to start. Takes precedence over `BIOROUTER_SERVE_UI`. | `BIOROUTER_SERVE_UI` if set, otherwise found automatically — see [When the interface cannot be found](#when-the-interface-cannot-be-found) |
+| `--public-url <url>` | The `https://` address a reverse proxy serves the interface at, path prefix included. `serve` prints it with the token, and the live views accept connections from it. Takes precedence over `BIOROUTER_PUBLIC_URL`. See [Behind a reverse proxy](#behind-a-reverse-proxy). | None |
 | `--open` | Open a browser once the server is ready, through a page only your account can read. | Off |
 
 The default port is `8765` rather than `3000` deliberately: `3000` is `biorouterd`'s own default, so
@@ -173,9 +174,9 @@ started `serve`.
 
 - **There is no transport encryption.** `serve` speaks plain HTTP. Over an untrusted network the
   token and everything else are readable in transit. Browser access from another machine requires
-  a TLS-terminating reverse proxy or an SSH tunnel. The proxy must forward the original `Host`,
-  set `X-Forwarded-Proto: https`, and preserve the browser's `Sec-Fetch-*` request headers; the
-  [headless Linux guide](headless-linux.md#decide-who-can-reach-the-port) has the configuration.
+  a TLS-terminating reverse proxy or an SSH tunnel. The proxy must pass the browser's
+  `Sec-Fetch-*` request headers through; [Behind a reverse proxy](#behind-a-reverse-proxy) and the
+  [headless Linux guide](headless-linux.md#decide-who-can-reach-the-port) have the configuration.
 - **There is one credential and no user accounts.** Everyone who opens the address is the same
   user, with the same files and the same history. Biorouter has no notion of separate accounts
   here.
@@ -197,6 +198,57 @@ ssh -N -L 8765:127.0.0.1:8765 user@remote-host
 
 Then open the URL `serve` printed on the remote host, unchanged, in a local browser. For a shared
 host meant to stay up, see [Headless Linux deployment](headless-linux.md).
+
+### Behind a reverse proxy
+
+Put an HTTPS reverse proxy in front of a loopback bind, and tell `serve` the address people open:
+
+```bash
+biorouter serve --port 8765 --public-url https://biorouter.example.org/
+```
+
+The interface also works under a path on a shared hostname. The proxy must remove the path prefix
+before it forwards the request, and pass WebSocket upgrades through:
+
+```bash
+biorouter serve --port 8765 --public-url https://hub.example.org/biorouter/
+```
+
+`--public-url` does three things:
+
+1. `serve` prints that address, with the access token, as the one to open.
+2. The live views accept a connection from a page at that address. Without it, they accept only a
+   page whose address matches the `Host` and `X-Forwarded-Proto` headers the daemon receives,
+   which a chain of proxies may not preserve.
+3. The access cookie is limited to that path, so it is not sent to other servers on the same
+   hostname.
+
+The proxy must pass the browser's `Sec-Fetch-*` request headers through, which proxies do unless
+configured to remove them. The browser sends them only to an `https` or loopback address, and the
+daemon serves the interface to another address only when they arrive. Open the address with its
+trailing slash: the interface loads its files relative to it.
+
+#### JupyterHub
+
+With [jupyter-server-proxy](https://jupyter-server-proxy.readthedocs.io/), each person's server can
+start Biorouter and serve it at `https://<hub>/user/<name>/biorouter/`. The hub's own login protects
+the address, so the access token can be turned off:
+
+```python
+c.ServerProxy.servers = {
+    "biorouter": {
+        "command": [
+            "biorouter", "serve", "--port", "{port}", "--no-token",
+            "--public-url", "https://hub.example.org{base_url}biorouter/",
+        ],
+        "timeout": 60,
+    },
+}
+```
+
+`{base_url}` is the server's own prefix, for example `/user/alice/`. Replace `hub.example.org` with
+the hub's hostname. `--no-token` is accepted because `serve` binds the loopback address, which only
+the proxy on the same machine can reach.
 
 ## The model is fixed before you start
 
@@ -282,8 +334,9 @@ these checks read and ignores the opener policy, so an app's script there could 
 and every other app. Neither the interface nor apps are served on browser credentials at such an
 address; open them through an
 SSH tunnel or an HTTPS proxy ([What exposing the port means](#what-exposing-the-port-means)).
-The proxy must preserve Fetch Metadata. `X-Forwarded-Proto: https` alone is refused: an old HTTP
-app tab can forge that header on a fetch, but cannot forge the browser's `Sec-Fetch-*` headers.
+The proxy must preserve Fetch Metadata. What a proxy says about the scheme is not consulted: an
+old HTTP app tab can forge `X-Forwarded-Proto: https` on a fetch, but cannot forge the browser's
+`Sec-Fetch-*` headers, and the browser sends those only to an `https` or loopback address.
 
 Gaps remain even at a secure address: a browser that does not support the `noopener-allow-popups`
 opener policy (Chromium-based browsers do) lets an app read another app's page through a popup, a
@@ -332,14 +385,23 @@ chat client shortening the link, or a bookmark saved after the address changed t
 printed. If the launch has since restarted, the token has changed; read the new one from the
 terminal.
 
-**The page loads but nothing connects.** Check that you are on the address `serve` printed. A
-browser reaching the daemon on a different origin is not the supported configuration — the
-interface is served at the root of the daemon's own origin and nowhere else. Behind a TLS proxy,
-check that it forwards the original `Host`, sets `X-Forwarded-Proto: https`, and preserves
-`Sec-Fetch-*` headers: the live views are
-WebSockets, and the daemon admits one only from the scheme, host and port the browser used. The
-daemon logs each refusal as `rejected workspace WS: cross-origin connect rejected`, with the
-origin it was given.
+**The page loads but nothing connects.** Check that you are on the address `serve` printed. The
+live views are WebSockets, and the daemon admits one only from the scheme, host and port the
+browser used. Behind a reverse proxy, pass that address with `--public-url` (see
+[Behind a reverse proxy](#behind-a-reverse-proxy)). Without it, the daemon works the address out
+from the `Host` and `X-Forwarded-Proto` headers, so the proxy must forward the original `Host` and
+set `X-Forwarded-Proto: https`, and a chain of proxies that appends `http` to that header refuses
+every live view. The daemon logs each refusal as
+`rejected workspace WS: cross-origin connect rejected`, with the origin it was given.
+
+**Behind a proxy, the page says to open Biorouter through localhost or HTTPS.** The browser's
+`Sec-Fetch-*` request headers did not arrive. Check that the address in the browser is `https`,
+and that no proxy in the chain removes those headers.
+
+**Under a path prefix, the page stays on "Loading Biorouter".** The interface's files did not
+load. Check that the proxy removes the prefix before forwarding, and that the address ends in `/`.
+A bundle built by an earlier release asks for its files at the hostname's root; rebuild it with
+`npm run build:web`.
 
 **A file path the agent uses does not exist.** Paths are resolved on the serving machine. When the
 browser is on a different computer, its local files are not visible to the agent; copy them to the
