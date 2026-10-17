@@ -145,8 +145,10 @@ export function useConfiguredModels(
   const saveTaskDefault = useCallback(
     async (choice: ModelChoice) => {
       if (!upsert) return;
-      // `upsert` announces the write once it resolved, which reads the models again everywhere.
+      // `upsert` announces the write to every other surface once it resolved; this one reads
+      // again for itself, so what it says next is what the daemon now holds.
       await upsert(CREW_TASK_MODEL_KEY, { provider: choice.provider, model: choice.model }, false);
+      setVersion((current) => current + 1);
     },
     [upsert]
   );

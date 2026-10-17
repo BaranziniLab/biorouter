@@ -284,6 +284,33 @@ describe('@agent in the composer (OW-10)', () => {
     expect(runPosts()).toHaveLength(1);
   });
 
+  it('forgets the draft put aside for the channel when its task starts after the person moved on', async () => {
+    let admit: (value: unknown) => void = () => undefined;
+    daemon.state.http = (path, method) =>
+      path === RUNS && method === 'POST'
+        ? new Promise((resolve) => {
+            admit = resolve;
+          })
+        : undefined;
+    renderCrew();
+    const composer = await channelReady();
+    await typeTask(composer, '@agent count the reads');
+    await waitFor(() => expect(consent()).toHaveTextContent('Enter starts your agent'));
+    enter(composer);
+    await waitFor(() => expect(runPosts()).toHaveLength(1));
+    act(() => currentCrew().selectChannel(ids.methods));
+    const there = await channelReady('methods');
+    fireEvent.change(there, { target: { value: 'notes for methods' } });
+    await act(async () => {
+      admit({ ...ownedRun, status: 'running' });
+    });
+    // The other channel's words are its own; coming back finds no task to start again.
+    expect(there).toHaveValue('notes for methods');
+    act(() => currentCrew().selectChannel(ids.general));
+    await waitFor(() => expect(screen.getByLabelText('Message #general')).toHaveValue(''));
+    expect(runPosts()).toHaveLength(1);
+  });
+
   describe('when the pane must decide, Enter opens it with the words', () => {
     it('opens Ask my agent for a trigger alone', async () => {
       renderCrew();
