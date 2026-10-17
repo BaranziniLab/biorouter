@@ -319,7 +319,8 @@ export function WorkspaceMenu({
         </p>
       )}
       <DropdownMenuGroup aria-describedby={reason ? reasonId : undefined}>
-        {isHost && (
+        {/* The host invites; in an open workspace every member does (OW-2). */}
+        {(isHost || isOpenWorkspace(crew.snapshot)) && (
           <DropdownMenuItem
             disabled={!snapshotReady}
             onSelect={() => crew.openDialog({ kind: 'invite-people' })}

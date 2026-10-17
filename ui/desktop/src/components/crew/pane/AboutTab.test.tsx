@@ -236,3 +236,49 @@ describe('AboutTab', () => {
     expect(screen.getByText(aboutCopy.publicSafeHint)).toBeInTheDocument();
   });
 });
+
+describe('AboutTab under open governance and deletion (OW-2, OW-4)', () => {
+  const opened = (snapshot = makeSnapshot()) => ({
+    ...snapshot,
+    workspace: { ...snapshot.workspace, governance: 'open' as const },
+  });
+
+  it('offers Delete channel… beside Archive on a delete_v1 broker, never for #general', async () => {
+    installObserver({ capabilities: ['delete_v1'] });
+    renderCrew(() => <About />);
+    const about = await shown();
+    expect(within(about).queryByRole('button', { name: aboutCopy.delete })).toBeNull();
+    act(() => currentCrew().selectChannel(methods.id));
+    await waitFor(() => expect(currentCrew().channel?.id).toBe(methods.id));
+    const danger = within(about).getByRole('region', { name: aboutCopy.dangerZone });
+    expect(within(danger).getByRole('button', { name: aboutCopy.archive })).toBeInTheDocument();
+    await userEvent.setup().click(within(danger).getByRole('button', { name: aboutCopy.delete }));
+    expect(currentCrew().ui.dialog).toEqual({
+      kind: 'confirm',
+      confirm: { action: 'delete-channel', channelId: methods.id },
+    });
+  });
+
+  it('gives a member of an open workspace Rename and Archive, but never Transfer', async () => {
+    installObserver({
+      snapshot: opened(makeSnapshot({ actor: bob })),
+      capabilities: ['open_governance_v1'],
+    });
+    renderCrew(() => <About canRename />);
+    const about = await shown();
+    expect(within(about).getByRole('button', { name: aboutCopy.renameName })).toBeInTheDocument();
+    expect(within(about).getByRole('button', { name: aboutCopy.archive })).toBeInTheDocument();
+    expect(within(about).queryByRole('button', { name: aboutCopy.transfer })).toBeNull();
+  });
+
+  it('keeps a managed workspace’s member away from the owner’s tools', async () => {
+    installObserver({
+      snapshot: makeSnapshot({ actor: bob }),
+      capabilities: ['open_governance_v1', 'delete_v1'],
+    });
+    renderCrew(() => <About canRename />);
+    const about = await shown();
+    expect(within(about).queryByRole('region', { name: aboutCopy.dangerZone })).toBeNull();
+    expect(within(about).queryByRole('button', { name: aboutCopy.renameName })).toBeNull();
+  });
+});

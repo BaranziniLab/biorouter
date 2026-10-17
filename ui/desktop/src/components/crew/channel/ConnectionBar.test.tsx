@@ -2,7 +2,7 @@ import { act, fireEvent, screen, waitFor, within } from '@testing-library/react'
 import { useState } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { CrewHttpError } from '../crewApi';
-import { MEMBERSHIP_ENDED_CODE } from '../state/connectFailure';
+import { MEMBERSHIP_ENDED_CODE, WORKSPACE_DELETED_CONNECT_CODE } from '../state/connectFailure';
 import { useCrewErrorSlot } from '../state/CrewControllerContext';
 import { crewObservationCopy } from '../state/copy';
 import { CHANNEL_LOST_ERROR_CODE } from '../state/useCrewObservation';
@@ -987,5 +987,66 @@ describe('actionErrorText (R-4)', () => {
     expect(text).not.toMatch(RAW_TRANSPORT);
     // A broker refusal still reads as its sentence.
     expect(actionErrorText('forbidden: You can’t do that here.')).toBe('You can’t do that here.');
+  });
+});
+
+describe('a workspace its host deleted (OW-5)', () => {
+  beforeEach(() => {
+    installDaemon();
+  });
+
+  it('says so once, offering only Remove from this computer, from the saved record', async () => {
+    installDaemon([
+      {
+        ...connection,
+        status: 'disconnected',
+        last_error: 'The host deleted this workspace.',
+        last_error_code: WORKSPACE_DELETED_CONNECT_CODE,
+      },
+    ]);
+    observationFailure('Crew connection is not connected', 'observation_refused');
+    renderCrew(Layout);
+    const words = crewObservationCopy.workspaceDeleted('Fixture');
+    await waitFor(() => expect(screen.getAllByText(words)).toHaveLength(1));
+    expect(screen.getByRole('alert')).toHaveTextContent(words);
+    expect(screen.queryByRole('button', { name: connectionBarCopy.retryName })).toBeNull();
+    expect(screen.queryByRole('button', { name: connectionBarCopy.tryAgain })).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: crewObservationCopy.removeFromComputer }));
+    expect(currentCrew().ui.dialog).toEqual({
+      kind: 'confirm',
+      confirm: { action: 'remove-connection', connectionId: connection.id },
+    });
+    // Nothing is dialled for a workspace that no longer exists.
+    expect(
+      mocks.crewHttp.mock.calls.filter(([path]) => path === '/connections/conn-1/connect')
+    ).toHaveLength(0);
+  });
+
+  it('reads the connection view’s own flag the same way', async () => {
+    installDaemon([{ ...connection, status: 'disconnected', workspace_deleted: true }]);
+    observationFailure('Crew connection is not connected', 'observation_refused');
+    renderCrew(Layout);
+    await waitFor(() =>
+      expect(screen.getByRole('alert')).toHaveTextContent(
+        crewObservationCopy.workspaceDeleted('Fixture')
+      )
+    );
+  });
+
+  it('answers an observation that ended workspace_deleted, with no Retry', async () => {
+    renderCrew(Layout);
+    await verified();
+    observationFailure(DAEMON_SENTENCE, 'workspace_deleted');
+    await act(async () => {
+      await currentCrew().refresh();
+    });
+    await waitFor(() => expect(currentCrew().refreshErrorCode).toBe('workspace_deleted'));
+    await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent(/The host deleted/));
+    expect(screen.getAllByRole('alert')).toHaveLength(1);
+    expect(screen.queryByRole('button', { name: connectionBarCopy.retryName })).toBeNull();
+    expect(
+      screen.getByRole('button', { name: crewObservationCopy.removeFromComputer })
+    ).toBeInTheDocument();
+    expect(currentCrew().refreshErrorRetryable).toBe(false);
   });
 });

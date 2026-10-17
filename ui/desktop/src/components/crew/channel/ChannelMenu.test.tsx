@@ -303,3 +303,76 @@ describe('ChannelMenu actions', () => {
     writeText.mockRestore();
   });
 });
+
+describe('ChannelMenu under open governance and deletion (OW-2, OW-4)', () => {
+  const openWorkspace = (overrides: Parameters<typeof makeSnapshot>[0] = {}) => {
+    const snapshot = makeSnapshot(overrides);
+    return { ...snapshot, workspace: { ...snapshot.workspace, governance: 'open' as const } };
+  };
+
+  it('adds Delete channel… last and destructive on a delete_v1 broker, never for #general', async () => {
+    const user = userEvent.setup();
+    installObserver({ capabilities: ['delete_v1'], messages: [] });
+    renderCrew(() => <Layout />);
+    await openMenu(user);
+    // #general goes only with its team.
+    expect(screen.queryByRole('menuitem', { name: menu.delete })).toBeNull();
+    await user.keyboard('{Escape}');
+
+    act(() => currentCrew().selectChannel(methods.id));
+    await openMenu(user, 'methods');
+    const names = itemNames();
+    expect(names.slice(-3)).toEqual([menu.archive, menu.delete, channelHeaderCopy.copyForSupport]);
+    const item = screen.getByRole('menuitem', { name: menu.delete });
+    expect(item).toHaveAttribute('data-variant', 'destructive');
+    await user.click(item);
+    await waitFor(() =>
+      expect(currentCrew().ui.dialog).toEqual({
+        kind: 'confirm',
+        confirm: { action: 'delete-channel', channelId: methods.id },
+      })
+    );
+  });
+
+  it('offers no Delete channel… without delete_v1, whatever the role', async () => {
+    const user = userEvent.setup();
+    installObserver({ messages: [] });
+    renderCrew(() => <Layout />);
+    await screen.findByRole('button', { name: channelHeaderCopy.menuName('general') });
+    act(() => currentCrew().selectChannel(methods.id));
+    await openMenu(user, 'methods');
+    expect(itemNames()).toContain(menu.archive);
+    expect(screen.queryByRole('menuitem', { name: menu.delete })).toBeNull();
+  });
+
+  it('lets any member of an open workspace manage the channel, but not transfer it', async () => {
+    const user = userEvent.setup();
+    installObserver({
+      snapshot: openWorkspace({ actor: bob }),
+      capabilities: ['open_governance_v1', 'delete_v1'],
+      messages: [],
+    });
+    renderCrew(() => <Layout canRename />);
+    await openMenu(user);
+    const names = itemNames();
+    expect(names).toContain(menu.addPeople);
+    expect(names).toContain(menu.rename);
+    expect(names).toContain(menu.archive);
+    // Transferring ownership stays the owner's in either governance.
+    expect(names).not.toContain(menu.transfer);
+    // #general goes only with its team, open or not.
+    expect(names).not.toContain(menu.delete);
+  });
+
+  it('keeps a managed workspace’s member to the shared items, delete_v1 or not', async () => {
+    const user = userEvent.setup();
+    installObserver({
+      snapshot: makeSnapshot({ actor: bob }),
+      capabilities: ['open_governance_v1', 'delete_v1'],
+      messages: [],
+    });
+    renderCrew(() => <Layout canRename />);
+    await openMenu(user);
+    expect(itemNames()).toEqual(EVERYONE);
+  });
+});

@@ -46,6 +46,7 @@ import {
   brokerSupports,
   CONTEXT_MAX_BYTES,
   DELETE_CAPABILITY,
+  isOpenWorkspace,
   mayEditContext,
   OPEN_GOVERNANCE_CAPABILITY,
   WORKSPACE_CONTEXT_CAPABILITY,
@@ -680,7 +681,7 @@ function ContextTab({ view }: { view: DialogView }) {
       </label>
       <Textarea
         id={fieldId}
-        rows={14}
+        rows={10}
         className="font-mono"
         readOnly={!editable}
         spellCheck={false}
@@ -767,7 +768,10 @@ function PeopleTab({
 }) {
   const { crew, dir, snapshot, workspace } = view;
   const isHost = dir.viewerIsHost;
-  const waiting = isHost ? (snapshot?.pending_joins ?? []) : [];
+  // The host invites and lets people in; in an open workspace every member does (OW-2). Only the
+  // host removes anyone from the workspace, either way.
+  const mayInvite = isHost || isOpenWorkspace(snapshot);
+  const waiting = mayInvite ? (snapshot?.pending_joins ?? []) : [];
   const people = React.useMemo(() => peopleInOrder(dir.people), [dir.people]);
   const others = people.filter((person) => !person.isYou);
   // Who is online, from the verified view only: a kept view is not now (M18).
@@ -787,7 +791,7 @@ function PeopleTab({
       </div>
     );
 
-  const invite = isHost ? (
+  const invite = mayInvite ? (
     <Button
       variant="secondary"
       size="sm"
@@ -825,7 +829,7 @@ function PeopleTab({
           {copy.noMembers(workspace)}
         </Note>
       ) : null}
-      {isHost ? null : (
+      {mayInvite ? null : (
         <p className="text-supporting text-text-muted mt-2">
           {copy.onlyHostInvites(dir.host ? personLabel(dir.host, 'authority', dir) : null)}
         </p>

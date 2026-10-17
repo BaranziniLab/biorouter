@@ -6,7 +6,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { sidebarCopy } from '../sidebar/copy';
 import { CrewControllerProvider } from '../state/CrewControllerContext';
 import { connectionUpdateBody } from '../state/useCrewConnections';
-import { confirmCopy, workspaceSettingsCopy as copy } from './copy';
+import { CrewHttpError } from '../crewApi';
+import { confirmCopy, contextCopy, workspaceSettingsCopy as copy } from './copy';
 import {
   alice,
   bob,
@@ -904,5 +905,280 @@ describe('WorkspaceSettingsDialog, the seams (QA Q3-40, Q3-26, Q3-33)', () => {
     expect(DIALOGS_CSS).toMatch(
       /@media \(prefers-reduced-motion: reduce\)\s*\{\s*\.crew-settings-panel\s*\{\s*transition:\s*none;/
     );
+  });
+});
+
+describe('WorkspaceSettingsDialog: governance, context and deletion (OW-1, OW-5, OW-8)', () => {
+  const asBob = (overrides: Parameters<typeof makeSnapshot>[0] = {}) =>
+    makeSnapshot({ actor: bob, ...overrides });
+  const governed = (snapshot = makeSnapshot(), governance: 'open' | 'managed' = 'open') => ({
+    ...snapshot,
+    workspace: { ...snapshot.workspace, governance },
+  });
+  const withContext = (snapshot = makeSnapshot()) => ({
+    ...snapshot,
+    context: { text: '# leo\n', revision: 3, updated_by: alice.id, updated_at: 1_790_000_000 },
+  });
+  const contextTab = async () => {
+    const dialog = await screen.findByRole('dialog', { name: 'lab settings' });
+    return within(dialog).getByRole('tabpanel');
+  };
+
+  it('lets the host choose who manages, at once, and keeps the dialog open', async () => {
+    const { crew, onClose } = renderSettings({}, { capabilities: ['open_governance_v1'] });
+    const group = await screen.findByRole('radiogroup', { name: copy.governance.label });
+    const managed = within(group).getByRole('radio', { name: new RegExp(copy.governance.managed) });
+    // A workspace from before governance reads as managed: today's rules.
+    expect(managed).toBeChecked();
+    expect(screen.getByText(copy.governance.hostOnly('lab'))).toBeInTheDocument();
+    await act(async () => {
+      fireEvent.click(within(group).getByRole('radio', { name: new RegExp(copy.governance.open) }));
+    });
+    await waitFor(() =>
+      expect(crew.request).toHaveBeenCalledWith(
+        'workspace.set_governance',
+        { governance: 'open' },
+        { mutation: true }
+      )
+    );
+    await waitFor(() => expect(crew.refresh).toHaveBeenCalled());
+    expect(onClose).not.toHaveBeenCalled();
+  });
+
+  it('tells a member who manages, read-only, and offers no governance without the capability', async () => {
+    const member = renderSettings(
+      {},
+      { snapshot: governed(asBob()), capabilities: ['open_governance_v1'] }
+    );
+    await screen.findByRole('dialog', { name: 'lab settings' });
+    expect(screen.queryByRole('radiogroup', { name: copy.governance.label })).toBeNull();
+    const row = document.querySelector('[data-crew-settings-governance]') as HTMLElement;
+    expect(row).toHaveTextContent(copy.governance.row);
+    expect(row).toHaveTextContent(copy.governance.everyone);
+    member.unmount();
+
+    renderSettings({}, { capabilities: [] });
+    await screen.findByRole('dialog', { name: 'lab settings' });
+    expect(document.querySelector('[data-crew-settings-governance]')).toBeNull();
+  });
+
+  it('offers everyone Remove from this computer, over the dialog', async () => {
+    renderSettings({}, { snapshot: asBob(), capabilities: ['delete_v1'] });
+    fireEvent.click(await screen.findByRole('button', { name: copy.removeFromComputer }));
+    expect(
+      await screen.findByRole('alertdialog', { name: confirmCopy.removeConnection.title('lab') })
+    ).toBeInTheDocument();
+    // A member deletes nothing for everyone.
+    expect(screen.queryByRole('button', { name: copy.deleteWorkspace })).toBeNull();
+  });
+
+  it('offers the host Delete workspace…, typed, where Crew on the server can delete', async () => {
+    renderSettings({}, { capabilities: ['delete_v1'] });
+    fireEvent.click(await screen.findByRole('button', { name: copy.deleteWorkspace }));
+    const confirm = await screen.findByRole('alertdialog', {
+      name: confirmCopy.deleteWorkspace.title('lab'),
+    });
+    expect(within(confirm).getByLabelText('Type lab to confirm')).toBeInTheDocument();
+  });
+
+  it('says what to update when Crew on the server cannot delete yet', async () => {
+    renderSettings({}, { capabilities: ['unique_names_v1'] });
+    const button = await screen.findByRole('button', { name: copy.deleteWorkspace });
+    expect(button).toBeDisabled();
+    expect(button).toHaveAccessibleDescription(copy.deleteUnsupported('hpc.example.edu'));
+  });
+
+  it('offers the Context tab only where the broker keeps one', async () => {
+    const without = renderSettings({}, { capabilities: ['delete_v1'] });
+    const dialog = await screen.findByRole('dialog', { name: 'lab settings' });
+    expect(within(dialog).queryByRole('tab', { name: contextCopy.tab })).toBeNull();
+    without.unmount();
+    renderSettings({ tab: 'context' }, { capabilities: ['workspace_context_v1'] });
+    expect(await screen.findByRole('tab', { name: contextCopy.tab })).toHaveAttribute(
+      'aria-selected',
+      'true'
+    );
+  });
+
+  it('saves the host’s edit over the revision it was written on, and stays open', async () => {
+    const { crew, onClose } = renderSettings(
+      { tab: 'context' },
+      {
+        snapshot: withContext(),
+        capabilities: ['workspace_context_v1'],
+        request: (method) =>
+          method === 'workspace.context.set' ? { revision: 4, updated_at: 1_790_000_100 } : {},
+      }
+    );
+    const panel = await contextTab();
+    const editor = within(panel).getByLabelText(contextCopy.label);
+    expect(editor).toHaveValue('# leo\n');
+    expect(panel).toHaveTextContent('Revision 3');
+    const save = within(panel).getByRole('button', { name: contextCopy.save });
+    // Nothing to save until something changed.
+    expect(save).toBeDisabled();
+    fireEvent.change(editor, { target: { value: '# leo\nData lives in /pool1.' } });
+    await act(async () => {
+      fireEvent.click(save);
+    });
+    await waitFor(() =>
+      expect(requestsFor(crew, 'workspace.context.set')).toEqual([
+        { text: '# leo\nData lives in /pool1.', expected_revision: 3 },
+      ])
+    );
+    expect(await within(panel).findByText(contextCopy.savedNotice)).toBeInTheDocument();
+    expect(panel).toHaveTextContent('Revision 4');
+    expect(onClose).not.toHaveBeenCalled();
+  });
+
+  it('keeps the person’s words through a revision conflict, then lets them choose', async () => {
+    let sets = 0;
+    const { crew } = renderSettings(
+      { tab: 'context' },
+      {
+        snapshot: withContext(),
+        capabilities: ['workspace_context_v1'],
+        request: (method) => {
+          if (method === 'workspace.context.get')
+            return {
+              context: { text: 'theirs', revision: 4, updated_by: bob.id, updated_at: 1 },
+            };
+          if (method === 'workspace.context.set' && (sets += 1) === 1)
+            throw new CrewHttpError(
+              'revision_conflict: The context changed since you opened it.',
+              409,
+              'crew_request_refused',
+              undefined,
+              'revision_conflict'
+            );
+          return { revision: 5 };
+        },
+      }
+    );
+    const panel = await contextTab();
+    const editor = within(panel).getByLabelText(contextCopy.label);
+    fireEvent.change(editor, { target: { value: 'mine' } });
+    await act(async () => {
+      fireEvent.click(within(panel).getByRole('button', { name: contextCopy.save }));
+    });
+    const note = await within(panel).findByRole('alert');
+    expect(note).toHaveTextContent(/saved a newer version while you were editing/);
+    expect(note).toHaveTextContent(/Bob Lee/);
+    // The refusal is answered here, not repeated as an error.
+    expect(screen.queryByText(/revision_conflict/)).toBeNull();
+    expect(editor).toHaveValue('mine');
+
+    // Saving again replaces theirs on purpose, over the revision just read.
+    await act(async () => {
+      fireEvent.click(within(panel).getByRole('button', { name: contextCopy.save }));
+    });
+    await waitFor(() =>
+      expect(requestsFor(crew, 'workspace.context.set')).toEqual([
+        { text: 'mine', expected_revision: 3 },
+        { text: 'mine', expected_revision: 4 },
+      ])
+    );
+  });
+
+  it('takes the newer version when the person chooses theirs', async () => {
+    renderSettings(
+      { tab: 'context' },
+      {
+        snapshot: withContext(),
+        capabilities: ['workspace_context_v1'],
+        request: (method) => {
+          if (method === 'workspace.context.get')
+            return { context: { text: 'theirs', revision: 4, updated_by: bob.id } };
+          throw new CrewHttpError(
+            'revision_conflict',
+            409,
+            undefined,
+            undefined,
+            'revision_conflict'
+          );
+        },
+      }
+    );
+    const panel = await contextTab();
+    const editor = within(panel).getByLabelText(contextCopy.label);
+    fireEvent.change(editor, { target: { value: 'mine' } });
+    await act(async () => {
+      fireEvent.click(within(panel).getByRole('button', { name: contextCopy.save }));
+    });
+    fireEvent.click(await within(panel).findByRole('button', { name: contextCopy.useTheirs }));
+    expect(editor).toHaveValue('theirs');
+    expect(within(panel).queryByRole('alert')).toBeNull();
+    expect(within(panel).getByRole('button', { name: contextCopy.save })).toBeDisabled();
+  });
+
+  it('drafts from the server into the editor, unsaved, and never over unsaved words', async () => {
+    const { crew } = renderSettings({ tab: 'context' }, { capabilities: ['workspace_context_v1'] });
+    const panel = await contextTab();
+    const editor = within(panel).getByLabelText(contextCopy.label);
+    await act(async () => {
+      fireEvent.click(within(panel).getByRole('button', { name: contextCopy.draft }));
+    });
+    expect(crew.draftWorkspaceContext).toHaveBeenCalledWith(connection.id);
+    expect(editor).toHaveValue('# Server\n');
+    expect(within(panel).getByRole('status')).toHaveTextContent(
+      contextCopy.drafted('hpc.example.edu')
+    );
+    expect(requestsFor(crew, 'workspace.context.set')).toEqual([]);
+    // Unsaved words: Discard is offered, Draft is not.
+    expect(within(panel).queryByRole('button', { name: contextCopy.draft })).toBeNull();
+    fireEvent.click(within(panel).getByRole('button', { name: contextCopy.discard }));
+    expect(editor).toHaveValue('');
+  });
+
+  it('shows a managed workspace’s member the context read-only, saying who may change it', async () => {
+    renderSettings(
+      { tab: 'context' },
+      { snapshot: withContext(asBob()), capabilities: ['workspace_context_v1'] }
+    );
+    const panel = await contextTab();
+    expect(within(panel).getByLabelText(contextCopy.label)).toHaveAttribute('readonly');
+    expect(panel).toHaveTextContent(/Only the host, Alice Chen/);
+    expect(within(panel).queryByRole('button', { name: contextCopy.save })).toBeNull();
+  });
+
+  it('lets an open workspace’s member edit the context', async () => {
+    renderSettings(
+      { tab: 'context' },
+      { snapshot: governed(withContext(asBob())), capabilities: ['workspace_context_v1'] }
+    );
+    const panel = await contextTab();
+    expect(within(panel).getByLabelText(contextCopy.label)).not.toHaveAttribute('readonly');
+    expect(within(panel).getByRole('button', { name: contextCopy.save })).toBeInTheDocument();
+  });
+
+  it('refuses a context over 64 KB before sending it', async () => {
+    const { crew } = renderSettings({ tab: 'context' }, { capabilities: ['workspace_context_v1'] });
+    const panel = await contextTab();
+    fireEvent.change(within(panel).getByLabelText(contextCopy.label), {
+      target: { value: 'x'.repeat(64 * 1024 + 1) },
+    });
+    expect(panel).toHaveTextContent(contextCopy.tooLarge);
+    expect(within(panel).getByRole('button', { name: contextCopy.save })).toBeDisabled();
+    expect(requestsFor(crew, 'workspace.context.set')).toEqual([]);
+  });
+});
+
+describe('WorkspaceSettingsDialog People in an open workspace (OW-2)', () => {
+  it('lets a member invite, and still leaves removing anyone to the host', async () => {
+    const user = userEvent.setup();
+    const snapshot = makeSnapshot({ actor: bob });
+    const { crew } = renderSettings(
+      { tab: 'people' },
+      { snapshot: { ...snapshot, workspace: { ...snapshot.workspace, governance: 'open' } } }
+    );
+    const dialog = await screen.findByRole('dialog', { name: 'lab settings' });
+    fireEvent.click(within(dialog).getByRole('button', { name: copy.invite }));
+    expect(crew.current().ui.dialog).toEqual({ kind: 'invite-people' });
+    expect(within(dialog).queryByText(/can invite new people/)).toBeNull();
+    await user.click(
+      within(dialog).getByRole('button', { name: copy.memberOptions('Carol Diaz (@carol)') })
+    );
+    const menu = await screen.findByRole('menu');
+    expect(within(menu).queryByRole('menuitem', { name: copy.removeFrom('lab') })).toBeNull();
   });
 });
