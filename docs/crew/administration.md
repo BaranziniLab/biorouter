@@ -290,7 +290,7 @@ Crew deletes data in three ways, and each keeps a different amount:
 | Action | What goes | What stays |
 |---|---|---|
 | Delete a channel, or a team with its channels | The channel or team, its shared files on the server, its server paths, invitations and read positions, and every agent task and chat that reads it | Its messages, in `journal.jsonl` and in the workspace's live state, unreadable to everyone through Crew, until the workspace is deleted |
-| Delete the workspace (host) | Everything the broker created in the state directory: `journal.jsonl`, `blobs/`, `runtime.json`, `broker.log`, `torn-tail-*`, the lock and the socket | Any file in the state directory that the broker did not create, which it lists and leaves; members' own copies of downloaded files |
+| Delete the workspace (host) | Everything the broker created in the state directory: `journal.jsonl`, `blobs/`, `runtime.json`, `broker.log`, `torn-tail-*`, the lock and the socket | Any file in the state directory that the broker did not create, which it lists and leaves; the `deleted` file in its runtime directory under `/tmp`, holding only the workspace ID ([Delete a stopped workspace](#delete-a-stopped-workspace)); members' own copies of downloaded files |
 | Remove a workspace from one computer | That computer's key and saved connection | Everything on the server |
 
 Deleting a channel frees its file space, but its messages still count toward the workspace's state and journal limits. When text must be gone from the server, delete the workspace, and remember any backup copies.
@@ -298,6 +298,8 @@ Deleting a channel frees its file space, but its messages still count toward the
 ### Delete a stopped workspace
 
 `workspace.delete`, from **Delete workspace…** or `biorouter crew workspace delete`, refuses every later request but `hello` with `workspace_deleted`, waits 30 seconds so connected members learn of it, then erases the state directory and exits. Before it erases anything it writes a `DELETED` marker there, so a broker started on that directory again refuses with `workspace_deleted` and the command to finish. The directory itself goes once it is empty.
+
+The runtime directory under `/tmp` (the one that held `broker.sock`) stays, holding one file, `deleted`, with the workspace ID in it, readable by every account. A member's `biorouter-crew bridge` that finds no broker there reads it and answers `workspace_deleted`, so a member who was idle through the 30 seconds, or offline, learns of the deletion at their next connection instead of reading the workspace as stopped. `biorouter-crew delete` leaves the same file. It blocks nothing: a workspace you start later, even in the same state directory, gets a runtime directory of its own. It goes when `/tmp` is cleaned, and you can remove the directory yourself once every member has removed the workspace from their computer.
 
 For a broker that is not running, or an erase a crash interrupted, the host runs on the server:
 

@@ -608,6 +608,27 @@ const GRANT_TIMED_OUT: &str =
 const BROKER_GRANT_EXPIRED: &str = "grant_expired";
 /// The broker's code for every request to a workspace its host deleted (design OW-5).
 const BROKER_WORKSPACE_DELETED: &str = "workspace_deleted";
+/// The unsigned `state` a broker's `hello` carries while a workspace its host deleted counts
+/// down to its erase (OW-5).
+const HELLO_DELETED: &str = "deleted";
+/// Whether `error` is the workspace's own `workspace_deleted` refusal of a request.
+fn broker_said_deleted(error: &anyhow::Error) -> bool {
+    keepalive::broker_refusal(error).is_some_and(|(code, _)| code == BROKER_WORKSPACE_DELETED)
+}
+/// Whether the bridge found its workspace's server gone with the workspace: the host deleted
+/// it, and the server erased it and stopped, leaving the tombstone the bridge read (L7).
+fn bridge_said_deleted(error: &anyhow::Error) -> bool {
+    error
+        .chain()
+        .find_map(|cause| cause.downcast_ref::<SshFailure>())
+        .is_some_and(|failure| failure.kind == SshFailureKind::WorkspaceDeleted)
+}
+/// Whether a `hello` says its host deleted the workspace, which the server is about to erase
+/// (OW-5). Unsigned, like the storage state, and asked only of a `hello` whose identity
+/// verified; a relay that could add it could as well drop the bridge.
+fn hello_says_deleted(hello: &Value) -> bool {
+    hello.get("state").and_then(Value::as_str) == Some(HELLO_DELETED)
+}
 /// Shown when a chat with no Crew access asks for a Crew run, or a revocation finds none. It
 /// names the one step that connects this chat, in this chat (Q3-29): "Grant it access from
 /// Crew" sent people to Crew, whose empty state sent them back. It is written to the person,
@@ -2104,28 +2125,46 @@ impl CrewManager {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .contains(id)
     }
-    /// A request on `id` answered `answer`: when the workspace said it was deleted, remember
-    /// that, and answer the refusal typed, `crew_workspace_deleted`, so every client can offer
-    /// Remove from this computer without reading the workspace's words. Anything else is
-    /// returned unchanged.
+    /// A request on `id` answered `answer`: when the workspace said it was deleted, or the
+    /// bridge carrying the request found its server gone with the workspace (L7, whatever the
+    /// lost request was typed as), remember that, and answer the refusal typed,
+    /// `crew_workspace_deleted`, so every client can offer Remove from this computer without
+    /// reading the workspace's words. Anything else is returned unchanged.
     async fn heed_workspace_deleted(&self, id: &str, answer: Result<Value>) -> Result<Value> {
         let error = match answer {
             Ok(value) => return Ok(value),
             Err(error) => error,
         };
-        if CrewRefusal::find(&error).is_some()
-            || keepalive::broker_refusal(&error)
-                .is_none_or(|(code, _)| code != BROKER_WORKSPACE_DELETED)
-        {
+        let deleted = match CrewRefusal::find(&error) {
+            Some(refused) if refused.code() == refusal::WORKSPACE_DELETED => false,
+            Some(_) => bridge_said_deleted(&error),
+            None => broker_said_deleted(&error) || bridge_said_deleted(&error),
+        };
+        if !deleted {
             return Err(error);
         }
+        Err(error.context(self.note_workspace_deleted(id).await))
+    }
+    /// Remember that `id`'s host deleted its workspace (OW-5), stop every dial of it, and return
+    /// the typed refusal every request on it is answered with from now on. Its code is kept
+    /// beside that sentence, so a connection a dial or a heartbeat then leaves disconnected
+    /// with it reads `last_error_code` `crew_workspace_deleted`, and no client says it twice.
+    async fn note_workspace_deleted(&self, id: &str) -> CrewRefusal {
         self.deleted_workspaces
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .insert(id.to_owned());
         // Nothing is left to dial: the workspace's server stops for good.
         self.disarm_idle_redial(id);
-        Err(error.context(self.workspace_deleted_refusal(id).await))
+        let refused = self.workspace_deleted_refusal(id).await;
+        self.error_codes
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(
+                id.to_owned(),
+                (refusal::WORKSPACE_DELETED, refused.message().to_owned()),
+            );
+        refused
     }
     /// `crew_workspace_deleted` for `id`, whose workspace's host deleted it: what every request
     /// on it is answered once that is known, so a client offers Remove from this computer and
@@ -3392,10 +3431,15 @@ impl CrewManager {
         connected
     }
     pub(super) async fn connect_locked(&self, id: &str) -> Result<Connection> {
+        // Its host deleted the workspace, whose server has stopped for good: a dial, a person's
+        // or the daemon's own, could only learn that again (L6, L7).
+        if self.workspace_deleted(id) {
+            return Err(self.workspace_deleted_refusal(id).await.into());
+        }
         let c = self.connection(id).await?;
         let mut transport = transport::Transport::connect(&c, &self.control_path(id)?).await?;
         let challenge_nonce = hello_nonce();
-        let hello = transport
+        let hello = match transport
             .request(
                 "hello",
                 json!({"challenge_nonce":challenge_nonce}),
@@ -3403,8 +3447,24 @@ impl CrewManager {
                 None,
                 None,
             )
-            .await?;
+            .await
+        {
+            Ok(hello) => hello,
+            // L7: the bridge found no server, only the tombstone it left when the host deleted
+            // the workspace: a member idle through the grace period, or offline then. The
+            // refusal replaces the SSH failure, so every door answers the same 409.
+            Err(error) if bridge_said_deleted(&error) => {
+                tracing::info!(connection = id, error = %error, "The Crew workspace's host deleted it; not dialling it again");
+                return Err(self.note_workspace_deleted(id).await.into());
+            }
+            Err(error) => return Err(error),
+        };
         let verified = Self::verify_workspace_identity(&c, &hello, &challenge_nonce)?;
+        // A server counting down to its erase answers nothing but `hello` (OW-5).
+        if hello_says_deleted(&hello) {
+            transport.close().await;
+            return Err(self.note_workspace_deleted(id).await.into());
+        }
         let broker_takes_full = verified
             .broker
             .capabilities
@@ -3535,10 +3595,17 @@ impl CrewManager {
             .await;
         let usable = locked.is_usable();
         drop(locked);
-        let verified = match answer
-            .and_then(|hello| Self::verify_workspace_identity(c, &hello, &challenge_nonce))
-        {
-            Ok(verified) => verified,
+        let verified = match answer.and_then(|hello| {
+            Self::verify_workspace_identity(c, &hello, &challenge_nonce)
+                .map(|verified| (verified, hello_says_deleted(&hello)))
+        }) {
+            Ok((verified, false)) => verified,
+            // The host deleted the workspace (OW-5): its server counts down to the erase, or
+            // the bridge found it gone, leaving its tombstone (L7). Never dialled again.
+            Ok((_, true)) => return (Err(self.note_workspace_deleted(id).await.into()), usable),
+            Err(error) if bridge_said_deleted(&error) => {
+                return (Err(self.note_workspace_deleted(id).await.into()), usable)
+            }
             Err(error) => return (Err(error), usable),
         };
         (

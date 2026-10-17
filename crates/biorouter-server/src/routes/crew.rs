@@ -571,7 +571,8 @@ pub async fn delete_workspace(
     responses(
         (status = 200, description = "The connection, connected and verified against its pinned workspace key", body = CrewConnectionView),
         (status = 400, description = "`code` classifies an SSH or workspace-identity failure (`crew_ssh_auth_required`, `crew_ssh_key_refused`, `crew_ssh_host_key_unknown`, `crew_ssh_host_key_changed`, `crew_ssh_unreachable`, `crew_bridge_missing`, `crew_broker_not_running`, `crew_ssh_failed`, `crew_workspace_identity_mismatch`); `error` is the unchanged message, `detail`, when present, OpenSSH's own bounded words for Copy details, and `host`, when present, the host the failure concerns (a jump host's included). Otherwise `crew_institution_mismatch` when the workspace's connections disagree about its institution, `crew_credential_store_unavailable` or `crew_credential_store_refused` when the device key cannot be read, or `crew_request_refused`", body = CrewError),
-        (status = 403, description = "No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no user-action key", body = CrewError)
+        (status = 403, description = "No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no user-action key", body = CrewError),
+        (status = 409, description = "`crew_workspace_deleted`: the workspace's host deleted it (its server said so, or the bridge found the tombstone its server left), so the connection is never dialled again and can only be removed from this computer; `workspace` names it", body = CrewError)
     ),
     tag = "Crew"
 )]

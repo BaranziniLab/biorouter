@@ -11,7 +11,9 @@
 //!   left owned, delete; an open workspace lets any member; an agent's grant never can;
 //! - `workspace.delete` (the host, as a person) commits a tombstone, after which every request
 //!   but `hello` is refused `workspace_deleted`, and the erase removes only what the broker
-//!   created, starting and ending with the `DELETED` marker a crash would leave;
+//!   created, starting and ending with the `DELETED` marker a crash would leave. The runtime
+//!   directory then keeps one file, `deleted`, naming the workspace, so a member's bridge that
+//!   finds no broker answers `workspace_deleted` too (L7);
 //! - `biorouter-crew delete` erases a stopped broker's workspace, and finishes an interrupted
 //!   erase.
 //!
@@ -978,6 +980,18 @@ fn a_running_broker_erases_a_deleted_workspace_and_exits() {
         "auth.bootstrap",
         json!({"public_key": key_hex(&host)}),
     ));
+    // L7: a member's bridge, connected and idle: its daemon sends nothing through the grace
+    // period, so it hears of the deletion only when the broker stops.
+    let mut idle_bridge = std::process::Command::new(env!("CARGO_BIN_EXE_biorouter-crew"))
+        .args(["bridge", "--stdio", "--socket"])
+        .arg(&socket)
+        .args(["--owner-uid", &host_uid().to_string()])
+        .args(["--workspace-id", &workspace_id])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
     ok(signed_send(
         "workspace.delete",
         json!({"workspace_id": workspace_id, "expected_name": null, "idempotency_key": "delete"}),
@@ -995,13 +1009,112 @@ fn a_running_broker_erases_a_deleted_workspace_and_exits() {
     assert_eq!(code, "workspace_deleted");
 
     let deadline = Instant::now() + Duration::from_secs(60);
-    while state.exists() && Instant::now() < deadline {
+    while (state.exists() || socket.exists()) && Instant::now() < deadline {
         std::thread::sleep(Duration::from_millis(500));
     }
     assert!(!state.exists(), "the state directory is erased");
     assert!(!socket.exists(), "the socket is removed");
+    // The idle bridge exits when the broker does, saying the host deleted the workspace. Its
+    // input stays open until then: closed, it would end as a daemon that hung up.
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let status = loop {
+        if let Some(status) = idle_bridge.try_wait().unwrap() {
+            break status;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the idle bridge is still running"
+        );
+        std::thread::sleep(Duration::from_millis(100));
+    };
+    assert_eq!(status.code(), Some(1));
+    let mut said = String::new();
+    std::io::Read::read_to_string(&mut idle_bridge.stderr.take().unwrap(), &mut said).unwrap();
     assert!(
-        !socket.parent().unwrap().exists(),
-        "and its runtime directory"
+        said.contains(
+            "workspace_deleted: The host deleted this workspace. Remove it from this computer."
+        ),
+        "{said}"
     );
+    the_tombstone_tells_members(&socket, &workspace_id);
+
+    // The tombstone blocks nothing: a new workspace started in the same state directory gets a
+    // runtime directory of its own, and a bridge for the old one still says it was deleted.
+    let output = crew(&[
+        "start",
+        "--state-dir",
+        state_dir,
+        "--bootstrap-key",
+        &key_hex(&host),
+    ]);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let restarted: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_ne!(restarted["workspace_id"], json!(workspace_id));
+    let runtime: Value =
+        serde_json::from_slice(&std::fs::read(state.join("runtime.json")).unwrap()).unwrap();
+    let new_socket = PathBuf::from(runtime["socket"].as_str().unwrap());
+    assert_ne!(new_socket.parent(), socket.parent());
+    the_tombstone_tells_members(&socket, &workspace_id);
+    let stopped = crew(&["stop", "--state-dir", state_dir]);
+    assert!(
+        stopped.status.success(),
+        "{}",
+        String::from_utf8_lossy(&stopped.stderr)
+    );
+    for socket in [&socket, &new_socket] {
+        let directory = socket.parent().unwrap();
+        for entry in std::fs::read_dir(directory).into_iter().flatten().flatten() {
+            let _ = std::fs::remove_file(entry.path());
+        }
+        let _ = std::fs::remove_dir(directory);
+    }
+}
+
+/// L7: once a deleted workspace's broker has erased it and stopped, its runtime directory holds
+/// only the tombstone naming the workspace, readable by every account, and a member's bridge
+/// that finds no broker there fails with `workspace_deleted` (exit 1, as the member's daemon
+/// reads it) for that workspace alone.
+#[cfg(target_os = "linux")]
+fn the_tombstone_tells_members(socket: &Path, workspace_id: &str) {
+    use std::os::unix::fs::PermissionsExt;
+    let directory = socket.parent().unwrap();
+    let entries: Vec<String> = std::fs::read_dir(directory)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    assert_eq!(entries, ["deleted"], "only the tombstone stays");
+    let tombstone = directory.join("deleted");
+    assert_eq!(std::fs::read_to_string(&tombstone).unwrap(), workspace_id);
+    assert_eq!(
+        std::fs::metadata(&tombstone).unwrap().permissions().mode() & 0o7777,
+        0o644
+    );
+    let bridge = |workspace: &str| {
+        std::process::Command::new(env!("CARGO_BIN_EXE_biorouter-crew"))
+            .args(["bridge", "--stdio", "--socket"])
+            .arg(socket)
+            .args(["--owner-uid", &host_uid().to_string()])
+            .args(["--workspace-id", workspace])
+            .stdin(std::process::Stdio::null())
+            .output()
+            .unwrap()
+    };
+    let deleted = bridge(workspace_id);
+    assert_eq!(deleted.status.code(), Some(1));
+    let said = String::from_utf8_lossy(&deleted.stderr);
+    assert!(
+        said.contains(
+            "workspace_deleted: The host deleted this workspace. Remove it from this computer."
+        ),
+        "{said}"
+    );
+    let other = bridge(&uuid());
+    assert_eq!(other.status.code(), Some(1));
+    let said = String::from_utf8_lossy(&other.stderr);
+    assert!(!said.contains("workspace_deleted"), "{said}");
+    assert!(said.contains("(os error 2)"), "{said}");
 }

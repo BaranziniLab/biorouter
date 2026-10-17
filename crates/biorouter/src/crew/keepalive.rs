@@ -84,6 +84,16 @@
 //! page keeps its bridge up while the host approves), and its refusals change nothing here. So
 //! that a revocation is noticed without waiting for someone to use Crew, every successful
 //! keepalive re-dial of such a device is followed by one person-signed read.
+//!
+//! **A deleted workspace stops everything too (L6, L7).** When its host deletes it, the
+//! workspace's server answers `workspace_deleted` for 30 s, then erases it and stops, leaving a
+//! tombstone where its socket was. A member whose daemon sent nothing in those 30 s (the
+//! heartbeat waits [`KeepaliveTiming::idle`]), or who was offline, used to meet only a server
+//! that was not running, and was told it was reconnecting for an hour. Now a dial whose bridge
+//! reads the tombstone ([`SshFailureKind::WorkspaceDeleted`]), a verified `hello` that says
+//! `deleted`, and a request the workspace refuses as deleted each mark the connection deleted:
+//! the retries are disarmed, nothing dials it again (a person's Connect included), and every
+//! request is answered `crew_workspace_deleted`.
 
 use super::{transport, CrewManager, SshFailure, SshFailureKind, WorkspaceIdentityError};
 use anyhow::Result;
@@ -642,11 +652,13 @@ impl CrewManager {
 
     /// A later try of a re-dial that failed for a network reason, while it is still owed:
     /// `None` when it is not (someone connected or disconnected meanwhile, another finder
-    /// armed a newer schedule, the membership ended, or a sign-in is pending).
+    /// armed a newer schedule, the membership ended, the host deleted the workspace, or a
+    /// sign-in is pending).
     async fn retry_idle_redial(&self, id: &str, token: u64) -> Option<Result<()>> {
         let _lifecycle = self.connection_guard(id).await.ok()?;
         if !self.idle_redial_armed(id, token)
             || self.membership_ended(id)
+            || self.workspace_deleted(id)
             || self.transports.lock().await.contains_key(id)
             || super::authentication::ensure_connect_available(id).is_err()
         {

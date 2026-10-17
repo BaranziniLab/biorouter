@@ -125,7 +125,11 @@ fn signed_hello(node: &str, v2: bool, capabilities: &[&str]) -> Value {
 /// request as the bridge does when its workspace server is not running (`Error: No such file
 /// or directory (os error 2)`, exit 1: SSH worked); `broker-lost-after-N` answers N requests and
 /// then, at the next, exits as the bridge does when its server went away under it (`Error:
-/// broker_unavailable: …`, exit 1). `run.create` answers
+/// broker_unavailable: …`, exit 1); `workspace-deleted` fails before any request as the bridge
+/// does when it finds only the tombstone a deleted workspace's server left (`Error:
+/// workspace_deleted: …`, exit 1, L7). Once a test has created `hello-deleted` under the root,
+/// every `hello` says `"state": "deleted"`, as a server counting down to its erase answers
+/// ([`deleted_hello`]). `run.create` answers
 /// [`REGRANTED_RUN`], and `workspace.snapshot` answers [`grant_snapshot`] once a test has created
 /// `grant-snapshot` under the root ([`allow_grants`]); every other test's probes get the generic
 /// answer they always did. `context.manifest` answers [`manifest`]; `blob.read` and `blob.status` answer for
@@ -148,6 +152,7 @@ fn write_fake_ssh(root: &Path, plan: &[&str]) {
     let hello_other = signed_hello(&"5d".repeat(32), false, &["human_chat"]).to_string();
     let hello_join = signed_hello(NODE, false, &["human_chat", "join_by_name_v1"]).to_string();
     let hello_storage = storage_stopped_hello().to_string();
+    let hello_deleted = deleted_hello().to_string();
     let manifest = manifest().to_string();
     let read_new = blob_read("blob-new", NEW_CSV).to_string();
     let read_old = blob_read("blob-old", OLD_CSV).to_string();
@@ -168,6 +173,7 @@ fn write_fake_ssh(root: &Path, plan: &[&str]) {
         &hello_other,
         &hello_join,
         &hello_storage,
+        &hello_deleted,
         &manifest,
         &read_new,
         &read_old,
@@ -210,6 +216,9 @@ case "$plan" in
   broker-stopped)
     printf '%s\n' 'Error: No such file or directory (os error 2)' >&2
     exit 1 ;;
+  workspace-deleted)
+    printf '%s\n' 'Error: workspace_deleted: The host deleted this workspace. Remove it from this computer.' >&2
+    exit 1 ;;
 esac
 answered=0
 signed=0
@@ -244,6 +253,7 @@ while IFS= read -r line; do
       join-drop-after-1) body='{hello_join}' ;;
     esac
     [ -e "$root/storage-stopped" ] && body='{hello_storage}'
+    [ -e "$root/hello-deleted" ] && body='{hello_deleted}'
     printf '{{"id":"%s","result":%s}}\n' "$id" "$body"
   elif [ "$plan" = grant-expired ] && printf '%s\n' "$line" | grep -q '"credential":'; then
     printf '{{"id":"%s","error":{{"code":"grant_expired","message":"grant_expired: run revoked, expired or policy changed"}}}}\n' "$id"
@@ -319,6 +329,14 @@ fn storage_stopped_hello() -> Value {
     hello["storage"] = json!({"code": "storage_full",
         "message": "The workspace server ran out of disk space and has stopped saving changes.",
         "since": 1_790_000_000u64});
+    hello
+}
+
+/// A `hello` from a server whose host deleted the workspace, counting down to its erase (OW-5):
+/// the fixture's own, with the unsigned `state` the broker adds.
+fn deleted_hello() -> Value {
+    let mut hello = hello();
+    hello["state"] = json!("deleted");
     hello
 }
 
@@ -4529,4 +4547,206 @@ async fn removing_a_disconnected_connection_stops_its_grants_without_dialling() 
     assert!(f.manager.read_credential(&format!("run:{WORKER}")).is_err());
     let cap = CallCapability::for_test(ProviderTier::Private, true);
     assert!(f.manager.check_dispatch(WORKER, &cap).await.is_err());
+}
+
+/// What every request on a connection whose workspace its host deleted is answered with: the
+/// typed refusal and its sentence, naming the connection (its `hello` was v1 only, so it has no
+/// signed name).
+const DELETED: &str = "The host deleted keepalive fixture. Remove it from this computer.";
+
+/// That `error` is the typed `crew_workspace_deleted` refusal.
+fn assert_deleted_refusal(error: &anyhow::Error) {
+    assert_eq!(
+        super::CrewRefusal::find(error).map(super::CrewRefusal::code),
+        Some("crew_workspace_deleted"),
+        "{error:#}"
+    );
+    assert_eq!(error.to_string(), DELETED);
+}
+
+/// L7: a member connected but idle while the host deleted the workspace. Their daemon sent
+/// nothing in the 30 s grace period, so it heard no `workspace_deleted`; the bridge ended when
+/// the server stopped, and the dial after it met only the tombstone the server left. The
+/// connection is marked deleted and says so in a code, nothing dials it again (the keepalive's
+/// retries, a request or a person's Connect), and every request is answered
+/// `crew_workspace_deleted`. It used to say it was reconnecting, for an hour.
+#[tokio::test]
+async fn a_bridge_that_finds_its_workspace_deleted_is_never_dialled_again() {
+    if !crate::test_sandbox::in_a_process_of_its_own() {
+        return;
+    }
+    let f = fixture(
+        "workspace-deleted-redial",
+        &["end-after-1", "workspace-deleted", "serve"],
+        fast(Duration::from_millis(50)),
+    )
+    .await;
+    f.manager.connect(CONNECTION_ID).await.unwrap();
+    let manager = Arc::clone(&f.manager);
+    until(async || status(&manager).await == ("disconnected".to_owned(), Some(DELETED.to_owned())))
+        .await;
+    assert!(f.manager.workspace_deleted(CONNECTION_ID));
+    assert_eq!(error_code(&f.manager).await, Some("crew_workspace_deleted"));
+    assert!(!f.manager.redial_pending(CONNECTION_ID), "no retries armed");
+    assert_eq!(spawns(&f.root), 2);
+    tokio::time::sleep(Duration::from_millis(400)).await;
+    assert_eq!(spawns(&f.root), 2, "never dialled again by itself");
+
+    let refused = f
+        .manager
+        .human_request(CONNECTION_ID, "workspace.snapshot", json!({}), None)
+        .await
+        .unwrap_err();
+    assert_deleted_refusal(&refused);
+    let refused = f.manager.connect(CONNECTION_ID).await.unwrap_err();
+    assert_deleted_refusal(&refused);
+    assert_eq!(spawns(&f.root), 2, "nor by a request or a person's Connect");
+    assert!(!f.manager.redial_pending(CONNECTION_ID));
+}
+
+/// L7: a member who was offline while the host deleted the workspace learns it at their next
+/// Connect, from the tombstone, and nothing dials it again.
+#[tokio::test]
+async fn an_offline_member_learns_the_workspace_was_deleted_at_the_next_connect() {
+    if !crate::test_sandbox::in_a_process_of_its_own() {
+        return;
+    }
+    let f = fixture(
+        "workspace-deleted-offline",
+        &["workspace-deleted", "serve"],
+        request_finds(Duration::from_millis(50)),
+    )
+    .await;
+    let refused = f.manager.connect(CONNECTION_ID).await.unwrap_err();
+    assert_deleted_refusal(&refused);
+    assert!(
+        refused
+            .chain()
+            .all(|cause| cause.downcast_ref::<SshFailure>().is_none()),
+        "the refusal replaces the SSH failure, so the connect route answers it as every other \
+         door does: {refused:?}"
+    );
+    assert!(f.manager.workspace_deleted(CONNECTION_ID));
+    assert!(!f.manager.redial_pending(CONNECTION_ID), "nothing to retry");
+    tokio::time::sleep(Duration::from_millis(400)).await;
+    assert_eq!(spawns(&f.root), 1);
+    let refused = f
+        .manager
+        .human_request(CONNECTION_ID, "workspace.snapshot", json!({}), None)
+        .await
+        .unwrap_err();
+    assert_deleted_refusal(&refused);
+    assert_eq!(spawns(&f.root), 1);
+}
+
+/// L7: a request whose bridge exited because the workspace's server stopped with the workspace
+/// deleted is answered `crew_workspace_deleted`, on top of however its loss was typed, and
+/// marks the connection deleted. A request lost to a server that merely stopped keeps its own
+/// type and marks nothing.
+#[tokio::test]
+async fn a_request_lost_to_a_deleted_workspace_is_answered_deleted() {
+    let root = tempfile::tempdir().unwrap();
+    let manager = CrewManager::new(root.path().to_owned()).unwrap();
+    let lost = |kind| {
+        super::lost_request(
+            anyhow::Error::new(SshFailure {
+                kind,
+                code: "ssh_eof".into(),
+                status: "exit_1".into(),
+                description: "SSH connection closed".into(),
+                detail: None,
+                host: None,
+                outcome_unknown: true,
+            }),
+            super::Lost::WhileCarrying,
+            "message.post",
+            Some("post-key".into()),
+            "lab",
+        )
+    };
+    let error = manager
+        .heed_workspace_deleted(
+            "deleted-connection",
+            Err(lost(SshFailureKind::WorkspaceDeleted)),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(
+        super::CrewRefusal::find(&error).map(super::CrewRefusal::code),
+        Some("crew_workspace_deleted"),
+        "{error:#}"
+    );
+    assert_eq!(
+        error.to_string(),
+        "The host deleted this workspace. Remove it from this computer."
+    );
+    assert!(manager.workspace_deleted("deleted-connection"));
+
+    let error = manager
+        .heed_workspace_deleted(
+            "stopped-connection",
+            Err(lost(SshFailureKind::BrokerNotRunning)),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(
+        super::CrewRefusal::find(&error).map(super::CrewRefusal::code),
+        Some("crew_outcome_unknown"),
+        "{error:#}"
+    );
+    assert!(!manager.workspace_deleted("stopped-connection"));
+}
+
+/// OW-5, L7: a verified `hello` that says the workspace is deleted (its server counting down to
+/// the erase) marks the connection deleted, at a Connect and at a heartbeat alike, and nothing
+/// dials it again.
+#[tokio::test]
+async fn a_hello_that_says_the_workspace_was_deleted_ends_the_connection_for_good() {
+    if !crate::test_sandbox::in_a_process_of_its_own() {
+        return;
+    }
+    let f = fixture(
+        "workspace-deleted-hello-connect",
+        &["serve", "serve"],
+        fast(Duration::from_millis(50)),
+    )
+    .await;
+    fs::write(f.root.join("hello-deleted"), "").unwrap();
+    let refused = f.manager.connect(CONNECTION_ID).await.unwrap_err();
+    assert_deleted_refusal(&refused);
+    assert!(f.manager.workspace_deleted(CONNECTION_ID));
+    assert!(!f
+        .manager
+        .transports
+        .lock()
+        .await
+        .contains_key(CONNECTION_ID));
+    tokio::time::sleep(Duration::from_millis(400)).await;
+    assert_eq!(spawns(&f.root), 1);
+    drop(f);
+
+    // The heartbeat of an idle member who was connected when the host deleted it.
+    let f = fixture(
+        "workspace-deleted-hello-heartbeat",
+        &["serve", "serve"],
+        fast(Duration::from_millis(50)),
+    )
+    .await;
+    f.manager.connect(CONNECTION_ID).await.unwrap();
+    assert!(!f.manager.workspace_deleted(CONNECTION_ID));
+    fs::write(f.root.join("hello-deleted"), "").unwrap();
+    let manager = Arc::clone(&f.manager);
+    until(async || status(&manager).await == ("disconnected".to_owned(), Some(DELETED.to_owned())))
+        .await;
+    assert!(f.manager.workspace_deleted(CONNECTION_ID));
+    assert_eq!(error_code(&f.manager).await, Some("crew_workspace_deleted"));
+    tokio::time::sleep(Duration::from_millis(400)).await;
+    assert_eq!(spawns(&f.root), 1, "never dialled again");
+    assert!(
+        requests(&f.root)
+            .iter()
+            .all(|(spawn, method)| *spawn == 1 && method == "hello"),
+        "{:?}",
+        requests(&f.root)
+    );
 }

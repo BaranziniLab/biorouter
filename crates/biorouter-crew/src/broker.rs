@@ -882,6 +882,8 @@ const SHARE_METHODS: [&str; 9] = [
 const RUN_SOURCE_CHANNELS: usize = 100;
 /// Every request but `hello` once the host has deleted the workspace (OW-5), ahead of
 /// authentication, so a member's daemon learns it rather than seeing the broker as offline.
+/// A member's bridge fails with the same line once the broker has erased the workspace and
+/// stopped, from the [`RUNTIME_TOMBSTONE`] it left (L7).
 const WORKSPACE_DELETED: &str =
     "workspace_deleted: The host deleted this workspace. Remove it from this computer.";
 /// How long after `workspace.delete` the broker keeps answering `workspace_deleted` before it
@@ -894,6 +896,15 @@ const DELETED_MARKER: &str = "DELETED";
 /// Where the [`DELETED_MARKER`] is written before it is renamed into place, so the marker never
 /// exists without the workspace ID in it.
 const DELETED_MARKER_TEMP: &str = ".DELETED.tmp";
+/// The file a deleted workspace's runtime directory keeps once its broker has erased the
+/// workspace and stopped (OW-5, L7): the workspace's ID, readable by every account. A member's
+/// bridge that then finds no broker there says the host deleted the workspace
+/// ([`WORKSPACE_DELETED`]) rather than that nothing is running, whether the member was
+/// connected and idle through the grace period or offline. Only the host account and root can
+/// write in that directory. It stays until `/tmp` is cleaned: a later `start` never reuses the
+/// directory (a new workspace gets a new random one), and a recorded directory that holds one
+/// reads as unusable, so the workspace moves ([`relocate_runtime`]).
+const RUNTIME_TOMBSTONE: &str = "deleted";
 /// A team's `#general` goes only with its team (`channel.delete`).
 const GENERAL_DELETE: &str =
     "invalid_params: #general belongs to its team. Delete the team instead.";
@@ -2018,8 +2029,10 @@ impl Broker {
             .to_bytes(),
         );
         let mut hello = json!({"protocol":1,"workspace_id":workspace.id,"host_uid":workspace.host_uid,"mode":workspace.mode,"institution_id":workspace.institution_id,"policy_epoch":workspace.policy_epoch,"name":workspace.name,"workspace_public_key":public_key,"node_id":node_id,"workspace_key_fingerprint":digest(&key.verifying_key().to_bytes()),"challenge_nonce":nonce,"signature":signature,"signature_v2":signature_v2,"capabilities":capabilities,"unsupported":["arbitrary_shell","remote_filesystem","network_filesystem","cross_workspace_release"]});
-        // Unsigned, for display only: whether this broker is still saving changes, or the host
-        // deleted the workspace and it is about to erase itself. An older broker sends no
+        // Unsigned: whether this broker is still saving changes, or the host deleted the
+        // workspace and it is about to erase itself. The storage state is for display only; a
+        // member's daemon ends the connection on `deleted` (L7), as it does on the equally
+        // unsigned `workspace_deleted` refusal of any other request. An older broker sends no
         // `state`, which a client reads as unknown.
         match &self.storage_fault {
             _ if workspace.deleted_at.is_some() => hello["state"] = json!("deleted"),
@@ -6024,11 +6037,8 @@ pub fn serve(root: &Path, bootstrap_key: &str, name: Option<&str>) -> Result<()>
         let runtime = broker.state.runtime_basename.clone();
         let leftovers = erase_store(&broker.root, &workspace_id)?;
         if let Some(basename) = runtime {
-            remove_stale_runtime(
-                &broker.runtime_root,
-                broker.state.workspace.host_uid,
-                &basename,
-            );
+            let uid = broker.state.workspace.host_uid;
+            retire_runtime(&broker.runtime_root, uid, &basename, &workspace_id);
         }
         println!(
             "{}",
@@ -6158,9 +6168,11 @@ fn watch_runtime(socket: PathBuf, bound: (u64, u64), broker: Arc<Mutex<Broker>>)
 }
 /// The end of a workspace its host deleted (OW-5), once connected members have had
 /// [`DELETE_GRACE_SECS`] to hear `workspace_deleted`: erase the state directory
-/// ([`erase_store`]), remove the runtime socket and its directory if they are still the ones
-/// this broker bound, and exit. Called with the broker's lock held, so no request is answered
-/// in between.
+/// ([`erase_store`]), and, while the runtime socket is still the one this broker bound, leave
+/// the [`RUNTIME_TOMBSTONE`] in its directory and remove the socket, and exit. A member whose
+/// daemon sent nothing in the grace period, or who was offline, learns it from the tombstone
+/// (L7). Should the tombstone fail, the directory goes with the socket, as before it existed.
+/// Called with the broker's lock held, so no request is answered in between.
 fn finish_deletion(broker: &Broker, socket: &Path, bound: (u64, u64)) -> ! {
     let workspace_id = &broker.state.workspace.id;
     let root = broker.root.display();
@@ -6178,12 +6190,107 @@ fn finish_deletion(broker: &Broker, socket: &Path, bound: (u64, u64)) -> ! {
         ),
     }
     if runtime_intact(socket, bound) {
+        // Written even when the erase failed: the host deleted the workspace either way.
+        let kept = socket
+            .parent()
+            .is_some_and(|directory| leave_runtime_tombstone(directory, workspace_id));
         let _ = fs::remove_file(socket);
-        if let Some(directory) = socket.parent() {
-            let _ = fs::remove_dir(directory);
+        if !kept {
+            if let Some(directory) = socket.parent() {
+                let _ = fs::remove_dir(directory);
+            }
         }
     }
     std::process::exit(if erased.is_ok() { 0 } else { 74 })
+}
+/// Leave the [`RUNTIME_TOMBSTONE`] naming `workspace_id` in `directory`, a deleted workspace's
+/// runtime directory this account owns: created exclusively, never through a symbolic link,
+/// and readable by every account whatever the umask. Whether it was written whole; a file it
+/// could not finish is removed again.
+fn leave_runtime_tombstone(directory: &Path, workspace_id: &str) -> bool {
+    if !broker_id(workspace_id) {
+        return false;
+    }
+    let path = directory.join(RUNTIME_TOMBSTONE);
+    let Ok(mut file) = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o644)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
+        .open(&path)
+    else {
+        return false;
+    };
+    let written = file
+        .set_permissions(fs::Permissions::from_mode(0o644))
+        .and_then(|()| file.write_all(workspace_id.as_bytes()))
+        .and_then(|()| file.sync_all());
+    if written.is_err() {
+        let _ = fs::remove_file(&path);
+    }
+    written.is_ok()
+}
+/// Whether `directory` is a runtime directory of `owner`'s holding the [`RUNTIME_TOMBSTONE`] of
+/// `workspace`, checked as [`check_runtime_socket`] checks a socket: the directory (not a
+/// symbolic link) is `owner`'s and no other account can write into it, and the tombstone is a
+/// regular file `owner` owns with one link, opened without following a symbolic link and read
+/// only up to a bound. Only `owner` and root can make one.
+fn runtime_tombstone_names(directory: &Path, owner: u32, workspace: &str) -> bool {
+    let Ok(dir) = fs::symlink_metadata(directory) else {
+        return false;
+    };
+    if !(dir.is_dir() && dir.uid() == owner && dir.mode() & 0o022 == 0 && broker_id(workspace)) {
+        return false;
+    }
+    let Ok(file) = OpenOptions::new()
+        .read(true)
+        // A FIFO in its place must not stall the bridge.
+        .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC | libc::O_NONBLOCK)
+        .open(directory.join(RUNTIME_TOMBSTONE))
+    else {
+        return false;
+    };
+    let Ok(metadata) = file.metadata() else {
+        return false;
+    };
+    if !(metadata.is_file() && metadata.uid() == owner && metadata.nlink() == 1) {
+        return false;
+    }
+    let mut bytes = Vec::new();
+    file.take(128).read_to_end(&mut bytes).is_ok()
+        && String::from_utf8_lossy(&bytes).trim() == workspace
+}
+/// Whether the host deleted `workspace` (OW-5, L7), as the tombstone its broker left says: in
+/// the runtime directory the member's connection was saved with (`socket`'s), or in another of
+/// `owner`'s runtime directories in `root` the workspace had moved to ([`moved_workspace`]).
+/// Asked only once no broker answers for the workspace anywhere, so a broker running for it is
+/// always the answer, whatever an old tombstone says. As for a moved broker, ownership is
+/// checked before at most [`SIBLING_PROBE_LIMIT`] other directories are read.
+fn workspace_tombstoned(root: &Path, socket: &Path, owner: u32, workspace: &str) -> bool {
+    let saved = socket.parent();
+    if saved.is_some_and(|directory| runtime_tombstone_names(directory, owner, workspace)) {
+        return true;
+    }
+    let Ok(entries) = fs::read_dir(root) else {
+        return false;
+    };
+    let saved = saved.and_then(Path::file_name);
+    let mut candidates: Vec<PathBuf> = entries
+        .filter_map(|entry| entry.ok()?.file_name().into_string().ok())
+        .filter(|name| {
+            runtime_basename_of(name, owner) && Some(std::ffi::OsStr::new(name)) != saved
+        })
+        .map(|name| root.join(name))
+        .filter(|directory| {
+            fs::symlink_metadata(directory)
+                .is_ok_and(|dir| dir.is_dir() && dir.uid() == owner && dir.mode() & 0o022 == 0)
+        })
+        .collect();
+    candidates.sort();
+    candidates.truncate(SIBLING_PROBE_LIMIT);
+    candidates
+        .iter()
+        .any(|directory| runtime_tombstone_names(directory, owner, workspace))
 }
 /// Whether `name` is an ID exactly as [`id`] makes them (a hyphenated, lowercase UUID): what
 /// the broker names workspaces and blob files by.
@@ -6313,11 +6420,14 @@ fn erase_store(root: &Path, workspace_id: &str) -> Result<Vec<String>> {
     leftovers.sort();
     Ok(leftovers)
 }
-/// Remove a deleted workspace's runtime directory `runtime_root/basename` when nothing listens
+/// Retire a deleted workspace's runtime directory `runtime_root/basename` when nothing listens
 /// in it: a directory `uid` owns that no other account can write into, holding at most a stale
-/// `broker.sock` of `uid`'s. Anything else is left exactly as it is, as
-/// [`reclaim_runtime_socket`] leaves it.
-fn remove_stale_runtime(runtime_root: &Path, uid: u32, basename: &str) {
+/// `broker.sock` of `uid`'s and a [`RUNTIME_TOMBSTONE`]. The stale socket goes, and the
+/// directory stays with the tombstone naming `workspace_id` in it, so members learn the host
+/// deleted the workspace (L7); with none (no ID to name, or it could not be written) the
+/// directory goes too. A tombstone already there is kept as it is. Anything else is left
+/// exactly as it is, as [`reclaim_runtime_socket`] leaves it.
+fn retire_runtime(runtime_root: &Path, uid: u32, basename: &str, workspace_id: &str) {
     use std::os::unix::fs::FileTypeExt;
     if !runtime_basename_of(basename, uid) {
         return;
@@ -6332,9 +6442,12 @@ fn remove_stale_runtime(runtime_root: &Path, uid: u32, basename: &str) {
     let Ok(entries) = fs::read_dir(&directory) else {
         return;
     };
+    let mut tombstoned = false;
     for entry in entries {
-        if !entry.is_ok_and(|entry| entry.file_name() == "broker.sock") {
-            return;
+        match entry.map(|entry| entry.file_name()) {
+            Ok(name) if name == "broker.sock" => {}
+            Ok(name) if name == RUNTIME_TOMBSTONE => tombstoned = true,
+            _ => return,
         }
     }
     let socket = directory.join("broker.sock");
@@ -6348,6 +6461,9 @@ fn remove_stale_runtime(runtime_root: &Path, uid: u32, basename: &str) {
             }
             _ => return,
         }
+    }
+    if tombstoned || leave_runtime_tombstone(&directory, workspace_id) {
+        return;
     }
     let _ = fs::remove_dir(&directory);
 }
@@ -6395,20 +6511,38 @@ fn serve_requests(
 }
 /// A connection to `workspace`'s broker, which `owner` runs, with the `hello` it answered: at
 /// `socket`, the path the member's saved connection names, or, when that path no longer leads
-/// to the workspace, wherever in `root` the broker has moved to ([`moved_workspace`]).
+/// to the workspace, wherever in `root` the broker has moved to ([`moved_workspace`]). When no
+/// broker answers for it anywhere and its broker left the tombstone of a deleted workspace
+/// ([`workspace_tombstoned`]), the refusal is [`WORKSPACE_DELETED`], so the member's daemon
+/// says the host deleted it rather than that it is not running (L7).
 fn open_workspace(
     root: &Path,
     socket: &Path,
     owner: u32,
     workspace: &str,
 ) -> Result<(UnixStream, BufReader<UnixStream>, Value)> {
-    match connect_workspace(socket, owner, workspace, None) {
-        Ok(found) => Ok(found),
-        Err(error) => {
-            let pinned = socket.parent().and_then(Path::file_name);
-            moved_workspace(root, owner, workspace, pinned).ok_or(error)
-        }
+    open_workspace_at(root, socket, owner, workspace)
+        .map(|(_, stream, reader, hello)| (stream, reader, hello))
+}
+/// [`open_workspace`], with the socket the broker answered at first.
+fn open_workspace_at(
+    root: &Path,
+    socket: &Path,
+    owner: u32,
+    workspace: &str,
+) -> Result<(PathBuf, UnixStream, BufReader<UnixStream>, Value)> {
+    let error = match connect_workspace(socket, owner, workspace, None) {
+        Ok((stream, reader, hello)) => return Ok((socket.to_path_buf(), stream, reader, hello)),
+        Err(error) => error,
+    };
+    let pinned = socket.parent().and_then(Path::file_name);
+    if let Some(found) = moved_workspace(root, owner, workspace, pinned) {
+        return Ok(found);
     }
+    if workspace_tombstoned(root, socket, owner, workspace) {
+        bail!(WORKSPACE_DELETED);
+    }
+    Err(error)
 }
 /// Connect to the broker at `socket` and check it is `workspace`'s, run by `owner`: the socket
 /// and its directory are `owner`'s ([`check_runtime_socket`]), the listener runs as `owner`,
@@ -6457,13 +6591,14 @@ fn connect_workspace(
 /// checks the workspace key's signature on its own `hello`, exactly as for the saved path.
 /// As when a start checks its siblings, ownership is checked before at most
 /// [`SIBLING_PROBE_LIMIT`] directories are tried, each bounded by [`SIBLING_PROBE_TIMEOUT`], so
-/// entries another account creates can neither take those slots nor stall the search.
+/// entries another account creates can neither take those slots nor stall the search. The
+/// socket it answered at comes first.
 fn moved_workspace(
     root: &Path,
     owner: u32,
     workspace: &str,
     pinned: Option<&std::ffi::OsStr>,
-) -> Option<(UnixStream, BufReader<UnixStream>, Value)> {
+) -> Option<(PathBuf, UnixStream, BufReader<UnixStream>, Value)> {
     let mut candidates: Vec<PathBuf> = fs::read_dir(root)
         .ok()?
         .filter_map(|entry| entry.ok()?.file_name().into_string().ok())
@@ -6476,7 +6611,9 @@ fn moved_workspace(
     candidates.sort();
     candidates.truncate(SIBLING_PROBE_LIMIT);
     candidates.into_iter().find_map(|socket| {
-        connect_workspace(&socket, owner, workspace, Some(SIBLING_PROBE_TIMEOUT)).ok()
+        let (stream, reader, hello) =
+            connect_workspace(&socket, owner, workspace, Some(SIBLING_PROBE_TIMEOUT)).ok()?;
+        Some((socket, stream, reader, hello))
     })
 }
 pub fn bridge(socket: &Path, owner: u32, workspace: &str) -> Result<()> {
@@ -6485,7 +6622,7 @@ pub fn bridge(socket: &Path, owner: u32, workspace: &str) -> Result<()> {
         "unsupported: bridge requires Linux"
     );
     let root = runtime_root_of(socket)?;
-    let (stream, reader, _) = open_workspace(root, socket, owner, workspace)?;
+    let (connected, stream, reader, _) = open_workspace_at(root, socket, owner, workspace)?;
     // A full-access transfer opens its own connection the same way, so the relay never waits
     // on it.
     let reconnect: crate::remote_full::Connect = {
@@ -6505,7 +6642,19 @@ pub fn bridge(socket: &Path, owner: u32, workspace: &str) -> Result<()> {
     let mut input = BufReader::new(File::from(std::io::stdin().as_fd().try_clone_to_owned()?));
     let stdout = std::io::stdout();
     let mut output = stdout.lock();
-    relay(&mut input, &mut output, stream, reader, &reconnect)
+    relay(&mut input, &mut output, stream, reader, &reconnect).map_err(|error| {
+        // A broker that went because its host deleted the workspace left the tombstone in its
+        // directory before it stopped: say so, so a member connected through the grace period
+        // learns it now (L7).
+        let deleted = connected
+            .parent()
+            .is_some_and(|directory| runtime_tombstone_names(directory, owner, workspace));
+        if deleted {
+            anyhow!(WORKSPACE_DELETED)
+        } else {
+            error
+        }
+    })
 }
 /// Write `response` to the daemon as one frame. An answer too large for a frame is replaced by
 /// a refusal under the same ID rather than ending the bridge.
@@ -6802,7 +6951,8 @@ pub fn delete_workspace(root: &Path, workspace_id: &str) -> Result<Value> {
 }
 
 /// Erase the stopped workspace `workspace_id` in `root` (whose journal said `stored`): under
-/// the writer lock, then the runtime directory it last listened in.
+/// the writer lock, then retire the runtime directory it last listened in, leaving the
+/// tombstone members' bridges read there ([`retire_runtime`]).
 fn erase_stopped(
     root: &Path,
     workspace_id: &str,
@@ -6834,7 +6984,12 @@ fn erase_stopped(
         });
     let leftovers = erase_store(root, workspace_id)?;
     if let Some(basename) = runtime {
-        remove_stale_runtime(Path::new("/tmp"), unsafe { libc::geteuid() }, &basename);
+        retire_runtime(
+            Path::new("/tmp"),
+            unsafe { libc::geteuid() },
+            &basename,
+            workspace_id,
+        );
     }
     // Empty only when `serve` finished an erase nothing named any more.
     let workspace_id = (!workspace_id.is_empty()).then_some(workspace_id);
@@ -7549,6 +7704,143 @@ mod runtime_tests {
             error.downcast_ref::<std::io::Error>().is_some(),
             "{error:#}"
         );
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// A runtime directory of this account's at `root/crew-<uid>-<fill × 32>`, with `mode`.
+    fn runtime_directory(root: &Path, fill: char, mode: u32) -> (String, PathBuf) {
+        let uid = unsafe { libc::geteuid() };
+        let basename = format!("crew-{uid}-{}", fill.to_string().repeat(32));
+        let directory = root.join(&basename);
+        fs::create_dir(&directory).unwrap();
+        fs::set_permissions(&directory, fs::Permissions::from_mode(mode)).unwrap();
+        (basename, directory)
+    }
+
+    /// L7: the tombstone a deleted workspace's broker leaves is written whole, readable by
+    /// every account, never written over, and read only from its host's own runtime directory
+    /// as a regular file the host owns with one link, naming exactly that workspace.
+    #[test]
+    fn a_tombstone_is_read_only_from_its_hosts_own_runtime_directory() {
+        let root = short_root();
+        let uid = unsafe { libc::geteuid() };
+        let workspace = Uuid::new_v4().to_string();
+        let (_, directory) = runtime_directory(&root, 'a', 0o711);
+        assert!(!runtime_tombstone_names(&directory, uid, &workspace));
+        assert!(!leave_runtime_tombstone(&directory, "not-a-workspace-id"));
+        assert!(!directory.join(RUNTIME_TOMBSTONE).exists());
+
+        assert!(leave_runtime_tombstone(&directory, &workspace));
+        let tombstone = directory.join(RUNTIME_TOMBSTONE);
+        assert_eq!(fs::read_to_string(&tombstone).unwrap(), workspace);
+        assert_eq!(
+            fs::symlink_metadata(&tombstone).unwrap().mode() & 0o7777,
+            0o644,
+            "members' bridges read it"
+        );
+        assert!(runtime_tombstone_names(&directory, uid, &workspace));
+        assert!(!runtime_tombstone_names(
+            &directory,
+            uid,
+            &Uuid::new_v4().to_string()
+        ));
+        assert!(!runtime_tombstone_names(
+            &directory,
+            uid.wrapping_add(1),
+            &workspace
+        ));
+        assert!(
+            !leave_runtime_tombstone(&directory, &Uuid::new_v4().to_string()),
+            "never written over"
+        );
+        assert_eq!(fs::read_to_string(&tombstone).unwrap(), workspace);
+
+        // A second link to it, as another account could make to a file it can read where
+        // hard links are not protected, is not the broker's file.
+        let (_, linked) = runtime_directory(&root, 'b', 0o711);
+        fs::hard_link(&tombstone, linked.join(RUNTIME_TOMBSTONE)).unwrap();
+        assert!(!runtime_tombstone_names(&linked, uid, &workspace));
+        assert!(!runtime_tombstone_names(&directory, uid, &workspace));
+        fs::remove_file(linked.join(RUNTIME_TOMBSTONE)).unwrap();
+        // A symbolic link in its place is never followed.
+        std::os::unix::fs::symlink(&tombstone, linked.join(RUNTIME_TOMBSTONE)).unwrap();
+        assert!(!runtime_tombstone_names(&linked, uid, &workspace));
+        // A directory other accounts can write into says nothing, whatever it holds.
+        let (_, writable) = runtime_directory(&root, 'c', 0o777);
+        fs::write(writable.join(RUNTIME_TOMBSTONE), &workspace).unwrap();
+        assert!(!runtime_tombstone_names(&writable, uid, &workspace));
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// L7: with no broker for the workspace anywhere, a bridge whose saved runtime directory,
+    /// or the one the workspace moved to, holds its tombstone fails with `workspace_deleted`,
+    /// so the member's daemon offers to remove it rather than reconnecting forever. Another
+    /// workspace's tombstone, or one in a directory other accounts can write into, leaves the
+    /// saved path's own error.
+    #[test]
+    fn a_bridge_reads_the_tombstone_its_workspaces_broker_left() {
+        let root = short_root();
+        let uid = unsafe { libc::geteuid() };
+        let workspace = Uuid::new_v4().to_string();
+        let (_, saved) = runtime_directory(&root, 'a', 0o711);
+        let pinned = saved.join("broker.sock");
+        let not_running = |root: &Path| {
+            let error = open_workspace(root, &pinned, uid, &workspace).expect_err("no broker");
+            assert!(
+                error.downcast_ref::<std::io::Error>().is_some(),
+                "{error:#}"
+            );
+        };
+        not_running(&root);
+        assert!(leave_runtime_tombstone(&saved, &Uuid::new_v4().to_string()));
+        not_running(&root);
+        let (_, writable) = runtime_directory(&root, 'b', 0o777);
+        fs::write(writable.join(RUNTIME_TOMBSTONE), &workspace).unwrap();
+        not_running(&root);
+
+        let (_, moved) = runtime_directory(&root, 'c', 0o711);
+        assert!(leave_runtime_tombstone(&moved, &workspace));
+        let error = open_workspace(&root, &pinned, uid, &workspace).expect_err("deleted");
+        assert_eq!(error.to_string(), WORKSPACE_DELETED);
+        let _ = fs::remove_dir_all(&root);
+
+        let root = short_root();
+        let (_, saved) = runtime_directory(&root, 'a', 0o711);
+        assert!(leave_runtime_tombstone(&saved, &workspace));
+        let error = open_workspace(&root, &saved.join("broker.sock"), uid, &workspace)
+            .expect_err("deleted");
+        assert_eq!(error.to_string(), WORKSPACE_DELETED);
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// L7: retiring a deleted workspace's runtime directory removes its stale socket and keeps
+    /// the directory with the tombstone in it, and keeps a tombstone already there as it is.
+    /// With no workspace ID to name, the directory goes, as before tombstones; a live listener
+    /// leaves everything in place.
+    #[test]
+    fn retiring_a_deleted_workspaces_runtime_directory_leaves_its_tombstone() {
+        let root = short_root();
+        let uid = unsafe { libc::geteuid() };
+        let workspace = Uuid::new_v4().to_string();
+
+        let (basename, directory) = runtime_directory(&root, 'a', 0o711);
+        drop(UnixListener::bind(directory.join("broker.sock")).unwrap());
+        retire_runtime(&root, uid, &basename, &workspace);
+        assert!(fs::symlink_metadata(directory.join("broker.sock")).is_err());
+        assert!(runtime_tombstone_names(&directory, uid, &workspace));
+        retire_runtime(&root, uid, &basename, &Uuid::new_v4().to_string());
+        assert!(runtime_tombstone_names(&directory, uid, &workspace));
+
+        let (basename, directory) = runtime_directory(&root, 'b', 0o711);
+        drop(UnixListener::bind(directory.join("broker.sock")).unwrap());
+        retire_runtime(&root, uid, &basename, "");
+        assert!(!directory.exists());
+
+        let (basename, directory) = runtime_directory(&root, 'c', 0o711);
+        let _live = UnixListener::bind(directory.join("broker.sock")).unwrap();
+        retire_runtime(&root, uid, &basename, &workspace);
+        assert!(directory.join("broker.sock").exists());
+        assert!(!directory.join(RUNTIME_TOMBSTONE).exists());
         let _ = fs::remove_dir_all(&root);
     }
 }

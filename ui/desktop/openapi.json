@@ -2700,6 +2700,16 @@
                 }
               }
             }
+          },
+          "409": {
+            "description": "`crew_workspace_deleted`: the workspace's host deleted it (its server said so, or the bridge found the tombstone its server left), so the connection is never dialled again and can only be removed from this computer; `workspace` names it",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CrewError"
+                }
+              }
+            }
           }
         }
       }

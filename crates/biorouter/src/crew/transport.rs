@@ -94,6 +94,10 @@ pub enum SshFailureKind {
     /// SSH worked and the bridge ran, but no workspace server answers on its socket: it was
     /// stopped, killed or the server rebooted (W2-DMN-5).
     BrokerNotRunning,
+    /// SSH worked and the bridge ran, and found that the host deleted the workspace: its
+    /// server erased it and stopped, leaving the tombstone the bridge read (OW-5, L7). Final:
+    /// there is nothing left to dial.
+    WorkspaceDeleted,
     /// Anything else, including a failure while ssh was still running.
     Other,
 }
@@ -109,6 +113,8 @@ impl SshFailureKind {
             Self::Unreachable => "crew_ssh_unreachable",
             Self::BridgeMissing => "crew_bridge_missing",
             Self::BrokerNotRunning => "crew_broker_not_running",
+            // The code every client already answers with Remove from this computer.
+            Self::WorkspaceDeleted => super::refusal::WORKSPACE_DELETED,
             Self::Other => "crew_ssh_failed",
         }
     }
@@ -795,6 +801,13 @@ fn classify(state: ChildState, stderr: &str) -> SshFailureKind {
             return kind;
         }
     }
+    // SSH connected and the bridge ran, and its workspace's host deleted the workspace: the
+    // broker erased it and stopped, leaving the tombstone the bridge read (OW-5, L7). The
+    // bridge says so as `Error: workspace_deleted: …` and exits 1. Read first: it is the
+    // bridge's own word, so the bridge is not missing.
+    if code != Some(SSH_OWN_FAILURE_STATUS) && workspace_deleted(&lines) {
+        return SshFailureKind::WorkspaceDeleted;
+    }
     if any_line(&lines, |line| {
         line.contains("biorouter-crew")
             && [
@@ -829,6 +842,14 @@ fn broker_not_running(lines: &[String]) -> bool {
                 || line.contains("connection refused (os error 61)")
                 || line.contains("broker_unavailable:")
                 || line.contains("broker disconnected"))
+    })
+}
+
+/// Whether the bridge said its workspace's host deleted the workspace: its startup error is the
+/// broker's `workspace_deleted` refusal (`biorouter-crew`'s `WORKSPACE_DELETED`).
+fn workspace_deleted(lines: &[String]) -> bool {
+    any_line(lines, |line| {
+        line.trim_start().starts_with("error: workspace_deleted:")
     })
 }
 

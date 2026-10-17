@@ -186,12 +186,14 @@ If you are the host, read [Limits of the host role](hosting-a-workspace.md#limit
 
 ## A deleted workspace
 
-When the host deletes a workspace, Crew on the server answers every request with a refusal, then erases the workspace and stops. If you were connected, the connection bar says "The host deleted {workspace}." with **Remove from this computer…**. If you were offline, you learn it the next time Crew connects. Nothing else is possible: there is nothing left to reconnect to.
+When the host deletes a workspace, Crew on the server refuses every request for 30 seconds, then erases the workspace and stops. It leaves a small file on the server that says the workspace was deleted, so your Crew learns it whether you were using the workspace, connected but idle, or offline: from the refusal, or from that file the next time it connects. The connection bar then says "The host deleted {workspace}." with **Remove from this computer…**, and Crew stops reconnecting to it. Nothing else is possible: there is nothing left to reconnect to.
 
 1. Choose **Remove from this computer…**, then **Remove**. This deletes this computer's key and saved connection for the workspace.
 2. Files you saved on your computer stay. Messages and files on the server are gone.
 
 From a terminal, commands answer `The host deleted this workspace on the server. Remove it from this computer with biorouter crew connections remove.` (code `crew_workspace_deleted`), and `connections remove` removes it without the host warning, since there is no workspace left to host.
+
+The file lasts until the server clears its temporary files, which many servers do when they restart. If you stayed offline until after that, Crew can't tell a deleted workspace from a stopped one, and shows the message for a stopped workspace (see [Automatic reconnection](#automatic-reconnection)). Ask your host, and remove the workspace from this computer if they deleted it.
 
 ## A server that stopped saving
 

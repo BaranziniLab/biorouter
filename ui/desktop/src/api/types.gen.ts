@@ -8220,6 +8220,10 @@ export type CrewConnectErrors = {
      * No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no user-action key
      */
     403: CrewError;
+    /**
+     * `crew_workspace_deleted`: the workspace's host deleted it (its server said so, or the bridge found the tombstone its server left), so the connection is never dialled again and can only be removed from this computer; `workspace` names it
+     */
+    409: CrewError;
 };
 
 export type CrewConnectError = CrewConnectErrors[keyof CrewConnectErrors];

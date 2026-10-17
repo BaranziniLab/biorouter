@@ -730,7 +730,7 @@ pub(super) fn ssh_sentence(kind: super::SshFailureKind, stderr: &str, ssh_target
         Kind::HostKeyUnknown => "This computer hasn't connected to the server before. Sign in once in a terminal to check its fingerprint, then try again.",
         Kind::HostKeyChanged => "The server's identity changed since this computer last connected. Check with the server's administrator before you continue.",
         Kind::Unreachable => "Couldn't reach the server. Check the login and your network, then try again.",
-        Kind::BridgeMissing | Kind::BrokerNotRunning | Kind::Other => "SSH couldn't run the commands. Run them yourself in a terminal to see why.",
+        Kind::BridgeMissing | Kind::BrokerNotRunning | Kind::WorkspaceDeleted | Kind::Other => "SSH couldn't run the commands. Run them yourself in a terminal to see why.",
     }
     .to_owned()
 }
