@@ -358,6 +358,17 @@ impl PublicUrl {
         };
         let origin = WebOrigin::with_authority(url.scheme(), &authority)
             .ok_or_else(|| format!("{value:?} names a host no browser origin can carry"))?;
+        // A browser applies the shell's protections only at a secure address,
+        // and at a plain-HTTP network address the daemon refuses the interface
+        // (`auth::reached_over_a_secure_context`). Declaring one would only make
+        // the live views connect to a page that cannot be served, or, behind a
+        // proxy that rewrites `Host` to loopback, to one served without them.
+        if url.scheme() == "http" && !host_is_loopback_name(host) {
+            return Err(format!(
+                "{value:?} is plain http at a network address; use the https address of the \
+                 proxy in front of it"
+            ));
+        }
         let allowed = |b: u8| b.is_ascii_alphanumeric() || b"-._~!$&'()*+,=:@%/".contains(&b);
         if !url.path().bytes().all(allowed) {
             return Err(format!(
@@ -387,17 +398,49 @@ impl PublicUrl {
     }
 }
 
-/// This process's declared public address, read once. A value that does not
-/// parse is `None` here; `commands::agent` refuses to start on one, so a
-/// running daemon never reaches this with it.
+/// Whether a URL's host names this machine the way a browser counts as secure:
+/// a loopback address, `localhost`, or a name under `.localhost`. `host` is as
+/// `url::Url::host_str` writes it, an IPv6 address in brackets.
+fn host_is_loopback_name(host: &str) -> bool {
+    let bare = host.trim_start_matches('[').trim_end_matches(']');
+    if let Ok(address) = bare.parse::<std::net::IpAddr>() {
+        return address.is_loopback();
+    }
+    let name = bare.trim_end_matches('.').to_ascii_lowercase();
+    name == "localhost" || name.ends_with(".localhost")
+}
+
+/// This process's declared public address, read once, and only on a daemon
+/// that serves the web interface (`BIOROUTER_SERVE_UI`, which `biorouter serve`
+/// sets beside it). The desktop application hands its daemon its whole
+/// environment, so a value exported in someone's shell must not reach the
+/// desktop daemon's socket gates. A value that does not parse is `None` here;
+/// `commands::agent` refuses to start on one, so a running daemon never
+/// reaches this with it.
 pub(crate) fn declared_public_url() -> Option<&'static PublicUrl> {
     static DECLARED: LazyLock<Option<PublicUrl>> = LazyLock::new(|| {
-        std::env::var(PUBLIC_URL_ENV)
-            .ok()
-            .filter(|value| !value.trim().is_empty())
-            .and_then(|value| PublicUrl::parse(&value).ok())
+        public_url_from(
+            std::env::var(SERVE_UI_ENV).ok().as_deref(),
+            std::env::var(PUBLIC_URL_ENV).ok().as_deref(),
+        )
+        .and_then(Result::ok)
     });
     DECLARED.as_ref()
+}
+
+/// The variable that makes a daemon serve the web interface
+/// (`configuration::Settings::serve_ui`).
+const SERVE_UI_ENV: &str = "BIOROUTER_SERVE_UI";
+
+/// The public address a daemon with these two variables declares: none unless
+/// it serves the web interface and names one, else the parse of it.
+pub fn public_url_from(
+    serve_ui: Option<&str>,
+    public_url: Option<&str>,
+) -> Option<Result<PublicUrl, String>> {
+    let serves_the_interface = serve_ui.is_some_and(|dir| !dir.trim().is_empty());
+    let value = public_url.filter(|value| !value.trim().is_empty())?;
+    serves_the_interface.then(|| PublicUrl::parse(value))
 }
 
 /// What a WebSocket upgrade says about where it came from and where it was
@@ -849,6 +892,26 @@ mod origin_tests {
         assert!(!upgrade(None, hub, "https", Some(&public)).is_this_daemons());
     }
 
+    /// The desktop application hands its daemon its whole environment, so a
+    /// value someone exported must not reach a daemon that serves no interface:
+    /// not to refuse its start, and not to widen its socket gates.
+    #[test]
+    fn a_public_url_is_read_only_by_a_daemon_that_serves_the_interface() {
+        let url = Some("https://hub.example.org/p/");
+        assert!(super::public_url_from(None, url).is_none());
+        assert!(super::public_url_from(Some(" "), url).is_none());
+        assert!(super::public_url_from(None, Some("not a url")).is_none());
+        assert!(matches!(
+            super::public_url_from(Some("/usr/share/biorouter/web"), url),
+            Some(Ok(_))
+        ));
+        assert!(matches!(
+            super::public_url_from(Some("/usr/share/biorouter/web"), Some("not a url")),
+            Some(Err(_))
+        ));
+        assert!(super::public_url_from(Some("/usr/share/biorouter/web"), Some("")).is_none());
+    }
+
     #[test]
     fn a_public_url_keeps_its_origin_and_its_path_without_the_trailing_slash() {
         let parsed = |value: &str| {
@@ -864,9 +927,14 @@ mod origin_tests {
             parsed("https://Proxy.Example.org:443/a/b"),
             expect("https://proxy.example.org", "/a/b")
         );
+        // Plain http only on this machine (an SSH tunnel's far end).
         assert_eq!(
-            parsed("http://10.0.0.5:8080"),
-            expect("http://10.0.0.5:8080", "/")
+            parsed("http://127.0.0.1:8765"),
+            expect("http://127.0.0.1:8765", "/")
+        );
+        assert_eq!(
+            parsed("http://localhost:8765/x/"),
+            expect("http://localhost:8765", "/x")
         );
         assert_eq!(
             parsed("https://[::1]:9443/"),
@@ -887,6 +955,11 @@ mod origin_tests {
             "https://hub.example.org/#top",
             // `;` would end the cookie's Path attribute and start another.
             "https://hub.example.org/a;Domain=evil.net/",
+            // Plain http at a network address: the interface is refused there.
+            "http://10.0.0.5:8080",
+            "http://hub.example.org/",
+            // A host no browser origin carries.
+            "https://a*b.example.org/",
         ] {
             assert!(
                 PublicUrl::parse(refused).is_err(),

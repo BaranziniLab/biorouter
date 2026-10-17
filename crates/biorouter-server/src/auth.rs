@@ -488,8 +488,14 @@ pub fn mint_app_launch(app_id: &str) -> String {
 /// app's browser surface. A token that is unknown, expired, already redeemed or
 /// for another app gets `None`, and a redeemed one is gone.
 ///
-/// `Path=/apps/{id}` (no trailing slash) covers the redirect route, the page and
-/// everything below it. `HttpOnly` keeps the page's own script from reading it,
+/// It carries no `Path`, so the browser scopes it to the directory of the
+/// address it redeemed the link at: `/apps/{id}` (no trailing slash), covering
+/// the redirect route, the page and everything below it. That is exactly the
+/// `Path=/apps/{id}` this used to name, except under a reverse proxy's path
+/// prefix (issue #402), which the daemon never sees: there the browser's own
+/// address is `/<prefix>/apps/{id}/`, and a cookie scoped to `/apps/{id}` was
+/// never sent back, so every app refused its own page. `HttpOnly` keeps the
+/// page's own script from reading it,
 /// and `SameSite=Strict` keeps it off every request another site starts: the
 /// two flags `routes::web_ui` sets on the served document's cookie.
 ///
@@ -515,7 +521,7 @@ pub fn mint_app_launch(app_id: &str) -> String {
 pub fn redeem_app_launch(app_id: &str, presented: &str) -> Option<String> {
     let value = app_access().redeem(app_id, presented, Instant::now())?;
     Some(format!(
-        "{}={value}; Path=/apps/{app_id}; HttpOnly; SameSite=Strict",
+        "{}={value}; HttpOnly; SameSite=Strict",
         app_access_cookie_name()
     ))
 }
@@ -626,8 +632,10 @@ fn app_access_granted_by(
 /// secure context: a loopback address, `localhost` or a name under
 /// `.localhost`, or any address the browser itself attached Fetch Metadata to
 /// (`Sec-Fetch-Mode` and `Sec-Fetch-Dest`), which is how an HTTPS reverse proxy
-/// in front of the daemon is recognised. A request with no `Host` (nor
-/// authority) was not sent by a browser, and counts as one.
+/// in front of the daemon is recognised; and for a WebSocket handshake, which
+/// carries no Fetch Metadata anywhere, an `Origin` that is `https`
+/// ([`is_a_websocket_upgrade_from_an_https_page`]). A request with no `Host`
+/// (nor authority) was not sent by a browser, and counts as one.
 ///
 /// It is what decides whether [`is_document_navigation`] and the opener
 /// policies mean anything. A browser sends Fetch Metadata only to such an
@@ -672,7 +680,40 @@ pub fn reached_over_a_secure_context(
             None => return true,
         },
     };
-    host_is_loopback(host) || carries_fetch_metadata(headers)
+    host_is_loopback(host)
+        || carries_fetch_metadata(headers)
+        || is_a_websocket_upgrade_from_an_https_page(headers)
+}
+
+/// Whether a request is a WebSocket handshake opened by a page served over
+/// `https`: `Upgrade: websocket` and an `Origin` whose scheme is `https`.
+///
+/// The one browser request that reaches an app surface with no Fetch Metadata
+/// at all, wherever the page is: Chrome attaches none to a WebSocket handshake
+/// (measured 2026-10-16). So behind an HTTPS reverse proxy every app's agent
+/// socket (`/apps/{id}/agent`) was refused as though the page were at a
+/// plain-HTTP address, and the app showed "No Biorouter backend" (issue
+/// #402). The handshake's `Origin` answers the same question instead: it is
+/// the address of the page that opened the socket, a page at an `https`
+/// address is a secure context, and script can set neither `Origin` nor
+/// `Upgrade`. A page at a plain-HTTP network address presents an `http`
+/// origin and is still refused. Whether the origin is this daemon's own is the
+/// socket gate's question (`routes::UpgradeOrigin::is_this_daemons`), asked
+/// after this one.
+fn is_a_websocket_upgrade_from_an_https_page(headers: &axum::http::HeaderMap) -> bool {
+    let header = |name: axum::http::header::HeaderName| {
+        headers
+            .get(name)
+            .and_then(|value| value.to_str().ok())
+            .map(str::trim)
+    };
+    header(axum::http::header::UPGRADE).is_some_and(|value| value.eq_ignore_ascii_case("websocket"))
+        && header(axum::http::header::ORIGIN)
+            .and_then(crate::routes::WebOrigin::parse)
+            // Parsed first, so the scheme is normalised and the rest is an origin;
+            // the accessor would be dead code in `biorouterd`, which compiles
+            // `routes` without this lib-only module.
+            .is_some_and(|origin| origin.to_string().starts_with("https://"))
 }
 
 /// Whether a request carries the Fetch Metadata a browser attaches to a
@@ -1961,11 +2002,19 @@ mod tests {
 
         // An HTTP LAN page already open during an update can forge this proxy
         // header on a fetch, but cannot make the browser emit Fetch Metadata.
-        // Nor does metadata that is present but blank, or only half of it.
+        // Nor does metadata that is present but blank, or only half of it,
+        // nor a socket handshake from a page at a plain-HTTP address, nor an
+        // `https` origin on a request that is not a socket handshake.
         for forged in [
             vec![("x-forwarded-proto", "https")],
             vec![("sec-fetch-mode", "navigate")],
             vec![("sec-fetch-mode", " "), ("sec-fetch-dest", "document")],
+            vec![
+                ("upgrade", "websocket"),
+                ("origin", "http://192.168.1.5:8765"),
+            ],
+            vec![("upgrade", "websocket"), ("origin", "null")],
+            vec![("origin", "https://biorouter.example.org")],
         ] {
             for uri in surfaces {
                 let mut headers = forged.clone();
@@ -2004,6 +2053,14 @@ mod tests {
             behind_a_proxy(Some("https,http")),
             behind_a_proxy(Some("http")),
             behind_a_proxy(None),
+            // A WebSocket handshake carries no Fetch Metadata in Chrome, so an
+            // app's agent socket behind an HTTPS proxy was refused. Its origin
+            // says the page that opened it is at an `https` address.
+            vec![
+                ("host", "biorouter.example.org"),
+                ("upgrade", "websocket"),
+                ("origin", "https://biorouter.example.org"),
+            ],
             // No `Host` at all is not a browser.
             vec![],
         ] {

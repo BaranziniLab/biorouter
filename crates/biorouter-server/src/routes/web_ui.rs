@@ -165,8 +165,11 @@ impl WebUi {
         match &self.browser_token {
             // No token configured: the launcher bound loopback and chose not to
             // require one. `biorouter serve` refuses this combination for any
-            // non-loopback bind, so reaching here means the only callers are on
-            // this machine.
+            // non-loopback bind, so reaching here means every caller is on this
+            // machine: its other accounts, and a reverse proxy on it forwarding
+            // whoever reaches the proxy. That is the operator's call to make,
+            // and why `docs/deployment/browser-access.md` keeps the token on a
+            // JupyterHub whose users share one machine.
             None => true,
             Some(expected) => presented.is_some_and(|p| super::secret_matches(p, expected)),
         }
@@ -354,7 +357,9 @@ async fn index(
 ///   own URL.
 ///
 /// It names only `.` and `..` segments, so nothing from the request reaches the
-/// page, and the shell's own policy (`base-uri 'self'`) accepts it.
+/// page, and it always resolves to this origin, which the bundle's own content
+/// policy (`base-uri 'self'`, in the `<meta>` of `ui/desktop/index.html`)
+/// accepts.
 fn mount_href(path: &str) -> String {
     match path.matches('/').count().saturating_sub(1) {
         0 => "./".to_string(),

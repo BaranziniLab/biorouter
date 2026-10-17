@@ -675,8 +675,11 @@ jobs:
           # the relative bundle resolves under a proxy's path prefix and on a
           # path that fell through to the shell alike.
           grep -q '<head><base href="./">' "$RUNNER_TEMP/shell.html" || fail 'the shell names no mount'
-          curl -fsS -b 'biorouter_session=citoken' http://127.0.0.1:18777/a/b/c \
-            | grep -q '<base href="../../">' || fail 'a deep path does not lead back to the mount'
+          # To a file first: under pipefail, `grep -q` exiting early can kill
+          # curl mid-write and fail the step at random.
+          curl -fsS -b 'biorouter_session=citoken' -o "$RUNNER_TEMP/deep.html" http://127.0.0.1:18777/a/b/c \
+            || fail 'a deep path did not answer'
+          grep -q '<base href="../../">' "$RUNNER_TEMP/deep.html" || fail 'a deep path does not lead back to the mount'
 
           # Behind an HTTPS reverse proxy (issue #402). The browser's Fetch
           # Metadata is what says the page is at a secure address; the scheme a

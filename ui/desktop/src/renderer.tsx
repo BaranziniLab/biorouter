@@ -78,16 +78,22 @@ function getHeadlessConfig(): HeadlessConfig {
   const mountUrl = servedByDaemon
     ? new URL('./', document.baseURI).href.replace(/\/+$/, '')
     : window.location.origin;
+  // ⚠ Never from the address bar on a page the daemon served. That page holds
+  // the daemon's secret and sends it with every request, so `?api=` or
+  // `?headless=` naming another host would hand the secret, and everything the
+  // person types, to whoever wrote the link. Any site can send a browser to such
+  // a link, and with `--no-token` the shell is served to it.
+  const queryBase = (name: string) => (servedByDaemon ? null : params.get(name));
   const apiBaseUrl =
     globalConfig.apiBaseUrl ||
-    params.get('api') ||
+    queryBase('api') ||
     (servedByDaemon
       ? mountUrl
       : isLocalhost
         ? 'http://127.0.0.1:3000'
         : `${window.location.origin}/api`);
   const headlessBaseUrl =
-    globalConfig.headlessBaseUrl || params.get('headless') || `${mountUrl}/headless`;
+    globalConfig.headlessBaseUrl || queryBase('headless') || `${mountUrl}/headless`;
 
   if (querySecret) {
     window.sessionStorage?.setItem('biorouter-headless-secret', querySecret);

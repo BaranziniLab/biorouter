@@ -118,15 +118,17 @@ fn remove_blocks(html: &str, open: &str, close: &str) -> String {
 /// refused; the bundle ran twice; and each re-export nested one more layer. It
 /// removes exactly what the assembler emits and nothing an author writes: the
 /// theme and overrides `<style>` blocks, every config island, the bundle tag in
-/// the assembler's own spelling, an injected `<base href="/apps/<id>/">`, and
-/// `data-br-pack` on `<html>`.
+/// the assembler's own spelling, an injected `<base href="/apps/<id>/">` or the
+/// `<base href="./">` the daemon has served since issue #402 (each with the
+/// newline the assembler writes after it), and `data-br-pack` on `<html>`.
 fn strip_injected(html: &str) -> String {
     let mut out = remove_blocks(html, THEME_TAG, "</style>");
     out = remove_blocks(&out, THEME_OVERRIDES_TAG, "</style>");
     out = remove_blocks(&out, CONFIG_ISLAND_TAG, "</script>");
     out = remove_blocks(&out, BUNDLE_TAG, "");
     static BASE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
-        regex::Regex::new(r#"<base href="/apps/[A-Za-z0-9._-]+/">\n?"#).expect("static regex")
+        regex::Regex::new(r#"<base href="/apps/[A-Za-z0-9._-]+/">\n?|<base href="\./">\n"#)
+            .expect("static regex")
     });
     out = BASE.replace_all(&out, "").into_owned();
     if let Some(start) = find_ascii_ci(&out, "<html") {
@@ -4493,6 +4495,15 @@ setTimeout(()=>process.exit(0),120000).unref();
         }
         // The card heals the same way.
         assert_eq!(assemble_card(&m, &nested), assemble_card(&m, raw));
+
+        // The daemon serves the relative base now (issue #402), and a page
+        // assembled with it heals the same way, from either spelling.
+        let relative = assemble_app(&m, raw, Some("./"), None, Some("tok"));
+        for damaged in [&relative, &fresh] {
+            let served = assemble_app(&m, damaged, Some("./"), None, Some("tok"));
+            assert_eq!(served, relative, "re-assembling heals to the fresh page");
+            assert_eq!(served.matches("<base href=").count(), 1, "{served}");
+        }
     }
 
     /// What the author wrote is never stripped: only the assembler's own markup.

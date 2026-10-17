@@ -460,13 +460,25 @@ pub async fn run(exit_with_parent: Option<u32>) -> Result<()> {
     // before it starts the daemon; a launcher that did not is refused here
     // rather than having its declaration quietly ignored, which would leave the
     // live views refusing their own page with nothing on screen to say why.
-    let public_url = match std::env::var(crate::routes::PUBLIC_URL_ENV) {
-        Ok(value) if !value.trim().is_empty() => Some(
-            crate::routes::PublicUrl::parse(&value)
-                .map_err(|e| anyhow::anyhow!("{}: {e}", crate::routes::PUBLIC_URL_ENV))?,
-        ),
-        _ => None,
-    };
+    // Only on a daemon that serves the interface: the desktop application hands
+    // its daemon its whole environment, and a value someone exported must
+    // neither stop that daemon starting nor widen its socket gates.
+    let declared = std::env::var(crate::routes::PUBLIC_URL_ENV).ok();
+    let public_url =
+        match crate::routes::public_url_from(settings.serve_ui.as_deref(), declared.as_deref()) {
+            Some(parsed) => Some(
+                parsed.map_err(|e| anyhow::anyhow!("{}: {e}", crate::routes::PUBLIC_URL_ENV))?,
+            ),
+            None => {
+                if declared.is_some_and(|value| !value.trim().is_empty()) {
+                    tracing::warn!(
+                        "{} is ignored: this daemon does not serve the web interface",
+                        crate::routes::PUBLIC_URL_ENV
+                    );
+                }
+                None
+            }
+        };
     if let Some(public) = public_url.as_ref() {
         info!(
             "the interface is reached through {}{}; the WebSocket gates admit that origin",

@@ -620,8 +620,29 @@ pub(crate) fn choose_public_url(
     if !matches!(url.scheme(), "http" | "https") {
         bail!("--public-url {raw:?} must be an http or https address");
     }
-    if url.host_str().is_none() {
-        bail!("--public-url {raw:?} names no host");
+    // The daemon's rule (`routes::PublicUrl::parse`): a host a browser origin
+    // can carry, and https unless it is this machine.
+    let loopback = match url.host() {
+        None => bail!("--public-url {raw:?} names no host"),
+        Some(url::Host::Domain(name)) => {
+            if !name
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'.' | b'_'))
+            {
+                bail!("--public-url {raw:?} names a host no browser address can carry");
+            }
+            let name = name.trim_end_matches('.').to_ascii_lowercase();
+            name == "localhost" || name.ends_with(".localhost")
+        }
+        Some(url::Host::Ipv4(address)) => address.is_loopback(),
+        Some(url::Host::Ipv6(address)) => address.is_loopback(),
+    };
+    if url.scheme() == "http" && !loopback {
+        bail!(
+            "--public-url {raw:?} is plain http at a network address. A browser applies the \
+             interface's protections only over https or on this machine, and serve refuses the \
+             interface at such an address; give the https address of the proxy in front of it"
+        );
     }
     if !url.username().is_empty() || url.password().is_some() {
         bail!("--public-url {raw:?} must not carry a user name or password");
@@ -931,6 +952,11 @@ mod tests {
             chosen(Some("https://hub.example.org"), None).as_deref(),
             Some("https://hub.example.org/")
         );
+        // Plain http is accepted on this machine only.
+        assert_eq!(
+            chosen(Some("http://localhost:8765/x"), None).as_deref(),
+            Some("http://localhost:8765/x/")
+        );
         // The flag outranks the variable, which is read when there is no flag.
         assert_eq!(
             chosen(
@@ -965,6 +991,9 @@ mod tests {
             "https://hub.example.org/?t=abc",
             "https://hub.example.org/#top",
             "https://hub.example.org/a;Domain=evil.net/",
+            "http://10.0.0.5:8080/",
+            "http://hub.example.org/",
+            "https://a*b.example.org/",
         ] {
             let error = choose_public_url(Some(refused.to_string()), None)
                 .expect_err(refused)
