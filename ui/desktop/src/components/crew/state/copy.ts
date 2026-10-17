@@ -86,6 +86,13 @@ export const crewObservationCopy = {
     `Too many Crew windows are showing live updates for ${workspace}. Close one, then retry.`,
   /** `response_too_large`. */
   updateTooLarge: (workspace: string) => `An update from ${workspace} was too large to show.`,
+  /**
+   * `workspace_deleted` (OW-5): the host deleted the workspace on its server. Nothing is left to
+   * retry; removing it from this computer is the one thing to do, and the bar offers it.
+   */
+  workspaceDeleted: (workspace: string) => `The host deleted ${workspace}.`,
+  /** The bar's one action beside it: the existing local removal (`remove-connection`). */
+  removeFromComputer: 'Remove from this computer…',
 } as const;
 
 /** The unsent drafts a channel keeps while the person is elsewhere (Q2-07, Q3-09). */

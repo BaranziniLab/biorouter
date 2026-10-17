@@ -9,8 +9,10 @@ import {
   isMembershipEnded,
   isNotSetUpFailure,
   isTrustFailure,
+  isWorkspaceDeleted,
   MEMBERSHIP_ENDED_CODE,
   TRUST_FAILURE_KINDS,
+  WORKSPACE_DELETED_CONNECT_CODE,
   type ArrivalConnectInput,
   type ConnectFailureKind,
 } from './connectFailure';
@@ -256,5 +258,34 @@ describe('arrivalConnectDecision (Q3-08, SECURITY-SENSITIVE)', () => {
       'broker_not_running',
     ];
     for (const kind of retryable) expect(decide({ lastConnectFailure: { kind } })).toBe('connect');
+  });
+});
+
+describe('isWorkspaceDeleted (OW-5)', () => {
+  it('reads the view’s own flag or the daemon’s typed code, and nothing else', () => {
+    expect(WORKSPACE_DELETED_CONNECT_CODE).toBe('crew_workspace_deleted');
+    expect(isWorkspaceDeleted({ workspace_deleted: true })).toBe(true);
+    expect(isWorkspaceDeleted({ last_error_code: 'crew_workspace_deleted' })).toBe(true);
+    expect(isWorkspaceDeleted({ workspace_deleted: false })).toBe(false);
+    expect(isWorkspaceDeleted({ last_error_code: 'crew_broker_not_running' })).toBe(false);
+    expect(isWorkspaceDeleted(null)).toBe(false);
+  });
+
+  it('never connects a workspace its host deleted on arrival from a chat', () => {
+    const input: ArrivalConnectInput = {
+      connection: { status: 'disconnected', workspace_deleted: true },
+      lastConnectFailure: null,
+      connecting: true,
+      signInPending: false,
+    };
+    // Final even while a connect runs.
+    expect(arrivalConnectDecision(input)).toBe('skip');
+    expect(
+      arrivalConnectDecision({
+        ...input,
+        connecting: false,
+        connection: { status: 'disconnected', last_error_code: WORKSPACE_DELETED_CONNECT_CODE },
+      })
+    ).toBe('skip');
   });
 });

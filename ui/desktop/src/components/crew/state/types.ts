@@ -1,8 +1,11 @@
 import type {
   Channel,
   CrewConnection,
+  CrewContextDraft,
   CrewMessage,
   CrewMessagePeople,
+  CrewRemoteAccess,
+  CrewWorkspaceDeleted,
   ObservedRun,
   Snapshot,
   Team,
@@ -71,8 +74,13 @@ export interface CrewDraft {
 }
 
 /** The body the daemon accepts for `POST /crew/connections` and `PATCH /crew/connections/{id}`. */
-/** `POST /crew/connections` and `PATCH …/{id}`: the body the daemon's spec declares (CROSSCUT-6). */
-export type SaveConnectionInput = Api.SaveConnection;
+/**
+ * `POST /crew/connections` and `PATCH …/{id}`: the body the daemon's spec declares (CROSSCUT-6),
+ * with the agent access level of the open-workspaces contract (OW-6) until the spec declares it.
+ * `remote_access` is sent only for `full`: the daemon's default is `folder`, so a body without it
+ * means folder, and a daemon before the contract never sees a field it would refuse.
+ */
+export type SaveConnectionInput = Api.SaveConnection & { remote_access?: CrewRemoteAccess };
 
 /** `POST /crew/devices/prepare`: the prepared (or recovered) hosting identity. */
 export type PreparedDevice = Api.PreparedDevice;
@@ -98,7 +106,7 @@ export type CrewJoinStatus =
   | 'unsupported'
   | (string & {});
 
-export type WorkspaceSettingsTab = 'general' | 'people' | 'privacy' | 'agent-access';
+export type WorkspaceSettingsTab = 'general' | 'people' | 'privacy' | 'context' | 'agent-access';
 export type DetailsTab = 'about' | 'members' | 'files' | 'access';
 
 /** Every confirmation of the spec's confirmation table that is a dialog (not an inline two-step). */
@@ -109,6 +117,9 @@ export type ConfirmIntent =
   | { action: 'set-institution'; institutionId: string }
   | { action: 'remove-person'; principalId: string }
   | { action: 'archive-channel'; channelId: string }
+  | { action: 'delete-channel'; channelId: string }
+  | { action: 'delete-team'; teamId: string }
+  | { action: 'delete-workspace'; connectionId: string }
   | { action: 'remove-channel-member'; channelId: string; principalId: string }
   | { action: 'remove-connection'; connectionId: string }
   | { action: 'stop-task'; runId: string };
@@ -139,6 +150,11 @@ export type DialogIntent =
   | { kind: 'edit-profile' }
   | { kind: 'keys' }
   | { kind: 'share-path' }
+  /**
+   * An open workspace's teams and channels the person is not in, each with Join (OW-2). With a
+   * team, that team's channels only.
+   */
+  | { kind: 'browse-channels'; teamId?: string }
   /** Sign in is tracked by `signIn`; opening this intent is the same as `openSignIn()`. */
   | { kind: 'sign-in' }
   | { kind: 'confirm'; confirm: ConfirmIntent };
@@ -301,6 +317,20 @@ export interface CrewController {
   updateConnection(id: string, input: SaveConnectionInput): Promise<CrewConnection>;
   /** DELETE and reload the list. Throws on failure. */
   removeConnection(id: string): Promise<void>;
+  /**
+   * The host deletes the workspace on its server for everyone (OW-5): `POST …/workspace/delete`,
+   * after which the daemon has removed the connection here too, and the list is read again. Throws
+   * on failure. Absent on a stand-in controller.
+   */
+  deleteWorkspace?(
+    id: string,
+    input: { workspace_id: string; expected_name: string | null }
+  ): Promise<CrewWorkspaceDeleted>;
+  /**
+   * A context document drafted from the server's fixed probe over this connection (OW-8): `POST
+   * …/context/draft`. Nothing is saved. Throws on failure. Absent on a stand-in controller.
+   */
+  draftWorkspaceContext?(id: string): Promise<CrewContextDraft>;
   /** Prepare or recover the hosting identity. Throws on failure. */
   prepareHostingDevice(): Promise<PreparedDevice>;
   /**

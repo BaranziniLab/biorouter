@@ -238,6 +238,8 @@ export const sidebarCopy = {
     /** A channel row's accessible name. */
     rowLabel: (name: string, unread: number) => (unread > 0 ? `${name}, ${unread} unread` : name),
     add: 'Add channel',
+    /** An open workspace's quiet row under a team with channels to join (OW-2). */
+    browse: 'Browse channels',
     archivedGroup: (count: number) => `Archived (${count})`,
     /** The unread count badge caps here. */
     unreadCap: 99,
@@ -260,6 +262,10 @@ export const sidebarCopy = {
     createChannel: 'Create channel…',
     addPeople: (team: string) => `Add people to ${team}…`,
     rename: 'Rename team…',
+    /** An open workspace's channels in this team the viewer is not in yet (OW-2). */
+    browse: (team: string) => `Browse channels in ${team}…`,
+    /** OW-4: destructive, last before the support submenu, for whoever may delete the team. */
+    delete: 'Delete team…',
     /**
      * The submenu that holds a menu's machine-ID copies, and only those, last after a separator
      * (Q3-26, the shared "Copy for support" contract): a PI's everyday menu leads with what a
@@ -314,6 +320,8 @@ export const sidebarCopy = {
     /** The same name as Workspace settings' tab and the pane's Access heading. */
     access: 'Agent access…',
     createTeam: 'Create team…',
+    /** An open workspace's teams and channels the viewer is not in (OW-2). */
+    browse: 'Browse channels…',
     /**
      * Pinned. Offered only while the connection is not connected and verified, or while a join
      * waits for the host (Q3-57): beside "Connected" it did nothing but invite a stray Enter.

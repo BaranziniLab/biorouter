@@ -13,6 +13,7 @@ import {
 import CustomRadio from '../../ui/CustomRadio';
 import { Disclosure } from '../../ui/disclosure';
 import { Input } from '../../ui/input';
+import { Note } from '../../ui/note';
 import { Switch } from '../../ui/switch';
 import { cn } from '../../../utils';
 import { INSTITUTION_ID_PATTERN } from '../identity';
@@ -319,66 +320,175 @@ export function remoteFolderInvalid(remoteRoot: string): boolean {
 }
 
 /**
- * "Agent on {server}" (Q2-37): what the person's agent may do on the server, in its own labelled
- * row rather than among the SSH settings. Folded to one line that states it ("No work folder ·
- * agent commands off"), off unless the person turns it on. The folder lets the agent read and write
- * files there; the switch lets it run commands in that folder, and needs the folder first.
+ * What a connection's agent may do on its server (OW-6): **off** (no work folder), **folder** (the
+ * confined work folder Crew always had) or **full** (it runs commands as the person's own account).
+ */
+export type AgentAccess = 'off' | 'folder' | 'full';
+
+/** Whether the agent row holds a work folder its field would refuse, at the level chosen. */
+export function agentFolderInvalid(access: AgentAccess, remoteRoot: string): boolean {
+  return access !== 'off' && remoteFolderInvalid(remoteRoot);
+}
+
+/**
+ * The connection fields a level saves. `createdFolder` is the work folder a setup job made on the
+ * server (`~/crew-work/<workspace>`), used under As me on the server when the person left the
+ * folder empty. Full access needs a folder and commands on (the daemon refuses it otherwise), so
+ * without one the connection is saved off and the member setup sets both (OW-9). `remote_access`
+ * is sent only for `full`: a body without it means folder, which every daemon accepts.
+ */
+export function agentAccessSettings(
+  access: AgentAccess,
+  remoteRoot: string,
+  remoteExecution: boolean,
+  createdFolder: string | null = null
+): { remote_root?: string; remote_execution: boolean; remote_access?: 'full' } {
+  const typed = remoteRoot.trim();
+  if (access === 'full') {
+    const folder = typed || createdFolder?.trim() || '';
+    return folder
+      ? { remote_root: folder, remote_execution: true, remote_access: 'full' }
+      : { remote_execution: false };
+  }
+  if (access === 'folder' && typed)
+    return { remote_root: typed, remote_execution: remoteExecution };
+  return { remote_execution: false };
+}
+
+/**
+ * "Your agent on {server}" (Q2-37): what the person's agent may do on the server, in its own
+ * labelled row rather than among the SSH settings, folded to one line that states it ("Your agent
+ * on lab-server runs commands as you"). Three levels (OW-6): Off; In a folder, where the folder
+ * lets the agent read and write files and the switch lets it run commands there in a sandbox; and
+ * As me on the server, the default for a new connection, with its one warning. The person chooses
+ * it for their own account, and public models never get any level, whatever is chosen here.
  */
 export function AgentAccessFields({
   server,
+  user = null,
   open,
   onOpenChange,
+  access,
+  onAccess,
   remoteRoot,
   remoteExecution,
   disabled,
+  fullAvailable = true,
+  hostWorkspace = null,
   onRemoteRoot,
   onRemoteExecution,
 }: {
   server: string;
+  /** The server account the agent would act as, for the warning. */
+  user?: string | null;
   open: boolean;
   onOpenChange: (open: boolean) => void;
+  access: AgentAccess;
+  onAccess: (access: AgentAccess) => void;
   remoteRoot: string;
   remoteExecution: boolean;
   disabled?: boolean;
+  /** False for a background service before the contract, which would refuse the level. */
+  fullAvailable?: boolean;
+  /** The workspace the person hosts from this account, for the host's extra sentence. */
+  hostWorkspace?: string | null;
   onRemoteRoot: (value: string) => void;
   onRemoteExecution: (value: boolean) => void;
 }) {
   const folder = remoteRoot.trim();
   const serverName = server || hostCopy.theServer;
+  const name = useId();
+  const levels: { value: AgentAccess; label: string; hint: string; unavailable?: boolean }[] = [
+    { value: 'off', label: joinCopy.accessOff, hint: joinCopy.accessOffHint },
+    { value: 'folder', label: joinCopy.accessFolder, hint: joinCopy.accessFolderHint },
+    {
+      value: 'full',
+      label: joinCopy.accessFull,
+      hint: fullAvailable ? joinCopy.accessFullHint(user) : joinCopy.accessFullUnavailable,
+      unavailable: !fullAvailable,
+    },
+  ];
   return (
     <Disclosure
       label={joinCopy.agentHeading(serverName)}
       open={open}
       onOpenChange={onOpenChange}
-      summary={joinCopy.agentSummary(folder, Boolean(folder) && remoteExecution)}
+      summary={joinCopy.agentSummary(access, folder, Boolean(folder) && remoteExecution)}
     >
       <div className="crew-onboard-form" data-testid="crew-onboard-agent">
-        <Field
-          label={joinCopy.remoteFolder}
-          helper={joinCopy.remoteFolderHelper(serverName)}
-          invalidMessage={joinCopy.remoteFolderInvalid}
-        >
-          {(props) => (
-            <Input
-              {...props}
-              disabled={disabled}
-              pattern="/.*"
-              value={remoteRoot}
-              spellCheck={false}
-              onChange={(event) => {
-                onRemoteRoot(event.target.value);
-                if (!event.target.value.trim()) onRemoteExecution(false);
-              }}
+        <fieldset className="crew-onboard-radios">
+          <legend className="text-label text-text-default">
+            {joinCopy.agentLegend(serverName)}
+          </legend>
+          {levels.map((level) => (
+            <CustomRadio
+              key={level.value}
+              id={`${name}-${level.value}`}
+              name={name}
+              value={level.value}
+              checked={access === level.value}
+              disabled={disabled || level.unavailable}
+              onChange={() => onAccess(level.value)}
+              label={level.label}
+              secondaryLabel={level.hint}
             />
-          )}
-        </Field>
-        <SwitchRow
-          label={joinCopy.remoteExecution}
-          checked={Boolean(folder) && remoteExecution}
-          disabled={disabled || !folder}
-          hint={folder ? undefined : joinCopy.remoteExecutionNeedsFolder}
-          onCheckedChange={onRemoteExecution}
-        />
+          ))}
+        </fieldset>
+        {access === 'folder' ? (
+          <>
+            <Field
+              label={joinCopy.remoteFolder}
+              helper={joinCopy.remoteFolderHelper(serverName)}
+              invalidMessage={joinCopy.remoteFolderInvalid}
+            >
+              {(props) => (
+                <Input
+                  {...props}
+                  disabled={disabled}
+                  pattern="/.*"
+                  value={remoteRoot}
+                  spellCheck={false}
+                  onChange={(event) => {
+                    onRemoteRoot(event.target.value);
+                    if (!event.target.value.trim()) onRemoteExecution(false);
+                  }}
+                />
+              )}
+            </Field>
+            <SwitchRow
+              label={joinCopy.remoteExecution}
+              checked={Boolean(folder) && remoteExecution}
+              disabled={disabled || !folder}
+              hint={folder ? undefined : joinCopy.remoteExecutionNeedsFolder}
+              onCheckedChange={onRemoteExecution}
+            />
+          </>
+        ) : null}
+        {access === 'full' ? (
+          <>
+            <Field
+              label={joinCopy.remoteFolder}
+              helper={joinCopy.fullFolderHelper(serverName)}
+              invalidMessage={joinCopy.remoteFolderInvalid}
+            >
+              {(props) => (
+                <Input
+                  {...props}
+                  disabled={disabled}
+                  pattern="/.*"
+                  value={remoteRoot}
+                  spellCheck={false}
+                  onChange={(event) => onRemoteRoot(event.target.value)}
+                />
+              )}
+            </Field>
+            {/* Its whole text, always: it is the one warning the level has (OW-6). */}
+            <Note tone="warning" role="status" unclamped testId="crew-onboard-full-warning">
+              {joinCopy.fullWarning(user, serverName)}
+              {hostWorkspace ? ` ${joinCopy.fullWarningHost(hostWorkspace)}` : null}
+            </Note>
+          </>
+        ) : null}
       </div>
     </Disclosure>
   );

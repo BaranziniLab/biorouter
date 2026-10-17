@@ -2,7 +2,8 @@ import { useCallback, useRef } from 'react';
 import { ConfirmationModal } from '../../ui/ConfirmationModal';
 import { DangerousConfirmDialog } from '../../ui/DangerousConfirmDialog';
 import { toastSuccess } from '../../../toasts';
-import { channelName, personLabel } from '../identity';
+import type { Snapshot } from '../crewApi';
+import { channelName, personLabel, teamName } from '../identity';
 import { sshUsername } from '../onboarding/joinText';
 import { connectionUpdateBody } from '../state/useCrewConnections';
 import type { ConfirmIntent, CrewController, ErrorSource } from '../state/types';
@@ -81,6 +82,12 @@ export function CrewConfirmation({ confirm, onClose }: CrewConfirmationProps) {
       return <RemovePerson principalId={confirm.principalId} onClose={onClose} />;
     case 'archive-channel':
       return <ArchiveChannel channelId={confirm.channelId} onClose={onClose} />;
+    case 'delete-channel':
+      return <DeleteChannel channelId={confirm.channelId} onClose={onClose} />;
+    case 'delete-team':
+      return <DeleteTeam teamId={confirm.teamId} onClose={onClose} />;
+    case 'delete-workspace':
+      return <DeleteWorkspace connectionId={confirm.connectionId} onClose={onClose} />;
     case 'remove-channel-member':
       return (
         <RemoveChannelMember
@@ -331,6 +338,183 @@ function ArchiveChannel({ channelId, onClose }: { channelId: string; onClose(): 
     >
       <ConfirmBody />
     </ConfirmationModal>
+  );
+}
+
+/**
+ * Where to go when the channel on screen is about to be deleted, or its team: another open channel
+ * of the same team (its #general first), else of any team, else none. Moving there first retires
+ * the deleted channel's observation, so its end is not read as access the person lost.
+ */
+export function channelAfterDeleting(
+  snapshot: Snapshot | null,
+  deleted: { channelId?: string; teamId?: string }
+): string | null {
+  if (!snapshot) return null;
+  const gone = (channel: Snapshot['channels'][number]) =>
+    channel.archived ||
+    channel.id === deleted.channelId ||
+    (deleted.teamId !== undefined && channel.team_id === deleted.teamId);
+  const open = snapshot.channels.filter((channel) => !gone(channel));
+  const teamOf = deleted.channelId
+    ? snapshot.channels.find((channel) => channel.id === deleted.channelId)?.team_id
+    : undefined;
+  const team = snapshot.teams.find((item) => item.id === teamOf);
+  return (
+    open.find((channel) => channel.id === team?.general_channel_id)?.id ??
+    open.find((channel) => channel.team_id === teamOf)?.id ??
+    open[0]?.id ??
+    null
+  );
+}
+
+/**
+ * Delete a channel for everyone (OW-4). Like Archive it is one destructive click, as the CLI's
+ * `channels delete --yes`: the dialog names what goes. `expected_name` is the stored name the
+ * person saw, so a rename meanwhile is refused (`name_changed`) rather than deleting a channel
+ * under another name. Deleting the channel on screen first moves to another one.
+ */
+function DeleteChannel({ channelId, onClose }: { channelId: string; onClose(): void }) {
+  const { crew, snapshot } = useDialogView();
+  const channel = snapshot?.channels.find((item) => item.id === channelId) ?? null;
+  const key = 'mutate:channel.delete';
+  useCloseWhenMissing(channel === null, onClose);
+  if (!channel) return null;
+  const name = channelName(channel);
+  return (
+    <ConfirmationModal
+      isOpen
+      title={confirmCopy.deleteChannel.title(name)}
+      message={confirmCopy.deleteChannel.description(name)}
+      confirmLabel={confirmCopy.deleteChannel.confirm}
+      cancelLabel={confirmCopy.cancel}
+      confirmVariant="destructive"
+      isSubmitting={crew.isPending(key)}
+      onCancel={onClose}
+      onConfirm={() => {
+        const onScreen = crew.channelId === channelId;
+        const next = onScreen ? channelAfterDeleting(snapshot, { channelId }) : null;
+        void runConfirmed(crew, key, async () => {
+          await crew.mutate(
+            'channel.delete',
+            { channel_id: channelId, expected_name: channel.name },
+            { refresh: !onScreen }
+          );
+          if (onScreen && next) crew.selectChannel(next);
+          else if (onScreen) await crew.refresh();
+        }).then((done) => {
+          if (!done) return;
+          toastSuccess({ msg: confirmCopy.deleteChannel.toast(name) });
+          onClose();
+        });
+      }}
+    >
+      <ConfirmBody />
+    </ConfirmationModal>
+  );
+}
+
+/** The `channels` count a `team.delete` answer carries, as a number or a list, else null. */
+function deletedChannelCount(result: unknown): number | null {
+  if (typeof result !== 'object' || result === null) return null;
+  const channels = (result as { channels?: unknown }).channels;
+  if (typeof channels === 'number' && Number.isSafeInteger(channels) && channels >= 0)
+    return channels;
+  return Array.isArray(channels) ? channels.length : null;
+}
+
+/** Delete a team and every channel in it for everyone (OW-4), as `teams delete --yes` does. */
+function DeleteTeam({ teamId, onClose }: { teamId: string; onClose(): void }) {
+  const { crew, snapshot } = useDialogView();
+  const team = snapshot?.teams.find((item) => item.id === teamId) ?? null;
+  const key = 'mutate:team.delete';
+  useCloseWhenMissing(team === null, onClose);
+  if (!team) return null;
+  const name = teamName(team);
+  return (
+    <ConfirmationModal
+      isOpen
+      title={confirmCopy.deleteTeam.title(name)}
+      message={confirmCopy.deleteTeam.description(name)}
+      confirmLabel={confirmCopy.deleteTeam.confirm}
+      cancelLabel={confirmCopy.cancel}
+      confirmVariant="destructive"
+      isSubmitting={crew.isPending(key)}
+      onCancel={onClose}
+      onConfirm={() => {
+        const onScreen = crew.teamId === teamId;
+        const next = onScreen ? channelAfterDeleting(snapshot, { teamId }) : null;
+        let channels: number | null = null;
+        void runConfirmed(crew, key, async () => {
+          const result = await crew.mutate(
+            'team.delete',
+            { team_id: teamId, expected_name: team.name },
+            { refresh: !onScreen }
+          );
+          channels = deletedChannelCount(result);
+          if (onScreen && next) crew.selectChannel(next);
+          else if (onScreen) await crew.refresh();
+        }).then((done) => {
+          if (!done) return;
+          toastSuccess({ msg: confirmCopy.deleteTeam.toast(name, channels) });
+          onClose();
+        });
+      }}
+    >
+      <ConfirmBody />
+    </ConfirmationModal>
+  );
+}
+
+/**
+ * The host deletes the workspace for everyone (OW-5): typed with the workspace's own name, as
+ * every confirmation that cannot be undone and concerns the whole workspace is. The daemon sends
+ * `workspace.delete`, then removes the connection from this computer, so the dialog is not bound
+ * to the snapshot (`crewSurfaces`): the request ends the view while it is on its way.
+ */
+function DeleteWorkspace({ connectionId, onClose }: { connectionId: string; onClose(): void }) {
+  const { crew, workspace, phrase, snapshot, server } = useDialogView(connectionId);
+  const saved = crew.connections.find((item) => item.id === connectionId) ?? null;
+  const key = 'connection.delete-workspace';
+  const deleteWorkspace = crew.deleteWorkspace;
+  // Nothing to name, or no way to send it: never show a deletion that could not say which.
+  const missing = saved === null || !deleteWorkspace;
+  const pending = useRef(false);
+  useCloseWhenMissing(missing && !pending.current, onClose);
+  if (!saved || !deleteWorkspace) return null;
+  return (
+    <DangerousConfirmDialog
+      open
+      title={confirmCopy.deleteWorkspace.title(workspace)}
+      description={confirmCopy.deleteWorkspace.description(workspace, server)}
+      phrase={phrase}
+      fieldLabel={confirmCopy.typeToConfirm(phrase)}
+      confirmLabel={confirmCopy.deleteWorkspace.confirm}
+      cancelLabel={confirmCopy.cancel}
+      busy={crew.isPending(key)}
+      onCancel={onClose}
+      onConfirm={() => {
+        if (!snapshot) {
+          crew.reportError(dialogErrorCopy.privacyUnverified, SOURCE);
+          return;
+        }
+        pending.current = true;
+        void runConfirmed(crew, key, () =>
+          deleteWorkspace(connectionId, {
+            workspace_id: saved.workspace_id,
+            // The broker compares the name it stores; a workspace from before names has none.
+            expected_name: snapshot.workspace.name ?? null,
+          })
+        ).then((done) => {
+          pending.current = false;
+          if (!done) return;
+          toastSuccess({ msg: confirmCopy.deleteWorkspace.toast(workspace) });
+          onClose();
+        });
+      }}
+    >
+      <ConfirmBody />
+    </DangerousConfirmDialog>
   );
 }
 

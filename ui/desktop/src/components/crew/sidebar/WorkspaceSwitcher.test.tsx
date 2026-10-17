@@ -648,3 +648,48 @@ describe('unavailableReason', () => {
     }
   );
 });
+
+describe('the workspace menu in an open workspace (OW-2)', () => {
+  it('adds Browse channels… after Create team…, opening the whole workspace’s list', async () => {
+    const snapshot = makeSnapshot();
+    const view = renderWithCrew(
+      <WorkspaceSwitcher />,
+      makeController({
+        snapshot: { ...snapshot, workspace: { ...snapshot.workspace, governance: 'open' } },
+      })
+    );
+    const { user, menu } = await openMenu();
+    const names = within(menu)
+      .getAllByRole('menuitem')
+      .map((item) => item.textContent);
+    expect(names.indexOf(copy.browse)).toBe(names.indexOf(copy.createTeam) + 1);
+    await user.click(within(menu).getByRole('menuitem', { name: copy.browse }));
+    expect(view.controller.openDialog).toHaveBeenCalledWith({ kind: 'browse-channels' });
+  });
+
+  it('offers no Browse channels… in a managed workspace', async () => {
+    renderWithCrew(<WorkspaceSwitcher />);
+    const { menu } = await openMenu();
+    expect(within(menu).queryByRole('menuitem', { name: copy.browse })).toBeNull();
+  });
+
+  it('offers a member Invite people, which only the host has in a managed workspace', async () => {
+    const snapshot = makeSnapshot({ actor: bob });
+    const open = renderWithCrew(
+      <WorkspaceSwitcher />,
+      makeController({
+        isHost: false,
+        snapshot: { ...snapshot, workspace: { ...snapshot.workspace, governance: 'open' } },
+      })
+    );
+    let { menu } = await openMenu();
+    expect(
+      within(menu).getByRole('menuitem', { name: copy.invite('Fixture') })
+    ).toBeInTheDocument();
+    open.unmount();
+
+    renderWithCrew(<WorkspaceSwitcher />, makeController({ isHost: false, snapshot }));
+    ({ menu } = await openMenu());
+    expect(within(menu).queryByRole('menuitem', { name: copy.invite('Fixture') })).toBeNull();
+  });
+});

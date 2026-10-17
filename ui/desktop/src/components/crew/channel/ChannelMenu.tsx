@@ -9,6 +9,7 @@ import {
   DropdownMenuTrigger,
 } from '../../ui/dropdown-menu';
 import { cn } from '../../../utils';
+import { managesChannel, mayDeleteChannel } from '../dialogs/governance';
 import { channelName, channelSlug } from '../identity';
 import type { DetailsTab, DialogIntent } from '../state/types';
 import { CopyForSupport, useMenuCopy } from '../timeline/TimelineCopy';
@@ -47,8 +48,11 @@ export interface ChannelMenuProps {
  * (or pane) records the trigger as its opener and returns focus to it when it closes; the menu
  * then leaves focus where the new surface put it.
  *
- * Owner items are hidden from everyone else; React gates nothing — the broker refuses anything the
- * person may not do, and the refusal renders in the connection bar.
+ * Managing items are hidden from whoever may not use them: Add people, Rename and Archive are the
+ * owner's, or every member's in an open workspace (OW-2); Transfer ownership stays the owner's;
+ * Delete channel… (OW-4, `delete_v1`) follows `mayDeleteChannel`, archived or not, and never for
+ * a team's #general. React gates nothing — the broker refuses anything the person may not do, and
+ * the refusal renders in the connection bar.
  *
  * Copy channel name is a person's copy and stays with the everyday items; Copy channel ID is a
  * machine string, and sits last, after a separator, in "Copy for support" (Q3-26).
@@ -59,7 +63,7 @@ export function ChannelMenu({
   onCopied,
   className,
 }: ChannelMenuProps) {
-  const { crew, channel, isOwner } = useChannelPresentation();
+  const { crew, channel, snapshot, isOwner } = useChannelPresentation();
   const [open, setOpen] = useState(false);
   const trigger = useRef<HTMLButtonElement>(null);
   const handedOff = useRef(false);
@@ -74,7 +78,12 @@ export function ChannelMenu({
   if (!channel) return null;
 
   const slug = channelSlug(channel);
-  const ownerTools = isOwner && !channel.archived;
+  const manageTools = managesChannel(snapshot, channel) && !channel.archived;
+  const canTransfer = isOwner && !channel.archived;
+  const canDelete = mayDeleteChannel(snapshot, channel, {
+    capabilities: crew.capabilities,
+    viewerIsHost: crew.isHost,
+  });
   const live = crew.historyBefore === null;
   const latest = live ? crew.messages[crew.messages.length - 1] : undefined;
 
@@ -139,7 +148,7 @@ export function ChannelMenu({
         </DropdownMenuGroup>
         <DropdownMenuSeparator />
         <DropdownMenuGroup>
-          {ownerTools && (
+          {manageTools && (
             <DropdownMenuItem
               onSelect={openDialog({ kind: 'add-people', target: 'channel', targetId: channel.id })}
             >
@@ -174,31 +183,46 @@ export function ChannelMenu({
             {menuCopy.label('name', channelCopy.menu.copyName)}
           </DropdownMenuItem>
         </DropdownMenuGroup>
-        {ownerTools && (
+        {(manageTools || canTransfer || canDelete) && (
           <>
             <DropdownMenuSeparator />
             <DropdownMenuGroup>
-              {canRename && (
+              {manageTools && canRename && (
                 <DropdownMenuItem
                   onSelect={openDialog({ kind: 'rename', target: 'channel', targetId: channel.id })}
                 >
                   {channelCopy.menu.rename}
                 </DropdownMenuItem>
               )}
-              <DropdownMenuItem
-                onSelect={openDialog({ kind: 'transfer-ownership', channelId: channel.id })}
-              >
-                {channelCopy.menu.transfer}
-              </DropdownMenuItem>
-              <DropdownMenuItem
-                variant="destructive"
-                onSelect={openDialog({
-                  kind: 'confirm',
-                  confirm: { action: 'archive-channel', channelId: channel.id },
-                })}
-              >
-                {channelCopy.menu.archive}
-              </DropdownMenuItem>
+              {canTransfer && (
+                <DropdownMenuItem
+                  onSelect={openDialog({ kind: 'transfer-ownership', channelId: channel.id })}
+                >
+                  {channelCopy.menu.transfer}
+                </DropdownMenuItem>
+              )}
+              {manageTools && (
+                <DropdownMenuItem
+                  variant="destructive"
+                  onSelect={openDialog({
+                    kind: 'confirm',
+                    confirm: { action: 'archive-channel', channelId: channel.id },
+                  })}
+                >
+                  {channelCopy.menu.archive}
+                </DropdownMenuItem>
+              )}
+              {canDelete && (
+                <DropdownMenuItem
+                  variant="destructive"
+                  onSelect={openDialog({
+                    kind: 'confirm',
+                    confirm: { action: 'delete-channel', channelId: channel.id },
+                  })}
+                >
+                  {channelCopy.menu.delete}
+                </DropdownMenuItem>
+              )}
             </DropdownMenuGroup>
           </>
         )}

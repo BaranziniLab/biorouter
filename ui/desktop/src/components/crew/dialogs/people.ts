@@ -1,5 +1,6 @@
 import type { Invitation, PendingJoin, Snapshot } from '../crewApi';
 import { expiryCopy } from './copy';
+import { isOpenWorkspace } from './governance';
 import {
   channelName,
   cleanName,
@@ -219,6 +220,8 @@ export function directAddChannels(
   const team = snapshot?.teams.find((item) => item.id === teamId);
   if (!snapshot || !team) return [];
   const me = dir.me?.id ?? null;
+  // In an open workspace a member adds people to every channel they are in (OW-2), all ticked.
+  const open = isOpenWorkspace(snapshot);
   const general = snapshot.channels.find((item) => item.id === team.general_channel_id);
   const others = snapshot.channels
     .filter(
@@ -226,13 +229,13 @@ export function directAddChannels(
         channel.team_id === teamId &&
         channel.id !== team.general_channel_id &&
         !channel.archived &&
-        ((me !== null && channel.owner_id === me) || dir.viewerIsHost)
+        ((me !== null && channel.owner_id === me) || open || dir.viewerIsHost)
     )
     .map((channel) => ({
       id: channel.id,
       label: channelName(channel),
       always: false,
-      checked: me !== null && channel.owner_id === me,
+      checked: (me !== null && channel.owner_id === me) || open,
     }))
     .sort((a, b) => a.label.localeCompare(b.label));
   return [

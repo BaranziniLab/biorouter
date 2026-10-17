@@ -7,13 +7,40 @@ export interface CrewDaemonAccess {
   userAction: string;
 }
 
-/** Main-process only: proof and controller handles never enter renderer state. */
+/**
+ * What a sign-in is for: a saved connection, or a setup job waiting for the person to sign in
+ * (OW-9). Both prepare a session the same way and share the one terminal route.
+ */
+export type CrewDaemonTerminalTarget =
+  | { kind: 'connection'; connectionId: string }
+  | { kind: 'setup'; jobId: string };
+
+/** The daemon route that prepares the sign-in session for `target`. */
+export function crewAuthenticationPreparePath(target: CrewDaemonTerminalTarget): string {
+  return target.kind === 'connection'
+    ? `/crew/connections/${encodeURIComponent(target.connectionId)}/authentication`
+    : `/crew/setup/${encodeURIComponent(target.jobId)}/authentication`;
+}
+
+/** A typed daemon code a terminal error frame carried (`crew_bridge_missing`, …), else null. */
+function frameCode(value: unknown): string | null {
+  return typeof value === 'string' && /^crew_[a-z0-9_]{1,64}$/.test(value) ? value : null;
+}
+
+/**
+ * Main-process only: proof and controller handles never enter renderer state. `target` is a saved
+ * connection's id, or a target naming a setup job. `onExit` hears the exit code, and the typed code
+ * of the daemon's last error frame (a handoff that found Crew missing on the server says
+ * `crew_bridge_missing`, so the renderer can offer setup rather than a dead end).
+ */
 export async function createCrewDaemonTerminal(
   access: CrewDaemonAccess,
-  connectionId: string,
+  target: string | CrewDaemonTerminalTarget,
   onData: (data: string) => void,
-  onExit: (code: number | null) => void
+  onExit: (code: number | null, failureCode?: string | null) => void
 ) {
+  const resolved: CrewDaemonTerminalTarget =
+    typeof target === 'string' ? { kind: 'connection', connectionId: target } : target;
   const controller = crypto.randomUUID();
   const headers = {
     'Content-Type': 'application/json',
@@ -21,23 +48,27 @@ export async function createCrewDaemonTerminal(
     'X-User-Action': access.userAction,
     'X-Crew-Controller': controller,
   };
-  const response = await fetch(
-    `${access.baseUrl}/crew/connections/${encodeURIComponent(connectionId)}/authentication`,
-    {
-      method: 'POST',
-      headers,
-      body: JSON.stringify({
-        request_id: crypto.randomUUID(),
-        controller_id: controller,
-        cols: 80,
-        rows: 12,
-      }),
-      signal: AbortSignal.timeout(45000),
-    }
-  );
+  const response = await fetch(`${access.baseUrl}${crewAuthenticationPreparePath(resolved)}`, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({
+      request_id: crypto.randomUUID(),
+      controller_id: controller,
+      cols: 80,
+      rows: 12,
+    }),
+    signal: AbortSignal.timeout(45000),
+  });
   const prepared = await response.json();
   if (!response.ok) throw new Error(prepared.error || 'SSH authentication could not start.');
-  if (typeof prepared.authentication_id !== 'string' || prepared.connection_id !== connectionId)
+  // A connection's session names that connection. A setup's names the key its master rides (the
+  // connection or the pending host setup), which this process does not know; it names the job, when
+  // it says, and must name the one asked for.
+  const bound =
+    resolved.kind === 'connection'
+      ? prepared.connection_id === resolved.connectionId
+      : prepared.job_id === undefined || prepared.job_id === resolved.jobId;
+  if (typeof prepared.authentication_id !== 'string' || !bound)
     throw new Error('Invalid daemon authentication session.');
   const endpoint = `${access.baseUrl}/crew/authentication/${encodeURIComponent(prepared.authentication_id)}`;
   const websocketUrl = new URL(`${endpoint}/terminal`);
@@ -50,6 +81,7 @@ export async function createCrewDaemonTerminal(
   const decoder = new StringDecoder('utf8');
   let disposed = false;
   let exitCode: number | null = null;
+  let failureCode: string | null = null;
   const dispose = () => {
     if (disposed) return;
     disposed = true;
@@ -74,7 +106,10 @@ export async function createCrewDaemonTerminal(
             : event.exit_code === 0
               ? null
               : (event.exit_code ?? null);
-      if (event.type === 'error') onData('\r\nAuthentication refused. Close and reconnect.\r\n');
+      if (event.type === 'error') {
+        failureCode = frameCode(event.code) ?? failureCode;
+        onData('\r\nAuthentication refused. Close and reconnect.\r\n');
+      }
     } catch {
       dispose();
     }
@@ -82,7 +117,7 @@ export async function createCrewDaemonTerminal(
   socket.on('close', () => {
     const remaining = decoder.end();
     if (remaining && !disposed) onData(remaining);
-    onExit(exitCode);
+    onExit(exitCode, failureCode);
   });
   socket.on('error', () => {});
   try {

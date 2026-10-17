@@ -988,3 +988,107 @@ describe('the channel context menu', () => {
     ).toBeNull();
   });
 });
+
+describe('open governance, Browse channels and Delete team (OW-2, OW-4)', () => {
+  const openSnapshot = (overrides: Parameters<typeof makeSnapshot>[0] = {}) => {
+    const snapshot = makeSnapshot(overrides);
+    return { ...snapshot, workspace: { ...snapshot.workspace, governance: 'open' as const } };
+  };
+  const labMenu = async (user: ReturnType<typeof userEvent.setup>) => {
+    await user.click(screen.getByRole('button', { name: 'Analysis Lab options' }));
+    return screen.findByRole('menu');
+  };
+
+  it('offers the creator Delete team… on a delete_v1 broker, destructive, before support', async () => {
+    const user = userEvent.setup();
+    const view = renderTeams({ capabilities: ['delete_v1'] });
+    const menu = await labMenu(user);
+    const names = within(menu)
+      .getAllByRole('menuitem')
+      .map((item) => item.textContent);
+    expect(names.slice(-2)).toEqual([
+      sidebarCopy.teamMenu.delete,
+      sidebarCopy.teamMenu.copyForSupport,
+    ]);
+    const item = within(menu).getByRole('menuitem', { name: sidebarCopy.teamMenu.delete });
+    expect(item).toHaveAttribute('data-variant', 'destructive');
+    await user.click(item);
+    expect(view.controller.openDialog).toHaveBeenCalledWith({
+      kind: 'confirm',
+      confirm: { action: 'delete-team', teamId: TEAM_LAB },
+    });
+  });
+
+  it('offers no Delete team… to a managed workspace’s member, nor without delete_v1', async () => {
+    const user = userEvent.setup();
+    const member = renderTeams({
+      snapshot: makeSnapshot({ actor: bob }),
+      isHost: false,
+      capabilities: ['delete_v1'],
+    });
+    let menu = await labMenu(user);
+    expect(within(menu).queryByRole('menuitem', { name: sidebarCopy.teamMenu.delete })).toBeNull();
+    member.unmount();
+
+    renderTeams({ capabilities: null });
+    menu = await labMenu(user);
+    expect(within(menu).queryByRole('menuitem', { name: sidebarCopy.teamMenu.delete })).toBeNull();
+  });
+
+  it('lets every member of an open workspace add, rename, browse and delete', async () => {
+    const user = userEvent.setup();
+    const view = renderTeams(
+      {
+        snapshot: openSnapshot({
+          actor: bob,
+          joinable_channels: [{ id: 'chan-hidden', team_id: TEAM_LAB, name: 'imaging' }],
+        }),
+        isHost: false,
+        capabilities: ['open_governance_v1', 'delete_v1'],
+      },
+      true
+    );
+    const menu = await labMenu(user);
+    expect(
+      within(menu)
+        .getAllByRole('menuitem')
+        .map((item) => item.textContent)
+    ).toEqual([
+      sidebarCopy.teamMenu.members('Analysis Lab'),
+      sidebarCopy.teamMenu.createChannel,
+      sidebarCopy.teamMenu.addPeople('Analysis Lab'),
+      sidebarCopy.teamMenu.rename,
+      sidebarCopy.teamMenu.browse('Analysis Lab'),
+      sidebarCopy.teamMenu.delete,
+      sidebarCopy.teamMenu.copyForSupport,
+    ]);
+    await user.keyboard('{Escape}');
+    // The quiet row stands where the member hint was: everything in an open workspace is a Join away.
+    const lab = header('Analysis Lab, 4 channels').closest('[data-crew-team]') as HTMLElement;
+    expect(lab.querySelector('[data-crew-member-hint]')).toBeNull();
+    const browse = within(lab).getByRole('button', { name: sidebarCopy.channel.browse });
+    expect(browse).toHaveAttribute('data-crew-row', `browse:${TEAM_LAB}`);
+    fireEvent.click(browse);
+    expect(view.controller.openDialog).toHaveBeenCalledWith({
+      kind: 'browse-channels',
+      teamId: TEAM_LAB,
+    });
+  });
+
+  it('offers Browse only where the open workspace lists something to join in that team', () => {
+    renderTeams({
+      snapshot: openSnapshot({
+        actor: bob,
+        joinable_channels: [{ id: 'chan-other', team_id: TEAM_SC, name: 'atlas' }],
+      }),
+      isHost: false,
+      capabilities: ['open_governance_v1'],
+    });
+    const lab = header('Analysis Lab, 4 channels').closest('[data-crew-team]') as HTMLElement;
+    expect(within(lab).queryByRole('button', { name: sidebarCopy.channel.browse })).toBeNull();
+    const sc = header('single-cell, 1 channel').closest('[data-crew-team]') as HTMLElement;
+    expect(
+      within(sc).getByRole('button', { name: sidebarCopy.channel.browse })
+    ).toBeInTheDocument();
+  });
+});

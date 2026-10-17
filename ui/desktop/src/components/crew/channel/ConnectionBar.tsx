@@ -14,12 +14,15 @@ import {
   isMembershipEnded,
   isNotSetUpFailure,
   isTrustFailure,
+  isWorkspaceDeleted,
+  WORKSPACE_DELETED_CONNECT_CODE,
   type ConnectFailureKind,
 } from '../state/connectFailure';
 import { crewObservationCopy } from '../state/copy';
 import { useCrew } from '../state/CrewControllerContext';
 import { reconnectDaemon, useDaemonConnection } from '../state/daemonConnection';
 import { DIALOG_FOCUS_FALLBACKS, restoreFocusSoon } from '../state/focusReturn';
+import { WORKSPACE_DELETED_CODE } from '../state/observationFailure';
 import { CHANNEL_LOST_ERROR_CODE } from '../state/useCrewObservation';
 import { connectionBarCopy } from './copy';
 import { calendarDate, workspaceLabel } from './presentation';
@@ -153,6 +156,9 @@ export interface ConnectionBarProps {
  *    disconnected (Q2-01); a person removed from the workspace gets no Retry at all (Q2-18). A
  *    saved connection whose membership the workspace ended (`crew_membership_ended`, Q3-12 and
  *    Q3-50) says so here, as "You're no longer a member of …", with no Retry, whatever its status.
+ *    A workspace its host deleted (OW-5: the record's `workspace_deleted`, a connect answered
+ *    `crew_workspace_deleted`, or an observation ended `workspace_deleted`) says "The host deleted
+ *    …" with the one thing left to do, Remove from this computer…, and no Retry.
  * 2. an observer or global action error — or a connect failure whose own surface is not on
  *    screen — with Dismiss (Try again for a connect failure). A closed channel's note shows only
  *    over a workspace view (Q2-19). A connect failure reads as its kind, never in the transport's
@@ -231,13 +237,22 @@ export function ConnectionBar({ className }: ConnectionBarProps) {
   // The workspace ended this computer's or this person's membership: said once, here, with no
   // Retry — on the join screen its card says it instead.
   const membershipEnded = isMembershipEnded(connection) && !notMember;
+  // The host deleted the workspace (OW-5): final, whatever the saved status says.
+  const workspaceDeleted =
+    Boolean(connection) &&
+    (isWorkspaceDeleted(connection) ||
+      crew.refreshErrorCode === WORKSPACE_DELETED_CODE ||
+      failure?.code === WORKSPACE_DELETED_CONNECT_CODE);
   const showObservationError =
     !daemonAway &&
-    (membershipEnded ||
+    (workspaceDeleted ||
+      membershipEnded ||
       (Boolean(refreshError) && !notMember && (!connection || connection.status === 'connected')));
-  const observationText = membershipEnded
-    ? crewObservationCopy.noLongerMember(workspace)
-    : refreshError;
+  const observationText = workspaceDeleted
+    ? crewObservationCopy.workspaceDeleted(workspace)
+    : membershipEnded
+      ? crewObservationCopy.noLongerMember(workspace)
+      : refreshError;
   // The offline screen under the bar carries "Connect to …": the same action as Try again (Q3-07).
   const offlineCardShown = crew.screen === 'offline' && connection?.status === 'disconnected';
   // A closed channel's note describes the workspace view it was closed in: on a connection
@@ -333,10 +348,25 @@ export function ConnectionBar({ className }: ConnectionBarProps) {
             // Retrying can only help a connection the daemon calls connected, and never a person
             // removed from the workspace (Q2-18). With no saved connection at all, the screen
             // under the bar has its own Try again. Retry reads the saved connection first and,
-            // when the daemon has since called it disconnected, connects at once (Q2-01).
-            !membershipEnded &&
-            connection?.status === 'connected' &&
-            crew.refreshErrorRetryable !== false ? (
+            // when the daemon has since called it disconnected, connects at once (Q2-01). A
+            // deleted workspace offers removal instead: nothing is left to retry.
+            workspaceDeleted && connectionId ? (
+              <Button
+                type="button"
+                variant="secondary"
+                size="sm"
+                onClick={() =>
+                  crew.openDialog({
+                    kind: 'confirm',
+                    confirm: { action: 'remove-connection', connectionId },
+                  })
+                }
+              >
+                {crewObservationCopy.removeFromComputer}
+              </Button>
+            ) : !membershipEnded &&
+              connection?.status === 'connected' &&
+              crew.refreshErrorRetryable !== false ? (
               <Button
                 type="button"
                 variant="secondary"
@@ -378,7 +408,9 @@ export function ConnectionBar({ className }: ConnectionBarProps) {
         </Note>
       )}
 
+      {/* A deleted workspace's connect failure is said once, above, with Remove. */}
       {connectError &&
+        !workspaceDeleted &&
         (unreachable ? (
           unreachableNote('alert')
         ) : (

@@ -459,25 +459,176 @@ describe('ConnectionSettingsDialog', () => {
     expect(crew.updateConnection).not.toHaveBeenCalled();
   });
 
-  it('keeps the agent-execution switch off until a remote folder is set', async () => {
-    renderSettings({ port: 2222 });
-    const execution = await screen.findByRole('switch', {
-      name: /Let my agent run commands in this folder/,
+  // OW-6 replaced the run-commands switch with a level: Off, In a folder, As me on the server.
+  describe('what the agent may do on the server (OW-6)', () => {
+    const SERVER = 'hpc.example.edu';
+    const level = (name: string) =>
+      within(screen.getByRole('radiogroup', { name: connectionSettingsCopy.access(SERVER) }))
+        .getAllByRole('radio')
+        .find((radio) => radio.closest('label')?.textContent?.startsWith(name)) as HTMLElement;
+    const fullAccess = {
+      full_access_available: true,
+      confined_execution_available: true,
+      user: 'alice',
+      home: '/home/alice',
+    };
+
+    it('asks the question by the server’s name, Off with no folder, and saves no folder', async () => {
+      const { crew } = renderSettings();
+      await screen.findByLabelText('Connection name');
+      expect(level(connectionSettingsCopy.accessOff)).toBeChecked();
+      expect(screen.queryByLabelText('Remote work folder')).toBeNull();
+      save();
+      await waitFor(() => expect(crew.updateConnection).toHaveBeenCalledTimes(1));
+      const body = crew.updateConnection.mock.calls[0][1];
+      expect(body).toMatchObject({ remote_root: undefined, remote_execution: false });
+      expect(body).not.toHaveProperty('remote_access');
     });
-    expect(execution).toBeDisabled();
-    fireEvent.change(screen.getByLabelText('Remote work folder'), {
-      target: { value: '/home/alice/project' },
+
+    it('needs a folder In a folder, says what a confined command cannot do, and turns them on', async () => {
+      const { crew } = renderSettings();
+      await screen.findByLabelText('Connection name');
+      fireEvent.click(level(connectionSettingsCopy.accessFolder));
+      const folder = screen.getByLabelText('Remote work folder');
+      expect(folder).toBeRequired();
+      // HPC-N1: what a command there cannot do, said before the person saves it.
+      expect(folder).toHaveAccessibleDescription(connectionSettingsCopy.remoteExecutionHelp);
+      expect(connectionSettingsCopy.remoteExecutionHelp).toMatch(/no network/);
+      expect(connectionSettingsCopy.remoteExecutionHelp).toMatch(/sbatch/);
+      // A required folder: the browser's own validation stops an empty one.
+      save();
+      expect(crew.updateConnection).not.toHaveBeenCalled();
+      fireEvent.change(folder, { target: { value: '/home/alice/project' } });
+      save();
+      await waitFor(() => expect(crew.updateConnection).toHaveBeenCalledTimes(1));
+      const body = crew.updateConnection.mock.calls[0][1];
+      expect(body).toMatchObject({ remote_root: '/home/alice/project', remote_execution: true });
+      expect(body).not.toHaveProperty('remote_access');
     });
-    expect(execution).toBeEnabled();
-    // HPC-N1: what a command there cannot do, said before the person turns it on.
-    expect(execution).toHaveAccessibleDescription(connectionSettingsCopy.remoteExecutionHelp);
-    expect(connectionSettingsCopy.remoteExecutionHelp).toMatch(/no network/);
-    expect(connectionSettingsCopy.remoteExecutionHelp).toMatch(/sbatch/);
+
+    it('says only files work in a folder on a server that cannot confine commands', async () => {
+      renderSettings({
+        remote_root: '/home/alice/project',
+        server_access: { ...fullAccess, confined_execution_available: false },
+      });
+      expect(await screen.findByLabelText('Remote work folder')).toHaveAccessibleDescription(
+        connectionSettingsCopy.confinedUnavailable(SERVER)
+      );
+    });
+
+    it('fills the home folder for As me on the server, warns once, and saves full access', async () => {
+      const { crew } = renderSettings({ server_access: fullAccess });
+      await screen.findByLabelText('Connection name');
+      expect(screen.queryByTestId('crew-full-access-warning')).toBeNull();
+      fireEvent.click(level(connectionSettingsCopy.accessFull));
+      expect(screen.getByLabelText('Remote work folder')).toHaveValue('/home/alice');
+      const warning = screen.getByTestId('crew-full-access-warning');
+      expect(warning).toHaveTextContent(connectionSettingsCopy.fullWarning('@alice', SERVER));
+      // The person hosts this workspace (the fixture's Alice): its files are in this account.
+      expect(warning).toHaveTextContent(connectionSettingsCopy.fullWarningHost('lab'));
+      // One warning, no typing: Save is the consent.
+      expect(screen.queryByRole('alertdialog')).toBeNull();
+      save();
+      await waitFor(() => expect(crew.updateConnection).toHaveBeenCalledTimes(1));
+      expect(crew.updateConnection.mock.calls[0][1]).toMatchObject({
+        remote_root: '/home/alice',
+        remote_execution: true,
+        remote_access: 'full',
+      });
+    });
+
+    it('offers As me on the server only where the bridge can, saying what to update', async () => {
+      renderSettings({ server_access: { ...fullAccess, full_access_available: false } });
+      await screen.findByLabelText('Connection name');
+      const full = level(connectionSettingsCopy.accessFull);
+      expect(full).toBeDisabled();
+      expect(full.closest('label')).toHaveTextContent(
+        connectionSettingsCopy.accessFullUnavailable(SERVER)
+      );
+      expect(connectionSettingsCopy.accessFullUnavailable(SERVER)).toBe(
+        'Update Crew on hpc.example.edu first.'
+      );
+    });
+
+    it('keeps full access through an unrelated save, and drops it for another level', async () => {
+      const saved = {
+        remote_root: '/home/alice',
+        remote_execution: true,
+        remote_access: 'full' as const,
+        server_access: { ...fullAccess, full_access_available: false },
+      };
+      const first = renderSettings(saved);
+      fireEvent.change(await screen.findByLabelText('Connection name'), {
+        target: { value: 'Imaging core' },
+      });
+      // A saved full level stays choosable, even where the bridge now says it cannot.
+      expect(level(connectionSettingsCopy.accessFull)).toBeChecked();
+      expect(level(connectionSettingsCopy.accessFull)).toBeEnabled();
+      save();
+      await waitFor(() => expect(first.crew.updateConnection).toHaveBeenCalledTimes(1));
+      expect(first.crew.updateConnection.mock.calls[0][1]).toMatchObject({
+        name: 'Imaging core',
+        remote_access: 'full',
+      });
+      first.unmount();
+
+      const second = renderSettings(saved);
+      await screen.findByLabelText('Connection name');
+      fireEvent.click(level(connectionSettingsCopy.accessFolder));
+      save();
+      await waitFor(() => expect(second.crew.updateConnection).toHaveBeenCalledTimes(1));
+      const body = second.crew.updateConnection.mock.calls[0][1];
+      expect(body).toMatchObject({ remote_root: '/home/alice', remote_execution: true });
+      expect(body).not.toHaveProperty('remote_access');
+    });
+
+    it('keeps a files-only folder files-only through an unrelated save', async () => {
+      const { crew } = renderSettings({ remote_root: '/srv/data', remote_execution: false });
+      fireEvent.change(await screen.findByLabelText('Connection name'), {
+        target: { value: 'Imaging core' },
+      });
+      expect(level(connectionSettingsCopy.accessFolder)).toBeChecked();
+      save();
+      await waitFor(() => expect(crew.updateConnection).toHaveBeenCalledTimes(1));
+      expect(crew.updateConnection.mock.calls[0][1]).toMatchObject({
+        remote_root: '/srv/data',
+        remote_execution: false,
+      });
+    });
+
+    it('keeps a folder typed under Off, unsent, for the next level', async () => {
+      const { crew } = renderSettings({ remote_root: '/home/alice/project' });
+      await screen.findByLabelText('Remote work folder');
+      fireEvent.click(level(connectionSettingsCopy.accessOff));
+      expect(screen.queryByLabelText('Remote work folder')).toBeNull();
+      fireEvent.click(level(connectionSettingsCopy.accessFolder));
+      expect(screen.getByLabelText('Remote work folder')).toHaveValue('/home/alice/project');
+      fireEvent.click(level(connectionSettingsCopy.accessOff));
+      save();
+      await waitFor(() => expect(crew.updateConnection).toHaveBeenCalledTimes(1));
+      expect(crew.updateConnection.mock.calls[0][1]).toMatchObject({
+        remote_root: undefined,
+        remote_execution: false,
+      });
+    });
+
+    it('says the daemon’s full-access folder refusal under the folder', async () => {
+      const { crew } = renderSettings({ server_access: fullAccess });
+      const sentence =
+        'Full access needs a default folder on the server, as an absolute path such as /home/you/crew-work';
+      crew.updateConnection.mockRejectedValueOnce(new Error(sentence));
+      await screen.findByLabelText('Connection name');
+      fireEvent.click(level(connectionSettingsCopy.accessFull));
+      save();
+      await waitFor(() =>
+        expect(screen.getByLabelText('Remote work folder')).toHaveAccessibleDescription(sentence)
+      );
+    });
   });
 
-  it('keeps Workspace details closed, even when Advanced opens by itself', async () => {
-    // A remote folder opens Advanced (the normal setup for an agent that works there); the machine
-    // IDs must not come with it (QA T-33).
+  it('keeps Workspace details closed with a work folder set', async () => {
+    // A work folder is the normal setup for an agent that works on the server; the machine IDs
+    // must not come with it (QA T-33).
     renderSettings({ remote_root: '/home/alice/project', remote_execution: true });
     expect(await screen.findByLabelText('Remote work folder')).toHaveValue('/home/alice/project');
     expect(screen.getByRole('button', { name: /^Workspace details/ })).toHaveAttribute(

@@ -65,6 +65,8 @@ export const aboutCopy = {
   transfer: 'Transfer ownership…',
   dangerZone: 'Danger zone',
   archive: 'Archive channel…',
+  /** OW-4: beside Archive, for whoever may delete the channel; never for #general. */
+  delete: 'Delete channel…',
   /**
    * The quiet disclosure that holds Copy channel ID (Q3-26): a machine ID is for a support
    * request, not an everyday row. Connection settings names its own the same way.

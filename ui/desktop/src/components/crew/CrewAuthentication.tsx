@@ -31,7 +31,30 @@ function terminalFontFamily(): string {
 }
 
 /**
- * The SSH sign-in terminal: the body of the Sign in dialog (`crew/auth/SignInDialog.tsx`).
+ * What a sign-in is for: a saved connection (the Sign in dialog's usual job), or a setup job that is
+ * waiting for the person to sign in (OW-9). A setup sign-in keeps its SSH session for the job, so
+ * one password covers installing Crew, starting or connecting, and creating the workspace.
+ */
+export type CrewSignInTarget =
+  | { kind: 'connection'; id: string }
+  | { kind: 'setup'; jobId: string };
+
+/** The daemon's code for a sign-in that worked on a server where Crew isn't installed yet. */
+export const BRIDGE_MISSING_CODE = 'crew_bridge_missing';
+
+type CrewAuthenticationProps = {
+  onConnected: () => void;
+  onClose: () => void;
+  /**
+   * The sign-in worked, but Crew isn't installed for the account (`crew_bridge_missing`): the
+   * daemon kept the SSH session, so setup can use it. Without this, the exit reads as any other.
+   */
+  onBridgeMissing?: () => void;
+} & ({ connectionId: string; target?: never } | { target: CrewSignInTarget; connectionId?: never });
+
+/**
+ * The SSH sign-in terminal: the body of the Sign in dialog (`crew/auth/SignInDialog.tsx`), for a
+ * saved connection (`connectionId`) or a setup job (`target`).
  *
  * The contract the regression tests pin (C16) is unchanged: data and an exit that arrive before
  * the IPC answers are replayed for the right session only; the session is resized only after it
@@ -44,18 +67,24 @@ function terminalFontFamily(): string {
  */
 export default function CrewAuthentication({
   connectionId,
+  target,
   onConnected,
   onClose,
-}: {
-  connectionId: string;
-  onConnected: () => void;
-  onClose: () => void;
-}) {
+  onBridgeMissing,
+}: CrewAuthenticationProps) {
+  const resolved: CrewSignInTarget = target ?? { kind: 'connection', id: connectionId ?? '' };
+  // The session is opened again only when what it signs in for changes.
+  const targetKind = resolved.kind;
+  const targetId = resolved.kind === 'connection' ? resolved.id : resolved.jobId;
   const container = useRef<HTMLDivElement>(null);
   const [error, setError] = useState('');
   const activeSession = useRef('');
   const closeRequested = useRef(false);
   const connectedCallback = useRef(onConnected);
+  const bridgeMissingCallback = useRef(onBridgeMissing);
+  useEffect(() => {
+    bridgeMissingCallback.current = onBridgeMissing;
+  }, [onBridgeMissing]);
   const terminalRef = useRef<Terminal | null>(null);
   const family = useThemeFamily();
   const mode = useResolvedTheme();
@@ -92,11 +121,15 @@ export default function CrewAuthentication({
     let sessionId = '';
     let cancelled = false;
     const pending: { sessionId: string; data: string }[] = [];
-    const pendingExits: { sessionId: string; exitCode: number | null }[] = [];
+    const pendingExits: { sessionId: string; exitCode: number | null; code?: string }[] = [];
     let pendingBytes = 0;
-    const showExit = (exitCode: number | null) => {
+    const showExit = (exitCode: number | null, code?: string) => {
       if (exitCode === 0) {
         connectedCallback.current();
+        return;
+      }
+      if (code === BRIDGE_MISSING_CODE && bridgeMissingCallback.current) {
+        bridgeMissingCallback.current();
         return;
       }
       setError(signInCopy.ended(exitCode ?? 'unknown'));
@@ -120,7 +153,7 @@ export default function CrewAuthentication({
     });
     const removeExit = window.electron.onTerminalExit((event) => {
       if (cancelled) return;
-      if (sessionId === event.sessionId) showExit(event.exitCode);
+      if (sessionId === event.sessionId) showExit(event.exitCode, event.code);
       else if (!sessionId && pendingExits.length < 30) pendingExits.push(event);
     });
     const input = terminal.onData((data) => {
@@ -130,11 +163,15 @@ export default function CrewAuthentication({
         });
     });
     void (async () => {
-      if (!window.electron.createCrewAuthentication) {
+      const create =
+        targetKind === 'setup'
+          ? window.electron.createCrewSetupAuthentication
+          : window.electron.createCrewAuthentication;
+      if (!create) {
         setError(signInCopy.needsDesktop);
         return;
       }
-      const result = await window.electron.createCrewAuthentication(connectionId);
+      const result = await create(targetId);
       if (!result.success) {
         if (!cancelled) setError(result.error);
         return;
@@ -153,7 +190,7 @@ export default function CrewAuthentication({
       const earlyExit = pendingExits.find((event) => event.sessionId === sessionId);
       pendingExits.length = 0;
       if (earlyExit) {
-        showExit(earlyExit.exitCode);
+        showExit(earlyExit.exitCode, earlyExit.code);
         return;
       }
       fit.fit();
@@ -177,7 +214,7 @@ export default function CrewAuthentication({
       if (closeRequested.current && sessionId)
         void window.electron.disposeTerminalSession(sessionId);
     };
-  }, [connectionId]);
+  }, [targetKind, targetId]);
   return (
     <section className="crew-signin" aria-label={signInCopy.terminalName}>
       {/* The family's own terminal ground token, which the generated palette's background is

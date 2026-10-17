@@ -2,7 +2,7 @@
 import http from 'node:http';
 import { afterEach, describe, expect, it } from 'vitest';
 import WebSocket, { WebSocketServer } from 'ws';
-import { createCrewDaemonTerminal } from './crewDaemonTerminal';
+import { createCrewDaemonTerminal, crewAuthenticationPreparePath } from './crewDaemonTerminal';
 
 type RequestRecord = {
   method: string;
@@ -209,5 +209,75 @@ describe('Crew daemon terminal adapter', () => {
     );
     expect(await exit).toBeNull();
     terminal.dispose();
+  });
+
+  it('prepares a setup job’s sign-in on the job’s own route, and passes on a frame’s typed code', async () => {
+    const requests: RequestRecord[] = [];
+    server = http.createServer(async (request, response) => {
+      requests.push({
+        method: request.method ?? '',
+        path: request.url ?? '',
+        headers: request.headers,
+        body: await readRequest(request),
+      });
+      if (request.method === 'POST') {
+        // A setup session names the key its master rides, which is not the job's id.
+        response.writeHead(201, { 'content-type': 'application/json' });
+        response.end(
+          JSON.stringify({ authentication_id: 'auth-9', connection_id: 'prep-1', job_id: 'job-1' })
+        );
+        return;
+      }
+      response.writeHead(204).end();
+    });
+    websocketServer = new WebSocketServer({ noServer: true });
+    server.on('upgrade', (request, socket, head) => {
+      websocketServer?.handleUpgrade(request, socket, head, (upstream) => {
+        setTimeout(() => {
+          upstream.send(
+            JSON.stringify({ type: 'error', code: 'crew_bridge_missing', error: 'Not set up.' })
+          );
+          upstream.send(JSON.stringify({ type: 'exit', authenticated: false, exit_code: 1 }));
+          upstream.close();
+        }, 20);
+      });
+    });
+    await new Promise<void>((resolve) => server?.listen(0, '127.0.0.1', () => resolve()));
+    const address = server.address() as { port: number };
+    globalThis.fetch = localFetch;
+    let resolveExit!: (exit: [number | null, string | null | undefined]) => void;
+    const exit = new Promise<[number | null, string | null | undefined]>((resolve) => {
+      resolveExit = resolve;
+    });
+    const terminal = await createCrewDaemonTerminal(
+      { baseUrl: `http://127.0.0.1:${address.port}`, secret: 'secret', userAction: 'proof' },
+      { kind: 'setup', jobId: 'job-1' },
+      () => {},
+      (code, failureCode) => resolveExit([code, failureCode])
+    );
+    expect(await exit).toEqual([1, 'crew_bridge_missing']);
+    terminal.dispose();
+    expect(requests[0]).toMatchObject({ method: 'POST', path: '/crew/setup/job-1/authentication' });
+    expect(crewAuthenticationPreparePath({ kind: 'setup', jobId: 'a/../b' })).toBe(
+      '/crew/setup/a%2F..%2Fb/authentication'
+    );
+  });
+
+  it('refuses a setup session that names another job', async () => {
+    server = http.createServer((_request, response) => {
+      response.writeHead(200, { 'content-type': 'application/json' });
+      response.end(JSON.stringify({ authentication_id: 'auth-10', job_id: 'job-2' }));
+    });
+    await new Promise<void>((resolve) => server?.listen(0, '127.0.0.1', () => resolve()));
+    const address = server.address() as { port: number };
+    globalThis.fetch = localFetch;
+    await expect(
+      createCrewDaemonTerminal(
+        { baseUrl: `http://127.0.0.1:${address.port}`, secret: 'secret', userAction: 'proof' },
+        { kind: 'setup', jobId: 'job-1' },
+        () => {},
+        () => {}
+      )
+    ).rejects.toThrow('Invalid daemon authentication session.');
   });
 });

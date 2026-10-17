@@ -3,7 +3,13 @@ import { useLocation, useSearchParams } from 'react-router-dom';
 import type * as Api from '../../../api/types.gen';
 import { useSameRouteReset } from '../../../hooks/useSameRouteReset';
 import { CREW_RECONNECTING } from '../api/errors';
-import { crewHttp, crewRequest, type CrewConnection, type Snapshot } from '../crewApi';
+import {
+  crewHttp,
+  crewRequest,
+  type CrewConnection,
+  type CrewContextDraft,
+  type Snapshot,
+} from '../crewApi';
 import { connectionNames } from '../identity/objectNames';
 import { crewActionCopy } from './copy';
 import { useCrewActions } from './crewActions';
@@ -15,7 +21,7 @@ import {
   usePostInFlight,
 } from './crewSend';
 import { useCrewRunStart } from './crewRunStart';
-import { arrivalConnectDecision, isMembershipEnded } from './connectFailure';
+import { arrivalConnectDecision, isMembershipEnded, isWorkspaceDeleted } from './connectFailure';
 import { deriveConnectionStatus, deriveCrewScreen } from './crewStatus';
 import { useCrewSurfaces } from './crewSurfaces';
 import { rememberedLastChannel, rememberLastChannel } from './draftStash';
@@ -144,6 +150,7 @@ export function useCrewController(options: CrewControllerOptions = {}): CrewCont
     saveConnection,
     updateConnection: patchConnection,
     removeConnection,
+    deleteWorkspace,
     prepareHostingDevice,
   } = useCrewConnections(generation);
   /**
@@ -748,8 +755,9 @@ export function useCrewController(options: CrewControllerOptions = {}): CrewCont
         leaveEndToSave(lostId);
         return;
       }
-      // A membership the workspace ended is final: nothing is observed again or followed for it.
-      const ended = isMembershipEnded(record);
+      // A membership the workspace ended is final, and so is a workspace its host deleted (OW-5):
+      // nothing is observed again or followed for either.
+      const ended = isMembershipEnded(record) || isWorkspaceDeleted(record);
       if (record?.status === 'connected' && !ended && takeQuietReobserve(lostId, Date.now())) {
         // Still being decided until the new view verifies (`onVerifiedFrame`), or until that
         // observation ends too and this decides again: "Reconnecting…" once that takes a while.
@@ -783,7 +791,8 @@ export function useCrewController(options: CrewControllerOptions = {}): CrewCont
    * save that leaves it disconnected is followed once it is back.
    */
   const savedStatus = savedConnection?.status;
-  const savedMembershipEnded = isMembershipEnded(savedConnection);
+  const savedMembershipEnded =
+    isMembershipEnded(savedConnection) || isWorkspaceDeleted(savedConnection);
   const followLatest = useRef(followOffline);
   followLatest.current = followOffline;
   useEffect(() => {
@@ -845,6 +854,9 @@ export function useCrewController(options: CrewControllerOptions = {}): CrewCont
       await refresh();
     });
   };
+  // Nothing is saved: the draft goes into the person's editor, and Save is theirs (OW-8).
+  const draftWorkspaceContext = (id: string) =>
+    crewHttp<CrewContextDraft>(`/connections/${encodeURIComponent(id)}/context/draft`, 'POST', {});
   const grantSession = async ({
     contextChannels,
     sessionId = grantSessionId ?? undefined,
@@ -942,7 +954,7 @@ export function useCrewController(options: CrewControllerOptions = {}): CrewCont
   const isReconnecting = reconnecting !== null && reconnecting === connectionId;
   const inFlight = isPending('connect') || isPending('sign-in') || surfaces.signIn.open;
   const verifiedHere = connectionVerifiedThisSession(connectionId) || joinStatus === 'joined';
-  const membershipEnded = isMembershipEnded(savedConnection);
+  const membershipEnded = isMembershipEnded(savedConnection) || isWorkspaceDeleted(savedConnection);
 
   /**
    * SECURITY-SENSITIVE (human review). Connect on arrival from a chat's "Connect in Crew" (Q3-08):
@@ -1013,6 +1025,8 @@ export function useCrewController(options: CrewControllerOptions = {}): CrewCont
     saveConnection,
     updateConnection,
     removeConnection,
+    deleteWorkspace,
+    draftWorkspaceContext,
     prepareHostingDevice,
     connect,
     disconnect,

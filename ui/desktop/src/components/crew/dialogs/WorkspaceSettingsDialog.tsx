@@ -17,9 +17,10 @@ import {
 import { Note } from '../../ui/note';
 import { PrivacyBadge } from '../../ui/PrivacyBadge';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '../../ui/tabs';
+import { Textarea } from '../../ui/textarea';
 import { Tooltip, TooltipContent, TooltipTrigger } from '../../ui/Tooltip';
 import { AlertTriangle, MoreHorizontal } from '../../icons/app-icons';
-import type { PendingJoin } from '../crewApi';
+import { CrewHttpError, type CrewWorkspaceContext, type PendingJoin } from '../crewApi';
 import {
   InstitutionName,
   institutionLabel,
@@ -39,8 +40,17 @@ import { connectionUpdateBody } from '../state/useCrewConnections';
 import type { ConfirmIntent, ErrorSource, WorkspaceSettingsTab } from '../state/types';
 import { copyText } from './clipboard';
 import { CrewConfirmation } from './confirmations';
-import { workspaceSettingsCopy as copy } from './copy';
-import { DialogErrorNote, useDismissOwnError } from './fields';
+import { contextCopy, workspaceSettingsCopy as copy } from './copy';
+import { DialogErrorNote, RadioRows, useDismissOwnError } from './fields';
+import {
+  brokerSupports,
+  CONTEXT_MAX_BYTES,
+  DELETE_CAPABILITY,
+  isOpenWorkspace,
+  mayEditContext,
+  OPEN_GOVERNANCE_CAPABILITY,
+  WORKSPACE_CONTEXT_CAPABILITY,
+} from './governance';
 import { MakePrivateDialog } from './MakePrivateDialog';
 import { peopleInOrder } from './people';
 import { uniqueNamesSupported, useDialogView, type DialogView } from './workspace';
@@ -60,8 +70,9 @@ export interface WorkspaceSettingsDialogProps {
 }
 
 /**
- * Workspace settings (ui-redesign-spec, "Dialog inventory"): General · People · Privacy · Agent
- * access, the one home for what the workspace menu's People…, Privacy… and Chats with access… open.
+ * Workspace settings (ui-redesign-spec, "Dialog inventory"): General · People · Privacy · Context ·
+ * Agent access, the one home for what the workspace menu's People…, Privacy… and Chats with
+ * access… open. Context is offered where the broker keeps one (`workspace_context_v1`, OW-8).
  *
  * Every control here sends a request the broker or daemon decides; host-only controls are shown
  * only to the host because they are the only person the broker would accept them from, not because
@@ -94,7 +105,9 @@ export function WorkspaceSettingsDialog({
 }: WorkspaceSettingsDialogProps) {
   const view = useDialogView();
   const { crew, workspace } = view;
+  const contextOffered = brokerSupports(crew.capabilities, WORKSPACE_CONTEXT_CAPABILITY);
   const offered: WorkspaceSettingsTab[] = ['general', 'people', 'privacy'];
+  if (contextOffered) offered.push('context');
   if (agentAccess !== undefined) offered.push('agent-access');
   const [current, setCurrent] = React.useState<WorkspaceSettingsTab>(
     tab && offered.includes(tab) ? tab : 'general'
@@ -138,13 +151,14 @@ export function WorkspaceSettingsDialog({
           <TabsTrigger value="general">{copy.tabs.general}</TabsTrigger>
           <TabsTrigger value="people">{copy.tabs.people}</TabsTrigger>
           <TabsTrigger value="privacy">{copy.tabs.privacy}</TabsTrigger>
+          {contextOffered ? <TabsTrigger value="context">{contextCopy.tab}</TabsTrigger> : null}
           {agentAccess !== undefined ? (
             <TabsTrigger value="agent-access">{copy.tabs.agentAccess}</TabsTrigger>
           ) : null}
         </TabsList>
         <div className="crew-settings-panels" aria-busy={isChecking(view) || undefined}>
           <TabsContent {...panel('general')}>
-            <GeneralTab view={view} />
+            <GeneralTab view={view} onConfirm={ask} />
           </TabsContent>
           <TabsContent {...panel('people')}>
             <PeopleTab view={view} onConfirm={ask} />
@@ -159,6 +173,11 @@ export function WorkspaceSettingsDialog({
               }}
             />
           </TabsContent>
+          {contextOffered ? (
+            <TabsContent {...panel('context')}>
+              <ContextTab view={view} />
+            </TabsContent>
+          ) : null}
           {/* The access area's content mounts only while it is selected: it is not ours to run
               hidden. It shares the cell, so the dialog is at least as tall as the tallest of ours.
               Like every tab it opens with no label repeating its name: the access area's own
@@ -316,9 +335,18 @@ function Section({
   );
 }
 
-function GeneralTab({ view }: { view: DialogView }) {
+function GeneralTab({
+  view,
+  onConfirm,
+}: {
+  view: DialogView;
+  onConfirm(intent: ConfirmIntent): void;
+}) {
   const { crew, dir, snapshot, server, address, workspace } = view;
   const canRename = dir.viewerIsHost && uniqueNamesSupported(snapshot, crew.capabilities);
+  const governed = brokerSupports(crew.capabilities, OPEN_GOVERNANCE_CAPABILITY);
+  const deletable = brokerSupports(crew.capabilities, DELETE_CAPABILITY);
+  const saved = savedConnection(view);
   // How full the workspace is (M1, W2-UIW-20): the host's snapshot alone carries usage, and a
   // broker too old to send it shows no row. The consequence is said from 80%, in the row.
   const fullness = dir.viewerIsHost ? workspaceFullness(snapshot?.usage) : null;
@@ -394,6 +422,339 @@ function GeneralTab({ view }: { view: DialogView }) {
           </Button>
         </div>
       ) : null}
+      {governed && snapshot ? <Governance view={view} /> : null}
+      {saved ? (
+        <DangerZone
+          view={view}
+          // The host deletes the workspace for everyone where the controller can send it; Crew on
+          // the server says whether it can (`delete_v1`), and a disabled item says what to update.
+          canDelete={dir.viewerIsHost && Boolean(snapshot) && Boolean(crew.deleteWorkspace)}
+          deleteSupported={deletable}
+          onRemove={() => onConfirm({ action: 'remove-connection', connectionId: saved.id })}
+          onDelete={() => onConfirm({ action: 'delete-workspace', connectionId: saved.id })}
+        />
+      ) : null}
+    </div>
+  );
+}
+
+/**
+ * Who manages teams and channels (OW-1, OW-2). The host chooses, and the choice applies at once
+ * through `workspace.set_governance`; the host can switch back. A member reads it in a word. The
+ * request goes through `request`, not `mutate`, so the dialog it is made in stays open.
+ */
+function Governance({ view }: { view: DialogView }) {
+  const { crew, dir, snapshot, workspace } = view;
+  const key = 'mutate:workspace.set_governance';
+  const [chosen, setChosen] = React.useState<'open' | 'managed' | null>(null);
+  const current = snapshot?.workspace.governance === 'open' ? 'open' : 'managed';
+  const verified = crew.snapshot !== null && crew.observedPrivacy !== null;
+  if (!dir.viewerIsHost)
+    return (
+      <div className="biorouter-settings-list mt-3" data-crew-settings-governance="">
+        <Row label={copy.governance.row}>
+          <span>{current === 'open' ? copy.governance.everyone : copy.governance.owners}</span>
+        </Row>
+      </div>
+    );
+  const choose = (governance: 'open' | 'managed') => {
+    if (governance === current) return;
+    setChosen(governance);
+    void crew
+      .act(SOURCE, key, async () => {
+        await crew.request('workspace.set_governance', { governance }, { mutation: true });
+        await crew.refresh();
+      })
+      .finally(() => setChosen(null));
+  };
+  return (
+    <div className="mt-4 flex flex-col gap-1 px-3" data-crew-settings-governance="">
+      <RadioRows<'open' | 'managed'>
+        label={copy.governance.label}
+        name="crew-workspace-governance"
+        value={chosen ?? current}
+        disabled={!verified || crew.isPending(key)}
+        onChange={choose}
+        options={[
+          { value: 'open', label: copy.governance.open, detail: copy.governance.openDetail },
+          {
+            value: 'managed',
+            label: copy.governance.managed,
+            detail: copy.governance.managedDetail,
+          },
+        ]}
+      />
+      <p className="text-supporting text-text-muted">{copy.governance.hostOnly(workspace)}</p>
+    </div>
+  );
+}
+
+/**
+ * General's last section (OW-5): Remove from this computer… for everyone — the existing local
+ * removal, which leaves the server alone — and, for the host, Delete workspace…, typed with the
+ * workspace's name. Both open their confirmation over this dialog, so Cancel returns here.
+ */
+function DangerZone({
+  view,
+  canDelete,
+  deleteSupported,
+  onRemove,
+  onDelete,
+}: {
+  view: DialogView;
+  canDelete: boolean;
+  deleteSupported: boolean;
+  onRemove(): void;
+  onDelete(): void;
+}) {
+  const headingId = React.useId();
+  const reasonId = React.useId();
+  return (
+    <section aria-labelledby={headingId} className="mt-6 flex flex-col gap-2 px-3">
+      <h3 id={headingId} className="text-caps text-text-muted">
+        {copy.dangerZone}
+      </h3>
+      <div className="flex flex-wrap items-center gap-2">
+        <Button variant="secondary" size="sm" onClick={onRemove}>
+          {copy.removeFromComputer}
+        </Button>
+        {canDelete ? (
+          <Button
+            variant="destructive"
+            size="sm"
+            disabled={!deleteSupported}
+            aria-describedby={deleteSupported ? undefined : reasonId}
+            onClick={onDelete}
+          >
+            {copy.deleteWorkspace}
+          </Button>
+        ) : null}
+      </div>
+      {canDelete && !deleteSupported ? (
+        <p id={reasonId} className="text-supporting text-text-muted">
+          {copy.deleteUnsupported(view.server)}
+        </p>
+      ) : null}
+    </section>
+  );
+}
+
+/** A context document as `workspace.context.get` answers it, or null for none or a bad shape. */
+function contextFrom(value: unknown): CrewWorkspaceContext | null {
+  if (typeof value !== 'object' || value === null) return null;
+  const context = (value as { context?: unknown }).context;
+  if (typeof context !== 'object' || context === null) return null;
+  const record = context as Record<string, unknown>;
+  const revision = record.revision;
+  if (typeof record.text !== 'string' || typeof revision !== 'number') return null;
+  if (!Number.isSafeInteger(revision) || revision < 0) return null;
+  return {
+    text: record.text,
+    revision,
+    updated_by: typeof record.updated_by === 'string' ? record.updated_by : null,
+    updated_at: typeof record.updated_at === 'number' ? record.updated_at : null,
+  };
+}
+
+/** How many bytes `text` takes as UTF-8, which is what the broker's 64 KiB limit counts. */
+function utf8Bytes(text: string): number {
+  return new TextEncoder().encode(text).length;
+}
+
+/** When a revision was saved, in the person's own locale. */
+function savedWhen(unixSeconds: number | null | undefined): string | null {
+  if (typeof unixSeconds !== 'number' || !Number.isFinite(unixSeconds) || unixSeconds <= 0)
+    return null;
+  return new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' }).format(
+    new Date(unixSeconds * 1000)
+  );
+}
+
+/**
+ * The Context tab (OW-8): the workspace's one Markdown document about itself and its server, which
+ * every member's agent reads as reference information that authorizes nothing.
+ *
+ * - Anyone edits it in an open workspace, only the host in a managed one (`mayEditContext`); for
+ *   everyone else it is read-only, and says who may change it.
+ * - Each save names the revision it was written over (`expected_revision`). When someone saved in
+ *   between, the broker answers `revision_conflict`: the person's own words stay in the editor,
+ *   the newer version is read (`workspace.context.get`), and they choose — save again to replace
+ *   it on purpose, or use theirs. Nothing is merged or lost by itself.
+ * - Draft from server asks the daemon for a draft from the server's fixed probe over this
+ *   connection (`POST …/context/draft`) and puts it in the editor, unsaved. It is offered while the
+ *   editor holds nothing unsaved, so a draft never replaces words the person typed.
+ * - A newer revision arriving while nothing is unsaved is taken as it is.
+ *
+ * Saving goes through `request`, not `mutate`, so the dialog stays open.
+ */
+function ContextTab({ view }: { view: DialogView }) {
+  const { crew, dir, snapshot, server, workspace } = view;
+  const fieldId = React.useId();
+  const editable = mayEditContext(snapshot, {
+    capabilities: crew.capabilities,
+    viewerIsHost: dir.viewerIsHost,
+  });
+  const latest = snapshot?.context ?? null;
+  const [base, setBase] = React.useState<CrewWorkspaceContext | null>(latest);
+  const [text, setText] = React.useState(latest?.text ?? '');
+  const [conflict, setConflict] = React.useState<CrewWorkspaceContext | null>(null);
+  const [notice, setNotice] = React.useState<'drafted' | 'saved' | null>(null);
+  const saveKey = 'mutate:workspace.context.set';
+  const draftKey = 'context.draft';
+  const dirty = text !== (base?.text ?? '');
+  const tooLarge = utf8Bytes(text) > CONTEXT_MAX_BYTES;
+  const saving = crew.isPending(saveKey);
+  const drafting = crew.isPending(draftKey);
+  const verified = crew.snapshot !== null && crew.observedPrivacy !== null;
+
+  // Someone else's save, seen in the next view: taken as it is while nothing here is unsaved.
+  const editing = React.useRef({ dirty, conflict, base });
+  editing.current = { dirty, conflict, base };
+  React.useEffect(() => {
+    const now = editing.current;
+    if (!latest || latest.revision === now.base?.revision || now.dirty || now.conflict) return;
+    setBase(latest);
+    setText(latest.text);
+  }, [latest]);
+
+  const save = () => {
+    if (tooLarge || !dirty) return;
+    const written = text;
+    void crew.act(SOURCE, saveKey, async () => {
+      let answer: unknown;
+      try {
+        answer = await crew.request(
+          'workspace.context.set',
+          { text: written, expected_revision: base?.revision ?? 0 },
+          { mutation: true }
+        );
+      } catch (failure) {
+        if (!(failure instanceof CrewHttpError) || failure.brokerCode !== 'revision_conflict')
+          throw failure;
+        const newer = contextFrom(await crew.request('workspace.context.get', {}));
+        if (!newer) throw failure;
+        setBase(newer);
+        setConflict(newer);
+        setNotice(null);
+        return;
+      }
+      const result = (answer ?? {}) as { revision?: unknown; updated_at?: unknown };
+      setBase({
+        text: written,
+        revision: typeof result.revision === 'number' ? result.revision : (base?.revision ?? 0) + 1,
+        updated_by: dir.me?.id ?? null,
+        updated_at: typeof result.updated_at === 'number' ? result.updated_at : null,
+      });
+      setConflict(null);
+      setNotice('saved');
+      await crew.refresh();
+    });
+  };
+
+  const draft = () => {
+    const request = crew.draftWorkspaceContext;
+    if (!request || !crew.connectionId) return;
+    void crew.act(SOURCE, draftKey, async () => {
+      const answer = await request(crew.connectionId);
+      if (typeof answer?.draft !== 'string') return;
+      setText(answer.draft);
+      setNotice('drafted');
+    });
+  };
+
+  const shown = conflict ?? base;
+  const who = shown?.updated_by ? personLabel(shown.updated_by, 'inline', dir) : null;
+  const meta = shown ? contextCopy.saved(shown.revision, who, savedWhen(shown.updated_at)) : null;
+  const helpId = `${fieldId}-help`;
+
+  if (isChecking(view))
+    return (
+      <p className="px-3 py-2.5 text-supporting text-text-muted" data-crew-settings-checking="">
+        {copy.checking}
+      </p>
+    );
+
+  return (
+    <div className="flex flex-col gap-2 px-3 py-1" data-crew-settings-context="">
+      <label htmlFor={fieldId} className="text-label text-text-default">
+        {contextCopy.label}
+      </label>
+      <Textarea
+        id={fieldId}
+        rows={10}
+        className="font-mono"
+        readOnly={!editable}
+        spellCheck={false}
+        placeholder={editable ? contextCopy.placeholder : contextCopy.empty}
+        aria-describedby={helpId}
+        aria-invalid={tooLarge || undefined}
+        value={text}
+        onChange={(event) => {
+          setText(event.target.value);
+          setNotice(null);
+        }}
+      />
+      <div id={helpId} className="flex flex-col gap-1 text-supporting text-text-muted">
+        {tooLarge ? <span className="text-text-danger">{contextCopy.tooLarge}</span> : null}
+        {meta ? <span data-crew-context-revision="">{meta}</span> : null}
+        <span>{contextCopy.help(workspace)}</span>
+        {!editable ? (
+          <span>
+            {contextCopy.hostOnly(dir.host ? personLabel(dir.host, 'authority', dir) : null)}
+          </span>
+        ) : null}
+      </div>
+      {conflict ? (
+        <Note
+          tone="warning"
+          role="alert"
+          icon={AlertTriangle}
+          action={
+            <Button
+              variant="secondary"
+              size="sm"
+              onClick={() => {
+                setText(conflict.text);
+                setConflict(null);
+              }}
+            >
+              {contextCopy.useTheirs}
+            </Button>
+          }
+        >
+          <p>{contextCopy.conflict(who)}</p>
+        </Note>
+      ) : null}
+      {notice ? (
+        <p role="status" className="text-supporting text-text-muted">
+          {notice === 'saved' ? contextCopy.savedNotice : contextCopy.drafted(server)}
+        </p>
+      ) : null}
+      {editable ? (
+        <div className="biorouter-settings-control-strip flex flex-wrap gap-2">
+          <Button size="sm" disabled={!verified || !dirty || tooLarge || saving} onClick={save}>
+            {saving ? contextCopy.saving : contextCopy.save}
+          </Button>
+          {dirty ? (
+            <Button
+              variant="ghost"
+              size="sm"
+              disabled={saving}
+              onClick={() => {
+                setText(base?.text ?? '');
+                setConflict(null);
+                setNotice(null);
+              }}
+            >
+              {contextCopy.discard}
+            </Button>
+          ) : crew.draftWorkspaceContext ? (
+            <Button variant="secondary" size="sm" disabled={drafting} onClick={draft}>
+              {drafting ? contextCopy.drafting : contextCopy.draft}
+            </Button>
+          ) : null}
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -407,7 +768,10 @@ function PeopleTab({
 }) {
   const { crew, dir, snapshot, workspace } = view;
   const isHost = dir.viewerIsHost;
-  const waiting = isHost ? (snapshot?.pending_joins ?? []) : [];
+  // The host invites and lets people in; in an open workspace every member does (OW-2). Only the
+  // host removes anyone from the workspace, either way.
+  const mayInvite = isHost || isOpenWorkspace(snapshot);
+  const waiting = mayInvite ? (snapshot?.pending_joins ?? []) : [];
   const people = React.useMemo(() => peopleInOrder(dir.people), [dir.people]);
   const others = people.filter((person) => !person.isYou);
   // Who is online, from the verified view only: a kept view is not now (M18).
@@ -427,7 +791,7 @@ function PeopleTab({
       </div>
     );
 
-  const invite = isHost ? (
+  const invite = mayInvite ? (
     <Button
       variant="secondary"
       size="sm"
@@ -465,7 +829,7 @@ function PeopleTab({
           {copy.noMembers(workspace)}
         </Note>
       ) : null}
-      {isHost ? null : (
+      {mayInvite ? null : (
         <p className="text-supporting text-text-muted mt-2">
           {copy.onlyHostInvites(dir.host ? personLabel(dir.host, 'authority', dir) : null)}
         </p>

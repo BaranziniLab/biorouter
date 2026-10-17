@@ -65,6 +65,25 @@ export function isNotSetUpFailure(kind: ConnectFailureKind | undefined): boolean
  */
 export const MEMBERSHIP_ENDED_CODE = 'crew_membership_ended';
 
+/**
+ * The daemon's code for a connection whose workspace the host deleted (OW-5): its bridge found the
+ * deletion's tombstone, or the broker answered `workspace_deleted` in the moments before it exited.
+ */
+export const WORKSPACE_DELETED_CONNECT_CODE = 'crew_workspace_deleted';
+
+/**
+ * Whether the host deleted this connection's workspace, as the saved record says: the view's own
+ * `workspace_deleted`, or its last failure's code. Only removal from this computer is left then.
+ */
+export function isWorkspaceDeleted(
+  connection: { last_error_code?: string | null; workspace_deleted?: boolean } | null | undefined
+): boolean {
+  return (
+    connection?.workspace_deleted === true ||
+    connection?.last_error_code === WORKSPACE_DELETED_CONNECT_CODE
+  );
+}
+
 /** Whether the saved connection's last answer was that its membership ended. */
 export function isMembershipEnded(
   connection: { last_error_code?: string | null } | null | undefined
@@ -77,7 +96,11 @@ export type ArrivalConnectDecision = 'connect' | 'wait' | 'skip';
 
 export interface ArrivalConnectInput {
   /** The saved record of the connection the request names; null when there is none. */
-  connection: { status: string; last_error_code?: string | null } | null;
+  connection: {
+    status: string;
+    last_error_code?: string | null;
+    workspace_deleted?: boolean;
+  } | null;
   /** The classified failure of the most recent connect or sign-in for that connection. */
   lastConnectFailure: { kind: ConnectFailureKind } | null;
   /** A connect for it is already running. */
@@ -101,6 +124,8 @@ export function arrivalConnectDecision(input: ArrivalConnectInput): ArrivalConne
   const failure = lastConnectFailure?.kind;
   if (
     isMembershipEnded(connection) ||
+    // Its host deleted the workspace (OW-5): there is nothing left to connect to.
+    isWorkspaceDeleted(connection) ||
     isTrustFailure(failure) ||
     failure === 'auth_required' ||
     // A refused key is refused again until the person changes the login or the key.
