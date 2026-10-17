@@ -249,6 +249,8 @@ export interface ConnectionSettingsDialogProps {
  * - A real `<form>` with a `type="submit"` button and no `noValidate`, so the browser's own
  *   validation refuses an incomplete connection before any request (C8). Institution is required
  *   exactly when the connection is Private, and survives toggling the mode.
+ * - "What can your agent do on {server}?" (OW-6) is the person's choice of Off, In a folder or
+ *   As me on the server, with the folder the level needs ({@link AgentAccessFields}).
  * - Advanced holds the optional fields and opens by itself when the record already uses one; a
  *   submit that would fail on a hidden field opens it and focuses that field.
  * - Saving a Private connection as Public first asks for the workspace's name

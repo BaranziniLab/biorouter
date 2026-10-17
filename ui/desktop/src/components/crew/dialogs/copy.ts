@@ -37,7 +37,6 @@ export const connectionSettingsCopy = {
   summarySshDefaults: 'your SSH settings',
   summaryIdentity: 'identity file',
   summaryJump: (host: string) => `via ${host}`,
-  summaryFolder: (path: string) => `folder ${path}`,
   port: 'Port',
   identityFile: 'Identity file',
   /**
@@ -121,7 +120,6 @@ export const connectionSettingsCopy = {
   /** The host's extra sentence: the broker's own files live in this account. */
   fullWarningHost: (workspace: string) =>
     `You host ${workspace} in this account, so it can also read everything ${workspace} keeps on the server, including channels you aren’t in.`,
-  remoteRootNeeded: 'Choose a folder on the server for your agent.',
   portRange: 'Use a port from 1 to 65535.',
   /** Its own disclosure, closed until opened, whatever Advanced holds (QA T-33). */
   workspaceDetails: 'Workspace details',
