@@ -322,7 +322,11 @@ async fn redirect_to_slash(Path(id): Path<String>) -> Response {
     if validate_artifact_id(&id).is_err() {
         return (StatusCode::BAD_REQUEST, "invalid app id").into_response();
     }
-    Redirect::temporary(&format!("/apps/{id}/")).into_response()
+    // Relative, so it stays under a reverse proxy's path prefix, which the
+    // daemon never sees (issue #402): `/apps/x` resolves `./x/` to `/apps/x/`,
+    // and `/<prefix>/apps/x` to `/<prefix>/apps/x/`. The id is letters, digits,
+    // `-` and `_` only, so it cannot turn the reference into anything else.
+    Redirect::temporary(&format!("./{id}/")).into_response()
 }
 
 /// The origin a browser on this machine reaches the daemon's own listener at,
@@ -9041,7 +9045,7 @@ mod tests {
                 .headers()
                 .get(header::LOCATION)
                 .and_then(|value| value.to_str().ok()),
-            Some("/apps/safe-app_2/")
+            Some("./safe-app_2/")
         );
     }
 
