@@ -568,10 +568,24 @@ impl std::io::Write for PrivateProviderLogCapture {
     }
 }
 
+/// The `<info-msg>` block the agent adds to every request carries the clock to
+/// the minute, so two attempts a second apart can differ only there.
+fn without_per_request_context(text: &str) -> String {
+    use biorouter::agents::extension_manager::{MOIM_CLOSE_TAG as CLOSE, MOIM_OPEN_TAG as OPEN};
+    text.split_once(OPEN)
+        .and_then(|(before, rest)| {
+            rest.split_once(CLOSE)
+                .map(|(_, after)| format!("{before}{after}"))
+        })
+        .unwrap_or_else(|| text.to_string())
+}
+
 struct PrivateErrorProvider {
     calls: AtomicUsize,
     recover: bool,
     sentinel: &'static str,
+    /// The agent-visible text of every request, in call order.
+    sent: Mutex<Vec<Vec<String>>>,
 }
 
 #[async_trait]
@@ -579,9 +593,22 @@ impl Provider for PrivateErrorProvider {
     async fn complete(
         &self,
         _system_prompt: &str,
-        _messages: &[Message],
+        messages: &[Message],
         _tools: &[Tool],
     ) -> Result<(Message, ProviderUsage), ProviderError> {
+        self.sent.lock().unwrap().push(
+            messages
+                .iter()
+                .filter(|message| message.is_agent_visible())
+                .map(|message| {
+                    format!(
+                        "{:?}: {}",
+                        message.role,
+                        without_per_request_context(&message.as_concat_text())
+                    )
+                })
+                .collect(),
+        );
         if self.calls.fetch_add(1, Ordering::SeqCst) == 0 {
             let (status, message) = if self.recover {
                 (
@@ -755,6 +782,7 @@ async fn private_provider_error_logging_invalid_request_stops_without_diagnostic
         calls: AtomicUsize::new(0),
         recover: false,
         sentinel: SENTINEL,
+        sent: Mutex::default(),
     });
     assert_eq!(provider.tier(), ProviderTier::Private);
     let (observation, logs) = observe_private_provider_error(provider.clone()).await;
@@ -798,11 +826,24 @@ async fn private_provider_error_logging_retry_keeps_details_out_of_diagnostics()
         calls: AtomicUsize::new(0),
         recover: true,
         sentinel: SENTINEL,
+        sent: Mutex::default(),
     });
     assert_eq!(provider.tier(), ProviderTier::Private);
     let (observation, logs) = observe_private_provider_error(provider.clone()).await;
 
     assert_eq!(provider.calls.load(Ordering::SeqCst), 2);
+    // Nothing reached the conversation before the failure, so the retry is the
+    // same request with no note: a note after the user's message used to be
+    // what the model answered, instead of the user (measured on Gemma 4 E4B).
+    let sent = provider.sent.lock().unwrap().clone();
+    assert_eq!(sent.len(), 2);
+    assert_eq!(sent[0], sent[1], "the retry must re-send the same request");
+    assert!(
+        sent[1]
+            .iter()
+            .all(|row| !row.contains("biorouter-loop-guard")),
+        "{sent:?}"
+    );
     assert_eq!(observation.history_replacements, 0);
     assert_eq!(observation.tool_messages, 0);
     assert!(observation.aborts.is_empty());
