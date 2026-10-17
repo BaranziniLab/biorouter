@@ -3,6 +3,7 @@ import { ModalShellDefaultsContext, type ModalShellDefaults } from '../../ModalS
 import { useCrew } from '../state/CrewControllerContext';
 import type { DialogIntent, DialogKind } from '../state/types';
 import { AddPeopleDialog } from './AddPeopleDialog';
+import { BrowseChannelsDialog } from './BrowseChannelsDialog';
 import { CrewConfirmation } from './confirmations';
 import { ConnectionSettingsDialog } from './ConnectionSettingsDialog';
 import { CreateChannelDialog } from './CreateChannelDialog';
@@ -34,6 +35,7 @@ export const HOSTED_DIALOG_KINDS: readonly DialogKind[] = [
   'edit-profile',
   'keys',
   'share-path',
+  'browse-channels',
   'confirm',
 ];
 
@@ -162,6 +164,8 @@ function HostedDialog({ intent, agentAccess }: { intent: DialogIntent; agentAcce
       return <KeysDialog key={key} onClose={closeDialog} />;
     case 'share-path':
       return <SharePathDialog key={key} onClose={closeDialog} />;
+    case 'browse-channels':
+      return <BrowseChannelsDialog key={key} teamId={intent.teamId} onClose={closeDialog} />;
     case 'confirm':
       return <CrewConfirmation key={key} confirm={intent.confirm} onClose={closeDialog} />;
     case 'join':

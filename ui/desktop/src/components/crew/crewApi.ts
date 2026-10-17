@@ -25,7 +25,61 @@ export type CrewConnectionStatus =
  */
 export type CrewConnection = Loosen<Api.CrewConnectionView, 'server_label'> & {
   status: CrewConnectionStatus;
+} & CrewConnectionAccess;
+
+/** What a connection's agents may do on the server (design OW-6); "off" is no work folder. */
+export type CrewRemoteAccess = 'folder' | 'full';
+
+/**
+ * What the member's own bridge says it can do (`bridge.hello`, OW-6), on the connection view. Null
+ * before the first connect, and absent from a daemon before the contract.
+ */
+export interface CrewServerAccess {
+  full_access_available: boolean;
+  confined_execution_available: boolean;
+  bridge_version?: string | null;
+  landlock_abi?: number | null;
+  /** The server account the bridge runs as, and its home: the full-access folder's default. */
+  user?: string | null;
+  home?: string | null;
+}
+
+/**
+ * The connection view's fields of the open-workspaces contract (OW-5, OW-6), typed here until the
+ * generated client declares them. Each is optional: a daemon before the contract sends none. A
+ * type, not an interface, so a saved connection still reads as a plain record (an interface has no
+ * implicit index signature).
+ */
+export type CrewConnectionAccess = {
+  remote_access?: CrewRemoteAccess;
+  server_access?: CrewServerAccess | null;
+  /** The host deleted the workspace (a `workspace_deleted` answer); only removal is left. */
+  workspace_deleted?: boolean;
 };
+
+/**
+ * A route of the open-workspaces contract (`docs/crew/design/open-workspaces-and-automatic-setup.md`)
+ * that the generated client does not declare yet, named the way a generated `…Data` type names its
+ * route. Once `npm run generate-api` declares one, its generated type replaces this line.
+ */
+interface PendingCrewRoute<Url extends string> {
+  url: Url;
+}
+
+/** `POST …/workspace/delete` (OW-5): the workspace is deleted on its server and removed here. */
+export interface CrewWorkspaceDeleted {
+  deleted: boolean;
+  workspace_id?: string;
+  /** The saved connections to that workspace the daemon removed from this computer. */
+  removed_connections?: string[];
+}
+
+/** `POST …/context/draft` (OW-8): a context document drawn from the server's fixed probe. */
+export interface CrewContextDraft {
+  draft: string;
+  /** The probe's facts the draft was written from. Display only; never sent anywhere. */
+  facts?: unknown;
+}
 
 /** A code the daemon's Crew routes answer, as its OpenAPI spec declares them. */
 export type CrewErrorCode = Api.CrewErrorCode;
@@ -151,7 +205,18 @@ export interface Snapshot {
     host_principal_id?: string;
     /** The workspace slug (S2a); absent or null for a workspace created before names. */
     name?: string | null;
+    /**
+     * Who manages teams and channels (OW-1): `open`, every member; `managed`, owners and the host.
+     * A broker before `open_governance_v1` omits it, which means `managed`.
+     */
+    governance?: 'open' | 'managed';
   };
+  /** The workspace's context document (OW-8); absent until first set, or from an older broker. */
+  context?: CrewWorkspaceContext | null;
+  /** An open workspace's teams the viewer is not in (OW-2), each joinable with `team.join`. */
+  joinable_teams?: CrewJoinable[];
+  /** An open workspace's channels, in the viewer's teams, the viewer is not in (`channel.join`). */
+  joinable_channels?: CrewJoinable[];
   actor: CrewActor;
   principals: Principal[];
   /** Inactive principals referenced by the viewer's visible objects (S1a). */
@@ -176,6 +241,26 @@ export interface Snapshot {
    * from an older broker, which lists everything.
    */
   totals?: CrewSnapshotTotals;
+}
+/**
+ * The workspace's context document (OW-8): Markdown the members write about the server, which every
+ * member's agent reads as reference information. `updated_by` is a principal ID; `updated_at` is
+ * Unix seconds. `revision` is what a save names as `expected_revision`.
+ */
+export interface CrewWorkspaceContext {
+  text: string;
+  revision: number;
+  updated_by?: string | null;
+  updated_at?: number | null;
+}
+/** A team or channel an open workspace's member may join (OW-2). Names are the broker's own. */
+export interface CrewJoinable extends CrewNameFlags {
+  id: string;
+  /** A channel's team; absent on a team. */
+  team_id?: string;
+  name: string;
+  classification?: 'public_safe' | 'restricted';
+  member_count?: number;
 }
 /** The snapshot's section counts; a count the broker did not send, or sent malformed, is absent. */
 export interface CrewSnapshotTotals {
@@ -403,7 +488,9 @@ interface CrewOperations {
     | Api.CrewResolveData
     | Api.CrewTransferStartData
     | Api.CrewTransferPauseData
-    | Api.CrewTransferResumeData;
+    | Api.CrewTransferResumeData
+    | PendingCrewRoute<'/crew/connections/{id}/workspace/delete'>
+    | PendingCrewRoute<'/crew/connections/{id}/context/draft'>;
   PATCH: Api.CrewUpdateConnectionData;
   DELETE: Api.CrewRemoveConnectionData | Api.CrewHostStartCancelData | Api.CrewTransferForgetData;
 }
@@ -642,9 +729,55 @@ function validatedTotals(value: unknown): CrewSnapshotTotals | undefined {
   return Object.keys(totals).length > 0 ? totals : undefined;
 }
 
+/**
+ * The context document, from the snapshot's own `context` or the workspace's (the contract allows
+ * either). `null` is the broker saying there is none yet; anything malformed is absent.
+ */
+function validatedContext(value: unknown): CrewWorkspaceContext | null | undefined {
+  if (value === null) return null;
+  if (!isRecord(value) || typeof value.text !== 'string') return undefined;
+  const revision = count(value.revision);
+  if (revision === undefined) return undefined;
+  const context: CrewWorkspaceContext = { text: value.text, revision };
+  if (nonEmptyText(value.updated_by)) context.updated_by = value.updated_by;
+  const at = count(value.updated_at);
+  if (at !== undefined) context.updated_at = at;
+  return context;
+}
+
+/** Joinable teams or channels, each with the id and name a row needs; the rest is display. */
+function validatedJoinables(value: unknown): CrewJoinable[] | undefined {
+  return recordsWith<CrewJoinable>(value, ['id', 'name'])?.map((item) => {
+    const joinable: CrewJoinable = { id: item.id, name: item.name };
+    if (nonEmptyText(item.team_id)) joinable.team_id = item.team_id;
+    if (typeof item.display_name === 'string') joinable.display_name = item.display_name;
+    if (typeof item.handle === 'string') joinable.handle = item.handle;
+    if (item.classification === 'public_safe' || item.classification === 'restricted')
+      joinable.classification = item.classification;
+    const members = count(item.member_count);
+    if (members !== undefined) joinable.member_count = members;
+    return joinable;
+  });
+}
+
 function stateWithValidatedProjections(frame: Record<string, unknown>): CrewObservation {
   const { labels, capabilities, ...state } = frame;
   const snapshot = { ...(frame.snapshot as Record<string, unknown>) };
+  // Governance decides which controls are offered, never what is allowed: only the two words the
+  // broker writes are kept, and anything else reads as `managed`.
+  if (isRecord(snapshot.workspace)) {
+    const workspace = { ...snapshot.workspace };
+    const { governance } = workspace;
+    if (governance !== 'open' && governance !== 'managed') delete workspace.governance;
+    assignOptional(
+      snapshot,
+      'context',
+      validatedContext('context' in snapshot ? snapshot.context : workspace.context)
+    );
+    snapshot.workspace = workspace;
+  }
+  assignOptional(snapshot, 'joinable_teams', validatedJoinables(snapshot.joinable_teams));
+  assignOptional(snapshot, 'joinable_channels', validatedJoinables(snapshot.joinable_channels));
   if (isRecord(snapshot.actor)) {
     const actor = { ...snapshot.actor };
     assignOptional(actor, 'devices', recordsWith<CrewDevice>(actor.devices, ['fingerprint']));

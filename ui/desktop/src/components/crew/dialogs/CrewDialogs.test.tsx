@@ -68,6 +68,7 @@ const EVERY_KIND: DialogIntent[] = [
   { kind: 'edit-profile' },
   { kind: 'keys' },
   { kind: 'share-path' },
+  { kind: 'browse-channels' },
   { kind: 'confirm', confirm: { action: 'archive-channel', channelId: 'channel-general' } },
 ];
 
@@ -376,6 +377,7 @@ describe('CrewDialogs', () => {
     expect([...HOSTED_DIALOG_KINDS].sort()).toEqual(
       [
         'add-people',
+        'browse-channels',
         'confirm',
         'connection-settings',
         'create-channel',

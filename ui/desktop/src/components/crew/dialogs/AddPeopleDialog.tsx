@@ -24,6 +24,7 @@ import { failureMessage } from '../state/observationFailure';
 import type { ErrorSource } from '../state/types';
 import { addPeopleCopy as copy, dialogErrorCopy } from './copy';
 import { DialogErrorNote } from './fields';
+import { isOpenWorkspace } from './governance';
 import {
   addPeopleCandidates,
   channelsSeenAfterTeamAdd,
@@ -158,10 +159,12 @@ export function AddPeopleDialog({ target, targetId, view, onClose }: AddPeopleDi
   );
 
   // The broker's rule, said before anyone is picked: adding directly, the owner (a team's creator)
-  // or the host; inviting, the owner only. Unknown ownership is left to the broker.
+  // or the host; inviting, the owner only; in an open workspace, any member of the team or channel
+  // either way (OW-2). Unknown ownership is left to the broker.
   const ownerId = target === 'team' ? team?.created_by : channel?.owner_id;
   const owner = ownerId ? dir.byId(ownerId) : null;
-  const mayAdd = !ownerId || ownerId === dir.me?.id || (directAdd && dir.viewerIsHost);
+  const open = isOpenWorkspace(snapshot);
+  const mayAdd = !ownerId || ownerId === dir.me?.id || open || (directAdd && dir.viewerIsHost);
   // A team's member list: for someone who may not add people to it (QA Q3-44), and for everyone
   // when the team menu's "Members of {team}…" asked for it, until they choose to add (QA Q4-35).
   const membersView = target === 'team' && (!mayAdd || (view === 'members' && !adding));
@@ -318,7 +321,9 @@ export function AddPeopleDialog({ target, targetId, view, onClose }: AddPeopleDi
       return { text: copy.allInWorkspace(workspace), action: inviteToWorkspace };
     }
     if (others.length === 0) {
-      const canAddToTeam = Boolean(team && (team.created_by === dir.me?.id || dir.viewerIsHost));
+      const canAddToTeam = Boolean(
+        team && (team.created_by === dir.me?.id || open || dir.viewerIsHost)
+      );
       return {
         text:
           !directAdd && pendingTeam.length > 0

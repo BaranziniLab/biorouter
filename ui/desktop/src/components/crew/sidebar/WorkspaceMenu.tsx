@@ -24,6 +24,7 @@ import { StatusDot, type StatusDotTone } from '../../ui/status-dot';
 import { connectErrorText } from '../channel/ConnectionBar';
 import type { CrewConnection } from '../crewApi';
 import { groupedFingerprint, useWorkspaceKeyFingerprint } from '../dialogs/fingerprint';
+import { isOpenWorkspace } from '../dialogs/governance';
 import { connectionNames, PersonName, personLabel } from '../identity';
 import { connectFailureHost, savedFailureKind } from '../state/connectFailure';
 import { useJoinContext } from '../onboarding/joinContext';
@@ -350,6 +351,15 @@ export function WorkspaceMenu({
         >
           {copy.createTeam}
         </DropdownMenuItem>
+        {/* An open workspace's teams and channels to join (OW-2); a managed one has none. */}
+        {isOpenWorkspace(crew.snapshot) && (
+          <DropdownMenuItem
+            disabled={!snapshotReady}
+            onSelect={() => crew.openDialog({ kind: 'browse-channels' })}
+          >
+            {copy.browse}
+          </DropdownMenuItem>
+        )}
       </DropdownMenuGroup>
       <DropdownMenuSeparator />
       <DropdownMenuGroup>

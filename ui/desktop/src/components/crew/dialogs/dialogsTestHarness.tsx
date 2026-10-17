@@ -93,6 +93,10 @@ export interface FakeCrewOptions {
   /** The broker's answer to `request`/`mutate`, by method. Throw to refuse. */
   request?: (method: string, params: Record<string, unknown>) => unknown;
   dialog?: DialogIntent | null;
+  /** What the broker's `hello` advertises. Absent: unknown, as an older daemon leaves it. */
+  capabilities?: readonly string[] | null;
+  /** The selected channel; `channel-general` when absent. */
+  channelId?: string;
 }
 
 export interface FakeCrew {
@@ -104,6 +108,8 @@ export interface FakeCrew {
   selectTeam: Mock;
   selectChannel: Mock;
   addReference: Mock;
+  deleteWorkspace: Mock;
+  draftWorkspaceContext: Mock;
   /** The controller the last render provided. */
   current(): CrewController;
 }
@@ -153,10 +159,13 @@ function FakeCrewProvider({
         : 'private'
       : null,
     labels: null,
-    teamId: 'team-1',
-    channelId: 'channel-general',
+    teamId:
+      snapshot?.channels.find((item) => item.id === (options.channelId ?? 'channel-general'))
+        ?.team_id ?? 'team-1',
+    channelId: options.channelId ?? 'channel-general',
     team: snapshot?.teams[0] ?? null,
     channel: snapshot?.channels[0] ?? null,
+    capabilities: options.capabilities,
     act: actions.act,
     error: actions.error,
     errorSlotFor: actions.errorSlotFor,
@@ -174,6 +183,8 @@ function FakeCrewProvider({
     },
     updateConnection: spies.updateConnection,
     removeConnection: spies.removeConnection,
+    deleteWorkspace: spies.deleteWorkspace,
+    draftWorkspaceContext: spies.draftWorkspaceContext,
     refresh: spies.refresh,
     cancelRun: spies.cancelRun,
     selectTeam: spies.selectTeam,
@@ -203,6 +214,11 @@ export function renderWithCrew(
     ),
     updateConnection: vi.fn(async (_id: string, body: object) => ({ ...connection, ...body })),
     removeConnection: vi.fn(async () => {}),
+    deleteWorkspace: vi.fn(async (_id: string, input: { workspace_id: string }) => ({
+      deleted: true,
+      workspace_id: input.workspace_id,
+    })),
+    draftWorkspaceContext: vi.fn(async () => ({ draft: '# Server\n', facts: {} })),
     refresh: vi.fn(async () => {}),
     cancelRun: vi.fn(async () => {}),
     selectTeam: vi.fn(),

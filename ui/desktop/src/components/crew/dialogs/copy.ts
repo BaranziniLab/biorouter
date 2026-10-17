@@ -83,14 +83,45 @@ export const connectionSettingsCopy = {
     `This connection is for ${typed}, but ${workspace} belongs to ${institution}. Use ${institution} here.`,
   institutionMismatchUnknown: (workspace: string) =>
     `This connection’s institution has to be the one ${workspace} belongs to, which can’t be changed.`,
-  remoteExecution: 'Let my agent run commands in this folder',
   /**
-   * Under the toggle (HPC-N1): a command there runs confined, with no network, no other processes
-   * and no user lookups, so an agent asked to submit a cluster job found out only by trying.
+   * What the connection's agents may do on the server (OW-6), the person's own choice for their
+   * own account: nothing, today's confined work folder, or commands as them. `server` is the
+   * server as the person names it.
+   */
+  access: (server: string) => `What can your agent do on ${server || 'the server'}?`,
+  accessOff: 'Off',
+  accessOffDetail: (server: string) =>
+    `It can’t use files or run commands on ${server || 'the server'}.`,
+  accessFolder: 'In a folder',
+  accessFolderDetail: 'It reads and writes files in one folder, and runs confined commands there.',
+  accessFull: 'As me on the server',
+  /** `user` is the server account, `@crew_alice`, or null. */
+  accessFullDetail: (user: string | null) =>
+    `It runs commands as ${user ?? 'you'}, with your files, network and programs.`,
+  /** Why As me on the server can't be chosen: the broker or this account's bridge predates it. */
+  accessFullUnavailable: (server: string) => `Update Crew on ${server || 'the server'} first.`,
+  /**
+   * Under In a folder (HPC-N1): a command there runs confined, with no network, no other
+   * processes and no user lookups, so an agent asked to submit a cluster job found out only by
+   * trying. Quoted whole by the manual (`check-crew-manual.mjs`, app-sentences).
    */
   remoteExecutionHelp:
     'Commands run with no network and can’t start other programs, so cluster tools such as sbatch won’t run there.',
-  remoteExecutionNeedsFolder: 'Set a remote work folder first.',
+  /** In a folder on a kernel that cannot confine a command (no Landlock ABI 3): files only. */
+  confinedUnavailable: (server: string) =>
+    `${server || 'This server'} can’t confine commands, so in a folder your agent only reads and writes files. To run commands there, choose As me on the server.`,
+  /** Under the folder while As me on the server is chosen: it is where commands start. */
+  fullFolderHelp: 'Commands start in this folder and can reach anything your account can.',
+  /**
+   * The one warning before full access (privacy-policy constraint 4.1): said in place, and Save is
+   * the person's consent. `user` is the account (`@crew_alice`), `server` the server's name.
+   */
+  fullWarning: (user: string, server: string) =>
+    `Your agent will run commands as ${user} on ${server || 'the server'}: it can read and change anything your account can, use the network, and start programs that keep running after access ends. Other people’s messages and files in channels it reads can try to steer it. Use a private model you trust.`,
+  /** The host's extra sentence: the broker's own files live in this account. */
+  fullWarningHost: (workspace: string) =>
+    `You host ${workspace} in this account, so it can also read everything ${workspace} keeps on the server, including channels you aren’t in.`,
+  remoteRootNeeded: 'Choose a folder on the server for your agent.',
   portRange: 'Use a port from 1 to 65535.',
   /** Its own disclosure, closed until opened, whatever Advanced holds (QA T-33). */
   workspaceDetails: 'Workspace details',
@@ -193,6 +224,92 @@ export const workspaceSettingsCopy = {
   checking: 'Checking…',
   /** People's whole tab in the same state: who is in, and who may invite, come from the view. */
   checkingPeople: (workspace: string) => `Checking who is in ${workspace}…`,
+  done: 'Done',
+  /**
+   * Who manages teams and channels (OW-1, OW-2): the host's choice, applied at once. Either way
+   * only the host removes people, changes privacy or deletes the workspace.
+   */
+  governance: {
+    label: 'Who can manage teams and channels',
+    open: 'Everyone can manage',
+    openDetail:
+      'Every member can rename, archive and delete teams and channels, add people to them and join any of them.',
+    managed: 'Owners manage',
+    managedDetail: 'A team’s creator and a channel’s owner change them, and nobody else.',
+    hostOnly: (workspace: string) =>
+      `Either way, only you remove people from ${workspace}, change its privacy or delete it.`,
+    /** The same, read-only, for a member: who manages, in a word. */
+    row: 'Who manages',
+    everyone: 'Everyone',
+    owners: 'Owners',
+  },
+  /** General's last section: removing the workspace here, and deleting it for everyone. */
+  dangerZone: 'Danger zone',
+  removeFromComputer: 'Remove from this computer…',
+  deleteWorkspace: 'Delete workspace…',
+  /** Why the host's Delete workspace… is disabled: the server's Crew predates deletion. */
+  deleteUnsupported: (server: string) =>
+    `Update Crew on ${server || 'the server'} to delete this workspace.`,
+} as const;
+
+/**
+ * The Context tab (OW-8): one Markdown document about the workspace and its server that every
+ * member's agent receives as reference information. Anyone edits it in an open workspace, only the
+ * host in a managed one; every save names the revision it replaces.
+ */
+export const contextCopy = {
+  tab: 'Context',
+  label: 'Context for agents',
+  /** Under the editor: what it is for, and what it never does. */
+  help: (workspace: string) =>
+    `Every member’s agent reads this about ${workspace} and its server: where data lives, how to run jobs. It’s reference only and never tells an agent to do anything.`,
+  placeholder: 'For example: where the shared data lives, and how jobs run on this server.',
+  empty: 'No context yet.',
+  /** `who` is `personLabel(…, 'inline')`; `when` is a date and time. */
+  saved: (revision: number, who: string | null, when: string | null) =>
+    [`Revision ${revision}`, who ? `saved by ${who}` : null, when]
+      .filter((part): part is string => Boolean(part))
+      .join(' · '),
+  save: 'Save context',
+  saving: 'Saving…',
+  savedNotice: 'Context saved.',
+  discard: 'Discard changes',
+  draft: 'Draft from server',
+  drafting: 'Drafting…',
+  /** After a draft: it is in the editor, unsaved. */
+  drafted: (server: string) =>
+    `Drafted from what ${server || 'the server'} reports. Review it, then save it.`,
+  /**
+   * `revision_conflict`: someone saved while this person edited. Their own words stay in the
+   * editor; saving again replaces the newer version on purpose, or they take it instead.
+   */
+  conflict: (who: string | null) =>
+    `${who ?? 'Someone'} saved a newer version while you were editing. Your text is still here: save again to replace theirs, or use their version.`,
+  useTheirs: 'Use their version',
+  tooLarge: 'The context can be at most 64 KB. Shorten it, then save.',
+  /** For whoever may not edit it: a managed workspace's members. */
+  hostOnly: (host: string | null) =>
+    host
+      ? `Only the host, ${host}, can change this context.`
+      : 'Only the host can change this context.',
+} as const;
+
+/** Browse channels (OW-2): an open workspace's teams and channels the person is not in yet. */
+export const browseCopy = {
+  title: 'Browse channels',
+  titleTeam: (team: string) => `Browse channels in ${team}`,
+  teams: 'Teams',
+  channels: 'Channels',
+  /** `team` is the team as typed; channels are `#name`. */
+  channelIn: (team: string) => `in ${team}`,
+  members: (count: number) => `${count} ${count === 1 ? 'member' : 'members'}`,
+  restricted: 'Restricted',
+  join: 'Join',
+  joinTeamLabel: (team: string) => `Join ${team}`,
+  joinChannelLabel: (channel: string) => `Join ${channel}`,
+  /** Joining a team brings its #general (`team.join`). */
+  teamDetail: 'Joining adds you to its #general.',
+  nothing: 'You’re in every team and channel you can join.',
   done: 'Done',
 } as const;
 
@@ -729,6 +846,44 @@ export const confirmCopy = {
     description: 'It stops working on this task. Anything it already did stays done.',
     confirm: 'Stop task',
     cancel: 'Keep running',
+  },
+  /**
+   * `channel.delete` (OW-4). "Removed from the workspace", never "erased": the broker's journal
+   * keeps the old records until the workspace itself is deleted (design, "Risks accepted").
+   * `channel` is `#name`. The first sentence is pinned.
+   */
+  deleteChannel: {
+    title: (channel: string) => `Delete ${channel}?`,
+    description: (channel: string) =>
+      `Removes ${channel}, its files and its messages from the workspace. Nobody can bring it back.`,
+    confirm: 'Delete channel',
+    toast: (channel: string) => `Deleted ${channel}.`,
+  },
+  /**
+   * `team.delete` (OW-4): every channel in the team goes with it, including channels the person
+   * deleting it is not in, which their own view does not list, so no count is promised here.
+   */
+  deleteTeam: {
+    title: (team: string) => `Delete ${team}?`,
+    description: (team: string) =>
+      `Removes ${team} and every channel in it, including channels you aren’t in, with their files and messages, from the workspace. Nobody can bring them back.`,
+    confirm: 'Delete team',
+    /** `channels` is how many the broker says went with it, when it says. */
+    toast: (team: string, channels: number | null) =>
+      channels === null
+        ? `Deleted ${team}.`
+        : `Deleted ${team} and its ${channels} ${channels === 1 ? 'channel' : 'channels'}.`,
+  },
+  /**
+   * `workspace.delete` (OW-5), the host's: Crew stops on the server and erases what the workspace
+   * keeps there, and the daemon removes it from this computer. Typed, with the workspace's name.
+   */
+  deleteWorkspace: {
+    title: (workspace: string) => `Delete ${workspace} for everyone?`,
+    description: (workspace: string, server: string) =>
+      `Crew stops on ${server || 'the server'} and deletes everything ${workspace} keeps there: its teams, channels, messages, files and members. It’s removed from this computer too, and members can only remove it from theirs. This can’t be undone.`,
+    confirm: 'Delete workspace',
+    toast: (workspace: string) => `Deleted ${workspace}.`,
   },
 } as const;
 

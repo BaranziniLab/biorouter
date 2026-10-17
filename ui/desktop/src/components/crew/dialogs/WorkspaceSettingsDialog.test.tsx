@@ -664,8 +664,9 @@ describe('WorkspaceSettingsDialog, one vocabulary (QA Q2-29, Q2-66, Q2-69)', () 
     const user = userEvent.setup();
     renderSettings({ tab: 'general', agentAccess: <AgentAccessFixture /> });
     const dialog = await screen.findByRole('dialog', { name: 'lab settings' });
+    // General's one label divides it: its everyday rows, then removing or deleting (OW-5).
     const expected: Record<string, string[]> = {
-      General: [],
+      General: [copy.dangerZone],
       People: [copy.members],
       Privacy: [],
       'Agent access': [],

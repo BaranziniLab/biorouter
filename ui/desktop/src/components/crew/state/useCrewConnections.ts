@@ -6,7 +6,7 @@ import {
   type MutableRefObject,
   type SetStateAction,
 } from 'react';
-import { crewHttp, type CrewConnection } from '../crewApi';
+import { crewHttp, type CrewConnection, type CrewWorkspaceDeleted } from '../crewApi';
 import { classifyConnectFailure } from './connectFailure';
 import { forgetConnectionFailedTasks } from './crewRunStart';
 import { forgetConnectionDrafts, forgetLastChannel, resetBetweenTests } from './draftStash';
@@ -22,7 +22,8 @@ import type {
 
 /**
  * The full connection body a privacy change PATCHes (L18: the daemon replaces the whole record,
- * so every field is sent, in this order).
+ * so every field is sent, in this order). Full agent access (OW-6) goes with it: a body without
+ * `remote_access` means folder, so leaving it out would quietly take that access away.
  */
 export function connectionUpdateBody(connection: CrewConnection): SaveConnectionInput {
   return {
@@ -40,6 +41,7 @@ export function connectionUpdateBody(connection: CrewConnection): SaveConnection
     remote_execution: connection.remote_execution,
     mode: connection.mode,
     institution_id: connection.institution_id ?? null,
+    ...(connection.remote_access === 'full' ? { remote_access: 'full' as const } : {}),
   };
 }
 
@@ -60,6 +62,10 @@ export interface CrewConnections {
   saveConnection(input: SaveConnectionInput): Promise<CrewConnection>;
   updateConnection(id: string, input: SaveConnectionInput): Promise<CrewConnection>;
   removeConnection(id: string): Promise<void>;
+  deleteWorkspace(
+    id: string,
+    input: { workspace_id: string; expected_name: string | null }
+  ): Promise<CrewWorkspaceDeleted>;
   prepareHostingDevice(): Promise<PreparedDevice>;
 }
 
@@ -154,6 +160,21 @@ export function useCrewConnections(generation: MutableRefObject<number>): CrewCo
     },
     [loadConnections]
   );
+  // The daemon removes this computer's connection itself once the broker accepted the delete
+  // (OW-5), so what is left here is what `removeConnection` forgets, and a fresh list.
+  const deleteWorkspace = useCallback(
+    async (id: string, input: { workspace_id: string; expected_name: string | null }) => {
+      const result = await crewHttp<CrewWorkspaceDeleted>(
+        `/connections/${encodeURIComponent(id)}/workspace/delete`,
+        'POST',
+        input
+      );
+      forgetConnectionMemory(id);
+      await loadConnections();
+      return result;
+    },
+    [loadConnections]
+  );
   const prepareHostingDevice = useCallback(
     () => crewHttp<PreparedDevice>('/devices/prepare', 'POST', {}),
     []
@@ -170,6 +191,7 @@ export function useCrewConnections(generation: MutableRefObject<number>): CrewCo
     saveConnection,
     updateConnection,
     removeConnection,
+    deleteWorkspace,
     prepareHostingDevice,
   };
 }
