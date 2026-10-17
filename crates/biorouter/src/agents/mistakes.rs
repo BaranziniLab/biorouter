@@ -150,16 +150,76 @@ impl MistakeConfig {
 /// What the reply loop should do about a provider error.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ProviderErrorAction {
-    /// The error is recoverable and the retry budget is not spent: put `notice`
-    /// in front of the model and take another swing at the turn.
+    /// The error is recoverable and the retry budget is not spent: take another
+    /// swing at the turn, with `notice` in front of the model when there is
+    /// one (see [`RetryPoint`] for when there is not).
     Recover {
-        notice: String,
+        notice: Option<String>,
         attempt: u32,
         limit: u32,
     },
     /// Fatal, or the retry budget is spent: end the turn with `notice`. The
     /// conversation is left intact, so the user can simply say "continue".
     Stop { notice: String },
+}
+
+/// Where the failed provider call stood, which decides what the model is told
+/// before the retry.
+///
+/// The note used to be the same everywhere: an agent-only user message carrying
+/// the error text and advice to "send a smaller or simpler step". As the newest
+/// message in the conversation it outweighed a short request. Measured on Gemma
+/// 4 E4B: the user sent "test", the first call hit a llama-server cache
+/// collision, and the retried reply was entirely about the failure ("The system
+/// seems to be restarting a turn due to a server context cache limit. I will
+/// wait for the next instruction"). The note is persisted, so every later turn
+/// read it too.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RetryPoint {
+    /// Nothing reached the conversation since the request was sent. The retry
+    /// re-sends exactly that request with no note, so the model answers what
+    /// it was asked. There is no step of the model's to make smaller here: the
+    /// request is the user's message and the history before it.
+    Resend,
+    /// The failed call followed tool results, partway through a task. A
+    /// request-shaped failure (an oversized result, a call the server could not
+    /// parse) can repeat on an identical re-send, so the model is told what
+    /// failed and that a smaller next step may avoid it.
+    AfterToolResults,
+    /// Part of the reply had already streamed, and it stays in the
+    /// conversation. A note is needed after it: the conversation cannot end on
+    /// the model's own unfinished turn, and the model has to know to continue
+    /// rather than start over.
+    AfterPartialReply,
+}
+
+/// Where a failed call stood. `conversation` is the conversation the call was
+/// built from, before the per-request `<info-msg>` block: that block is
+/// inserted as its own user row after trailing tool results, so the request as
+/// sent never ends on one. `added` is what this iteration produced before it
+/// failed.
+pub fn retry_point(
+    conversation: &[crate::conversation::message::Message],
+    added: &[crate::conversation::message::Message],
+) -> RetryPoint {
+    use crate::conversation::message::MessageContent;
+    if added.iter().any(|message| message.is_agent_visible()) {
+        return RetryPoint::AfterPartialReply;
+    }
+    let follows_tool_results = conversation
+        .iter()
+        .rev()
+        .find(|message| message.is_agent_visible())
+        .is_some_and(|last| {
+            last.content
+                .iter()
+                .any(|content| matches!(content, MessageContent::ToolResponse(_)))
+        });
+    if follows_tool_results {
+        RetryPoint::AfterToolResults
+    } else {
+        RetryPoint::Resend
+    }
 }
 
 /// Is this a provider error that a second attempt could plausibly survive?
@@ -301,6 +361,7 @@ impl MistakeTracker {
         &mut self,
         config: &MistakeConfig,
         error: &ProviderError,
+        point: RetryPoint,
     ) -> ProviderErrorAction {
         let spent = self.provider_errors;
         if !config.enabled || !is_recoverable(error) || spent >= config.provider_error_retries {
@@ -311,7 +372,12 @@ impl MistakeTracker {
 
         self.provider_errors = spent.saturating_add(1);
         ProviderErrorAction::Recover {
-            notice: recovery_notice(error, self.provider_errors, config.provider_error_retries),
+            notice: recovery_notice(
+                error,
+                point,
+                self.provider_errors,
+                config.provider_error_retries,
+            ),
             attempt: self.provider_errors,
             limit: config.provider_error_retries,
         }
@@ -411,17 +477,39 @@ fn quoted_list(tools: &[String]) -> String {
         .join(", ")
 }
 
-/// Model-visible hint injected before the retry. The model cannot fix a 502, but
-/// it *can* stop re-sending the request that provoked a 400, and it should know
-/// the previous attempt never landed.
-fn recovery_notice(error: &ProviderError, attempt: u32, limit: u32) -> String {
-    format!(
-        "The previous model call did not complete: {error}. Nothing you did in that step \
-         took effect, and no tool ran. Biorouter is retrying it ({attempt}/{limit}). If the \
-         failure looks like something about the request itself (an oversized or malformed \
-         payload, an unsupported argument), send a smaller or simpler step this time rather \
-         than repeating the same one; otherwise just carry on where you left off."
-    )
+/// Said in every note: it is not the user speaking, and the failure is not the
+/// subject. The user already has the transient notice the loop showed them.
+const NOT_FROM_THE_USER: &str = "Do not mention the failure or apologise for it; the user \
+     has already been told. This note is not from the user and needs no reply of its own.";
+
+/// Model-visible note injected before the retry, or none (see [`RetryPoint`]).
+///
+/// Only the mid-task note carries the error: there the model can act on it by
+/// choosing a different next step. Elsewhere the error text only invited a
+/// reply about the error.
+fn recovery_notice(
+    error: &ProviderError,
+    point: RetryPoint,
+    attempt: u32,
+    limit: u32,
+) -> Option<String> {
+    match point {
+        RetryPoint::Resend => None,
+        RetryPoint::AfterPartialReply => Some(format!(
+            "Your reply above was cut off partway by a model server or connection failure, and \
+             Biorouter is retrying ({attempt}/{limit}). No tool ran. Continue the reply from \
+             exactly where it stopped, without repeating what is already written. \
+             {NOT_FROM_THE_USER}"
+        )),
+        RetryPoint::AfterToolResults => Some(format!(
+            "The model call after the tool results above did not complete: {error}. No tool ran \
+             in it, and Biorouter is retrying ({attempt}/{limit}). If the failure looks like \
+             something about the request itself (an oversized or malformed payload, an \
+             unsupported argument), take a smaller or simpler next step than the one you were \
+             about to take; otherwise continue the user's task as you would have. \
+             {NOT_FROM_THE_USER}"
+        )),
+    }
 }
 
 /// The user-facing message when the turn ends on a provider error.
@@ -709,20 +797,20 @@ mod tests {
         let mut tracker = MistakeTracker::default();
         let error = ProviderError::ServerError("502 bad gateway".to_string());
 
-        let first = tracker.observe_provider_error(&config, &error);
+        let first = tracker.observe_provider_error(&config, &error, RetryPoint::AfterToolResults);
         let ProviderErrorAction::Recover {
-            notice,
+            notice: Some(notice),
             attempt,
             limit,
         } = first
         else {
-            panic!("a 502 is recoverable: {first:?}");
+            panic!("a 502 is recoverable, and mid-task it gets a note: {first:?}");
         };
         assert_eq!((attempt, limit), (1, 1));
         assert!(notice.contains("did not complete"), "{notice}");
-        assert!(notice.contains("no tool ran"), "{notice}");
+        assert!(notice.contains("No tool ran"), "{notice}");
 
-        let second = tracker.observe_provider_error(&config, &error);
+        let second = tracker.observe_provider_error(&config, &error, RetryPoint::Resend);
         let ProviderErrorAction::Stop { notice } = second else {
             panic!("the retry budget is spent: {second:?}");
         };
@@ -731,6 +819,125 @@ mod tests {
             notice.contains("already retried it once"),
             "the user is told Biorouter already tried: {notice}"
         );
+    }
+
+    /// Measured on Gemma 4 E4B: with the old note after "test", the retried
+    /// reply was entirely about the failure. Nothing had reached the
+    /// conversation, so the retry is now the same request with no note.
+    #[test]
+    fn a_retry_with_nothing_new_in_the_conversation_carries_no_note() {
+        let config = MistakeConfig::default();
+        let mut tracker = MistakeTracker::default();
+        let error = ProviderError::ServerError("Context size has been exceeded.".to_string());
+
+        assert_eq!(
+            tracker.observe_provider_error(&config, &error, RetryPoint::Resend),
+            ProviderErrorAction::Recover {
+                notice: None,
+                attempt: 1,
+                limit: 1,
+            }
+        );
+    }
+
+    /// The part of the reply that streamed stays, so the model is told to
+    /// continue it, and the error text, which only invited a reply about the
+    /// error, is left out.
+    #[test]
+    fn a_cut_off_reply_is_continued_without_naming_the_error() {
+        let config = MistakeConfig::default();
+        let mut tracker = MistakeTracker::default();
+        let error = ProviderError::ServerError("SECRET_SERVER_TEXT".to_string());
+
+        let ProviderErrorAction::Recover {
+            notice: Some(notice),
+            ..
+        } = tracker.observe_provider_error(&config, &error, RetryPoint::AfterPartialReply)
+        else {
+            panic!("a cut-off reply needs a note after it");
+        };
+        assert!(notice.contains("Continue the reply"), "{notice}");
+        assert!(notice.contains("without repeating"), "{notice}");
+        assert!(!notice.contains("SECRET_SERVER_TEXT"), "{notice}");
+    }
+
+    /// Every note says it is not the user speaking and that the failure is not
+    /// the subject; only the mid-task one carries the error and the advice a
+    /// model can act on.
+    #[test]
+    fn every_note_tells_the_model_not_to_answer_it() {
+        let error = ProviderError::ServerError("SECRET_SERVER_TEXT".to_string());
+        for point in [RetryPoint::AfterPartialReply, RetryPoint::AfterToolResults] {
+            let notice = recovery_notice(&error, point, 1, 1).expect("a note");
+            assert!(notice.contains("Do not mention the failure"), "{notice}");
+            assert!(notice.contains("not from the user"), "{notice}");
+            assert_eq!(
+                notice.contains("SECRET_SERVER_TEXT"),
+                point == RetryPoint::AfterToolResults,
+                "{point:?}: {notice}"
+            );
+            assert_eq!(
+                notice.contains("smaller or simpler next step"),
+                point == RetryPoint::AfterToolResults,
+                "{point:?}: {notice}"
+            );
+        }
+        assert_eq!(recovery_notice(&error, RetryPoint::Resend, 1, 1), None);
+    }
+
+    #[test]
+    fn retry_point_reads_what_the_call_was_sent_and_what_it_produced() {
+        use crate::conversation::message::Message;
+
+        let asked = vec![Message::user().with_text("test")];
+        assert_eq!(retry_point(&asked, &[]), RetryPoint::Resend);
+
+        // An earlier note, or anything else the model alone sees, is not new.
+        let mut with_old_note = asked.clone();
+        with_old_note.push(Message::assistant().with_text("Hello."));
+        with_old_note.push(
+            Message::user()
+                .with_text("<biorouter-loop-guard>old</biorouter-loop-guard>")
+                .with_visibility(false, true),
+        );
+        assert_eq!(retry_point(&with_old_note, &[]), RetryPoint::Resend);
+
+        let mut mid_task = asked.clone();
+        mid_task.push(Message::assistant().with_tool_request(
+            "call-1",
+            Ok(rmcp::model::CallToolRequestParams {
+                task: None,
+                name: "shell".into(),
+                arguments: None,
+                meta: None,
+            }),
+        ));
+        mid_task.push(Message::user().with_tool_response(
+            "call-1",
+            Ok(CallToolResult::success(vec![Content::text("done")])),
+        ));
+        assert_eq!(retry_point(&mid_task, &[]), RetryPoint::AfterToolResults);
+
+        // A user-only row (shown to the person, never sent) is skipped.
+        let mut shown_only = mid_task.clone();
+        shown_only.push(
+            Message::assistant()
+                .with_text("Retrying")
+                .with_visibility(true, false),
+        );
+        assert_eq!(retry_point(&shown_only, &[]), RetryPoint::AfterToolResults);
+
+        let partial = vec![Message::assistant().with_text("No task has been")];
+        assert_eq!(retry_point(&asked, &partial), RetryPoint::AfterPartialReply);
+        assert_eq!(
+            retry_point(&mid_task, &partial),
+            RetryPoint::AfterPartialReply
+        );
+
+        let shown_only_partial = vec![Message::assistant()
+            .with_text("notice")
+            .with_visibility(true, false)];
+        assert_eq!(retry_point(&asked, &shown_only_partial), RetryPoint::Resend);
     }
 
     #[test]
@@ -750,7 +957,7 @@ mod tests {
                 retry_delay: None,
             },
         ] {
-            let action = tracker.observe_provider_error(&config, &error);
+            let action = tracker.observe_provider_error(&config, &error, RetryPoint::Resend);
             assert!(
                 matches!(action, ProviderErrorAction::Stop { .. }),
                 "{error} must not be retried, got {action:?}"
@@ -766,7 +973,7 @@ mod tests {
         let error = ProviderError::RequestFailed("connection reset".to_string());
 
         assert!(matches!(
-            tracker.observe_provider_error(&config, &error),
+            tracker.observe_provider_error(&config, &error, RetryPoint::Resend),
             ProviderErrorAction::Recover { .. }
         ));
         tracker.observe_provider_success();
@@ -774,7 +981,7 @@ mod tests {
 
         assert!(
             matches!(
-                tracker.observe_provider_error(&config, &error),
+                tracker.observe_provider_error(&config, &error, RetryPoint::Resend),
                 ProviderErrorAction::Recover { .. }
             ),
             "a later, unrelated blip gets its own chance"
@@ -790,7 +997,8 @@ mod tests {
         let mut tracker = MistakeTracker::default();
         let error = ProviderError::ServerError("502".to_string());
 
-        let ProviderErrorAction::Stop { notice } = tracker.observe_provider_error(&config, &error)
+        let ProviderErrorAction::Stop { notice } =
+            tracker.observe_provider_error(&config, &error, RetryPoint::Resend)
         else {
             panic!("retries are off");
         };
@@ -819,7 +1027,8 @@ mod tests {
                 .to_string(),
         );
 
-        let ProviderErrorAction::Stop { notice } = tracker.observe_provider_error(&config, &error)
+        let ProviderErrorAction::Stop { notice } =
+            tracker.observe_provider_error(&config, &error, RetryPoint::Resend)
         else {
             panic!("retries are off");
         };
@@ -847,7 +1056,8 @@ mod tests {
         );
         assert!(!is_recoverable(&error), "the fixture must be fatal");
 
-        let ProviderErrorAction::Stop { notice } = tracker.observe_provider_error(&config, &error)
+        let ProviderErrorAction::Stop { notice } =
+            tracker.observe_provider_error(&config, &error, RetryPoint::Resend)
         else {
             panic!("a fatal error ends the turn");
         };
@@ -878,7 +1088,8 @@ mod tests {
         let error = ProviderError::Authentication(
             "Authentication failed. Status: 401. Response: Invalid client id or secret".to_string(),
         );
-        let ProviderErrorAction::Stop { notice } = tracker.observe_provider_error(&config, &error)
+        let ProviderErrorAction::Stop { notice } =
+            tracker.observe_provider_error(&config, &error, RetryPoint::Resend)
         else {
             panic!("a refused key ends the turn");
         };
@@ -890,9 +1101,11 @@ mod tests {
         assert!(notice.contains("send your message again"), "{notice}");
         assert!(!notice.contains("Please retry"), "{notice}");
         // Every other fatal error keeps its own sentence.
-        let ProviderErrorAction::Stop { notice } = tracker
-            .observe_provider_error(&config, &ProviderError::RequestFailed("400".to_string()))
-        else {
+        let ProviderErrorAction::Stop { notice } = tracker.observe_provider_error(
+            &config,
+            &ProviderError::RequestFailed("400".to_string()),
+            RetryPoint::Resend,
+        ) else {
             panic!("fatal");
         };
         assert!(notice.contains("until its cause changes"), "{notice}");
@@ -911,7 +1124,7 @@ mod tests {
         // Burn the budget, then read the notice the exhausted retry produces.
         for _ in 0..=config.provider_error_retries {
             if let ProviderErrorAction::Stop { notice: text } =
-                tracker.observe_provider_error(&config, &error)
+                tracker.observe_provider_error(&config, &error, RetryPoint::Resend)
             {
                 notice = Some(text);
             }
