@@ -1944,8 +1944,8 @@ impl Broker {
         Ok(hello)
     }
     /// What `hello` advertises, in the order it advertises it (the v2 signature covers the
-    /// order).
-    fn capabilities() -> Vec<&'static str> {
+    /// order). `biorouter-crew --version --output-format json` reports the same list.
+    pub fn capabilities() -> Vec<&'static str> {
         #[allow(unused_mut)]
         let mut capabilities = vec![
             "human_chat",
@@ -1956,6 +1956,7 @@ impl Broker {
             "unique_names_v1",
             "direct_add_v1",
             "presence_v1",
+            "remote_access_v1",
         ];
         #[cfg(feature = "join-by-name")]
         capabilities.push("join_by_name_v1");
@@ -3068,8 +3069,11 @@ impl Broker {
             .remote_root
             .as_ref()
             .ok_or_else(|| anyhow!("forbidden: run has no remote path approval"))?;
+        // `access` decides which helper the owner's bridge runs; a bridge that finds none (an
+        // older broker) stays in folder mode. `owner_id` keys full-access jobs, which any run of
+        // the same owner may read, and `channel_id` is where a shared server file is uploaded.
         Ok(
-            json!({"root":root,"allow_execute":run.remote_execution,"public_provider":run.public_provider,"run_id":run.id,"policy_epoch":run.policy_epoch,"expires_at":run.expires_at}),
+            json!({"root":root,"allow_execute":run.remote_execution,"public_provider":run.public_provider,"run_id":run.id,"policy_epoch":run.policy_epoch,"expires_at":run.expires_at,"access":run.remote_access.as_str(),"owner_id":run.owner_id,"channel_id":run.channel_id}),
         )
     }
     fn read_context_manifest(&self, actor: &Actor, _req: &Request) -> Result<Value> {
@@ -4223,6 +4227,19 @@ impl Broker {
             !remote_execution || remote_root.is_some(),
             "invalid_params: execution requires remote root"
         );
+        let remote_access = match p.get("remote_access") {
+            None | Some(Value::Null) => RemoteAccess::Folder,
+            Some(value) => serde_json::from_value(value.clone()).map_err(|_| {
+                anyhow!("invalid_params: remote_access must be \"folder\" or \"full\".")
+            })?,
+        };
+        // Full access runs as the owner's whole account, so it needs everything a confined
+        // command needs: a work folder, the person's execution grant and a private model.
+        ensure!(
+            remote_access == RemoteAccess::Folder
+                || (remote_root.is_some() && remote_execution && !consent.public_provider),
+            "invalid_params: Full remote access needs a remote root, remote execution and a private provider."
+        );
         let protected_context =
             Self::is_protected_context(s, &sources, &consent.personal_mode, remote_root.as_deref());
         ensure!(
@@ -4244,6 +4261,7 @@ impl Broker {
             connection_institution_id: consent.connection_institution_id,
             remote_root,
             remote_execution,
+            remote_access,
             id: id(),
             owner_id: who.clone(),
             channel_id: channel.into(),
