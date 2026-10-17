@@ -12559,8 +12559,12 @@ impl Agent {
                             // context; a fatal one (auth, rate limit, unsupported) or a
                             // spent retry budget still stops, with the conversation
                             // preserved so the user can just say "continue".
+                            // The conversation, not `conversation_with_moim`: the
+                            // per-request `<info-msg>` block is inserted as its own
+                            // user row AFTER trailing tool results, so the request as
+                            // sent never ends on one.
                             let retry_point = crate::agents::mistakes::retry_point(
-                                conversation_with_moim.messages(),
+                                conversation.messages(),
                                 messages_to_add.messages(),
                             );
                             match mistakes.observe_provider_error(&mistake_config, provider_err, retry_point) {

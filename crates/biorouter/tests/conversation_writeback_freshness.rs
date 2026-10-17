@@ -333,7 +333,8 @@ impl Provider for RaceProvider {
 
         if self.server_error_on.contains(&n) {
             // Recoverable (see `mistakes::is_recoverable`), so BR-66 absorbs it
-            // and stores a model-only hint instead of ending the turn.
+            // instead of ending the turn, storing a model-only hint when the
+            // call followed tool results.
             return Err(ProviderError::ServerError("mock 503".to_string()));
         }
 
@@ -2185,21 +2186,24 @@ async fn a_reply_split_into_several_stored_rows_publishes_every_one_of_their_ids
 /// #59: a row the client is deliberately **not shown** must still be
 /// distinguishable from one it simply was not told about.
 ///
-/// BR-66 absorbs a recoverable provider error by storing its hint as a
-/// `with_visibility(false, true)` user message — model-visible plumbing that is
-/// never yielded as a `Message`. Before this it was invisible to the client in
-/// the strong sense: not drawn *and* not nameable, so `expectedMessageIds` could
-/// not include it and the guard refused the edit. It is now published with
-/// `user_visible: false` — named, and marked "draw nothing for this".
+/// BR-66 absorbs a recoverable provider error that follows tool results by
+/// storing its hint as a `with_visibility(false, true)` user message —
+/// model-visible plumbing that is never yielded as a `Message`. (A failure with
+/// nothing new in the conversation is re-sent with no hint at all, so the error
+/// here comes after a tool round: `mistakes::RetryPoint::AfterToolResults`.)
+/// Before this it was invisible to the client in the strong sense: not drawn
+/// *and* not nameable, so `expectedMessageIds` could not include it and the
+/// guard refused the edit. It is now published with `user_visible: false` —
+/// named, and marked "draw nothing for this".
 #[tokio::test(flavor = "multi_thread")]
 async fn a_row_the_user_is_never_shown_is_published_as_not_user_visible() {
-    let (h, provider) = harness(|p| p.server_error_on(0)).await;
+    let (h, provider) = harness(|p| p.tools_on(0).server_error_on(1)).await;
 
     let events = h.run_turn(USER_PROMPT).await.unwrap();
     assert_eq!(
         provider.main_call_count(),
-        2,
-        "the recoverable error must have been absorbed and the turn retried"
+        3,
+        "the tool round, then the recoverable error absorbed and the call retried"
     );
 
     // The hidden row exists on disk and was never streamed as a Message.
@@ -2678,13 +2682,20 @@ async fn no_turn_shape_names_a_row_before_it_hands_it_over() {
     let (with_tools, _p) = harness(|p| p.tools_on(0)).await;
     let tool_events = with_tools.run_turn(USER_PROMPT).await.unwrap();
 
-    let (recovered, _p) = harness(|p| p.server_error_on(0)).await;
+    let (resent, _p) = harness(|p| p.server_error_on(0)).await;
+    let resent_events = resent.run_turn(USER_PROMPT).await.unwrap();
+
+    let (recovered, _p) = harness(|p| p.tools_on(0).server_error_on(1)).await;
     let recovered_events = recovered.run_turn(USER_PROMPT).await.unwrap();
 
     for (shape, events) in [
         ("an ordinary reply", plain_events),
         ("a reply split across several stored rows", tool_events),
-        ("a recovered provider error", recovered_events),
+        ("a provider error retried by re-sending", resent_events),
+        (
+            "a provider error retried mid-task, with a hint",
+            recovered_events,
+        ),
     ] {
         let early = ids_named_before_their_own_message(&events);
         assert!(

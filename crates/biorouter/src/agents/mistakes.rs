@@ -193,8 +193,11 @@ pub enum RetryPoint {
     AfterPartialReply,
 }
 
-/// Where a failed call stood. `conversation` is what the call was sent;
-/// `added` is what this iteration produced before it failed.
+/// Where a failed call stood. `conversation` is the conversation the call was
+/// built from, before the per-request `<info-msg>` block: that block is
+/// inserted as its own user row after trailing tool results, so the request as
+/// sent never ends on one. `added` is what this iteration produced before it
+/// failed.
 pub fn retry_point(
     conversation: &[crate::conversation::message::Message],
     added: &[crate::conversation::message::Message],
