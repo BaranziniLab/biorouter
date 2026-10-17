@@ -26,8 +26,9 @@
 //! - `hello` advertises `join_by_name_v1` whenever this module is compiled.
 //!
 //! Account lookups go through `broker.directory` (the [`Directory`] seam), never through libc
-//! directly, and only after `broker.manager(..)` has admitted the caller. `enrollment.pending`
-//! makes none; `auth.join` makes exactly one, the fresh `by_uid` of check 2.
+//! directly, and only after [`human_manager`] has admitted the caller: the host, or in an open
+//! workspace any member (OW-2). `enrollment.pending` makes none; `auth.join` makes exactly one,
+//! the fresh `by_uid` of check 2.
 
 use super::*;
 use unicode_properties::{GeneralCategory, UnicodeGeneralCategory};
@@ -280,7 +281,8 @@ fn code_matches(s: &State, join: &PendingJoin, key: &[u8; 32]) -> Result<bool> {
 
 /// Bind the key: a new principal (nickname = username, D2) or the existing one for an added
 /// device, the device labeled `invitation_code`, the join and any legacy enrollment for the
-/// UID removed, committed as `uid:<n>`.
+/// UID removed, committed as `uid:<n>`. In an open workspace a new principal also joins every
+/// team and every unarchived channel (OW-3).
 fn bind(
     broker: &mut Broker,
     join: &PendingJoin,
@@ -308,6 +310,7 @@ fn bind(
             state
                 .principals
                 .insert(principal.id.clone(), principal.clone());
+            admit_everywhere(&mut state, &principal.id);
             principal
         }
     };
@@ -354,10 +357,14 @@ pub(super) fn mutate(
     Some(result)
 }
 
-/// Only the host's own signed device: never an agent's grant, and checked before any account
-/// lookup.
+/// Only the host's own signed device, or in an open workspace any member's (OW-2; every signed
+/// request is an active member's): never an agent's grant, and checked before any account
+/// lookup. The approved code must still be the joiner's own device code, so whoever approves,
+/// the joiner's screen decides which key is let in.
 fn human_manager(broker: &Broker, s: &State, actor: &Actor) -> Result<()> {
-    broker.manager(s, &actor.id)?;
+    if !open_governance(s) {
+        broker.manager(s, &actor.id)?;
+    }
     ensure!(actor.run.is_none(), AGENT_REFUSED);
     Ok(())
 }

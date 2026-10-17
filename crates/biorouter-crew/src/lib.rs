@@ -102,6 +102,25 @@ impl ProviderAffiliation {
     }
 }
 
+/// Who manages a workspace's teams, channels and joiners (OW-1, OW-2).
+///
+/// `Managed` is today's rules: owners, team creators and the host manage. `Open` lets every
+/// active member rename, archive and delete teams and channels, add and remove people in them,
+/// join any of them, and invite and admit joiners; removing someone from the workspace, privacy,
+/// governance, renaming and deleting the workspace stay the host's.
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum Governance {
+    #[default]
+    Managed,
+    Open,
+}
+impl Governance {
+    pub fn is_managed(&self) -> bool {
+        *self == Self::Managed
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Workspace {
     pub id: String,
@@ -115,6 +134,29 @@ pub struct Workspace {
     /// existed replays and re-serializes byte for byte, and an older broker ignores the field.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
+    /// Serialized only when `open`, so a journal written before governance existed replays and
+    /// re-serializes byte for byte, and an older broker (which ignores the field) enforces the
+    /// managed rules, which are stricter.
+    #[serde(default, skip_serializing_if = "Governance::is_managed")]
+    pub governance: Governance,
+    /// When the host deleted the workspace (seconds since the Unix epoch): the tombstone
+    /// `workspace.delete` commits before the broker erases its files. Absent until then.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deleted_at: Option<u64>,
+}
+
+/// The workspace's context document (OW-8): Markdown the members write about the server, which
+/// every member's agent receives as reference information. Stored by the broker, at most
+/// 64 KiB of text.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct WorkspaceContext {
+    pub text: String,
+    /// 1 for the first text, one more for every change.
+    pub revision: u64,
+    /// The principal who wrote this revision.
+    pub updated_by: String,
+    /// When this revision was written (seconds since the Unix epoch).
+    pub updated_at: u64,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Principal {
@@ -369,7 +411,9 @@ fn canonical(value: &Value) -> Value {
 #[cfg(unix)]
 mod broker;
 #[cfg(unix)]
-pub use broker::{bridge, lifecycle, serve, Account, Broker, Connection, Directory};
+pub use broker::{
+    bridge, delete_workspace, lifecycle, serve, Account, Broker, Connection, Directory,
+};
 #[cfg(all(unix, feature = "test-seams"))]
 pub use broker::{JournalCall, Quotas};
 
