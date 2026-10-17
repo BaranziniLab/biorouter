@@ -116,7 +116,7 @@ fn path_variants(path: &Path) -> Vec<PathBuf> {
 /// Where the running bridge executable is, as reported and as resolved. Fails closed: a bridge
 /// that cannot locate itself cannot protect itself.
 fn bridge_executables() -> Result<Vec<PathBuf>> {
-    let executable = std::env::current_exe()
+    let executable = crate::remote_full::reported_executable()
         .map_err(|_| anyhow!("invalid_scope: cannot locate the Crew bridge executable"))?;
     Ok(path_variants(&executable))
 }
@@ -553,7 +553,10 @@ fn reserve_job_record(root: &Path, id: &str, digest: &str, run: &str) -> Result<
 }
 fn spawn_job_child(root: &Path, argv: &[String], expiry: u64, deadline: Instant) -> Result<Child> {
     use std::os::unix::process::CommandExt;
-    let mut command = Command::new(std::env::current_exe()?);
+    // The bridge's own running image, which still runs after setup replaced its file.
+    let mut command = Command::new(crate::remote_full::own_image(
+        &crate::remote_full::reported_executable()?,
+    ));
     command
         .arg("__crew-exec")
         .env_clear()

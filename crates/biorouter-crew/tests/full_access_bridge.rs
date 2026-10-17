@@ -1,6 +1,8 @@
 //! End to end through the real binaries (design OW-6, OW-7): a `biorouter-crew serve` broker,
 //! a person's signed requests on its socket, and the member's `biorouter-crew bridge` running a
-//! full-access command and copying an attachment to the server and back.
+//! full-access command and copying an attachment to the server and back. The bridge runs from
+//! the account's installed copy, which setup replaces while it runs, and a copy the broker has
+//! no connection left for fails with the broker's reason.
 //!
 //! Linux only, and only as an ordinary account: the broker refuses to serve as root and full
 //! access refuses to run as root. As root (a container's default) the test says so and returns;
@@ -231,7 +233,12 @@ fn a_full_access_run_runs_commands_and_moves_files_through_the_real_bridge() {
     );
     assert_eq!(run["run"]["remote_access"], "full");
 
-    let mut child = Command::new(BINARY)
+    // The bridge runs from the copy setup installs, as the daemon starts it over SSH.
+    let installed = home.join(".local/bin/biorouter-crew");
+    fs::create_dir_all(installed.parent().unwrap()).unwrap();
+    fs::copy(BINARY, &installed).unwrap();
+    fs::set_permissions(&installed, fs::Permissions::from_mode(0o755)).unwrap();
+    let mut child = Command::new(&installed)
         .args(["bridge", "--stdio", "--socket"])
         .arg(&served.socket)
         .args([
@@ -269,6 +276,29 @@ fn a_full_access_run_runs_commands_and_moves_files_through_the_real_bridge() {
     assert_eq!(shell["state"], "completed", "{shell}");
     assert_eq!(shell["stdout_tail"], format!("hi\nnet\n{uid}\n"));
 
+    // Setup installs a newer copy while the bridge runs (`mv -f` over it): the bridge's own
+    // file is gone, and its jobs still start, from the image it runs.
+    let staged = home.join(".local/bin/.biorouter-crew.partial");
+    fs::copy(BINARY, &staged).unwrap();
+    fs::set_permissions(&staged, fs::Permissions::from_mode(0o755)).unwrap();
+    fs::rename(&staged, &installed).unwrap();
+    let after = bridge.ok(
+        "remote.shell",
+        json!({"command": "echo after", "idempotency_key": "after-update", "wait_seconds": 20}),
+    );
+    assert_eq!(after["state"], "completed", "{after}");
+    assert_eq!(after["stdout_tail"], "after\n");
+    let refused = bridge.ask(
+        "remote.write",
+        json!({"path": "~/.local/bin/biorouter-crew", "text": "x"}),
+    );
+    assert!(
+        refused["error"]["message"]
+            .as_str()
+            .is_some_and(|message| message.starts_with("forbidden:")),
+        "{refused}"
+    );
+
     // The attachment comes to the server whole and checked, and goes back as a new one.
     let fetch = bridge.ok(
         "remote.fetch_blob",
@@ -288,6 +318,42 @@ fn a_full_access_run_runs_commands_and_moves_files_through_the_real_bridge() {
     assert_eq!(copy["complete"], true);
     assert_eq!(copy["sha256"], sha256);
     assert_eq!(copy["channel_id"], channel.as_str());
+
+    // The account's connections fill up: the next one is told why, and so is a copy that
+    // needed it.
+    let mut held = Vec::new();
+    let refusal = loop {
+        assert!(held.len() <= 8, "the broker never refused a connection");
+        let mut stream = UnixStream::connect(&served.socket).unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        let _ = stream
+            .write_all(b"{\"version\":1,\"id\":\"hello\",\"method\":\"hello\",\"params\":{}}\n");
+        let mut line = String::new();
+        BufReader::new(stream.try_clone().unwrap())
+            .read_line(&mut line)
+            .unwrap();
+        let answer: Value = serde_json::from_str(&line).unwrap();
+        if !answer["error"].is_null() {
+            break answer;
+        }
+        held.push(stream);
+    };
+    assert_eq!(refusal["error"]["code"], "quota_exceeded", "{refusal}");
+    let fetch = bridge.ok(
+        "remote.fetch_blob",
+        json!({"blob_id": blob_id, "path": "inbox/again.bin", "idempotency_key": "fetch-full"}),
+    );
+    let failed = bridge.finished(fetch["job_id"].as_str().unwrap());
+    assert_eq!(failed["state"], "failed", "{failed}");
+    assert!(
+        failed["error"]
+            .as_str()
+            .is_some_and(|error| error.contains("8 connections")),
+        "{failed}"
+    );
+    drop(held);
 
     // Revoking the run ends what its credential can do through the bridge.
     person.signed("run.revoke", json!({"run_id": run["run"]["id"]}));

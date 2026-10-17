@@ -632,8 +632,10 @@ fn the_erase_removes_only_what_the_broker_created_and_ends_with_its_marker() {
     let Lab { mut bob, data, .. } = lab(&mut ws);
     let file = upload(&mut ws, &mut bob, &data, b"payload");
     let root = ws.root.path().to_path_buf();
-    // A file the host keeps in the same directory, which the broker never created.
+    // Files the host keeps in the same directory and in its `blobs/`, which the broker never
+    // created: only blob files named by a blob ID are the broker's.
     std::fs::write(root.join("notes.txt"), b"mine").unwrap();
+    std::fs::write(root.join("blobs").join("mine.txt"), b"mine").unwrap();
     let params = workspace_delete(&ws);
     ws.host_ok("workspace.delete", params);
     let deleted_at = ws.broker.state_json()["workspace"]["deleted_at"]
@@ -646,14 +648,21 @@ fn the_erase_removes_only_what_the_broker_created_and_ends_with_its_marker() {
     assert!(root.join("journal.jsonl").exists());
 
     let leftovers = ws.broker.erase_if_due(deleted_at + 30).unwrap().unwrap();
-    assert_eq!(leftovers, vec!["notes.txt".to_owned()]);
+    assert_eq!(
+        leftovers,
+        vec!["blobs/mine.txt".to_owned(), "notes.txt".to_owned()]
+    );
     let mut left: Vec<String> = std::fs::read_dir(&root)
         .unwrap()
         .map(|entry| entry.unwrap().file_name().into_string().unwrap())
         .collect();
     left.sort();
-    assert_eq!(left, vec!["notes.txt".to_owned()]);
+    assert_eq!(left, vec!["blobs".to_owned(), "notes.txt".to_owned()]);
     assert!(!root.join("blobs").join(&file).exists());
+    assert_eq!(
+        std::fs::read(root.join("blobs").join("mine.txt")).unwrap(),
+        b"mine"
+    );
 
     // Without anything of the host's in it, the directory itself goes.
     let mut ws = Workspace::new("delete-erase-all");
@@ -699,6 +708,130 @@ fn a_directory_an_erase_left_half_done_never_reopens_and_delete_finishes_it() {
     );
 
     let answer = biorouter_crew::delete_workspace(root.path(), &id).unwrap();
+    assert_eq!(
+        answer,
+        json!({"deleted": true, "workspace_id": id, "leftovers": []})
+    );
+    assert!(!root.path().exists());
+}
+
+/// Write `contents` as the `DELETED` marker, owner-only, as an interrupted erase left it.
+fn write_marker(root: &Path, contents: &[u8]) {
+    let marker = root.join("DELETED");
+    std::fs::write(&marker, contents).unwrap();
+    std::fs::set_permissions(&marker, std::os::unix::fs::PermissionsExt::from_mode(0o600)).unwrap();
+}
+
+/// A marker a full disk or a crash cut short names no workspace. It still keeps the directory
+/// from reopening, the refusal names the journal's ID, and `delete` finishes with that ID; with
+/// the journal gone too, the ID the host gives finishes it.
+#[test]
+fn a_marker_that_names_no_workspace_is_finished_with_the_journals_id() {
+    for contents in [&b""[..], b"\n", b"not-a-workspace-id"] {
+        let ws = Workspace::new("delete-empty-marker");
+        let (id, root, directory) = stopped(ws);
+        write_marker(root.path(), contents);
+        let error = Broker::open_with_directory(root.path(), &key_hex(&key(7)), directory.boxed())
+            .err()
+            .expect("a half-erased directory never reopens");
+        let message = format!("{error:#}");
+        assert!(message.starts_with("workspace_deleted:"), "{message}");
+        assert!(
+            message.ends_with(&format!("--workspace-id {id}")),
+            "{message}"
+        );
+        let other = uuid();
+        let error = biorouter_crew::delete_workspace(root.path(), &other).unwrap_err();
+        assert!(
+            format!("{error:#}").starts_with("identity_mismatch:"),
+            "{error:#}"
+        );
+        let answer = biorouter_crew::delete_workspace(root.path(), &id).unwrap();
+        assert_eq!(
+            answer,
+            json!({"deleted": true, "workspace_id": id, "leftovers": []})
+        );
+        assert!(!root.path().exists());
+    }
+
+    let ws = Workspace::new("delete-empty-marker-no-journal");
+    let (id, root, _) = stopped(ws);
+    std::fs::remove_file(root.path().join("journal.jsonl")).unwrap();
+    write_marker(root.path(), b"");
+    let answer = biorouter_crew::delete_workspace(root.path(), &id).unwrap();
+    assert_eq!(answer["deleted"], true);
+    assert!(!root.path().exists());
+}
+
+/// The marker is written beside the directory's files and renamed into place, so a crash
+/// before the rename leaves the workspace whole and openable, and the erase removes the
+/// temporary file with everything else.
+#[test]
+fn the_marker_is_written_whole_before_it_appears() {
+    let ws = Workspace::new("delete-marker-temp");
+    let (id, root, directory) = stopped(ws);
+    let temporary = root.path().join(".DELETED.tmp");
+    std::fs::write(&temporary, b"").unwrap();
+    std::fs::set_permissions(
+        &temporary,
+        std::os::unix::fs::PermissionsExt::from_mode(0o600),
+    )
+    .unwrap();
+    let broker = Broker::open_with_directory(root.path(), &key_hex(&key(7)), directory.boxed())
+        .expect("nothing was erased, so the workspace opens");
+    drop(broker);
+    let answer = biorouter_crew::delete_workspace(root.path(), &id).unwrap();
+    assert_eq!(
+        answer,
+        json!({"deleted": true, "workspace_id": id, "leftovers": []})
+    );
+    assert!(!root.path().exists());
+}
+
+/// `serve` finishes an erase its marker shows was started, and `start` refuses to start one,
+/// naming the command that finishes it. `serve` needs Linux.
+#[cfg(target_os = "linux")]
+#[test]
+fn serve_finishes_an_interrupted_erase_and_start_refuses_it() {
+    let crew = |args: &[&str]| {
+        std::process::Command::new(env!("CARGO_BIN_EXE_biorouter-crew"))
+            .args(args)
+            .output()
+            .unwrap()
+    };
+    let ws = Workspace::new("delete-serve-marker");
+    let (id, root, _) = stopped(ws);
+    write_marker(root.path(), b"");
+    let state_dir = root.path().to_str().unwrap().to_owned();
+    let started = crew(&[
+        "start",
+        "--state-dir",
+        &state_dir,
+        "--bootstrap-key",
+        &key_hex(&key(7)),
+    ]);
+    assert!(!started.status.success());
+    let message = String::from_utf8_lossy(&started.stderr).into_owned();
+    assert!(message.contains("workspace_deleted:"), "{message}");
+    assert!(
+        message.contains(&format!("--workspace-id {id}")),
+        "{message}"
+    );
+    assert!(root.path().join("journal.jsonl").exists());
+
+    let served = crew(&[
+        "serve",
+        "--state-dir",
+        &state_dir,
+        "--bootstrap-key",
+        &key_hex(&key(7)),
+    ]);
+    assert!(
+        served.status.success(),
+        "{}",
+        String::from_utf8_lossy(&served.stderr)
+    );
+    let answer: Value = serde_json::from_slice(&served.stdout).unwrap();
     assert_eq!(
         answer,
         json!({"deleted": true, "workspace_id": id, "leftovers": []})

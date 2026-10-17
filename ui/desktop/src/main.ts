@@ -1,6 +1,11 @@
 import { applicationUserDataDirectory } from './applicationDataProfile';
 import { developmentProfileRoot } from './developmentProfile';
-import { createCrewDaemonTerminal, type CrewDaemonTerminalTarget } from './crewDaemonTerminal';
+import {
+  createCrewDaemonTerminal,
+  sharedOpening,
+  type CrewAuthenticationOpen,
+  type CrewDaemonTerminalTarget,
+} from './crewDaemonTerminal';
 import { crewBrokerDirectory, saveCrewBroker } from './crewBrokerExport';
 import { closeNativeSecretPrompt, promptNativeSecret } from './nativeSecretPrompt';
 import { writeConversationId, writeSelectedText } from './utils/conversationClipboard';
@@ -5022,7 +5027,8 @@ const terminalSessions = new TerminalSessionRegistry<TerminalSession>((error) =>
 let nodePtyModule: NodePtyModule | null | undefined;
 let nodePtyLoading: Promise<NodePtyModule | null> | undefined;
 const crewAuthenticationSessions = new Map<string, { sessionId: string }>();
-const crewAuthenticationPending = new Set<string>();
+/** Sign-ins still opening, by key: a second ask shares the first's answer (`sharedOpening`). */
+const crewAuthenticationPending = new Map<string, Promise<CrewAuthenticationOpen>>();
 
 /**
  * Free every shell a renderer owns once its document goes away.
@@ -5456,7 +5462,7 @@ function registerCliInstallHandlers() {
   async function openCrewAuthentication(
     event: Electron.IpcMainInvokeEvent,
     target: CrewDaemonTerminalTarget
-  ) {
+  ): Promise<CrewAuthenticationOpen> {
     const owner = event.sender;
     const ownerWindow = BrowserWindow.fromWebContents(owner);
     const baseUrl = ownerWindow && biorouterdClients.get(ownerWindow.id)?.getConfig().baseUrl;
@@ -5468,9 +5474,18 @@ function registerCliInstallHandlers() {
     const existing = crewAuthenticationSessions.get(key);
     if (existing && terminalSessions.getOwned(existing.sessionId, owner.id))
       return { success: true, sessionId: existing.sessionId, backend: 'pty', cwd: '' };
-    if (crewAuthenticationPending.has(key))
-      return { success: false, error: 'SSH authentication is already opening.' };
-    crewAuthenticationPending.add(key);
+    // A window that asks again while this one is opening (a remount) attaches to the same session.
+    return sharedOpening(crewAuthenticationPending, key, () =>
+      startCrewAuthentication(owner, baseUrl, key, target)
+    );
+  }
+
+  async function startCrewAuthentication(
+    owner: Electron.WebContents,
+    baseUrl: string,
+    key: string,
+    target: CrewDaemonTerminalTarget
+  ): Promise<CrewAuthenticationOpen> {
     try {
       if (terminalSessions.countForOwner(owner.id) >= maxTerminalSessionsPerOwner())
         throw new Error('Close an existing terminal before opening SSH authentication.');
@@ -5523,8 +5538,6 @@ function registerCliInstallHandlers() {
         success: false,
         error: error instanceof Error ? error.message : 'SSH authentication failed.',
       };
-    } finally {
-      crewAuthenticationPending.delete(key);
     }
   }
 

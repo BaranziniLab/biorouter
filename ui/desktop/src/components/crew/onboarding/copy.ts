@@ -393,18 +393,19 @@ export const hostCopy = {
   /**
    * "Set up and start Crew" (OW-9): the daemon installs Crew in the host's account when it isn't
    * there, signs in through the Sign in window when the server asks, and runs exactly the commands
-   * above. A background service before automatic setup runs only the commands (D-HOST).
+   * "Run it yourself in a terminal" shows (U1: the step leads with this, not with the commands).
+   * A background service before automatic setup runs only the commands (D-HOST).
    */
   setUpAndStart: 'Set up and start Crew',
   setUpAndStartHint: (server: string, user: string | null) =>
     `Biorouter signs in to ${server}${
       user ? ` as ${user}` : ''
-    } with your SSH settings, installs Crew in your account if it isn’t there yet, and runs exactly these commands. If the server asks for a password or a code, a Sign in window opens.`,
+    } with your SSH settings, installs Crew in your account if it isn’t there yet, and starts the workspace. If the server asks for a password or a code, a Sign in window opens.`,
   /** The same button on a background service before automatic setup: it can't sign in or install. */
   startForMeHint: (server: string, user: string | null) =>
     `Biorouter signs in to ${server}${
       user ? ` as ${user}` : ''
-    } with your SSH settings and runs exactly these commands. If the server asks for a password or a code, run them yourself instead.`,
+    } with your SSH settings and runs the start commands for you. If the server asks for a password or a code, run them yourself instead.`,
   startRunning: (server: string) => `Starting Crew on ${server}…`,
   startReading: 'Reading what Crew printed…',
   stop: 'Stop',
@@ -642,9 +643,18 @@ export const setupCopy = {
     'Setting Crew up needs a newer Biorouter background service. Quit and reopen Biorouter, or install it yourself.',
   failed: 'Setup didn’t finish.',
   tryAgain: 'Try again',
-  /** `crew_install_incompatible`: the one refusal a person can answer from here. */
+  /** `crew_install_incompatible`: a refusal a person can answer from here. */
   replace: 'Replace the installed Crew',
-  output: 'What the server printed',
+  /**
+   * `crew_host_storage_unsafe` (L3): the other one. The daemon's sentence names the folders and the
+   * command; the button runs that command on exactly those folders, then the setup goes on.
+   */
+  fixStorage: 'Fix it for me',
+  fixStorageHint:
+    'Fix it for me takes write access for other people off exactly those folders (chmod go-w), then carries on setting up.',
+  /** The daemon's bounded detail of a stopped job: what the server or OpenSSH said. */
+  output: 'Show details',
+  outputLabel: 'What the server said',
   error: (code: string, server: string): string | null => {
     switch (code) {
       case 'crew_setup_busy':
@@ -787,6 +797,13 @@ export const emptyCopy = {
    * that and naming the server, as the connection bar does (SC2-N9): under "chen-lab is offline",
    * "It refused this computer's SSH key" said neither what failed nor what "it" was.
    */
+  /**
+   * The host deleted the workspace (OW-5, L6), said from the saved record so it still holds once
+   * the deleted workspace's server has exited: no Connect, and no start line for a server that is
+   * gone on purpose. The title is the connection bar's own sentence (`workspaceDeleted`).
+   */
+  deletedBody:
+    'There’s nothing left on the server to connect to. Remove it from this computer to take it off your list.',
   keyRefusedTitle: (server: string) => `Can’t sign in to ${server}`,
   keyRefusedBody: (server: string, user: string | null) =>
     `${server} refused this computer’s SSH key${user ? ` for ${user}` : ''}. Check Your server login in Connection settings.`,

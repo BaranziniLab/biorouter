@@ -478,6 +478,55 @@ describe('deleting channels, teams and workspaces (OW-4, OW-5)', () => {
     expect(requestsFor(crew, 'workspace.delete')).toEqual([]);
   });
 
+  it('deletes a workspace from before names with expected_name null, typed as its connection (C19)', async () => {
+    pointerOpen();
+    // A workspace started without a name stores none: the broker compares null with that, so the
+    // connection's name is only what the person types, never what is sent.
+    const snapshot = makeSnapshot();
+    delete (snapshot.workspace as { name?: string }).name;
+    const { crew, onClose } = renderConfirm(
+      { action: 'delete-workspace', connectionId: connection.id },
+      { snapshot }
+    );
+    const dialog = await screen.findByRole('alertdialog', {
+      name: confirmCopy.deleteWorkspace.title('Fixture'),
+    });
+    fireEvent.change(within(dialog).getByLabelText('Type Fixture to confirm'), {
+      target: { value: 'Fixture' },
+    });
+    await act(async () => {
+      fireEvent.click(within(dialog).getByRole('button', { name: 'Delete workspace' }));
+    });
+    await waitFor(() =>
+      expect(crew.deleteWorkspace).toHaveBeenCalledWith(connection.id, {
+        workspace_id: connection.workspace_id,
+        expected_name: null,
+      })
+    );
+    await waitFor(() => expect(onClose).toHaveBeenCalled());
+  });
+
+  it('removes a workspace its host deleted without the host or rejoin warnings (L6)', async () => {
+    // The host's own last computer, which would otherwise be asked to type the name and told the
+    // host controls end for good: the workspace is gone, so there are none to give up.
+    const deleted = { ...connection, status: 'disconnected' as const, workspace_deleted: true };
+    const { crew, onClose } = renderConfirm(
+      { action: 'remove-connection', connectionId: connection.id },
+      { connections: [deleted] }
+    );
+    const dialog = await screen.findByRole('alertdialog', {
+      name: confirmCopy.removeConnection.title('lab'),
+    });
+    expect(dialog).toHaveTextContent(confirmCopy.removeConnection.deletedDescription('lab'));
+    expect(dialog).not.toHaveTextContent(/host controls|the host has to add this computer/);
+    expect(within(dialog).queryByLabelText('Type lab to confirm')).toBeNull();
+    await act(async () => {
+      fireEvent.click(within(dialog).getByRole('button', { name: 'Remove' }));
+    });
+    await waitFor(() => expect(crew.removeConnection).toHaveBeenCalledWith(connection.id));
+    await waitFor(() => expect(onClose).toHaveBeenCalled());
+  });
+
   it('keeps a refused workspace deletion in its dialog', async () => {
     const { crew, onClose } = renderConfirm({
       action: 'delete-workspace',

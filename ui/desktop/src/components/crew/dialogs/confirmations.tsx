@@ -5,6 +5,7 @@ import { toastSuccess } from '../../../toasts';
 import type { Snapshot } from '../crewApi';
 import { channelName, personLabel, teamName } from '../identity';
 import { sshUsername } from '../onboarding/joinText';
+import { isWorkspaceDeleted } from '../state/connectFailure';
 import { connectionUpdateBody } from '../state/useCrewConnections';
 import type { ConfirmIntent, CrewController, ErrorSource } from '../state/types';
 import { confirmCopy, dialogErrorCopy } from './copy';
@@ -594,7 +595,12 @@ function RemoveConnection({ connectionId, onClose }: { connectionId: string; onC
   const { crew, workspace, phrase, snapshot, dir } = useDialogView(connectionId);
   const key = 'connection.remove';
   const saved = crew.connections.find((item) => item.id === connectionId) ?? null;
-  const standing = removalStanding(snapshot, dir.viewerIsHost, saved?.device_id);
+  // A workspace its host deleted (OW-5): nothing is left on the server to host, rejoin or lose
+  // (L6, L7), so the removal says only what it does here.
+  const deleted = isWorkspaceDeleted(saved);
+  const standing = deleted
+    ? 'deleted'
+    : removalStanding(snapshot, dir.viewerIsHost, saved?.device_id);
   const username = dir.me?.username ?? sshUsername(saved?.ssh_target) ?? null;
   const remove = () =>
     void runConfirmed(crew, key, () => crew.removeConnection(connectionId)).then(
@@ -623,9 +629,11 @@ function RemoveConnection({ connectionId, onClose }: { connectionId: string; onC
       isOpen
       title={confirmCopy.removeConnection.title(workspace)}
       message={
-        standing === 'member'
-          ? confirmCopy.removeConnection.memberDescription(workspace, username)
-          : confirmCopy.removeConnection.description
+        standing === 'deleted'
+          ? confirmCopy.removeConnection.deletedDescription(workspace)
+          : standing === 'member'
+            ? confirmCopy.removeConnection.memberDescription(workspace, username)
+            : confirmCopy.removeConnection.description
       }
       confirmLabel={confirmCopy.removeConnection.confirm}
       cancelLabel={confirmCopy.cancel}

@@ -9,9 +9,10 @@
 //! and the grant. File operations take absolute, `~/` or work-folder-relative paths and follow
 //! symlinks; nothing here checks ownership, because the account's own permissions are the
 //! boundary. Two writes are refused anyway, as accident prevention rather than security: the
-//! running bridge executable and `~/.ssh/authorized_keys`. Channel attachments move to and from
-//! the server in background transfers over a second broker connection, so the relay never
-//! waits on them.
+//! bridge executable (the running one and the installed `~/.local/bin/biorouter-crew`) and
+//! `~/.ssh/authorized_keys`. Channel attachments move to and from the server in background
+//! transfers over a second broker connection, so the relay never waits on them; at most
+//! [`MAX_TRANSFERS`] run at once, inside the broker's connections per account.
 //!
 //! Every answer stays well under the 1 MiB frame: reads and writes move at most
 //! [`MAX_CHUNK_BYTES`], output tails at most [`MAX_TAIL`] per stream.
@@ -44,6 +45,9 @@ const DEFAULT_TAIL: usize = 16_384;
 const MAX_TAIL: usize = 65_536;
 /// Jobs (commands and transfers) running at once in this account, and records kept.
 const MAX_RUNNING: usize = 8;
+/// Transfers running at once in this account. Each holds its own broker connection, and the
+/// broker takes at most 8 per account, so this leaves room for the account's bridges.
+const MAX_TRANSFERS: usize = 4;
 const MAX_RECORDS: usize = 512;
 /// The longest command text, or the most bytes of all argv items together.
 const MAX_COMMAND: usize = 65_536;
@@ -76,31 +80,71 @@ pub struct BrokerLink {
 }
 
 /// Where full-access operations run: the account's home (what `~/` means), the job records
-/// directory, and the executable the supervisor is started from (the running bridge), which is
-/// also one of the two files a structured write refuses.
+/// directory, the running bridge's file (one of the files a structured write refuses), and
+/// what the supervisor is started from.
 #[derive(Clone, Debug)]
 pub struct Context {
     pub home: PathBuf,
     pub jobs: PathBuf,
+    /// The file the running bridge was started from, which a structured write refuses.
     pub executable: PathBuf,
+    /// What `__crew-run` is started from: this process's own image.
+    pub program: PathBuf,
 }
 
 impl Context {
-    /// The bridge's own: `HOME` from its SSH login (the account database when unset) and the
-    /// executable this process was started from.
+    /// The bridge's own: `HOME` from its SSH login (the account database when unset), the file
+    /// this process was started from (the installed `~/.local/bin/biorouter-crew` when it
+    /// cannot tell), and its running image.
     pub fn of_this_process() -> Result<Self> {
         let home = std::env::var_os("HOME")
             .map(PathBuf::from)
             .filter(|home| home.is_absolute())
             .map(Ok)
             .unwrap_or_else(|| crate::probe::this_account().map(|account| account.home))?;
-        let executable = std::env::current_exe()
-            .map_err(|_| anyhow!("invalid_scope: cannot locate the Crew bridge executable"))?;
+        let executable = reported_executable().unwrap_or_else(|_| installed_executable(&home));
         Ok(Self {
             jobs: home.join(".local/state/biorouter-crew/jobs"),
+            program: own_image(&executable),
             home,
             executable,
         })
+    }
+}
+
+/// Where setup installs the bridge in an account.
+fn installed_executable(home: &Path) -> PathBuf {
+    home.join(".local/bin/biorouter-crew")
+}
+
+/// `path` without the ` (deleted)` Linux adds to `/proc/self/exe` once the file a process was
+/// started from is gone, as when setup renames a newer copy over a running bridge.
+fn without_deleted(path: PathBuf) -> PathBuf {
+    match path
+        .to_str()
+        .and_then(|text| text.strip_suffix(" (deleted)"))
+    {
+        Some(text) => PathBuf::from(text),
+        None => path,
+    }
+}
+
+/// The path the running bridge was started from, as `current_exe` reports it, without
+/// ` (deleted)`.
+pub(crate) fn reported_executable() -> std::io::Result<PathBuf> {
+    std::env::current_exe().map(without_deleted)
+}
+
+/// What a helper process of this bridge is started from: on Linux this process's own running
+/// image (`/proc/self/exe`), which still runs after setup has replaced or removed the file it
+/// was started from, and keeps a job of an older bridge from running a newer binary's
+/// supervisor; elsewhere, or without `/proc`, `fallback`.
+pub(crate) fn own_image(fallback: &Path) -> PathBuf {
+    let image = Path::new("/proc/self/exe");
+    if cfg!(target_os = "linux") && image.exists() {
+        image.to_path_buf()
+    } else {
+        fallback.to_path_buf()
     }
 }
 
@@ -228,11 +272,16 @@ fn spellings(path: &Path) -> Vec<PathBuf> {
     variants
 }
 
-/// The files a structured write refuses, under every spelling: the running bridge, and the
-/// account's `authorized_keys` files. The shell can still change them; this keeps an agent's
-/// ordinary file write from locking the person out by accident.
+/// The files a structured write refuses, under every spelling: the running bridge and the
+/// installed one, and the account's `authorized_keys` files. The shell can still change them;
+/// this keeps an agent's ordinary file write from locking the person out by accident.
 fn protected_writes(context: &Context) -> Vec<PathBuf> {
     let mut protected = spellings(&context.executable);
+    for installed in spellings(&installed_executable(&context.home)) {
+        if !protected.contains(&installed) {
+            protected.push(installed);
+        }
+    }
     for home in spellings(&context.home) {
         for name in ["authorized_keys", "authorized_keys2"] {
             protected.push(home.join(".ssh").join(name));
@@ -352,7 +401,14 @@ fn stat(path: &Path) -> Result<Value> {
 
 /// `remote.read {path, offset?, length?}`: at most [`MAX_CHUNK_BYTES`] from `offset`. The bytes
 /// come back as hex, and also as text when they are UTF-8 and the frame has room for both.
+///
+/// A read with neither `offset` nor `length` is a read of the whole file, as in folder mode: a
+/// file of at most [`crate::MAX_CHUNK`] (256 KiB, what `remote.attach` moves to the channel in
+/// one piece), and a larger one is refused before anything is read, rather than answered with
+/// its first part, which `size` and `sha256` would then describe as if it were the file.
 fn read(path: &Path, params: &Value) -> Result<Value> {
+    let absent = |key: &str| params.get(key).is_none_or(Value::is_null);
+    let whole = absent("offset") && absent("length");
     let offset = params.get("offset").and_then(Value::as_u64).unwrap_or(0);
     let length = match params.get("length") {
         None | Some(Value::Null) => MAX_CHUNK_BYTES,
@@ -366,6 +422,11 @@ fn read(path: &Path, params: &Value) -> Result<Value> {
     let metadata = file.metadata()?;
     ensure!(metadata.is_file(), "not a regular file");
     let file_size = metadata.len();
+    ensure!(
+        !whole || file_size <= crate::MAX_CHUNK as u64,
+        "invalid_params: {} is {file_size} bytes, larger than a read without offset and length returns (256 KiB). Read it in parts with offset and length (at most {MAX_CHUNK_BYTES} bytes each), or post it to the channel with remote.share_file.",
+        path.display()
+    );
     ensure!(
         offset <= file_size,
         "invalid_params: offset beyond the end of the file"
@@ -693,12 +754,19 @@ fn job_view(dir: &Path, tail: usize) -> Result<Value> {
     Ok(answer)
 }
 
-/// Make room for one more job: refuse while [`MAX_RUNNING`] run, and drop the oldest finished
-/// records once [`MAX_RECORDS`] are kept.
-fn make_room(jobs: &Path) -> Result<()> {
+/// Whether a job record's `kind` is a transfer, which holds a broker connection while it runs.
+fn is_transfer(kind: Option<&str>) -> bool {
+    matches!(kind, Some("fetch_blob" | "share_file"))
+}
+
+/// Make room for one more job (a transfer when `transfer`): refuse while [`MAX_RUNNING`] run,
+/// or a transfer while [`MAX_TRANSFERS`] do, and drop the oldest finished records once
+/// [`MAX_RECORDS`] are kept.
+fn make_room(jobs: &Path, transfer: bool) -> Result<()> {
     let mut finished = Vec::new();
     let mut records = 0usize;
     let mut running = 0usize;
+    let mut transfers = 0usize;
     for entry in fs::read_dir(jobs)? {
         let entry = entry?;
         let name = entry.file_name();
@@ -720,11 +788,16 @@ fn make_room(jobs: &Path) -> Result<()> {
             finished.push((ended, dir));
         } else {
             running += 1;
+            transfers += usize::from(is_transfer(record["kind"].as_str()));
         }
     }
     ensure!(
         running < MAX_RUNNING,
         "quota_exceeded: {MAX_RUNNING} Crew jobs are already running in this account. Wait for one to finish or cancel one."
+    );
+    ensure!(
+        !transfer || transfers < MAX_TRANSFERS,
+        "quota_exceeded: {MAX_TRANSFERS} Crew file copies are already running in this account. Wait for one to finish (remote.job_status) or cancel one."
     );
     if records >= MAX_RECORDS {
         finished.sort();
@@ -758,7 +831,7 @@ fn reserve(context: &Context, id: &str, record: &Value) -> Result<(PathBuf, bool
         );
         return Ok((dir, false));
     }
-    make_room(jobs)?;
+    make_room(jobs, is_transfer(record["kind"].as_str()))?;
     let temporary = jobs.join(format!(".new-{}", uuid::Uuid::new_v4().simple()));
     fs::DirBuilder::new().mode(0o700).create(&temporary)?;
     let made = (|| -> Result<()> {
@@ -928,7 +1001,7 @@ fn start_command(
 /// bridge's own (standard output is the frame channel to the daemon). It is reaped on a thread:
 /// a job that is not detached stays this bridge's child, and dies with it.
 fn spawn_supervisor(context: &Context, dir: &Path, id: &str) -> Result<()> {
-    let mut child = std::process::Command::new(&context.executable)
+    let mut child = std::process::Command::new(&context.program)
         .arg("__crew-run")
         .arg(dir)
         .env("BIOROUTER_CREW_JOB_ID", id)
@@ -1612,6 +1685,7 @@ mod tests {
             home: home.to_path_buf(),
             jobs: home.join(".local/state/biorouter-crew/jobs"),
             executable: home.join(".local/bin/biorouter-crew"),
+            program: home.join(".local/bin/biorouter-crew"),
         }
     }
 
@@ -1736,7 +1810,7 @@ mod tests {
         assert!(read(&file, &json!({"length": MAX_CHUNK_BYTES + 1})).is_err());
         let big = home.join("big.txt");
         fs::write(&big, "\u{1}".repeat(MAX_CHUNK_BYTES + 10)).unwrap();
-        let answer = read(&big, &json!({})).unwrap();
+        let answer = read(&big, &json!({"offset": 0})).unwrap();
         assert_eq!(answer["size"], MAX_CHUNK_BYTES);
         assert_eq!(answer["eof"], false);
         assert!(
@@ -1744,6 +1818,65 @@ mod tests {
             "escaped text would overflow the frame"
         );
         assert!(serde_json::to_vec(&answer).unwrap().len() < crate::MAX_FRAME);
+        let _ = fs::remove_dir_all(&home);
+    }
+
+    /// A read without a range is the whole file, as `remote.attach` uploads it in one chunk: up
+    /// to the broker's chunk size it comes back whole, and a larger file is refused rather than
+    /// cut, with what to do instead.
+    #[test]
+    fn a_read_without_a_range_is_the_whole_file_or_refused() {
+        let home = temp("read-whole");
+        let fits = home.join("fits.csv");
+        fs::write(&fits, vec![b'a'; crate::MAX_CHUNK]).unwrap();
+        let answer = read(&fits, &json!({"path": "fits.csv"})).unwrap();
+        assert_eq!(answer["size"], crate::MAX_CHUNK);
+        assert_eq!(answer["file_size"], crate::MAX_CHUNK);
+        assert_eq!(answer["eof"], true);
+        let larger = home.join("larger.csv");
+        fs::write(&larger, vec![b'a'; crate::MAX_CHUNK + 1]).unwrap();
+        for params in [json!({}), json!({"offset": null, "length": null})] {
+            let error = read(&larger, &params).unwrap_err().to_string();
+            assert!(error.starts_with("invalid_params:"), "{error}");
+            assert!(error.contains("remote.share_file"), "{error}");
+        }
+        let part = read(&larger, &json!({"length": crate::MAX_CHUNK})).unwrap();
+        assert_eq!(part["eof"], false);
+        assert_eq!(part["next_offset"], crate::MAX_CHUNK);
+        let _ = fs::remove_dir_all(&home);
+    }
+
+    /// The bridge's file is protected however `/proc/self/exe` names it, and the installed copy
+    /// is protected even when the bridge runs from elsewhere; helpers start from the running
+    /// image, which outlives a replaced file.
+    #[test]
+    fn the_bridge_finds_itself_after_a_newer_copy_replaced_it() {
+        assert_eq!(
+            without_deleted(PathBuf::from("/home/u/.local/bin/biorouter-crew (deleted)")),
+            PathBuf::from("/home/u/.local/bin/biorouter-crew")
+        );
+        assert_eq!(
+            without_deleted(PathBuf::from("/opt/crew/biorouter-crew")),
+            PathBuf::from("/opt/crew/biorouter-crew")
+        );
+        let home = temp("installed");
+        let mut context = context(&home);
+        context.executable = PathBuf::from("/opt/crew/biorouter-crew");
+        fs::create_dir_all(home.join(".local/bin")).unwrap();
+        let error = write(
+            &context,
+            &home.join(".local/bin/biorouter-crew"),
+            &json!({"text": "x"}),
+        )
+        .unwrap_err();
+        assert!(error.to_string().starts_with("forbidden:"), "{error}");
+        let this = Context::of_this_process().unwrap();
+        assert!(!this.executable.to_string_lossy().ends_with(" (deleted)"));
+        if cfg!(target_os = "linux") {
+            assert_eq!(this.program, PathBuf::from("/proc/self/exe"));
+        } else {
+            assert_eq!(this.program, this.executable);
+        }
         let _ = fs::remove_dir_all(&home);
     }
 
@@ -1901,7 +2034,7 @@ mod tests {
         for index in 0..MAX_RUNNING {
             make(index, false);
         }
-        assert!(make_room(&jobs)
+        assert!(make_room(&jobs, false)
             .unwrap_err()
             .to_string()
             .starts_with("quota_exceeded:"));
@@ -1912,9 +2045,37 @@ mod tests {
         for index in 1..MAX_RECORDS {
             make(index, true);
         }
-        make_room(&jobs).unwrap();
+        make_room(&jobs, false).unwrap();
         assert!(!oldest.exists(), "the oldest finished record made room");
         assert_eq!(fs::read_dir(&jobs).unwrap().count(), MAX_RECORDS - 1);
+        let _ = fs::remove_dir_all(&home);
+    }
+
+    /// Each transfer holds a broker connection, and the broker takes 8 per account: at most
+    /// four transfers run at once, while commands may still start.
+    #[test]
+    fn running_transfers_are_capped_below_the_brokers_connections() {
+        let home = temp("transfer-caps");
+        let context = context(&home);
+        let jobs = jobs_directory(&context).unwrap().to_path_buf();
+        for (index, kind) in ["fetch_blob", "share_file", "fetch_blob", "share_file"]
+            .into_iter()
+            .enumerate()
+        {
+            let dir = jobs.join(job_id("o", &format!("t{index}")));
+            fs::create_dir(&dir).unwrap();
+            write_json(
+                &dir.join("job.json"),
+                &json!({"owner_id": "o", "kind": kind, "created_at": now()}),
+            )
+            .unwrap();
+        }
+        let error = make_room(&jobs, true).unwrap_err().to_string();
+        assert!(error.starts_with("quota_exceeded:"), "{error}");
+        assert!(error.contains("file copies"), "{error}");
+        make_room(&jobs, false).unwrap();
+        let record = json!({"job_id": "x", "owner_id": "o", "digest": "d", "kind": "share_file", "created_at": now()});
+        assert!(reserve(&context, &job_id("o", "fifth"), &record).is_err());
         let _ = fs::remove_dir_all(&home);
     }
 

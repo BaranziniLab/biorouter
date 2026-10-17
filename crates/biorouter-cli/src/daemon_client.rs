@@ -800,6 +800,9 @@ impl CrewClient {
                             let value: Value = serde_json::from_str(&text)?;
                             if value["type"] == "exit" { exit_code = value["exit_code"].as_i64(); authenticated = value["authenticated"].as_bool() == Some(true); break; }
                             if value["type"] == "error" {
+                                if let Some(missing) = bridge_missing_frame(&value) {
+                                    return Err(missing.into());
+                                }
                                 let message = value.get("code").and_then(Value::as_str)
                                     .and_then(biorouter::crew::authentication::terminal_failure_message)
                                     .unwrap_or("SSH authentication ended; inspect the daemon's connection status");
@@ -835,6 +838,21 @@ impl CrewClient {
             Ok(json!({"authentication_id":id,"exit_code":exit_code,"authenticated":authenticated}))
         }
     }
+}
+
+/// The sign-in terminal's error frame for a sign-in that worked on a server with no Crew in the
+/// account (C13, C28): its `code` stays `crew_handoff_failed` for older clients, and
+/// `bridge_missing: true` says what it is. Read as the connect failure it is,
+/// `crew_bridge_missing`, so the person is told to set Crew up, and `crew join` and setup act on
+/// it. `None` for any other frame.
+#[cfg_attr(not(unix), allow(dead_code))]
+fn bridge_missing_frame(frame: &Value) -> Option<DaemonRefusal> {
+    (frame["type"] == "error" && frame["bridge_missing"].as_bool() == Some(true)).then(|| {
+        DaemonRefusal::reported(
+            409,
+            &json!({"code": "crew_bridge_missing", "message": frame.get("error")}),
+        )
+    })
 }
 
 /// What `crew auth` says with no terminal to show the server's prompts in (SF2-N6). A server that
@@ -1884,14 +1902,14 @@ pub async fn credentials_control(
 #[cfg(all(test, unix))]
 mod tests {
     use super::{
-        credentials_control, daemon_control, daemon_refusal, key_refused, no_vault_to_unlock,
-        open_daemon_owner_lock, read_observer_frames, require_supported_platform,
-        secret_prompt_possible, sign_in_possible, sign_in_terminal_size, vault_passphrase,
-        wait_for_daemon_stop, CrewClient, DaemonRefusal, EventDecoder, Restated,
-        AUTH_NEEDS_A_TERMINAL, DAEMON_NEEDS_RESTART, DAEMON_NEEDS_RESTART_CODE, DAEMON_NOT_RUNNING,
-        DAEMON_NOT_RUNNING_CODE, MAX_SSE_FRAME, NEW_VAULT_PASSPHRASE, NO_VAULT_NO_KEYRING,
-        NO_VAULT_TO_UNLOCK, NO_VAULT_TO_UNLOCK_CODE, NO_VAULT_TO_UNLOCK_FILES, VAULT_PASSPHRASE,
-        VAULT_PASSPHRASE_AGAIN,
+        bridge_missing_frame, credentials_control, daemon_control, daemon_refusal, key_refused,
+        no_vault_to_unlock, open_daemon_owner_lock, read_observer_frames,
+        require_supported_platform, secret_prompt_possible, sign_in_possible,
+        sign_in_terminal_size, vault_passphrase, wait_for_daemon_stop, CrewClient, DaemonRefusal,
+        EventDecoder, Restated, AUTH_NEEDS_A_TERMINAL, DAEMON_NEEDS_RESTART,
+        DAEMON_NEEDS_RESTART_CODE, DAEMON_NOT_RUNNING, DAEMON_NOT_RUNNING_CODE, MAX_SSE_FRAME,
+        NEW_VAULT_PASSPHRASE, NO_VAULT_NO_KEYRING, NO_VAULT_TO_UNLOCK, NO_VAULT_TO_UNLOCK_CODE,
+        NO_VAULT_TO_UNLOCK_FILES, VAULT_PASSPHRASE, VAULT_PASSPHRASE_AGAIN,
     };
     use crate::commands::needs_terminal::NeedsTerminal;
     use biorouter::crew::observation::ObserveEvent;
@@ -2806,6 +2824,26 @@ mod tests {
         );
         let none = daemon_refusal(400, Some(&serde_json::json!({"error": "x"})), "fallback");
         assert_eq!(none.detail(), None);
+    }
+
+    /// C13, C28: the frame the daemon really sends when a sign-in worked and the server has no
+    /// Crew in the account (`handoff_failure_frame`): `crew_handoff_failed` with
+    /// `bridge_missing`, read as `crew_bridge_missing`. The same code without the flag stays
+    /// what it was.
+    #[test]
+    fn a_sign_in_without_crew_on_the_server_is_crew_bridge_missing() {
+        let frame = serde_json::json!({
+            "type": "error", "code": "crew_handoff_failed",
+            "error": "Signed in, but Crew couldn't start on the server.", "bridge_missing": true
+        });
+        let missing = bridge_missing_frame(&frame).expect("a missing bridge");
+        assert_eq!(missing.kind.as_deref(), Some("crew_bridge_missing"));
+        assert_eq!(missing.status, 409);
+        let plain =
+            serde_json::json!({"type": "error", "code": "crew_handoff_failed", "error": "x"});
+        assert!(bridge_missing_frame(&plain).is_none());
+        let exit = serde_json::json!({"type": "exit", "bridge_missing": true});
+        assert!(bridge_missing_frame(&exit).is_none());
     }
 
     /// A 403 that says the key was not accepted marks the daemon as one this command cannot

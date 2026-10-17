@@ -1,10 +1,10 @@
 # Crew administration
 
-> **What this is.** What the Linux server needs for Crew, and how to install, start, upgrade, back up and troubleshoot a workspace.
-> **Status:** Current. Describes Biorouter 1.91.2.
+> **What this is.** What the Linux server needs for Crew, how Biorouter installs it in each account, and how to start, upgrade, delete, back up and troubleshoot a workspace.
+> **Status:** Current. Describes Biorouter 1.93.0, checked against the Crew code on 2026-10-16.
 > **Audience:** Lab managers who host a workspace, and the IT staff who support its server.
 
-A Crew workspace holds a lab's channels, shared files and AI agents. The host runs `biorouter-crew` on a Linux server as their own account. This broker keeps the workspace in files owned by that account, listens only on a Unix socket under `/tmp`, and learns each caller's account from the kernel. When a member connects, Biorouter starts the same program over SSH in their account, as a bridge to that socket. Crew needs no administrator rights, system service or open network port. For the app, see [Hosting a workspace](hosting-a-workspace.md).
+A Crew workspace holds a lab's channels, shared files and AI agents. The host runs `biorouter-crew` on a Linux server as their own account. This broker keeps the workspace in files owned by that account, listens only on a Unix socket under `/tmp`, and learns each caller's account from the kernel. When a member connects, Biorouter starts the same program over SSH in their account, as a bridge to that socket. Biorouter installs the program in each account itself, from the copy built into the desktop app and the command line, when the person joins or hosts ([How Biorouter installs Crew](#how-biorouter-installs-crew)). Crew needs no administrator rights, system service or open network port. For the app, see [Hosting a workspace](hosting-a-workspace.md).
 
 Examples: host `@alice`, member `@bob`, server `hpc.example.edu`, workspace `chen-lab`. Angle brackets, such as `<version>`, mark a value you fill in.
 
@@ -14,7 +14,9 @@ Crew needs Linux on x86_64 with glibc 2.31 or newer, and was checked on Debian 1
 
 ### Check a server before you host
 
-Run these on the server as the hosting account. They change nothing, and the last works only on x86_64.
+From a computer with Biorouter, `biorouter crew doctor --server alice@hpc.example.edu` signs in and checks the server without changing anything: its system, glibc, whether Crew is in the account and which version, and whether its kernel can confine commands to a folder. On the server, `"$HOME/.local/bin/biorouter-crew" doctor` prints the same facts, what blocks hosting there and what limits agents, and `probe` prints only the facts, both as JSON with `--output-format json`. The checks are fixed, run at most 5 seconds each, use no network, and read nothing of other accounts' homes, environment variables, process lists, SSH settings or shell history.
+
+Or run these on the server as the hosting account. They change nothing, and the last works only on x86_64.
 
 ```bash
 ldd --version | head -n 1
@@ -29,10 +31,10 @@ python3 -c 'import ctypes,json,os; libc=ctypes.CDLL(None,use_errno=True); libc.s
 | `ldd` below 2.31 | The release build may not start. |
 | `uname` not ending in `x86_64` | No qualified build exists. |
 | `df` shows `nfs`, `nfs4`, `cifs` or `smb3` | See [Storage requirements](#storage-requirements). |
-| `$HOME` mode `775`, `2770` or similar | Refused. Run `chmod go-w "$HOME"`. |
+| `$HOME` mode `775`, `2770` or similar | Refused. Run `chmod go-w "$HOME"`. The same holds for `~/.local` and `~/.local/share`: see [Storage permissions](#storage-permissions). |
 | `/etc/machine-id` missing or not owned by `root` | See [Machine identity](#machine-identity). |
 | `pidfd_open` is `0` | `stop` fails with `unsupported: safe stop requires Linux pidfd_open`. Do not host here. |
-| `landlock_abi` below `3` | Agents cannot run commands in a member's remote work folder. Those commands also need seccomp. Everything else works. |
+| `landlock_abi` below `3` | Agents with **In a folder** access cannot run commands in a member's work folder, which needs Landlock ABI 3 (Linux 6.2) and seccomp, and Crew refuses them up front with a sentence that names full access. Agents with **As me on the server** run commands as the member's account and need neither. Everything else works. |
 
 ### Machine identity
 
@@ -81,9 +83,18 @@ The state directory, by default `~/.local/share/biorouter-crew/<workspace name>`
 |---|---|
 | Local, persistent disk. Lustre, GPFS, BeeGFS and CephFS are not qualified, and `/tmp` is cleaned. With home folders on NFS, pass `--state-dir` with a local folder (untested). | `unsupported_storage` on NFS, CIFS or SMB |
 | The directory belongs to the host, has mode 0700 and is no symbolic link. | `unsafe_storage: state directory must be owner-only and not a symlink` |
-| No folder above it is writable by group or others unless sticky. | `unsafe_storage: writable non-sticky ancestor` |
+| No folder above it is writable by group or others unless sticky. See [Storage permissions](#storage-permissions). | `unsafe_storage: writable non-sticky ancestor` |
 | Each file belongs to the host, has mode 0600 and one link. | `unsafe_storage: file ownership, mode or links invalid` |
 | One broker per workspace. | `writer_active` |
+
+### Storage permissions
+
+The rule "No folder above it is writable by group or others unless sticky" covers the folders in the host's home on the way to the state directory, such as `~/.local` and `~/.local/share`. A lab server that gives new folders group write, so that `~/.local` reads `drwxrwxr-x`, fails it. Before **Set up and start Crew** or `biorouter crew host` starts the workspace, setup checks those folders, and when one fails, it stops with `crew_host_storage_unsafe`: the message names each folder and the command `chmod go-w` with them, and the error's `detail` lists them one per line.
+
+- **Fix it for me** in the Host dialog, or `biorouter crew host --fix-permissions`, has setup run `chmod go-w` on exactly those folders, each checked again first: owned by the hosting account, inside its home, a folder and not a link. Then it continues.
+- Or the host runs the command on the server, then starts again.
+
+`chmod go-w` only removes write permission for the group and others. Reading and entering the folders stays as it was. A folder another account owns, or one outside the home folder, is never changed, and needs IT.
 
 With `--state-dir`, the parent folder must exist. The socket is `/tmp/crew-<host UID>-<…>/broker.sock` (folder 0711, socket 0666). The broker checks every request and keeps the same path after `/tmp` is cleaned. If the folder's permissions changed but still kept other accounts from writing into it, the broker sets them back and keeps the path. If another account took that path while `/tmp` was empty, the broker moves to a new one and `start` prints `"socket_changed":true`. Members need to do nothing: Crew finds the new folder from the old path. If someone's Crew can't connect after a move, they update `~/.local/bin/biorouter-crew` in their server account. Don't send a new invitation line to people who already joined: Crew refuses a line that differs from the workspace it has saved.
 
@@ -95,15 +106,31 @@ With `--state-dir`, the parent folder must exist. The socket is `/tmp/crew-<host
 
 ## Install biorouter-crew
 
-Every account that connects, the host's included, needs its own copy at exactly `~/.local/bin/biorouter-crew`. A copy only elsewhere on `PATH` does not count. The person installs it signed in as themselves, or an administrator installs it into their account. The host's ordinary account cannot write into another account, so hosts send these requests to you. [Install Crew in your server account](joining-a-workspace.md#install-crew-in-your-server-account) is the member's view.
+Every account that connects, the host's included, needs its own copy at exactly `~/.local/bin/biorouter-crew`. A copy only elsewhere on `PATH` does not count.
+
+### How Biorouter installs Crew
+
+Biorouter installs the copy itself. Joining a workspace, **Set up Crew for my account**, **Set up and start Crew**, and `biorouter crew setup` and `biorouter crew host` all run the same setup service in the person's Biorouter background service:
+
+1. It checks the server with fixed commands: the account, the system, glibc, free space, the tools to check a SHA-256, and any copy already installed.
+2. It signs in once. A server that wants a password or a code opens the Sign in window, and every later step reuses that SSH connection.
+3. It sends the program over the SSH session's standard input, checks its size, SHA-256 and `--version` on the server, and installs it at `~/.local/bin/biorouter-crew` with one rename. The copy it replaces stays as `biorouter-crew.previous`.
+4. It starts the workspace (for a host) or connects (for a member).
+
+It never follows a link, touches a file another account owns, or replaces a newer version with an older one. An older copy that still runs is kept unless the person asks to replace it (`biorouter crew setup --replace-existing`). A copy of the same version with a different SHA-256, such as a development build, is replaced, and setup reports both digests. No command it runs contains text a person, a renderer or an agent typed.
+
+The program it sends is the one built into Biorouter: `crew-broker/linux-x86_64/biorouter-crew`, with its `manifest.json`, beside `biorouterd` in the desktop app, and under `/usr/libexec/biorouter/crew-broker/linux-x86_64/` in the CLI `.deb` and `.rpm` packages. The manifest records its version, SHA-256, size and glibc floor, and setup checks the file against it before sending. For development, `BIOROUTER_CREW_BROKER_DIR` names a folder holding `biorouter-crew` and, usually, its `manifest.json` ([Linux portability](design/linux-portability.md)).
+
+A member with no SSH route of their own to the server, or a server that refuses a program sent this way, uses the manual install below.
 
 ### Get a verified file
 
-- Download `biorouter-cli_<version>_amd64.deb` or `biorouter-cli-<version>-1.x86_64.rpm` from the [Biorouter release page](https://github.com/BaranziniLab/biorouter/releases). Its `sha256sum` must match the `sha256:` value shown beside it.
+- In the desktop app, **Save Crew’s server program…** under the Host dialog's **Crew isn’t on {server} yet?**, or a member's **Install it yourself**, saves the built-in copy as `biorouter-crew-<version>-linux-x86_64`, and shows its SHA-256 and the commands to copy, check and install it.
+- Or download `biorouter-cli_<version>_amd64.deb` or `biorouter-cli-<version>-1.x86_64.rpm` from the [Biorouter release page](https://github.com/BaranziniLab/biorouter/releases). Its `sha256sum` must match the `sha256:` value shown beside it.
 - Either package installs `/usr/bin/biorouter-crew`. To extract it instead, run `dpkg-deb --extract biorouter-cli_<version>_amd64.deb staging` and use `staging/usr/bin/biorouter-crew`.
-- Or build it on Linux with `cargo build --locked --release -p biorouter-crew`, following [Linux artifact portability](design/linux-portability.md).
+- Or build it with `scripts/build-crew-broker-linux.sh`, following [Linux artifact portability](design/linux-portability.md).
 
-[Install Crew on the server](hosting-a-workspace.md#install-crew-on-the-server) gives these steps for a person on a Mac.
+[Install Crew yourself](hosting-a-workspace.md#install-crew-yourself) gives these steps for a person on a Mac.
 
 ### Install commands
 
@@ -116,19 +143,19 @@ install -m 0755 "$VERIFIED_BINARY" "$HOME/.local/bin/biorouter-crew"
 "$HOME/.local/bin/biorouter-crew" --version
 ```
 
-The last line prints the version. The Host dialog shows these commands under **Crew isn’t on hpc.example.edu yet?**, and a member's "Crew isn’t set up" screen under **Install it yourself**. The Invite dialog shows the `command -v` form under **If Bob sees “Crew isn’t set up”**.
+The last line prints the version. The Invite dialog shows the `command -v` form under **If Bob sees “Crew isn’t set up”**.
 
-Without a copy, a member sees "Crew isn’t set up for your account on hpc.example.edu", and `biorouter crew connect` fails with `crew_bridge_missing`. After the install, they choose **Try again**.
+Without a copy, a member sees "Crew isn’t set up for your account on hpc.example.edu", with **Set up Crew for my account**, and `biorouter crew connect` fails with `crew_bridge_missing`. After a manual install, they choose **Try again**.
 
 ## Start and stop the broker
 
-In step 2 of the Host dialog, **Start it for me** runs the start commands over SSH, or the host runs them from **Run it yourself in a terminal**. Their `--bootstrap-key` is the host computer's public key, used only to create the workspace.
+In step 2 of the Host dialog, **Set up and start Crew** installs Crew and runs the start commands over SSH, or the host runs them from **Run it yourself in a terminal**. `biorouter crew host` does the same from a terminal. Their `--bootstrap-key` is the host computer's public key, used only to create the workspace.
 
 `start` runs the broker in the background, logs to `broker.log` in the state directory, and prints one line of JSON:
 
 - `"state":"running"` with an `invitation` line that the host pastes into Crew. If `invitation` is `null`, `invitation_error` says why.
 - `"state":"starting"`: no answer within 15 seconds. Wait, then run `status`.
-- `start_failed`: the broker stopped. The last log line names the cause.
+- `start_failed`: the broker stopped. The last log line names the cause. When setup ran `start`, it shows what the broker printed in its error's `detail`, and the desktop app in **What the server printed**.
 
 `status` checks that the broker answers as the same account and workspace, and prints one line of JSON with `"state":"running"` and the workspace's `name`. If the broker has stopped saving changes, `status` fails instead, with the cause and the commands to run (see [Server storage full or failing](#server-storage-full-or-failing)).
 
@@ -168,7 +195,7 @@ To recover, as the host:
 - The broker checks every request: the member is active, uses the UID they joined with, and that UID keeps its username. If not, the command line shows `Account enrollment changed.` and `biorouter crew members` shows `account no longer valid`. Usernames are unique among active members, ignoring case and lookalike letters.
 - After you rename an account, remove the old member and invite the new name. Inviting the new name first is refused with `This account joined as @bob and is now @robert…`.
 - Remove a member from every workspace before you delete their account. Crew cannot tell apart two people who get the same UID and username.
-- Only the host manages membership, the workspace name, privacy and institution, and agents never can. See [Hosting a workspace](hosting-a-workspace.md).
+- Only the host removes members from the workspace, and manages its name, privacy, institution and governance. In a managed workspace only the host lets people in, and in an open one every member can. Agents never can. See [Hosting a workspace](hosting-a-workspace.md).
 - Removing someone ends every agent's access in the workspace. Their messages, server account and SSH access stay. Inviting them again creates a new member with no earlier teams or channels.
 
 The host's account, programs running as it and the server's administrators can read everything the workspace stores, including Restricted channels. SSH encryption alone does not make a deployment HIPAA compliant. Your institution decides endpoint approval and access review.
@@ -202,7 +229,10 @@ On member computers, each Biorouter background service listens on a TCP port on 
 | `blobs/` | Shared file contents. |
 | `writer.lock`, `runtime.json`, `broker.log`, `torn-tail-<ID>` | The lock, the broker's details, its log, and any journal line set aside during recovery. |
 | `~/.local/bin/biorouter-crew` | The program, in each member's server account. |
-| `~/.local/state/biorouter-crew/remote-jobs/` | Records of agent commands, in each member's server account. |
+| `~/.local/state/biorouter-crew/remote-jobs/` | Records of agent commands with **In a folder** access, in each member's server account. |
+| `~/.local/state/biorouter-crew/jobs/` | With **As me on the server** access, each command's and file copy's record and output, in each member's server account. At most 512 are kept. |
+| `~/crew-work/<workspace>` | The work folder setup creates for full access when none was given, in each member's server account. |
+| `~/.local/bin/biorouter-crew.previous` | The copy setup replaced, kept for a rollback. |
 | `~/.config/biorouter/crew/` | On each computer: saved connections, and vault files when used. Device keys stay in the system keychain. |
 | `~/.local/state/biorouter/crew/` | On each computer: `runs.json`, the record of the agent tasks started there, and `transfers/`, the receipts of its file uploads and downloads. |
 | `~/.local/share/biorouter/crew/tasks/` | On each computer: the working folder of agent task chats. The task chats themselves are saved with your other chats, in `~/.local/share/biorouter/sessions/`. |
@@ -212,7 +242,9 @@ The first three rows are in the state directory. Computer paths are macOS and Li
 
 ## Upgrade Crew
 
-Upgrade at a quiet time, because members disconnect while the broker restarts. As the host:
+Each person's Biorouter installs a missing copy, and replaces a same-version copy whose SHA-256 differs, by itself. An older copy that still runs stays until the person runs `biorouter crew setup --replace-existing`, which installs the copy built into their Biorouter and keeps the old one as `biorouter-crew.previous`. For a member, that is the whole upgrade: it takes effect at their next connection.
+
+The host's copy also runs the workspace, which keeps running the old program until it restarts. Upgrade at a quiet time, because members disconnect while the broker restarts. As the host, run `biorouter crew setup --replace-existing` on your computer, then stop and start the broker on the server as in steps 2 and 3 below. Or by hand:
 
 1. Install the new file beside the old one, and check it:
 
@@ -247,20 +279,44 @@ The new broker reads the journal as it is. To roll back, work in `~/.local/bin`:
 2. Run `mv -f biorouter-crew.previous biorouter-crew`.
 3. Run `./biorouter-crew start --state-dir "$HOME/.local/share/biorouter-crew/chen-lab"`. It prints `"state":"running"`.
 
-Members replace their own copy the same way. It takes effect at their next connection. If a member reads that the server "can't let people join with a code yet" or "can't add people directly yet", upgrade the broker.
+Members replace their own copy the same way, or with `biorouter crew setup --replace-existing`. It takes effect at their next connection. If a member reads that the server "can't let people join with a code yet" or "can't add people directly yet", or that it can't delete channels or open the workspace yet, upgrade the broker.
 
 After a Biorouter update, reopening Biorouter on macOS or Linux replaces an older background service automatically. A terminal command replaces a service it cannot use, while `--no-start` refuses instead. An already open window can still show "…needs a newer Biorouter background service…", or a terminal command can say `Restart the shared Biorouter daemon to …`. [Replace an old background service](connections-and-troubleshooting.md#replace-an-old-background-service) gives the fix. Stopping the service affects every window and terminal using it.
 
+## Deletion and retention
+
+Crew deletes data in three ways, and each keeps a different amount:
+
+| Action | What goes | What stays |
+|---|---|---|
+| Delete a channel, or a team with its channels | The channel or team, its shared files on the server, its server paths, invitations and read positions, and every agent task and chat that reads it | Its messages, in `journal.jsonl` and in the workspace's live state, unreadable to everyone through Crew, until the workspace is deleted |
+| Delete the workspace (host) | Everything the broker created in the state directory: `journal.jsonl`, `blobs/`, `runtime.json`, `broker.log`, `torn-tail-*`, the lock and the socket | Any file in the state directory that the broker did not create, which it lists and leaves; members' own copies of downloaded files |
+| Remove a workspace from one computer | That computer's key and saved connection | Everything on the server |
+
+Deleting a channel frees its file space, but its messages still count toward the workspace's state and journal limits. When text must be gone from the server, delete the workspace, and remember any backup copies.
+
+### Delete a stopped workspace
+
+`workspace.delete`, from **Delete workspace…** or `biorouter crew workspace delete`, refuses every later request but `hello` with `workspace_deleted`, waits 30 seconds so connected members learn of it, then erases the state directory and exits. Before it erases anything it writes a `DELETED` marker there, so a broker started on that directory again refuses with `workspace_deleted` and the command to finish. The directory itself goes once it is empty.
+
+For a broker that is not running, or an erase a crash interrupted, the host runs on the server:
+
+```bash
+"$HOME/.local/bin/biorouter-crew" delete --state-dir "$HOME/.local/share/biorouter-crew/chen-lab" --workspace-id WORKSPACE_ID
+```
+
+The workspace ID is the confirmation, and must be the one the directory holds; on the host's computer, `biorouter crew connections show --show-ids` prints it as `Workspace ID:`. `delete` refuses with `writer_active` while a broker runs from the directory, and prints the files it left in place, if any.
+
 ## Back up a workspace
 
-Crew has no export, backup, restore, retention or deletion tools, and never deletes messages or files. Your institution decides backup, retention, deletion and legal hold. To preserve a copy:
+Crew has no export, backup, restore or retention tools. Your institution decides backup, retention, deletion and legal hold. To preserve a copy:
 
 1. Stop the broker and check for `"stopped":true`.
 2. Make sure nobody starts it while you copy.
 3. Copy the whole state directory to equally private storage, and check the copy with `sha256sum`.
 4. Start the broker again. The `start` line prints `"state":"running"`, and members can connect.
 
-Never edit `journal.jsonl`, because a broker refuses records that fail their checksums. A copy cannot run on another machine (`node_identity_changed`) or account (`host_identity_changed`), and Crew has no failover. The host's account and root can change the journal, so keep tamper resistant audit records elsewhere.
+Never edit `journal.jsonl`, because a broker refuses records that fail their checksums. A copy cannot run on another machine (`node_identity_changed`) or account (`host_identity_changed`), and Crew has no failover. The host's account and root can change the journal, so keep tamper resistant audit records elsewhere. A backup taken before a channel was deleted still holds the channel.
 
 ## Workspace limits
 
@@ -275,13 +331,17 @@ Never edit `journal.jsonl`, because a broker refuses records that fail their che
 | Unfinished uploads | Each holds its full declared size of the shared file space, and of its member's share, from the moment it starts. One with no progress for a day is removed, with its partial file. Cancelling it on the member's computer does not remove it sooner. |
 | Remote references | 10,000 |
 | One member's share (the host has none) | 4 MiB of workspace state, 256 MiB of journal, 10 teams, 100 channels, 2.5 GiB and 2,500 shared files, 2,500 remote references, 100 waiting invitations |
-| Channels an agent reads | A task: its channel plus 16 more. A chat: 20, including its own. |
+| Channels an agent reads | A task: its channel plus 16 more, or plus 99 more in an open workspace on a current server. A chat: 20, including its own. |
+| One agent task | 60 model turns, 200 tool calls, 55 minutes. Four tasks at once on one computer. |
 | Broker connections | 256, and 8 per account |
-| One agent command on the server | 60 seconds of CPU, 1 GiB memory, 16 MiB files, 64 open files, 30 seconds of run time (60 at most), 4 at once |
+| One agent command in a work folder (**In a folder**) | 60 seconds of CPU, 1 GiB memory, 16 MiB files, 64 open files, 30 seconds of run time (60 at most), 4 at once |
 | What one agent command can reach | Its work folder, and the programs and libraries under `/usr/bin`, `/usr/lib`, `/bin` and `/lib`. It has no network, cannot start other processes and cannot read `/etc`, so cluster tools such as `sbatch` and `squeue` do not run. See [Work in the remote work folder](agents-and-chat-access.md#work-in-the-remote-work-folder). |
 | Agent file access in the remote work folder | 256 KiB per read or write, 64 KiB of command output |
+| One agent command with **As me on the server** | The account's own limits, and 10 minutes of run time by default, an hour at most; a detached job runs until it ends. 64 KiB of command text, 384 KiB per read or write, 64 KiB of output in an answer. 8 commands and file copies at once per account, 512 records kept. |
+| One file copy with **As me on the server** | 1 GiB, to the server (`remote.fetch_blob`) or to the channel (`remote.share_file`) |
+| Workspace context | 64 KiB of Markdown |
 
-The state limit decides capacity. Ordinary changes may use 15 MiB of it, so fewer than 15,360 messages of 1 KiB fit, or 1,920 of 8 KiB. Archiving frees nothing. At a limit, reading works and changes are refused with "This workspace has grown past the size Crew supports…". The host can still remove members and change the privacy mode, and anyone can still stop an agent, archive a channel or remove someone from a channel they own. Preserve it and start a new workspace with a new state directory.
+The state limit decides capacity. Ordinary changes may use 15 MiB of it, so fewer than 15,360 messages of 1 KiB fit, or 1,920 of 8 KiB. Archiving frees nothing, and deleting a channel frees its files but not its messages' space. At a limit, reading works and changes are refused with "This workspace has grown past the size Crew supports…". The host can still remove members and change the privacy mode, and anyone can still stop an agent, archive a channel or remove someone from a channel they own. Preserve it and start a new workspace with a new state directory.
 
 A member who reaches their share sees "You have used your share of this workspace's storage" (or its journal, files, teams, channels, references or invitations). Everyone else keeps working, and reading still works for them too.
 
@@ -302,6 +362,10 @@ Plan for up to about 1.2 GiB of broker memory when 50 accounts post at once.
 | `journal_corrupt: checksum mismatch` | Change nothing. After an upgrade, roll back and use a release build. |
 | `quota_exceeded: journal exceeds supported replay size of 1 GiB` | Preserve the workspace and start a new one. |
 | `storage_full: Crew on this server stopped saving changes…` or `storage_failed: …` from `status` | See [Server storage full or failing](#server-storage-full-or-failing). |
+| `unsafe_storage: writable non-sticky ancestor` | Run `chmod go-w` on the folders above the state directory that your account owns, such as `~/.local`. See [Storage permissions](#storage-permissions). |
+| `workspace_deleted: This state directory holds a workspace its host deleted. …` | The workspace was deleted. Run the `biorouter-crew delete` command the message names to finish ([Delete a stopped workspace](#delete-a-stopped-workspace)). |
+| `writer_active: A broker is running from this state directory. …` | Stop the broker first, then run `delete` again. |
+| `identity_mismatch: This state directory holds workspace …` | `--workspace-id` names another workspace. Check the ID and the `--state-dir`. |
 | `ssh -G refused the native configuration; …` | Run `ssh -G <host>` on the member's computer to see the error. |
 
 ## Related documentation

@@ -35,7 +35,7 @@ pub fn render_workspace_context(facts: &Value) -> String {
     machine(facts, host.as_deref(), &mut out);
     running_work(&facts["scheduler"], &mut out);
     software(facts, &mut out);
-    storage(&facts["storage"], &mut out);
+    storage(&facts["storage"], facts["home"].as_str(), &mut out);
     out.push_str("## Conventions\n\n(Written by the lab.)\n");
     out
 }
@@ -117,15 +117,18 @@ fn machine(facts: &Value, host: Option<&str>, out: &mut String) {
     );
 }
 
-/// A GPU as the probe names it: its model, or `{name, memory_gib}`.
+/// A GPU as the probe names it: its model, or `{name, memory_mib}` (as `nvidia-smi` reports
+/// it, and the probe writes it), or `{name, memory_gib}`. Memory is shown in GiB, rounded.
 fn gpu(value: &Value) -> Option<String> {
     if let Some(name) = text(value) {
         return Some(name);
     }
     let name = text(&value["name"]).or_else(|| text(&value["model"]))?;
-    Some(match count(&value["memory_gib"]) {
-        Some(memory) => format!("{name} ({memory} GiB)"),
-        None => name,
+    let memory = count(&value["memory_gib"])
+        .or_else(|| count(&value["memory_mib"]).map(|mib| mib.saturating_add(512) / 1024));
+    Some(match memory {
+        Some(memory) if memory > 0 => format!("{name} ({memory} GiB)"),
+        _ => name,
     })
 }
 
@@ -251,9 +254,47 @@ fn software(facts: &Value, out: &mut String) {
     );
 }
 
-fn storage(storage: &Value, out: &mut String) {
+/// An absolute server path's parts; `None` for any other (`~`, `~/data`: the account's own).
+fn path_parts(path: &str) -> Option<Vec<&str>> {
+    let rest = path.strip_prefix('/')?;
+    Some(
+        rest.split('/')
+            .filter(|part| !part.is_empty() && *part != ".")
+            .collect(),
+    )
+}
+
+fn under(path: &[&str], base: &[&str]) -> bool {
+    path.len() >= base.len() && path[..base.len()] == *base
+}
+
+/// Whether `path` is inside a home folder other than the account's own `home`, by the probe's
+/// own rule (`biorouter-crew probe` leaves those out; one installed before it did not): below
+/// `home`'s parent but not `home` or above it, or below `/home` but not `home`. With no `home`,
+/// anything below `/home` counts. Whose homes a server has is not the workspace's business.
+fn in_another_home(path: &str, home: Option<&str>) -> bool {
+    let Some(path) = path_parts(path) else {
+        return false;
+    };
+    let below_home_root = path.first() == Some(&"home") && path.len() > 1;
+    let Some(home) = home.and_then(path_parts) else {
+        return below_home_root;
+    };
+    if under(&home, &path) {
+        return false;
+    }
+    let sibling = home.len() >= 2 && under(&path, &home[..home.len() - 1]) && !under(&path, &home);
+    sibling || (below_home_root && !under(&path, &home))
+}
+
+fn storage(storage: &Value, home: Option<&str>, out: &mut String) {
     out.push_str("## Storage\n\n");
     let rows: Vec<String> = list(storage)
+        .filter(|entry| {
+            entry["path"]
+                .as_str()
+                .is_none_or(|path| !in_another_home(path, home))
+        })
         .filter_map(|entry| {
             let path = text(&entry["path"])?;
             let cell = |value: Option<String>| value.unwrap_or_else(|| "unknown".into());
@@ -369,6 +410,63 @@ mod tests {
             "{guide}"
         );
         assert!(guide.contains("- Environment modules: available (`module avail`)"));
+    }
+
+    /// C9: the probe writes a GPU's memory as `memory_mib`, as `nvidia-smi` reports it.
+    #[test]
+    fn a_gpu_s_memory_is_read_as_the_probe_writes_it() {
+        let mut facts = leo();
+        facts["gpus"] = json!([
+            {"name": "NVIDIA A100", "memory_mib": 81920},
+            {"name": "NVIDIA T4", "memory_mib": 15360},
+            {"name": "Unknown card", "memory_mib": null},
+        ]);
+        let guide = render_workspace_context(&facts);
+        assert!(
+            guide.contains("- GPUs: NVIDIA A100 (80 GiB); NVIDIA T4 (15 GiB); Unknown card"),
+            "{guide}"
+        );
+    }
+
+    /// L4: other people's home folders (what an older probe listed from a ZFS server, one
+    /// dataset per account) are not named in a document every member reads; the account's own
+    /// home, the folders above it, and the shared data storage stay.
+    #[test]
+    fn other_people_s_homes_are_left_out_of_storage() {
+        let mut facts = leo();
+        facts["home"] = json!("/pool1/home/gbellucci");
+        facts["storage"] = json!([
+            {"path": "/pool1/home/gbellucci", "fs": "zfs", "size_gib": 24862, "avail_gib": 19638},
+            {"path": "/", "fs": "ext4", "size_gib": 217, "avail_gib": 89},
+            {"path": "/pool1", "fs": "zfs", "size_gib": 23982, "avail_gib": 19638},
+            {"path": "/pool1/home", "fs": "zfs", "size_gib": 19713, "avail_gib": 19638},
+            {"path": "/pool1/data", "fs": "zfs", "size_gib": 22820, "avail_gib": 19638},
+            {"path": "/pool1/home/braian", "fs": "zfs", "size_gib": 19776, "avail_gib": 19638},
+            {"path": "/pool1/home/amit/projects", "fs": "zfs", "size_gib": 19648, "avail_gib": 19638},
+            {"path": "/pool1/data/datasets", "fs": "zfs", "size_gib": 21101, "avail_gib": 19638},
+            {"path": "/home/noah", "fs": "nfs", "size_gib": 500, "avail_gib": 100},
+            {"path": "~/scratch", "fs": "xfs", "size_gib": 900, "avail_gib": 800},
+        ]);
+        let guide = render_workspace_context(&facts);
+        for kept in [
+            "| /pool1/home/gbellucci |",
+            "| / |",
+            "| /pool1 |",
+            "| /pool1/home |",
+            "| /pool1/data |",
+            "| /pool1/data/datasets |",
+            "| ~/scratch |",
+        ] {
+            assert!(guide.contains(kept), "{kept} missing from:\n{guide}");
+        }
+        for left_out in ["braian", "amit", "noah"] {
+            assert!(!guide.contains(left_out), "{left_out} in:\n{guide}");
+        }
+        // With no home known, nothing below /home is named.
+        facts["home"] = json!(null);
+        let guide = render_workspace_context(&facts);
+        assert!(!guide.contains("noah"), "{guide}");
+        assert!(guide.contains("| /pool1/home/braian |"), "{guide}");
     }
 
     #[test]

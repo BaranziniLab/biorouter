@@ -41,6 +41,7 @@ impl Home {
             home: path.clone(),
             jobs: path.join(".local/state/biorouter-crew/jobs"),
             executable: PathBuf::from(env!("CARGO_BIN_EXE_biorouter-crew")),
+            program: PathBuf::from(env!("CARGO_BIN_EXE_biorouter-crew")),
         };
         Self { path, context }
     }

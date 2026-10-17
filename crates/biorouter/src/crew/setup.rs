@@ -26,13 +26,17 @@
 //!   connection's ID *is* its preparation ID), with `BatchMode=yes`. A server that asks for a
 //!   password parks the job at `needs_sign_in` until the person signs in through the native
 //!   terminal (`POST /crew/setup/{job_id}/authentication`), whose master every later step, the
-//!   start, Create and the connect ride: one password covers them all.
+//!   start, Create and the connect ride: one password covers them all. That master serves only
+//!   the login and route it signed in to: a job for another route, or a connection saved with
+//!   another, ends it rather than riding it.
+//! - **A member's agents get only the access the person chose** (`agent_access`, design
+//!   OW-6). A job that was not told a level leaves the connection's access exactly as it is.
 
 use super::{
     authentication, host_start, ssh_policy, transport, AuthenticationPlan, Connection, CrewManager,
     RemoteAccess, SaveConnection, SshFailureKind, StartOutput,
 };
-use anyhow::{Context, Result};
+use anyhow::{ensure, Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -66,6 +70,26 @@ const GLIBC_FLOOR: &str = "2.31";
 /// What a person reads for the installed program's place on the server.
 const INSTALLED_PATH: &str = "~/.local/bin/biorouter-crew";
 
+/// The folders a host's workspace would be kept under that this account owns and that other
+/// accounts may write to: `w` walks up from `~/.local/share/biorouter-crew` (or the nearest
+/// folder of it that exists), as its real path, to `/`, and calls `$A` with each folder whose
+/// mode has group or other write and no sticky bit and whose owner is this account. The broker
+/// refuses to keep a workspace under any such folder (`unsafe_storage: writable non-sticky
+/// ancestor`), so setup asks first.
+macro_rules! storage_walk {
+    () => {
+        concat!(
+            "U=$(id -u); ",
+            "w() { D=\"$HOME/.local/share/biorouter-crew\"; ",
+            "until [ -d \"$D\" ] || [ \"$D\" = / ] || [ -z \"$D\" ]; do D=$(dirname \"$D\"); done; ",
+            "D=$(cd \"$D\" 2>/dev/null && pwd -P); ",
+            "while [ -n \"$D\" ]; do set -- $(ls -ldn \"$D\" 2>/dev/null); ",
+            "case \"$1\" in ?????w*|????????w*) case \"$1\" in ?????????[tT]*) ;; *) [ \"$3\" = \"$U\" ] && \"$A\" \"$D\";; esac;; esac; ",
+            "[ \"$D\" = / ] && break; D=$(dirname \"$D\"); done; }; ",
+        )
+    };
+}
+
 /// What the server says about itself. Reads only the account's own facts and files.
 const PROBE_SCRIPT: &str = concat!(
     "set -f; P=BRCREW_PROBE; ",
@@ -89,7 +113,25 @@ const PROBE_SCRIPT: &str = concat!(
     "if command -v timeout >/dev/null 2>&1; then V=$(timeout 10 \"$F\" --version 2>&1); else V=$(\"$F\" --version 2>&1); fi; C=$?; ",
     "echo \"$P binary_exit $C\"; echo \"$P binary_version_hex $(printf %s \"$V\" | head -c 400 | h)\"; ",
     "fi; ",
+    storage_walk!(),
+    "r() { echo \"$P storage_unsafe_hex $(printf %s \"$1\" | head -c 4096 | h)\"; }; A=r; w; ",
     "echo \"$P end\""
+);
+
+/// Take write access for other accounts away (`chmod go-w`) from exactly the folders the walk
+/// finds, each checked again here: this account's, a folder, not a link, and inside the
+/// account's own home (its real path). Then say what changed and what the walk still finds.
+/// Nothing is substituted: the server finds the folders itself.
+const STORAGE_FIX_SCRIPT: &str = concat!(
+    "set -f; P=BRCREW_STORAGE; ",
+    "h() { od -An -v -tx1 | tr -d \" \\n\"; }; ",
+    storage_walk!(),
+    "H=$(cd \"$HOME\" 2>/dev/null && pwd -P); [ \"$H\" = / ] && H=; ",
+    "r() { echo \"$P $1 $(printf %s \"$2\" | head -c 4096 | h)\"; }; ",
+    "x() { if [ -n \"$H\" ] && [ -d \"$1\" ]; then case \"$1\" in \"$H\"|\"$H\"/*) ",
+    "if [ -L \"$1\" ]; then :; elif chmod go-w \"$1\"; then r fixed \"$1\"; fi;; esac; fi; }; ",
+    "u() { r unsafe \"$1\"; }; ",
+    "A=x; w; A=u; w; echo \"$P done\""
 );
 
 /// Receive the program on standard input and install it. `@JOB@`, `@SIZE@`, `@SHA@`, `@VER@`
@@ -100,7 +142,9 @@ const INSTALL_SCRIPT: &str = concat!(
     "f() { echo \"$P fail $*\"; exit 3; }; ",
     "B=\"$HOME/.local/bin\"; F=\"$B/biorouter-crew\"; R=\"$B/biorouter-crew.previous\"; ",
     "T=\"$B/.biorouter-crew.@JOB@.partial\"; L=\"$B/.biorouter-crew.install-lock\"; ",
-    "mkdir -p \"$B\" || f permission_denied bin_dir; ",
+    // A folder this makes is writable by the account alone, whatever the login's umask: a
+    // group-writable ~/.local is a folder Crew then refuses to keep a workspace under.
+    "umask 022; mkdir -p \"$B\" || f permission_denied bin_dir; ",
     "umask 077; ",
     "if [ -L \"$B\" ]; then f unexpected_target bin_dir; fi; [ -d \"$B\" ] || f unexpected_target bin_dir; ",
     "set -- $(ls -ldn \"$B\"); [ \"$3\" = \"$(id -u)\" ] || f unexpected_target bin_dir_owner; ",
@@ -165,9 +209,35 @@ pub struct SetupRequest {
     #[serde(default)]
     pub workspace_name: Option<String>,
     /// Replace a Crew program in the account that is older than this app's, or that does not
-    /// run. The one replaced stays as `biorouter-crew.previous`. A newer one is never replaced.
+    /// run. The one replaced stays as `biorouter-crew.previous`. A newer one is never replaced;
+    /// one of this app's version that is another build of it (another SHA-256) is replaced
+    /// whether or not this is set.
     #[serde(default)]
     pub replace_existing: bool,
+    /// What a member's agents may do on the server once the job connects (design OW-6), as the
+    /// person chose it: `off`, `folder` or `full`. Absent leaves the connection's agent access
+    /// exactly as it is. Only a member's job reads it.
+    #[serde(default)]
+    #[schema(inline)]
+    pub agent_access: Option<SetupAgentAccess>,
+    /// Take write access for other accounts away (`chmod go-w`) from the folders the job finds
+    /// above where the workspace is kept, which the account owns, when Crew would otherwise
+    /// refuse to start there (`crew_host_storage_unsafe`). Only a host's job reads it.
+    #[serde(default)]
+    pub fix_storage_permissions: bool,
+}
+
+/// A member's agent access, as setup is asked to set it (design OW-6).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize, utoipa::ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum SetupAgentAccess {
+    /// No work folder: the job changes nothing and makes no folder.
+    Off,
+    /// The work folder, confined, with commands where the server can confine them.
+    Folder,
+    /// Run as the person on the server, starting in the work folder. Where the server or the
+    /// bridge does not take full access, the job sets the work folder instead, and says so.
+    Full,
 }
 
 /// Which server, and which account on it.
@@ -274,6 +344,11 @@ pub struct SetupServer {
     pub free_kib: Option<u64>,
     /// The tool the server checks a SHA-256 with: `sha256sum`, `shasum` or `openssl`.
     pub checksum_tool: Option<String>,
+    /// Folders above where a host's workspace is kept (`~/.local/share/biorouter-crew`), as
+    /// their real paths, that this account owns and other accounts may write to (group or other
+    /// write, no sticky bit). Crew won't start a workspace under them
+    /// (`crew_host_storage_unsafe`) until `chmod go-w` takes that away.
+    pub storage_unsafe: Vec<String>,
 }
 
 /// The account's Crew program, as the check found it.
@@ -316,6 +391,10 @@ pub struct SetupOutcome {
     pub reused: bool,
     /// The program replaced stays as `~/.local/bin/biorouter-crew.previous`.
     pub previous_kept: bool,
+    /// The program this job replaced, and the one it put in its place: an older version, or
+    /// another build of this app's version (another SHA-256). `null` when nothing was replaced.
+    #[schema(inline)]
+    pub upgraded_from: Option<SetupUpgrade>,
     /// A host's start, read exactly as `POST /crew/host/start` reads it.
     pub host: Option<StartOutput>,
     /// The start command that ran, character for character what the Host dialog shows.
@@ -324,12 +403,25 @@ pub struct SetupOutcome {
     pub connection_id: Option<String>,
     /// The workspace's work folder on the server, as its canonical path.
     pub work_folder: Option<String>,
-    /// What this job set the connection's agent access to, when it gave the connection its
-    /// work folder (a member whose connection had none, on a server and bridge that take full
-    /// access).
+    /// What this job set a member's connection's agent access to, as the request's
+    /// `agent_access` asked: `full`, or `folder` (asked for, or where full access is not
+    /// available). `null` when the job changed nothing.
     pub remote_access: Option<RemoteAccess>,
     /// The first context document, drafted from the server's facts (Markdown).
     pub context_draft: Option<String>,
+}
+
+/// A Crew program a job replaced ([`SetupOutcome::upgraded_from`]).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, utoipa::ToSchema)]
+pub struct SetupUpgrade {
+    /// The version the replaced program named, when it named one.
+    pub version: Option<String>,
+    /// The replaced program's SHA-256, as 64 lowercase hex digits.
+    pub sha256: Option<String>,
+    /// The version now installed.
+    pub installed_version: String,
+    /// The SHA-256 of the program now installed.
+    pub installed_sha256: String,
 }
 
 /// Why a job stopped.
@@ -341,7 +433,11 @@ pub struct SetupError {
     /// (`crew_workspace_identity_mismatch`, `crew_request_refused`), or one of setup's own:
     /// `crew_setup_cancelled`, `crew_setup_timed_out`, `crew_setup_sign_in_expired`,
     /// `crew_setup_server_unreadable` (the server's answer could not be read),
-    /// `crew_setup_start_failed` (Crew did not start the workspace; see `outcome.host`),
+    /// `crew_setup_start_failed` (Crew did not start the workspace; see `outcome.host`, and
+    /// `detail` for what Crew printed), `crew_host_storage_unsafe` (other accounts can write to
+    /// a folder above where the workspace is kept; `detail` lists them one per line, and
+    /// `fix_storage_permissions` lets setup fix the ones the account owns),
+    /// `crew_setup_changed` (the connection's login or route changed while the job ran),
     /// `crew_install_artifact_unavailable`, `crew_install_unsupported_platform`,
     /// `crew_install_dependency_missing`, `crew_install_incompatible` (the program there does
     /// not run or name its version), `crew_install_unexpected_target` (a link, a folder or
@@ -742,9 +838,18 @@ struct Probe {
     binary_sha256: Option<String>,
     binary_exit: Option<i32>,
     binary_output: Option<String>,
+    storage_unsafe: Vec<String>,
 }
 
 const KINDS: [&str; 5] = ["missing", "file", "symlink", "dir", "other"];
+/// At most this many folders are read from one storage walk (there are as many as the path
+/// has parts).
+const MAX_STORAGE_FOLDERS: usize = 32;
+
+/// A folder the storage walk named: an absolute path, hex-encoded on the server.
+fn walked_folder(value: &str) -> Option<String> {
+    unhex_text(value, 4096).filter(|path| path.starts_with('/'))
+}
 
 /// The probe's `BRCREW_PROBE` lines, read strictly; every other line (a login banner, a
 /// `.bashrc` that prints) is ignored. `None` unless the probe both began and ended.
@@ -783,6 +888,15 @@ fn read_probe(stdout: &[u8]) -> Option<Probe> {
             }
             "binary_exit" => probe.binary_exit = value.parse().ok(),
             "binary_version_hex" => probe.binary_output = unhex_text(value, 400),
+            "storage_unsafe_hex" => {
+                if let Some(folder) = walked_folder(value) {
+                    if probe.storage_unsafe.len() < MAX_STORAGE_FOLDERS
+                        && !probe.storage_unsafe.contains(&folder)
+                    {
+                        probe.storage_unsafe.push(folder);
+                    }
+                }
+            }
             _ => {}
         }
     }
@@ -851,6 +965,71 @@ fn read_install(stdout: &[u8]) -> Installed {
     } else {
         Installed::Unknown
     }
+}
+
+/// What the storage fix changed, and what the walk still finds after it.
+#[derive(Debug, Default, PartialEq, Eq)]
+struct StorageFix {
+    fixed: Vec<String>,
+    left: Vec<String>,
+}
+
+/// The storage fix's `BRCREW_STORAGE` lines; `None` unless it said it was done.
+fn read_storage_fix(stdout: &[u8]) -> Option<StorageFix> {
+    let text = String::from_utf8_lossy(stdout);
+    let mut fix = StorageFix::default();
+    for line in text.lines() {
+        let Some(rest) = line.trim_end().strip_prefix("BRCREW_STORAGE ") else {
+            continue;
+        };
+        let mut words = rest.split(' ');
+        let list = match words.next() {
+            Some("fixed") => &mut fix.fixed,
+            Some("unsafe") => &mut fix.left,
+            Some("done") => return Some(fix),
+            _ => continue,
+        };
+        if let Some(folder) = words.next().and_then(walked_folder) {
+            if list.len() < MAX_STORAGE_FOLDERS && !list.contains(&folder) {
+                list.push(folder);
+            }
+        }
+    }
+    None
+}
+
+/// A path as a POSIX shell reads it back as one word: as it is when it needs no quoting, else
+/// in single quotes.
+fn shell_word(path: &str) -> String {
+    if !path.is_empty()
+        && path
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b"/._-+,:%=".contains(&b))
+    {
+        path.to_owned()
+    } else {
+        format!("'{}'", path.replace('\'', "'\\''"))
+    }
+}
+
+/// What a start printed, for Copy details: its standard output and error, line by line, each
+/// without control characters, at most 40 lines and 2000 characters, blank lines dropped.
+fn printed(stdout: &[u8], stderr: &str) -> Option<String> {
+    let stdout = host_start::shown(stdout);
+    let lines: Vec<String> = stdout
+        .lines()
+        .chain(stderr.lines())
+        .map(|line| {
+            line.chars()
+                .filter(|c| !c.is_control())
+                .collect::<String>()
+                .trim()
+                .to_owned()
+        })
+        .filter(|line| !line.is_empty())
+        .take(40)
+        .collect();
+    detail(&lines.join("\n"))
 }
 
 /// The work folder's canonical path, or why it could not be made.
@@ -931,6 +1110,12 @@ impl Route {
     }
 }
 
+/// The route digest a setup sign-in for `connection`'s login and route is bound to, so a kept
+/// setup master is let go when the connection that would ride it names another route (C12).
+pub(super) fn route_digest(connection: &Connection) -> Vec<u8> {
+    Route::of(connection).digest()
+}
+
 /// Why a job stopped.
 struct Stop {
     state: SetupState,
@@ -961,6 +1146,10 @@ struct Job {
     bootstrap_key: Option<String>,
     workspace_name: Option<String>,
     replace_existing: bool,
+    /// The agent access a member's job sets, as the person chose it; `None` leaves it as is.
+    agent_access: Option<SetupAgentAccess>,
+    /// A host's job may `chmod go-w` the account's own folders above the workspace.
+    fix_storage_permissions: bool,
     connection_id: Option<String>,
     progress: Mutex<Progress>,
     finished_at: Mutex<Option<Instant>>,
@@ -1051,6 +1240,13 @@ pub(super) fn sign_in_route(job_id: &str) -> Option<Vec<u8>> {
     job(job_id).map(|job| job.route.digest())
 }
 
+/// Whether `job_id` is known and waiting for its person to sign in. A sign-in left open for a
+/// job that is not (it ended, or asked again for another sign-in) holds its server's key for
+/// nothing, so a new one replaces it.
+pub(super) fn waiting_for_sign_in(job_id: &str) -> bool {
+    job(job_id).is_some_and(|job| job.progress().state == SetupState::NeedsSignIn)
+}
+
 /// The manager whose control paths and lifecycle a setup sign-in for `job_id` uses.
 pub(super) fn sign_in_manager(job_id: &str) -> Option<Arc<CrewManager>> {
     job(job_id).map(|job| Arc::clone(&job.manager))
@@ -1107,8 +1303,12 @@ fn stages_for(intent: SetupIntent) -> Vec<SetupStage> {
 enum Plan {
     /// Keep the program there, at this version.
     Reuse(String),
-    /// Send this app's copy; `previous` is the SHA-256 of the one it replaces, if any.
-    Install { previous: Option<String> },
+    /// Send this app's copy; `previous` is the SHA-256 of the one it replaces, if any, and
+    /// `from` the version that one named.
+    Install {
+        previous: Option<String>,
+        from: Option<String>,
+    },
 }
 
 impl Job {
@@ -1311,12 +1511,21 @@ impl Job {
                 return Err(stop);
             }
         };
+        let ours = artifact.as_ref().ok().map(|a| a.info.version.clone());
         let decided = match &plan {
             Plan::Reuse(version) => format!("Crew {version} is installed in your account."),
-            Plan::Install { previous: None } => "Crew isn't installed in your account yet.".into(),
-            Plan::Install { previous: Some(_) } => {
-                "Crew in your account will be replaced with this app's.".into()
+            Plan::Install { previous: None, .. } => {
+                "Crew isn't installed in your account yet.".into()
             }
+            Plan::Install {
+                previous: Some(_),
+                from: Some(from),
+            } if Some(from) == ours.as_ref() => format!(
+                "Crew {from} in your account is another build than this app's, so it will be replaced."
+            ),
+            Plan::Install {
+                previous: Some(_), ..
+            } => "Crew in your account will be replaced with this app's.".into(),
         };
         self.done(Name::Check, Some(decided));
         if self.intent == SetupIntent::Check {
@@ -1338,14 +1547,23 @@ impl Job {
                 });
                 version
             }
-            Plan::Install { previous } => {
+            Plan::Install { previous, from } => {
                 self.begin(Name::Install);
                 // `plan` only installs with a copy in hand.
                 let artifact = artifact.map_err(|error| {
                     self.stop("crew_install_artifact_unavailable", error.to_string(), None)
                 })?;
-                let version = self.install(&artifact, previous).await?;
-                self.done(Name::Install, Some(format!("Installed Crew {version}.")));
+                let replaced = previous.is_some();
+                let version = self.install(&artifact, previous, from.clone()).await?;
+                let said = match from {
+                    Some(from) if replaced && from == version => {
+                        format!("Replaced Crew {version} with this app's build of it.")
+                    }
+                    Some(from) if replaced => format!("Updated Crew from {from} to {version}."),
+                    _ if replaced => format!("Replaced Crew in your account with {version}."),
+                    _ => format!("Installed Crew {version}."),
+                };
+                self.done(Name::Install, Some(said));
                 version
             }
         };
@@ -1438,6 +1656,7 @@ impl Job {
                 glibc: probe.glibc.clone(),
                 free_kib: probe.free_kib,
                 checksum_tool: probe.checksum_tool().map(str::to_owned),
+                storage_unsafe: probe.storage_unsafe.clone(),
             };
             progress.installed = Some(SetupInstalled {
                 path: INSTALLED_PATH.into(),
@@ -1474,11 +1693,19 @@ impl Job {
                     (Some(version), Err(_)) => return Ok(Plan::Reuse(version)),
                     (Some(version), Ok(artifact)) => {
                         let ours = &artifact.info.version;
-                        let older = match (version_of(&version), version_of(ours)) {
-                            (Some(theirs), Some(ours)) => theirs < ours,
-                            _ => version != *ours,
+                        let (older, same) = match (version_of(&version), version_of(ours)) {
+                            (Some(theirs), Some(ours)) => (theirs < ours, theirs == ours),
+                            _ => (version != *ours, version == *ours),
                         };
-                        if !older || !self.replace_existing {
+                        // This app's version, built from other bytes (a development build,
+                        // or one a person copied there): replaced by the copy this app checked,
+                        // the one it replaces kept as `.previous`. A newer one stays.
+                        let rebuilt = same
+                            && probe
+                                .binary_sha256
+                                .as_deref()
+                                .is_some_and(|sha| sha != artifact.info.sha256);
+                        if !rebuilt && (!older || !self.replace_existing) {
                             return Ok(Plan::Reuse(version));
                         }
                     }
@@ -1556,7 +1783,8 @@ impl Job {
                 ));
             }
         }
-        Ok(Plan::Install { previous })
+        let from = previous.as_ref().and_then(|_| probe.installed_version());
+        Ok(Plan::Install { previous, from })
     }
 
     /// Why the program there cannot be used, from what its `--version` printed.
@@ -1588,10 +1816,22 @@ impl Job {
         self.stop(code, message, detail(&output))
     }
 
-    /// Send and install `artifact`, answering the version now in place.
-    async fn install(&self, artifact: &Artifact, previous: Option<String>) -> Result<String, Stop> {
+    /// Send and install `artifact` in place of the program whose SHA-256 is `previous` and
+    /// whose version is `from` (if any), answering the version now in place.
+    async fn install(
+        &self,
+        artifact: &Artifact,
+        previous: Option<String>,
+        from: Option<String>,
+    ) -> Result<String, Stop> {
         let server = self.server().to_owned();
         let version = artifact.info.version.clone();
+        let upgrade = previous.as_ref().map(|sha256| SetupUpgrade {
+            version: from,
+            sha256: Some(sha256.clone()),
+            installed_version: version.clone(),
+            installed_sha256: artifact.info.sha256.clone(),
+        });
         let script = INSTALL_SCRIPT
             .replace("@JOB@", &super::hex(&rand::random::<[u8; 16]>()))
             .replace("@SIZE@", &artifact.info.size.to_string())
@@ -1629,13 +1869,18 @@ impl Job {
                 self.outcome(|outcome| {
                     outcome.installed_version = Some(version.clone());
                     outcome.previous_kept = previous;
+                    outcome.upgraded_from = upgrade;
                 });
                 Ok(version)
             }
             Installed::Failed { reason, rest } => Err(self.install_failure(&reason, &rest)),
             // The connection dropped, the run timed out, or the output was lost. Once every
             // byte was sent, the rename may have happened: only a fresh look can say.
-            Installed::Unknown if ran.input_written => self.settle_unknown(artifact).await,
+            Installed::Unknown if ran.input_written => {
+                let version = self.settle_unknown(artifact).await?;
+                self.outcome(|outcome| outcome.upgraded_from = upgrade);
+                Ok(version)
+            }
             Installed::Unknown => Err(self
                 .interrupted(&ran)
                 .unwrap_or_else(|| self.unreadable(&ran))),
@@ -1750,6 +1995,7 @@ impl Job {
         };
         let command = host_start::host_start_command(slug, key)
             .map_err(|error| self.stop("crew_request_invalid", error.to_string(), None))?;
+        let fixed = self.safe_storage().await?;
         let ran = self
             .run(
                 command.replace('\n', "; "),
@@ -1770,8 +2016,27 @@ impl Job {
         let server = self.server();
         let message = match &result {
             StartOutput::Found { .. } => {
-                self.done(SetupStageName::Start, None);
+                let said = (!fixed.is_empty()).then(|| {
+                    format!(
+                        "Other accounts can no longer write to {}.",
+                        fixed.join(", ")
+                    )
+                });
+                self.done(SetupStageName::Start, said);
                 return Ok(());
+            }
+            // A folder above the workspace that the walk could not see as this account's (one
+            // another account owns): the broker's own check is the one that says so.
+            StartOutput::Problem { .. }
+                if output.contains("unsafe_storage: writable non-sticky") =>
+            {
+                return Err(self.stop(
+                    "crew_host_storage_unsafe",
+                    format!(
+                        "Crew on {server} won't keep the workspace in your account, because another account can write to a folder above it. Ask the server's administrator; the details say what Crew found."
+                    ),
+                    printed(&ran.stdout, &ran.stderr),
+                ));
             }
             StartOutput::Problem { problem, .. } => match problem.as_str() {
                 "starting" => {
@@ -1780,15 +2045,72 @@ impl Job {
                 "not_installed" => format!(
                     "Crew was installed, but {server} couldn't run it to start the workspace."
                 ),
-                "server_error" => format!("Crew on {server} didn't start the workspace."),
+                "server_error" => format!(
+                    "Crew on {server} didn't start the workspace. The details say what it printed."
+                ),
                 _ => format!("Crew ran on {server}, but Biorouter couldn't read what it printed."),
             },
         };
-        let problem_detail = match &result {
-            StartOutput::Problem { detail, .. } => detail.clone(),
-            StartOutput::Found { .. } => None,
+        // Everything Crew printed, so a person (or Copy details) sees the server's own words.
+        Err(self.stop(
+            "crew_setup_start_failed",
+            message,
+            printed(&ran.stdout, &ran.stderr),
+        ))
+    }
+
+    /// Before a host's start: the folders above where the workspace is kept that other accounts
+    /// may write to stop it, unless the person asked setup to fix them
+    /// (`fix_storage_permissions`), which takes that write access away from exactly the folders
+    /// the server finds itself. Answers the folders it fixed.
+    async fn safe_storage(&self) -> Result<Vec<String>, Stop> {
+        let found = self.progress().server.storage_unsafe;
+        if found.is_empty() {
+            return Ok(Vec::new());
+        }
+        if !self.fix_storage_permissions {
+            return Err(self.storage_unsafe(&found, false));
+        }
+        let ran = self
+            .run(STORAGE_FIX_SCRIPT.into(), None, PROBE_LIMIT, &self.cancel)
+            .await?;
+        if let Some(stop) = self.interrupted(&ran) {
+            return Err(stop);
+        }
+        let fix = read_storage_fix(&ran.stdout).ok_or_else(|| self.unreadable(&ran))?;
+        self.update(|progress| progress.server.storage_unsafe = fix.left.clone());
+        if !fix.left.is_empty() {
+            return Err(self.storage_unsafe(&fix.left, true));
+        }
+        Ok(fix.fixed)
+    }
+
+    /// `crew_host_storage_unsafe`, naming `folders` and the command that fixes them.
+    fn storage_unsafe(&self, folders: &[String], tried: bool) -> Stop {
+        let server = self.server();
+        let names = folders.join(", ");
+        let command = format!(
+            "chmod go-w {}",
+            folders
+                .iter()
+                .map(|folder| shell_word(folder))
+                .collect::<Vec<_>>()
+                .join(" ")
+        );
+        let message = if tried {
+            format!(
+                "Biorouter couldn't stop other accounts writing to {names} on {server}, so Crew won't keep a workspace there. Run {command} on {server}, or ask its administrator, then start again."
+            )
+        } else {
+            format!(
+                "Crew won't keep a workspace on {server} while other accounts can write to {names}. Run {command} on {server}, or let Biorouter fix it for you, then start again."
+            )
         };
-        Err(self.stop("crew_setup_start_failed", message, problem_detail))
+        self.stop(
+            "crew_host_storage_unsafe",
+            message,
+            Some(folders.join("\n")),
+        )
     }
 
     /// Connect, verified as a person's Connect is, over the master the job signed in with.
@@ -1801,6 +2123,20 @@ impl Job {
                 None,
             ));
         };
+        // The master this job signed in with is for the route it started with; a connection
+        // edited to another route since must not ride it (C12).
+        let current = self.manager.connection(id).await.ok();
+        if current.as_ref().map(Route::of).as_ref() != Some(&self.route) {
+            authentication::retire_setup_masters(id, None);
+            return Err(self.stop(
+                "crew_setup_changed",
+                format!(
+                    "The connection to {} changed while Crew was being set up, so setup stopped. Set Crew up again.",
+                    self.server()
+                ),
+                None,
+            ));
+        }
         match self.manager.connect(id).await {
             Ok(_) => {
                 self.outcome(|outcome| outcome.connection_id = Some(id.to_owned()));
@@ -1851,14 +2187,90 @@ impl Job {
             .filter(|name| valid(name))
     }
 
-    /// Make `~/crew-work/<workspace>`, and give a member's connection that has no folder yet
-    /// this one, with full access, when its server and bridge take it.
+    /// Make `~/crew-work/<workspace>`. A member's connection gets the agent access the request
+    /// asked for (design OW-6), in the folder it already has or this one; a member's job that
+    /// was asked for none, or for `off`, changes nothing and makes no folder.
     async fn work_folder(&self, installed_version: &str) -> Result<(), Stop> {
         use SetupStageName as Name;
         self.begin(Name::WorkFolder);
+        let member = self
+            .connection_id
+            .as_deref()
+            .filter(|_| self.intent == SetupIntent::Member);
+        let mut chosen = None;
+        if let Some(id) = member {
+            match self.agent_access {
+                None => {
+                    self.skip(
+                        Name::WorkFolder,
+                        format!(
+                            "What your agents may do on {} is as you set it.",
+                            self.server()
+                        ),
+                    );
+                    return Ok(());
+                }
+                Some(SetupAgentAccess::Off) => {
+                    self.skip(
+                        Name::WorkFolder,
+                        format!(
+                            "Your agents have no folder on {}, as you chose.",
+                            self.server()
+                        ),
+                    );
+                    return Ok(());
+                }
+                Some(level) => {
+                    let root = self
+                        .manager
+                        .connection(id)
+                        .await
+                        .ok()
+                        .and_then(|connection| connection.remote_root);
+                    chosen = Some((id, level, root));
+                }
+            }
+        }
+        let folder = match chosen.as_ref().and_then(|(_, _, root)| root.clone()) {
+            // The folder the person already gave the connection stays its folder.
+            Some(root) => root,
+            None => match self.make_work_folder().await? {
+                Some(folder) => folder,
+                None => return Ok(()),
+            },
+        };
+        self.outcome(|outcome| outcome.work_folder = Some(folder.clone()));
+        let mut said = format!("Your work folder is {folder}.");
+        if let Some((id, level, _)) = chosen {
+            match self
+                .manager
+                .apply_agent_access(id, level, &folder, installed_version)
+                .await
+            {
+                Ok(applied) => {
+                    self.outcome(|outcome| outcome.remote_access = Some(applied.access));
+                    said.push(' ');
+                    said.push_str(&applied.sentence(self.server()));
+                }
+                Err(error) => {
+                    tracing::info!(connection = id, %error, "Crew setup couldn't set the connection's agent access");
+                    said.push_str(
+                        " It isn't set on your connection; choose it in Connection settings.",
+                    );
+                }
+            }
+        }
+        self.done(Name::WorkFolder, Some(said));
+        Ok(())
+    }
+
+    /// Make `~/crew-work/<workspace>`, answering its canonical path; `None`, with the stage
+    /// skipped and why, when it could not be made.
+    async fn make_work_folder(&self) -> Result<Option<String>, Stop> {
+        use SetupStageName as Name;
         let Some(slug) = self.workspace_slug() else {
             self.skip(Name::WorkFolder, "The workspace's name isn't known yet.");
-            return Ok(());
+            return Ok(None);
         };
         let ran = self
             .run(
@@ -1871,8 +2283,8 @@ impl Job {
         if ran.cancelled {
             return Err(self.cancelled(false));
         }
-        let folder = match read_folder(&ran.stdout) {
-            Ok(folder) => folder,
+        match read_folder(&ran.stdout) {
+            Ok(folder) => Ok(Some(folder)),
             Err(reason) => {
                 let why = match reason.as_str() {
                     "foreign_owner" => format!("~/crew-work/{slug} belongs to another account."),
@@ -1880,36 +2292,9 @@ impl Job {
                     _ => format!("Biorouter couldn't read where ~/crew-work/{slug} is."),
                 };
                 self.skip(Name::WorkFolder, why);
-                return Ok(());
-            }
-        };
-        self.outcome(|outcome| outcome.work_folder = Some(folder.clone()));
-        let mut said = format!("Your work folder is {folder}.");
-        if let Some(id) = self
-            .connection_id
-            .as_deref()
-            .filter(|_| self.intent == SetupIntent::Member)
-        {
-            match self
-                .manager
-                .adopt_work_folder(id, &folder, installed_version)
-                .await
-            {
-                Ok(Some(access)) => {
-                    self.outcome(|outcome| outcome.remote_access = Some(access));
-                    said.push_str(" Your agents can now work there as you.");
-                }
-                Ok(None) => {}
-                Err(error) => {
-                    tracing::info!(connection = id, %error, "Crew setup couldn't give the connection its work folder");
-                    said.push_str(
-                        " It isn't set on your connection; choose it in Connection settings.",
-                    );
-                }
+                Ok(None)
             }
         }
-        self.done(Name::WorkFolder, Some(said));
-        Ok(())
     }
 
     /// Draft the context document from the installed program's own probe. Nothing here stops
@@ -2073,7 +2458,9 @@ impl CrewManager {
         {
             let jobs = jobs();
             if let Some((id, job)) = jobs.iter().find(|(_, job)| job.running() && job.key == key) {
-                if job.intent == request.intent {
+                // The same job only for the same login and route: one for another would ride
+                // the sign-in this one is using (C12).
+                if job.intent == request.intent && job.route == route {
                     return Ok(job.status(id));
                 }
                 return Err(refused(
@@ -2090,6 +2477,10 @@ impl CrewManager {
                 ));
             }
         }
+        // A master an earlier job's sign-in left at this key serves only the login and route
+        // it signed in to. One for another route ends here, so this job's check asks for its
+        // own sign-in rather than running every step as the other account (C12).
+        authentication::retire_setup_masters(&key, Some(&route.digest()));
         let server = SetupServer {
             login: route.ssh_target.clone(),
             ..SetupServer::default()
@@ -2103,6 +2494,8 @@ impl CrewManager {
             bootstrap_key,
             workspace_name: request.workspace_name,
             replace_existing: request.replace_existing,
+            agent_access: request.agent_access,
+            fix_storage_permissions: request.fix_storage_permissions,
             connection_id,
             progress: Mutex::new(Progress {
                 state: SetupState::Running,
@@ -2123,32 +2516,111 @@ impl CrewManager {
         let job_id = uuid::Uuid::new_v4().to_string();
         jobs().insert(job_id.clone(), Arc::clone(&job));
         let running = Arc::clone(&job);
+        let ended = job_id.clone();
         tokio::spawn(async move {
             let result = running.drive().await;
             running.end(result);
+            // A sign-in the job opened and nobody finished holds the server's key for nothing
+            // now; a master it adopted stays, for the start, Create and the connect.
+            authentication::end_setup_sign_ins(&ended);
         });
         Ok(job.status(&job_id))
     }
 
-    /// Give `id` the work folder `folder` with full access, when it has no folder yet and its
-    /// server and bridge take full access (as its last verified connect found). `Ok(None)`
-    /// when either is not so; nothing changes then.
-    async fn adopt_work_folder(
+    /// Give `id` the agent access `level` (never [`SetupAgentAccess::Off`], which changes
+    /// nothing), working in `folder`: full access where its server and bridge take it (as its
+    /// last verified connect found) and the installed program names a version, else the folder,
+    /// with commands where the server can confine them.
+    async fn apply_agent_access(
         &self,
         id: &str,
+        level: SetupAgentAccess,
         folder: &str,
         installed_version: &str,
-    ) -> Result<Option<RemoteAccess>> {
+    ) -> Result<AppliedAccess> {
         let connection = self.connection(id).await?;
-        let full = self
-            .server_access(id)
-            .is_some_and(|access| access.full_access_available);
-        if connection.remote_root.is_some() || !full || version_of(installed_version).is_none() {
-            return Ok(None);
+        let access = self.server_access(id);
+        let full = access.as_ref().is_some_and(|a| a.full_access_available)
+            && version_of(installed_version).is_some();
+        let confined = access.as_ref().and_then(|a| a.confined_execution_available) == Some(true);
+        let applied = match level {
+            SetupAgentAccess::Full if full => AppliedAccess {
+                access: RemoteAccess::Full,
+                execution: true,
+                full_unavailable: false,
+            },
+            SetupAgentAccess::Full | SetupAgentAccess::Folder => AppliedAccess {
+                access: RemoteAccess::Folder,
+                execution: confined,
+                full_unavailable: level == SetupAgentAccess::Full,
+            },
+            SetupAgentAccess::Off => anyhow::bail!("Off changes nothing"),
+        };
+        let root = connection
+            .remote_root
+            .clone()
+            .unwrap_or_else(|| folder.to_owned());
+        self.save_keeping_master(
+            id,
+            access_save(&connection, &root, applied.execution, applied.access),
+        )
+        .await?;
+        Ok(applied)
+    }
+
+    /// Save `input` over `id` as [`Self::update`] does, for an edit that keeps the route: the
+    /// policy epoch moves (every grant on it ends), the bridge and what it announced are
+    /// dropped, and a connection that was connected is dialled again from scratch. Unlike
+    /// [`Self::update`], it leaves the SSH master and the sign-in it was adopted from alone
+    /// (C11): the route is the same, so they are still this connection's, and the dial rides
+    /// them. A password-only account would otherwise end setup disconnected, asked for its
+    /// password again.
+    async fn save_keeping_master(&self, id: &str, input: SaveConnection) -> Result<Connection> {
+        let _lifecycle = self.connection_guard(id).await?;
+        Self::validate_connection(&input)?;
+        let saved = self.connection(id).await?;
+        ensure!(
+            super::same_route(&saved, &input),
+            "The connection changed while Crew was being set up. Set Crew up again."
+        );
+        if let Some(unchanged) = self.unchanged_by(id, &input).await? {
+            return Ok(unchanged);
         }
-        self.update(id, work_folder_save(&connection, folder))
-            .await?;
-        Ok(Some(RemoteAccess::Full))
+        // P-1: a save that would be refused is refused while the bridge is still up.
+        self.refusal_before_saving(id, &input).await?;
+        self.disarm_idle_redial(id);
+        let removed = self.transports.lock().await.remove(id);
+        let reconnect = removed.is_some();
+        if let Some(transport) = removed {
+            transport.lock().await.close().await;
+        }
+        self.forget_broker(id);
+        {
+            let mut registry = self.registry.lock().await;
+            if let Some(c) = registry.connections.iter_mut().find(|c| c.id == id) {
+                c.status = "disconnected".into();
+            }
+        }
+        let saved = self.save_inner(Some(id), input).await?;
+        if !reconnect || authentication::ensure_connect_available(id).is_err() {
+            return Ok(saved);
+        }
+        match self.connect_locked(id).await {
+            Ok(connected) => Ok(connected),
+            Err(error) => {
+                let message = error.to_string();
+                tracing::info!(connection = id, %error, "Crew couldn't reconnect after setup saved the connection");
+                {
+                    let mut registry = self.registry.lock().await;
+                    if let Some(c) = registry.connections.iter_mut().find(|c| c.id == id) {
+                        c.status = "disconnected".into();
+                        c.last_error = Some(message.clone());
+                    }
+                }
+                self.note_error_code(id, &error, &message);
+                self.connection(id).await
+            }
+        }
     }
 
     /// The server's facts over `id`'s own control path, and the context document drafted from
@@ -2214,8 +2686,43 @@ impl CrewManager {
     }
 }
 
-/// `connection` as a save that gives it `folder` with full access, all else as it is.
-fn work_folder_save(connection: &Connection, folder: &str) -> SaveConnection {
+/// The agent access [`CrewManager::apply_agent_access`] set.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct AppliedAccess {
+    access: RemoteAccess,
+    /// Whether the connection's agents may run commands.
+    execution: bool,
+    /// Full access was asked for, and the server or the bridge does not take it.
+    full_unavailable: bool,
+}
+
+impl AppliedAccess {
+    /// What it means for the person, after "Your work folder is …".
+    fn sentence(&self, server: &str) -> String {
+        match (self.access, self.full_unavailable, self.execution) {
+            (RemoteAccess::Full, _, _) => "Your agents can now work there as you.".into(),
+            (_, true, true) => format!(
+                "Full access isn't available on {server} yet, so your agents work only in that folder."
+            ),
+            (_, true, false) => format!(
+                "Full access isn't available on {server} yet, so your agents can read and write files in that folder but not run commands."
+            ),
+            (_, false, true) => "Your agents work only in that folder.".into(),
+            (_, false, false) => format!(
+                "Your agents can read and write files in that folder; {server} can't keep commands inside it, so they can't run commands."
+            ),
+        }
+    }
+}
+
+/// `connection` as a save that gives it `root` at agent access `access`, commands on or off as
+/// `execution` says, all else as it is.
+fn access_save(
+    connection: &Connection,
+    root: &str,
+    execution: bool,
+    access: RemoteAccess,
+) -> SaveConnection {
     SaveConnection {
         preparation_id: None,
         name: connection.name.clone(),
@@ -2227,9 +2734,9 @@ fn work_folder_save(connection: &Connection, folder: &str) -> SaveConnection {
         owner_uid: connection.owner_uid,
         workspace_id: connection.workspace_id.clone(),
         workspace_public_key: connection.workspace_public_key.clone(),
-        remote_root: Some(folder.to_owned()),
-        remote_execution: true,
-        remote_access: RemoteAccess::Full,
+        remote_root: Some(root.to_owned()),
+        remote_execution: execution,
+        remote_access: access,
         cluster_connection_id: Some(connection.cluster_connection_id.clone()),
         mode: connection.mode,
         institution_id: connection.institution_id.clone(),

@@ -275,6 +275,33 @@ describe('deriveCrewScreen, row by row', () => {
     );
   });
 
+  it('is workspace-deleted once the host deleted it, whatever the last connect said (L6)', () => {
+    expect(screen({ connection: disconnected, workspaceDeleted: true })).toBe('workspace-deleted');
+    // Its server exited after the erase, or asks for a password nobody needs to type now.
+    expect(
+      screen({
+        connection: disconnected,
+        lastConnectFailure: failure('broker_not_running'),
+        workspaceDeleted: true,
+      })
+    ).toBe('workspace-deleted');
+    expect(
+      screen({
+        connection: disconnected,
+        lastConnectFailure: failure('auth_required'),
+        workspaceDeleted: true,
+      })
+    ).toBe('workspace-deleted');
+    expect(screen({ connection: connected, observationError: true, workspaceDeleted: true })).toBe(
+      'workspace-deleted'
+    );
+    // A verified view still on screen stays, the connection bar saying it.
+    expect(screen({ view: workspace, channelId: 'channel-1', workspaceDeleted: true })).toBe(
+      'channel'
+    );
+    expect(screen({ connection: disconnected })).toBe('offline');
+  });
+
   it('is join for a connected person who is not a member', () => {
     expect(screen({ notJoined: true })).toBe('join');
     expect(screen({ notJoined: true, observationError: true })).toBe('join');

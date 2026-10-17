@@ -256,19 +256,22 @@ describe('HostDialog', () => {
     expect(await screen.findByText(hostCopy.startHeading('hpc.ucsf.edu'))).toBeInTheDocument();
     expect(view.crew().prepareHostingDevice).toHaveBeenCalledOnce();
     expect(screen.getByText(hostCopy.stepOf(2, 3, 'Start'))).toBeInTheDocument();
-    expect(screen.getByText(hostCopy.runThis('hpc.ucsf.edu', 'alice'))).toBeInTheDocument();
-    const command = screen.getByText(/--name lab-data --bootstrap-key c{64}/);
-    // One command per line, scrolling sideways rather than wrapping mid-flag (T-42).
-    expect(command.closest('[data-slot="copy-field"]')).toHaveClass('crew-onboard-command');
     expect(screen.getByText(hostCopy.consequence)).toBeInTheDocument();
 
-    // The step's action is Set up and start Crew (OW-9); the manual path is folded under it.
+    // The step leads with its action, Set up and start Crew (OW-9), and no shell block (U1): the
+    // commands are the manual path's, folded under it.
     const start = screen.getByRole('button', { name: hostCopy.setUpAndStart });
     expect(start).toHaveFocus();
     expect(start).toHaveAccessibleDescription(hostCopy.setUpAndStartHint('hpc.ucsf.edu', 'alice'));
+    expect(screen.queryByText(hostCopy.runThis('hpc.ucsf.edu', 'alice'))).toBeNull();
+    expect(screen.queryByText(/--bootstrap-key/)).toBeNull();
     expect(screen.queryByLabelText(hostCopy.pasted)).toBeNull();
     expect(screen.queryByRole('button', { name: hostCopy.continue })).toBeNull();
     runItYourself();
+    expect(screen.getByText(hostCopy.runThis('hpc.ucsf.edu', 'alice'))).toBeVisible();
+    const command = screen.getByText(/--name lab-data --bootstrap-key c{64}/);
+    // One command per line, scrolling sideways rather than wrapping mid-flag (T-42).
+    expect(command.closest('[data-slot="copy-field"]')).toHaveClass('crew-onboard-command');
     expect(screen.getByText(hostCopy.runYourselfBody('hpc.ucsf.edu', 'alice'))).toBeVisible();
     expect(screen.getByRole('button', { name: hostCopy.continue })).toBeInTheDocument();
 
@@ -1257,8 +1260,6 @@ describe('HostDialog', () => {
         proxy_jump: null,
       });
       expect(JSON.stringify(request)).not.toMatch(/biorouter-crew|umask|bootstrap/);
-      // The shown text is the one the daemon reports running.
-      expect(screen.getByText(/--name lab-data --bootstrap-key c{64}/).textContent).toBe(SHOWN);
 
       // Its output streams in, in a region a keyboard can reach, while it runs.
       const output = await screen.findByTestId('crew-host-start-output');
@@ -1268,6 +1269,9 @@ describe('HostDialog', () => {
       // Busy, not disabled: focus stays on it.
       expect(start).toHaveAttribute('aria-disabled', 'true');
       expect(start).toHaveFocus();
+      // The text Run it yourself shows is the one the daemon reports running.
+      runItYourself();
+      expect(screen.getByText(/--name lab-data --bootstrap-key c{64}/).textContent).toBe(SHOWN);
 
       // Read as a paste is read, then on to Create with nothing to paste; focus follows.
       await screen.findByText(hostCopy.createHeading('lab-data', 'hpc.ucsf.edu'), undefined, {

@@ -1357,17 +1357,8 @@ function HostDialogView({ open, onClose }: { open: boolean; onClose: () => void 
               {step === 'start' && prepared ? (
                 <>
                   <h3 className="text-label text-text-default">{hostCopy.startHeading(server)}</h3>
-                  <p className="text-body text-text-default">
-                    {hostCopy.runThis(server, sshUsername(serverLogin))}
-                  </p>
-                  {/* One command per line, scrolling sideways rather than wrapping mid-flag. The
-                      same text every way: setup and the older start run exactly this. */}
-                  <CopyField
-                    multiline
-                    className="crew-onboard-command"
-                    label={hostCopy.commandLabel}
-                    value={shownCommands}
-                  />
+                  {/* The step leads with its one action and its plain steps (U1): the commands it
+                      runs are for a person who runs them themselves, under Run it yourself. */}
                   <div className="crew-onboard-stack" data-testid="crew-host-start-for-me">
                     <div className="crew-onboard-row">
                       <Button
@@ -1461,6 +1452,17 @@ function HostDialogView({ open, onClose }: { open: boolean; onClose: () => void 
                     onOpenChange={setManualOpen}
                   >
                     <div className="crew-onboard-form" data-testid="crew-host-run-yourself">
+                      <p className="text-body text-text-default">
+                        {hostCopy.runThis(server, sshUsername(serverLogin))}
+                      </p>
+                      {/* One command per line, scrolling sideways rather than wrapping mid-flag.
+                          The same text every way: setup and the older start run exactly this. */}
+                      <CopyField
+                        multiline
+                        className="crew-onboard-command"
+                        label={hostCopy.commandLabel}
+                        value={shownCommands}
+                      />
                       <p className="text-body text-text-default">
                         {hostCopy.runYourselfBody(server, sshUsername(serverLogin))}
                       </p>

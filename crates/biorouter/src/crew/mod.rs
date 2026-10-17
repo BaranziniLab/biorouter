@@ -21,10 +21,9 @@ mod context;
 mod setup;
 pub use context::render_workspace_context;
 pub use setup::{
-    cancel_setup, prepare_setup_sign_in, setup_artifact, setup_status, ContextDraft,
-    SetupArtifact, SetupError, SetupInstalled, SetupIntent, SetupOutcome, SetupRefused,
-    SetupRequest, SetupServer, SetupStage, SetupStageName, SetupStageState, SetupState,
-    SetupStatus, SetupTarget,
+    cancel_setup, prepare_setup_sign_in, setup_artifact, setup_status, ContextDraft, SetupArtifact,
+    SetupError, SetupInstalled, SetupIntent, SetupOutcome, SetupRefused, SetupRequest, SetupServer,
+    SetupStage, SetupStageName, SetupStageState, SetupState, SetupStatus, SetupTarget,
 };
 mod keepalive;
 mod local_host;
@@ -2126,15 +2125,19 @@ impl CrewManager {
             .insert(id.to_owned());
         // Nothing is left to dial: the workspace's server stops for good.
         self.disarm_idle_redial(id);
+        Err(error.context(self.workspace_deleted_refusal(id).await))
+    }
+    /// `crew_workspace_deleted` for `id`, whose workspace's host deleted it: what every request
+    /// on it is answered once that is known, so a client offers Remove from this computer and
+    /// never Connect (L6).
+    async fn workspace_deleted_refusal(&self, id: &str) -> CrewRefusal {
         let workspace = self.workspace_label(id).await;
-        Err(error.context(
-            CrewRefusal::new(
-                refusal::WORKSPACE_DELETED,
-                format!("The host deleted {workspace}. Remove it from this computer."),
-            )
-            .status(409)
-            .with("workspace", json!(workspace)),
-        ))
+        CrewRefusal::new(
+            refusal::WORKSPACE_DELETED,
+            format!("The host deleted {workspace}. Remove it from this computer."),
+        )
+        .status(409)
+        .with("workspace", json!(workspace))
     }
     /// The workspace's own privacy mode, as its last `hello` signed it (v2); `None` when no
     /// signed `hello` said (not connected, or an older broker). It can be stale: a request the
@@ -3152,7 +3155,10 @@ impl CrewManager {
     }
     /// Delete the workspace `id` connects to, as its host (design OW-5), then remove the
     /// connection from this computer exactly as [`Self::remove`] does. The workspace decides:
-    /// only its host may, and only while `expected_name` is still its name. One that already
+    /// only its host may, and only while `expected_name` is still its name. `None` is a
+    /// workspace with no stored name (one from before names), sent as `null`, which the
+    /// workspace takes only while it still has none (C2); the person's typed consent is the
+    /// client's, against whatever label it showed. One that already
     /// answers `workspace_deleted` was deleted, by this request's lost answer or from another of
     /// the host's computers, so the connection is removed all the same. Every other saved
     /// connection to the same workspace is marked deleted, for its person to remove.
@@ -3163,7 +3169,7 @@ impl CrewManager {
         &self,
         id: &str,
         workspace_id: &str,
-        expected_name: &str,
+        expected_name: Option<&str>,
         request_id: Option<String>,
     ) -> Result<WorkspaceDeletion> {
         let c = self.connection(id).await?;
@@ -3172,7 +3178,7 @@ impl CrewManager {
             "That isn't the workspace this connection is for. Refresh Crew, then try again."
         );
         ensure!(
-            !expected_name.trim().is_empty(),
+            expected_name.is_none_or(|name| !name.trim().is_empty()),
             "Type the workspace's name to delete it."
         );
         if let Some(capabilities) = self.capabilities(id) {
@@ -3810,6 +3816,11 @@ impl CrewManager {
         if let Some(transport) = self.transports.lock().await.get(id).cloned() {
             return Ok(transport);
         }
+        // Its host deleted the workspace, and its server has stopped for good: connecting
+        // cannot help, so say what can (L6).
+        if self.workspace_deleted(id) {
+            return Err(self.workspace_deleted_refusal(id).await.into());
+        }
         // A bridge that broke is being dialled again by itself: nothing needs signing in, and
         // the request can be sent again in a moment (W2-DMN-6).
         if self.redial_pending(id) {
@@ -4131,6 +4142,25 @@ impl CrewManager {
     }
     pub async fn is_scoped_session(&self, session: &str) -> bool {
         self.is_scoped(session).await
+    }
+    /// What a Crew-scoped chat is told at every turn about where its remote paths lead, by its
+    /// grant's level as its connection has it now (design OW-6): a full-access grant runs as
+    /// the person's account, where a path is not tied to the work folder. Words only: the
+    /// bridge and the broker enforce the level.
+    pub async fn moim_scope_line(&self, session: &str) -> &'static str {
+        let registry = self.registry.lock().await;
+        let level = registry.scopes.get(session).and_then(|scope| {
+            registry
+                .connections
+                .iter()
+                .find(|connection| connection.id == scope.connection_id)
+                .and_then(|connection| remote_level(scope.public_provider, connection))
+        });
+        if level == Some(RemoteAccess::Full) {
+            MOIM_FULL_SCOPE
+        } else {
+            MOIM_FOLDER_SCOPE
+        }
     }
     pub async fn authorize_session_tool(&self, session: &str, name: &str) -> Result<()> {
         if self.is_scoped(session).await {
@@ -4462,7 +4492,15 @@ impl CrewManager {
     /// (`remote_full_v1`, their own Crew), as this connection's last connect found them. Each
     /// refusal names the one to update. An older server would ignore the request's level and
     /// make a folder run, which the echo check refuses too; this says why first.
+    ///
+    /// Nothing is known of either end while the connection is down in this process (after a
+    /// Disconnect, or in a daemon just started): that is said, typed as every other request on
+    /// it would say it (`crew_not_connected`, `crew_reconnecting`), rather than blaming the
+    /// server's Crew (C17). A connect records the `hello` before it publishes the bridge.
     async fn full_access_offered(&self, id: &str) -> Result<()> {
+        if self.capabilities(id).is_none() {
+            self.transport(id).await?;
+        }
         let server = self.server_name(id).await;
         ensure!(
             self.capabilities(id).is_some_and(|capabilities| {
@@ -4911,15 +4949,7 @@ impl CrewManager {
             );
         }
         if method.starts_with("remote.") {
-            let level = remote_level(s.public_provider, &c);
-            if FULL_ACCESS_METHODS.contains(&method) && level != Some(RemoteAccess::Full) {
-                anyhow::bail!(full_access_only(method, level));
-            }
-            // The dispatch scan read these arguments against this computer's home; a full-access
-            // request is also read against the server account's own, where it runs.
-            if level == Some(RemoteAccess::Full) {
-                self.refuse_remote_secrets(&c, method, &params)?;
-            }
+            self.refuse_remote_request(&s, &c, method, &params)?;
         }
         if method == "run.project" {
             params["run_id"] = json!(s.run_id);
@@ -5379,6 +5409,27 @@ impl CrewManager {
         )
         .await
     }
+    /// What the daemon refuses of a grant's `remote.*` request before anything is sent: a
+    /// method the grant's level does not take, and at full access one the secret guard refuses
+    /// against the server account. The level, when the grant has one.
+    fn refuse_remote_request(
+        &self,
+        s: &Scope,
+        c: &Connection,
+        method: &str,
+        params: &Value,
+    ) -> Result<Option<RemoteAccess>> {
+        let level = remote_level(s.public_provider, c);
+        if FULL_ACCESS_METHODS.contains(&method) && level != Some(RemoteAccess::Full) {
+            anyhow::bail!(full_access_only(method, level));
+        }
+        // The dispatch scan read these arguments against this computer's home; a full-access
+        // request is also read against the server account's own, where it runs.
+        if level == Some(RemoteAccess::Full) {
+            self.refuse_remote_secrets(c, method, params)?;
+        }
+        Ok(level)
+    }
     /// The secret guard again for a full-access request, against the server account it runs as
     /// (design OW-6): `~`, `$HOME` and `$USER` expand to the home and account the person's own
     /// bridge reported, and a relative path starts at the default folder. Like the dispatch scan,
@@ -5406,7 +5457,20 @@ impl CrewManager {
         let Some(arguments) = params.as_object() else {
             return Ok(());
         };
-        if let Some(denied) = guard.find_denied_access_in(arguments, &env) {
+        let mut arguments = arguments.clone();
+        // C15: `remote.execute` runs its argv in `cwd` as the person's account, so it is read
+        // as the command it is, quoted word by word, beside that `cwd`; as an `argv` list it
+        // read as prose, where `cat .netrc` named no path. Under a key of its own, so a
+        // `command` the model also sent is still read as it stands. An argv that cannot be
+        // quoted (a NUL) is one the bridge refuses.
+        if method == "remote.execute" {
+            if let Some(argv) = params.get("argv").and_then(Value::as_array) {
+                if let Ok(command) = shlex::try_join(argv.iter().filter_map(Value::as_str)) {
+                    arguments.insert("argv_command".into(), Value::String(command));
+                }
+            }
+        }
+        if let Some(denied) = guard.find_denied_access_in(&arguments, &env) {
             anyhow::bail!(denied.message());
         }
         Ok(())
@@ -5431,14 +5495,45 @@ impl CrewManager {
         if method == "remote.attach" {
             return self.attach_remote(session, params).await;
         }
+        if method == "remote.shell" {
+            check_shell_params(&params)?;
+        }
+        // OW-6, C16: what an agent changes on the server is announced in the channel before it
+        // is sent, for a task and a connected chat alike, since both reach it here. Only what
+        // the daemon would send: a method the grant's level does not take, or one the secret
+        // guard refuses, is refused now with nothing posted, and a grant with no access to the
+        // server announces nothing (the workspace refuses it). One that cannot be announced is
+        // not sent.
+        if let Some(line) = remote_announcement(method, &params) {
+            let c = self.connection(&s.connection_id).await?;
+            if self
+                .refuse_remote_request(&s, &c, method, &params)?
+                .is_some()
+            {
+                self.publish_run(session, &line, "progress").await?;
+            }
+        }
         match method {
-            "remote.shell" => check_shell_params(&params)?,
             "remote.share_file" | "remote.fetch_blob" => {
-                let mut answer = self.worker_request(session, method, params.clone()).await?;
-                if let Some(job) = self.note_transfer(session, method, &params, &answer) {
-                    self.settle_transfer(session, &job, &mut answer).await;
-                }
-                return Ok(answer);
+                let answer = self.worker_request(session, method, params.clone()).await?;
+                let Some(job) = self.note_transfer(session, method, &params, &answer) else {
+                    return Ok(answer);
+                };
+                let still_copying = if method == "remote.share_file" {
+                    SHARE_STILL_COPYING
+                } else {
+                    FETCH_STILL_COPYING
+                };
+                return Ok(self
+                    .follow_transfer(
+                        session,
+                        &job,
+                        answer,
+                        still_copying,
+                        TRANSFER_SETTLE_WAIT,
+                        TRANSFER_POLL_EVERY,
+                    )
+                    .await);
             }
             "remote.job_status" => {
                 let job = params["job_id"].as_str().map(str::to_owned);
@@ -5642,6 +5737,11 @@ fn admission_context(context: AdmissionContext<'_>) -> Value {
 
 /// What a full-access grant's relative remote paths are relative to.
 const FULL_PATH_BASE: &str = "default_folder on the server: a relative path starts there, and an absolute or ~/ path is the account's own; never the local task directory";
+
+/// [`CrewManager::moim_scope_line`] for a grant in a work folder, or with no access.
+const MOIM_FOLDER_SCOPE: &str = "Crew scope: remote file paths are relative to the approved SSH work directory. The local task directory is not a remote file location. Omit connection_id in crew__request to use this conversation's granted connection. Use crew__connections for current scope metadata; channel IDs are not connection IDs.";
+/// [`CrewManager::moim_scope_line`] for a full-access grant.
+const MOIM_FULL_SCOPE: &str = "Crew scope: commands run as the person's own account on the server. Remote paths may be absolute, ~/ or relative to default_folder from crew__connections. The local task directory is not a remote file location. Omit connection_id in crew__request to use this conversation's granted connection. Use crew__connections for current scope metadata; channel IDs are not connection IDs.";
 
 /// What a grant may do on the server, as its agent is told it (design OW-6), in
 /// `crew__connections` and a task's `crew_context`. Words only: the broker and the bridge
@@ -6607,6 +6707,33 @@ enum RemoteTransfer {
 /// How many unfinished transfers one chat keeps; one started past it is not followed up.
 const MAX_REMOTE_TRANSFERS: usize = 64;
 
+/// How long a chat's `remote.share_file` or `remote.fetch_blob` waits for its copy before it
+/// answers, asking after it every [`TRANSFER_POLL_EVERY`]: well inside the transport's own
+/// request timeout, so a file of ordinary size is posted (or counts as read) before the model
+/// is told anything, and a model that ends its turn at once leaves nothing undone.
+const TRANSFER_SETTLE_WAIT: std::time::Duration = std::time::Duration::from_secs(20);
+const TRANSFER_POLL_EVERY: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// What a share still copying when [`TRANSFER_SETTLE_WAIT`] ends tells the model.
+pub(crate) const SHARE_STILL_COPYING: &str = "Still copying. Check it with remote.job_status before you finish; Crew posts the file when it is done.";
+/// What a copy to the server still running then tells it.
+pub(crate) const FETCH_STILL_COPYING: &str =
+    "Still copying. Check it with remote.job_status before you finish or use the copy.";
+
+/// A server job's state as its answer gives it: the full-access bridge's `state`
+/// (`starting`, `running`, `completed`, `failed`, `timed_out`, `cancelled` or `lost`), or
+/// `status`, which a folder-mode answer carries instead.
+fn job_state(answer: &Value) -> Option<&str> {
+    answer["state"]
+        .as_str()
+        .or_else(|| answer["status"].as_str())
+}
+
+/// Whether a job in `state` has not ended yet.
+fn job_unfinished(state: Option<&str>) -> bool {
+    matches!(state, Some("starting" | "running"))
+}
+
 /// The blob a finished `remote.share_file` job uploaded, from its `remote.job_status` answer.
 fn shared_blob(status: &Value) -> Option<String> {
     [&status["result"]["blob_id"], &status["blob_id"]]
@@ -6622,6 +6749,116 @@ fn remote_file_name(path: &str) -> Option<&str> {
         .rsplit('/')
         .next()
         .filter(|name| !name.is_empty())
+}
+
+/// Remote operations that change something on the server. Each is announced to the channel
+/// before it is sent ([`remote_announcement`]), with its program or path, so the people who
+/// share the workspace can see what ran under the person's account: by a task and by a
+/// connected chat alike, since both send it through [`CrewManager::agent_request`]. A shell
+/// command is named by its program and length, never its text, and a transfer by its file's
+/// name (design OW-6, OW-7). Reads, listings, polls and every outcome (a failure included) stay
+/// in the conversation: they are the agent's working steps, not news for the channel, and a
+/// result can carry private file contents or diagnostics.
+pub const ANNOUNCED_REMOTE_OPERATIONS: &[&str] = &[
+    "remote.execute",
+    "remote.write",
+    "remote.shell",
+    "remote.fetch_blob",
+    "remote.share_file",
+];
+
+/// The program a shell command starts, as the channel is told it (design OW-6): the base name
+/// of its first word that is not a `NAME=value` assignment, and only when it reads as a program
+/// name. Never anything else of the command, which can carry a secret (`TOKEN=… curl …`, a
+/// password in an argument).
+fn shell_program(command: &str) -> &str {
+    let is_assignment = |word: &str| {
+        word.split_once('=').is_some_and(|(name, _)| {
+            !name.is_empty() && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+        })
+    };
+    command
+        .split_whitespace()
+        .find(|word| !is_assignment(word))
+        .and_then(|word| word.rsplit('/').next())
+        .filter(|program| {
+            !program.is_empty()
+                && program.len() <= 64
+                && program
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-' | '+'))
+        })
+        .unwrap_or("command")
+}
+
+/// A file's name as the channel is told it: a server path's last part, without control
+/// characters.
+fn announced_file_name(name: &str) -> String {
+    name.trim_end_matches('/')
+        .rsplit('/')
+        .next()
+        .unwrap_or_default()
+        .chars()
+        .filter(|c| !c.is_control())
+        .take(256)
+        .collect()
+}
+
+/// What the channel is told of `method`: its program, file or path, never a command's text or
+/// a file's contents.
+fn remote_operation_detail(method: &str, params: &Value) -> String {
+    if method == "remote.shell" {
+        let command = params.get("command").and_then(Value::as_str).unwrap_or("");
+        format!(
+            "{} ({} characters; runs as your account)",
+            shell_program(command),
+            command.chars().count()
+        )
+    } else if method == "remote.fetch_blob" {
+        announced_file_name(params.get("path").and_then(Value::as_str).unwrap_or(""))
+    } else if method == "remote.share_file" {
+        let name = params
+            .get("name")
+            .and_then(Value::as_str)
+            .filter(|name| !name.trim().is_empty())
+            .or_else(|| params.get("path").and_then(Value::as_str))
+            .unwrap_or("");
+        announced_file_name(name)
+    } else if method == "remote.execute" {
+        let argv = params.get("argv").and_then(Value::as_array);
+        let program = argv
+            .and_then(|argv| argv.first())
+            .and_then(Value::as_str)
+            .and_then(|p| Path::new(p).file_name())
+            .and_then(|p| p.to_str())
+            .unwrap_or("program");
+        format!(
+            "{program} ({} arguments; task-scoped execution)",
+            argv.map(|argv| argv.len().saturating_sub(1)).unwrap_or(0)
+        )
+    } else if method.starts_with("remote.") {
+        params
+            .get("path")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .chars()
+            .filter(|c| !c.is_control())
+            .take(256)
+            .collect()
+    } else {
+        String::new()
+    }
+}
+
+/// The line the channel is told before an agent's `method` is sent to the server, or `None`
+/// for a method it hears nothing of ([`ANNOUNCED_REMOTE_OPERATIONS`]).
+pub fn remote_announcement(method: &str, params: &Value) -> Option<String> {
+    ANNOUNCED_REMOTE_OPERATIONS.contains(&method).then(|| {
+        format!(
+            "Requested {method}: {}",
+            remote_operation_detail(method, params)
+        )
+    })
 }
 
 /// Why `method`, one of [`FULL_ACCESS_METHODS`], is refused to a grant at `level`, for the
@@ -7125,9 +7362,11 @@ impl CrewManager {
                 jobs.remove(job);
             }
         };
-        match status["status"].as_str() {
+        // L1: the full-access bridge says `state`; `status` is a folder-mode answer's word. A
+        // job whose process went away (`lost`) has ended too.
+        match job_state(status) {
             Some("completed") => {}
-            Some("failed" | "timed_out" | "cancelled" | "unknown_after_disconnect") => {
+            Some("failed" | "timed_out" | "cancelled" | "lost" | "unknown_after_disconnect") => {
                 forget();
                 return;
             }
@@ -7174,6 +7413,48 @@ impl CrewManager {
                 }
             }
         }
+    }
+
+    /// Follow a transfer a chat just started (L2), `answer` being the start's own: ask after
+    /// its `job` every `every` for up to `wait` and settle it as it ends, so a shared file is
+    /// posted and a fetched one counts as read before the model hears anything. A model that
+    /// ended its turn right after the start left the file unposted, and a task's grant ends
+    /// when it posts its result. One still copying at the end answers with its job ID and
+    /// `still_copying`, which tells the model to check it before it finishes. A status that
+    /// cannot be read ends the wait with the last answer; the model can still ask itself.
+    async fn follow_transfer(
+        &self,
+        session: &str,
+        job: &str,
+        mut answer: Value,
+        still_copying: &str,
+        wait: std::time::Duration,
+        every: std::time::Duration,
+    ) -> Value {
+        self.settle_transfer(session, job, &mut answer).await;
+        let deadline = tokio::time::Instant::now() + wait;
+        while job_unfinished(job_state(&answer)) && tokio::time::Instant::now() + every <= deadline
+        {
+            tokio::time::sleep(every).await;
+            match self
+                .worker_request(session, "remote.job_status", json!({ "job_id": job }))
+                .await
+            {
+                Ok(status) => {
+                    answer = status;
+                    self.settle_transfer(session, job, &mut answer).await;
+                }
+                Err(error) => {
+                    tracing::debug!(session, %error, "Couldn't follow a Crew server transfer");
+                    break;
+                }
+            }
+        }
+        if job_unfinished(job_state(&answer)) {
+            answer["job_id"] = json!(job);
+            answer["message"] = json!(still_copying);
+        }
+        answer
     }
 }
 
@@ -11037,7 +11318,7 @@ done
             .delete_workspace(
                 connection_id,
                 "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
-                "lab",
+                Some("lab"),
                 None,
             )
             .await
@@ -11049,7 +11330,7 @@ done
         assert_eq!(logged_methods(&log, "workspace.delete"), 0);
 
         let deleted = manager
-            .delete_workspace(connection_id, &connection.workspace_id, "lab", None)
+            .delete_workspace(connection_id, &connection.workspace_id, Some("lab"), None)
             .await
             .unwrap();
         assert_eq!(deleted.workspace_id, connection.workspace_id);
@@ -11097,11 +11378,436 @@ done
         let _env = isolated_crew_env(&root);
         let manager = signed_fixture_manager(&root, &connection, &scope, &device_key, true).await;
         let deleted = manager
-            .delete_workspace(connection_id, &connection.workspace_id, "lab", None)
+            .delete_workspace(connection_id, &connection.workspace_id, Some("lab"), None)
             .await
             .unwrap();
         assert_eq!(deleted.erase_after_seconds, None);
         assert!(manager.connection(connection_id).await.is_err());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    /// C2, C19, C29: a workspace with no stored name (one from before names) is deleted by
+    /// naming none: `expected_name` goes to the workspace as `null`, which it takes only while
+    /// it still has no name. An empty name is still refused before anything is sent.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn an_unnamed_workspace_is_deleted_by_naming_none() {
+        if !crate::test_sandbox::in_a_process_of_its_own() {
+            return;
+        }
+        let root = fixture_root("workspace-delete-unnamed");
+        let connection_id = "1b1b1b1b-1b1b-4b1b-8b1b-1b1b1b1b1b1b";
+        let (connection, scope, device_key) = signed_fixture_connection(connection_id);
+        let log = write_answering_ssh(
+            &root,
+            &connection.workspace_id,
+            &[(
+                "workspace.delete",
+                json!({"deleted": true, "workspace_id": connection.workspace_id,
+                    "erase_after_seconds": 30}),
+            )],
+        );
+        let _env = isolated_crew_env(&root);
+        let manager = signed_fixture_manager(&root, &connection, &scope, &device_key, true).await;
+        let empty = manager
+            .delete_workspace(connection_id, &connection.workspace_id, Some("  "), None)
+            .await
+            .unwrap_err();
+        assert_eq!(empty.to_string(), "Type the workspace's name to delete it.");
+        assert_eq!(logged_methods(&log, "workspace.delete"), 0);
+
+        let deleted = manager
+            .delete_workspace(connection_id, &connection.workspace_id, None, None)
+            .await
+            .unwrap();
+        assert_eq!(deleted.erase_after_seconds, Some(30));
+        let sent: Vec<Value> = fs::read_to_string(&log)
+            .unwrap()
+            .lines()
+            .filter_map(|line| serde_json::from_str(line).ok())
+            .filter(|frame: &Value| frame["method"] == "workspace.delete")
+            .collect();
+        assert_eq!(sent.len(), 1);
+        assert!(
+            sent[0]["params"]
+                .as_object()
+                .is_some_and(|params| params.get("expected_name") == Some(&Value::Null)),
+            "{}",
+            sent[0]
+        );
+        assert!(manager.connection(connection_id).await.is_err());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[cfg(unix)]
+    const FULL_ACCESS_SESSION: &str = "worker-race-session";
+
+    /// A chat with full access (design OW-6) on `connection_id`, from a private model, over a
+    /// scripted `ssh` answering `answers` (see [`write_answering_ssh`]), whose own bridge
+    /// reported the account's home. The log's path, and the environment the test holds.
+    #[cfg(unix)]
+    async fn full_access_fixture(
+        root: &Path,
+        connection_id: &str,
+        answers: &[(&str, Value)],
+        refusals: &[(&str, &str)],
+    ) -> (Arc<CrewManager>, PathBuf, env_lock::EnvGuard<'static>) {
+        let (mut connection, mut scope, device_key) = signed_fixture_connection(connection_id);
+        connection.remote_root = Some("/pool1/home/wanjun/crew-work/lab".into());
+        connection.remote_execution = true;
+        connection.remote_access = RemoteAccess::Full;
+        scope.public_provider = false;
+        let log = write_scripted_ssh(root, &connection.workspace_id, answers, refusals);
+        let env = isolated_crew_env(root);
+        let manager = signed_fixture_manager(root, &connection, &scope, &device_key, true).await;
+        manager.remember_bridge(
+            connection_id,
+            BridgeState {
+                hello: BridgeHello {
+                    version: Some("1.94.0".into()),
+                    capabilities: vec![BRIDGE_FULL_CAPABILITY.into()],
+                    landlock_abi: Some(1),
+                    confined_execution_supported: Some(false),
+                    user: Some("wanjun".into()),
+                    home: Some("/pool1/home/wanjun".into()),
+                },
+                broker_takes_full: true,
+            },
+        );
+        (manager, log, env)
+    }
+
+    /// Every request the scripted `ssh` was sent, in order, as `(method, params)`.
+    #[cfg(unix)]
+    fn sent_requests(log: &Path) -> Vec<(String, Value)> {
+        fs::read_to_string(log)
+            .unwrap_or_default()
+            .lines()
+            .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+            .filter_map(|frame| {
+                Some((
+                    frame["method"].as_str()?.to_owned(),
+                    frame["params"].clone(),
+                ))
+            })
+            .collect()
+    }
+
+    /// A `remote.share_file` job as the full-access bridge's `job_view` answers it, in `state`.
+    #[cfg(unix)]
+    fn bridge_share_view(state: &str) -> Value {
+        let mut view = json!({
+            "job_id": "job-share", "kind": "share_file", "state": state, "detach": false,
+            "created_at": 1_760_000_000u64, "bytes_done": 0, "size": 10,
+            "path": "/pool1/home/wanjun/crew-work/lab/out/fig.pdf", "name": "fig.pdf",
+        });
+        if state == "completed" {
+            let result = json!({"blob_id": "0a1b2c3d-0000-4000-8000-000000000009",
+                "name": "fig.pdf", "size": 10, "sha256": "ab".repeat(32),
+                "media_type": "application/pdf"});
+            view["ended_at"] = json!(1_760_000_002u64);
+            view["bytes_done"] = json!(10);
+            for (key, value) in result.as_object().unwrap() {
+                view[key] = value.clone();
+            }
+            view["result"] = result;
+        }
+        view
+    }
+
+    /// L1, L2, C5, C14, C27: a file a full-access chat shares is posted before the model hears
+    /// anything. The bridge words its job's state as `state`; the daemon follows the job
+    /// itself, and posts the file once it completes, with the daemon's line. What the chat
+    /// asked for is announced in the channel first (C16).
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_shared_server_file_is_posted_before_the_model_is_answered() {
+        if !crate::test_sandbox::in_a_process_of_its_own() {
+            return;
+        }
+        let root = fixture_root("full-access-share");
+        let connection_id = "1c1c1c1c-1c1c-4c1c-8c1c-1c1c1c1c1c1c";
+        let (manager, log, _env) = full_access_fixture(
+            &root,
+            connection_id,
+            &[
+                ("remote.share_file", bridge_share_view("running")),
+                ("remote.job_status", bridge_share_view("completed")),
+            ],
+            &[],
+        )
+        .await;
+        let cap = CallCapability::for_test(ProviderTier::Private, true);
+        let answer = manager
+            .agent_request(
+                FULL_ACCESS_SESSION,
+                &cap,
+                connection_id,
+                "remote.share_file",
+                json!({"path": "out/fig.pdf", "idempotency_key": "share-1"}),
+            )
+            .await
+            .unwrap();
+        assert_eq!(answer["state"], "completed", "{answer}");
+        assert_eq!(answer["posted_to_channel"], true, "{answer}");
+        assert!(answer.get("message").is_none(), "{answer}");
+        let sent = sent_requests(&log);
+        let methods: Vec<&str> = sent
+            .iter()
+            .map(|(method, _)| method.as_str())
+            .filter(|method| *method != "auth.challenge")
+            .collect();
+        assert_eq!(
+            methods,
+            [
+                "run.project",
+                "remote.share_file",
+                "remote.job_status",
+                "run.project"
+            ]
+        );
+        let posts: Vec<&Value> = sent
+            .iter()
+            .filter(|(method, _)| method == "run.project")
+            .map(|(_, params)| params)
+            .collect();
+        assert_eq!(posts[0]["body"], "Requested remote.share_file: fig.pdf");
+        assert_eq!(posts[0]["status"], "progress");
+        assert_eq!(
+            posts[1]["attachments"],
+            json!(["0a1b2c3d-0000-4000-8000-000000000009"])
+        );
+        assert_eq!(posts[1]["idempotency_key"], "share:job-share");
+        assert!(
+            posts[1]["body"]
+                .as_str()
+                .is_some_and(|body| body.contains("fig.pdf")),
+            "{}",
+            posts[1]
+        );
+        assert!(manager
+            .remote_transfers
+            .lock()
+            .unwrap()
+            .get(FULL_ACCESS_SESSION)
+            .is_none_or(HashMap::is_empty));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    /// L1, L2: a channel file a full-access chat copies to the server counts as read once the
+    /// copy completes, so the result's Source line names it.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_file_copied_to_the_server_counts_as_read() {
+        if !crate::test_sandbox::in_a_process_of_its_own() {
+            return;
+        }
+        let root = fixture_root("full-access-fetch");
+        let connection_id = "1d1d1d1d-1d1d-4d1d-8d1d-1d1d1d1d1d1d";
+        let blob = "0a1b2c3d-0000-4000-8000-000000000007";
+        let path = "/pool1/home/wanjun/crew-work/lab/plate_counts.csv";
+        let fetch = |state: &str| {
+            let mut view = json!({"job_id": "job-fetch", "kind": "fetch_blob", "state": state,
+                "detach": false, "created_at": 1_760_000_000u64, "bytes_done": 0, "size": 24,
+                "path": path, "blob_id": blob});
+            if state == "completed" {
+                let result = json!({"path": path, "size": 24, "sha256": "cd".repeat(32)});
+                view["ended_at"] = json!(1_760_000_002u64);
+                view["sha256"] = result["sha256"].clone();
+                view["result"] = result;
+            }
+            view
+        };
+        let (manager, log, _env) = full_access_fixture(
+            &root,
+            connection_id,
+            &[
+                ("remote.fetch_blob", fetch("running")),
+                ("remote.job_status", fetch("completed")),
+                (
+                    "blob.status",
+                    json!({"run_id": null, "id": blob, "owner_id": "principal-gina",
+                        "channel_id": "worker-race-channel", "name": "plate_counts.csv",
+                        "media_type": "text/csv", "size": 24, "sha256": "cd".repeat(32),
+                        "offset": 24, "complete": true, "restricted": false,
+                        "source_channels": ["worker-race-channel"]}),
+                ),
+            ],
+            &[],
+        )
+        .await;
+        assert_eq!(manager.run_source_line(FULL_ACCESS_SESSION), None);
+        let cap = CallCapability::for_test(ProviderTier::Private, true);
+        let answer = manager
+            .agent_request(
+                FULL_ACCESS_SESSION,
+                &cap,
+                connection_id,
+                "remote.fetch_blob",
+                json!({"blob_id": blob, "path": "plate_counts.csv", "idempotency_key": "fetch-1"}),
+            )
+            .await
+            .unwrap();
+        assert_eq!(answer["state"], "completed", "{answer}");
+        let line = manager
+            .run_source_line(FULL_ACCESS_SESSION)
+            .expect("the copied file is named");
+        assert!(line.contains("plate_counts.csv"), "{line}");
+        let announced = sent_requests(&log)
+            .into_iter()
+            .find(|(method, _)| method == "run.project")
+            .expect("announced");
+        assert_eq!(
+            announced.1["body"],
+            "Requested remote.fetch_blob: plate_counts.csv"
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    /// L2: a share still copying when the wait ends answers with its job and tells the model to
+    /// check it before it finishes; it stays followed, so the next `remote.job_status` posts it.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_share_still_copying_says_to_check_it_before_finishing() {
+        if !crate::test_sandbox::in_a_process_of_its_own() {
+            return;
+        }
+        let root = fixture_root("full-access-still-copying");
+        let connection_id = "1e1e1e1e-1e1e-4e1e-8e1e-1e1e1e1e1e1e";
+        let (manager, log, _env) = full_access_fixture(
+            &root,
+            connection_id,
+            &[("remote.job_status", bridge_share_view("running"))],
+            &[],
+        )
+        .await;
+        let params = json!({"path": "out/fig.pdf", "idempotency_key": "share-2"});
+        let started = bridge_share_view("starting");
+        let job = manager
+            .note_transfer(FULL_ACCESS_SESSION, "remote.share_file", &params, &started)
+            .expect("followed");
+        let answer = manager
+            .follow_transfer(
+                FULL_ACCESS_SESSION,
+                &job,
+                started,
+                SHARE_STILL_COPYING,
+                std::time::Duration::from_millis(300),
+                std::time::Duration::from_millis(100),
+            )
+            .await;
+        assert_eq!(answer["state"], "running", "{answer}");
+        assert_eq!(answer["job_id"], "job-share");
+        assert_eq!(answer["message"], SHARE_STILL_COPYING);
+        assert!(logged_methods(&log, "remote.job_status") >= 1);
+        assert_eq!(logged_methods(&log, "run.project"), 0, "nothing posted yet");
+        assert!(manager
+            .remote_transfers
+            .lock()
+            .unwrap()
+            .get(FULL_ACCESS_SESSION)
+            .is_some_and(|jobs| jobs.contains_key("job-share")));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    /// C16: a connected chat's full-access shell command is announced in the channel before it
+    /// is sent, by its program and length, never its text, as a task's is.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_chat_s_shell_command_is_announced_before_it_runs() {
+        if !crate::test_sandbox::in_a_process_of_its_own() {
+            return;
+        }
+        let root = fixture_root("full-access-shell-announced");
+        let connection_id = "1f1f1f1f-1f1f-4f1f-8f1f-1f1f1f1f1f1f";
+        let (manager, log, _env) = full_access_fixture(
+            &root,
+            connection_id,
+            &[(
+                "remote.shell",
+                json!({"job_id": "job-shell", "kind": "shell", "state": "completed",
+                    "detach": false, "created_at": 1_760_000_000u64, "exit_code": 0,
+                    "stdout_tail": "ok", "stderr_tail": "", "truncated": false}),
+            )],
+            &[],
+        )
+        .await;
+        let secret = "PRIVATE_SYNTHETIC_TOKEN_5d1e";
+        let command = format!("API_TOKEN={secret} Rscript fit.R");
+        let cap = CallCapability::for_test(ProviderTier::Private, true);
+        // A command the secret guard refuses is refused with nothing announced or sent.
+        manager
+            .agent_request(
+                FULL_ACCESS_SESSION,
+                &cap,
+                connection_id,
+                "remote.shell",
+                json!({"command": "cat ~/.netrc", "idempotency_key": "shell-0"}),
+            )
+            .await
+            .unwrap_err();
+        assert!(sent_requests(&log).is_empty(), "nothing was sent");
+        let answer = manager
+            .agent_request(
+                FULL_ACCESS_SESSION,
+                &cap,
+                connection_id,
+                "remote.shell",
+                json!({"command": command, "idempotency_key": "shell-1"}),
+            )
+            .await
+            .unwrap();
+        assert_eq!(answer["exit_code"], 0);
+        let sent = sent_requests(&log);
+        let announced = sent
+            .iter()
+            .position(|(method, _)| method == "run.project")
+            .expect("announced");
+        let ran = sent
+            .iter()
+            .position(|(method, _)| method == "remote.shell")
+            .expect("sent");
+        assert!(announced < ran, "announced before it was sent");
+        assert_eq!(
+            sent[announced].1["body"],
+            format!(
+                "Requested remote.shell: Rscript ({} characters; runs as your account)",
+                command.chars().count()
+            )
+        );
+        assert!(!sent[announced].1.to_string().contains(secret));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    /// C16: an operation that cannot be announced is not sent.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_shell_command_that_cannot_be_announced_is_not_sent() {
+        if !crate::test_sandbox::in_a_process_of_its_own() {
+            return;
+        }
+        let root = fixture_root("full-access-shell-unannounced");
+        let connection_id = "2a2a2a2a-2a2a-4a2a-8a2a-2a2a2a2a2a2a";
+        let (manager, log, _env) = full_access_fixture(
+            &root,
+            connection_id,
+            &[],
+            &[("run.project", "invalid_params")],
+        )
+        .await;
+        let cap = CallCapability::for_test(ProviderTier::Private, true);
+        manager
+            .agent_request(
+                FULL_ACCESS_SESSION,
+                &cap,
+                connection_id,
+                "remote.shell",
+                json!({"command": "Rscript fit.R", "idempotency_key": "shell-2"}),
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(logged_methods(&log, "run.project"), 1);
+        assert_eq!(logged_methods(&log, "remote.shell"), 0);
         let _ = fs::remove_dir_all(root);
     }
 

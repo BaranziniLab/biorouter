@@ -6,6 +6,7 @@ import {
   NoTeamState,
   OfflineState,
   SignInNeededState,
+  WorkspaceDeletedState,
 } from './EmptyStates';
 import { HostDialog } from './HostDialog';
 import { JoinDialog } from './JoinDialog';
@@ -25,6 +26,7 @@ export const ONBOARDING_SCREENS: readonly CrewScreen[] = [
   'join',
   'no-team',
   'no-channel',
+  'workspace-deleted',
 ];
 
 /** Whether `screen` is one this area draws. */
@@ -58,6 +60,8 @@ export function OnboardingScreen() {
       return <NoTeamState />;
     case 'no-channel':
       return <NoChannelState />;
+    case 'workspace-deleted':
+      return <WorkspaceDeletedState />;
     default:
       return null;
   }

@@ -20,12 +20,21 @@ import {
   usePostCheck,
   usePostInFlight,
 } from './crewSend';
-import { useCrewRunStart } from './crewRunStart';
-import { arrivalConnectDecision, isMembershipEnded, isWorkspaceDeleted } from './connectFailure';
+import { runSources, useCrewRunStart } from './crewRunStart';
+import {
+  arrivalConnectDecision,
+  isMembershipEnded,
+  isWorkspaceDeleted,
+  WORKSPACE_DELETED_CONNECT_CODE,
+} from './connectFailure';
 import { deriveConnectionStatus, deriveCrewScreen } from './crewStatus';
 import { useCrewSurfaces } from './crewSurfaces';
 import { rememberedLastChannel, rememberLastChannel } from './draftStash';
-import { failureMessage, isFinalObservationEnd } from './observationFailure';
+import {
+  failureMessage,
+  isFinalObservationEnd,
+  WORKSPACE_DELETED_CODE,
+} from './observationFailure';
 import {
   arrivalConnectConsumed,
   arrivalConnectIntent,
@@ -875,7 +884,7 @@ export function useCrewController(options: CrewControllerOptions = {}): CrewCont
         expected_policy_epoch: observedPrivacy.policyEpoch,
         expected_workspace_policy_epoch: snapshot.workspace.policy_epoch,
         channel_id: channelId,
-        context_channels: [channelId, ...contextChannels],
+        context_channels: runSources(channelId, contextChannels),
       } satisfies Api.GrantSessionRequest
     );
   };
@@ -1150,6 +1159,10 @@ export function useCrewController(options: CrewControllerOptions = {}): CrewCont
       notJoined,
       reconnecting: isReconnecting,
       awaitingSave,
+      workspaceDeleted:
+        isWorkspaceDeleted(savedConnection) ||
+        connectFailure?.code === WORKSPACE_DELETED_CONNECT_CODE ||
+        refreshErrorCode === WORKSPACE_DELETED_CODE,
     }),
     effectivePrivacy:
       shownVerified && snapshot && observedPrivacy

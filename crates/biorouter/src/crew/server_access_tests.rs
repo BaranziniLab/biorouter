@@ -415,17 +415,180 @@ fn an_empty_context_is_none_and_a_long_one_is_cut_at_a_character() {
 #[test]
 fn a_finished_share_names_its_blob_and_a_server_path_its_file() {
     assert_eq!(
-        shared_blob(&json!({"status": "completed", "result": {"blob_id": "blob-1"}})),
+        shared_blob(&json!({"state": "completed", "result": {"blob_id": "blob-1"}})),
         Some("blob-1".into())
     );
     assert_eq!(
-        shared_blob(&json!({"status": "completed", "blob_id": "blob-2"})),
+        shared_blob(&json!({"state": "completed", "blob_id": "blob-2"})),
         Some("blob-2".into())
     );
-    assert_eq!(shared_blob(&json!({"status": "completed"})), None);
+    assert_eq!(shared_blob(&json!({"state": "completed"})), None);
     assert_eq!(remote_file_name("/pool1/out/fig.pdf"), Some("fig.pdf"));
     assert_eq!(remote_file_name("results/"), Some("results"));
     assert_eq!(remote_file_name("/"), None);
+}
+
+/// A finished `remote.share_file` as the full-access bridge's `job_view` answers it: the state
+/// is under `state`, never `status`, and the transfer's result is both nested and flattened.
+fn share_view(state: &str) -> Value {
+    let mut view = json!({
+        "job_id": "job-share", "kind": "share_file", "state": state, "detach": false,
+        "created_at": 1_760_000_000u64, "bytes_done": 0, "size": 10,
+        "path": "/pool1/home/wanjun/crew-work/lab/out/fig.pdf", "name": "fig.pdf",
+    });
+    if state == "completed" {
+        let result = json!({"blob_id": "blob-9", "name": "fig.pdf", "size": 10,
+            "sha256": "ab".repeat(32), "media_type": "application/pdf"});
+        view["ended_at"] = json!(1_760_000_002u64);
+        for (key, value) in result.as_object().unwrap() {
+            view[key] = value.clone();
+        }
+        view["result"] = result;
+    }
+    view
+}
+
+/// L1, C5, C14, C27: a transfer is followed by the bridge's own word for its job, `state`: a
+/// job still going is kept, and one that ended without its file (`failed`, `cancelled`, and
+/// `lost` for a process that went away) is let go, so it never counts against the chat's
+/// transfers. A folder-mode answer's `status` is still read.
+#[tokio::test]
+async fn a_transfer_is_followed_by_the_bridge_s_own_state() {
+    assert_eq!(job_state(&share_view("running")), Some("running"));
+    assert_eq!(
+        job_state(&json!({"status": "completed"})),
+        Some("completed")
+    );
+    assert_eq!(
+        job_state(&json!({"state": "lost", "status": "running"})),
+        Some("lost")
+    );
+    assert!(job_unfinished(job_state(&share_view("starting"))));
+    assert!(!job_unfinished(job_state(&share_view("completed"))));
+
+    let root = tempfile::tempdir().unwrap();
+    let manager = CrewManager::new(root.path().to_owned()).unwrap();
+    let params = json!({"path": "out/fig.pdf", "idempotency_key": "k"});
+    let transfers = |manager: &CrewManager| {
+        manager
+            .remote_transfers
+            .lock()
+            .unwrap()
+            .get("chat")
+            .map_or(0, HashMap::len)
+    };
+    for ended in ["failed", "cancelled", "timed_out", "lost"] {
+        let job = manager
+            .note_transfer("chat", "remote.share_file", &params, &share_view("running"))
+            .expect("followed");
+        let mut running = share_view("running");
+        manager.settle_transfer("chat", &job, &mut running).await;
+        assert_eq!(transfers(&manager), 1, "a running job is kept");
+        assert!(running.get("posted_to_channel").is_none());
+        let mut status = share_view(ended);
+        manager.settle_transfer("chat", &job, &mut status).await;
+        assert_eq!(transfers(&manager), 0, "{ended} ends the transfer");
+        assert!(status.get("posted_to_channel").is_none(), "{ended}");
+    }
+}
+
+/// C17: with nothing heard from a connection in this process (after a Disconnect, or in a
+/// daemon just started), a full-access run is refused as not connected, which a person can
+/// fix by connecting, and never blamed on the server's Crew being too old. Once connected, an
+/// older server or bridge is named.
+#[tokio::test]
+async fn full_access_on_a_connection_that_is_down_says_to_connect() {
+    let root = tempfile::tempdir().unwrap();
+    let manager = CrewManager::new(root.path().to_owned()).unwrap();
+    let c = connection(RemoteAccess::Full, Some(FOLDER));
+    manager.registry.lock().await.connections.push(c.clone());
+    let down = manager.full_access_offered(&c.id).await.unwrap_err();
+    let refusal = CrewRefusal::find(&down).expect("typed");
+    assert_eq!(refusal.code(), "crew_not_connected", "{down}");
+    assert!(!down.to_string().contains("too old"), "{down}");
+
+    let broker = |capabilities: &[&str]| BrokerHello {
+        signature_version: 2,
+        capabilities: capabilities.iter().map(|c| (*c).to_owned()).collect(),
+        workspace_name: None,
+        mode: None,
+        institution_id: None,
+        policy_epoch: None,
+        storage: None,
+    };
+    manager.remember_broker(&c.id, broker(&["presence_v1"]));
+    let old_server = manager.full_access_offered(&c.id).await.unwrap_err();
+    assert!(
+        old_server.to_string().contains("The workspace's Crew on"),
+        "{old_server}"
+    );
+    manager.remember_broker(&c.id, broker(&["presence_v1", REMOTE_ACCESS_CAPABILITY]));
+    let old_bridge = manager.full_access_offered(&c.id).await.unwrap_err();
+    assert!(
+        old_bridge.to_string().contains("Your Crew on"),
+        "{old_bridge}"
+    );
+    manager.remember_bridge(
+        &c.id,
+        BridgeState {
+            hello: full_bridge(),
+            broker_takes_full: true,
+        },
+    );
+    manager.full_access_offered(&c.id).await.unwrap();
+}
+
+/// What a full-access chat is told at every turn says commands run as the person's account
+/// and where its paths lead; a folder grant keeps its own words.
+#[tokio::test]
+async fn a_full_access_chat_is_told_its_paths_are_the_account_s_own() {
+    let root = tempfile::tempdir().unwrap();
+    let manager = CrewManager::new(root.path().to_owned()).unwrap();
+    let grant = |connection_id: &str| Scope {
+        connection_id: connection_id.into(),
+        run_id: format!("run-{connection_id}"),
+        channel_id: "channel".into(),
+        source_channels: vec!["channel".into()],
+        epoch: 1,
+        provider_binding: "private".into(),
+        public_provider: false,
+        origin_restricted: false,
+        institution_ids: BTreeSet::new(),
+        institution_policy: true,
+        expired: false,
+        expires_at: None,
+        labels: None,
+        session_incarnation: None,
+        session_store: None,
+        revocation: None,
+    };
+    {
+        let mut registry = manager.registry.lock().await;
+        let mut full = connection(RemoteAccess::Full, Some(FOLDER));
+        full.id = "full".into();
+        let mut folder = connection(RemoteAccess::Folder, Some(FOLDER));
+        folder.id = "folder".into();
+        registry.connections.extend([full, folder]);
+        registry.scopes.insert("full-chat".into(), grant("full"));
+        registry
+            .scopes
+            .insert("folder-chat".into(), grant("folder"));
+    }
+    let full = manager.moim_scope_line("full-chat").await;
+    assert!(
+        full.contains("commands run as the person's own account on the server"),
+        "{full}"
+    );
+    assert!(full.contains("may be absolute, ~/ or relative to default_folder"));
+    assert!(!full.contains("relative to the approved SSH work directory"));
+    let folder = manager.moim_scope_line("folder-chat").await;
+    assert!(
+        folder.starts_with(
+            "Crew scope: remote file paths are relative to the approved SSH work directory."
+        ),
+        "{folder}"
+    );
+    assert_eq!(manager.moim_scope_line("no-such-chat").await, folder);
 }
 
 /// OW-6: a full-access request is also read against the server account it runs as: `~`,
@@ -480,6 +643,34 @@ async fn the_secret_guard_reads_a_full_access_request_against_the_server_account
             "{params}"
         );
     }
+    // C15: `remote.execute` runs its argv in `cwd` as the account, so the argv is read as the
+    // command it is: a credential file named without a separator is still a credential file.
+    for params in [
+        json!({"argv": ["cat", ".env"], "cwd": "~/project"}),
+        json!({"argv": ["cat", ".netrc"], "cwd": "~"}),
+        json!({"argv": ["head", "credentials"], "cwd": "~/.aws"}),
+        json!({"argv": ["sh", "-c", "cat .netrc"], "cwd": "~"}),
+        json!({"argv": ["cat", "id_ed25519"], "cwd": "~/.ssh"}),
+        json!({"argv": ["cat", ".env"]}),
+    ] {
+        assert!(
+            manager
+                .refuse_remote_secrets(&c, "remote.execute", &params)
+                .is_err(),
+            "{params}"
+        );
+    }
+    for params in [
+        json!({"argv": ["python3", "analysis.py"], "cwd": "~/crew-work/lab"}),
+        json!({"argv": ["Rscript", "fit.R", "--out", "results/fit.csv"]}),
+    ] {
+        assert!(
+            manager
+                .refuse_remote_secrets(&c, "remote.execute", &params)
+                .is_ok(),
+            "{params}"
+        );
+    }
 }
 
 /// OW-5: a workspace that answers `workspace_deleted` is remembered as deleted, so the
@@ -505,6 +696,31 @@ async fn a_deleted_workspace_is_remembered_and_answered_typed() {
         "The host deleted this workspace. Remove it from this computer."
     );
     assert!(manager.workspace_deleted("deleted-connection"));
+    // L6: once its server has gone, a request on it says the host deleted it, not that it is
+    // disconnected: connecting cannot help, removing it here can.
+    let gone = manager
+        .transport("deleted-connection")
+        .await
+        .err()
+        .expect("refused");
+    assert_eq!(
+        CrewRefusal::find(&gone).map(CrewRefusal::code),
+        Some("crew_workspace_deleted"),
+        "{gone}"
+    );
+    assert_eq!(
+        gone.to_string(),
+        "The host deleted this workspace. Remove it from this computer."
+    );
+    let other = manager
+        .transport("other-connection")
+        .await
+        .err()
+        .expect("refused");
+    assert_eq!(
+        CrewRefusal::find(&other).map(CrewRefusal::code),
+        Some("crew_not_connected")
+    );
 
     let forbidden = anyhow::anyhow!(
         "Crew broker refused request: {}",

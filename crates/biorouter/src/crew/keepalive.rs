@@ -385,6 +385,11 @@ impl CrewManager {
                 }
             }
         }
+        // A bridge that ended after its host deleted the workspace is not dialled again: the
+        // workspace's server has stopped for good (L6).
+        if self.workspace_deleted(id) {
+            return Err(self.workspace_deleted_refusal(id).await.into());
+        }
         if self.dialled_recently(id) {
             self.redial_after_a_gap(id, &transport).await;
         } else {

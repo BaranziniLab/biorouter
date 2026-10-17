@@ -891,6 +891,9 @@ const DELETE_GRACE_SECS: u64 = 30;
 /// removes last, so a directory a crash left half-erased is never mistaken for an empty one
 /// (where the next `start` would create a new workspace without a word).
 const DELETED_MARKER: &str = "DELETED";
+/// Where the [`DELETED_MARKER`] is written before it is renamed into place, so the marker never
+/// exists without the workspace ID in it.
+const DELETED_MARKER_TEMP: &str = ".DELETED.tmp";
 /// A team's `#general` goes only with its team (`channel.delete`).
 const GENERAL_DELETE: &str =
     "invalid_params: #general belongs to its team. Delete the team instead.";
@@ -1326,12 +1329,7 @@ impl Broker {
         let root = canonical_root.as_path();
         // An erase a crash interrupted (OW-5): never reopened, so a `start` cannot quietly put
         // a new workspace where the deleted one was being removed.
-        if let Some(workspace_id) = deleted_marker(root)? {
-            bail!(
-                "workspace_deleted: This state directory holds a workspace its host deleted. Finish removing it: biorouter-crew delete --state-dir {} --workspace-id {workspace_id}",
-                root.display()
-            );
-        }
+        refuse_marked(root)?;
         #[cfg(target_os = "linux")]
         {
             let path = std::ffi::CString::new(root.as_os_str().as_encoded_bytes())?;
@@ -3535,7 +3533,7 @@ impl Broker {
         #[cfg(feature = "join-by-name")]
         {
             let (uid, username) = (principal.uid, principal.username.clone());
-            join::on_principal_revoked(s, uid, &username);
+            join::on_principal_revoked(s, target, uid, &username);
         }
         s.devices.retain(|_, d| d.principal_id != target);
         s.enrollments.retain(|_, e| {
@@ -3820,6 +3818,10 @@ impl Broker {
             Some("managed") => Governance::Managed,
             _ => bail!("invalid_params: governance must be open or managed"),
         };
+        #[cfg(feature = "join-by-name")]
+        if open_governance(s) && governance == Governance::Managed {
+            join::on_governance_managed(self, s);
+        }
         s.workspace.governance = governance;
         Ok(json!({ "governance": governance }))
     }
@@ -5940,6 +5942,32 @@ fn write_runtime(root: &Path, info: &Value) -> Result<()> {
     fs::rename(path, root.join("runtime.json"))?;
     sync_dir(root)
 }
+/// Connections a broker holds at once, in all and per account. A full-access bridge holds one
+/// and each of its file copies another (at most four, `remote_full`'s `MAX_TRANSFERS`).
+const MAX_CONNECTIONS: usize = 256;
+const MAX_CONNECTIONS_PER_UID: usize = 8;
+const SERVER_FULL: &str =
+    "quota_exceeded: The workspace server has too many connections open. Try again shortly.";
+const ACCOUNT_FULL: &str = "quota_exceeded: This account already has 8 connections open to the workspace server. Wait for a Crew file copy to finish, or close another Crew connection, and try again.";
+/// Tell a connection over the limits why it is closed, in the one frame it reads first, so it
+/// fails with a reason instead of finding the stream at its end. The write never waits: a fresh
+/// connection's buffer takes one short frame.
+fn refuse_connection(stream: UnixStream, refusal: &str) {
+    let response = Response {
+        id: String::new(),
+        result: None,
+        error: Some(ProtocolError {
+            code: "quota_exceeded".into(),
+            message: refusal.into(),
+        }),
+    };
+    if let Ok(mut bytes) = serde_json::to_vec(&response) {
+        bytes.push(b'\n');
+        let mut stream = stream;
+        let _ = stream.set_nonblocking(true);
+        let _ = stream.write_all(&bytes);
+    }
+}
 struct ConnectionPermit {
     counts: Arc<Mutex<BTreeMap<u32, usize>>>,
     uid: u32,
@@ -5964,6 +5992,16 @@ pub fn serve(root: &Path, bootstrap_key: &str, name: Option<&str>) -> Result<()>
         cfg!(target_os = "linux"),
         "unsupported: serve requires Linux"
     );
+    // An erase a crash interrupted after its marker went in (OW-5): the host confirmed it, so
+    // it is finished, never reopened.
+    if let Some(marked) = deleted_marker(root).ok().flatten() {
+        private_dir(root)?;
+        let workspace_id = marked_workspace(root, marked);
+        let stored = stored_workspace(root).ok().flatten();
+        let answer = erase_stopped(root, workspace_id.as_deref().unwrap_or_default(), stored)?;
+        println!("{answer}");
+        return Ok(());
+    }
     let node_id = node_identity()?;
     let mut broker = Broker::open_inner(root, bootstrap_key, Box::new(SystemDirectory), name)?;
     if broker.state.workspace.deleted_at.is_some() {
@@ -6030,8 +6068,15 @@ pub fn serve(root: &Path, bootstrap_key: &str, name: Option<&str>) -> Result<()>
             let mut counts = active
                 .lock()
                 .map_err(|_| anyhow!("connection limits unavailable"))?;
-            if counts.values().sum::<usize>() >= 256 || counts.get(&uid).copied().unwrap_or(0) >= 8
-            {
+            let refusal = if counts.values().sum::<usize>() >= MAX_CONNECTIONS {
+                Some(SERVER_FULL)
+            } else if counts.get(&uid).copied().unwrap_or(0) >= MAX_CONNECTIONS_PER_UID {
+                Some(ACCOUNT_FULL)
+            } else {
+                None
+            };
+            if let Some(refusal) = refusal {
+                refuse_connection(stream, refusal);
                 continue;
             }
             *counts.entry(uid).or_default() += 1;
@@ -6127,9 +6172,17 @@ fn finish_deletion(broker: &Broker, socket: &Path, bound: (u64, u64)) -> ! {
     }
     std::process::exit(if erased.is_ok() { 0 } else { 74 })
 }
-/// The workspace ID in `root`'s [`DELETED_MARKER`], or `None` when there is no marker: an
-/// erase that a crash interrupted left it.
-fn deleted_marker(root: &Path) -> Result<Option<String>> {
+/// Whether `name` is an ID exactly as [`id`] makes them (a hyphenated, lowercase UUID): what
+/// the broker names workspaces and blob files by.
+fn broker_id(name: &str) -> bool {
+    Uuid::parse_str(name).is_ok_and(|id| id.hyphenated().to_string() == name)
+}
+/// What `root`'s [`DELETED_MARKER`] says, which an erase a crash interrupted left: `None` when
+/// there is no marker; `Some(Some(id))` when it names the workspace being erased; `Some(None)`
+/// when it names none, as a write that a full disk or a crash cut short left it before markers
+/// were written whole. An erase was started either way: the host confirmed it, and only which
+/// workspace it was is then for the journal to say.
+fn deleted_marker(root: &Path) -> Result<Option<Option<String>>> {
     let file = match OpenOptions::new()
         .read(true)
         .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
@@ -6141,9 +6194,33 @@ fn deleted_marker(root: &Path) -> Result<Option<String>> {
             return Err(error).context("unsafe_storage: cannot read the deleted-workspace marker")
         }
     };
-    let mut id = String::new();
-    file.take(128).read_to_string(&mut id)?;
-    Ok(Some(id.trim().to_owned()))
+    let mut bytes = Vec::new();
+    file.take(128).read_to_end(&mut bytes)?;
+    let id = String::from_utf8_lossy(&bytes).trim().to_owned();
+    Ok(Some(broker_id(&id).then_some(id)))
+}
+/// The workspace an interrupted erase in `root` was removing: the marker's ID, or the
+/// journal's when the marker names none.
+fn marked_workspace(root: &Path, marked: Option<String>) -> Option<String> {
+    marked.or_else(|| {
+        stored_workspace(root)
+            .ok()
+            .flatten()
+            .map(|stored| stored.id)
+    })
+}
+/// Refuse `root` while it holds a [`DELETED_MARKER`], naming the command that finishes the
+/// erase.
+fn refuse_marked(root: &Path) -> Result<()> {
+    if let Some(marked) = deleted_marker(root)? {
+        let workspace_id =
+            marked_workspace(root, marked).unwrap_or_else(|| "<the workspace's ID>".into());
+        bail!(
+            "workspace_deleted: This state directory holds a workspace its host deleted. Finish removing it: biorouter-crew delete --state-dir {} --workspace-id {workspace_id}",
+            root.display()
+        );
+    }
+    Ok(())
 }
 /// Erase a deleted workspace's state directory `root`, removing only the files the broker
 /// creates and never anything recursively, since `--state-dir` may name a directory that held
@@ -6157,10 +6234,15 @@ fn deleted_marker(root: &Path) -> Result<Option<String>> {
 fn erase_store(root: &Path, workspace_id: &str) -> Result<Vec<String>> {
     let euid = unsafe { libc::geteuid() };
     let marker = root.join(DELETED_MARKER);
-    let mut file = private_file(&marker, false)?;
+    // Written whole beside it and renamed into place: a full disk or a crash leaves either no
+    // marker (and nothing erased) or one naming the workspace, never an empty one.
+    let temporary = root.join(DELETED_MARKER_TEMP);
+    let mut file = private_file(&temporary, false)?;
     file.set_len(0)?;
     file.write_all(workspace_id.as_bytes())?;
     file.sync_all()?;
+    drop(file);
+    fs::rename(&temporary, &marker)?;
     sync_dir(root)?;
     let ours = |path: &Path| {
         fs::symlink_metadata(path).is_ok_and(|m| m.is_file() && m.uid() == euid && m.nlink() == 1)
@@ -6168,8 +6250,12 @@ fn erase_store(root: &Path, workspace_id: &str) -> Result<Vec<String>> {
     let blobs = root.join("blobs");
     if fs::symlink_metadata(&blobs).is_ok_and(|m| m.is_dir() && m.uid() == euid) {
         for entry in fs::read_dir(&blobs)? {
-            let path = entry?.path();
-            if ours(&path) {
+            let entry = entry?;
+            // Blob files are named by their ID; anything else in `blobs/` is not the broker's
+            // and stays, as a leftover.
+            let blob = entry.file_name().to_str().is_some_and(broker_id);
+            let path = entry.path();
+            if blob && ours(&path) {
                 let _ = fs::remove_file(&path);
             }
         }
@@ -6178,8 +6264,10 @@ fn erase_store(root: &Path, workspace_id: &str) -> Result<Vec<String>> {
     for entry in fs::read_dir(root)? {
         let entry = entry?;
         let created = entry.file_name().to_str().is_some_and(|name| {
-            matches!(name, "journal.jsonl" | "runtime.json" | "broker.log")
-                || name.starts_with("torn-tail-")
+            matches!(
+                name,
+                "journal.jsonl" | "runtime.json" | "broker.log" | DELETED_MARKER_TEMP
+            ) || name.starts_with("torn-tail-")
                 || (name.starts_with(".runtime-") && name.ends_with(".tmp"))
         });
         if created && ours(&entry.path()) {
@@ -6330,6 +6418,10 @@ fn connect_workspace(
     let hello: Response = serde_json::from_slice(
         &read_frame(&mut reader)?.ok_or_else(|| anyhow!("broker disconnected"))?,
     )?;
+    // A refusal (a connection over the broker's limits) is the broker's own sentence.
+    if let Some(error) = hello.error {
+        bail!("{}", error.message);
+    }
     let hello = hello.result.unwrap_or(Value::Null);
     ensure!(
         hello.get("workspace_id").and_then(Value::as_str) == Some(workspace),
@@ -6660,19 +6752,37 @@ pub fn delete_workspace(root: &Path, workspace_id: &str) -> Result<Value> {
         Err(error) => return Err(error.into()),
     }
     // Past an interrupted erase the marker names the workspace, and the journal may already be
-    // gone or cut short; before one, the journal is what names it.
+    // gone or cut short; before one, the journal is what names it. A marker that names nothing
+    // (cut short by a full disk or a crash) leaves it to the journal too.
     let marker = deleted_marker(root)?;
     let stored = match (&marker, stored_workspace(root)) {
         (Some(_), stored) => stored.ok().flatten(),
         (None, stored) => stored?,
     };
     let held = marker
-        .or_else(|| stored.as_ref().map(|stored| stored.id.clone()))
-        .ok_or_else(|| anyhow!("not_found: This state directory holds no workspace."))?;
-    ensure!(
-        held == workspace_id,
-        "identity_mismatch: This state directory holds workspace {held}, not {workspace_id}."
-    );
+        .clone()
+        .flatten()
+        .or_else(|| stored.as_ref().map(|stored| stored.id.clone()));
+    match held {
+        Some(held) => ensure!(
+            held == workspace_id,
+            "identity_mismatch: This state directory holds workspace {held}, not {workspace_id}."
+        ),
+        // An erase was started, which the host confirmed then, and nothing names its workspace
+        // any more: the ID given is the one to finish with.
+        None if marker.is_some() => {}
+        None => bail!("not_found: This state directory holds no workspace."),
+    }
+    erase_stopped(root, workspace_id, stored)
+}
+
+/// Erase the stopped workspace `workspace_id` in `root` (whose journal said `stored`): under
+/// the writer lock, then the runtime directory it last listened in.
+fn erase_stopped(
+    root: &Path,
+    workspace_id: &str,
+    stored: Option<StoredWorkspace>,
+) -> Result<Value> {
     // The same lock a broker holds for as long as it runs.
     let lock = private_file(&root.join("writer.lock"), false)?;
     ensure!(
@@ -6701,6 +6811,8 @@ pub fn delete_workspace(root: &Path, workspace_id: &str) -> Result<Value> {
     if let Some(basename) = runtime {
         remove_stale_runtime(Path::new("/tmp"), unsafe { libc::geteuid() }, &basename);
     }
+    // Empty only when `serve` finished an erase nothing named any more.
+    let workspace_id = (!workspace_id.is_empty()).then_some(workspace_id);
     Ok(json!({"deleted": true, "workspace_id": workspace_id, "leftovers": leftovers}))
 }
 
@@ -6752,6 +6864,9 @@ fn start(root: &Path, key: &str, name: Option<&str>) -> Result<Value> {
         validate_workspace_name(name).map_err(|error| anyhow!(error.wire()))?;
     }
     private_dir(root)?;
+    // A deleted workspace an erase did not finish is never started; `serve` would finish the
+    // erase, which is `delete`'s to say.
+    refuse_marked(root)?;
     if let Some(name) = name {
         let stored = stored_workspace(root)?;
         if let Some(stored_name) = stored.as_ref().and_then(|stored| stored.name.as_deref()) {

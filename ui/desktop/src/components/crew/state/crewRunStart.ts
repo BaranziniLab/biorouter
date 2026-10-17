@@ -191,6 +191,23 @@ export interface CrewRunStart {
 }
 
 /**
+ * The `context_channels` a run start or a chat grant sends (C20): the channel it posts in first,
+ * then every other channel it reads once. The route counts the others against its limit (99 for a
+ * broker with `wide_runs_v1`, `WIDE_RUN_EXTRA_CHANNELS`), so a wide run sends at most 100 sources;
+ * a selection that still names the destination, or a channel twice, never makes one more.
+ */
+export function runSources(channelId: string, others: readonly string[]): string[] {
+  const sources = [channelId];
+  const seen = new Set(sources);
+  for (const id of others) {
+    if (seen.has(id)) continue;
+    seen.add(id);
+    sources.push(id);
+  }
+  return sources;
+}
+
+/**
  * Start the person's own agent in the selected channel.
  *
  * The request carries the verified privacy epochs and one request id. A retry of an unchanged
@@ -339,7 +356,7 @@ export function useCrewRunStart(context: CrewRunStartContext): CrewRunStart {
       prompt,
       provider,
       model,
-      context_channels: [channelId, ...contextChannels],
+      context_channels: runSources(channelId, contextChannels),
       posting_grant: true,
     } satisfies Api.StartRunRequest;
     const fingerprint = JSON.stringify({ connectionId, ...payload });

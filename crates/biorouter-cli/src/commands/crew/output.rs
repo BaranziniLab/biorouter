@@ -843,6 +843,10 @@ const SETUP_FAILURES: &[(&str, &str)] = &[
         "Crew didn't start the workspace on the server.",
     ),
     (
+        "crew_host_storage_unsafe",
+        "Other accounts on the server can change folders of yours that hold Crew's storage, so the workspace wasn't started.",
+    ),
+    (
         "crew_server_probe_unsupported",
         "The Crew in your account on the server can't check the server yet.",
     ),
@@ -923,16 +927,57 @@ pub fn setup_failure_sentence(code: &str, own: Option<&str>) -> String {
         "crew_server_probe_unsupported" => {
             Some("Update it with biorouter crew setup, then try again.")
         }
+        // L3: `crew host --fix-permissions` runs that chmod for the person, on exactly those
+        // folders, and goes on.
+        "crew_host_storage_unsafe" => Some(
+            "Or run the same command with --fix-permissions, and setup removes that write access for you.",
+        ),
         _ => None,
     };
     match hint {
         // The daemon's own sentence may already say it.
-        Some(hint) if !said.contains("--replace-existing") && !said.contains("crew setup") => {
+        Some(hint)
+            if !said.contains("--replace-existing")
+                && !said.contains("crew setup")
+                && !said.contains("--fix-permissions") =>
+        {
             format!("{said}\n{hint}")
         }
         _ => said.to_owned(),
     }
 }
+
+/// A setup failure's sentence, then the server's or the broker's own words beside it
+/// (`SetupError.detail`, L3): what a failed start printed is the one thing that says why, so a
+/// person reads it here, as a failed connect's OpenSSH words are read. The detail is already
+/// terminal-safe line by line; at most [`SETUP_DETAIL_LINES`] lines are shown.
+pub fn with_setup_detail(sentence: &str, detail: Option<&str>) -> String {
+    let Some(detail) = detail.map(str::trim).filter(|detail| !detail.is_empty()) else {
+        return sentence.to_owned();
+    };
+    let mut lines = vec![sentence.to_owned()];
+    let all: Vec<&str> = detail
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .collect();
+    for (index, line) in all.iter().take(SETUP_DETAIL_LINES).enumerate() {
+        lines.push(if index == 0 {
+            format!("  Details: {line}")
+        } else {
+            format!("    {line}")
+        });
+    }
+    if all.len() > SETUP_DETAIL_LINES {
+        lines.push(format!(
+            "    ({} more lines in --output-format json)",
+            all.len() - SETUP_DETAIL_LINES
+        ));
+    }
+    lines.join("\n")
+}
+
+/// How many lines of a setup failure's detail text output shows.
+const SETUP_DETAIL_LINES: usize = 20;
 
 /// The server a setup job is for, as a sentence names it: the login the daemon checked, else
 /// the one the person gave.
@@ -994,8 +1039,14 @@ pub fn setup_progress_lines(previous: &Value, current: &Value, login: &str) -> V
 
 /// What a finished setup job did, for a person: what a check found, or which Crew is now
 /// installed and, for a member, that the connection is up and what agents may do there.
-pub fn setup_summary_lines(status: &Value, login: &str) -> Vec<String> {
+///
+/// `connection` is the saved connection the job was for, read after it finished, when there is
+/// one: the job's own server facts never say whether the kernel confines commands to a folder
+/// (only the connection's `server_access`, from its bridge, does, C25), and what agents may do
+/// is what the connection now says, not what the job could have set (C22).
+pub fn setup_summary_lines(status: &Value, login: &str, connection: Option<&Value>) -> Vec<String> {
     let server = setup_server(status, login);
+    let server_access = connection.map_or(&Value::Null, |connection| &connection["server_access"]);
     let outcome = &status["outcome"];
     let installed = &status["installed"];
     let artifact = str_field(&status["artifact"], "version").map(safe_text);
@@ -1040,11 +1091,17 @@ pub fn setup_summary_lines(status: &Value, login: &str) -> Vec<String> {
         if let Some(problem) = str_field(installed, "problem") {
             lines.push(safe_text(problem));
         }
-        if facts
-            .get("landlock_abi")
-            .and_then(Value::as_i64)
-            .is_some_and(|abi| abi < 3)
-        {
+        // The bridge's own report, from the connection's last connect: the SSH check never
+        // learns the kernel's Landlock ABI.
+        let unconfined = server_access
+            .get("confined_execution_available")
+            .and_then(Value::as_bool)
+            == Some(false)
+            || server_access
+                .get("landlock_abi")
+                .and_then(Value::as_i64)
+                .is_some_and(|abi| abi < 3);
+        if unconfined {
             lines.push("Agents can run commands there only with full access: its kernel can't confine them to a folder.".to_owned());
         }
         return lines;
@@ -1052,16 +1109,24 @@ pub fn setup_summary_lines(status: &Value, login: &str) -> Vec<String> {
     let version = str_field(outcome, "installed_version")
         .or_else(|| str_field(installed, "version"))
         .map(safe_text);
-    let crew = version.map_or_else(|| "Crew".to_owned(), |version| format!("Crew {version}"));
+    let crew = version
+        .as_deref()
+        .map_or_else(|| "Crew".to_owned(), |version| format!("Crew {version}"));
     let mut lines = vec![
         if outcome.get("reused").and_then(Value::as_bool) == Some(true) {
             format!("{crew} was already installed in your account on {server}.")
-        } else if let Some(previous) = str_field(outcome, "upgraded_from") {
-            format!(
-                "Updated Crew from {} to {} in your account on {server}.",
-                safe_text(previous),
-                crew.trim_start_matches("Crew ")
-            )
+        } else if let Some(previous) = setup_replaced(outcome, installed) {
+            match version.as_deref() {
+                Some(now) if previous != now => {
+                    format!("Updated Crew from {previous} to {now} in your account on {server}.")
+                }
+                // The same version with another SHA-256, or no version to compare.
+                _ => format!(
+                    "Replaced {crew} in your account on {server} with this computer's copy of it."
+                ),
+            }
+        } else if outcome.get("previous_kept").and_then(Value::as_bool) == Some(true) {
+            format!("Replaced the Crew program in your account on {server} with {crew}.")
         } else {
             format!("Installed {crew} in your account on {server}.")
         },
@@ -1070,14 +1135,62 @@ pub fn setup_summary_lines(status: &Value, login: &str) -> Vec<String> {
         if str_field(outcome, "connection_id").is_some() {
             lines.push("Connected.".to_owned());
         }
-        if let Some(folder) = str_field(outcome, "work_folder") {
-            lines.push(format!(
-                "Your agent can work as you on {server}, starting in {}. Change that with biorouter crew connections set-access.",
-                safe_text(folder)
-            ));
-        }
+        lines.extend(member_access_line(outcome, connection, &server));
     }
     lines
+}
+
+/// The version an install replaced, as the daemon reports it: `upgraded_from` (a version, or
+/// `{version, sha256}` beside the new digest), else, when the replaced program was kept as
+/// `biorouter-crew.previous`, the version the check found before the install (nothing checks
+/// again after it).
+fn setup_replaced(outcome: &Value, installed: &Value) -> Option<String> {
+    let reported = match outcome.get("upgraded_from") {
+        Some(Value::String(version)) => Some(version.as_str()),
+        Some(previous) => str_field(previous, "version"),
+        None => None,
+    };
+    let kept = || {
+        (outcome.get("previous_kept").and_then(Value::as_bool) == Some(true))
+            .then(|| str_field(installed, "version"))
+            .flatten()
+    };
+    reported
+        .or_else(kept)
+        .map(str::trim)
+        .filter(|version| !version.is_empty())
+        .map(safe_text)
+}
+
+/// What a member's setup left agents able to do on `server` (OW-6, C22): what the job set
+/// (`outcome.remote_access`), with the folder and whether commands run there read from the
+/// connection when it was read again; a folder the job made but did not give the connection is
+/// only named. Nothing when the job changed nothing about it.
+fn member_access_line(outcome: &Value, connection: Option<&Value>, server: &str) -> Option<String> {
+    let saved = |key: &str| connection.and_then(|connection| str_field(connection, key));
+    let folder = str_field(outcome, "work_folder")
+        .or_else(|| saved("remote_root"))
+        .map(safe_text);
+    match (str_field(outcome, "remote_access"), folder) {
+        (Some("full"), Some(folder)) => Some(format!(
+            "Your agent can work as you on {server}, starting in {folder}. Change that with biorouter crew connections set-access."
+        )),
+        (Some(_), Some(folder)) => {
+            let runs = connection
+                .and_then(|connection| connection.get("remote_execution"))
+                .and_then(Value::as_bool)
+                != Some(false);
+            Some(if runs {
+                format!("Agents can work in {folder} on {server}, confined to that folder. Change that with biorouter crew connections set-access.")
+            } else {
+                format!("Agents can read and write files in {folder} on {server}. Its kernel can't confine commands to a folder, so running them there needs full access: biorouter crew connections set-access full.")
+            })
+        }
+        (None, Some(folder)) if str_field(outcome, "work_folder").is_some() => Some(format!(
+            "Your work folder on {server} is {folder}. Choose what agents may do there with biorouter crew connections set-access."
+        )),
+        _ => None,
+    }
 }
 
 /// How two release versions (`1.93.0`) compare, `None` when either is not one.
@@ -1126,6 +1239,66 @@ pub fn workspace_context_lines(context: &Value, options: &HumanOptions) -> Vec<S
     if !about.is_empty() {
         lines.push(String::new());
         lines.push(about.join(" · "));
+    }
+    lines
+}
+
+/// `files list` (L8): `{channel_id, files: [{attachment_id, name, size, media_type, shared_by,
+/// run_id, shared_at, message_id}], unavailable, complete}`, one line a file, newest first:
+/// its name and size, who shared it and when, and always its attachment ID, which `files
+/// download` takes. Then what the listing could not show.
+pub fn channel_files_lines(listing: &Value, options: &HumanOptions) -> Vec<String> {
+    let ctx = Ctx::new(options.directory.clone(), options.show_ids, options.clock);
+    let files = list(listing, "files");
+    let channel = ctx.channel(str_field(listing, "channel_id"));
+    let mut lines: Vec<String> = files
+        .iter()
+        .map(|file| {
+            let mut name = text_or(file, "name", "Unnamed file");
+            if let Some(size) = file.get("size").and_then(Value::as_u64) {
+                let _ = write!(name, " ({})", human_size(size));
+            }
+            let mut parts = vec![name];
+            let by = str_field(file, "shared_by");
+            parts.push(match str_field(file, "run_id") {
+                None => format!("shared by {}", ctx.you_or_person(by)),
+                Some(_) if ctx.is_actor(by) => "shared by your agent".to_owned(),
+                Some(_) => format!("shared by the agent of {}", ctx.person(by)),
+            });
+            if let Some(at) = file.get("shared_at").and_then(Value::as_i64) {
+                parts.push(ctx.when(at));
+            }
+            if let Some(id) = str_field(file, "attachment_id") {
+                parts.push(format!("attachment ID {}", safe_text(id)));
+            }
+            parts.join(" · ")
+        })
+        .collect();
+    if lines.is_empty() {
+        lines.push(format!("No files were shared in {channel}."));
+    }
+    let unavailable = listing
+        .get("unavailable")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    if unavailable > 0 {
+        let unavailable = usize::try_from(unavailable).unwrap_or(usize::MAX);
+        lines.push(format!(
+            "{} shared there can't be opened any more.",
+            count(unavailable, "more file", "more files")
+        ));
+    }
+    if listing.get("complete").and_then(Value::as_bool) == Some(false) {
+        lines.push(
+            "Only the channel's newest messages were read, so older files may not be listed."
+                .to_owned(),
+        );
+    }
+    if !files.is_empty() {
+        lines.push(
+            "Download one with biorouter crew files download ATTACHMENT_ID --output FILE."
+                .to_owned(),
+        );
     }
     lines
 }
@@ -5547,56 +5720,220 @@ mod tests {
     /// a member's setup says it connected and what agents may do.
     #[test]
     fn setup_summaries_say_what_was_found_and_done() {
+        // The daemon's `SetupServer` has no Landlock ABI: the check's own facts never say
+        // whether the kernel confines commands (C25).
         let check = json!({
             "intent": "check", "state": "finished",
-            "server": {"login": "bob@leo", "os": "Linux", "arch": "x86_64", "glibc": "2.35", "landlock_abi": 1},
+            "server": {"login": "bob@leo", "os": "Linux", "arch": "x86_64", "glibc": "2.35"},
             "installed": {"path": "~/.local/bin/biorouter-crew", "state": "file", "version": "1.92.1"},
             "artifact": {"version": "1.93.0"}
         });
+        let found = [
+            "bob@leo: Linux x86_64, glibc 2.35.",
+            "Crew 1.92.1 is installed in your account there. This computer has Crew 1.93.0; biorouter crew setup --replace-existing updates it.",
+        ];
+        assert_eq!(setup_summary_lines(&check, "bob@leo", None), found);
+        // A saved connection's bridge does say, from its last connect (leo: Landlock ABI 1).
+        let leo =
+            json!({"server_access": {"landlock_abi": 1, "confined_execution_available": false}});
         assert_eq!(
-            setup_summary_lines(&check, "bob@leo"),
+            setup_summary_lines(&check, "bob@leo", Some(&leo)),
             [
-                "bob@leo: Linux x86_64, glibc 2.35.",
-                "Crew 1.92.1 is installed in your account there. This computer has Crew 1.93.0; biorouter crew setup --replace-existing updates it.",
+                found[0],
+                found[1],
                 "Agents can run commands there only with full access: its kernel can't confine them to a folder.",
             ]
+        );
+        let confined =
+            json!({"server_access": {"landlock_abi": 4, "confined_execution_available": true}});
+        assert_eq!(
+            setup_summary_lines(&check, "bob@leo", Some(&confined)),
+            found
         );
         let mut newer = check.clone();
         newer["installed"]["version"] = json!("1.94.0");
         assert_eq!(
-            setup_summary_lines(&newer, "bob@leo")[1],
+            setup_summary_lines(&newer, "bob@leo", None)[1],
             "Crew 1.94.0 is installed in your account there, newer than this computer's 1.93.0, so setup leaves it in place."
         );
         let mut missing = check.clone();
         missing["installed"] = json!({"state": "missing"});
-        missing["server"]["landlock_abi"] = json!(3);
         assert_eq!(
-            setup_summary_lines(&missing, "bob@leo")[1],
+            setup_summary_lines(&missing, "bob@leo", None)[1],
             "Crew isn't installed in your account there. biorouter crew setup installs Crew 1.93.0."
         );
 
         let install = json!({"intent": "install", "state": "finished", "server": {"login": "bob@leo"},
             "outcome": {"installed_version": "1.93.0", "reused": false}});
         assert_eq!(
-            setup_summary_lines(&install, "x"),
+            setup_summary_lines(&install, "x", None),
             ["Installed Crew 1.93.0 in your account on bob@leo."]
         );
         let mut reused = install.clone();
         reused["outcome"]["reused"] = json!(true);
         assert_eq!(
-            setup_summary_lines(&reused, "x"),
+            setup_summary_lines(&reused, "x", None),
             ["Crew 1.93.0 was already installed in your account on bob@leo."]
         );
+        // C25: an update replaces the older program and keeps it (`previous_kept`); the version
+        // the check found before the install is the one it replaced.
+        let mut updated = install.clone();
+        updated["outcome"]["previous_kept"] = json!(true);
+        updated["installed"] = json!({"state": "file", "version": "1.92.1"});
+        assert_eq!(
+            setup_summary_lines(&updated, "x", None),
+            ["Updated Crew from 1.92.1 to 1.93.0 in your account on bob@leo."]
+        );
+        // The daemon's own `upgraded_from`, as a version or with its digest beside the new one.
+        let mut reported = install.clone();
+        reported["outcome"]["previous_kept"] = json!(true);
+        reported["outcome"]["upgraded_from"] =
+            json!({"version": "1.91.0", "sha256": "ab".repeat(32)});
+        assert_eq!(
+            setup_summary_lines(&reported, "x", None),
+            ["Updated Crew from 1.91.0 to 1.93.0 in your account on bob@leo."]
+        );
+        reported["outcome"]["upgraded_from"] = json!("1.90.2");
+        assert_eq!(
+            setup_summary_lines(&reported, "x", None),
+            ["Updated Crew from 1.90.2 to 1.93.0 in your account on bob@leo."]
+        );
+        // The same version with another SHA-256 is replaced, not "updated".
+        reported["outcome"]["upgraded_from"] =
+            json!({"version": "1.93.0", "sha256": "cd".repeat(32)});
+        assert_eq!(
+            setup_summary_lines(&reported, "x", None),
+            ["Replaced Crew 1.93.0 in your account on bob@leo with this computer's copy of it."]
+        );
+
+        // C22: what agents may do is what the job set, never read from the folder alone.
         let member = json!({"intent": "member", "state": "finished", "server": {"login": "bob@leo"},
             "outcome": {"installed_version": "1.93.0", "reused": false, "connection_id": "c",
-                        "work_folder": "/pool1/home/bob/crew-work/lab"}});
+                        "work_folder": "/pool1/home/bob/crew-work/lab", "remote_access": "full"}});
         assert_eq!(
-            setup_summary_lines(&member, "x"),
+            setup_summary_lines(&member, "x", None),
             [
                 "Installed Crew 1.93.0 in your account on bob@leo.",
                 "Connected.",
                 "Your agent can work as you on bob@leo, starting in /pool1/home/bob/crew-work/lab. Change that with biorouter crew connections set-access.",
             ]
+        );
+        let mut made_only = member.clone();
+        made_only["outcome"]
+            .as_object_mut()
+            .expect("outcome")
+            .remove("remote_access");
+        assert_eq!(
+            setup_summary_lines(&made_only, "x", None)[2],
+            "Your work folder on bob@leo is /pool1/home/bob/crew-work/lab. Choose what agents may do there with biorouter crew connections set-access."
+        );
+        // The job set folder access; the connection says whether commands run there.
+        let mut folder = member.clone();
+        folder["outcome"]["remote_access"] = json!("folder");
+        let files_only =
+            json!({"remote_root": "/pool1/home/bob/crew-work/lab", "remote_execution": false});
+        assert_eq!(
+            setup_summary_lines(&folder, "x", Some(&files_only))[2],
+            "Agents can read and write files in /pool1/home/bob/crew-work/lab on bob@leo. Its kernel can't confine commands to a folder, so running them there needs full access: biorouter crew connections set-access full."
+        );
+        let runs =
+            json!({"remote_root": "/pool1/home/bob/crew-work/lab", "remote_execution": true});
+        assert_eq!(
+            setup_summary_lines(&folder, "x", Some(&runs))[2],
+            "Agents can work in /pool1/home/bob/crew-work/lab on bob@leo, confined to that folder. Change that with biorouter crew connections set-access."
+        );
+        // A re-run on a connection that keeps its own folder changes nothing, and says nothing.
+        let mut kept = member.clone();
+        let outcome = kept["outcome"].as_object_mut().expect("outcome");
+        outcome.remove("remote_access");
+        outcome.remove("work_folder");
+        let own = json!({"remote_root": "/scratch/bob/proj", "remote_execution": true, "remote_access": "folder"});
+        assert_eq!(
+            setup_summary_lines(&kept, "x", Some(&own)),
+            [
+                "Installed Crew 1.93.0 in your account on bob@leo.",
+                "Connected."
+            ]
+        );
+    }
+
+    /// L3: a failed start's own words are said under its sentence, a bounded number of lines.
+    #[test]
+    fn a_setup_failure_shows_what_the_server_printed() {
+        assert_eq!(with_setup_detail("It failed.", None), "It failed.");
+        assert_eq!(with_setup_detail("It failed.", Some("  ")), "It failed.");
+        assert_eq!(
+            with_setup_detail(
+                "Crew didn't start the workspace on the server.",
+                Some("unsafe_storage: writable non-sticky ancestor\n/pool1/home/wanjun/.local")
+            ),
+            "Crew didn't start the workspace on the server.\n  Details: unsafe_storage: writable non-sticky ancestor\n    /pool1/home/wanjun/.local"
+        );
+        let long: Vec<String> = (0..25).map(|line| format!("line {line}")).collect();
+        let shown = with_setup_detail("It failed.", Some(&long.join("\n")));
+        assert_eq!(shown.lines().count(), 1 + 20 + 1, "{shown}");
+        assert!(
+            shown.ends_with("(5 more lines in --output-format json)"),
+            "{shown}"
+        );
+        // The storage refusal names the flag that fixes it, unless the daemon already did.
+        assert!(is_setup_code("crew_host_storage_unsafe"));
+        assert_eq!(
+            setup_failure_sentence(
+                "crew_host_storage_unsafe",
+                Some("Other accounts can write to /pool1/home/wanjun/.local. Run chmod go-w /pool1/home/wanjun/.local on the server.")
+            ),
+            "Other accounts can write to /pool1/home/wanjun/.local. Run chmod go-w /pool1/home/wanjun/.local on the server.\nOr run the same command with --fix-permissions, and setup removes that write access for you."
+        );
+        assert_eq!(
+            setup_failure_sentence(
+                "crew_host_storage_unsafe",
+                Some("Run it again with --fix-permissions.")
+            ),
+            "Run it again with --fix-permissions."
+        );
+    }
+
+    /// L8: a channel's files, newest first, each with who shared it, when, and the attachment ID
+    /// files download takes, whatever --show-ids says.
+    #[test]
+    fn a_channel_files_are_listed_with_their_attachment_ids() {
+        let snapshot = alice_snapshot();
+        let options = options(false, Directory::from_snapshot(&snapshot));
+        let listing = json!({"channel_id": "nope", "files": [
+            {"attachment_id": "b-2", "name": "fig.pdf", "size": 2048, "shared_by": BOB, "run_id": "r", "shared_at": NOW - 60},
+            {"attachment_id": "b-1", "name": "plate_counts.csv", "size": 1200, "shared_by": BOB, "shared_at": NOW - 120}
+        ], "unavailable": 1, "complete": false});
+        let lines = channel_files_lines(&listing, &options);
+        assert_eq!(lines.len(), 5, "{lines:?}");
+        assert!(
+            lines[0].starts_with("fig.pdf (2.0 KB) · shared by the agent of "),
+            "{lines:?}"
+        );
+        assert!(lines[0].ends_with(" · attachment ID b-2"), "{lines:?}");
+        assert!(
+            lines[1].starts_with("plate_counts.csv (1.2 KB) · shared by "),
+            "{lines:?}"
+        );
+        assert!(lines[1].contains("(@crew_bob)"), "{lines:?}");
+        assert!(
+            lines[1].ends_with(" · 01:48 · attachment ID b-1"),
+            "{lines:?}"
+        );
+        assert_eq!(
+            lines[2],
+            "1 more file shared there can't be opened any more."
+        );
+        assert!(lines[3].starts_with("Only the channel's newest messages were read"));
+        assert_eq!(
+            lines[4],
+            "Download one with biorouter crew files download ATTACHMENT_ID --output FILE."
+        );
+        let empty = channel_files_lines(&json!({"files": [], "complete": true}), &options);
+        assert_eq!(empty.len(), 1, "{empty:?}");
+        assert!(
+            empty[0].starts_with("No files were shared in "),
+            "{empty:?}"
         );
     }
 

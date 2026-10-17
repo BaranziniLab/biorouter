@@ -185,7 +185,7 @@ pub async fn start(
     path = "/crew/setup/{job_id}",
     params(("job_id" = String, Path, description = "The job `POST /crew/setup` answered")),
     responses(
-        (status = 200, description = "`state` is `running`, `needs_sign_in` (open `POST /crew/setup/{job_id}/authentication`), `finished` (`outcome`), `failed` or `cancelled` (`error`: a typed code and a sentence, such as `crew_setup_cancelled`, `crew_setup_timed_out`, `crew_setup_sign_in_expired`, `crew_setup_start_failed`, `crew_install_checksum_mismatch` or an SSH code)", body = SetupStatus),
+        (status = 200, description = "`state` is `running`, `needs_sign_in` (open `POST /crew/setup/{job_id}/authentication`), `finished` (`outcome`), `failed` or `cancelled` (`error`: a typed code and a sentence, such as `crew_setup_cancelled`, `crew_setup_timed_out`, `crew_setup_sign_in_expired`, `crew_setup_start_failed` (`detail` is what Crew printed), `crew_host_storage_unsafe` (other accounts can write to a folder above where the workspace is kept; `detail` lists them, and starting again with `fix_storage_permissions` fixes the account's own), `crew_setup_changed`, `crew_install_checksum_mismatch` or an SSH code)", body = SetupStatus),
         (status = 403, description = "No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no user-action key", body = CrewError),
         (status = 404, description = "`crew_setup_not_found`: no such job on this computer", body = CrewError)
     ),

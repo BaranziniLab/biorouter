@@ -60,6 +60,8 @@ vi.mock('child_process', async (importOriginal) => {
 });
 
 import { createHash } from 'node:crypto';
+import os from 'node:os';
+import path from 'node:path';
 
 import { externalBackendUrlFromEnv, startBiorouterd } from './biorouterd';
 
@@ -205,6 +207,30 @@ describe('startBiorouterd logging', () => {
     expect(logged).not.toContain(inheritedValue);
     expect(logged).not.toContain(overrideValue);
     expect(logged).not.toContain(serverSecret);
+  });
+
+  // G3: a development profile hands its daemon a short allowlist, not this process's environment.
+  // The askpass seam and the Crew broker override are on it; anything else stays out.
+  it('passes a development profile’s askpass and broker seams, and nothing unlisted', async () => {
+    const root = path.join(os.tmpdir(), 'biorouter-dev-profile-g3');
+    vi.stubEnv('BIOROUTER_DEV_PROFILE_ROOT', root);
+    vi.stubEnv('SSH_ASKPASS', '/tmp/askpass.sh');
+    vi.stubEnv('SSH_ASKPASS_REQUIRE', 'force');
+    vi.stubEnv('DISPLAY', ':0');
+    vi.stubEnv('BIOROUTER_CREW_BROKER_DIR', '/tmp/crew-broker');
+    try {
+      const app = { isPackaged: false, on: vi.fn() } as unknown as App;
+      await startBiorouterd({ app, serverSecret, dir: process.cwd() });
+      const env = (mocks.spawn.mock.calls[0]?.[2] as { env: Record<string, string> }).env;
+      expect(env.SSH_ASKPASS).toBe('/tmp/askpass.sh');
+      expect(env.SSH_ASKPASS_REQUIRE).toBe('force');
+      expect(env.DISPLAY).toBe(':0');
+      expect(env.BIOROUTER_CREW_BROKER_DIR).toBe('/tmp/crew-broker');
+      expect(env.HOME).toBe(path.join(root, 'home'));
+      expect(env[inheritedKey]).toBeUndefined();
+    } finally {
+      vi.unstubAllEnvs();
+    }
   });
 });
 

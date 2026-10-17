@@ -843,6 +843,12 @@ export const confirmCopy = {
     onlyHostDescription: (workspace: string, username: string | null) =>
       `You host ${workspace}, and no other computer of yours can act as its host. Removing it here ends the host controls for good: nobody could let people in, change its privacy or remove anyone again. To keep them, first invite another computer of yours with Add another device for ${username ? `@${username}` : 'yourself'}.`,
     onlyHostConfirm: 'Remove and give up hosting',
+    /**
+     * A workspace its host deleted (OW-5): no host controls, messages or way back are left to
+     * warn about, only what goes from this computer.
+     */
+    deletedDescription: (workspace: string) =>
+      `The host deleted ${workspace}. Removing it here deletes this computer’s key for it and ends every chat’s access through it.`,
     confirm: 'Remove',
   },
   stopTask: {

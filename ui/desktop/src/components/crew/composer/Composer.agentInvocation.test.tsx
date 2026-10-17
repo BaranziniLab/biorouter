@@ -520,4 +520,47 @@ describe('@agent in the composer (OW-10)', () => {
     await waitFor(() => expect(runPosts()).toHaveLength(1));
     expect(runPosts()[0].context_channels).toEqual([ids.general, ids.methods]);
   });
+
+  it('sends at most 100 sources in a wide run: the channel it posts in, then 99 others (C20)', async () => {
+    const base = richSnapshot({ pending_joins: [] });
+    const extra = Array.from({ length: 150 }, (_, index) => ({
+      ...base.channels[1],
+      id: `channel-extra-${index}`,
+      name: `extra-${index}`,
+      members: [ids.alice],
+    }));
+    daemon.state.snapshot = {
+      ...base,
+      workspace: { ...base.workspace, governance: 'open' } as Snapshot['workspace'],
+      channels: [...base.channels, ...extra],
+    };
+    renderCrew();
+    const composer = await channelReady();
+    act(() =>
+      daemon.emit({
+        type: 'state',
+        connection_id: connection.id,
+        connection_mode: 'private',
+        connection_policy_epoch: 1,
+        connection_institution_id: connection.institution_id,
+        snapshot: daemon.state.snapshot,
+        runs: [],
+        cursor: null,
+        capabilities: ['presence_v1', 'wide_runs_v1'],
+      })
+    );
+    await waitFor(() => expect(currentCrew().capabilities).toContain('wide_runs_v1'));
+    await typeTask(composer, '@agent summarize the week');
+    await waitFor(() =>
+      expect(consent()).toHaveTextContent(
+        'It reads 100 channels and posts its result in #general, for this task only.'
+      )
+    );
+    enter(composer);
+    await waitFor(() => expect(runPosts()).toHaveLength(1));
+    const sources = runPosts()[0].context_channels as string[];
+    expect(sources).toHaveLength(100);
+    expect(sources[0]).toBe(ids.general);
+    expect(new Set(sources).size).toBe(100);
+  });
 });

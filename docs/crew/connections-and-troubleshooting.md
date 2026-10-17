@@ -1,7 +1,7 @@
 # Connections and troubleshooting
 
-> **What this is.** How Crew connects to your lab's workspace, how to sign in and change connection settings, and what each status and error message asks you to do.
-> **Status:** Current.
+> **What this is.** How Crew connects to your lab's workspace, how to sign in, set Crew up in your server account and change connection settings, what a deleted workspace looks like, and what each status and error message asks you to do.
+> **Status:** Current. Checked against the Crew code on 2026-10-16.
 > **Audience:** Lab members who use Crew in the Biorouter desktop app. No SSH or terminal experience is needed.
 
 Your lab's workspace runs on a shared lab server. Your computer reaches it over SSH, the secure login that lab servers use. The Biorouter background service on your computer keeps the connection open and checks the server's identity.
@@ -17,11 +17,12 @@ A word in braces stands for a name that Crew fills in. For example, "Connect to 
 | "Updates unavailable" | Live updates stopped. Choose **Retry** in the connection bar. |
 | **Sign-in needed** | Choose the word to [sign in](#sign-in-to-the-server). |
 | "Can’t verify server" | See [Server identity checks](#server-identity-checks). |
-| "Not set up on this server" | See [Crew missing from your server account](#crew-missing-from-your-server-account). |
+| "Not set up on this server" | Choose **Set up Crew for my account**. See [Crew missing from your server account](#crew-missing-from-your-server-account). |
 | "Not joined yet" | Your host has not let you in yet. See [Joining a workspace](joining-a-workspace.md). |
 | "Offline" | You are not connected. This follows a computer restart, **Disconnect**, a saved change to your server login, port, identity file or jump hosts in **Connection settings…**, or a dropped connection. After a drop, Crew [reconnects by itself](#automatic-reconnection). Otherwise, choose **Connect to {workspace}**. |
 | "Connected" with "The workspace server has stopped saving changes. Reading still works." | The server's disk is full or failing. You can read, but posts, uploads and other changes are refused. See [A server that stopped saving](#a-server-that-stopped-saving). |
 | "Can’t connect" | The last attempt failed. The main area says why, such as "Crew isn’t running on {server}" or "{server} refused this computer’s SSH key". See [Messages and what to do](#messages-and-what-to-do). |
+| "The host deleted {workspace}." in the connection bar | The workspace no longer exists. See [A deleted workspace](#a-deleted-workspace). |
 
 ## Connect and disconnect
 
@@ -114,10 +115,44 @@ Every server has a host key that proves its identity. Your computer keeps the ke
 
 ## Crew missing from your server account
 
-"Crew isn’t set up for your account on {server address}" in the main area means your own server account has no `~/.local/bin/biorouter-crew`. [Install Crew in your server account](joining-a-workspace.md#install-crew-in-your-server-account) says who can install it and how.
+"Crew isn’t set up for your account on {server address}" in the main area means your own server account has no usable `~/.local/bin/biorouter-crew`. It says "Biorouter can install it in your own account. It goes in ~/.local/bin and needs no administrator."
 
-1. Install it yourself, or copy the ready message on the screen and send it to IT, or to your host to pass on.
-2. When it is installed, choose **Try again**. Crew connects.
+1. Choose **Set up Crew for my account**. Biorouter signs in to the server as you with your SSH settings, and the Sign in window opens if the server asks for a password or a code.
+2. Watch the steps: "Checking server", "Signing in", "Installing Crew in your account" and "Connecting". When they finish, Crew connects, and your channels appear.
+
+Setting Crew up here installs the program and connects, and changes nothing about [what your agent may do on the server](agents-and-chat-access.md#what-your-agent-may-do-on-the-server). After you choose Join, Crew starts this setup by itself when the program is missing, even when the server asked you to sign in first.
+
+If it cannot work for you, **Ask your host instead** gives a ready message for your host or IT, and **Install it yourself** gives the commands ([Install Crew yourself](hosting-a-workspace.md#install-crew-yourself)). When someone else has installed it, choose **Try again**, and Crew connects.
+
+### Setting Crew up in your server account
+
+The same setup runs when you join, when you host (**Set up and start Crew**), and from a terminal (`biorouter crew setup`, `biorouter crew host`). It installs Crew's server program in your own account, checks its SHA-256 on the server, keeps the copy it replaces as `biorouter-crew.previous`, and never replaces a newer copy with an older one. When setup fails, it says why, and **What the server printed** holds the server's own words for IT.
+
+| Message starts with | What to do |
+|---|---|
+| "Biorouter is already setting Crew up on two servers." | Wait for one to finish, then try again. |
+| "Setup stopped. Crew may be partly set up" | Try again: it finishes the setup. |
+| "{server} took too long to answer" | Try again. If it repeats, check the network or ask IT. |
+| "Setup waited 10 minutes for you to sign in" or "Sign-in didn’t finish, so setup stopped." | Try again when you are ready to sign in. |
+| "Biorouter couldn’t read what {server} answered, so it changed nothing." | Try again. If it happens again, install Crew yourself. |
+| "This Biorouter doesn’t include Crew’s server program" | Update Biorouter, or ask your host or IT to install Crew. |
+| "Crew can’t run on {server}" | The server is not x86_64 Linux, or its system libraries are too old or missing. Ask IT. |
+| "The copy of Crew that reached {server} didn’t match the one Biorouter sent" | Try again, and tell IT if it happens again. |
+| "{server} has no tool to check the program" | Ask IT to add `sha256sum`, `shasum` or `openssl`. |
+| "Your account on {server} can’t write to ~/.local/bin" | Fix the folder's permissions, or ask IT. |
+| "~/.local/bin/biorouter-crew on {server} isn’t a file your account owns" | Remove it, or ask IT, then try again. Setup never replaces a link or another account's file. |
+| "There isn’t enough free space in your home folder" | Free space in your home folder on the server. |
+| "The connection to {server} ended before all of Crew arrived" | Try again. Nothing was installed. |
+| "Another Biorouter is installing Crew in your account" | Wait a minute, then try again. |
+| "Biorouter can’t tell whether Crew finished installing" | Try again to check. |
+| "The Crew already in your account on {server} doesn’t work with this Biorouter." | Choose **Replace the installed Crew**. The old copy is kept beside it. |
+| "Crew is installed in your account, but it didn’t start the workspace" | A host's start failed. Open **What the server printed**, which holds Crew's own message, and see [If setting up does not work](hosting-a-workspace.md#if-setting-up-does-not-work). |
+| A message naming folders and `chmod go-w` | A host's folders above `~/.local/share/biorouter-crew` can be changed by other accounts. Choose **Fix it for me**, or run the command yourself ([Fix folder permissions](hosting-a-workspace.md#fix-folder-permissions)). |
+| "Other people on {server} can change your home folder" | Run `chmod go-w ~` on the server, then try again. |
+| "Your home folder on {server} is on network storage" or "The Linux on {server} is too old to host a workspace." | Host from another account or server. You can still join workspaces hosted elsewhere. |
+| "…needs a newer Biorouter background service." | See [Replace an old background service](#replace-an-old-background-service). |
+
+The code behind each message is in [Setup refusals](command-line.md#setup-refusals).
 
 ## Connection settings
 
@@ -132,13 +167,13 @@ Choose the workspace name, then **Connection settings…**.
 | **Port** | The SSH port. The default is 22. |
 | **Identity file** | The full path of your SSH key, such as `/Users/you/.ssh/id_ed25519`. A path starting with `~` is refused. Leave it empty to use your SSH settings. |
 | **Jump hosts** | A gateway server from IT that you pass through first. It also needs settings in your SSH settings file. See [SSH requirements](administration.md#ssh-requirements). |
-| **Remote work folder**, **Let my agent run commands in this folder** | See [Agents and chat access](agents-and-chat-access.md). |
+| "What can your agent do on {server}?" | **Off**, **In a folder** or **As me on the server**, with the work folder and, in a folder, **Let my agent run commands in this folder**. See [What your agent may do on the server](agents-and-chat-access.md#what-your-agent-may-do-on-the-server). Full access shows its warning before you save. |
 
 **Port** and the fields below it are under **Advanced**. A wrong value gets a note under its field. **Workspace details** copies IDs that support staff may ask for.
 
 Choose **Save connection**. A saved change ends the Crew access of chats on that server. In such a chat, choose **Grant access again**, or start a new chat.
 
-- A change to **Privacy**, **Institution**, **Connection name** or the remote work folder keeps the route to the server. If the workspace was connected, Crew reconnects at once.
+- A change to **Privacy**, **Institution**, **Connection name**, the agent access level or the work folder keeps the route to the server. If the workspace was connected, Crew reconnects at once.
 - A change to **Your server login**, **Port**, **Identity file** or **Jump hosts** disconnects the workspace. Choose **Connect to {workspace}** afterwards.
 
 A value Crew refuses gets a note under its field, which opens **Advanced** if it is there. An institution that does not match the workspace's gets, for example, "This connection is for stanford, but chen-lab belongs to ucsf. Use ucsf here."
@@ -147,7 +182,16 @@ Workspaces on one server share one privacy setting and one institution. If any i
 
 To remove a workspace, choose **Remove {workspace} from this computer…**, then **Remove**. This disconnects it, ends every chat's access to it, and deletes this computer's key for it. Your messages stay on the server, and you stay a member, so your old invitation does not bring the workspace back. To use it here again, follow [Add this computer to your existing account](joining-a-workspace.md#add-this-computer-to-your-existing-account).
 
-If you are the host, read [Limits of the host role](hosting-a-workspace.md#limits-of-the-host-role) before you remove a workspace.
+If you are the host, read [Limits of the host role](hosting-a-workspace.md#limits-of-the-host-role) before you remove a workspace. To delete the workspace for everyone instead, see [Delete the workspace](hosting-a-workspace.md#delete-the-workspace).
+
+## A deleted workspace
+
+When the host deletes a workspace, Crew on the server answers every request with a refusal, then erases the workspace and stops. If you were connected, the connection bar says "The host deleted {workspace}." with **Remove from this computer…**. If you were offline, you learn it the next time Crew connects. Nothing else is possible: there is nothing left to reconnect to.
+
+1. Choose **Remove from this computer…**, then **Remove**. This deletes this computer's key and saved connection for the workspace.
+2. Files you saved on your computer stay. Messages and files on the server are gone.
+
+From a terminal, commands answer `The host deleted this workspace on the server. Remove it from this computer with biorouter crew connections remove.` (code `crew_workspace_deleted`), and `connections remove` removes it without the host warning, since there is no workspace left to host.
 
 ## A server that stopped saving
 
@@ -172,7 +216,8 @@ For messages on the join screen, see [Problems while you wait](joining-a-workspa
 | "Can’t connect…", "Crew can’t connect." or "It didn’t connect" | Your server name may reach a different machine from the one that runs Crew. Ask your host. Otherwise, check **Connection settings…** with IT. |
 | "…asked you to sign in" | [Sign in](#sign-in-to-the-server). |
 | "Crew couldn’t verify…" | See [Server identity checks](#server-identity-checks). |
-| "Crew isn’t running for you…" or "Signed in, but Crew couldn't start…" | See [Crew missing from your server account](#crew-missing-from-your-server-account). |
+| "Crew isn’t running for you…" or "Signed in, but Crew couldn't start…" | Crew is missing from your server account. Crew sets it up by itself after you sign in, or choose **Set up Crew for my account**. See [Crew missing from your server account](#crew-missing-from-your-server-account). |
+| "The host deleted {workspace}." | See [A deleted workspace](#a-deleted-workspace). |
 | "Crew SSH host…", such as "Crew SSH host gateway (the jump host on this connection's route) requires StrictHostKeyChecking yes…" | Your SSH settings file lacks a setting that Crew requires for that jump host. Send the sentence to IT with a link to [SSH requirements](administration.md#ssh-requirements), then connect again. If it adds "This computer is the workspace's server, so it needs no jump host", clear **Jump hosts** in **Connection settings…** instead ([Join from the workspace's own server](command-line.md#join-from-the-workspaces-own-server)). |
 | "You already use this server for {other workspace}…" | One computer uses one institution for each server. Ask your host which is right. |
 | "…dropped while it was idle." | Wait, or choose **Reconnect**. |
@@ -234,7 +279,9 @@ Here, **Reconnect** means: choose **Close**, then **Reconnect** in the workspace
 After a Biorouter update, the background service that was already running is still the old version until Biorouter replaces it. These messages mean the old service is still running:
 
 - "This feature needs a newer Biorouter background service…"
-- "Start it for me needs a newer Biorouter background service…"
+- "Starting Crew for you needs a newer Biorouter background service…"
+- "Setting Crew up needs a newer Biorouter background service…"
+- "As me on the server needs a newer Biorouter background service…"
 - "This daemon cannot verify human Crew actions…"
 
 To replace the service on a Mac or Linux computer, quit Biorouter and open it again. Biorouter stops the old service and starts a new one, and the action that showed the message then works. Replacing the service stops running agent tasks and file transfers, so check them afterward.

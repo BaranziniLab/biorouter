@@ -6,6 +6,7 @@ import { MEMBERSHIP_ENDED_CODE, WORKSPACE_DELETED_CONNECT_CODE } from '../state/
 import { useCrewErrorSlot } from '../state/CrewControllerContext';
 import { crewObservationCopy } from '../state/copy';
 import { CHANNEL_LOST_ERROR_CODE } from '../state/useCrewObservation';
+import { OnboardingScreen } from '../onboarding/OnboardingScreen';
 import { ConnectionBar, actionErrorText, connectErrorText } from './ConnectionBar';
 import { connectionBarCopy } from './copy';
 import {
@@ -995,6 +996,16 @@ describe('a workspace its host deleted (OW-5)', () => {
     installDaemon();
   });
 
+  /** The bar with the main area under it, as `MainScreen` mounts them: the two say it once. */
+  function WithMainArea() {
+    return (
+      <>
+        <Layout />
+        <OnboardingScreen />
+      </>
+    );
+  }
+
   it('says so once, offering only Remove from this computer, from the saved record', async () => {
     installDaemon([
       {
@@ -1005,12 +1016,16 @@ describe('a workspace its host deleted (OW-5)', () => {
       },
     ]);
     observationFailure('Crew connection is not connected', 'observation_refused');
-    renderCrew(Layout);
+    renderCrew(WithMainArea);
     const words = crewObservationCopy.workspaceDeleted('Fixture');
     await waitFor(() => expect(screen.getAllByText(words)).toHaveLength(1));
-    expect(screen.getByRole('alert')).toHaveTextContent(words);
+    // The main area says it, so the bar says nothing more (L6).
+    expect(currentCrew().screen).toBe('workspace-deleted');
+    expect(screen.getByRole('heading', { name: words })).toBeInTheDocument();
+    expect(within(bar()).queryByText(words)).toBeNull();
     expect(screen.queryByRole('button', { name: connectionBarCopy.retryName })).toBeNull();
     expect(screen.queryByRole('button', { name: connectionBarCopy.tryAgain })).toBeNull();
+    expect(screen.queryByRole('button', { name: /^Connect/ })).toBeNull();
     fireEvent.click(screen.getByRole('button', { name: crewObservationCopy.removeFromComputer }));
     expect(currentCrew().ui.dialog).toEqual({
       kind: 'confirm',
@@ -1022,27 +1037,49 @@ describe('a workspace its host deleted (OW-5)', () => {
     ).toHaveLength(0);
   });
 
-  it('reads the connection view’s own flag the same way', async () => {
+  it('reads the connection view’s own flag the same way, after its server has exited (L6)', async () => {
+    // The deleted workspace's server erased itself and exited: the last connect found nothing
+    // running, which alone would offer the host a start line. The view's flag still decides.
+    installDaemon([
+      {
+        ...connection,
+        status: 'disconnected',
+        workspace_deleted: true,
+        last_error: 'Crew is not running on the server.',
+        last_error_code: 'crew_broker_not_running',
+      },
+    ]);
+    observationFailure('Crew connection is not connected', 'observation_refused');
+    renderCrew(WithMainArea);
+    expect(
+      await screen.findByRole('heading', {
+        name: crewObservationCopy.workspaceDeleted('Fixture'),
+      })
+    ).toBeInTheDocument();
+    expect(screen.queryByTestId('crew-broker-stopped')).toBeNull();
+    expect(screen.queryByRole('button', { name: /^Connect/ })).toBeNull();
+    expect(
+      screen.getByRole('button', { name: crewObservationCopy.removeFromComputer })
+    ).toBeInTheDocument();
+  });
+
+  it('leaves it to the main area’s card while that screen is up', async () => {
     installDaemon([{ ...connection, status: 'disconnected', workspace_deleted: true }]);
     observationFailure('Crew connection is not connected', 'observation_refused');
     renderCrew(Layout);
-    await waitFor(() =>
-      expect(screen.getByRole('alert')).toHaveTextContent(
-        crewObservationCopy.workspaceDeleted('Fixture')
-      )
-    );
+    await waitFor(() => expect(currentCrew().screen).toBe('workspace-deleted'));
+    expect(within(bar()).queryByText(crewObservationCopy.workspaceDeleted('Fixture'))).toBeNull();
   });
 
   it('answers an observation that ended workspace_deleted, with no Retry', async () => {
-    renderCrew(Layout);
+    renderCrew(WithMainArea);
     await verified();
     observationFailure(DAEMON_SENTENCE, 'workspace_deleted');
     await act(async () => {
       await currentCrew().refresh();
     });
     await waitFor(() => expect(currentCrew().refreshErrorCode).toBe('workspace_deleted'));
-    await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent(/The host deleted/));
-    expect(screen.getAllByRole('alert')).toHaveLength(1);
+    await waitFor(() => expect(screen.getAllByText(/The host deleted/)).toHaveLength(1));
     expect(screen.queryByRole('button', { name: connectionBarCopy.retryName })).toBeNull();
     expect(
       screen.getByRole('button', { name: crewObservationCopy.removeFromComputer })

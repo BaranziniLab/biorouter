@@ -866,4 +866,133 @@ mod join {
         assert_eq!(ids(&snapshot, "teams"), vec![team]);
         assert_eq!(ids(&snapshot, "channels"), sorted(&[&general, &methods]));
     }
+
+    /// Erin's device, and the device code her own screen shows for it.
+    fn erins_device(ws: &Workspace) -> (Member, String) {
+        let erin = Member::new(ERIN, key(14));
+        let code = device_code(
+            &ws.broker.workspace().id,
+            &workspace_key(ws),
+            &erin.key.verifying_key().to_bytes(),
+        );
+        (erin, code)
+    }
+
+    /// Erin's pending join ID, or `None` when she has no invitation.
+    fn pending_join(ws: &mut Workspace) -> Option<String> {
+        let pending = ok(ws.broker.handle(
+            ERIN,
+            &mut Connection::new(),
+            request("pending", "enrollment.pending", json!({})),
+        ));
+        pending["join_id"].as_str().map(str::to_owned)
+    }
+
+    fn claim(ws: &mut Workspace, erin: &mut Member, join_id: &str) -> Response {
+        let claim = json!({"public_key": key_hex(&erin.key), "join_id": join_id});
+        signed_raw(&mut ws.broker, erin, "auth.join", claim)
+    }
+
+    /// Bob, a member, invites and admits Erin while the workspace is open: her join ID.
+    fn bob_admits_erin(ws: &mut Workspace, bob: &mut Member, code: &str) -> String {
+        ws.directory.set(ERIN, "erin", Some("Erin Diaz"));
+        open(ws);
+        ws.call_ok(bob, "enrollment.invite", json!({"username": "erin"}));
+        ws.call_ok(
+            bob,
+            "enrollment.approve",
+            json!({"username": "erin", "code": code}),
+        );
+        pending_join(ws).expect("Erin is invited")
+    }
+
+    /// A member's invitation lasts only as long as their authority to let people in: closing
+    /// the workspace or removing the member withdraws it before Erin can claim it, and an
+    /// approval made while the workspace was open has to be made again by the host.
+    #[test]
+    fn a_members_invitation_ends_with_their_authority() {
+        // The workspace becomes managed again: only the host admits people now.
+        let mut ws = Workspace::new("governance-join-closed");
+        let Lab { mut bob, .. } = lab(&mut ws);
+        let (mut erin, code) = erins_device(&ws);
+        let join_id = bob_admits_erin(&mut ws, &mut bob, &code);
+        ws.host_ok("workspace.set_governance", json!({"governance": "managed"}));
+        assert_eq!(pending_join(&mut ws), None);
+        let lines = journal_lines(&ws);
+        let (refusal, _) = refused(claim(&mut ws, &mut erin, &join_id));
+        assert_eq!(refusal, "not_invited");
+        assert_eq!(journal_lines(&ws), lines, "a refused claim writes nothing");
+
+        // The host removes the member who invited her.
+        let mut ws = Workspace::new("governance-join-removed");
+        let Lab { mut bob, .. } = lab(&mut ws);
+        let (mut erin, code) = erins_device(&ws);
+        let join_id = bob_admits_erin(&mut ws, &mut bob, &code);
+        ws.offboard(&bob.principal_id);
+        assert_eq!(pending_join(&mut ws), None);
+        let lines = journal_lines(&ws);
+        let (refusal, _) = refused(claim(&mut ws, &mut erin, &join_id));
+        assert_eq!(refusal, "not_invited");
+        assert_eq!(journal_lines(&ws), lines);
+
+        // The host invited her and Bob approved while open: the join stays, the approval goes.
+        let mut ws = Workspace::new("governance-join-reapproved");
+        let Lab { mut bob, .. } = lab(&mut ws);
+        let (mut erin, code) = erins_device(&ws);
+        ws.directory.set(ERIN, "erin", Some("Erin Diaz"));
+        open(&mut ws);
+        ws.host_ok("enrollment.invite", json!({"username": "erin"}));
+        ws.call_ok(
+            &mut bob,
+            "enrollment.approve",
+            json!({"username": "erin", "code": code}),
+        );
+        ws.host_ok("workspace.set_governance", json!({"governance": "managed"}));
+        let join_id = pending_join(&mut ws).expect("the host's invitation stays");
+        assert_eq!(ws.host_snapshot()["pending_joins"][0]["approved"], false);
+        let (refusal, _) = refused(claim(&mut ws, &mut erin, &join_id));
+        assert_eq!(refusal, "code_mismatch");
+        ws.host_ok(
+            "enrollment.approve",
+            json!({"username": "erin", "code": code}),
+        );
+        ok(claim(&mut ws, &mut erin, &join_id));
+    }
+
+    /// The claim itself rechecks the inviter, whatever the journal holds: here a managed
+    /// workspace's join that a member invited and approved, which no broker of this version
+    /// leaves behind.
+    #[test]
+    fn a_claim_rechecks_that_the_inviter_may_still_let_people_in() {
+        let mut ws = Workspace::new("governance-join-recheck");
+        let Lab { bob, .. } = lab(&mut ws);
+        ws.directory.set(ERIN, "erin", Some("Erin Diaz"));
+        let (mut erin, code) = erins_device(&ws);
+        let join = biorouter_crew::PendingJoin {
+            join_id: "0b".repeat(16),
+            uid: ERIN,
+            username: "erin".into(),
+            full_name: None,
+            inviter_id: bob.principal_id.clone(),
+            existing_principal_id: None,
+            generation: vec![],
+            approved_code: Some(code),
+            created_at: now(),
+            expires_at: now() + 86_400,
+        };
+        let host = ws.host.principal_id.clone();
+        let mut ws = ws.edit_journal(|journal| {
+            journal.append(
+                &host,
+                "enrollment.invite",
+                vec![set(&["pending_joins"], json!({ ERIN.to_string(): join }))],
+            );
+        });
+        let join_id = pending_join(&mut ws).expect("the crafted join");
+        let lines = journal_lines(&ws);
+        let (refusal, message) = refused(claim(&mut ws, &mut erin, &join_id));
+        assert_eq!(refusal, "account_changed", "{message}");
+        assert!(message.contains("can no longer let people in"), "{message}");
+        assert_eq!(journal_lines(&ws), lines);
+    }
 }

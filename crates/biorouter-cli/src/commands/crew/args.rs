@@ -82,6 +82,17 @@ pub enum AgentAccess {
     Full,
 }
 
+impl AgentAccess {
+    /// The level as a setup request names it (`SetupRequest.agent_access`).
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Off => "off",
+            Self::Folder => "folder",
+            Self::Full => "full",
+        }
+    }
+}
+
 #[derive(Args)]
 pub struct CrewOptions {
     /// Saved connection: its name, its SSH target or its ID. Required when more than one
@@ -150,7 +161,8 @@ pub enum CrewCommand {
     /// Close the selected SSH connection.
     Disconnect,
     /// Join the workspace a saved connection points to: show this computer's code for the
-    /// host, then wait until they let you in.
+    /// host, then wait until they let you in. Sets Crew up in your account on the server first
+    /// when it isn't there yet.
     Join(JoinArgs),
     /// Show the workspace, set it up once as its host, rename or delete it, choose who manages
     /// it, or keep its context document.
@@ -353,6 +365,11 @@ pub struct SetupArgs {
     /// Only check the server, changing nothing (the same as biorouter crew doctor).
     #[arg(long)]
     pub check: bool,
+    /// What agents may do on the server through the saved connection: nothing (off), work in
+    /// one folder (folder), or run commands as you (full). Default: full when the connection
+    /// has no work folder yet; otherwise it is left as it is.
+    #[arg(long, value_enum, conflicts_with_all = ["check", "server"])]
+    pub agent_access: Option<AgentAccess>,
 }
 
 /// `host`: a new workspace, from installing Crew to an open workspace with its context.
@@ -380,6 +397,10 @@ pub struct HostArgs {
     /// A jump route.
     #[arg(long)]
     pub proxy_jump: Option<String>,
+    /// Let setup remove write access for others (chmod go-w) from the folders of yours above
+    /// Crew's storage that other accounts can write to. Hosting is refused while they can.
+    #[arg(long)]
+    pub fix_permissions: bool,
     /// Go ahead without asking. Needed when there is no terminal to ask in.
     #[arg(long)]
     pub yes: bool,
@@ -583,9 +604,9 @@ pub struct MembersArgs {
 
 #[derive(Subcommand)]
 pub enum MembersCommand {
-    /// Add a workspace member to a team you own (with its #general and any channels of it you
-    /// own), or to channels you own. They already joined the workspace, so there is nothing
-    /// for them to accept.
+    /// Add a workspace member to a team (with its #general and the channels of it you name),
+    /// or to channels: ones you own, or, in an open workspace, any you are in. They already
+    /// joined the workspace, so there is nothing for them to accept.
     #[command(
         after_help = "Examples:\n  biorouter crew members add @bob --team \"Analysis Lab\" --channel '#methods'\n  biorouter crew members add @bob --channel analysis-lab/methods",
         group(ArgGroup::new("place").required(true).multiple(true).args(["team", "channels"]))
@@ -888,6 +909,15 @@ pub enum FileCommand {
     Show {
         /// The file's attachment ID, which history --show-ids prints beside its name.
         attachment: String,
+    },
+    /// List the files shared in a channel, newest first: name, size, who shared it, when, and
+    /// the attachment ID files download takes.
+    List {
+        /// The channel: methods, '#methods' or analysis-lab/methods.
+        channel: String,
+        /// How many files to list, 1 to 200.
+        #[arg(long, default_value_t = 50, value_parser = clap::value_parser!(u16).range(1..=200))]
+        limit: u16,
     },
 }
 
@@ -1616,6 +1646,30 @@ mod tests {
         };
         assert!(args.check && args.target.server.is_none());
         assert_eq!(options.connection.as_deref(), Some("UCSF HPC"));
+        assert!(args.agent_access.is_none());
+
+        // The agent access a member's setup gives the saved connection; it means nothing to a
+        // check or to a server with no saved connection.
+        for (word, level) in [
+            ("off", AgentAccess::Off),
+            ("folder", AgentAccess::Folder),
+            ("full", AgentAccess::Full),
+        ] {
+            let CrewCommand::Setup(args) = parse(&["setup", "--agent-access", word]).command else {
+                panic!("setup --agent-access")
+            };
+            assert_eq!(args.agent_access, Some(level));
+            assert_eq!(level.as_str(), word);
+        }
+        assert!(refused(&["setup", "--agent-access", "full", "--check"]));
+        assert!(refused(&[
+            "setup",
+            "--agent-access",
+            "full",
+            "--server",
+            "hpc"
+        ]));
+        assert!(refused(&["setup", "--agent-access", "everything"]));
 
         let CrewCommand::Doctor(target) = parse(&["doctor", "--server", "hpc"]).command else {
             panic!("doctor")
@@ -1642,6 +1696,7 @@ mod tests {
         );
         assert_eq!(args.institution_id.as_deref(), Some("ucsf"));
         assert!(matches!(args.mode, PrivacyMode::Private) && args.yes);
+        assert!(!args.fix_permissions);
         let CrewCommand::Host(args) = parse(&[
             "host", "--name", "lab", "--server", "hpc", "--mode", "public",
         ])
@@ -1650,6 +1705,39 @@ mod tests {
             panic!("host --mode public")
         };
         assert!(matches!(args.mode, PrivacyMode::Public) && !args.yes);
+        let CrewCommand::Host(args) = parse(&[
+            "host",
+            "--name",
+            "lab",
+            "--server",
+            "hpc",
+            "--fix-permissions",
+        ])
+        .command
+        else {
+            panic!("host --fix-permissions")
+        };
+        assert!(args.fix_permissions);
+    }
+
+    /// L8: a channel's files are listed newest first, up to --limit.
+    #[test]
+    fn files_list_parses() {
+        let CrewCommand::Files(FileCommand::List { channel, limit }) =
+            parse(&["files", "list", "#methods"]).command
+        else {
+            panic!("files list")
+        };
+        assert_eq!((channel.as_str(), limit), ("#methods", 50));
+        let CrewCommand::Files(FileCommand::List { limit, .. }) =
+            parse(&["files", "list", "methods", "--limit", "5"]).command
+        else {
+            panic!("files list --limit")
+        };
+        assert_eq!(limit, 5);
+        assert!(refused(&["files", "list", "methods", "--limit", "0"]));
+        assert!(refused(&["files", "list", "methods", "--limit", "201"]));
+        assert!(refused(&["files", "list"]));
     }
 
     /// OW-4, OW-1, OW-8: deleting the workspace takes a typed name, governance one of two

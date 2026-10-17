@@ -18,8 +18,10 @@
 //!   params carry `username`, `enrollment.approve` and `enrollment.cancel`. The result is
 //!   cached in `dedupe`, so it never carries a code, key, UID or join ID.
 //! - [`project_for_manager`]: the host's `workspace.snapshot` only, as `pending_joins`.
-//! - [`on_principal_revoked`]: `enrollment.revoke`, with the revoked principal's UID and
+//! - [`on_principal_revoked`]: `enrollment.revoke`, with the revoked principal's ID, UID and
 //!   username.
+//! - [`on_governance_managed`]: `workspace.set_governance` when an open workspace becomes
+//!   managed again.
 //! - [`prune_expired`]: at the start of every mutation (`apply_mutation`, `auth.bootstrap`,
 //!   `auth.enroll`), so expired joins never count against the cap.
 //! - [`on_legacy_enrolled`]: after a successful legacy `auth.enroll` for `uid`.
@@ -52,6 +54,9 @@ const JOIN_CHANGED: &str =
     "join_changed: The host sent a new invitation. Check your join status and try again.";
 const ACCOUNT_CHANGED: &str = "account_changed: This server account changed since the host invited it. Ask the host to invite you again.";
 const MEMBERSHIP_CHANGED: &str = "account_changed: Membership for this account changed since the host invited it. Ask the host to invite you again.";
+/// The person who invited (or, in an open workspace, admitted) the joiner no longer holds that
+/// authority: they were removed, or the workspace became managed and they are not the host.
+const INVITER_CHANGED: &str = "account_changed: The person who invited you can no longer let people in. Ask the host to invite you again.";
 const CODE_MISMATCH: &str = "code_mismatch: The host hasn't let this device in. Send the host the code shown on your screen.";
 const NAME_INVALID: &str = "name_invalid: Type the account's name on the server, with no spaces, slashes, colons or invisible characters.";
 const NAME_DIGITS: &str =
@@ -199,6 +204,12 @@ fn claim(broker: &mut Broker, uid: u32, conn: &mut Connection, req: &Request) ->
     );
     // 3. The principals holding this UID or name are the ones there were at invite time.
     check_generation(&broker.state, &join)?;
+    // 3b. The inviter still holds the authority they invited with (OW-2), as
+    // `invitation.accept` rechecks for teams and channels.
+    ensure!(
+        inviter_holds_authority(broker, &broker.state, &join),
+        INVITER_CHANGED
+    );
     // 4. Possession of the key, over a single-use, socket-bound, 60-second nonce.
     broker.verify(uid, conn, req, public_key)?;
     let key: [u8; 32] = hex::decode(public_key)?
@@ -215,6 +226,18 @@ fn claim(broker: &mut Broker, uid: u32, conn: &mut Connection, req: &Request) ->
     // 7. D3 still holds.
     Broker::ensure_username_free(&broker.state, uid, &join.username)?;
     bind(broker, &join, public_key, device_id, now)
+}
+
+/// Whether `join`'s inviter may still let people in: the host, or in an open workspace any
+/// active member (the same rule [`human_manager`] applied when they invited).
+fn inviter_holds_authority(broker: &Broker, s: &State, join: &PendingJoin) -> bool {
+    if open_governance(s) {
+        s.principals
+            .get(&join.inviter_id)
+            .is_some_and(|inviter| inviter.active)
+    } else {
+        broker.manager(s, &join.inviter_id).is_ok()
+    }
 }
 
 fn claimable_join<'a>(s: &'a State, uid: u32, join_id: &str, now: u64) -> Result<&'a PendingJoin> {
@@ -610,10 +633,31 @@ pub(super) fn project_for_manager(broker: &Broker, s: &State) -> Value {
 }
 
 /// `enrollment.revoke` purges pending joins for the revoked principal's UID and for any name
-/// colliding with its username.
-pub(super) fn on_principal_revoked(s: &mut State, uid: u32, username: &str) {
-    s.pending_joins
-        .retain(|_, join| join.uid != uid && !names_collide(&join.username, username));
+/// colliding with its username, and every join that principal invited: their authority to let
+/// people in went with them.
+pub(super) fn on_principal_revoked(s: &mut State, principal_id: &str, uid: u32, username: &str) {
+    s.pending_joins.retain(|_, join| {
+        join.uid != uid
+            && !names_collide(&join.username, username)
+            && join.inviter_id != principal_id
+    });
+}
+
+/// An open workspace becoming managed again: only the host admits joiners now, so a join some
+/// other member invited goes, and every approval is withdrawn, since who entered a code is not
+/// recorded and a member may have approved a join the host invited. The host enters the code
+/// again to let the joiner in.
+pub(super) fn on_governance_managed(broker: &Broker, s: &mut State) {
+    let hosts: BTreeSet<String> = s
+        .pending_joins
+        .iter()
+        .filter(|(_, join)| broker.manager(s, &join.inviter_id).is_ok())
+        .map(|(key, _)| key.clone())
+        .collect();
+    s.pending_joins.retain(|key, _| hosts.contains(key));
+    for join in s.pending_joins.values_mut() {
+        join.approved_code = None;
+    }
 }
 
 /// Drop joins that expired at or before `now`.

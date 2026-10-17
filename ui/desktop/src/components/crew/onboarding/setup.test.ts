@@ -147,6 +147,32 @@ describe('automatic setup, on the wire (OW-9)', () => {
     });
   });
 
+  it('sends the agent access and the storage fix only when asked (C18, L3)', async () => {
+    const fetchMock = answer(200, { ...RUNNING, intent: 'member' });
+    await startSetup({
+      target: { kind: 'connection', connection_id: 'conn-1' },
+      intent: 'member',
+      agent_access: 'off',
+    });
+    expect(JSON.parse(String(sent(fetchMock).init.body))).toEqual({
+      target: { kind: 'connection', connection_id: 'conn-1' },
+      intent: 'member',
+      agent_access: 'off',
+    });
+    await startSetup({ ...HOST, fix_storage_permissions: true });
+    expect(JSON.parse(String(sent(fetchMock, 1).init.body))).toEqual({
+      target: { kind: 'pending', preparation_id: 'prep-1', ssh_target: 'alice@hpc.ucsf.edu' },
+      intent: 'host',
+      workspace_name: 'lab',
+      fix_storage_permissions: true,
+    });
+    // Nothing asked: neither key is sent, so the job leaves the connection's access alone.
+    await startSetup({ ...HOST, fix_storage_permissions: false });
+    const body = JSON.parse(String(sent(fetchMock, 2).init.body));
+    expect(body).not.toHaveProperty('fix_storage_permissions');
+    expect(body).not.toHaveProperty('agent_access');
+  });
+
   it('reads and stops a job with the same proof, by its escaped id', async () => {
     const fetchMock = answer(200, { ...RUNNING, state: 'finished', stage: 'done' });
     const run = await readSetup('job/../1');
@@ -332,11 +358,20 @@ describe('the manual install', () => {
 
 describe('a member setup Join asked for', () => {
   it('is taken once, and lapses', () => {
-    requestMemberSetup('conn-1', 1000);
-    expect(takeMemberSetupRequest('conn-2', 1000)).toBe(false);
-    expect(takeMemberSetupRequest('conn-1', 1000 + MEMBER_SETUP_REQUEST_MS)).toBe(true);
-    expect(takeMemberSetupRequest('conn-1', 1000)).toBe(false);
-    requestMemberSetup('conn-1', 1000);
-    expect(takeMemberSetupRequest('conn-1', 1001 + MEMBER_SETUP_REQUEST_MS)).toBe(false);
+    requestMemberSetup('conn-1', { agentAccess: 'full' }, 1000);
+    expect(takeMemberSetupRequest('conn-2', 1000)).toBeNull();
+    expect(takeMemberSetupRequest('conn-1', 1000 + MEMBER_SETUP_REQUEST_MS)).toEqual({
+      agentAccess: 'full',
+    });
+    expect(takeMemberSetupRequest('conn-1', 1000)).toBeNull();
+    requestMemberSetup('conn-1', { agentAccess: 'full' }, 1000);
+    expect(takeMemberSetupRequest('conn-1', 1001 + MEMBER_SETUP_REQUEST_MS)).toBeNull();
+  });
+
+  it('carries the level chosen in Join, Off included (C18)', () => {
+    requestMemberSetup('conn-1', { agentAccess: 'off' }, 1000);
+    expect(takeMemberSetupRequest('conn-1', 1000)).toEqual({ agentAccess: 'off' });
+    requestMemberSetup('conn-2', { agentAccess: null }, 1000);
+    expect(takeMemberSetupRequest('conn-2', 1000)).toEqual({ agentAccess: null });
   });
 });

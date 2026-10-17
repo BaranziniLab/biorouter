@@ -1016,6 +1016,45 @@ mod tests {
         }
     }
 
+    /// C13: a sign-in that worked on a server with no Crew program for this account answers
+    /// the code older clients map, `crew_handoff_failed`, flagged `bridge_missing: true`, which
+    /// is what a client reads as "Crew isn't set up" and starts the member setup from. The
+    /// flag rides a cause the connect wrapped, as the real connect's is; nothing else carries it.
+    #[test]
+    fn a_sign_in_with_no_crew_behind_it_is_flagged_bridge_missing() {
+        let failure = |kind| SshFailure {
+            kind,
+            code: "ssh_exit".into(),
+            status: "exit_127".into(),
+            description: "Crew isn't installed for this account".into(),
+            detail: None,
+            host: None,
+            outcome_unknown: false,
+        };
+        let missing = HandoffFailed::wrap(
+            anyhow::Error::new(failure(biorouter::crew::SshFailureKind::BridgeMissing))
+                .context("Couldn't connect to the workspace"),
+        );
+        assert_eq!(
+            handoff_failure_frame(&missing),
+            json!({
+                "type": "error",
+                "code": "crew_handoff_failed",
+                "error": authentication::HANDOFF_FAILED_MESSAGE,
+                "bridge_missing": true,
+            })
+        );
+        for kind in [
+            biorouter::crew::SshFailureKind::BrokerNotRunning,
+            biorouter::crew::SshFailureKind::KeyRefused,
+        ] {
+            let frame =
+                handoff_failure_frame(&HandoffFailed::wrap(anyhow::Error::new(failure(kind))));
+            assert_eq!(frame["code"], "crew_handoff_failed", "{frame}");
+            assert!(frame.get("bridge_missing").is_none(), "{frame}");
+        }
+    }
+
     /// A handoff that failed for a reason the core did not type (the session was replaced or
     /// closed first) keeps the older code and text, which every client already maps.
     #[test]

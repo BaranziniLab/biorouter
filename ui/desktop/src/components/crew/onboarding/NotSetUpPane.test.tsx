@@ -1,7 +1,7 @@
 import { act, fireEvent, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { CrewHttpError } from '../crewApi';
-import { notSetUpCopy, setupCopy } from './copy';
+import { joinCopy, notSetUpCopy, setupCopy } from './copy';
 import { resetJoinContextForTests, updateJoinContext } from './joinContext';
 import { NotSetUpPane } from './NotSetUpPane';
 import { requestMemberSetup, resetMemberSetupRequestsForTests, type SetupRun } from './setup';
@@ -286,9 +286,19 @@ describe('NotSetUpPane', () => {
   it('starts by itself after Join, once, and never on its own otherwise', async () => {
     mocks.startSetup.mockResolvedValue(job());
     mocks.readSetup.mockReturnValue(new Promise(() => {}));
-    requestMemberSetup('conn-1');
+    requestMemberSetup('conn-1', { agentAccess: 'full' });
     const view = renderPane();
     await waitFor(() => expect(mocks.startSetup).toHaveBeenCalledOnce());
+    // The level chosen in Join, and its one warning while the job sets it (OW-6).
+    expect(mocks.startSetup).toHaveBeenCalledWith({
+      target: { kind: 'connection', connection_id: 'conn-1' },
+      intent: 'member',
+      workspace_name: 'lab',
+      agent_access: 'full',
+    });
+    expect(await screen.findByTestId('crew-onboard-full-warning')).toHaveTextContent(
+      joinCopy.fullWarning('bob', 'hpc.ucsf.edu')
+    );
     view.unmount();
     // The request was taken: the pane shown again waits for the person.
     renderPane();
@@ -298,8 +308,34 @@ describe('NotSetUpPane', () => {
     expect(mocks.startSetup).toHaveBeenCalledOnce();
   });
 
+  it('keeps Off off: a Join that chose Off asks for no access, and shows no warning (C18)', async () => {
+    mocks.startSetup.mockResolvedValue(job());
+    mocks.readSetup.mockReturnValue(new Promise(() => {}));
+    requestMemberSetup('conn-1', { agentAccess: 'off' });
+    renderPane();
+    await waitFor(() =>
+      expect(mocks.startSetup).toHaveBeenCalledWith({
+        target: { kind: 'connection', connection_id: 'conn-1' },
+        intent: 'member',
+        workspace_name: 'lab',
+        agent_access: 'off',
+      })
+    );
+    expect(screen.queryByTestId('crew-onboard-full-warning')).toBeNull();
+  });
+
+  it('leaves the agent’s access alone when the person presses Set up (C18)', async () => {
+    mocks.startSetup.mockResolvedValue(job());
+    mocks.readSetup.mockReturnValue(new Promise(() => {}));
+    renderPane();
+    fireEvent.click(screen.getByRole('button', { name: notSetUpCopy.setUp }));
+    await waitFor(() => expect(mocks.startSetup).toHaveBeenCalledOnce());
+    expect(mocks.startSetup.mock.calls[0][0]).not.toHaveProperty('agent_access');
+    expect(screen.queryByTestId('crew-onboard-full-warning')).toBeNull();
+  });
+
   it('lets a request from Join lapse', async () => {
-    requestMemberSetup('conn-1', Date.now() - 11 * 60 * 1000);
+    requestMemberSetup('conn-1', { agentAccess: 'full' }, Date.now() - 11 * 60 * 1000);
     renderPane();
     await act(async () => {
       await Promise.resolve();

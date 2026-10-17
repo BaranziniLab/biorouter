@@ -1,10 +1,11 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useId, useRef, useState } from 'react';
 import { Check } from '../../icons/app-icons';
 import { Button } from '../../ui/button';
 import { CopyField } from '../../ui/copy-field';
 import { Disclosure } from '../../ui/disclosure';
 import { Note } from '../../ui/note';
 import { crewErrorCode } from '../api/errors';
+import { CrewHttpError } from '../crewApi';
 import { SignInDialog } from '../auth/SignInDialog';
 import { sanitizeDisplayText } from '../identity';
 import { hostCopy, setupCopy } from './copy';
@@ -51,6 +52,18 @@ export interface SetupProblem {
 /** What `start` came to: the caller falls back on `outdated`, and has nothing to do otherwise. */
 export type SetupStartResult = 'started' | 'outdated' | 'refused' | 'busy';
 
+export interface SetupRetryOptions {
+  replaceExisting?: boolean;
+  fixStoragePermissions?: boolean;
+}
+
+/**
+ * The code of a host setup that stopped before starting the workspace because other people can
+ * write to a folder above Crew's storage (L3). Its message names the folders and the command; its
+ * `detail` lists them. "Fix it for me" starts the job again with `fix_storage_permissions`.
+ */
+export const HOST_STORAGE_UNSAFE_CODE = 'crew_host_storage_unsafe';
+
 export interface SetupJob {
   phase: SetupJobPhase;
   run: SetupRun | null;
@@ -62,8 +75,11 @@ export interface SetupJob {
   /** Starting, or the daemon's to finish: nothing may start another. */
   busy: boolean;
   start(input: SetupInput): Promise<SetupStartResult>;
-  /** Start the last job again; `replaceExisting` answers `crew_install_incompatible`. */
-  retry(options?: { replaceExisting?: boolean }): Promise<SetupStartResult>;
+  /**
+   * Start the last job again. `replaceExisting` answers `crew_install_incompatible`, and
+   * `fixStoragePermissions` answers `crew_host_storage_unsafe` (the person's "Fix it for me").
+   */
+  retry(options?: SetupRetryOptions): Promise<SetupStartResult>;
   stop(): void;
   /** The Sign in window finished (exit 0): the job goes on by itself. */
   signedIn(): void;
@@ -188,7 +204,9 @@ export function useSetupJob({
           message:
             (code ? setupCopy.error(code, serverRef.current) : null) ||
             (failure instanceof Error && failure.message ? failure.message : setupCopy.failed),
-          output: '',
+          // A refused start keeps the daemon's bounded detail too (what the server said, or the
+          // folders a storage check named), for Show details.
+          output: failure instanceof CrewHttpError ? (failure.detail ?? '') : '',
         });
         return 'refused';
       }
@@ -197,10 +215,14 @@ export function useSetupJob({
   );
 
   const retry = useCallback(
-    (options: { replaceExisting?: boolean } = {}) => {
+    (options: SetupRetryOptions = {}) => {
       const input = lastInput.current;
       if (!input) return Promise.resolve<SetupStartResult>('refused');
-      return start(options.replaceExisting ? { ...input, replace_existing: true } : input);
+      return start({
+        ...input,
+        ...(options.replaceExisting ? { replace_existing: true } : {}),
+        ...(options.fixStoragePermissions ? { fix_storage_permissions: true } : {}),
+      });
     },
     [start]
   );
@@ -299,6 +321,7 @@ export function SetupProgress({
   server: string;
   testId?: string;
 }) {
+  const fixHintId = useId();
   if (job.phase === 'idle' || job.phase === 'outdated') return null;
   const stages = shownStages(intent, job);
   const current: PlainSetupStage =
@@ -384,20 +407,36 @@ export function SetupProgress({
                   {setupCopy.replace}
                 </Button>
               ) : null}
+              {job.problem.code === HOST_STORAGE_UNSAFE_CODE ? (
+                <Button
+                  type="button"
+                  variant="secondary"
+                  size="sm"
+                  aria-describedby={fixHintId}
+                  onClick={() => void job.retry({ fixStoragePermissions: true })}
+                >
+                  {setupCopy.fixStorage}
+                </Button>
+              ) : null}
               <Button type="button" variant="secondary" size="sm" onClick={() => void job.retry()}>
                 {setupCopy.tryAgain}
               </Button>
             </div>
           }
         >
-          {job.problem.message}
+          <p>{job.problem.message}</p>
+          {job.problem.code === HOST_STORAGE_UNSAFE_CODE ? (
+            <p id={fixHintId} className="mt-1">
+              {setupCopy.fixStorageHint}
+            </p>
+          ) : null}
         </Note>
       ) : null}
       {job.problem?.output ? (
         <Disclosure label={setupCopy.output}>
           <pre
             tabIndex={0}
-            aria-label={setupCopy.output}
+            aria-label={setupCopy.outputLabel}
             className="crew-onboard-output font-mono text-supporting text-text-default"
           >
             {job.problem.output}

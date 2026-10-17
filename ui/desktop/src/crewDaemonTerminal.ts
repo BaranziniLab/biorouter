@@ -15,6 +15,32 @@ export type CrewDaemonTerminalTarget =
   | { kind: 'connection'; connectionId: string }
   | { kind: 'setup'; jobId: string };
 
+/** What opening a sign-in answers the renderer: the session it attaches to, or why not. */
+export type CrewAuthenticationOpen =
+  | { success: true; sessionId: string; backend: 'pty'; cwd: string }
+  | { success: false; error: string };
+
+/**
+ * One sign-in opening per key at a time (G1): a caller that asks while the first opening is still
+ * on its way gets that opening's own answer, the same session. A Sign in window that mounts twice
+ * (React's StrictMode in development, or any remount) asks twice; refusing the second left the
+ * first session with no window listening to it, and its job then ended "Sign-in didn't finish".
+ * The entry goes once the opening settles, so a later sign-in opens afresh.
+ */
+export function sharedOpening<T>(
+  pending: Map<string, Promise<T>>,
+  key: string,
+  open: () => Promise<T>
+): Promise<T> {
+  const current = pending.get(key);
+  if (current) return current;
+  const opening = open().finally(() => {
+    if (pending.get(key) === opening) pending.delete(key);
+  });
+  pending.set(key, opening);
+  return opening;
+}
+
 /** The daemon route that prepares the sign-in session for `target`. */
 export function crewAuthenticationPreparePath(target: CrewDaemonTerminalTarget): string {
   return target.kind === 'connection'
@@ -22,7 +48,10 @@ export function crewAuthenticationPreparePath(target: CrewDaemonTerminalTarget):
     : `/crew/setup/${encodeURIComponent(target.jobId)}/authentication`;
 }
 
-/** A typed daemon code a terminal error frame carried (`crew_bridge_missing`, …), else null. */
+/** What `onExit` reports for a sign-in whose account has no Crew program behind it. */
+export const BRIDGE_MISSING_FRAME_CODE = 'crew_bridge_missing';
+
+/** A typed daemon code a terminal error frame carried (`crew_handoff_failed`, …), else null. */
 function frameCode(value: unknown): string | null {
   return typeof value === 'string' && /^crew_[a-z0-9_]{1,64}$/.test(value) ? value : null;
 }
@@ -30,8 +59,9 @@ function frameCode(value: unknown): string | null {
 /**
  * Main-process only: proof and controller handles never enter renderer state. `target` is a saved
  * connection's id, or a target naming a setup job. `onExit` hears the exit code, and the typed code
- * of the daemon's last error frame (a handoff that found Crew missing on the server says
- * `crew_bridge_missing`, so the renderer can offer setup rather than a dead end).
+ * of the daemon's last error frame (a handoff that found Crew missing on the server is reported as
+ * `crew_bridge_missing`, whichever code the frame carried, so the renderer can offer setup rather
+ * than a dead end).
  */
 export async function createCrewDaemonTerminal(
   access: CrewDaemonAccess,
@@ -107,7 +137,13 @@ export async function createCrewDaemonTerminal(
               ? null
               : (event.exit_code ?? null);
       if (event.type === 'error') {
-        failureCode = frameCode(event.code) ?? failureCode;
+        // A sign-in that worked on an account with no Crew program keeps the daemon's older code,
+        // `crew_handoff_failed`, and says `bridge_missing: true` beside it (C13, C28): that is the
+        // one the renderer answers by setting Crew up, so it hears `crew_bridge_missing`.
+        failureCode =
+          event.bridge_missing === true
+            ? BRIDGE_MISSING_FRAME_CODE
+            : (frameCode(event.code) ?? failureCode);
         onData('\r\nAuthentication refused. Close and reconnect.\r\n');
       }
     } catch {

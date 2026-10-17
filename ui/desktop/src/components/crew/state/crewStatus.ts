@@ -142,7 +142,13 @@ export type CrewScreen =
   | 'updates-paused'
   | 'no-team'
   | 'no-channel'
-  | 'channel';
+  | 'channel'
+  /**
+   * The host deleted the workspace (OW-5, L6): only removing it from this computer is left, so the
+   * main area says so and offers that, never Connect or a stopped server's start line. Said from
+   * the saved record, so it holds after the deleted workspace's server has exited.
+   */
+  | 'workspace-deleted';
 
 export interface CrewScreenInput {
   connectionsState: 'loading' | 'loaded' | 'failed';
@@ -173,6 +179,11 @@ export interface CrewScreenInput {
    * screen while the save reconnects, never the offline one and its Connect. Absent: false.
    */
   awaitingSave?: boolean;
+  /**
+   * The host deleted the workspace: the connection view's `workspace_deleted`, its last failure's
+   * code, or an observation that ended `workspace_deleted`. Final. Absent: false.
+   */
+  workspaceDeleted?: boolean;
 }
 
 /** Exactly one main-area screen for the controller's state. Pure and table-tested. */
@@ -184,6 +195,10 @@ export function deriveCrewScreen(input: CrewScreenInput): CrewScreen {
   const { connection, view } = input;
   // A saved connection exists but is not selected yet (the selection lands with the list).
   if (!connection) return 'loading';
+  // Nothing is left to connect to, sign in to or verify: whatever the last connect said (a
+  // deleted workspace's server stops answering at all), only removal is left. A verified view
+  // still on screen stays, with the connection bar saying it.
+  if (input.workspaceDeleted === true && !view) return 'workspace-deleted';
   const failure = input.lastConnectFailure?.kind;
   if (isTrustFailure(failure)) return 'trust';
   // A workspace that was verified is shown until it is replaced or a failure clears it; the

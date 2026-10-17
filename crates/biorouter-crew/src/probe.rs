@@ -30,6 +30,24 @@ const MAX_STORAGE: usize = 12;
 /// A filesystem that is not the home's, `/tmp`'s or a scratch area's is reported only from
 /// this size, so a server's small system volumes do not crowd out its data storage.
 const LARGE_FILESYSTEM_GIB: u64 = 100;
+/// A mount with one of these names somewhere in its path holds data a lab shares, and is
+/// reported even when it shares its pool's free space with a mount listed above it.
+const SHARED_DATA_NAMES: [&str; 14] = [
+    "data",
+    "datasets",
+    "dataset",
+    "shared",
+    "projects",
+    "project",
+    "groups",
+    "group",
+    "labs",
+    "lab",
+    "scratch",
+    "work",
+    "references",
+    "reference",
+];
 /// Filesystem types that hold data, as `/proc/self/mounts` names them.
 const DATA_FILESYSTEMS: [&str; 18] = [
     "ext2",
@@ -359,8 +377,8 @@ fn version_in(text: &str) -> Option<String> {
 }
 
 /// `path` as the probe reports it: `~/…` inside the account's home, else unchanged, and `None`
-/// when it is inside another home.
-fn shown_path(path: &Path, home: &Path) -> Option<String> {
+/// when it is inside another home ([`in_another_home`], with the [`home_roots`] of `home`).
+fn shown_path(path: &Path, home: &Path, roots: &[PathBuf]) -> Option<String> {
     if let Ok(inside) = path.strip_prefix(home) {
         return Some(if inside.as_os_str().is_empty() {
             "~".to_owned()
@@ -368,20 +386,37 @@ fn shown_path(path: &Path, home: &Path) -> Option<String> {
             format!("~/{}", inside.display())
         });
     }
-    (!in_another_home(path, home)).then(|| path.display().to_string())
+    (!in_another_home(path, home, roots)).then(|| path.display().to_string())
 }
 
-/// Whether `path` is inside a home directory other than `home`: a sibling of `home` (or below
-/// one), or anything below `/home` that is not `home` itself or one of its ancestors.
-fn in_another_home(path: &Path, home: &Path) -> bool {
-    if home.starts_with(path) {
+/// The folders that hold people's homes, as far as this account's own home shows them: the
+/// home's parent, and, when the filesystem the home is on is named after the account (a home
+/// dataset of its own, as ZFS servers give each person, such as `/pool1/home/wanjun` holding
+/// `/pool1/home/wanjun/wanjun`), that filesystem's parent, where everyone else's are.
+fn home_roots(home: &Path, user: &str, mounts: &[Mount]) -> Vec<PathBuf> {
+    let mut roots: Vec<PathBuf> = home.parent().map(Path::to_path_buf).into_iter().collect();
+    let own = mount_of(mounts, home)
+        .map(|mount| mount.path.as_path())
+        .filter(|mount| !user.is_empty() && mount.file_name() == Some(std::ffi::OsStr::new(user)));
+    if let Some(parent) = own.and_then(Path::parent) {
+        if !roots.iter().any(|root| root == parent) {
+            roots.push(parent.to_path_buf());
+        }
+    }
+    roots
+}
+
+/// Whether `path` is inside a home directory other than `home`: below one of the folders that
+/// hold homes (`roots`) without being `home`, inside it or one of its ancestors, or anything
+/// below `/home` that is not.
+fn in_another_home(path: &Path, home: &Path, roots: &[PathBuf]) -> bool {
+    if home.starts_with(path) || path.starts_with(home) {
         return false;
     }
-    let sibling = home
-        .parent()
-        .filter(|parent| parent.components().count() > 1)
-        .is_some_and(|parent| path.starts_with(parent) && !path.starts_with(home));
-    sibling || (path.starts_with("/home") && path != Path::new("/home") && !path.starts_with(home))
+    roots
+        .iter()
+        .any(|root| root.components().count() > 1 && path.starts_with(root))
+        || (path.starts_with("/home") && path != Path::new("/home"))
 }
 
 /// One mount from `/proc/self/mounts`: where, and of what type.
@@ -464,10 +499,71 @@ fn space_gib(path: &Path) -> std::sync::mpsc::Receiver<Option<(u64, u64)>> {
     receiver
 }
 
+/// One filesystem the probe asked about: where, whether it is always named (the home's, `/tmp`'s
+/// or a scratch area), its type, and its size and free space in GiB.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct Asked {
+    path: PathBuf,
+    always: bool,
+    fs: String,
+    size_gib: u64,
+    avail_gib: u64,
+}
+
+/// Whether `path` names a mount a lab shares data in ([`SHARED_DATA_NAMES`]).
+fn shared_data(path: &Path) -> bool {
+    path.components().any(|component| {
+        component.as_os_str().to_str().is_some_and(|name| {
+            SHARED_DATA_NAMES
+                .iter()
+                .any(|shared| name.eq_ignore_ascii_case(shared))
+        })
+    })
+}
+
+/// The filesystems to name, from those that answered (`asked`, in the order asked): never one
+/// inside another person's home; one entry per distinct filesystem; one inside a listed
+/// filesystem of the same type with the same free space (a dataset of the same pool, as ZFS
+/// shows each) only when it holds shared data; at most [`MAX_STORAGE`].
+fn reported_storage(asked: &[Asked], home: &Path, roots: &[PathBuf]) -> Vec<Value> {
+    let candidates: Vec<&Asked> = asked
+        .iter()
+        .filter(|entry| entry.always || entry.size_gib >= LARGE_FILESYSTEM_GIB)
+        .filter(|entry| !in_another_home(&entry.path, home, roots))
+        .collect();
+    let mut seen = std::collections::BTreeSet::new();
+    let mut reported = Vec::new();
+    for entry in &candidates {
+        if reported.len() >= MAX_STORAGE {
+            break;
+        }
+        // One pool reached through several mounts (bind mounts) is one entry.
+        if !seen.insert((entry.fs.clone(), entry.size_gib, entry.avail_gib)) {
+            continue;
+        }
+        let pooled = candidates.iter().any(|above| {
+            above.path != entry.path
+                && entry.path.starts_with(&above.path)
+                && above.fs == entry.fs
+                && above.avail_gib == entry.avail_gib
+        });
+        if !entry.always && pooled && !shared_data(&entry.path) {
+            continue;
+        }
+        let Some(shown) = shown_path(&entry.path, home, roots) else {
+            continue;
+        };
+        reported.push(json!({
+            "path": shown, "fs": entry.fs, "size_gib": entry.size_gib, "avail_gib": entry.avail_gib,
+        }));
+    }
+    reported
+}
+
 /// The filesystems worth naming: the home's, `/tmp`'s, any `/scratch*`, then other data
-/// filesystems of at least [`LARGE_FILESYSTEM_GIB`], never one inside another person's home,
-/// one entry per distinct filesystem, at most [`MAX_STORAGE`].
-fn storage(mounts: &[Mount], home: &Path) -> Vec<Value> {
+/// filesystems of at least [`LARGE_FILESYSTEM_GIB`], never one inside another person's home
+/// (which is never even asked about), as [`reported_storage`] chooses them.
+fn storage(mounts: &[Mount], home: &Path, roots: &[PathBuf]) -> Vec<Value> {
     let mut wanted: Vec<(PathBuf, bool)> = Vec::new();
     for path in [home.to_path_buf(), PathBuf::from("/tmp")] {
         if let Some(mount) = mount_of(mounts, &path) {
@@ -508,9 +604,9 @@ fn storage(mounts: &[Mount], home: &Path) -> Vec<Value> {
         }
     }
     // Every filesystem is asked at once and answers within one shared [`PROBE_TIMEOUT`].
-    let asked: Vec<_> = wanted
+    let asking: Vec<_> = wanted
         .into_iter()
-        .filter(|(path, _)| !in_another_home(path, home))
+        .filter(|(path, _)| !in_another_home(path, home, roots))
         .take(48)
         .map(|(path, always)| {
             let answer = space_gib(&path);
@@ -518,33 +614,24 @@ fn storage(mounts: &[Mount], home: &Path) -> Vec<Value> {
         })
         .collect();
     let deadline = Instant::now() + PROBE_TIMEOUT;
-    let mut seen = std::collections::BTreeSet::new();
-    let mut reported = Vec::new();
-    for (path, always, answer) in asked {
+    let mut asked = Vec::new();
+    for (path, always, answer) in asking {
         let remaining = deadline.saturating_duration_since(Instant::now());
         let Ok(Some((size_gib, avail_gib))) = answer.recv_timeout(remaining) else {
             continue;
         };
-        if reported.len() >= MAX_STORAGE {
-            continue;
-        }
-        if !always && size_gib < LARGE_FILESYSTEM_GIB {
-            continue;
-        }
         let fs = mount_of(mounts, &path)
             .map(|mount| mount.fs.clone())
             .unwrap_or_default();
-        // One pool reached through several mounts (ZFS datasets, bind mounts) is one entry.
-        if !seen.insert((fs.clone(), size_gib, avail_gib)) {
-            continue;
-        }
-        let Some(shown) = shown_path(&path, home) else {
-            continue;
-        };
-        reported
-            .push(json!({"path": shown, "fs": fs, "size_gib": size_gib, "avail_gib": avail_gib}));
+        asked.push(Asked {
+            path,
+            always,
+            fs,
+            size_gib,
+            avail_gib,
+        });
     }
-    reported
+    reported_storage(&asked, home, roots)
 }
 
 fn os_release() -> Option<String> {
@@ -638,7 +725,21 @@ fn in_group(name: &str) -> bool {
     primary == gid || groups.contains(&gid)
 }
 
-/// GPUs `nvidia-smi` reports: `{name, memory_mib}` each.
+/// `nvidia-smi --query-gpu=name,memory.total --format=csv,noheader,nounits` output as GPUs:
+/// `{name, memory_mib}` each, the memory in MiB as `nvidia-smi` gives it (`null` when it says
+/// none), which the context draft converts to GiB.
+fn parse_gpus(stdout: &str) -> Vec<Value> {
+    stdout
+        .lines()
+        .filter_map(|line| {
+            let (name, memory) = line.rsplit_once(',')?;
+            Some(json!({"name": name.trim().chars().take(128).collect::<String>(), "memory_mib": memory.trim().parse::<u64>().ok()}))
+        })
+        .take(32)
+        .collect()
+}
+
+/// GPUs `nvidia-smi` reports ([`parse_gpus`]).
 fn gpus(nvidia_smi: Option<&str>) -> Vec<Value> {
     let Some(program) = nvidia_smi else {
         return Vec::new();
@@ -653,14 +754,7 @@ fn gpus(nvidia_smi: Option<&str>) -> Vec<Value> {
     ) else {
         return Vec::new();
     };
-    stdout
-        .lines()
-        .filter_map(|line| {
-            let (name, memory) = line.rsplit_once(',')?;
-            Some(json!({"name": name.trim().chars().take(128).collect::<String>(), "memory_mib": memory.trim().parse::<u64>().ok()}))
-        })
-        .take(32)
-        .collect()
+    parse_gpus(&stdout)
 }
 
 /// The scheduler the found commands belong to.
@@ -686,6 +780,7 @@ fn scheduler_kind(found: &[&str]) -> Option<&'static str> {
 pub fn probe() -> Value {
     let account = this_account().ok();
     let home = account.as_ref().map(|a| a.home.clone()).unwrap_or_default();
+    let user = account.as_ref().map(|a| a.user.clone()).unwrap_or_default();
     let (kernel, arch) = uname();
     let (found, login_modules) = account.as_ref().map(login_commands).unwrap_or_default();
     let path_of = |name: &str| {
@@ -734,10 +829,11 @@ pub fn probe() -> Value {
     let mounts = std::fs::read_to_string("/proc/self/mounts")
         .map(|text| parse_mounts(&text))
         .unwrap_or_default();
+    let roots = home_roots(&home, &user, &mounts);
     let storage = if home.as_os_str().is_empty() {
         Vec::new()
     } else {
-        storage(&mounts, &home)
+        storage(&mounts, &home, &roots)
     };
     let mut conda: Vec<String> = Vec::new();
     for place in CONDA_PLACES {
@@ -752,7 +848,7 @@ pub fn probe() -> Value {
     for name in ["conda", "mamba"] {
         let prefix = path_of(name)
             .and_then(|path| Path::new(path).parent()?.parent().map(Path::to_path_buf));
-        if let Some(shown) = prefix.and_then(|prefix| shown_path(&prefix, &home)) {
+        if let Some(shown) = prefix.and_then(|prefix| shown_path(&prefix, &home, &roots)) {
             if !conda.contains(&shown) {
                 conda.push(shown);
             }
@@ -811,7 +907,44 @@ pub fn probe() -> Value {
         "landlock_abi": landlock_abi(),
         "user": account.as_ref().map(|a| a.user.clone()),
         "home": account.as_ref().map(|a| a.home.clone()),
+        "storage_unsafe_ancestors": account
+            .as_ref()
+            .map(|account| storage_unsafe_ancestors(&account.home, account.uid))
+            .unwrap_or_default(),
     })
+}
+
+/// Where a workspace this account hosts keeps its state, `~/.local/share/biorouter-crew/<name>`
+/// (the broker's `default_state_dir`).
+fn state_parent(home: &Path) -> PathBuf {
+    home.join(".local/share/biorouter-crew")
+}
+
+/// The folders above a hosted workspace's state that this account owns and that its group or
+/// everyone may write into without the sticky bit: what the broker refuses to start under
+/// (`unsafe_storage: writable non-sticky ancestor`) and the account can fix itself, with
+/// `chmod go-w` on exactly these. The real paths, symlinks resolved as the broker resolves them,
+/// from the highest down; a folder another account owns is in `hosting_blockers` only.
+pub fn storage_unsafe_ancestors(home: &Path, uid: u32) -> Vec<String> {
+    use std::os::unix::fs::MetadataExt;
+    let state = state_parent(home);
+    let existing = state
+        .ancestors()
+        .find(|path| path.exists())
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| PathBuf::from("/"));
+    let canonical = std::fs::canonicalize(&existing).unwrap_or(existing);
+    let mut unsafe_folders: Vec<String> = canonical
+        .ancestors()
+        .filter(|folder| {
+            std::fs::symlink_metadata(folder).is_ok_and(|m| {
+                m.is_dir() && m.uid() == uid && m.mode() & 0o022 != 0 && m.mode() & 0o1000 == 0
+            })
+        })
+        .map(|folder| folder.display().to_string())
+        .collect();
+    unsafe_folders.reverse();
+    unsafe_folders
 }
 
 /// Why a broker cannot host a workspace in this account, each a code, mirroring the checks the
@@ -836,7 +969,7 @@ pub fn hosting_blockers(account: &ThisAccount) -> Vec<&'static str> {
     if !machine_id_usable() {
         blockers.push("machine_id_unavailable");
     }
-    let state = account.home.join(".local/share/biorouter-crew");
+    let state = state_parent(&account.home);
     let existing = state
         .ancestors()
         .find(|path| path.exists())
@@ -974,24 +1107,171 @@ mod tests {
     #[test]
     fn other_peoples_homes_are_never_reported() {
         let home = Path::new("/pool1/home/wanjun");
-        assert!(in_another_home(Path::new("/pool1/home/alice"), home));
+        let roots = home_roots(home, "wanjun", &[]);
+        assert!(in_another_home(
+            Path::new("/pool1/home/alice"),
+            home,
+            &roots
+        ));
         assert!(in_another_home(
             Path::new("/pool1/home/alice/anaconda3"),
-            home
+            home,
+            &roots
         ));
-        assert!(in_another_home(Path::new("/home/bob"), home));
-        assert!(!in_another_home(Path::new("/pool1/home"), home));
-        assert!(!in_another_home(Path::new("/pool1/home/wanjun/data"), home));
-        assert!(!in_another_home(Path::new("/opt/conda"), home));
+        assert!(in_another_home(Path::new("/home/bob"), home, &roots));
+        assert!(!in_another_home(Path::new("/pool1/home"), home, &roots));
+        assert!(!in_another_home(
+            Path::new("/pool1/home/wanjun/data"),
+            home,
+            &roots
+        ));
+        assert!(!in_another_home(Path::new("/opt/conda"), home, &roots));
         assert_eq!(
-            shown_path(Path::new("/pool1/home/wanjun/anaconda3"), home).as_deref(),
+            shown_path(Path::new("/pool1/home/wanjun/anaconda3"), home, &roots).as_deref(),
             Some("~/anaconda3")
         );
-        assert_eq!(shown_path(Path::new("/pool1/home/alice/x"), home), None);
         assert_eq!(
-            shown_path(Path::new("/opt/conda"), home).as_deref(),
+            shown_path(Path::new("/pool1/home/alice/x"), home, &roots),
+            None
+        );
+        assert_eq!(
+            shown_path(Path::new("/opt/conda"), home, &roots).as_deref(),
             Some("/opt/conda")
         );
+
+        // A home inside a dataset of its own (`/pool1/home/gbellucci/gbellucci`, as on leo):
+        // the datasets beside that one are everyone else's homes.
+        let mounts = parse_mounts(
+            "pool1 /pool1 zfs rw 0 0\npool1/home /pool1/home zfs rw 0 0\npool1/home/gbellucci /pool1/home/gbellucci zfs rw 0 0\npool1/home/braian /pool1/home/braian zfs rw 0 0\n",
+        );
+        let home = Path::new("/pool1/home/gbellucci/gbellucci");
+        let roots = home_roots(home, "gbellucci", &mounts);
+        assert!(in_another_home(
+            Path::new("/pool1/home/braian"),
+            home,
+            &roots
+        ));
+        assert!(!in_another_home(
+            Path::new("/pool1/home/gbellucci"),
+            home,
+            &roots
+        ));
+        assert!(!in_another_home(Path::new("/pool1/home"), home, &roots));
+        assert!(!in_another_home(Path::new("/pool1/data"), home, &roots));
+        // A dataset not named after the account says nothing about its siblings.
+        let roots = home_roots(home, "someone-else", &mounts);
+        assert!(!in_another_home(
+            Path::new("/pool1/home/braian"),
+            home,
+            &roots
+        ));
+    }
+
+    /// leo.ucsf.edu's mounts, as its probe saw them on 2026-10-16: other people's home datasets
+    /// are left out, and the pool's datasets that only repeat its free space collapse into it,
+    /// except the shared data ones.
+    #[test]
+    fn a_pool_s_datasets_are_named_once_and_never_another_person_s() {
+        let home = Path::new("/pool1/home/gbellucci/gbellucci");
+        let mounts = parse_mounts(
+            "pool1/home/gbellucci /pool1/home/gbellucci zfs rw 0 0\npool1/home /pool1/home zfs rw 0 0\n",
+        );
+        let roots = home_roots(home, "gbellucci", &mounts);
+        let zfs = |path: &str, always: bool, size_gib: u64| Asked {
+            path: PathBuf::from(path),
+            always,
+            fs: "zfs".into(),
+            size_gib,
+            avail_gib: 19_638,
+        };
+        let asked = vec![
+            zfs("/pool1/home/gbellucci", true, 24_862),
+            Asked {
+                path: PathBuf::from("/"),
+                always: true,
+                fs: "ext4".into(),
+                size_gib: 217,
+                avail_gib: 89,
+            },
+            zfs("/pool1", false, 23_982),
+            zfs("/pool1/archived_home", false, 19_638),
+            zfs("/pool1/home", false, 19_713),
+            zfs("/pool1/data", false, 22_820),
+            zfs("/pool1/home/braian", false, 19_776),
+            zfs("/pool1/home/amit", false, 19_648),
+            zfs("/pool1/home/ysun6", false, 36_563),
+            zfs("/pool1/data/datasets", false, 21_101),
+            zfs("/pool1/home/noah", false, 19_644),
+        ];
+        let paths: Vec<String> = reported_storage(&asked, home, &roots)
+            .iter()
+            .map(|entry| entry["path"].as_str().unwrap().to_owned())
+            .collect();
+        assert_eq!(
+            paths,
+            [
+                "/pool1/home/gbellucci",
+                "/",
+                "/pool1",
+                "/pool1/data",
+                "/pool1/data/datasets"
+            ]
+        );
+    }
+
+    /// The probe's GPU shape: memory in MiB, as the context draft reads it.
+    #[test]
+    fn gpus_carry_their_memory_in_mib() {
+        assert_eq!(
+            parse_gpus("NVIDIA A100-SXM4-80GB, 81920\nTesla T4, [N/A]\n"),
+            vec![
+                json!({"name": "NVIDIA A100-SXM4-80GB", "memory_mib": 81920}),
+                json!({"name": "Tesla T4", "memory_mib": null}),
+            ]
+        );
+    }
+
+    /// Folders above the hosting state that the account owns and others may write into are
+    /// named, from the highest down; a sticky one is not, and nor is one that is safe.
+    #[test]
+    fn writable_folders_above_the_hosting_state_are_named() {
+        use std::os::unix::fs::PermissionsExt;
+        let base = std::env::temp_dir().join(format!(
+            "crew-probe-storage-{}-{}",
+            std::process::id(),
+            uuid::Uuid::new_v4().simple()
+        ));
+        let home = base.join("home");
+        std::fs::create_dir_all(home.join(".local/share")).unwrap();
+        let home = std::fs::canonicalize(&home).unwrap();
+        let set = |path: &Path, mode: u32| {
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)).unwrap()
+        };
+        set(&base, 0o700);
+        set(&home, 0o755);
+        set(&home.join(".local"), 0o775);
+        set(&home.join(".local/share"), 0o1777);
+        let uid = unsafe { libc::geteuid() };
+        let unsafe_folders = storage_unsafe_ancestors(&home, uid);
+        assert_eq!(
+            unsafe_folders,
+            vec![home.join(".local").display().to_string()]
+        );
+        set(&home, 0o770);
+        assert_eq!(
+            storage_unsafe_ancestors(&home, uid),
+            vec![
+                home.display().to_string(),
+                home.join(".local").display().to_string()
+            ]
+        );
+        set(&home, 0o755);
+        set(&home.join(".local"), 0o755);
+        assert!(storage_unsafe_ancestors(&home, uid).is_empty());
+        // Another account's folders are not this account's to fix.
+        set(&home.join(".local"), 0o777);
+        assert!(storage_unsafe_ancestors(&home, uid.wrapping_add(1)).is_empty());
+        let _ = std::fs::remove_dir_all(&base);
     }
 
     #[test]
@@ -1026,9 +1306,11 @@ mod tests {
             "landlock_abi",
             "user",
             "home",
+            "storage_unsafe_ancestors",
         ] {
             assert!(facts.get(key).is_some(), "missing {key}: {facts}");
         }
+        assert!(facts["storage_unsafe_ancestors"].is_array());
         assert_eq!(facts["schema"], 1);
         assert!(facts["gpus"].is_array() && facts["conda"].is_array());
         assert!(facts["storage"].is_array());

@@ -84,7 +84,9 @@ pub struct HandoffFailed {
 }
 
 impl HandoffFailed {
-    fn wrap(cause: anyhow::Error) -> anyhow::Error {
+    /// `cause` as a failed handoff, as [`handoff`] answers one: also what an adapter's tests
+    /// build its terminal frame from.
+    pub fn wrap(cause: anyhow::Error) -> anyhow::Error {
         anyhow::Error::new(Self { cause })
     }
     /// Always [`HANDOFF_FAILED_CODE`].
@@ -328,7 +330,9 @@ pub async fn prepare(
 /// is bound to the job's `route`, the SHA-256 of the login and route the job reaches.
 ///
 /// A sign-in this key already adopted is let go first: the job asked for this one because its
-/// check could not use that master, so it is not answering, and nothing rides it.
+/// check could not use that master, so it is not answering, and nothing rides it. So is one
+/// still open for a setup job that is not this one or no longer waits for it (G2): it holds the
+/// key for a job that ended, or for an earlier ask of this one, and nobody will finish it.
 #[allow(clippy::too_many_arguments)]
 pub(super) async fn prepare_setup(
     manager: &super::CrewManager,
@@ -347,14 +351,32 @@ pub(super) async fn prepare_setup(
     let size = dimensions(cols, rows)?;
     let _lifecycle = manager.connection_guard(key).await?;
     let plan = foreground_plan(plan);
+    // Which jobs other setup sign-ins on this key are for, asked outside the sessions lock.
+    let others: Vec<(String, String)> = SESSIONS
+        .lock()
+        .map_err(|_| anyhow::anyhow!("Authentication state unavailable"))?
+        .iter()
+        .filter_map(|(id, session)| match &session.purpose {
+            Purpose::Setup { job_id: other, .. } if session.info.connection_id == key => {
+                Some((id.clone(), other.clone()))
+            }
+            _ => None,
+        })
+        .collect();
+    let abandoned: Vec<String> = others
+        .into_iter()
+        .filter(|(_, other)| other != job_id || !super::setup::waiting_for_sign_in(other))
+        .map(|(id, _)| id)
+        .collect();
     let stale: Vec<Arc<AuthSession>> = {
         let mut sessions = SESSIONS
             .lock()
             .map_err(|_| anyhow::anyhow!("Authentication state unavailable"))?;
         let ids: Vec<String> = sessions
             .iter()
-            .filter(|(_, session)| {
-                session.info.connection_id == key && session.adopted.load(Ordering::Acquire)
+            .filter(|(id, session)| {
+                session.info.connection_id == key
+                    && (session.adopted.load(Ordering::Acquire) || abandoned.contains(id))
             })
             .map(|(id, _)| id.clone())
             .collect();
@@ -415,9 +437,98 @@ pub(super) async fn prepare_setup(
     );
     Ok(info)
 }
+/// End the setup masters adopted at `key` whose job signed in to another route than
+/// `keep_route` (every one, with `None`), so nothing rides a master another login made (C12).
+/// Answers whether one ended.
+pub(super) fn retire_setup_masters(key: &str, keep_route: Option<&[u8]>) -> bool {
+    let retired: Vec<Arc<AuthSession>> = {
+        let mut sessions = SESSIONS.lock().unwrap_or_else(PoisonError::into_inner);
+        let ids: Vec<String> = sessions
+            .iter()
+            .filter(|(_, session)| {
+                session.info.connection_id == key
+                    && session.adopted.load(Ordering::Acquire)
+                    && matches!(&session.purpose, Purpose::Setup { route, .. } if keep_route != Some(route.as_slice()))
+            })
+            .map(|(id, _)| id.clone())
+            .collect();
+        ids.iter().filter_map(|id| sessions.remove(id)).collect()
+    };
+    let any = !retired.is_empty();
+    for session in retired {
+        *session.started.lock().unwrap() = true;
+        // The master is the sign-in's own process (`ControlPersist=no`): it ends with it.
+        session.runtime.lock().unwrap().take();
+    }
+    any
+}
+
+/// A setup job ended (G2): the sign-ins it opened that nobody finished hold its server's key
+/// for nothing, so they end. A master it adopted stays, for the start, Create and the connect
+/// that follow; the next job or connect for another route ends it ([`retire_setup_masters`]).
+pub(super) fn end_setup_sign_ins(job_id: &str) {
+    let ended: Vec<Arc<AuthSession>> = {
+        let mut sessions = SESSIONS.lock().unwrap_or_else(PoisonError::into_inner);
+        let ids: Vec<String> = sessions
+            .iter()
+            .filter(|(_, session)| {
+                !session.adopted.load(Ordering::Acquire)
+                    && matches!(&session.purpose, Purpose::Setup { job_id: job, .. } if job == job_id)
+            })
+            .map(|(id, _)| id.clone())
+            .collect();
+        ids.iter().filter_map(|id| sessions.remove(id)).collect()
+    };
+    for session in ended {
+        *session.started.lock().unwrap() = true;
+        session.runtime.lock().unwrap().take();
+    }
+}
+
+/// A setup master adopted at `connection`'s key serves only the route its job signed in to.
+/// Before a connect rides it, one whose route is not the saved connection's ends (C12): a
+/// connection saved from a host setup's preparation with another login than the setup used
+/// would otherwise run as the account the setup signed in to. Asked without waiting: when the
+/// saved connection can't be read at once, the master ends too, which costs a second sign-in
+/// at worst.
+fn retire_misbound_setup_masters(connection: &str) {
+    let bound = SESSIONS
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .values()
+        .any(|session| {
+            session.info.connection_id == connection
+                && session.adopted.load(Ordering::Acquire)
+                && matches!(session.purpose, Purpose::Setup { .. })
+        });
+    if !bound {
+        return;
+    }
+    let saved = manager().ok().and_then(|manager| {
+        manager.registry.try_lock().ok().map(|registry| {
+            registry
+                .connections
+                .iter()
+                .find(|c| c.id == connection)
+                .map(super::setup::route_digest)
+        })
+    });
+    match saved {
+        // Nothing saved under this key yet: the master is the setup job's own.
+        Some(None) => {}
+        Some(Some(route)) => {
+            retire_setup_masters(connection, Some(&route));
+        }
+        None => {
+            retire_setup_masters(connection, None);
+        }
+    }
+}
+
 /// Called while holding the connection lifecycle guard; only handoff may connect
 /// a pending native authentication session and change its verified node/epoch.
 pub(super) fn ensure_connect_available(connection: &str) -> Result<()> {
+    retire_misbound_setup_masters(connection);
     let mut sessions = SESSIONS
         .lock()
         .map_err(|_| anyhow::anyhow!("Authentication state unavailable"))?;

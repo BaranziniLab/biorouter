@@ -186,6 +186,8 @@ pub enum CrewErrorCode {
     CrewSetupNotWaitingForSignIn,
     CrewSetupServerUnreadable,
     CrewSetupStartFailed,
+    CrewSetupChanged,
+    CrewHostStorageUnsafe,
     CrewServerProbeUnsupported,
     CrewInstallArtifactUnavailable,
     CrewInstallUnsupportedPlatform,
@@ -375,9 +377,13 @@ pub struct CrewConnectionRemoved {
 pub struct DeleteWorkspaceRequest {
     /// The workspace to delete: the connection's own, or nothing is sent.
     pub workspace_id: String,
-    /// The workspace's name as the person typed it. The workspace refuses it when its name has
-    /// changed since (`name_changed`).
-    pub expected_name: String,
+    /// The workspace's stored name, as the person confirmed it, or `null` for a workspace that
+    /// has no stored name (one from before names). Always sent: the workspace refuses it when
+    /// its name is no longer this one (`name_changed`), so `null` deletes only a workspace that
+    /// still has none.
+    #[serde(deserialize_with = "Option::deserialize")]
+    #[schema(required = true)]
+    pub expected_name: Option<String>,
     /// The request's idempotency key, so a retry after `crew_outcome_unknown` is the same
     /// deletion. Optional.
     #[serde(default)]

@@ -113,6 +113,14 @@ function settingsDiffer(connection: CrewConnection, settings: LocalSettings): bo
   );
 }
 
+/**
+ * The level Join's choice comes to (OW-6), as the member setup is told it: In a folder with no
+ * folder typed is off, as its own summary says ("is off") and as it saves.
+ */
+export function chosenAccess(access: AgentAccess, remoteRoot: string): AgentAccess {
+  return access === 'folder' && !remoteRoot.trim() ? 'off' : access;
+}
+
 /** Whether a server login override holds a value the daemon would refuse. Empty is fine. */
 export function serverLoginInvalid(value: string): boolean {
   const login = value.trim();
@@ -453,7 +461,7 @@ function JoinDialogView({ open, onClose }: { open: boolean; onClose: () => void 
     if (sshAlias.trim()) value.ssh_target = sshAlias.trim();
     if (connectionName.trim()) value.name = connectionName.trim();
     // A level without a folder saves as the invitation route wrote it (no folder): under As me on
-    // the server, the member setup makes the folder and sets the level itself.
+    // the server, the member setup makes the folder and sets the level it is told (C18).
     const agent = agentAccessSettings(access, remoteRoot, remoteExecution);
     if (agent.remote_root) Object.assign(value, agent);
     return value;
@@ -611,9 +619,14 @@ function JoinDialogView({ open, onClose }: { open: boolean; onClose: () => void 
         joining: true,
         suggestName: true,
       });
+    // The level the member setup is told (C18): the one chosen here, for a connection this Join
+    // saved. A connection that was already on this computer keeps what it has, as its other
+    // settings do; it changes in Connection settings.
+    const level = isNew ? chosenAccess(access, remoteRoot) : null;
     // As me on the server with no folder typed: the member setup installs Crew when the account
     // lacks it, makes the work folder, sets the level and connects (OW-9), so the choice holds
-    // whether or not Crew was there already.
+    // whether or not Crew was there already. It sets full access only because the person chose it
+    // here, never because the connection has no folder.
     if (access === 'full' && !remoteRoot.trim() && setupSupport.supported === true) {
       setupConnectionId.current = saved.id;
       setPhase('setting-up');
@@ -623,12 +636,14 @@ function JoinDialogView({ open, onClose }: { open: boolean; onClose: () => void 
         target: { kind: 'connection', connection_id: saved.id },
         intent: 'member',
         ...(isWorkspaceName(name) ? { workspace_name: name } : {}),
+        ...(level ? { agent_access: level } : {}),
       });
       if (!mounted.current || result !== 'outdated') return;
     }
     // Otherwise it connects. If connecting finds Crew missing for the account, the Not set up pane
-    // sets it up by itself: this Join was the person's consent (decision 5.7).
-    requestMemberSetup(saved.id);
+    // sets it up by itself: this Join was the person's consent (decision 5.7). It carries the level
+    // chosen here, so Off stays off and a folder stays the folder the person typed.
+    requestMemberSetup(saved.id, { agentAccess: level });
     setPhase('connecting');
     setPendingConnect(saved.id);
   };

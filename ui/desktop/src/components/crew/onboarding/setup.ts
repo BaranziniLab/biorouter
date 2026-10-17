@@ -34,6 +34,13 @@ export type SetupTarget =
       proxy_jump?: string | null;
     };
 
+/**
+ * What a connection's agent may do on its server (OW-6): no work folder, the confined folder, or
+ * commands as the person's own account. The same three levels the Join dialog and Connection
+ * settings offer.
+ */
+export type SetupAgentAccess = 'off' | 'folder' | 'full';
+
 export interface SetupInput {
   target: SetupTarget;
   intent: SetupIntent;
@@ -41,6 +48,18 @@ export interface SetupInput {
   workspace_name?: string;
   /** Replace an older or incompatible install (the previous copy is kept beside it). */
   replace_existing?: boolean;
+  /**
+   * A member job: the level the person chose for this connection's agent (C10, C18). Absent, the
+   * job leaves the connection's agent access exactly as it is; it never infers a level from a
+   * connection that has no work folder, because Off is saved that way too.
+   */
+  agent_access?: SetupAgentAccess;
+  /**
+   * A host job: take write access for other people off the folders the server check named
+   * (`crew_host_storage_unsafe`), with `chmod go-w` on exactly those, then go on. Only on the
+   * person's "Fix it for me".
+   */
+  fix_storage_permissions?: boolean;
 }
 
 /** The broker this build carries, as `GET /crew/setup/artifact` describes it. */
@@ -234,6 +253,8 @@ export async function startSetup(input: SetupInput): Promise<SetupRun> {
     intent: input.intent,
     ...(input.workspace_name ? { workspace_name: input.workspace_name } : {}),
     ...(input.replace_existing ? { replace_existing: true } : {}),
+    ...(input.agent_access ? { agent_access: input.agent_access } : {}),
+    ...(input.fix_storage_permissions ? { fix_storage_permissions: true } : {}),
   };
   return setupRunFrom(await crewHttp<unknown>('/setup', 'POST', body));
 }
@@ -361,20 +382,38 @@ export function manualInstallCommands(
  * Join asked for a member setup if connecting finds Crew missing for the account (OW-9): the Not
  * set up pane starts it by itself, once. In memory only, and only for a while: pressing Join is
  * the consent, so a request never outlives this app session, and it lapses after the time a
- * sign-in may take (the daemon waits as long for one).
+ * sign-in may take (the daemon waits as long for one). It carries the level the person chose in
+ * Join (C18), so the job sets exactly that one: Off stays off.
  */
 export const MEMBER_SETUP_REQUEST_MS = 10 * 60 * 1000;
-const memberSetupRequests = new Map<string, number>();
 
-export function requestMemberSetup(connectionId: string, now: number = Date.now()): void {
-  if (connectionId) memberSetupRequests.set(connectionId, now);
+/** What Join asked of the member setup the Not set up pane starts for it. */
+export interface MemberSetupRequest {
+  /**
+   * The agent access the person chose in Join, sent as the job's `agent_access`; null for a
+   * connection that was already on this computer, whose access the job leaves as it is.
+   */
+  agentAccess: SetupAgentAccess | null;
 }
 
-/** Take the request for `connectionId`: true once, while it stands, then false. */
-export function takeMemberSetupRequest(connectionId: string, now: number = Date.now()): boolean {
-  const at = memberSetupRequests.get(connectionId);
+const memberSetupRequests = new Map<string, { at: number; request: MemberSetupRequest }>();
+
+export function requestMemberSetup(
+  connectionId: string,
+  request: MemberSetupRequest,
+  now: number = Date.now()
+): void {
+  if (connectionId) memberSetupRequests.set(connectionId, { at: now, request });
+}
+
+/** Take the request for `connectionId`: the request once, while it stands, then null. */
+export function takeMemberSetupRequest(
+  connectionId: string,
+  now: number = Date.now()
+): MemberSetupRequest | null {
+  const entry = memberSetupRequests.get(connectionId);
   memberSetupRequests.delete(connectionId);
-  return at !== undefined && now - at <= MEMBER_SETUP_REQUEST_MS;
+  return entry !== undefined && now - entry.at <= MEMBER_SETUP_REQUEST_MS ? entry.request : null;
 }
 
 export function resetMemberSetupRequestsForTests(): void {

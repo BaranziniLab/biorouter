@@ -243,8 +243,11 @@ export function ConnectionBar({ className }: ConnectionBarProps) {
     (isWorkspaceDeleted(connection) ||
       crew.refreshErrorCode === WORKSPACE_DELETED_CODE ||
       failure?.code === WORKSPACE_DELETED_CONNECT_CODE);
+  // The main area says it, with Remove, once no verified view is left to show (L6): said once.
+  const deletedSaidBelow = workspaceDeleted && crew.screen === 'workspace-deleted';
   const showObservationError =
     !daemonAway &&
+    !deletedSaidBelow &&
     (workspaceDeleted ||
       membershipEnded ||
       (Boolean(refreshError) && !notMember && (!connection || connection.status === 'connected')));

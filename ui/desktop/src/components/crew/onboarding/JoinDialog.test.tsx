@@ -753,6 +753,12 @@ describe('JoinDialog', () => {
     expect(removeConnection).not.toHaveBeenCalled();
     // What it remembers about its own join is left alone.
     expect(readJoinContext('conn-old')).not.toMatchObject({ joining: true });
+    // So is what its agent may do: the setup is told no level for it (C18).
+    await waitFor(() => expect(mocks.startSetup).toHaveBeenCalled());
+    expect(mocks.startSetup.mock.calls[0][0]).toMatchObject({
+      target: { kind: 'connection', connection_id: 'conn-old' },
+    });
+    expect(mocks.startSetup.mock.calls[0][0]).not.toHaveProperty('agent_access');
   });
 
   it('neither updates nor removes a connection it cannot tell the save created', async () => {
@@ -1217,6 +1223,8 @@ describe('JoinDialog sets Crew up in the account (OW-9)', () => {
         intent: 'member',
         // The work folder is named for the workspace, `~/crew-work/lab`.
         workspace_name: 'lab',
+        // Full access because the person chose it here (C18), not because no folder was saved.
+        agent_access: 'full',
       })
     );
     // Saved as the invitation route wrote it: the job makes the folder and sets the level.
@@ -1230,7 +1238,7 @@ describe('JoinDialog sets Crew up in the account (OW-9)', () => {
     });
     await waitFor(() => expect(view.crew().closeDialog).toHaveBeenCalled());
     // Nothing is left for the Not set up pane to start by itself.
-    expect(takeMemberSetupRequest('conn-new')).toBe(false);
+    expect(takeMemberSetupRequest('conn-new')).toBeNull();
   });
 
   it('keeps a failed setup in the dialog, with Try again, and Join done', async () => {
@@ -1273,7 +1281,55 @@ describe('JoinDialog sets Crew up in the account (OW-9)', () => {
     view.update({ connectionId: 'conn-new', connections: [saved], connection: saved });
     await waitFor(() => expect(view.crew().connect).toHaveBeenCalledWith({ userInitiated: true }));
     expect(mocks.startSetup).not.toHaveBeenCalled();
-    expect(takeMemberSetupRequest('conn-new')).toBe(true);
+    // The request carries Off, so the setup the Not set up pane starts keeps it off (C18).
+    expect(takeMemberSetupRequest('conn-new')).toEqual({ agentAccess: 'off' });
+  });
+
+  it.each([
+    ['In a folder with no folder typed', 'In a folder', '', 'off'],
+    ['In a folder with a folder', 'In a folder', '/work/lab', 'folder'],
+    ['As me with a folder', 'As me on the server', '/work/lab', 'full'],
+  ] as const)(
+    'asks the Not set up pane for exactly the level chosen: %s (C18)',
+    async (_name, radio, folder, level) => {
+      mocks.previewInvitation.mockResolvedValue(PREVIEW);
+      const saved = fakeConnection({ id: 'conn-new', status: 'disconnected' });
+      mocks.saveFromInvitation.mockResolvedValue(saved);
+      const updateConnection = vi.fn(async (_id: string, body: object) => ({ ...saved, ...body }));
+      const view = renderDialog({ updateConnection });
+      await paste();
+      await screen.findByTestId('crew-join-summary');
+      fireEvent.click(screen.getByRole('button', { name: joinCopy.agentHeading('hpc.ucsf.edu') }));
+      fireEvent.click(screen.getByRole('radio', { name: new RegExp(`^${radio}`) }));
+      if (folder)
+        fireEvent.change(screen.getByLabelText(joinCopy.remoteFolder), {
+          target: { value: folder },
+        });
+      fireEvent.click(screen.getByRole('button', { name: 'Join lab' }));
+      await waitFor(() => expect(view.crew().selectConnection).toHaveBeenCalledWith('conn-new'));
+      view.update({ connectionId: 'conn-new', connections: [saved], connection: saved });
+      await waitFor(() =>
+        expect(view.crew().connect).toHaveBeenCalledWith({ userInitiated: true })
+      );
+      expect(mocks.startSetup).not.toHaveBeenCalled();
+      expect(takeMemberSetupRequest('conn-new')).toEqual({ agentAccess: level });
+    }
+  );
+
+  it('shows As me on the server’s one warning before Join, with its row folded (OW-6)', async () => {
+    mocks.previewInvitation.mockResolvedValue(PREVIEW);
+    renderDialog();
+    await paste();
+    await screen.findByTestId('crew-join-summary');
+    const row = screen.getByRole('button', { name: joinCopy.agentHeading('hpc.ucsf.edu') });
+    expect(row).toHaveAttribute('aria-expanded', 'false');
+    expect(screen.getByTestId('crew-onboard-full-warning')).toHaveTextContent(
+      joinCopy.fullWarning('bob', 'hpc.ucsf.edu')
+    );
+    // Off has no warning.
+    fireEvent.click(row);
+    fireEvent.click(screen.getByRole('radio', { name: /^Off/ }));
+    expect(screen.queryByTestId('crew-onboard-full-warning')).toBeNull();
   });
 
   it('saves As me with a folder typed as full access, and needs no setup for it', async () => {

@@ -1,8 +1,12 @@
 // @vitest-environment node
 import http from 'node:http';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import WebSocket, { WebSocketServer } from 'ws';
-import { createCrewDaemonTerminal, crewAuthenticationPreparePath } from './crewDaemonTerminal';
+import {
+  createCrewDaemonTerminal,
+  crewAuthenticationPreparePath,
+  sharedOpening,
+} from './crewDaemonTerminal';
 
 type RequestRecord = {
   method: string;
@@ -45,6 +49,18 @@ const localFetch = async (input: FetchInput, init?: RequestInit): Promise<Respon
     status: result.status,
     json: async () => JSON.parse(result.body),
   } as Response;
+};
+
+/** The daemon's sign-in handoff failure text (`HANDOFF_FAILED_MESSAGE`), for the frames below. */
+const HANDOFF_FAILED_TEXT =
+  "Signed in, but Crew couldn't start on the server. Crew may not be set up for your account there.";
+
+/** Exactly what `handoff_failure_frame` sends when sign-in worked and Crew is not installed. */
+const BRIDGE_MISSING_FRAME = {
+  type: 'error',
+  code: 'crew_handoff_failed',
+  error: HANDOFF_FAILED_TEXT,
+  bridge_missing: true,
 };
 
 describe('Crew daemon terminal adapter', () => {
@@ -211,7 +227,7 @@ describe('Crew daemon terminal adapter', () => {
     terminal.dispose();
   });
 
-  it('prepares a setup job’s sign-in on the job’s own route, and passes on a frame’s typed code', async () => {
+  it('prepares a setup job’s sign-in on the job’s own route, and reports a missing Crew program', async () => {
     const requests: RequestRecord[] = [];
     server = http.createServer(async (request, response) => {
       requests.push({
@@ -234,9 +250,9 @@ describe('Crew daemon terminal adapter', () => {
     server.on('upgrade', (request, socket, head) => {
       websocketServer?.handleUpgrade(request, socket, head, (upstream) => {
         setTimeout(() => {
-          upstream.send(
-            JSON.stringify({ type: 'error', code: 'crew_bridge_missing', error: 'Not set up.' })
-          );
+          // What `handoff_failure_frame` sends for a sign-in on an account with no Crew program:
+          // the older code, and the flag beside it (C13, C28).
+          upstream.send(JSON.stringify(BRIDGE_MISSING_FRAME));
           upstream.send(JSON.stringify({ type: 'exit', authenticated: false, exit_code: 1 }));
           upstream.close();
         }, 20);
@@ -263,6 +279,61 @@ describe('Crew daemon terminal adapter', () => {
     );
   });
 
+  it.each([
+    ['the daemon’s missing-Crew frame', BRIDGE_MISSING_FRAME, 'crew_bridge_missing'],
+    [
+      'a handoff that failed for another reason',
+      { type: 'error', code: 'crew_handoff_failed', error: HANDOFF_FAILED_TEXT },
+      'crew_handoff_failed',
+    ],
+    [
+      'a frame that says crew_bridge_missing itself',
+      { type: 'error', code: 'crew_bridge_missing', error: 'Not set up.' },
+      'crew_bridge_missing',
+    ],
+    [
+      'a flag that is not true',
+      { type: 'error', code: 'crew_handoff_failed', error: 'x', bridge_missing: 'yes' },
+      'crew_handoff_failed',
+    ],
+  ])('reports %s to the renderer as its typed code', async (_name, frame, expected) => {
+    server = http.createServer(async (request, response) => {
+      await readRequest(request);
+      if (request.method === 'POST') {
+        response.writeHead(201, { 'content-type': 'application/json' });
+        response.end(JSON.stringify({ authentication_id: 'auth-11', connection_id: 'conn-1' }));
+        return;
+      }
+      response.writeHead(204).end();
+    });
+    websocketServer = new WebSocketServer({ noServer: true });
+    server.on('upgrade', (request, socket, head) => {
+      websocketServer?.handleUpgrade(request, socket, head, (upstream) => {
+        setTimeout(() => {
+          upstream.send(JSON.stringify(frame));
+          upstream.close();
+        }, 20);
+      });
+    });
+    await new Promise<void>((resolve) => server?.listen(0, '127.0.0.1', () => resolve()));
+    const address = server.address() as { port: number };
+    globalThis.fetch = localFetch;
+    const output: string[] = [];
+    let resolveExit!: (exit: [number | null, string | null | undefined]) => void;
+    const exit = new Promise<[number | null, string | null | undefined]>((resolve) => {
+      resolveExit = resolve;
+    });
+    const terminal = await createCrewDaemonTerminal(
+      { baseUrl: `http://127.0.0.1:${address.port}`, secret: 'secret', userAction: 'proof' },
+      'conn-1',
+      (data) => output.push(data),
+      (code, failureCode) => resolveExit([code, failureCode])
+    );
+    expect(await exit).toEqual([null, expected]);
+    expect(output.join('')).toContain('Authentication refused.');
+    terminal.dispose();
+  });
+
   it('refuses a setup session that names another job', async () => {
     server = http.createServer((_request, response) => {
       response.writeHead(200, { 'content-type': 'application/json' });
@@ -279,5 +350,40 @@ describe('Crew daemon terminal adapter', () => {
         () => {}
       )
     ).rejects.toThrow('Invalid daemon authentication session.');
+  });
+});
+
+describe('sharedOpening (G1)', () => {
+  it('answers two overlapping opens of one sign-in with the same session', async () => {
+    const pending = new Map<string, Promise<{ sessionId: string }>>();
+    let opened = 0;
+    let finish!: (value: { sessionId: string }) => void;
+    const open = () => {
+      opened += 1;
+      return new Promise<{ sessionId: string }>((resolve) => {
+        finish = resolve;
+      });
+    };
+    // The Sign in window mounts twice before the first opening answers.
+    const first = sharedOpening(pending, '7:setup:job-1', open);
+    const second = sharedOpening(pending, '7:setup:job-1', open);
+    expect(opened).toBe(1);
+    finish({ sessionId: 'session-1' });
+    expect(await first).toEqual({ sessionId: 'session-1' });
+    expect(await second).toEqual({ sessionId: 'session-1' });
+    // Settled: the next sign-in opens again, and another key never waits on this one.
+    expect(pending.size).toBe(0);
+    void sharedOpening(pending, '7:setup:job-1', open);
+    void sharedOpening(pending, '7:conn-2', open);
+    expect(opened).toBe(3);
+  });
+
+  it('forgets an opening that failed, so trying again opens again', async () => {
+    const pending = new Map<string, Promise<string>>();
+    const open = vi.fn().mockRejectedValueOnce(new Error('daemon away')).mockResolvedValue('ok');
+    await expect(sharedOpening(pending, 'k', open)).rejects.toThrow('daemon away');
+    expect(pending.size).toBe(0);
+    await expect(sharedOpening(pending, 'k', open)).resolves.toBe('ok');
+    expect(open).toHaveBeenCalledTimes(2);
   });
 });
