@@ -762,6 +762,7 @@ fn crew_connection(mode: biorouter::crew::ClusterMode) -> biorouter::crew::Conne
         workspace_public_key: "11".repeat(32),
         remote_root: None,
         remote_execution: false,
+        remote_access: Default::default(),
         cluster_connection_id: "mode-cluster".into(),
         mode,
         institution_id: None,

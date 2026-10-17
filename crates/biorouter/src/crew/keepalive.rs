@@ -488,6 +488,13 @@ impl CrewManager {
             );
             return;
         }
+        if self.workspace_deleted(id) {
+            tracing::info!(
+                connection = id,
+                "Not dialling a Crew connection again by itself: its host deleted the workspace"
+            );
+            return;
+        }
         let Some(manager) = self.this.get().cloned() else {
             return;
         };

@@ -29,7 +29,7 @@
 //! its own key bound it would need a key whose 80-bit code equals the one shown here.
 use super::{
     hex, institution, manager, safe_atom, transport, unhex, AuthenticationPlan, ClusterMode,
-    Connection, CrewManager, SaveConnection,
+    Connection, CrewManager, RemoteAccess, SaveConnection,
 };
 use anyhow::{ensure, Context, Result};
 use biorouter_crew::invitation::{self as crew_invitation, ParsedInvitation, WorkspaceInvitation};
@@ -104,6 +104,14 @@ impl HandoffFailed {
             .downcast_ref::<super::WorkspaceIdentityError>()
             .is_some()
     }
+    /// Whether sign-in worked but the server has no Crew program for this account
+    /// (`crew_bridge_missing`). The signed-in master is kept then, adopted, so setting Crew up
+    /// (`POST /crew/setup`, design OW-9) rides it with no second password. [`Self::api_code`]
+    /// stays `crew_handoff_failed`, which older clients map; the connection's
+    /// `last_error_code` says `crew_bridge_missing`.
+    pub fn bridge_missing(&self) -> bool {
+        missing_bridge(&self.cause)
+    }
     /// The diagnostic text for logs: [`HANDOFF_FAILURE_MESSAGE`] and the cause.
     pub fn log_message(&self) -> String {
         format!("{HANDOFF_FAILURE_MESSAGE} Cause: {:#}", self.cause)
@@ -120,6 +128,14 @@ impl std::error::Error for HandoffFailed {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         Some(self.cause.as_ref())
     }
+}
+
+/// Whether `cause` is the server running no Crew program for this account.
+fn missing_bridge(cause: &anyhow::Error) -> bool {
+    cause
+        .chain()
+        .filter_map(|link| link.downcast_ref::<super::SshFailure>())
+        .any(|failure| failure.kind == super::SshFailureKind::BridgeMissing)
 }
 
 static SESSIONS: LazyLock<Mutex<HashMap<String, Arc<AuthSession>>>> =
@@ -188,6 +204,34 @@ struct AuthSession {
     size: PtySize,
     started: Mutex<bool>,
     runtime: Mutex<Option<Runtime>>,
+    purpose: Purpose,
+}
+/// What a sign-in is for. `info.connection_id` is its SSH control key either way: the saved
+/// connection's ID, or a setup job's (a connection's, or a pending host setup's preparation ID,
+/// which the connection it becomes will have), so one key never has two sign-ins.
+#[derive(Clone)]
+enum Purpose {
+    /// A saved connection's sign-in: adopted once a verified Crew broker answers behind it.
+    Connection,
+    /// A setup job's (design OW-9): adopted once its master is up, with no broker behind it
+    /// yet. It is bound to the job's route, not to a saved connection, and connects nothing:
+    /// the job runs its fixed commands over it, and a later Connect verifies the broker.
+    Setup {
+        job_id: String,
+        route: Vec<u8>,
+        target: String,
+    },
+}
+/// The manager whose control paths and lifecycle a sign-in uses: a setup job's own while the
+/// job is known, else the daemon's.
+fn session_manager(session: &AuthSession) -> Result<Arc<super::CrewManager>> {
+    match &session.purpose {
+        Purpose::Setup { job_id, .. } => match super::setup::sign_in_manager(job_id) {
+            Some(manager) => Ok(manager),
+            None => manager(),
+        },
+        Purpose::Connection => manager(),
+    }
 }
 fn foreground_plan(mut plan: AuthenticationPlan) -> AuthenticationPlan {
     for argument in &mut plan.args {
@@ -273,6 +317,100 @@ pub async fn prepare(
             size,
             started: Mutex::new(false),
             runtime: Mutex::new(None),
+            purpose: Purpose::Connection,
+        }),
+    );
+    Ok(info)
+}
+/// Prepare the terminal sign-in a setup job waits for (design OW-9), under the same rules as a
+/// connection's: one controller per control key, at most 32 sign-ins, a minute to attach. Its
+/// `plan` is the job's own master at `key`'s control path ([`foreground_plan`] applies), and it
+/// is bound to the job's `route`, the SHA-256 of the login and route the job reaches.
+///
+/// A sign-in this key already adopted is let go first: the job asked for this one because its
+/// check could not use that master, so it is not answering, and nothing rides it.
+#[allow(clippy::too_many_arguments)]
+pub(super) async fn prepare_setup(
+    manager: &super::CrewManager,
+    key: &str,
+    job_id: &str,
+    route: Vec<u8>,
+    target: &str,
+    plan: AuthenticationPlan,
+    request: &str,
+    controller: &str,
+    cols: u16,
+    rows: u16,
+) -> Result<AuthenticationSession> {
+    uuid::Uuid::parse_str(request)?;
+    uuid::Uuid::parse_str(controller)?;
+    let size = dimensions(cols, rows)?;
+    let _lifecycle = manager.connection_guard(key).await?;
+    let plan = foreground_plan(plan);
+    let stale: Vec<Arc<AuthSession>> = {
+        let mut sessions = SESSIONS
+            .lock()
+            .map_err(|_| anyhow::anyhow!("Authentication state unavailable"))?;
+        let ids: Vec<String> = sessions
+            .iter()
+            .filter(|(_, session)| {
+                session.info.connection_id == key && session.adopted.load(Ordering::Acquire)
+            })
+            .map(|(id, _)| id.clone())
+            .collect();
+        ids.iter().filter_map(|id| sessions.remove(id)).collect()
+    };
+    for session in stale {
+        *session.started.lock().unwrap() = true;
+        session.runtime.lock().unwrap().take();
+    }
+    let mut sessions = SESSIONS
+        .lock()
+        .map_err(|_| anyhow::anyhow!("Authentication state unavailable"))?;
+    sessions.retain(|_, session| {
+        session.created.elapsed() < Duration::from_secs(60) || *session.started.lock().unwrap()
+    });
+    for session in sessions.values() {
+        if session.request_id == request && session.info.controller_id == controller {
+            ensure!(
+                session.info.connection_id == key
+                    && matches!(&session.purpose, Purpose::Setup { job_id: job, route: bound, .. } if job == job_id && *bound == route),
+                "Authentication request changed; use a fresh request ID"
+            );
+            return Ok(session.info.clone());
+        }
+        ensure!(
+            session.info.connection_id != key,
+            "This server already has a sign-in open; close it before opening another"
+        );
+    }
+    ensure!(
+        sessions.len() < 32,
+        "Close an existing SSH authentication session first"
+    );
+    let info = AuthenticationSession {
+        authentication_id: uuid::Uuid::new_v4().to_string(),
+        connection_id: key.into(),
+        controller_id: controller.into(),
+        instance_id: INSTANCE.clone(),
+    };
+    sessions.insert(
+        info.authentication_id.clone(),
+        Arc::new(AuthSession {
+            info: info.clone(),
+            request_id: request.into(),
+            binding: Mutex::new(route.clone()),
+            adopted: Arc::new(AtomicBool::new(false)),
+            plan,
+            created: Instant::now(),
+            size,
+            started: Mutex::new(false),
+            runtime: Mutex::new(None),
+            purpose: Purpose::Setup {
+                job_id: job_id.into(),
+                route,
+                target: target.into(),
+            },
         }),
     );
     Ok(info)
@@ -306,24 +444,38 @@ fn session(id: &str, controller: &str) -> Result<Arc<AuthSession>> {
 }
 pub async fn validate(id: &str, controller: &str) -> Result<String> {
     let session = session(id, controller)?;
-    let current = binding(&session.info.connection_id).await?;
-    ensure!(
-        *session.binding.lock().unwrap() == current,
-        "Saved connection changed; close authentication and start again"
-    );
+    match &session.purpose {
+        Purpose::Connection => {
+            let current = binding(&session.info.connection_id).await?;
+            ensure!(
+                *session.binding.lock().unwrap() == current,
+                "Saved connection changed; close authentication and start again"
+            );
+        }
+        // A setup sign-in is bound to its job's route, while the job is known.
+        Purpose::Setup { job_id, route, .. } => ensure!(
+            super::setup::sign_in_route(job_id).as_ref() == Some(route),
+            "Setup changed or ended; close the sign-in and start again"
+        ),
+    }
     Ok(session.info.connection_id.clone())
 }
 pub async fn attach(id: &str, controller: &str) -> Result<mpsc::Receiver<TerminalEvent>> {
-    let connection = session(id, controller)?.info.connection_id.clone();
-    let manager = manager()?;
+    let current = session(id, controller)?;
+    let connection = current.info.connection_id.clone();
+    let manager = session_manager(&current)?;
+    drop(current);
     let _lifecycle = manager.connection_guard(&connection).await?;
     validate(id, controller).await?;
     let session = session(id, controller)?;
-    let fresh = foreground_plan(
-        manager
-            .authentication_plan(&session.info.connection_id)
-            .await?,
-    );
+    let fresh = foreground_plan(match &session.purpose {
+        Purpose::Connection => {
+            manager
+                .authentication_plan(&session.info.connection_id)
+                .await?
+        }
+        Purpose::Setup { job_id, .. } => super::setup::sign_in_plan(job_id).await?,
+    });
     ensure!(
         fresh.args == session.plan.args,
         "SSH authentication plan changed; start again"
@@ -352,10 +504,22 @@ fn command(plan: &AuthenticationPlan) -> CommandBuilder {
         if biorouter_mcp::developer::shell::is_daemon_private_env_key(&name) {
             continue;
         }
+        // A development profile's sign-in sees only what it needs, plus the askpass helper a
+        // test daemon was started with, so an automated test can sign in to an account that
+        // takes a password (OW-9). Unset, they pass nothing.
         if profile.is_some()
             && !matches!(
                 name.as_ref(),
-                "PATH" | "LANG" | "LC_ALL" | "SystemRoot" | "WINDIR" | "ComSpec" | "PATHEXT"
+                "PATH"
+                    | "LANG"
+                    | "LC_ALL"
+                    | "SystemRoot"
+                    | "WINDIR"
+                    | "ComSpec"
+                    | "PATHEXT"
+                    | "SSH_ASKPASS"
+                    | "SSH_ASKPASS_REQUIRE"
+                    | "DISPLAY"
             )
         {
             continue;
@@ -655,8 +819,23 @@ pub fn shutdown() {
 /// A failure after the session is found is a [`HandoffFailed`]: the connection is disconnected
 /// and its `last_error` carries [`HANDOFF_FAILED_MESSAGE`], while the diagnostic text and cause
 /// go to the log.
+///
+/// One failure keeps the signed-in master (design OW-9): the server has no Crew program for
+/// this account ([`HandoffFailed::bridge_missing`]). The session is adopted, so its window
+/// shows nothing more and a Connect may ride it, and the connection's `last_error_code` is
+/// `crew_bridge_missing`; setting Crew up then needs no second password. Nothing was sent to a
+/// broker, and the next Connect verifies one from scratch.
+///
+/// A setup job's sign-in is adopted once its master is up, and connects nothing.
 pub async fn handoff(id: &str, controller: &str) -> Result<bool> {
-    let connection = session(id, controller)?.info.connection_id.clone();
+    let current = session(id, controller)?;
+    if let Purpose::Setup { job_id, target, .. } = &current.purpose {
+        let (job_id, target) = (job_id.clone(), target.clone());
+        drop(current);
+        return handoff_setup(id, controller, &job_id, &target).await;
+    }
+    let connection = current.info.connection_id.clone();
+    drop(current);
     let manager = manager()?;
     let _lifecycle = manager.connection_guard(&connection).await?;
     // A replaced or cancelled session must not clean up a later connection.
@@ -664,12 +843,22 @@ pub async fn handoff(id: &str, controller: &str) -> Result<bool> {
     match handoff_locked(id, controller).await {
         Ok(adopted) => Ok(adopted),
         Err(cause) => {
-            let _ = manager.disconnect_locked(&connection).await;
+            let keep_master = missing_bridge(&cause);
+            if keep_master {
+                if let Ok(session) = session(id, controller) {
+                    session.adopted.store(true, Ordering::Release);
+                }
+            } else {
+                let _ = manager.disconnect_locked(&connection).await;
+            }
             let mut registry = manager.registry.lock().await;
             if let Some(entry) = registry.connections.iter_mut().find(|c| c.id == connection) {
                 entry.last_error = Some(HANDOFF_FAILED_MESSAGE.into());
             }
             drop(registry);
+            if keep_master {
+                manager.note_error_code(&connection, &cause, HANDOFF_FAILED_MESSAGE);
+            }
             let failure = HandoffFailed::wrap(cause);
             if let Some(typed) = failure.downcast_ref::<HandoffFailed>() {
                 tracing::warn!(connection = %connection, "{}", typed.log_message());
@@ -677,6 +866,54 @@ pub async fn handoff(id: &str, controller: &str) -> Result<bool> {
             Err(failure)
         }
     }
+}
+/// [`handoff`] for a setup job's sign-in: adopt the exact owned master at the job's control
+/// path, then tell the job.
+async fn handoff_setup(id: &str, controller: &str, job_id: &str, target: &str) -> Result<bool> {
+    let current = session(id, controller)?;
+    let key = current.info.connection_id.clone();
+    let manager = session_manager(&current)?;
+    drop(current);
+    let _lifecycle = manager.connection_guard(&key).await?;
+    validate(id, controller).await?;
+    let session = session(id, controller)?;
+    if session.adopted.load(Ordering::Acquire) {
+        return Ok(true);
+    }
+    let pid = session
+        .runtime
+        .lock()
+        .unwrap()
+        .as_ref()
+        .context("Authentication terminal unavailable")?
+        .pid;
+    let control = session
+        .plan
+        .args
+        .windows(2)
+        .find(|args| args[0] == "-S")
+        .context("Owned SSH control path missing")?[1]
+        .clone();
+    if !master_ready(&control, target, pid).await? {
+        return Ok(false);
+    }
+    validate(id, controller).await?;
+    {
+        let sessions = SESSIONS.lock().unwrap();
+        ensure!(
+            sessions
+                .get(id)
+                .is_some_and(|current| Arc::ptr_eq(current, &session)),
+            "Authentication was cancelled during handoff"
+        );
+        ensure!(
+            session.runtime.lock().unwrap().is_some(),
+            "Authentication process ended during handoff"
+        );
+    }
+    session.adopted.store(true, Ordering::Release);
+    super::setup::signed_in(job_id);
+    Ok(true)
 }
 async fn handoff_locked(id: &str, controller: &str) -> Result<bool> {
     validate(id, controller).await?;
@@ -763,8 +1000,10 @@ async fn master_ready(control: &str, target: &str, pid: u32) -> Result<bool> {
 }
 /// Complete teardown under the same connection generation used for adoption.
 pub async fn detach(id: &str, controller: &str) -> Result<()> {
-    let connection = session(id, controller)?.info.connection_id.clone();
-    let manager = manager()?;
+    let current = session(id, controller)?;
+    let connection = current.info.connection_id.clone();
+    let manager = session_manager(&current)?;
+    drop(current);
     let _lifecycle = manager.connection_guard(&connection).await?;
     let current = session(id, controller)?;
     if !current.adopted.load(Ordering::Acquire) {
@@ -772,12 +1011,20 @@ pub async fn detach(id: &str, controller: &str) -> Result<()> {
     }
     Ok(())
 }
+/// Stop a sign-in and disconnect its connection. A setup job's sign-in has no connection to
+/// disconnect: stopping it ends its master, which is its terminal's own process.
 pub async fn cancel_and_disconnect(id: &str, controller: &str) -> Result<()> {
-    let connection = session(id, controller)?.info.connection_id.clone();
-    let manager = manager()?;
+    let current = session(id, controller)?;
+    let connection = current.info.connection_id.clone();
+    let manager = session_manager(&current)?;
+    let setup = matches!(current.purpose, Purpose::Setup { .. });
+    drop(current);
     let _lifecycle = manager.connection_guard(&connection).await?;
     session(id, controller)?;
     cancel(id, controller)?;
+    if setup {
+        return Ok(());
+    }
     manager.disconnect_locked(&connection).await
 }
 
@@ -850,6 +1097,9 @@ pub struct InvitationAdvanced {
     pub remote_root: Option<String>,
     #[serde(default)]
     pub remote_execution: bool,
+    /// What the connection's agents may do on the server (design OW-6). Default: `folder`.
+    #[serde(default)]
+    pub remote_access: RemoteAccess,
     /// A prepared hosting identity (`POST /crew/devices/prepare`), when a host saves their own
     /// workspace from what `biorouter-crew start` printed.
     #[serde(default)]
@@ -1463,6 +1713,7 @@ fn save_input(
         workspace_public_key: invitation.workspace_public_key.clone(),
         remote_root: advanced.remote_root.clone(),
         remote_execution: advanced.remote_execution,
+        remote_access: advanced.remote_access,
         cluster_connection_id: None,
         mode,
         institution_id,
@@ -2871,6 +3122,7 @@ mod admission_tests {
             workspace_public_key: key.into(),
             remote_root: None,
             remote_execution: false,
+            remote_access: Default::default(),
             cluster_connection_id: uuid::Uuid::new_v4().to_string(),
             mode: ClusterMode::Private,
             institution_id: Some("ucsf".into()),
@@ -3376,6 +3628,7 @@ mod admission_tests {
             size: dimensions(80, 24).unwrap(),
             started: Mutex::new(true),
             runtime: Mutex::new(None),
+            purpose: Purpose::Connection,
         };
         SESSIONS
             .lock()
@@ -3393,6 +3646,9 @@ mod admission_tests {
             .log_message()
             .contains("Authentication terminal unavailable"));
         assert!(!typed.workspace_identity_mismatch());
+        // Only a missing Crew program keeps the master (OW-9); this cause disconnected.
+        assert!(!typed.bridge_missing());
+        assert!(SESSIONS.lock().unwrap().get(&auth_id).is_none());
         let saved = manager.connection(&connection_id).await.unwrap();
         assert_eq!(saved.status, "disconnected");
         assert_eq!(saved.last_error.as_deref(), Some(HANDOFF_FAILED_MESSAGE));
@@ -3403,6 +3659,25 @@ mod admission_tests {
         let identity = identity.downcast_ref::<HandoffFailed>().unwrap();
         assert!(identity.workspace_identity_mismatch());
         assert_eq!(identity.api_code(), HANDOFF_FAILED_CODE);
+        assert!(!identity.bridge_missing());
+
+        // A missing Crew program, however deep in the chain, is said as one, under the code
+        // older clients map.
+        let missing = HandoffFailed::wrap(
+            anyhow::Error::new(super::super::SshFailure {
+                kind: super::super::SshFailureKind::BridgeMissing,
+                code: "ssh_eof".into(),
+                status: "exit_127".into(),
+                description: "SSH closed before the broker answered".into(),
+                detail: None,
+                host: None,
+                outcome_unknown: false,
+            })
+            .context("while connecting"),
+        );
+        let missing = missing.downcast_ref::<HandoffFailed>().unwrap();
+        assert!(missing.bridge_missing());
+        assert_eq!(missing.api_code(), HANDOFF_FAILED_CODE);
 
         SESSIONS.lock().unwrap().remove(&auth_id);
         manager
@@ -3411,6 +3686,67 @@ mod admission_tests {
             .await
             .connections
             .retain(|c| c.id != connection_id);
+    }
+
+    /// A development profile's sign-in passes the daemon's askpass helper (and the display it
+    /// asks on) when one is set, so an automated test can sign in to an account that takes a
+    /// password (OW-9), and still nothing else the daemon holds; unset, nothing changes.
+    #[cfg(unix)]
+    #[test]
+    fn a_development_sign_in_passes_an_askpass_helper_only_when_set() {
+        if !crate::test_sandbox::in_a_process_of_its_own() {
+            return;
+        }
+        let root = tempfile::tempdir().unwrap();
+        let profile = root.path().join("profile").to_string_lossy().into_owned();
+        let plan = AuthenticationPlan {
+            program: "ssh".into(),
+            args: vec!["-M".into(), "lab".into()],
+            connection_id: "c".into(),
+            authentication_id: "a".into(),
+        };
+        let seam = ["SSH_ASKPASS", "SSH_ASKPASS_REQUIRE", "DISPLAY"];
+        {
+            let _env = crate::test_sandbox::relocate_path_root_and(
+                profile.as_str(),
+                [
+                    ("BIOROUTER_DEV_PROFILE_ROOT", Some(profile.as_str())),
+                    ("SSH_ASKPASS", Some("/opt/test/askpass")),
+                    ("SSH_ASKPASS_REQUIRE", Some("force")),
+                    ("DISPLAY", Some(":0")),
+                    ("SSH_AUTH_SOCK", Some("/tmp/agent.sock")),
+                ],
+            );
+            let built = command(&plan);
+            assert_eq!(
+                seam.map(|name| built
+                    .get_env(name)
+                    .map(|v| v.to_string_lossy().into_owned())),
+                [
+                    Some("/opt/test/askpass".to_owned()),
+                    Some("force".to_owned()),
+                    Some(":0".to_owned())
+                ]
+            );
+            assert!(built.get_env("SSH_AUTH_SOCK").is_none());
+            assert_eq!(
+                built.get_env("HOME"),
+                Some(Path::new(&profile).join("home").as_os_str())
+            );
+        }
+        let _env = crate::test_sandbox::relocate_path_root_and(
+            profile.as_str(),
+            [
+                ("BIOROUTER_DEV_PROFILE_ROOT", Some(profile.as_str())),
+                ("SSH_ASKPASS", None),
+                ("SSH_ASKPASS_REQUIRE", None),
+                ("DISPLAY", None),
+            ],
+        );
+        let built = command(&plan);
+        for name in seam {
+            assert!(built.get_env(name).is_none(), "{name}");
+        }
     }
 
     /// Point the profile, credentials and `ssh` of this process at `root`: file credentials

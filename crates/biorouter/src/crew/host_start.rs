@@ -42,7 +42,8 @@ use std::collections::HashMap;
 use std::process::Stdio;
 use std::sync::{Arc, LazyLock, Mutex};
 use std::time::{Duration, Instant};
-use tokio::io::AsyncReadExt;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio_util::sync::CancellationToken;
 
 /// The most output kept (and shown) per run.
 const MAX_OUTPUT: usize = 64 * 1024;
@@ -282,7 +283,7 @@ fn problem(problem: &str, detail: Option<String>) -> StartOutput {
 
 /// Output as it may be shown: printable text, newlines and tabs, nothing a terminal or a
 /// screen would act on.
-fn shown(bytes: &[u8]) -> String {
+pub(super) fn shown(bytes: &[u8]) -> String {
     String::from_utf8_lossy(bytes)
         .chars()
         .filter(|c| {
@@ -306,10 +307,10 @@ struct Job {
     /// The login the person typed, to name in a sign-in refusal.
     ssh_target: String,
     command: String,
-    output: Mutex<Vec<u8>>,
+    output: Arc<Mutex<Vec<u8>>>,
     state: Mutex<RunState>,
     finished_at: Mutex<Option<Instant>>,
-    cancel: tokio_util::sync::CancellationToken,
+    cancel: CancellationToken,
 }
 
 impl Job {
@@ -393,16 +394,21 @@ pub fn cancel_host_start(job_id: &str) -> bool {
 /// Starts run one at a time, so two clicks can never both start a run for one host setup.
 static STARTING: LazyLock<tokio::sync::Mutex<()>> = LazyLock::new(Default::default);
 
-/// The login and route, refused unless each is in the form a saved connection allows.
-fn check_route(request: &HostStartRequest) -> Result<()> {
-    if !safe_atom(&request.ssh_target) {
+/// The login and route, refused unless each is in the form a saved connection allows. Setup
+/// (`setup.rs`) checks a typed route by the same rules.
+pub(super) fn check_route(
+    ssh_target: &str,
+    proxy_jump: Option<&str>,
+    identity_file: Option<&str>,
+) -> Result<()> {
+    if !safe_atom(ssh_target) {
         return Err(refused(
             400,
             "crew_request_invalid",
             "Type the server login as an SSH alias or user@host.",
         ));
     }
-    if let Some(jump) = &request.proxy_jump {
+    if let Some(jump) = proxy_jump {
         if !jump.split(',').all(safe_atom) {
             return Err(refused(
                 400,
@@ -411,7 +417,7 @@ fn check_route(request: &HostStartRequest) -> Result<()> {
             ));
         }
     }
-    if let Some(identity) = &request.identity_file {
+    if let Some(identity) = identity_file {
         if !std::path::Path::new(identity).is_absolute() || identity.contains('\n') {
             return Err(refused(
                 400,
@@ -456,18 +462,53 @@ fn failure(
     })
 }
 
-/// Copy `reader` into the run's output and, when given, a second buffer of its own.
-async fn capture(
-    mut reader: impl tokio::io::AsyncRead + Unpin,
-    job: Arc<Job>,
-    also: Option<Arc<Mutex<Vec<u8>>>>,
-) {
+/// What a fixed command run over `ssh` came to ([`run_fixed`]).
+pub(super) struct Fixed {
+    pub exit_code: Option<i32>,
+    /// What the command printed on its standard output, at most 64 KiB.
+    pub stdout: Vec<u8>,
+    /// What it printed on its standard error, as it may be shown ([`shown`]).
+    pub stderr: String,
+    pub cancelled: bool,
+    pub timed_out: bool,
+    /// Every byte of the input reached `ssh`, and its input was closed after them.
+    pub input_written: bool,
+}
+
+/// Start `ssh` with `args`, its output piped, and its input piped only when there is input to
+/// send (otherwise `/dev/null`, so nothing on the server can wait on it).
+pub(super) fn spawn_ssh(args: &[String], input: bool) -> Result<tokio::process::Child> {
+    let mut ssh = tokio::process::Command::new("ssh");
+    ssh.args(args)
+        .stdin(if input { Stdio::piped() } else { Stdio::null() })
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true);
+    crate::subprocess::prepare_agent_child_command(&mut ssh);
+    ssh.spawn().context("Couldn't run ssh")
+}
+
+/// Run `ssh` with `args` to its end (or `limit`, or `cancel`), writing `input` to it and then
+/// closing its input. Only a failure to start `ssh` is an error; everything else is in the
+/// [`Fixed`].
+pub(super) async fn run_fixed(
+    args: &[String],
+    input: Option<Vec<u8>>,
+    limit: Duration,
+    cancel: &CancellationToken,
+) -> Result<Fixed> {
+    let child = spawn_ssh(args, input.is_some())?;
+    Ok(finish(child, input, limit, cancel, None).await)
+}
+
+/// Copy `reader` into each of `sinks`, each kept to [`MAX_OUTPUT`].
+async fn capture(mut reader: impl tokio::io::AsyncRead + Unpin, sinks: Vec<Arc<Mutex<Vec<u8>>>>) {
     let mut buffer = [0u8; 4096];
     loop {
         match reader.read(&mut buffer).await {
             Ok(0) | Err(_) => return,
             Ok(read) => {
-                for sink in std::iter::once(&job.output).chain(also.as_deref()) {
+                for sink in &sinks {
                     let mut sink = sink
                         .lock()
                         .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -479,51 +520,109 @@ async fn capture(
     }
 }
 
-/// Watch a started `ssh` to its end (or the limit, or a cancel), then record what it came to.
-fn watch(job: Arc<Job>, mut child: tokio::process::Child) {
+/// Watch a started `ssh` to its end (or the limit, or a cancel). Both of its outputs also go
+/// to `shared`, in arrival order, when given, so a run can be shown while it is under way.
+async fn finish(
+    mut child: tokio::process::Child,
+    input: Option<Vec<u8>>,
+    limit: Duration,
+    cancel: &CancellationToken,
+    shared: Option<Arc<Mutex<Vec<u8>>>>,
+) -> Fixed {
+    let stdout_buffer = Arc::new(Mutex::new(Vec::<u8>::new()));
+    let stderr_buffer = Arc::new(Mutex::new(Vec::<u8>::new()));
+    let sinks = |own: &Arc<Mutex<Vec<u8>>>| {
+        std::iter::once(Arc::clone(own))
+            .chain(shared.clone())
+            .collect::<Vec<_>>()
+    };
     let stdout = child
         .stdout
         .take()
-        .map(|out| tokio::spawn(capture(out, Arc::clone(&job), None)));
-    let stderr_buffer = Arc::new(Mutex::new(Vec::<u8>::new()));
-    let stderr = child.stderr.take().map(|err| {
-        tokio::spawn(capture(
-            err,
-            Arc::clone(&job),
-            Some(Arc::clone(&stderr_buffer)),
-        ))
-    });
-    tokio::spawn(async move {
-        let waited = tokio::select! {
-            status = tokio::time::timeout(RUN_LIMIT, child.wait()) => status.ok(),
-            () = job.cancel.cancelled() => None,
-        };
-        let cancelled = job.cancel.is_cancelled();
-        let timed_out = waited.is_none();
-        if timed_out {
-            let _ = child.kill().await;
-        }
-        for task in [stdout, stderr].into_iter().flatten() {
-            let _ = tokio::time::timeout(Duration::from_secs(2), task).await;
-        }
-        let exit_code = waited
+        .map(|out| tokio::spawn(capture(out, sinks(&stdout_buffer))));
+    let stderr = child
+        .stderr
+        .take()
+        .map(|err| tokio::spawn(capture(err, sinks(&stderr_buffer))));
+    // Written beside the reads, so a command that prints while it reads never waits on us.
+    let writer = match (child.stdin.take(), input) {
+        (Some(mut stdin), Some(bytes)) => Some(tokio::spawn(async move {
+            for chunk in bytes.chunks(64 * 1024) {
+                if stdin.write_all(chunk).await.is_err() {
+                    return false;
+                }
+            }
+            stdin.flush().await.is_ok() && stdin.shutdown().await.is_ok()
+        })),
+        _ => None,
+    };
+    let waited = tokio::select! {
+        status = tokio::time::timeout(limit, child.wait()) => status.ok(),
+        () = cancel.cancelled() => None,
+    };
+    let cancelled = cancel.is_cancelled();
+    if waited.is_none() {
+        let _ = child.kill().await;
+    }
+    let input_written = match writer {
+        Some(mut task) => match tokio::time::timeout(Duration::from_secs(2), &mut task).await {
+            Ok(Ok(written)) => written,
+            _ => {
+                task.abort();
+                false
+            }
+        },
+        None => false,
+    };
+    for task in [stdout, stderr].into_iter().flatten() {
+        let _ = tokio::time::timeout(Duration::from_secs(2), task).await;
+    }
+    let read = |buffer: &Arc<Mutex<Vec<u8>>>| {
+        buffer
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    };
+    let timed_out = waited.is_none() && !cancelled;
+    Fixed {
+        exit_code: waited
             .and_then(|status| status.ok())
-            .and_then(|status| status.code());
-        let stderr = shown(
-            &stderr_buffer
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner),
-        );
-        match failure(cancelled, timed_out, exit_code, &stderr, &job.ssh_target) {
-            Some(error) => job.finish(HostStartState::Failed, exit_code, None, Some(error)),
+            .and_then(|status| status.code()),
+        stdout: read(&stdout_buffer),
+        stderr: shown(&read(&stderr_buffer)),
+        cancelled,
+        timed_out,
+        input_written,
+    }
+}
+
+/// Watch a started `ssh` to its end (or the limit, or a cancel), then record what it came to.
+fn watch(job: Arc<Job>, child: tokio::process::Child) {
+    tokio::spawn(async move {
+        let ran = finish(
+            child,
+            None,
+            RUN_LIMIT,
+            &job.cancel,
+            Some(Arc::clone(&job.output)),
+        )
+        .await;
+        match failure(
+            ran.cancelled,
+            ran.timed_out,
+            ran.exit_code,
+            &ran.stderr,
+            &job.ssh_target,
+        ) {
+            Some(error) => job.finish(HostStartState::Failed, ran.exit_code, None, Some(error)),
             None => {
                 let output = shown(
                     &job.output
                         .lock()
                         .unwrap_or_else(std::sync::PoisonError::into_inner),
                 );
-                let result = read_start_output(&output, exit_code);
-                job.finish(HostStartState::Finished, exit_code, Some(result), None);
+                let result = read_start_output(&output, ran.exit_code);
+                job.finish(HostStartState::Finished, ran.exit_code, Some(result), None);
             }
         }
     });
@@ -532,7 +631,7 @@ fn watch(job: Arc<Job>, mut child: tokio::process::Child) {
 impl CrewManager {
     /// The hosting key of `preparation_id`, when it is this computer's pending host setup and
     /// no saved connection has used it yet.
-    async fn host_setup_key(&self, preparation_id: &str) -> Result<String> {
+    pub(super) async fn host_setup_key(&self, preparation_id: &str) -> Result<String> {
         let registry = self.registry.lock().await;
         if registry.completed_preparations.contains_key(preparation_id) {
             return Err(refused(
@@ -558,7 +657,11 @@ impl CrewManager {
     /// Start the host setup's commands on the server (see the module documentation). Answers
     /// the run already under way for the same setup rather than starting a second.
     pub async fn start_host(&self, request: HostStartRequest) -> Result<HostStartStatus> {
-        check_route(&request)?;
+        check_route(
+            &request.ssh_target,
+            request.proxy_jump.as_deref(),
+            request.identity_file.as_deref(),
+        )?;
         let bootstrap_key = self.host_setup_key(&request.preparation_id).await?;
         let command = host_start_command(&request.workspace_name, &bootstrap_key)
             .map_err(|error| refused(400, "crew_request_invalid", error.to_string()))?;
@@ -595,23 +698,16 @@ impl CrewManager {
         // `Transport::connect` does: `ssh -G` with options and no host prints its usage and
         // exits 255, which would refuse every start.
         super::ssh_policy::preflight(&args, &request.ssh_target).await?;
-        let mut ssh = tokio::process::Command::new("ssh");
-        ssh.args(&args)
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .kill_on_drop(true);
-        crate::subprocess::prepare_agent_child_command(&mut ssh);
-        let child = ssh.spawn().context("Couldn't run ssh")?;
+        let child = spawn_ssh(&args, false)?;
         let job_id = uuid::Uuid::new_v4().to_string();
         let job = Arc::new(Job {
             preparation_id: request.preparation_id,
             ssh_target: request.ssh_target,
             command,
-            output: Mutex::new(Vec::new()),
+            output: Arc::new(Mutex::new(Vec::new())),
             state: Mutex::new((HostStartState::Running, None, None, None)),
             finished_at: Mutex::new(None),
-            cancel: tokio_util::sync::CancellationToken::new(),
+            cancel: CancellationToken::new(),
         });
         jobs().insert(job_id.clone(), Arc::clone(&job));
         watch(Arc::clone(&job), child);

@@ -280,12 +280,22 @@ async fn serve(mut socket: WebSocket, headers: HeaderMap, id: String, controller
 /// rather than a missing installation. The diagnostic text stays in the daemon's log, where
 /// [`authentication::handoff`] already wrote it. Anything else (the session was replaced or
 /// closed) keeps the older code and text.
+///
+/// A sign-in with no Crew program behind it for this account adds `"bridge_missing": true`
+/// under the same code: its master is kept, so setting Crew up (`POST /crew/setup`, OW-9)
+/// needs no second password.
 fn handoff_failure_frame(error: &anyhow::Error) -> Value {
     match error.downcast_ref::<HandoffFailed>() {
         Some(failed) if failed.workspace_identity_mismatch() => json!({
             "type": "error",
             "code": WORKSPACE_IDENTITY_MISMATCH_CODE,
             "error": failed.cause().to_string(),
+        }),
+        Some(failed) if failed.bridge_missing() => json!({
+            "type": "error",
+            "code": failed.api_code(),
+            "error": failed.to_string(),
+            "bridge_missing": true,
         }),
         Some(failed) => json!({
             "type": "error",

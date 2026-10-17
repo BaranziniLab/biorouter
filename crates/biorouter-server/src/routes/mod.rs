@@ -744,6 +744,7 @@ pub mod crew;
 pub mod crew_authentication;
 pub mod crew_observation;
 pub mod crew_profile;
+pub mod crew_setup;
 pub mod crew_transfers;
 pub mod errors;
 pub mod knowledge;
@@ -800,6 +801,7 @@ pub fn configure(state: Arc<crate::state::AppState>, secret_key: String) -> Rout
         .merge(crew_observation::routes())
         .merge(crew_transfers::routes())
         .merge(crew_profile::routes(state.clone()))
+        .merge(crew_setup::routes())
         .merge(biorouter_server::daemon_service::routes())
         .merge(llamacpp::routes(state.clone()))
         .merge(ollama::routes(state.clone()))

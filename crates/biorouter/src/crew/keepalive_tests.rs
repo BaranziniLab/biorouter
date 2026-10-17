@@ -39,6 +39,7 @@ fn connection() -> Connection {
         workspace_public_key: hex(&workspace_key().verifying_key().to_bytes()),
         remote_root: None,
         remote_execution: false,
+        remote_access: Default::default(),
         cluster_connection_id: "keepalive-cluster".into(),
         mode: ClusterMode::Public,
         institution_id: None,
@@ -213,6 +214,14 @@ esac
 answered=0
 signed=0
 while IFS= read -r line; do
+  # The bridge.hello every verified connect asks: answered as an older bridge's broker does,
+  # and kept out of the log and the counts the plans read, so each plan means what it did.
+  case "$line" in
+    *'"method":"bridge.hello"'*)
+      id=$(printf '%s\n' "$line" | sed -n 's/.*"id":"\([^"]*\)".*/\1/p')
+      printf '{{"id":"%s","error":{{"code":"unsupported","message":"unsupported: method unavailable"}}}}\n' "$id"
+      continue ;;
+  esac
   printf '%s %s\n' "$n" "$line" >> "$root/requests.log"
   case "$plan" in
     drop-at-post) case "$line" in *'"method":"run.project"'*) exit 0 ;; esac ;;
@@ -4048,6 +4057,7 @@ async fn saving_a_connection_unchanged_changes_nothing() {
         workspace_public_key: c.workspace_public_key.clone(),
         remote_root: c.remote_root.clone(),
         remote_execution: c.remote_execution,
+        remote_access: Default::default(),
         cluster_connection_id: Some(c.cluster_connection_id.clone()),
         mode,
         institution_id: c.institution_id.clone(),
@@ -4171,6 +4181,7 @@ async fn a_privacy_save_reconnects_a_connected_connection() {
         workspace_public_key: c.workspace_public_key.clone(),
         remote_root: c.remote_root.clone(),
         remote_execution: c.remote_execution,
+        remote_access: Default::default(),
         cluster_connection_id: Some(c.cluster_connection_id.clone()),
         mode,
         institution_id: institution.map(str::to_owned),
