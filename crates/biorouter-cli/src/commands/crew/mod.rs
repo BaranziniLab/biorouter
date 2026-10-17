@@ -2305,6 +2305,38 @@ fn host_removal_notice(
     })
 }
 
+/// What `connections remove` knows before it asks: the saved connection, whether its host
+/// deleted the workspace, and the workspace snapshot when it can be read. A workspace its host
+/// deleted has no host controls left to lose, and its server answers nothing but that it was
+/// deleted, so it is not asked who hosts it (L7). A connection that is down is connected once
+/// first: a member who was offline when the host deleted the workspace learns it here, from
+/// the connect's `crew_workspace_deleted`, instead of being warned about host controls the
+/// workspace no longer has. A connect that fails otherwise leaves the snapshot unknown.
+async fn removal_view(api: &Api) -> Result<(Value, bool, Option<Value>)> {
+    let deleted = |connection: &Value| connection["workspace_deleted"].as_bool() == Some(true);
+    let connection = api.connection().await?;
+    if deleted(&connection) {
+        return Ok((connection, true, None));
+    }
+    match api.snapshot().await {
+        Ok(snapshot) => Ok((connection, false, Some(snapshot))),
+        Err(error) if disconnected(&error) => {
+            let connected = api.connect().await.is_ok();
+            let connection = api.connection().await?;
+            if deleted(&connection) {
+                return Ok((connection, true, None));
+            }
+            let snapshot = if connected {
+                api.snapshot().await.ok()
+            } else {
+                None
+            };
+            Ok((connection, false, snapshot))
+        }
+        Err(_) => Ok((connection, false, None)),
+    }
+}
+
 /// `connections remove` (CLI-1): delete the saved connection and this computer's device key.
 /// For a host's only computer that ends the host controls for good, so it is refused unless
 /// `--give-up-host-controls` says so; every removal is confirmed by typing the name, and what
@@ -2314,18 +2346,10 @@ async fn remove_connection(
     confirm: Option<&str>,
     give_up_host_controls: bool,
 ) -> Result<Reply> {
-    let connection = api.connection().await?;
+    let (connection, deleted, snapshot) = removal_view(api).await?;
     let name = connection_name(&connection);
     let shown = name_text(&name);
     let own_device = own_device_id(&connection);
-    // L7: a workspace its host deleted has no host controls left to lose, and its server
-    // answers nothing but that it was deleted, so it is not asked who hosts it.
-    let deleted = connection["workspace_deleted"].as_bool() == Some(true);
-    let snapshot = if deleted {
-        None
-    } else {
-        api.snapshot().await.ok()
-    };
     let standing = match &snapshot {
         _ if deleted => HostStanding::NotHost,
         Some(snapshot) => host_standing(snapshot, own_device),
@@ -14209,6 +14233,58 @@ mod tests {
         );
         assert_eq!(lines, ["Removed crew-lab from this computer."]);
         assert!(fake.broker_call("workspace.snapshot").is_none());
+    }
+
+    /// L7: a member who was offline when the host deleted the workspace finds its connection
+    /// down, not marked deleted. Removing it connects once, the connect answers
+    /// `crew_workspace_deleted`, and the removal is then said as one of a deleted workspace,
+    /// with no warning about host controls.
+    #[tokio::test]
+    async fn removing_a_connection_that_is_down_learns_the_workspace_was_deleted() {
+        let dialled = Arc::new(AtomicBool::new(false));
+        let seen = Arc::clone(&dialled);
+        let handler = move |method: &str, path: &str, body: Option<&Value>| -> Result<Value> {
+            match (method, path) {
+                ("GET", "/crew/connections") => Ok(json!({"connections": [{
+                    "id": CONNECTION, "name": "crew-lab", "ssh_target": "bob@leo",
+                    "workspace_id": "w", "status": "disconnected",
+                    "workspace_deleted": seen.load(Ordering::SeqCst)
+                }]})),
+                (_, path) if path.ends_with("/request") => {
+                    Err(refuse(409, Some(NOT_CONNECTED), LEGACY_DISCONNECTED))
+                }
+                ("POST", path) if path.ends_with("/connect") => {
+                    seen.store(true, Ordering::SeqCst);
+                    Err(refuse(
+                        409,
+                        Some("crew_workspace_deleted"),
+                        "The host deleted crew-lab. Remove it from this computer.",
+                    ))
+                }
+                ("DELETE", path) if path == format!("/crew/connections/{CONNECTION}") => {
+                    Ok(json!({"removed": true}))
+                }
+                _ => standard(method, path, body),
+            }
+        };
+        let (mut api, _) = api_with(OutputFormat::Text, handler);
+        api.selected = Some(CONNECTION.into());
+        let (_, deleted, snapshot) = removal_view(&api).await.expect("view");
+        assert!(dialled.load(Ordering::SeqCst), "connected once to learn it");
+        assert!(deleted, "the connect said the host deleted it");
+        assert!(snapshot.is_none());
+        let lines = said(
+            run(
+                &api,
+                CrewCommand::Connections(ConnectionCommand::Remove {
+                    confirm: Some("crew-lab".into()),
+                    give_up_host_controls: false,
+                }),
+            )
+            .await
+            .expect("removed"),
+        );
+        assert_eq!(lines, ["Removed crew-lab from this computer."]);
     }
 
     /// L8: `files list` reads a channel's history newest first, page by page, and lists each
