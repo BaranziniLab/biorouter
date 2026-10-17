@@ -444,6 +444,12 @@ export const letInCopy = {
    */
   approved: (who: string) =>
     `Code saved. ${who} is in as soon as ${who}’s Crew checks in; you can close this.`,
+  /**
+   * `approved` in an open workspace (OW-3): the broker adds a new member to every team and every
+   * unarchived channel as they come in, so the dialog offers no team, and this says why.
+   */
+  approvedOpen: (who: string, workspace: string) =>
+    `Code saved. ${who} is in as soon as ${who}’s Crew checks in, and is added to every team and channel in ${workspace}; you can close this.`,
   /** Replaces `approved` once the directory shows the person as a member. */
   joined: (who: string, workspace: string) => `${who} joined ${workspace}`,
   /**

@@ -276,9 +276,12 @@ export interface HostDialogProps {
  *   connection with the prepared identity, connects (Sign in opens by itself if the server asks),
  *   and asks the workspace to make this computer its first admin device (`auth.bootstrap`).
  *
- * A Private workspace without an institution label is then asked once to take the host's
- * institution — an irreversible label, so it has its own "Mark as {id}", with what it does and
- * what Not now leaves open (Q3-45). A host setup interrupted after saving is remembered on this
+ * A Private workspace with the institution chosen on Name is marked with it as Create finishes,
+ * as `biorouter crew host` does (G4): the label can't be undone, so Create says so before the
+ * person commits, and nothing asks again. A Private workspace left without a label that way (a
+ * resumed setup, whose Name this dialog never showed, or a Public choice on a connection that
+ * names an institution) is asked once instead, with its own "Mark as {id}", what it does and what
+ * Not now leaves open (Q3-45). A host setup interrupted after saving is remembered on this
  * computer and resumes at Create.
  */
 export function HostDialog({ open, onOpenChange }: HostDialogProps) {
@@ -542,14 +545,44 @@ function HostDialogView({ open, onClose }: { open: boolean; onClose: () => void 
   // How the label reads in the question's words: "UCSF", never `ucsf` (Q4-47). The ID written is
   // still `labelInstitution`.
   const labelName = institutionLabel(labelInstitution, knownInstitutions) ?? labelInstitution ?? '';
+  // The institution the person chose on Name with Private, which Create writes as the workspace's
+  // own label (G4). Never on a resumed setup: this dialog never showed it Name, and the field
+  // there holds only the configured default.
+  const chosenInstitution =
+    !resumeId && mode === 'private' && isInstitutionId(institution.trim())
+      ? institution.trim()
+      : null;
+  const chosenName =
+    institutionLabel(chosenInstitution, knownInstitutions) ?? chosenInstitution ?? '';
 
-  // A workspace this dialog bootstrapped is opened to everyone who joins and given its first
-  // context document once it verifies (OW-1, OW-8), before the label question or the close. Each
-  // only when the broker says it takes it; a refusal is reported, and never stops the dialog: the
-  // workspace exists, and Workspace settings does the same.
+  // A workspace this dialog bootstrapped takes the institution chosen on Name, is opened to
+  // everyone who joins and is given its first context document once it verifies (G4, OW-1, OW-8),
+  // in the order `biorouter crew host` does them, before the close. Governance and the context
+  // only when the broker says it takes them; a refusal is reported, and never stops the dialog:
+  // the workspace exists, and Workspace settings and Get {workspace} ready do the same.
   const [finishing, setFinishing] = useState<'idle' | 'running' | 'done'>('idle');
+  /** Create marked the workspace (or said why it couldn't): the label question is not asked. */
+  const markedHere = useRef(false);
   const finishWorkspace = async () => {
     const capabilities = latest.current.capabilities ?? [];
+    let marked = false;
+    if (chosenInstitution) {
+      markedHere.current = true;
+      // The label step's request, with the canonical ID.
+      marked = await crew
+        .request(
+          'policy.set',
+          { mode: 'private', institution_id: chosenInstitution },
+          { mutation: true }
+        )
+        .then(
+          () => true,
+          () => {
+            crew.reportError(hostCopy.markFailed(workspaceLabel, chosenName), 'global');
+            return false;
+          }
+        );
+    }
     if (capabilities.includes('open_governance_v1')) {
       await crew
         .request('workspace.set_governance', { governance: 'open' }, { mutation: true })
@@ -561,6 +594,9 @@ function HostDialogView({ open, onClose }: { open: boolean; onClose: () => void 
         .request('workspace.context.set', { text: draft, expected_revision: 0 }, { mutation: true })
         .catch(() => crew.reportError(hostCopy.contextFailed(workspaceLabel), 'global'));
     }
+    // The view read before the label still shows the workspace unmarked: read it again, as the
+    // label step's own request does.
+    if (marked) await latest.current.refresh().catch(() => undefined);
   };
 
   useEffect(() => {
@@ -576,7 +612,14 @@ function HostDialogView({ open, onClose }: { open: boolean; onClose: () => void 
     }
     if (verified && crew.snapshot) {
       const workspace = crew.snapshot.workspace;
-      if (workspace.mode === 'private' && !workspace.institution_id && labelInstitution) {
+      // Create marked it already, or reported why it couldn't, with where to do it: a second
+      // question would ask what Name answered (G4).
+      if (
+        workspace.mode === 'private' &&
+        !workspace.institution_id &&
+        labelInstitution &&
+        !markedHere.current
+      ) {
         setPhase('labelling');
         setStep('label');
       } else {
@@ -1584,6 +1627,13 @@ function HostDialogView({ open, onClose }: { open: boolean; onClose: () => void 
                   <p className="text-body text-text-default">
                     {hostCopy.createBody(workspaceLabel)}
                   </p>
+                  {/* Create also writes the label Name chose, which can't be undone: said here,
+                      before the person commits, rather than asked again after (G4). */}
+                  {chosenInstitution ? (
+                    <p className="text-body text-text-default" data-testid="crew-host-create-label">
+                      {hostCopy.createLabel(workspaceLabel, chosenName)}
+                    </p>
+                  ) : null}
                   {createNote ? (
                     <Note tone="warning" role="status">
                       {createNote}

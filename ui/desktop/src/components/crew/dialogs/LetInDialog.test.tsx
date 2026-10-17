@@ -514,6 +514,59 @@ describe('LetInDialog', () => {
   });
 });
 
+describe('LetInDialog, in an open workspace (OW-3)', () => {
+  const open = (overrides: Partial<Snapshot> = {}): Snapshot => {
+    const snapshot = withMethods(overrides);
+    return { ...snapshot, workspace: { ...snapshot.workspace, governance: 'open' } };
+  };
+
+  it('offers no team to a joiner, who comes in to every team and channel, and says so', async () => {
+    const onClose = vi.fn();
+    const { crew, update } = renderDirectAdd(open(), onClose);
+    await approveWith(CODE);
+    const dialog = await screen.findByRole('dialog');
+    // While Eve's Crew has not checked in: nothing to add her to, and no "once Eve joins".
+    expect(
+      within(dialog).getByText(
+        'Code saved. Eve is in as soon as Eve’s Crew checks in, and is added to every team and channel in lab; you can close this.'
+      )
+    ).toBeInTheDocument();
+    expect(within(dialog).queryByRole('button', { name: /^Add to / })).toBeNull();
+    expect(within(dialog).queryByText(letInCopy.addAfterJoin('Eve'))).toBeNull();
+    expect(within(dialog).queryByText(letInCopy.channelsIn('Analysis Lab'))).toBeNull();
+    // Done is the dialog's one action from the start.
+    const done = within(dialog).getByRole('button', { name: letInCopy.done });
+    await waitFor(() => expect(done).toHaveFocus());
+
+    // She joined, and the broker put her in every team: still nothing to offer.
+    update(
+      open({
+        principals: [...makeSnapshot().principals, eve],
+        pending_joins: [],
+        teams: makeSnapshot().teams.map((team) => ({
+          ...team,
+          members: [...team.members, eve.id],
+        })),
+      })
+    );
+    expect(await within(dialog).findByText(letInCopy.joined('Eve', 'lab'))).toBeInTheDocument();
+    expect(within(dialog).queryByRole('button', { name: /^Add to / })).toBeNull();
+    fireEvent.click(within(dialog).getByRole('button', { name: letInCopy.done }));
+    expect(onClose).toHaveBeenCalled();
+    expect(requestsFor(crew, 'team.add_member')).toEqual([]);
+    expect(requestsFor(crew, 'invitation.create')).toEqual([]);
+  });
+
+  it('keeps a managed workspace’s team offer and hint', async () => {
+    renderDirectAdd(withMethods());
+    await approveWith(CODE);
+    const dialog = await screen.findByRole('dialog');
+    expect(within(dialog).getByText(letInCopy.approved('Eve'))).toBeInTheDocument();
+    expect(within(dialog).getByRole('button', { name: 'Add to Analysis Lab' })).toBeInTheDocument();
+    expect(within(dialog).getByText(letInCopy.addAfterJoin('Eve'))).toBeInTheDocument();
+  });
+});
+
 describe('LetInDialog, the team the joiner goes into (QA Q2-03)', () => {
   const joinedFrame = () =>
     withMethods({ principals: [...makeSnapshot().principals, eve], pending_joins: [] });

@@ -49,7 +49,7 @@ The dialog has three steps: Name, Start and Create. To do the same from a termin
 5. Fill in **Advanced** only if IT gave you a port, an identity file or a jump host.
 6. Choose **Continue**. Biorouter makes a hosting key, so only this computer can create the workspace. The dialog moves to step 2, Start.
 
-The Privacy choice sets only your own connection. Every new workspace starts "Private for everyone".
+The Privacy choice sets your own connection. Every new workspace starts "Private for everyone". With **Private**, **Create workspace** in step 3 also marks the workspace with the institution you typed, permanently ([Create the workspace](#create-the-workspace)).
 
 ### Set up and start Crew
 
@@ -107,12 +107,13 @@ Every setup code is listed in [Setup refusals](command-line.md#setup-refusals).
 ### Create the workspace
 
 1. In step 3, note the workspace **Fingerprint**. People you invite may ask you to read it out.
-2. Choose **Create workspace**. Crew calls this computer the workspace's "first admin device": its key is what lets you act as host ([Limits of the host role](#limits-of-the-host-role)).
-3. If the server asks for a password or a code, type it in the Sign in window.
+2. If you chose **Private** in step 1, step 3 also says "Creating {workspace} also marks it as a {institution} workspace, for everyone who works there. Agents working in {workspace} can then use only models approved for {institution}. This can’t be undone." To use another institution, go **Back** to step 1 and change **Institution** first.
+3. Choose **Create workspace**. Crew calls this computer the workspace's "first admin device": its key is what lets you act as host ([Limits of the host role](#limits-of-the-host-role)).
+4. If the server asks for a password or a code, type it in the Sign in window.
 
-Create also makes the workspace open to every member, and saves a first [workspace context](agents-and-chat-access.md#the-workspace-context), drafted from a fixed check of the server: its system, processors, memory, GPUs, storage, schedulers and software. If either does not work, Crew says that the workspace was created but the setting was not made, and the workspace works anyway. Make it later on the **General** or **Context** tab of "{workspace} settings".
+With Private, Create marks the workspace with your institution, as `biorouter crew host --institution` does. It also makes the workspace open to every member, and saves a first [workspace context](agents-and-chat-access.md#the-workspace-context), drafted from a fixed check of the server: its system, processors, memory, GPUs, storage, schedulers and software. If one of these does not work, Crew says that the workspace was created but the setting was not made, and the workspace works anyway. Mark it later with **Set institution to {institution}…** ([Mark the workspace with your institution](#mark-the-workspace-with-your-institution)), and make the others on the **General** or **Context** tab of "{workspace} settings".
 
-When it worked, the dialog asks about your institution, as described next, or closes and shows the checklist.
+When it worked, the dialog closes and shows the checklist. It asks about your institution first only when Create did not mark the workspace, as described next.
 
 If Create fails, choose **Create workspace** again, or see [Connections and troubleshooting](connections-and-troubleshooting.md). If you closed the dialog too early, choose **Finish creating…** on the "Finish creating {workspace}" card.
 
@@ -169,7 +170,7 @@ When the install worked, the last line prints the version, such as `biorouter-cr
 
 ## Mark the workspace with your institution
 
-After Create, if Crew knows your institution, the dialog asks "Mark {workspace} as a {institution} workspace?". Until the workspace has one, people can chat and share files, but agents cannot work there.
+Create marks the workspace when you chose Private and an institution in step 1. Otherwise, such as when you finish a setup from **Finish creating…**, or chose Public on a connection that names an institution, the dialog asks after Create "Mark {workspace} as a {institution} workspace?". Until the workspace has an institution, people can chat and share files, but agents cannot work there.
 
 - **Mark as {institution}** sets it permanently. For another institution, host a new workspace.
 - **Not now** leaves it for later.

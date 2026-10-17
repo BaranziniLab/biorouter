@@ -467,6 +467,14 @@ export const hostCopy = {
   createBody: (workspace: string) =>
     `Creating ${workspace} makes this computer its first admin device.`,
   /**
+   * Under `createBody` when Name chose Private and an institution (G4): Create also writes that
+   * institution as the workspace's own label with `policy.set`, as `biorouter crew host` does, so
+   * what the label does and that it can't be undone are said before the person commits, in the
+   * label step's words. `id` is the institution as it reads (`institutionLabel`: "UCSF", Q4-47).
+   */
+  createLabel: (workspace: string, id: string) =>
+    `Creating ${workspace} also marks it as a ${id} workspace, for everyone who works there. Agents working in ${workspace} can then use only models approved for ${id}. This can’t be undone.`,
+  /**
    * Once the connection is saved and the daemon's name for its server differs from the one this
    * dialog has been using (Q4-34): the dialog keeps its word, and this says how the two relate —
    * the words Connection settings uses. Every surface after the dialog uses `label`.
@@ -483,14 +491,18 @@ export const hostCopy = {
   signingIn: 'Waiting for you to sign in…',
   signInEnded: 'Sign-in didn’t finish. Choose Create workspace to try again.',
   /**
-   * After bootstrap, the two settings Create makes for a workspace it made (OW-1, OW-8). Either
-   * failing leaves a working workspace, so it is said, and Workspace settings does the same.
+   * After bootstrap, the settings Create makes for a workspace it made (G4, OW-1, OW-8). Each
+   * failing leaves a working workspace, so it is said, with where the same setting is made later.
    */
+  markFailed: (workspace: string, id: string) =>
+    `${workspace} was created, but Biorouter couldn’t mark it as a ${id} workspace, so agents can’t work there yet. You can do it from Get ${workspace} ready, or from Privacy… in the workspace menu.`,
   governanceFailed: (workspace: string) =>
     `${workspace} was created, but Biorouter couldn’t let everyone in it manage teams and channels. You can do it in Workspace settings.`,
   contextFailed: (workspace: string) =>
     `${workspace} was created, but Biorouter couldn’t save its description of the server. You can draft it again in Workspace settings.`,
-  // Label step (Q3-45). Only what the broker and daemon enforce: an institution-labelled Private
+  // Label step (Q3-45), for a Private workspace Create did not mark (G4): a resumed setup, or a
+  // Public choice on a connection that names an institution. Only what the broker and daemon
+  // enforce: an institution-labelled Private
   // workspace admits an agent only on a model approved for that institution
   // (`enforce_institution_policy`, `institution::admission`), an unlabelled one admits no agent at
   // all ("unlabelled private workspaces allow human collaboration only"), and `policy.set` refuses

@@ -411,7 +411,7 @@ describe('HostDialog', () => {
     );
   });
 
-  it('creates the workspace: save with the prepared identity, connect, bootstrap, then label', async () => {
+  it('creates the workspace: save with the prepared identity, connect, bootstrap, then mark it with the institution Name chose (G4)', async () => {
     const connectDone = deferred();
     const connect = vi.fn(() => connectDone.promise);
     const saved = fakeConnection({
@@ -428,6 +428,11 @@ describe('HostDialog', () => {
     // The fingerprint says what it is for (T-34).
     expect(screen.getByText(hostCopy.fingerprintHelper)).toBeInTheDocument();
     expect(screen.getByText(hostCopy.createBody('lab-data'))).toBeInTheDocument();
+    // Create also writes the label Name chose, which can't be undone: it says so before the
+    // person commits, in the label step's words, instead of asking again afterwards (G4).
+    expect(screen.getByTestId('crew-host-create-label')).toHaveTextContent(
+      'Creating lab-data also marks it as a ucsf workspace, for everyone who works there. Agents working in lab-data can then use only models approved for ucsf. This can’t be undone.'
+    );
     fireEvent.click(screen.getByRole('button', { name: hostCopy.create }));
 
     const crew = view.crew();
@@ -470,7 +475,9 @@ describe('HostDialog', () => {
     // have (Q3-51): the checklist asks before the first invitation goes out.
     expect(readJoinContext('conn-host')).toMatchObject({ hostSetup: false, suggestName: true });
 
-    // Verified, Private and unlabelled: ask once for the host's institution.
+    // Verified, Private and unlabelled: Create writes the institution Name chose, with the label
+    // step's request, as `biorouter crew host --institution` does.
+    const refreshesBefore = vi.mocked(crew.refresh).mock.calls.length;
     const snapshot = fakeSnapshot({
       workspace: {
         id: 'workspace-1',
@@ -491,30 +498,116 @@ describe('HostDialog', () => {
         policyEpoch: 1,
       },
     });
-    // It says what the label does — only what the broker enforces — and what Not now leaves open
-    // (Q3-45), instead of "Label lab-data as ucsf? This can't be changed later."
-    expect(
-      await screen.findByRole('dialog', { name: 'Mark lab-data as a ucsf workspace?' })
-    ).toBeInTheDocument();
-    expect(
-      screen.getByText(
-        'Agents working in lab-data can then use only models approved for ucsf. This can’t be undone.'
-      )
-    ).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: hostCopy.labelLater })).toHaveAccessibleDescription(
-      'Until then, people can chat and share files in lab-data, but agents can’t work there. You can do this later from Get lab-data ready, or from Privacy… in the workspace menu.'
-    );
-    expect(document.body.textContent).not.toMatch(/\bLabel\b|changed later/);
-    // A separate, explicit confirmation: nothing is set until the person presses it.
-    expect(crew.mutate).not.toHaveBeenCalledWith('policy.set', expect.anything());
-    fireEvent.click(screen.getByRole('button', { name: 'Mark as ucsf' }));
     await waitFor(() =>
-      expect(crew.mutate).toHaveBeenCalledWith('policy.set', {
-        mode: 'private',
-        institution_id: 'ucsf',
-      })
+      expect(crew.request).toHaveBeenCalledWith(
+        'policy.set',
+        { mode: 'private', institution_id: 'ucsf' },
+        { mutation: true }
+      )
     );
+    // Then the dialog closes, with no second question about what Name answered, and the
+    // workspace is read again so it shows the label it now has.
     await waitFor(() => expect(crew.closeDialog).toHaveBeenCalled());
+    expect(vi.mocked(crew.refresh).mock.calls.length).toBeGreaterThan(refreshesBefore);
+    expect(screen.queryByText(hostCopy.labelTitle('lab-data', 'ucsf'))).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Mark as ucsf' })).toBeNull();
+    expect(crew.mutate).not.toHaveBeenCalledWith('policy.set', expect.anything());
+    expect(crew.reportError).not.toHaveBeenCalled();
+  });
+
+  it('says where to finish the label when Create could not write it, and asks nothing (G4)', async () => {
+    const request = vi.fn((method: string) =>
+      method === 'policy.set'
+        ? Promise.reject(new Error('privacy_denied: workspace institution cannot be changed'))
+        : Promise.resolve({})
+    );
+    const saved = fakeConnection({ id: 'conn-host', status: 'connected' });
+    const view = renderHost({
+      request: request as unknown as CrewController['request'],
+      saveConnection: vi.fn().mockResolvedValue(saved),
+    });
+    await throughStart();
+    fireEvent.click(screen.getByRole('button', { name: hostCopy.create }));
+    await waitFor(() => expect(view.crew().saveConnection).toHaveBeenCalled());
+    view.update({ connectionId: 'conn-host', connections: [saved], connection: saved });
+    await waitFor(() => expect(view.crew().setJoinStatus).toHaveBeenCalledWith('joined'));
+    view.update({
+      snapshot: fakeSnapshot({
+        workspace: {
+          id: 'workspace-1',
+          host_uid: 1000,
+          mode: 'private',
+          institution_id: null,
+          policy_epoch: 1,
+          host_principal_id: 'p-alice',
+          name: 'lab-data',
+        },
+      }),
+      observedPrivacy: {
+        connectionId: 'conn-host',
+        mode: 'private',
+        institutionId: 'ucsf',
+        policyEpoch: 1,
+      },
+    });
+    await waitFor(() =>
+      expect(view.crew().reportError).toHaveBeenCalledWith(
+        hostCopy.markFailed('lab-data', 'ucsf'),
+        'global'
+      )
+    );
+    expect(hostCopy.markFailed('lab-data', 'ucsf')).toBe(
+      'lab-data was created, but Biorouter couldn’t mark it as a ucsf workspace, so agents can’t work there yet. You can do it from Get lab-data ready, or from Privacy… in the workspace menu.'
+    );
+    // The workspace exists: the dialog closes, and the checklist and Privacy… finish it.
+    await waitFor(() => expect(view.crew().closeDialog).toHaveBeenCalled());
+    expect(screen.queryByText(hostCopy.labelTitle('lab-data', 'ucsf'))).toBeNull();
+  });
+
+  it('writes no label for a Public choice, and asks once instead when the workspace is still unmarked', async () => {
+    const saved = fakeConnection({ id: 'conn-host', status: 'connected' });
+    const view = renderHost({ saveConnection: vi.fn().mockResolvedValue(saved) });
+    await fillName();
+    fireEvent.click(screen.getByRole('radio', { name: new RegExp(`^${joinCopy.public}`) }));
+    fireEvent.click(screen.getByRole('button', { name: hostCopy.continue }));
+    await screen.findByText(hostCopy.startHeading('hpc.ucsf.edu'));
+    runItYourself();
+    fireEvent.change(screen.getByLabelText(hostCopy.pasted), { target: { value: PASTE } });
+    fireEvent.click(screen.getByRole('button', { name: hostCopy.continue }));
+    await screen.findByText(hostCopy.createHeading('lab-data', 'hpc.ucsf.edu'));
+    // Nothing on Create says a label is coming: none is.
+    expect(screen.queryByTestId('crew-host-create-label')).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: hostCopy.create }));
+    await waitFor(() => expect(view.crew().saveConnection).toHaveBeenCalled());
+    view.update({ connectionId: 'conn-host', connections: [saved], connection: saved });
+    await waitFor(() => expect(view.crew().setJoinStatus).toHaveBeenCalledWith('joined'));
+    view.update({
+      snapshot: fakeSnapshot({
+        workspace: {
+          id: 'workspace-1',
+          host_uid: 1000,
+          mode: 'private',
+          institution_id: null,
+          policy_epoch: 1,
+          host_principal_id: 'p-alice',
+          name: 'lab-data',
+        },
+      }),
+      observedPrivacy: {
+        connectionId: 'conn-host',
+        mode: 'public',
+        institutionId: 'ucsf',
+        policyEpoch: 1,
+      },
+    });
+    // The saved connection names an institution the workspace does not have: the label step is
+    // for exactly this, and sets nothing until the person presses Mark.
+    expect(await screen.findByText(hostCopy.labelTitle('lab-data', 'ucsf'))).toBeInTheDocument();
+    expect(view.crew().request).not.toHaveBeenCalledWith(
+      'policy.set',
+      expect.anything(),
+      expect.anything()
+    );
   });
 
   it('waits for Sign in, and returns to Create when it ends without signing in', async () => {
@@ -695,10 +788,18 @@ describe('HostDialog', () => {
         policyEpoch: 1,
       },
     });
-    expect(await screen.findByText(hostCopy.labelTitle('lab-data', 'ucsf'))).toBeInTheDocument();
+    // Verified: Create writes the label Name chose, and closes.
+    await waitFor(() =>
+      expect(request).toHaveBeenCalledWith(
+        'policy.set',
+        { mode: 'private', institution_id: 'ucsf' },
+        { mutation: true }
+      )
+    );
+    await waitFor(() => expect(view.crew().closeDialog).toHaveBeenCalled());
   });
 
-  it('asks to mark the workspace in the institution’s own name, and says why it asks again (Q4-47)', async () => {
+  it('asks a resumed setup to mark the workspace in the institution’s own name, and says why it asks again (Q4-47)', async () => {
     // The configured provider publishes "UCSF" for `ucsf`.
     mocks.getProviders.mockResolvedValue([
       {
@@ -707,12 +808,18 @@ describe('HostDialog', () => {
         affiliation: { kind: 'institutions', institutions: [{ id: 'ucsf', display_name: 'UCSF' }] },
       },
     ]);
-    const saved = fakeConnection({ id: 'conn-host', status: 'connected' });
-    const view = renderHost({ saveConnection: vi.fn().mockResolvedValue(saved) });
-    await throughStart();
+    // A setup this computer saved on an earlier visit: this dialog never showed it Name, so Create
+    // writes no label, and the label step asks once instead (G4).
+    updateJoinContext('conn-host', { hostSetup: true, workspaceName: 'lab-data' });
+    const saved = fakeConnection({
+      id: 'conn-host',
+      ssh_target: 'alice@hpc.ucsf.edu',
+      status: 'connected',
+    });
+    const view = renderHost({ connectionId: 'conn-host', connection: saved, connections: [saved] });
+    expect(await screen.findByText(hostCopy.stepOf(3, 3, 'Create'))).toBeInTheDocument();
+    expect(screen.queryByTestId('crew-host-create-label')).toBeNull();
     fireEvent.click(screen.getByRole('button', { name: hostCopy.create }));
-    await waitFor(() => expect(view.crew().saveConnection).toHaveBeenCalled());
-    view.update({ connectionId: 'conn-host', connections: [saved], connection: saved });
     await waitFor(() => expect(view.crew().setJoinStatus).toHaveBeenCalledWith('joined'));
     view.update({
       snapshot: fakeSnapshot({
@@ -749,6 +856,19 @@ describe('HostDialog', () => {
       )
     ).toBeInTheDocument();
     expect(document.body.textContent).not.toMatch(/\bucsf\b/);
+    // What Not now leaves open (Q3-45), instead of "Label lab-data as ucsf? This can't be changed
+    // later."
+    expect(screen.getByRole('button', { name: hostCopy.labelLater })).toHaveAccessibleDescription(
+      'Until then, people can chat and share files in lab-data, but agents can’t work there. You can do this later from Get lab-data ready, or from Privacy… in the workspace menu.'
+    );
+    expect(document.body.textContent).not.toMatch(/\bLabel\b|changed later/);
+    // A separate, explicit confirmation: nothing is set until the person presses it.
+    expect(view.crew().mutate).not.toHaveBeenCalledWith('policy.set', expect.anything());
+    expect(view.crew().request).not.toHaveBeenCalledWith(
+      'policy.set',
+      expect.anything(),
+      expect.anything()
+    );
     fireEvent.click(screen.getByRole('button', { name: 'Mark as UCSF' }));
     // The label written is still the canonical ID.
     await waitFor(() =>
@@ -757,6 +877,7 @@ describe('HostDialog', () => {
         institution_id: 'ucsf',
       })
     );
+    await waitFor(() => expect(view.crew().closeDialog).toHaveBeenCalled());
   });
 
   it('closes on an observation error that arose while verifying, for the connection bar to explain', async () => {
@@ -1016,7 +1137,7 @@ describe('HostDialog', () => {
       expect(screen.getByRole('button', { name: hostCopy.create })).toHaveFocus();
     });
 
-    it('creates with the folder setup made, as me, then opens the workspace and saves its context', async () => {
+    it('creates with the folder setup made, as me, then marks the workspace, opens it and saves its context', async () => {
       mocks.startSetup.mockResolvedValue(finished());
       const saved = fakeConnection({
         id: 'prep-1',
@@ -1077,8 +1198,19 @@ describe('HostDialog', () => {
           { mutation: true }
         )
       );
-      // Then the institution, as before: its own explicit confirmation.
-      expect(await screen.findByText(hostCopy.labelTitle('lab-data', 'ucsf'))).toBeInTheDocument();
+      // The institution Name chose went first, as `biorouter crew host` writes it (G4), and
+      // nothing asks for it again: the dialog closes.
+      const order = (method: string) =>
+        vi.mocked(crew.request).mock.calls.findIndex(([called]) => called === method);
+      expect(crew.request).toHaveBeenCalledWith(
+        'policy.set',
+        { mode: 'private', institution_id: 'ucsf' },
+        { mutation: true }
+      );
+      expect(order('policy.set')).toBeLessThan(order('workspace.set_governance'));
+      expect(order('workspace.set_governance')).toBeLessThan(order('workspace.context.set'));
+      await waitFor(() => expect(crew.closeDialog).toHaveBeenCalled());
+      expect(screen.queryByText(hostCopy.labelTitle('lab-data', 'ucsf'))).toBeNull();
       expect(crew.mutate).not.toHaveBeenCalledWith('policy.set', expect.anything());
     });
 

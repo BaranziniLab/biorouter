@@ -18,6 +18,7 @@ import { DeviceCodeInput } from './DeviceCodeInput';
 import { deviceCodeProblem } from './deviceCode';
 import { DialogErrorNote, Field, helpId, useDialogError, useDismissOwnError } from './fields';
 import { groupedFingerprint, useWorkspaceKeyFingerprint } from './fingerprint';
+import { isOpenWorkspace } from './governance';
 import {
   channelsSeenAfterTeamAdd,
   directAddChannels,
@@ -98,6 +99,9 @@ interface Approval {
  *   in no team at all (QA Q2-03) — becomes the primary only once nothing is left to add. A person
  *   adding a device is already a member, so there Done stays primary and no optional channel
  *   starts ticked.
+ * - In an open workspace the broker adds a new member to every team and every unarchived channel
+ *   as they come in (OW-3), so a joiner is offered no team at all: the status says so ("… and is
+ *   added to every team and channel in {workspace}"), and Done is the primary from the start.
  * - Both views show the workspace key's fingerprint the joiner's Crew shows, to read to them if
  *   they ask (QA Q2-04), with nothing to copy: it is compared by eye, never sent. While the code is
  *   awaited, a line under it says when their invitation expires (QA Q4-36).
@@ -174,6 +178,7 @@ export function LetInDialog({ username, onClose }: LetInDialogProps) {
   const replaceCode =
     sentCode !== null && error !== null && isAlreadyApproved(error) ? sentCode : null;
   const directAdd = directAddSupported(crew.capabilities);
+  const openWorkspace = isOpenWorkspace(snapshot);
   const memberId = member?.id ?? null;
   // The teams the person is in right now, once the directory knows them.
   const inTeamsNow =
@@ -191,12 +196,18 @@ export function LetInDialog({ username, onClose }: LetInDialogProps) {
    * room the saved view will take.
    */
   const savedLayout = (memberBefore: boolean, alreadyIn: ReadonlySet<string> | null) => {
-    const teams = (snapshot?.teams ?? []).filter(
-      (team) =>
-        // Adding directly, the team's owner or the host may add; inviting, only its creator can.
-        (team.created_by === dir.me?.id || (directAdd && dir.viewerIsHost)) &&
-        !alreadyIn?.has(team.id)
-    );
+    // A joiner of an open workspace comes in to every team (OW-3): there is none to add them to,
+    // before or after they join.
+    const teams =
+      openWorkspace && !memberBefore
+        ? []
+        : (snapshot?.teams ?? []).filter(
+            (team) =>
+              // Adding directly, the team's owner or the host may add; inviting, only its
+              // creator can.
+              (team.created_by === dir.me?.id || (directAdd && dir.viewerIsHost)) &&
+              !alreadyIn?.has(team.id)
+          );
     // Someone adding a device is a member already: the team offers stay, but are not the point.
     const promote = !memberBefore;
     const toDo = teams.filter((team) => outcomes[team.id] === undefined);
@@ -443,6 +454,7 @@ export function LetInDialog({ username, onClose }: LetInDialogProps) {
                 workspace={workspace}
                 steady={promote}
                 device={approval.memberBefore}
+                open={openWorkspace}
               />
             )
           }
@@ -591,6 +603,7 @@ export function LetInDialog({ username, onClose }: LetInDialogProps) {
             workspace={workspace}
             steady={upcoming.promote}
             device={addingDevice}
+            open={openWorkspace}
             fingerprint={fingerprint}
             offers={upcoming.teams.map((team) => ({
               team,
@@ -643,6 +656,7 @@ export function SavedViewBody({
   workspace,
   steady = false,
   device = false,
+  open = false,
   fingerprint,
   offers,
   hint,
@@ -661,6 +675,8 @@ export function SavedViewBody({
   steady?: boolean;
   /** For `sizer`: another computer of a member, as `SavedCodeStatus` takes it. */
   device?: boolean;
+  /** For `sizer`: an open workspace, as `SavedCodeStatus` takes it. */
+  open?: boolean;
   fingerprint: string | null;
   offers: readonly TeamOffer[];
   hint: string | null;
@@ -683,6 +699,7 @@ export function SavedViewBody({
           workspace={workspace}
           steady={steady}
           device={device}
+          open={open}
           sizer
         />
       ) : (
@@ -769,6 +786,7 @@ export function SavedCodeStatus({
   workspace,
   steady,
   device = false,
+  open = false,
   sizer = false,
 }: {
   joined: boolean;
@@ -777,9 +795,15 @@ export function SavedCodeStatus({
   steady: boolean;
   /** Another computer of a member (SC2-N6): the sentences are about that computer. */
   device?: boolean;
+  /** An open workspace (OW-3): a new member comes in to every team and channel. */
+  open?: boolean;
   sizer?: boolean;
 }) {
-  const approvedText = device ? copy.deviceApproved(first) : copy.approved(first);
+  const approvedText = device
+    ? copy.deviceApproved(first)
+    : open
+      ? copy.approvedOpen(first, workspace)
+      : copy.approved(first);
   const joinedText = device ? copy.deviceJoined(first, workspace) : copy.joined(first, workspace);
   if (sizer) {
     return (

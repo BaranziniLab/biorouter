@@ -30,6 +30,7 @@ import { OPENING_QUIET_MS, OPENING_STALL_MS } from './useOpening';
 import { ChannelHeader } from '../channel/ChannelHeader';
 import { channelHeaderCopy } from '../channel/headerCopy';
 import { Composer } from '../composer/Composer';
+import { sidebarCopy } from '../sidebar/copy';
 
 // The composer's upload hook lists this channel's transfers; nothing here uploads.
 vi.mock('../crewTransfers', () => ({
@@ -133,6 +134,51 @@ describe('the channel’s start', () => {
     ).toBeInTheDocument();
     // The sidebar already says how other channels appear; the intro does not repeat it.
     expect(screen.queryByText(/Only channels you’ve been added to/)).toBeNull();
+  });
+
+  it('points a member of an open workspace to Browse channels, not to the host (OW-2, OW-3)', () => {
+    // A member came in to every team and channel, and joins the rest from the workspace menu:
+    // nobody has to add them.
+    const member = makeController({
+      snapshot: snapshotFor({
+        workspace: {
+          id: ID.workspace,
+          host_uid: 1000,
+          mode: 'private',
+          policy_epoch: 1,
+          governance: 'open',
+        },
+        actor: { id: ID.bob, uid: 1001, username: 'bob', nickname: 'Bob Lee' },
+      }),
+    });
+    const view = renderWithController(<Timeline />, member);
+    expect(
+      screen.getByText('To join other channels, choose Browse channels… in the workspace menu.', {
+        exact: true,
+      })
+    ).toBeInTheDocument();
+    // The words of the menu item it names.
+    expect(timelineCopy.introBrowseChannels).toContain(sidebarCopy.workspaceMenu.browse);
+    expect(screen.queryByText(/add you to other channels/)).toBeNull();
+    view.unmount();
+
+    // The host of an open workspace is told nothing, as in a managed one.
+    renderWithController(
+      <Timeline />,
+      makeController({
+        snapshot: snapshotFor({
+          workspace: {
+            id: ID.workspace,
+            host_uid: 1000,
+            mode: 'private',
+            policy_epoch: 1,
+            governance: 'open',
+          },
+        }),
+      })
+    );
+    expect(screen.getByText('Welcome to #general')).toBeInTheDocument();
+    expect(screen.queryByText(timelineCopy.introBrowseChannels)).toBeNull();
   });
 
   it('names a host who has not chosen a name by the handle alone (Q4-21)', () => {

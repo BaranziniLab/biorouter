@@ -38,6 +38,12 @@ export const timelineCopy = {
    */
   introOtherChannels: (host: string | null) =>
     host ? `Ask ${host} to add you to other channels.` : '',
+  /**
+   * The same, in an open workspace (OW-2, OW-3): a member joined every team and channel when they
+   * came in, joins the rest themselves and needs nobody to add them, so this names the workspace
+   * menu's own item, `Browse channels…` (`sidebarCopy.workspaceMenu.browse`).
+   */
+  introBrowseChannels: 'To join other channels, choose Browse channels… in the workspace menu.',
 
   today: 'Today',
   yesterday: 'Yesterday',

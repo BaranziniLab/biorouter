@@ -191,7 +191,7 @@ If the dialog says "No one else is in {team} yet.", add people to the team first
 
 ### When someone adds you
 
-The channel appears in your sidebar, and a notice such as "Alice Chen (@alice) added you to #methods" names who added you. If you were elsewhere in Biorouter at the time, the notice appears when you next open Crew, as long as Biorouter stayed open. When you are added to a team, the notice names the team, such as "Alice Chen (@alice) added you to Analysis Lab". You can read everything already posted there. The channel opens with "Welcome to #{channel}" and "Ask {host} to add you to other channels." The host can add you only to channels the host is in. For any other channel, ask its owner.
+The channel appears in your sidebar, and a notice such as "Alice Chen (@alice) added you to #methods" names who added you. If you were elsewhere in Biorouter at the time, the notice appears when you next open Crew, as long as Biorouter stayed open. When you are added to a team, the notice names the team, such as "Alice Chen (@alice) added you to Analysis Lab". You can read everything already posted there. The channel opens with "Welcome to #{channel}". In a managed workspace it adds "Ask {host} to add you to other channels." The host can add you only to channels the host is in. For any other channel, ask its owner. In an open workspace it adds "To join other channels, choose Browse channels… in the workspace menu." instead, because you join them yourself (see [Browse and join channels](#browse-and-join-channels)).
 
 ### Remove someone from a channel
 
