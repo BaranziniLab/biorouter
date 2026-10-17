@@ -157,6 +157,62 @@ describe('file-link reliability: provenance boundaries', () => {
     expect(filePathsBeforeMessage([request, response], 2, 'local', '/work')).toEqual([]);
   });
 
+  // A script's record of its calls is proof a write ran, where its source is
+  // not: only a call recorded `ok` makes a file known.
+  it.each([
+    ['ok', ['/elsewhere/report.md']],
+    ['error', []],
+  ])('promotes a script call recorded %s by its record alone', (status, expected) => {
+    const request: Message = {
+      id: 'request',
+      role: 'assistant',
+      created: 1,
+      metadata: { userVisible: true, agentVisible: true },
+      content: [
+        {
+          type: 'toolRequest',
+          id: 'script',
+          toolCall: {
+            status: 'success',
+            value: {
+              name: 'code_execution__execute_code',
+              arguments: { code: 'text_editor(opts);' },
+            },
+          },
+        },
+      ],
+    };
+    const response: Message = {
+      id: 'response',
+      role: 'tool',
+      created: 2,
+      metadata: { userVisible: false, agentVisible: true },
+      content: [
+        {
+          type: 'toolResponse',
+          id: 'script',
+          toolResult: {
+            status: 'success',
+            value: {
+              isError: false,
+              content: [],
+              _meta: {
+                'biorouter/tool-calls': [
+                  {
+                    tool: 'developer__text_editor',
+                    args: JSON.stringify({ command: 'write', path: '/elsewhere/report.md' }),
+                    status,
+                  },
+                ],
+              },
+            },
+          },
+        },
+      ],
+    };
+    expect(filePathsBeforeMessage([request, response], 2, 'local', '/work')).toEqual(expected);
+  });
+
   // The index is built for EVERY message of both transcript renderers, so it is
   // the first thing a shared transcript from a remote `base_url` reaches — and
   // `message.metadata.provenance` was read there without a guard. Measured in a

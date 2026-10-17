@@ -2,6 +2,7 @@ import type { Message } from '../../api';
 import { getTextContent } from '../../types/message';
 import {
   baseToolName,
+  executedCallFiles,
   fileArtifactPathsFromToolCall,
   looksLikePreviewableFile,
 } from './artifactUtils';
@@ -108,8 +109,9 @@ function buildIndex(
       const call = calls.get(content.id);
       if (!call) continue;
       calls.delete(content.id);
+      const name = baseToolName(call.name);
       // Wrapper success does not prove a statically discovered inner write ran.
-      if (['shell', 'bash', 'execute_code', 'run_code'].includes(baseToolName(call.name))) continue;
+      if (name === 'shell' || name === 'bash') continue;
       const result = content.toolResult as {
         status?: string;
         value?: { isError?: boolean; is_error?: boolean };
@@ -121,6 +123,11 @@ function buildIndex(
         result.value.is_error
       )
         continue;
+      // A script's record of the calls it made does: a write recorded `ok` ran.
+      if (name === 'execute_code' || name === 'run_code') {
+        for (const path of executedCallFiles(result, workingDir)?.written ?? []) add(path, index);
+        continue;
+      }
       for (const path of fileArtifactPathsFromToolCall(call.name, call.arguments, workingDir)) {
         add(path, index);
       }

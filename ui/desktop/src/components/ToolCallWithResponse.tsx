@@ -39,6 +39,7 @@ import {
   inSentence,
   sentenceStart,
   spellServerName,
+  stepActionPhrase,
   toolActionPhrase,
   toolCallNameWords,
   toolNamePhrase,
@@ -631,38 +632,48 @@ const lineValue = (value: unknown): string => {
     .trimEnd()}…`;
 };
 
+/** A step whose description says nothing ("Step 1 of 3", "Update #2") is named by its tool. */
+const isPlaceholderStep = (text: string): boolean =>
+  text === 'No description was provided.' ||
+  /^(?:tool(?: call)?|step|update|updating|task|operation)(?:\s+(?:tool(?: call)?|step|update|updating|task|operation))?\s*(?:(?:number|no\.?)\s*)?#?\s*\d+(?:\s+of\s+\d+)?[.!]?$/i.test(
+    text
+  );
+
 const toolGraphNodeLabel = ({ tool, description }: ToolGraphNode): string => {
   const text = description.replace(/\s+/g, ' ').trim();
-  const placeholder =
-    text === 'No description was provided.' ||
-    /^(?:tool(?: call)?|step|update|updating|task|operation)(?:\s+(?:tool(?: call)?|step|update|updating|task|operation))?\s*(?:(?:number|no\.?)\s*)?#?\s*\d+(?:\s+of\s+\d+)?[.!]?$/i.test(
-      text
-    );
-  return placeholder ? sentenceStart(toolNamePhrase(tool)) : text;
+  return isPlaceholderStep(text) ? sentenceStart(toolNamePhrase(tool)) : text;
 };
 
-/** The verb a script's row carries, so the state reads "Ran …", "Failed to run …". */
-const RUN_SCRIPT = 'Running ';
-
 /**
- * A coordinated script as the work its plan names, its first and last steps
- * in the model's own words after the verb: "Running list KBs → active KB",
- * "Ran …" once done (V2-R2-4). Without the verb the line was the bare
- * description, lowercase, the one row in a turn with no state on it.
+ * A coordinated script as the work its plan names: its first step, and its
+ * last after an arrow, in the model's own words ("Listing KBs → active KB").
+ * The first step leads with a verb the row's state conjugates, so a finished
+ * script reads "Listed KBs → active KB" and a failed one "Failed to list KBs →
+ * active KB", the way every other row reads (V2-R2-4). Models write steps as
+ * imperatives, so the step's own verb is that verb ({@link stepActionPhrase}):
+ * a "Running " put in front of one read "Ran run ls -la". A step named only by
+ * its tool runs that tool ("Running Agent Drafter build app").
  */
 const summarizeToolGraph = (graph: ToolGraphNode[]): string => {
-  // Each step follows the verb, so it opens in lowercase unless it starts with a name.
-  const descriptions = graph.map((node) => inSentence(toolGraphNodeLabel(node)));
-  const actions = [...new Set(descriptions)];
+  const steps = graph.map((node) => {
+    const text = node.description.replace(/\s+/g, ' ').trim();
+    return isPlaceholderStep(text)
+      ? {
+          lead: toolActionPhrase(toolNameWords(node.tool)),
+          tail: inSentence(sentenceStart(toolNamePhrase(node.tool))),
+        }
+      : { lead: stepActionPhrase(text), tail: inSentence(text) };
+  });
+  // The same step written twice names one action.
+  const actions = [...new Map(steps.map((step) => [step.tail, step])).values()];
   const shorten = (text: string, limit: number): string => {
     const characters = Array.from(text);
     return characters.length <= limit ? text : `${characters.slice(0, limit - 1).join('')}…`;
   };
-  const planLimit = MAX_SUMMARY_VALUE_LENGTH - RUN_SCRIPT.length;
-  if (actions.length === 1) return `${RUN_SCRIPT}${shorten(actions[0], planLimit)}`;
-  const actionLimit = Math.floor((planLimit - 3) / 2);
-  return `${RUN_SCRIPT}${shorten(actions[0], actionLimit)} → ${shorten(
-    actions[actions.length - 1],
+  if (actions.length === 1) return shorten(actions[0].lead, MAX_SUMMARY_VALUE_LENGTH);
+  const actionLimit = Math.floor((MAX_SUMMARY_VALUE_LENGTH - 3) / 2);
+  return `${shorten(actions[0].lead, actionLimit)} → ${shorten(
+    actions[actions.length - 1].tail,
     actionLimit
   )}`;
 };

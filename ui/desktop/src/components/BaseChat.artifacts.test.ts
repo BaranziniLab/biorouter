@@ -86,6 +86,52 @@ const textToolResponse = (id: string, text: string, isError = false): Message =>
 });
 
 describe('collectArtifactsFromMessages', () => {
+  // Measured with GPT-5.5: a Code Execution script built its command in a
+  // variable, the file was written, and the panel never offered it. The
+  // result records the call with the arguments it really ran with.
+  it('offers a file a script call wrote, read off the result’s call records', () => {
+    const scriptResponse = (calls: unknown[], isError = false): Message => ({
+      id: crypto.randomUUID(),
+      role: 'tool',
+      created: 2,
+      metadata: { userVisible: false, agentVisible: true },
+      content: [
+        {
+          type: 'toolResponse',
+          id: 'script',
+          toolResult: {
+            status: 'success',
+            value: {
+              isError,
+              content: [{ type: 'text', text: 'done' }],
+              _meta: { 'biorouter/tool-calls': calls },
+            },
+          },
+        },
+      ],
+    });
+    const request = writeRequest('script', 'code_execution__execute_code', {
+      code: 'const cmd = makeCommand(); shell({ command: cmd });',
+      tool_graph: [{ tool: 'developer/shell', description: 'write the notes' }],
+    });
+    const call = (status: string) => ({
+      tool: 'developer__shell',
+      args: JSON.stringify({ command: "printf '# Notes\\n' > /work/smoke-notes.md" }),
+      status,
+    });
+
+    expect(collectArtifactsFromMessages([request, scriptResponse([call('ok')])], '/work')).toEqual([
+      { kind: 'file', path: '/work/smoke-notes.md', title: 'smoke-notes.md' },
+    ]);
+    // A call that failed, or a script that failed, offers nothing.
+    expect(
+      collectArtifactsFromMessages([request, scriptResponse([call('error')])], '/work')
+    ).toEqual([]);
+    expect(
+      collectArtifactsFromMessages([request, scriptResponse([call('ok')], true)], '/work')
+    ).toEqual([]);
+  });
+
   it('file-link reliability: does not substitute the launch cwd for an unloaded session', () => {
     const source = readFileSync(`${process.cwd()}/src/components/BaseChat.tsx`, 'utf8');
     expect(source).not.toMatch(

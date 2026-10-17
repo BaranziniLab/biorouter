@@ -784,9 +784,15 @@ export function collectArtifactsFromMessages(
       if (!call) continue;
 
       // A `ui://` resource carries its own preview; a written file only leaves
-      // its path behind, in the arguments of the call that created it.
+      // its path behind, in the arguments of the call that created it (for a
+      // Code Execution script, in the result's record of the calls it made).
       if (isSuccessfulToolResult(content.toolResult)) {
-        for (const path of fileArtifactPathsFromToolCall(call.name, call.arguments, workingDir)) {
+        for (const path of fileArtifactPathsFromToolCall(
+          call.name,
+          call.arguments,
+          workingDir,
+          content.toolResult
+        )) {
           if (confirmWritten(path)) continue;
           addArtifact({ kind: 'file', title: basenameFromPath(path), path });
         }
