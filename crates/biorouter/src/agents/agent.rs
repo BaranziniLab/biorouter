@@ -11480,9 +11480,9 @@ impl Agent {
                 let mut signed_replay_invalidated_this_iteration = false;
                 let mut did_recovery_compact_this_iteration = false;
                 let mut did_retry_reset_this_iteration = false;
-                // BR-66: set when a recoverable provider error was absorbed and a
-                // hint pushed into `messages_to_add`; the turn continues instead of
-                // ending on the error.
+                // BR-66: set when a recoverable provider error was absorbed (with
+                // a hint in `messages_to_add` when one is needed); the turn
+                // continues instead of ending on the error.
                 let mut did_recover_provider_error_this_iteration = false;
                 // Some streamed APIs cannot transport a steer inside an existing
                 // request but can cancel that request on stream drop. In that case
@@ -12559,13 +12559,18 @@ impl Agent {
                             // context; a fatal one (auth, rate limit, unsupported) or a
                             // spent retry budget still stops, with the conversation
                             // preserved so the user can just say "continue".
-                            match mistakes.observe_provider_error(&mistake_config, provider_err) {
+                            let retry_point = crate::agents::mistakes::retry_point(
+                                conversation_with_moim.messages(),
+                                messages_to_add.messages(),
+                            );
+                            match mistakes.observe_provider_error(&mistake_config, provider_err, retry_point) {
                                 crate::agents::mistakes::ProviderErrorAction::Recover { notice, attempt, limit } => {
                                     warn!(
                                         error_type = provider_err.telemetry_type(),
                                         attempt,
                                         limit,
-                                        "Provider call failed; retrying with a hint"
+                                        ?retry_point,
+                                        "Provider call failed; retrying"
                                     );
                                     // BR-67: retries are a loop-safety decision too —
                                     // the error text itself never enters the trace.
@@ -12585,14 +12590,19 @@ impl Agent {
                                         provider_retry_notice(provider_err, attempt, limit),
                                     ));
                                     // Model-visible only: the hint is loop plumbing, and
-                                    // the user already has the notification above.
-                                    messages_to_add.push(
-                                        model_only_user_text_with_new_id(
-                                            crate::tool_inspection::frame_loop_warnings(
-                                                std::slice::from_ref(&notice),
-                                            )
-                                        ),
-                                    );
+                                    // the user already has the notification above. None
+                                    // when nothing reached the conversation: the retry is
+                                    // then the same request, so the model answers what
+                                    // it was asked rather than the note (`RetryPoint`).
+                                    if let Some(notice) = notice {
+                                        messages_to_add.push(
+                                            model_only_user_text_with_new_id(
+                                                crate::tool_inspection::frame_loop_warnings(
+                                                    std::slice::from_ref(&notice),
+                                                )
+                                            ),
+                                        );
+                                    }
                                     did_recover_provider_error_this_iteration = true;
                                     break;
                                 }
@@ -12788,7 +12798,7 @@ impl Agent {
                         } else if did_recovery_compact_this_iteration {
                         // Avoid setting exit_chat; continue from last user message in the conversation
                         } else if did_recover_provider_error_this_iteration {
-                        // BR-66: the provider call failed recoverably and the hint is
+                        // BR-66: the provider call failed recoverably and any hint is
                         // already in `messages_to_add`. No tool ran and the model said
                         // nothing, so this is not a finished turn — take the retry
                         // rather than ending the turn (or handing it to the retry
