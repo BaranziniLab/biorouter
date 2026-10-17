@@ -242,6 +242,34 @@ pub struct Run {
     pub remote_root: Option<String>,
     #[serde(default)]
     pub remote_execution: bool,
+    /// What the run's agent may do on the server: the confined work folder, or full access as
+    /// the owner's own account (design OW-6). Serialized only when full, so a journal written
+    /// before this field existed replays and re-serializes byte for byte, and an older broker
+    /// ignores it.
+    #[serde(default, skip_serializing_if = "RemoteAccess::is_folder")]
+    pub remote_access: RemoteAccess,
+}
+/// A run's level of agent access on the server (design OW-6). "Off" is a run with no
+/// `remote_root`, not a level. `Folder` is the confined work folder Crew always had; `Full` runs
+/// commands and file operations as the owner's own account through the owner's own bridge.
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum RemoteAccess {
+    #[default]
+    Folder,
+    Full,
+}
+impl RemoteAccess {
+    pub fn is_folder(&self) -> bool {
+        *self == Self::Folder
+    }
+    /// The wire spelling, as `run.remote_scope` reports it.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Folder => "folder",
+            Self::Full => "full",
+        }
+    }
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Blob {
@@ -418,4 +446,43 @@ pub use broker::{
 pub use broker::{JournalCall, Quotas};
 
 #[cfg(unix)]
+pub mod probe;
+#[cfg(unix)]
 pub mod remote;
+#[cfg(unix)]
+pub mod remote_full;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn run_json() -> Value {
+        serde_json::json!({
+            "id": "run", "owner_id": "owner", "channel_id": "channel", "source_channels": ["channel"],
+            "provider_policy_id": "private", "public_provider": false, "personal_mode": "private",
+            "policy_epoch": 1, "expires_at": 10, "revoked": false, "remote_root": "/home/bob/work",
+            "remote_execution": true
+        })
+    }
+
+    /// A run journaled before `remote_access` existed reads as a folder run, and a folder run
+    /// serializes without the field, so old journals replay and re-serialize byte for byte.
+    #[test]
+    fn a_run_without_remote_access_is_a_folder_run_and_stays_unchanged() {
+        let run: Run = serde_json::from_value(run_json()).unwrap();
+        assert_eq!(run.remote_access, RemoteAccess::Folder);
+        let written = serde_json::to_value(&run).unwrap();
+        assert!(written.get("remote_access").is_none(), "{written}");
+    }
+
+    #[test]
+    fn a_full_access_run_round_trips() {
+        let mut value = run_json();
+        value["remote_access"] = serde_json::json!("full");
+        let run: Run = serde_json::from_value(value).unwrap();
+        assert_eq!(run.remote_access, RemoteAccess::Full);
+        assert_eq!(serde_json::to_value(&run).unwrap()["remote_access"], "full");
+        assert_eq!(RemoteAccess::Full.as_str(), "full");
+        assert_eq!(RemoteAccess::Folder.as_str(), "folder");
+    }
+}
