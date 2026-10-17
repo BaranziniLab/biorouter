@@ -166,6 +166,71 @@ fn in_stream_context_overflow(error: &Value) -> Option<ProviderError> {
     ))
 }
 
+/// What the user is told for an in-stream error frame Biorouter does not
+/// recognise. The provider's own text is withheld, because it can echo the
+/// prompt.
+const UNRECOGNISED_IN_STREAM_ERROR: &str =
+    "Provider reported an error while streaming. Contact your provider administrator.";
+
+/// llama-server's decode failures that stop the requests it was running,
+/// reported as the server errors they are. The same failures arriving as an
+/// HTTP 500 were already `ServerError`s, retried as transient; inside a stream
+/// that had started they fell through to [`UNRECOGNISED_IN_STREAM_ERROR`],
+/// which is fatal and told the user "Retrying will not help" (#401).
+///
+/// Matched exactly (code 500, type `server_error`, and the server's own fixed
+/// sentence), so the text the user sees is always Biorouter's.
+fn in_stream_llama_server_failure(error: &Value) -> Option<ProviderError> {
+    if error.get("code").and_then(Value::as_u64) != Some(500)
+        || error.get("type").and_then(Value::as_str) != Some("server_error")
+    {
+        return None;
+    }
+    match error.get("message").and_then(Value::as_str)? {
+        "Compute error." => Some(ProviderError::ServerError("Compute error.".into())),
+        crate::providers::utils::LLAMA_SERVER_CACHE_FULL => Some(ProviderError::ServerError(
+            crate::providers::utils::LLAMA_SERVER_CACHE_FULL_EXPLAINED.into(),
+        )),
+        _ => None,
+    }
+}
+
+/// An error object's `code` or `type`, when it is a short plain identifier
+/// (`500`, `server_error`). Anything else is provider prose and is not logged.
+fn loggable_error_label(value: Option<&Value>) -> Option<String> {
+    match value? {
+        Value::Number(number) => Some(number.to_string()),
+        Value::String(text)
+            if !text.is_empty()
+                && text.len() <= 64
+                && text
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_') =>
+        {
+            Some(text.clone())
+        }
+        _ => None,
+    }
+}
+
+/// One warning per in-stream error frame, as `log_provider_failure` gives a
+/// failed HTTP status: the frame's code and type when they are plain
+/// identifiers, and the class Biorouter reported. Never the message. Until
+/// this, an unrecognised frame left nothing in the daemon log to say which
+/// error the server had sent.
+fn log_in_stream_error(error: &Value, mapped: &ProviderError) {
+    tracing::warn!(
+        code = loggable_error_label(error.get("code"))
+            .as_deref()
+            .unwrap_or("-"),
+        provider_type = loggable_error_label(error.get("type"))
+            .as_deref()
+            .unwrap_or("-"),
+        error_type = mapped.telemetry_type(),
+        "Provider reported an error inside the stream"
+    );
+}
+
 fn parse_streaming_chunk(line: &str) -> anyhow::Result<StreamingChunk> {
     let mut value: Value = serde_json::from_str(line).map_err(|error| {
         anyhow!(
@@ -175,20 +240,11 @@ fn parse_streaming_chunk(line: &str) -> anyhow::Result<StreamingChunk> {
         )
     })?;
     if let Some(error) = value.get("error").filter(|error| !error.is_null()) {
-        if let Some(overflow) = in_stream_context_overflow(error) {
-            return Err(overflow.into());
-        }
-        if error.get("code").and_then(Value::as_u64) == Some(500)
-            && error.get("type").and_then(Value::as_str) == Some("server_error")
-            && error.get("message").and_then(Value::as_str) == Some("Compute error.")
-        {
-            return Err(ProviderError::ServerError("Compute error.".into()).into());
-        }
-        return Err(ProviderError::RequestFailed(
-            "Provider reported an error while streaming. Contact your provider administrator."
-                .into(),
-        )
-        .into());
+        let mapped = in_stream_context_overflow(error)
+            .or_else(|| in_stream_llama_server_failure(error))
+            .unwrap_or_else(|| ProviderError::RequestFailed(UNRECOGNISED_IN_STREAM_ERROR.into()));
+        log_in_stream_error(error, &mapped);
+        return Err(mapped.into());
     }
     if let Some(choices) = value.get_mut("choices").and_then(Value::as_array_mut) {
         for choice in choices {
@@ -1976,12 +2032,13 @@ data: [DONE]
             Some((23101, 8192))
         );
 
-        // The KV-collision 500 stays the generic in-stream error.
+        // The KV-collision 500 is not this chat's overflow: compacting cannot
+        // fix it, so it is a server error and never a context-length one.
         let lines = r#"data: {"error":{"code":500,"message":"Context size has been exceeded.","type":"server_error"}}"#;
         let error = decode_lines(lines, false).await.unwrap_err();
         assert!(matches!(
             error.downcast_ref::<ProviderError>(),
-            Some(ProviderError::RequestFailed(_))
+            Some(ProviderError::ServerError(_))
         ));
     }
 
@@ -1999,7 +2056,7 @@ data: [DONE]
             json!({"code": 400, "type": "server_error", "message": "Compute error."}),
             json!({"code": 500, "type": "invalid_request_error", "message": "Compute error."}),
             json!({"code": 500, "type": "server_error", "message": "Compute error. SECRET_PROVIDER_PAYLOAD"}),
-            json!({"code": 500, "type": "server_error", "message": "Context size has been exceeded."}),
+            json!({"code": 500, "type": "server_error", "message": "Invalid input batch."}),
             json!({"message": "SECRET_PROVIDER_PAYLOAD"}),
         ] {
             let lines = format!("data: {}", json!({"error": payload}));
@@ -2011,6 +2068,94 @@ data: [DONE]
             ));
             assert!(!error.to_string().contains("SECRET_PROVIDER_PAYLOAD"));
         }
+    }
+
+    /// #401. The whole response body llama-server b9611 sent a v1.92.1 chat
+    /// turn that overlapped two other requests with different prompts, as
+    /// recorded between the daemon and the server. It used to read "Provider
+    /// reported an error while streaming. Contact your provider administrator."
+    /// followed by "Retrying will not help", while the same failure arriving as
+    /// an HTTP 500 was retried.
+    #[tokio::test]
+    async fn in_stream_shared_cache_overflow_is_a_retryable_server_error() {
+        let recorded = r#"data: {"error":{"code":500,"message":"Context size has been exceeded.","type":"server_error"}}"#;
+        let error = decode_lines(recorded, false).await.unwrap_err();
+        let error = error
+            .downcast_ref::<ProviderError>()
+            .expect("a provider error");
+        assert!(matches!(
+            error,
+            ProviderError::ServerError(message)
+                if message == crate::providers::utils::LLAMA_SERVER_CACHE_FULL_EXPLAINED
+        ));
+        assert!(crate::agents::mistakes::is_recoverable(error));
+        assert!(
+            !crate::providers::llamacpp_sidecar::is_compute_error(&error.to_string()),
+            "a full cache is not a broken GPU backend, so the server must be kept"
+        );
+
+        // Text is shown before the server gives up: the reply up to then
+        // still arrives, then the error.
+        let partial = concat!(
+            r#"data: {"choices":[{"finish_reason":null,"index":0,"delta":{"role":"assistant","content":"No task"}}],"created":1,"id":"chatcmpl-1","model":"gemma4","object":"chat.completion.chunk"}"#,
+            "\n",
+            r#"data: {"error":{"code":500,"message":"Context size has been exceeded.","type":"server_error"}}"#,
+        );
+        let owned: Vec<anyhow::Result<String>> =
+            partial.lines().map(|l| Ok(l.to_string())).collect();
+        let stream = response_to_streaming_message(tokio_stream::iter(owned));
+        pin!(stream);
+        let (message, _, _) = stream.next().await.unwrap().unwrap();
+        assert_eq!(message.unwrap().as_concat_text(), "No task");
+        let error = stream.next().await.unwrap().unwrap_err();
+        assert!(matches!(
+            error.downcast_ref::<ProviderError>(),
+            Some(ProviderError::ServerError(_))
+        ));
+    }
+
+    #[tokio::test]
+    async fn in_stream_shared_cache_overflow_needs_the_exact_server_frame() {
+        for payload in [
+            json!({"code": 400, "type": "server_error", "message": "Context size has been exceeded."}),
+            json!({"code": 500, "type": "invalid_request_error", "message": "Context size has been exceeded."}),
+            json!({"code": 500, "type": "server_error", "message": "Context size has been exceeded. SECRET_PROVIDER_PAYLOAD"}),
+            json!({"message": "Context size has been exceeded."}),
+        ] {
+            let lines = format!("data: {}", json!({"error": payload}));
+            let error = decode_lines(&lines, false).await.unwrap_err();
+            assert!(
+                matches!(
+                    error.downcast_ref::<ProviderError>(),
+                    Some(ProviderError::RequestFailed(message))
+                        if message == UNRECOGNISED_IN_STREAM_ERROR
+                ),
+                "{payload}"
+            );
+            assert!(!error.to_string().contains("SECRET_PROVIDER_PAYLOAD"));
+        }
+    }
+
+    #[test]
+    fn only_plain_identifiers_from_an_error_frame_are_logged() {
+        assert_eq!(
+            loggable_error_label(Some(&json!(500))).as_deref(),
+            Some("500")
+        );
+        assert_eq!(
+            loggable_error_label(Some(&json!("server_error"))).as_deref(),
+            Some("server_error")
+        );
+        for prose in [
+            json!("the user said: SECRET"),
+            json!(""),
+            json!("x".repeat(65)),
+            json!({"nested": "SECRET"}),
+            json!(["SECRET"]),
+        ] {
+            assert_eq!(loggable_error_label(Some(&prose)), None, "{prose}");
+        }
+        assert_eq!(loggable_error_label(None), None);
     }
 
     #[test]

@@ -2217,6 +2217,30 @@ mod tests {
             Some(key.as_str())
         );
 
+        // #401: requests that overflowed a shared cache together are retried,
+        // and the server is kept, since nothing is wrong with it once the
+        // other requests finish.
+        let (_server, decoded) = http_error_stream(json!({
+            "code": 500,
+            "type": "server_error",
+            "message": "Context size has been exceeded."
+        }))
+        .await;
+        let mut stream = hold_lease_while_generating_with_recovery(
+            decoded,
+            Some(port),
+            |error, port| async move { after_failure(error, Some(*port)).await },
+        );
+        assert!(matches!(
+            stream.next().await.unwrap(),
+            Err(ProviderError::ServerError(message))
+                if message == crate::providers::utils::LLAMA_SERVER_CACHE_FULL_EXPLAINED
+        ));
+        assert_eq!(
+            llamacpp_sidecar::current_api_key().as_deref(),
+            Some(key.as_str())
+        );
+
         let (_server, decoded) = http_error_stream(json!({
             "code": 500,
             "type": "server_error",

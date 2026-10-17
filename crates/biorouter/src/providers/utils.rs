@@ -258,6 +258,32 @@ fn llama_server_context_overflow(payload: &Value) -> Option<String> {
     })
 }
 
+/// llama-server's sentence when a batch found no free cells in its KV cache.
+///
+/// With llama-server's default slots (`--parallel` auto: four slots on ONE
+/// unified cache) requests with different prompts compete for that cache; an
+/// explicit `--parallel N` splits the window instead and fails a large prompt
+/// up front with `exceed_context_size_error`. A reply that reaches the end of
+/// the window on its own stops with `finish_reason: "length"` (measured on
+/// b9611 with one request at the window's edge). So this sentence means
+/// several requests were running and did not fit together, and llama-server
+/// then stops EVERY request it was running, not only the newest. With the
+/// default slots and a 64k window, three overlapping ~31k-token Biorouter
+/// requests all failed this way on b9611 and on b11429, some partway through
+/// their answers (#401); with `--parallel 1` the same three queued and all
+/// succeeded. It is a fixed string in the server's source, so matching it
+/// exactly echoes nothing the server wrote.
+pub(crate) const LLAMA_SERVER_CACHE_FULL: &str = "Context size has been exceeded.";
+
+/// What Biorouter reports for [`LLAMA_SERVER_CACHE_FULL`], whether it arrives
+/// as an HTTP 500 or inside a stream that had already started.
+pub(crate) const LLAMA_SERVER_CACHE_FULL_EXPLAINED: &str =
+    "The model server ran out of room in its shared context cache while it was running \
+     several requests at once, so it stopped them (llama.cpp reports this as \"Context size \
+     has been exceeded.\"). Retrying usually works once the other requests finish. A server \
+     that runs one request at a time cannot hit this: start it with --parallel 1, as \
+     Biorouter's own Llama Server does.";
+
 fn format_server_error_message(status_code: StatusCode, payload: Option<&Value>) -> String {
     match payload {
         Some(Value::Null) | None => format!(
@@ -320,6 +346,9 @@ pub fn map_http_error_to_provider_error(
             details: extract_message(),
             retry_delay: None,
         },
+        _ if status.is_server_error() && message == Some(LLAMA_SERVER_CACHE_FULL) => {
+            ProviderError::ServerError(LLAMA_SERVER_CACHE_FULL_EXPLAINED.to_string())
+        }
         _ if status.is_server_error() => {
             ProviderError::ServerError(format!("Server error ({}): {}", status, extract_message()))
         }
@@ -1471,7 +1500,8 @@ mod tests {
 
     /// LC-2's failure is NOT an overflow of this chat: two requests collided in
     /// a KV cache shared between parallel slots. Compacting cannot fix it, so it
-    /// must stay a server error and never start the compaction ladder.
+    /// must stay a server error and never start the compaction ladder. It reads
+    /// the same as the in-stream form (#401), in Biorouter's words.
     #[test]
     fn llama_server_kv_collision_500_is_not_a_context_length_error() {
         let error = map_http_error_to_provider_error(
@@ -1482,7 +1512,24 @@ mod tests {
                 "type": "server_error"
             }})),
         );
-        assert!(matches!(error, ProviderError::ServerError(_)), "{error:?}");
+        assert_eq!(
+            error,
+            ProviderError::ServerError(LLAMA_SERVER_CACHE_FULL_EXPLAINED.to_string())
+        );
+
+        // Any other 500 keeps the server's own text, as before.
+        let error = map_http_error_to_provider_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Some(json!({"error": {
+                "code": 500,
+                "message": "Context size has been exceeded. Try again later.",
+                "type": "server_error"
+            }})),
+        );
+        assert!(
+            matches!(&error, ProviderError::ServerError(message) if message.starts_with("Server error (500")),
+            "{error:?}"
+        );
     }
 
     /// Ollama's cloud models, by the tag Ollama gives them, and the local

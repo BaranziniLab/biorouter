@@ -576,6 +576,16 @@ prompt both catalog models made structured tool calls reliably.
   second request waits in-process instead of on a silent socket that the idle
   timeout would cut, and a model switch waits for in-flight leases. A streamed
   reply releases its lease when generation ends, never across a tool approval.
+  ⚠ The collision needs llama-server's DEFAULT slots (`--parallel` auto, one
+  unified cache); an explicit `--parallel N` splits the window N ways instead
+  (b11429: `n_ctx_slot = 16384` at 64k/4), which fails a large prompt up front
+  as `exceed_context_size_error`. So it now reaches Biorouter from an
+  `LLAMACPP_EXTERNAL_HOST` server started with defaults, and once a stream has
+  started it arrives as an in-stream `{"error":…}` frame, not a 500. Both forms
+  map to the same retryable `ServerError` (`LLAMA_SERVER_CACHE_FULL` in
+  `providers/utils.rs`); the in-stream one used to read "Provider reported an
+  error while streaming" plus "Retrying will not help", which is how v1.92.1's
+  default-slot sidecar showed it (#401, measured on b9611 and b11429).
 - **Security:** a fresh random API key per launch, written 0600 to
   `<data>/llamacpp/run/<pid>.key` and passed with `--api-key-file` after the
   extra args; the provider sends it as Bearer and `/health` stays public (the
