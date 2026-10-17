@@ -241,6 +241,16 @@ fn workspace_full(code: &str, message: &str) -> Option<Full> {
 const IDENTITY_CONFLICT_UNNAMED: &str =
     "Another active member already has this username. Remove the old member first.";
 
+/// OW-5: every request to a deleted workspace but `hello` is refused `workspace_deleted`, and
+/// the one thing left to do is on this computer.
+const WORKSPACE_DELETED: &str = "The host deleted this workspace on the server. Remove it from this computer with biorouter crew connections remove.";
+/// OW-8: a context change made against a revision someone else has since replaced.
+const REVISION_CONFLICT: &str = "Someone changed the workspace context since you read it, so yours wasn't saved. Read it again with biorouter crew workspace context show, then make your change.";
+/// OW-4: a deletion whose `expected_name` no longer matches, when the broker's text is not a
+/// sentence of its own.
+const NAME_CHANGED: &str =
+    "Its name changed since you chose it, so nothing was deleted. Check the name, then try again.";
+
 fn identity_conflict(username: Option<&str>) -> String {
     match username {
         Some(name) => {
@@ -278,13 +288,15 @@ const SENTENCE_CODES: &[&str] = &[
     "join_changed",
     "account_changed",
     "code_mismatch",
+    "name_changed",
 ];
 
-/// Whether the broker wrote `sentence` for a person: capitalised (or opening with a number or
-/// an `@username`), and ending in a full stop. The broker's technical texts are neither.
+/// Whether the broker wrote `sentence` for a person: capitalised (or opening with a number, an
+/// `@username` or a `#channel`), and ending in a full stop. The broker's technical texts are
+/// neither.
 fn reads_as_sentence(sentence: &str) -> bool {
     let first = sentence.chars().next();
-    first.is_some_and(|ch| ch.is_uppercase() || ch.is_numeric() || ch == '@')
+    first.is_some_and(|ch| ch.is_uppercase() || ch.is_numeric() || ch == '@' || ch == '#')
         && sentence.ends_with(['.', '!', '?'])
 }
 
@@ -612,6 +624,10 @@ pub fn broker_refusal_text_in(code: &str, message: &str, place: &RefusalPlace) -
             .to_owned()
         }
         ("rate_limited", _) if !reads_as_sentence(sentence) => TOO_MANY_ATTEMPTS.to_owned(),
+        // OW-5 and OW-8: what to do next is a command here, whatever the broker's words.
+        ("workspace_deleted", _) => WORKSPACE_DELETED.to_owned(),
+        ("revision_conflict", _) => REVISION_CONFLICT.to_owned(),
+        ("name_changed", _) if !reads_as_sentence(sentence) => NAME_CHANGED.to_owned(),
         ("already_approved", Some(name)) => already_approved(name),
         // CLIDOCS-F12: the broker's "Choose Add device…" names the desktop's control; the
         // hint below names this terminal's flag.
@@ -642,6 +658,10 @@ fn broker_refusal_hint(code: &str, sentence: &str, shown: &str) -> Option<String
         // The broker's own sentence already says so; a bare code does not.
         "name_taken" if !shown.to_ascii_lowercase().contains("choose a different name") => {
             Some("Choose another name.".to_owned())
+        }
+        // OW-4: a team's #general goes only with its team.
+        "invalid_params" if sentence.contains("belongs to its team") => {
+            Some("Run: biorouter crew teams delete TEAM".to_owned())
         }
         _ => None,
     }
@@ -730,8 +750,14 @@ pub fn connect_failure_text(code: &str) -> Option<&'static str> {
         "crew_ssh_unreachable" => {
             "Couldn't reach the server. Check your network or your VPN, then connect again."
         }
+        // OW-9: the daemon installs it now, from the copy this computer carries.
         "crew_bridge_missing" => {
-            "Crew isn't set up for your account on the server: ~/.local/bin/biorouter-crew is missing there. Install it yourself, or ask your host or IT team to, then connect again."
+            "Crew isn't set up for your account on the server: ~/.local/bin/biorouter-crew is missing there. Run biorouter crew setup to install it, then connect again."
+        }
+        // OW-5: the host deleted the workspace on the server; the saved connection is all
+        // that is left of it here.
+        "crew_workspace_deleted" => {
+            WORKSPACE_DELETED
         }
         "crew_ssh_failed" => {
             "SSH or Crew on the server failed. If the server restarted, ask your host to start the workspace again, then connect again."
@@ -779,6 +805,329 @@ pub fn same_host_connect_failure_text(code: &str, ssh_target: &str) -> Option<St
         )),
         _ => None,
     }
+}
+
+/// The setup refusals and job failures (OW-9; `SetupError.code` and the setup routes' refusals
+/// in `crew/setup.rs`), each with the sentence said when the daemon wrote none.
+const SETUP_FAILURES: &[(&str, &str)] = &[
+    (
+        "crew_setup_busy",
+        "Biorouter is already setting up as many servers as it can at once. Wait for one to finish, then try again.",
+    ),
+    (
+        "crew_setup_not_found",
+        "That setup isn't running any more. Run the same command again.",
+    ),
+    (
+        "crew_setup_cancelled",
+        "Setup was stopped before it finished. Run the same command again to finish.",
+    ),
+    (
+        "crew_setup_timed_out",
+        "Setting up took too long and was stopped. Check the connection to the server, then run the same command again.",
+    ),
+    (
+        "crew_setup_sign_in_expired",
+        "Nobody signed in to the server in time, so setup stopped. Run the same command again in a terminal.",
+    ),
+    (
+        "crew_setup_not_waiting_for_sign_in",
+        "This setup isn't waiting for anyone to sign in.",
+    ),
+    (
+        "crew_setup_server_unreadable",
+        "Biorouter couldn't read what the server answered, so nothing was changed there.",
+    ),
+    (
+        "crew_setup_start_failed",
+        "Crew didn't start the workspace on the server.",
+    ),
+    (
+        "crew_server_probe_unsupported",
+        "The Crew in your account on the server can't check the server yet.",
+    ),
+    (
+        "crew_install_artifact_unavailable",
+        "This copy of Biorouter carries no Crew server program to install. Install the Biorouter app or a release package, then try again.",
+    ),
+    (
+        "crew_install_unsupported_platform",
+        "Crew's server program runs on Linux x86_64 servers only, and this server is something else.",
+    ),
+    (
+        "crew_install_checksum_mismatch",
+        "The copy that reached the server didn't match this computer's, so nothing was replaced. Run the same command again.",
+    ),
+    (
+        "crew_install_checksum_tool_missing",
+        "The server has no sha256sum, shasum or openssl to check the copy with, so Crew wasn't installed. Ask your IT team for one of them.",
+    ),
+    (
+        "crew_install_permission_denied",
+        "Crew couldn't write ~/.local/bin in your account on the server. Check that folder's permissions, then run the same command again.",
+    ),
+    (
+        "crew_install_unexpected_target",
+        "Where Crew goes in your account on the server, ~/.local/bin/biorouter-crew, there is a link, a folder or another account's file, so nothing was installed.",
+    ),
+    (
+        "crew_install_dependency_missing",
+        "Crew can't run on this server: a system library it needs is missing or too old.",
+    ),
+    (
+        "crew_install_no_space",
+        "Your account on the server doesn't have room for Crew. Free some space, then run the same command again.",
+    ),
+    (
+        "crew_install_transfer_incomplete",
+        "The copy to the server stopped before it finished, and nothing was replaced. Run the same command again.",
+    ),
+    (
+        "crew_install_busy",
+        "Crew is being installed in this account on the server right now. Wait a moment, then try again.",
+    ),
+    (
+        "crew_install_outcome_unknown",
+        "The connection dropped after Crew was copied, so Biorouter couldn't tell whether it was installed.",
+    ),
+    (
+        "crew_install_incompatible",
+        "The Crew in your account on the server doesn't run, or doesn't say which version it is.",
+    ),
+];
+
+/// Whether `code` is one of the setup routes' codes ([`SETUP_FAILURES`]).
+pub fn is_setup_code(code: &str) -> bool {
+    SETUP_FAILURES.iter().any(|(known, _)| *known == code)
+}
+
+/// A setup refusal or failure for a person: the daemon's own sentence (`own`), else the
+/// command line's, then, on its own line, the flag or command that acts on it here.
+pub fn setup_failure_sentence(code: &str, own: Option<&str>) -> String {
+    let fallback = SETUP_FAILURES
+        .iter()
+        .find(|(known, _)| *known == code)
+        .map_or("Setting up Crew on the server failed.", |(_, text)| *text);
+    let said = own
+        .map(str::trim)
+        .filter(|own| !own.is_empty())
+        .unwrap_or(fallback);
+    let hint = match code {
+        "crew_install_unexpected_target" => Some(
+            "Setup never replaces that. Move it out of the way on the server, then run the same command again.",
+        ),
+        "crew_install_incompatible" => Some(
+            "To replace it, run the same command with --replace-existing; the old one is kept as biorouter-crew.previous.",
+        ),
+        "crew_install_outcome_unknown" => Some("Run biorouter crew doctor to check."),
+        "crew_server_probe_unsupported" => {
+            Some("Update it with biorouter crew setup, then try again.")
+        }
+        _ => None,
+    };
+    match hint {
+        // The daemon's own sentence may already say it.
+        Some(hint) if !said.contains("--replace-existing") && !said.contains("crew setup") => {
+            format!("{said}\n{hint}")
+        }
+        _ => said.to_owned(),
+    }
+}
+
+/// The server a setup job is for, as a sentence names it: the login the daemon checked, else
+/// the one the person gave.
+pub fn setup_server(status: &Value, login: &str) -> String {
+    str_field(&status["server"], "login")
+        .or(Some(login.trim()).filter(|login| !login.is_empty()))
+        .map_or_else(|| "the server".to_owned(), safe_text)
+}
+
+/// A setup stage for a person (OW-9), as the desktop's Host dialog names its steps. A stage
+/// this version does not know is said from its own name.
+pub fn setup_stage_words(name: &str) -> String {
+    match name {
+        "check" => "Checking the server".to_owned(),
+        "sign_in" => "Signing in".to_owned(),
+        "install" => "Installing Crew in your account".to_owned(),
+        "start" => "Starting the workspace".to_owned(),
+        "connect" => "Connecting".to_owned(),
+        "work_folder" => "Making the work folder".to_owned(),
+        "context" => "Reading what the server has, for the workspace context".to_owned(),
+        "done" => "Ready".to_owned(),
+        other => sentence_case(&other.replace('_', " ")),
+    }
+}
+
+/// The lines a setup job's change from `previous` to `current` adds: each stage the first time
+/// it is seen running or done (a quick stage can finish between two looks), and a sign-in the
+/// server asks for. A skipped stage says nothing; a failure is the command's error.
+pub fn setup_progress_lines(previous: &Value, current: &Value, login: &str) -> Vec<String> {
+    let seen = |status: &Value, name: &str| {
+        list(status, "stages").iter().any(|stage| {
+            str_field(stage, "name") == Some(name)
+                && matches!(
+                    str_field(stage, "state"),
+                    Some("running" | "done" | "failed")
+                )
+        })
+    };
+    let mut lines: Vec<String> = list(current, "stages")
+        .iter()
+        .filter(|stage| matches!(str_field(stage, "state"), Some("running" | "done")))
+        .filter_map(|stage| str_field(stage, "name"))
+        .filter(|name| !seen(previous, name))
+        .map(|name| match name {
+            "done" => setup_stage_words(name),
+            _ => format!("{}…", setup_stage_words(name)),
+        })
+        .collect();
+    if str_field(current, "state") == Some("needs_sign_in")
+        && str_field(previous, "state") != Some("needs_sign_in")
+    {
+        lines.push(format!(
+            "{} asks for your password or a verification code.",
+            setup_server(current, login)
+        ));
+    }
+    lines
+}
+
+/// What a finished setup job did, for a person: what a check found, or which Crew is now
+/// installed and, for a member, that the connection is up and what agents may do there.
+pub fn setup_summary_lines(status: &Value, login: &str) -> Vec<String> {
+    let server = setup_server(status, login);
+    let outcome = &status["outcome"];
+    let installed = &status["installed"];
+    let artifact = str_field(&status["artifact"], "version").map(safe_text);
+    if str_field(status, "intent") == Some("check") {
+        let facts = &status["server"];
+        let mut lines = Vec::new();
+        let system: Vec<String> = ["os", "arch"]
+            .iter()
+            .filter_map(|key| str_field(facts, key))
+            .map(safe_text)
+            .collect();
+        if !system.is_empty() {
+            let mut line = format!("{server}: {}", system.join(" "));
+            if let Some(glibc) = str_field(facts, "glibc") {
+                line.push_str(&format!(", glibc {}", safe_text(glibc)));
+            }
+            lines.push(format!("{line}."));
+        }
+        lines.push(match str_field(installed, "state") {
+            Some("missing") | None => match &artifact {
+                Some(version) => format!("Crew isn't installed in your account there. biorouter crew setup installs Crew {version}."),
+                None => "Crew isn't installed in your account there.".to_owned(),
+            },
+            Some("symlink") => "~/.local/bin/biorouter-crew there is a symbolic link, which setup never replaces. Remove it, then run biorouter crew setup.".to_owned(),
+            Some("file") => match (str_field(installed, "version").map(safe_text), &artifact) {
+                (Some(version), Some(ours)) => match release_order(&version, ours) {
+                    Some(std::cmp::Ordering::Less) => format!(
+                        "Crew {version} is installed in your account there. This computer has Crew {ours}; biorouter crew setup --replace-existing updates it."
+                    ),
+                    Some(std::cmp::Ordering::Greater) => format!(
+                        "Crew {version} is installed in your account there, newer than this computer's {ours}, so setup leaves it in place."
+                    ),
+                    _ => format!("Crew {version} is installed in your account there."),
+                },
+                (Some(version), None) => {
+                    format!("Crew {version} is installed in your account there.")
+                }
+                (None, _) => "A Crew is installed in your account there, but it doesn't say which version it is. biorouter crew setup --replace-existing replaces it.".to_owned(),
+            },
+            Some(_) => "~/.local/bin/biorouter-crew there is a folder or something else that isn't a program, which setup never replaces. Move it out of the way, then run biorouter crew setup.".to_owned(),
+        });
+        if let Some(problem) = str_field(installed, "problem") {
+            lines.push(safe_text(problem));
+        }
+        if facts
+            .get("landlock_abi")
+            .and_then(Value::as_i64)
+            .is_some_and(|abi| abi < 3)
+        {
+            lines.push("Agents can run commands there only with full access: its kernel can't confine them to a folder.".to_owned());
+        }
+        return lines;
+    }
+    let version = str_field(outcome, "installed_version")
+        .or_else(|| str_field(installed, "version"))
+        .map(safe_text);
+    let crew = version.map_or_else(|| "Crew".to_owned(), |version| format!("Crew {version}"));
+    let mut lines = vec![
+        if outcome.get("reused").and_then(Value::as_bool) == Some(true) {
+            format!("{crew} was already installed in your account on {server}.")
+        } else if let Some(previous) = str_field(outcome, "upgraded_from") {
+            format!(
+                "Updated Crew from {} to {} in your account on {server}.",
+                safe_text(previous),
+                crew.trim_start_matches("Crew ")
+            )
+        } else {
+            format!("Installed {crew} in your account on {server}.")
+        },
+    ];
+    if str_field(status, "intent") == Some("member") {
+        if str_field(outcome, "connection_id").is_some() {
+            lines.push("Connected.".to_owned());
+        }
+        if let Some(folder) = str_field(outcome, "work_folder") {
+            lines.push(format!(
+                "Your agent can work as you on {server}, starting in {}. Change that with biorouter crew connections set-access.",
+                safe_text(folder)
+            ));
+        }
+    }
+    lines
+}
+
+/// How two release versions (`1.93.0`) compare, `None` when either is not one.
+fn release_order(left: &str, right: &str) -> Option<std::cmp::Ordering> {
+    let parts = |version: &str| {
+        version
+            .trim()
+            .split('.')
+            .map(|part| part.parse::<u64>().ok())
+            .collect::<Option<Vec<_>>>()
+    };
+    Some(parts(left)?.cmp(&parts(right)?))
+}
+
+/// Markdown text as it is printed, line by line, each made terminal-safe.
+pub fn markdown_lines(text: &str) -> Vec<String> {
+    body_lines(text)
+}
+
+/// The workspace's context document (OW-8), `{text, revision, updated_by, updated_at}` or
+/// `null`: the text, then who changed it last and when.
+pub fn workspace_context_lines(context: &Value, options: &HumanOptions) -> Vec<String> {
+    let Some(text) = str_field(context, "text") else {
+        return vec![
+            "This workspace has no context document yet.".to_owned(),
+            "Write one with biorouter crew workspace context set FILE, or draft one from the server with biorouter crew workspace context draft --save.".to_owned(),
+        ];
+    };
+    let mut directory = options.directory.clone();
+    directory.absorb(context);
+    let ctx = Ctx::new(directory, options.show_ids, options.clock);
+    let mut lines = body_lines(text);
+    if lines.is_empty() {
+        lines.push("(The context document is empty.)".to_owned());
+    }
+    let mut about = Vec::new();
+    if let Some(revision) = context.get("revision").and_then(Value::as_u64) {
+        about.push(format!("Revision {revision}"));
+    }
+    if let Some(editor) = str_field(context, "updated_by") {
+        about.push(format!("changed by {}", ctx.you_or_person(Some(editor))));
+    }
+    if let Some(at) = context.get("updated_at").and_then(Value::as_i64) {
+        about.push(ctx.when(at));
+    }
+    if !about.is_empty() {
+        lines.push(String::new());
+        lines.push(about.join(" · "));
+    }
+    lines
 }
 
 /// How text output is rendered.
@@ -1868,6 +2217,7 @@ impl Ctx {
             str_field(connection, "id"),
         )];
         out.extend(server_storage_lines(connection));
+        out.extend(workspace_deleted_lines(connection));
         out.extend(last_error_lines(connection));
         out
     }
@@ -1890,6 +2240,7 @@ impl Ctx {
             out.push(format!("  Status: {status}"));
         }
         out.extend(server_storage_lines(connection));
+        out.extend(workspace_deleted_lines(connection));
         let mut privacy = vec![mode_word(str_field(connection, "mode"))];
         privacy.push(institution(connection));
         if let Some(epoch) = connection.get("policy_epoch").and_then(Value::as_u64) {
@@ -1917,7 +2268,10 @@ impl Ctx {
         }
         if let Some(root) = str_field(connection, "remote_root") {
             let execution = connection.get("remote_execution").and_then(Value::as_bool);
-            let access = if execution == Some(true) {
+            // OW-6: full access is the person's whole account, not the folder.
+            let access = if str_field(connection, "remote_access") == Some("full") {
+                "agents work as you on the server, starting here"
+            } else if execution == Some(true) {
                 "agents may run commands there"
             } else {
                 "agents may read files there"
@@ -2081,6 +2435,22 @@ impl Ctx {
             None => format!("Task posting to {channel} · {status}"),
         };
         let mut out = vec![self.with_id(head, "task ID", str_field(run, "run_id"))];
+        // OW-11: the model a task started on without naming one, and where it came from.
+        let chosen = &run["task_model"];
+        if let (Some(model), Some(provider)) =
+            (str_field(chosen, "model"), str_field(chosen, "provider"))
+        {
+            let source = match str_field(chosen, "source") {
+                Some("crew_tasks") => ", your model for Crew tasks",
+                Some("new_chats") => ", your default model for new chats",
+                _ => "",
+            };
+            out.push(format!(
+                "  Model: {} ({}){source}",
+                safe_text(model),
+                safe_text(provider)
+            ));
+        }
         if let Some(session) = str_field(run, "session_id") {
             out.push(format!("  Chat: {}", safe_text(session)));
         }
@@ -2664,6 +3034,19 @@ fn server_storage_lines(connection: &Value) -> Vec<String> {
         out.push(format!("  {}", host_restart_steps(&first)));
     }
     out
+}
+
+/// Said under a member's connection to a workspace its host deleted (OW-5): the daemon marks
+/// it (`workspace_deleted`), and the one thing left is to remove it here. A last error that
+/// already says so is not said twice.
+fn workspace_deleted_lines(connection: &Value) -> Vec<String> {
+    let marked = connection.get("workspace_deleted").and_then(Value::as_bool) == Some(true);
+    if !marked || str_field(connection, "last_error_code") == Some("crew_workspace_deleted") {
+        return Vec::new();
+    }
+    connect_failure_text("crew_workspace_deleted")
+        .map(|sentence| vec![format!("  {sentence}")])
+        .unwrap_or_default()
 }
 
 /// A saved connection's last error. When the daemon types it (`last_error_code`) with a code
@@ -4735,6 +5118,33 @@ mod tests {
         ),
         ("stale_cursor", "stale_cursor", "A message in this view is no longer available to you."),
         ("brand_new_code", "brand_new_code", "The workspace refused this request."),
+        // OW-4, OW-5, OW-8 (design contract texts; the broker's own literals are its own
+        // engineer's): what to do next is a command on this computer.
+        (
+            "workspace_deleted",
+            "workspace_deleted: workspace was deleted by its host",
+            WORKSPACE_DELETED,
+        ),
+        (
+            "revision_conflict",
+            "revision_conflict: context revision changed",
+            REVISION_CONFLICT,
+        ),
+        (
+            "name_changed",
+            "name_changed: expected name does not match",
+            NAME_CHANGED,
+        ),
+        (
+            "name_changed",
+            "name_changed: #methods is now called #methods-old. Check it before deleting it.",
+            "#methods is now called #methods-old. Check it before deleting it.",
+        ),
+        (
+            "invalid_params",
+            "invalid_params: #general belongs to its team. Delete the team instead.",
+            "#general belongs to its team. Delete the team instead.\nRun: biorouter crew teams delete TEAM",
+        ),
     ];
 
     #[test]
@@ -5044,5 +5454,200 @@ mod tests {
         ] {
             assert!(!text.contains("resolved affiliation"), "{text}");
         }
+    }
+
+    /// OW-5, OW-9: a connection whose workspace was deleted, and a server where Crew is
+    /// missing, each say the command that acts on it.
+    #[test]
+    fn a_deleted_workspace_and_a_missing_crew_name_their_command() {
+        assert_eq!(
+            connect_failure_text("crew_workspace_deleted"),
+            Some(WORKSPACE_DELETED)
+        );
+        assert!(connect_failure_text("crew_bridge_missing")
+            .expect("missing bridge")
+            .contains("Run biorouter crew setup"));
+        let mut deleted = connection();
+        deleted["workspace_deleted"] = json!(true);
+        let text = plain(&deleted);
+        assert!(text.contains(WORKSPACE_DELETED), "{text}");
+        assert!(plain(&json!({"connections": [deleted.clone()]})).contains(WORKSPACE_DELETED));
+        // A last error that already says so is not said twice.
+        deleted["last_error"] = json!("workspace_deleted: workspace was deleted");
+        deleted["last_error_code"] = json!("crew_workspace_deleted");
+        assert_eq!(plain(&deleted).matches("The host deleted").count(), 1);
+
+        let mut full = connection();
+        full["remote_access"] = json!("full");
+        assert!(
+            plain(&full).contains("Remote folder: /home/crew_bob/crew-work · agents work as you on the server, starting here"),
+            "{}",
+            plain(&full)
+        );
+    }
+
+    /// OW-11: a task that started without naming its model says which one runs, and why.
+    #[test]
+    fn a_task_says_the_model_it_started_on() {
+        let mut run = task();
+        run["task_model"] =
+            json!({"provider": "versa_azure", "model": "gpt-5.5", "source": "crew_tasks"});
+        assert!(
+            plain(&run).contains("\n  Model: gpt-5.5 (versa_azure), your model for Crew tasks\n"),
+            "{}",
+            plain(&run)
+        );
+        run["task_model"]["source"] = json!("flags");
+        assert!(plain(&run).contains("\n  Model: gpt-5.5 (versa_azure)\n"));
+        assert!(!plain(&task()).contains("Model:"));
+    }
+
+    fn stage(name: &str, state: &str) -> Value {
+        json!({"name": name, "state": state})
+    }
+
+    /// OW-9: each stage is said once, when first seen running or done, a quick one included; a
+    /// skipped stage says nothing; a sign-in the server asks for is said.
+    #[test]
+    fn setup_progress_says_each_stage_once() {
+        let first = json!({"state": "running", "stages": [stage("check", "running"), stage("install", "pending")]});
+        assert_eq!(
+            setup_progress_lines(&Value::Null, &first, "bob@hpc"),
+            ["Checking the server…"]
+        );
+        let later = json!({"state": "running", "stages": [
+            stage("check", "done"), stage("work_folder", "done"),
+            stage("start", "skipped"), stage("install", "running")
+        ]});
+        assert_eq!(
+            setup_progress_lines(&first, &later, "bob@hpc"),
+            [
+                "Making the work folder…",
+                "Installing Crew in your account…"
+            ]
+        );
+        assert!(setup_progress_lines(&later, &later, "bob@hpc").is_empty());
+        let sign_in = json!({"state": "needs_sign_in", "server": {"login": "bob@leo"},
+            "stages": [stage("check", "running"), stage("sign_in", "running")]});
+        assert_eq!(
+            setup_progress_lines(&first, &sign_in, "ignored"),
+            [
+                "Signing in…",
+                "bob@leo asks for your password or a verification code."
+            ]
+        );
+        let done = json!({"state": "finished", "stages": [stage("check", "done"), stage("brand_new", "done"), stage("done", "done")]});
+        assert_eq!(
+            setup_progress_lines(&first, &done, "bob@hpc"),
+            ["Brand new…", "Ready"]
+        );
+    }
+
+    /// OW-9: a check says what the server is and what is installed; an install says what it did;
+    /// a member's setup says it connected and what agents may do.
+    #[test]
+    fn setup_summaries_say_what_was_found_and_done() {
+        let check = json!({
+            "intent": "check", "state": "finished",
+            "server": {"login": "bob@leo", "os": "Linux", "arch": "x86_64", "glibc": "2.35", "landlock_abi": 1},
+            "installed": {"path": "~/.local/bin/biorouter-crew", "state": "file", "version": "1.92.1"},
+            "artifact": {"version": "1.93.0"}
+        });
+        assert_eq!(
+            setup_summary_lines(&check, "bob@leo"),
+            [
+                "bob@leo: Linux x86_64, glibc 2.35.",
+                "Crew 1.92.1 is installed in your account there. This computer has Crew 1.93.0; biorouter crew setup --replace-existing updates it.",
+                "Agents can run commands there only with full access: its kernel can't confine them to a folder.",
+            ]
+        );
+        let mut newer = check.clone();
+        newer["installed"]["version"] = json!("1.94.0");
+        assert_eq!(
+            setup_summary_lines(&newer, "bob@leo")[1],
+            "Crew 1.94.0 is installed in your account there, newer than this computer's 1.93.0, so setup leaves it in place."
+        );
+        let mut missing = check.clone();
+        missing["installed"] = json!({"state": "missing"});
+        missing["server"]["landlock_abi"] = json!(3);
+        assert_eq!(
+            setup_summary_lines(&missing, "bob@leo")[1],
+            "Crew isn't installed in your account there. biorouter crew setup installs Crew 1.93.0."
+        );
+
+        let install = json!({"intent": "install", "state": "finished", "server": {"login": "bob@leo"},
+            "outcome": {"installed_version": "1.93.0", "reused": false}});
+        assert_eq!(
+            setup_summary_lines(&install, "x"),
+            ["Installed Crew 1.93.0 in your account on bob@leo."]
+        );
+        let mut reused = install.clone();
+        reused["outcome"]["reused"] = json!(true);
+        assert_eq!(
+            setup_summary_lines(&reused, "x"),
+            ["Crew 1.93.0 was already installed in your account on bob@leo."]
+        );
+        let member = json!({"intent": "member", "state": "finished", "server": {"login": "bob@leo"},
+            "outcome": {"installed_version": "1.93.0", "reused": false, "connection_id": "c",
+                        "work_folder": "/pool1/home/bob/crew-work/lab"}});
+        assert_eq!(
+            setup_summary_lines(&member, "x"),
+            [
+                "Installed Crew 1.93.0 in your account on bob@leo.",
+                "Connected.",
+                "Your agent can work as you on bob@leo, starting in /pool1/home/bob/crew-work/lab. Change that with biorouter crew connections set-access.",
+            ]
+        );
+    }
+
+    /// OW-9: a setup refusal is the daemon's sentence when it wrote one, else the command
+    /// line's, with the flag that acts on it here.
+    #[test]
+    fn setup_failures_say_the_flag_that_acts_on_them() {
+        assert!(is_setup_code("crew_install_incompatible"));
+        assert!(is_setup_code("crew_setup_busy"));
+        assert!(!is_setup_code("crew_ssh_unreachable"));
+        assert_eq!(
+            setup_failure_sentence("crew_install_incompatible", Some("Crew 1.80.0 doesn't run.")),
+            "Crew 1.80.0 doesn't run.\nTo replace it, run the same command with --replace-existing; the old one is kept as biorouter-crew.previous."
+        );
+        assert_eq!(
+            setup_failure_sentence("crew_install_no_space", None),
+            "Your account on the server doesn't have room for Crew. Free some space, then run the same command again."
+        );
+        // A sentence that already names the flag is not told it again.
+        assert_eq!(
+            setup_failure_sentence(
+                "crew_install_incompatible",
+                Some("Set it up again with --replace-existing.")
+            ),
+            "Set it up again with --replace-existing."
+        );
+        for (code, text) in SETUP_FAILURES {
+            assert!(code.starts_with("crew_"), "{code}");
+            assert!(reads_as_sentence(text) || text.starts_with('~'), "{text}");
+        }
+    }
+
+    /// OW-8: the context document is printed as written, then who changed it and when.
+    #[test]
+    fn the_workspace_context_names_who_changed_it() {
+        let snapshot = alice_snapshot();
+        let options = options(false, Directory::from_snapshot(&snapshot));
+        let context = json!({"text": "# Leo\n\nNo job scheduler.\n", "revision": 2,
+            "updated_by": BOB, "updated_at": NOW - 120});
+        let lines = workspace_context_lines(&context, &options);
+        assert_eq!(lines[..3], ["# Leo", "", "No job scheduler."]);
+        assert_eq!(lines[3], "");
+        assert!(
+            lines[4].starts_with("Revision 2 · changed by "),
+            "{lines:?}"
+        );
+        assert!(lines[4].contains("(@crew_bob)"), "{lines:?}");
+        assert!(lines[4].ends_with(" · 01:48"), "{lines:?}");
+        assert_eq!(
+            workspace_context_lines(&Value::Null, &options)[0],
+            "This workspace has no context document yet."
+        );
     }
 }
