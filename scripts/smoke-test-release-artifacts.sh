@@ -248,7 +248,7 @@ smoke_serve() {
       # The token is exchanged for a session cookie. It is not consumed
       # (SD-9 in docs/deployment/serve-decisions.md): the readiness loop above
       # has already redeemed it. The answer is a page served by the daemon
-      # itself that moves on to /, not a 303, so the SameSite=Strict cookie
+      # itself that moves on to ./, not a 303, so the SameSite=Strict cookie
       # survives a navigation started by the file: page that serve --open writes.
       curl -s -o /tmp/bounce.html -D /tmp/h "http://127.0.0.1:18080/?t=smoketoken"
       grep -qi "^HTTP/1.1 200" /tmp/h
@@ -256,7 +256,7 @@ smoke_serve() {
       grep -qi "HttpOnly" /tmp/h
       grep -qi "SameSite=Strict" /tmp/h
       grep -qi "cache-control: no-store" /tmp/h
-      grep -q "http-equiv=\"refresh\" content=\"0;url=/\"" /tmp/bounce.html
+      grep -q "http-equiv=\"refresh\" content=\"0;url=./\"" /tmp/bounce.html
       # `! grep` cannot fail a `set -e` script: bash exempts a negated
       # pipeline from errexit, so each absence is an explicit exit.
       if grep -q smoketoken /tmp/bounce.html; then exit 1; fi
@@ -273,8 +273,11 @@ smoke_serve() {
       grep -q "\"secretKey\":\"[0-9a-f]\{64\}\"" /tmp/shell.html
       if grep -q "apiBaseUrl" /tmp/shell.html; then exit 1; fi
 
-      # The bundle really is served, and it is the ROOT-BASE build.
-      grep -q "src=\"/assets/" /tmp/shell.html
+      # The bundle really is served, and it is the RELATIVE build, with the
+      # mount named in the shell, so it also works under a reverse proxy path
+      # prefix (issue #402).
+      grep -q "src=\"./assets/" /tmp/shell.html
+      grep -q "<head><base href=\"./\">" /tmp/shell.html
       asset=$(grep -o "/assets/index-[A-Za-z0-9_-]*\.js" /tmp/shell.html | head -1)
       curl -fsS -o /dev/null "http://127.0.0.1:18080$asset"
 
@@ -296,7 +299,7 @@ smoke_serve() {
         exit 1
       fi
     '
-  log "biorouter serve: token exchange, gated shell, root-base bundle, authenticated endpoints, and stopping with its daemon passed"
+  log "biorouter serve: token exchange, gated shell, relative bundle and mount, authenticated endpoints, and stopping with its daemon passed"
 }
 
 case "$TARGET" in

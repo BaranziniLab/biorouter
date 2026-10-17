@@ -624,9 +624,10 @@ fn app_access_granted_by(
 
 /// Whether the address a request was sent to is one a browser treats as a
 /// secure context: a loopback address, `localhost` or a name under
-/// `.localhost`, or HTTPS forwarded by a TLS proxy with Fetch Metadata from
-/// the browser (`routes::request_scheme`). A request with no `Host` (nor authority) was not
-/// sent by a browser, and counts as one.
+/// `.localhost`, or any address the browser itself attached Fetch Metadata to
+/// (`Sec-Fetch-Mode` and `Sec-Fetch-Dest`), which is how an HTTPS reverse proxy
+/// in front of the daemon is recognised. A request with no `Host` (nor
+/// authority) was not sent by a browser, and counts as one.
 ///
 /// It is what decides whether [`is_document_navigation`] and the opener
 /// policies mean anything. A browser sends Fetch Metadata only to such an
@@ -638,10 +639,24 @@ fn app_access_granted_by(
 /// arrived with no `Sec-Fetch-*` at all, where on 127.0.0.1 the same script was
 /// told apart and severed.
 ///
-/// `X-Forwarded-Proto` alone proves nothing: a page left open from an older
-/// daemon can set it on an HTTP LAN fetch. Such a browser sends no Fetch
-/// Metadata and cannot forge those headers, so forwarded HTTPS also requires
-/// both metadata headers. Secret-header callers do not depend on this gate.
+/// That is also why the metadata alone is the evidence, and nothing a proxy
+/// writes is consulted. The Fetch Metadata specification has a browser attach
+/// these headers only to a potentially trustworthy URL (https, or loopback), and
+/// script cannot set a `Sec-` header, so their presence is the browser saying
+/// the very thing this gate needs to know: it is applying the protections above
+/// to this address. A proxy that forwards the request does not change that, and
+/// a page at a plain-HTTP address cannot fake it.
+///
+/// ⚠ Until issue #402 the forwarded case also required `X-Forwarded-Proto:
+/// https`, read through `routes::request_scheme`. That added no protection, since
+/// the metadata was already required beside it, and it refused real deployments:
+/// a chain whose inner hop appends its own scheme (JupyterHub's
+/// configurable-http-proxy after a TLS terminator reaches the daemon as
+/// `"https,http"`, whose last value is `http`), and a proxy that names the scheme
+/// some other way or not at all (JupyterHub's documented nginx block sends
+/// `X-Scheme`). Do not put it back: a header a proxy may or may not write is a
+/// worse witness to what the browser did than the browser's own headers.
+/// Secret-header callers do not depend on this gate.
 pub fn reached_over_a_secure_context(
     headers: &axum::http::HeaderMap,
     uri: &axum::http::Uri,
@@ -657,14 +672,19 @@ pub fn reached_over_a_secure_context(
             None => return true,
         },
     };
-    host_is_loopback(host)
-        || (crate::routes::request_scheme(headers) == "https"
-            && ["sec-fetch-mode", "sec-fetch-dest"].iter().all(|name| {
-                headers
-                    .get(*name)
-                    .and_then(|value| value.to_str().ok())
-                    .is_some_and(|value| !value.trim().is_empty())
-            }))
+    host_is_loopback(host) || carries_fetch_metadata(headers)
+}
+
+/// Whether a request carries the Fetch Metadata a browser attaches to a
+/// potentially trustworthy URL: a readable, non-empty `Sec-Fetch-Mode` and
+/// `Sec-Fetch-Dest`. See [`reached_over_a_secure_context`].
+fn carries_fetch_metadata(headers: &axum::http::HeaderMap) -> bool {
+    ["sec-fetch-mode", "sec-fetch-dest"].iter().all(|name| {
+        headers
+            .get(*name)
+            .and_then(|value| value.to_str().ok())
+            .is_some_and(|value| !value.trim().is_empty())
+    })
 }
 
 /// Whether a `Host` value names this machine the way a browser counts as
@@ -1941,25 +1961,38 @@ mod tests {
 
         // An HTTP LAN page already open during an update can forge this proxy
         // header on a fetch, but cannot make the browser emit Fetch Metadata.
-        for uri in surfaces {
-            let (status, body) = app_request(
-                &app,
-                peer,
-                Method::GET,
-                uri,
-                &[
-                    ("cookie", cookie.as_str()),
-                    ("host", "192.168.1.5:8765"),
-                    ("x-forwarded-proto", "https"),
-                ],
-            )
-            .await;
-            assert_eq!(status, StatusCode::FORBIDDEN, "forged HTTPS: {uri}");
-            assert!(!body.contains("reached the app route"));
+        // Nor does metadata that is present but blank, or only half of it.
+        for forged in [
+            vec![("x-forwarded-proto", "https")],
+            vec![("sec-fetch-mode", "navigate")],
+            vec![("sec-fetch-mode", " "), ("sec-fetch-dest", "document")],
+        ] {
+            for uri in surfaces {
+                let mut headers = forged.clone();
+                headers.push(("cookie", cookie.as_str()));
+                headers.push(("host", "192.168.1.5:8765"));
+                let (status, body) = app_request(&app, peer, Method::GET, uri, &headers).await;
+                assert_eq!(status, StatusCode::FORBIDDEN, "forged {forged:?}: {uri}");
+                assert!(!body.contains("reached the app route"));
+            }
         }
 
         // Loopback in every spelling a browser counts as secure, and anything a
-        // TLS proxy forwarded as https.
+        // browser attached Fetch Metadata to, which it does only at an https or
+        // loopback address. What a proxy in front says about the scheme is not
+        // consulted (issue #402): JupyterHub's configurable-http-proxy appends
+        // its own `http` after the TLS terminator's `https`, and its documented
+        // nginx block sends `X-Scheme` and no `X-Forwarded-Proto` at all.
+        let navigation = [
+            ("sec-fetch-mode", "navigate"),
+            ("sec-fetch-dest", "document"),
+        ];
+        let behind_a_proxy = |proto: Option<&'static str>| {
+            let mut headers = vec![("host", "biorouter.example.org")];
+            headers.extend(proto.map(|proto| ("x-forwarded-proto", proto)));
+            headers.extend(navigation);
+            headers
+        };
         for headers in [
             vec![("host", "127.0.0.1:8765")],
             vec![("host", "127.4.5.6")],
@@ -1967,12 +2000,10 @@ mod tests {
             vec![("host", "LocalHost.:8765")],
             vec![("host", "[::1]:8765")],
             vec![("host", "present-app.localhost:8765")],
-            vec![
-                ("host", "biorouter.example.org"),
-                ("x-forwarded-proto", "https"),
-                ("sec-fetch-mode", "navigate"),
-                ("sec-fetch-dest", "document"),
-            ],
+            behind_a_proxy(Some("https")),
+            behind_a_proxy(Some("https,http")),
+            behind_a_proxy(Some("http")),
+            behind_a_proxy(None),
             // No `Host` at all is not a browser.
             vec![],
         ] {

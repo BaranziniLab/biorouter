@@ -404,8 +404,10 @@ lint-ui:
     cd ui/desktop && npm run lint:check
 
 # Build the browser interface bundle biorouterd serves (BIOROUTER_SERVE_UI).
-# Writes a ROOT-BASE build of the renderer to ui/desktop/src/web/ (~8.8 MB),
-# which every packaging path ships beside the binaries — see extraResource in
+# Writes a RELATIVE-BASE build of the renderer to ui/desktop/src/web/ (~8.8 MB),
+# which biorouterd anchors with a <base href> it writes into the shell, so the
+# same bundle works at a hostname's root and under a reverse proxy's path prefix.
+# Every packaging path ships it beside the binaries — see extraResource in
 # ui/desktop/forge.config.ts, and /usr/share/biorouter/web in the CLI-only
 # packages. Output is gitignored.
 #

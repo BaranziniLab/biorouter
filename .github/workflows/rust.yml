@@ -610,10 +610,13 @@ jobs:
         run: |
           npm ci
           npm run build:web
-          # Root base, not Forge's relative base: a relative-base bundle served
-          # at the root resolves its assets against the current path.
-          grep -q 'src="/assets/' src/web/index.html
-          ! grep -q 'src="./assets/' src/web/index.html
+          # A RELATIVE base (issue #402): the daemon names the interface's mount
+          # in a <base href> it writes into the shell, so one bundle works at the
+          # root of a hostname and under a reverse proxy's path prefix. A
+          # root-base bundle asks for /assets/... at the proxy's root and never
+          # mounts there.
+          grep -q 'src="./assets/' src/web/index.html
+          ! grep -q 'src="/assets/' src/web/index.html
 
       - name: Build the command and the daemon
         run: cargo build -p biorouter-cli -p biorouter-server
@@ -654,7 +657,7 @@ jobs:
           grep -qi 'SameSite=Strict' "$RUNNER_TEMP/h" || fail 'the session cookie is sent cross-site'
           grep -qi 'cache-control: no-store' "$RUNNER_TEMP/h" || fail 'the exchange page is cacheable'
           grep -qi 'referrer-policy: no-referrer' "$RUNNER_TEMP/h" || fail 'the exchange page leaks its address'
-          grep -q 'http-equiv="refresh" content="0;url=/"' "$RUNNER_TEMP/bounce.html" \
+          grep -q 'http-equiv="refresh" content="0;url=./"' "$RUNNER_TEMP/bounce.html" \
             || fail 'the exchange page does not move on to the interface'
           ! grep -q citoken "$RUNNER_TEMP/bounce.html" || fail 'the exchange page carries the token'
 
@@ -668,6 +671,26 @@ jobs:
             || fail 'apiBaseUrl is present; the renderer will not use its own origin'
           grep -q 'no-store' <(curl -s -D - -o /dev/null -b 'biorouter_session=citoken' http://127.0.0.1:18777/) \
             || fail 'the shell is cacheable and it carries the secret'
+          # The shell names its mount, relative to where the request landed, so
+          # the relative bundle resolves under a proxy's path prefix and on a
+          # path that fell through to the shell alike.
+          grep -q '<head><base href="./">' "$RUNNER_TEMP/shell.html" || fail 'the shell names no mount'
+          curl -fsS -b 'biorouter_session=citoken' http://127.0.0.1:18777/a/b/c \
+            | grep -q '<base href="../../">' || fail 'a deep path does not lead back to the mount'
+
+          # Behind an HTTPS reverse proxy (issue #402). The browser's Fetch
+          # Metadata is what says the page is at a secure address; the scheme a
+          # proxy chain reports is not asked, because JupyterHub's chain reports
+          # `https,http`. Without the metadata, a network address is refused.
+          nav=(-H 'Sec-Fetch-Mode: navigate' -H 'Sec-Fetch-Dest: document')
+          for proto in https 'https,http' http; do
+            [ "$(curl -s -o /dev/null -w '%{http_code}' -b 'biorouter_session=citoken' "${nav[@]}" \
+                -H 'Host: hub.example.org' -H "X-Forwarded-Proto: $proto" http://127.0.0.1:18777/)" = 200 ] \
+              || fail "a proxied navigation with X-Forwarded-Proto: $proto was refused"
+          done
+          [ "$(curl -s -o /dev/null -w '%{http_code}' -b 'biorouter_session=citoken' \
+              -H 'Host: 192.168.1.5:18777' -H 'X-Forwarded-Proto: https' http://127.0.0.1:18777/)" = 403 ] \
+            || fail 'a network address without Fetch Metadata was served the shell'
 
           # The bundle is really served.
           asset=$(grep -o '/assets/index-[A-Za-z0-9_-]*\.js' "$RUNNER_TEMP/shell.html" | head -1)

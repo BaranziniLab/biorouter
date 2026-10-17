@@ -317,6 +317,7 @@ mod tests {
             host,
             scheme: "http",
             renderer: None,
+            public: None,
         }
     }
 
