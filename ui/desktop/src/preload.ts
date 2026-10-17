@@ -208,6 +208,11 @@ type TerminalExitEvent = {
   sessionId: string;
   exitCode: number | null;
   signal: string | null;
+  /**
+   * A Crew sign-in only: the typed code of the daemon's last error frame, such as
+   * `crew_bridge_missing` when the sign-in worked but Crew isn't installed for the account.
+   */
+  code?: string;
 };
 
 const config = JSON.parse(process.argv.find((arg) => arg.startsWith('{')) || '{}');
@@ -578,6 +583,20 @@ type ElectronAPI = {
    */
   crewShareDroppedFile: import('./utils/crewSharePathBridge').CrewShareDroppedFile;
   createCrewAuthentication?: (connectionId: string) => Promise<TerminalCreateResult>;
+  /** The Sign in terminal for a Crew setup job that waits on the person (OW-9). */
+  createCrewSetupAuthentication?: (jobId: string) => Promise<TerminalCreateResult>;
+  /**
+   * "Save Crew's server program…" (OW-9): save the broker this build carries, after the main
+   * process checked it against the version and SHA-256 the renderer showed.
+   */
+  crewSaveBroker?: (expected: {
+    version: string;
+    sha256: string;
+  }) => Promise<
+    | { success: true; filePath: string }
+    | { success: false; canceled: true }
+    | { success: false; error: string }
+  >;
   createTerminalSession: (options?: {
     workingDir?: string;
     cols?: number;
@@ -932,6 +951,10 @@ const electronAPI: ElectronAPI = {
   crewShareDroppedFile: createCrewShareDroppedFile(webUtils, ipcRenderer),
   createCrewAuthentication: (connectionId: string) =>
     ipcRenderer.invoke('crew:authenticate', connectionId),
+  createCrewSetupAuthentication: (jobId: string) =>
+    ipcRenderer.invoke('crew:authenticate-setup', jobId),
+  crewSaveBroker: (expected: { version: string; sha256: string }) =>
+    ipcRenderer.invoke('crew:save-broker', expected),
   createTerminalSession: (options?: { workingDir?: string; cols?: number; rows?: number }) =>
     ipcRenderer.invoke('terminal:create', options),
   writeTerminalSession: (sessionId: string, data: string) =>

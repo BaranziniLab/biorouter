@@ -1,4 +1,4 @@
-import { fireEvent, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, screen, waitFor } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 import { fakeConnection, makeCrew, renderWithCrew } from '../onboarding/testCrew';
 import { useCrew } from '../state/CrewControllerContext';
@@ -73,6 +73,41 @@ describe('SignInDialog', () => {
     renderSignIn({ signIn: { open: false, reason: null } });
     expect(screen.queryByRole('dialog')).toBeNull();
     expect(screen.queryByTestId('crew-authentication')).toBeNull();
+  });
+
+  it('connects again over the kept session when the sign-in found Crew missing (OW-9)', () => {
+    const { crew } = renderSignIn();
+    const props = auth.props[auth.props.length - 1] as unknown as { onBridgeMissing: () => void };
+    act(() => props.onBridgeMissing());
+    expect(crew.closeSignIn).toHaveBeenCalledOnce();
+    expect(crew.connect).toHaveBeenCalledWith({ userInitiated: true });
+  });
+});
+
+describe('SignInDialog for a setup job (OW-9)', () => {
+  it('signs in for the job it is given, named for the server, outside the controller', () => {
+    const onSignedIn = vi.fn();
+    const onClose = vi.fn();
+    // The controller's own sign-in is closed: this one is the setup's.
+    renderWithCrew(
+      <SignInDialog
+        target={{ kind: 'setup', jobId: 'job-1' }}
+        open
+        host="hpc.ucsf.edu"
+        onSignedIn={onSignedIn}
+        onClose={onClose}
+      />,
+      makeCrew({ signIn: { open: false, reason: null } })
+    );
+    const dialog = screen.getByRole('dialog', { name: signInCopy.title('hpc.ucsf.edu') });
+    expect(dialog).toHaveAccessibleDescription(signInCopy.lead);
+    const props = auth.props[auth.props.length - 1] as unknown as Record<string, unknown>;
+    expect(props.target).toEqual({ kind: 'setup', jobId: 'job-1' });
+    expect(props.connectionId).toBeUndefined();
+    fireEvent.click(screen.getByRole('button', { name: 'Simulate authenticated completion' }));
+    expect(onSignedIn).toHaveBeenCalledOnce();
+    fireEvent.click(screen.getByRole('button', { name: signInCopy.closeName }));
+    expect(onClose).toHaveBeenCalledOnce();
   });
 });
 
