@@ -5,6 +5,12 @@ const { fetchLlamaServer } = require('./fetch-llama-server');
 const { fetchEsbuild } = require('./fetch-esbuild');
 const { stageComputerUse } = require('./computer-use-resources');
 const { npmCommand } = require('./npm-command');
+const {
+  CREW_BROKER_DIR,
+  crewBrokerRequired,
+  inspectCrewBroker,
+  isCrewBrokerPath,
+} = require('./crew-broker-resources');
 
 // Paths
 const appRoot = path.join(__dirname, '..');
@@ -43,18 +49,25 @@ function matchesPattern(filename, patterns) {
 }
 
 // Helper function to clean directory of cross-platform files
-function cleanBinDirectory(targetPlatform) {
+//
+// It walks the top level only, and `crew-broker/` is skipped by name: the Linux Crew broker
+// ships in every package (crew-broker-resources.js), so it is never another platform's file.
+function cleanBinDirectory(targetPlatform, binDir = srcBinDir) {
   console.log(`Cleaning bin directory for ${targetPlatform} build...`);
 
-  if (!fs.existsSync(srcBinDir)) {
+  if (!fs.existsSync(binDir)) {
     console.log('src/bin directory does not exist, skipping cleanup');
     return;
   }
 
-  const files = fs.readdirSync(srcBinDir, { withFileTypes: true });
+  const files = fs.readdirSync(binDir, { withFileTypes: true });
 
   files.forEach((file) => {
-    const filePath = path.join(srcBinDir, file.name);
+    const filePath = path.join(binDir, file.name);
+
+    if (file.name === CREW_BROKER_DIR) {
+      return;
+    }
 
     if (targetPlatform === 'darwin' || targetPlatform === 'linux') {
       // For macOS/Linux, remove Windows-specific files
@@ -181,17 +194,25 @@ function listFilesRecursive(dir) {
 /// It has to recurse. The Linux packaging script removed `*.exe` with a
 /// top-level glob, which cannot match `bin/llamacpp/llama-server.exe`, and
 /// `cleanBinDirectory` walks one level for the same reason.
-function assertNoForeignBinaries(targetPlatform) {
+///
+/// `crew-broker/` is exempt by design, not by luck: it holds a Linux ELF in
+/// every package, macOS and Windows included, because the Crew setup service
+/// installs it on a server (crew-broker-resources.js checks it instead).
+function foreignBinaries(targetPlatform, binDir = srcBinDir) {
   const foreign = {
     darwin: [/\.exe$/i, /\.dll$/i, /\.cmd$/i],
     linux: [/\.exe$/i, /\.dll$/i, /\.cmd$/i],
     win32: [],
   }[targetPlatform];
-  if (!foreign || foreign.length === 0) return;
+  if (!foreign || foreign.length === 0) return [];
 
-  const offenders = listFilesRecursive(srcBinDir)
-    .filter((f) => foreign.some((re) => re.test(f)))
-    .map((f) => path.relative(srcBinDir, f));
+  return listFilesRecursive(binDir)
+    .map((f) => path.relative(binDir, f))
+    .filter((f) => !isCrewBrokerPath(f) && foreign.some((re) => re.test(f)));
+}
+
+function assertNoForeignBinaries(targetPlatform) {
+  const offenders = foreignBinaries(targetPlatform);
 
   if (offenders.length > 0) {
     const label = targetPlatform === 'darwin' ? 'macOS' : 'Linux';
@@ -264,6 +285,31 @@ function validateRequiredBinaries(targetPlatform) {
     console.error('');
     process.exit(1);
   }
+
+  validateCrewBroker(platformLabel);
+}
+
+// The Linux Crew broker the setup service installs on a server (OW-9). Required in a release
+// build (`--release`, or BIOROUTER_REQUIRE_CREW_BROKER=1, which scripts/release.sh sets); a dev
+// build without one still packages, with a warning, because only Crew setup needs it. A broker
+// that disagrees with its own manifest fails either way: it could never be installed.
+function validateCrewBroker(platformLabel) {
+  const { problems, warnings } = inspectCrewBroker(srcBinDir, {
+    required: crewBrokerRequired(),
+    appVersion: require('../package.json').version,
+  });
+  warnings.forEach((warning) => console.warn(`⚠️  ${warning}`));
+  if (problems.length > 0) {
+    console.error(`\n❌ PACKAGING ERROR: the ${platformLabel} bundle's Crew broker is not usable:`);
+    problems.forEach((problem) => console.error(`   - ${problem}`));
+    console.error('\nStage it first:');
+    console.error('  just stage-crew-broker');
+    console.error(
+      '  (or: scripts/stage-crew-broker.sh <linux release dir> ui/desktop/src/bin/crew-broker/linux-x86_64)'
+    );
+    console.error('');
+    process.exit(1);
+  }
 }
 
 // Main function
@@ -307,4 +353,4 @@ if (require.main === module) {
   preparePlatformBinaries();
 }
 
-module.exports = { preparePlatformBinaries };
+module.exports = { cleanBinDirectory, foreignBinaries, preparePlatformBinaries };

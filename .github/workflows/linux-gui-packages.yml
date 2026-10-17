@@ -94,6 +94,25 @@ jobs:
       - name: Re-assert the glibc floor on the downloaded binaries
         run: bash scripts/check-glibc-floor.sh
 
+      # The Crew setup service installs the Linux broker on a server from the copy a package
+      # carries (OW-9). Staged here from the artifact's own broker, with the manifest the
+      # service trusts; `build-linux-deb.sh` copies target/crew-broker/linux-x86_64 into the GUI
+      # packages, and `build-cli-linux-packages.sh` stages its own copy for the CLI ones.
+      #
+      # ⚠ Non-fatal when the artifact has no broker: the GUI packages then carry none and
+      # prepare-platform-binaries.js warns instead of failing, because this workflow does not
+      # set BIOROUTER_REQUIRE_CREW_BROKER. Today the chmod step above names the broker, so a
+      # missing one fails there first; this guards a later change to the artifact. A broker
+      # that IS present but fails staging (wrong ELF machine, glibc floor, version) still fails.
+      - name: Stage the Crew broker for the GUI packages
+        run: |
+          broker=target/x86_64-unknown-linux-gnu/release/biorouter-crew
+          if [ ! -f "$broker" ]; then
+            echo "::warning::the linux-backend artifact has no biorouter-crew; the GUI packages will carry no Crew broker"
+            exit 0
+          fi
+          bash scripts/stage-crew-broker.sh "$broker" target/crew-broker/linux-x86_64
+
       - uses: actions/setup-node@v4
         with:
           node-version: '24'
@@ -256,6 +275,20 @@ jobs:
           # only asking for the file by name sees it.
           [ -d "$res/bin/llamacpp" ] || { echo "::error::no llamacpp sidecar in the deb — prepare-platform-binaries.js did not run"; ls -la "$res/bin"; exit 1; }
           [ -d "$res/web" ] || { echo "::error::no browser interface bundle in the deb"; exit 1; }
+
+          # The Crew broker, whenever the staging step found one: in the shipped .deb, the bytes
+          # its manifest describes, and the very broker the artifact carried.
+          if [ -f target/crew-broker/linux-x86_64/manifest.json ]; then
+            node -e '
+              const { inspectCrewBroker } = require("./ui/desktop/scripts/crew-broker-resources");
+              const result = inspectCrewBroker(process.argv[1], { required: true, appVersion: process.argv[2] });
+              result.problems.forEach((problem) => console.log(`::error::${problem}`));
+              process.exit(result.problems.length > 0 ? 1 : 0);
+            ' "$res/bin" "$v"
+            cmp "$res/bin/crew-broker/linux-x86_64/biorouter-crew" target/x86_64-unknown-linux-gnu/release/biorouter-crew \
+              || { echo "::error::the deb's Crew broker is not the linux-backend artifact's"; exit 1; }
+            echo "the deb carries the Crew broker and its manifest"
+          fi
 
           # `ocu` at mode 0200 ships non-executable and Biorouter Copilot does
           # not work on Linux, with nothing in the test suite catching it. That
