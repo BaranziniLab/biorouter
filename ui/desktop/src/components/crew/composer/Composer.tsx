@@ -25,6 +25,7 @@ import { ModelTierMarks } from '../pane/CrewModelPicker';
 import {
   isAffiliationRefusal,
   isPublicModelRefusal,
+  knownInstitutions,
   modelDisplay,
   modelRefusalText,
   remoteAccessText,
@@ -32,7 +33,6 @@ import {
   usePanePresentation,
   wideRunChannels,
   workspaceInstitutionLabel,
-  knownInstitutions,
   type TaskStartCheck,
 } from '../pane/presentation';
 import { useConfiguredModels } from '../pane/useConfiguredModels';
