@@ -68,6 +68,21 @@ pub enum ClusterMode {
     #[default]
     Private,
 }
+/// What a connection's agents may do on the server (design OW-6). `Folder` is the confined work
+/// folder Crew always had; `Full` runs commands as the person's own account through their own
+/// bridge. "Off" is the absence of a work folder, not a level.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq, utoipa::ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum RemoteAccess {
+    #[default]
+    Folder,
+    Full,
+}
+impl RemoteAccess {
+    pub fn is_folder(&self) -> bool {
+        *self == Self::Folder
+    }
+}
 /// A connection to save or edit (`POST /crew/connections`, `PATCH /crew/connections/{id}`).
 #[derive(Clone, Debug, Deserialize, Serialize, utoipa::ToSchema)]
 #[serde(deny_unknown_fields)]
