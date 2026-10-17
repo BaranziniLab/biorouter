@@ -1,7 +1,7 @@
 use anyhow::{bail, Result};
 
 #[cfg(unix)]
-const USAGE: &str = "usage: biorouter-crew serve|start|status|stop (--state-dir PATH | --name NAME) [--name NAME] [--bootstrap-key HEX]; bridge --stdio --socket PATH --owner-uid UID --workspace-id UUID";
+const USAGE: &str = "usage: biorouter-crew serve|start|status|stop (--state-dir PATH | --name NAME) [--name NAME] [--bootstrap-key HEX]; delete (--state-dir PATH | --name NAME) --workspace-id UUID; bridge --stdio --socket PATH --owner-uid UID --workspace-id UUID";
 
 /// Where a named workspace keeps its state when `--state-dir` is not given:
 /// `$HOME/.local/share/biorouter-crew/<name>`. The name is validated first, so it is a plain
@@ -31,7 +31,7 @@ fn main() -> Result<()> {
         return Ok(());
     }
     if matches!(command, "help" | "--help" | "-h") {
-        println!("Usage: biorouter-crew start --name NAME --bootstrap-key HEX [--state-dir PATH]\n       biorouter-crew serve|start|status|stop --state-dir PATH [--name NAME] [--bootstrap-key HEX]\n       biorouter-crew bridge --stdio --socket PATH --owner-uid UID --workspace-id UUID\n       biorouter-crew --version\n--name names the workspace (lowercase letters, numbers and hyphens); without --state-dir its state lives in ~/.local/share/biorouter-crew/NAME. start prints the workspace's invitation line (brcrew1:...) to paste into Crew.\nBroker and bridge operations require Linux.");
+        println!("Usage: biorouter-crew start --name NAME --bootstrap-key HEX [--state-dir PATH]\n       biorouter-crew serve|start|status|stop --state-dir PATH [--name NAME] [--bootstrap-key HEX]\n       biorouter-crew delete (--state-dir PATH | --name NAME) --workspace-id UUID\n       biorouter-crew bridge --stdio --socket PATH --owner-uid UID --workspace-id UUID\n       biorouter-crew --version\n--name names the workspace (lowercase letters, numbers and hyphens); without --state-dir its state lives in ~/.local/share/biorouter-crew/NAME. start prints the workspace's invitation line (brcrew1:...) to paste into Crew. delete erases a stopped workspace's state directory, only the files Crew created; --workspace-id must be the ID of the workspace it holds.\nBroker and bridge operations require Linux.");
         return Ok(());
     }
 
@@ -52,7 +52,7 @@ fn main() -> Result<()> {
                 .parse()?,
             option("--workspace-id").ok_or_else(|| anyhow::anyhow!("--workspace-id required"))?,
         )?;
-    } else if matches!(command, "serve" | "start" | "status" | "stop") {
+    } else if matches!(command, "serve" | "start" | "status" | "stop" | "delete") {
         let name = option("--name");
         if args.iter().any(|arg| arg == "--name") && name.is_none() {
             bail!("--name requires a workspace name");
@@ -77,7 +77,12 @@ fn main() -> Result<()> {
             ),
         };
         let key = option("--bootstrap-key").unwrap_or("");
-        if command == "serve" {
+        if command == "delete" {
+            let workspace_id = option("--workspace-id").ok_or_else(|| {
+                anyhow::anyhow!("--workspace-id required: the ID of the workspace to delete")
+            })?;
+            println!("{}", biorouter_crew::delete_workspace(&root, workspace_id)?);
+        } else if command == "serve" {
             biorouter_crew::serve(&root, key, name)?;
         } else {
             let name = if command == "start" { name } else { None };
