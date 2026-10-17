@@ -218,7 +218,9 @@ while IFS= read -r line; do
   # and kept out of the log and the counts the plans read, so each plan means what it did.
   case "$line" in
     *'"method":"bridge.hello"'*)
-      id=$(printf '%s\n' "$line" | sed -n 's/.*"id":"\([^"]*\)".*/\1/p')
+      # Parameter expansion, not a `sed` child: a fork per connect slowed every timed plan.
+      id=${{line#*'"id":"'}}
+      id=${{id%%'"'*}}
       printf '{{"id":"%s","error":{{"code":"unsupported","message":"unsupported: method unavailable"}}}}\n' "$id"
       continue ;;
   esac

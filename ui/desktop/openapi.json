@@ -4929,7 +4929,7 @@
         ],
         "responses": {
           "200": {
-            "description": "`state` is `running`, `needs_sign_in` (open `POST /crew/setup/{job_id}/authentication`), `finished` (`outcome`), `failed` or `cancelled` (`error`: a typed code and a sentence, such as `crew_setup_cancelled`, `crew_setup_timed_out`, `crew_setup_sign_in_expired`, `crew_setup_start_failed`, `crew_install_checksum_mismatch` or an SSH code)",
+            "description": "`state` is `running`, `needs_sign_in` (open `POST /crew/setup/{job_id}/authentication`), `finished` (`outcome`), `failed` or `cancelled` (`error`: a typed code and a sentence, such as `crew_setup_cancelled`, `crew_setup_timed_out`, `crew_setup_sign_in_expired`, `crew_setup_start_failed` (`detail` is what Crew printed), `crew_host_storage_unsafe` (other accounts can write to a folder above where the workspace is kept; `detail` lists them, and starting again with `fix_storage_permissions` fixes the account's own), `crew_setup_changed`, `crew_install_checksum_mismatch` or an SSH code)",
             "content": {
               "application/json": {
                 "schema": {
@@ -12011,6 +12011,8 @@
           "crew_setup_not_waiting_for_sign_in",
           "crew_setup_server_unreadable",
           "crew_setup_start_failed",
+          "crew_setup_changed",
+          "crew_host_storage_unsafe",
           "crew_server_probe_unsupported",
           "crew_install_artifact_unavailable",
           "crew_install_unsupported_platform",
@@ -12526,7 +12528,8 @@
         "properties": {
           "expected_name": {
             "type": "string",
-            "description": "The workspace's name as the person typed it. The workspace refuses it when its name has\nchanged since (`name_changed`)."
+            "description": "The workspace's stored name, as the person confirmed it, or `null` for a workspace that\nhas no stored name (one from before names). Always sent: the workspace refuses it when\nits name is no longer this one (`name_changed`), so `null` deletes only a workspace that\nstill has none.",
+            "nullable": true
           },
           "request_id": {
             "type": "string",
@@ -19676,7 +19679,7 @@
         "properties": {
           "code": {
             "type": "string",
-            "description": "The SSH codes (`crew_ssh_auth_required`, `crew_ssh_key_refused`,\n`crew_ssh_host_key_unknown`, `crew_ssh_host_key_changed`, `crew_ssh_unreachable`,\n`crew_bridge_missing`, `crew_broker_not_running`, `crew_ssh_failed`), a connect's\n(`crew_workspace_identity_mismatch`, `crew_request_refused`), or one of setup's own:\n`crew_setup_cancelled`, `crew_setup_timed_out`, `crew_setup_sign_in_expired`,\n`crew_setup_server_unreadable` (the server's answer could not be read),\n`crew_setup_start_failed` (Crew did not start the workspace; see `outcome.host`),\n`crew_install_artifact_unavailable`, `crew_install_unsupported_platform`,\n`crew_install_dependency_missing`, `crew_install_incompatible` (the program there does\nnot run or name its version), `crew_install_unexpected_target` (a link, a folder or\nanother account's file where the program goes), `crew_install_checksum_tool_missing`,\n`crew_install_no_space`, `crew_install_permission_denied`, `crew_install_busy` (another\ninstall in the account), `crew_install_transfer_incomplete`,\n`crew_install_checksum_mismatch` (nothing was replaced) or\n`crew_install_outcome_unknown` (the connection dropped after the transfer; set up again\nto check)."
+            "description": "The SSH codes (`crew_ssh_auth_required`, `crew_ssh_key_refused`,\n`crew_ssh_host_key_unknown`, `crew_ssh_host_key_changed`, `crew_ssh_unreachable`,\n`crew_bridge_missing`, `crew_broker_not_running`, `crew_ssh_failed`), a connect's\n(`crew_workspace_identity_mismatch`, `crew_request_refused`), or one of setup's own:\n`crew_setup_cancelled`, `crew_setup_timed_out`, `crew_setup_sign_in_expired`,\n`crew_setup_server_unreadable` (the server's answer could not be read),\n`crew_setup_start_failed` (Crew did not start the workspace; see `outcome.host`, and\n`detail` for what Crew printed), `crew_host_storage_unsafe` (other accounts can write to\na folder above where the workspace is kept; `detail` lists them one per line, and\n`fix_storage_permissions` lets setup fix the ones the account owns),\n`crew_setup_changed` (the connection's login or route changed while the job ran),\n`crew_install_artifact_unavailable`, `crew_install_unsupported_platform`,\n`crew_install_dependency_missing`, `crew_install_incompatible` (the program there does\nnot run or name its version), `crew_install_unexpected_target` (a link, a folder or\nanother account's file where the program goes), `crew_install_checksum_tool_missing`,\n`crew_install_no_space`, `crew_install_permission_denied`, `crew_install_busy` (another\ninstall in the account), `crew_install_transfer_incomplete`,\n`crew_install_checksum_mismatch` (nothing was replaced) or\n`crew_install_outcome_unknown` (the connection dropped after the transfer; set up again\nto check)."
           },
           "detail": {
             "type": "string",
@@ -19792,6 +19795,39 @@
             "type": "boolean",
             "description": "The program already there was kept: the same version as this app's, a newer one, or an\nolder one that was not to be replaced."
           },
+          "upgraded_from": {
+            "allOf": [
+              {
+                "type": "object",
+                "description": "A Crew program a job replaced ([`SetupOutcome::upgraded_from`]).",
+                "required": [
+                  "installed_version",
+                  "installed_sha256"
+                ],
+                "properties": {
+                  "installed_sha256": {
+                    "type": "string",
+                    "description": "The SHA-256 of the program now installed."
+                  },
+                  "installed_version": {
+                    "type": "string",
+                    "description": "The version now installed."
+                  },
+                  "sha256": {
+                    "type": "string",
+                    "description": "The replaced program's SHA-256, as 64 lowercase hex digits.",
+                    "nullable": true
+                  },
+                  "version": {
+                    "type": "string",
+                    "description": "The version the replaced program named, when it named one.",
+                    "nullable": true
+                  }
+                }
+              }
+            ],
+            "nullable": true
+          },
           "work_folder": {
             "type": "string",
             "description": "The workspace's work folder on the server, as its canonical path.",
@@ -19807,12 +19843,30 @@
           "intent"
         ],
         "properties": {
+          "agent_access": {
+            "allOf": [
+              {
+                "type": "string",
+                "description": "A member's agent access, as setup is asked to set it (design OW-6).",
+                "enum": [
+                  "off",
+                  "folder",
+                  "full"
+                ]
+              }
+            ],
+            "nullable": true
+          },
+          "fix_storage_permissions": {
+            "type": "boolean",
+            "description": "Take write access for other accounts away (`chmod go-w`) from the folders the job finds\nabove where the workspace is kept, which the account owns, when Crew would otherwise\nrefuse to start there (`crew_host_storage_unsafe`). Only a host's job reads it."
+          },
           "intent": {
             "$ref": "#/components/schemas/SetupIntent"
           },
           "replace_existing": {
             "type": "boolean",
-            "description": "Replace a Crew program in the account that is older than this app's, or that does not\nrun. The one replaced stays as `biorouter-crew.previous`. A newer one is never replaced."
+            "description": "Replace a Crew program in the account that is older than this app's, or that does not\nrun. The one replaced stays as `biorouter-crew.previous`. A newer one is never replaced;\none of this app's version that is another build of it (another SHA-256) is replaced\nwhether or not this is set."
           },
           "target": {
             "$ref": "#/components/schemas/SetupTarget"
@@ -19844,7 +19898,8 @@
         "type": "object",
         "description": "What the server said about itself. Each field is `null` until the check has read it.",
         "required": [
-          "login"
+          "login",
+          "storage_unsafe"
         ],
         "properties": {
           "arch": {
@@ -19882,6 +19937,13 @@
           "os": {
             "type": "string",
             "nullable": true
+          },
+          "storage_unsafe": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Folders above where a host's workspace is kept (`~/.local/share/biorouter-crew`), as\ntheir real paths, that this account owns and other accounts may write to (group or other\nwrite, no sticky bit). Crew won't start a workspace under them\n(`crew_host_storage_unsafe`) until `chmod go-w` takes that away."
           },
           "uid": {
             "type": "integer",

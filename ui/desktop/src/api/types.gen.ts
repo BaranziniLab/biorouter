@@ -1113,7 +1113,7 @@ export type CrewError = {
  * client names every one; `openapi_contract_tests` fails on a code a Crew source answers that
  * is missing here, and on one listed here that nothing answers any more.
  */
-export type CrewErrorCode = 'crew_user_action_required' | 'crew_human_authority_unavailable' | 'crew_request_invalid' | 'crew_request_refused' | 'crew_credential_store_unavailable' | 'crew_credential_store_refused' | 'crew_registry_unreadable' | 'crew_connection_not_found' | 'crew_connection_required' | 'crew_not_connected' | 'crew_membership_ended' | 'crew_ssh_auth_required' | 'crew_ssh_key_refused' | 'crew_ssh_host_key_unknown' | 'crew_ssh_host_key_changed' | 'crew_ssh_unreachable' | 'crew_ssh_failed' | 'crew_bridge_missing' | 'crew_broker_not_running' | 'crew_handoff_failed' | 'crew_workspace_identity_mismatch' | 'crew_workspace_deleted' | 'crew_not_sent' | 'crew_outcome_unknown' | 'crew_reconnecting' | 'crew_mode_mismatch' | 'crew_institution_mismatch' | 'crew_public_model_refused' | 'crew_channel_not_in_workspace' | 'crew_model_fixed' | 'crew_typed_run_required' | 'crew_invalid_selector' | 'unknown_name' | 'ambiguous_name' | 'crew_idempotency_conflict' | 'crew_start_outcome_unknown' | 'crew_cancel_persistence_failed' | 'crew_session_unavailable' | 'crew_revocation_unconfirmed' | 'crew_revocation_not_saved' | 'crew_grant_not_found' | 'crew_grant_other_connection' | 'crew_grant_replaced' | 'crew_grant_ended' | 'crew_profile_refused' | 'crew_transfer_refused' | 'crew_file_is_credential' | 'crew_file_name_hidden' | 'crew_file_name_invisible' | 'crew_folder_shared' | 'crew_destination_is_folder' | 'crew_destination_exists' | 'crew_file_is_program' | 'observer_capacity_reached' | 'crew_invitation_invalid' | 'crew_invitation_conflict' | 'crew_connection_exists' | 'crew_join_unsupported' | 'crew_join_not_approved' | 'crew_join_code_mismatch' | 'crew_join_not_invited' | 'crew_join_expired' | 'crew_join_replaced' | 'crew_join_account_changed' | 'crew_join_device_conflict' | 'crew_join_identity_conflict' | 'crew_join_refused' | 'crew_host_setup_unknown' | 'crew_host_setup_used' | 'crew_host_start_busy' | 'crew_host_start_not_found' | 'crew_host_start_timed_out' | 'crew_host_start_cancelled' | 'crew_setup_busy' | 'crew_setup_not_found' | 'crew_setup_cancelled' | 'crew_setup_timed_out' | 'crew_setup_sign_in_expired' | 'crew_setup_not_waiting_for_sign_in' | 'crew_setup_server_unreadable' | 'crew_setup_start_failed' | 'crew_server_probe_unsupported' | 'crew_install_artifact_unavailable' | 'crew_install_unsupported_platform' | 'crew_install_dependency_missing' | 'crew_install_incompatible' | 'crew_install_unexpected_target' | 'crew_install_checksum_tool_missing' | 'crew_install_no_space' | 'crew_install_permission_denied' | 'crew_install_busy' | 'crew_install_transfer_incomplete' | 'crew_install_checksum_mismatch' | 'crew_install_outcome_unknown';
+export type CrewErrorCode = 'crew_user_action_required' | 'crew_human_authority_unavailable' | 'crew_request_invalid' | 'crew_request_refused' | 'crew_credential_store_unavailable' | 'crew_credential_store_refused' | 'crew_registry_unreadable' | 'crew_connection_not_found' | 'crew_connection_required' | 'crew_not_connected' | 'crew_membership_ended' | 'crew_ssh_auth_required' | 'crew_ssh_key_refused' | 'crew_ssh_host_key_unknown' | 'crew_ssh_host_key_changed' | 'crew_ssh_unreachable' | 'crew_ssh_failed' | 'crew_bridge_missing' | 'crew_broker_not_running' | 'crew_handoff_failed' | 'crew_workspace_identity_mismatch' | 'crew_workspace_deleted' | 'crew_not_sent' | 'crew_outcome_unknown' | 'crew_reconnecting' | 'crew_mode_mismatch' | 'crew_institution_mismatch' | 'crew_public_model_refused' | 'crew_channel_not_in_workspace' | 'crew_model_fixed' | 'crew_typed_run_required' | 'crew_invalid_selector' | 'unknown_name' | 'ambiguous_name' | 'crew_idempotency_conflict' | 'crew_start_outcome_unknown' | 'crew_cancel_persistence_failed' | 'crew_session_unavailable' | 'crew_revocation_unconfirmed' | 'crew_revocation_not_saved' | 'crew_grant_not_found' | 'crew_grant_other_connection' | 'crew_grant_replaced' | 'crew_grant_ended' | 'crew_profile_refused' | 'crew_transfer_refused' | 'crew_file_is_credential' | 'crew_file_name_hidden' | 'crew_file_name_invisible' | 'crew_folder_shared' | 'crew_destination_is_folder' | 'crew_destination_exists' | 'crew_file_is_program' | 'observer_capacity_reached' | 'crew_invitation_invalid' | 'crew_invitation_conflict' | 'crew_connection_exists' | 'crew_join_unsupported' | 'crew_join_not_approved' | 'crew_join_code_mismatch' | 'crew_join_not_invited' | 'crew_join_expired' | 'crew_join_replaced' | 'crew_join_account_changed' | 'crew_join_device_conflict' | 'crew_join_identity_conflict' | 'crew_join_refused' | 'crew_host_setup_unknown' | 'crew_host_setup_used' | 'crew_host_start_busy' | 'crew_host_start_not_found' | 'crew_host_start_timed_out' | 'crew_host_start_cancelled' | 'crew_setup_busy' | 'crew_setup_not_found' | 'crew_setup_cancelled' | 'crew_setup_timed_out' | 'crew_setup_sign_in_expired' | 'crew_setup_not_waiting_for_sign_in' | 'crew_setup_server_unreadable' | 'crew_setup_start_failed' | 'crew_setup_changed' | 'crew_host_storage_unsafe' | 'crew_server_probe_unsupported' | 'crew_install_artifact_unavailable' | 'crew_install_unsupported_platform' | 'crew_install_dependency_missing' | 'crew_install_incompatible' | 'crew_install_unexpected_target' | 'crew_install_checksum_tool_missing' | 'crew_install_no_space' | 'crew_install_permission_denied' | 'crew_install_busy' | 'crew_install_transfer_incomplete' | 'crew_install_checksum_mismatch' | 'crew_install_outcome_unknown';
 
 /**
  * `DELETE /crew/files/{capability_id}`.
@@ -1444,10 +1444,12 @@ export type DeleteWorkflowRequest = {
  */
 export type DeleteWorkspaceRequest = {
     /**
-     * The workspace's name as the person typed it. The workspace refuses it when its name has
-     * changed since (`name_changed`).
+     * The workspace's stored name, as the person confirmed it, or `null` for a workspace that
+     * has no stored name (one from before names). Always sent: the workspace refuses it when
+     * its name is no longer this one (`name_changed`), so `null` deletes only a workspace that
+     * still has none.
      */
-    expected_name: string;
+    expected_name: string | null;
     /**
      * The request's idempotency key, so a retry after `crew_outcome_unknown` is the same
      * deletion. Optional.
@@ -5230,7 +5232,11 @@ export type SetupError = {
      * (`crew_workspace_identity_mismatch`, `crew_request_refused`), or one of setup's own:
      * `crew_setup_cancelled`, `crew_setup_timed_out`, `crew_setup_sign_in_expired`,
      * `crew_setup_server_unreadable` (the server's answer could not be read),
-     * `crew_setup_start_failed` (Crew did not start the workspace; see `outcome.host`),
+     * `crew_setup_start_failed` (Crew did not start the workspace; see `outcome.host`, and
+     * `detail` for what Crew printed), `crew_host_storage_unsafe` (other accounts can write to
+     * a folder above where the workspace is kept; `detail` lists them one per line, and
+     * `fix_storage_permissions` lets setup fix the ones the account owns),
+     * `crew_setup_changed` (the connection's login or route changed while the job ran),
      * `crew_install_artifact_unavailable`, `crew_install_unsupported_platform`,
      * `crew_install_dependency_missing`, `crew_install_incompatible` (the program there does
      * not run or name its version), `crew_install_unexpected_target` (a link, a folder or
@@ -5317,6 +5323,27 @@ export type SetupOutcome = {
      */
     reused: boolean;
     /**
+     * A Crew program a job replaced ([`SetupOutcome::upgraded_from`]).
+     */
+    upgraded_from?: {
+        /**
+         * The SHA-256 of the program now installed.
+         */
+        installed_sha256: string;
+        /**
+         * The version now installed.
+         */
+        installed_version: string;
+        /**
+         * The replaced program's SHA-256, as 64 lowercase hex digits.
+         */
+        sha256?: string | null;
+        /**
+         * The version the replaced program named, when it named one.
+         */
+        version?: string | null;
+    } | null;
+    /**
      * The workspace's work folder on the server, as its canonical path.
      */
     work_folder?: string | null;
@@ -5326,10 +5353,22 @@ export type SetupOutcome = {
  * What to set up (`POST /crew/setup`).
  */
 export type SetupRequest = {
+    /**
+     * A member's agent access, as setup is asked to set it (design OW-6).
+     */
+    agent_access?: 'off' | 'folder' | 'full' | null;
+    /**
+     * Take write access for other accounts away (`chmod go-w`) from the folders the job finds
+     * above where the workspace is kept, which the account owns, when Crew would otherwise
+     * refuse to start there (`crew_host_storage_unsafe`). Only a host's job reads it.
+     */
+    fix_storage_permissions?: boolean;
     intent: SetupIntent;
     /**
      * Replace a Crew program in the account that is older than this app's, or that does not
-     * run. The one replaced stays as `biorouter-crew.previous`. A newer one is never replaced.
+     * run. The one replaced stays as `biorouter-crew.previous`. A newer one is never replaced;
+     * one of this app's version that is another build of it (another SHA-256) is replaced
+     * whether or not this is set.
      */
     replace_existing?: boolean;
     target: SetupTarget;
@@ -5366,6 +5405,13 @@ export type SetupServer = {
      */
     login: string;
     os?: string | null;
+    /**
+     * Folders above where a host's workspace is kept (`~/.local/share/biorouter-crew`), as
+     * their real paths, that this account owns and other accounts may write to (group or other
+     * write, no sticky bit). Crew won't start a workspace under them
+     * (`crew_host_storage_unsafe`) until `chmod go-w` takes that away.
+     */
+    storage_unsafe: Array<string>;
     uid?: number | null;
     user?: string | null;
 };
@@ -9470,7 +9516,7 @@ export type CrewSetupStatusError = CrewSetupStatusErrors[keyof CrewSetupStatusEr
 
 export type CrewSetupStatusResponses = {
     /**
-     * `state` is `running`, `needs_sign_in` (open `POST /crew/setup/{job_id}/authentication`), `finished` (`outcome`), `failed` or `cancelled` (`error`: a typed code and a sentence, such as `crew_setup_cancelled`, `crew_setup_timed_out`, `crew_setup_sign_in_expired`, `crew_setup_start_failed`, `crew_install_checksum_mismatch` or an SSH code)
+     * `state` is `running`, `needs_sign_in` (open `POST /crew/setup/{job_id}/authentication`), `finished` (`outcome`), `failed` or `cancelled` (`error`: a typed code and a sentence, such as `crew_setup_cancelled`, `crew_setup_timed_out`, `crew_setup_sign_in_expired`, `crew_setup_start_failed` (`detail` is what Crew printed), `crew_host_storage_unsafe` (other accounts can write to a folder above where the workspace is kept; `detail` lists them, and starting again with `fix_storage_permissions` fixes the account's own), `crew_setup_changed`, `crew_install_checksum_mismatch` or an SSH code)
      */
     200: SetupStatus;
 };
