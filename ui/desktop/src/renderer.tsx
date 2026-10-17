@@ -66,20 +66,34 @@ function getHeadlessConfig(): HeadlessConfig {
   const isLocalhost = ['localhost', '127.0.0.1'].includes(window.location.hostname);
   // A page the daemon served itself carries this global (see
   // `crates/biorouter-server/src/routes/web_ui.rs`). That daemon serves the API
-  // on the very same origin, so the origin IS the base. The two fallbacks below
-  // it are for a page served by something else: the loopback guess names a port
-  // the daemon need not be on, and would be meaningless from another machine.
+  // beside the page, so the address the page is mounted at IS the base: the
+  // origin, plus the path a reverse proxy serves it under (issue #402, e.g.
+  // JupyterHub's `/user/<name>/proxy/<port>/`). The daemon cannot know that
+  // path, since a proxy strips it, but it does know how deep below the mount
+  // each request was, and names the mount in a `<base href>`, so the base URI
+  // is it. The two fallbacks below are for a page served by something else:
+  // the loopback guess names a port the daemon need not be on, and would be
+  // meaningless from another machine.
   const servedByDaemon = Boolean(window.__BIOROUTER_HEADLESS_CONFIG__);
+  const mountUrl = servedByDaemon
+    ? new URL('./', document.baseURI).href.replace(/\/+$/, '')
+    : window.location.origin;
+  // ⚠ Never from the address bar on a page the daemon served. That page holds
+  // the daemon's secret and sends it with every request, so `?api=` or
+  // `?headless=` naming another host would hand the secret, and everything the
+  // person types, to whoever wrote the link. Any site can send a browser to such
+  // a link, and with `--no-token` the shell is served to it.
+  const queryBase = (name: string) => (servedByDaemon ? null : params.get(name));
   const apiBaseUrl =
     globalConfig.apiBaseUrl ||
-    params.get('api') ||
+    queryBase('api') ||
     (servedByDaemon
-      ? window.location.origin
+      ? mountUrl
       : isLocalhost
         ? 'http://127.0.0.1:3000'
         : `${window.location.origin}/api`);
   const headlessBaseUrl =
-    globalConfig.headlessBaseUrl || params.get('headless') || `${window.location.origin}/headless`;
+    globalConfig.headlessBaseUrl || queryBase('headless') || `${mountUrl}/headless`;
 
   if (querySecret) {
     window.sessionStorage?.setItem('biorouter-headless-secret', querySecret);

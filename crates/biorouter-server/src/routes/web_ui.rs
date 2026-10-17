@@ -28,8 +28,8 @@
 //! 1. `biorouter serve` mints a browser token for the launch and prints it in
 //!    the URL it shows the user.
 //! 2. `GET /?t=<token>` validates it, sets a session cookie, and answers a
-//!    short page of this origin that moves the browser on to `/`, so the token
-//!    leaves the address bar ([`exchange_bounce`]).
+//!    short page of this origin that moves the browser on to the interface's
+//!    mount, so the token leaves the address bar ([`exchange_bounce`]).
 //! 3. `GET /` with that cookie returns the shell, with the daemon's secret
 //!    injected into it.
 //! 4. From then on the application presents `X-Secret-Key` exactly as the
@@ -69,8 +69,9 @@
 //!
 //! # The shell shares its origin with code an agent wrote
 //!
-//! Those apps are served from this same origin, and the cookie is `Path=/`, so
-//! it rides along on any request an app's script makes here. An app could
+//! Those apps are served from this same origin, and the cookie's `Path` is the
+//! interface's own (`/`, or the prefix `--public-url` declared), so it rides
+//! along on any request an app's script makes here. An app could
 //! `fetch('/')` or frame `/` and read the secret out of the shell. So the shell
 //! is served only to a document navigation (`auth::is_document_navigation`),
 //! cannot be framed, and its opener policy (`SHELL_CSP`) leaves an app that
@@ -122,6 +123,11 @@ pub struct WebUi {
     /// The browser token, hex-encoded. `None` disables the gate entirely, which
     /// is only correct for a loopback bind the launcher chose not to token.
     browser_token: Option<String>,
+    /// The `Path` of the session cookie: `/`, or the path prefix a reverse proxy
+    /// serves the interface under, from `biorouter serve --public-url`
+    /// (`routes::PublicUrl`). Behind JupyterHub every user's server shares one
+    /// hostname, and a cookie at `/` would carry this token to all of them.
+    cookie_path: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -138,15 +144,20 @@ impl WebUi {
     /// which is why the document is gated: anyone who can read the shell can
     /// drive the API, and that is the intended equivalence — a browser that has
     /// authenticated is as capable as the desktop application.
+    ///
+    /// `public_path` is the path of the address `biorouter serve --public-url`
+    /// declared, `/` or a prefix with no trailing slash, and scopes the cookie.
     pub fn new(
         web_dir: &Path,
         secret_key: &str,
         browser_token: Option<String>,
+        public_path: Option<&str>,
     ) -> std::io::Result<Self> {
         let raw = std::fs::read_to_string(web_dir.join("index.html"))?;
         Ok(Self {
             index_html: inject_runtime_config(&raw, secret_key),
             browser_token,
+            cookie_path: public_path.unwrap_or("/").to_string(),
         })
     }
 
@@ -154,8 +165,11 @@ impl WebUi {
         match &self.browser_token {
             // No token configured: the launcher bound loopback and chose not to
             // require one. `biorouter serve` refuses this combination for any
-            // non-loopback bind, so reaching here means the only callers are on
-            // this machine.
+            // non-loopback bind, so reaching here means every caller is on this
+            // machine: its other accounts, and a reverse proxy on it forwarding
+            // whoever reaches the proxy. That is the operator's call to make,
+            // and why `docs/deployment/browser-access.md` keeps the token on a
+            // JupyterHub whose users share one machine.
             None => true,
             Some(expected) => presented.is_some_and(|p| super::secret_matches(p, expected)),
         }
@@ -164,8 +178,10 @@ impl WebUi {
 
 /// Splice the runtime configuration the renderer reads into the shell.
 ///
-/// `ui/desktop/src/renderer.tsx` looks for `window.__BIOROUTER_HEADLESS_CONFIG__`
-/// and derives its API base, its interface-endpoint base and its secret from it.
+/// `ui/desktop/src/renderer.tsx` looks for `window.__BIOROUTER_HEADLESS_CONFIG__`,
+/// takes its secret from it, and reads its presence as "the daemon served me",
+/// which sends it to the shell's `<base href>` ([`with_base`]) for its API base
+/// and its interface-endpoint base.
 /// Everything downstream of that global — the shim that stands in for
 /// `window.electron`, the API client, the secret handling — already exists and
 /// is untouched by this change.
@@ -178,13 +194,18 @@ impl WebUi {
 fn inject_runtime_config(raw: &str, secret_key: &str) -> String {
     // `apiBaseUrl` is deliberately ABSENT rather than empty. The renderer treats
     // the mere presence of this global as "the daemon served me", and then uses
-    // its own origin -- which is the only correct answer, and the only one the
-    // daemon could not supply: it does not know the address the browser used.
-    // An empty string here would be falsy and fall through to the renderer's
-    // `http://127.0.0.1:3000` guess, which names a port the daemon need not be
-    // on and is meaningless from another machine.
+    // the address it is mounted at -- which is the only correct answer, and the
+    // only one the daemon could not supply: it does not know the address the
+    // browser used. An empty string here would be falsy and fall through to the
+    // renderer's `http://127.0.0.1:3000` guess, which names a port the daemon
+    // need not be on and is meaningless from another machine.
+    //
+    // `headlessBaseUrl` is absent for the same reason. It used to be the literal
+    // `/headless`, which is right only at the root of a hostname; behind a
+    // proxy that serves the interface under a path (issue #402) it sent every
+    // interface request to the proxy's root. The renderer derives it from the
+    // mount, the `<base href>` [`index`] writes into the shell.
     let config = serde_json::json!({
-        "headlessBaseUrl": "/headless",
         "secretKey": secret_key,
     });
     // `</script>` inside a JSON string would close the tag early. The daemon
@@ -275,14 +296,22 @@ async fn index(
         return not_a_navigation();
     }
 
+    // Where the interface is mounted, relative to where this request landed.
+    // See [`mount_href`].
+    let mount = mount_href(uri.path());
+
     // The token in the URL is exchanged for a cookie and the browser is moved
     // on, so it does not linger in the address bar, in the tab's history, or in
     // the `Referer` of anything the page later loads.
     if let Some(token) = query.t.as_deref() {
         if ui.token_matches(Some(token)) {
-            return exchange_bounce(&format!(
-                "{SESSION_COOKIE}={token}; Path=/; HttpOnly; SameSite=Strict"
-            ));
+            return exchange_bounce(
+                &format!(
+                    "{SESSION_COOKIE}={token}; Path={}; HttpOnly; SameSite=Strict",
+                    ui.cookie_path
+                ),
+                &mount,
+            );
         }
         return unauthorized();
     }
@@ -300,8 +329,63 @@ async fn index(
         .header(header::CONTENT_SECURITY_POLICY, SHELL_CSP)
         .header(header::X_FRAME_OPTIONS, "DENY")
         .header("cross-origin-opener-policy", "same-origin")
-        .body(Body::from(ui.index_html.clone()))
+        .body(Body::from(with_base(&ui.index_html, &mount)))
         .expect("valid html response")
+}
+
+/// The interface's mount, as a URL relative to the path a request was sent to:
+/// `./` for `/` (or any path one segment deep), `../` one directory further
+/// down, and so on.
+///
+/// The bundle is built with a relative base (`npm run build:web` passes `--base
+/// ./`), so every URL it holds -- the entry script and stylesheet in the shell,
+/// the code-split chunks, the fonts its stylesheets name -- resolves against
+/// the document, and the renderer reads its API base off the same document
+/// (`renderer.tsx`). Naming the mount in a `<base href>` is what lets one
+/// bundle work wherever it is opened:
+///
+/// - at the root of a hostname, which is what it always did;
+/// - under a path prefix a reverse proxy strips before forwarding (issue #402:
+///   JupyterHub's `/user/<name>/proxy/<port>/`, nginx's `location /p/ {
+///   proxy_pass http://127.0.0.1:8765/; }`). The daemon never sees the prefix,
+///   and does not need to: the part of the path below the mount is the same on
+///   both sides of the proxy, so the distance back up to the mount is too;
+/// - on a path that is not the mount at all, which falls through to the shell.
+///   A relative bundle there would ask for `/x/assets/...` and be answered
+///   with this page as a script, which is why the bundle used to have to be
+///   built with an absolute base, and why this cannot be left to the document's
+///   own URL.
+///
+/// It names only `.` and `..` segments, so nothing from the request reaches the
+/// page, and it always resolves to this origin, which the bundle's own content
+/// policy (`base-uri 'self'`, in the `<meta>` of `ui/desktop/index.html`)
+/// accepts.
+fn mount_href(path: &str) -> String {
+    match path.matches('/').count().saturating_sub(1) {
+        0 => "./".to_string(),
+        depth => "../".repeat(depth),
+    }
+}
+
+/// The shell with `<base href="{mount}">` as the first element of its head, so
+/// it precedes every URL the head holds.
+fn with_base(shell: &str, mount: &str) -> String {
+    let base = format!("<base href=\"{mount}\">");
+    match shell.find("<head>") {
+        Some(at) => {
+            // `split_at`, as in `inject_runtime_config`, because this workspace
+            // denies `string_slice`; `find` gives a character boundary.
+            let (before, after) = shell.split_at(at + "<head>".len());
+            let mut out = String::with_capacity(shell.len() + base.len());
+            out.push_str(before);
+            out.push_str(&base);
+            out.push_str(after);
+            out
+        }
+        // Not something Vite produces; `inject_runtime_config` already put its
+        // own snippet first in that case, and this goes before it.
+        None => format!("{base}{shell}"),
+    }
 }
 
 /// The policy the shell is served under. Only `frame-ancestors`: the shell's
@@ -325,7 +409,7 @@ fn insecure_address() -> Response<Body> {
             (header::CONTENT_TYPE, "text/plain; charset=utf-8"),
             (header::CACHE_CONTROL, "no-store"),
         ],
-        "Open Biorouter through localhost or HTTPS. Use an SSH tunnel or a TLS proxy and a current browser that sends Fetch Metadata.",
+        "Open Biorouter through localhost or HTTPS. Use an SSH tunnel, or an HTTPS reverse proxy that passes the browser's Sec-Fetch-* headers through, and a current browser that sends them.",
     )
         .into_response()
 }
@@ -359,8 +443,9 @@ fn not_a_navigation() -> Response<Body> {
 /// cookie goes with it. The same rule, for the same reason, as an app's launch
 /// link (`routes::apps::launch_bounce`). A meta refresh rather than a script,
 /// because the page's policy allows no script, and no token in the page: the
-/// cookie carries it, and the address the page moves to is `/`.
-fn exchange_bounce(cookie: &str) -> Response<Body> {
+/// cookie carries it, and the address the page moves to is the mount
+/// ([`mount_href`]), relative, so the browser stays under a proxy's path prefix.
+fn exchange_bounce(cookie: &str, mount: &str) -> Response<Body> {
     Response::builder()
         .status(StatusCode::OK)
         .header(header::CONTENT_TYPE, "text/html; charset=utf-8")
@@ -372,15 +457,21 @@ fn exchange_bounce(cookie: &str) -> Response<Body> {
              form-action 'none'; frame-ancestors 'none'",
         )
         .header(header::SET_COOKIE, cookie)
-        .body(Body::from(EXCHANGE_BOUNCE_HTML))
+        .body(Body::from(exchange_bounce_html(mount)))
         .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
 }
 
-const EXCHANGE_BOUNCE_HTML: &str = "<!doctype html><meta charset=utf-8>\
-     <meta http-equiv=\"refresh\" content=\"0;url=/\">\
-     <title>Opening Biorouter</title>\
-     <body style=\"font:15px system-ui;margin:3rem auto;max-width:32rem\">\
-     <p>Opening Biorouter. If nothing happens, <a href=\"/\">continue here</a>.</p>";
+/// `mount` is a [`mount_href`], only `.` and `..` segments, so it needs no
+/// escaping in an attribute.
+fn exchange_bounce_html(mount: &str) -> String {
+    format!(
+        "<!doctype html><meta charset=utf-8>\
+         <meta http-equiv=\"refresh\" content=\"0;url={mount}\">\
+         <title>Opening Biorouter</title>\
+         <body style=\"font:15px system-ui;margin:3rem auto;max-width:32rem\">\
+         <p>Opening Biorouter. If nothing happens, <a href=\"{mount}\">continue here</a>.</p>"
+    )
+}
 
 /// Refuse without saying anything a caller does not already know.
 fn unauthorized() -> Response<Body> {
@@ -426,6 +517,7 @@ mod tests {
         WebUi {
             index_html: "<html><head></head><body>shell</body></html>".to_string(),
             browser_token: token.map(str::to_string),
+            cookie_path: "/".to_string(),
         }
     }
 
@@ -439,6 +531,9 @@ mod tests {
             !out.contains("apiBaseUrl"),
             "apiBaseUrl must be absent so the renderer uses its own origin"
         );
+        // So must the interface endpoints' base: the literal `/headless` it
+        // used to be is wrong under a proxy's path prefix (issue #402).
+        assert!(!out.contains("headlessBaseUrl"), "{out}");
         assert!(out.contains("\"secretKey\":\"deadbeef\""));
         // Injected inside <head>, so it runs before the module bundle that
         // reads it.
@@ -569,8 +664,9 @@ mod tests {
             .await
             .unwrap();
         let body = String::from_utf8(body.to_vec()).unwrap();
+        // Relative, so a browser under a proxy's path prefix stays under it.
         assert!(
-            body.contains("<meta http-equiv=\"refresh\" content=\"0;url=/\">"),
+            body.contains("<meta http-equiv=\"refresh\" content=\"0;url=./\">"),
             "{body}"
         );
         assert!(
@@ -679,6 +775,7 @@ mod tests {
                 "lan-secret",
             ),
             browser_token: Some("tok".into()),
+            cookie_path: "/".to_string(),
         };
         for forwarded in [None, Some("https")] {
             for token in [None, Some("tok")] {
@@ -709,28 +806,116 @@ mod tests {
         }
     }
 
+    /// Issue #402. A browser sends Fetch Metadata only to an https or loopback
+    /// address, so a navigation carrying it through a proxy is the browser
+    /// saying it applies the shell's protections there. What the proxy chain
+    /// says about the scheme is not asked: JupyterHub's configurable-http-proxy
+    /// appends `http` after the TLS terminator's `https`, and its documented
+    /// nginx block sends `X-Scheme` and no `X-Forwarded-Proto` at all. Each of
+    /// those was refused with "Open Biorouter through localhost or HTTPS".
     #[tokio::test]
     async fn modern_tls_proxy_navigations_can_open_the_shell_and_exchange_tokens() {
         let ui = ui_with(Some("tok"));
-        for token in [None, Some("tok")] {
-            let mut headers = cookie_request(Some("navigate"), Some("document"));
-            headers.insert(header::HOST, "biorouter.example.org".parse().unwrap());
-            headers.insert("x-forwarded-proto", "https".parse().unwrap());
+        for proto in [Some("https"), Some("https,http"), Some("http"), None] {
+            for token in [None, Some("tok")] {
+                let mut headers = cookie_request(Some("navigate"), Some("document"));
+                headers.insert(header::HOST, "biorouter.example.org".parse().unwrap());
+                if let Some(proto) = proto {
+                    headers.insert("x-forwarded-proto", proto.parse().unwrap());
+                }
+                let res = index(
+                    State(ui.clone()),
+                    headers,
+                    Query(IndexQuery {
+                        t: token.map(str::to_owned),
+                    }),
+                    Uri::default(),
+                )
+                .await;
+                assert_eq!(res.status(), StatusCode::OK, "{proto:?} {token:?}");
+                assert_eq!(
+                    res.headers().get(header::SET_COOKIE).is_some(),
+                    token.is_some()
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn the_mount_is_named_relative_to_where_the_request_landed() {
+        for (path, mount) in [
+            ("/", "./"),
+            ("/sessions", "./"),
+            ("/sessions/", "../"),
+            ("/a/b", "../"),
+            ("/a/b/c", "../../"),
+            ("/a//b", "../../"),
+            ("", "./"),
+        ] {
+            assert_eq!(mount_href(path), mount, "{path:?}");
+        }
+    }
+
+    /// The bundle is relative, so the shell names its mount before anything in
+    /// its head asks for a URL. At `/` that is `./`, which is what the document's
+    /// own address already said; on a path that fell through to the shell it is
+    /// the way back up, so `./assets/...` does not become `/x/assets/...`.
+    #[tokio::test]
+    async fn the_shell_names_its_mount_first_in_its_head() {
+        let ui = WebUi {
+            index_html: inject_runtime_config(
+                "<!doctype html><html><head><meta charset=utf-8>\
+                 <script type=module src=\"./assets/index.js\"></script></head><body></body></html>",
+                "s3cr3t",
+            ),
+            browser_token: None,
+            cookie_path: "/".to_string(),
+        };
+        for (uri, mount) in [("/", "./"), ("/x/y/z", "../../")] {
             let res = index(
                 State(ui.clone()),
-                headers,
-                Query(IndexQuery {
-                    t: token.map(str::to_owned),
-                }),
-                Uri::default(),
+                cookie_request(Some("navigate"), Some("document")),
+                Query(IndexQuery { t: None }),
+                uri.parse().unwrap(),
             )
             .await;
             assert_eq!(res.status(), StatusCode::OK);
-            assert_eq!(
-                res.headers().get(header::SET_COOKIE).is_some(),
-                token.is_some()
+            let body = axum::body::to_bytes(res.into_body(), 64 * 1024)
+                .await
+                .unwrap();
+            let body = String::from_utf8(body.to_vec()).unwrap();
+            assert!(
+                body.starts_with(&format!(
+                    "<!doctype html><html><head><base href=\"{mount}\"><meta charset=utf-8>"
+                )),
+                "{uri}: {body}"
             );
+            assert_eq!(body.matches("<base").count(), 1, "{body}");
         }
+    }
+
+    /// Behind a proxy's path prefix (`biorouter serve --public-url
+    /// https://hub/user/a/proxy/8765/`) the session cookie is scoped to that
+    /// prefix: every JupyterHub user's server shares the hostname, and a cookie
+    /// at `/` would carry this token to all of them.
+    #[tokio::test]
+    async fn the_session_cookie_is_scoped_to_the_declared_public_path() {
+        let ui = WebUi {
+            cookie_path: "/user/a/proxy/8765".to_string(),
+            ..ui_with(Some("tok"))
+        };
+        let res = index(
+            State(ui),
+            cookie_request(Some("navigate"), Some("document")),
+            Query(IndexQuery {
+                t: Some("tok".into()),
+            }),
+            Uri::default(),
+        )
+        .await;
+        assert_eq!(res.status(), StatusCode::OK);
+        let cookie = res.headers()[header::SET_COOKIE].to_str().unwrap();
+        assert!(cookie.contains("; Path=/user/a/proxy/8765; "), "{cookie}");
     }
 
     #[tokio::test]
@@ -753,6 +938,7 @@ mod tests {
         let ui = WebUi {
             index_html: inject_runtime_config("<html><head></head><body></body></html>", "s3cr3t"),
             browser_token: Some("tok".into()),
+            cookie_path: "/".to_string(),
         };
         for (mode, dest) in [
             (Some("cors"), Some("empty")),

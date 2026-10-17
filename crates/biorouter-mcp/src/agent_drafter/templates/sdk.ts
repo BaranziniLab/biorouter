@@ -522,14 +522,37 @@ function getClientId(appId: string): string {
 }
 
 /**
- * The endpoint the page's own origin implies. `null` under `file://`, where
- * there is no host to derive one from.
+ * The path a reverse proxy serves the daemon under, read off a `path` that
+ * holds this app's own `/apps/<id>/`: `""` at the root of a hostname, and
+ * `/user/a/proxy/8765` behind a proxy that strips that prefix before
+ * forwarding (issue #402), which the daemon never sees and so cannot tell the
+ * page. A path without the app's segment (an export's own page, a test) has
+ * none, so everything derived from it is what it always was.
+ */
+function proxyPrefix(path: string, appId: string): string {
+  const at = path.indexOf(`/apps/${appId}/`);
+  return at > 0 ? path.slice(0, at) : "";
+}
+
+/** The path prefix of this page's own address; see {@link proxyPrefix}. */
+function pagePrefix(appId: string): string {
+  try {
+    return proxyPrefix(window.location.pathname, appId);
+  } catch {
+    return "";
+  }
+}
+
+/**
+ * The endpoint the page's own origin implies, under the page's path prefix
+ * ({@link proxyPrefix}). `null` under `file://`, where there is no host to
+ * derive one from.
  */
 function sameOriginEndpoint(appId: string): string | null {
   const loc = window.location;
   if (loc.protocol !== "http:" && loc.protocol !== "https:") return null;
   const proto = loc.protocol === "https:" ? "wss:" : "ws:";
-  return `${proto}//${loc.host}/apps/${appId}/agent`;
+  return `${proto}//${loc.host}${pagePrefix(appId)}/apps/${appId}/agent`;
 }
 
 /**
@@ -818,7 +841,11 @@ export class BioRouterClient {
 
   constructor(config: AppConfig) {
     this.config = config;
-    figureFramePath = "/apps/" + encodeURIComponent(config.appId) + "/figure-frame";
+    figureFramePath =
+      pagePrefix(encodeURIComponent(config.appId)) +
+      "/apps/" +
+      encodeURIComponent(config.appId) +
+      "/figure-frame";
     this.ui = new UiRuntime(this);
   }
 
@@ -1232,14 +1259,17 @@ export class BioRouterClient {
    */
   private httpBase(): string {
     const ep = this.activeEndpoint;
-    const appPath = `/apps/${encodeURIComponent(this.config.appId)}`;
+    const id = encodeURIComponent(this.config.appId);
+    const appPath = `/apps/${id}`;
     if (ep) {
       const u = new URL(ep);
       const proto = u.protocol === "wss:" ? "https:" : "http:";
-      return `${proto}//${u.host}${appPath}`;
+      // Under the endpoint's own path prefix, so a page behind a proxy that
+      // strips one asks for `<prefix>/apps/<id>/models`, not the proxy's root.
+      return `${proto}//${u.host}${proxyPrefix(u.pathname, id)}${appPath}`;
     }
     const loc = window.location;
-    return `${loc.protocol}//${loc.host}${appPath}`;
+    return `${loc.protocol}//${loc.host}${pagePrefix(id)}${appPath}`;
   }
 
   /** Provider/model catalog the user has available (the provider-agnostic

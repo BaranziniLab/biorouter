@@ -92,11 +92,15 @@ pub async fn handle_serve(
     token: Option<String>,
     no_token: bool,
     web_dir: Option<PathBuf>,
+    public_url: Option<String>,
     open_browser: bool,
     computer_use_approval: bool,
 ) -> Result<()> {
     let computer_use_digest = configure_computer_use_approval(computer_use_approval)?;
     let bind_is_loopback = host_is_loopback(&host);
+    // Before anything starts, so a typo is a message here rather than a daemon
+    // that refuses to start.
+    let public_url = choose_public_url(public_url, std::env::var(PUBLIC_URL_ENV).ok())?;
 
     // A credential that is optional on an exposed port is not a credential; it
     // is a setting nobody changed. So the token is mandatory the moment the bind
@@ -152,6 +156,17 @@ pub async fn handle_serve(
             command.env_remove("BIOROUTER_BROWSER_TOKEN");
         }
     }
+    // Set from the choice above, or removed: the daemon reads this variable on
+    // its own, so one this shell exports but that was not chosen here would
+    // reach it without the banner saying so.
+    match public_url.as_deref() {
+        Some(url) => {
+            command.env(PUBLIC_URL_ENV, url);
+        }
+        None => {
+            command.env_remove(PUBLIC_URL_ENV);
+        }
+    }
     let mut child = command
         .env("BIOROUTER_HOST", &host)
         .env("BIOROUTER_PORT", port.to_string())
@@ -204,8 +219,20 @@ pub async fn handle_serve(
             }
         }
 
-        let url = browser_url(&host, port, browser_token.value());
-        print_banner(&url, &host, port, &browser_token, bind_is_loopback);
+        let local_url = browser_url(&host, port, browser_token.value());
+        let url = match public_url.as_deref() {
+            Some(public) => with_token(public, browser_token.value()),
+            None => local_url.clone(),
+        };
+        let proxied_to = public_url.as_ref().map(|_| browser_url(&host, port, None));
+        print_banner(
+            &url,
+            &host,
+            port,
+            &browser_token,
+            bind_is_loopback,
+            proxied_to.as_deref(),
+        );
         if computer_use_approval {
             eprintln!("  Biorouter Copilot approval is configured. Enter your approval key in the browser when approving a task.");
             eprintln!("  Biorouter Copilot controls this backend host's desktop, not a remote browser's device.");
@@ -298,14 +325,24 @@ fn token_flag_warning(token: &BrowserToken) -> Option<&'static str> {
 }
 
 /// What the operator reads once the daemon is answering.
+///
+/// `proxied_to` is this daemon's own address when `url` is a reverse proxy's
+/// (`--public-url`), so the operator can check the proxy forwards there.
 fn print_banner(
     url: &str,
     host: &str,
     port: u16,
     browser_token: &BrowserToken,
     bind_is_loopback: bool,
+    proxied_to: Option<&str>,
 ) {
     println!("\n  Biorouter is serving at\n\n      {url}\n");
+    if let Some(local) = proxied_to {
+        println!(
+            "  through a reverse proxy that forwards it to {local},\n  removing any path \
+             prefix on the way and passing WebSocket upgrades through.\n"
+        );
+    }
     if !bind_is_loopback {
         match reachable_address(host) {
             Some(addr) => println!(
@@ -551,6 +588,90 @@ fn browser_url(host: &str, port: u16, token: Option<&str>) -> String {
     match token {
         Some(t) => format!("http://{host}:{port}/?t={t}"),
         None => format!("http://{host}:{port}/"),
+    }
+}
+
+/// The variable `biorouter serve` hands the daemon the public address in
+/// (`--public-url`). The daemon's own name for it is
+/// `biorouter_server::routes::PUBLIC_URL_ENV`; this crate does not depend on
+/// that one, so the literal is repeated, as the user-action variable is.
+const PUBLIC_URL_ENV: &str = "BIOROUTER_PUBLIC_URL";
+
+/// The address a reverse proxy serves the interface at: `--public-url`, else
+/// `BIOROUTER_PUBLIC_URL` from this shell, else none. The same order as the
+/// token's ([`choose_browser_token`]), and a blank variable reads as unset.
+///
+/// Returned normalised, with the trailing slash a relative bundle needs to
+/// resolve its assets under the prefix (issue #402). Refused, with the reason,
+/// when it is not an `http` or `https` URL with a host and nothing but a path
+/// after it; the daemon applies the same rule (`routes::PublicUrl::parse`) and
+/// would refuse to start on it.
+pub(crate) fn choose_public_url(
+    flag: Option<String>,
+    variable: Option<String>,
+) -> Result<Option<String>> {
+    let Some(raw) = flag.or_else(|| variable.filter(|value| !value.trim().is_empty())) else {
+        return Ok(None);
+    };
+    let raw = raw.trim();
+    let mut url = url::Url::parse(raw).with_context(|| {
+        format!("--public-url {raw:?} is not a URL; give the whole address, https:// and all")
+    })?;
+    if !matches!(url.scheme(), "http" | "https") {
+        bail!("--public-url {raw:?} must be an http or https address");
+    }
+    // The daemon's rule (`routes::PublicUrl::parse`): a host a browser origin
+    // can carry, and https unless it is this machine.
+    let loopback = match url.host() {
+        None => bail!("--public-url {raw:?} names no host"),
+        Some(url::Host::Domain(name)) => {
+            if !name
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'.' | b'_'))
+            {
+                bail!("--public-url {raw:?} names a host no browser address can carry");
+            }
+            let name = name.trim_end_matches('.').to_ascii_lowercase();
+            name == "localhost" || name.ends_with(".localhost")
+        }
+        Some(url::Host::Ipv4(address)) => address.is_loopback(),
+        Some(url::Host::Ipv6(address)) => address.is_loopback(),
+    };
+    if url.scheme() == "http" && !loopback {
+        bail!(
+            "--public-url {raw:?} is plain http at a network address. A browser applies the \
+             interface's protections only over https or on this machine, and serve refuses the \
+             interface at such an address; give the https address of the proxy in front of it"
+        );
+    }
+    if !url.username().is_empty() || url.password().is_some() {
+        bail!("--public-url {raw:?} must not carry a user name or password");
+    }
+    if url.query().is_some() || url.fragment().is_some() {
+        bail!(
+            "--public-url {raw:?} must not carry a query or a fragment; the access token is \
+             added to the address this command prints"
+        );
+    }
+    let allowed = |b: u8| b.is_ascii_alphanumeric() || b"-._~!$&'()*+,=:@%/".contains(&b);
+    if !url.path().bytes().all(allowed) {
+        bail!(
+            "the path of --public-url {raw:?} may hold only letters, digits, percent escapes and \
+             - . _ ~ ! $ & ' ( ) * + , = : @ /"
+        );
+    }
+    if !url.path().ends_with('/') {
+        let path = format!("{}/", url.path());
+        url.set_path(&path);
+    }
+    Ok(Some(url.to_string()))
+}
+
+/// `url` with the browser token as its query, or unchanged without one.
+fn with_token(url: &str, token: Option<&str>) -> String {
+    match token {
+        Some(t) => format!("{url}?t={t}"),
+        None => url.to_string(),
     }
 }
 
@@ -810,6 +931,75 @@ mod tests {
     fn the_default_port_does_not_collide_with_the_daemon_it_starts() {
         // biorouterd's own default is 3000, and so was the old `biorouter web`.
         assert_ne!(DEFAULT_PORT, 3000);
+    }
+
+    /// Issue #402: `--public-url` is back, for a reverse proxy that serves the
+    /// interface under a path (JupyterHub's `/user/<name>/proxy/<port>/`). The
+    /// trailing slash is added, because the relative bundle resolves its assets
+    /// against it, and the token goes after it.
+    #[test]
+    fn a_public_url_is_normalised_and_carries_the_token() {
+        let chosen = |flag: Option<&str>, variable: Option<&str>| {
+            choose_public_url(flag.map(str::to_string), variable.map(str::to_string)).unwrap()
+        };
+        assert_eq!(chosen(None, None), None);
+        assert_eq!(chosen(None, Some("  ")), None);
+        assert_eq!(
+            chosen(Some("https://hub.example.org/user/a/proxy/8765"), None).as_deref(),
+            Some("https://hub.example.org/user/a/proxy/8765/")
+        );
+        assert_eq!(
+            chosen(Some("https://hub.example.org"), None).as_deref(),
+            Some("https://hub.example.org/")
+        );
+        // Plain http is accepted on this machine only.
+        assert_eq!(
+            chosen(Some("http://localhost:8765/x"), None).as_deref(),
+            Some("http://localhost:8765/x/")
+        );
+        // The flag outranks the variable, which is read when there is no flag.
+        assert_eq!(
+            chosen(
+                Some("https://a.example.org/x/"),
+                Some("https://b.example.org/")
+            )
+            .as_deref(),
+            Some("https://a.example.org/x/")
+        );
+        assert_eq!(
+            chosen(None, Some("https://b.example.org/y")).as_deref(),
+            Some("https://b.example.org/y/")
+        );
+        assert_eq!(
+            with_token("https://hub.example.org/p/", Some("abc")),
+            "https://hub.example.org/p/?t=abc"
+        );
+        assert_eq!(
+            with_token("https://hub.example.org/p/", None),
+            "https://hub.example.org/p/"
+        );
+    }
+
+    /// The daemon refuses to start on the same values
+    /// (`routes::PublicUrl::parse`); saying so here names the flag.
+    #[test]
+    fn a_public_url_that_is_not_a_plain_web_address_is_refused() {
+        for refused in [
+            "hub.example.org/prefix/",
+            "ftp://hub.example.org/",
+            "https://user:pw@hub.example.org/",
+            "https://hub.example.org/?t=abc",
+            "https://hub.example.org/#top",
+            "https://hub.example.org/a;Domain=evil.net/",
+            "http://10.0.0.5:8080/",
+            "http://hub.example.org/",
+            "https://a*b.example.org/",
+        ] {
+            let error = choose_public_url(Some(refused.to_string()), None)
+                .expect_err(refused)
+                .to_string();
+            assert!(error.contains("--public-url"), "{refused}: {error}");
+        }
     }
 
     #[test]

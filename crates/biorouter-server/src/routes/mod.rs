@@ -297,6 +297,152 @@ pub(crate) fn declared_renderer_origin() -> Option<&'static DeclaredRenderer> {
     DECLARED.as_ref()
 }
 
+/// The environment variable `biorouter serve --public-url` sets to tell the
+/// daemon the address a browser reaches its interface at, when that is a
+/// reverse proxy rather than the daemon's own listener (issue #402).
+///
+/// The daemon learns two things from it and nothing else:
+///
+/// - the **origin**, which the WebSocket gates admit beside the daemon's own
+///   ([`UpgradeOrigin::is_this_daemons`]). Behind a chain of proxies, the `Host`
+///   and `X-Forwarded-Proto` that reach the daemon need not describe the
+///   address the browser used (JupyterHub's configurable-http-proxy appends its
+///   own `http` after the TLS terminator's `https`), and an operator who wrote
+///   the address down should not have to make every hop agree about it;
+/// - the **path**, which scopes the browser session cookie (`routes::web_ui`),
+///   so a token is not sent to every other server under the same hostname, as
+///   each JupyterHub user's is.
+///
+/// It widens nothing a browser page could use. An `Origin` is set by the
+/// browser and cannot be written by script, so admitting the declared one
+/// admits pages served at the address the operator says is this interface.
+pub const PUBLIC_URL_ENV: &str = "BIOROUTER_PUBLIC_URL";
+
+/// The address a browser reaches this daemon's interface at, as `biorouter
+/// serve --public-url` declared it. See [`PUBLIC_URL_ENV`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PublicUrl {
+    origin: WebOrigin,
+    /// `/`, or the prefix with no trailing slash: `/user/a/proxy/8765`.
+    path: String,
+}
+
+impl PublicUrl {
+    /// An `http` or `https` URL with a host and nothing a browser would not
+    /// send back: no credentials, query or fragment. The path may carry percent
+    /// escapes; every other character in it must be one a URL path allows
+    /// unescaped, except `;`, which would end the cookie's `Path` attribute.
+    ///
+    /// `biorouter serve` applies the same rule before it starts the daemon, so
+    /// an operator hears about a typo there; this is the daemon refusing to start
+    /// on a value nobody checked, for a launcher that is not `serve`.
+    pub fn parse(value: &str) -> Result<Self, String> {
+        let value = value.trim();
+        let url = url::Url::parse(value).map_err(|e| format!("{value:?} is not a URL ({e})"))?;
+        if !matches!(url.scheme(), "http" | "https") {
+            return Err(format!("{value:?} is not an http or https address"));
+        }
+        if !url.username().is_empty() || url.password().is_some() {
+            return Err(format!("{value:?} carries a user name or password"));
+        }
+        if url.query().is_some() || url.fragment().is_some() {
+            return Err(format!("{value:?} carries a query or a fragment"));
+        }
+        let host = url
+            .host_str()
+            .ok_or_else(|| format!("{value:?} names no host"))?;
+        // `Url` drops a scheme's default port, as a browser's `Origin` does.
+        let authority = match url.port() {
+            Some(port) => format!("{host}:{port}"),
+            None => host.to_string(),
+        };
+        let origin = WebOrigin::with_authority(url.scheme(), &authority)
+            .ok_or_else(|| format!("{value:?} names a host no browser origin can carry"))?;
+        // A browser applies the shell's protections only at a secure address,
+        // and at a plain-HTTP network address the daemon refuses the interface
+        // (`auth::reached_over_a_secure_context`). Declaring one would only make
+        // the live views connect to a page that cannot be served, or, behind a
+        // proxy that rewrites `Host` to loopback, to one served without them.
+        if url.scheme() == "http" && !host_is_loopback_name(host) {
+            return Err(format!(
+                "{value:?} is plain http at a network address; use the https address of the \
+                 proxy in front of it"
+            ));
+        }
+        let allowed = |b: u8| b.is_ascii_alphanumeric() || b"-._~!$&'()*+,=:@%/".contains(&b);
+        if !url.path().bytes().all(allowed) {
+            return Err(format!(
+                "the path of {value:?} may hold only letters, digits, percent escapes and \
+                 - . _ ~ ! $ & ' ( ) * + , = : @ /"
+            ));
+        }
+        let path = url.path().trim_end_matches('/');
+        Ok(Self {
+            origin,
+            path: if path.is_empty() {
+                "/".to_string()
+            } else {
+                path.to_string()
+            },
+        })
+    }
+
+    /// The origin of a page served at this address.
+    pub fn origin(&self) -> &WebOrigin {
+        &self.origin
+    }
+
+    /// `/`, or the path prefix with no trailing slash.
+    pub fn path(&self) -> &str {
+        &self.path
+    }
+}
+
+/// Whether a URL's host names this machine the way a browser counts as secure:
+/// a loopback address, `localhost`, or a name under `.localhost`. `host` is as
+/// `url::Url::host_str` writes it, an IPv6 address in brackets.
+fn host_is_loopback_name(host: &str) -> bool {
+    let bare = host.trim_start_matches('[').trim_end_matches(']');
+    if let Ok(address) = bare.parse::<std::net::IpAddr>() {
+        return address.is_loopback();
+    }
+    let name = bare.trim_end_matches('.').to_ascii_lowercase();
+    name == "localhost" || name.ends_with(".localhost")
+}
+
+/// This process's declared public address, read once, and only on a daemon
+/// that serves the web interface (`BIOROUTER_SERVE_UI`, which `biorouter serve`
+/// sets beside it). The desktop application hands its daemon its whole
+/// environment, so a value exported in someone's shell must not reach the
+/// desktop daemon's socket gates. A value that does not parse is `None` here;
+/// `commands::agent` refuses to start on one, so a running daemon never
+/// reaches this with it.
+pub(crate) fn declared_public_url() -> Option<&'static PublicUrl> {
+    static DECLARED: LazyLock<Option<PublicUrl>> = LazyLock::new(|| {
+        public_url_from(
+            std::env::var(SERVE_UI_ENV).ok().as_deref(),
+            std::env::var(PUBLIC_URL_ENV).ok().as_deref(),
+        )
+        .and_then(Result::ok)
+    });
+    DECLARED.as_ref()
+}
+
+/// The variable that makes a daemon serve the web interface
+/// (`configuration::Settings::serve_ui`).
+const SERVE_UI_ENV: &str = "BIOROUTER_SERVE_UI";
+
+/// The public address a daemon with these two variables declares: none unless
+/// it serves the web interface and names one, else the parse of it.
+pub fn public_url_from(
+    serve_ui: Option<&str>,
+    public_url: Option<&str>,
+) -> Option<Result<PublicUrl, String>> {
+    let serves_the_interface = serve_ui.is_some_and(|dir| !dir.trim().is_empty());
+    let value = public_url.filter(|value| !value.trim().is_empty())?;
+    serves_the_interface.then(|| PublicUrl::parse(value))
+}
+
 /// What a WebSocket upgrade says about where it came from and where it was
 /// sent, read off the request once so that both socket gates — the workspace
 /// socket and the per-app agent socket — ask the same question of it.
@@ -323,6 +469,9 @@ pub(crate) struct UpgradeOrigin<'a> {
     /// The renderer this daemon's launcher declared, if any; see
     /// [`RENDERER_ORIGIN_ENV`].
     pub renderer: Option<&'a DeclaredRenderer>,
+    /// The public address `biorouter serve --public-url` declared, if any; see
+    /// [`PUBLIC_URL_ENV`].
+    pub public: Option<&'a PublicUrl>,
 }
 
 impl<'a> UpgradeOrigin<'a> {
@@ -336,11 +485,13 @@ impl<'a> UpgradeOrigin<'a> {
                 .and_then(|value| value.to_str().ok()),
             scheme: request_scheme(headers),
             renderer: declared_renderer_origin(),
+            public: declared_public_url(),
         }
     }
 
     /// Is the page behind this upgrade one of this daemon's own: served from
-    /// its origin, or the renderer its launcher declared?
+    /// its origin, from the public address its launcher declared (a reverse
+    /// proxy in front of it), or the renderer its launcher declared?
     ///
     /// `false` when the upgrade carries no `Origin`. Whether that is admitted
     /// is each gate's own decision, and both admit it, because their token is
@@ -350,6 +501,9 @@ impl<'a> UpgradeOrigin<'a> {
             return false;
         };
         origin_matches_host(origin, self.host, self.scheme)
+            || self
+                .public
+                .is_some_and(|public| WebOrigin::parse(origin).as_ref() == Some(public.origin()))
             || matches!(
                 self.renderer,
                 Some(DeclaredRenderer::LoopbackHttp(renderer))
@@ -434,7 +588,7 @@ pub(crate) fn body_of<'a>(src: &'a str, signature: &str) -> &'a str {
 mod origin_tests {
     use super::{
         declared_renderer, is_local_origin, origin_matches_host, request_scheme, DeclaredRenderer,
-        UpgradeOrigin, WebOrigin,
+        PublicUrl, UpgradeOrigin, WebOrigin,
     };
     use axum::http::HeaderMap;
 
@@ -682,6 +836,7 @@ mod origin_tests {
             host: Some("127.0.0.1:9380"),
             scheme: "http",
             renderer,
+            public: None,
         };
         assert!(upgrade(Some("http://127.0.0.1:9380"), None).is_this_daemons());
         assert!(upgrade(Some("http://localhost:5173"), Some(&vite)).is_this_daemons());
@@ -691,6 +846,126 @@ mod origin_tests {
         assert!(!upgrade(Some("http://localhost:5173"), None).is_this_daemons());
         // No Origin is not "this daemon's"; each gate decides that case itself.
         assert!(!upgrade(None, Some(&vite)).is_this_daemons());
+    }
+
+    /// Issue #402: behind JupyterHub, the browser's page is
+    /// `https://hub.example.org/user/a/proxy/8765/`, the `Host` is preserved,
+    /// and `X-Forwarded-Proto` arrives as `https,http` because
+    /// configurable-http-proxy appends its own scheme after the TLS
+    /// terminator's. The same-origin test reads the last value and refuses the
+    /// interface's own socket. The address the operator declared with
+    /// `--public-url` is admitted whatever the hops in between said, and admits
+    /// nothing beside itself.
+    #[test]
+    fn the_declared_public_address_is_this_daemons_whatever_the_proxy_chain_said() {
+        let public = PublicUrl::parse("https://hub.example.org/user/a/proxy/8765/").unwrap();
+        let upgrade = |origin, host, scheme, public| UpgradeOrigin {
+            origin,
+            origin_unreadable: false,
+            host,
+            scheme,
+            renderer: None,
+            public,
+        };
+        let page = Some("https://hub.example.org");
+        let hub = Some("hub.example.org");
+        // Without the declaration, the appended `http` refuses the real page.
+        assert!(!upgrade(page, hub, "http", None).is_this_daemons());
+        // With it, the page is admitted, and so it is when a hop rewrote `Host`.
+        assert!(upgrade(page, hub, "http", Some(&public)).is_this_daemons());
+        assert!(upgrade(page, Some("127.0.0.1:8765"), "http", Some(&public)).is_this_daemons());
+        // Exactly that origin: not its plain-http twin, a neighbour, or a port.
+        for other in [
+            "http://hub.example.org",
+            "https://evil.example.org",
+            "https://hub.example.org.evil.net",
+            "https://hub.example.org:8443",
+            "null",
+        ] {
+            assert!(
+                !upgrade(Some(other), Some("127.0.0.1:8765"), "http", Some(&public))
+                    .is_this_daemons(),
+                "{other}"
+            );
+        }
+        // No Origin is still each gate's own question.
+        assert!(!upgrade(None, hub, "https", Some(&public)).is_this_daemons());
+    }
+
+    /// The desktop application hands its daemon its whole environment, so a
+    /// value someone exported must not reach a daemon that serves no interface:
+    /// not to refuse its start, and not to widen its socket gates.
+    #[test]
+    fn a_public_url_is_read_only_by_a_daemon_that_serves_the_interface() {
+        let url = Some("https://hub.example.org/p/");
+        assert!(super::public_url_from(None, url).is_none());
+        assert!(super::public_url_from(Some(" "), url).is_none());
+        assert!(super::public_url_from(None, Some("not a url")).is_none());
+        assert!(matches!(
+            super::public_url_from(Some("/usr/share/biorouter/web"), url),
+            Some(Ok(_))
+        ));
+        assert!(matches!(
+            super::public_url_from(Some("/usr/share/biorouter/web"), Some("not a url")),
+            Some(Err(_))
+        ));
+        assert!(super::public_url_from(Some("/usr/share/biorouter/web"), Some("")).is_none());
+    }
+
+    #[test]
+    fn a_public_url_keeps_its_origin_and_its_path_without_the_trailing_slash() {
+        let parsed = |value: &str| {
+            let url = PublicUrl::parse(value).unwrap_or_else(|e| panic!("{value}: {e}"));
+            (url.origin().to_string(), url.path().to_string())
+        };
+        let expect = |origin: &str, path: &str| (origin.to_string(), path.to_string());
+        assert_eq!(
+            parsed("https://proxy.example.org/prefix/"),
+            expect("https://proxy.example.org", "/prefix")
+        );
+        assert_eq!(
+            parsed("https://Proxy.Example.org:443/a/b"),
+            expect("https://proxy.example.org", "/a/b")
+        );
+        // Plain http only on this machine (an SSH tunnel's far end).
+        assert_eq!(
+            parsed("http://127.0.0.1:8765"),
+            expect("http://127.0.0.1:8765", "/")
+        );
+        assert_eq!(
+            parsed("http://localhost:8765/x/"),
+            expect("http://localhost:8765", "/x")
+        );
+        assert_eq!(
+            parsed("https://[::1]:9443/"),
+            expect("https://[::1]:9443", "/")
+        );
+        // A JupyterHub user name is percent-encoded in its prefix, and stays so.
+        assert_eq!(
+            parsed("https://hub.example.org/user/foo%40bar.org/proxy/8765/"),
+            expect("https://hub.example.org", "/user/foo%40bar.org/proxy/8765")
+        );
+        for refused in [
+            "",
+            "hub.example.org/prefix/",
+            "ftp://hub.example.org/",
+            "file:///tmp/x",
+            "https://user:pw@hub.example.org/",
+            "https://hub.example.org/?t=token",
+            "https://hub.example.org/#top",
+            // `;` would end the cookie's Path attribute and start another.
+            "https://hub.example.org/a;Domain=evil.net/",
+            // Plain http at a network address: the interface is refused there.
+            "http://10.0.0.5:8080",
+            "http://hub.example.org/",
+            // A host no browser origin carries.
+            "https://a*b.example.org/",
+        ] {
+            assert!(
+                PublicUrl::parse(refused).is_err(),
+                "{refused:?} must be refused"
+            );
+        }
     }
 
     /// The packaged renderer's `file:` page is a DIFFERENT question from
@@ -712,6 +987,7 @@ mod origin_tests {
             host: Some("127.0.0.1:9380"),
             scheme: "http",
             renderer,
+            public: None,
         };
         assert!(upgrade(Some("file://"), Some(&electron)).is_declared_electron_renderer());
         // Nothing declared — `biorouter serve`, or a hand-run `biorouterd`.

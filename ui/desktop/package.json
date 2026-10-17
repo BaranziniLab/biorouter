@@ -10,7 +10,7 @@
   "scripts": {
     "typecheck": "tsc --noEmit",
     "generate-api": "openapi-ts",
-    "build:web": "vite build --config vite.renderer.config.mts --outDir src/web --emptyOutDir",
+    "build:web": "vite build --config vite.renderer.config.mts --base ./ --outDir src/web --emptyOutDir",
     "start-gui": "npm run generate-api && electron-forge start",
     "start-gui-debug": "npm run generate-api && electron-forge start -- --inspect=9229",
     "start": "cd ../.. && just run-ui",

@@ -1792,6 +1792,38 @@ async function runSelftest() {
     "KNOWN_EVENT_KINDS is not Object.keys(KNOWN_EVENT_KINDS_MAP)"
   );
 
+  // ── Issue #402: an app behind a reverse proxy that strips a path prefix ────
+  // The daemon serves the page at `/apps/<id>/` and never sees the prefix, so
+  // the SDK reads it off the page's own address. At the root, and on an
+  // export's own page that holds no `/apps/<id>/`, nothing changes.
+  async function firstSocketUrl(pagePath) {
+    const domP = new JSDOM(
+      '<!doctype html><html><head><title>p</title></head><body></body></html>',
+      { url: `http://127.0.0.1:${PORT}${pagePath}`, runScripts: "outside-only", pretendToBeVisual: true }
+    );
+    const w = domP.window;
+    const seen = [];
+    w.WebSocket = function (url) {
+      seen.push(String(url));
+      throw new Error("no ws (prefix probe)");
+    };
+    w.console = { log() {}, info() {}, debug() {}, error() {}, warn() {} };
+    w.BIOROUTER_APP_CONFIG = { appId: "prefixed-app", autoChat: false, ui: false };
+    w.eval(bundle);
+    await delay(30);
+    domP.window.close();
+    return (seen[0] || "").split("?")[0];
+  }
+  const origin = `ws://127.0.0.1:${PORT}`;
+  for (const [pagePath, expected] of [
+    ["/user/a/proxy/9/apps/prefixed-app/", `${origin}/user/a/proxy/9/apps/prefixed-app/agent`],
+    ["/apps/prefixed-app/", `${origin}/apps/prefixed-app/agent`],
+    ["/", `${origin}/apps/prefixed-app/agent`],
+  ]) {
+    const got = await firstSocketUrl(pagePath);
+    check(`an app page at ${pagePath} connects its socket under that page's prefix`, got === expected, got);
+  }
+
   dom.window.close();
   log(failures === 0 ? "ALL PASS" : `${failures} FAILURE(S)`);
   return failures === 0 ? 0 : 1;
