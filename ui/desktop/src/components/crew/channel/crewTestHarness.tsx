@@ -33,6 +33,8 @@ export const connection = {
   institution_id: 'ucsf',
   status: 'connected' as const,
   remote_execution: false,
+  remote_access: 'folder' as const,
+  workspace_deleted: false,
 };
 
 export const alice = {
