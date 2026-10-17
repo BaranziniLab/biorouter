@@ -53,8 +53,8 @@ const DEFAULT_LIST: usize = 500;
 const MAX_LIST: usize = 2_000;
 /// The largest attachment a transfer moves, as the broker allows.
 const MAX_TRANSFER: u64 = 1 << 30;
-/// The largest file `remote.hash` reads in one answer.
-const MAX_HASH: u64 = 2 << 30;
+/// The largest file `remote.hash` reads in one answer, which the relay waits for.
+const MAX_HASH: u64 = 1 << 30;
 /// How long a cancelled job's process group has between `SIGTERM` and `SIGKILL`.
 const CANCEL_GRACE: Duration = Duration::from_secs(5);
 /// A record with neither a process nor an exit this long after it was made never started.
@@ -457,7 +457,7 @@ fn hash(path: &Path) -> Result<Value> {
     ensure!(metadata.is_file(), "not a regular file");
     ensure!(
         metadata.len() <= MAX_HASH,
-        "invalid_params: remote.hash reads files up to 2 GiB; run sha256sum with remote.shell for larger ones"
+        "invalid_params: remote.hash reads files up to 1 GiB; run sha256sum with remote.shell for larger ones"
     );
     let mut hasher = Sha256::new();
     let mut buffer = vec![0u8; 1 << 20];
@@ -1095,6 +1095,10 @@ fn linux_supervise(dir: &Path) -> Result<()> {
             Ok(())
         });
     }
+    // A cancel that arrived before the command started stops it from starting at all.
+    if dir.join("cancel.json").exists() {
+        return finish("cancelled", json!({}));
+    }
     let mut child = match command.spawn() {
         Ok(child) => child,
         Err(error) => {
@@ -1129,7 +1133,10 @@ fn linux_supervise(dir: &Path) -> Result<()> {
         if let Some(status) = child.try_wait()? {
             break status;
         }
-        let stop = STOP_REQUESTED.load(std::sync::atomic::Ordering::SeqCst);
+        // A cancel the bridge recorded before this process's group was known to it (or that
+        // could not signal it) is honored here.
+        let stop = STOP_REQUESTED.load(std::sync::atomic::Ordering::SeqCst)
+            || dir.join("cancel.json").exists();
         if stopped.is_none() && (stop || Instant::now() >= deadline) {
             stopped = Some(if stop { "cancelled" } else { "timed_out" });
             unsafe { libc::kill(-(pid as i32), libc::SIGTERM) };

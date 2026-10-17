@@ -166,7 +166,10 @@ fn a_command_runs_as_the_account_with_network_and_children() {
     assert_eq!(answer["job_id"], id.as_str());
     assert!(stdout.contains(&format!("job={id}")), "{stdout}");
     // A login shell's startup files may add to standard error; the command's own line is there.
-    assert!(answer["stderr_tail"].as_str().unwrap().contains("oops\n"), "{answer}");
+    assert!(
+        answer["stderr_tail"].as_str().unwrap().contains("oops\n"),
+        "{answer}"
+    );
     assert_eq!(answer["truncated"], false);
     let dir = home.context.jobs.join(&id);
     assert_eq!(
@@ -430,6 +433,42 @@ fn at_most_eight_jobs_run_at_once() {
     }
     home.call("remote.shell", shell("true", "ninth", json!({})))
         .unwrap();
+}
+
+/// The supervisor never starts a command whose cancel was recorded first, and refuses a job
+/// directory other accounts could write into.
+#[test]
+fn a_cancel_recorded_before_the_start_keeps_the_command_from_running() {
+    let home = Home::new("early-cancel");
+    let dir = home.path.join("job");
+    fs::create_dir(&dir).unwrap();
+    fs::set_permissions(&dir, fs::Permissions::from_mode(0o700)).unwrap();
+    let marker = home.path.join("ran");
+    let record = json!({
+        "job_id": "early", "kind": "shell", "owner_id": "owner-1", "detach": false,
+        "timeout_seconds": 10, "cwd": home.path, "parent_pid": std::process::id(),
+        "argv": ["/bin/sh", "-c", format!("touch {}", marker.display())],
+    });
+    fs::write(dir.join("job.json"), record.to_string()).unwrap();
+    fs::write(dir.join("cancel.json"), "{}").unwrap();
+    let status = std::process::Command::new(env!("CARGO_BIN_EXE_biorouter-crew"))
+        .arg("__crew-run")
+        .arg(&dir)
+        .status()
+        .unwrap();
+    assert!(status.success());
+    let exit: Value = serde_json::from_slice(&fs::read(dir.join("exit.json")).unwrap()).unwrap();
+    assert_eq!(exit["state"], "cancelled", "{exit}");
+    assert!(!marker.exists(), "the command ran");
+    fs::remove_file(dir.join("exit.json")).unwrap();
+    fs::set_permissions(&dir, fs::Permissions::from_mode(0o777)).unwrap();
+    let refused = std::process::Command::new(env!("CARGO_BIN_EXE_biorouter-crew"))
+        .arg("__crew-run")
+        .arg(&dir)
+        .status()
+        .unwrap();
+    assert!(!refused.success());
+    assert!(!dir.join("exit.json").exists());
 }
 
 /// What the fake broker holds: one attachment to read, and the uploads it was given.

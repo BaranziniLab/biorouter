@@ -439,11 +439,14 @@ fn mount_of<'m>(mounts: &'m [Mount], path: &Path) -> Option<&'m Mount> {
         .max_by_key(|mount| mount.path.components().count())
 }
 
-/// Size and free space of the filesystem at `path` in GiB, from `statvfs` on its own thread so
-/// a hung network mount costs [`PROBE_TIMEOUT`] and no more.
-fn space_gib(path: &Path) -> Option<(u64, u64)> {
-    let path = std::ffi::CString::new(path.as_os_str().as_encoded_bytes()).ok()?;
+/// Size and free space of the filesystem at `path` in GiB, from `statvfs` on its own thread, so
+/// a hung network mount holds up nobody: the answer arrives on the receiver, or never.
+fn space_gib(path: &Path) -> std::sync::mpsc::Receiver<Option<(u64, u64)>> {
     let (sender, receiver) = std::sync::mpsc::channel();
+    let Ok(path) = std::ffi::CString::new(path.as_os_str().as_encoded_bytes()) else {
+        let _ = sender.send(None);
+        return receiver;
+    };
     std::thread::spawn(move || {
         let mut info = std::mem::MaybeUninit::<libc::statvfs>::uninit();
         let answer = (unsafe { libc::statvfs(path.as_ptr(), info.as_mut_ptr()) } == 0).then(|| {
@@ -458,7 +461,7 @@ fn space_gib(path: &Path) -> Option<(u64, u64)> {
         });
         let _ = sender.send(answer);
     });
-    receiver.recv_timeout(PROBE_TIMEOUT).ok().flatten()
+    receiver
 }
 
 /// The filesystems worth naming: the home's, `/tmp`'s, any `/scratch*`, then other data
@@ -486,6 +489,7 @@ fn storage(mounts: &[Mount], home: &Path) -> Vec<Value> {
         wanted.extend(scratch.into_iter().take(4).map(|path| (path, true)));
     }
     for mount in mounts {
+        // System areas, and the single files a container bind-mounts under /etc.
         let system = [
             "/proc",
             "/sys",
@@ -493,7 +497,9 @@ fn storage(mounts: &[Mount], home: &Path) -> Vec<Value> {
             "/run",
             "/boot",
             "/snap",
+            "/etc",
             "/var/lib/docker",
+            "/var/lib/containers",
         ]
         .iter()
         .any(|prefix| mount.path.starts_with(prefix));
@@ -501,15 +507,27 @@ fn storage(mounts: &[Mount], home: &Path) -> Vec<Value> {
             wanted.push((mount.path.clone(), false));
         }
     }
+    // Every filesystem is asked at once and answers within one shared [`PROBE_TIMEOUT`].
+    let asked: Vec<_> = wanted
+        .into_iter()
+        .filter(|(path, _)| !in_another_home(path, home))
+        .take(48)
+        .map(|(path, always)| {
+            let answer = space_gib(&path);
+            (path, always, answer)
+        })
+        .collect();
+    let deadline = Instant::now() + PROBE_TIMEOUT;
     let mut seen = std::collections::BTreeSet::new();
     let mut reported = Vec::new();
-    for (path, always) in wanted.into_iter().take(48) {
-        if reported.len() >= MAX_STORAGE || in_another_home(&path, home) {
-            continue;
-        }
-        let Some((size_gib, avail_gib)) = space_gib(&path) else {
+    for (path, always, answer) in asked {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        let Ok(Some((size_gib, avail_gib))) = answer.recv_timeout(remaining) else {
             continue;
         };
+        if reported.len() >= MAX_STORAGE {
+            continue;
+        }
         if !always && size_gib < LARGE_FILESYSTEM_GIB {
             continue;
         }

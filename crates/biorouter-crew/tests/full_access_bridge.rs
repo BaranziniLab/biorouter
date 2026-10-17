@@ -170,7 +170,9 @@ impl Drop for Bridge {
 fn a_full_access_run_runs_commands_and_moves_files_through_the_real_bridge() {
     let uid = unsafe { libc::geteuid() };
     if uid == 0 {
-        eprintln!("skipped: the broker and full access refuse root; run this binary as an ordinary user");
+        eprintln!(
+            "skipped: the broker and full access refuse root; run this binary as an ordinary user"
+        );
         return;
     }
     let state = private_dir("state");
@@ -232,7 +234,12 @@ fn a_full_access_run_runs_commands_and_moves_files_through_the_real_bridge() {
     let mut child = Command::new(BINARY)
         .args(["bridge", "--stdio", "--socket"])
         .arg(&served.socket)
-        .args(["--owner-uid", &uid.to_string(), "--workspace-id", &served.workspace_id])
+        .args([
+            "--owner-uid",
+            &uid.to_string(),
+            "--workspace-id",
+            &served.workspace_id,
+        ])
         .env("HOME", &home)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -277,10 +284,7 @@ fn a_full_access_run_runs_commands_and_moves_files_through_the_real_bridge() {
     let shared = bridge.finished(share["job_id"].as_str().unwrap());
     assert_eq!(shared["state"], "completed", "{shared}");
     assert_eq!(shared["size"], attachment.len());
-    let copy = person.signed(
-        "blob.status",
-        json!({"blob_id": shared["blob_id"]}),
-    );
+    let copy = person.signed("blob.status", json!({"blob_id": shared["blob_id"]}));
     assert_eq!(copy["complete"], true);
     assert_eq!(copy["sha256"], sha256);
     assert_eq!(copy["channel_id"], channel.as_str());
@@ -291,7 +295,10 @@ fn a_full_access_run_runs_commands_and_moves_files_through_the_real_bridge() {
         "remote.shell",
         json!({"command": "true", "idempotency_key": "after", "wait_seconds": 1}),
     );
-    assert_eq!(refused["error"]["code"], "remote_operation_denied", "{refused}");
+    assert_eq!(
+        refused["error"]["code"], "remote_operation_denied",
+        "{refused}"
+    );
     drop(bridge);
     drop(served);
     let _ = fs::remove_dir_all(&state);
