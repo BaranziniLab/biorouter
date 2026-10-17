@@ -134,4 +134,62 @@ export const composerCopy = {
    * and says so in a note the person closes, as the manual's table of refused files says.
    */
   oneFileAtATime: (name: string) => `Crew shares one file at a time. Only ${name} was added.`,
+
+  // Starting an agent from the composer: `@agent`, `/agent`, `/task` (design OW-10). `channel` is
+  // the slug, without the `#`; a model is named as Ask my agent names it ("GPT-5.5 · Versa").
+  /**
+   * Pinned: Send's accessible name while the draft starts a task. Never "Ask my agent", which is the
+   * button beside it (ui-redesign-spec C6); "Send message" stays the name for every other draft.
+   */
+  startTask: 'Start agent task',
+  /** Send's tooltip while the draft starts a task. */
+  startTaskTooltip: 'Start your agent',
+  /** A start from the composer that failed; the reason follows in its own text node. */
+  startErrorLead: 'Couldn’t start your agent.',
+  /** The suggestion list's name. */
+  suggestions: 'Suggestions',
+  /** The `@agent` row's second line. `model` is null while it is not known yet. */
+  agentRowDetail: (model: string | null, channel: string) =>
+    model ? `Your agent · ${model} · posts in #${channel}` : `Your agent · posts in #${channel}`,
+  /** The `/agent` and `/task` rows' second line. */
+  slashRowDetail: (channel: string) => `Start your agent on a task in #${channel}`,
+  /** Someone is called `agent`, so `@agent` mentions them. `person` in the authority form. */
+  agentNameTaken: (person: string) => `@agent is ${person}. Type /agent to ask your agent.`,
+  /**
+   * The consent line under the text while the draft starts a task: what Enter does, before Enter,
+   * because Enter is the consent (OW-10). The same facts Ask my agent shows: the model and its tier,
+   * where it posts, what it reads, and what it may do on the server. The model's tier mark follows
+   * `agentStartsWith` as its own chip.
+   */
+  agentStartsWith: (model: string) => `Enter starts your agent with ${model}`,
+  /** True only because the daemon revokes the task's posting grant once it finishes (T-25). */
+  agentReads: (channel: string) =>
+    `It reads #${channel} and posts its result there, for this task only.`,
+  /** The same, in an open workspace where a task reads every channel the person is in. */
+  agentReadsWide: (count: number, channel: string) =>
+    `It reads ${count} channels and posts its result in #${channel}, for this task only.`,
+  /** The model the line names would be refused here; `blockText` (Ask my agent's words) first. */
+  agentOpensPicker: 'Enter opens Ask my agent to choose another model.',
+  agentNoModel: 'No model is set for Crew tasks. Enter opens Ask my agent to choose one.',
+  agentLoading: 'Checking your model for Crew tasks…',
+  /** A trigger with no task after it. */
+  agentEmpty: 'Type the task after it, or press Enter to open Ask my agent.',
+  /** The last start's outcome is unknown: the pane's gate decides what happens next (C9 to C12). */
+  agentUnknownOutcome: 'Check your previous task first. Enter opens Ask my agent.',
+  /** Attachments with `@agent`: a task is words only, so nothing starts. */
+  agentFiles: '@agent starts a task from words only. Send the files first, then ask your agent.',
+  /** Over the daemon's 32,768 bytes for a task (`TASK_PROMPT_MAX_BYTES`). Nothing starts. */
+  agentTooLong: 'A task can be up to 32 KB. Attach long text as a file.',
+  /** Opens Ask my agent on its model picker, with the task's words. */
+  agentChange: 'Change',
+  agentChangeName: 'Change the model for this task',
+  /** Sends the draft as an ordinary message, `@agent` and all. */
+  postAsMessage: 'Post as a message',
+  /** While the person chose to post a draft that would start a task. */
+  postingAsMessage: 'Enter posts this as a message.',
+  startTaskInstead: 'Start a task instead',
+  /** A start's refusal of the model: Ask my agent opens on its picker with the task's words. */
+  chooseAnotherModel: 'Choose another model',
+  /** A start whose outcome is unknown: Ask my agent opens on its gate. */
+  openAskMyAgent: 'Open Ask my agent',
 } as const;
