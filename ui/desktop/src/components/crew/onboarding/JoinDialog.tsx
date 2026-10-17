@@ -44,6 +44,8 @@ import { connectionUpdateBody } from '../state/useCrewConnections';
 import { joinCopy, joinStateCopy } from './copy';
 import {
   AgentAccessFields,
+  agentAccessSettings,
+  agentFolderInvalid,
   Field,
   FieldErrorsProvider,
   PrivacyFields,
@@ -53,9 +55,12 @@ import {
   useInitialFocus,
   useMounted,
   useOpenGeneration,
+  type AgentAccess,
 } from './fields';
 import { updateJoinContext } from './joinContext';
-import { firstName, groupWorkspaceFingerprint } from './joinText';
+import { firstName, groupWorkspaceFingerprint, isWorkspaceName, sshUsername } from './joinText';
+import { requestMemberSetup } from './setup';
+import { SetupProgress, useSetupArtifact, useSetupJob } from './SetupProgress';
 
 type Mode = 'private' | 'public';
 
@@ -96,7 +101,10 @@ const SSH_LOGIN = /^[A-Za-z0-9_./:@%][A-Za-z0-9_./:@%-]*$/;
 
 /** Advanced choices a joiner may make that the invitation route's contract does not carry. */
 type LocalSettings = Partial<
-  Pick<SaveConnectionInput, 'ssh_target' | 'name' | 'remote_root' | 'remote_execution'>
+  Pick<
+    SaveConnectionInput,
+    'ssh_target' | 'name' | 'remote_root' | 'remote_execution' | 'remote_access'
+  >
 >;
 
 function settingsDiffer(connection: CrewConnection, settings: LocalSettings): boolean {
@@ -157,6 +165,7 @@ function replacedWhole(event: { nativeEvent: Event }): boolean {
 function JoinDialogView({ open, onClose }: { open: boolean; onClose: () => void }) {
   const crew = useCrew();
   const formId = useId();
+  const installsId = useId();
   const mounted = useMounted();
   const { errors, validate, formProps } = useFormValidation();
 
@@ -208,6 +217,11 @@ function JoinDialogView({ open, onClose }: { open: boolean; onClose: () => void 
   const [connectionName, setConnectionName] = useState('');
   const [remoteRoot, setRemoteRoot] = useState('');
   const [remoteExecution, setRemoteExecution] = useState(false);
+  /** As me on the server unless the person chose otherwise, or the daemon can't take it (OW-6). */
+  const [access, setAccess] = useState<AgentAccess>('full');
+  const [accessEdited, setAccessEdited] = useState(false);
+  /** Whether the daemon has automatic setup (OW-9); false for one before it. */
+  const setupSupport = useSetupArtifact(open);
 
   const [manual, setManual] = useState(false);
   const [manualLogin, setManualLogin] = useState('');
@@ -216,12 +230,17 @@ function JoinDialogView({ open, onClose }: { open: boolean; onClose: () => void 
   const [ownerUid, setOwnerUid] = useState('');
   const [workspaceKey, setWorkspaceKey] = useState('');
 
-  const [phase, setPhase] = useState<'idle' | 'saving' | 'connecting'>('idle');
+  /**
+   * `setting-up`: the connection is saved and a member setup job installs Crew in the account (when
+   * it is missing), makes the agent's work folder and connects (OW-9), before the dialog closes.
+   */
+  const [phase, setPhase] = useState<'idle' | 'saving' | 'connecting' | 'setting-up'>('idle');
   const [pendingConnect, setPendingConnect] = useState<string | null>(null);
   /** The saved connection a refused save concerns (`connection_id` of a 409), to offer opening. */
   const [saveConflictId, setSaveConflictId] = useState<string | null>(null);
   const [validateHidden, setValidateHidden] = useState(false);
-  const locked = phase !== 'idle';
+  /** The connection a member setup job is setting up, which it connects once done. */
+  const setupConnectionId = useRef<string | null>(null);
 
   // Open on the invitation box, and keep focus there while the menu that opened the dialog closes
   // (Q2-27).
@@ -292,6 +311,11 @@ function JoinDialogView({ open, onClose }: { open: boolean; onClose: () => void 
     setPrefilledFor(preview);
   }, [preview, usernameEdited, privacyEdited]);
 
+  // A background service before the contract would refuse As me on the server: start off instead.
+  useEffect(() => {
+    if (setupSupport.supported === false && !accessEdited) setAccess('off');
+  }, [setupSupport.supported, accessEdited]);
+
   // An invitation that names no server needs the login from Advanced: open it, once per paste.
   const serverMissing = Boolean(preview?.missing.includes('server'));
   useEffect(() => {
@@ -338,6 +362,20 @@ function JoinDialogView({ open, onClose }: { open: boolean; onClose: () => void 
     sanitizeDisplayText(preview?.workspace_name) ||
     sanitizeDisplayText(connectionName) ||
     joinCopy.unnamedWorkspace;
+
+  // The member setup Join runs for As me on the server (OW-9). Once it connected the account, the
+  // controller connects too, so it follows, and the dialog closes as an ordinary join does.
+  const job = useSetupJob({
+    server: server || workspaceLabel,
+    onFinished: () => {
+      if (!setupConnectionId.current) return;
+      setPhase('connecting');
+      setPendingConnect(setupConnectionId.current);
+    },
+  });
+  // A setup that failed leaves the dialog for the person to try again or cancel: no longer busy,
+  // but Join has done its part, so it is not offered again.
+  const locked = phase === 'setting-up' ? job.busy : phase !== 'idle';
   const defaultPort = preview?.ssh_port ?? 22;
   const portValue = port.trim() ? Number(port) : null;
   // A Private connection needs an institution. When the invitation has none, show the field
@@ -389,11 +427,13 @@ function JoinDialogView({ open, onClose }: { open: boolean; onClose: () => void 
   const submitLabel =
     phase === 'connecting'
       ? joinCopy.connecting(server || workspaceLabel)
-      : replaceableId
-        ? joinCopy.replaceSaved
-        : preview?.workspace_name
-          ? joinCopy.submit(workspaceLabel)
-          : joinCopy.submitFallback;
+      : phase === 'setting-up'
+        ? joinCopy.settingUp(server || workspaceLabel)
+        : replaceableId
+          ? joinCopy.replaceSaved
+          : preview?.workspace_name
+            ? joinCopy.submit(workspaceLabel)
+            : joinCopy.submitFallback;
 
   /**
    * The overrides the invitation route's contract names (naming-design "Joiner": port, identity
@@ -412,10 +452,10 @@ function JoinDialogView({ open, onClose }: { open: boolean; onClose: () => void 
     const value: LocalSettings = {};
     if (sshAlias.trim()) value.ssh_target = sshAlias.trim();
     if (connectionName.trim()) value.name = connectionName.trim();
-    if (remoteRoot.trim()) {
-      value.remote_root = remoteRoot.trim();
-      value.remote_execution = remoteExecution;
-    }
+    // A level without a folder saves as the invitation route wrote it (no folder): under As me on
+    // the server, the member setup makes the folder and sets the level itself.
+    const agent = agentAccessSettings(access, remoteRoot, remoteExecution);
+    if (agent.remote_root) Object.assign(value, agent);
     return value;
   };
 
@@ -469,9 +509,9 @@ function JoinDialogView({ open, onClose }: { open: boolean; onClose: () => void 
 
   const submit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    if (locked) return;
+    if (locked || phase === 'setting-up') return;
     // A field that would be refused inside a folded section: open it, then report under the field.
-    const agentHidden = !agentOpen && remoteFolderInvalid(remoteRoot);
+    const agentHidden = !agentOpen && agentFolderInvalid(access, remoteRoot);
     const advancedHidden =
       !advancedOpen &&
       (manualIncomplete() ||
@@ -507,8 +547,7 @@ function JoinDialogView({ open, onClose }: { open: boolean; onClose: () => void 
           owner_uid: Number(ownerUid.trim()),
           workspace_id: workspaceId.trim(),
           workspace_public_key: workspaceKey.trim().toLowerCase(),
-          remote_root: remoteRoot.trim() || undefined,
-          remote_execution: remoteRoot.trim() ? remoteExecution : false,
+          ...agentAccessSettings(access, remoteRoot, remoteExecution),
           mode,
           institution_id: institutionId,
         };
@@ -572,6 +611,24 @@ function JoinDialogView({ open, onClose }: { open: boolean; onClose: () => void 
         joining: true,
         suggestName: true,
       });
+    // As me on the server with no folder typed: the member setup installs Crew when the account
+    // lacks it, makes the work folder, sets the level and connects (OW-9), so the choice holds
+    // whether or not Crew was there already.
+    if (access === 'full' && !remoteRoot.trim() && setupSupport.supported === true) {
+      setupConnectionId.current = saved.id;
+      setPhase('setting-up');
+      // The work folder is named for the workspace (`~/crew-work/<workspace>`) when its name is one.
+      const name = preview?.workspace_name ?? '';
+      const result = await job.start({
+        target: { kind: 'connection', connection_id: saved.id },
+        intent: 'member',
+        ...(isWorkspaceName(name) ? { workspace_name: name } : {}),
+      });
+      if (!mounted.current || result !== 'outdated') return;
+    }
+    // Otherwise it connects. If connecting finds Crew missing for the account, the Not set up pane
+    // sets it up by itself: this Join was the person's consent (decision 5.7).
+    requestMemberSetup(saved.id);
     setPhase('connecting');
     setPendingConnect(saved.id);
   };
@@ -635,8 +692,18 @@ function JoinDialogView({ open, onClose }: { open: boolean; onClose: () => void 
             <Button
               type="submit"
               form={formId}
+              // Join's part is done once a setup started; Try again lives with the setup.
               disabled={
-                locked || (!manual && !preview) || previewState.kind === 'checking' || mode === null
+                locked ||
+                phase === 'setting-up' ||
+                (!manual && !preview) ||
+                previewState.kind === 'checking' ||
+                mode === null
+              }
+              aria-describedby={
+                phase !== 'setting-up' && ((preview && !existingId) || manual)
+                  ? installsId
+                  : undefined
               }
             >
               {submitLabel}
@@ -940,11 +1007,22 @@ function JoinDialogView({ open, onClose }: { open: boolean; onClose: () => void 
               {(preview && !existingId) || manual ? (
                 <AgentAccessFields
                   server={server}
+                  user={
+                    sanitizeDisplayText(username.trim()) ||
+                    sshUsername(manual ? manualLogin : sshAlias) ||
+                    null
+                  }
                   open={agentOpen}
                   onOpenChange={setAgentOpen}
+                  access={access}
+                  onAccess={(next) => {
+                    setAccessEdited(true);
+                    setAccess(next);
+                  }}
                   remoteRoot={remoteRoot}
                   remoteExecution={remoteExecution}
                   disabled={locked}
+                  fullAvailable={setupSupport.supported !== false}
                   onRemoteRoot={setRemoteRoot}
                   onRemoteExecution={setRemoteExecution}
                 />
@@ -1074,6 +1152,19 @@ function JoinDialogView({ open, onClose }: { open: boolean; onClose: () => void 
                   </div>
                 </Disclosure>
               </div>
+
+              {phase === 'setting-up' ? (
+                <SetupProgress
+                  job={job}
+                  intent="member"
+                  server={server || workspaceLabel}
+                  testId="crew-join-setup"
+                />
+              ) : (preview && !existingId) || manual ? (
+                <p id={installsId} className="text-supporting text-text-muted">
+                  {joinCopy.installsCrew(server || joinStateCopy.theWorkspace)}
+                </p>
+              ) : null}
 
               <JoinErrorSlot
                 action={

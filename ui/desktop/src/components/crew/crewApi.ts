@@ -373,6 +373,7 @@ async function crewHeaders(hasJsonBody: boolean): Promise<Headers> {
  */
 interface CrewOperations {
   GET:
+    | PendingSetupGet
     | Api.CrewListConnectionsData
     | Api.CrewProfileGrantsData
     | Api.CrewConnectionInvitationData
@@ -384,6 +385,7 @@ interface CrewOperations {
     | Api.CrewTransferListData
     | Api.CrewTransferStatusData;
   POST:
+    | PendingSetupPost
     | Api.CrewSaveConnectionData
     | Api.CrewConnectionFromInvitationData
     | Api.CrewAuthenticationPlanData
@@ -405,8 +407,22 @@ interface CrewOperations {
     | Api.CrewTransferPauseData
     | Api.CrewTransferResumeData;
   PATCH: Api.CrewUpdateConnectionData;
-  DELETE: Api.CrewRemoveConnectionData | Api.CrewHostStartCancelData | Api.CrewTransferForgetData;
+  DELETE:
+    | Api.CrewRemoveConnectionData
+    | Api.CrewHostStartCancelData
+    | Api.CrewTransferForgetData
+    | PendingSetupDelete;
 }
+
+/**
+ * Automatic setup (OW-9): the bundled broker and setup jobs, not in the generated client yet.
+ * `onboarding/setup.ts` declares and checks every answer itself.
+ */
+type PendingSetupGet =
+  | PendingCrewRoute<'/crew/setup/artifact'>
+  | PendingCrewRoute<'/crew/setup/{job_id}'>;
+type PendingSetupPost = PendingCrewRoute<'/crew/setup'>;
+type PendingSetupDelete = PendingCrewRoute<'/crew/setup/{job_id}'>;
 
 /** A route template with each `{parameter}` filled by one value. */
 type Filled<Path extends string> = Path extends `${infer Head}{${string}}${infer Tail}`

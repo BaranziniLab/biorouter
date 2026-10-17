@@ -493,3 +493,48 @@
     animation: none;
   }
 }
+
+/* A setup job's steps (OW-9): one line each, in order — a tick once done, the
+   spinner on the one under way, an empty ring for the ones to come, a danger
+   ring where it stopped. The words carry the state; the marks only echo it. */
+.crew-setup-steps {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.crew-setup-step {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.crew-setup-step-mark {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border: 1px solid var(--border-emphasized);
+  border-radius: var(--radius-full);
+}
+
+.crew-setup-step[data-state='done'] .crew-setup-step-mark {
+  border-color: transparent;
+  background-color: var(--wash-success);
+  color: var(--text-success);
+}
+
+.crew-setup-step[data-state='current'] .crew-setup-step-mark {
+  border-color: transparent;
+}
+
+.crew-setup-step[data-state='failed'] .crew-setup-step-mark {
+  border-color: var(--border-danger);
+}

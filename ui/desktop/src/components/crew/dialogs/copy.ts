@@ -224,8 +224,14 @@ export const inviteCopy = {
     `Also tell ${first} the server’s SSH fingerprint, or where to get it from IT, so they can check it the first time they connect.`,
   invitationLabel: 'invitation message',
   /**
-   * Collapsed under the result: what to do if the joiner's Crew says it isn't set up — in the words
-   * the joiner's screen uses (`notSetUpCopy.title`), not a question only IT can answer (QA Q4-37).
+   * Under the invitation (OW-9): the joiner's own Biorouter installs Crew in their account when it
+   * isn't there, so there is nothing to install for them first.
+   */
+  setsUp: (first: string) => `${first}’s Biorouter sets Crew up in their account.`,
+  /**
+   * Collapsed under the result: what to do if the joiner's Crew still says it isn't set up — in the
+   * words the joiner's screen uses (`notSetUpCopy.title`), not a question only IT can answer (QA
+   * Q4-37).
    */
   installed: (first: string) => `If ${first} sees “Crew isn’t set up”`,
   /** One sentence, then the commands: who to send them to, and whose account they install into. */

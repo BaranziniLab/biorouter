@@ -5,8 +5,9 @@ import { CrewHttpError } from '../crewApi';
 import { CREW_INVITATION_INVALID } from '../api/errors';
 import type { CrewInvitationPreview } from '../api/join';
 import { INSTITUTION_ID_PATTERN } from '../identity';
-import { joinCopy } from './copy';
+import { joinCopy, setupCopy } from './copy';
 import { readJoinContext, resetJoinContextForTests } from './joinContext';
+import { resetMemberSetupRequestsForTests, takeMemberSetupRequest, type SetupRun } from './setup';
 import {
   invalidInvitationText,
   JoinDialog,
@@ -22,7 +23,62 @@ const mocks = vi.hoisted(() => ({
   savedConnectionIds: vi.fn(),
   getProviders: vi.fn(),
   read: vi.fn(),
+  startSetup: vi.fn(),
+  readSetup: vi.fn(),
+  stopSetup: vi.fn(),
+  /** What the daemon says of automatic setup; its own read has its suite (`setup.test.ts`). */
+  setupSupport: { supported: true as boolean | null, artifact: null as unknown },
 }));
+
+vi.mock('./setup', async () => {
+  const actual = await vi.importActual<typeof import('./setup')>('./setup');
+  return {
+    ...actual,
+    startSetup: mocks.startSetup,
+    readSetup: mocks.readSetup,
+    stopSetup: mocks.stopSetup,
+  };
+});
+vi.mock('./SetupProgress', async () => {
+  const actual = await vi.importActual<typeof import('./SetupProgress')>('./SetupProgress');
+  return { ...actual, useSetupArtifact: () => mocks.setupSupport };
+});
+// A setup job's Sign in window has its own suites.
+vi.mock('../auth/SignInDialog', () => ({ SignInDialog: () => null }));
+
+const ARTIFACT = {
+  version: '1.94.0',
+  target: 'x86_64-unknown-linux-gnu',
+  sha256: 'd'.repeat(64),
+  size: 3556248,
+  source: 'bundled',
+};
+
+/** A member setup job as `setup.ts` reads it. */
+function setupJob(overrides: Partial<SetupRun> = {}): SetupRun {
+  return {
+    jobId: 'setup-1',
+    intent: 'member',
+    state: 'finished',
+    stage: 'done',
+    stages: [],
+    server: null,
+    artifact: ARTIFACT,
+    outcome: {
+      installedVersion: '1.94.0',
+      reused: true,
+      host: null,
+      hostCommand: null,
+      connectionId: 'conn-new',
+      workFolder: '/home/bob/crew-work/lab',
+      remoteAccess: 'full',
+      contextDraft: null,
+    },
+    error: null,
+    output: '',
+    ...overrides,
+  };
+}
 
 // The configured providers publish the name "UCSF" for the ID `ucsf` (Q2-38).
 vi.mock('../../ConfigContext', async () => {
@@ -108,7 +164,13 @@ beforeEach(() => {
     },
   ]);
   mocks.read.mockReset().mockResolvedValue(null);
+  // A daemon with automatic setup, whose member job finishes at once unless a test says otherwise.
+  mocks.setupSupport = { supported: true, artifact: ARTIFACT };
+  mocks.startSetup.mockReset().mockResolvedValue(setupJob());
+  mocks.readSetup.mockReset();
+  mocks.stopSetup.mockReset().mockResolvedValue(undefined);
   resetJoinContextForTests();
+  resetMemberSetupRequestsForTests();
 });
 
 afterEach(() => {
@@ -441,22 +503,39 @@ describe('JoinDialog', () => {
     expect(screen.queryByLabelText(joinCopy.remoteFolder)).toBeNull();
   });
 
-  it('gives the agent’s permissions their own labelled row, off by default (Q2-37)', async () => {
+  it('gives the agent’s permissions their own labelled row, as me by default (Q2-37, OW-6)', async () => {
     mocks.previewInvitation.mockResolvedValue(PREVIEW);
     renderDialog();
     await paste();
     await screen.findByTestId('crew-join-summary');
     const row = screen.getByRole('button', { name: joinCopy.agentHeading('hpc.ucsf.edu') });
     // Folded, it says whose agent and its one state as one sentence (Q4-44): "Your agent on
-    // hpc.ucsf.edu is off". The name ends in no colon, which dangled once the row opened.
+    // hpc.ucsf.edu runs commands as you". The name ends in no colon, which dangled once the row
+    // opened. A new connection made by the setup flow defaults to As me on the server (OW-6).
     expect(row.textContent).toBe('Your agent on hpc.ucsf.edu');
     expect(row).toHaveAccessibleName('Your agent on hpc.ucsf.edu');
-    expect(row).toHaveAccessibleDescription('is off');
+    await waitFor(() => expect(row).toHaveAccessibleDescription('runs commands as you'));
     expect(document.body.textContent).not.toMatch(/No work folder|agent commands/);
     fireEvent.click(row);
     // Open, the heading stands alone: nothing trails it.
     expect(row.textContent).toBe('Your agent on hpc.ucsf.edu');
     expect(row).not.toHaveAccessibleDescription();
+    // Three levels; the default carries its one warning, naming the account it acts as.
+    expect(screen.getByRole('group', { name: joinCopy.agentLegend('hpc.ucsf.edu') })).toBeVisible();
+    expect(screen.getByRole('radio', { name: /^As me on the server/ })).toBeChecked();
+    expect(screen.getByTestId('crew-onboard-full-warning')).toHaveTextContent(
+      joinCopy.fullWarning('bob', 'hpc.ucsf.edu')
+    );
+    expect(screen.getByLabelText(joinCopy.remoteFolder)).toHaveAccessibleDescription(
+      joinCopy.fullFolderHelper('hpc.ucsf.edu')
+    );
+    fireEvent.click(screen.getByRole('radio', { name: /^Off/ }));
+    fireEvent.click(row);
+    expect(row).toHaveAccessibleDescription('is off');
+    fireEvent.click(row);
+    // In a folder: the confined work folder, as it always was.
+    fireEvent.click(screen.getByRole('radio', { name: /^In a folder/ }));
+    expect(screen.queryByTestId('crew-onboard-full-warning')).toBeNull();
     const agent = screen.getByRole('switch', { name: joinCopy.remoteExecution });
     expect(agent).not.toBeChecked();
     expect(agent).toBeDisabled();
@@ -548,6 +627,7 @@ describe('JoinDialog', () => {
       target: { value: 'UCSF lab' },
     });
     fireEvent.click(screen.getByRole('button', { name: joinCopy.agentHeading('hpc.ucsf.edu') }));
+    fireEvent.click(screen.getByRole('radio', { name: /^In a folder/ }));
     fireEvent.change(screen.getByLabelText(joinCopy.remoteFolder), {
       target: { value: '/work/lab' },
     });
@@ -1107,5 +1187,138 @@ describe('JoinDialog', () => {
     await screen.findByTestId('crew-join-summary');
     expect(screen.getByLabelText(joinCopy.invitation)).toHaveFocus();
     expect(screen.queryByTestId('crew-join-invitation-read')).toBeNull();
+  });
+});
+
+describe('JoinDialog sets Crew up in the account (OW-9)', () => {
+  it('says under Join that it installs Crew when the account lacks it', async () => {
+    mocks.previewInvitation.mockResolvedValue(PREVIEW);
+    renderDialog();
+    await paste();
+    const join = await screen.findByRole('button', { name: 'Join lab' });
+    expect(join).toHaveAccessibleDescription(joinCopy.installsCrew('hpc.ucsf.edu'));
+  });
+
+  it('runs a member setup for As me on the server, then connects and closes', async () => {
+    mocks.previewInvitation.mockResolvedValue(PREVIEW);
+    const saved = fakeConnection({ id: 'conn-new', status: 'disconnected' });
+    mocks.saveFromInvitation.mockResolvedValue(saved);
+    mocks.startSetup.mockResolvedValue(
+      setupJob({ state: 'running', stage: 'probe', outcome: null })
+    );
+    mocks.readSetup.mockResolvedValue(setupJob());
+    const view = renderDialog();
+    await paste();
+    fireEvent.click(await screen.findByRole('button', { name: 'Join lab' }));
+
+    await waitFor(() =>
+      expect(mocks.startSetup).toHaveBeenCalledWith({
+        target: { kind: 'connection', connection_id: 'conn-new' },
+        intent: 'member',
+        // The work folder is named for the workspace, `~/crew-work/lab`.
+        workspace_name: 'lab',
+      })
+    );
+    // Saved as the invitation route wrote it: the job makes the folder and sets the level.
+    expect(view.crew().updateConnection).not.toHaveBeenCalled();
+    expect(await screen.findByRole('list', { name: setupCopy.stepsLabel })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: joinCopy.settingUp('hpc.ucsf.edu') })).toBeDisabled();
+
+    view.update({ connectionId: 'conn-new', connections: [saved], connection: saved });
+    await waitFor(() => expect(view.crew().connect).toHaveBeenCalledWith({ userInitiated: true }), {
+      timeout: 3000,
+    });
+    await waitFor(() => expect(view.crew().closeDialog).toHaveBeenCalled());
+    // Nothing is left for the Not set up pane to start by itself.
+    expect(takeMemberSetupRequest('conn-new')).toBe(false);
+  });
+
+  it('keeps a failed setup in the dialog, with Try again, and Join done', async () => {
+    mocks.previewInvitation.mockResolvedValue(PREVIEW);
+    mocks.saveFromInvitation.mockResolvedValue(
+      fakeConnection({ id: 'conn-new', status: 'disconnected' })
+    );
+    mocks.startSetup.mockResolvedValue(
+      setupJob({
+        state: 'failed',
+        stage: 'transfer',
+        outcome: null,
+        error: { code: 'crew_install_transfer_incomplete', message: 'Cut off.', detail: null },
+      })
+    );
+    const view = renderDialog();
+    await paste();
+    fireEvent.click(await screen.findByRole('button', { name: 'Join lab' }));
+    const problem = await screen.findByTestId('crew-setup-problem');
+    expect(problem).toHaveTextContent(
+      setupCopy.error('crew_install_transfer_incomplete', 'hpc.ucsf.edu') as string
+    );
+    expect(within(problem).getByRole('button', { name: setupCopy.tryAgain })).toBeEnabled();
+    expect(screen.getByRole('button', { name: joinCopy.settingUp('hpc.ucsf.edu') })).toBeDisabled();
+    expect(screen.getByRole('button', { name: joinCopy.cancel })).toBeEnabled();
+    expect(view.crew().connect).not.toHaveBeenCalled();
+  });
+
+  it('connects at once below As me, and asks the Not set up pane to set up if it must', async () => {
+    mocks.previewInvitation.mockResolvedValue(PREVIEW);
+    const saved = fakeConnection({ id: 'conn-new', status: 'disconnected' });
+    mocks.saveFromInvitation.mockResolvedValue(saved);
+    const view = renderDialog();
+    await paste();
+    await screen.findByTestId('crew-join-summary');
+    fireEvent.click(screen.getByRole('button', { name: joinCopy.agentHeading('hpc.ucsf.edu') }));
+    fireEvent.click(screen.getByRole('radio', { name: /^Off/ }));
+    fireEvent.click(screen.getByRole('button', { name: 'Join lab' }));
+    await waitFor(() => expect(view.crew().selectConnection).toHaveBeenCalledWith('conn-new'));
+    view.update({ connectionId: 'conn-new', connections: [saved], connection: saved });
+    await waitFor(() => expect(view.crew().connect).toHaveBeenCalledWith({ userInitiated: true }));
+    expect(mocks.startSetup).not.toHaveBeenCalled();
+    expect(takeMemberSetupRequest('conn-new')).toBe(true);
+  });
+
+  it('saves As me with a folder typed as full access, and needs no setup for it', async () => {
+    mocks.previewInvitation.mockResolvedValue(PREVIEW);
+    const saved = fakeConnection({ id: 'conn-new', status: 'disconnected' });
+    mocks.saveFromInvitation.mockResolvedValue(saved);
+    const updateConnection = vi.fn(async (_id: string, body: object) => ({ ...saved, ...body }));
+    renderDialog({ updateConnection });
+    await paste();
+    await screen.findByTestId('crew-join-summary');
+    fireEvent.click(screen.getByRole('button', { name: joinCopy.agentHeading('hpc.ucsf.edu') }));
+    fireEvent.change(screen.getByLabelText(joinCopy.remoteFolder), {
+      target: { value: '/pool1/home/bob/work' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Join lab' }));
+    await waitFor(() =>
+      expect(updateConnection).toHaveBeenCalledWith(
+        'conn-new',
+        expect.objectContaining({
+          remote_root: '/pool1/home/bob/work',
+          remote_execution: true,
+          remote_access: 'full',
+        })
+      )
+    );
+    expect(mocks.startSetup).not.toHaveBeenCalled();
+  });
+
+  it('offers As me on the server only on a daemon that takes it', async () => {
+    // A daemon before automatic setup answers its routes 404 (`useSetupArtifact`).
+    mocks.setupSupport = { supported: false, artifact: null };
+    mocks.previewInvitation.mockResolvedValue(PREVIEW);
+    const saved = fakeConnection({ id: 'conn-new', status: 'disconnected' });
+    mocks.saveFromInvitation.mockResolvedValue(saved);
+    const view = renderDialog();
+    await paste();
+    await screen.findByTestId('crew-join-summary');
+    const row = screen.getByRole('button', { name: joinCopy.agentHeading('hpc.ucsf.edu') });
+    await waitFor(() => expect(row).toHaveAccessibleDescription('is off'));
+    fireEvent.click(row);
+    expect(screen.getByRole('radio', { name: /^As me on the server/ })).toBeDisabled();
+    fireEvent.click(screen.getByRole('button', { name: 'Join lab' }));
+    await waitFor(() => expect(view.crew().selectConnection).toHaveBeenCalledWith('conn-new'));
+    view.update({ connectionId: 'conn-new', connections: [saved], connection: saved });
+    await waitFor(() => expect(view.crew().connect).toHaveBeenCalled());
+    expect(mocks.startSetup).not.toHaveBeenCalled();
   });
 });

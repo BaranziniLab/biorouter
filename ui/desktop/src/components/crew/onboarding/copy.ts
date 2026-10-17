@@ -142,13 +142,51 @@ export const joinCopy = {
    * is hidden then.
    */
   agentHeading: (server: string) => `Your agent on ${server}`,
-  /** The rest of that sentence while folded; off unless the person turned it on. */
-  agentSummary: (folder: string, commands: boolean) =>
-    folder
-      ? commands
-        ? `can use ${folder} and run commands there`
-        : `can use ${folder}`
-      : 'is off',
+  /**
+   * The rest of that sentence while folded (OW-6). As me on the server is the default for a new
+   * connection; a folder level without a folder is off, as it always was.
+   */
+  agentSummary: (access: 'off' | 'folder' | 'full', folder: string, commands: boolean) =>
+    access === 'full'
+      ? folder
+        ? `runs commands as you, starting in ${folder}`
+        : 'runs commands as you'
+      : access === 'folder' && folder
+        ? commands
+          ? `can use ${folder} and run commands there`
+          : `can use ${folder}`
+        : 'is off',
+  /** The three access levels (OW-6), the question Connection settings asks too. */
+  agentLegend: (server: string) => `What can your agent do on ${server}?`,
+  accessOff: 'Off',
+  accessOffHint: 'Your agent doesn’t use this server.',
+  accessFolder: 'In a folder',
+  accessFolderHint: 'It reads and writes one folder, and can run commands there in a sandbox.',
+  accessFull: 'As me on the server',
+  accessFullHint: (user: string | null) =>
+    user
+      ? `It runs commands as ${user}, with your files, programs and network.`
+      : 'It runs commands as you, with your files, programs and network.',
+  /** Why As me on the server can't be chosen: the background service predates it. */
+  accessFullUnavailable:
+    'As me on the server needs a newer Biorouter background service. Quit and reopen Biorouter to choose it.',
+  /** The work folder under As me on the server: optional, created by setup when left empty. */
+  fullFolderHelper: (server: string) =>
+    `Optional. A folder on ${server}, starting with /, where your agent starts. Leave it empty and Biorouter creates one in ~/crew-work.`,
+  /**
+   * The one warning for As me on the server (privacy constraints 4.1): what the agent can reach, and
+   * that what others write can try to steer it. Shown while the level is chosen; no typing.
+   */
+  fullWarning: (user: string | null, server: string) =>
+    `Your agent will run commands as ${user ?? 'you'} on ${server}: it can read and change anything your account can, use the network, and start programs that keep running after access ends. Other people’s messages and files in channels it reads can try to steer it. Use a private model you trust.`,
+  /** The host's extra sentence: their account also holds the workspace's own files. */
+  fullWarningHost: (workspace: string) =>
+    `You host ${workspace} from this account, so your agent can also read the workspace’s own files on the server, including channels you’re not in.`,
+  /** Under Join (decision 5.7): pressing it also sets Crew up when the account lacks it. */
+  installsCrew: (server: string) =>
+    `If Crew isn’t set up for your account on ${server} yet, Biorouter installs it there for you.`,
+  /** Join's button while the member setup runs. */
+  settingUp: (server: string) => `Setting up Crew on ${server}…`,
   serverLogin: 'Server login',
   serverLoginHelper: (defaultLogin: string) =>
     `An SSH alias from your SSH config, instead of ${defaultLogin}.`,
@@ -352,8 +390,17 @@ export const hostCopy = {
       ? `These commands start Crew on ${server} as ${user}:`
       : `These commands start Crew on ${server}:`,
   commandLabel: 'start command',
-  // "Start it for me" (D-HOST): the daemon runs exactly the commands above, over SSH, on a click.
-  startForMe: 'Start it for me',
+  /**
+   * "Set up and start Crew" (OW-9): the daemon installs Crew in the host's account when it isn't
+   * there, signs in through the Sign in window when the server asks, and runs exactly the commands
+   * above. A background service before automatic setup runs only the commands (D-HOST).
+   */
+  setUpAndStart: 'Set up and start Crew',
+  setUpAndStartHint: (server: string, user: string | null) =>
+    `Biorouter signs in to ${server}${
+      user ? ` as ${user}` : ''
+    } with your SSH settings, installs Crew in your account if it isn’t there yet, and runs exactly these commands. If the server asks for a password or a code, a Sign in window opens.`,
+  /** The same button on a background service before automatic setup: it can't sign in or install. */
   startForMeHint: (server: string, user: string | null) =>
     `Biorouter signs in to ${server}${
       user ? ` as ${user}` : ''
@@ -363,7 +410,8 @@ export const hostCopy = {
   stop: 'Stop',
   /** The accessible name of the box that shows the commands' output as it arrives. */
   startOutput: 'What the server printed',
-  startStarting: 'Crew was still starting. Wait a few seconds, then choose Start it for me again.',
+  startStarting:
+    'Crew was still starting. Wait a few seconds, then choose Set up and start Crew again.',
   startUnreadable:
     'Biorouter couldn’t find what Crew prints in the output. Run the commands yourself to see what the server says.',
   startCommandChanged:
@@ -371,7 +419,7 @@ export const hostCopy = {
   startFailed:
     'Starting Crew didn’t finish. Run the commands yourself to see what the server says.',
   startStaleDaemon:
-    'Start it for me needs a newer Biorouter background service. Quit and reopen Biorouter, or run the commands yourself.',
+    'Starting Crew for you needs a newer Biorouter background service. Quit and reopen Biorouter, or run the commands yourself.',
   /** The manual path, folded (D-HOST): the same commands, in the person's own terminal. */
   runYourself: 'Run it yourself in a terminal',
   runYourselfBody: (server: string, user: string | null) =>
@@ -388,7 +436,8 @@ export const hostCopy = {
     'If your terminal asks you to confirm the server, compare the fingerprint with the one from your IT team. Type yes only if they match.',
   /**
    * Folded under the start commands (Q4-37): named for the situation the host is in, not for a
-   * program they have never heard of. The content is the same install commands.
+   * program they have never heard of. It holds the manual install of the broker this build
+   * carries (`setupCopy.manual*`), for when automatic setup can't reach the server.
    */
   notInstalled: (server: string) => `Crew isn’t on ${server} yet?`,
   installLabel: 'install commands',
@@ -432,6 +481,14 @@ export const hostCopy = {
   creating: 'Creating…',
   signingIn: 'Waiting for you to sign in…',
   signInEnded: 'Sign-in didn’t finish. Choose Create workspace to try again.',
+  /**
+   * After bootstrap, the two settings Create makes for a workspace it made (OW-1, OW-8). Either
+   * failing leaves a working workspace, so it is said, and Workspace settings does the same.
+   */
+  governanceFailed: (workspace: string) =>
+    `${workspace} was created, but Biorouter couldn’t let everyone in it manage teams and channels. You can do it in Workspace settings.`,
+  contextFailed: (workspace: string) =>
+    `${workspace} was created, but Biorouter couldn’t save its description of the server. You can draft it again in Workspace settings.`,
   // Label step (Q3-45). Only what the broker and daemon enforce: an institution-labelled Private
   // workspace admits an agent only on a model approved for that institution
   // (`enforce_institution_policy`, `institution::admission`), an unlabelled one admits no agent at
@@ -538,16 +595,125 @@ export const trustCopy = {
 
 export const notSetUpCopy = {
   title: (server: string) => `Crew isn’t set up for your account on ${server}`,
-  body: 'It’s installed once per account, usually by your host or IT team.',
+  /** Setup is the way on (OW-9): it goes in the person's own account, with no administrator. */
+  body: 'Biorouter can install it in your own account. It goes in ~/.local/bin and needs no administrator.',
+  setUp: 'Set up Crew for my account',
+  setUpHint: (server: string, user: string | null) =>
+    `Biorouter signs in to ${server}${
+      user ? ` as ${user}` : ''
+    } with your SSH settings and installs Crew in your account. If the server asks for a password or a code, a Sign in window opens.`,
+  /** The older ways on, folded: a message for the host, and the manual install. */
+  askHost: 'Ask your host instead',
   message: (hostFirst: string | null, username: string | null, server: string) =>
     `${hostFirst ? `Hi ${hostFirst}, Crew` : 'Crew'} isn’t set up for my account${
       username ? ` (@${username})` : ''
     } on ${server} yet. Could you or IT install biorouter-crew in ~/.local/bin for me?`,
   messageLabel: 'message to your host',
   installYourself: 'Install it yourself',
-  installIntro: 'Get a verified biorouter-crew file for this server, then run:',
   installLabel: 'install commands',
+  /** Connect again without setting anything up, for an install someone else just made. */
   tryAgain: 'Try again',
+} as const;
+
+/**
+ * Automatic setup (OW-9): the plain steps of a setup job, the sentence for each refusal code the
+ * daemon's setup answers (`crew_setup_*`, `crew_install_*`, `crew_host_*`), and the manual install
+ * "Run it yourself" offers. `server` is already the dialog's word for the server.
+ */
+export const setupCopy = {
+  /** The accessible name of the list of steps. */
+  stepsLabel: 'Setup steps',
+  stages: {
+    checking: 'Checking server',
+    'signing-in': 'Signing in',
+    installing: 'Installing Crew in your account',
+    starting: 'Starting workspace',
+    connecting: 'Connecting',
+    ready: 'Ready',
+  },
+  /** Beside "Installing Crew in your account" once done. */
+  reused: (version: string) => `Crew ${version} was already installed.`,
+  installed: (version: string) => `Installed Crew ${version}.`,
+  stop: 'Stop',
+  /** A Sign in window the person closed before signing in ends the job. */
+  signInEnded: 'Sign-in didn’t finish, so setup stopped. Try again when you’re ready to sign in.',
+  /** The daemon predates automatic setup. */
+  outdated:
+    'Setting Crew up needs a newer Biorouter background service. Quit and reopen Biorouter, or install it yourself.',
+  failed: 'Setup didn’t finish.',
+  tryAgain: 'Try again',
+  /** `crew_install_incompatible`: the one refusal a person can answer from here. */
+  replace: 'Replace the installed Crew',
+  output: 'What the server printed',
+  error: (code: string, server: string): string | null => {
+    switch (code) {
+      case 'crew_setup_busy':
+        return 'Biorouter is already setting Crew up on two servers. Wait for one to finish, then try again.';
+      case 'crew_setup_not_found':
+        return 'Biorouter lost track of this setup, for example because it restarted. Try again.';
+      case 'crew_setup_cancelled':
+        return 'Setup stopped. Crew may be partly set up; trying again finishes it.';
+      case 'crew_setup_timed_out':
+        return `${server} took too long to answer, so setup stopped. Try again.`;
+      case 'crew_setup_sign_in_expired':
+        return 'Setup waited 10 minutes for you to sign in, then stopped. Try again when you’re ready to sign in.';
+      case 'crew_setup_not_waiting_for_sign_in':
+        return 'This setup isn’t waiting for you to sign in any more.';
+      case 'crew_setup_artifact_changed':
+        return 'Crew’s server program in this Biorouter changed during setup. Try again.';
+      case 'crew_setup_server_unreadable':
+        return `Biorouter couldn’t read what ${server} answered, so it changed nothing. Try again; if it happens again, install Crew yourself below.`;
+      case 'crew_setup_start_failed':
+        return `Crew is installed in your account, but it didn’t start the workspace on ${server}. Run the commands yourself to see what the server says.`;
+      case 'crew_install_artifact_unavailable':
+        return 'This Biorouter doesn’t include Crew’s server program, so it can’t install it. Update Biorouter, or ask your host or IT to install Crew.';
+      case 'crew_install_unsupported_platform':
+        return `Crew can’t run on ${server}: it needs Linux on an x86-64 processor.`;
+      case 'crew_install_checksum_mismatch':
+        return `The copy of Crew that reached ${server} didn’t match the one Biorouter sent, so it wasn’t installed. Try again, and tell IT if it happens again.`;
+      case 'crew_install_checksum_tool_missing':
+        return `${server} has no tool to check the program (sha256sum, shasum or openssl), so Crew wasn’t installed. Ask IT to add one.`;
+      case 'crew_install_permission_denied':
+        return `Your account on ${server} can’t write to ~/.local/bin, so Crew wasn’t installed.`;
+      case 'crew_install_unexpected_target':
+        return `~/.local/bin/biorouter-crew on ${server} isn’t a file your account owns, so Biorouter left it alone. Remove it, or ask IT, then try again.`;
+      case 'crew_install_dependency_missing':
+        return `Crew can’t run on ${server}: the server’s system libraries are too old or missing. Ask IT.`;
+      case 'crew_install_no_space':
+        return `There isn’t enough free space in your home folder on ${server} to install Crew.`;
+      case 'crew_install_transfer_incomplete':
+        return `The connection to ${server} ended before all of Crew arrived, so nothing was installed. Try again.`;
+      case 'crew_install_busy':
+        return `Another Biorouter is installing Crew in your account on ${server} right now. Wait a minute, then try again.`;
+      case 'crew_install_outcome_unknown':
+        return `Biorouter can’t tell whether Crew finished installing on ${server}. Try again to check.`;
+      case 'crew_install_incompatible':
+        return `The Crew already in your account on ${server} doesn’t work with this Biorouter. Replace it to continue; the old copy is kept beside it.`;
+      case 'crew_host_storage_unsupported':
+        return `Your home folder on ${server} is on network storage, where Crew can’t keep a workspace. Host from an account whose home is on a local disk.`;
+      case 'crew_host_pidfd_unavailable':
+        return `The Linux on ${server} is too old to host a workspace. You can still join workspaces hosted elsewhere.`;
+      case 'crew_host_machine_id_unavailable':
+        return `${server} has no readable machine ID (/etc/machine-id), which hosting a workspace needs. Ask IT.`;
+      case 'crew_host_home_unsafe':
+        return `Other people on ${server} can change your home folder, so Crew won’t host a workspace there. Run chmod go-w ~ on the server, then try again.`;
+      default:
+        return null;
+    }
+  },
+  // The manual install ("Run it yourself", "Install it yourself").
+  saveBroker: 'Save Crew’s server program…',
+  saving: 'Saving…',
+  saved: (path: string) => `Saved to ${path}.`,
+  saveFailed: 'Biorouter couldn’t save the program. Try again, or choose another folder.',
+  manualIntro: (server: string) =>
+    `Save the program, copy it to ${server}, check it and install it in your account:`,
+  manualVersion: (version: string, sha256: string) =>
+    `Crew ${version} for Linux x86-64, SHA-256 ${sha256}.`,
+  /** This build carries no broker (a development build without one staged). */
+  artifactUnavailable:
+    'This Biorouter doesn’t include Crew’s server program. Ask your host or IT to install biorouter-crew in ~/.local/bin.',
+  needsDesktop: 'Saving the program needs the Biorouter desktop app.',
 } as const;
 
 export const emptyCopy = {
@@ -641,11 +807,3 @@ export const emptyCopy = {
   noChannelBody: 'Create one to start talking.',
   noChannelAction: 'Create channel',
 } as const;
-
-/** The per-account install commands (cli-guide.md, "Install the remote executable"). */
-export const INSTALL_COMMANDS = [
-  "VERIFIED_BINARY='/replace/with/path/to/verified/linux/biorouter-crew'",
-  'mkdir -p "$HOME/.local/bin"',
-  'install -m 0755 "$VERIFIED_BINARY" "$HOME/.local/bin/biorouter-crew"',
-  '"$HOME/.local/bin/biorouter-crew" --version',
-].join('\n');
