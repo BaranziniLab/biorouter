@@ -5559,13 +5559,46 @@ pub fn bridge(socket: &Path, owner: u32, workspace: &str) -> Result<()> {
     );
     let root = runtime_root_of(socket)?;
     let (stream, reader, _) = open_workspace(root, socket, owner, workspace)?;
+    // A full-access transfer opens its own connection the same way, so the relay never waits
+    // on it.
+    let reconnect: crate::remote_full::Connect = {
+        let (root, socket, workspace) = (
+            root.to_path_buf(),
+            socket.to_path_buf(),
+            workspace.to_owned(),
+        );
+        Arc::new(move || {
+            open_workspace(&root, &socket, owner, &workspace)
+                .map(|(stream, reader, _)| (stream, reader))
+        })
+    };
     // Standard input is read through a buffer the relay can see into: it waits on the input
     // descriptor only when that buffer is empty.
     use std::os::fd::AsFd;
     let mut input = BufReader::new(File::from(std::io::stdin().as_fd().try_clone_to_owned()?));
     let stdout = std::io::stdout();
     let mut output = stdout.lock();
-    relay(&mut input, &mut output, stream, reader)
+    relay(&mut input, &mut output, stream, reader, &reconnect)
+}
+/// Write `response` to the daemon as one frame. An answer too large for a frame is replaced by
+/// a refusal under the same ID rather than ending the bridge.
+fn write_response(output: &mut impl Write, response: Response) -> Result<()> {
+    let mut bytes = serde_json::to_vec(&response)?;
+    if bytes.len() >= MAX_FRAME {
+        bytes = serde_json::to_vec(&Response {
+            id: response.id,
+            result: None,
+            error: Some(ProtocolError {
+                code: "response_too_large".into(),
+                message: "response_too_large: The answer was larger than one frame. Ask for less."
+                    .into(),
+            }),
+        })?;
+    }
+    bytes.push(b'\n');
+    output.write_all(&bytes)?;
+    output.flush()?;
+    Ok(())
 }
 /// What a bridge answers a request it could not hand to the broker: nothing of it reached the
 /// workspace, so nothing changed and it is safe to send again once reconnected. The member's
@@ -5583,11 +5616,16 @@ const BROKER_GONE: &str =
 /// (R-5). Waiting on the daemon alone, it noticed a broker that died only when the next
 /// request failed, and the member read "Connected" for up to two and a half minutes. A request
 /// that could not be written to the broker is answered [`NOT_DELIVERED`] before it exits.
+///
+/// `bridge.*` requests are the bridge's own (design OW-6, OW-8) and are answered here, never
+/// forwarded, an unknown one with a local refusal. `reconnect` opens the second broker
+/// connection a full-access transfer runs on.
 fn relay(
     input: &mut BufReader<File>,
     output: &mut impl Write,
     mut stream: UnixStream,
     mut reader: BufReader<UnixStream>,
+    reconnect: &crate::remote_full::Connect,
 ) -> Result<()> {
     loop {
         if input.buffer().is_empty() {
@@ -5606,7 +5644,21 @@ fn relay(
             return Ok(());
         };
         let request: Request = serde_json::from_slice(&frame)?;
-        if request.method.starts_with("remote.") {
+        if request.method.starts_with("bridge.") {
+            let response = match crate::probe::bridge_method(&request.method) {
+                Ok(value) => Response {
+                    id: request.id,
+                    result: Some(value),
+                    error: None,
+                },
+                Err(error) => Response {
+                    id: request.id,
+                    result: None,
+                    error: Some(protocol_error(&error)),
+                },
+            };
+            write_response(output, response)?;
+        } else if request.method.starts_with("remote.") {
             let result = (|| -> Result<Value> {
                 ensure!(
                     request.auth.is_none() && request.credential.is_some(),
@@ -5633,7 +5685,12 @@ fn relay(
                 let scope = scope_response
                     .result
                     .ok_or_else(|| anyhow!("invalid_response"))?;
-                let result = crate::remote::handle(&request.method, &request.params, &scope)?;
+                let link = crate::remote_full::BrokerLink {
+                    connect: reconnect.clone(),
+                    credential: request.credential.clone().unwrap_or_default(),
+                };
+                let result =
+                    crate::remote::handle(&request.method, &request.params, &scope, &link)?;
                 stream.write_all(&scope_bytes)?;
                 stream.flush()?;
                 let recheck: Response = serde_json::from_slice(
@@ -5660,11 +5717,7 @@ fn relay(
                     }),
                 },
             };
-            let mut bytes = serde_json::to_vec(&response)?;
-            ensure!(bytes.len() < MAX_FRAME, "response_too_large");
-            bytes.push(b'\n');
-            output.write_all(&bytes)?;
-            output.flush()?;
+            write_response(output, response)?;
         } else {
             if stream
                 .write_all(&frame)
@@ -6666,10 +6719,104 @@ mod bridge_tests {
         std::thread::spawn(move || {
             let reader = BufReader::new(bridge_side.try_clone().unwrap());
             let mut output = Vec::new();
-            let result = relay(&mut input, &mut output, bridge_side, reader);
+            let reconnect: crate::remote_full::Connect =
+                Arc::new(|| bail!("no second broker connection in this test"));
+            let result = relay(&mut input, &mut output, bridge_side, reader, &reconnect);
             let _ = sender.send((result, output));
         });
         receiver
+    }
+
+    /// A broker that records every frame it receives and answers each `{ok: true}`.
+    fn recording_broker(broker_side: UnixStream) -> Arc<Mutex<Vec<Value>>> {
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let record = seen.clone();
+        std::thread::spawn(move || {
+            let mut reader = BufReader::new(broker_side.try_clone().unwrap());
+            let mut writer = broker_side;
+            while let Ok(Some(request)) = read_frame(&mut reader) {
+                let request: Value = serde_json::from_slice(&request).unwrap();
+                let answer = json!({"id": request["id"], "result": {"ok": true}});
+                record.lock().unwrap().push(request);
+                writer.write_all(format!("{answer}\n").as_bytes()).unwrap();
+            }
+        });
+        seen
+    }
+
+    fn answers(output: &[u8]) -> Vec<Value> {
+        output
+            .split(|b| *b == b'\n')
+            .filter(|line| !line.is_empty())
+            .map(|line| serde_json::from_slice::<Value>(line).unwrap())
+            .collect()
+    }
+
+    /// `bridge.hello` and `bridge.probe` are answered by the bridge itself, and any other
+    /// `bridge.*` method is refused there: none of them ever reaches the broker, while an
+    /// ordinary request after them still does.
+    #[test]
+    fn bridge_methods_are_answered_locally_and_never_forwarded() {
+        let (input, mut daemon) = stdin_pipe();
+        let (bridge_side, broker_side) = UnixStream::pair().unwrap();
+        let seen = recording_broker(broker_side);
+        let finished = spawn_relay(input, bridge_side);
+        for (id, method) in [
+            ("hello", "bridge.hello"),
+            ("probe", "bridge.probe"),
+            ("other", "bridge.delete_everything"),
+        ] {
+            daemon
+                .write_all(
+                    format!("{{\"version\":1,\"id\":\"{id}\",\"method\":\"{method}\",\"params\":{{}}}}\n")
+                        .as_bytes(),
+                )
+                .unwrap();
+        }
+        daemon.write_all(&frame("post")).unwrap();
+        drop(daemon);
+        let (result, output) = finished.recv_timeout(Duration::from_secs(30)).unwrap();
+        result.unwrap();
+        let answers = answers(&output);
+        assert_eq!(answers.len(), 4, "{answers:?}");
+        assert_eq!(answers[0]["id"], "hello");
+        assert_eq!(
+            answers[0]["result"]["capabilities"],
+            json!(["remote_full_v1", "remote_transfer_v1", "bridge_probe_v1"])
+        );
+        assert_eq!(
+            answers[0]["result"]["bridge_version"],
+            env!("CARGO_PKG_VERSION")
+        );
+        assert_eq!(answers[1]["result"]["schema"], 1);
+        assert_eq!(answers[2]["error"]["code"], "unsupported");
+        assert_eq!(answers[3]["result"]["ok"], true);
+        let seen = seen.lock().unwrap();
+        assert_eq!(
+            seen.len(),
+            1,
+            "only the ordinary request reached the broker: {seen:?}"
+        );
+        assert_eq!(seen[0]["method"], "message.post");
+    }
+
+    /// A `remote.*` frame without a worker credential is refused by the bridge, and the broker
+    /// is never asked for its scope.
+    #[test]
+    fn a_remote_request_without_a_credential_is_refused_locally() {
+        let (input, mut daemon) = stdin_pipe();
+        let (bridge_side, broker_side) = UnixStream::pair().unwrap();
+        let seen = recording_broker(broker_side);
+        let finished = spawn_relay(input, bridge_side);
+        daemon
+            .write_all(b"{\"version\":1,\"id\":\"shell\",\"method\":\"remote.shell\",\"params\":{\"command\":\"id\"}}\n")
+            .unwrap();
+        drop(daemon);
+        let (result, output) = finished.recv_timeout(Duration::from_secs(5)).unwrap();
+        result.unwrap();
+        let answers = answers(&output);
+        assert_eq!(answers[0]["error"]["code"], "remote_operation_denied");
+        assert!(seen.lock().unwrap().is_empty());
     }
 
     fn frame(id: &str) -> Vec<u8> {

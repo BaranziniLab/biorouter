@@ -1,4 +1,5 @@
-//! Own-UID scoped file operations and fail-closed, single-process Linux jobs.
+//! Own-UID scoped file operations and fail-closed, single-process Linux jobs: folder mode.
+//! A run whose scope says `access: "full"` is handed to [`crate::remote_full`] instead.
 use anyhow::{anyhow, bail, ensure, Result};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
@@ -236,10 +237,52 @@ fn open_scoped(root: &Path, path: &Path, write: bool) -> Result<File> {
     }
     Ok(dir)
 }
-pub fn handle(method: &str, params: &Value, scope: &Value) -> Result<Value> {
+/// Methods only a full-access run has (design OW-6, OW-7).
+const FULL_ACCESS_METHODS: [&str; 4] = [
+    "remote.shell",
+    "remote.stat",
+    "remote.fetch_blob",
+    "remote.share_file",
+];
+
+/// The run's access level, as its scope says. A scope without `access` comes from a broker
+/// older than full access and is a folder run, so a newer bridge fails closed.
+pub fn access(scope: &Value) -> Result<crate::RemoteAccess> {
+    match scope.get("access") {
+        None | Some(Value::Null) => Ok(crate::RemoteAccess::Folder),
+        Some(value) if value == "folder" => Ok(crate::RemoteAccess::Folder),
+        Some(value) if value == "full" => Ok(crate::RemoteAccess::Full),
+        Some(_) => bail!("invalid_scope: unknown remote access level"),
+    }
+}
+
+/// What a folder-mode command answers when the kernel cannot confine it: said up front, naming
+/// the level that can run commands here, instead of the confinement library's own error from
+/// inside the helper.
+pub fn confinement_refusal(landlock_abi: u32) -> Option<String> {
+    (landlock_abi < 3).then(|| {
+        format!(
+            "unsupported: This server's kernel can't confine commands (Landlock ABI {landlock_abi}). Choose 'As me on the server' in Connection settings to run commands as yourself."
+        )
+    })
+}
+
+pub fn handle(
+    method: &str,
+    params: &Value,
+    scope: &Value,
+    link: &crate::remote_full::BrokerLink,
+) -> Result<Value> {
     ensure!(
         cfg!(target_os = "linux"),
         "unsupported: scoped remote operations require Linux"
+    );
+    if access(scope)? == crate::RemoteAccess::Full {
+        return crate::remote_full::handle(method, params, scope, link);
+    }
+    ensure!(
+        !FULL_ACCESS_METHODS.contains(&method),
+        "unsupported: {method} needs full access. Choose 'As me on the server' in Connection settings."
     );
     let root = root(scope)?;
     let path = relative(params)?;
@@ -599,6 +642,9 @@ fn start_job(root: &Path, params: &Value, scope: &Value) -> Result<Value> {
         scope["allow_execute"] == true,
         "forbidden: remote execution requires an explicit human grant"
     );
+    if let Some(refusal) = confinement_refusal(crate::probe::landlock_abi()) {
+        bail!(refusal);
+    }
     validate_work_tree(root)?;
     let argv: Vec<String> = serde_json::from_value(params["argv"].clone())?;
     ensure!(
@@ -1069,6 +1115,58 @@ mod tests {
     fn relative_and_shallow_roots_are_refused() {
         refused("crew-work/lab", BRIDGE);
         refused("/srv", BRIDGE);
+    }
+
+    /// A scope from an older broker names no access level and stays in folder mode; only the
+    /// exact word `full` leaves it, and an unknown level is refused rather than guessed.
+    #[test]
+    fn a_scope_without_access_is_folder_mode() {
+        assert_eq!(
+            access(&json!({"root": "/x"})).unwrap(),
+            crate::RemoteAccess::Folder
+        );
+        assert_eq!(
+            access(&json!({"access": "folder"})).unwrap(),
+            crate::RemoteAccess::Folder
+        );
+        assert_eq!(
+            access(&json!({"access": "full"})).unwrap(),
+            crate::RemoteAccess::Full
+        );
+        for level in [json!("FULL"), json!(true), json!("confined")] {
+            assert!(access(&json!({ "access": level })).is_err(), "{level}");
+        }
+    }
+
+    /// A kernel without Landlock ABI 3 is refused before anything is reserved or started, with
+    /// a sentence that names full access.
+    #[test]
+    fn a_kernel_that_cannot_confine_is_refused_up_front() {
+        let refusal = confinement_refusal(1).unwrap();
+        assert!(refusal.starts_with("unsupported: "), "{refusal}");
+        assert!(refusal.contains("Landlock ABI 1"), "{refusal}");
+        assert!(refusal.contains("As me on the server"), "{refusal}");
+        assert!(confinement_refusal(0).is_some());
+        assert!(confinement_refusal(3).is_none());
+        assert!(confinement_refusal(6).is_none());
+    }
+
+    /// The methods only full access has are refused in folder mode with a sentence that says
+    /// so, before the work folder is even looked at.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn full_access_methods_are_refused_in_folder_mode() {
+        let link = crate::remote_full::BrokerLink {
+            connect: Arc::new(|| bail!("no broker in this test")),
+            credential: String::new(),
+        };
+        let scope = json!({"root": "/nonexistent", "public_provider": false, "access": "folder"});
+        for method in FULL_ACCESS_METHODS {
+            let error = handle(method, &json!({}), &scope, &link)
+                .unwrap_err()
+                .to_string();
+            assert!(error.contains("needs full access"), "{method}: {error}");
+        }
     }
 
     #[test]

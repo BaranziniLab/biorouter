@@ -402,7 +402,11 @@ pub use broker::{bridge, lifecycle, serve, Account, Broker, Connection, Director
 pub use broker::{JournalCall, Quotas};
 
 #[cfg(unix)]
+pub mod probe;
+#[cfg(unix)]
 pub mod remote;
+#[cfg(unix)]
+pub mod remote_full;
 
 #[cfg(test)]
 mod tests {
