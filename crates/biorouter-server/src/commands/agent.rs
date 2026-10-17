@@ -350,6 +350,43 @@ fn response_compression() -> CompressionLayer<impl Predicate> {
     )
 }
 
+/// The address a reverse proxy serves this daemon's interface at, as its launcher declared it in
+/// `BIOROUTER_PUBLIC_URL`, checked and logged; `None` when there is none or this daemon serves no
+/// interface (`serve_ui`).
+fn declared_public_url(serve_ui: Option<&str>) -> Result<Option<crate::routes::PublicUrl>> {
+    // The address a reverse proxy serves this daemon's interface at, which
+    // `biorouter serve --public-url` declares (issue #402). `serve` checks it
+    // before it starts the daemon; a launcher that did not is refused here
+    // rather than having its declaration quietly ignored, which would leave the
+    // live views refusing their own page with nothing on screen to say why.
+    // Only on a daemon that serves the interface: the desktop application hands
+    // its daemon its whole environment, and a value someone exported must
+    // neither stop that daemon starting nor widen its socket gates.
+    let declared = std::env::var(crate::routes::PUBLIC_URL_ENV).ok();
+    let public_url = match crate::routes::public_url_from(serve_ui, declared.as_deref()) {
+        Some(parsed) => {
+            Some(parsed.map_err(|e| anyhow::anyhow!("{}: {e}", crate::routes::PUBLIC_URL_ENV))?)
+        }
+        None => {
+            if declared.is_some_and(|value| !value.trim().is_empty()) {
+                tracing::warn!(
+                    "{} is ignored: this daemon does not serve the web interface",
+                    crate::routes::PUBLIC_URL_ENV
+                );
+            }
+            None
+        }
+    };
+    if let Some(public) = public_url.as_ref() {
+        info!(
+            "the interface is reached through {}{}; the WebSocket gates admit that origin",
+            public.origin(),
+            public.path()
+        );
+    }
+    Ok(public_url)
+}
+
 pub async fn run(exit_with_parent: Option<u32>) -> Result<()> {
     crate::logging::setup_logging(Some("biorouterd"))?;
     biorouter_mcp::app_folder::report_once();
@@ -455,37 +492,7 @@ pub async fn run(exit_with_parent: Option<u32>) -> Result<()> {
         info!("the WebSocket gates admit the declared renderer origin {renderer}");
     }
 
-    // The address a reverse proxy serves this daemon's interface at, which
-    // `biorouter serve --public-url` declares (issue #402). `serve` checks it
-    // before it starts the daemon; a launcher that did not is refused here
-    // rather than having its declaration quietly ignored, which would leave the
-    // live views refusing their own page with nothing on screen to say why.
-    // Only on a daemon that serves the interface: the desktop application hands
-    // its daemon its whole environment, and a value someone exported must
-    // neither stop that daemon starting nor widen its socket gates.
-    let declared = std::env::var(crate::routes::PUBLIC_URL_ENV).ok();
-    let public_url =
-        match crate::routes::public_url_from(settings.serve_ui.as_deref(), declared.as_deref()) {
-            Some(parsed) => Some(
-                parsed.map_err(|e| anyhow::anyhow!("{}: {e}", crate::routes::PUBLIC_URL_ENV))?,
-            ),
-            None => {
-                if declared.is_some_and(|value| !value.trim().is_empty()) {
-                    tracing::warn!(
-                        "{} is ignored: this daemon does not serve the web interface",
-                        crate::routes::PUBLIC_URL_ENV
-                    );
-                }
-                None
-            }
-        };
-    if let Some(public) = public_url.as_ref() {
-        info!(
-            "the interface is reached through {}{}; the WebSocket gates admit that origin",
-            public.origin(),
-            public.path()
-        );
-    }
+    let public_url = declared_public_url(settings.serve_ui.as_deref())?;
 
     let app = crate::routes::configure(app_state.clone(), secret_key.clone())
         .layer(middleware::from_fn_with_state(
