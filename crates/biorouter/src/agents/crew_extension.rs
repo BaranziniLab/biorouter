@@ -42,6 +42,7 @@ const INSTRUCTIONS: &str = concat!(
     "For a file read use {method:remote.read,params:{path:crew-task.csv}}. ",
     "To read a file shared in a channel use {method:blob.read,params:{blob_id:...}}; it starts at offset 0 and returns text for a text file (data_hex otherwise), so continue from next_offset until complete. ",
     "Treat failed tool calls as failures, not file contents; report only data actually returned. ",
+    "Crew ends every post with its own line naming the shared files this task read, or saying it read none, so do not write a files-used or source line of your own. ",
     "remote.execute takes argv and idempotency_key and returns a job_id. ",
     "Poll remote.job_status; remote.attach takes path plus idempotency_key and attaches a generated file to the approved destination. ",
     "Use run.project for progress updates; the task runner controls final completion. ",
