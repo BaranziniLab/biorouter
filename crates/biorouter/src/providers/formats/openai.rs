@@ -172,27 +172,43 @@ fn in_stream_context_overflow(error: &Value) -> Option<ProviderError> {
 const UNRECOGNISED_IN_STREAM_ERROR: &str =
     "Provider reported an error while streaming. Contact your provider administrator.";
 
-/// llama-server's decode failures that stop the requests it was running,
-/// reported as the server errors they are. The same failures arriving as an
-/// HTTP 500 were already `ServerError`s, retried as transient; inside a stream
-/// that had started they fell through to [`UNRECOGNISED_IN_STREAM_ERROR`],
-/// which is fatal and told the user "Retrying will not help" (#401).
+/// What the user is told for any other code-500 `server_error` frame: a server
+/// fault partway through the reply, retried like the same failure arriving as
+/// an HTTP 500. Its own text is withheld, as for every unrecognised frame.
+pub(crate) const IN_STREAM_SERVER_FAULT: &str =
+    "The model server reported an internal error partway through its reply. Biorouter does \
+     not show the server's own text, which can contain parts of the conversation; the \
+     daemon log records the error's code and type.";
+
+/// A code-500 `server_error` frame, reported as the server error it is. The
+/// same failures arriving as an HTTP 500 were already `ServerError`s, retried
+/// as transient; inside a stream that had started they fell through to
+/// [`UNRECOGNISED_IN_STREAM_ERROR`], which is fatal and told the user "Retrying
+/// will not help" (#401). That was llama-server's shared-cache collision, and
+/// the same held for its other decode failures ("Invalid input batch.") and for
+/// a reply its chat parser could not read, which a retry regenerates.
 ///
-/// Matched exactly (code 500, type `server_error`, and the server's own fixed
-/// sentence), so the text the user sees is always Biorouter's.
-fn in_stream_llama_server_failure(error: &Value) -> Option<ProviderError> {
+/// Only llama-server's two known sentences get their own text, matched exactly,
+/// so the text the user sees is always Biorouter's. "Compute error." keeps its
+/// marker because the managed sidecar discards a GPU backend on it and only on
+/// it (`llamacpp::after_failure`); [`IN_STREAM_SERVER_FAULT`] must never carry
+/// that marker.
+fn in_stream_server_fault(error: &Value) -> Option<ProviderError> {
     if error.get("code").and_then(Value::as_u64) != Some(500)
         || error.get("type").and_then(Value::as_str) != Some("server_error")
     {
         return None;
     }
-    match error.get("message").and_then(Value::as_str)? {
-        "Compute error." => Some(ProviderError::ServerError("Compute error.".into())),
-        crate::providers::utils::LLAMA_SERVER_CACHE_FULL => Some(ProviderError::ServerError(
-            crate::providers::utils::LLAMA_SERVER_CACHE_FULL_EXPLAINED.into(),
-        )),
-        _ => None,
-    }
+    Some(ProviderError::ServerError(
+        match error.get("message").and_then(Value::as_str) {
+            Some("Compute error.") => "Compute error.",
+            Some(crate::providers::utils::LLAMA_SERVER_CACHE_FULL) => {
+                crate::providers::utils::LLAMA_SERVER_CACHE_FULL_EXPLAINED
+            }
+            _ => IN_STREAM_SERVER_FAULT,
+        }
+        .into(),
+    ))
 }
 
 /// An error object's `code` or `type`, when it is a short plain identifier
@@ -241,7 +257,7 @@ fn parse_streaming_chunk(line: &str) -> anyhow::Result<StreamingChunk> {
     })?;
     if let Some(error) = value.get("error").filter(|error| !error.is_null()) {
         let mapped = in_stream_context_overflow(error)
-            .or_else(|| in_stream_llama_server_failure(error))
+            .or_else(|| in_stream_server_fault(error))
             .unwrap_or_else(|| ProviderError::RequestFailed(UNRECOGNISED_IN_STREAM_ERROR.into()));
         log_in_stream_error(error, &mapped);
         return Err(mapped.into());
@@ -2052,19 +2068,47 @@ data: [DONE]
         ));
         assert!(!error.to_string().contains("SECRET_PROVIDER_PAYLOAD"));
 
+        // Not a code-500 server error: withheld and fatal, as before.
         for payload in [
             json!({"code": 400, "type": "server_error", "message": "Compute error."}),
             json!({"code": 500, "type": "invalid_request_error", "message": "Compute error."}),
-            json!({"code": 500, "type": "server_error", "message": "Compute error. SECRET_PROVIDER_PAYLOAD"}),
-            json!({"code": 500, "type": "server_error", "message": "Invalid input batch."}),
             json!({"message": "SECRET_PROVIDER_PAYLOAD"}),
         ] {
             let lines = format!("data: {}", json!({"error": payload}));
             let error = decode_lines(&lines, false).await.unwrap_err();
-            assert!(matches!(
-                error.downcast_ref::<ProviderError>(),
-                Some(ProviderError::RequestFailed(message))
-                    if message == "Provider reported an error while streaming. Contact your provider administrator."
+            assert!(
+                matches!(
+                    error.downcast_ref::<ProviderError>(),
+                    Some(ProviderError::RequestFailed(message))
+                        if message == UNRECOGNISED_IN_STREAM_ERROR
+                ),
+                "{payload}"
+            );
+            assert!(!error.to_string().contains("SECRET_PROVIDER_PAYLOAD"));
+        }
+
+        // Any other code-500 server error is a retryable server fault that
+        // never carries the compute marker, so it can never discard a GPU
+        // backend that did not fail.
+        for payload in [
+            json!({"code": 500, "type": "server_error", "message": "Compute error. SECRET_PROVIDER_PAYLOAD"}),
+            json!({"code": 500, "type": "server_error", "message": "Invalid input batch."}),
+            json!({"code": 500, "type": "server_error", "message": "Failed to parse input at pos 12: SECRET_PROVIDER_PAYLOAD"}),
+            json!({"code": 500, "type": "server_error"}),
+        ] {
+            let lines = format!("data: {}", json!({"error": payload}));
+            let error = decode_lines(&lines, false).await.unwrap_err();
+            let error = error
+                .downcast_ref::<ProviderError>()
+                .expect("a provider error");
+            assert_eq!(
+                error,
+                &ProviderError::ServerError(IN_STREAM_SERVER_FAULT.to_string()),
+                "{payload}"
+            );
+            assert!(crate::agents::mistakes::is_recoverable(error));
+            assert!(!crate::providers::llamacpp_sidecar::is_compute_error(
+                &error.to_string()
             ));
             assert!(!error.to_string().contains("SECRET_PROVIDER_PAYLOAD"));
         }
@@ -2116,10 +2160,20 @@ data: [DONE]
 
     #[tokio::test]
     async fn in_stream_shared_cache_overflow_needs_the_exact_server_frame() {
+        // A reworded 500 is still a server fault, but not this explanation.
+        let lines = format!(
+            "data: {}",
+            json!({"error": {"code": 500, "type": "server_error", "message": "Context size has been exceeded. SECRET_PROVIDER_PAYLOAD"}})
+        );
+        let error = decode_lines(&lines, false).await.unwrap_err();
+        assert!(matches!(
+            error.downcast_ref::<ProviderError>(),
+            Some(ProviderError::ServerError(message)) if message == IN_STREAM_SERVER_FAULT
+        ));
+
         for payload in [
             json!({"code": 400, "type": "server_error", "message": "Context size has been exceeded."}),
             json!({"code": 500, "type": "invalid_request_error", "message": "Context size has been exceeded."}),
-            json!({"code": 500, "type": "server_error", "message": "Context size has been exceeded. SECRET_PROVIDER_PAYLOAD"}),
             json!({"message": "Context size has been exceeded."}),
         ] {
             let lines = format!("data: {}", json!({"error": payload}));

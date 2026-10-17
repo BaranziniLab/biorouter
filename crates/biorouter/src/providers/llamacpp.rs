@@ -2210,7 +2210,10 @@ mod tests {
             |error, port| async move { after_failure(error, Some(*port)).await },
         );
         let error = stream.next().await.unwrap().unwrap_err();
-        assert!(matches!(&error, ProviderError::RequestFailed(_)));
+        assert!(
+            matches!(&error, ProviderError::ServerError(message) if !llamacpp_sidecar::is_compute_error(message)),
+            "a server fault that is not a compute failure: {error:?}"
+        );
         assert!(!error.to_string().contains("SECRET_PROVIDER_PAYLOAD"));
         assert_eq!(
             llamacpp_sidecar::current_api_key().as_deref(),
