@@ -583,7 +583,9 @@ prompt both catalog models made structured tool calls reliably.
   `LLAMACPP_EXTERNAL_HOST` server started with defaults, and once a stream has
   started it arrives as an in-stream `{"error":…}` frame, not a 500. Both forms
   map to the same retryable `ServerError` (`LLAMA_SERVER_CACHE_FULL` in
-  `providers/utils.rs`); the in-stream one used to read "Provider reported an
+  `providers/utils.rs`), as does every other in-stream code-500 `server_error`
+  frame (`IN_STREAM_SERVER_FAULT`, its text withheld, and never the
+  "Compute error." marker that discards a GPU backend); the in-stream one used to read "Provider reported an
   error while streaming" plus "Retrying will not help", which is how v1.92.1's
   default-slot sidecar showed it (#401, measured on b9611 and b11429).
 - **Security:** a fresh random API key per launch, written 0600 to
