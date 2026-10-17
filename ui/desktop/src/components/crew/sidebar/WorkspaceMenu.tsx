@@ -26,7 +26,7 @@ import type { CrewConnection } from '../crewApi';
 import { groupedFingerprint, useWorkspaceKeyFingerprint } from '../dialogs/fingerprint';
 import { isOpenWorkspace } from '../dialogs/governance';
 import { connectionNames, PersonName, personLabel } from '../identity';
-import { connectFailureHost, savedFailureKind } from '../state/connectFailure';
+import { connectFailureHost, isWorkspaceDeleted, savedFailureKind } from '../state/connectFailure';
 import { useJoinContext } from '../onboarding/joinContext';
 import { sshUsername } from '../onboarding/joinText';
 import { useCrew } from '../state/CrewControllerContext';
@@ -41,8 +41,9 @@ import './crew-sidebar.css';
 const copy = sidebarCopy.workspaceMenu;
 
 /** A saved connection's dot in the Switch section, from the only state the daemon keeps for it. */
-function savedStatusTone(status: CrewConnection['status']): StatusDotTone {
-  switch (status) {
+function savedStatusTone(connection: CrewConnection): StatusDotTone {
+  if (isWorkspaceDeleted(connection)) return CONNECTION_STATUS['workspace-deleted'].tone;
+  switch (connection.status) {
     case 'connected':
       return 'success';
     case 'authentication_required':
@@ -54,9 +55,13 @@ function savedStatusTone(status: CrewConnection['status']): StatusDotTone {
   }
 }
 
-/** The word beside that dot, for a screen reader (colour is never the only signal). */
-function savedStatusWord(status: CrewConnection['status']): string {
-  switch (status) {
+/**
+ * The word beside that dot, for a screen reader (colour is never the only signal). A workspace its
+ * host deleted says so, as the status row does once it is selected (G8).
+ */
+function savedStatusWord(connection: CrewConnection): string {
+  if (isWorkspaceDeleted(connection)) return crewStatusCopy.workspaceDeleted;
+  switch (connection.status) {
     case 'connected':
       return crewStatusCopy.connected;
     case 'authentication_required':
@@ -83,10 +88,12 @@ const CONNECTION_UP: ReadonlySet<string> = new Set<ConnectionStatusKey>([
  * Whether the menu offers Reconnect (Q3-57): only while the connection is not connected and
  * verified — which covers a join waiting for the host, whose status is "Not joined yet". Beside
  * "Connected · identity verified" it could only restart a healthy connection, and a keyboard user
- * pressed it by accident. Every other state keeps it, disabled while a connect already runs.
+ * pressed it by accident. A workspace its host deleted has nothing left to connect to, and every
+ * connect is refused, so it is not offered there either (R2-G8). Every other state keeps it,
+ * disabled while a connect already runs.
  */
 export function offersReconnect(status: ConnectionStatusKey | null): boolean {
-  return status !== 'connected';
+  return status !== 'connected' && status !== 'workspace-deleted';
 }
 
 /**
@@ -97,6 +104,8 @@ export function offersReconnect(status: ConnectionStatusKey | null): boolean {
 export function unavailableReason(status: string | null, ready: boolean): string | null {
   if (ready) return null;
   if (status === 'not-joined') return sidebarCopy.unavailable.notJoined;
+  // Never "once you're connected": nothing is left to connect to (G8).
+  if (status === 'workspace-deleted') return sidebarCopy.unavailable.deleted;
   return status !== null && CONNECTION_UP.has(status)
     ? sidebarCopy.unavailable.notVerified
     : sidebarCopy.unavailable.notConnected;
@@ -407,10 +416,8 @@ export function WorkspaceMenu({
           >
             {connections.map((item) => {
               const current = item.id === connectionId;
-              const tone =
-                current && presentation ? presentation.tone : savedStatusTone(item.status);
-              const word =
-                current && presentation ? presentation.word : savedStatusWord(item.status);
+              const tone = current && presentation ? presentation.tone : savedStatusTone(item);
+              const word = current && presentation ? presentation.word : savedStatusWord(item);
               return (
                 <DropdownMenuRadioItem key={item.id} value={item.id} disabled={crew.busy}>
                   <StatusDot tone={tone} />

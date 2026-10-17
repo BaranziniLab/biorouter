@@ -148,6 +148,30 @@ describe('deriveConnectionStatus, row by row', () => {
     expect(status({ notJoined: true, verified: true })).toBe('connected');
   });
 
+  // G8: the main area said "The host deleted gui-lab." while this row read "Updates unavailable",
+  // a word that sends the person to Retry against a server with nothing left on it.
+  it('reads "Deleted by host" once the host deleted the workspace, before every other word', () => {
+    expect(status({ observationError: true, workspaceDeleted: true })).toBe('workspace-deleted');
+    expect(status({ connection: disconnected, workspaceDeleted: true })).toBe('workspace-deleted');
+    expect(
+      status({
+        connection: disconnected,
+        lastConnectFailure: failure('host_key_unknown'),
+        inFlight: true,
+        verified: true,
+        reconnecting: true,
+        notJoined: true,
+        workspaceDeleted: true,
+      })
+    ).toBe('workspace-deleted');
+    expect(status({ observationError: true, workspaceDeleted: false })).toBe('updates-unavailable');
+    expect(CONNECTION_STATUS['workspace-deleted']).toMatchObject({
+      word: 'Deleted by host',
+      tone: 'idle',
+      spinner: false,
+    });
+  });
+
   it('reads "Offline" for a saved-disconnected connection with no failure (after an app restart)', () => {
     expect(status({ connection: disconnected })).toBe('offline');
     expect(status({ connection: disconnected, observationError: true })).toBe('offline');

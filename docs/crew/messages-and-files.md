@@ -141,9 +141,10 @@ is back when you return.
   draft is too long to keep when you switch channel. Attach it as a file."
 - Crew clears a draft, and says so, when the workspace's or your connection's privacy or
   institution changes.
-- When you lose access to a channel that held your draft, a note above the message box says
-  "#methods held your unsent draft, which can’t be sent there now. Copy it before you close this
-  note." Choose **Copy draft**, then **Dismiss**. The draft is gone once you dismiss the note.
+- When a channel that held your draft closes, because you lost access to it or it was deleted, a
+  note above the message box says "#methods held your unsent draft, which can’t be sent there
+  now. Copy it before you close this note." Choose **Copy draft**, then **Dismiss**. The draft is
+  gone once you dismiss the note.
 
 ## Share a file from your computer
 
@@ -308,8 +309,10 @@ A channel can be deleted by its owner, or in an open workspace by any of its mem
 team's channels go with the team ([Delete a channel](teams-channels-and-people.md#delete-a-channel)).
 Crew says it "Removes #methods, its files and its messages from the workspace."
 
-- The channel leaves everyone's sidebar. If you have it open, it closes, and an unsent draft
-  there gets the note about a channel you lost access to, described in
+- The channel leaves everyone's sidebar. If you have it open, it closes with "#methods was
+  deleted, so it was closed." In a managed workspace Crew can't tell a deleted channel from one you
+  were removed from, unless its whole team was deleted, and says "#methods is no longer available
+  to you, so it was closed." instead. An unsent draft there gets the note described in
   [Drafts you leave behind](#drafts-you-leave-behind).
 - Its shared files are deleted from the server, and its server paths and file cards go with it.
   A file you saved on your computer stays there.

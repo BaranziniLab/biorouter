@@ -269,6 +269,9 @@ export interface CrewSnapshotTotals {
   invitations?: number;
   runs?: number;
   references?: number;
+  /** An open workspace's: how many teams and channels the viewer may join (OW-2). */
+  joinable_teams?: number;
+  joinable_channels?: number;
 }
 /**
  * The host's view of the workspace's non-renewable budgets, in bytes. Ordinary changes stop at a
@@ -738,7 +741,15 @@ function validatedPendingJoin(join: PendingJoin): PendingJoin {
 function validatedTotals(value: unknown): CrewSnapshotTotals | undefined {
   if (!isRecord(value)) return undefined;
   const totals: CrewSnapshotTotals = {};
-  for (const key of ['teams', 'channels', 'invitations', 'runs', 'references'] as const) {
+  for (const key of [
+    'teams',
+    'channels',
+    'invitations',
+    'runs',
+    'references',
+    'joinable_teams',
+    'joinable_channels',
+  ] as const) {
     const amount = count(value[key]);
     if (amount !== undefined) totals[key] = amount;
   }

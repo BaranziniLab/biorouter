@@ -13,7 +13,7 @@ import type { CrewConnection, Snapshot } from '../crewApi';
 import { useCrewActions } from '../state/crewActions';
 import { CrewControllerProvider } from '../state/CrewControllerContext';
 import { useCrewSurfaces } from '../state/crewSurfaces';
-import type { CrewController, DialogIntent } from '../state/types';
+import type { CrewController, DialogIntent, LastConnectFailure } from '../state/types';
 
 export const connection: CrewConnection = {
   id: 'conn-1',
@@ -99,6 +99,10 @@ export interface FakeCrewOptions {
   capabilities?: readonly string[] | null;
   /** The selected channel; `channel-general` when absent. */
   channelId?: string;
+  /** The code the selected connection's view ended with. Absent: none. */
+  refreshErrorCode?: string | null;
+  /** The selected connection's last connect failure. Absent: none. */
+  lastConnectFailure?: LastConnectFailure | null;
 }
 
 export interface FakeCrew {
@@ -168,6 +172,8 @@ function FakeCrewProvider({
     team: snapshot?.teams[0] ?? null,
     channel: snapshot?.channels[0] ?? null,
     capabilities: options.capabilities,
+    refreshErrorCode: options.refreshErrorCode ?? null,
+    lastConnectFailure: options.lastConnectFailure ?? null,
     act: actions.act,
     error: actions.error,
     errorSlotFor: actions.errorSlotFor,

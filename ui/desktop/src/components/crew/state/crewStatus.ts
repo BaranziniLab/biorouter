@@ -17,7 +17,8 @@ export type ConnectionStatusKey =
   | 'sign-in-needed'
   | 'not-set-up'
   | 'offline'
-  | 'cant-connect';
+  | 'cant-connect'
+  | 'workspace-deleted';
 
 export type StatusTone = 'success' | 'warning' | 'danger' | 'neutral' | 'idle';
 
@@ -54,6 +55,8 @@ export const CONNECTION_STATUS: Readonly<
   'not-set-up': { tone: 'danger', word: crewStatusCopy.notSetUp, spinner: false },
   offline: { tone: 'idle', word: crewStatusCopy.offline, spinner: false },
   'cant-connect': { tone: 'danger', word: crewStatusCopy.cantConnect, spinner: false },
+  // Nothing is left to fix or wait for: idle, like Offline, beside the bar's own note.
+  'workspace-deleted': { tone: 'idle', word: crewStatusCopy.workspaceDeleted, spinner: false },
 };
 
 export interface ConnectionStatusInput {
@@ -87,6 +90,11 @@ export interface ConnectionStatusInput {
    * connected connection being updated, never "Offline". Absent: false.
    */
   awaitingSave?: boolean;
+  /**
+   * The host deleted the workspace (`workspaceKnownDeleted`): "Deleted by host", whatever the
+   * dropped connection or the ended view would otherwise read (G8). Absent: false.
+   */
+  workspaceDeleted?: boolean;
 }
 
 /**
@@ -97,12 +105,16 @@ export interface ConnectionStatusInput {
  * most recent connect, not from the saved status.
  *
  * "Updates unavailable" is said only for a connection the daemon calls connected, and never while
- * a reconnect runs: the precedence is Reconnecting… > Offline > Updates unavailable (Q2-17).
+ * a reconnect runs: the precedence is Reconnecting… > Offline > Updates unavailable (Q2-17). A
+ * workspace its host deleted reads "Deleted by host" before anything else.
  */
 export function deriveConnectionStatus(input: ConnectionStatusInput): ConnectionStatusKey | null {
   const { connection, lastConnectFailure, inFlight, verified, observationError, notJoined } = input;
   const reverifying = input.reverifying === true;
   if (!connection) return null;
+  // Final: no connect, sign-in or retry can bring a deleted workspace back, so no word that
+  // invites one (it read "Updates unavailable" beside "The host deleted …", G8).
+  if (input.workspaceDeleted === true) return 'workspace-deleted';
   const failure = lastConnectFailure?.kind;
   if (isTrustFailure(failure)) return 'cant-verify';
   if (verified) return inFlight ? 'connecting' : 'connected';

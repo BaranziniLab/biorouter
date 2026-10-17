@@ -567,6 +567,34 @@ describe('WorkspaceSwitcher', () => {
     expect(controller.selectConnection).toHaveBeenCalledWith(secondConnection.id);
   });
 
+  // G8: a saved workspace the host deleted reads so in the switcher too, not "Offline".
+  it('names a deleted workspace as deleted in the switch list, selected or not', async () => {
+    const deleted = {
+      ...secondConnection,
+      status: 'disconnected' as const,
+      workspace_deleted: true,
+    };
+    renderWithCrew(<WorkspaceSwitcher />, makeController({ connections: [connection, deleted] }));
+    const { menu } = await openMenu();
+    const radios = within(menu).getAllByRole('menuitemradio');
+    expect(radios[1]).toHaveAccessibleName(`Imaging core, ${crewStatusCopy.workspaceDeleted}`);
+    expect(radios[1].querySelector('[data-slot="status-dot"]')).toHaveAttribute(
+      'data-tone',
+      'idle'
+    );
+  });
+
+  it('says the items will not open beside "Deleted by host"', async () => {
+    renderWithCrew(
+      <WorkspaceSwitcher />,
+      makeController({ snapshot: null, observedPrivacy: null, status: 'workspace-deleted' })
+    );
+    const { menu } = await openMenu();
+    expect(menu.querySelector('[data-crew-menu-note]')).toHaveTextContent(
+      sidebarCopy.unavailable.deleted
+    );
+  });
+
   /** MSG2-N9: the menu listed what the list held when Crew opened, whatever a terminal did since. */
   it('reads the saved workspaces again each time it opens', async () => {
     const reloadConnections = vi.fn();
@@ -604,8 +632,9 @@ describe('WorkspaceSwitcher', () => {
 });
 
 describe('offersReconnect', () => {
-  it('is false only for a connection that is connected and verified', () => {
+  it('is false only for a connection that is connected and verified, or whose workspace was deleted', () => {
     expect(offersReconnect('connected')).toBe(false);
+    expect(offersReconnect('workspace-deleted')).toBe(false);
     for (const status of [
       'connecting',
       'reconnecting',
@@ -647,6 +676,12 @@ describe('unavailableReason', () => {
       expect(unavailableReason(status, false)).toBe(sidebarCopy.unavailable.notConnected);
     }
   );
+
+  // G8: a deleted workspace has nothing left to connect to, so "once you're connected" would send
+  // the person looking for a way back that does not exist.
+  it('tells a person whose workspace the host deleted that the items will not open', () => {
+    expect(unavailableReason('workspace-deleted', false)).toBe(sidebarCopy.unavailable.deleted);
+  });
 });
 
 describe('the workspace menu in an open workspace (OW-2)', () => {

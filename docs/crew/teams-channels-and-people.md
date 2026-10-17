@@ -153,7 +153,7 @@ Deleting a channel removes it, its messages and its files from the workspace for
 1. Choose **Delete channel…** in the channel menu or on the **About** tab. In a managed workspace only the channel's owner sees it, and the host for a channel whose owner left the workspace. In an open workspace every member of the channel sees it.
 2. At "Delete #{channel}?", read "Removes #{channel}, its files and its messages from the workspace. Nobody can bring it back.", then choose **Delete channel**.
 
-"Deleted #{channel}." appears, and the channel leaves everyone's sidebar. Every agent task and chat that reads the channel loses its access. The deleted messages stay in the workspace's history file on the server until the workspace itself is deleted, unreadable to everyone, which [Deleted channels](messages-and-files.md#deleted-channels) explains. From a terminal, run `biorouter crew channels delete CHANNEL`.
+"Deleted #{channel}." appears, and the channel leaves everyone's sidebar. A member who has it open sees it close with "#{channel} was deleted, so it was closed." in an open workspace, and "#{channel} is no longer available to you, so it was closed." in a managed one, where their Crew can't tell it from a removal. Every agent task and chat that reads the channel loses its access. The deleted messages stay in the workspace's history file on the server until the workspace itself is deleted, unreadable to everyone, which [Deleted channels](messages-and-files.md#deleted-channels) explains. From a terminal, run `biorouter crew channels delete CHANNEL`.
 
 ### Delete a team
 
@@ -162,7 +162,7 @@ Deleting a team removes it and every channel in it, including channels you are n
 1. Point at the team, choose **⋯**, then **Delete team…**. In a managed workspace only the team's creator sees it, and the host when the creator left. In an open workspace every member of the team sees it.
 2. At "Delete {team}?", choose **Delete team**.
 
-"Deleted {team} and its {n} channels." appears. From a terminal, run `biorouter crew teams delete TEAM`.
+"Deleted {team} and its {n} channels." appears. A member who has one of its channels open sees it close with "#{channel} was deleted, so it was closed.", in any workspace. From a terminal, run `biorouter crew teams delete TEAM`.
 
 ## Add and remove people
 
@@ -198,7 +198,7 @@ The channel appears in your sidebar, and a notice such as "Alice Chen (@alice) a
 1. As the owner, or any member of the channel in an open workspace, open the **Members** tab, choose **⋯** on the person's row, then **Remove from #{channel}…**. Nobody can remove the channel's owner.
 2. Choose **Remove**.
 
-The channel closes on their screen with "You no longer have access to #{channel}, so it was closed." They stay in the team.
+The channel closes on their screen. In an open workspace it says "You’re no longer in #{channel}, so it was closed." In a managed workspace their Crew can't tell whether they were removed or the channel was deleted, so it says "#{channel} is no longer available to you, so it was closed." They stay in the team.
 
 Crew has no Leave item. Hand over a channel you own, or ask the owner to remove you. In an open workspace, any other member of the channel can remove you.
 

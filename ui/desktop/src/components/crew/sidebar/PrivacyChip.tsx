@@ -17,8 +17,9 @@ const copy = sidebarCopy.chip;
  * Statuses in which nothing is checking this connection's privacy, so the chip says nothing at
  * all (Q2-17, Q2-01, Q2-43): "Offline · Checking privacy…" put a claim of work in progress beside
  * a status that says none is possible. The status word is the whole story there — a connection
- * that is down, reconnecting, waiting for sign-in or refused, a view whose updates stopped, and a
- * joiner the host has not let in yet (the workspace reports nothing about a non-member).
+ * that is down, reconnecting, waiting for sign-in or refused, a view whose updates stopped, a
+ * joiner the host has not let in yet (the workspace reports nothing about a non-member), and a
+ * workspace its host deleted.
  *
  * Every other unverified state (connecting, checking, updating) reads "Checking privacy…": the
  * next snapshot verifies it.
@@ -32,6 +33,7 @@ export const CHIP_SILENT_STATUSES: ReadonlySet<ConnectionStatusKey> = new Set<Co
   'not-set-up',
   'not-joined',
   'updates-unavailable',
+  'workspace-deleted',
 ]);
 
 /**

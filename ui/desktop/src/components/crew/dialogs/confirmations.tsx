@@ -5,7 +5,7 @@ import { toastSuccess } from '../../../toasts';
 import type { Snapshot } from '../crewApi';
 import { channelName, personLabel, teamName } from '../identity';
 import { sshUsername } from '../onboarding/joinText';
-import { isWorkspaceDeleted } from '../state/connectFailure';
+import { workspaceKnownDeleted } from '../state/connectFailure';
 import { connectionUpdateBody } from '../state/useCrewConnections';
 import type { ConfirmIntent, CrewController, ErrorSource } from '../state/types';
 import { confirmCopy, dialogErrorCopy } from './copy';
@@ -596,8 +596,15 @@ function RemoveConnection({ connectionId, onClose }: { connectionId: string; onC
   const key = 'connection.remove';
   const saved = crew.connections.find((item) => item.id === connectionId) ?? null;
   // A workspace its host deleted (OW-5): nothing is left on the server to host, rejoin or lose
-  // (L6, L7), so the removal says only what it does here.
-  const deleted = isWorkspaceDeleted(saved);
+  // (L6, L7), so the removal says only what it does here. Asked as the main area asks it (G9): for
+  // the selected connection, a connect or a view that ended `workspace_deleted` says so before the
+  // saved record does, and the pane behind this dialog already says "The host deleted …".
+  const selected = connectionId === crew.connectionId;
+  const deleted = workspaceKnownDeleted({
+    saved,
+    lastConnectFailure: selected ? crew.lastConnectFailure : null,
+    observationCode: selected ? crew.refreshErrorCode : null,
+  });
   const standing = deleted
     ? 'deleted'
     : removalStanding(snapshot, dir.viewerIsHost, saved?.device_id);

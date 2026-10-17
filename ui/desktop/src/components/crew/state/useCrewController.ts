@@ -25,16 +25,12 @@ import {
   arrivalConnectDecision,
   isMembershipEnded,
   isWorkspaceDeleted,
-  WORKSPACE_DELETED_CONNECT_CODE,
+  workspaceKnownDeleted,
 } from './connectFailure';
 import { deriveConnectionStatus, deriveCrewScreen } from './crewStatus';
 import { useCrewSurfaces } from './crewSurfaces';
 import { rememberedLastChannel, rememberLastChannel } from './draftStash';
-import {
-  failureMessage,
-  isFinalObservationEnd,
-  WORKSPACE_DELETED_CODE,
-} from './observationFailure';
+import { failureMessage, isFinalObservationEnd } from './observationFailure';
 import {
   arrivalConnectConsumed,
   arrivalConnectIntent,
@@ -131,6 +127,7 @@ export function useCrewController(options: CrewControllerOptions = {}): CrewCont
     dismissError,
     dismissErrorFrom,
     dismissErrorIfShown,
+    replaceErrorIfShown,
     dismissTransportError,
     isPending,
   } = actions;
@@ -248,6 +245,7 @@ export function useCrewController(options: CrewControllerOptions = {}): CrewCont
     draft,
     reportError,
     dismissError,
+    replaceError: replaceErrorIfShown,
     composerNoteFor,
     closeSignIn,
     setJoinStatus,
@@ -965,6 +963,13 @@ export function useCrewController(options: CrewControllerOptions = {}): CrewCont
   const inFlight = isPending('connect') || isPending('sign-in') || surfaces.signIn.open;
   const verifiedHere = connectionVerifiedThisSession(connectionId) || joinStatus === 'joined';
   const membershipEnded = isMembershipEnded(savedConnection) || isWorkspaceDeleted(savedConnection);
+  // The host deleted the workspace, by the saved record, the last connect or the ended view: the
+  // main area and the status row say it from this one answer (G8).
+  const workspaceDeleted = workspaceKnownDeleted({
+    saved: savedConnection,
+    lastConnectFailure: connectFailure,
+    observationCode: refreshErrorCode,
+  });
 
   /**
    * SECURITY-SENSITIVE (human review). Connect on arrival from a chat's "Connect in Crew" (Q3-08):
@@ -1145,6 +1150,7 @@ export function useCrewController(options: CrewControllerOptions = {}): CrewCont
       reverifying: reverifying && lossPending !== connectionId,
       reconnecting: isReconnecting,
       awaitingSave,
+      workspaceDeleted,
     }),
     screen: deriveCrewScreen({
       connectionsState,
@@ -1159,10 +1165,7 @@ export function useCrewController(options: CrewControllerOptions = {}): CrewCont
       notJoined,
       reconnecting: isReconnecting,
       awaitingSave,
-      workspaceDeleted:
-        isWorkspaceDeleted(savedConnection) ||
-        connectFailure?.code === WORKSPACE_DELETED_CONNECT_CODE ||
-        refreshErrorCode === WORKSPACE_DELETED_CODE,
+      workspaceDeleted,
     }),
     effectivePrivacy:
       shownVerified && snapshot && observedPrivacy

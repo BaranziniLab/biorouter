@@ -289,6 +289,7 @@ describe('PrivacyChip', () => {
     'not-set-up',
     'not-joined',
     'updates-unavailable',
+    'workspace-deleted',
   ] as const)(
     'says nothing at all while the status is %s: nothing is checking privacy',
     (status) => {
@@ -311,6 +312,7 @@ describe('PrivacyChip', () => {
       'not-set-up',
       'not-joined',
       'updates-unavailable',
+      'workspace-deleted',
     ];
     expect([...CHIP_SILENT_STATUSES].sort()).toEqual([...decided].sort());
   });

@@ -450,6 +450,7 @@ The SSH login in the You row is the standalone text node CVT finds (`fixture`, `
 
 | Condition | Dot | Word |
 |---|---|---|
+| The host deleted the workspace (`workspaceKnownDeleted`: the saved `workspace_deleted`, a connect answered `crew_workspace_deleted`, or a view that ended `workspace_deleted`) | idle | Deleted by host |
 | The last user-initiated connect failed with a trust code (`crew_ssh_host_key_unknown`, `crew_ssh_host_key_changed`, `crew_workspace_identity_mismatch`) | danger | Can't verify server |
 | A connect or sign-in is in flight | neutral + spinner | Connecting… |
 | Verified snapshot and observed privacy exist for this connection | success | Connected (`sr-only`: **Connected · identity verified**, pinned) |
@@ -1322,6 +1323,7 @@ Advanced. `{person}` means `personLabel` output; `{first}` is the display name's
 | `status.connected` | Connected *(visible; `sr-only` **Connected · identity verified**, pinned)* |
 | `status.checking` | **Checking connection** (pinned) |
 | `status.updatesUnavailable` | **Updates unavailable** (pinned) |
+| `status.workspaceDeleted` | Deleted by host |
 | `status.connecting` / `status.signIn` / `status.notSetUp` / `status.notJoined` / `status.offline` / `status.error` / `status.trust` | Connecting… · Sign-in needed · Not set up on this server · Not joined yet · Offline · Can't connect · Can't verify server |
 | `chip.name` | Privacy: Private · {institution} / Privacy: Public *(accessible name; new test anchor)* |
 | `chip.checking` | Checking privacy… |

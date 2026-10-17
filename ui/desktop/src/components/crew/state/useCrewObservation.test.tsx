@@ -803,6 +803,89 @@ describe('a recoverable end of observation (live QA round 1, P0-1)', () => {
     );
   });
 
+  // G7: the daemon closes the channel on a snapshot this window never sees, so the first sentence
+  // is one that is true whether it was deleted or the person removed from it. The workspace's next
+  // view says which, where it can, and the sentence on show becomes exact.
+  describe('saying why a closed channel went (G7)', () => {
+    const open = (extra: Record<string, unknown>) => ({
+      ...snapshot,
+      workspace: { ...snapshot.workspace, governance: 'open' },
+      ...extra,
+    });
+    async function workspaceObserver(): Promise<Observation> {
+      let next: Observation | undefined;
+      await waitFor(() => {
+        next = sessions.find((item) => item.channelId === undefined && !item.signal.aborted);
+        expect(next).toBeDefined();
+      });
+      return next!;
+    }
+    async function closeChannel(): Promise<Observation> {
+      const first = await observeChannel();
+      send(first, ended('channel_access_changed'));
+      expect(crew.error?.message).toBe(crewObservationCopy.channelAccessLostNamed('#general'));
+      return workspaceObserver();
+    }
+
+    it('says the channel was deleted when an open workspace lists it nowhere and its team stays', async () => {
+      const workspace = await closeChannel();
+      send(workspace, stateFrame({ snapshot: open({ channels: [], joinable_channels: [] }) }));
+      expect(crew.error?.message).toBe(crewObservationCopy.channelDeletedNamed('#general'));
+      expect(crew.error?.code).toBe('channel_lost');
+    });
+
+    it('says the channel was deleted when its team went too, in a managed workspace as well', async () => {
+      const workspace = await closeChannel();
+      send(workspace, stateFrame({ snapshot: { ...snapshot, teams: [], channels: [] } }));
+      expect(crew.error?.message).toBe(crewObservationCopy.channelDeletedNamed('#general'));
+    });
+
+    it('says the person is no longer in it when an open workspace offers it to join', async () => {
+      const workspace = await closeChannel();
+      send(
+        workspace,
+        stateFrame({
+          snapshot: open({
+            channels: [],
+            joinable_channels: [{ id: channel.id, team_id: 'team-1', name: 'general' }],
+          }),
+        })
+      );
+      expect(crew.error?.message).toBe(crewObservationCopy.channelLeftNamed('#general'));
+    });
+
+    it('keeps the sentence that is true either way where a managed workspace cannot tell', async () => {
+      const workspace = await closeChannel();
+      send(workspace, stateFrame({ snapshot: { ...snapshot, channels: [] } }));
+      expect(crew.error?.message).toBe(crewObservationCopy.channelAccessLostNamed('#general'));
+    });
+
+    it('proves nothing from a list the broker cut short', async () => {
+      const workspace = await closeChannel();
+      send(
+        workspace,
+        stateFrame({
+          snapshot: open({ channels: [], joinable_channels: [], totals: { joinable_channels: 3 } }),
+        })
+      );
+      expect(crew.error?.message).toBe(crewObservationCopy.channelAccessLostNamed('#general'));
+    });
+
+    it('never replaces a newer error, and decides once', async () => {
+      const workspace = await closeChannel();
+      act(() => crew.reportError('Something else happened.', 'observer'));
+      send(workspace, stateFrame({ snapshot: open({ channels: [], joinable_channels: [] }) }));
+      expect(crew.error?.message).toBe('Something else happened.');
+    });
+
+    it('says so at once when the view that drops the channel shows it was deleted', async () => {
+      const first = await observeChannel();
+      send(first, stateFrame({ snapshot: open({ channels: [], joinable_channels: [] }) }));
+      expect(crew.channelId).toBe('');
+      expect(crew.error?.message).toBe(crewObservationCopy.channelDeletedNamed('#general'));
+    });
+  });
+
   it('drops a lost channel’s words, unoffered, when access to the workspace changes too', async () => {
     const first = await observeChannel();
     act(() => crew.setBody('for #general'));

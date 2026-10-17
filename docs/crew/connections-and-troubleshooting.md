@@ -21,6 +21,7 @@ A word in braces stands for a name that Crew fills in. For example, "Connect to 
 | "Not joined yet" | Your host has not let you in yet. See [Joining a workspace](joining-a-workspace.md). |
 | "Offline" | You are not connected. This follows a computer restart, **Disconnect**, a saved change to your server login, port, identity file or jump hosts in **Connection settings…**, or a dropped connection. After a drop, Crew [reconnects by itself](#automatic-reconnection). Otherwise, choose **Connect to {workspace}**. |
 | "Connected" with "The workspace server has stopped saving changes. Reading still works." | The server's disk is full or failing. You can read, but posts, uploads and other changes are refused. See [A server that stopped saving](#a-server-that-stopped-saving). |
+| "Deleted by host" | The host deleted the workspace. Only removing it from this computer is left. See [A deleted workspace](#a-deleted-workspace). |
 | "Can’t connect" | The last attempt failed. The main area says why, such as "Crew isn’t running on {server}" or "{server} refused this computer’s SSH key". See [Messages and what to do](#messages-and-what-to-do). |
 | "The host deleted {workspace}." in the connection bar | The workspace no longer exists. See [A deleted workspace](#a-deleted-workspace). |
 
@@ -186,9 +187,9 @@ If you are the host, read [Limits of the host role](hosting-a-workspace.md#limit
 
 ## A deleted workspace
 
-When the host deletes a workspace, Crew on the server refuses every request for 30 seconds, then erases the workspace and stops. It leaves a small file on the server that says the workspace was deleted, so your Crew learns it whether you were using the workspace, connected but idle, or offline: from the refusal, or from that file the next time it connects. The connection bar then says "The host deleted {workspace}." with **Remove from this computer…**, and Crew stops reconnecting to it. Nothing else is possible: there is nothing left to reconnect to.
+When the host deletes a workspace, Crew on the server refuses every request for 30 seconds, then erases the workspace and stops. It leaves a small file on the server that says the workspace was deleted, so your Crew learns it whether you were using the workspace, connected but idle, or offline: from the refusal, or from that file the next time it connects. The connection bar then says "The host deleted {workspace}." with **Remove from this computer…**, the status row reads "Deleted by host", and Crew stops reconnecting to it. Nothing else is possible: there is nothing left to reconnect to.
 
-1. Choose **Remove from this computer…**, then **Remove**. This deletes this computer's key and saved connection for the workspace.
+1. Choose **Remove from this computer…**. The confirmation says "The host deleted {workspace}. Removing it here deletes this computer’s key for it and ends every chat’s access through it." Choose **Remove**. This deletes this computer's key and saved connection for the workspace.
 2. Files you saved on your computer stay. Messages and files on the server are gone.
 
 From a terminal, commands answer `The host deleted this workspace on the server. Remove it from this computer with biorouter crew connections remove.` (code `crew_workspace_deleted`), and `connections remove` removes it without the host warning, since there is no workspace left to host.
@@ -240,7 +241,9 @@ For messages on the join screen, see [Problems while you wait](joining-a-workspa
 | "Biorouter lost its connection to its background service, so Crew can’t reach your workspaces until Biorouter reconnects." with **Reconnect** | Biorouter reconnects by itself. If the message stays, choose **Reconnect**, the same button as the notice in the app's sidebar. Crew then loads your workspaces again. |
 | "Live updates keep stopping…" or "…couldn’t confirm the request came from you." | Choose **Retry**. If it repeats, quit and reopen Biorouter. |
 | "Your access to {workspace} changed." | Choose **Retry**. If it repeats, ask your host. |
-| "You no longer have access to {channel}…" | Ask the channel owner if you need access again. |
+| "{channel} was deleted, so it was closed." | The channel no longer exists, and nobody can bring it back. |
+| "You’re no longer in {channel}, so it was closed." | Someone removed you from the channel in an open workspace. To join it again, choose **Browse channels…** in the workspace menu. |
+| "{channel} is no longer available to you…" | The channel was deleted, or you were removed from it. A managed workspace does not show Crew which. Ask the channel owner if you need access again. |
 | "…doesn’t recognize this computer yet." | This is normal while you wait for your host. |
 | Any other message, such as "Live updates…stopped." or "Earlier messages couldn’t be loaded." | Choose **Retry**. |
 

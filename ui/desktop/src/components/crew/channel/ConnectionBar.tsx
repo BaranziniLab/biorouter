@@ -14,15 +14,13 @@ import {
   isMembershipEnded,
   isNotSetUpFailure,
   isTrustFailure,
-  isWorkspaceDeleted,
-  WORKSPACE_DELETED_CONNECT_CODE,
+  workspaceKnownDeleted,
   type ConnectFailureKind,
 } from '../state/connectFailure';
 import { crewObservationCopy } from '../state/copy';
 import { useCrew } from '../state/CrewControllerContext';
 import { reconnectDaemon, useDaemonConnection } from '../state/daemonConnection';
 import { DIALOG_FOCUS_FALLBACKS, restoreFocusSoon } from '../state/focusReturn';
-import { WORKSPACE_DELETED_CODE } from '../state/observationFailure';
 import { CHANNEL_LOST_ERROR_CODE } from '../state/useCrewObservation';
 import { connectionBarCopy } from './copy';
 import { calendarDate, workspaceLabel } from './presentation';
@@ -240,9 +238,11 @@ export function ConnectionBar({ className }: ConnectionBarProps) {
   // The host deleted the workspace (OW-5): final, whatever the saved status says.
   const workspaceDeleted =
     Boolean(connection) &&
-    (isWorkspaceDeleted(connection) ||
-      crew.refreshErrorCode === WORKSPACE_DELETED_CODE ||
-      failure?.code === WORKSPACE_DELETED_CONNECT_CODE);
+    workspaceKnownDeleted({
+      saved: connection,
+      lastConnectFailure: failure,
+      observationCode: crew.refreshErrorCode,
+    });
   // The main area says it, with Remove, once no verified view is left to show (L6): said once.
   const deletedSaidBelow = workspaceDeleted && crew.screen === 'workspace-deleted';
   const showObservationError =

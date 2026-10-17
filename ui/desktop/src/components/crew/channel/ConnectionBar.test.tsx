@@ -3,8 +3,11 @@ import { useState } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { CrewHttpError } from '../crewApi';
 import { MEMBERSHIP_ENDED_CODE, WORKSPACE_DELETED_CONNECT_CODE } from '../state/connectFailure';
-import { useCrewErrorSlot } from '../state/CrewControllerContext';
-import { crewObservationCopy } from '../state/copy';
+import { confirmCopy } from '../dialogs/copy';
+import { CrewConfirmation } from '../dialogs/confirmations';
+import { useCrew, useCrewErrorSlot } from '../state/CrewControllerContext';
+import { crewObservationCopy, crewStatusCopy } from '../state/copy';
+import { CONNECTION_STATUS } from '../state/crewStatus';
 import { CHANNEL_LOST_ERROR_CODE } from '../state/useCrewObservation';
 import { OnboardingScreen } from '../onboarding/OnboardingScreen';
 import { ConnectionBar, actionErrorText, connectErrorText } from './ConnectionBar';
@@ -1069,6 +1072,47 @@ describe('a workspace its host deleted (OW-5)', () => {
     renderCrew(Layout);
     await waitFor(() => expect(currentCrew().screen).toBe('workspace-deleted'));
     expect(within(bar()).queryByText(crewObservationCopy.workspaceDeleted('Fixture'))).toBeNull();
+  });
+
+  // G8, G9: the live view ended `workspace_deleted` on a connection the daemon still called
+  // connected. The main area said "The host deleted …", while the status row read "Updates
+  // unavailable" and Remove from this computer… warned about messages that stay on the server and
+  // a host that can add this computer back. Both now ask what the main area asks.
+  it('says Deleted by host on the status row and removes without the generic warnings', async () => {
+    function WithConfirmation() {
+      const crew = useCrew();
+      const dialog = crew.ui.dialog;
+      return (
+        <>
+          <Layout />
+          <OnboardingScreen />
+          {dialog?.kind === 'confirm' && (
+            <CrewConfirmation confirm={dialog.confirm} onClose={crew.closeDialog} />
+          )}
+        </>
+      );
+    }
+    renderCrew(WithConfirmation);
+    await verified();
+    observationFailure(DAEMON_SENTENCE, 'workspace_deleted');
+    await act(async () => {
+      await currentCrew().refresh();
+    });
+    await waitFor(() => expect(currentCrew().refreshErrorCode).toBe('workspace_deleted'));
+    // The saved record has not caught up: only the ended view says so.
+    expect(currentCrew().connection?.workspace_deleted).not.toBe(true);
+    expect(currentCrew().connection?.status).toBe('connected');
+    expect(currentCrew().status).toBe('workspace-deleted');
+    expect(CONNECTION_STATUS[currentCrew().status!].word).toBe(crewStatusCopy.workspaceDeleted);
+    expect(crewStatusCopy.workspaceDeleted).toBe('Deleted by host');
+
+    fireEvent.click(screen.getByRole('button', { name: crewObservationCopy.removeFromComputer }));
+    const dialog = await screen.findByRole('alertdialog', {
+      name: confirmCopy.removeConnection.title('Fixture'),
+    });
+    expect(dialog).toHaveTextContent(confirmCopy.removeConnection.deletedDescription('Fixture'));
+    expect(dialog).not.toHaveTextContent(/stay on the server|host has to add this computer/);
+    expect(dialog).not.toHaveTextContent(/nobody can let people in/);
   });
 
   it('answers an observation that ended workspace_deleted, with no Retry', async () => {

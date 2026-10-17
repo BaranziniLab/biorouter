@@ -344,6 +344,8 @@ export const sidebarCopy = {
     notConnected: 'Available once you’re connected',
     /** The connection is up (checking, updating, updates unavailable) but not verified yet. */
     notVerified: 'Available once the connection is verified',
+    /** The host deleted the workspace: nothing here will become available again. */
+    deleted: 'Not available: the host deleted this workspace',
   },
 
   you: {

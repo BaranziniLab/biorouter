@@ -527,6 +527,63 @@ describe('deleting channels, teams and workspaces (OW-4, OW-5)', () => {
     await waitFor(() => expect(onClose).toHaveBeenCalled());
   });
 
+  // G9: the main area said "The host deleted lab." from the ended view or the last connect, before
+  // the saved record caught up, and the confirmation still warned that messages stay on the server
+  // and that the host can add this computer back. It asks what the main area asks now.
+  it.each([
+    ['a view that ended workspace_deleted', { refreshErrorCode: 'workspace_deleted' }],
+    [
+      'a connect answered crew_workspace_deleted',
+      {
+        lastConnectFailure: {
+          kind: 'unknown' as const,
+          message: 'The host deleted this workspace on the server.',
+          code: 'crew_workspace_deleted',
+        },
+      },
+    ],
+  ])('says only what goes from this computer after %s', async (_what, heard) => {
+    // No verified view is left once the view ended, as on the deleted workspace's own screen, so
+    // the workspace goes by its connection's name.
+    const { crew } = renderConfirm(
+      { action: 'remove-connection', connectionId: connection.id },
+      { snapshot: null, ...heard }
+    );
+    const dialog = await screen.findByRole('alertdialog', {
+      name: confirmCopy.removeConnection.title('Fixture'),
+    });
+    expect(dialog).toHaveTextContent(confirmCopy.removeConnection.deletedDescription('Fixture'));
+    expect(dialog).not.toHaveTextContent(
+      /stay on the server|host has to add this computer|nobody can let people in/
+    );
+    await act(async () => {
+      fireEvent.click(within(dialog).getByRole('button', { name: 'Remove' }));
+    });
+    await waitFor(() => expect(crew.removeConnection).toHaveBeenCalledWith(connection.id));
+  });
+
+  it('keeps the generic warnings when nothing says the workspace was deleted', async () => {
+    renderConfirm(
+      { action: 'remove-connection', connectionId: connection.id },
+      { snapshot: null, refreshErrorCode: 'forbidden' }
+    );
+    const dialog = await screen.findByRole('alertdialog', {
+      name: confirmCopy.removeConnection.title('Fixture'),
+    });
+    expect(dialog).toHaveTextContent(confirmCopy.removeConnection.description);
+  });
+
+  it('reads another connection’s deletion from its saved record alone', async () => {
+    // The selected connection's ended view is about the selected connection, not this one.
+    const other = { ...connection, id: 'conn-2', name: 'other' };
+    renderConfirm(
+      { action: 'remove-connection', connectionId: other.id },
+      { snapshot: null, connections: [connection, other], refreshErrorCode: 'workspace_deleted' }
+    );
+    const dialog = await screen.findByRole('alertdialog');
+    expect(dialog).not.toHaveTextContent(/The host deleted/);
+  });
+
   it('keeps a refused workspace deletion in its dialog', async () => {
     const { crew, onClose } = renderConfirm({
       action: 'delete-workspace',
