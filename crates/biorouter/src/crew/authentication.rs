@@ -27,6 +27,7 @@
 //! Nothing the broker returns can change the code this computer shows: a process in the bridge
 //! path can relay, drop or fake every answer here, which can only mislead this screen. To have
 //! its own key bound it would need a key whose 80-bit code equals the one shown here.
+use super::server_label::{own_alias_for_login, OwnAlias};
 use super::{
     hex, institution, manager, safe_atom, transport, unhex, AuthenticationPlan, ClusterMode,
     Connection, CrewManager, RemoteAccess, SaveConnection,
@@ -1684,6 +1685,48 @@ struct PlannedRoute {
     proxy_jump: Option<String>,
 }
 
+impl PlannedRoute {
+    /// The same login under the person's own name for it (G5): its port is the entry's, and
+    /// so is its route when it sets one; otherwise the invitation's jump host hint stays. A
+    /// connection already saved for the workspace under the planned login keeps it, so pasting
+    /// again finds that connection rather than a conflict.
+    fn under_own_alias(mut self, alias: Option<&OwnAlias>, saved: Option<&Connection>) -> Self {
+        let Some(alias) = alias else {
+            return self;
+        };
+        if saved.is_some_and(|saved| self.ssh_target.as_deref() == Some(saved.ssh_target.as_str()))
+        {
+            return self;
+        }
+        self.ssh_target = Some(alias.name.clone());
+        self.port = None;
+        if alias.sets_route {
+            self.proxy_jump = None;
+        }
+        self
+    }
+}
+
+/// G5: the person's own `Host` entry for the login an invitation would save, when they chose
+/// no server login, port or jump host and the server is not this machine. A choice of theirs,
+/// or loopback on the server itself, is kept exactly as planned.
+async fn own_alias(
+    invitation: &WorkspaceInvitation,
+    overrides: &InvitationOverrides,
+    here: bool,
+) -> Option<OwnAlias> {
+    let advanced = &overrides.advanced;
+    let typed_login = advanced
+        .ssh_target
+        .as_deref()
+        .is_some_and(|alias| !alias.trim().is_empty());
+    if here || typed_login || advanced.port.is_some() || advanced.proxy_jump.is_some() {
+        return None;
+    }
+    let route = planned_route(invitation, overrides, here).ok()?;
+    own_alias_for_login(route.ssh_target.as_deref()?, route.port).await
+}
+
 /// The SSH login and route saving would use. `here`: the invitation's server is this machine
 /// ([`super::local_host`]), so the route is `localhost`, with no jump host unless the person
 /// typed one (W2-DMN-2). A login the person chose is theirs either way.
@@ -1852,11 +1895,14 @@ fn reusable_or_replaceable(
     }
 }
 
+/// `own_alias`: the person's own `Host` entry for the planned login ([`own_alias`]), which
+/// [`PlannedRoute::under_own_alias`] saves in its place.
 fn plan_invitation(
     parsed: &ParsedInvitation,
     overrides: &InvitationOverrides,
     connections: &[Connection],
     here: bool,
+    own_alias: Option<&OwnAlias>,
 ) -> Result<InvitationPlan, InvitationRefused> {
     let invitation = &parsed.invitation;
     let advanced = &overrides.advanced;
@@ -1890,8 +1936,9 @@ fn plan_invitation(
     if mode == ClusterMode::Private && institution_id.is_none() {
         missing.push(InvitationMissing::Institution);
     }
-    let (existing, replaceable) =
-        reusable_or_replaceable(saved_match(connections, invitation)?, &route);
+    let matched = saved_match(connections, invitation)?;
+    let route = route.under_own_alias(own_alias, matched.as_ref());
+    let (existing, replaceable) = reusable_or_replaceable(matched, &route);
     let name = planned_name(
         invitation,
         advanced,
@@ -2234,9 +2281,6 @@ fn hello_is_stale(hello: &super::BrokerHello, workspace: &Value) -> bool {
         || hello.workspace_name.as_deref() != name
 }
 
-/// Where an SSH login really goes: the lowercase hostname and port `ssh -G` resolves under
-/// the same configuration the bridge reads, else the login's own host part and port. `None`
-/// for a login that can't safely be passed to `ssh`.
 /// Whether this computer's SSH settings sign in to the invitation's server as another account
 /// than the one it names (W2-DMN-3): asked only when the login saving would use is the
 /// invitation's own (`{invitee}@{server}`), and answered only for a `User` the person's settings
@@ -2321,6 +2365,9 @@ async fn configured_user(name: &str, port: Option<u16>) -> Option<String> {
     resolved.ok().flatten()
 }
 
+/// Where an SSH login really goes: the lowercase hostname and port `ssh -G` resolves under
+/// the same configuration the bridge reads, else the login's own host part and port. `None`
+/// for a login that can't safely be passed to `ssh`.
 pub(super) async fn ssh_endpoint(target: &str, port: Option<u16>) -> Option<(String, u16)> {
     if !safe_atom(target) {
         return None;
@@ -2385,7 +2432,9 @@ impl CrewManager {
     /// legacy `biorouter-crew status` JSON) and preview it, or save a connection pinned exactly
     /// as it says: the workspace ID, workspace key, socket and host UID are never taken from
     /// anywhere else. Saving goes through the ordinary save path, so a Private save needs an
-    /// institution, which the invitation of a Private workspace supplies.
+    /// institution, which the invitation of a Private workspace supplies. The login saved is
+    /// `{username}@{server}`, or the person's own `Host` entry for that same login when they
+    /// chose no login, port or jump host (G5, `own_alias`).
     ///
     /// A preview saves nothing and touches no credential. A save of a workspace this computer
     /// already has returns that connection when the settings agree (so a repeated paste never
@@ -2407,8 +2456,10 @@ impl CrewManager {
             Some(host) => super::local_host::names_this_machine(host),
             None => false,
         };
+        let alias = own_alias(&parsed.invitation, &overrides, here).await;
+        let alias = alias.as_ref();
         if preview {
-            let plan = plan_invitation(&parsed, &overrides, &self.list().await, here)?;
+            let plan = plan_invitation(&parsed, &overrides, &self.list().await, here, alias)?;
             let mut preview = plan.preview;
             preview.institution_conflict = self.institution_conflict(&preview).await;
             if let Some(target) = preview.ssh_target.as_deref() {
@@ -2418,7 +2469,7 @@ impl CrewManager {
             return Ok(InvitationOutcome::Preview(Box::new(preview)));
         }
         let _serial = INVITATION_SAVES.lock().await;
-        let plan = plan_invitation(&parsed, &overrides, &self.list().await, here)?;
+        let plan = plan_invitation(&parsed, &overrides, &self.list().await, here, alias)?;
         if let Some(missing) = plan.preview.missing.first() {
             return Err(missing_refusal(*missing, &plan.preview).into());
         }
@@ -4190,6 +4241,160 @@ fi
         );
     }
 
+    /// G5: with no login, port or jump host of their own, an invitation is saved under the
+    /// person's own `Host` entry for the very login it plans (the same user, host name and
+    /// port), so the identity file and route they keep there apply. A choice of theirs, the
+    /// server's own loopback login, and a connection already saved under the planned login
+    /// are kept as they are.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn an_invitation_is_saved_under_the_persons_own_alias_for_its_login() {
+        if !crate::test_sandbox::in_a_process_of_its_own() {
+            return;
+        }
+        let root = fixture_root("own-alias");
+        let _env = isolated_env(&root);
+        async fn planned(
+            manager: &CrewManager,
+            message: &str,
+            overrides: InvitationOverrides,
+        ) -> Option<String> {
+            preview_with(manager, message, overrides)
+                .await
+                .unwrap()
+                .ssh_target
+        }
+        let bob: &[&str] = &["user bob", "hostname hpc.example.org", "port 22"];
+        let robert: &[&str] = &["user robert", "hostname hpc.example.org", "port 22"];
+        let other_port: &[&str] = &["user bob", "hostname hpc.example.org", "port 2222"];
+        let local: &[&str] = &["user bob", "hostname localhost", "port 22"];
+        let delegated: &[&str] = &[
+            "user bob",
+            "hostname hpc.example.org",
+            "port 22",
+            "gssapidelegatecredentials yes",
+        ];
+        write_fake_ssh(
+            &root,
+            &[
+                ("bob@hpc.example.org", bob),
+                ("robert@hpc.example.org", robert),
+                ("bob@localhost", local),
+                ("lab-robert", robert),
+                ("lab-port", other_port),
+                ("lab-delegated", delegated),
+                ("lab-hpc", bob),
+                ("lab-local", local),
+            ],
+            &[],
+        );
+        let config = root.join("profile/home/.ssh/config");
+        fs::create_dir_all(config.parent().unwrap()).unwrap();
+        let earlier = CrewManager::new(root.join("earlier")).unwrap();
+        let message = crew_invitation::message(&lab_invitation()).unwrap();
+        // Saved before the person had an entry for the server, under the planned login.
+        let before = saved_of(
+            earlier
+                .connection_from_invitation(&message, false, InvitationOverrides::default())
+                .await
+                .unwrap(),
+        );
+        assert_eq!(before.ssh_target, "bob@hpc.example.org");
+        fs::write(
+            &config,
+            "Host lab-robert\n  User robert\nHost lab-port\n  Port 2222\nHost lab-delegated\n  GSSAPIDelegateCredentials yes\nHost lab-hpc\n  User bob\n  IdentityFile /keys/lab\nHost lab-local\n",
+        )
+        .unwrap();
+
+        // Another account and another port are other logins, and an entry Crew's connection
+        // preflight refuses (delegated credentials) could not connect; the entry for this one
+        // that Crew can use is.
+        let manager = CrewManager::new(root.join("crew")).unwrap();
+        let preview = preview_with(&manager, &message, InvitationOverrides::default())
+            .await
+            .unwrap();
+        assert_eq!(
+            (preview.ssh_target.as_deref(), preview.port),
+            (Some("lab-hpc"), None)
+        );
+        assert_eq!(preview.server_label.as_deref(), Some("lab-hpc"));
+        assert_eq!(preview.login_mismatch, None);
+        let saved = saved_of(
+            manager
+                .connection_from_invitation(&message, false, InvitationOverrides::default())
+                .await
+                .unwrap(),
+        );
+        assert_eq!((saved.ssh_target.as_str(), saved.port), ("lab-hpc", None));
+        let again = saved_of(
+            manager
+                .connection_from_invitation(&message, false, InvitationOverrides::default())
+                .await
+                .unwrap(),
+        );
+        assert_eq!(again.id, saved.id);
+        // A connection saved under the planned login keeps it: pasting again finds it.
+        let kept = saved_of(
+            earlier
+                .connection_from_invitation(&message, false, InvitationOverrides::default())
+                .await
+                .unwrap(),
+        );
+        assert_eq!(
+            (kept.id.as_str(), kept.ssh_target.as_str()),
+            (before.id.as_str(), "bob@hpc.example.org")
+        );
+
+        // A username the person typed is matched like the invitation's.
+        let typed_user = InvitationOverrides {
+            username: Some("robert".into()),
+            ..Default::default()
+        };
+        assert_eq!(
+            planned(&manager, &message, typed_user).await.as_deref(),
+            Some("lab-robert")
+        );
+        // A login, port or jump host the person chose is theirs, exactly as typed.
+        let advanced = |advanced: InvitationAdvanced| InvitationOverrides {
+            advanced,
+            ..Default::default()
+        };
+        for choice in [
+            InvitationAdvanced {
+                ssh_target: Some("bob@hpc.example.org".into()),
+                ..Default::default()
+            },
+            InvitationAdvanced {
+                port: Some(22),
+                ..Default::default()
+            },
+            InvitationAdvanced {
+                proxy_jump: Some("gateway.example.org".into()),
+                ..Default::default()
+            },
+        ] {
+            assert_eq!(
+                planned(&manager, &message, advanced(choice))
+                    .await
+                    .as_deref(),
+                Some("bob@hpc.example.org")
+            );
+        }
+        // On the server itself the login is loopback, whatever entry names it.
+        let on_the_server = crew_invitation::message(&WorkspaceInvitation {
+            ssh_host: Some("localhost".into()),
+            ..lab_invitation()
+        })
+        .unwrap();
+        assert_eq!(
+            planned(&manager, &on_the_server, InvitationOverrides::default())
+                .await
+                .as_deref(),
+            Some("bob@localhost")
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
     /// W2-DMN-3: an invitation that names another account than the one this computer's SSH
     /// settings sign in to the server as says so, with both. A username the person typed, or a
     /// login of their own, is theirs; and OpenSSH's default user is not a setting.
@@ -5067,7 +5272,8 @@ fi
     }
 
     /// D-ALIAS: the preview names the server by the joiner's own SSH alias for the address the
-    /// invitation carries, while the login it would save keeps that address.
+    /// invitation carries, while the login it would save keeps that address: this alias signs
+    /// in as the local account, not as the invited one, so it is another login (G5).
     #[cfg(unix)]
     #[tokio::test]
     async fn a_preview_names_the_server_by_the_joiners_own_alias() {
@@ -5080,9 +5286,12 @@ fi
             &[
                 (
                     "bob@hpc.example.org",
-                    &["hostname hpc.example.org", "port 22"],
+                    &["user bob", "hostname hpc.example.org", "port 22"],
                 ),
-                ("hpc-alias", &["hostname hpc.example.org", "port 22"]),
+                (
+                    "hpc-alias",
+                    &["user localme", "hostname hpc.example.org", "port 22"],
+                ),
                 ("elsewhere", &["hostname other.example.org", "port 22"]),
             ],
             &[],

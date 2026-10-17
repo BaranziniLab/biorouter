@@ -101,11 +101,13 @@ To change it:
 
 **As me on the server** comes with one warning, which you read before you choose Join: "Your agent will run commands as bob on lab.example.edu: it can read and change anything your account can, use the network, and start programs that keep running after access ends. Other people’s messages and files in channels it reads can try to steer it. Use a private model you trust." See [What your agent may do on the server](agents-and-chat-access.md#what-your-agent-may-do-on-the-server).
 
-Joining gives your connection exactly the level you chose. **Off** stays off: setting Crew up never turns access on by itself. Change the level later in **Connection settings…**.
+Joining gives your connection exactly the level you chose. **Off** stays off once the connection has connected: setting Crew up never turns access on by itself. One case is different: a connection saved but never connected from this computer (the desktop's setup failed, for example) that you then join with `biorouter crew join` gets the same level `biorouter crew setup` gives a new connection, **As me on the server**, and the terminal says so before anything runs. Change the level later in **Connection settings…**.
 
 ### Advanced server connection details
 
 Use **Advanced** only with settings from IT. It opens by itself when the invitation names no server.
+
+When you leave **Server login**, **Port** and **Jump hosts** empty, Crew saves the login `bob@lab.example.edu`. If your SSH settings file, `~/.ssh/config`, has a short name (alias) for that server that signs in as the same account on the same port, Crew saves that name instead, so the key, port and jump host you set for it there apply. The summary then names the server by that name. A short name that signs in as another account, or on another port, is never used, and neither is one Crew could not connect through, such as one with a `ProxyCommand` or a `RemoteCommand`. When you join on the workspace's own server, the login is `bob@localhost`.
 
 | Field | Use |
 |---|---|
