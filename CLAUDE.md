@@ -2086,7 +2086,12 @@ replaced a standalone `biorouter-headless` binary and its Linux tarball, both de
   `Sec-Fetch-Mode` and `Sec-Fetch-Dest`, which a browser sends only to an https or loopback URL
   and script cannot forge. It no longer asks `X-Forwarded-Proto`: requiring it beside the metadata
   added nothing and refused JupyterHub, whose chain reports `https,http`. A plain-HTTP LAN
-  address is still refused, because Chrome sends no Fetch Metadata there.
+  address is still refused, because Chrome sends no Fetch Metadata there. ⚠ Chrome sends no Fetch
+  Metadata on a WebSocket handshake ANYWHERE, so a handshake counts when its `Origin` is `https`
+  (`is_a_websocket_upgrade_from_an_https_page`); without that arm every app's agent socket was
+  refused behind an HTTPS proxy. Built apps under a prefix: the page gets `<base href="./">`, the
+  launch bounce goes to `./`, the app cookie carries no `Path`, and `sdk.ts` reads the prefix off
+  its own address (`proxyPrefix`). Don't reintroduce a root-absolute `/apps/{id}/` in any of them.
 - **Tests:** `cargo test -p biorouter-server --lib -- routes::web_ui routes::shell` (the `--`
   is required: cargo takes one filter before it and rejects a second with a usage error),
   `cargo test -p biorouter-cli --lib commands::serve`, the `serve` job in

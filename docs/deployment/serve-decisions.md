@@ -1191,15 +1191,17 @@ such engines are refused through a non-loopback HTTPS proxy. Per-app origins rem
 
 ## SD-15: Behind a reverse proxy, at the root or under a path
 
-**Ruling (2026-10-16, issue #402).** Three changes, taken together because one deployment needed
-all three: JupyterHub, where each person's server is reached at
+**Ruling (2026-10-16, issue #402).** Four changes, taken together because one deployment needed
+all four: JupyterHub, where each person's server is reached at
 `https://hub.example.org/user/<name>/proxy/<port>/` through a TLS terminator,
 configurable-http-proxy and jupyter-server-proxy.
 
 1. **The browser says whether an address is secure.** A request whose `Host` is not loopback
    counts as reaching a secure address when the browser attached Fetch Metadata to it
    (`Sec-Fetch-Mode` and `Sec-Fetch-Dest`). `X-Forwarded-Proto` is no longer part of that decision
-   (`auth::reached_over_a_secure_context`).
+   (`auth::reached_over_a_secure_context`). A WebSocket handshake, which carries no Fetch Metadata
+   in Chrome wherever the page is, counts when its `Origin` is `https`: the page that opened it is
+   at a secure address, and script can set neither `Origin` nor `Upgrade`.
 2. **The interface works under a path prefix that a proxy strips.** `npm run build:web` builds
    the bundle with a relative base (`--base ./`), and the daemon writes `<base href>` into the
    shell, naming the mount relative to the path each request landed on
@@ -1209,7 +1211,15 @@ configurable-http-proxy and jupyter-server-proxy.
 3. **`biorouter serve --public-url <address>` names the address a browser uses.** `serve` prints
    that address with the access token. The daemon admits its origin on the WebSocket gates
    (`routes::PublicUrl`, `UpgradeOrigin::is_this_daemons`) and scopes the session cookie's `Path`
-   to its path. `BIOROUTER_PUBLIC_URL` in the shell is read when the flag is absent.
+   to its path. `BIOROUTER_PUBLIC_URL` in the shell is read when the flag is absent. The address
+   must be `https` unless it names this machine, and only a daemon that serves the interface reads
+   the variable, because the desktop application hands its daemon its whole environment.
+4. **Built apps work under the prefix too.** An app's page is served with `<base href="./">`
+   (it is only ever served at `/apps/{id}/`), its launch link moves the browser to `./`, and its
+   access cookie carries no `Path`, so the browser scopes it to the address it redeemed the link
+   at. The App SDK reads the prefix off its own page's address, in front of `/apps/{id}/`, for its
+   agent socket, its REST calls and its figure frames; a page without that segment (an export's
+   own) derives what it always did.
 
 **Why.** Version 1.93.0 refused every JupyterHub deployment of `serve`, and lost the path prefix
 support that 1.89 had (issue #9).
@@ -1232,6 +1242,10 @@ support that 1.89 had (issue #9).
   The `<base href>` closes that. It needs no configuration, because a proxy that strips a prefix
   leaves the part of the path below the mount unchanged, so the distance back up is the same on
   both sides of the proxy.
+- Every app surface asks the same secure address question, and an app's agent socket is a
+  WebSocket, so behind any HTTPS proxy every app opened and then said "No Biorouter backend". The
+  app's page, cookie and SDK also named `/apps/{id}/` from the root, which under a prefix sent
+  them to the proxy's root.
 - The live views connect over a WebSocket whose gate compares the page's `Origin` with the `Host`
   and the scheme from `X-Forwarded-Proto`. Through the same chain that comparison refuses the
   interface's own socket, so the page loads and every live view stays empty. Chrome sends no Fetch

@@ -231,24 +231,48 @@ trailing slash: the interface loads its files relative to it.
 #### JupyterHub
 
 With [jupyter-server-proxy](https://jupyter-server-proxy.readthedocs.io/), each person's server can
-start Biorouter and serve it at `https://<hub>/user/<name>/biorouter/`. The hub's own login protects
-the address, so the access token can be turned off:
+start Biorouter and serve it at `https://<hub>/user/<name>/biorouter/`. `{base_url}` below is the
+server's own prefix, for example `/user/alice/`; replace `hub.example.org` with the hub's hostname.
 
-```python
-c.ServerProxy.servers = {
-    "biorouter": {
-        "command": [
-            "biorouter", "serve", "--port", "{port}", "--no-token",
-            "--public-url", "https://hub.example.org{base_url}biorouter/",
-        ],
-        "timeout": 60,
-    },
-}
-```
+Whether to keep the access token depends on who else can reach the server's loopback port:
 
-`{base_url}` is the server's own prefix, for example `/user/alice/`. Replace `hub.example.org` with
-the hub's hostname. `--no-token` is accepted because `serve` binds the loopback address, which only
-the proxy on the same machine can reach.
+- **Each server runs in its own container** (KubeSpawner, DockerSpawner). Only the hub's proxy
+  reaches the port, and the hub's login protects the address, so `--no-token` is reasonable:
+
+  ```python
+  c.ServerProxy.servers = {
+      "biorouter": {
+          "command": [
+              "biorouter", "serve", "--port", "{port}", "--no-token",
+              "--public-url", "https://hub.example.org{base_url}biorouter/",
+          ],
+          "timeout": 60,
+      },
+  }
+  ```
+
+- **Servers share one machine** (the default LocalProcessSpawner, The Littlest JupyterHub). Every
+  other account on that machine can reach the loopback port and would use Biorouter as you, so
+  keep the token. Put a token in a file only you can read, pass it with `BIOROUTER_BROWSER_TOKEN`,
+  and open `https://hub.example.org/user/<name>/biorouter/?t=<token>` once. The cookie that address
+  sets lasts until the server stops.
+
+  ```python
+  import pathlib
+
+  token_file = pathlib.Path.home() / ".config" / "biorouter" / "browser-token"
+
+  c.ServerProxy.servers = {
+      "biorouter": {
+          "command": [
+              "biorouter", "serve", "--port", "{port}",
+              "--public-url", "https://hub.example.org{base_url}biorouter/",
+          ],
+          "environment": {"BIOROUTER_BROWSER_TOKEN": token_file.read_text().strip()},
+          "timeout": 60,
+      },
+  }
+  ```
 
 ## The model is fixed before you start
 
