@@ -386,12 +386,14 @@ describe('the Models tab rows in a real layout engine (spec 3.13, 5.7)', () => {
     }
   });
 
-  it('draws the Model, Providers and Reset rows as one 40px line each', async (ctx) => {
+  it('draws the Model, Crew tasks, Providers and Reset rows as one 40px line each', async (ctx) => {
     if (!browser) return ctx.skip();
     const tab = await open();
     try {
       const model = await rowsOf(tab, 'settings-default-model');
-      expect(model.map((row) => row.label)).toEqual(['Model', 'Providers']);
+      // Crew tasks (Crew design OW-11) sits under the model new chats start on, which it follows
+      // until a model of its own is chosen.
+      expect(model.map((row) => row.label)).toEqual(['Model', 'Crew tasks', 'Providers']);
       for (const row of model) near(row.height, 40, `${row.label} row`);
       const danger = await rowsOf(tab, 'settings-models-danger-zone');
       expect(danger.map((row) => row.label)).toEqual(['Reset provider and model']);

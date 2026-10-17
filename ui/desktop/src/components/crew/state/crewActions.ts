@@ -113,6 +113,7 @@ export function useCrewActions(): CrewActions {
         ...(code !== undefined ? { code } : {}),
         ...(details?.destination !== undefined ? { destination: details.destination } : {}),
         ...(details?.transport ? { transport: true } : {}),
+        ...(details?.action ? { action: details.action } : {}),
       }),
     []
   );

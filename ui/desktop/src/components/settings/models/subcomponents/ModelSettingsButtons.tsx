@@ -1,6 +1,7 @@
 import { useState, type ReactNode } from 'react';
 import { Button } from '../../../ui/button';
 import { SettingRow } from '../../../ui/setting-row';
+import { CrewTaskModelRow } from './CrewTaskModelRow';
 import { SwitchModelModal } from './SwitchModelModal';
 import type { View } from '../../../../utils/navigationUtils';
 import { shouldShowPredefinedModels } from '../predefinedModelsUtils';
@@ -16,8 +17,9 @@ interface ConfigureModelButtonsProps {
 }
 
 /**
- * The "Default model" section's rows: the model in force with a `Change…` action, and, when
- * the deployment does not pin its models, a `Providers` row with `Manage…` (spec §3.13).
+ * The "Default model" section's rows: the model in force with a `Change…` action, the model Crew
+ * tasks start on (`CrewTaskModelRow`, Crew design OW-11), and, when the deployment does not pin
+ * its models, a `Providers` row with `Manage…` (spec §3.13).
  *
  * The visible words are short ("Change…", "Manage…"); the accessible names stay the longer
  * ones the daemon's docs and the tests use ("Switch models", "Configure providers"). They are
@@ -53,6 +55,7 @@ export default function ModelSettingsButtons({ setView, modelValue }: ConfigureM
           onClose={() => setIsAddModelModalOpen(false)}
         />
       ) : null}
+      <CrewTaskModelRow />
       {!hasPredefinedModels && (
         <SettingRow label={defaultModelCopy.providers}>
           <Button

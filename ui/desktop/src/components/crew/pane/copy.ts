@@ -159,8 +159,20 @@ export const agentCopy = {
     return [reads, folder].filter(Boolean).join(' · ');
   },
   alsoRead: 'Also read',
+  /**
+   * Advanced's closed summary in an open workspace whose broker reads wide (`wideRunChannels`):
+   * the task reads every channel the person is in. `count` includes the channel it posts in.
+   */
+  readsChannels: (count: number) => `Reads ${count} channels`,
   folderExec: (path: string) => `Can run commands in ${path}`,
   folderRead: (path: string) => `Can read ${path}`,
+  /**
+   * Full access (design OW-6): commands run as the person's own account on the server, through
+   * their own bridge, with the work folder as where they start. `server` is what the person calls
+   * the server; `path` the work folder.
+   */
+  fullAccess: (server: string, path: string) =>
+    `Can run commands as you on ${server || 'the server'}, starting in ${path}`,
   /**
    * A public model where the daemon refuses one (AG-F4), said before Start, which it disables, and
    * in place of the daemon's "Private cluster blocks public models" and the other public-model
@@ -229,6 +241,19 @@ export const agentCopy = {
    * success as well as failure and cancel (T-25). Keep the two together.
    */
   scope: (channel: string) => `Your agent can read ${channel} and post there, for this task only.`,
+  /** The same, for a task that reads other channels too. `count` includes `channel`. */
+  scopeWide: (channel: string, count: number) =>
+    `Your agent can read ${count} channels and post in ${channel}, for this task only.`,
+  /**
+   * Under the model when it is not the one Crew tasks start on (OW-11): a link that makes it so.
+   * Not a checkbox (C9: the unknown-outcome gate's is the only one).
+   */
+  useForFutureTasks: 'Use for future tasks',
+  /** Said once the model for Crew tasks is saved; `model` as the summary names it. */
+  usedForFutureTasks: (model: string) => `Future tasks start on ${model}.`,
+  /** The model for Crew tasks could not be saved. */
+  useForFutureTasksFailed: (message: string) =>
+    `Couldn’t save the model for Crew tasks. ${message}`,
   /** Pinned. */
   start: 'Start my agent and allow posting here',
   /** Start's label, beside a spinner, from the click until the pane closes (Q2-67). */

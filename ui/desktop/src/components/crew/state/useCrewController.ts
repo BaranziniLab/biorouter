@@ -890,6 +890,7 @@ export function useCrewController(options: CrewControllerOptions = {}): CrewCont
     runs,
     generation,
     setBody: draft.setBody,
+    clearSentBody: draft.clearSentBody,
     restartObservation,
     resetSurfaces,
     act,
@@ -1100,6 +1101,7 @@ export function useCrewController(options: CrewControllerOptions = {}): CrewCont
     dismissLostDraft,
 
     startOwnedRun: runStart.startOwnedRun,
+    askAgent: runStart.askAgent,
     unknownRunDestination: runStart.unknownRunDestination,
     inspectedPriorRun: runStart.inspectedPriorRun,
     setInspectedPriorRun: runStart.setInspectedPriorRun,

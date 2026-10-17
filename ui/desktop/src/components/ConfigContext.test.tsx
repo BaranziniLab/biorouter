@@ -451,6 +451,19 @@ describe('ConfigContext announces writes of the app-wide model selection (F3)', 
         <button type="button" onClick={() => run(() => remove('BIOROUTER_MODEL', false))}>
           Remove model
         </button>
+        <button
+          type="button"
+          onClick={() =>
+            run(() =>
+              upsert('CREW_TASK_MODEL', { provider: 'ollama', model: 'qwen3.8:27b' }, false)
+            )
+          }
+        >
+          Write Crew task model
+        </button>
+        <button type="button" onClick={() => run(() => remove('CREW_TASK_MODEL', false))}>
+          Remove Crew task model
+        </button>
         <button type="button" onClick={() => run(() => upsert('BIOROUTER_MODE', 'auto', false))}>
           Write mode
         </button>
@@ -479,15 +492,20 @@ describe('ConfigContext announces writes of the app-wide model selection (F3)', 
       </ConfigProvider>
     );
 
-  it.each([['Write provider'], ['Write model'], ['Remove model']])(
-    '%s announces, once the write has resolved',
-    async (button) => {
-      renderWriteProbe();
-      fireEvent.click(screen.getByRole('button', { name: button }));
-      await waitFor(() => expect(screen.getByTestId('write-result')).toHaveTextContent('ok'));
-      expect(nudges).toBe(1);
-    }
-  );
+  // OW-11: Crew's composer and Ask my agent state the model a task starts on, which falls back to
+  // the pair, so a write of `CREW_TASK_MODEL` reaches every window the same way.
+  it.each([
+    ['Write provider'],
+    ['Write model'],
+    ['Remove model'],
+    ['Write Crew task model'],
+    ['Remove Crew task model'],
+  ])('%s announces, once the write has resolved', async (button) => {
+    renderWriteProbe();
+    fireEvent.click(screen.getByRole('button', { name: button }));
+    await waitFor(() => expect(screen.getByTestId('write-result')).toHaveTextContent('ok'));
+    expect(nudges).toBe(1);
+  });
 
   it('says nothing about a key a new chat does not bind', async () => {
     renderWriteProbe();
