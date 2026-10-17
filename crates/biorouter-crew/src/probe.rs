@@ -775,23 +775,36 @@ fn scheduler_kind(found: &[&str]) -> Option<&'static str> {
     }
 }
 
-/// The server facts `bridge.probe` and `biorouter-crew probe` report (design, "Server probe
-/// and context draft"). A fact that cannot be learned is `null` or empty, never an error.
-pub fn probe() -> Value {
-    let account = this_account().ok();
-    let home = account.as_ref().map(|a| a.home.clone()).unwrap_or_default();
-    let user = account.as_ref().map(|a| a.user.clone()).unwrap_or_default();
-    let (kernel, arch) = uname();
-    let (found, login_modules) = account.as_ref().map(login_commands).unwrap_or_default();
-    let path_of = |name: &str| {
-        found
-            .iter()
-            .find(|(found, _)| found == name)
-            .map(|(_, path)| path.as_str())
-    };
-    let names: Vec<&str> = found.iter().map(|(name, _)| name.as_str()).collect();
+/// The found commands that belong to a batch scheduler, in the order they were found.
+fn scheduler_commands<'a>(names: &[&'a str]) -> Vec<&'a str> {
+    names
+        .iter()
+        .copied()
+        .filter(|name| {
+            matches!(
+                *name,
+                "sbatch"
+                    | "squeue"
+                    | "sinfo"
+                    | "srun"
+                    | "qsub"
+                    | "qstat"
+                    | "qconf"
+                    | "pbsnodes"
+                    | "bsub"
+                    | "condor_submit"
+            )
+        })
+        .collect()
+}
+
+/// Start one thread per language whose command was found, each asking it for its version.
+fn spawn_version_probes<'a>(
+    path_of: impl Fn(&str) -> Option<&'a str>,
+    home: &Path,
+) -> Vec<(&'static str, std::thread::JoinHandle<Option<String>>)> {
     // Version commands run side by side, so the probe as a whole stays near two timeouts.
-    let versions: Vec<(&str, std::thread::JoinHandle<Option<String>>)> = [
+    [
         ("python3", "--version"),
         ("R", "--version"),
         ("julia", "--version"),
@@ -821,20 +834,30 @@ pub fn probe() -> Value {
             }),
         ))
     })
-    .collect();
-    let gpus_thread = {
-        let program = path_of("nvidia-smi").map(str::to_owned);
-        std::thread::spawn(move || gpus(program.as_deref()))
-    };
-    let mounts = std::fs::read_to_string("/proc/self/mounts")
-        .map(|text| parse_mounts(&text))
-        .unwrap_or_default();
-    let roots = home_roots(&home, &user, &mounts);
-    let storage = if home.as_os_str().is_empty() {
-        Vec::new()
-    } else {
-        storage(&mounts, &home, &roots)
-    };
+    .collect()
+}
+
+/// The versions [`spawn_version_probes`] learned, by language; a language whose command
+/// failed or printed no version is left out.
+fn join_version_probes(
+    versions: Vec<(&'static str, std::thread::JoinHandle<Option<String>>)>,
+) -> serde_json::Map<String, Value> {
+    let mut languages = serde_json::Map::new();
+    for (name, thread) in versions {
+        if let Ok(Some(version)) = thread.join() {
+            languages.insert(name.to_owned(), json!(version));
+        }
+    }
+    languages
+}
+
+/// The conda installs this account can use: the usual places that hold a `conda` or
+/// `micromamba`, then the prefixes of the `conda` and `mamba` commands found, each shown once.
+fn conda_installs<'a>(
+    path_of: impl Fn(&str) -> Option<&'a str>,
+    home: &Path,
+    roots: &[PathBuf],
+) -> Vec<String> {
     let mut conda: Vec<String> = Vec::new();
     for place in CONDA_PLACES {
         let path = match place.strip_prefix("~/") {
@@ -848,41 +871,51 @@ pub fn probe() -> Value {
     for name in ["conda", "mamba"] {
         let prefix = path_of(name)
             .and_then(|path| Path::new(path).parent()?.parent().map(Path::to_path_buf));
-        if let Some(shown) = prefix.and_then(|prefix| shown_path(&prefix, &home, &roots)) {
+        if let Some(shown) = prefix.and_then(|prefix| shown_path(&prefix, home, roots)) {
             if !conda.contains(&shown) {
                 conda.push(shown);
             }
         }
     }
+    conda
+}
+
+/// The server facts `bridge.probe` and `biorouter-crew probe` report (design, "Server probe
+/// and context draft"). A fact that cannot be learned is `null` or empty, never an error.
+pub fn probe() -> Value {
+    let account = this_account().ok();
+    let home = account.as_ref().map(|a| a.home.clone()).unwrap_or_default();
+    let user = account.as_ref().map(|a| a.user.clone()).unwrap_or_default();
+    let (kernel, arch) = uname();
+    let (found, login_modules) = account.as_ref().map(login_commands).unwrap_or_default();
+    let path_of = |name: &str| {
+        found
+            .iter()
+            .find(|(found, _)| found == name)
+            .map(|(_, path)| path.as_str())
+    };
+    let names: Vec<&str> = found.iter().map(|(name, _)| name.as_str()).collect();
+    let versions = spawn_version_probes(path_of, &home);
+    let gpus_thread = {
+        let program = path_of("nvidia-smi").map(str::to_owned);
+        std::thread::spawn(move || gpus(program.as_deref()))
+    };
+    let mounts = std::fs::read_to_string("/proc/self/mounts")
+        .map(|text| parse_mounts(&text))
+        .unwrap_or_default();
+    let roots = home_roots(&home, &user, &mounts);
+    let storage = if home.as_os_str().is_empty() {
+        Vec::new()
+    } else {
+        storage(&mounts, &home, &roots)
+    };
+    let conda = conda_installs(path_of, &home, &roots);
     let modules = login_modules
         || MODULE_MARKERS
             .iter()
             .any(|marker| Path::new(marker).exists());
-    let scheduler_commands: Vec<&str> = names
-        .iter()
-        .copied()
-        .filter(|name| {
-            matches!(
-                *name,
-                "sbatch"
-                    | "squeue"
-                    | "sinfo"
-                    | "srun"
-                    | "qsub"
-                    | "qstat"
-                    | "qconf"
-                    | "pbsnodes"
-                    | "bsub"
-                    | "condor_submit"
-            )
-        })
-        .collect();
-    let mut languages = serde_json::Map::new();
-    for (name, thread) in versions {
-        if let Ok(Some(version)) = thread.join() {
-            languages.insert(name.to_owned(), json!(version));
-        }
-    }
+    let scheduler_commands = scheduler_commands(&names);
+    let languages = join_version_probes(versions);
     json!({
         "schema": 1,
         "host": hostname(),

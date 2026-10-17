@@ -4723,44 +4723,8 @@ impl Broker {
             (1..=3600).contains(&expires),
             "invalid_params: expiry must be 1..3600 seconds"
         );
-        let remote_root = match p.get("remote_root") {
-            None | Some(Value::Null) => None,
-            Some(_) => Some(display_text(p, "remote_root", 4096)?.to_owned()),
-        };
-        let remote_execution = p
-            .get("remote_execution")
-            .and_then(Value::as_bool)
-            .unwrap_or(false);
-        if let Some(root) = &remote_root {
-            ensure!(
-                !consent.public_provider && Path::new(root).is_absolute() && root != "/",
-                "privacy_denied: remote root must be explicitly scoped and private-provider only"
-            );
-            self.protect_authority_root(
-                root,
-                s.principals
-                    .get(who)
-                    .ok_or_else(|| anyhow!("unauthorized"))?
-                    .uid,
-            )?;
-        }
-        ensure!(
-            !remote_execution || remote_root.is_some(),
-            "invalid_params: execution requires remote root"
-        );
-        let remote_access = match p.get("remote_access") {
-            None | Some(Value::Null) => RemoteAccess::Folder,
-            Some(value) => serde_json::from_value(value.clone()).map_err(|_| {
-                anyhow!("invalid_params: remote_access must be \"folder\" or \"full\".")
-            })?,
-        };
-        // Full access runs as the owner's whole account, so it needs everything a confined
-        // command needs: a work folder, the person's execution grant and a private model.
-        ensure!(
-            remote_access == RemoteAccess::Folder
-                || (remote_root.is_some() && remote_execution && !consent.public_provider),
-            "invalid_params: Full remote access needs a remote root, remote execution and a private provider."
-        );
+        let (remote_root, remote_execution, remote_access) =
+            self.run_remote_scope(s, who, p, &consent)?;
         let protected_context =
             Self::is_protected_context(s, &sources, &consent.personal_mode, remote_root.as_deref());
         ensure!(
@@ -4799,6 +4763,55 @@ impl Broker {
             .insert(digest(credential.as_bytes()), run.id.clone());
         s.runs.insert(run.id.clone(), run.clone());
         Ok(json!({"run":run,"credential":credential}))
+    }
+    /// The remote half of a `run.create` request, validated and never applied: the work folder,
+    /// whether commands may run in it, and the access they run with. It only reads `s`.
+    fn run_remote_scope(
+        &self,
+        s: &State,
+        who: &str,
+        p: &Value,
+        consent: &RunPolicyConsent,
+    ) -> Result<(Option<String>, bool, RemoteAccess)> {
+        let remote_root = match p.get("remote_root") {
+            None | Some(Value::Null) => None,
+            Some(_) => Some(display_text(p, "remote_root", 4096)?.to_owned()),
+        };
+        let remote_execution = p
+            .get("remote_execution")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        if let Some(root) = &remote_root {
+            ensure!(
+                !consent.public_provider && Path::new(root).is_absolute() && root != "/",
+                "privacy_denied: remote root must be explicitly scoped and private-provider only"
+            );
+            self.protect_authority_root(
+                root,
+                s.principals
+                    .get(who)
+                    .ok_or_else(|| anyhow!("unauthorized"))?
+                    .uid,
+            )?;
+        }
+        ensure!(
+            !remote_execution || remote_root.is_some(),
+            "invalid_params: execution requires remote root"
+        );
+        let remote_access = match p.get("remote_access") {
+            None | Some(Value::Null) => RemoteAccess::Folder,
+            Some(value) => serde_json::from_value(value.clone()).map_err(|_| {
+                anyhow!("invalid_params: remote_access must be \"folder\" or \"full\".")
+            })?,
+        };
+        // Full access runs as the owner's whole account, so it needs everything a confined
+        // command needs: a work folder, the person's execution grant and a private model.
+        ensure!(
+            remote_access == RemoteAccess::Folder
+                || (remote_root.is_some() && remote_execution && !consent.public_provider),
+            "invalid_params: Full remote access needs a remote root, remote execution and a private provider."
+        );
+        Ok((remote_root, remote_execution, remote_access))
     }
     fn mutate_run_revoke(&self, s: &mut State, actor: &Actor, req: &Request) -> Result<Value> {
         let p = &req.params;
@@ -6573,49 +6586,7 @@ fn relay(
             };
             write_response(output, response)?;
         } else if request.method.starts_with("remote.") {
-            let result = (|| -> Result<Value> {
-                ensure!(
-                    request.auth.is_none() && request.credential.is_some(),
-                    "forbidden: remote helper requires scoped worker credential"
-                );
-                let scope_request = Request {
-                    version: request.version,
-                    id: request.id.clone(),
-                    method: "run.remote_scope".into(),
-                    params: json!({}),
-                    auth: None,
-                    credential: request.credential.clone(),
-                };
-                let mut scope_bytes = serde_json::to_vec(&scope_request)?;
-                scope_bytes.push(b'\n');
-                stream.write_all(&scope_bytes)?;
-                stream.flush()?;
-                let scope_response: Response = serde_json::from_slice(
-                    &read_frame(&mut reader)?.ok_or_else(|| anyhow!("broker disconnected"))?,
-                )?;
-                if let Some(error) = scope_response.error {
-                    bail!("{}: {}", error.code, error.message);
-                }
-                let scope = scope_response
-                    .result
-                    .ok_or_else(|| anyhow!("invalid_response"))?;
-                let link = crate::remote_full::BrokerLink {
-                    connect: reconnect.clone(),
-                    credential: request.credential.clone().unwrap_or_default(),
-                };
-                let result =
-                    crate::remote::handle(&request.method, &request.params, &scope, &link)?;
-                stream.write_all(&scope_bytes)?;
-                stream.flush()?;
-                let recheck: Response = serde_json::from_slice(
-                    &read_frame(&mut reader)?.ok_or_else(|| anyhow!("broker disconnected"))?,
-                )?;
-                if let Some(error) = recheck.error {
-                    bail!("{}: permission changed during remote operation; effect may already have occurred: {}",error.code,error.message);
-                }
-                ensure!(recheck.result.as_ref()==Some(&scope),"permission_changed: remote scope changed during operation; effect may already have occurred");
-                Ok(result)
-            })();
+            let result = remote_operation(&request, &mut stream, &mut reader, reconnect);
             let response = match result {
                 Ok(value) => Response {
                     id: request.id,
@@ -6649,6 +6620,60 @@ fn relay(
             output.flush()?;
         }
     }
+}
+/// Run one `remote.*` request for [`relay`]: ask the broker for the worker credential's remote
+/// scope, run the operation inside it, then ask again and refuse the result if the scope changed
+/// while it ran.
+fn remote_operation(
+    request: &Request,
+    stream: &mut UnixStream,
+    reader: &mut BufReader<UnixStream>,
+    reconnect: &crate::remote_full::Connect,
+) -> Result<Value> {
+    ensure!(
+        request.auth.is_none() && request.credential.is_some(),
+        "forbidden: remote helper requires scoped worker credential"
+    );
+    let scope_request = Request {
+        version: request.version,
+        id: request.id.clone(),
+        method: "run.remote_scope".into(),
+        params: json!({}),
+        auth: None,
+        credential: request.credential.clone(),
+    };
+    let mut scope_bytes = serde_json::to_vec(&scope_request)?;
+    scope_bytes.push(b'\n');
+    stream.write_all(&scope_bytes)?;
+    stream.flush()?;
+    let scope_response: Response = serde_json::from_slice(
+        &read_frame(reader)?.ok_or_else(|| anyhow!("broker disconnected"))?,
+    )?;
+    if let Some(error) = scope_response.error {
+        bail!("{}: {}", error.code, error.message);
+    }
+    let scope = scope_response
+        .result
+        .ok_or_else(|| anyhow!("invalid_response"))?;
+    let link = crate::remote_full::BrokerLink {
+        connect: reconnect.clone(),
+        credential: request.credential.clone().unwrap_or_default(),
+    };
+    let result = crate::remote::handle(&request.method, &request.params, &scope, &link)?;
+    stream.write_all(&scope_bytes)?;
+    stream.flush()?;
+    let recheck: Response = serde_json::from_slice(
+        &read_frame(reader)?.ok_or_else(|| anyhow!("broker disconnected"))?,
+    )?;
+    if let Some(error) = recheck.error {
+        bail!(
+            "{}: permission changed during remote operation; effect may already have occurred: {}",
+            error.code,
+            error.message
+        );
+    }
+    ensure!(recheck.result.as_ref()==Some(&scope),"permission_changed: remote scope changed during operation; effect may already have occurred");
+    Ok(result)
 }
 /// Wait until the daemon's `input` has something to read or the broker's `stream` signals
 /// anything at all: `(input_ready, broker_gone)`. Readable, hung up or failed, a broker that

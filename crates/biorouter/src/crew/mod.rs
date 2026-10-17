@@ -4672,94 +4672,29 @@ impl CrewManager {
             .ok_or_else(|| anyhow::anyhow!("Broker did not return a run ID"))?
             .to_string();
         let mut credential_written = false;
-        let admitted: Result<RunAdmission> = async {
-            ensure!(
-                is_run_id(&run_id),
-                "Crew workspace answered with a run ID this computer does not accept; the run was revoked"
-            );
-            ensure!(
-                result["run"]["protected_context"].as_bool() == Some(admission.protected_context),
-                "Crew broker returned a different protected-context policy; refresh before granting agent access"
-            );
-            // OW-6: the run's level is the one asked for. A missing `remote_access` is a folder
-            // run, which is all an older server makes.
-            let granted = match &result["run"]["remote_access"] {
-                Value::Null => Some(RemoteAccess::Folder),
-                echoed => serde_json::from_value::<RemoteAccess>(echoed.clone()).ok(),
-            };
-            ensure!(
-                granted == Some(if full { RemoteAccess::Full } else { RemoteAccess::Folder }),
-                "Crew broker returned a different level of access to the server than was asked for; the run was revoked"
-            );
-            let credential = result["credential"]
-                .as_str()
-                .ok_or_else(|| anyhow::anyhow!("Broker did not return a scoped credential"))?;
-            let expires_at = result["run"]["expires_at"].as_u64();
-            self.write_credential(&format!("run:{session}"), credential)?;
-            credential_written = true;
-            let scope = Scope {
-                connection_id: id.into(),
-                run_id: run_id.clone(),
-                channel_id: channel.into(),
-                source_channels: sources.clone(),
-                epoch: c.policy_epoch,
-                provider_binding: provider_binding(provider),
-                public_provider: public,
-                origin_restricted,
-                institution_ids: institution_ids.clone(),
-                institution_policy: true,
-                expired: false,
-                expires_at,
-                labels: Some(labels.clone()),
-                session_incarnation: Some(session_incarnation),
-                session_store: self.own_store(),
-                revocation: None,
-            };
-            // Recorded here even when the save fails, as it always was: the abandon below
-            // then finds it and stops it here too. An unconfirmed stop of the chat's earlier
-            // grant is kept and asked about again (F3).
-            self.record_grant(session, scope).await?;
-            // A new task starts from nothing read, even under a chat ID used before.
-            self.forget_run_reads(session);
-            let context = self
-                .worker_request(
+        let admitted = self
+            .set_up_created_run(
+                AdmittedRun {
                     session,
-                    "messages.history",
-                    json!({"channel_id":channel,"limit":50,"latest":true}),
-                )
-                .await?;
-            let shared_files = self.list_shared_files(session, &context).await;
-            let server = self.server_facts(public, &c).await;
-            // OW-8: what the workspace says about its server, from the person's own snapshot.
-            // A public model reads it only in a Public workspace, as the broker lets a public
-            // run read it; it is admitted nowhere else.
-            let workspace_mode = self.signed_workspace_mode(id).unwrap_or(c.mode);
-            let workspace_context = if !public || workspace_mode == ClusterMode::Public {
-                workspace_context(&snapshot_context)
-            } else {
-                Value::Null
-            };
-            Ok(RunAdmission {
-                run_id: run_id.clone(),
-                institution_ids: institution_ids.clone(),
-                expires_at,
-                context: wrapper_safe_json(&serde_json::to_string(&admission_context(
-                    AdmissionContext {
-                        connection_id: id,
-                        channel,
-                        sources: &sources,
-                        labels: &labels,
-                        remote_files_enabled: !public && c.remote_root.is_some(),
-                        server: &server,
-                        workspace_context,
-                        shared_files,
-                        history: context,
-                    },
-                ))?),
-                labels: labels.clone(),
-            })
-        }
-        .await;
+                    id,
+                    channel,
+                    sources: &sources,
+                    provider,
+                    connection: &c,
+                    public,
+                    origin_restricted,
+                    full,
+                    protected_context: admission.protected_context,
+                    institution_ids: &institution_ids,
+                    labels: &labels,
+                    session_incarnation,
+                    snapshot_context: &snapshot_context,
+                },
+                &result,
+                &run_id,
+                &mut credential_written,
+            )
+            .await;
         match admitted {
             Ok(admitted) => Ok(admitted),
             Err(error) => {
@@ -4768,6 +4703,103 @@ impl CrewManager {
                 Err(error)
             }
         }
+    }
+    /// Set up the run the workspace created for `run` ([`Self::begin_run_with_policy`]), whose
+    /// answer to `run.create` is `result` and names `run_id`: check it is the run asked for,
+    /// save its credential, record the grant and read what the model starts from. Every failure
+    /// here is the caller's to take back (D7); `credential_written` says whether this saved the
+    /// run credential.
+    async fn set_up_created_run(
+        &self,
+        run: AdmittedRun<'_>,
+        result: &Value,
+        run_id: &str,
+        credential_written: &mut bool,
+    ) -> Result<RunAdmission> {
+        let AdmittedRun {
+            session,
+            id,
+            channel,
+            sources,
+            provider,
+            connection: c,
+            public,
+            origin_restricted,
+            full,
+            protected_context,
+            institution_ids,
+            labels,
+            session_incarnation,
+            snapshot_context,
+        } = run;
+        check_created_run(result, run_id, protected_context, full)?;
+        let credential = result["credential"]
+            .as_str()
+            .ok_or_else(|| anyhow::anyhow!("Broker did not return a scoped credential"))?;
+        let expires_at = result["run"]["expires_at"].as_u64();
+        self.write_credential(&format!("run:{session}"), credential)?;
+        *credential_written = true;
+        let scope = Scope {
+            connection_id: id.into(),
+            run_id: run_id.into(),
+            channel_id: channel.into(),
+            source_channels: sources.to_vec(),
+            epoch: c.policy_epoch,
+            provider_binding: provider_binding(provider),
+            public_provider: public,
+            origin_restricted,
+            institution_ids: institution_ids.clone(),
+            institution_policy: true,
+            expired: false,
+            expires_at,
+            labels: Some(labels.clone()),
+            session_incarnation: Some(session_incarnation),
+            session_store: self.own_store(),
+            revocation: None,
+        };
+        // Recorded here even when the save fails, as it always was: the abandon in the caller
+        // then finds it and stops it here too. An unconfirmed stop of the chat's earlier grant
+        // is kept and asked about again (F3).
+        self.record_grant(session, scope).await?;
+        // A new task starts from nothing read, even under a chat ID used before.
+        self.forget_run_reads(session);
+        let context = self
+            .worker_request(
+                session,
+                "messages.history",
+                json!({"channel_id":channel,"limit":50,"latest":true}),
+            )
+            .await?;
+        let shared_files = self.list_shared_files(session, &context).await;
+        let server = self.server_facts(public, c).await;
+        // OW-8: what the workspace says about its server, from the person's own snapshot.
+        // A public model reads it only in a Public workspace, as the broker lets a public
+        // run read it; it is admitted nowhere else.
+        let workspace_mode = self.signed_workspace_mode(id).unwrap_or(c.mode);
+        let workspace_context = if !public || workspace_mode == ClusterMode::Public {
+            workspace_context(snapshot_context)
+        } else {
+            Value::Null
+        };
+        Ok(RunAdmission {
+            run_id: run_id.into(),
+            institution_ids: institution_ids.clone(),
+            expires_at,
+            context: wrapper_safe_json(&serde_json::to_string(&admission_context(
+                AdmissionContext {
+                    connection_id: id,
+                    channel,
+                    sources,
+                    labels,
+                    remote_files_enabled: !public && c.remote_root.is_some(),
+                    server: &server,
+                    workspace_context,
+                    shared_files,
+                    history: context,
+                },
+            ))?),
+            labels: labels.clone(),
+        })
     }
     /// Take back a run the workspace created for a grant that then failed to be set up (D7),
     /// best effort: the caller answers with the failure that brought it here, never this.
@@ -5688,6 +5720,59 @@ struct LineEntry {
     name: String,
     copy: Option<String>,
     shared: Option<String>,
+}
+
+/// What [`CrewManager::begin_run_with_policy`] admitted and asked the workspace's `run.create`
+/// for, which [`CrewManager::set_up_created_run`] checks the created run against and makes the
+/// grant of.
+struct AdmittedRun<'a> {
+    session: &'a str,
+    id: &'a str,
+    channel: &'a str,
+    /// The run's final list: the sources, followed by `channel` when they lacked it.
+    sources: &'a [String],
+    provider: &'a dyn Provider,
+    connection: &'a Connection,
+    public: bool,
+    origin_restricted: bool,
+    /// A full-access run (design OW-6) was asked for.
+    full: bool,
+    protected_context: bool,
+    institution_ids: &'a BTreeSet<String>,
+    labels: &'a AdmissionLabels,
+    session_incarnation: i64,
+    /// The snapshot's workspace context document, unframed (`null` without one).
+    snapshot_context: &'a Value,
+}
+
+/// Whether the workspace's answer to `run.create` (`result`, naming `run_id`) is the run that
+/// was asked for: an ID this computer accepts, the protected-context policy admission found,
+/// and the level of access asked for (`full`).
+fn check_created_run(
+    result: &Value,
+    run_id: &str,
+    protected_context: bool,
+    full: bool,
+) -> Result<()> {
+    ensure!(
+        is_run_id(run_id),
+        "Crew workspace answered with a run ID this computer does not accept; the run was revoked"
+    );
+    ensure!(
+        result["run"]["protected_context"].as_bool() == Some(protected_context),
+        "Crew broker returned a different protected-context policy; refresh before granting agent access"
+    );
+    // OW-6: the run's level is the one asked for. A missing `remote_access` is a folder
+    // run, which is all an older server makes.
+    let granted = match &result["run"]["remote_access"] {
+        Value::Null => Some(RemoteAccess::Folder),
+        echoed => serde_json::from_value::<RemoteAccess>(echoed.clone()).ok(),
+    };
+    ensure!(
+        granted == Some(if full { RemoteAccess::Full } else { RemoteAccess::Folder }),
+        "Crew broker returned a different level of access to the server than was asked for; the run was revoked"
+    );
+    Ok(())
 }
 
 /// What [`CrewManager::begin_run_with_policy`] gives the model as `crew_context` when a run is

@@ -1137,39 +1137,11 @@ async fn run(api: &Api, command: CrewCommand) -> Result<Reply> {
         CrewCommand::Join(args) => join(api, args).await?,
         CrewCommand::Workspace(command) => workspace(api, command).await?,
         CrewCommand::Enroll(command) => enrollment(api, command).await?,
-        CrewCommand::Members(MembersArgs { command: None }) => {
-            let snapshot = api.snapshot().await?;
-            let mut people = with_roles(snapshot_field(&snapshot, "principals")?, &snapshot);
-            if let Some(list) = people.as_array_mut() {
-                let host = snapshot_host_id(&snapshot);
-                output::people_in_order(list, host.as_deref(), snapshot["actor"]["id"].as_str());
-            }
-            api.show_with(people, Directory::from_snapshot(&snapshot))
-        }
-        CrewCommand::Members(MembersArgs {
-            command:
-                Some(MembersCommand::Add {
-                    person,
-                    team,
-                    channels,
-                }),
-        }) => add_member(api, &person, team.as_deref(), &channels).await?,
+        CrewCommand::Members(args) => members(api, args).await?,
         CrewCommand::Teams(command) => teams(api, command).await?,
         CrewCommand::Channels(command) => channels(api, command).await?,
         CrewCommand::Invites(command) => invitations(api, command).await?,
-        CrewCommand::Profile(ProfileCommand::Show) => {
-            let snapshot = api.snapshot().await?;
-            let actor = snapshot_field(&snapshot, "actor")?;
-            api.show_with(actor, Directory::from_snapshot(&snapshot))
-        }
-        CrewCommand::Profile(ProfileCommand::Set { nickname, avatar }) => api.show(
-            api.broker(
-                "profile.update",
-                json!({"nickname":nickname,"avatar":avatar}),
-                true,
-            )
-            .await?,
-        ),
+        CrewCommand::Profile(command) => profile(api, command).await?,
         CrewCommand::Ownership(command) => ownership(api, command).await?,
         CrewCommand::RemoveMember {
             channel,
@@ -3902,6 +3874,108 @@ fn host_start_problem(host: &Value, workspace: &str, server: &str, name: &str) -
     })
 }
 
+/// What `host` was asked for, checked ([`Hosting::check`]), with the workspace, the login and
+/// the privacy as the lines that follow show them.
+struct Hosting {
+    name: String,
+    server: String,
+    institution: Option<String>,
+    mode: PrivacyMode,
+    port: Option<u16>,
+    identity_file: Option<String>,
+    proxy_jump: Option<String>,
+    fix_permissions: bool,
+    yes: bool,
+    /// The workspace's name as a line shows it.
+    shown: String,
+    /// The SSH login as a line shows it.
+    login: String,
+    /// The workspace's privacy as a line shows it.
+    privacy: String,
+}
+
+impl Hosting {
+    /// `host`'s arguments, checked before anything is asked or sent: it saves a new
+    /// connection, so it takes no `--connection`, and a Private workspace needs its
+    /// institution.
+    fn check(api: &Api, args: HostArgs) -> Result<Self> {
+        let HostArgs {
+            name,
+            server,
+            institution_id,
+            mode,
+            port,
+            identity_file,
+            proxy_jump,
+            fix_permissions,
+            yes,
+        } = args;
+        let name = name.trim().to_owned();
+        let server = server.trim().to_owned();
+        ensure!(
+            api.selected.is_none(),
+            "host saves a new connection, so it takes no --connection."
+        );
+        let institution = institution_id
+            .map(|id| id.trim().to_owned())
+            .filter(|id| !id.is_empty());
+        if matches!(mode, PrivacyMode::Private) && institution.is_none() {
+            return Err(usage(
+                "A Private workspace needs its institution. Add --institution ID, like --institution ucsf.",
+                INSTITUTION_REQUIRED,
+            ));
+        }
+        let shown = name_text(&name);
+        let login = safe_text(&server);
+        let privacy = privacy_badge(Some(mode.as_str()), institution.as_deref());
+        Ok(Self {
+            name,
+            server,
+            institution,
+            mode,
+            port,
+            identity_file,
+            proxy_jump,
+            fix_permissions,
+            yes,
+            shown,
+            login,
+            privacy,
+        })
+    }
+
+    /// The one question `host` asks, before anything is set up: what hosting installs and
+    /// what it lets agents do. `--yes` where there is no terminal.
+    async fn confirm(&self, api: &Api) -> Result<()> {
+        let Self {
+            shown,
+            login,
+            privacy,
+            ..
+        } = self;
+        if let Consent::Ask(question) = yes_or_ask(
+            self.yes,
+            api.interactive,
+            "Go ahead?".to_owned(),
+            format!("Hosting {shown} installs Crew in your account on {login} and lets your agent work as you there. There is no terminal to ask in, so add --yes."),
+        )? {
+            let mut stderr = std::io::stderr().lock();
+            for line in [
+                format!("Host {shown} on {login}? Biorouter will:"),
+                "  install Crew in your account there (~/.local/bin/biorouter-crew),".to_owned(),
+                format!("  start {shown} and save it on this computer,"),
+                format!("  make it {privacy} and open: every member can manage teams, channels and people,"),
+                format!("  and let your agent work as you on {login}: it can run any command your account can and reach any file it can. Public models never get this access."),
+            ] {
+                writeln!(stderr, "{line}")?;
+            }
+            drop(stderr);
+            ask_yes(question, "Nothing was set up.").await?;
+        }
+        Ok(())
+    }
+}
+
 /// `host` (OW-9): a new workspace from start to finish. Setup installs Crew in the person's
 /// account and starts the workspace; then it is saved here from what the start printed, with
 /// the work folder the job made and full agent access (OW-6), connected over the same SSH
@@ -3913,79 +3987,89 @@ async fn host(
     args: HostArgs,
     interrupt: impl std::future::Future<Output = std::io::Result<()>>,
 ) -> Result<Reply> {
-    let HostArgs {
-        name,
-        server,
-        institution_id,
-        mode,
-        port,
-        identity_file,
-        proxy_jump,
-        fix_permissions,
-        yes,
-    } = args;
-    let name = name.trim().to_owned();
-    let server = server.trim().to_owned();
-    ensure!(
-        api.selected.is_none(),
-        "host saves a new connection, so it takes no --connection."
-    );
-    let institution = institution_id
-        .map(|id| id.trim().to_owned())
-        .filter(|id| !id.is_empty());
-    if matches!(mode, PrivacyMode::Private) && institution.is_none() {
-        return Err(usage(
-            "A Private workspace needs its institution. Add --institution ID, like --institution ucsf.",
-            INSTITUTION_REQUIRED,
-        ));
-    }
-    let shown = name_text(&name);
-    let login = safe_text(&server);
-    let privacy = privacy_badge(Some(mode.as_str()), institution.as_deref());
-    if let Consent::Ask(question) = yes_or_ask(
-        yes,
-        api.interactive,
-        "Go ahead?".to_owned(),
-        format!("Hosting {shown} installs Crew in your account on {login} and lets your agent work as you there. There is no terminal to ask in, so add --yes."),
-    )? {
-        let mut stderr = std::io::stderr().lock();
-        for line in [
-            format!("Host {shown} on {login}? Biorouter will:"),
-            "  install Crew in your account there (~/.local/bin/biorouter-crew),".to_owned(),
-            format!("  start {shown} and save it on this computer,"),
-            format!("  make it {privacy} and open: every member can manage teams, channels and people,"),
-            format!("  and let your agent work as you on {login}: it can run any command your account can and reach any file it can. Public models never get this access."),
-        ] {
-            writeln!(stderr, "{line}")?;
-        }
-        drop(stderr);
-        ask_yes(question, "Nothing was set up.").await?;
-    }
+    let hosting = Hosting::check(api, args)?;
+    hosting.confirm(api).await?;
     let preparation = preparation_id(api).await?;
     let target = pending_target(
         &preparation,
-        &server,
-        port,
-        identity_file.as_deref(),
-        proxy_jump.as_deref(),
+        &hosting.server,
+        hosting.port,
+        hosting.identity_file.as_deref(),
+        hosting.proxy_jump.as_deref(),
     )?;
-    let mut request = json!({"target": target, "intent": "host", "workspace_name": name});
+    let (outcome, invitation) = run_host_setup(api, &hosting, &target, interrupt).await?;
+
+    // Saved from what the start printed, as `connections join-invitation --preparation-id`
+    // saves it, with the work folder the job made and full access.
+    let folder = outcome["work_folder"]
+        .as_str()
+        .map(str::trim)
+        .filter(|folder| folder.starts_with('/'))
+        .map(str::to_owned);
+    let advanced = host_advanced(&hosting, &preparation, &target, folder.as_deref());
+    let connection = save_hosted(
+        api,
+        &hosting,
+        &preparation,
+        &advanced,
+        &invitation,
+        folder.as_deref(),
+    )
+    .await?;
+    let saved_as = connection_name(&connection);
+    let done = format!(
+        "Started {} on {} and saved it on this computer",
+        hosting.shown, hosting.login
+    );
+    let (open, context_revision) =
+        finish_hosting(api, &hosting, &connection, &outcome, &saved_as, &done).await?;
+
+    let lines = hosted_lines(
+        &hosting,
+        &connection,
+        folder.as_deref(),
+        &done,
+        open,
+        context_revision,
+        &saved_as,
+    );
+    let value = json!({
+        "workspace": hosting.name,
+        "connection": connection,
+        "governance": if open { "open" } else { "managed" },
+        "context_revision": context_revision,
+        "outcome": outcome,
+    });
+    api.stream(&value, &lines)?;
+    Ok(Reply::Streamed)
+}
+
+/// `host`'s setup job: installs Crew in the person's account and starts the workspace, its
+/// lines and summary printed as they come ([`run_setup`]). Answers the job's outcome and the
+/// invitation the start printed, or, when the start pinned no workspace, what it said
+/// ([`host_start_problem`]).
+async fn run_host_setup(
+    api: &Api,
+    hosting: &Hosting,
+    target: &Value,
+    interrupt: impl std::future::Future<Output = std::io::Result<()>>,
+) -> Result<(Value, String)> {
+    let mut request = json!({"target": target, "intent": "host", "workspace_name": hosting.name});
     // L3: the person asked setup to take others' write access off the folders of theirs above
     // Crew's storage; setup re-checks each one before it changes it.
-    if fix_permissions {
+    if hosting.fix_permissions {
         request["fix_storage_permissions"] = json!(true);
     }
-    let (status, mut lines) =
-        run_setup(api, request, &server, interrupt)
-            .await
-            .map_err(|error| {
-                if fix_permissions {
-                    already_tried_the_fix(error)
-                } else {
-                    error
-                }
-            })?;
-    lines.extend(output::setup_summary_lines(&status, &server, None));
+    let (status, mut lines) = run_setup(api, request, &hosting.server, interrupt)
+        .await
+        .map_err(|error| {
+            if hosting.fix_permissions {
+                already_tried_the_fix(error)
+            } else {
+                error
+            }
+        })?;
+    lines.extend(output::setup_summary_lines(&status, &hosting.server, None));
     api.stream(&status, &lines)?;
     let outcome = status["outcome"].clone();
     let started = match outcome["host"]["kind"].as_str() {
@@ -3996,76 +4080,61 @@ async fn host(
         _ => None,
     };
     let Some(invitation) = started else {
-        return Err(host_start_problem(&outcome["host"], &shown, &login, &name));
+        return Err(host_start_problem(
+            &outcome["host"],
+            &hosting.shown,
+            &hosting.login,
+            &hosting.name,
+        ));
     };
+    Ok((outcome, invitation))
+}
 
-    // Saved from what the start printed, as `connections join-invitation --preparation-id`
-    // saves it, with the work folder the job made and full access.
-    let mut advanced = json!({"preparation_id": preparation, "ssh_target": server});
-    if let Some(port) = port {
+/// What a hosted workspace is saved with besides its invitation (`advanced`): the login and
+/// route `host` was given, and with the work folder the job made, full access to it.
+fn host_advanced(
+    hosting: &Hosting,
+    preparation: &str,
+    target: &Value,
+    folder: Option<&str>,
+) -> Value {
+    let mut advanced = json!({"preparation_id": preparation, "ssh_target": hosting.server});
+    if let Some(port) = hosting.port {
         advanced["port"] = json!(port);
     }
     if let Some(identity) = target["identity_file"].as_str() {
         advanced["identity_file"] = json!(identity);
     }
-    if let Some(jump) = &proxy_jump {
+    if let Some(jump) = &hosting.proxy_jump {
         advanced["proxy_jump"] = json!(jump);
     }
-    let folder = outcome["work_folder"]
-        .as_str()
-        .map(str::trim)
-        .filter(|folder| folder.starts_with('/'))
-        .map(str::to_owned);
-    if let Some(folder) = &folder {
+    if let Some(folder) = folder {
         advanced["remote_root"] = json!(folder);
         advanced["remote_execution"] = json!(true);
         advanced["remote_access"] = json!("full");
     }
-    let mut save = json!({"invitation": invitation, "mode": mode.as_str(), "advanced": advanced});
-    if let Some(institution) = &institution {
+    advanced
+}
+
+/// Saves the started workspace on this computer ([`from_invitation`]) and answers the saved
+/// connection, which every request from here is for. A save that fails says how to finish by
+/// hand ([`host_unsaved`]).
+async fn save_hosted(
+    api: &Api,
+    hosting: &Hosting,
+    preparation: &str,
+    advanced: &Value,
+    invitation: &str,
+    folder: Option<&str>,
+) -> Result<Value> {
+    let mut save =
+        json!({"invitation": invitation, "mode": hosting.mode.as_str(), "advanced": advanced});
+    if let Some(institution) = &hosting.institution {
         save["institution_id"] = json!(institution);
     }
-    let saved = from_invitation(api, &save, false).await.map_err(|error| {
-        let command = host_save_command(
-            &preparation,
-            &server,
-            mode,
-            &advanced,
-            institution.as_deref(),
-        );
-        // The save names the connection after the workspace, and every step after it is
-        // still to do.
-        let mut lines = vec![
-            format!(
-                "Started {shown} on {login}, but couldn't save it on this computer: {}",
-                error_text(&error)
-            ),
-            format!(
-                "To save it, run {command} and paste this line: {}",
-                safe_text(&invitation)
-            ),
-            "Then run these in order:".to_owned(),
-        ];
-        lines.extend(host_finish_commands(
-            HostStep::Connect,
-            &name,
-            "connect",
-            mode,
-            institution.as_deref(),
-        ));
-        if folder.is_some() {
-            lines.push(format!(
-                "  biorouter crew --connection {} connections set-access full",
-                safe_text(&shell_word(&name))
-            ));
-        }
-        let unsaved: anyhow::Error = Unfinished {
-            sentence: lines.join("\n"),
-            source: error,
-        }
-        .into();
-        unsaved
-    })?;
+    let saved = from_invitation(api, &save, false)
+        .await
+        .map_err(|error| host_unsaved(error, hosting, preparation, advanced, invitation, folder))?;
     let connection = saved
         .get("connection")
         .filter(|connection| connection.is_object())
@@ -4083,10 +4152,77 @@ async fn host(
         api.connection_id.get() == Some(&id),
         "This command was already working with another connection"
     );
-    let saved_as = connection_name(&connection);
-    let done = format!("Started {shown} on {login} and saved it on this computer");
-    let finish =
-        |step, error| host_unfinished(error, step, &saved_as, &done, mode, institution.as_deref());
+    Ok(connection)
+}
+
+/// A `host` that started the workspace but couldn't save it here ([`Unfinished`]): the command
+/// that saves it by hand, the invitation line to paste into it, and the steps after the save.
+fn host_unsaved(
+    error: anyhow::Error,
+    hosting: &Hosting,
+    preparation: &str,
+    advanced: &Value,
+    invitation: &str,
+    folder: Option<&str>,
+) -> anyhow::Error {
+    let Hosting {
+        name,
+        server,
+        institution,
+        mode,
+        shown,
+        login,
+        ..
+    } = hosting;
+    let command = host_save_command(preparation, server, *mode, advanced, institution.as_deref());
+    // The save names the connection after the workspace, and every step after it is
+    // still to do.
+    let mut lines = vec![
+        format!(
+            "Started {shown} on {login}, but couldn't save it on this computer: {}",
+            error_text(&error)
+        ),
+        format!(
+            "To save it, run {command} and paste this line: {}",
+            safe_text(invitation)
+        ),
+        "Then run these in order:".to_owned(),
+    ];
+    lines.extend(host_finish_commands(
+        HostStep::Connect,
+        name,
+        "connect",
+        *mode,
+        institution.as_deref(),
+    ));
+    if folder.is_some() {
+        lines.push(format!(
+            "  biorouter crew --connection {} connections set-access full",
+            safe_text(&shell_word(name))
+        ));
+    }
+    Unfinished {
+        sentence: lines.join("\n"),
+        source: error,
+    }
+    .into()
+}
+
+/// `host`'s steps once the workspace is saved, in order: connect (unless the save left it
+/// connected), bootstrap, privacy, governance and context. Answers whether the workspace is
+/// open and the revision of the context written from the job's draft; a step that fails is
+/// [`host_unfinished`] from that step on.
+async fn finish_hosting(
+    api: &Api,
+    hosting: &Hosting,
+    connection: &Value,
+    outcome: &Value,
+    saved_as: &str,
+    done: &str,
+) -> Result<(bool, Option<u64>)> {
+    let mode = hosting.mode;
+    let institution = hosting.institution.as_deref();
+    let finish = |step, error| host_unfinished(error, step, saved_as, done, mode, institution);
     if connection["status"].as_str() != Some("connected") {
         api.connect()
             .await
@@ -4100,7 +4236,7 @@ async fn host(
     .await
     .map_err(|error| finish(HostStep::Bootstrap, error))?;
     let mut policy = json!({"mode": mode.as_str()});
-    if let Some(institution) = &institution {
+    if let Some(institution) = institution {
         policy["institution_id"] = json!(institution);
     }
     api.broker_step("policy.set", policy, 1)
@@ -4134,7 +4270,26 @@ async fn host(
         },
         None => None,
     };
+    Ok((open, context_revision))
+}
 
+/// What a finished `host` says: what was done, the workspace's privacy and governance, what
+/// agents may do on the server, the context it wrote, and how to invite people.
+fn hosted_lines(
+    hosting: &Hosting,
+    connection: &Value,
+    folder: Option<&str>,
+    done: &str,
+    open: bool,
+    context_revision: Option<u64>,
+    saved_as: &str,
+) -> Vec<String> {
+    let Hosting {
+        shown,
+        login,
+        privacy,
+        ..
+    } = hosting;
     let mut lines = vec![format!("{done}.")];
     lines.push(if open {
         format!("{shown} is {privacy} and open: every member can manage teams, channels and people.")
@@ -4143,7 +4298,7 @@ async fn host(
     });
     // What the saved connection says, not what was asked for (C22): a daemon that does not
     // report the level, or could not save it, is not taken to have given full access.
-    match (&folder, connection["remote_access"].as_str()) {
+    match (folder, connection["remote_access"].as_str()) {
         (Some(folder), Some("full")) => lines.push(format!(
             "Your agent can work as you on {login}, starting in {}. Change that with biorouter crew connections set-access.",
             safe_text(folder)
@@ -4161,17 +4316,9 @@ async fn host(
     }
     lines.push(format!(
         "Next: invite people with biorouter crew --connection {} enroll invite @USERNAME",
-        safe_text(&shell_word(&saved_as))
+        safe_text(&shell_word(saved_as))
     ));
-    let value = json!({
-        "workspace": name,
-        "connection": connection,
-        "governance": if open { "open" } else { "managed" },
-        "context_revision": context_revision,
-        "outcome": outcome,
-    });
-    api.stream(&value, &lines)?;
-    Ok(Reply::Streamed)
+    lines
 }
 
 async fn workspace(api: &Api, command: WorkspaceCommand) -> Result<Reply> {
@@ -5536,6 +5683,25 @@ fn choose_invitation<'a>(pending: &[&'a Value], selector: Option<&str>) -> Resul
     }
 }
 
+/// `profile show|set`: your own name in the workspace, and the computers you enrolled.
+async fn profile(api: &Api, command: ProfileCommand) -> Result<Reply> {
+    Ok(match command {
+        ProfileCommand::Show => {
+            let snapshot = api.snapshot().await?;
+            let actor = snapshot_field(&snapshot, "actor")?;
+            api.show_with(actor, Directory::from_snapshot(&snapshot))
+        }
+        ProfileCommand::Set { nickname, avatar } => api.show(
+            api.broker(
+                "profile.update",
+                json!({"nickname":nickname,"avatar":avatar}),
+                true,
+            )
+            .await?,
+        ),
+    })
+}
+
 async fn ownership(api: &Api, command: OwnershipCommand) -> Result<Reply> {
     Ok(match command {
         OwnershipCommand::Offer { channel, successor } => {
@@ -5601,6 +5767,27 @@ fn and_list(items: &[String]) -> String {
         [only] => only.clone(),
         [rest @ .., last] => format!("{} and {last}", rest.join(", ")),
     }
+}
+
+/// `members` alone lists the people in the workspace, the host and you first; `members add`
+/// adds one of them to a team or to channels ([`add_member`]).
+async fn members(api: &Api, args: MembersArgs) -> Result<Reply> {
+    Ok(match args.command {
+        None => {
+            let snapshot = api.snapshot().await?;
+            let mut people = with_roles(snapshot_field(&snapshot, "principals")?, &snapshot);
+            if let Some(list) = people.as_array_mut() {
+                let host = snapshot_host_id(&snapshot);
+                output::people_in_order(list, host.as_deref(), snapshot["actor"]["id"].as_str());
+            }
+            api.show_with(people, Directory::from_snapshot(&snapshot))
+        }
+        Some(MembersCommand::Add {
+            person,
+            team,
+            channels,
+        }) => add_member(api, &person, team.as_deref(), &channels).await?,
+    })
 }
 
 /// `members add @bob --team T [--channel C …]` and `members add @bob --channel C …`: direct add
@@ -6485,117 +6672,126 @@ async fn start_task(
 /// configuration as `CREW_TASK_MODEL`, which the desktop's Settings › Models › Crew tasks row
 /// writes too.
 async fn defaults(api: &Api, command: DefaultsCommand) -> Result<Reply> {
-    Ok(match command {
-        DefaultsCommand::Show => {
-            let choices = TaskModelChoices::read(api).await?;
-            let resolved = choices.resolved();
-            let pair = |choice: &Option<(String, String)>| {
-                choice.as_ref().map_or(
-                    Value::Null,
-                    |(provider, model)| json!({"provider": provider, "model": model}),
-                )
-            };
-            let mut lines = Vec::new();
-            // C30: a stored choice the app would skip is said, as Settings shows it
-            // unavailable, and the model that really runs follows.
-            if let Some((provider, model)) = &choices.crew {
-                if choices.usable(&choices.crew).is_none() {
-                    lines.push(format!(
-                        "Your model for Crew tasks, {} ({}), can't run a task: that provider isn't configured, or Crew can't run it.",
-                        safe_text(model),
-                        safe_text(provider)
-                    ));
-                }
-            }
-            lines.push(match &resolved {
-                Some(TaskModel {
-                    provider,
-                    model,
-                    source: ModelSource::CrewTasks,
-                }) => format!(
-                    "Crew tasks start on {} ({}).",
-                    safe_text(model),
-                    safe_text(provider)
-                ),
-                Some(TaskModel { provider, model, .. }) => format!(
-                    "Crew tasks use your default model for new chats: {} ({}).",
-                    safe_text(model),
-                    safe_text(provider)
-                ),
-                None if choices.chats.is_some() => "Your default model for new chats can't run a Crew task either. Choose one with biorouter crew defaults set --provider PROVIDER --model MODEL.".to_owned(),
-                None if choices.crew.is_some() => "There's no default model for new chats to use instead. Choose one with biorouter crew defaults set --provider PROVIDER --model MODEL.".to_owned(),
-                None => "No model is set for Crew tasks, and there's no default model for new chats. Choose one with biorouter crew defaults set --provider PROVIDER --model MODEL.".to_owned(),
-            });
-            let source = resolved
-                .as_ref()
-                .map_or(Value::Null, |choice| json!(choice.source.wire()));
-            let runs = resolved.as_ref().map_or(Value::Null, TaskModel::to_json);
-            api.say(
-                json!({"crew_tasks": pair(&choices.crew), "new_chats": pair(&choices.chats), "source": source, "resolved": runs}),
-                lines,
+    match command {
+        DefaultsCommand::Show => defaults_show(api).await,
+        DefaultsCommand::Set { provider, model } => defaults_set(api, provider, model).await,
+        DefaultsCommand::Clear => defaults_clear(api).await,
+    }
+}
+
+/// `defaults show`: the model for Crew tasks and the default model for new chats as stored,
+/// and the one a task really starts on.
+async fn defaults_show(api: &Api) -> Result<Reply> {
+    let choices = TaskModelChoices::read(api).await?;
+    let resolved = choices.resolved();
+    let pair = |choice: &Option<(String, String)>| {
+        choice.as_ref().map_or(
+            Value::Null,
+            |(provider, model)| json!({"provider": provider, "model": model}),
+        )
+    };
+    let mut lines = Vec::new();
+    // C30: a stored choice the app would skip is said, as Settings shows it
+    // unavailable, and the model that really runs follows.
+    if let Some((provider, model)) = &choices.crew {
+        if choices.usable(&choices.crew).is_none() {
+            lines.push(format!(
+                "Your model for Crew tasks, {} ({}), can't run a task: that provider isn't configured, or Crew can't run it.",
+                safe_text(model),
+                safe_text(provider)
+            ));
+        }
+    }
+    lines.push(match &resolved {
+        Some(TaskModel {
+            provider,
+            model,
+            source: ModelSource::CrewTasks,
+        }) => format!(
+            "Crew tasks start on {} ({}).",
+            safe_text(model),
+            safe_text(provider)
+        ),
+        Some(TaskModel { provider, model, .. }) => format!(
+            "Crew tasks use your default model for new chats: {} ({}).",
+            safe_text(model),
+            safe_text(provider)
+        ),
+        None if choices.chats.is_some() => "Your default model for new chats can't run a Crew task either. Choose one with biorouter crew defaults set --provider PROVIDER --model MODEL.".to_owned(),
+        None if choices.crew.is_some() => "There's no default model for new chats to use instead. Choose one with biorouter crew defaults set --provider PROVIDER --model MODEL.".to_owned(),
+        None => "No model is set for Crew tasks, and there's no default model for new chats. Choose one with biorouter crew defaults set --provider PROVIDER --model MODEL.".to_owned(),
+    });
+    let source = resolved
+        .as_ref()
+        .map_or(Value::Null, |choice| json!(choice.source.wire()));
+    let runs = resolved.as_ref().map_or(Value::Null, TaskModel::to_json);
+    Ok(api.say(
+        json!({"crew_tasks": pair(&choices.crew), "new_chats": pair(&choices.chats), "source": source, "resolved": runs}),
+        lines,
+    ))
+}
+
+/// `defaults set --provider P --model M`: the model Crew tasks start on from now on.
+async fn defaults_set(api: &Api, provider: String, model: String) -> Result<Reply> {
+    let Some((provider, model)) = model_choice(&json!({"provider": provider, "model": model}))
+    else {
+        bail!("Name both the provider and the model, like --provider versa_azure --model gpt-5.5.");
+    };
+    let value = json!({"provider": provider, "model": model});
+    api.client
+        .request(
+            "POST",
+            "/config/upsert",
+            Some(json!({"key": CREW_TASK_MODEL, "value": value, "is_secret": false})),
+        )
+        .await?;
+    Ok(api.say(
+        value,
+        vec![format!(
+            "Crew tasks now start on {} ({}), unless a task names another model.",
+            safe_text(&model),
+            safe_text(&provider)
+        )],
+    ))
+}
+
+/// `defaults clear`: Crew tasks go back to the default model for new chats, which is named,
+/// and said when a task can't start on it.
+async fn defaults_clear(api: &Api) -> Result<Reply> {
+    let stored = read_config(api, CREW_TASK_MODEL).await?;
+    let was = model_choice(&stored);
+    // `/config/remove` answers a key that is not set with a bare 404.
+    if !stored.is_null() {
+        api.client
+            .request(
+                "POST",
+                "/config/remove",
+                Some(json!({"key": CREW_TASK_MODEL, "is_secret": false})),
             )
+            .await?;
+    }
+    let chats = new_chat_model(api).await?;
+    let mut line = match was {
+        Some(_) => "Crew tasks now use your default model for new chats".to_owned(),
+        None => {
+            "No model was set for Crew tasks; they use your default model for new chats".to_owned()
         }
-        DefaultsCommand::Set { provider, model } => {
-            let Some((provider, model)) =
-                model_choice(&json!({"provider": provider, "model": model}))
-            else {
-                bail!("Name both the provider and the model, like --provider versa_azure --model gpt-5.5.");
-            };
-            let value = json!({"provider": provider, "model": model});
-            api.client
-                .request(
-                    "POST",
-                    "/config/upsert",
-                    Some(json!({"key": CREW_TASK_MODEL, "value": value, "is_secret": false})),
-                )
-                .await?;
-            api.say(
-                value,
-                vec![format!(
-                    "Crew tasks now start on {} ({}), unless a task names another model.",
-                    safe_text(&model),
-                    safe_text(&provider)
-                )],
-            )
-        }
-        DefaultsCommand::Clear => {
-            let stored = read_config(api, CREW_TASK_MODEL).await?;
-            let was = model_choice(&stored);
-            // `/config/remove` answers a key that is not set with a bare 404.
-            if !stored.is_null() {
-                api.client
-                    .request(
-                        "POST",
-                        "/config/remove",
-                        Some(json!({"key": CREW_TASK_MODEL, "is_secret": false})),
-                    )
-                    .await?;
+    };
+    match &chats {
+        Some((provider, model)) => {
+            line.push_str(&format!(
+                ": {} ({}).",
+                safe_text(model),
+                safe_text(provider)
+            ));
+            // C30: said when it is one a task can't start on, as the app skips it.
+            if !usable_task_providers(api).await?.contains(provider) {
+                line.push_str(" It can't run a Crew task: that provider isn't configured, or Crew can't run it. Choose another with biorouter crew defaults set --provider PROVIDER --model MODEL.");
             }
-            let chats = new_chat_model(api).await?;
-            let mut line = match was {
-                Some(_) => "Crew tasks now use your default model for new chats".to_owned(),
-                None => {
-                    "No model was set for Crew tasks; they use your default model for new chats"
-                        .to_owned()
-                }
-            };
-            match &chats {
-                Some((provider, model)) => {
-                    line.push_str(&format!(
-                        ": {} ({}).",
-                        safe_text(model),
-                        safe_text(provider)
-                    ));
-                    // C30: said when it is one a task can't start on, as the app skips it.
-                    if !usable_task_providers(api).await?.contains(provider) {
-                        line.push_str(" It can't run a Crew task: that provider isn't configured, or Crew can't run it. Choose another with biorouter crew defaults set --provider PROVIDER --model MODEL.");
-                    }
-                }
-                None => line.push_str(", and none is set."),
-            }
-            api.say(json!({"cleared": was.is_some()}), vec![line])
         }
-    })
+        None => line.push_str(", and none is set."),
+    }
+    Ok(api.say(json!({"cleared": was.is_some()}), vec![line]))
 }
 
 /// `tasks start`'s institution refusal ("…the model's resolved affiliation…") in the desktop's

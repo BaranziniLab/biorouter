@@ -1729,6 +1729,16 @@ impl Job {
         };
         let artifact =
             artifact.map_err(|why| self.stop("crew_install_artifact_unavailable", why, None))?;
+        self.check_install_target(probe, artifact)?;
+        let from = previous.as_ref().and_then(|_| probe.installed_version());
+        Ok(Plan::Install { previous, from })
+    }
+
+    /// Why `artifact` cannot be installed in the account `probe` describes, if it cannot: the
+    /// platform it is built for, the glibc it needs, a folder to put it in, a tool to check the
+    /// copy with, and room for it.
+    fn check_install_target(&self, probe: &Probe, artifact: &Artifact) -> Result<(), Stop> {
+        let server = self.server();
         let (os, arch) = (probe.os.as_deref(), probe.arch.as_deref());
         if os != Some("Linux") || !matches!(arch, Some("x86_64" | "amd64")) {
             return Err(self.stop(
@@ -1758,9 +1768,13 @@ impl Job {
             }
         }
         if !matches!(probe.bin_dir.as_deref(), Some("missing" | "dir")) {
-            return Err(unexpected(format!(
-                "~/.local/bin on {server} isn't a folder, so Biorouter can't install Crew there."
-            )));
+            return Err(self.stop(
+                "crew_install_unexpected_target",
+                format!(
+                    "~/.local/bin on {server} isn't a folder, so Biorouter can't install Crew there."
+                ),
+                None,
+            ));
         }
         if probe.checksum_tool().is_none() {
             return Err(self.stop(
@@ -1783,8 +1797,7 @@ impl Job {
                 ));
             }
         }
-        let from = previous.as_ref().and_then(|_| probe.installed_version());
-        Ok(Plan::Install { previous, from })
+        Ok(())
     }
 
     /// Why the program there cannot be used, from what its `--version` printed.
@@ -2364,6 +2377,36 @@ impl Job {
     }
 }
 
+/// Refuse a setup request whose workspace name the start command would not take, or whose
+/// intent does not fit its target.
+fn check_request(request: &SetupRequest) -> Result<()> {
+    if let Some(name) = &request.workspace_name {
+        // The start command's own grammar.
+        host_start::host_start_command(name, &"0".repeat(64))
+            .map_err(|error| refused(400, "crew_request_invalid", error.to_string()))?;
+    }
+    match (request.intent, &request.target) {
+        (SetupIntent::Host, SetupTarget::Pending { .. }) if request.workspace_name.is_none() => {
+            Err(refused(
+                400,
+                "crew_request_invalid",
+                "Name the workspace to host.",
+            ))
+        }
+        (SetupIntent::Host, SetupTarget::Connection { .. }) => Err(refused(
+            400,
+            "crew_request_invalid",
+            "Hosting starts from this computer's host setup, not from a saved connection.",
+        )),
+        (SetupIntent::Member, SetupTarget::Pending { .. }) => Err(refused(
+            400,
+            "crew_request_invalid",
+            "A member's setup is for a saved connection.",
+        )),
+        _ => Ok(()),
+    }
+}
+
 impl CrewManager {
     /// Start a setup job (see the module documentation). Answers the job already under way for
     /// the same server and intent rather than starting a second.
@@ -2373,86 +2416,8 @@ impl CrewManager {
             .get()
             .and_then(std::sync::Weak::upgrade)
             .context("Crew setup needs the daemon's own Crew manager")?;
-        if let Some(name) = &request.workspace_name {
-            // The start command's own grammar.
-            host_start::host_start_command(name, &"0".repeat(64))
-                .map_err(|error| refused(400, "crew_request_invalid", error.to_string()))?;
-        }
-        match (request.intent, &request.target) {
-            (SetupIntent::Host, SetupTarget::Pending { .. })
-                if request.workspace_name.is_none() =>
-            {
-                return Err(refused(
-                    400,
-                    "crew_request_invalid",
-                    "Name the workspace to host.",
-                ));
-            }
-            (SetupIntent::Host, SetupTarget::Connection { .. }) => {
-                return Err(refused(
-                    400,
-                    "crew_request_invalid",
-                    "Hosting starts from this computer's host setup, not from a saved connection.",
-                ));
-            }
-            (SetupIntent::Member, SetupTarget::Pending { .. }) => {
-                return Err(refused(
-                    400,
-                    "crew_request_invalid",
-                    "A member's setup is for a saved connection.",
-                ));
-            }
-            _ => {}
-        }
-        let (key, route, bootstrap_key, connection_id) = match &request.target {
-            SetupTarget::Pending {
-                preparation_id,
-                ssh_target,
-                port,
-                identity_file,
-                proxy_jump,
-            } => {
-                host_start::check_route(
-                    ssh_target,
-                    proxy_jump.as_deref(),
-                    identity_file.as_deref(),
-                )
-                .map_err(as_setup)?;
-                let bootstrap_key = self
-                    .host_setup_key(preparation_id)
-                    .await
-                    .map_err(as_setup)?;
-                let route = Route {
-                    ssh_target: ssh_target.clone(),
-                    port: *port,
-                    identity_file: identity_file.clone(),
-                    proxy_jump: proxy_jump.clone(),
-                };
-                (preparation_id.clone(), route, Some(bootstrap_key), None)
-            }
-            SetupTarget::Connection { connection_id } => {
-                let connection = self.connection(connection_id).await.map_err(|_| {
-                    refused(
-                        404,
-                        "crew_connection_not_found",
-                        "No saved connection has that ID on this computer.",
-                    )
-                })?;
-                let route = Route::of(&connection);
-                host_start::check_route(
-                    &route.ssh_target,
-                    route.proxy_jump.as_deref(),
-                    route.identity_file.as_deref(),
-                )
-                .map_err(as_setup)?;
-                (
-                    connection_id.clone(),
-                    route,
-                    None,
-                    Some(connection_id.clone()),
-                )
-            }
-        };
+        check_request(&request)?;
+        let (key, route, bootstrap_key, connection_id) = self.setup_target(&request.target).await?;
         let control = self.control_path(&key)?;
         let _starting = STARTING.lock().await;
         {
@@ -2525,6 +2490,63 @@ impl CrewManager {
             authentication::end_setup_sign_ins(&ended);
         });
         Ok(job.status(&job_id))
+    }
+
+    /// Where a setup job for `target` runs: its SSH control key, its route, a host's hosting
+    /// key, and the saved connection it is for, if it is for one.
+    async fn setup_target(
+        &self,
+        target: &SetupTarget,
+    ) -> Result<(String, Route, Option<String>, Option<String>)> {
+        Ok(match target {
+            SetupTarget::Pending {
+                preparation_id,
+                ssh_target,
+                port,
+                identity_file,
+                proxy_jump,
+            } => {
+                host_start::check_route(
+                    ssh_target,
+                    proxy_jump.as_deref(),
+                    identity_file.as_deref(),
+                )
+                .map_err(as_setup)?;
+                let bootstrap_key = self
+                    .host_setup_key(preparation_id)
+                    .await
+                    .map_err(as_setup)?;
+                let route = Route {
+                    ssh_target: ssh_target.clone(),
+                    port: *port,
+                    identity_file: identity_file.clone(),
+                    proxy_jump: proxy_jump.clone(),
+                };
+                (preparation_id.clone(), route, Some(bootstrap_key), None)
+            }
+            SetupTarget::Connection { connection_id } => {
+                let connection = self.connection(connection_id).await.map_err(|_| {
+                    refused(
+                        404,
+                        "crew_connection_not_found",
+                        "No saved connection has that ID on this computer.",
+                    )
+                })?;
+                let route = Route::of(&connection);
+                host_start::check_route(
+                    &route.ssh_target,
+                    route.proxy_jump.as_deref(),
+                    route.identity_file.as_deref(),
+                )
+                .map_err(as_setup)?;
+                (
+                    connection_id.clone(),
+                    route,
+                    None,
+                    Some(connection_id.clone()),
+                )
+            }
+        })
     }
 
     /// Give `id` the agent access `level` (never [`SetupAgentAccess::Off`], which changes
