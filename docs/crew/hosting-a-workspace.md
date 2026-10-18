@@ -57,7 +57,7 @@ Step 2 shows the commands that make a private folder, start Crew and print its d
 
 1. Choose **Set up and start Crew**.
 2. If the server asks for a password or a code, the Sign in window opens. Type it there. One sign-in covers the whole setup and **Create workspace** after it.
-3. Watch the steps: "Checking server", "Signing in", "Installing Crew in your account", "Starting workspace" and "Ready". Beside the install step, Crew says "Installed Crew {version}." or "Crew {version} was already installed."
+3. Watch the steps: "Checking server", "Signing in", "Installing Crew in your account", "Starting workspace" and "Ready". Beside the install step, Crew says "Installed Crew {version}." or "Crew {version} was already installed.", or, when it replaced a copy, "Updated Crew from {old version} to {version}.", "Replaced Crew {version} with this computer’s copy of it." or, when the old copy's version is not known, "Replaced the Crew program with Crew {version}."
 4. When Crew has started, the dialog moves to step 3 by itself.
 
 Biorouter runs exactly the commands shown, as you, plus fixed commands that check the server and install Crew. It sends Crew's server program over the SSH connection itself, checks its SHA-256 on the server, and installs it with one rename, keeping any older copy beside it as `biorouter-crew.previous`. It never replaces a newer copy with an older one, and keeps an older copy that still runs, which `biorouter crew setup --replace-existing` updates ([Upgrade Crew](administration.md#upgrade-crew)). A copy of the same version that is not byte for byte the one Biorouter carries is replaced, and Crew says which copy it replaced. **Stop** ends the setup. Closing the dialog does not stop the commands on the server.

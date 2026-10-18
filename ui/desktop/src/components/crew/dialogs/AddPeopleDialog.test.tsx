@@ -3,6 +3,7 @@ import { act, fireEvent, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { Invitation, Snapshot } from '../crewApi';
 import { forgetJoinerNames, rememberJoinerNames } from '../identity';
+import { membersCopy } from '../pane/copy';
 import { CrewControllerProvider, useCrew } from '../state/CrewControllerContext';
 import { AddPeopleDialog, type AddPeopleDialogProps } from './AddPeopleDialog';
 import { addPeopleCopy } from './copy';
@@ -524,6 +525,43 @@ describe('AddPeopleDialog with no one left to add (QA Q2-22)', () => {
     expect(rows[2].querySelector('[data-crew-online]')).not.toBeNull();
     expect(rows[0].querySelector('[data-crew-online]')).toBeNull();
     expect(rows[1].querySelector('[data-crew-online]')).toBeNull();
+  });
+
+  // A channel's list marks its owner as the Members tab does, never as the team's owner: Bob owns
+  // #scratch in Alice's team, and everyone in the team is already in it.
+  it('marks a channel’s owner "Channel owner" in its Already in list, not "Team owner"', async () => {
+    const scratch = {
+      ...methods,
+      id: 'channel-scratch',
+      name: 'scratch',
+      created_by: bob.id,
+      owner_id: bob.id,
+      members: [alice.id, bob.id, carol.id],
+    };
+    const base = makeSnapshot();
+    const alreadyIn = async () => {
+      const dialog = await screen.findByRole('dialog');
+      const section = within(dialog)
+        .getByRole('heading', { name: addPeopleCopy.alreadyInPlace('#scratch') })
+        .closest('section')!;
+      const rows = within(section).getAllByRole('listitem');
+      const row = (name: string) => rows.find((item) => item.textContent?.includes(name))!;
+      expect(row('Bob Lee')).toHaveTextContent(membersCopy.owner);
+      expect(row('Alice Chen')).not.toHaveTextContent(membersCopy.owner);
+      expect(section).not.toHaveTextContent(addPeopleCopy.teamOwner);
+    };
+    const asBob = renderDirect(
+      { target: 'channel', targetId: 'channel-scratch' },
+      { snapshot: { ...base, actor: bob, channels: [...base.channels, scratch] } }
+    );
+    await alreadyIn();
+    asBob.unmount();
+    // Carol may not add people to it: the list sits under the note saying who may, marked the same.
+    renderWithCrew(
+      <AddPeopleDialog target="channel" targetId="channel-scratch" onClose={vi.fn()} />,
+      { snapshot: { ...base, actor: carol, channels: [...base.channels, scratch] } }
+    );
+    await alreadyIn();
   });
 
   it('opens "Members of {team}…" on the member list for the owner, with Add people one step away (QA Q4-35)', async () => {

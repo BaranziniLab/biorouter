@@ -370,7 +370,7 @@ export function AddPeopleDialog({ target, targetId, view, onClose }: AddPeopleDi
     message || membersView ? targetMembers(snapshot, dir, pickerTarget, added, workspaceId) : [];
   // Marked as the Members tab marks them (UXN-6): the owner (`ownerId`, a team's being its
   // creator), and who is online, from the verified view only.
-  const ownerLabel = team ? copy.teamOwner : membersCopy.owner;
+  const ownerLabel = target === 'team' ? copy.teamOwner : membersCopy.owner;
   const online = crew.snapshot ? onlineSet(crew.snapshot) : null;
   // Named as the host knows them (QA Q4-42): "Jack Moreno (@crew_jack)", as Let in named them.
   const inviteesLine =

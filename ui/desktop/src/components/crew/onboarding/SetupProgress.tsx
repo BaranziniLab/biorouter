@@ -336,9 +336,15 @@ export function SetupProgress({
   const installedDetail =
     outcome?.installedVersion && outcome.reused
       ? setupCopy.reused(outcome.installedVersion)
-      : outcome?.installedVersion
-        ? setupCopy.installed(outcome.installedVersion)
-        : null;
+      : outcome?.installedVersion && outcome.replacedVersion
+        ? outcome.replacedVersion === outcome.installedVersion
+          ? setupCopy.replaced(outcome.installedVersion)
+          : setupCopy.updated(outcome.replacedVersion, outcome.installedVersion)
+        : outcome?.installedVersion && outcome.previousKept
+          ? setupCopy.replacedProgram(outcome.installedVersion)
+          : outcome?.installedVersion
+            ? setupCopy.installed(outcome.installedVersion)
+            : null;
   const jobId = job.run?.jobId ?? null;
   return (
     <div className="crew-onboard-stack" data-testid={testId}>

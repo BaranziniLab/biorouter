@@ -647,6 +647,10 @@ export const setupCopy = {
   /** Beside "Installing Crew in your account" once done. */
   reused: (version: string) => `Crew ${version} was already installed.`,
   installed: (version: string) => `Installed Crew ${version}.`,
+  /** An install that replaced a program (`setup_summary_lines` in the CLI says the same). */
+  updated: (from: string, to: string) => `Updated Crew from ${from} to ${to}.`,
+  replaced: (version: string) => `Replaced Crew ${version} with this computer’s copy of it.`,
+  replacedProgram: (version: string) => `Replaced the Crew program with Crew ${version}.`,
   stop: 'Stop',
   /** A Sign in window the person closed before signing in ends the job. */
   signInEnded: 'Sign-in didn’t finish, so setup stopped. Try again when you’re ready to sign in.',
