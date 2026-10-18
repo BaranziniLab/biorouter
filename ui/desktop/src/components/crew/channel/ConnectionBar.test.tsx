@@ -728,6 +728,12 @@ describe('ConnectionBar', () => {
       observationFailure('Crew connection is not connected', 'observation_refused');
       renderCrew(Layout);
       await waitFor(() => expect(currentCrew().screen).toBe('offline'));
+      // ⚠ Let the connection change finish first. The commit that shows 'offline' is the one
+      // that selects the connection, and its effect clears the join status for the new
+      // connection; a status set before that effect runs is wiped, and the screen stays
+      // 'offline' (CI, 2026-10-18; a probe that sets it in a layout effect reproduces it every
+      // time). In the app the join status comes from an async probe, long after.
+      await act(async () => {});
       act(() => currentCrew().setJoinStatus('invited'));
       await waitFor(() => expect(currentCrew().screen).toBe('join'));
       expect(screen.queryByText(crewObservationCopy.noLongerMember('Fixture'))).toBeNull();

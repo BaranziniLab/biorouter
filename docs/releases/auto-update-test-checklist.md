@@ -230,6 +230,27 @@ Evidence:
   "Successfully launched application" line for the staged copy. It used to pass
   on the swap alone, which a ShipIt that installed and never relaunched also
   produces. `FEED_VER` lets one signed build serve as its own update.
+- [x] Against GitHub itself, in real Electron with the shipped transport: the
+  v1.93.1 arm64 zip (252,096,991 bytes) with the connection cut after 63 MB.
+  The 302 to GitHub's asset CDN was followed, the second request asked for
+  `bytes=62980096-`, the CDN answered 206, and the finished file matched the
+  SHA-512 in v1.93.1's `latest-mac.yml` (11.5 s).
+- [x] Run against the signed and notarized 1.93.2 arm64 build, serving itself
+  as 99.0.0: **PASS**. Downloaded at 11:23:20.2, staged by Squirrel.Mac at
+  11:23:21.9 (the app quit on that event, since the install had been requested
+  while it staged), installed by ShipIt at 11:23:23.0 and relaunched at
+  11:23:24.0. Three things the script needed, each of which made a working
+  update look broken:
+  - It launches the app through `open`, as Finder does. Started from an agent
+    shell, Squirrel.Mac wrote its install request but ShipIt, a per-user launchd
+    job, did not run, or ran minutes later.
+  - `--user-data-dir` must be mode 0700 (`applicationDataProfile.ts`), or the app
+    stops at a modal error before it logs anything.
+  - `BIOROUTER_PATH_ROOT` keeps the test app off the installed app's shared
+    background service. ShipIt's state and electron-updater's download cache are
+    still shared with an installed Biorouter, so a run replaces any update that
+    app had staged, and a ShipIt job it left waiting must be removed first
+    (`launchctl remove com.electron.biorouter.ShipIt`).
 
 ### Why Sections B and C still need a human and hardware
 
