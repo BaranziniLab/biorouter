@@ -13447,6 +13447,13 @@ mod tests {
         args.port = Some(2222);
         args.identity_file = Some("/keys/leo".into());
         args.proxy_jump = Some("jump@gw".into());
+        // The save carries the key's path as it was sent, made absolute: `/keys/leo` is not
+        // absolute on Windows, which writes it under the current drive.
+        let identity_file = absolute_local_path("/keys/leo", etcetera::home_dir().ok(), || {
+            Ok(std::env::current_dir()?)
+        })
+        .expect("an absolute path");
+        let identity_file = safe_text(&shell_word(&identity_file));
         let error = host(&api, args, std::future::pending())
             .await
             .expect_err("save failed");
@@ -13455,7 +13462,7 @@ mod tests {
             shown,
             format!(
                 "Started chen-lab on alice@leo, but couldn't save it on this computer: Biorouter couldn't reach the system keyring.\n\
-                 To save it, run biorouter crew connections join-invitation - --yes --preparation-id {PREPARATION} --ssh-target alice@leo --mode private --port 2222 --identity-file /keys/leo --proxy-jump jump@gw --institution ucsf --remote-root /home/alice/crew-work/chen-lab --remote-execution and paste this line: brcrew1:abc\n\
+                 To save it, run biorouter crew connections join-invitation - --yes --preparation-id {PREPARATION} --ssh-target alice@leo --mode private --port 2222 --identity-file {identity_file} --proxy-jump jump@gw --institution ucsf --remote-root /home/alice/crew-work/chen-lab --remote-execution and paste this line: brcrew1:abc\n\
                  Then run these in order:\n  \
                  biorouter crew --connection chen-lab connect\n  \
                  biorouter crew --connection chen-lab workspace bootstrap\n  \
