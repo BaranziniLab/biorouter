@@ -1024,10 +1024,21 @@ impl BioRouterAcpAgent {
                 }
                 Ok(_) => {}
                 Err(e) => {
+                    drop(stream);
+                    self.agent.retire_unanswered_retry_note(&session_id).await;
                     return Err(sacp::Error::internal_error()
                         .data(format!("Error in agent response stream: {}", e)));
                 }
             }
+        }
+
+        // A cancel while a provider retry waits leaves the retry's note the last
+        // row the model reads, and the next prompt would be sent behind it. The
+        // token, not `was_cancelled`: the reply loop sees the cancel too, and its
+        // stream then usually ends on its own before another event arrives.
+        drop(stream);
+        if cancel_token.is_cancelled() {
+            self.agent.retire_unanswered_retry_note(&session_id).await;
         }
 
         let mut sessions = self.sessions.lock().await;

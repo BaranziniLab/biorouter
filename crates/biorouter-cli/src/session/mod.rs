@@ -1741,6 +1741,18 @@ impl CliSession {
             }
         }
 
+        // A Stop (or a failed stream) while a provider retry waits leaves the
+        // retry's note the last row the model reads, and the next message would
+        // be sent behind it. The daemon settles that in `settle_interrupted_turn`;
+        // the CLI settles no turn, so it retires the note itself. Every exit that
+        // abandons the turn has cancelled the token, including the commonest: the
+        // reply loop sees the Stop and its stream ends on its own (`None`).
+        if cancel_token_clone.is_cancelled() {
+            self.agent
+                .retire_unanswered_retry_note(&self.session_id)
+                .await;
+        }
+
         // Whatever is still held (a call that never answered) belongs to this
         // turn and prints before it ends.
         print_shell_output_lines(shell_order.finish_all(), &mut progress_bars, interactive);

@@ -43,7 +43,7 @@ use crate::model::ModelConfig;
 use crate::privacy::ProviderTier;
 use crate::providers::formats::openai::{create_request, get_usage, response_to_message};
 use crate::providers::formats::text_tool_calls::{
-    recover_in_message, recover_leaked_tool_calls, RecoveryContext,
+    continues_a_reply, recover_in_message, recover_leaked_tool_calls, RecoveryContext,
 };
 use crate::utils::safe_truncate;
 
@@ -1394,6 +1394,7 @@ impl Provider for LlamaCppProvider {
                 tools: filtered_tools.to_vec(),
                 provider: "llamacpp",
                 model: self.model.model_name.clone(),
+                continues_reply: continues_a_reply(),
             },
         );
         Ok(hold_lease_while_generating_with_recovery(

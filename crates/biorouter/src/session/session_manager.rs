@@ -2200,6 +2200,27 @@ impl SessionManager {
         self.add_message_adopting_uid(id, message).await
     }
 
+    /// Hide a stored row from the model, keeping it stored: an update in place,
+    /// compared against the metadata it was read with, so a row changed since
+    /// is left alone.
+    pub(crate) async fn hide_from_agent(&self, id: &str, message: &Message) -> Result<()> {
+        let Some(uid) = message.id.as_deref() else {
+            return Ok(());
+        };
+        sqlx::query(
+            "UPDATE messages SET metadata_json = ? WHERE session_id = ? AND msg_uid = ? AND metadata_json = ?",
+        )
+        .bind(serde_json::to_string(
+            &message.metadata.clone().with_agent_invisible(),
+        )?)
+        .bind(id)
+        .bind(uid)
+        .bind(serde_json::to_string(&message.metadata)?)
+        .execute(self.storage.pool().await?)
+        .await?;
+        Ok(())
+    }
+
     /// Unconditional whole-history rewrite: DELETE every message of the session
     /// and re-INSERT the supplied ones.
     ///

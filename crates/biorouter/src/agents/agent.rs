@@ -2652,6 +2652,83 @@ fn model_only_user_text_with_new_id<S: Into<String>>(text: S) -> Message {
         .with_visibility(false, true)
 }
 
+/// Whether the next completion goes on from the model's own text: the last
+/// rows the model reads are its reply and then a note the person never sees,
+/// as when a cut-off reply is retried or continued past its output limit. Its
+/// first text then joins that reply, so a local provider keeps the leading
+/// whitespace that separates the two
+/// ([`crate::providers::formats::text_tool_calls::RecoveryContext::continues_reply`]).
+fn request_continues_a_reply(messages: &[Message]) -> bool {
+    let mut seen = messages
+        .iter()
+        .rev()
+        .filter(|message| message.is_agent_visible());
+    let (Some(note), Some(reply)) = (seen.next(), seen.next()) else {
+        return false;
+    };
+    note.role == rmcp::model::Role::User
+        && !note.is_user_visible()
+        && reply.role == rmcp::model::Role::Assistant
+        && matches!(reply.content.last(), Some(MessageContent::Text(_)))
+}
+
+#[cfg(test)]
+mod request_continues_a_reply_tests {
+    use super::*;
+
+    /// Both continuations the loop writes, a retry of a cut-off reply and one
+    /// past the output limit, go on from the model's text; a new message from
+    /// the person, or a note after tool results, does not.
+    #[test]
+    fn only_a_note_right_after_the_models_text_continues_it() {
+        let asked = Message::user().with_text("Write one sentence about foxes.");
+        let partial = Message::assistant().with_text("The quick brown fox");
+        let stopped = Message::assistant()
+            .with_text("Stopped.")
+            .with_visibility(true, false);
+        for note in [
+            "<biorouter-loop-guard>Continue the reply</biorouter-loop-guard>",
+            TRUNCATION_CONTINUATION_MESSAGE,
+        ] {
+            assert!(request_continues_a_reply(&[
+                asked.clone(),
+                partial.clone(),
+                model_only_user_text(note),
+            ]));
+            assert!(request_continues_a_reply(&[
+                asked.clone(),
+                partial.clone(),
+                model_only_user_text(note),
+                stopped.clone(),
+            ]));
+        }
+        assert!(!request_continues_a_reply(&[
+            asked.clone(),
+            partial.clone(),
+            stopped,
+            Message::user().with_text("test"),
+        ]));
+        let call = Message::assistant().with_tool_request(
+            "c1",
+            Ok(CallToolRequestParams {
+                task: None,
+                name: "developer__shell".into(),
+                arguments: None,
+                meta: None,
+            }),
+        );
+        let result = Message::user()
+            .with_tool_response("c1", Ok(rmcp::model::CallToolResult::success(vec![])));
+        assert!(!request_continues_a_reply(&[
+            asked.clone(),
+            call,
+            result,
+            model_only_user_text("<biorouter-loop-guard>retry</biorouter-loop-guard>"),
+        ]));
+        assert!(!request_continues_a_reply(&[asked]));
+    }
+}
+
 /// Persist one loop iteration's messages and hand them back carrying the uids
 /// the store actually used.
 ///
@@ -4084,6 +4161,9 @@ pub struct Agent {
     pub(super) steer_arrivals: tokio::sync::watch::Sender<u64>,
     /// The newest steer a `SteerWaiting` frame has already been sent for.
     pub(super) announced_steer_seq: std::sync::atomic::AtomicU64,
+    /// The note the last provider retry was stored behind, as (session id,
+    /// message id). See [`Agent::retire_unanswered_retry_note`].
+    pub(super) pending_retry_note: std::sync::Mutex<Option<(String, String)>>,
 }
 
 /// What an accepted steer is waiting behind. See [`AgentEvent::SteerWaiting`].
@@ -5140,6 +5220,7 @@ impl Agent {
             turn_exit: std::sync::Mutex::new(None),
             steer_arrivals: tokio::sync::watch::Sender::new(0),
             announced_steer_seq: std::sync::atomic::AtomicU64::new(0),
+            pending_retry_note: std::sync::Mutex::new(None),
         }
     }
 
@@ -10754,7 +10835,12 @@ impl Agent {
     ///
     /// `None` when the write failed: a notice the store does not hold must not be
     /// handed to a client as history, because a reload would not reproduce it.
+    ///
+    /// A retry note nothing answered is retired first: a reply stream that ran
+    /// out on its own after the Stop reaches here without
+    /// [`Self::settle_interrupted_turn`].
     pub async fn record_turn_stopped(&self, session_id: &str) -> Option<Message> {
+        self.retire_unanswered_retry_note(session_id).await;
         let notice = self
             .durable_notice(
                 session_id,
@@ -10762,6 +10848,67 @@ impl Agent {
             )
             .await;
         notice.id.is_some().then_some(notice)
+    }
+
+    /// Hide from the model a retry note nothing answered. A provider retry is
+    /// stored behind a note telling the model to continue its cut-off reply, or
+    /// to go on after the tool results; when the turn is settled with that note
+    /// still the last row the model reads (a Stop while the retry was waiting),
+    /// the person's next message would be sent behind it, in one user message,
+    /// and the model told to continue a reply the person stopped. The row is
+    /// updated in place, not deleted, so nothing is rewritten; a note the retry
+    /// already answered is followed by that answer and stays.
+    ///
+    /// [`Self::settle_interrupted_turn`] and [`Self::record_turn_stopped`] call
+    /// it. A client that settles neither, the CLI and ACP, calls it itself after
+    /// a cancelled or failed reply stream has ended or been dropped.
+    pub async fn retire_unanswered_retry_note(&self, session_id: &str) {
+        let note_id = {
+            let mut pending = self
+                .pending_retry_note
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            match pending.take() {
+                Some((session, id)) if session == session_id => id,
+                other => {
+                    *pending = other;
+                    return;
+                }
+            }
+        };
+        let last = match self
+            .config
+            .session_manager
+            .get_session(session_id, true)
+            .await
+        {
+            Ok(session) => session.conversation.and_then(|conversation| {
+                conversation
+                    .messages()
+                    .iter()
+                    .rev()
+                    .find(|message| message.is_agent_visible())
+                    .cloned()
+            }),
+            Err(e) => {
+                warn!(
+                    "could not read the interrupted turn's conversation; its retry note stays: {e}"
+                );
+                return;
+            }
+        };
+        let Some(note) = last.filter(|message| message.id.as_deref() == Some(note_id.as_str()))
+        else {
+            return;
+        };
+        if let Err(e) = self
+            .config
+            .session_manager
+            .hide_from_agent(session_id, &note)
+            .await
+        {
+            warn!("could not retire the interrupted turn's retry note: {e}");
+        }
     }
 
     /// Settle a turn whose reply stream is being abandoned — a Stop, or a stream
@@ -10785,6 +10932,7 @@ impl Agent {
         stopped: bool,
     ) -> Result<InterruptedTurnRows> {
         let prose = self.settle_stopped_reply(session_id, in_flight).await;
+        self.retire_unanswered_retry_note(session_id).await;
         let steers = self.settle_carried_over_soft_interrupts(session_id).await?;
         let notice = if stopped {
             self.record_turn_stopped(session_id).await
@@ -11521,13 +11669,16 @@ impl Agent {
                         Some(session_config.id.clone()),
                         coding_agent_bridge::ACTIVE_BRIDGE_URL.scope(
                             bridge_url,
-                            Self::stream_response_from_provider(
-                                iteration_provider,
-                                &system_prompt,
-                                conversation_with_moim.messages(),
-                                &tools,
-                                &toolshim_tools,
-                                live_steer_receiver,
+                            crate::providers::formats::text_tool_calls::CONTINUES_A_REPLY.scope(
+                                request_continues_a_reply(conversation.messages()),
+                                Self::stream_response_from_provider(
+                                    iteration_provider,
+                                    &system_prompt,
+                                    conversation_with_moim.messages(),
+                                    &tools,
+                                    &toolshim_tools,
+                                    live_steer_receiver,
+                                ),
                             ),
                         ),
                     ),
@@ -12702,13 +12853,17 @@ impl Agent {
                                     // then the same request, so the model answers what
                                     // it was asked rather than the note (`RetryPoint`).
                                     if let Some(notice) = notice {
-                                        messages_to_add.push(
-                                            model_only_user_text_with_new_id(
-                                                crate::tool_inspection::frame_loop_warnings(
-                                                    std::slice::from_ref(&notice),
-                                                )
-                                            ),
+                                        let note = model_only_user_text_with_new_id(
+                                            crate::tool_inspection::frame_loop_warnings(
+                                                std::slice::from_ref(&notice),
+                                            )
                                         );
+                                        *self
+                                            .pending_retry_note
+                                            .lock()
+                                            .unwrap_or_else(std::sync::PoisonError::into_inner) =
+                                            note.id.clone().map(|id| (session_config.id.clone(), id));
+                                        messages_to_add.push(note);
                                     }
                                     did_recover_provider_error_this_iteration = true;
                                     break;
