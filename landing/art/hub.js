@@ -543,7 +543,9 @@
       send.classList.remove('armed');
       setActive(TURNS[ti].row);
       layout();
-      routePath.setAttribute('d', route(ti));
+      // A frame with no size yet (a hidden tab or pane) has no geometry; the
+      // first layout() that has one draws the route (current is set above).
+      if (geo) routePath.setAttribute('d', route(ti));
       routePath.classList.add('on');
     }
 
