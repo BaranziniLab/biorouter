@@ -7,6 +7,10 @@
 .hero-text { max-width: 1040px; }
 .hero-meta { margin: 24px 0 0; font-size: var(--fs-sm); line-height: var(--lh-sm); color: var(--subtle); }
 .hero-meta a { color: var(--subtle); }
+/* One quiet line under the meta that points to the newest update. */
+.hero-news { margin: 8px 0 0; font-size: var(--fs-sm); line-height: var(--lh-sm); color: var(--ink); }
+.hero-news .k { color: var(--coral-ink); }
+.hero-news .arrow { color: var(--coral); }
 .hero-art { margin: 48px 0 0; }
 .art-hub { width: 100%; height: clamp(360px, 46vw, 470px); }
 @media (max-width: 760px) {
@@ -29,6 +33,16 @@
   .pillar { grid-template-columns: 1fr; gap: 32px; padding-bottom: 64px; }
   .pillar-art .art { aspect-ratio: auto; height: min(118vw, 500px); }
 }
+
+/* Updates: a dated note, lighter than the principles above it. */
+.update { max-width: 720px; }
+.update .eyebrow { margin-bottom: 8px; }
+.update .subtitle { margin: 0; }
+.update-talk { margin: 16px 0 0; font-size: var(--fs-body); line-height: 1.65; color: var(--muted); max-width: 560px; text-wrap: pretty; }
+.update-title { color: var(--ink); }
+.update .body-muted { margin: 8px 0 0; text-wrap: pretty; }
+.update-meta { margin: 16px 0 0; font-size: var(--fs-sm); line-height: var(--lh-sm); color: var(--subtle); }
+.update .actions { margin-top: 24px; }
 
 /* Capabilities */
 .features { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 40px 24px; }
