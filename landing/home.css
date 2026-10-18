@@ -2,7 +2,9 @@
 
 /* Hero */
 .hero { padding-top: 64px; }
-.hero-text { max-width: 760px; }
+/* Wide enough for the headline's second line to stay one line from 768px up;
+   the lede keeps its own measure. */
+.hero-text { max-width: 1040px; }
 .hero-meta { margin: 24px 0 0; font-size: var(--fs-sm); line-height: var(--lh-sm); color: var(--subtle); }
 .hero-meta a { color: var(--subtle); }
 .hero-art { margin: 48px 0 0; }
