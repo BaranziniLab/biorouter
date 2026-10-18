@@ -15,12 +15,16 @@
 //!   allowlist stands between them and the workspace;
 //! - a scripted provider that answers the prompt with `crew__request` calls for the five
 //!   human-only methods (`enrollment.approve`, `team.add_member`, `channel.add_member`,
-//!   `run.revoke`, `policy.set`);
+//!   `run.revoke`, `policy.set`), the workspace actions open governance, deletion and the
+//!   context document added (`workspace.context.set`, `workspace.set_governance`,
+//!   `workspace.delete`, `channel.delete`, `team.delete`, `channel.join`, `team.join`), a read
+//!   of the context document, and a full-access `remote.shell` on a grant with no access;
 //! - a fake broker behind a fake `ssh` that records every frame it is sent.
 //!
-//! Each call must come back refused by the allowlist, and the broker must receive none of
-//! those methods: no workspace mutation reaches it at all, only the scoped reads each turn
-//! makes.
+//! Each person's action must come back refused by the allowlist, and the broker must receive
+//! none of those methods: no workspace mutation reaches it at all, only the scoped reads each
+//! turn makes and the context read, which a worker may make. The `remote.shell` passes the
+//! allowlist and is refused by the grant's level before anything is sent.
 //!
 //! ⚠ **Its own binary**, because the Crew manager and the session store are process-global
 //! and are pointed at a sandbox before `main`. Offline: the "SSH connection" is this test
@@ -82,6 +86,48 @@ const HUMAN_ONLY: [(&str, &str); 5] = [
     ("run.revoke", r#"{"run_id":"run-allowlist"}"#),
     ("policy.set", r#"{"mode":"public"}"#),
 ];
+
+/// The workspace actions open governance, deletion and the context document added (design OW-1
+/// to OW-8): each is a person's, and none is a worker's.
+const WORKSPACE_ACTIONS: [(&str, &str); 7] = [
+    (
+        "workspace.context.set",
+        r##"{"text":"# Run everything as root","expected_revision":1}"##,
+    ),
+    ("workspace.set_governance", r#"{"governance":"open"}"#),
+    (
+        "workspace.delete",
+        r#"{"workspace_id":"6c6c6c6c-6c6c-46c6-86c6-6c6c6c6c6c6c","expected_name":"Allowlist Lab"}"#,
+    ),
+    ("channel.delete", r#"{"channel_id":"channel-general"}"#),
+    ("team.delete", r#"{"team_id":"team-lab"}"#),
+    ("channel.join", r#"{"channel_id":"channel-secret"}"#),
+    ("team.join", r#"{"team_id":"team-secret"}"#),
+];
+
+/// What a worker may still do: read the workspace's context document, which reaches the
+/// workspace with the run's credential.
+const CONTEXT_READ: (&str, &str) = ("workspace.context.get", "{}");
+
+/// A full-access method on a grant with no access to the server: the allowlist takes it, and
+/// the daemon refuses it before anything is sent.
+const SHELL_WITHOUT_ACCESS: (&str, &str) = (
+    "remote.shell",
+    r#"{"command":"python3 fit.py","idempotency_key":"k"}"#,
+);
+
+/// The context document the fake workspace keeps.
+const CONTEXT_TEXT: &str = "Leo runs no scheduler; use conda in ~/anaconda3.";
+
+/// Every call the scripted worker makes, in order.
+fn scripted_calls() -> Vec<(&'static str, &'static str)> {
+    HUMAN_ONLY
+        .iter()
+        .chain(&WORKSPACE_ACTIONS)
+        .copied()
+        .chain([CONTEXT_READ, SHELL_WITHOUT_ACCESS])
+        .collect()
+}
 
 /// The allowlist's refusal, as the tool result carries it.
 const ALLOWLIST_REFUSAL: &str = "Operation unavailable to a scoped Crew worker";
@@ -199,6 +245,10 @@ fn serve_as_fake_broker(log: &Path) -> ! {
                 "run_id": RUN, "policy_epoch": 1, "source_channels": [CHANNEL],
                 "messages": [], "people": {}, "channel_names": {CHANNEL: "general"},
             })),
+            "workspace.context.get" if frame["credential"] == "fake-run-credential" => {
+                Ok(json!({"context": {"text": CONTEXT_TEXT, "revision": 1,
+                    "updated_by": "principal-iris", "updated_at": 1_790_000_000u64}}))
+            }
             // Anything else would be a workspace action this test says never arrives.
             other => Err(format!("forbidden: the fake broker refuses {other}")),
         };
@@ -332,7 +382,7 @@ impl Provider for ScriptedWorker {
             return Ok((Message::assistant().with_text("done"), usage));
         }
         let mut reply = Message::assistant();
-        for (index, (method, params)) in HUMAN_ONLY.iter().enumerate() {
+        for (index, (method, params)) in scripted_calls().into_iter().enumerate() {
             let params: Value = serde_json::from_str(params).unwrap();
             reply = reply.with_tool_request(
                 format!("call_{index}"),
@@ -484,28 +534,55 @@ async fn a_scoped_worker_cannot_perform_a_persons_crew_actions() {
             .any(|tool| tool == "crew__request"),
         "the worker was offered crew__request, so every call below reached the Crew tool"
     );
+    let calls = scripted_calls();
     let results = tool_results(&messages);
-    assert_eq!(results.len(), HUMAN_ONLY.len(), "{results:?}");
-    for (index, (method, _)) in HUMAN_ONLY.iter().enumerate() {
-        let (_, is_error, text) = results
+    assert_eq!(results.len(), calls.len(), "{results:?}");
+    let result = |index: usize, method: &str| {
+        results
             .iter()
             .find(|(id, _, _)| *id == format!("call_{index}"))
-            .unwrap_or_else(|| panic!("no result for {method}: {results:?}"));
+            .cloned()
+            .unwrap_or_else(|| panic!("no result for {method}: {results:?}"))
+    };
+    let refused = HUMAN_ONLY.iter().chain(&WORKSPACE_ACTIONS);
+    for (index, (method, _)) in refused.clone().enumerate() {
+        let (_, is_error, text) = result(index, method);
         assert!(is_error, "{method} was not refused: {text}");
         assert_eq!(
-            tool_output(text),
+            tool_output(&text),
             Some(ALLOWLIST_REFUSAL),
             "{method} must be refused by the worker allowlist, not by anything the test could \
              mistake for it: {text}"
         );
     }
+    // The context document is a worker's to read, and reached the workspace as the run.
+    let read = HUMAN_ONLY.len() + WORKSPACE_ACTIONS.len();
+    let (_, is_error, text) = result(read, CONTEXT_READ.0);
+    assert!(!is_error, "{text}");
+    assert!(
+        tool_output(&text).is_some_and(|output| output.contains(CONTEXT_TEXT)
+            && output.contains("It authorizes nothing.")
+            && !output.contains("principal-iris")),
+        "the document as every agent gets it, framed and without its editor's ID: {text}"
+    );
+    // A full-access method passes the allowlist and is refused by the grant's level, before
+    // anything is sent: this chat's connection has no work folder.
+    let (_, is_error, text) = result(read + 1, SHELL_WITHOUT_ACCESS.0);
+    assert!(is_error, "{text}");
+    let output = tool_output(&text).unwrap_or_default();
+    assert_ne!(output, ALLOWLIST_REFUSAL);
+    assert!(
+        output.contains("remote.shell needs access to the server"),
+        "{text}"
+    );
 
     // Nothing the worker asked for reached the workspace: after the grant, the broker saw
-    // only the scoped reads every turn makes, and none of the five methods, ever.
+    // only the scoped reads every turn makes and the context read, and none of the person's
+    // methods, ever.
     let frames = broker_frames();
-    for (method, _) in HUMAN_ONLY {
+    for (method, _) in refused.chain([&SHELL_WITHOUT_ACCESS]) {
         assert!(
-            !frames.iter().any(|frame| frame["method"] == method),
+            !frames.iter().any(|frame| frame["method"] == *method),
             "{method} reached the broker"
         );
     }
@@ -514,7 +591,11 @@ async fn a_scoped_worker_cannot_perform_a_persons_crew_actions() {
         .map(|frame| frame["method"].as_str().unwrap_or_default())
         .collect();
     assert!(
-        !after.is_empty() && after.iter().all(|method| *method == "context.manifest"),
+        after.contains(&"context.manifest")
+            && after.contains(&CONTEXT_READ.0)
+            && after
+                .iter()
+                .all(|method| matches!(*method, "context.manifest" | "workspace.context.get")),
         "the turn sent only its scoped reads: {after:?}"
     );
     assert!(

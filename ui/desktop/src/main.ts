@@ -1,6 +1,12 @@
 import { applicationUserDataDirectory } from './applicationDataProfile';
 import { developmentProfileRoot } from './developmentProfile';
-import { createCrewDaemonTerminal } from './crewDaemonTerminal';
+import {
+  createCrewDaemonTerminal,
+  sharedOpening,
+  type CrewAuthenticationOpen,
+  type CrewDaemonTerminalTarget,
+} from './crewDaemonTerminal';
+import { crewBrokerDirectory, saveCrewBroker } from './crewBrokerExport';
 import { closeNativeSecretPrompt, promptNativeSecret } from './nativeSecretPrompt';
 import { writeConversationId, writeSelectedText } from './utils/conversationClipboard';
 import type {
@@ -5021,7 +5027,8 @@ const terminalSessions = new TerminalSessionRegistry<TerminalSession>((error) =>
 let nodePtyModule: NodePtyModule | null | undefined;
 let nodePtyLoading: Promise<NodePtyModule | null> | undefined;
 const crewAuthenticationSessions = new Map<string, { sessionId: string }>();
-const crewAuthenticationPending = new Set<string>();
+/** Sign-ins still opening, by key: a second ask shares the first's answer (`sharedOpening`). */
+const crewAuthenticationPending = new Map<string, Promise<CrewAuthenticationOpen>>();
 
 /**
  * Free every shell a renderer owns once its document goes away.
@@ -5426,17 +5433,59 @@ function registerCliInstallHandlers() {
   ipcMain.handle('crew:authenticate', async (event, connectionId: unknown) => {
     if (typeof connectionId !== 'string' || !/^[a-zA-Z0-9_-]{1,128}$/.test(connectionId))
       return { success: false, error: 'Invalid Crew connection ID.' };
+    return openCrewAuthentication(event, { kind: 'connection', connectionId });
+  });
+
+  // The Sign in window for a setup job waiting on the person (OW-9): the same terminal, prepared on
+  // the job's own route, so one password covers install, start and connect.
+  ipcMain.handle('crew:authenticate-setup', async (event, jobId: unknown) => {
+    if (typeof jobId !== 'string' || !/^[a-zA-Z0-9_-]{1,128}$/.test(jobId))
+      return { success: false, error: 'Invalid Crew setup ID.' };
+    return openCrewAuthentication(event, { kind: 'setup', jobId });
+  });
+
+  // "Save Crew's server program…" (OW-9): a copy of the broker this build carries, for the manual
+  // install. The renderer names the version and digest it showed; the file written is checked
+  // against both, and against its own manifest, before the save dialog opens.
+  ipcMain.handle('crew:save-broker', async (event, expected: unknown) => {
+    const owner = BrowserWindow.fromWebContents(event.sender);
+    if (!owner) return { success: false, error: 'The window is not available.' };
+    return saveCrewBroker(expected, {
+      brokerDirectory: () => crewBrokerDirectory(app),
+      readFile: (file) => fs.readFile(file),
+      writeFile: (file, data) => fs.writeFile(file, data, { mode: 0o755 }),
+      defaultFolder: () => app.getPath('downloads'),
+      showSaveDialog: (options) => dialog.showSaveDialog(owner, options),
+    });
+  });
+
+  async function openCrewAuthentication(
+    event: Electron.IpcMainInvokeEvent,
+    target: CrewDaemonTerminalTarget
+  ): Promise<CrewAuthenticationOpen> {
     const owner = event.sender;
     const ownerWindow = BrowserWindow.fromWebContents(owner);
     const baseUrl = ownerWindow && biorouterdClients.get(ownerWindow.id)?.getConfig().baseUrl;
     if (!baseUrl) return { success: false, error: 'The local daemon is not available.' };
-    const key = `${owner.id}:${connectionId}`;
+    const key =
+      target.kind === 'connection'
+        ? `${owner.id}:${target.connectionId}`
+        : `${owner.id}:setup:${target.jobId}`;
     const existing = crewAuthenticationSessions.get(key);
     if (existing && terminalSessions.getOwned(existing.sessionId, owner.id))
       return { success: true, sessionId: existing.sessionId, backend: 'pty', cwd: '' };
-    if (crewAuthenticationPending.has(key))
-      return { success: false, error: 'SSH authentication is already opening.' };
-    crewAuthenticationPending.add(key);
+    // A window that asks again while this one is opening (a remount) attaches to the same session.
+    return sharedOpening(crewAuthenticationPending, key, () =>
+      startCrewAuthentication(owner, baseUrl, key, target)
+    );
+  }
+
+  async function startCrewAuthentication(
+    owner: Electron.WebContents,
+    baseUrl: string,
+    key: string,
+    target: CrewDaemonTerminalTarget
+  ): Promise<CrewAuthenticationOpen> {
     try {
       if (terminalSessions.countForOwner(owner.id) >= maxTerminalSessionsPerOwner())
         throw new Error('Close an existing terminal before opening SSH authentication.');
@@ -5445,16 +5494,21 @@ function registerCliInstallHandlers() {
       let ended = false;
       const terminal = await createCrewDaemonTerminal(
         { baseUrl, secret: getServerSecret(settings), userAction: getUserActionKey(settings) },
-        connectionId,
+        target,
         (data) => {
           if (!owner.isDestroyed()) owner.send('terminal:data', { sessionId, data });
         },
-        (exitCode) => {
+        (exitCode, failureCode) => {
           ended = true;
           if (crewAuthenticationSessions.get(key)?.sessionId === sessionId)
             crewAuthenticationSessions.delete(key);
           terminalSessions.forget(sessionId)?.removeOwnerDestroyedListener();
-          if (!owner.isDestroyed()) owner.send('terminal:exit', { sessionId, exitCode });
+          if (!owner.isDestroyed())
+            owner.send('terminal:exit', {
+              sessionId,
+              exitCode,
+              ...(failureCode ? { code: failureCode } : {}),
+            });
         }
       );
       if (owner.isDestroyed() || ended) {
@@ -5484,10 +5538,8 @@ function registerCliInstallHandlers() {
         success: false,
         error: error instanceof Error ? error.message : 'SSH authentication failed.',
       };
-    } finally {
-      crewAuthenticationPending.delete(key);
     }
-  });
+  }
 
   ipcMain.handle('terminal:create', async (event, options?: TerminalCreateOptions) => {
     const cwd = usableWorkingDir(options?.workingDir) || os.homedir();

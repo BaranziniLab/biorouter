@@ -123,6 +123,201 @@ export interface CrewModelPickerProps {
 }
 
 /**
+ * Each configured provider's models (`modelsOf`), keyed by provider name, or `null` while they are
+ * being read. Read once per list of providers, by whoever mounts it: the pane's picker as the pane
+ * opens, the Settings row only once its menu is open.
+ */
+export function useProviderModels(
+  providersProp: readonly ProviderDetails[] | null
+): Record<string, string[]> | null {
+  const { getProviderModels } = useConfig();
+  const [models, setModels] = useState<Record<string, string[]> | null>(null);
+  const providers = useMemo(() => providersProp ?? [], [providersProp]);
+  const providerKey = providers.map((item) => item.name).join('\n');
+  useEffect(() => {
+    let active = true;
+    setModels(null);
+    void Promise.all(
+      providers.map(async (item) => [item.name, await modelsOf(item, getProviderModels)] as const)
+    ).then((entries) => {
+      if (active) setModels(Object.fromEntries(entries));
+    });
+    return () => {
+      active = false;
+    };
+    // `providerKey` stands for the list: a new array with the same providers is the same list.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [providerKey, getProviderModels]);
+  return models;
+}
+
+export interface CrewModelListProps {
+  /** The configured providers to choose from; `null` while they load. */
+  providers: readonly ProviderDetails[] | null;
+  /** `useProviderModels(providers)`. */
+  models: Record<string, string[]> | null;
+  /** The choice on show, marked with a check. */
+  provider: string;
+  model: string;
+  query: string;
+  onQueryChange(query: string): void;
+  onChoose(choice: ModelChoice): void;
+  unavailableReason?(provider: ProviderDetails): string | null;
+  privateOnly?: boolean;
+  /**
+   * A first row before the models, for a choice that is not a model: Settings' "Same as new
+   * chats". Shown while the search is empty or matches its words.
+   */
+  leading?: { label: string; selected: boolean; onSelect(): void };
+  /** The listbox's name. Default "Models". */
+  label?: string;
+}
+
+/**
+ * The searchable list of models inside a picker's popover: a `Command` with its search field,
+ * grouped by configured provider with each heading's tier and affiliation marks, and a free-text
+ * row "Use “{text}” with {provider}" for a model the provider does not list.
+ */
+export function CrewModelList({
+  providers: providersProp,
+  models,
+  provider,
+  model,
+  query,
+  onQueryChange,
+  onChoose,
+  unavailableReason,
+  privateOnly = false,
+  leading,
+  label = agentCopy.modelsLabel,
+}: CrewModelListProps) {
+  const providers = useMemo(() => providersProp ?? [], [providersProp]);
+  const providersLoading = providersProp === null;
+  const needle = query.trim().toLowerCase();
+  const groups = useMemo(
+    () =>
+      providers.map((item) => {
+        const label = providerLabel(item);
+        const all = models?.[item.name] ?? [];
+        const providerMatches =
+          needle !== '' &&
+          (item.name.toLowerCase().includes(needle) || label.toLowerCase().includes(needle));
+        const listed = all.filter(
+          (name) => needle === '' || providerMatches || name.toLowerCase().includes(needle)
+        );
+        const freeText =
+          needle !== '' && !all.some((name) => name.toLowerCase() === needle) ? query.trim() : null;
+        return {
+          provider: item,
+          label,
+          listed,
+          freeText,
+          unavailable: unavailableReason?.(item) ?? null,
+        };
+      }),
+    [providers, models, needle, query, unavailableReason]
+  );
+  const anyRows = groups.some((group) => group.listed.length > 0 || group.freeText);
+  const showLeading =
+    leading !== undefined && (needle === '' || leading.label.toLowerCase().includes(needle));
+
+  return (
+    <Command label={label} query={query} onQueryChange={onQueryChange} className="crew-model-list">
+      <CommandInput
+        placeholder={agentCopy.searchModels}
+        aria-label={agentCopy.searchModels}
+        autoFocus
+      />
+      <CommandList aria-label={label}>
+        {showLeading && leading && (
+          <CommandGroup>
+            <CommandItem selected={leading.selected} onSelect={leading.onSelect}>
+              <span className="min-w-0 flex-1 truncate">{leading.label}</span>
+              {leading.selected && (
+                <Check
+                  aria-hidden="true"
+                  className="h-icon-row w-icon-row shrink-0 text-text-default"
+                />
+              )}
+            </CommandItem>
+          </CommandGroup>
+        )}
+        {models === null || providersLoading ? (
+          <CommandEmpty>
+            <p className="text-supporting text-text-muted">{agentCopy.loadingModels}</p>
+          </CommandEmpty>
+        ) : !anyRows ? (
+          showLeading ? null : (
+            <CommandEmpty>
+              <p className="text-supporting text-text-muted">{agentCopy.noMatch}</p>
+            </CommandEmpty>
+          )
+        ) : (
+          groups.map((group) =>
+            group.listed.length === 0 && !group.freeText ? null : (
+              <CommandGroup
+                key={group.provider.name}
+                heading={
+                  <span className="inline-flex flex-wrap items-center gap-1.5">
+                    <span>{group.label}</span>
+                    <ModelTierMarks provider={group.provider} privateOnly={privateOnly} />
+                    {group.unavailable && (
+                      <span className="text-supporting text-text-muted">{group.unavailable}</span>
+                    )}
+                  </span>
+                }
+              >
+                {group.listed.map((name) => {
+                  const selected = provider === group.provider.name && model === name;
+                  return (
+                    <CommandItem
+                      key={name}
+                      selected={selected}
+                      onSelect={() => onChoose({ provider: group.provider.name, model: name })}
+                    >
+                      <span className="flex min-w-0 flex-1 flex-col">
+                        <span className="truncate">{name}</span>
+                        {group.unavailable && (
+                          <span className="text-supporting text-text-muted">
+                            {group.unavailable}
+                          </span>
+                        )}
+                      </span>
+                      {selected && (
+                        <Check
+                          aria-hidden="true"
+                          className="h-icon-row w-icon-row shrink-0 text-text-default"
+                        />
+                      )}
+                    </CommandItem>
+                  );
+                })}
+                {group.freeText && (
+                  <CommandItem
+                    onSelect={() =>
+                      onChoose({ provider: group.provider.name, model: group.freeText ?? '' })
+                    }
+                  >
+                    <span className="flex min-w-0 flex-1 flex-col">
+                      <span className="truncate">
+                        {agentCopy.modelUse(group.freeText, group.label)}
+                      </span>
+                      {group.unavailable && (
+                        <span className="text-supporting text-text-muted">{group.unavailable}</span>
+                      )}
+                    </span>
+                  </CommandItem>
+                )}
+              </CommandGroup>
+            )
+          )
+        )}
+      </CommandList>
+    </Command>
+  );
+}
+
+/**
  * The model picker for Ask my agent (ui-redesign-spec, "Ask my agent"): a field-look `Popover` +
  * `Command` whose trigger is named "Model" followed by its value ("Choose a model" when empty).
  * Models are grouped by configured provider, each heading carrying the provider's tier and
@@ -152,7 +347,6 @@ export const CrewModelPicker = forwardRef<HTMLButtonElement, CrewModelPickerProp
     },
     ref
   ) {
-    const { getProviderModels } = useConfig();
     const [openState, setOpenState] = useState(false);
     const open = openProp ?? openState;
     const setOpen = (next: boolean) => {
@@ -160,59 +354,14 @@ export const CrewModelPicker = forwardRef<HTMLButtonElement, CrewModelPickerProp
       onOpenChange?.(next);
     };
     const [query, setQuery] = useState('');
-    const [models, setModels] = useState<Record<string, string[]> | null>(null);
+    const models = useProviderModels(providersProp);
     const ownLabelId = useId();
     const valueId = useId();
-    const providers = useMemo(() => providersProp ?? [], [providersProp]);
-    const providersLoading = providersProp === null;
 
-    const providerKey = providers.map((item) => item.name).join('\n');
-    useEffect(() => {
-      let active = true;
-      setModels(null);
-      void Promise.all(
-        providers.map(async (item) => [item.name, await modelsOf(item, getProviderModels)] as const)
-      ).then((entries) => {
-        if (active) setModels(Object.fromEntries(entries));
-      });
-      return () => {
-        active = false;
-      };
-      // `providerKey` stands for the list: a new array with the same providers is the same list.
-      // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [providerKey, getProviderModels]);
-
-    const selectedProvider = providers.find((item) => item.name === provider);
+    const selectedProvider = providersProp?.find((item) => item.name === provider);
     const hasValue = provider !== '' && model !== '';
     const shown = modelDisplay({ provider, model }, selectedProvider);
     const triggerValue = agentCopy.modelChoice(shown.model, shown.provider);
-    const needle = query.trim().toLowerCase();
-    const groups = useMemo(
-      () =>
-        providers.map((item) => {
-          const label = providerLabel(item);
-          const all = models?.[item.name] ?? [];
-          const providerMatches =
-            needle !== '' &&
-            (item.name.toLowerCase().includes(needle) || label.toLowerCase().includes(needle));
-          const listed = all.filter(
-            (name) => needle === '' || providerMatches || name.toLowerCase().includes(needle)
-          );
-          const freeText =
-            needle !== '' && !all.some((name) => name.toLowerCase() === needle)
-              ? query.trim()
-              : null;
-          return {
-            provider: item,
-            label,
-            listed,
-            freeText,
-            unavailable: unavailableReason?.(item) ?? null,
-          };
-        }),
-      [providers, models, needle, query, unavailableReason]
-    );
-    const anyRows = groups.some((group) => group.listed.length > 0 || group.freeText);
 
     const choose = (choice: ModelChoice) => {
       onChange(choice);
@@ -269,92 +418,17 @@ export const CrewModelPicker = forwardRef<HTMLButtonElement, CrewModelPickerProp
           className="w-80 p-0"
           onOpenAutoFocus={(event) => event.preventDefault()}
         >
-          <Command
-            label={agentCopy.modelsLabel}
+          <CrewModelList
+            providers={providersProp}
+            models={models}
+            provider={provider}
+            model={model}
             query={query}
             onQueryChange={setQuery}
-            className="crew-model-list"
-          >
-            <CommandInput
-              placeholder={agentCopy.searchModels}
-              aria-label={agentCopy.searchModels}
-              autoFocus
-            />
-            <CommandList aria-label={agentCopy.modelsLabel}>
-              {models === null || providersLoading ? (
-                <CommandEmpty>
-                  <p className="text-supporting text-text-muted">{agentCopy.loadingModels}</p>
-                </CommandEmpty>
-              ) : !anyRows ? (
-                <CommandEmpty>
-                  <p className="text-supporting text-text-muted">{agentCopy.noMatch}</p>
-                </CommandEmpty>
-              ) : (
-                groups.map((group) =>
-                  group.listed.length === 0 && !group.freeText ? null : (
-                    <CommandGroup
-                      key={group.provider.name}
-                      heading={
-                        <span className="inline-flex flex-wrap items-center gap-1.5">
-                          <span>{group.label}</span>
-                          <ModelTierMarks provider={group.provider} privateOnly={privateOnly} />
-                          {group.unavailable && (
-                            <span className="text-supporting text-text-muted">
-                              {group.unavailable}
-                            </span>
-                          )}
-                        </span>
-                      }
-                    >
-                      {group.listed.map((name) => {
-                        const selected = provider === group.provider.name && model === name;
-                        return (
-                          <CommandItem
-                            key={name}
-                            selected={selected}
-                            onSelect={() => choose({ provider: group.provider.name, model: name })}
-                          >
-                            <span className="flex min-w-0 flex-1 flex-col">
-                              <span className="truncate">{name}</span>
-                              {group.unavailable && (
-                                <span className="text-supporting text-text-muted">
-                                  {group.unavailable}
-                                </span>
-                              )}
-                            </span>
-                            {selected && (
-                              <Check
-                                aria-hidden="true"
-                                className="h-icon-row w-icon-row shrink-0 text-text-default"
-                              />
-                            )}
-                          </CommandItem>
-                        );
-                      })}
-                      {group.freeText && (
-                        <CommandItem
-                          onSelect={() =>
-                            choose({ provider: group.provider.name, model: group.freeText ?? '' })
-                          }
-                        >
-                          <span className="flex min-w-0 flex-1 flex-col">
-                            <span className="truncate">
-                              {agentCopy.modelUse(group.freeText, group.label)}
-                            </span>
-                            {group.unavailable && (
-                              <span className="text-supporting text-text-muted">
-                                {group.unavailable}
-                              </span>
-                            )}
-                          </span>
-                        </CommandItem>
-                      )}
-                    </CommandGroup>
-                  )
-                )
-              )}
-            </CommandList>
-          </Command>
+            onChoose={choose}
+            unavailableReason={unavailableReason}
+            privateOnly={privateOnly}
+          />
         </PopoverContent>
       </Popover>
     );

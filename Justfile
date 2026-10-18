@@ -111,6 +111,9 @@ make-ui-linux:
     . scripts/cross-env.sh
     echo "Step 1/2: Cross-compiling Rust binaries for Linux x64 via Docker ($LINUX_RUST_IMG)..."
     cross_linux "cargo build --release"
+    # build-linux-deb.sh copies this into the package; it cannot stage it
+    # itself, because staging needs Docker and it runs inside a container.
+    ./scripts/stage-crew-broker.sh target/x86_64-unknown-linux-gnu/release target/crew-broker/linux-x86_64
     echo "Step 2/2: Packaging .deb via Docker (linux/amd64)..."
     docker volume create biorouter-linux-npm-cache || true
     docker run --rm \
@@ -162,6 +165,18 @@ build-cross:
     cross_windows "cargo build --release --bin biorouterd --bin biorouter" "" "$WIN_DLL_STAGE"
     ./scripts/check-glibc-floor.sh
     ./scripts/check-crew-broker-join.sh
+
+# Cross-build the Linux x86_64 Crew broker alone and stage it, with the manifest
+# the setup service trusts, where the desktop app carries it (OW-9):
+# ui/desktop/src/bin/crew-broker/linux-x86_64/{biorouter-crew,manifest.json}.
+# The same cross recipe as the release (scripts/cross-env.sh), on a persistent
+# Docker volume, so a rebuild takes about a minute. Needs Docker. `copy-binary`
+# leaves it in place, but `make-ui-windows` empties src/bin before it packages,
+# so its package carries no broker. A dev package without one builds with a
+# warning; a release build refuses (prepare-platform-binaries.js with
+# BIOROUTER_REQUIRE_CREW_BROKER=1).
+stage-crew-broker:
+    ./scripts/build-crew-broker-linux.sh ui/desktop/src/bin/crew-broker/linux-x86_64
 
 # Build for Intel Mac
 release-intel:

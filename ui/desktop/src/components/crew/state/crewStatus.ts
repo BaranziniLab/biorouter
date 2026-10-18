@@ -17,7 +17,8 @@ export type ConnectionStatusKey =
   | 'sign-in-needed'
   | 'not-set-up'
   | 'offline'
-  | 'cant-connect';
+  | 'cant-connect'
+  | 'workspace-deleted';
 
 export type StatusTone = 'success' | 'warning' | 'danger' | 'neutral' | 'idle';
 
@@ -54,6 +55,8 @@ export const CONNECTION_STATUS: Readonly<
   'not-set-up': { tone: 'danger', word: crewStatusCopy.notSetUp, spinner: false },
   offline: { tone: 'idle', word: crewStatusCopy.offline, spinner: false },
   'cant-connect': { tone: 'danger', word: crewStatusCopy.cantConnect, spinner: false },
+  // Nothing is left to fix or wait for: idle, like Offline, beside the bar's own note.
+  'workspace-deleted': { tone: 'idle', word: crewStatusCopy.workspaceDeleted, spinner: false },
 };
 
 export interface ConnectionStatusInput {
@@ -87,6 +90,11 @@ export interface ConnectionStatusInput {
    * connected connection being updated, never "Offline". Absent: false.
    */
   awaitingSave?: boolean;
+  /**
+   * The host deleted the workspace (`workspaceKnownDeleted`): "Deleted by host", whatever the
+   * dropped connection or the ended view would otherwise read (G8). Absent: false.
+   */
+  workspaceDeleted?: boolean;
 }
 
 /**
@@ -97,12 +105,16 @@ export interface ConnectionStatusInput {
  * most recent connect, not from the saved status.
  *
  * "Updates unavailable" is said only for a connection the daemon calls connected, and never while
- * a reconnect runs: the precedence is Reconnecting… > Offline > Updates unavailable (Q2-17).
+ * a reconnect runs: the precedence is Reconnecting… > Offline > Updates unavailable (Q2-17). A
+ * workspace its host deleted reads "Deleted by host" before anything else.
  */
 export function deriveConnectionStatus(input: ConnectionStatusInput): ConnectionStatusKey | null {
   const { connection, lastConnectFailure, inFlight, verified, observationError, notJoined } = input;
   const reverifying = input.reverifying === true;
   if (!connection) return null;
+  // Final: no connect, sign-in or retry can bring a deleted workspace back, so no word that
+  // invites one (it read "Updates unavailable" beside "The host deleted …", G8).
+  if (input.workspaceDeleted === true) return 'workspace-deleted';
   const failure = lastConnectFailure?.kind;
   if (isTrustFailure(failure)) return 'cant-verify';
   if (verified) return inFlight ? 'connecting' : 'connected';
@@ -142,7 +154,13 @@ export type CrewScreen =
   | 'updates-paused'
   | 'no-team'
   | 'no-channel'
-  | 'channel';
+  | 'channel'
+  /**
+   * The host deleted the workspace (OW-5, L6): only removing it from this computer is left, so the
+   * main area says so and offers that, never Connect or a stopped server's start line. Said from
+   * the saved record, so it holds after the deleted workspace's server has exited.
+   */
+  | 'workspace-deleted';
 
 export interface CrewScreenInput {
   connectionsState: 'loading' | 'loaded' | 'failed';
@@ -173,6 +191,11 @@ export interface CrewScreenInput {
    * screen while the save reconnects, never the offline one and its Connect. Absent: false.
    */
   awaitingSave?: boolean;
+  /**
+   * The host deleted the workspace: the connection view's `workspace_deleted`, its last failure's
+   * code, or an observation that ended `workspace_deleted`. Final. Absent: false.
+   */
+  workspaceDeleted?: boolean;
 }
 
 /** Exactly one main-area screen for the controller's state. Pure and table-tested. */
@@ -184,6 +207,10 @@ export function deriveCrewScreen(input: CrewScreenInput): CrewScreen {
   const { connection, view } = input;
   // A saved connection exists but is not selected yet (the selection lands with the list).
   if (!connection) return 'loading';
+  // Nothing is left to connect to, sign in to or verify: whatever the last connect said (a
+  // deleted workspace's server stops answering at all), only removal is left. A verified view
+  // still on screen stays, with the connection bar saying it.
+  if (input.workspaceDeleted === true && !view) return 'workspace-deleted';
   const failure = input.lastConnectFailure?.kind;
   if (isTrustFailure(failure)) return 'trust';
   // A workspace that was verified is shown until it is replaced or a failure clears it; the

@@ -2,7 +2,7 @@ import { act, fireEvent, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { connectionUpdateBody } from '../state/useCrewConnections';
 import type { ConfirmIntent } from '../state/types';
-import { CrewConfirmation } from './confirmations';
+import { channelAfterDeleting, CrewConfirmation } from './confirmations';
 import { confirmCopy } from './copy';
 import {
   alice,
@@ -316,5 +316,292 @@ describe('CrewConfirmation', () => {
     const { onClose } = renderConfirm({ action: 'remove-person', principalId: 'person-unknown' });
     await waitFor(() => expect(onClose).toHaveBeenCalled());
     expect(screen.queryByRole('alertdialog')).toBeNull();
+  });
+});
+
+describe('deleting channels, teams and workspaces (OW-4, OW-5)', () => {
+  const twoChannels = () =>
+    makeSnapshot({
+      channels: [
+        ...makeSnapshot().channels,
+        {
+          id: 'channel-methods',
+          team_id: 'team-1',
+          name: 'methods',
+          created_by: alice.id,
+          owner_id: alice.id,
+          members: [alice.id, bob.id],
+          archived: false,
+          classification: 'restricted',
+        },
+      ],
+    });
+
+  it('names what a channel deletion removes, and sends the name the person saw', async () => {
+    const { crew, onClose } = renderConfirm(
+      { action: 'delete-channel', channelId: 'channel-methods' },
+      { snapshot: twoChannels() }
+    );
+    const dialog = await screen.findByRole('alertdialog', {
+      name: confirmCopy.deleteChannel.title('#methods'),
+    });
+    // Pinned: "removed from the workspace", never "erased" (the journal keeps old records).
+    expect(dialog).toHaveTextContent(
+      'Removes #methods, its files and its messages from the workspace.'
+    );
+    await act(async () => {
+      fireEvent.click(within(dialog).getByRole('button', { name: 'Delete channel' }));
+    });
+    await waitFor(() =>
+      expect(requestsFor(crew, 'channel.delete')).toEqual([
+        { channel_id: 'channel-methods', expected_name: 'methods' },
+      ])
+    );
+    // Another channel is on screen: refreshed in place, nowhere else to go.
+    expect(crew.selectChannel).not.toHaveBeenCalled();
+    expect(crew.refresh).toHaveBeenCalled();
+    await waitFor(() =>
+      expect(toasts.toastSuccess).toHaveBeenCalledWith({
+        msg: confirmCopy.deleteChannel.toast('#methods'),
+      })
+    );
+    expect(onClose).toHaveBeenCalled();
+  });
+
+  it('moves off the channel on screen before its deletion is observed', async () => {
+    const { crew } = renderConfirm(
+      { action: 'delete-channel', channelId: 'channel-methods' },
+      { snapshot: twoChannels(), channelId: 'channel-methods' }
+    );
+    const dialog = await screen.findByRole('alertdialog', {
+      name: confirmCopy.deleteChannel.title('#methods'),
+    });
+    await act(async () => {
+      fireEvent.click(within(dialog).getByRole('button', { name: 'Delete channel' }));
+    });
+    await waitFor(() => expect(crew.selectChannel).toHaveBeenCalledWith('channel-general'));
+    expect(requestsFor(crew, 'channel.delete')).toHaveLength(1);
+  });
+
+  it('keeps a refused channel deletion in its dialog, once', async () => {
+    const { onClose } = renderConfirm(
+      { action: 'delete-channel', channelId: 'channel-methods' },
+      {
+        snapshot: twoChannels(),
+        request: () => {
+          throw new Error('name_changed: This was renamed since you confirmed.');
+        },
+      }
+    );
+    const dialog = await screen.findByRole('alertdialog', {
+      name: confirmCopy.deleteChannel.title('#methods'),
+    });
+    await act(async () => {
+      fireEvent.click(within(dialog).getByRole('button', { name: 'Delete channel' }));
+    });
+    expect(await within(dialog).findAllByText(/This was renamed since you confirmed/)).toHaveLength(
+      1
+    );
+    expect(onClose).not.toHaveBeenCalled();
+    expect(toasts.toastSuccess).not.toHaveBeenCalled();
+  });
+
+  it('deletes a team with every channel in it, and says how many went', async () => {
+    const { crew, onClose } = renderConfirm(
+      { action: 'delete-team', teamId: 'team-1' },
+      {
+        snapshot: twoChannels(),
+        request: () => ({ deleted: true, team_id: 'team-1', channels: 3 }),
+      }
+    );
+    const dialog = await screen.findByRole('alertdialog', {
+      name: confirmCopy.deleteTeam.title('Analysis Lab'),
+    });
+    expect(dialog).toHaveTextContent(/including channels you aren’t in/);
+    await act(async () => {
+      fireEvent.click(within(dialog).getByRole('button', { name: 'Delete team' }));
+    });
+    await waitFor(() =>
+      expect(requestsFor(crew, 'team.delete')).toEqual([
+        { team_id: 'team-1', expected_name: 'Analysis Lab' },
+      ])
+    );
+    await waitFor(() =>
+      expect(toasts.toastSuccess).toHaveBeenCalledWith({
+        msg: 'Deleted Analysis Lab and its 3 channels.',
+      })
+    );
+    expect(onClose).toHaveBeenCalled();
+  });
+
+  it('chooses where to go: the team’s #general, then its other channels, then any team', () => {
+    const snapshot = twoChannels();
+    expect(channelAfterDeleting(snapshot, { channelId: 'channel-methods' })).toBe(
+      'channel-general'
+    );
+    expect(channelAfterDeleting(snapshot, { channelId: 'channel-general' })).toBe(
+      'channel-methods'
+    );
+    expect(channelAfterDeleting(snapshot, { teamId: 'team-1' })).toBeNull();
+    expect(channelAfterDeleting(null, { teamId: 'team-1' })).toBeNull();
+  });
+
+  it('deletes the workspace only once its name is typed, with the id and name it stores', async () => {
+    pointerOpen();
+    const { crew, onClose } = renderConfirm({
+      action: 'delete-workspace',
+      connectionId: connection.id,
+    });
+    const dialog = await screen.findByRole('alertdialog', {
+      name: confirmCopy.deleteWorkspace.title('lab'),
+    });
+    expect(dialog).toHaveTextContent(
+      confirmCopy.deleteWorkspace.description('lab', 'hpc.example.edu')
+    );
+    const confirm = within(dialog).getByRole('button', { name: 'Delete workspace' });
+    expect(confirm).toBeDisabled();
+    fireEvent.change(within(dialog).getByLabelText('Type lab to confirm'), {
+      target: { value: 'LAB' },
+    });
+    await act(async () => {
+      fireEvent.click(confirm);
+    });
+    await waitFor(() =>
+      expect(crew.deleteWorkspace).toHaveBeenCalledWith(connection.id, {
+        workspace_id: connection.workspace_id,
+        expected_name: 'lab',
+      })
+    );
+    await waitFor(() => expect(toasts.toastSuccess).toHaveBeenCalledWith({ msg: 'Deleted lab.' }));
+    expect(onClose).toHaveBeenCalled();
+    // A deletion is no broker request the generic door could send.
+    expect(requestsFor(crew, 'workspace.delete')).toEqual([]);
+  });
+
+  it('deletes a workspace from before names with expected_name null, typed as its connection (C19)', async () => {
+    pointerOpen();
+    // A workspace started without a name stores none: the broker compares null with that, so the
+    // connection's name is only what the person types, never what is sent.
+    const snapshot = makeSnapshot();
+    delete (snapshot.workspace as { name?: string }).name;
+    const { crew, onClose } = renderConfirm(
+      { action: 'delete-workspace', connectionId: connection.id },
+      { snapshot }
+    );
+    const dialog = await screen.findByRole('alertdialog', {
+      name: confirmCopy.deleteWorkspace.title('Fixture'),
+    });
+    fireEvent.change(within(dialog).getByLabelText('Type Fixture to confirm'), {
+      target: { value: 'Fixture' },
+    });
+    await act(async () => {
+      fireEvent.click(within(dialog).getByRole('button', { name: 'Delete workspace' }));
+    });
+    await waitFor(() =>
+      expect(crew.deleteWorkspace).toHaveBeenCalledWith(connection.id, {
+        workspace_id: connection.workspace_id,
+        expected_name: null,
+      })
+    );
+    await waitFor(() => expect(onClose).toHaveBeenCalled());
+  });
+
+  it('removes a workspace its host deleted without the host or rejoin warnings (L6)', async () => {
+    // The host's own last computer, which would otherwise be asked to type the name and told the
+    // host controls end for good: the workspace is gone, so there are none to give up.
+    const deleted = { ...connection, status: 'disconnected' as const, workspace_deleted: true };
+    const { crew, onClose } = renderConfirm(
+      { action: 'remove-connection', connectionId: connection.id },
+      { connections: [deleted] }
+    );
+    const dialog = await screen.findByRole('alertdialog', {
+      name: confirmCopy.removeConnection.title('lab'),
+    });
+    expect(dialog).toHaveTextContent(confirmCopy.removeConnection.deletedDescription('lab'));
+    expect(dialog).not.toHaveTextContent(/host controls|the host has to add this computer/);
+    expect(within(dialog).queryByLabelText('Type lab to confirm')).toBeNull();
+    await act(async () => {
+      fireEvent.click(within(dialog).getByRole('button', { name: 'Remove' }));
+    });
+    await waitFor(() => expect(crew.removeConnection).toHaveBeenCalledWith(connection.id));
+    await waitFor(() => expect(onClose).toHaveBeenCalled());
+  });
+
+  // G9: the main area said "The host deleted lab." from the ended view or the last connect, before
+  // the saved record caught up, and the confirmation still warned that messages stay on the server
+  // and that the host can add this computer back. It asks what the main area asks now.
+  it.each([
+    ['a view that ended workspace_deleted', { refreshErrorCode: 'workspace_deleted' }],
+    [
+      'a connect answered crew_workspace_deleted',
+      {
+        lastConnectFailure: {
+          kind: 'unknown' as const,
+          message: 'The host deleted this workspace on the server.',
+          code: 'crew_workspace_deleted',
+        },
+      },
+    ],
+  ])('says only what goes from this computer after %s', async (_what, heard) => {
+    // No verified view is left once the view ended, as on the deleted workspace's own screen, so
+    // the workspace goes by its connection's name.
+    const { crew } = renderConfirm(
+      { action: 'remove-connection', connectionId: connection.id },
+      { snapshot: null, ...heard }
+    );
+    const dialog = await screen.findByRole('alertdialog', {
+      name: confirmCopy.removeConnection.title('Fixture'),
+    });
+    expect(dialog).toHaveTextContent(confirmCopy.removeConnection.deletedDescription('Fixture'));
+    expect(dialog).not.toHaveTextContent(
+      /stay on the server|host has to add this computer|nobody can let people in/
+    );
+    await act(async () => {
+      fireEvent.click(within(dialog).getByRole('button', { name: 'Remove' }));
+    });
+    await waitFor(() => expect(crew.removeConnection).toHaveBeenCalledWith(connection.id));
+  });
+
+  it('keeps the generic warnings when nothing says the workspace was deleted', async () => {
+    renderConfirm(
+      { action: 'remove-connection', connectionId: connection.id },
+      { snapshot: null, refreshErrorCode: 'forbidden' }
+    );
+    const dialog = await screen.findByRole('alertdialog', {
+      name: confirmCopy.removeConnection.title('Fixture'),
+    });
+    expect(dialog).toHaveTextContent(confirmCopy.removeConnection.description);
+  });
+
+  it('reads another connection’s deletion from its saved record alone', async () => {
+    // The selected connection's ended view is about the selected connection, not this one.
+    const other = { ...connection, id: 'conn-2', name: 'other' };
+    renderConfirm(
+      { action: 'remove-connection', connectionId: other.id },
+      { snapshot: null, connections: [connection, other], refreshErrorCode: 'workspace_deleted' }
+    );
+    const dialog = await screen.findByRole('alertdialog');
+    expect(dialog).not.toHaveTextContent(/The host deleted/);
+  });
+
+  it('keeps a refused workspace deletion in its dialog', async () => {
+    const { crew, onClose } = renderConfirm({
+      action: 'delete-workspace',
+      connectionId: connection.id,
+    });
+    crew.deleteWorkspace.mockRejectedValueOnce(
+      new Error('forbidden: human host decision required')
+    );
+    const dialog = await screen.findByRole('alertdialog', {
+      name: confirmCopy.deleteWorkspace.title('lab'),
+    });
+    fireEvent.change(within(dialog).getByLabelText('Type lab to confirm'), {
+      target: { value: 'lab' },
+    });
+    await act(async () => {
+      fireEvent.click(within(dialog).getByRole('button', { name: 'Delete workspace' }));
+    });
+    expect(await within(dialog).findAllByText(/human host decision required/)).toHaveLength(1);
+    expect(onClose).not.toHaveBeenCalled();
   });
 });

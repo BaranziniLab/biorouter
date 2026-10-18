@@ -138,10 +138,10 @@ fn without_urls(details: &str) -> String {
 }
 
 /// Whether `code` appears in `details` as a number of its own: not a slice of a
-/// longer number (`50451`), not a host's port (`localhost:504`,
-/// `127.0.0.1:50451`, `[::1]:504`), not part of a dotted number. A URL is
-/// already gone (see [`without_urls`]); this catches the `failed to connect to
-/// 127.0.0.1:50451` form, which has no scheme.
+/// longer number (`50451`), not part of a word or hex id (`deepseek-r1:8b-75faa429a979`, a
+/// model named `foo-401b`), not a host's port (`localhost:504`, `127.0.0.1:50451`,
+/// `[::1]:504`), not part of a dotted number. A URL is already gone (see [`without_urls`]);
+/// this catches the `failed to connect to 127.0.0.1:50451` form, which has no scheme.
 ///
 /// ⚠ A colon alone does not make a port. An error body quoted into the message
 /// says `"code":401` or `status:429`, and those ARE the status: only a colon
@@ -155,12 +155,12 @@ fn mentions_status(details: &str, code: &str) -> bool {
         let mut after = tail.chars().skip(code.chars().count());
         let next = after.next();
         let standalone_start = match before {
-            Some(c) if c.is_ascii_digit() || c == '.' => false,
+            Some(c) if c.is_ascii_alphanumeric() || c == '.' => false,
             Some(':') => !ends_with_host(head.strip_suffix(':').unwrap_or(head)),
             _ => true,
         };
         let standalone_end = match next {
-            Some(c) if c.is_ascii_digit() => false,
+            Some(c) if c.is_ascii_alphanumeric() => false,
             // `504.` ends a sentence; `504.5` is not a status.
             Some('.') => !after.next().is_some_and(|c| c.is_ascii_digit()),
             _ => true,
@@ -456,6 +456,23 @@ mod tests {
                 expected,
                 "{message}"
             );
+        }
+    }
+
+    /// A status inside a word or a hex id is not a status. An Ollama test's model name carries a
+    /// random hex suffix, and `…75faa429a979…` read as a 429 made a refusal look like a rate limit,
+    /// so it was retried (CI, 2026-10-17); a model named like `foo-401b` read as bad credentials.
+    #[test]
+    fn a_status_inside_a_word_or_hex_id_is_not_that_status() {
+        for message in [
+            "deepseek-r1:8b-75faa429a979487a8f9327d6b7c4c6bb cannot call tools",
+            "model foo-401b failed to load",
+            "llama-500m stopped",
+            "digest sha256:3f403e5 is not on this server",
+        ] {
+            let kind = ProviderError::RequestFailed(message.into()).kind();
+            assert_eq!(kind, ProviderErrorKind::Other, "{message}");
+            assert!(!kind.is_transient(), "{message}");
         }
     }
 

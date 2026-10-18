@@ -1,7 +1,7 @@
 # Agents and chat access
 
-> **What this is.** How to give an AI agent access to a Crew channel with **Ask my agent** or `/crew`, and how to follow, revoke and restore that access.
-> **Status:** Current.
+> **What this is.** How to give an AI agent access to a Crew channel with **Ask my agent**, `@agent` or `/crew`, which model Crew tasks use, what an agent may do on the lab server, the workspace context it reads, and how to follow, revoke and restore that access.
+> **Status:** Current. Checked against the Crew code on 2026-10-16.
 > **Audience:** Lab members who use Crew in the Biorouter desktop app.
 
 A task is one job for your agent. A connected chat is a Biorouter conversation that reads a channel and posts there while you talk to it. Nothing reads or posts until you allow it, access lasts one hour at most, and everyone in the channel sees what your agent posts.
@@ -10,7 +10,7 @@ A task is one job for your agent. A connected chat is a Biorouter conversation t
 
 - Set up at least one AI model in Biorouter. See [Choosing a model provider](../getting-started/choosing-a-model-provider.md).
 - Your agent runs on this computer with your model. Keep the computer on until the task shows "Done". On a Mac or Linux, quitting Biorouter does not stop a task. Quitting on Windows, or restarting or shutting down the computer, stops it.
-- One computer runs at most four tasks at once. A task stops after 20 model turns or 60 tool calls, so split long work into several tasks.
+- One computer runs at most four tasks at once. A task stops after 60 model turns, 200 tool calls or 55 minutes, so split long work into several tasks, or start long computations on the server as detached jobs ([As me on the server](#as-me-on-the-server)).
 - Access lists show only your own chats and tasks, never other people's agents.
 - From a terminal, see [Run an agent task](command-line.md#run-an-agent-task) and [Give a chat access to Crew](command-line.md#give-a-chat-access-to-crew).
 
@@ -20,7 +20,47 @@ Workspaces and connections start Private, so you usually need a model approved f
 2. A Private connection has an institution, set in **Connection settings…**.
 3. The model is approved for that institution, or is local.
 
-Crew checks the model before you start or allow. **Ask my agent** and the Chat access pane say why a model will be refused, such as "chen-lab is Private, so a public model can’t read it. Choose a private model.", and keep their start or Allow button unavailable. Crew checks the first two conditions when you choose the button. A model is approved when its provider carries your institution, and you cannot approve one yourself. To add such a provider, open **Settings** > **Models** > **Configure providers**, then the **Institutional** tab.
+Crew checks the model before you start or allow. Model rules stay the same at every level of [server access](#what-your-agent-may-do-on-the-server): a public model never gets any of it. **Ask my agent** and the Chat access pane say why a model will be refused, such as "chen-lab is Private, so a public model can’t read it. Choose a private model.", and keep their start or Allow button unavailable. Crew checks the first two conditions when you choose the button. A model is approved when its provider carries your institution, and you cannot approve one yourself. To add such a provider, open **Settings** > **Models** > **Configure providers**, then the **Institutional** tab.
+
+## Choose the model for Crew tasks
+
+Crew tasks start on one model you choose for them, whichever way you start them.
+
+1. Open **Settings** > **Models**.
+2. Under the default model, the **Crew tasks** row reads "Same as new chats" until you choose. Choose **Change…**.
+3. Choose a model in "Models for Crew tasks", or "Same as new chats".
+
+The row says "Ask my agent and @agent in Crew start on this model. A workspace can still refuse a model its institution has not approved." A model whose provider is no longer set up reads, for example, "GPT-5.5 · Versa isn’t set up for Crew, so tasks use the model for new chats." In **Ask my agent**, a model you picked for one task offers **Use for future tasks** under it, which makes it the model for Crew tasks. From a terminal, `biorouter crew defaults set --provider PROVIDER --model MODEL` does the same ([Run an agent task](command-line.md#run-an-agent-task)).
+
+The choice is a preference, not a permission: Crew still checks every start against the workspace's privacy and institution.
+
+## Start a task from the message box
+
+Type `@agent`, `/agent` or `/task` at the very start of a message, then the task, such as `@agent sum the plate counts in plate_counts.csv`.
+
+1. As you type `@`, a list of suggestions opens, with your agent first ("Your agent · GPT-5.5 · Versa · posts in #methods") and then people. `/` offers `/agent` and `/task`. Choose one, or keep typing.
+2. Under the text, a line says what Enter will do, such as "Enter starts your agent with GPT-5.5 · Versa", with the model's privacy chip, then "It reads #methods and posts its result there, for this task only." In an open workspace whose server supports it, the task reads every channel you are in, and the line says, for example, "It reads 12 channels and posts its result in #methods, for this task only." If your connection gives the agent access to the server, the line says that too.
+3. Press Enter. The send button is named "Start agent task" while the draft starts a task. Pressing Enter is your consent: the task starts with the facts on that line, and Crew posts it in the channel as "Task: …", as **Ask my agent** does.
+
+Next to the line:
+
+- **Change** opens **Ask my agent** with your words, to choose another model or channels.
+- **Post as a message** sends the text as an ordinary message, `@agent` and all. "Enter posts this as a message." then says so, and **Start a task instead** goes back.
+
+Some drafts start nothing, and the line says why:
+
+| Line | Why |
+|---|---|
+| "No model is set for Crew tasks. Enter opens Ask my agent to choose one." | No model for Crew tasks or new chats is set. Enter opens **Ask my agent**. |
+| "Enter opens Ask my agent to choose another model." | The workspace would refuse the model. The reason comes first. |
+| "Type the task after it, or press Enter to open Ask my agent." | Nothing follows the trigger. |
+| "@agent starts a task from words only. Send the files first, then ask your agent." | The draft has a file or server path attached. |
+| "A task can be up to 32 KB. Attach long text as a file." | The task is too long. |
+| "Check your previous task first. Enter opens Ask my agent." | Crew could not tell whether your last start went through ([If Crew cannot tell whether a task started](#if-crew-cannot-tell-whether-a-task-started)). |
+
+If someone in the workspace has the username `agent`, `@agent` mentions that person, and the list says, for example, "@agent is Agent Smith (@agent). Type /agent to ask your agent." `/agent` and `/task` still start a task.
+
+A start that fails shows "Couldn’t start your agent." with the reason, and the draft stays. A model the workspace refuses offers **Choose another model**, and a start whose outcome is unknown offers **Open Ask my agent**.
 
 ## Start a task with Ask my agent
 
@@ -28,7 +68,7 @@ Crew checks the model before you start or allow. **Ask my agent** and the Chat a
 2. Choose **Ask my agent**, the robot icon left of the send button. An archived channel, or one Crew is still verifying, has no such button.
 3. Check the pane's first line, such as "Posts to #methods in Analysis Lab · lab".
 4. Type the task in **Task**. Enter adds a new line.
-5. Check **Model**, or choose **Change**. See [Choose a model](#choose-a-model).
+5. Check **Model**, which starts on [your model for Crew tasks](#choose-the-model-for-crew-tasks), or choose **Change**. See [Choose a model](#choose-a-model).
 6. Optionally open **Advanced**. See [Also read other channels](#also-read-other-channels).
 7. Read any notes, then choose **Start my agent and allow posting here**.
 
@@ -56,7 +96,11 @@ Claude Code and Codex appear in the list but are always refused.
 
 ### Also read other channels
 
-When there is something to choose, the pane shows **Advanced**. Under "Also read", tick up to 16 more channels for the agent to read. It still posts only here. If your connection has a **Remote work folder** (set in **Connection settings…**), **Advanced** also shows "Can read {folder}", or "Can run commands in {folder}" when **Let my agent run commands in this folder** is on.
+When there is something to choose, the pane shows **Advanced**. Under "Also read", tick up to 16 more channels for the agent to read. It still posts only here.
+
+In an open workspace whose server supports it, a task reads every channel you are in that is not archived, up to 99 more, and **Advanced** reads, for example, "Reads 12 channels". Untick any you want left out. The workspace still checks that you are in each one, and a public model is still refused for a Restricted one.
+
+If your connection gives the agent access to the server ([What your agent may do on the server](#what-your-agent-may-do-on-the-server)), **Advanced** also shows it: "Can read {folder}" or "Can run commands in {folder}" in a folder, and "Can run commands as you on {server}, starting in {folder}" with full access.
 
 ### Files named in the task
 
@@ -104,7 +148,7 @@ The agent's reply is posted as the result, and its first line names the file use
 
 ### The task's conversation
 
-**Open** shows the task's own conversation, titled "Crew · #methods · " and the task's first line. It may be missing from "Recents", so use **Open** or **Show in chat history**. A task uses only Crew tools and the checklist tool, the task list the agent keeps while it works.
+**Open** shows the task's own conversation, titled "Crew · #methods · " and the task's first line. It may be missing from "Recents", so use **Open** or **Show in chat history**. A task uses only Crew tools and the checklist tool, the task list the agent keeps while it works. **Show details** on the task's row lists its steps, such as "Requested remote.shell: Rscript (52 characters; runs as your account)". A command is named by its program and its length, never its text, so nothing secret in it reaches the channel.
 
 A task's access ends once it posts its result, and its access row reads "Ended", or "Stopped" if you stopped it. This is normal. The conversation offers only **Start a new chat**. For more work, start a new task.
 
@@ -137,7 +181,7 @@ To change such a chat's model:
 
 A "Crew · #methods" chip above the chat's message box opens its Chat access pane, and **Revoke access** sits beside it. In the channel, the chat posts as "Your agent · Plot review". Choose the title to open the chat. Others never see the title.
 
-The chat can read and search its channels (the 200 most recent messages at once), read shared files, and post in its one channel. With a Private model it can use the **Remote work folder**, and run commands there when **Let my agent run commands in this folder** is on.
+The chat can read and search its channels (the 200 most recent messages at once), read shared files, read the [workspace context](#the-workspace-context), and post in its one channel. With a Private model it can use the server as your connection allows: the **Remote work folder**, with commands when **Let my agent run commands in this folder** is on, or full access ([What your agent may do on the server](#what-your-agent-may-do-on-the-server)).
 
 Each post the chat makes ends with a line from Crew, not the model, naming the shared files and the work-folder files the chat read since its last post, such as ``Source: `gina-assay.csv`, shared by Gina Rossi (@crew_gina).`` or ``Source: `samples_result.txt` from the remote work folder on hpc.``, or "No shared file was read for this post." when it read neither. That line is always last, so a "Source:" line the model wrote itself sits above it. Trust Crew's line.
 
@@ -161,9 +205,21 @@ The first grant fixes the chat's workspace, channel and model permanently, and a
 
 Typing `/crew` in a chat that has access shows a note instead of the pane, with **Manage access** or, after access ends, **Grant again**. Both only open the Chat access pane.
 
-## Work in the remote work folder
+## What your agent may do on the server
 
-If your connection has a **Remote work folder**, set when you join or in **Connection settings…**, a task or chat with a Private model can read and write files there. With **Let my agent run commands in this folder** on, it can also run commands there. A Public model cannot use the folder. A chat gets the folder with its channel access, and the Chat access pane lists it before you choose Allow, as the task pane's **Advanced** does for a task.
+Each connection has an agent access level, which says what your agents may do on the lab server. You choose it for your own account when you join, and change it in **Connection settings…**, under "What can your agent do on {server}?". It applies to every task and connected chat through that connection, and only with a private model. A public model gets none of it, whatever the level.
+
+| Level | What your agent may do |
+|---|---|
+| **Off** | "It can’t use files or run commands on {server}." |
+| **In a folder** | "It reads and writes files in one folder, and runs confined commands there." See [Work in the remote work folder](#work-in-the-remote-work-folder). |
+| **As me on the server** | Full access: "It runs commands as {you}, with your files, network and programs." See [As me on the server](#as-me-on-the-server). |
+
+A new connection made by joining or hosting starts at **As me on the server**, with the warning below, and you may choose less. **Off** stays off: setting Crew up again never raises it, except that `biorouter crew join` on a connection that never connected from this computer gives it the new-connection level and says so ([Joining](joining-a-workspace.md)). **As me on the server** needs a current Crew on the server, in the host's account and in yours, and is unavailable, with "Update Crew on {server} first.", until it is there. `biorouter crew setup --replace-existing` updates your own copy, and the host updates the workspace's ([Upgrade Crew](administration.md#upgrade-crew)). From a terminal, `biorouter crew connections set-access off`, `folder` or `full` sets the level ([Agent access](command-line.md#agent-access)).
+
+### Work in the remote work folder
+
+At **In a folder**, a task or chat with a Private model can read and write files in the **Remote work folder**. With **Let my agent run commands in this folder** on, it can also run commands there. A chat gets the folder with its channel access, and the Chat access pane lists it before you choose Allow, as the task pane's **Advanced** does for a task.
 
 A command in the work folder runs in a closed space on the server:
 
@@ -171,7 +227,40 @@ A command in the work folder runs in a closed space on the server:
 - It cannot start other processes, so a shell, or a script that runs other programs, fails.
 - It can read only the work folder and the programs and libraries under `/usr/bin`, `/usr/lib`, `/bin` and `/lib`. It cannot read `/etc`, so it cannot look up users.
 
-So cluster tools such as `sbatch`, `squeue`, `sinfo` and `scontrol` do not run there, often with no message. Your agent is told these limits, and a command that fails without an error reminds it of them, so it should tell you rather than try again. The switch in **Connection settings…** says so too: "Commands run with no network and can’t start other programs, so cluster tools such as sbatch won’t run there." Submit cluster jobs yourself, for example from your own SSH session, then let the agent read their results in the folder. The size and time limits of one command are in [Workspace limits](administration.md#workspace-limits).
+So cluster tools such as `sbatch`, `squeue`, `sinfo` and `scontrol` do not run there, often with no message. Your agent is told these limits, and a command that fails without an error reminds it of them, so it should tell you rather than try again. The switch in **Connection settings…** says so too: "Commands run with no network and can’t start other programs, so cluster tools such as sbatch won’t run there." Submit cluster jobs yourself, for example from your own SSH session, or choose **As me on the server**. The size and time limits of one command are in [Workspace limits](administration.md#workspace-limits).
+
+The closed space needs a Linux kernel with Landlock ABI 3 (Linux 6.2 or newer). On an older kernel, the folder gives files only: Connection settings says "{server} can’t confine commands, so in a folder your agent only reads and writes files. To run commands there, choose As me on the server.", and Crew refuses a command there up front with a sentence that names full access.
+
+### As me on the server
+
+At **As me on the server**, your agent runs commands as your own account on the server, through your own Crew there: in your login shell, with your network, your programs and modules, and any file your account can reach. It can start jobs that keep running after its task ends. Commands start in the connection's work folder, which Biorouter creates as `~/crew-work/{workspace}` when you leave it empty.
+
+> **Warning.** Crew shows this before you choose it: "Your agent will run commands as {you} on {server}: it can read and change anything your account can, use the network, and start programs that keep running after access ends. Other people’s messages and files in channels it reads can try to steer it. Use a private model you trust." If you host the workspace from that account, your agent can also read everything the workspace keeps on the server, including channels you are not in.
+
+What the agent can do there:
+
+- **Run a command.** `remote.shell` runs one command in your login shell. Crew waits up to 20 seconds for it (10 by default), then answers with its output, or with a job the agent checks with `remote.job_status`. A command may run for up to an hour. A longer one runs as a detached job (`detach`), which keeps running after the task ends, and the agent or a later task checks it with `remote.job_status` or stops it with `remote.cancel`.
+- **Work with files.** It lists, reads, writes and checks files anywhere your account can, by full path, `~/` path or a path in the work folder, up to 384 KB per read or write.
+- **Copy a channel's file to the server.** `remote.fetch_blob` copies a shared file of up to 1 GB to a path on the server, in the background, and checks its SHA-256. The task's Source line then names it as read.
+- **Post a server file to the channel.** `remote.share_file` uploads a server file of up to 1 GB in the background, and Crew posts it in the task's channel when the copy is done.
+
+Crew follows each copy for up to 20 seconds and settles it before it answers the agent. A copy still running after that is answered "Still copying. Check it with remote.job_status before you finish; Crew posts the file when it is done.", and the agent is told to check it before it finishes. One account runs at most 8 commands and copies at once.
+
+Every command the agent runs is announced in the task's steps by its program and its length, such as "Requested remote.shell: Rscript (52 characters; runs as your account)", never its text. The secret guard still refuses commands and files that would read a credential, and results that carry one are withheld ([Files Crew will not share](privacy-and-security.md#files-crew-will-not-share)).
+
+The agent is told to run heavy computation on the server rather than in its reply: it writes a script with `remote.write`, runs it with `remote.shell`, and starts long work as a detached job. It reads the [workspace context](#the-workspace-context) first, to learn the server's storage, software and how jobs run there.
+
+Ending access, by revoking a chat or when a task finishes, stops new commands, but a detached job keeps running in your account. Check it, or stop it yourself with `kill` on the server. Full access does not let the agent act as you in Crew: your device keys stay on this computer.
+
+## The workspace context
+
+Each workspace has a context document: a short Markdown page about the workspace and its server, such as where shared data lives, which software and modules are there, and how jobs run. Every member's agent reads it before it works on the server. It is reference information, written by people in the workspace, and it never tells an agent to do anything or allows anything.
+
+- When the host creates a workspace, Crew drafts the first context from a fixed check of the server: the system, processors, memory, GPUs, storage, schedulers, software and containers. The check reads only what your own account can see, and never other people's folders.
+- Read it on the **Context** tab of "{workspace} settings", or with `biorouter crew workspace context show`.
+- In an open workspace every member edits it, and in a managed one only the host does ([Keep the workspace context](hosting-a-workspace.md#keep-the-workspace-context)). **Draft from server** drafts it again from what the server reports now.
+
+Other people's words in the context reach your agent, just as their messages do. Your agent treats them as information, not instructions.
 
 ## Refusals when you start or allow
 
@@ -212,7 +301,7 @@ Old rows sit under **Show past access (3)**, and only this computer remembers th
 
 ## Revoke access
 
-Revoking stops the whole chat on this computer at once, then asks the workspace to confirm. Posts stay, and a command already running in the work folder may keep running. Deleting a chat does not revoke it. To end a task's access, stop the task.
+Revoking stops the whole chat on this computer at once, then asks the workspace to confirm. Posts stay, and a command already running on the server may keep running, a detached job in particular. Deleting a chat does not revoke it. To end a task's access, stop the task.
 
 1. Choose **Revoke access** in the chat or its Chat access pane, or **Revoke** on its row in an Agent access list.
 2. At "Stop “Plot review” reading and posting in #methods?", choose **Revoke**. **Keep access** and Escape cancel.
@@ -236,12 +325,12 @@ Access ends when:
 
 - your connection's privacy, settings or institution change;
 - someone is removed from the workspace or a channel;
-- someone is added to a team or channel, or accepts a team or channel invitation;
+- someone is added to a team or channel in a managed workspace, or accepts a team or channel invitation;
 - a channel is archived, or its ownership is offered or accepted;
 - the workspace's privacy or institution changes;
 - in a Public workspace with a Public connection, a channel it reads gets a Restricted message or file.
 
-Renaming a team, channel or the workspace does not end access. A workspace change shows only at the chat's next use of Crew, so an idle chat can look active until then.
+Renaming a team, channel or the workspace does not end access, and neither does adding people in an open workspace, or a member joining a team or channel there. Deleting a channel or a team ends only the access of tasks and chats that read one of its channels. A workspace change shows only at the chat's next use of Crew, so an idle chat can look active until then.
 
 ## Related documentation
 

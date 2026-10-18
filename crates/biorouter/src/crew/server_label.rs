@@ -15,6 +15,18 @@
 //! an invitation, and never compared for identity: the saved login, the host-key check and the
 //! pinned workspace key are unchanged, so an alias can never redirect a connection. It is
 //! resolved with the same `ssh -G` and the same profile `-F` the bridge uses.
+//!
+//! **The saved login is a separate question** ([`own_alias_for_login`], G5). OpenSSH applies a
+//! `Host` block only when the name on the command line matches it, so a joiner whose identity
+//! file, port or jump host for the server sit under an alias would not get them from
+//! `crew_bob@52.33.141.141`. When the person chose no login, port or jump host, an invitation
+//! is saved under the first literal `Host` entry that `ssh -G` resolves to the same user, the
+//! same host name and the same port as that login: the same account on the same server, with
+//! the person's own settings for it. Matching on all three, never on the label, is what keeps
+//! it from signing in as anyone else. An entry Crew's own SSH command could not use is passed
+//! over ([`crew_can_use`]): one its connection preflight refuses (a custom `ProxyCommand`,
+//! delegated GSSAPI credentials and the rest of `ssh_policy`), or one that replaces or starves
+//! the bridge command (`RemoteCommand`, `SessionType`, `StdinNull`), where `user@host` works.
 
 use super::authentication::{resolve_ssh, resolved_endpoint, ssh_endpoint};
 use std::collections::HashMap;
@@ -230,8 +242,11 @@ type LabelCache = HashMap<(String, Option<u16>), (String, Fingerprint, Instant)>
 
 static CACHE: LazyLock<Mutex<LabelCache>> = LazyLock::new(Default::default);
 
-/// `ssh -G <name>`'s host name and port, under the profile's `-F` like the bridge.
-async fn endpoint_of(name: &str) -> Option<(String, u16)> {
+/// `ssh -G [-p port] <name>`'s settings, under the profile's `-F` like the bridge.
+async fn settings_of(name: &str, port: Option<u16>) -> Option<HashMap<String, String>> {
+    if !super::safe_atom(name) {
+        return None;
+    }
     let mut args = Vec::new();
     if let Some(profile) = std::env::var_os("BIOROUTER_DEV_PROFILE_ROOT") {
         args.extend([
@@ -242,11 +257,101 @@ async fn endpoint_of(name: &str) -> Option<(String, u16)> {
                 .into_owned(),
         ]);
     }
+    if let Some(port) = port {
+        args.extend(["-p".to_owned(), port.to_string()]);
+    }
     args.push(name.to_owned());
-    let settings = resolve_ssh(&args).await.ok()?;
-    resolved_endpoint(&settings)
+    resolve_ssh(&args).await.ok()
+}
+
+/// `ssh -G <name>`'s host name and port, under the profile's `-F` like the bridge.
+async fn endpoint_of(name: &str) -> Option<(String, u16)> {
+    resolved_endpoint(&settings_of(name, None).await?)
         .ok()
         .map(|(host, port)| (host.to_ascii_lowercase(), port))
+}
+
+/// The account, lowercase host name and port `ssh -G` settings sign in to.
+fn login_of(settings: &HashMap<String, String>) -> Option<(String, String, u16)> {
+    let user = settings
+        .get("user")
+        .filter(|user| biorouter_crew::valid_username(user))?;
+    let (host, port) = resolved_endpoint(settings).ok()?;
+    Some((user.clone(), host.to_ascii_lowercase(), port))
+}
+
+/// Whether `ssh -G` settings route the connection themselves, through a jump host or a proxy
+/// command.
+fn sets_route(settings: &HashMap<String, String>) -> bool {
+    ["proxyjump", "proxycommand"].iter().any(|key| {
+        settings
+            .get(*key)
+            .is_some_and(|value| !value.eq_ignore_ascii_case("none"))
+    })
+}
+
+/// Whether Crew's own SSH command can use the entry `name`, whose `ssh -G` settings are
+/// `settings`: no remote command, session type or closed stdin of its own in place of the
+/// bridge command, and the connection preflight every connect runs ([`super::ssh_policy`])
+/// admits it under the options Crew's command line sets.
+async fn crew_can_use(name: &str, settings: &HashMap<String, String>) -> bool {
+    let replaces_command = settings
+        .get("remotecommand")
+        .is_some_and(|command| !command.eq_ignore_ascii_case("none"))
+        || settings
+            .get("sessiontype")
+            .is_some_and(|kind| !kind.eq_ignore_ascii_case("default"))
+        || settings
+            .get("stdinnull")
+            .is_some_and(|closed| matches!(closed.as_str(), "yes" | "true"));
+    if replaces_command {
+        return false;
+    }
+    let mut args = super::transport::login_args(None, None, None, None);
+    args.extend(["-o".to_owned(), "BatchMode=yes".to_owned(), name.to_owned()]);
+    super::ssh_policy::preflight(&args, name).await.is_ok()
+}
+
+/// A `Host` entry of the person's SSH configuration that signs in to the same login.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct OwnAlias {
+    pub(super) name: String,
+    /// The entry sets its own jump host or proxy command, which then takes the place of the
+    /// invitation's jump host hint.
+    pub(super) sets_route: bool,
+}
+
+/// G5: the person's own name for the login an invitation would save (`user@host` on `port`):
+/// the first literal `Host` entry of their SSH configuration, in file order, that `ssh -G`
+/// resolves to the same user, the same host name and the same port, and that Crew's own SSH
+/// command can use ([`crew_can_use`]). See the module documentation. `None` when the login's
+/// host is itself one of their entries (their settings for it already apply), when no entry
+/// matches, or when `ssh` can't say.
+pub(super) async fn own_alias_for_login(ssh_target: &str, port: Option<u16>) -> Option<OwnAlias> {
+    let (_, host) = ssh_target.rsplit_once('@')?;
+    let (names, _) = candidates();
+    if names.is_empty() || names.iter().any(|name| name.eq_ignore_ascii_case(host)) {
+        return None;
+    }
+    let search = async {
+        let login = login_of(&settings_of(ssh_target, port).await?)?;
+        for name in names.iter().take(MAX_CANDIDATES) {
+            let Some(settings) = settings_of(name, None).await else {
+                continue;
+            };
+            if login_of(&settings).as_ref() == Some(&login) && crew_can_use(name, &settings).await {
+                return Some(OwnAlias {
+                    name: name.clone(),
+                    sets_route: sets_route(&settings),
+                });
+            }
+        }
+        None
+    };
+    tokio::time::timeout(Duration::from_secs(5), search)
+        .await
+        .ok()
+        .flatten()
 }
 
 /// What to call the server a saved login (`user@host` or an alias) reaches. See the module
@@ -387,19 +492,44 @@ host second # trailing comment
         table: &[(&str, &str, u16)],
         config: &str,
     ) -> env_lock::EnvGuard<'static> {
+        let logins: Vec<_> = table
+            .iter()
+            .map(|(name, host, port)| (*name, "localme", *host, *port, ""))
+            .collect();
+        fake_ssh_logins(root, &logins, config)
+    }
+
+    /// What the fake `ssh -G` prints after a name's own lines: settings Crew's connection
+    /// preflight admits. A name's own line for a key comes first, and the first one is read.
+    #[cfg(unix)]
+    const POLICY_DEFAULTS: &str = "printf '%s\\n' 'stricthostkeychecking yes' 'forwardagent no' \
+        'forwardx11 no' 'permitlocalcommand no' 'clearallforwardings yes' \
+        'nohostauthenticationforlocalhost no' 'tunnel no' 'forkafterauthentication no' \
+        'gssapidelegatecredentials no' 'proxycommand none' 'controlmaster no' \
+        'controlpersist no' 'controlpath none'\n";
+
+    /// [`fake_ssh`] with a `user` and any further `ssh -G` lines per name. Any other login
+    /// resolves to its own user (else `localme`, the local account), its host and the port
+    /// given with `-p` (else 22).
+    #[cfg(unix)]
+    fn fake_ssh_logins(
+        root: &Path,
+        table: &[(&str, &str, &str, u16, &str)],
+        config: &str,
+    ) -> env_lock::EnvGuard<'static> {
         use std::os::unix::fs::PermissionsExt;
         let bin = root.join("bin");
         std::fs::create_dir_all(&bin).unwrap();
         let mut cases = String::new();
-        for (name, host, port) in table {
+        for (name, user, host, port, extra) in table {
             cases.push_str(&format!(
-                "    {name}) printf 'hostname {host}\\nport {port}\\n' ;;\n"
+                "    {name}) printf 'user {user}\\nhostname {host}\\nport {port}\\n{extra}' ;;\n"
             ));
         }
         std::fs::write(
             bin.join("ssh"),
             format!(
-                "#!/bin/sh\n[ \"$1\" = \"-G\" ] || exit 1\nport=22\nprev=\nfor last; do [ \"$prev\" = \"-p\" ] && port=$last; prev=$last; done\nhost=${{last##*@}}\ncase \"$host\" in\n{cases}    *) printf 'hostname %s\\nport %s\\n' \"$host\" \"$port\" ;;\nesac\n"
+                "#!/bin/sh\n[ \"$1\" = \"-G\" ] || exit 1\nport=22\nprev=\nfor last; do [ \"$prev\" = \"-p\" ] && port=$last; prev=$last; done\nhost=${{last##*@}}\ncase \"$last\" in *@*) user=${{last%@*}} ;; *) user=localme ;; esac\ncase \"$host\" in\n{cases}    *) printf 'user %s\\nhostname %s\\nport %s\\n' \"$user\" \"$host\" \"$port\" ;;\nesac\n{POLICY_DEFAULTS}"
             ),
         )
         .unwrap();
@@ -456,5 +586,73 @@ host second # trailing comment
             server_label("crew_bob@52.33.141.141", Some(2222)).await,
             "lab-alt"
         );
+    }
+
+    /// G5: a login is saved under the person's own `Host` entry only when that entry signs in
+    /// as the same user, to the same host name, on the same port.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn the_persons_own_alias_for_a_login_is_the_same_user_host_and_port() {
+        if !crate::test_sandbox::in_a_process_of_its_own() {
+            return;
+        }
+        let root = tempfile::tempdir().unwrap();
+        let _env = fake_ssh_logins(
+            root.path(),
+            &[
+                ("leo-local", "localme", "leo.ucsf.edu", 22, ""),
+                ("leo-port", "wanjun", "leo.ucsf.edu", 2222, ""),
+                ("leo-tunnel", "wanjun", "leo.ucsf.edu", 22, "proxycommand nc gw 22\\n"),
+                ("leo-kerberos", "wanjun", "leo.ucsf.edu", 22, "gssapidelegatecredentials yes\\n"),
+                ("leo-tmux", "wanjun", "leo.ucsf.edu", 22, "remotecommand tmux attach\\n"),
+                ("leo-wj-crew", "wanjun", "leo.ucsf.edu", 22, "proxycommand none\\n"),
+                ("leo-second", "wanjun", "leo.ucsf.edu", 22, ""),
+                ("gpu-box", "wanjun", "gpu.ucsf.edu", 22, "proxyjump gw.ucsf.edu\\n"),
+                ("hpc", "wanjun", "hpc.ucsf.edu", 22, ""),
+            ],
+            "Host leo-local\nHost leo-port\nHost leo-tunnel\nHost leo-kerberos\nHost leo-tmux\nHost leo-wj-crew\nHost leo-second\nHost gpu-box\nHost hpc.ucsf.edu\n  IdentityFile /keys/hpc\nHost hpc\n",
+        );
+        let alias = |name: &str, sets_route: bool| {
+            Some(OwnAlias {
+                name: name.into(),
+                sets_route,
+            })
+        };
+        // The first entry, in file order, with the same user, host name and port. An entry
+        // that signs in as the local account, or on another port, is not the same login, and
+        // `proxycommand none` is no route of its own. One Crew's SSH command could not use is
+        // passed over: a custom proxy command or delegated credentials, which the connection
+        // preflight refuses, and a remote command of its own, which `ssh` refuses beside the
+        // bridge's.
+        assert_eq!(
+            own_alias_for_login("wanjun@leo.ucsf.edu", None).await,
+            alias("leo-wj-crew", false)
+        );
+        assert_eq!(
+            own_alias_for_login("wanjun@leo.ucsf.edu", Some(2222)).await,
+            alias("leo-port", false)
+        );
+        assert_eq!(
+            own_alias_for_login("localme@leo.ucsf.edu", None).await,
+            alias("leo-local", false)
+        );
+        // Another account, or a server no entry names: the login stays as it is.
+        assert_eq!(
+            own_alias_for_login("crew_bob@leo.ucsf.edu", None).await,
+            None
+        );
+        assert_eq!(own_alias_for_login("wanjun@192.0.2.7", None).await, None);
+        // An entry with its own jump host says so, for the invitation's hint to give way.
+        assert_eq!(
+            own_alias_for_login("wanjun@gpu.ucsf.edu", None).await,
+            alias("gpu-box", true)
+        );
+        // The login's host is itself one of the person's entries: their settings already apply.
+        assert_eq!(own_alias_for_login("wanjun@hpc.ucsf.edu", None).await, None);
+        // An alias is not a login this looks up.
+        assert_eq!(own_alias_for_login("leo-wj-crew", None).await, None);
+        // The label is unchanged: the first entry for the same host name and port, whatever
+        // account it signs in as.
+        assert_eq!(server_label("wanjun@leo.ucsf.edu", None).await, "leo-local");
     }
 }

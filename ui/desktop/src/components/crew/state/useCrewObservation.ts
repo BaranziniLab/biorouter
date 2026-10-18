@@ -29,6 +29,7 @@ import {
   teamName,
 } from '../identity';
 import { HISTORY_PAGE_SIZE } from '../timeline/groupMessages';
+import { channelLossReason, channelLossText, type ChannelLossReason } from './channelLoss';
 import { crewObservationCopy } from './copy';
 import { postDestination, type CrewDraftState } from './crewSend';
 import { isMembershipEnded } from './connectFailure';
@@ -317,6 +318,12 @@ export interface CrewObservationContext {
   reportError(message: string, source?: ErrorSource, code?: string, details?: ErrorDetails): void;
   dismissError(): void;
   /**
+   * Put `next` in place of the error on show while it is still `message`, reported with `code`
+   * (`replaceErrorIfShown`): a closed channel's sentence is made exact once a fresh view says why
+   * it went (G7). Absent: the first sentence stays.
+   */
+  replaceError?(message: string, code: string, next: string): void;
+  /**
    * The composer's note about the draft of `destination` (`postDestination`), when it shows one:
    * put aside with the draft, so it comes back with it (QA M5). Absent: none is kept.
    */
@@ -478,6 +485,7 @@ export function useCrewObservation(context: CrewObservationContext): CrewObserva
     draft,
     reportError,
     dismissError,
+    replaceError,
     composerNoteFor,
     closeSignIn,
     setJoinStatus,
@@ -650,6 +658,23 @@ export function useCrewObservation(context: CrewObservationContext): CrewObserva
     refreshErrorRef.current = refreshError;
   }, [refreshError]);
   const lastFrame = useRef<{ connectionId: string; snapshot: Snapshot } | null>(null);
+  /**
+   * A channel closed before a fresh view could say why (`channel_access_changed`: the daemon read a
+   * snapshot this window never got), with the sentence that closed it: the next verified view of
+   * its connection decides whether it was deleted, and makes the sentence say so (G7).
+   */
+  const pendingLoss = useRef<{
+    connectionId: string;
+    channelId: string;
+    named: string | null;
+    before: Snapshot | null;
+    shown: string;
+    draftDiscarded: boolean;
+  } | null>(null);
+  const replaceErrorRef = useRef(replaceError);
+  useEffect(() => {
+    replaceErrorRef.current = replaceError;
+  }, [replaceError]);
   const namesFor = useCallback((id: string, channel: string) => {
     const view = lastFrame.current?.connectionId === id ? lastFrame.current.snapshot : null;
     return observationNames(view, connectionsRef.current, id, channel);
@@ -991,6 +1016,7 @@ export function useCrewObservation(context: CrewObservationContext): CrewObserva
     setAwaitingSave(null);
     recovery.current.budget = { attempts: [], all: [] };
     lastFrame.current = null;
+    pendingLoss.current = null;
     setSnapshot(null);
     setMessages([]);
     setMessagesLoaded(false);
@@ -1140,9 +1166,11 @@ export function useCrewObservation(context: CrewObservationContext): CrewObserva
 
     /**
      * The selected channel is gone for this person: close it, and its draft, and say so. `named`
-     * is its `#name` from the last view that still had it.
+     * is its `#name` from the last view that still had it; `reason` is why, as far as a fresh view
+     * proved it (`channelLossReason`). Returns the sentence it reported, and whether it said the
+     * draft's other contents went.
      */
-    const loseChannel = (named: string | null) => {
+    const loseChannel = (named: string | null, reason: ChannelLossReason) => {
       const hadContent = draftHasContent.current;
       // The words the person wrote for it are theirs: offered once, for copying, in a note of
       // their own (QA M10). Never put back into a composer.
@@ -1168,18 +1196,13 @@ export function useCrewObservation(context: CrewObservationContext): CrewObserva
       setBacklog(undefined);
       resetSurfaces('channel-revoked');
       setChannelId('');
-      const lostText = named
-        ? crewObservationCopy.channelAccessLostNamed(named)
-        : crewObservationCopy.channelAccessLost;
+      const lostText = channelLossText(reason, named);
       // The words are in the note above the message box; anything else the draft held (files,
       // server paths) is gone, as the bar says when there were no words to offer.
-      reportError(
-        hadContent && !words.trim()
-          ? `${lostText} ${crewObservationCopy.draftDiscarded}`
-          : lostText,
-        'observer',
-        CHANNEL_LOST_ERROR_CODE
-      );
+      const draftDiscarded = hadContent && !words.trim();
+      const shown = draftDiscarded ? `${lostText} ${crewObservationCopy.draftDiscarded}` : lostText;
+      reportError(shown, 'observer', CHANNEL_LOST_ERROR_CODE);
+      return { shown, draftDiscarded };
     };
 
     /**
@@ -1244,9 +1267,14 @@ export function useCrewObservation(context: CrewObservationContext): CrewObserva
         if (code === 'channel_access_changed' && channelId) {
           // The daemon checked the selected channel against a fresh snapshot and it was gone:
           // observing it again would only end the same way. Close it and observe the workspace.
+          // That snapshot stayed in the daemon, so why it went is not known yet: the sentence is
+          // one that is true either way, until the workspace's next view says (G7).
           const named = namesFor(connectionId, channelId).channel;
+          const before =
+            lastFrame.current?.connectionId === connectionId ? lastFrame.current.snapshot : null;
           clearProtectedState('channel-revoked');
-          loseChannel(named);
+          const lost = loseChannel(named, 'unknown');
+          pendingLoss.current = { connectionId, channelId, named, before, ...lost };
           setReverifying(true);
           return;
         }
@@ -1364,8 +1392,34 @@ export function useCrewObservation(context: CrewObservationContext): CrewObserva
                 tellNote(connectionId, channelId, kept.note);
                 draftHasContent.current = true;
               }
-              // Named from the last view that still had it: this one no longer does.
+              // Named from the last view that still had it: this one no longer does. Why it went is
+              // read against that view too, for its team and whether it was archived (G7).
               const revokedName = revoked ? namesFor(connectionId, channelId).channel : null;
+              const previousView =
+                lastFrame.current?.connectionId === connectionId
+                  ? lastFrame.current.snapshot
+                  : null;
+              const revokedReason = revoked
+                ? channelLossReason(previousView, frame.snapshot, channelId)
+                : 'unknown';
+              // A channel closed before a view could say why: this first view of its workspace
+              // since says, when it can, and the sentence on show becomes exact. Once only.
+              const pending = pendingLoss.current;
+              pendingLoss.current = null;
+              if (
+                pending?.connectionId === connectionId &&
+                !frame.snapshot.channels.some((item) => item.id === pending.channelId)
+              ) {
+                const reason = channelLossReason(pending.before, frame.snapshot, pending.channelId);
+                if (reason !== 'unknown') {
+                  const text = channelLossText(reason, pending.named);
+                  replaceErrorRef.current?.(
+                    pending.shown,
+                    CHANNEL_LOST_ERROR_CODE,
+                    pending.draftDiscarded ? `${text} ${crewObservationCopy.draftDiscarded}` : text
+                  );
+                }
+              }
               lastFrame.current = { connectionId, snapshot: frame.snapshot };
               recovery.current.budget.attempts = [];
               recoveringFrom.current = null;
@@ -1410,7 +1464,7 @@ export function useCrewObservation(context: CrewObservationContext): CrewObserva
               if (revoked) {
                 controller.abort();
                 generation.current += 1;
-                loseChannel(revokedName);
+                loseChannel(revokedName, revokedReason);
               }
             } else if (frame.type === 'messages' && frame.channel_id === channelId) {
               cursor = frame.cursor ?? null;

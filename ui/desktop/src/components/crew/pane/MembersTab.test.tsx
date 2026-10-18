@@ -611,3 +611,42 @@ describe('MembersTab', () => {
     });
   });
 });
+
+describe('MembersTab in an open workspace (OW-2)', () => {
+  it('lets any member add people and remove anyone but the owner, never Make owner…', async () => {
+    const user = userEvent.setup();
+    const snapshot = makeSnapshot({
+      actor: bob,
+      channels: [{ ...general, members: [alice.id, bob.id, carol.id] }, methods],
+    });
+    installObserver({
+      snapshot: { ...snapshot, workspace: { ...snapshot.workspace, governance: 'open' } },
+    });
+    renderCrew(Members);
+    const tab = await shown();
+    await user.click(within(tab).getByRole('button', { name: membersCopy.addPeople }));
+    expect(currentCrew().ui.dialog).toEqual({
+      kind: 'add-people',
+      target: 'channel',
+      targetId: general.id,
+    });
+
+    await user.click(
+      within(tab).getByRole('button', { name: membersCopy.more('Carol Diaz (@carol)') })
+    );
+    let menu = await screen.findByRole('menu');
+    expect(within(menu).queryByRole('menuitem', { name: membersCopy.makeOwner })).toBeNull();
+    await user.click(within(menu).getByRole('menuitem', { name: membersCopy.remove('#general') }));
+    expect(currentCrew().ui.dialog).toEqual({
+      kind: 'confirm',
+      confirm: { action: 'remove-channel-member', channelId: general.id, principalId: carol.id },
+    });
+
+    // The owner stays: nobody but the owner hands a channel on, or takes the owner out of it.
+    await user.click(
+      within(tab).getByRole('button', { name: membersCopy.more('Alice Chen (@alice)') })
+    );
+    menu = await screen.findByRole('menu');
+    expect(within(menu).queryByRole('menuitem', { name: /Remove from/ })).toBeNull();
+  });
+});

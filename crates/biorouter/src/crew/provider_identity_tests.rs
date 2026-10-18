@@ -63,6 +63,7 @@ impl Device {
             workspace_public_key: "11".repeat(32),
             remote_root: None,
             remote_execution: false,
+            remote_access: Default::default(),
             cluster_connection_id: "cluster-methods".into(),
             mode: if public {
                 ClusterMode::Public

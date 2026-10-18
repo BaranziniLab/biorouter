@@ -34,6 +34,8 @@ describe('surface resets', () => {
     { kind: 'invite-people' },
     { kind: 'let-in', username: 'bob' },
     { kind: 'confirm', confirm: { action: 'remove-connection', connectionId: 'conn-1' } },
+    // OW-5: the delete ends the view while it is on its way; the answer lands in the confirmation.
+    { kind: 'confirm', confirm: { action: 'delete-workspace', connectionId: 'conn-1' } },
   ])('keeps %o open through a refresh', (dialog) => {
     const ui: CrewUi = { dialog, pane: null };
     expect(nextUiAfterReset(ui, 'refresh')).toBe(ui);
@@ -51,6 +53,10 @@ describe('surface resets', () => {
     { kind: 'edit-profile' },
     { kind: 'share-path' },
     { kind: 'confirm', confirm: { action: 'archive-channel', channelId: 'channel-1' } },
+    { kind: 'confirm', confirm: { action: 'delete-channel', channelId: 'channel-1' } },
+    { kind: 'confirm', confirm: { action: 'delete-team', teamId: 'team-1' } },
+    { kind: 'browse-channels' },
+    { kind: 'browse-channels', teamId: 'team-1' },
   ])('treats %o as bound to the verified snapshot', (dialog) => {
     expect(isSnapshotBoundDialog(dialog)).toBe(true);
   });

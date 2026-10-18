@@ -15,6 +15,11 @@ export const crewStatusCopy = {
   checking: 'Checking connection',
   /** Pinned. */
   updatesUnavailable: 'Updates unavailable',
+  /**
+   * The host deleted the workspace (OW-5, G8): final, and said in place of whatever the dropped
+   * connection or the ended view would otherwise read.
+   */
+  workspaceDeleted: 'Deleted by host',
   connected: 'Connected',
   connecting: 'Connecting…',
   /** A verified workspace is being verified again after its live updates ended (re-observation). */
@@ -48,10 +53,22 @@ export const crewObservationCopy = {
    */
   scopeChanged:
     'Workspace privacy or selected channel access changed, so your unsent draft was cleared.',
-  channelAccessLost: 'You no longer have access to that channel, so it was closed.',
+  /**
+   * The selected channel left the view and the view cannot say why (G7, `channelLossReason`): it
+   * may have been deleted or the person removed from it, so the sentence is true of both.
+   */
+  channelAccessLost: 'That channel is no longer available to you, so it was closed.',
   /** `channel` is `#name`. */
   channelAccessLostNamed: (channel: string) =>
-    `You no longer have access to ${channel}, so it was closed.`,
+    `${channel} is no longer available to you, so it was closed.`,
+  /** The view shows the channel no longer exists: its team went, or an open workspace lists it nowhere. */
+  channelDeleted: 'That channel was deleted, so it was closed.',
+  /** `channel` is `#name`. */
+  channelDeletedNamed: (channel: string) => `${channel} was deleted, so it was closed.`,
+  /** The view shows the channel is still there and the person is not in it (an open workspace). */
+  channelLeft: 'You’re no longer in that channel, so it was closed.',
+  /** `channel` is `#name`. */
+  channelLeftNamed: (channel: string) => `You’re no longer in ${channel}, so it was closed.`,
   /** Added to a lost-channel sentence only when the composer held something. */
   draftDiscarded: 'Your unsent draft for it was cleared.',
   wrongConnection: 'Crew sent updates for a different workspace, so they weren’t shown.',
@@ -64,8 +81,11 @@ export const crewObservationCopy = {
   // observation ended…") is never shown. `workspace` is the workspace's display name.
   /** Updates stopped and retrying by itself did not bring them back (or it could not retry). */
   updatesStopped: (workspace: string) => `Live updates for ${workspace} stopped.`,
-  /** `channel_access_changed`, before a fresh view says which channel. */
-  channelAccessChanged: (channel: string) => `You no longer have access to ${channel}.`,
+  /**
+   * `channel_access_changed`, when it is shown as the end of the view rather than closing the
+   * channel. Nothing says whether it was deleted or the person removed, so it is true of both.
+   */
+  channelAccessChanged: (channel: string) => `${channel} is no longer available to you.`,
   /** `access_denied`, `forbidden`, `privacy_denied`, `principal_revoked`. */
   accessChanged: (workspace: string) => `Your access to ${workspace} changed.`,
   /** `unauthorized` / `unknown_device`: the workspace does not know this computer (yet). */
@@ -86,6 +106,13 @@ export const crewObservationCopy = {
     `Too many Crew windows are showing live updates for ${workspace}. Close one, then retry.`,
   /** `response_too_large`. */
   updateTooLarge: (workspace: string) => `An update from ${workspace} was too large to show.`,
+  /**
+   * `workspace_deleted` (OW-5): the host deleted the workspace on its server. Nothing is left to
+   * retry; removing it from this computer is the one thing to do, and the bar offers it.
+   */
+  workspaceDeleted: (workspace: string) => `The host deleted ${workspace}.`,
+  /** The bar's one action beside it: the existing local removal (`remove-connection`). */
+  removeFromComputer: 'Remove from this computer…',
 } as const;
 
 /** The unsent drafts a channel keeps while the person is elsewhere (Q2-07, Q3-09). */
@@ -93,12 +120,12 @@ export const crewDraftCopy = {
   /** Added to a rail row's accessible name when its channel holds a kept draft. */
   rowSuffix: ', draft',
   /**
-   * Above the message box when a channel the person lost access to held their unsent words (QA
-   * M10): they can no longer be sent there, and the note is the one place they are still kept.
-   * `channel` is `#name`, or null when no view named it.
+   * Above the message box when a channel that closed (the person lost access, or it was deleted)
+   * held their unsent words (QA M10): they can no longer be sent there, and the note is the one
+   * place they are still kept. `channel` is `#name`, or null when no view named it.
    */
   lost: (channel: string | null) =>
-    `${channel ?? 'A channel you lost access to'} held your unsent draft, which can’t be sent there now. Copy it before you close this note.`,
+    `${channel ?? 'A channel that was closed'} held your unsent draft, which can’t be sent there now. Copy it before you close this note.`,
   copy: 'Copy draft',
   copied: 'Copied',
   copyFailed: 'Couldn’t copy',

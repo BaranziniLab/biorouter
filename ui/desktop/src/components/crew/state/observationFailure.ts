@@ -54,7 +54,12 @@ export const ANSWERED_OBSERVATION_CODES: readonly string[] = [
   'unknown_device',
   'observer_capacity_reached',
   'response_too_large',
+  // The host deleted the workspace (OW-5): the broker answered, and only removal is left.
+  'workspace_deleted',
 ];
+
+/** The broker's code for every request to a workspace its host deleted (OW-5). */
+export const WORKSPACE_DELETED_CODE = 'workspace_deleted';
 
 /**
  * Whether an observation end may mean the connection itself dropped: the daemon's generic
@@ -69,14 +74,14 @@ export function mayBeConnectionLoss(code: string | null | undefined): boolean {
 
 /**
  * Ends after which retrying the same observation cannot help: the person was removed from the
- * workspace, or a computer this app session saw verified is no longer known to it (Q2-18). The
- * connection bar offers no Retry for them.
+ * workspace, its host deleted it (OW-5), or a computer this app session saw verified is no longer
+ * known to it (Q2-18). The connection bar offers no Retry for them.
  */
 export function isFinalObservationEnd(
   code: string | null | undefined,
   verifiedHere: boolean
 ): boolean {
-  if (code === 'principal_revoked') return true;
+  if (code === 'principal_revoked' || code === WORKSPACE_DELETED_CODE) return true;
   return verifiedHere && typeof code === 'string' && UNKNOWN_DEVICE_CODES.includes(code);
 }
 
@@ -161,6 +166,8 @@ export function observationFrameText(
       return crewObservationCopy.tooManyViews(workspace);
     case 'response_too_large':
       return crewObservationCopy.updateTooLarge(workspace);
+    case WORKSPACE_DELETED_CODE:
+      return crewObservationCopy.workspaceDeleted(workspace);
     default:
       return crewObservationCopy.updatesStopped(workspace);
   }

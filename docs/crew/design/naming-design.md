@@ -416,6 +416,22 @@ JSON = {
 - **Labels are not authority.** `workspace_name`, `host_display_name` and the SSH hints are display metadata and
   defaults; `hello` must verify against the pinned workspace key before anything is trusted, and the broker enforces
   the institution match for protected context (`broker.rs:1084-1115`).
+- **The joiner's saved login (G5, 2026-10-17).** The route plans `{username}@{ssh_host}` with the invitation's port
+  and jump host (`planned_route` in `crew/authentication.rs`). OpenSSH applies a `Host` block only when the name on
+  the command line matches it, so a joiner whose key, port or jump host for the server sit under an alias did not get
+  them, while the screen showed that alias (D-ALIAS, `crew/server_label.rs`). Now, when the joiner typed no server
+  login, port or jump host and the server is not this machine, the route saves the first literal `Host` entry of
+  their configuration (and the files it `Include`s, read with the same caps as the label) that `ssh -G` resolves to
+  the same user, the same host name and the same port as the planned login (`own_alias_for_login`), passing over an
+  entry Crew's own SSH command could not use (`crew_can_use`): one the connection preflight refuses (a custom
+  `ProxyCommand`, `GSSAPIDelegateCredentials yes` and the rest of `ssh_policy`), or one with a `RemoteCommand`,
+  `SessionType` or `StdinNull` of its own in place of the bridge command. Its port and, when it sets one, its jump
+  host replace the invitation's hints. That is the same account on the
+  same server with the joiner's own settings for it, so it changes no identity: the host-key check and the pinned
+  workspace key are unchanged, and the D-ALIAS label stays display only (it matches on host name and port alone,
+  so it never chooses the saved login). An entry for another account or another port is never used, nor is one when
+  the planned host is itself a literal `Host` entry (those settings already apply). A connection already saved for
+  the workspace under the planned login keeps it, so pasting again finds it.
 - **Privacy (D9, FR10, SR7).** `mode` and `institution_id` prefill the joiner's connection and are shown for
   confirmation. A Private save therefore always has an institution, which closes the save-before-institution dead
   end of the first draft (FR3.4). The joiner can change the mode; a mismatch line appears only when the choice

@@ -1,5 +1,5 @@
 import { useId, useState, type KeyboardEvent } from 'react';
-import { ChevronRight, MoreHorizontal, Plus } from '../../icons/app-icons';
+import { ChevronRight, Hash, MoreHorizontal, Plus } from '../../icons/app-icons';
 import { Button } from '../../ui/button';
 import {
   DropdownMenu,
@@ -37,6 +37,7 @@ export const rowKeys = {
   channel: (channelId: string) => `channel:${channelId}`,
   archived: (teamId: string) => `archived:${teamId}`,
   addChannel: (teamId: string) => `add-channel:${teamId}`,
+  browse: (teamId: string) => `browse:${teamId}`,
   addTeam: 'add-team',
 } as const;
 
@@ -81,11 +82,20 @@ export interface TeamSectionProps {
    */
   canAddPeople: boolean;
   /**
-   * The viewer may rename this team: its owner (creator) only. The broker's `team.rename` gives
-   * the host no exception, so offering it to a host who did not create the team led straight to
-   * "forbidden: team creator required" (Q2-41).
+   * The viewer may rename this team: its owner (creator) only, or any member of an open workspace
+   * (OW-2). The broker's `team.rename` gives the host no exception, so offering it to a host who
+   * did not create the team led straight to "forbidden: team creator required" (Q2-41).
    */
   canRename: boolean;
+  /** The team menu's "Delete team…" (OW-4): whoever `mayDeleteTeam` says, on a `delete_v1` broker. */
+  canDelete?: boolean;
+  /**
+   * An open workspace has channels in this team the viewer is not in (OW-2): the section ends in
+   * a quiet "Browse channels" row, and the team menu offers it, in place of the member hint.
+   */
+  canBrowse?: boolean;
+  /** The workspace is open: every member sees every channel they ask for, so no member hint. */
+  openWorkspace?: boolean;
   collapsed: boolean;
   onCollapsedChange(collapsed: boolean): void;
   archivedOpen: boolean;
@@ -129,6 +139,9 @@ export function TeamSection({
   role,
   canAddPeople,
   canRename,
+  canDelete = false,
+  canBrowse = false,
+  openWorkspace = false,
   collapsed,
   onCollapsedChange,
   archivedOpen,
@@ -167,6 +180,7 @@ export function TeamSection({
   // titled by what was asked for. Add people stays one step away in it for whoever may add.
   const openMembers = () =>
     crew.openDialog({ kind: 'add-people', target: 'team', targetId: section.id, view: 'members' });
+  const browse = () => crew.openDialog({ kind: 'browse-channels', teamId: section.id });
 
   const [menuOpen, setMenuOpen] = useState(false);
   const teamIdCopy = useMenuCopyItem(setMenuOpen);
@@ -274,6 +288,25 @@ export function TeamSection({
                   {copy.teamMenu.rename}
                 </DropdownMenuItem>
               )}
+              {canBrowse && (
+                <DropdownMenuItem disabled={!actionable} onSelect={browse}>
+                  {copy.teamMenu.browse(section.name)}
+                </DropdownMenuItem>
+              )}
+              {canDelete && (
+                <DropdownMenuItem
+                  variant="destructive"
+                  disabled={!actionable}
+                  onSelect={() =>
+                    crew.openDialog({
+                      kind: 'confirm',
+                      confirm: { action: 'delete-team', teamId: section.id },
+                    })
+                  }
+                >
+                  {copy.teamMenu.delete}
+                </DropdownMenuItem>
+              )}
               <DropdownMenuSeparator />
               <DropdownMenuSub>
                 <DropdownMenuSubTrigger data-crew-copy-for-support="">
@@ -365,7 +398,24 @@ export function TeamSection({
             </button>
           </li>
         )}
-        {!collapsed && role.kind === 'member' && (
+        {!collapsed && canBrowse && (
+          <li data-crew-row-item="">
+            <button
+              type="button"
+              className="crew-sidebar-row no-drag"
+              data-quiet="true"
+              data-crew-row={rowKeys.browse(section.id)}
+              tabIndex={tabIndexFor(rowKeys.browse(section.id))}
+              onFocus={() => onRowFocus(rowKeys.browse(section.id))}
+              disabled={!actionable}
+              onClick={browse}
+            >
+              <Hash className="crew-sidebar-row-icon" aria-hidden="true" />
+              <span className="crew-sidebar-row-name">{copy.channel.browse}</span>
+            </button>
+          </li>
+        )}
+        {!collapsed && role.kind === 'member' && !openWorkspace && (
           <li className="crew-sidebar-hint text-supporting" data-crew-member-hint="">
             {copy.team.memberHint(section.name)}
           </li>

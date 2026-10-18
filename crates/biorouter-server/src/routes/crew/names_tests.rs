@@ -743,6 +743,7 @@ fn connection(id: &str, name: &str, ssh_target: &str) -> Connection {
         workspace_public_key: "00".repeat(32),
         remote_root: None,
         remote_execution: false,
+        remote_access: Default::default(),
         cluster_connection_id: id.into(),
         mode: biorouter::crew::ClusterMode::Private,
         institution_id: None,

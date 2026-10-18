@@ -48,6 +48,10 @@ pub const NOT_SENT: &str = "crew_not_sent";
 /// sentence, answered as `400 crew_request_refused`, so no client could word it for itself.
 pub const NOT_CONNECTED: &str = "crew_not_connected";
 
+/// `crew_workspace_deleted`: the workspace's host deleted it (design OW-5), so its server answers
+/// nothing but that; the person can only remove the connection from this computer.
+pub const WORKSPACE_DELETED: &str = "crew_workspace_deleted";
+
 /// `crew_registry_unreadable`: Crew's saved settings on this computer (`connections.json`) can't
 /// be read by this build, so nothing was saved over them (DAEMON-6, T3-BE-6). The reader's own
 /// words go in `detail`, never in the sentence.

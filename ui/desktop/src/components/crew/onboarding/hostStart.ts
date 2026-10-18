@@ -6,6 +6,8 @@ import { wireOf } from '../api/parse';
 /**
  * "Start it for me" (D-HOST): the Host dialog's second step asks the daemon to run the start
  * commands it shows, instead of the person running them in a terminal and pasting the output.
+ * Since automatic setup (OW-9, `setup.ts`) it is the path for a daemon before setup: it cannot sign
+ * in to a password account or install Crew, and its route stays for older renderers.
  *
  * The renderer never sends a command. It names this computer's pending host setup (the
  * preparation the daemon made at Continue), the workspace name and the SSH login and route the
@@ -55,7 +57,11 @@ function text(value: unknown): string | null {
   return typeof value === 'string' ? value : null;
 }
 
-function resultFrom(wire: unknown): HostStartResult | null {
+/**
+ * What the start commands printed, read as a paste is read, or null for a result this build does
+ * not recognise. Setup's host outcome carries the same answer (`setup.ts`).
+ */
+export function hostStartResultFrom(wire: unknown): HostStartResult | null {
   const value = wireOf<Api.StartOutput>(wire);
   if (!value) return null;
   if (value.kind === 'found') {
@@ -92,7 +98,7 @@ export function hostStartRunFrom(wire: unknown): HostStartRun {
     command,
     state: state as HostStartState,
     output: text(value.output) ?? '',
-    result: resultFrom(value.result),
+    result: hostStartResultFrom(value.result),
     error,
   };
 }

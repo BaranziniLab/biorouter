@@ -280,12 +280,22 @@ async fn serve(mut socket: WebSocket, headers: HeaderMap, id: String, controller
 /// rather than a missing installation. The diagnostic text stays in the daemon's log, where
 /// [`authentication::handoff`] already wrote it. Anything else (the session was replaced or
 /// closed) keeps the older code and text.
+///
+/// A sign-in with no Crew program behind it for this account adds `"bridge_missing": true`
+/// under the same code: its master is kept, so setting Crew up (`POST /crew/setup`, OW-9)
+/// needs no second password.
 fn handoff_failure_frame(error: &anyhow::Error) -> Value {
     match error.downcast_ref::<HandoffFailed>() {
         Some(failed) if failed.workspace_identity_mismatch() => json!({
             "type": "error",
             "code": WORKSPACE_IDENTITY_MISMATCH_CODE,
             "error": failed.cause().to_string(),
+        }),
+        Some(failed) if failed.bridge_missing() => json!({
+            "type": "error",
+            "code": failed.api_code(),
+            "error": failed.to_string(),
+            "bridge_missing": true,
         }),
         Some(failed) => json!({
             "type": "error",
@@ -1003,6 +1013,45 @@ mod tests {
                 (StatusCode::BAD_REQUEST, INVALID_SELECTOR_CODE),
                 "{typed}"
             );
+        }
+    }
+
+    /// C13: a sign-in that worked on a server with no Crew program for this account answers
+    /// the code older clients map, `crew_handoff_failed`, flagged `bridge_missing: true`, which
+    /// is what a client reads as "Crew isn't set up" and starts the member setup from. The
+    /// flag rides a cause the connect wrapped, as the real connect's is; nothing else carries it.
+    #[test]
+    fn a_sign_in_with_no_crew_behind_it_is_flagged_bridge_missing() {
+        let failure = |kind| SshFailure {
+            kind,
+            code: "ssh_exit".into(),
+            status: "exit_127".into(),
+            description: "Crew isn't installed for this account".into(),
+            detail: None,
+            host: None,
+            outcome_unknown: false,
+        };
+        let missing = HandoffFailed::wrap(
+            anyhow::Error::new(failure(biorouter::crew::SshFailureKind::BridgeMissing))
+                .context("Couldn't connect to the workspace"),
+        );
+        assert_eq!(
+            handoff_failure_frame(&missing),
+            json!({
+                "type": "error",
+                "code": "crew_handoff_failed",
+                "error": authentication::HANDOFF_FAILED_MESSAGE,
+                "bridge_missing": true,
+            })
+        );
+        for kind in [
+            biorouter::crew::SshFailureKind::BrokerNotRunning,
+            biorouter::crew::SshFailureKind::KeyRefused,
+        ] {
+            let frame =
+                handoff_failure_frame(&HandoffFailed::wrap(anyhow::Error::new(failure(kind))));
+            assert_eq!(frame["code"], "crew_handoff_failed", "{frame}");
+            assert!(frame.get("bridge_missing").is_none(), "{frame}");
         }
     }
 

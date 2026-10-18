@@ -1,6 +1,7 @@
 import { useMemo, useState } from 'react';
 import { Plus } from '../../icons/app-icons';
 import type { Snapshot } from '../crewApi';
+import { hasJoinable, isOpenWorkspace, mayDeleteTeam } from '../dialogs/governance';
 import { directAddSupported, liveInvitations } from '../dialogs/people';
 import { personLabel, type PeopleDirectory } from '../identity';
 import { useCrew } from '../state/CrewControllerContext';
@@ -59,6 +60,11 @@ export function teamRoles(
   return roles;
 }
 
+/** The snapshot's team with `id`, for the gates that read its creator and members. */
+function teamOf(snapshot: Snapshot | null, id: string) {
+  return snapshot?.teams.find((team) => team.id === id) ?? null;
+}
+
 /**
  * Every team section, then the quiet "+ Add team" row, as ONE roving-focus list: ↑/↓ move
  * between rows across teams, Tab leaves it, and coming back in lands on the current channel —
@@ -77,8 +83,17 @@ export function TeamSections({ renameEnabled = false }: { renameEnabled?: boolea
   const actionable = verified;
   // Who the broker lets change a team (Q2-41). Rename is `team.rename`: the creator only, with no
   // exception for the host. Adding is `team.add_member` (owner or host) where the broker adds
-  // people directly, else `invitation.create` (owner only) — `AddPeopleDialog`'s own rule.
+  // people directly, else `invitation.create` (owner only) — `AddPeopleDialog`'s own rule. In an
+  // open workspace every member of the team does both (OW-2), and may join its other channels.
   const directAdd = directAddSupported(crew.capabilities);
+  const open = isOpenWorkspace(snapshot);
+  const browsable = useMemo(
+    () =>
+      new Set(
+        sections.filter((section) => hasJoinable(snapshot, section.id)).map((section) => section.id)
+      ),
+    [sections, snapshot]
+  );
 
   const keys = useMemo(() => {
     const list: string[] = [];
@@ -94,10 +109,11 @@ export function TeamSections({ renameEnabled = false }: { renameEnabled?: boolea
       if (!collapsed && section.archived.length > 0) list.push(rowKeys.archived(section.id));
       rows.archived.forEach((row) => list.push(rowKeys.channel(row.id)));
       if (!collapsed && actionable) list.push(rowKeys.addChannel(section.id));
+      if (!collapsed && browsable.has(section.id)) list.push(rowKeys.browse(section.id));
     }
     if (actionable) list.push(rowKeys.addTeam);
     return list;
-  }, [sections, collapsedTeams, archivedOpen, crew.channelId, actionable]);
+  }, [sections, collapsedTeams, archivedOpen, crew.channelId, actionable, browsable]);
 
   const roving = useRovingRows(keys, crew.channelId ? rowKeys.channel(crew.channelId) : null);
 
@@ -125,8 +141,16 @@ export function TeamSections({ renameEnabled = false }: { renameEnabled?: boolea
           key={section.id}
           section={section}
           role={roles.get(section.id) ?? { kind: 'member' }}
-          canAddPeople={roles.get(section.id)?.kind === 'owner' || (directAdd && dir.viewerIsHost)}
-          canRename={roles.get(section.id)?.kind === 'owner'}
+          canAddPeople={
+            roles.get(section.id)?.kind === 'owner' || open || (directAdd && dir.viewerIsHost)
+          }
+          canRename={roles.get(section.id)?.kind === 'owner' || open}
+          canDelete={mayDeleteTeam(snapshot, teamOf(snapshot, section.id), {
+            capabilities: crew.capabilities,
+            viewerIsHost: dir.viewerIsHost,
+          })}
+          canBrowse={browsable.has(section.id)}
+          openWorkspace={open}
           collapsed={collapsedTeams.isCollapsed(section.id)}
           onCollapsedChange={(collapsed) => collapsedTeams.setCollapsed(section.id, collapsed)}
           archivedOpen={archivedOpen.has(section.id)}

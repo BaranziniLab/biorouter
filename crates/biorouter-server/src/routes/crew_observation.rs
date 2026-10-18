@@ -60,6 +60,13 @@ fn observation_error_code(error: &anyhow::Error) -> String {
     if let Some(code) = broker_code(error) {
         return code;
     }
+    // OW-5: the core types a deleted workspace's refusal on top of the broker's envelope; the
+    // frame keeps the broker's own code, which every client answers with Remove.
+    if biorouter::crew::CrewRefusal::find(error)
+        .is_some_and(|refusal| refusal.code() == biorouter::crew::refusal::WORKSPACE_DELETED)
+    {
+        return "workspace_deleted".into();
+    }
     match error.to_string().as_str() {
         "policy_changed" => "policy_changed",
         "channel_access_changed" => "channel_access_changed",
@@ -95,6 +102,7 @@ fn observation_error_text(code: &str) -> &'static str {
         "forbidden" | "access_denied" => "You no longer have access to what this view shows",
         "principal_revoked" => "You're no longer a member of this workspace",
         "privacy_denied" => "The workspace's privacy rules don't allow this view",
+        "workspace_deleted" => "The host deleted this workspace",
         _ => "Live updates stopped",
     }
 }
@@ -1599,6 +1607,77 @@ mod tests {
             serde_json::from_value::<ObserveEvent>(frame).unwrap(),
             ObserveEvent::State { ref capabilities, .. } if capabilities.is_empty()
         ));
+    }
+
+    /// Design OW-1, OW-2, OW-8: what the workspace's snapshot says about its governance, its
+    /// context document and the teams and channels a person may join reaches the renderer as
+    /// the workspace answered it, beside the capabilities that say which controls to offer.
+    #[test]
+    fn a_state_frame_carries_governance_context_and_joinables_as_answered() {
+        let binding = json!({"mode": "private", "policy_epoch": 1, "institution_id": "ucsf"});
+        let snapshot = json!({
+            "workspace": {"id": "w", "name": "lab", "mode": "private", "policy_epoch": 4,
+                "governance": "open"},
+            "context": {"text": "# leo\nNo scheduler.", "revision": 2,
+                "updated_by": "principal-gina", "updated_at": 1_790_000_000u64},
+            "joinable_teams": [{"id": "team-2", "name": "imaging", "display_name": "Imaging",
+                "handle": "imaging", "classification": "restricted", "member_count": 3}],
+            "joinable_channels": [{"id": "channel-9", "team_id": "team-1", "name": "seq",
+                "display_name": "Sequencing", "handle": "seq", "classification": "restricted",
+                "member_count": 5}],
+            "principals": [],
+            "teams": [],
+            "channels": [],
+        });
+        let capabilities: Vec<String> = [
+            "open_governance_v1",
+            "delete_v1",
+            "workspace_context_v1",
+            "remote_access_v1",
+            "wide_runs_v1",
+        ]
+        .map(str::to_owned)
+        .to_vec();
+        let frame = state_frame_json(
+            "connection-1",
+            &binding,
+            snapshot.clone(),
+            vec![],
+            capabilities.clone(),
+        );
+        assert_eq!(frame["snapshot"], snapshot);
+        assert_eq!(frame["capabilities"], json!(capabilities));
+        match serde_json::from_value::<ObserveEvent>(frame).unwrap() {
+            ObserveEvent::State { snapshot: read, .. } => assert_eq!(read, snapshot),
+            _ => panic!("expected a state frame"),
+        }
+    }
+
+    /// OW-5: a workspace its host deleted ends the view with the broker's own code, which the
+    /// clients answer with Remove from this computer, whether or not the core typed it.
+    #[test]
+    fn a_deleted_workspace_ends_the_view_with_its_own_code() {
+        let envelope = anyhow::anyhow!(
+            "Crew broker refused request: {}",
+            json!({"code": "workspace_deleted", "message": "workspace_deleted: deleted"})
+        );
+        assert_eq!(observation_error_code(&envelope), "workspace_deleted");
+        let typed = anyhow::anyhow!(
+            "Crew broker refused request: {}",
+            json!({"code": "workspace_deleted", "message": "workspace_deleted: deleted"})
+        )
+        .context(
+            biorouter::crew::CrewRefusal::new(
+                biorouter::crew::refusal::WORKSPACE_DELETED,
+                "The host deleted lab. Remove it from this computer.",
+            )
+            .status(409),
+        );
+        assert_eq!(observation_error_code(&typed), "workspace_deleted");
+        assert_eq!(
+            observation_error_text("workspace_deleted"),
+            "The host deleted this workspace"
+        );
     }
 
     #[test]

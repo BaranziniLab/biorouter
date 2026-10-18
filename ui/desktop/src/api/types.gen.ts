@@ -827,6 +827,7 @@ export type Connection = {
     port?: number | null;
     proxy_jump?: string | null;
     public_key: string;
+    remote_access: RemoteAccess;
     /**
      * Always sent; the default only reads a registry saved before it was kept.
      */
@@ -843,6 +844,23 @@ export type Connection = {
 };
 
 export type Content = RawTextContent | RawImageContent | RawEmbeddedResource | RawAudioContent | RawResource;
+
+/**
+ * A connection's server facts and the context document drafted from them
+ * (`POST /crew/connections/{id}/context/draft`).
+ */
+export type ContextDraft = {
+    /**
+     * The draft, in Markdown ([`super::context::render_workspace_context`]).
+     */
+    draft: string;
+    /**
+     * The facts, exactly as `biorouter-crew probe --output-format json` answered them.
+     */
+    facts: {
+        [key: string]: unknown;
+    };
+};
 
 export type ContinuationLeaseErrorResponse = {
     error: string;
@@ -947,6 +965,7 @@ export type CrewConnectionRemoved = {
  */
 export type CrewConnectionView = Connection & {
     last_error_code?: CrewErrorCode | null;
+    server_access?: ServerAccess | null;
     /**
      * What to call the connection's server on screen (D-ALIAS): the person's own SSH alias
      * for its address when one maps to it, else the host. Display only, and never saved, so
@@ -954,6 +973,11 @@ export type CrewConnectionView = Connection & {
      */
     server_label: string;
     server_storage?: ServerStorage | null;
+    /**
+     * The workspace's host deleted it: its server answered `crew_workspace_deleted`, so the
+     * person can only remove the connection from this computer.
+     */
+    workspace_deleted: boolean;
 };
 
 /**
@@ -1089,7 +1113,7 @@ export type CrewError = {
  * client names every one; `openapi_contract_tests` fails on a code a Crew source answers that
  * is missing here, and on one listed here that nothing answers any more.
  */
-export type CrewErrorCode = 'crew_user_action_required' | 'crew_human_authority_unavailable' | 'crew_request_invalid' | 'crew_request_refused' | 'crew_credential_store_unavailable' | 'crew_credential_store_refused' | 'crew_registry_unreadable' | 'crew_connection_not_found' | 'crew_connection_required' | 'crew_not_connected' | 'crew_membership_ended' | 'crew_ssh_auth_required' | 'crew_ssh_key_refused' | 'crew_ssh_host_key_unknown' | 'crew_ssh_host_key_changed' | 'crew_ssh_unreachable' | 'crew_ssh_failed' | 'crew_bridge_missing' | 'crew_broker_not_running' | 'crew_handoff_failed' | 'crew_workspace_identity_mismatch' | 'crew_not_sent' | 'crew_outcome_unknown' | 'crew_reconnecting' | 'crew_mode_mismatch' | 'crew_institution_mismatch' | 'crew_public_model_refused' | 'crew_channel_not_in_workspace' | 'crew_model_fixed' | 'crew_typed_run_required' | 'crew_invalid_selector' | 'unknown_name' | 'ambiguous_name' | 'crew_idempotency_conflict' | 'crew_start_outcome_unknown' | 'crew_cancel_persistence_failed' | 'crew_session_unavailable' | 'crew_revocation_unconfirmed' | 'crew_revocation_not_saved' | 'crew_grant_not_found' | 'crew_grant_other_connection' | 'crew_grant_replaced' | 'crew_grant_ended' | 'crew_profile_refused' | 'crew_transfer_refused' | 'crew_file_is_credential' | 'crew_file_name_hidden' | 'crew_file_name_invisible' | 'crew_folder_shared' | 'crew_destination_is_folder' | 'crew_destination_exists' | 'crew_file_is_program' | 'observer_capacity_reached' | 'crew_invitation_invalid' | 'crew_invitation_conflict' | 'crew_connection_exists' | 'crew_join_unsupported' | 'crew_join_not_approved' | 'crew_join_code_mismatch' | 'crew_join_not_invited' | 'crew_join_expired' | 'crew_join_replaced' | 'crew_join_account_changed' | 'crew_join_device_conflict' | 'crew_join_identity_conflict' | 'crew_join_refused' | 'crew_host_setup_unknown' | 'crew_host_setup_used' | 'crew_host_start_busy' | 'crew_host_start_not_found' | 'crew_host_start_timed_out' | 'crew_host_start_cancelled';
+export type CrewErrorCode = 'crew_user_action_required' | 'crew_human_authority_unavailable' | 'crew_request_invalid' | 'crew_request_refused' | 'crew_credential_store_unavailable' | 'crew_credential_store_refused' | 'crew_registry_unreadable' | 'crew_connection_not_found' | 'crew_connection_required' | 'crew_not_connected' | 'crew_membership_ended' | 'crew_ssh_auth_required' | 'crew_ssh_key_refused' | 'crew_ssh_host_key_unknown' | 'crew_ssh_host_key_changed' | 'crew_ssh_unreachable' | 'crew_ssh_failed' | 'crew_bridge_missing' | 'crew_broker_not_running' | 'crew_handoff_failed' | 'crew_workspace_identity_mismatch' | 'crew_workspace_deleted' | 'crew_not_sent' | 'crew_outcome_unknown' | 'crew_reconnecting' | 'crew_mode_mismatch' | 'crew_institution_mismatch' | 'crew_public_model_refused' | 'crew_channel_not_in_workspace' | 'crew_model_fixed' | 'crew_typed_run_required' | 'crew_invalid_selector' | 'unknown_name' | 'ambiguous_name' | 'crew_idempotency_conflict' | 'crew_start_outcome_unknown' | 'crew_cancel_persistence_failed' | 'crew_session_unavailable' | 'crew_revocation_unconfirmed' | 'crew_revocation_not_saved' | 'crew_grant_not_found' | 'crew_grant_other_connection' | 'crew_grant_replaced' | 'crew_grant_ended' | 'crew_profile_refused' | 'crew_transfer_refused' | 'crew_file_is_credential' | 'crew_file_name_hidden' | 'crew_file_name_invisible' | 'crew_folder_shared' | 'crew_destination_is_folder' | 'crew_destination_exists' | 'crew_file_is_program' | 'observer_capacity_reached' | 'crew_invitation_invalid' | 'crew_invitation_conflict' | 'crew_connection_exists' | 'crew_join_unsupported' | 'crew_join_not_approved' | 'crew_join_code_mismatch' | 'crew_join_not_invited' | 'crew_join_expired' | 'crew_join_replaced' | 'crew_join_account_changed' | 'crew_join_device_conflict' | 'crew_join_identity_conflict' | 'crew_join_refused' | 'crew_host_setup_unknown' | 'crew_host_setup_used' | 'crew_host_start_busy' | 'crew_host_start_not_found' | 'crew_host_start_timed_out' | 'crew_host_start_cancelled' | 'crew_setup_busy' | 'crew_setup_not_found' | 'crew_setup_cancelled' | 'crew_setup_timed_out' | 'crew_setup_sign_in_expired' | 'crew_setup_not_waiting_for_sign_in' | 'crew_setup_server_unreadable' | 'crew_setup_start_failed' | 'crew_setup_changed' | 'crew_host_storage_unsafe' | 'crew_server_probe_unsupported' | 'crew_install_artifact_unavailable' | 'crew_install_unsupported_platform' | 'crew_install_dependency_missing' | 'crew_install_incompatible' | 'crew_install_unexpected_target' | 'crew_install_checksum_tool_missing' | 'crew_install_no_space' | 'crew_install_permission_denied' | 'crew_install_busy' | 'crew_install_transfer_incomplete' | 'crew_install_checksum_mismatch' | 'crew_install_outcome_unknown';
 
 /**
  * `DELETE /crew/files/{capability_id}`.
@@ -1284,6 +1308,26 @@ export type CrewTransferList = {
 export type CrewWorkspaceAnswer = unknown;
 
 /**
+ * `POST /crew/connections/{id}/workspace/delete`.
+ */
+export type CrewWorkspaceDeleted = {
+    /**
+     * Always `true`: the workspace is deleted on its server.
+     */
+    deleted: boolean;
+    /**
+     * Seconds until the server erases the workspace's files, as it said; `null` when the
+     * workspace had already been deleted.
+     */
+    erase_after_seconds?: number | null;
+    /**
+     * Always `true`: the connection was removed from this computer, with its keys.
+     */
+    removed: boolean;
+    workspace_id: string;
+};
+
+/**
  * Issue #56 Task 49 (DR-26): the user accepting ONE cross-institutional data
  * flow.
  *
@@ -1392,6 +1436,29 @@ export type DecodeWorkflowResponse = {
 
 export type DeleteWorkflowRequest = {
     id: string;
+};
+
+/**
+ * `POST /crew/connections/{id}/workspace/delete`: delete the connection's workspace on its
+ * server, as its host (design OW-5).
+ */
+export type DeleteWorkspaceRequest = {
+    /**
+     * The workspace's stored name, as the person confirmed it, or `null` for a workspace that
+     * has no stored name (one from before names). Always sent: the workspace refuses it when
+     * its name is no longer this one (`name_changed`), so `null` deletes only a workspace that
+     * still has none.
+     */
+    expected_name: string | null;
+    /**
+     * The request's idempotency key, so a retry after `crew_outcome_unknown` is the same
+     * deletion. Optional.
+     */
+    request_id?: string | null;
+    /**
+     * The workspace to delete: the connection's own, or nothing is sent.
+     */
+    workspace_id: string;
 };
 
 export type DetectProviderRequest = {
@@ -2341,6 +2408,7 @@ export type InvitationAdvanced = {
      * A jump route. An empty string means none, even when the invitation suggests one.
      */
     proxy_jump?: string | null;
+    remote_access?: RemoteAccess;
     remote_execution?: boolean;
     remote_root?: string | null;
     /**
@@ -4181,6 +4249,13 @@ export type RedactedThinkingContent = {
     data: string;
 };
 
+/**
+ * What a connection's agents may do on the server (design OW-6). `Folder` is the confined work
+ * folder Crew always had; `Full` runs commands as the person's own account through their own
+ * bridge. "Off" is the absence of a work folder, not a level.
+ */
+export type RemoteAccess = 'folder' | 'full';
+
 export type RemoveExtensionRequest = {
     name: string;
     session_id: string;
@@ -4544,6 +4619,7 @@ export type SaveConnection = {
     port?: number | null;
     preparation_id?: string | null;
     proxy_jump?: string | null;
+    remote_access?: RemoteAccess;
     remote_execution?: boolean;
     remote_root?: string | null;
     socket_path: string;
@@ -4724,6 +4800,43 @@ export type SecretKeyRequest = {
      * Whether the request can be satisfied without this one.
      */
     required?: boolean;
+};
+
+/**
+ * What a connection's agents can do on its server, as this computer learned it at the
+ * connection's last verified connect (design OW-6): the workspace server's capabilities and the
+ * person's own bridge's `bridge.hello`. Served as a saved connection's `server_access`, so
+ * Connection settings can say what is missing (an older server, an older bridge, a kernel that
+ * cannot confine commands) before anyone tries. Display only: a full-access run is offered
+ * only when both say so, and the broker and the bridge enforce it.
+ */
+export type ServerAccess = {
+    /**
+     * The person's own `biorouter-crew` on the server; `null` when it predates `bridge.hello`.
+     */
+    bridge_version?: string | null;
+    /**
+     * The bridge can confine commands to a work folder (the server's kernel has Landlock ABI
+     * 3 or later); `null` when the bridge is older and does not say.
+     */
+    confined_execution_available?: boolean | null;
+    /**
+     * The workspace server takes full-access runs (`remote_access_v1`) and the person's own
+     * bridge can run commands as their account (`remote_full_v1`).
+     */
+    full_access_available: boolean;
+    /**
+     * That account's home folder on the server; `null` when it did not say.
+     */
+    home?: string | null;
+    /**
+     * The server kernel's Landlock ABI, as the bridge read it; `null` when it did not say.
+     */
+    landlock_abi?: number | null;
+    /**
+     * The server account the bridge runs as; `null` when it did not say.
+     */
+    user?: string | null;
 };
 
 /**
@@ -5084,9 +5197,285 @@ export type Settings = {
     temperature?: number | null;
 };
 
+/**
+ * The program this daemon installs (`GET /crew/setup/artifact`).
+ */
+export type SetupArtifact = {
+    /**
+     * Its SHA-256, as 64 lowercase hex digits.
+     */
+    sha256: string;
+    size: number;
+    /**
+     * `bundled` (part of this app) or `dev` (a development copy from
+     * `BIOROUTER_CREW_BROKER_DIR`).
+     */
+    source: string;
+    /**
+     * The platform it is built for: `x86_64-unknown-linux-gnu`.
+     */
+    target: string;
+    /**
+     * What its `--version` prints after `biorouter-crew `.
+     */
+    version: string;
+};
+
+/**
+ * Why a job stopped.
+ */
+export type SetupError = {
+    /**
+     * The SSH codes (`crew_ssh_auth_required`, `crew_ssh_key_refused`,
+     * `crew_ssh_host_key_unknown`, `crew_ssh_host_key_changed`, `crew_ssh_unreachable`,
+     * `crew_bridge_missing`, `crew_broker_not_running`, `crew_ssh_failed`), a connect's
+     * (`crew_workspace_identity_mismatch`, `crew_request_refused`), or one of setup's own:
+     * `crew_setup_cancelled`, `crew_setup_timed_out`, `crew_setup_sign_in_expired`,
+     * `crew_setup_server_unreadable` (the server's answer could not be read),
+     * `crew_setup_start_failed` (Crew did not start the workspace; see `outcome.host`, and
+     * `detail` for what Crew printed), `crew_host_storage_unsafe` (other accounts can write to
+     * a folder above where the workspace is kept; `detail` lists them one per line, and
+     * `fix_storage_permissions` lets setup fix the ones the account owns),
+     * `crew_setup_changed` (the connection's login or route changed while the job ran),
+     * `crew_install_artifact_unavailable`, `crew_install_unsupported_platform`,
+     * `crew_install_dependency_missing`, `crew_install_incompatible` (the program there does
+     * not run or name its version), `crew_install_unexpected_target` (a link, a folder or
+     * another account's file where the program goes), `crew_install_checksum_tool_missing`,
+     * `crew_install_no_space`, `crew_install_permission_denied`, `crew_install_busy` (another
+     * install in the account), `crew_install_transfer_incomplete`,
+     * `crew_install_checksum_mismatch` (nothing was replaced) or
+     * `crew_install_outcome_unknown` (the connection dropped after the transfer; set up again
+     * to check).
+     */
+    code: string;
+    /**
+     * The server's or OpenSSH's own bounded words, for Copy details.
+     */
+    detail?: string | null;
+    /**
+     * The SSH hop a connect failure concerns.
+     */
+    host?: string | null;
+    /**
+     * One plain sentence for a person.
+     */
+    message: string;
+};
+
+/**
+ * The account's Crew program, as the check found it.
+ */
+export type SetupInstalled = {
+    /**
+     * Always `~/.local/bin/biorouter-crew`.
+     */
+    path: string;
+    /**
+     * Why it cannot be used or replaced, for a person.
+     */
+    problem?: string | null;
+    /**
+     * Whether `--version` ran and named a version; `null` when there is no file.
+     */
+    runnable?: boolean | null;
+    sha256?: string | null;
+    /**
+     * `missing`, `file`, `symlink`, `dir` or `other`.
+     */
+    state: string;
+    version?: string | null;
+};
+
+/**
+ * What the job is for.
+ */
+export type SetupIntent = 'check' | 'install' | 'host' | 'member';
+
+/**
+ * What a job did, once it is done.
+ */
+export type SetupOutcome = {
+    /**
+     * A member's connection, connected and verified.
+     */
+    connection_id?: string | null;
+    /**
+     * The first context document, drafted from the server's facts (Markdown).
+     */
+    context_draft?: string | null;
+    host?: StartOutput | null;
+    /**
+     * The start command that ran, character for character what the Host dialog shows.
+     */
+    host_command?: string | null;
+    /**
+     * The Crew program in the account now.
+     */
+    installed_version?: string | null;
+    /**
+     * The program replaced stays as `~/.local/bin/biorouter-crew.previous`.
+     */
+    previous_kept: boolean;
+    remote_access?: RemoteAccess | null;
+    /**
+     * The program already there was kept: the same version as this app's, a newer one, or an
+     * older one that was not to be replaced.
+     */
+    reused: boolean;
+    /**
+     * A Crew program a job replaced ([`SetupOutcome::upgraded_from`]).
+     */
+    upgraded_from?: {
+        /**
+         * The SHA-256 of the program now installed.
+         */
+        installed_sha256: string;
+        /**
+         * The version now installed.
+         */
+        installed_version: string;
+        /**
+         * The replaced program's SHA-256, as 64 lowercase hex digits.
+         */
+        sha256?: string | null;
+        /**
+         * The version the replaced program named, when it named one.
+         */
+        version?: string | null;
+    } | null;
+    /**
+     * The workspace's work folder on the server, as its canonical path.
+     */
+    work_folder?: string | null;
+};
+
+/**
+ * What to set up (`POST /crew/setup`).
+ */
+export type SetupRequest = {
+    /**
+     * A member's agent access, as setup is asked to set it (design OW-6).
+     */
+    agent_access?: 'off' | 'folder' | 'full' | null;
+    /**
+     * Take write access for other accounts away (`chmod go-w`) from the folders the job finds
+     * above where the workspace is kept, which the account owns, when Crew would otherwise
+     * refuse to start there (`crew_host_storage_unsafe`). Only a host's job reads it.
+     */
+    fix_storage_permissions?: boolean;
+    intent: SetupIntent;
+    /**
+     * Replace a Crew program in the account that is older than this app's, or that does not
+     * run. The one replaced stays as `biorouter-crew.previous`. A newer one is never replaced;
+     * one of this app's version that is another build of it (another SHA-256) is replaced
+     * whether or not this is set.
+     */
+    replace_existing?: boolean;
+    target: SetupTarget;
+    /**
+     * The workspace's name (`lab`, `chen-lab`), as the broker's rule allows it. A host's job
+     * needs it; a member's uses it for the work folder when given.
+     */
+    workspace_name?: string | null;
+};
+
 export type SetupResponse = {
     message: string;
     success: boolean;
+};
+
+/**
+ * What the server said about itself. Each field is `null` until the check has read it.
+ */
+export type SetupServer = {
+    arch?: string | null;
+    /**
+     * The tool the server checks a SHA-256 with: `sha256sum`, `shasum` or `openssl`.
+     */
+    checksum_tool?: string | null;
+    /**
+     * Free space in the account's home folder, in KiB.
+     */
+    free_kib?: number | null;
+    glibc?: string | null;
+    home?: string | null;
+    kernel?: string | null;
+    /**
+     * The SSH login the job uses.
+     */
+    login: string;
+    os?: string | null;
+    /**
+     * Folders above where a host's workspace is kept (`~/.local/share/biorouter-crew`), as
+     * their real paths, that this account owns and other accounts may write to (group or other
+     * write, no sticky bit). Crew won't start a workspace under them
+     * (`crew_host_storage_unsafe`) until `chmod go-w` takes that away.
+     */
+    storage_unsafe: Array<string>;
+    uid?: number | null;
+    user?: string | null;
+};
+
+/**
+ * Open a setup job's sign-in, as a connection's is opened.
+ */
+export type SetupSignIn = {
+    cols: number;
+    controller_id: string;
+    request_id: string;
+    rows: number;
+};
+
+export type SetupStage = {
+    /**
+     * A few words on what the step found or why it was skipped, for a person.
+     */
+    detail?: string | null;
+    name: SetupStageName;
+    state: SetupStageState;
+};
+
+/**
+ * A step of a job, in the order a job takes them.
+ */
+export type SetupStageName = 'check' | 'sign_in' | 'install' | 'start' | 'connect' | 'work_folder' | 'context' | 'done';
+
+export type SetupStageState = 'pending' | 'running' | 'done' | 'skipped' | 'failed';
+
+/**
+ * Where a job stands.
+ */
+export type SetupState = 'running' | 'needs_sign_in' | 'finished' | 'failed' | 'cancelled';
+
+/**
+ * A job, as `GET /crew/setup/{job_id}` answers it.
+ */
+export type SetupStatus = {
+    artifact?: SetupArtifact | null;
+    error?: SetupError | null;
+    installed?: SetupInstalled | null;
+    intent: SetupIntent;
+    job_id: string;
+    outcome?: SetupOutcome | null;
+    server: SetupServer;
+    stage: SetupStageName;
+    stages: Array<SetupStage>;
+    state: SetupState;
+};
+
+/**
+ * Which server, and which account on it.
+ */
+export type SetupTarget = {
+    connection_id: string;
+    kind: 'connection';
+} | {
+    identity_file?: string | null;
+    kind: 'pending';
+    port?: number | null;
+    preparation_id: string;
+    proxy_jump?: string | null;
+    ssh_target: string;
 };
 
 /**
@@ -7553,7 +7942,7 @@ export type CrewListConnectionsError = CrewListConnectionsErrors[keyof CrewListC
 
 export type CrewListConnectionsResponses = {
     /**
-     * Every connection saved on this computer, each with `server_label`, the person's own name for its server (their SSH alias when one maps to the address, else the host; display only), and `last_error_code` when the daemon has a code for `last_error`: `crew_membership_ended` (the workspace refused this computer or its person as no longer a member, so the daemon stops dialling it), an SSH failure's code or `crew_workspace_identity_mismatch`. `server_storage` says when a connected workspace's server has stopped saving changes (`code` `storage_full` or `storage_failed`, `since` when); `null` while it saves or when that is not known
+     * Every connection saved on this computer, each with `server_label`, the person's own name for its server (their SSH alias when one maps to the address, else the host; display only), and `last_error_code` when the daemon has a code for `last_error`: `crew_membership_ended` (the workspace refused this computer or its person as no longer a member, so the daemon stops dialling it), an SSH failure's code or `crew_workspace_identity_mismatch`. `server_storage` says when a connected workspace's server has stopped saving changes (`code` `storage_full` or `storage_failed`, `since` when); `null` while it saves or when that is not known. `server_access` says what agents can do on the server as the last connect found (whether full access is available, whether commands can be confined, the bridge's version, account and home); `null` before the first connect. `workspace_deleted` is `true` once the workspace answered `crew_workspace_deleted`: its host deleted it, so the person can only remove it from this computer
      */
     200: CrewConnectionList;
 };
@@ -7831,6 +8220,10 @@ export type CrewConnectErrors = {
      * No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no user-action key
      */
     403: CrewError;
+    /**
+     * `crew_workspace_deleted`: the workspace's host deleted it (its server said so, or the bridge found the tombstone its server left), so the connection is never dialled again and can only be removed from this computer; `workspace` names it
+     */
+    409: CrewError;
 };
 
 export type CrewConnectError = CrewConnectErrors[keyof CrewConnectErrors];
@@ -7843,6 +8236,48 @@ export type CrewConnectResponses = {
 };
 
 export type CrewConnectResponse = CrewConnectResponses[keyof CrewConnectResponses];
+
+export type CrewContextDraftData = {
+    body?: never;
+    path: {
+        /**
+         * The saved connection
+         */
+        id: string;
+    };
+    query?: never;
+    url: '/crew/connections/{id}/context/draft';
+};
+
+export type CrewContextDraftErrors = {
+    /**
+     * An SSH failure's code (`crew_ssh_auth_required`: sign in first; `crew_ssh_key_refused`, `crew_ssh_host_key_unknown`, `crew_ssh_host_key_changed`, `crew_ssh_unreachable`, `crew_ssh_failed`), or `crew_request_refused` for an SSH configuration the preflight refuses
+     */
+    400: CrewError;
+    /**
+     * No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no user-action key
+     */
+    403: CrewError;
+    /**
+     * `crew_connection_not_found`: no saved connection has that ID
+     */
+    404: CrewError;
+    /**
+     * `crew_server_probe_unsupported`: the Crew program in the account is too old to describe the server (set Crew up again); `crew_setup_server_unreadable`: its answer could not be read; `crew_setup_timed_out`: it did not answer in time
+     */
+    409: CrewError;
+};
+
+export type CrewContextDraftError = CrewContextDraftErrors[keyof CrewContextDraftErrors];
+
+export type CrewContextDraftResponses = {
+    /**
+     * `draft` (Markdown) and the `facts` it was drafted from
+     */
+    200: ContextDraft;
+};
+
+export type CrewContextDraftResponse = CrewContextDraftResponses[keyof CrewContextDraftResponses];
 
 export type CrewDisconnectData = {
     body?: never;
@@ -8136,7 +8571,7 @@ export type CrewRequestErrors = {
      */
     403: CrewError;
     /**
-     * `crew_not_connected`: the connection is down and nothing is dialling it again, so connect it (signing in if asked) and try again; `workspace` names it. Nothing was sent
+     * `crew_not_connected`: the connection is down and nothing is dialling it again, so connect it (signing in if asked) and try again; `workspace` names it. Nothing was sent. `crew_workspace_deleted`: the workspace's host deleted it, so it answers nothing else and the connection can only be removed from this computer; `workspace` names it
      */
     409: CrewError;
     /**
@@ -8455,6 +8890,60 @@ export type CrewProfileRevokeResponses = {
 };
 
 export type CrewProfileRevokeResponse = CrewProfileRevokeResponses[keyof CrewProfileRevokeResponses];
+
+export type CrewDeleteWorkspaceData = {
+    body: DeleteWorkspaceRequest;
+    path: {
+        /**
+         * The saved connection
+         */
+        id: string;
+    };
+    query?: never;
+    url: '/crew/connections/{id}/workspace/delete';
+};
+
+export type CrewDeleteWorkspaceErrors = {
+    /**
+     * `crew_request_invalid` for a body that is not JSON; `crew_request_refused` for a `workspace_id` that is not the connection's own, an empty name, a server whose Crew cannot delete workspaces yet, or a deletion the workspace refused (`broker_code` `forbidden`: only its host may delete it; `name_changed`: its name is no longer the one typed); `crew_credential_store_unavailable` or `crew_credential_store_refused` when the device key cannot be read
+     */
+    400: CrewError;
+    /**
+     * No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no user-action key
+     */
+    403: CrewError;
+    /**
+     * `crew_not_connected`: the connection is down and nothing is dialling it again, so connect it and try again; `workspace` names it. Nothing was sent. `crew_registry_unreadable`: the workspace was deleted, but Crew's saved settings on this computer can't be read by this build, so the connection is still saved
+     */
+    409: CrewError;
+    /**
+     * `crew_request_invalid`: the body is larger than the route takes
+     */
+    413: CrewError;
+    /**
+     * `crew_request_invalid`: the body is not sent as `application/json`
+     */
+    415: CrewError;
+    /**
+     * `crew_request_invalid`: a body with a missing, mistyped or unknown field; `detail` says which
+     */
+    422: CrewError;
+    /**
+     * The request did not go through: `crew_not_sent` (nothing reached the workspace), `crew_outcome_unknown` (the bridge was lost after the request was written, so whether the workspace was deleted is not known; retry with `request_id`, which answers `crew_workspace_deleted` if it was) or `crew_reconnecting` (Biorouter is dialling the workspace again; `workspace` names it)
+     */
+    503: CrewError;
+};
+
+export type CrewDeleteWorkspaceError = CrewDeleteWorkspaceErrors[keyof CrewDeleteWorkspaceErrors];
+
+export type CrewDeleteWorkspaceResponses = {
+    /**
+     * Deleted on its server, which erases its files after `erase_after_seconds`, and removed from this computer with its keys. A workspace that was already deleted (it answered `crew_workspace_deleted`) is removed from this computer all the same, with `erase_after_seconds` `null`
+     */
+    200: CrewWorkspaceDeleted;
+};
+
+export type CrewDeleteWorkspaceResponse = CrewDeleteWorkspaceResponses[keyof CrewDeleteWorkspaceResponses];
 
 export type CrewProfileCredentialsData = {
     body?: never;
@@ -8895,6 +9384,198 @@ export type CrewResolveResponses = {
 };
 
 export type CrewResolveResponse = CrewResolveResponses[keyof CrewResolveResponses];
+
+export type CrewSetupStartData = {
+    body: SetupRequest;
+    path?: never;
+    query?: never;
+    url: '/crew/setup';
+};
+
+export type CrewSetupStartErrors = {
+    /**
+     * `crew_request_invalid`: a body that is not JSON, a field the route does not take, a workspace name, login or route outside what a connection allows, a `host` job without a pending host setup and a name, or a `member` job without a saved connection; `crew_request_refused` for an SSH configuration the preflight refuses
+     */
+    400: CrewError;
+    /**
+     * No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no user-action key
+     */
+    403: CrewError;
+    /**
+     * `crew_connection_not_found`: no saved connection has that ID
+     */
+    404: CrewError;
+    /**
+     * `crew_host_setup_unknown`: no pending host setup with that ID on this computer; `crew_host_setup_used`: it already has a saved connection; `crew_setup_busy`: another kind of job is under way for this server, or too many jobs at once
+     */
+    409: CrewError;
+    /**
+     * `crew_request_invalid`: the body is larger than the route takes
+     */
+    413: CrewError;
+    /**
+     * `crew_request_invalid`: the body is not sent as `application/json`
+     */
+    415: CrewError;
+};
+
+export type CrewSetupStartError = CrewSetupStartErrors[keyof CrewSetupStartErrors];
+
+export type CrewSetupStartResponses = {
+    /**
+     * The job, started (or the one already under way for the same server and intent): poll `GET /crew/setup/{job_id}`
+     */
+    200: SetupStatus;
+};
+
+export type CrewSetupStartResponse = CrewSetupStartResponses[keyof CrewSetupStartResponses];
+
+export type CrewSetupArtifactData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/crew/setup/artifact';
+};
+
+export type CrewSetupArtifactErrors = {
+    /**
+     * No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no user-action key
+     */
+    403: CrewError;
+    /**
+     * `crew_install_artifact_unavailable`: this build has no Crew server program, or the one it has does not match its manifest or this daemon's version
+     */
+    409: CrewError;
+};
+
+export type CrewSetupArtifactError = CrewSetupArtifactErrors[keyof CrewSetupArtifactErrors];
+
+export type CrewSetupArtifactResponses = {
+    /**
+     * The program, checked against its manifest and this daemon's version: `source` is `bundled` (part of this app) or `dev` (from `BIOROUTER_CREW_BROKER_DIR`)
+     */
+    200: SetupArtifact;
+};
+
+export type CrewSetupArtifactResponse = CrewSetupArtifactResponses[keyof CrewSetupArtifactResponses];
+
+export type CrewSetupCancelData = {
+    body?: never;
+    path: {
+        /**
+         * The job to stop
+         */
+        job_id: string;
+    };
+    query?: never;
+    url: '/crew/setup/{job_id}';
+};
+
+export type CrewSetupCancelErrors = {
+    /**
+     * No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no user-action key
+     */
+    403: CrewError;
+    /**
+     * `crew_setup_not_found`: no such job on this computer
+     */
+    404: CrewError;
+};
+
+export type CrewSetupCancelError = CrewSetupCancelErrors[keyof CrewSetupCancelErrors];
+
+export type CrewSetupCancelResponses = {
+    /**
+     * Stopped; stopping a finished job changes nothing
+     */
+    200: CrewCancelled;
+};
+
+export type CrewSetupCancelResponse = CrewSetupCancelResponses[keyof CrewSetupCancelResponses];
+
+export type CrewSetupStatusData = {
+    body?: never;
+    path: {
+        /**
+         * The job `POST /crew/setup` answered
+         */
+        job_id: string;
+    };
+    query?: never;
+    url: '/crew/setup/{job_id}';
+};
+
+export type CrewSetupStatusErrors = {
+    /**
+     * No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no user-action key
+     */
+    403: CrewError;
+    /**
+     * `crew_setup_not_found`: no such job on this computer
+     */
+    404: CrewError;
+};
+
+export type CrewSetupStatusError = CrewSetupStatusErrors[keyof CrewSetupStatusErrors];
+
+export type CrewSetupStatusResponses = {
+    /**
+     * `state` is `running`, `needs_sign_in` (open `POST /crew/setup/{job_id}/authentication`), `finished` (`outcome`), `failed` or `cancelled` (`error`: a typed code and a sentence, such as `crew_setup_cancelled`, `crew_setup_timed_out`, `crew_setup_sign_in_expired`, `crew_setup_start_failed` (`detail` is what Crew printed), `crew_host_storage_unsafe` (other accounts can write to a folder above where the workspace is kept; `detail` lists them, and starting again with `fix_storage_permissions` fixes the account's own), `crew_setup_changed`, `crew_install_checksum_mismatch` or an SSH code)
+     */
+    200: SetupStatus;
+};
+
+export type CrewSetupStatusResponse = CrewSetupStatusResponses[keyof CrewSetupStatusResponses];
+
+export type CrewSetupAuthenticationPrepareData = {
+    body: SetupSignIn;
+    path: {
+        /**
+         * The job waiting for a sign-in
+         */
+        job_id: string;
+    };
+    query?: never;
+    url: '/crew/setup/{job_id}/authentication';
+};
+
+export type CrewSetupAuthenticationPrepareErrors = {
+    /**
+     * `crew_request_invalid` for a body that is not JSON or not this route's; `crew_request_refused` for a sign-in already open for this server under another controller, or one that could not start
+     */
+    400: CrewError;
+    /**
+     * No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no user-action key
+     */
+    403: CrewError;
+    /**
+     * `crew_setup_not_found`: no such job on this computer
+     */
+    404: CrewError;
+    /**
+     * `crew_setup_not_waiting_for_sign_in`: the job is not at `needs_sign_in`
+     */
+    409: CrewError;
+    /**
+     * `crew_request_invalid`: the body is larger than the route takes
+     */
+    413: CrewError;
+    /**
+     * `crew_request_invalid`: the body is not sent as `application/json`
+     */
+    415: CrewError;
+};
+
+export type CrewSetupAuthenticationPrepareError = CrewSetupAuthenticationPrepareErrors[keyof CrewSetupAuthenticationPrepareErrors];
+
+export type CrewSetupAuthenticationPrepareResponses = {
+    /**
+     * The sign-in, ready for its terminal. Once its master is up the job carries on over it, and so do the start, Create and the connect
+     */
+    200: AuthenticationSession;
+};
+
+export type CrewSetupAuthenticationPrepareResponse = CrewSetupAuthenticationPrepareResponses[keyof CrewSetupAuthenticationPrepareResponses];
 
 export type CrewTransferListData = {
     body?: never;

@@ -437,6 +437,7 @@ async fn stale_failed_transport_cannot_retire_a_newer_replacement() {
         workspace_public_key: "11".repeat(32),
         remote_root: None,
         remote_execution: false,
+        remote_access: Default::default(),
         cluster_connection_id: "stale-transport-cluster".into(),
         mode: ClusterMode::Public,
         institution_id: None,
@@ -729,6 +730,14 @@ const STDERR_FIXTURES: &[(&str, &str, i32, SshFailureKind)] = &[
         "Error: broker_unavailable: the workspace server closed the connection; reconnect to continue\n",
         1,
         SshFailureKind::BrokerNotRunning,
+    ),
+    // L7: the bridge found no server, only the tombstone it left when its host deleted the
+    // workspace. Not a stopped server, which is dialled again for an hour.
+    (
+        "the host deleted the workspace",
+        "Error: workspace_deleted: The host deleted this workspace. Remove it from this computer.\n",
+        1,
+        SshFailureKind::WorkspaceDeleted,
     ),
     (
         "a runtime-directory permission error is not a sign-in failure",
@@ -1151,10 +1160,46 @@ fn every_kind_has_its_api_code() {
         (Unreachable, "crew_ssh_unreachable"),
         (BridgeMissing, "crew_bridge_missing"),
         (BrokerNotRunning, "crew_broker_not_running"),
+        (WorkspaceDeleted, "crew_workspace_deleted"),
         (Other, "crew_ssh_failed"),
     ] {
         assert_eq!(kind.api_code(), code);
     }
+}
+
+/// L7: only the bridge's own startup error says the host deleted the workspace: its line, from
+/// a bridge that ran (any status but ssh's own 255, or a signal). The same words under ssh's
+/// 255, or anywhere but at the start of a line (a login banner quoting them), are not it.
+#[test]
+fn only_the_bridges_own_line_says_the_workspace_was_deleted() {
+    let line =
+        "Error: workspace_deleted: The host deleted this workspace. Remove it from this computer.";
+    for state in [ChildState::Exited(Some(1)), ChildState::Exited(None)] {
+        assert_eq!(
+            classify(state, line),
+            SshFailureKind::WorkspaceDeleted,
+            "{state:?}"
+        );
+        assert_eq!(
+            classify(state, &format!("Welcome to leo.\n  {line}\n")),
+            SshFailureKind::WorkspaceDeleted,
+            "{state:?}: indented"
+        );
+        assert_eq!(
+            classify(state, &format!("motd: {line}")),
+            SshFailureKind::Other,
+            "{state:?}: quoted"
+        );
+    }
+    assert_eq!(
+        classify(ChildState::Exited(Some(255)), line),
+        SshFailureKind::Other
+    );
+    assert_eq!(classify(ChildState::Running, line), SshFailureKind::Other);
+    assert_eq!(
+        super::classify_exit(Some(1), line).api_code(),
+        "crew_workspace_deleted"
+    );
 }
 
 #[test]

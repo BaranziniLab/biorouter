@@ -8,14 +8,7 @@ import type { ConnectFailureKind } from '../state/connectFailure';
 import { useCrew } from '../state/CrewControllerContext';
 import type { CrewController } from '../state/types';
 import { ChannelIntro } from '../timeline/ChannelIntro';
-import {
-  checklistCopy,
-  emptyCopy,
-  INSTALL_COMMANDS,
-  nameSuggestionCopy,
-  notSetUpCopy,
-  welcomeCopy,
-} from './copy';
+import { checklistCopy, emptyCopy, nameSuggestionCopy, welcomeCopy } from './copy';
 import {
   ConnectingCard,
   focusComposerOnceMounted,
@@ -28,7 +21,6 @@ import {
 } from './EmptyStates';
 import { attemptTime, brokerStartCommand } from './joinText';
 import { resetJoinContextForTests, updateJoinContext } from './joinContext';
-import { NotSetUpPane } from './NotSetUpPane';
 import { OnboardingScreen, ONBOARDING_SCREENS } from './OnboardingScreen';
 import { SetupChecklist } from './SetupChecklist';
 import {
@@ -527,48 +519,7 @@ describe('connection states', () => {
   });
 });
 
-describe('NotSetUpPane', () => {
-  it('hands over a message for the host and keeps the install behind a disclosure', async () => {
-    updateJoinContext('conn-1', { hostUsername: 'alice', hostDisplayName: 'Alice Chen' });
-    const crew = crewWith({
-      lastConnectFailure: { kind: 'bridge_missing', message: 'exit_127' },
-    });
-    renderWithCrew(<NotSetUpPane />, crew);
-
-    expect(
-      screen.getByRole('heading', { name: notSetUpCopy.title('hpc.ucsf.edu') })
-    ).toBeInTheDocument();
-    expect(screen.getByText(notSetUpCopy.body)).toBeInTheDocument();
-    const message =
-      'Hi Alice, Crew isn’t set up for my account (@bob) on hpc.ucsf.edu yet. Could you or IT install biorouter-crew in ~/.local/bin for me?';
-    expect(screen.getByText(message)).toBeInTheDocument();
-    fireEvent.click(screen.getByRole('button', { name: `Copy ${notSetUpCopy.messageLabel}` }));
-    await waitFor(() => expect(navigator.clipboard.writeText).toHaveBeenCalledWith(message));
-
-    expect(screen.queryByText(/install -m 0755/)).toBeNull();
-    fireEvent.click(screen.getByRole('button', { name: notSetUpCopy.installYourself }));
-    fireEvent.click(screen.getByRole('button', { name: `Copy ${notSetUpCopy.installLabel}` }));
-    await waitFor(() =>
-      expect(navigator.clipboard.writeText).toHaveBeenCalledWith(INSTALL_COMMANDS)
-    );
-
-    fireEvent.click(screen.getByRole('button', { name: notSetUpCopy.tryAgain }));
-    expect(crew.connect).toHaveBeenCalledWith({ userInitiated: true });
-    expect(crew.registerErrorSlot).toHaveBeenCalledWith('connect');
-  });
-
-  it('still reads as a message without a known host', () => {
-    renderWithCrew(
-      <NotSetUpPane />,
-      crewWith({ lastConnectFailure: { kind: 'handoff_failed', message: 'handoff' } })
-    );
-    expect(
-      screen.getByText(
-        'Crew isn’t set up for my account (@bob) on hpc.ucsf.edu yet. Could you or IT install biorouter-crew in ~/.local/bin for me?'
-      )
-    ).toBeInTheDocument();
-  });
-});
+// NotSetUpPane, now led by automatic setup (OW-9), has its own suite: `NotSetUpPane.test.tsx`.
 
 describe('NoTeamState', () => {
   it('tells a member whom to ask, with Create a team as the quiet way on', () => {

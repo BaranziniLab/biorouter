@@ -23,6 +23,7 @@ import {
   type CrewPerson,
 } from '../identity';
 import type { Channel } from '../crewApi';
+import { managesChannel } from '../dialogs/governance';
 import type { CrewController } from '../state/types';
 import { membersCopy } from './copy';
 import {
@@ -103,7 +104,8 @@ function MemberActions({
   memberId,
   username,
   label,
-  canManage,
+  canTransfer,
+  canRemove,
   announce,
 }: {
   crew: CrewController;
@@ -111,7 +113,10 @@ function MemberActions({
   memberId: string;
   username: string;
   label: string;
-  canManage: boolean;
+  /** Make owner…: the owner's alone, in either governance. */
+  canTransfer: boolean;
+  /** Remove from {channel}…: whoever manages the channel (OW-2). */
+  canRemove: boolean;
   announce(text: string): void;
 }) {
   const [open, setOpen] = useState(false);
@@ -183,36 +188,40 @@ function MemberActions({
             {itemLabel('username', membersCopy.copyUsername)}
           </DropdownMenuItem>
         )}
-        {canManage && (
+        {(canTransfer || canRemove) && (
           <>
             {/* Never the menu's first line: nothing sits above it without a username. */}
             {username !== '' && <DropdownMenuSeparator />}
-            <DropdownMenuItem
-              onSelect={() =>
-                crew.openDialog({
-                  kind: 'transfer-ownership',
-                  channelId: channel.id,
-                  successorId: memberId,
-                })
-              }
-            >
-              {membersCopy.makeOwner}
-            </DropdownMenuItem>
-            <DropdownMenuItem
-              variant="destructive"
-              onSelect={() =>
-                crew.openDialog({
-                  kind: 'confirm',
-                  confirm: {
-                    action: 'remove-channel-member',
+            {canTransfer && (
+              <DropdownMenuItem
+                onSelect={() =>
+                  crew.openDialog({
+                    kind: 'transfer-ownership',
                     channelId: channel.id,
-                    principalId: memberId,
-                  },
-                })
-              }
-            >
-              {membersCopy.remove(name)}
-            </DropdownMenuItem>
+                    successorId: memberId,
+                  })
+                }
+              >
+                {membersCopy.makeOwner}
+              </DropdownMenuItem>
+            )}
+            {canRemove && (
+              <DropdownMenuItem
+                variant="destructive"
+                onSelect={() =>
+                  crew.openDialog({
+                    kind: 'confirm',
+                    confirm: {
+                      action: 'remove-channel-member',
+                      channelId: channel.id,
+                      principalId: memberId,
+                    },
+                  })
+                }
+              >
+                {membersCopy.remove(name)}
+              </DropdownMenuItem>
+            )}
           </>
         )}
         <DropdownMenuSeparator />
@@ -251,8 +260,9 @@ function MemberActions({
  * nothing else to offer (an unknown member) has no `⋯`. Channel invitations the viewer sent and
  * nobody has accepted yet appear as muted "invited" rows.
  *
- * The owner adds people from here; anyone else is told who can, instead of being shown nothing.
- * The broker decides every one of these actions.
+ * The owner adds people from here, and in an open workspace every member does (OW-2), removing
+ * anyone but the owner too; anyone else is told who can, instead of being shown nothing. Make
+ * owner… stays the owner's. The broker decides every one of these actions.
  */
 export function MembersTab({ className }: MembersTabProps) {
   const { crew, snapshot, channel, dir, isOwner, online } = usePanePresentation();
@@ -292,10 +302,11 @@ export function MembersTab({ className }: MembersTabProps) {
   );
   const owner = dir.byId(channel.owner_id);
   const ownerTools = isOwner && !channel.archived;
+  const manageTools = managesChannel(snapshot, channel) && !channel.archived;
 
   return (
     <div className={cn('flex flex-col gap-3', className)}>
-      {ownerTools ? (
+      {manageTools ? (
         <div>
           <Button
             type="button"
@@ -321,10 +332,13 @@ export function MembersTab({ className }: MembersTabProps) {
       <ul role="list" aria-label={membersCopy.listLabel(name)} className="flex flex-col">
         {members.map(({ id, person, isOwner: rowIsOwner }) => {
           const label = personLabel(person ?? id, 'authority', dir);
-          const canManage = ownerTools && id !== actorId && !(person?.isFormer ?? false);
+          const other = id !== actorId && !(person?.isFormer ?? false);
+          const canTransfer = ownerTools && other;
+          // A member of an open workspace removes anyone but the channel's owner.
+          const canRemove = manageTools && other && (isOwner || !rowIsOwner);
           const username = person?.username ?? '';
           // Copy person ID never stands alone in a menu (T-33).
-          const hasMenu = canManage || username !== '';
+          const hasMenu = canTransfer || canRemove || username !== '';
           return (
             <li
               key={id}
@@ -357,7 +371,8 @@ export function MembersTab({ className }: MembersTabProps) {
                   memberId={id}
                   username={username}
                   label={label}
-                  canManage={canManage}
+                  canTransfer={canTransfer}
+                  canRemove={canRemove}
                   announce={announce}
                 />
               )}

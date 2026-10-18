@@ -16,6 +16,7 @@ import type { CrewController } from '../state/types';
 import { agentCopy, LONG_TASK_CHARS, LONG_TASK_LINES, unknownOutcomeCopy } from './copy';
 import { CrewModelPicker, ModelTierMarks } from './CrewModelPicker';
 import { newestTaskIn } from './newestTask';
+import { crewTaskModelUsable } from '../state/crewTaskModel';
 import {
   fileBaseName,
   isAffiliationRefusal,
@@ -25,13 +26,13 @@ import {
   modelDisplay,
   modelMismatch,
   modelRefusalText,
-  protectedRunContext,
-  publicModelRefusal,
-  runInstitution,
+  remoteAccessText,
   sameNamedFiles,
   sharedWhen,
+  taskStartCheck,
   unsharedFileNames,
   usePanePresentation,
+  wideRunChannels,
   workspaceInstitutionLabel,
   type SharedFile,
 } from './presentation';
@@ -199,9 +200,11 @@ export interface AgentTaskPaneProps {
  * reads this channel and posts in it.
  *
  * - The destination is always shown; it is the consent.
- * - **Task** has its own state, seeded once from the composer draft when the pane opens (L9). On
- *   success the Task clears, the composer draft clears only if it still equals that seed, and the
- *   pane closes. The daemon posts the task itself in the channel ("Task: …"), so the field says so,
+ * - **Task** has its own state, seeded once from the composer draft when the pane opens (L9), or,
+ *   when the composer opened it for `@agent` (OW-10), from the words after the trigger. On success
+ *   the Task clears, the composer draft clears only if it still equals that seed (the whole
+ *   `@agent …` draft), and the pane closes. The daemon posts the task itself in the channel
+ *   ("Task: …"), so the field says so,
  *   and says it again for a task long enough to be pasted data (T-24). It is at least six lines,
  *   grows with what is written and has no resize grip (`.crew-agent-task`, Q2-30).
  * - A task that names a file (`counts.csv`) no message in the channel shares gets a warning before
@@ -211,8 +214,10 @@ export interface AgentTaskPaneProps {
  *   describing Start: "2 files named … are shared in #…. Your agent will use the newest one, shared
  *   at 1:55 AM." — the daemon tells the agent to do exactly that and to name the file it used
  *   (Q3-02). The Task field does not spell-check: file names and sample IDs are not words (Q3-34).
- * - **Model**: the app's default model as a summary with Change when it resolves to a configured
- *   provider, else the picker; "No models are set up." with Open Settings when nothing is
+ * - **Model**: the model for Crew tasks (`CREW_TASK_MODEL`, OW-11), else the app's default model,
+ *   as a summary with Change when it resolves to a configured provider, else the picker (opened at
+ *   once when the composer's `@agent` model was blocked); **Use for future tasks** under any other
+ *   model makes it the one tasks start on; "No models are set up." with Open Settings when nothing is
  *   configured (Crew bypasses provider onboarding). A model is named as the composer's model chip
  *   names it and wraps rather than ellipsizing, followed by one worded chip, "🔒 Private · UCSF"
  *   (`ModelTierMarks`, Q2-67, one piece since Q4-28), then Change as a separate link. A private
@@ -221,7 +226,8 @@ export interface AgentTaskPaneProps {
  * - **Advanced** holds Also read (unmounted while closed, which keeps the unknown-outcome gate's
  *   checkbox the only one in the document, C9) and the remote folder line; closed, it says what it
  *   holds: "Reads only #general" or "Also reads #methods". With neither to offer it is not shown
- *   at all.
+ *   at all. In an open workspace whose broker reads wide (`wideRunChannels`), Also read lists every
+ *   channel the person is in, ticked, and the summary says "Reads N channels".
  * - Its errors are `pane:agent`'s. `DetailsPane` dismisses one when the pane leaves this mode, so
  *   a refusal does not reappear in the connection bar for a drawer that is gone (T-48).
  * - **Start my agent and allow posting here** is rendered unconditionally with a stable key, and
@@ -241,7 +247,11 @@ export interface AgentTaskPaneProps {
 export function AgentTaskPane({ onShowTask, className }: AgentTaskPaneProps) {
   const { crew, snapshot, channel, team, verified, workspace } = usePanePresentation();
   const navigate = useNavigate();
-  const [seed] = useState(() => crew.draft.body);
+  // The composer opens the pane for `@agent` with the task's words without the trigger and the
+  // draft they came from (OW-10); otherwise the Task is the draft itself. A seed that arrives while
+  // the pane is already open replaces the Task (below).
+  const intentSeed = crew.ui.pane?.mode === 'agent' ? crew.ui.pane.seed : undefined;
+  const [seed, setSeed] = useState(() => intentSeed?.draft ?? crew.draft.body);
   // A task whose start failed here, after the person had moved on, comes back as the Task
   // (MSG2-N10): only while the view verifies it under the scope it was started under. Read once as
   // the pane opens, and forgotten once shown, as a kept draft is.
@@ -254,14 +264,41 @@ export function AgentTaskPane({ onShowTask, className }: AgentTaskPaneProps) {
         )
       : null
   );
-  const [task, setTask] = useState(kept ?? seed);
+  const [task, setTask] = useState(kept ?? intentSeed?.task ?? seed);
   useEffect(() => {
     if (kept !== null) forgetFailedTask(crew.connectionId, crew.channelId);
   }, []); // eslint-disable-line react-hooks/exhaustive-deps -- once, for the task this pane opened with
   const models = useConfiguredModels();
   const [choice, setChoice] = useState<ModelChoice | null>(null);
-  const [picking, setPicking] = useState(false);
+  // `pickModel`: the composer's model was blocked here, or there was none, so the pane opens on the
+  // picker rather than on a summary of a model that cannot start this task.
+  const [picking, setPicking] = useState(intentSeed?.pickModel === true);
   const [pickerOpen, setPickerOpen] = useState(false);
+  // The picker opens a frame after the pane does: `DetailsPane` moves focus into the pane as it
+  // opens (a parent's effect, which runs after this one), and focus leaving an open popover closes
+  // it, so opened at once it would close again before anyone saw it.
+  const [pickerRequested, setPickerRequested] = useState(intentSeed?.pickModel === true);
+  useEffect(() => {
+    if (!pickerRequested) return;
+    const frame = requestAnimationFrame(() => {
+      setPickerOpen(true);
+      setPickerRequested(false);
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [pickerRequested]);
+  const lastSeed = useRef(intentSeed);
+  useEffect(() => {
+    if (!intentSeed || intentSeed === lastSeed.current) return;
+    lastSeed.current = intentSeed;
+    setSeed(intentSeed.draft);
+    setTask(intentSeed.task);
+    if (intentSeed.pickModel) {
+      setPicking(true);
+      setPickerRequested(true);
+    }
+  }, [intentSeed]);
+  const [savedDefault, setSavedDefault] = useState<string | null>(null);
+  const [saveFailure, setSaveFailure] = useState<string | null>(null);
   const [modelInvalid, setModelInvalid] = useState(false);
   const [advancedOpen, setAdvancedOpen] = useState(false);
   // From the click until the pane closes, Start reads "Starting…" (Q2-67). A failure or an
@@ -293,69 +330,85 @@ export function AgentTaskPane({ onShowTask, className }: AgentTaskPaneProps) {
   const mentioned = useMemo(() => mentionedFileNames(task), [task]);
   const sharedFiles = useSharedFiles(crew, channel?.id, mentioned.length > 0);
 
-  const selected = choice ?? models.defaults;
-  const summary = !picking && choice === null && models.defaults !== null;
+  // The model a Crew task starts on (OW-11), else the app's default: the summary's model.
+  const fallback = models.taskDefault ?? models.defaults;
+  const selected = choice ?? fallback;
+  const summary = !picking && choice === null && fallback !== null;
   const noModels = models.providers !== null && models.providers.length === 0;
   const selectedProvider = models.providers?.find((item) => item.name === selected?.provider);
   const unknown = crew.unknownRunDestination;
   const pending = crew.isPending('run.start');
 
+  // An open workspace whose broker reads wide: the task reads every channel the person is in, and
+  // Also read lists them ticked, to untick (`wideRunChannels`). Elsewhere, only what is ticked.
+  const wide = useMemo(
+    () => wideRunChannels({ snapshot, channel, capabilities: crew.capabilities }),
+    [snapshot, channel, crew.capabilities]
+  );
+  const [unticked, setUnticked] = useState<ReadonlySet<string>>(() => new Set());
+  const contextChannels = useMemo(
+    () => (wide ? wide.filter((id) => !unticked.has(id)) : crew.contextChannels),
+    [wide, unticked, crew.contextChannels]
+  );
   const otherChannels = useMemo(
-    () => (snapshot?.channels ?? []).filter((item) => item.id !== channel?.id && !item.archived),
-    [snapshot, channel]
+    () =>
+      wide
+        ? wide
+            .map((id) => snapshot?.channels.find((item) => item.id === id))
+            .filter((item): item is NonNullable<typeof item> => item !== undefined)
+        : (snapshot?.channels ?? []).filter((item) => item.id !== channel?.id && !item.archived),
+    [wide, snapshot, channel]
   );
   const channelLabels = useMemo(
     () => channelNamesAcrossTeams(snapshot?.channels ?? [], snapshot?.teams ?? []),
     [snapshot]
   );
   const known = useMemo(() => knownInstitutions(models.providers), [models.providers]);
-  const privateOnly = protectedRunContext({
-    connection: crew.connection,
-    snapshot,
-    channel,
-    contextChannels: crew.contextChannels,
-  });
 
   if (!channel) return null;
 
   const here = channelName(channel);
-  const institution = runInstitution({
+  const shown = selected ? modelDisplay(selected, selectedProvider) : null;
+  const shownName = shown ? agentCopy.modelChoice(shown.model, shown.provider) : '';
+  const { privateOnly, institution, mismatchText, publicText, blockText } = taskStartCheck({
+    provider: selectedProvider,
+    providers: models.providers,
     connection: crew.connection,
     snapshot,
     channel,
-    contextChannels: crew.contextChannels,
-    known,
+    contextChannels,
+    workspace,
+    channelLabel: (item) => channelLabels.get(item.id) ?? channelName(item),
+    model: shown?.model ?? null,
   });
   const notApproved = (provider: ProviderDetails) =>
     modelMismatch(provider, institution) && institution
       ? agentCopy.notApproved(institution.label)
       : null;
-  const shown = selected ? modelDisplay(selected, selectedProvider) : null;
-  const shownName = shown ? agentCopy.modelChoice(shown.model, shown.provider) : '';
-  const mismatch = modelMismatch(selectedProvider, institution);
-  const mismatchText =
-    mismatch && institution && shown
-      ? mismatch.affiliation
-        ? agentCopy.institutionMismatch(
-            shown.model,
-            mismatch.affiliation,
-            workspace,
-            institution.label
-          )
-        : agentCopy.institutionUnstated(shown.model, workspace, institution.label)
-      : null;
-  // A public model where the daemon refuses one (AG-F4): said before Start, which it disables, as a
-  // model the institution has not approved is.
-  const publicText = publicModelRefusal({
-    provider: selectedProvider,
-    connection: crew.connection,
-    snapshot,
-    channel,
-    contextChannels: crew.contextChannels,
-    workspace,
-    channelLabel: (item) => channelLabels.get(item.id) ?? channelName(item),
-  });
-  const blockText = mismatchText ?? publicText;
+  // "Use for future tasks" (OW-11): offered under a model that is not already the one Crew tasks
+  // start on, where the configuration can be written and the model could run a Crew task.
+  const offerAsDefault =
+    models.saveTaskDefault !== undefined &&
+    selected !== null &&
+    crewTaskModelUsable(selectedProvider) &&
+    (models.taskDefault?.provider !== selected.provider ||
+      models.taskDefault?.model !== selected.model);
+  const saveForFutureTasks = async () => {
+    if (!selected || !models.saveTaskDefault) return;
+    const name = shownName;
+    setSaveFailure(null);
+    try {
+      await models.saveTaskDefault(selected);
+      setSavedDefault(name);
+    } catch (failure) {
+      setSavedDefault(null);
+      setSaveFailure(
+        agentCopy.useForFutureTasksFailed(
+          failure instanceof Error && failure.message ? failure.message : String(failure)
+        )
+      );
+    }
+  };
   // The daemon's refusal in the pane's words: the same sentence the pane says before Start when it
   // can, else what it does know.
   const errorText =
@@ -372,15 +425,9 @@ export function AgentTaskPane({ onShowTask, className }: AgentTaskPaneProps) {
   const lines = task.split('\n').length;
   const longTask = lines > LONG_TASK_LINES || task.length > LONG_TASK_CHARS;
   const hasAdvanced =
-    otherChannels.length > 0 ||
-    crew.contextChannels.length > 0 ||
-    Boolean(crew.connection?.remote_root);
-  const folderText = crew.connection?.remote_root
-    ? crew.connection.remote_execution
-      ? agentCopy.folderExec(crew.connection.remote_root)
-      : agentCopy.folderRead(crew.connection.remote_root)
-    : null;
-  const alsoReads = crew.contextChannels
+    otherChannels.length > 0 || contextChannels.length > 0 || Boolean(crew.connection?.remote_root);
+  const folderText = remoteAccessText(crew.connection);
+  const alsoReads = contextChannels
     .filter((id) => id !== channel.id)
     .map((id) => {
       const item = snapshot?.channels.find((candidate) => candidate.id === id);
@@ -420,7 +467,7 @@ export function AgentTaskPane({ onShowTask, className }: AgentTaskPaneProps) {
         prompt: task,
         provider: selected.provider,
         model: selected.model,
-        contextChannels: crew.contextChannels,
+        contextChannels,
         deliberateRestart,
       });
       if (started) {
@@ -569,7 +616,7 @@ export function AgentTaskPane({ onShowTask, className }: AgentTaskPaneProps) {
                   className="h-auto p-0 text-label"
                   aria-label={agentCopy.modelChangeName}
                   onClick={() => {
-                    setChoice(models.defaults);
+                    setChoice(fallback);
                     setPicking(true);
                     setPickerOpen(true);
                   }}
@@ -616,6 +663,8 @@ export function AgentTaskPane({ onShowTask, className }: AgentTaskPaneProps) {
                   setChoice(next);
                   setPicking(true);
                   setModelInvalid(false);
+                  setSavedDefault(null);
+                  setSaveFailure(null);
                   // A refusal of the model just replaced is no longer about the choice on screen.
                   if (
                     error?.source === 'pane:agent' &&
@@ -632,13 +681,41 @@ export function AgentTaskPane({ onShowTask, className }: AgentTaskPaneProps) {
               )}
             </>
           )}
+          {/* A link, not a checkbox (C9). The saved model is what the next summary shows. */}
+          {offerAsDefault && !noModels && (
+            <div>
+              <Button
+                type="button"
+                variant="link"
+                className="h-auto p-0 text-supporting"
+                onClick={() => void saveForFutureTasks()}
+              >
+                {agentCopy.useForFutureTasks}
+              </Button>
+            </div>
+          )}
+          {saveFailure ? (
+            <p className="text-supporting text-text-danger" role="alert">
+              {saveFailure}
+            </p>
+          ) : savedDefault && !offerAsDefault ? (
+            <p className="text-supporting text-text-muted" role="status">
+              {agentCopy.usedForFutureTasks(savedDefault)}
+            </p>
+          ) : null}
         </div>
 
         {hasAdvanced && (
           <Disclosure
             open={advancedOpen}
             onOpenChange={setAdvancedOpen}
-            summary={agentCopy.advancedSummary(here, alsoReads, folderText)}
+            summary={
+              wide && alsoReads.length > 0
+                ? [agentCopy.readsChannels(alsoReads.length + 1), folderText]
+                    .filter(Boolean)
+                    .join(' · ')
+                : agentCopy.advancedSummary(here, alsoReads, folderText)
+            }
           >
             <div className="flex flex-col gap-3">
               {otherChannels.length > 0 && (
@@ -652,14 +729,24 @@ export function AgentTaskPane({ onShowTask, className }: AgentTaskPaneProps) {
                       className="flex min-w-0 items-center gap-2 text-label text-text-default"
                     >
                       <Checkbox
-                        checked={crew.contextChannels.includes(item.id)}
-                        onChange={(event) =>
+                        checked={contextChannels.includes(item.id)}
+                        onChange={(event) => {
+                          const on = event.target.checked;
+                          if (wide) {
+                            setUnticked((current) => {
+                              const next = new Set(current);
+                              if (on) next.delete(item.id);
+                              else next.add(item.id);
+                              return next;
+                            });
+                            return;
+                          }
                           crew.setContextChannels(
-                            event.target.checked
+                            on
                               ? [...crew.contextChannels, item.id]
                               : crew.contextChannels.filter((id) => id !== item.id)
-                          )
-                        }
+                          );
+                        }}
                       />
                       <span className="min-w-0 truncate">
                         {channelLabels.get(item.id) ?? channelName(item)}
@@ -675,7 +762,11 @@ export function AgentTaskPane({ onShowTask, className }: AgentTaskPaneProps) {
       </div>
 
       <div className="crew-pane-footer flex flex-col gap-2 py-3">
-        <p className="text-supporting text-text-muted">{agentCopy.scope(here)}</p>
+        <p className="text-supporting text-text-muted">
+          {alsoReads.length > 0 && wide
+            ? agentCopy.scopeWide(here, alsoReads.length + 1)
+            : agentCopy.scope(here)}
+        </p>
         {/* Before Start, which it disables: the pane says what the daemon would refuse (T-47), for
             a model the institution has not approved and a public model alike (AG-F4). */}
         {blockText && (

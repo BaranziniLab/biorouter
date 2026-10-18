@@ -67,6 +67,29 @@ jobs:
                     target/x86_64-pc-windows-gnu/release/biorouterd.exe
           echo "source commit: $(cat target/x86_64-pc-windows-gnu/release/package-source-commit.txt)"
 
+      # The Crew setup service installs the Linux broker on a server from the copy the Windows
+      # app carries (OW-9). This workflow builds no Linux backend, so it builds the broker alone
+      # (scripts/build-crew-broker-linux.sh: the release's cross recipe, about a minute on this
+      # runner) and stages it with the manifest the service trusts. Its bytes differ from the
+      # broker in the Linux packages, because Rust builds are not reproducible; each package's
+      # manifest describes its own copy, so that is expected rather than a mismatch.
+      #
+      # ⚠ Non-fatal by design: if this step fails, the Windows packages are still built, without
+      # a broker, and prepare-platform-binaries.js warns rather than fails because this workflow
+      # does not set BIOROUTER_REQUIRE_CREW_BROKER. The packages job prints a warning saying so.
+      - name: Build and stage the Linux Crew broker
+        id: crew-broker
+        continue-on-error: true
+        run: bash scripts/build-crew-broker-linux.sh target/crew-broker/linux-x86_64
+
+      - uses: actions/upload-artifact@v4
+        if: steps.crew-broker.outcome == 'success'
+        with:
+          name: windows-crew-broker-${{ inputs.version }}
+          path: target/crew-broker/linux-x86_64/
+          if-no-files-found: warn
+          retention-days: 7
+
       - uses: actions/upload-artifact@v4
         with:
           name: windows-backend-${{ inputs.version }}
@@ -88,6 +111,13 @@ jobs:
         with:
           name: windows-backend-${{ inputs.version }}
           path: target/x86_64-pc-windows-gnu/release/
+      # Missing when the backend job could not build the broker; see "Build and stage the
+      # Linux Crew broker" there. Non-fatal for the same reason.
+      - uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          name: windows-crew-broker-${{ inputs.version }}
+          path: target/crew-broker/linux-x86_64/
 
       - uses: actions/setup-node@v4
         with:
@@ -144,6 +174,20 @@ jobs:
                 ui/desktop/src/bin/
           cp -f target/x86_64-pc-windows-gnu/release/*.dll ui/desktop/src/bin/
           ls -l ui/desktop/src/bin
+
+      # After the step above, which empties src/bin. prepare-platform-binaries.js checks the
+      # copy against its manifest; without one the package is built with a warning.
+      - name: Stage the Linux Crew broker into src/bin
+        shell: bash
+        run: |
+          staged=target/crew-broker/linux-x86_64
+          if [ ! -f "$staged/biorouter-crew" ] || [ ! -f "$staged/manifest.json" ]; then
+            echo "::warning::no Linux Crew broker was built for this run, so the Windows packages carry none and Crew setup from them cannot install a broker on a server"
+            exit 0
+          fi
+          mkdir -p ui/desktop/src/bin/crew-broker/linux-x86_64
+          cp -f "$staged/biorouter-crew" "$staged/manifest.json" ui/desktop/src/bin/crew-broker/linux-x86_64/
+          ls -l ui/desktop/src/bin/crew-broker/linux-x86_64
 
       # ⚠ USE THE CANONICAL SCRIPT. Do not open-code build-main + download-mingit
       # + `npm run make`. `npm run make` is
@@ -248,6 +292,18 @@ jobs:
             exit 1
           fi
           echo "packaged resources/bin carries the platform tooling and the llamacpp sidecar"
+
+          # The Crew broker, whenever one was staged: packaged, and the bytes its manifest
+          # describes, which is all the setup service will accept.
+          if [ -f target/crew-broker/linux-x86_64/manifest.json ]; then
+            node -e '
+              const { inspectCrewBroker } = require("./ui/desktop/scripts/crew-broker-resources");
+              const result = inspectCrewBroker(process.argv[1], { required: true, appVersion: process.argv[2] });
+              result.problems.forEach((problem) => console.log(`::error::${problem}`));
+              process.exit(result.problems.length > 0 ? 1 : 0);
+            ' "$bin" "$v"
+            echo "packaged resources/bin carries the Crew broker and its manifest"
+          fi
 
           # The two jobs check out the same ref of the same run, so this cannot
           # currently disagree. Asserting it costs one line and turns an

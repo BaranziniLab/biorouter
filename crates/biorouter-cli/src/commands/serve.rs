@@ -136,70 +136,15 @@ pub async fn handle_serve(
     // including one that lands during the readiness wait below.
     let mut stop = StopSignals::install()?;
 
-    let daemon = resolve_biorouterd()?;
-    let mut command = Command::new(&daemon);
-    command.arg("agent");
-    // The second layer; see the module documentation.
-    #[cfg(unix)]
-    command
-        .arg("--exit-with-parent")
-        .arg(std::process::id().to_string());
-    match browser_token.value() {
-        Some(token) => {
-            command.env("BIOROUTER_BROWSER_TOKEN", token);
-        }
-        // ⚠ Removed, not merely unset. The child inherits this shell's
-        // environment, so `--no-token` in a shell that exports a token would
-        // leave the daemon demanding one while the URL printed below carries
-        // none: every open a 401, and nothing on screen to say why.
-        None => {
-            command.env_remove("BIOROUTER_BROWSER_TOKEN");
-        }
-    }
-    // Set from the choice above, or removed: the daemon reads this variable on
-    // its own, so one this shell exports but that was not chosen here would
-    // reach it without the banner saying so.
-    match public_url.as_deref() {
-        Some(url) => {
-            command.env(PUBLIC_URL_ENV, url);
-        }
-        None => {
-            command.env_remove(PUBLIC_URL_ENV);
-        }
-    }
-    let mut child = command
-        .env("BIOROUTER_HOST", &host)
-        .env("BIOROUTER_PORT", port.to_string())
-        .env("BIOROUTER_SERVER__SECRET_KEY", &secret_key)
-        .env("BIOROUTER_SERVE_UI", &web_dir)
-        // The daemon's WebSocket gates admit, beside its own origin, the one
-        // renderer its launcher declares — and for the packaged desktop app that
-        // declaration is the literal `file://`, which `routes/workspace.rs`
-        // matches by name. `serve`'s interface is served by the daemon itself, so
-        // it is same-origin and needs no declaration; stripping an inherited
-        // value makes "a serve daemon never admits a `file:` page" a property of
-        // the spawn rather than of whoever's shell this ran in.
-        .env_remove("BIOROUTER_RENDERER_ORIGIN")
-        .stdin(if computer_use_digest.is_some() {
-            Stdio::piped()
-        } else {
-            Stdio::null()
-        })
-        // SD-12: and this daemon says so. The desktop launcher sets
-        // `BIOROUTER_USER_ACTION_EXPECTED` to declare that it *does* send a
-        // digest, which makes a daemon that receives none refuse rather than
-        // exempt a private new chat. `serve` sends none by design, so an
-        // inherited value from the operator's shell would turn every private new
-        // chat here into a refusal nobody can clear — the failure SD-12 exists
-        // to remove. Cleared rather than trusted; the literal is defined once, in
-        // `biorouter_server::launch::USER_ACTION_EXPECTED_ENV` (this crate does
-        // not depend on `biorouter-server`).
-        .env_remove("BIOROUTER_USER_ACTION_EXPECTED")
-        // A backstop for a panic unwinding through here. Every ordinary path
-        // goes through `stop_daemon`, which asks before it insists.
-        .kill_on_drop(true)
-        .spawn()
-        .with_context(|| format!("could not start {}", daemon.display()))?;
+    let mut child = spawn_serve_daemon(
+        &host,
+        port,
+        &browser_token,
+        public_url.as_deref(),
+        &secret_key,
+        &web_dir,
+        computer_use_digest.is_some(),
+    )?;
 
     // The page `--open` hands the browser, removed however this ends: it holds
     // the address, token and all.
@@ -260,6 +205,85 @@ pub async fn handle_serve(
         let _ = std::fs::remove_file(page);
     }
     outcome
+}
+
+/// Start `serve`'s daemon: `biorouterd agent` with the browser token and public address that
+/// were chosen here (an inherited value of either is removed, never passed on), the secret, the
+/// interface folder, and an approval pipe on stdin only when `approval_pipe` is set.
+#[allow(clippy::too_many_arguments)]
+fn spawn_serve_daemon(
+    host: &str,
+    port: u16,
+    browser_token: &BrowserToken,
+    public_url: Option<&str>,
+    secret_key: &str,
+    web_dir: &Path,
+    approval_pipe: bool,
+) -> Result<Child> {
+    let daemon = resolve_biorouterd()?;
+    let mut command = Command::new(&daemon);
+    command.arg("agent");
+    // The second layer; see the module documentation.
+    #[cfg(unix)]
+    command
+        .arg("--exit-with-parent")
+        .arg(std::process::id().to_string());
+    match browser_token.value() {
+        Some(token) => {
+            command.env("BIOROUTER_BROWSER_TOKEN", token);
+        }
+        // ⚠ Removed, not merely unset. The child inherits this shell's
+        // environment, so `--no-token` in a shell that exports a token would
+        // leave the daemon demanding one while the URL printed below carries
+        // none: every open a 401, and nothing on screen to say why.
+        None => {
+            command.env_remove("BIOROUTER_BROWSER_TOKEN");
+        }
+    }
+    // Set from the choice above, or removed: the daemon reads this variable on
+    // its own, so one this shell exports but that was not chosen here would
+    // reach it without the banner saying so.
+    match public_url {
+        Some(url) => {
+            command.env(PUBLIC_URL_ENV, url);
+        }
+        None => {
+            command.env_remove(PUBLIC_URL_ENV);
+        }
+    }
+    command
+        .env("BIOROUTER_HOST", host)
+        .env("BIOROUTER_PORT", port.to_string())
+        .env("BIOROUTER_SERVER__SECRET_KEY", secret_key)
+        .env("BIOROUTER_SERVE_UI", web_dir)
+        // The daemon's WebSocket gates admit, beside its own origin, the one
+        // renderer its launcher declares — and for the packaged desktop app that
+        // declaration is the literal `file://`, which `routes/workspace.rs`
+        // matches by name. `serve`'s interface is served by the daemon itself, so
+        // it is same-origin and needs no declaration; stripping an inherited
+        // value makes "a serve daemon never admits a `file:` page" a property of
+        // the spawn rather than of whoever's shell this ran in.
+        .env_remove("BIOROUTER_RENDERER_ORIGIN")
+        .stdin(if approval_pipe {
+            Stdio::piped()
+        } else {
+            Stdio::null()
+        })
+        // SD-12: and this daemon says so. The desktop launcher sets
+        // `BIOROUTER_USER_ACTION_EXPECTED` to declare that it *does* send a
+        // digest, which makes a daemon that receives none refuse rather than
+        // exempt a private new chat. `serve` sends none by design, so an
+        // inherited value from the operator's shell would turn every private new
+        // chat here into a refusal nobody can clear — the failure SD-12 exists
+        // to remove. Cleared rather than trusted; the literal is defined once, in
+        // `biorouter_server::launch::USER_ACTION_EXPECTED_ENV` (this crate does
+        // not depend on `biorouter-server`).
+        .env_remove("BIOROUTER_USER_ACTION_EXPECTED")
+        // A backstop for a panic unwinding through here. Every ordinary path
+        // goes through `stop_daemon`, which asks before it insists.
+        .kill_on_drop(true)
+        .spawn()
+        .with_context(|| format!("could not start {}", daemon.display()))
 }
 
 /// How long the page `--open` hands the browser is kept. A browser reads it the

@@ -171,6 +171,14 @@ const EXEMPT: &[(&str, &str)] = &[
         "crates/biorouter-crew/src/remote.rs",
         "the file is included only by `#[cfg(unix)] pub mod remote` in biorouter-crew/src/lib.rs; its Linux remote helper child cannot compile on Windows",
     ),
+    (
+        "crates/biorouter-crew/src/remote_full.rs",
+        "the file is included only by `#[cfg(unix)] pub mod remote_full` in biorouter-crew/src/lib.rs; the full-access commands it runs as the member's own account on the Linux server cannot compile on Windows",
+    ),
+    (
+        "crates/biorouter-crew/src/probe.rs",
+        "the file is included only by `#[cfg(unix)] pub mod probe` in biorouter-crew/src/lib.rs; the version probes it runs on the Linux server cannot compile on Windows",
+    ),
 ];
 
 fn repo_root() -> PathBuf {

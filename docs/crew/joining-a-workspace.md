@@ -1,10 +1,10 @@
 # Joining a workspace
 
 > **What this is.** How to join your lab's Crew workspace, and what to do when a step stops you.
-> **Status:** Current.
+> **Status:** Current. Checked against the Crew code on 2026-10-16.
 > **Audience:** Lab members who received a Crew invitation. You need no SSH experience.
 
-To join, verify the lab server once, have Crew installed in your server account, paste the invitation from your host (the person who created the workspace), choose Join, and send your host the code Crew shows. When your host enters it, the workspace opens.
+To join, verify the lab server once, paste the invitation from your host (the person who created the workspace), choose what your agent may do on the server, choose Join, and send your host the code Crew shows. If Crew's server program is not in your server account yet, Biorouter installs it there when you choose Join. When your host, or in an open workspace any member, enters your code, the workspace opens.
 
 Examples use the host Alice Chen (@alice), the workspace `chen-lab` on `lab.example.edu`, and your username `bob`. Braces, such as {team}, mark a name Crew fills in.
 
@@ -17,7 +17,7 @@ Examples use the host Alice Chen (@alice), the workspace `chen-lab` on `lab.exam
 | Your exact server username, sent to your host before they invite you. It is the name before the @ in `ssh bob@lab.example.edu`. `bob` does not match `crew_bob`. | Ask IT for it. |
 | The invitation. It lasts 24 hours. | Ask your host to invite you again. |
 | The server verified on this computer. | Follow [Verify the server on this computer](#verify-the-server-on-this-computer). |
-| `biorouter-crew` in your own account on the server. | See [Install Crew in your server account](#install-crew-in-your-server-account). |
+| `biorouter-crew` in your own account on the server. | Biorouter installs it when you choose Join. See [Install Crew in your server account](#install-crew-in-your-server-account). |
 
 ### Verify the server on this computer
 
@@ -49,11 +49,15 @@ If Crew's "Can’t verify" screen names your jump host rather than the server, t
 
 ### Install Crew in your server account
 
-Crew needs its server program at exactly `~/.local/bin/biorouter-crew` in your own account on the lab server. Your host's copy does not count for you, and neither does a copy elsewhere, such as `/usr/bin/biorouter-crew`. Without it, Crew shows "Crew isn’t set up for your account on {server}".
+Crew needs its server program at exactly `~/.local/bin/biorouter-crew` in your own account on the lab server. Your host's copy does not count for you, and neither does a copy elsewhere, such as `/usr/bin/biorouter-crew`.
 
-You install it yourself, signed in as yourself, or IT does. A host with an ordinary account cannot install it in your account. That screen says it is installed "usually by your host or IT team", so a host without administrator rights passes your request to IT.
+You usually do nothing. When you choose Join, Biorouter signs in to the server as you, with your SSH settings, and installs it there if it is missing, from the copy built into Biorouter. It needs no administrator rights. If the server asks for a password or a code, the Sign in window opens, and one sign-in covers the install and the connection. The Join button reads "Setting up Crew on {server}…" while it works.
 
-To install it yourself, follow [Install Crew on the server](hosting-a-workspace.md#install-crew-on-the-server) with your own login. Its steps 5 and 6 are the lines under **Install it yourself** on the "Crew isn’t set up" screen. Type the first of those lines yourself, because **Copy** on that field also copies its placeholder path. When the last line prints the version, Crew is installed. If Crew already shows "Crew isn’t set up", choose **Try again** there, and Crew connects.
+If Crew later shows "Crew isn’t set up for your account on {server}", for example after you removed the program:
+
+1. Choose **Set up Crew for my account**. Biorouter installs it and connects. This changes nothing about what your agent may do on the server.
+2. If that fails, the screen says why ([Setting Crew up](connections-and-troubleshooting.md#setting-crew-up-in-your-server-account)). **Ask your host instead** gives a message to send, and **Install it yourself** gives the commands to install it by hand, which [Install Crew yourself](hosting-a-workspace.md#install-crew-yourself) explains.
+3. When someone else installed it for you, choose **Try again**, and Crew connects.
 
 ## Join from the Biorouter app
 
@@ -65,8 +69,9 @@ The invitation is a message with a line that starts `brcrew1:`. It holds no secr
 4. Check that the summary names the right workspace and host, for example "Hosted by Alice Chen (@alice) on lab.example.edu". If not, choose **Cancel**.
 5. Check **Your username on lab.example.edu**. It is your server login, not your Slack name or email. If the invitation was made for another account than the one this computer signs in as, a note says so, such as "This invitation is for @crew_bob, but this computer signs in to lab.example.edu as bob. Ask your host for your own invitation." Ask your host for an invitation to your own username.
 6. If Crew asks you to "Choose which AI models may work here", ask your host, then [choose](#which-ai-can-read-the-workspace).
-7. Leave **Your agent on lab.example.edu** and **Advanced** alone unless your host or IT said otherwise.
-8. Choose **Join chen-lab**. If the server asks for a password, see [Sign in to the server](connections-and-troubleshooting.md#sign-in-to-the-server).
+7. Check **Your agent on lab.example.edu**, which says what your agent may do on the server. It starts at **As me on the server**. See [Your agent on the server](#your-agent-on-the-server).
+8. Leave **Advanced** alone unless your host or IT said otherwise.
+9. Choose **Join chen-lab**. Under it, Crew says "If Crew isn’t set up for your account on lab.example.edu yet, Biorouter installs it there for you." If the server asks for a password, see [Sign in to the server](connections-and-troubleshooting.md#sign-in-to-the-server).
 
 The card with your code appears. Crew finishes the join later without asking again. If a message appears instead, see [When joining does not work](#when-joining-does-not-work). To join from a terminal instead, see [Join a workspace](command-line.md#join-a-workspace). To join from a terminal on the server that runs the workspace, see [Join from the workspace's own server](command-line.md#join-from-the-workspaces-own-server).
 
@@ -86,11 +91,23 @@ To change it:
 
 ### Your agent on the server
 
-**Your agent on lab.example.edu** is off by default. To let your Biorouter agent read and write files in a server folder, choose it and type the folder's full path, such as `/home/bob/project`, in **Remote work folder**. **Let my agent run commands in this folder** also lets it run commands there. Change both later in **Connection settings…**. See [Agents and chat access](agents-and-chat-access.md).
+**Your agent on lab.example.edu** answers "What can your agent do on lab.example.edu?" with three levels. You choose it for your own account, and nobody else can change it. Public models never get any of them.
+
+| Level | What your agent may do |
+|---|---|
+| **Off** | "Your agent doesn’t use this server." |
+| **In a folder** | "It reads and writes one folder, and can run commands there in a sandbox." Type the folder's full path, such as `/home/bob/project`, in **Remote work folder**, and turn on **Let my agent run commands in this folder** to let it run commands there. A server whose Linux kernel cannot confine commands to a folder (older than 6.2) gives a folder files only, and commands there need **As me on the server**. |
+| **As me on the server** | Full access: "It runs commands as bob, with your files, programs and network." A work folder is optional: leave it empty, and Biorouter creates one in `~/crew-work`, named for the workspace. |
+
+**As me on the server** comes with one warning, which you read before you choose Join: "Your agent will run commands as bob on lab.example.edu: it can read and change anything your account can, use the network, and start programs that keep running after access ends. Other people’s messages and files in channels it reads can try to steer it. Use a private model you trust." See [What your agent may do on the server](agents-and-chat-access.md#what-your-agent-may-do-on-the-server).
+
+Joining gives your connection exactly the level you chose. **Off** stays off once the connection has connected: setting Crew up never turns access on by itself. One case is different: a connection saved but never connected from this computer (the desktop's setup failed, for example) that you then join with `biorouter crew join` gets the same level `biorouter crew setup` gives a new connection, **As me on the server**, and the terminal says so before anything runs. Change the level later in **Connection settings…**.
 
 ### Advanced server connection details
 
 Use **Advanced** only with settings from IT. It opens by itself when the invitation names no server.
+
+When you leave **Server login**, **Port** and **Jump hosts** empty, Crew saves the login `bob@lab.example.edu`. If your SSH settings file, `~/.ssh/config`, has a short name (alias) for that server that signs in as the same account on the same port, Crew saves that name instead, so the key, port and jump host you set for it there apply. The summary then names the server by that name. A short name that signs in as another account, or on another port, is never used, and neither is one Crew could not connect through, such as one with a `ProxyCommand` or a `RemoteCommand`. When you join on the workspace's own server, the login is `bob@localhost`.
 
 | Field | Use |
 |---|---|
@@ -112,7 +129,7 @@ Your host can type it with or without dashes, in any case, and can type O as 0. 
 
 ## Wait for your host
 
-Your host may take minutes or hours. Meanwhile the status under the workspace name reads "Not joined yet". Crew checks by itself.
+Your host may take minutes or hours. In an open workspace, any member can let you in with your code. Meanwhile the status under the workspace name reads "Not joined yet". Crew checks by itself.
 
 In the workspace menu, **Reconnect** tries again. **Disconnect** stops waiting until you choose **Connect to chen-lab**. Neither changes your code.
 
@@ -120,7 +137,7 @@ You can close Biorouter. When you reopen it, open Crew, and choose **Connect to 
 
 ## When your host lets you in
 
-The card reads "Joining chen-lab…", and the workspace opens.
+The card reads "Joining chen-lab…", and the workspace opens. In an open workspace you are in every team and every channel that is not archived, so your channels are there at once. In a managed workspace, your host adds you to a team.
 
 | You see | Do this |
 |---|---|
@@ -175,7 +192,7 @@ A message under a field, or in a red note, names the rule a value broke. Correct
 | "Can’t verify lab.example.edu yet" | [Verify the server](#verify-the-server-on-this-computer), then choose **Try again**. Crew has no button to accept a server. |
 | "lab.example.edu’s identity changed" | Do not connect. Send IT the text from **Copy details for IT**, then follow [A changed server identity](connections-and-troubleshooting.md#a-changed-server-identity). |
 | "This isn’t the workspace you joined" | Send your host the text from **Copy details**, and wait. |
-| "Crew isn’t set up for your account on lab.example.edu" | See [Install Crew in your server account](#install-crew-in-your-server-account). |
+| "Crew isn’t set up for your account on lab.example.edu" | Choose **Set up Crew for my account**. See [Install Crew in your server account](#install-crew-in-your-server-account). |
 | "Can’t sign in to lab.example.edu" with "lab.example.edu refused this computer’s SSH key for bob." | The server takes no password here, so signing in cannot help. Check **Your server login** in **Connection settings…**, and ask IT which login and key to use. |
 | "Crew isn’t running on lab.example.edu" with "The workspace server isn’t running. Once Alice Chen starts Crew, this computer connects by itself within a few minutes, or you can connect now." | The workspace stopped on the server, for example after it restarted. Ask your host to start Crew if they have not. Crew connects by itself within about a minute of the start, or choose **Connect to chen-lab** to try at once. |
 | "It didn’t connect" | Choose **Connect to chen-lab** again. If it repeats, ask your host. The server name may reach a different machine each time. |
@@ -199,7 +216,7 @@ A red note with **Try again** appears under "Joining chen-lab…".
 |---|---|
 | "Joining didn’t finish." or "Your host sent a new invitation…" | Choose **Try again**. |
 | "Your host hasn't let this computer in yet…" | Send your code again. |
-| "You're not invited…", "This invitation expired…" or "Your account on the server changed…" | Ask for a new invitation. |
+| "You're not invited…", "This invitation expired…" or "Your account on the server changed…" | Ask for a new invitation. An invitation from a member also stops working once that member is removed or the workspace stops being open, so ask the host for one. |
 | "This workspace's server doesn't support joining by invitation yet…" | [Join with a token](#join-with-a-token-on-an-older-server). |
 | "Another member of this workspace already has your username…", "This computer's key is already in this workspace." or "The workspace didn't let this computer join." | Tell your host. |
 

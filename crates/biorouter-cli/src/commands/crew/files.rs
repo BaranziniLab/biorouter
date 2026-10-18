@@ -68,7 +68,78 @@ pub(super) async fn handle(api: &Api, command: FileCommand) -> Result<Value> {
             )
             .await
         }
+        FileCommand::List { channel, limit } => list(api, &channel, usize::from(limit)).await,
     }
+}
+
+/// How many messages `files list` reads at most, in pages of [`LIST_PAGE`]: a channel's files
+/// are found from its history, newest first, since the broker keeps no list of them.
+const LIST_MESSAGES: usize = 2000;
+/// A history page as large as the broker gives one.
+const LIST_PAGE: usize = 200;
+
+/// `files list CHANNEL` (L8): the files shared in a channel, newest first, read from its
+/// history (`messages.history`, then `blob.status` for each attachment, as history names them),
+/// each attachment once at its newest post, up to `limit`. Attachments the person can no longer
+/// open are counted, not listed; `complete` is false when older messages were left unread.
+async fn list(api: &Api, channel: &str, limit: usize) -> Result<Value> {
+    let channel = api.your_channel(channel).await?.id;
+    let mut files = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    let mut unavailable = 0_usize;
+    let mut before: Option<String> = None;
+    let mut read = 0;
+    let complete = loop {
+        let mut params = json!({"channel_id": channel, "latest": true, "limit": LIST_PAGE});
+        if let Some(before) = &before {
+            params["before"] = json!(before);
+        }
+        let page = api.broker("messages.history", params, false).await?;
+        let messages = page["messages"].as_array().cloned().unwrap_or_default();
+        read += messages.len();
+        // A latest page runs oldest to newest; the newest is wanted first.
+        for message in messages.iter().rev() {
+            for id in message["attachments"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(Value::as_str)
+            {
+                if files.len() >= limit || !seen.insert(id.to_owned()) || component(id).is_err() {
+                    continue;
+                }
+                match api.lookup("blob.status", json!({"blob_id": id})).await {
+                    Some(blob) if blob["name"].is_string() => files.push(json!({
+                        "attachment_id": id,
+                        "name": blob["name"],
+                        "size": blob["size"],
+                        "media_type": blob["media_type"],
+                        "shared_by": message["actor_id"],
+                        "run_id": message["run_id"],
+                        "shared_at": message["created_at"],
+                        "message_id": message["id"],
+                    })),
+                    _ => unavailable += 1,
+                }
+            }
+        }
+        if files.len() >= limit || messages.len() < LIST_PAGE {
+            break true;
+        }
+        if read >= LIST_MESSAGES {
+            break false;
+        }
+        match messages.first().and_then(|message| message["id"].as_str()) {
+            Some(oldest) => before = Some(oldest.to_owned()),
+            None => break true,
+        }
+    };
+    Ok(json!({
+        "channel_id": channel,
+        "files": files,
+        "unavailable": unavailable,
+        "complete": complete,
+    }))
 }
 
 async fn upload(api: &Api, channel: &str, file: &Path) -> Result<Value> {

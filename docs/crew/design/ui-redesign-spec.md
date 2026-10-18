@@ -1,7 +1,7 @@
 # Crew UI redesign specification
 
 > **What this is.** The final design for the BioRouter Crew desktop GUI: a clean, Slack-like, layered interface built only from BioRouter's design system. It covers the layout, every screen and control mapped from the current UI, the component and file architecture, progressive disclosure, the full copy deck, identity rules, revoke, privacy, motion, accessibility, theming, the regression-test migration and the acceptance criteria novice reviewers will apply.
-> **Status:** Current. Approved design, 2026-09-23, now built: every package of [plan §16](../../history/biorouter-crew/implementation-plan.md#work-packages-and-order) is implemented, and [implementation status](../../history/biorouter-crew/implementation-status.md) records what was measured. Three later decisions changed it, and each changed row says so: files can be dragged in or pasted after a native confirmation ([D-DROP](../../history/biorouter-crew/implementation-plan.md#live-qa-round-2-design-changes-2026-09-24)), message bodies render as Markdown ([UI-TIMELINE outcome](../../history/biorouter-crew/implementation-plan.md#work-packages-and-order)), and each file control is named for its file (Q3-13). After the merge, a live QA of the merged build on 2026-09-27 was followed by two rounds of fixes, and the second round (wave 2, committed 2026-09-27) changed more rows. Each of those rows says *Amended by wave 2* and names the QA finding it answers: where the timeline opens, how it pages and what it marks read (M6, M7), unread counts and mentions outside the Crew sidebar (M2), who is online (M18), the SSH failure table and the screens it drives (F5, R-7), the Chat access consent (AG-F1), and the remove-member and remove-connection confirmations (M11, CLI-1). Where this spec and the code disagree, the code is what shipped.
+> **Status:** Current. Approved design, 2026-09-23, now built: every package of [plan §16](../../history/biorouter-crew/implementation-plan.md#work-packages-and-order) is implemented, and [implementation status](../../history/biorouter-crew/implementation-status.md) records what was measured. Three later decisions changed it, and each changed row says so: files can be dragged in or pasted after a native confirmation ([D-DROP](../../history/biorouter-crew/implementation-plan.md#live-qa-round-2-design-changes-2026-09-24)), message bodies render as Markdown ([UI-TIMELINE outcome](../../history/biorouter-crew/implementation-plan.md#work-packages-and-order)), and each file control is named for its file (Q3-13). After the merge, a live QA of the merged build on 2026-09-27 was followed by two rounds of fixes, and the second round (wave 2, committed 2026-09-27) changed more rows. Each of those rows says *Amended by wave 2* and names the QA finding it answers: where the timeline opens, how it pages and what it marks read (M6, M7), unread counts and mentions outside the Crew sidebar (M2), who is online (M18), the SSH failure table and the screens it drives (F5, R-7), the Chat access consent (AG-F1), and the remove-member and remove-connection confirmations (M11, CLI-1). The [open workspaces and automatic setup](open-workspaces-and-automatic-setup.md) change of 2026-10-16 changed more rows, each marked *Amended by OW-n* with its decision: automatic setup in the Host, Join and Not set up flows (OW-9), the three agent access levels (OW-6), open governance with Browse channels (OW-1 to OW-3), deletion (OW-4, OW-5), the composer's `@agent` (OW-10), the model for Crew tasks (OW-11) and the Context tab (OW-8). Where this spec and the code disagree, the code is what shipped.
 > **Audience:** Implementers of the Crew GUI (`ui/desktop/src/components/crew/`), the daemon, broker and CLI implementers whose data it shows, reviewers who judge it with a novice walkthrough, and whoever migrates the Crew regression tests.
 
 Crew today is one 2,175-line component (`CrewView.tsx`) that renders a form wearing a page header: a native
@@ -432,11 +432,11 @@ footer.
 
 | Region | Contents | Shown when |
 |---|---|---|
-| **Switcher band** (`h-chrome`) | `WorkspaceSwitcher`: a `subject`-look trigger (the `KBSelectorTrigger` recipe) holding the workspace name (truncating) and a `ChevronDown` that rotates 180° when open. Opens the workspace menu. | A connection is selected |
+| **Switcher band** (`h-chrome`) | `WorkspaceSwitcher`: a `subject`-look trigger (the `KBSelectorTrigger` pattern) holding the workspace name (truncating) and a `ChevronDown` that rotates 180° when open. Opens the workspace menu. | A connection is selected |
 | **Status row** (`h-row-rail`, 32px, `px-3`) | Left: `StatusDot` + status word (`text-supporting`), a `role="status"` region. When healthy the word is "Connected" and an `sr-only` span carries **Connected · identity verified** (pinned). A "Sign-in needed" word is a button that opens Sign in. Right: `PrivacyChip`, a ghost `sm` button holding `PrivacyBadge` (full) and ` · ucsf`; accessible name **Privacy: Private · ucsf** / **Privacy: Public**. Reads **Checking privacy…** (no padlock) whenever observed privacy is not verified. Opens the privacy popover. | A connection is selected, in every state |
 | **Invitations** | Label "Invitations" (`text-caps`). One row per pending invitation to me: target name, muted "from {inviter}", a small secondary **Accept**. | Non-empty |
-| **Waiting to join** (host, S3a) | Label "Waiting to join". One row per pending join: `@bob` (mono) then "Bob Lee" muted, and **Let in…**. A warning line under the row when a device with a different code tried. | Non-empty |
-| **Team sections** | Header row: `ChevronRight` (rotates 90°) + team name as typed (`text-secondary font-medium text-text-muted`, never uppercased), hover/focus-revealed ghost `xs` `+` (Create channel in {team}) and `⋯` (team menu). Rows: 32px `h-row-rail`, `Hash` icon, name, `text-text-muted` at rest; unread `font-semibold text-text-default` plus a neutral count `Badge` (`tabular-nums`, `99+` cap); active `--sidebar-active` plus the 2px `--accent-bar`. A trailing collapsed "Archived (n)" sub-row and a quiet **+ Add channel** row. Collapse state is per viewer (`localStorage`, try/catch). | A verified (or last verified) snapshot exists |
+| **Waiting to join** (host, S3a; *amended by OW-2*: every member in an open workspace) | Label "Waiting to join". One row per pending join: `@bob` (mono) then "Bob Lee" muted, and **Let in…**. A warning line under the row when a device with a different code tried. | Non-empty |
+| **Team sections** | Header row: `ChevronRight` (rotates 90°) + team name as typed (`text-secondary font-medium text-text-muted`, never uppercased), hover/focus-revealed ghost `xs` `+` (Create channel in {team}) and `⋯` (team menu). Rows: 32px `h-row-rail`, `Hash` icon, name, `text-text-muted` at rest; unread `font-semibold text-text-default` plus a neutral count `Badge` (`tabular-nums`, `99+` cap); active `--sidebar-active` plus the 2px `--accent-bar`. A trailing collapsed "Archived (n)" sub-row and a quiet **+ Add channel** row. Collapse state is per viewer (`localStorage`, try/catch). *Amended by OW-2 and OW-4:* in an open workspace, a quiet **Browse channels** row under a team with channels to join; the team `⋯` adds **Browse channels in {team}…**, and **Delete team…** for whoever may delete it, last before Copy for support. | A verified (or last verified) snapshot exists |
 | **+ Add team** | Quiet row after the last team. | Same |
 | **Agents** | Label "Agents". Owned tasks that are running, waiting for approval or unconfirmed (`#methods · Working…`, a warning `Badge` "Needs you" for approval) and chats connected to this workspace (chat title, muted `#destination`). A task row jumps to and highlights its timeline row; a chat row opens its Chat access pane. Header `⋯`: Show revoked and finished. | At least one row |
 | **You row** (pinned footer, 48px, `border-t border-sidebar-border`) | 20px avatar, display name (`text-label`), and on a second line the SSH login as its own text node (`font-mono text-supporting text-text-muted`, e.g. `alice@hpc.ucsf.edu`). In a dev profile, a neutral `Badge` "Profile: alice". Opens the You menu. With no verified snapshot yet: placeholder avatar and the SSH login only. | A connection is selected |
@@ -450,6 +450,7 @@ The SSH login in the You row is the standalone text node CVT finds (`fixture`, `
 
 | Condition | Dot | Word |
 |---|---|---|
+| The host deleted the workspace (`workspaceKnownDeleted`: the saved `workspace_deleted`, a connect answered `crew_workspace_deleted`, or a view that ended `workspace_deleted`) | idle | Deleted by host |
 | The last user-initiated connect failed with a trust code (`crew_ssh_host_key_unknown`, `crew_ssh_host_key_changed`, `crew_workspace_identity_mismatch`) | danger | Can't verify server |
 | A connect or sign-in is in flight | neutral + spinner | Connecting… |
 | Verified snapshot and observed privacy exist for this connection | success | Connected (`sr-only`: **Connected · identity verified**, pinned) |
@@ -585,7 +586,8 @@ shadow, in a `px-4 pb-6 pt-3 bg-background-canvas` bar and the 760px column.
 | Textarea | `aria-label="Message #methods"` (pinned), placeholder `Message #methods`, `rows={1}`, auto-grows to 40vh, `bg-transparent border-none px-0 py-1.5`. The keydown handler moves verbatim: Enter sends; Shift+Enter, `isComposing`, `keyCode 229` and key repeat do not. |
 | Attach | Ghost round `Paperclip` (accessible name "Attach", `aria-haspopup="menu"`) opening a `DropdownMenu`: **Upload a file…** (the secure native picker) and **Share a server path…** (dialog). *Amended by [D-DROP](../../history/biorouter-crew/implementation-plan.md#live-qa-round-2-design-changes-2026-09-24).* A file dragged onto the channel or pasted into the composer is shared too, after one confirmation in a native dialog the main process shows. The preload resolves the path with Electron's `webUtils.getPathForFile`, and page script never supplies it (`crew/files/FileDropZone.tsx`). So the picker is not the only door, and the daemon's credential floor applies to every registration. |
 | Ask my agent | `Button variant="ghost" size="sm"`, `Bot` icon, **Ask my agent** (pinned). Opens the pane in agent mode. Disabled while archived or unverified. |
-| Send | `Button shape="round"`, accessible name **Send message** (pinned), `ArrowUp`. `secondary` until there is content, then `default` (accent). While posting it shows the spinner, stays the same DOM node and ignores clicks (single flight). |
+| Send | `Button shape="round"`, accessible name **Send message** (pinned), `ArrowUp`. `secondary` until there is content, then `default` (accent). While posting it shows the spinner, stays the same DOM node and ignores clicks (single flight). *Amended by OW-10:* while the draft starts a task, its accessible name is **Start agent task** (pinned) and its tooltip "Start your agent", never "Ask my agent", the button beside it; **Send message** stays the name for every other draft. |
+| Agent trigger | *Added by OW-10.* `@agent`, `/agent` or `/task` at the very start of the draft starts a task in this channel on the model for Crew tasks. `@` and `/` open `ComposerSuggestions`, "Suggestions": the `@agent` row "Your agent · {model} · posts in #{channel}", then people; `/agent` and `/task` read "Start your agent on a task in #{channel}". While the draft starts a task, a consent line under the text says, before Enter, what Enter does, because Enter is the consent: "Enter starts your agent with {model}" with the model's tier chip, then "It reads #{channel} and posts its result there, for this task only." (or "It reads {n} channels and posts its result in #{channel}, for this task only." in a wide run), with **Change** (Ask my agent, seeded) and **Post as a message**. A model the workspace would refuse, no model, an empty task, attachments, a task over 32 KB or an unknown previous outcome replace the line with their own and start nothing. A person whose username is `agent` keeps `@agent` as their mention ("@agent is {person}. Type /agent to ask your agent."). |
 | Chips | `Badge size="chip"` with a 14px `XIcon`. Remove names kept: "Remove counts.csv", "Remove remote reference Remote results" (pinned). Upload chips show a 16px progress ring and a Pause glyph while active. |
 | Note slot | One `Note` directly above the card, in priority order: the send error ("Couldn't send." then the error in its own text node), the chat-connect note ([Revoke](#revoke)), an ownership offer, the host's institution note, the first-join name suggestion. |
 | Archived | The card is replaced by a 44px bar: "This channel is archived." |
@@ -622,7 +624,7 @@ the pane survives a manual refresh (C1, CVT:437-466).
 - **About** (`.biorouter-settings-list` rows): Name `#methods` (Rename… for the owner, S2); Content `Restricted` or
   `Public-safe` with one consequence line; Owner `PersonName context="authority"` with Transfer ownership… for the
   owner, and "Offered to Bob Lee (@bob) · waiting" while an offer is pending; Created by; Team; a danger zone
-  (owner): Archive channel…; footer Copy channel ID.
+  (owner): Archive channel…, and *amended by OW-4* **Delete channel…** for whoever may delete it (owner, the host for an orphan, any member in an open workspace), never on a team's `#general`; footer Copy channel ID.
 - **Members**: Add people… (owner, `secondary sm`), count, one row per member (`PersonName context="authority"`)
   with Owner, you and former-member markers; the owner's row `⋯`: Make owner… · Remove from #methods… (confirm).
   Pending channel invitations you created appear as muted "invited" rows.
@@ -642,10 +644,15 @@ the pane survives a manual refresh (C1, CVT:437-466).
   by configured provider with `PrivacyBadge dense` and `AffiliationBadge` on each group heading, and a free-text row
   "Use “{text}” with {provider}". With no configured provider: "No models are set up." and a link button
   **Open Settings**. Crew bypasses provider onboarding, so a Crew-first user can arrive here with none.
+  *Amended by OW-11:* the summary starts on the model for Crew tasks (`CREW_TASK_MODEL`, the Settings › Models
+  **Crew tasks** row, "Same as new chats" by default), and a model chosen for one task offers the link
+  **Use for future tasks** under it, never a checkbox (C9).
 - **Advanced** (closed summary "Also reads nothing else" / "Also reads 2 channels"): Also read, a checkbox list of
   other non-archived channels across all teams labelled `Team / #channel` (unmounted while closed, which keeps C9),
   and, only when the connection has a remote folder, "Can run commands in /home/alice/crew-work" or "Can read
-  /home/alice/crew-work".
+  /home/alice/crew-work". *Amended by OW-3 and OW-6:* in an open workspace on a `wide_runs_v1` broker, every
+  channel the person is in is ticked (99 at most besides this one) and the summary reads "Reads {n} channels";
+  full access reads "Can run commands as you on {server}, starting in {path}".
 - **Consequence hint** (warning `Note`, only when it applies): "This model is Public, so it can't read Restricted
   channels." The daemon still decides.
 - **Consent line**: "Your agent can read #methods and post there, for this task only."
@@ -704,6 +711,15 @@ rows: Confirm the institution (**Set institution to {id}…**), Create a team (*
    The institution is known from the invitation, so a Private save never dead-ends for lack of one.
 3. **Join lab** saves the connection (pinned exactly as the invitation says), then connects. If the server wants a
    password or MFA, Sign in opens by itself and returns here when it closes.
+   *Amended by OW-6 and OW-9:* the labelled row **Your agent on {server}**, outside Advanced, asks "What can your
+   agent do on {server}?" with **Off**, **In a folder** and **As me on the server** (the default), and shows the one
+   full-access warning while that level is chosen; under Join, "If Crew isn’t set up for your account on {server}
+   yet, Biorouter installs it there for you." Join sends the level chosen with its member setup, which installs the
+   broker when it is missing, makes the work folder and connects; **Off** stays off. A sign-in whose bridge is
+   missing (`crew_bridge_missing`, or `crew_handoff_failed` with `bridge_missing: true`) starts the same setup. The
+   **Not set up** pane ("Crew isn’t set up for your account on {server}") offers **Set up Crew for my account**,
+   which sends no level, then **Ask your host instead**, **Install it yourself** (Save Crew’s server program… and the
+   manual commands) and **Try again**.
 4. The channel column shows the join state machine, polling `GET …/join` every 5s while visible:
 
 | Join status | Card | Action |
@@ -737,9 +753,17 @@ workspace key with `pattern="[a-fA-F0-9]{64}"`, fixing L8) lives in the Join dia
      start command, **Open a terminal here** embeds the app's `InAppTerminalDock` below the box, exactly as the
      coding-agent setup card does; the command stays copyable, and nothing is typed or run for the person. One
      consequence line (S2): "Anyone who can sign in to this server can see the workspace name."
+     *Amended by OW-9:* **Set up and start Crew** runs a host setup job, with plain stages (Checking server ·
+     Signing in · Installing Crew in your account · Starting workspace · Ready), signs in through Sign in when the
+     server asks, and moves to Create by itself; **Run it yourself in a terminal** keeps the paste path, and
+     **Crew isn’t on {server} yet?** holds **Save Crew’s server program…** and the manual install. Each refusal code
+     has its sentence, and **What the server printed** holds the server's own words. A `crew_host_storage_unsafe`
+     refusal offers **Fix it for me**, which runs the job again with `fix_storage_permissions`.
    - **Create:** "lab on hpc.ucsf.edu", the fingerprint `CopyField`, "Creating lab makes this computer its first admin
      device." **Create workspace** saves (with the `preparation_id`), connects, and runs `auth.bootstrap`. This is the
-     confirmation "Initialize as workspace host" never had (fixes L3).
+     confirmation "Initialize as workspace host" never had (fixes L3). *Amended by OW-1 and OW-8:* after bootstrap,
+     Create sets governance to open and saves the context draft the setup job made; either failing leaves a working
+     workspace and says so.
 2. If the workspace is Private and unlabelled, the flow asks once: "Label lab as ucsf? This can't be changed later."
    **Set ucsf permanently** / **Not now**. Not now leaves the checklist row open.
 3. The host lands on the setup checklist.
@@ -797,10 +821,11 @@ returns to the trigger on close.
 |---|---|---|---|
 | Join a workspace | md | First run, Add a workspace ▸ | Cancel · **Join {workspace}** |
 | Host a new workspace (3 steps) | lg | First run link, Add a workspace ▸ | Back/Cancel · **Continue** · **Create workspace** |
-| Connection settings | md, `scrollBody` | Workspace menu, notes | danger-zone link · Cancel · **Save connection** (pinned) |
-| Workspace settings (General · People · Privacy · Agent access) | lg, `info` | Workspace menu People…/Privacy…/Chats with access… | Done |
-| Invite people to {workspace} (host) | md | Workspace menu, checklist, People tab | Cancel · **Invite** → Done |
-| Let {person} in (host) | sm | Waiting to join row | Cancel · **Let {first} in** |
+| Connection settings | md, `scrollBody` | Workspace menu, notes | danger-zone link · Cancel · **Save connection** (pinned). *Amended by OW-6:* "What can your agent do on {server}?" with Off · In a folder · As me on the server, and the full-access warning in place, which Save confirms. |
+| Workspace settings (General · People · Privacy · Context · Agent access) | lg, `info` | Workspace menu People…/Privacy…/Chats with access… | Done. *Amended by OW-1, OW-5 and OW-8:* General holds **Who can manage teams and channels** (the host's switch, "Everyone can manage" or "Owners manage"; members read **Who manages**) and a Danger zone with **Remove from this computer…** and the host's **Delete workspace…**; Context holds the editor, **Draft from server** and **Save context**. |
+| Invite people to {workspace} (host; *amended by OW-2*: any member in an open workspace) | md | Workspace menu, checklist, People tab | Cancel · **Invite** → Done |
+| Let {person} in (host; *amended by OW-2*: any member in an open workspace) | sm | Waiting to join row | Cancel · **Let {first} in** |
+| Browse channels (*added by OW-2*) | md | Workspace menu **Browse channels…**, team `⋯`, the sidebar's Browse channels row | Teams and Channels lists, each with **Join** · Done |
 | Create team | sm | Menu, + Add team, empty state | Cancel · **Create team** → optional "Add people to {team}" step: Skip for now · **Add** |
 | Create channel | sm | Team `+`, + Add channel, team menu | Cancel · **Create channel** |
 | Add people to #{channel} / {team} | md | Channel menu, Members tab, team menu | Cancel · **Add** |
@@ -810,7 +835,7 @@ returns to the trigger on close.
 | Keys and security | md, `info` | You menu, vault-locked note | Done |
 | Share a server path | sm | Attach menu | Cancel · **Add to message** |
 | Sign in | lg, `required` | Automatic, menu, status word, sign-in state | (the component's **Close**) |
-| Confirmations | sm | per action | `DangerousConfirmDialog` or `ConfirmationModal` ([Privacy and institution](#privacy-and-institution), [Copy deck](#copy-deck)) |
+| Confirmations | sm | per action | `DangerousConfirmDialog` or `ConfirmationModal` ([Privacy and institution](#privacy-and-institution), [Copy deck](#copy-deck)). *Amended by OW-4 and OW-5:* "Delete #{channel}?" (**Delete channel**), "Delete {team}?" (**Delete team**), and "Delete {workspace} for everyone?" (**Delete workspace**, typed name), each "removed from the workspace", never "erased". |
 
 Radix modal dialogs `aria-hide` their siblings, which is correct here: no dialog is part of a flow in which a person
 or a test must act on the background. The flows that need that (Ask my agent and chat access) are the non-modal pane.
@@ -1298,6 +1323,7 @@ Advanced. `{person}` means `personLabel` output; `{first}` is the display name's
 | `status.connected` | Connected *(visible; `sr-only` **Connected · identity verified**, pinned)* |
 | `status.checking` | **Checking connection** (pinned) |
 | `status.updatesUnavailable` | **Updates unavailable** (pinned) |
+| `status.workspaceDeleted` | Deleted by host |
 | `status.connecting` / `status.signIn` / `status.notSetUp` / `status.notJoined` / `status.offline` / `status.error` / `status.trust` | Connecting… · Sign-in needed · Not set up on this server · Not joined yet · Offline · Can't connect · Can't verify server |
 | `chip.name` | Privacy: Private · {institution} / Privacy: Public *(accessible name; new test anchor)* |
 | `chip.checking` | Checking privacy… |

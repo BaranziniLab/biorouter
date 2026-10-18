@@ -666,6 +666,13 @@ async function startOrAttachBiorouterd(
               'BIOROUTER_PATH_ROOT',
               'BIOROUTER_DEV_PROFILE_ROOT',
               'BIOROUTER_DEV_PROFILE_NAME',
+              // A development profile's own seams (G3): the daemon-side askpass a scripted
+              // sign-in answers through, and the Crew broker build setup installs. Without
+              // them a dev GUI's daemon could reach neither. Development builds only.
+              'SSH_ASKPASS',
+              'SSH_ASKPASS_REQUIRE',
+              'DISPLAY',
+              'BIOROUTER_CREW_BROKER_DIR',
             ].includes(key)
           )
         )

@@ -1,10 +1,11 @@
-import { act, fireEvent, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { CrewHttpError } from '../crewApi';
 import { CREW_INVITATION_INVALID } from '../api/errors';
 import type { CrewController } from '../state/types';
-import { hostCopy, joinCopy } from './copy';
+import { hostCopy, joinCopy, setupCopy } from './copy';
 import { HostDialog } from './HostDialog';
+import type { SetupRun } from './setup';
 import { WORKSPACE_KEY_PATTERN } from './JoinDialog';
 import { readJoinContext, resetJoinContextForTests, updateJoinContext } from './joinContext';
 import {
@@ -23,7 +24,18 @@ const mocks = vi.hoisted(() => ({
   startHostRun: vi.fn(),
   readHostRun: vi.fn(),
   stopHostRun: vi.fn(),
+  startSetup: vi.fn(),
+  readSetup: vi.fn(),
+  stopSetup: vi.fn(),
+  signIn: [] as Record<string, unknown>[],
+  /** What the daemon says of automatic setup; its own read has its suite (`setup.test.ts`). */
+  setupSupport: { supported: true as boolean | null, artifact: null as unknown },
 }));
+
+vi.mock('./SetupProgress', async () => {
+  const actual = await vi.importActual<typeof import('./SetupProgress')>('./SetupProgress');
+  return { ...actual, useSetupArtifact: () => mocks.setupSupport };
+});
 
 vi.mock('./hostStart', async () => {
   const actual = await vi.importActual<typeof import('./hostStart')>('./hostStart');
@@ -34,6 +46,29 @@ vi.mock('./hostStart', async () => {
     stopHostRun: mocks.stopHostRun,
   };
 });
+
+vi.mock('./setup', async () => {
+  const actual = await vi.importActual<typeof import('./setup')>('./setup');
+  return {
+    ...actual,
+    startSetup: mocks.startSetup,
+    readSetup: mocks.readSetup,
+    stopSetup: mocks.stopSetup,
+  };
+});
+
+// A setup job's Sign in window: its terminal has its own suites. It stands in with its contract.
+vi.mock('../auth/SignInDialog', () => ({
+  SignInDialog: (props: Record<string, unknown>) => {
+    mocks.signIn.push(props);
+    if (!props.open) return null;
+    return (
+      <div data-testid="setup-sign-in">
+        <button onClick={props.onSignedIn as () => void}>Simulate signed in</button>
+      </div>
+    );
+  },
+}));
 
 vi.mock('../../ConfigContext', () => ({
   useConfig: () => ({ getProviders: mocks.getProviders }),
@@ -57,6 +92,14 @@ class ResizeObserverStub {
 }
 
 const HOSTING_KEY = 'c'.repeat(64);
+/** The broker this build carries (`GET /crew/setup/artifact`). */
+const ARTIFACT = {
+  version: '1.94.0',
+  target: 'x86_64-unknown-linux-gnu',
+  sha256: 'd'.repeat(64),
+  size: 3556248,
+  source: 'bundled',
+};
 const PASTE = 'started pid 4242\n{"workspace_id":"w-1","socket":"/tmp/crew-1000-abc/broker.sock"}';
 const PREVIEW = {
   workspace_id: '11111111-2222-3333-4444-555555555555',
@@ -129,10 +172,15 @@ beforeEach(() => {
   vi.stubGlobal('ResizeObserver', ResizeObserverStub);
   resetJoinContextForTests();
   mocks.dockProps.length = 0;
+  mocks.signIn.length = 0;
   mocks.previewInvitation.mockReset().mockResolvedValue(PREVIEW);
   mocks.startHostRun.mockReset();
   mocks.readHostRun.mockReset();
   mocks.stopHostRun.mockReset().mockResolvedValue(undefined);
+  mocks.setupSupport = { supported: true, artifact: ARTIFACT };
+  mocks.startSetup.mockReset();
+  mocks.readSetup.mockReset();
+  mocks.stopSetup.mockReset().mockResolvedValue(undefined);
   mocks.getProviders.mockReset().mockResolvedValue([
     {
       name: 'versa',
@@ -208,19 +256,22 @@ describe('HostDialog', () => {
     expect(await screen.findByText(hostCopy.startHeading('hpc.ucsf.edu'))).toBeInTheDocument();
     expect(view.crew().prepareHostingDevice).toHaveBeenCalledOnce();
     expect(screen.getByText(hostCopy.stepOf(2, 3, 'Start'))).toBeInTheDocument();
-    expect(screen.getByText(hostCopy.runThis('hpc.ucsf.edu', 'alice'))).toBeInTheDocument();
-    const command = screen.getByText(/--name lab-data --bootstrap-key c{64}/);
-    // One command per line, scrolling sideways rather than wrapping mid-flag (T-42).
-    expect(command.closest('[data-slot="copy-field"]')).toHaveClass('crew-onboard-command');
     expect(screen.getByText(hostCopy.consequence)).toBeInTheDocument();
 
-    // The step's action is Start it for me; the manual path is folded under it (D-HOST).
-    const start = screen.getByRole('button', { name: hostCopy.startForMe });
+    // The step leads with its action, Set up and start Crew (OW-9), and no shell block (U1): the
+    // commands are the manual path's, folded under it.
+    const start = screen.getByRole('button', { name: hostCopy.setUpAndStart });
     expect(start).toHaveFocus();
-    expect(start).toHaveAccessibleDescription(hostCopy.startForMeHint('hpc.ucsf.edu', 'alice'));
+    expect(start).toHaveAccessibleDescription(hostCopy.setUpAndStartHint('hpc.ucsf.edu', 'alice'));
+    expect(screen.queryByText(hostCopy.runThis('hpc.ucsf.edu', 'alice'))).toBeNull();
+    expect(screen.queryByText(/--bootstrap-key/)).toBeNull();
     expect(screen.queryByLabelText(hostCopy.pasted)).toBeNull();
     expect(screen.queryByRole('button', { name: hostCopy.continue })).toBeNull();
     runItYourself();
+    expect(screen.getByText(hostCopy.runThis('hpc.ucsf.edu', 'alice'))).toBeVisible();
+    const command = screen.getByText(/--name lab-data --bootstrap-key c{64}/);
+    // One command per line, scrolling sideways rather than wrapping mid-flag (T-42).
+    expect(command.closest('[data-slot="copy-field"]')).toHaveClass('crew-onboard-command');
     expect(screen.getByText(hostCopy.runYourselfBody('hpc.ucsf.edu', 'alice'))).toBeVisible();
     expect(screen.getByRole('button', { name: hostCopy.continue })).toBeInTheDocument();
 
@@ -360,7 +411,7 @@ describe('HostDialog', () => {
     );
   });
 
-  it('creates the workspace: save with the prepared identity, connect, bootstrap, then label', async () => {
+  it('creates the workspace: save with the prepared identity, connect, bootstrap, then mark it with the institution Name chose (G4)', async () => {
     const connectDone = deferred();
     const connect = vi.fn(() => connectDone.promise);
     const saved = fakeConnection({
@@ -377,6 +428,11 @@ describe('HostDialog', () => {
     // The fingerprint says what it is for (T-34).
     expect(screen.getByText(hostCopy.fingerprintHelper)).toBeInTheDocument();
     expect(screen.getByText(hostCopy.createBody('lab-data'))).toBeInTheDocument();
+    // Create also writes the label Name chose, which can't be undone: it says so before the
+    // person commits, in the label step's words, instead of asking again afterwards (G4).
+    expect(screen.getByTestId('crew-host-create-label')).toHaveTextContent(
+      'Creating lab-data also marks it as a ucsf workspace, for everyone who works there. Agents working in lab-data can then use only models approved for ucsf. This can’t be undone.'
+    );
     fireEvent.click(screen.getByRole('button', { name: hostCopy.create }));
 
     const crew = view.crew();
@@ -419,7 +475,9 @@ describe('HostDialog', () => {
     // have (Q3-51): the checklist asks before the first invitation goes out.
     expect(readJoinContext('conn-host')).toMatchObject({ hostSetup: false, suggestName: true });
 
-    // Verified, Private and unlabelled: ask once for the host's institution.
+    // Verified, Private and unlabelled: Create writes the institution Name chose, with the label
+    // step's request, as `biorouter crew host --institution` does.
+    const refreshesBefore = vi.mocked(crew.refresh).mock.calls.length;
     const snapshot = fakeSnapshot({
       workspace: {
         id: 'workspace-1',
@@ -440,30 +498,116 @@ describe('HostDialog', () => {
         policyEpoch: 1,
       },
     });
-    // It says what the label does — only what the broker enforces — and what Not now leaves open
-    // (Q3-45), instead of "Label lab-data as ucsf? This can't be changed later."
-    expect(
-      await screen.findByRole('dialog', { name: 'Mark lab-data as a ucsf workspace?' })
-    ).toBeInTheDocument();
-    expect(
-      screen.getByText(
-        'Agents working in lab-data can then use only models approved for ucsf. This can’t be undone.'
-      )
-    ).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: hostCopy.labelLater })).toHaveAccessibleDescription(
-      'Until then, people can chat and share files in lab-data, but agents can’t work there. You can do this later from Get lab-data ready, or from Privacy… in the workspace menu.'
-    );
-    expect(document.body.textContent).not.toMatch(/\bLabel\b|changed later/);
-    // A separate, explicit confirmation: nothing is set until the person presses it.
-    expect(crew.mutate).not.toHaveBeenCalledWith('policy.set', expect.anything());
-    fireEvent.click(screen.getByRole('button', { name: 'Mark as ucsf' }));
     await waitFor(() =>
-      expect(crew.mutate).toHaveBeenCalledWith('policy.set', {
-        mode: 'private',
-        institution_id: 'ucsf',
-      })
+      expect(crew.request).toHaveBeenCalledWith(
+        'policy.set',
+        { mode: 'private', institution_id: 'ucsf' },
+        { mutation: true }
+      )
     );
+    // Then the dialog closes, with no second question about what Name answered, and the
+    // workspace is read again so it shows the label it now has.
     await waitFor(() => expect(crew.closeDialog).toHaveBeenCalled());
+    expect(vi.mocked(crew.refresh).mock.calls.length).toBeGreaterThan(refreshesBefore);
+    expect(screen.queryByText(hostCopy.labelTitle('lab-data', 'ucsf'))).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Mark as ucsf' })).toBeNull();
+    expect(crew.mutate).not.toHaveBeenCalledWith('policy.set', expect.anything());
+    expect(crew.reportError).not.toHaveBeenCalled();
+  });
+
+  it('says where to finish the label when Create could not write it, and asks nothing (G4)', async () => {
+    const request = vi.fn((method: string) =>
+      method === 'policy.set'
+        ? Promise.reject(new Error('privacy_denied: workspace institution cannot be changed'))
+        : Promise.resolve({})
+    );
+    const saved = fakeConnection({ id: 'conn-host', status: 'connected' });
+    const view = renderHost({
+      request: request as unknown as CrewController['request'],
+      saveConnection: vi.fn().mockResolvedValue(saved),
+    });
+    await throughStart();
+    fireEvent.click(screen.getByRole('button', { name: hostCopy.create }));
+    await waitFor(() => expect(view.crew().saveConnection).toHaveBeenCalled());
+    view.update({ connectionId: 'conn-host', connections: [saved], connection: saved });
+    await waitFor(() => expect(view.crew().setJoinStatus).toHaveBeenCalledWith('joined'));
+    view.update({
+      snapshot: fakeSnapshot({
+        workspace: {
+          id: 'workspace-1',
+          host_uid: 1000,
+          mode: 'private',
+          institution_id: null,
+          policy_epoch: 1,
+          host_principal_id: 'p-alice',
+          name: 'lab-data',
+        },
+      }),
+      observedPrivacy: {
+        connectionId: 'conn-host',
+        mode: 'private',
+        institutionId: 'ucsf',
+        policyEpoch: 1,
+      },
+    });
+    await waitFor(() =>
+      expect(view.crew().reportError).toHaveBeenCalledWith(
+        hostCopy.markFailed('lab-data', 'ucsf'),
+        'global'
+      )
+    );
+    expect(hostCopy.markFailed('lab-data', 'ucsf')).toBe(
+      'lab-data was created, but Biorouter couldn’t mark it as a ucsf workspace, so agents can’t work there yet. You can do it from Get lab-data ready, or from Privacy… in the workspace menu.'
+    );
+    // The workspace exists: the dialog closes, and the checklist and Privacy… finish it.
+    await waitFor(() => expect(view.crew().closeDialog).toHaveBeenCalled());
+    expect(screen.queryByText(hostCopy.labelTitle('lab-data', 'ucsf'))).toBeNull();
+  });
+
+  it('writes no label for a Public choice, and asks once instead when the workspace is still unmarked', async () => {
+    const saved = fakeConnection({ id: 'conn-host', status: 'connected' });
+    const view = renderHost({ saveConnection: vi.fn().mockResolvedValue(saved) });
+    await fillName();
+    fireEvent.click(screen.getByRole('radio', { name: new RegExp(`^${joinCopy.public}`) }));
+    fireEvent.click(screen.getByRole('button', { name: hostCopy.continue }));
+    await screen.findByText(hostCopy.startHeading('hpc.ucsf.edu'));
+    runItYourself();
+    fireEvent.change(screen.getByLabelText(hostCopy.pasted), { target: { value: PASTE } });
+    fireEvent.click(screen.getByRole('button', { name: hostCopy.continue }));
+    await screen.findByText(hostCopy.createHeading('lab-data', 'hpc.ucsf.edu'));
+    // Nothing on Create says a label is coming: none is.
+    expect(screen.queryByTestId('crew-host-create-label')).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: hostCopy.create }));
+    await waitFor(() => expect(view.crew().saveConnection).toHaveBeenCalled());
+    view.update({ connectionId: 'conn-host', connections: [saved], connection: saved });
+    await waitFor(() => expect(view.crew().setJoinStatus).toHaveBeenCalledWith('joined'));
+    view.update({
+      snapshot: fakeSnapshot({
+        workspace: {
+          id: 'workspace-1',
+          host_uid: 1000,
+          mode: 'private',
+          institution_id: null,
+          policy_epoch: 1,
+          host_principal_id: 'p-alice',
+          name: 'lab-data',
+        },
+      }),
+      observedPrivacy: {
+        connectionId: 'conn-host',
+        mode: 'public',
+        institutionId: 'ucsf',
+        policyEpoch: 1,
+      },
+    });
+    // The saved connection names an institution the workspace does not have: the label step is
+    // for exactly this, and sets nothing until the person presses Mark.
+    expect(await screen.findByText(hostCopy.labelTitle('lab-data', 'ucsf'))).toBeInTheDocument();
+    expect(view.crew().request).not.toHaveBeenCalledWith(
+      'policy.set',
+      expect.anything(),
+      expect.anything()
+    );
   });
 
   it('waits for Sign in, and returns to Create when it ends without signing in', async () => {
@@ -644,10 +788,18 @@ describe('HostDialog', () => {
         policyEpoch: 1,
       },
     });
-    expect(await screen.findByText(hostCopy.labelTitle('lab-data', 'ucsf'))).toBeInTheDocument();
+    // Verified: Create writes the label Name chose, and closes.
+    await waitFor(() =>
+      expect(request).toHaveBeenCalledWith(
+        'policy.set',
+        { mode: 'private', institution_id: 'ucsf' },
+        { mutation: true }
+      )
+    );
+    await waitFor(() => expect(view.crew().closeDialog).toHaveBeenCalled());
   });
 
-  it('asks to mark the workspace in the institution’s own name, and says why it asks again (Q4-47)', async () => {
+  it('asks a resumed setup to mark the workspace in the institution’s own name, and says why it asks again (Q4-47)', async () => {
     // The configured provider publishes "UCSF" for `ucsf`.
     mocks.getProviders.mockResolvedValue([
       {
@@ -656,12 +808,18 @@ describe('HostDialog', () => {
         affiliation: { kind: 'institutions', institutions: [{ id: 'ucsf', display_name: 'UCSF' }] },
       },
     ]);
-    const saved = fakeConnection({ id: 'conn-host', status: 'connected' });
-    const view = renderHost({ saveConnection: vi.fn().mockResolvedValue(saved) });
-    await throughStart();
+    // A setup this computer saved on an earlier visit: this dialog never showed it Name, so Create
+    // writes no label, and the label step asks once instead (G4).
+    updateJoinContext('conn-host', { hostSetup: true, workspaceName: 'lab-data' });
+    const saved = fakeConnection({
+      id: 'conn-host',
+      ssh_target: 'alice@hpc.ucsf.edu',
+      status: 'connected',
+    });
+    const view = renderHost({ connectionId: 'conn-host', connection: saved, connections: [saved] });
+    expect(await screen.findByText(hostCopy.stepOf(3, 3, 'Create'))).toBeInTheDocument();
+    expect(screen.queryByTestId('crew-host-create-label')).toBeNull();
     fireEvent.click(screen.getByRole('button', { name: hostCopy.create }));
-    await waitFor(() => expect(view.crew().saveConnection).toHaveBeenCalled());
-    view.update({ connectionId: 'conn-host', connections: [saved], connection: saved });
     await waitFor(() => expect(view.crew().setJoinStatus).toHaveBeenCalledWith('joined'));
     view.update({
       snapshot: fakeSnapshot({
@@ -698,6 +856,19 @@ describe('HostDialog', () => {
       )
     ).toBeInTheDocument();
     expect(document.body.textContent).not.toMatch(/\bucsf\b/);
+    // What Not now leaves open (Q3-45), instead of "Label lab-data as ucsf? This can't be changed
+    // later."
+    expect(screen.getByRole('button', { name: hostCopy.labelLater })).toHaveAccessibleDescription(
+      'Until then, people can chat and share files in lab-data, but agents can’t work there. You can do this later from Get lab-data ready, or from Privacy… in the workspace menu.'
+    );
+    expect(document.body.textContent).not.toMatch(/\bLabel\b|changed later/);
+    // A separate, explicit confirmation: nothing is set until the person presses it.
+    expect(view.crew().mutate).not.toHaveBeenCalledWith('policy.set', expect.anything());
+    expect(view.crew().request).not.toHaveBeenCalledWith(
+      'policy.set',
+      expect.anything(),
+      expect.anything()
+    );
     fireEvent.click(screen.getByRole('button', { name: 'Mark as UCSF' }));
     // The label written is still the canonical ID.
     await waitFor(() =>
@@ -706,6 +877,7 @@ describe('HostDialog', () => {
         institution_id: 'ucsf',
       })
     );
+    await waitFor(() => expect(view.crew().closeDialog).toHaveBeenCalled());
   });
 
   it('closes on an observation error that arose while verifying, for the connection bar to explain', async () => {
@@ -739,7 +911,7 @@ describe('HostDialog', () => {
       await waitFor(() => expect(name).toHaveFocus());
     });
 
-    it('gives the agent’s permissions their own row, out of Advanced and off (Q2-37)', async () => {
+    it('gives the agent’s permissions their own row, out of Advanced, as me by default (Q2-37, OW-6)', async () => {
       const view = renderHost({
         saveConnection: vi.fn().mockResolvedValue(fakeConnection({ id: 'conn-host' })),
       });
@@ -751,10 +923,21 @@ describe('HostDialog', () => {
       expect(hostCopy.advancedSummary).toBe(joinCopy.advancedSummary);
       expect(hostCopy.advancedSummary).not.toMatch(/agent|Port|SSH/);
       const row = screen.getByRole('button', { name: joinCopy.agentHeading('hpc.ucsf.edu') });
-      expect(row).toHaveAccessibleDescription('is off');
+      // A new connection made by the setup flow defaults to As me on the server (OW-6).
+      expect(row).toHaveAccessibleDescription('runs commands as you');
       fireEvent.click(screen.getByRole('button', { name: 'Advanced' }));
       expect(screen.queryByRole('switch', { name: joinCopy.remoteExecution })).toBeNull();
       fireEvent.click(row);
+      // Three levels, the default with its one warning; the host's own account says more.
+      expect(screen.getByRole('radio', { name: /^As me on the server/ })).toBeChecked();
+      expect(screen.getByTestId('crew-onboard-full-warning')).toHaveTextContent(
+        joinCopy.fullWarning('alice', 'hpc.ucsf.edu')
+      );
+      expect(screen.getByTestId('crew-onboard-full-warning')).toHaveTextContent(
+        joinCopy.fullWarningHost('lab-data')
+      );
+      fireEvent.click(screen.getByRole('radio', { name: /^In a folder/ }));
+      expect(screen.queryByTestId('crew-onboard-full-warning')).toBeNull();
       // The work folder in plain words, not "an absolute path on the server" (Q3-49).
       expect(screen.getByLabelText(joinCopy.remoteFolder)).toHaveAccessibleDescription(
         'Optional. A folder on hpc.ucsf.edu, starting with /. Your agent can read and write files there.'
@@ -854,7 +1037,314 @@ describe('HostDialog', () => {
     });
   });
 
-  describe('Start it for me (D-HOST)', () => {
+  describe('Set up and start Crew (OW-9)', () => {
+    const SHOWN = [
+      'umask 077',
+      'mkdir -p "$HOME/.local/share/biorouter-crew"',
+      `"$HOME/.local/bin/biorouter-crew" start --state-dir "$HOME/.local/share/biorouter-crew/lab-data" --name lab-data --bootstrap-key ${HOSTING_KEY}`,
+      '"$HOME/.local/bin/biorouter-crew" status --state-dir "$HOME/.local/share/biorouter-crew/lab-data"',
+    ].join('\n');
+    const LINE = 'brcrew1:eyJ2IjoxfQ';
+    const DRAFT = '# hpc.ucsf.edu\n\nUbuntu 22.04, 16 CPUs, no job scheduler.';
+
+    function job(overrides: Partial<SetupRun> = {}): SetupRun {
+      return {
+        jobId: 'setup-1',
+        intent: 'host',
+        state: 'running',
+        stage: 'probe',
+        stages: [],
+        server: null,
+        artifact: ARTIFACT,
+        outcome: null,
+        error: null,
+        output: '',
+        ...overrides,
+      };
+    }
+    function finished(outcome: Partial<NonNullable<SetupRun['outcome']>> = {}): SetupRun {
+      return job({
+        state: 'finished',
+        stage: 'done',
+        outcome: {
+          installedVersion: '1.94.0',
+          reused: false,
+          host: { kind: 'found', text: LINE },
+          hostCommand: SHOWN,
+          connectionId: null,
+          workFolder: '/home/alice/crew-work/lab-data',
+          remoteAccess: null,
+          contextDraft: DRAFT,
+          ...outcome,
+        },
+      });
+    }
+
+    it('sets Crew up as the login typed, in plain steps, then moves on to Create', async () => {
+      mocks.startSetup.mockResolvedValue(job());
+      mocks.readSetup
+        .mockResolvedValueOnce(job({ stage: 'transfer' }))
+        .mockResolvedValueOnce(job({ stage: 'start' }))
+        .mockResolvedValue(finished());
+      renderHost();
+      await toStart();
+      const start = screen.getByRole('button', { name: hostCopy.setUpAndStart });
+      fireEvent.click(start);
+
+      // Only what the route takes: this computer's host setup, the login typed and the name.
+      await waitFor(() => expect(mocks.startSetup).toHaveBeenCalledOnce());
+      const [request] = mocks.startSetup.mock.calls[0];
+      expect(request).toEqual({
+        target: {
+          kind: 'pending',
+          preparation_id: 'prep-1',
+          ssh_target: 'alice@hpc.ucsf.edu',
+          port: null,
+          identity_file: null,
+          proxy_jump: null,
+        },
+        intent: 'host',
+        workspace_name: 'lab-data',
+      });
+      expect(JSON.stringify(request)).not.toMatch(/biorouter-crew|umask|bootstrap/);
+      expect(mocks.startHostRun).not.toHaveBeenCalled();
+
+      // The steps in plain words; Signing in only once a job asks for it.
+      const steps = await screen.findByRole('list', { name: setupCopy.stepsLabel });
+      expect(
+        within(steps)
+          .getAllByRole('listitem')
+          .map((item) => item.textContent)
+      ).toEqual([
+        setupCopy.stages.checking,
+        setupCopy.stages.installing,
+        setupCopy.stages.starting,
+        setupCopy.stages.ready,
+      ]);
+      // Busy, not disabled: focus stays on it, and pressing again starts nothing.
+      expect(start).toHaveAttribute('aria-disabled', 'true');
+      expect(start).toHaveFocus();
+      fireEvent.click(start);
+      expect(mocks.startSetup).toHaveBeenCalledOnce();
+      expect(screen.getByRole('button', { name: hostCopy.back })).toBeDisabled();
+
+      await screen.findByText(hostCopy.createHeading('lab-data', 'hpc.ucsf.edu'), undefined, {
+        timeout: 4000,
+      });
+      expect(mocks.readSetup).toHaveBeenCalledWith('setup-1', expect.any(AbortSignal));
+      // Read as a paste is read, exactly as the older start's output is.
+      expect(mocks.previewInvitation).toHaveBeenCalledWith(LINE);
+      expect(screen.getByRole('button', { name: hostCopy.create })).toHaveFocus();
+    });
+
+    it('creates with the folder setup made, as me, then marks the workspace, opens it and saves its context', async () => {
+      mocks.startSetup.mockResolvedValue(finished());
+      const saved = fakeConnection({
+        id: 'prep-1',
+        ssh_target: 'alice@hpc.ucsf.edu',
+        status: 'connected',
+      });
+      const view = renderHost({ saveConnection: vi.fn().mockResolvedValue(saved) });
+      await toStart();
+      fireEvent.click(screen.getByRole('button', { name: hostCopy.setUpAndStart }));
+      await screen.findByText(hostCopy.createHeading('lab-data', 'hpc.ucsf.edu'));
+      fireEvent.click(screen.getByRole('button', { name: hostCopy.create }));
+
+      const crew = view.crew();
+      await waitFor(() =>
+        expect(crew.saveConnection).toHaveBeenCalledWith(
+          expect.objectContaining({
+            remote_root: '/home/alice/crew-work/lab-data',
+            remote_execution: true,
+            remote_access: 'full',
+            preparation_id: 'prep-1',
+          })
+        )
+      );
+      view.update({ connectionId: 'prep-1', connections: [saved], connection: saved });
+      await waitFor(() => expect(crew.setJoinStatus).toHaveBeenCalledWith('joined'));
+      // Verified, with a broker that takes both: open governance, then the context draft.
+      view.update({
+        capabilities: ['presence_v1', 'open_governance_v1', 'workspace_context_v1'],
+        snapshot: fakeSnapshot({
+          workspace: {
+            id: 'workspace-1',
+            host_uid: 1000,
+            mode: 'private',
+            institution_id: null,
+            policy_epoch: 1,
+            host_principal_id: 'p-alice',
+            name: 'lab-data',
+          },
+        }),
+        observedPrivacy: {
+          connectionId: 'prep-1',
+          mode: 'private',
+          institutionId: 'ucsf',
+          policyEpoch: 1,
+        },
+      });
+      await waitFor(() =>
+        expect(crew.request).toHaveBeenCalledWith(
+          'workspace.set_governance',
+          { governance: 'open' },
+          { mutation: true }
+        )
+      );
+      await waitFor(() =>
+        expect(crew.request).toHaveBeenCalledWith(
+          'workspace.context.set',
+          { text: DRAFT, expected_revision: 0 },
+          { mutation: true }
+        )
+      );
+      // The institution Name chose went first, as `biorouter crew host` writes it (G4), and
+      // nothing asks for it again: the dialog closes.
+      const order = (method: string) =>
+        vi.mocked(crew.request).mock.calls.findIndex(([called]) => called === method);
+      expect(crew.request).toHaveBeenCalledWith(
+        'policy.set',
+        { mode: 'private', institution_id: 'ucsf' },
+        { mutation: true }
+      );
+      expect(order('policy.set')).toBeLessThan(order('workspace.set_governance'));
+      expect(order('workspace.set_governance')).toBeLessThan(order('workspace.context.set'));
+      await waitFor(() => expect(crew.closeDialog).toHaveBeenCalled());
+      expect(screen.queryByText(hostCopy.labelTitle('lab-data', 'ucsf'))).toBeNull();
+      expect(crew.mutate).not.toHaveBeenCalledWith('policy.set', expect.anything());
+    });
+
+    it('asks a broker for neither setting when it does not advertise them', async () => {
+      mocks.startSetup.mockResolvedValue(finished());
+      const saved = fakeConnection({ id: 'prep-1', status: 'connected' });
+      const view = renderHost({ saveConnection: vi.fn().mockResolvedValue(saved) });
+      await toStart();
+      fireEvent.click(screen.getByRole('button', { name: hostCopy.setUpAndStart }));
+      await screen.findByText(hostCopy.createHeading('lab-data', 'hpc.ucsf.edu'));
+      fireEvent.click(screen.getByRole('button', { name: hostCopy.create }));
+      await waitFor(() => expect(view.crew().saveConnection).toHaveBeenCalled());
+      view.update({ connectionId: 'prep-1', connections: [saved], connection: saved });
+      await waitFor(() => expect(view.crew().setJoinStatus).toHaveBeenCalledWith('joined'));
+      view.update({
+        capabilities: ['presence_v1'],
+        snapshot: fakeSnapshot(),
+        observedPrivacy: {
+          connectionId: 'prep-1',
+          mode: 'private',
+          institutionId: 'ucsf',
+          policyEpoch: 1,
+        },
+      });
+      await waitFor(() => expect(view.crew().closeDialog).toHaveBeenCalled());
+      expect(view.crew().request).not.toHaveBeenCalledWith(
+        'workspace.set_governance',
+        expect.anything(),
+        expect.anything()
+      );
+      expect(view.crew().request).not.toHaveBeenCalledWith(
+        'workspace.context.set',
+        expect.anything(),
+        expect.anything()
+      );
+    });
+
+    it('never reads a setup whose start command is not the one shown', async () => {
+      mocks.startSetup.mockResolvedValue(finished({ hostCommand: `${SHOWN}\nrm -rf ~` }));
+      renderHost();
+      await toStart();
+      fireEvent.click(screen.getByRole('button', { name: hostCopy.setUpAndStart }));
+      expect(await screen.findByTestId('crew-host-start-problem')).toHaveTextContent(
+        hostCopy.startCommandChanged
+      );
+      expect(mocks.previewInvitation).not.toHaveBeenCalled();
+      // The manual path opens: it always works.
+      expect(screen.getByLabelText(hostCopy.pasted)).toBeInTheDocument();
+    });
+
+    it('opens the Sign in window for the setup job when the server asks', async () => {
+      mocks.startSetup.mockResolvedValue(job({ state: 'needs_sign_in', stage: 'sign_in' }));
+      mocks.readSetup.mockResolvedValue(job({ state: 'needs_sign_in', stage: 'sign_in' }));
+      renderHost();
+      await toStart();
+      fireEvent.click(screen.getByRole('button', { name: hostCopy.setUpAndStart }));
+      await screen.findByTestId('setup-sign-in');
+      expect(mocks.signIn[mocks.signIn.length - 1]).toMatchObject({
+        target: { kind: 'setup', jobId: 'setup-1' },
+        open: true,
+        host: 'hpc.ucsf.edu',
+      });
+      const steps = screen.getByRole('list', { name: setupCopy.stepsLabel });
+      expect(within(steps).getByText(setupCopy.stages['signing-in'])).toBeInTheDocument();
+    });
+
+    it('says what a refusal means and opens the manual path, which always works', async () => {
+      mocks.startSetup.mockResolvedValue(
+        job({
+          state: 'failed',
+          stage: 'verify_installed',
+          error: {
+            code: 'crew_host_home_unsafe',
+            message: 'Home is group-writable.',
+            detail: null,
+          },
+        })
+      );
+      renderHost();
+      await toStart();
+      fireEvent.click(screen.getByRole('button', { name: hostCopy.setUpAndStart }));
+      expect(await screen.findByTestId('crew-setup-problem')).toHaveTextContent(
+        setupCopy.error('crew_host_home_unsafe', 'hpc.ucsf.edu') as string
+      );
+      expect(screen.getByLabelText(hostCopy.pasted)).toBeInTheDocument();
+    });
+
+    it('keeps the manual install generated from the broker this build carries', async () => {
+      renderHost();
+      await toStart();
+      fireEvent.click(screen.getByRole('button', { name: hostCopy.notInstalled('hpc.ucsf.edu') }));
+      const manual = await screen.findByTestId('crew-manual-install');
+      expect(manual.textContent).toContain(
+        'scp ~/Downloads/biorouter-crew-1.94.0-linux-x86_64 alice@hpc.ucsf.edu:biorouter-crew-1.94.0-linux-x86_64'
+      );
+      expect(manual.textContent).toContain(`${'d'.repeat(64)}  biorouter-crew-1.94.0-linux-x86_64`);
+      expect(manual.textContent).not.toMatch(/replace\/with|\/path\/to/);
+      expect(screen.getByRole('button', { name: setupCopy.saveBroker })).toBeInTheDocument();
+    });
+
+    it('takes the older start straight away when the daemon is known to predate setup', async () => {
+      // A daemon before automatic setup answers its routes 404 (`useSetupArtifact`).
+      mocks.setupSupport = { supported: false, artifact: null };
+      mocks.startHostRun.mockResolvedValue({
+        jobId: 'job-1',
+        command: SHOWN,
+        state: 'running',
+        output: '',
+        result: null,
+        error: null,
+      });
+      mocks.readHostRun.mockReturnValue(new Promise(() => {}));
+      renderHost();
+      await fillName();
+      // As me on the server is not offered by a daemon that would refuse it.
+      expect(
+        screen.getByRole('button', { name: joinCopy.agentHeading('hpc.ucsf.edu') })
+      ).toHaveAccessibleDescription('is off');
+      fireEvent.click(screen.getByRole('button', { name: hostCopy.continue }));
+      await screen.findByText(hostCopy.startHeading('hpc.ucsf.edu'));
+      const start = screen.getByRole('button', { name: hostCopy.setUpAndStart });
+      expect(start).toHaveAccessibleDescription(hostCopy.startForMeHint('hpc.ucsf.edu', 'alice'));
+      fireEvent.click(start);
+      await waitFor(() => expect(mocks.startHostRun).toHaveBeenCalledOnce());
+      expect(mocks.startSetup).not.toHaveBeenCalled();
+    });
+  });
+
+  // A daemon before automatic setup answers its route 404: the same click takes the older start,
+  // which runs the commands shown and nothing else (D-HOST).
+  describe('the older start, on a daemon before setup (D-HOST)', () => {
+    beforeEach(() => {
+      mocks.startSetup.mockRejectedValue(new CrewHttpError('Crew request failed (404)', 404));
+    });
     const SHOWN = [
       'umask 077',
       'mkdir -p "$HOME/.local/share/biorouter-crew"',
@@ -888,7 +1378,7 @@ describe('HostDialog', () => {
       renderHost();
       await toStart();
 
-      const start = screen.getByRole('button', { name: hostCopy.startForMe });
+      const start = screen.getByRole('button', { name: hostCopy.setUpAndStart });
       fireEvent.click(start);
       // Only what the route accepts: the host setup, the name and the login. Never a command.
       await waitFor(() => expect(mocks.startHostRun).toHaveBeenCalledOnce());
@@ -902,8 +1392,6 @@ describe('HostDialog', () => {
         proxy_jump: null,
       });
       expect(JSON.stringify(request)).not.toMatch(/biorouter-crew|umask|bootstrap/);
-      // The shown text is the one the daemon reports running.
-      expect(screen.getByText(/--name lab-data --bootstrap-key c{64}/).textContent).toBe(SHOWN);
 
       // Its output streams in, in a region a keyboard can reach, while it runs.
       const output = await screen.findByTestId('crew-host-start-output');
@@ -913,6 +1401,9 @@ describe('HostDialog', () => {
       // Busy, not disabled: focus stays on it.
       expect(start).toHaveAttribute('aria-disabled', 'true');
       expect(start).toHaveFocus();
+      // The text Run it yourself shows is the one the daemon reports running.
+      runItYourself();
+      expect(screen.getByText(/--name lab-data --bootstrap-key c{64}/).textContent).toBe(SHOWN);
 
       // Read as a paste is read, then on to Create with nothing to paste; focus follows.
       await screen.findByText(hostCopy.createHeading('lab-data', 'hpc.ucsf.edu'), undefined, {
@@ -928,7 +1419,7 @@ describe('HostDialog', () => {
       mocks.startHostRun.mockResolvedValue(run({ command: `${SHOWN}\nrm -rf ~` }));
       renderHost();
       await toStart();
-      fireEvent.click(screen.getByRole('button', { name: hostCopy.startForMe }));
+      fireEvent.click(screen.getByRole('button', { name: hostCopy.setUpAndStart }));
 
       expect(await screen.findByTestId('crew-host-start-problem')).toHaveTextContent(
         hostCopy.startCommandChanged
@@ -980,7 +1471,7 @@ describe('HostDialog', () => {
       mocks.startHostRun.mockResolvedValue(run({ ...answer, output: 'ssh: …' }));
       renderHost();
       await toStart();
-      const start = screen.getByRole('button', { name: hostCopy.startForMe });
+      const start = screen.getByRole('button', { name: hostCopy.setUpAndStart });
       fireEvent.click(start);
 
       expect(await screen.findByTestId('crew-host-start-problem')).toHaveTextContent(message);
@@ -1002,7 +1493,7 @@ describe('HostDialog', () => {
       );
       renderHost();
       await toStart();
-      fireEvent.click(screen.getByRole('button', { name: hostCopy.startForMe }));
+      fireEvent.click(screen.getByRole('button', { name: hostCopy.setUpAndStart }));
       expect(await screen.findByTestId('crew-host-start-problem')).toHaveTextContent(
         'Confirm this in Biorouter to continue.'
       );
@@ -1013,7 +1504,7 @@ describe('HostDialog', () => {
       mocks.startHostRun.mockRejectedValue(new CrewHttpError('Crew request failed (404)', 404));
       renderHost();
       await toStart();
-      fireEvent.click(screen.getByRole('button', { name: hostCopy.startForMe }));
+      fireEvent.click(screen.getByRole('button', { name: hostCopy.setUpAndStart }));
       expect(await screen.findByTestId('crew-host-start-problem')).toHaveTextContent(
         hostCopy.startStaleDaemon
       );
@@ -1027,7 +1518,7 @@ describe('HostDialog', () => {
       mocks.previewInvitation.mockResolvedValue({ ...PREVIEW, socket_path: null, owner_uid: null });
       renderHost();
       await toStart();
-      fireEvent.click(screen.getByRole('button', { name: hostCopy.startForMe }));
+      fireEvent.click(screen.getByRole('button', { name: hostCopy.setUpAndStart }));
 
       expect(await screen.findByText(hostCopy.detailsMissing)).toBeInTheDocument();
       expect(screen.getByLabelText(joinCopy.workspaceKey)).toHaveValue(WORKSPACE_KEY);
@@ -1046,7 +1537,7 @@ describe('HostDialog', () => {
       mocks.readHostRun.mockReturnValue(new Promise(() => {}));
       renderHost();
       await toStart();
-      fireEvent.click(screen.getByRole('button', { name: hostCopy.startForMe }));
+      fireEvent.click(screen.getByRole('button', { name: hostCopy.setUpAndStart }));
       const stop = await screen.findByRole('button', { name: hostCopy.stop });
       expect(screen.getByRole('button', { name: hostCopy.back })).toBeDisabled();
       fireEvent.click(stop);
@@ -1084,7 +1575,7 @@ describe('HostDialog', () => {
         );
         renderHost();
         await toStart();
-        const start = screen.getByRole('button', { name: hostCopy.startForMe });
+        const start = screen.getByRole('button', { name: hostCopy.setUpAndStart });
         fireEvent.click(start);
         // A keyboard user moves to Stop and presses it.
         const stop = await screen.findByRole('button', { name: hostCopy.stop });
@@ -1118,7 +1609,7 @@ describe('HostDialog', () => {
       );
       renderHost();
       await toStart();
-      const start = screen.getByRole('button', { name: hostCopy.startForMe });
+      const start = screen.getByRole('button', { name: hostCopy.setUpAndStart });
       fireEvent.click(start);
       const stop = await screen.findByRole('button', { name: hostCopy.stop });
       act(() => stop.focus());
@@ -1142,7 +1633,7 @@ describe('HostDialog', () => {
       mocks.readHostRun.mockReturnValue(new Promise(() => {}));
       renderHost();
       await toStart();
-      const start = screen.getByRole('button', { name: hostCopy.startForMe });
+      const start = screen.getByRole('button', { name: hostCopy.setUpAndStart });
       fireEvent.click(start);
       await screen.findByRole('button', { name: hostCopy.stop });
       fireEvent.click(start);

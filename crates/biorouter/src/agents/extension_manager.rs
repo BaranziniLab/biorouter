@@ -3744,9 +3744,11 @@ impl ExtensionManager {
         };
         if crew.is_scoped_session(session_id).await {
             // A newly granted ordinary chat can retain local platform clients.
-            // None of their workspace context is part of its remote grant.
+            // None of their workspace context is part of its remote grant. Where its remote
+            // paths lead depends on the grant's level (design OW-6).
+            let scope = crew.moim_scope_line(session_id).await;
             return Some(format!(
-                "{MOIM_OPEN_TAG}\nIt is currently {timestamp}\nCrew scope: remote file paths are relative to the approved SSH work directory. The local task directory is not a remote file location. Omit connection_id in crew__request to use this conversation's granted connection. Use crew__connections for current scope metadata; channel IDs are not connection IDs.\n{MOIM_CLOSE_TAG}"
+                "{MOIM_OPEN_TAG}\nIt is currently {timestamp}\n{scope}\n{MOIM_CLOSE_TAG}"
             ));
         }
         let mut content = format!(

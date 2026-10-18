@@ -27,9 +27,10 @@
 //! Nothing the broker returns can change the code this computer shows: a process in the bridge
 //! path can relay, drop or fake every answer here, which can only mislead this screen. To have
 //! its own key bound it would need a key whose 80-bit code equals the one shown here.
+use super::server_label::{own_alias_for_login, OwnAlias};
 use super::{
     hex, institution, manager, safe_atom, transport, unhex, AuthenticationPlan, ClusterMode,
-    Connection, CrewManager, SaveConnection,
+    Connection, CrewManager, RemoteAccess, SaveConnection,
 };
 use anyhow::{ensure, Context, Result};
 use biorouter_crew::invitation::{self as crew_invitation, ParsedInvitation, WorkspaceInvitation};
@@ -84,7 +85,9 @@ pub struct HandoffFailed {
 }
 
 impl HandoffFailed {
-    fn wrap(cause: anyhow::Error) -> anyhow::Error {
+    /// `cause` as a failed handoff, as [`handoff`] answers one: also what an adapter's tests
+    /// build its terminal frame from.
+    pub fn wrap(cause: anyhow::Error) -> anyhow::Error {
         anyhow::Error::new(Self { cause })
     }
     /// Always [`HANDOFF_FAILED_CODE`].
@@ -104,6 +107,14 @@ impl HandoffFailed {
             .downcast_ref::<super::WorkspaceIdentityError>()
             .is_some()
     }
+    /// Whether sign-in worked but the server has no Crew program for this account
+    /// (`crew_bridge_missing`). The signed-in master is kept then, adopted, so setting Crew up
+    /// (`POST /crew/setup`, design OW-9) rides it with no second password. [`Self::api_code`]
+    /// stays `crew_handoff_failed`, which older clients map; the connection's
+    /// `last_error_code` says `crew_bridge_missing`.
+    pub fn bridge_missing(&self) -> bool {
+        missing_bridge(&self.cause)
+    }
     /// The diagnostic text for logs: [`HANDOFF_FAILURE_MESSAGE`] and the cause.
     pub fn log_message(&self) -> String {
         format!("{HANDOFF_FAILURE_MESSAGE} Cause: {:#}", self.cause)
@@ -120,6 +131,14 @@ impl std::error::Error for HandoffFailed {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         Some(self.cause.as_ref())
     }
+}
+
+/// Whether `cause` is the server running no Crew program for this account.
+fn missing_bridge(cause: &anyhow::Error) -> bool {
+    cause
+        .chain()
+        .filter_map(|link| link.downcast_ref::<super::SshFailure>())
+        .any(|failure| failure.kind == super::SshFailureKind::BridgeMissing)
 }
 
 static SESSIONS: LazyLock<Mutex<HashMap<String, Arc<AuthSession>>>> =
@@ -188,6 +207,34 @@ struct AuthSession {
     size: PtySize,
     started: Mutex<bool>,
     runtime: Mutex<Option<Runtime>>,
+    purpose: Purpose,
+}
+/// What a sign-in is for. `info.connection_id` is its SSH control key either way: the saved
+/// connection's ID, or a setup job's (a connection's, or a pending host setup's preparation ID,
+/// which the connection it becomes will have), so one key never has two sign-ins.
+#[derive(Clone)]
+enum Purpose {
+    /// A saved connection's sign-in: adopted once a verified Crew broker answers behind it.
+    Connection,
+    /// A setup job's (design OW-9): adopted once its master is up, with no broker behind it
+    /// yet. It is bound to the job's route, not to a saved connection, and connects nothing:
+    /// the job runs its fixed commands over it, and a later Connect verifies the broker.
+    Setup {
+        job_id: String,
+        route: Vec<u8>,
+        target: String,
+    },
+}
+/// The manager whose control paths and lifecycle a sign-in uses: a setup job's own while the
+/// job is known, else the daemon's.
+fn session_manager(session: &AuthSession) -> Result<Arc<super::CrewManager>> {
+    match &session.purpose {
+        Purpose::Setup { job_id, .. } => match super::setup::sign_in_manager(job_id) {
+            Some(manager) => Ok(manager),
+            None => manager(),
+        },
+        Purpose::Connection => manager(),
+    }
 }
 fn foreground_plan(mut plan: AuthenticationPlan) -> AuthenticationPlan {
     for argument in &mut plan.args {
@@ -273,13 +320,216 @@ pub async fn prepare(
             size,
             started: Mutex::new(false),
             runtime: Mutex::new(None),
+            purpose: Purpose::Connection,
         }),
     );
     Ok(info)
 }
+/// Prepare the terminal sign-in a setup job waits for (design OW-9), under the same rules as a
+/// connection's: one controller per control key, at most 32 sign-ins, a minute to attach. Its
+/// `plan` is the job's own master at `key`'s control path ([`foreground_plan`] applies), and it
+/// is bound to the job's `route`, the SHA-256 of the login and route the job reaches.
+///
+/// A sign-in this key already adopted is let go first: the job asked for this one because its
+/// check could not use that master, so it is not answering, and nothing rides it. So is one
+/// still open for a setup job that is not this one or no longer waits for it (G2): it holds the
+/// key for a job that ended, or for an earlier ask of this one, and nobody will finish it.
+#[allow(clippy::too_many_arguments)]
+pub(super) async fn prepare_setup(
+    manager: &super::CrewManager,
+    key: &str,
+    job_id: &str,
+    route: Vec<u8>,
+    target: &str,
+    plan: AuthenticationPlan,
+    request: &str,
+    controller: &str,
+    cols: u16,
+    rows: u16,
+) -> Result<AuthenticationSession> {
+    uuid::Uuid::parse_str(request)?;
+    uuid::Uuid::parse_str(controller)?;
+    let size = dimensions(cols, rows)?;
+    let _lifecycle = manager.connection_guard(key).await?;
+    let plan = foreground_plan(plan);
+    // Which jobs other setup sign-ins on this key are for, asked outside the sessions lock.
+    let others: Vec<(String, String)> = SESSIONS
+        .lock()
+        .map_err(|_| anyhow::anyhow!("Authentication state unavailable"))?
+        .iter()
+        .filter_map(|(id, session)| match &session.purpose {
+            Purpose::Setup { job_id: other, .. } if session.info.connection_id == key => {
+                Some((id.clone(), other.clone()))
+            }
+            _ => None,
+        })
+        .collect();
+    let abandoned: Vec<String> = others
+        .into_iter()
+        .filter(|(_, other)| other != job_id || !super::setup::waiting_for_sign_in(other))
+        .map(|(id, _)| id)
+        .collect();
+    let stale: Vec<Arc<AuthSession>> = {
+        let mut sessions = SESSIONS
+            .lock()
+            .map_err(|_| anyhow::anyhow!("Authentication state unavailable"))?;
+        let ids: Vec<String> = sessions
+            .iter()
+            .filter(|(id, session)| {
+                session.info.connection_id == key
+                    && (session.adopted.load(Ordering::Acquire) || abandoned.contains(id))
+            })
+            .map(|(id, _)| id.clone())
+            .collect();
+        ids.iter().filter_map(|id| sessions.remove(id)).collect()
+    };
+    for session in stale {
+        *session.started.lock().unwrap() = true;
+        session.runtime.lock().unwrap().take();
+    }
+    let mut sessions = SESSIONS
+        .lock()
+        .map_err(|_| anyhow::anyhow!("Authentication state unavailable"))?;
+    sessions.retain(|_, session| {
+        session.created.elapsed() < Duration::from_secs(60) || *session.started.lock().unwrap()
+    });
+    for session in sessions.values() {
+        if session.request_id == request && session.info.controller_id == controller {
+            ensure!(
+                session.info.connection_id == key
+                    && matches!(&session.purpose, Purpose::Setup { job_id: job, route: bound, .. } if job == job_id && *bound == route),
+                "Authentication request changed; use a fresh request ID"
+            );
+            return Ok(session.info.clone());
+        }
+        ensure!(
+            session.info.connection_id != key,
+            "This server already has a sign-in open; close it before opening another"
+        );
+    }
+    ensure!(
+        sessions.len() < 32,
+        "Close an existing SSH authentication session first"
+    );
+    let info = AuthenticationSession {
+        authentication_id: uuid::Uuid::new_v4().to_string(),
+        connection_id: key.into(),
+        controller_id: controller.into(),
+        instance_id: INSTANCE.clone(),
+    };
+    sessions.insert(
+        info.authentication_id.clone(),
+        Arc::new(AuthSession {
+            info: info.clone(),
+            request_id: request.into(),
+            binding: Mutex::new(route.clone()),
+            adopted: Arc::new(AtomicBool::new(false)),
+            plan,
+            created: Instant::now(),
+            size,
+            started: Mutex::new(false),
+            runtime: Mutex::new(None),
+            purpose: Purpose::Setup {
+                job_id: job_id.into(),
+                route,
+                target: target.into(),
+            },
+        }),
+    );
+    Ok(info)
+}
+/// End the setup masters adopted at `key` whose job signed in to another route than
+/// `keep_route` (every one, with `None`), so nothing rides a master another login made (C12).
+/// Answers whether one ended.
+pub(super) fn retire_setup_masters(key: &str, keep_route: Option<&[u8]>) -> bool {
+    let retired: Vec<Arc<AuthSession>> = {
+        let mut sessions = SESSIONS.lock().unwrap_or_else(PoisonError::into_inner);
+        let ids: Vec<String> = sessions
+            .iter()
+            .filter(|(_, session)| {
+                session.info.connection_id == key
+                    && session.adopted.load(Ordering::Acquire)
+                    && matches!(&session.purpose, Purpose::Setup { route, .. } if keep_route != Some(route.as_slice()))
+            })
+            .map(|(id, _)| id.clone())
+            .collect();
+        ids.iter().filter_map(|id| sessions.remove(id)).collect()
+    };
+    let any = !retired.is_empty();
+    for session in retired {
+        *session.started.lock().unwrap() = true;
+        // The master is the sign-in's own process (`ControlPersist=no`): it ends with it.
+        session.runtime.lock().unwrap().take();
+    }
+    any
+}
+
+/// A setup job ended (G2): the sign-ins it opened that nobody finished hold its server's key
+/// for nothing, so they end. A master it adopted stays, for the start, Create and the connect
+/// that follow; the next job or connect for another route ends it ([`retire_setup_masters`]).
+pub(super) fn end_setup_sign_ins(job_id: &str) {
+    let ended: Vec<Arc<AuthSession>> = {
+        let mut sessions = SESSIONS.lock().unwrap_or_else(PoisonError::into_inner);
+        let ids: Vec<String> = sessions
+            .iter()
+            .filter(|(_, session)| {
+                !session.adopted.load(Ordering::Acquire)
+                    && matches!(&session.purpose, Purpose::Setup { job_id: job, .. } if job == job_id)
+            })
+            .map(|(id, _)| id.clone())
+            .collect();
+        ids.iter().filter_map(|id| sessions.remove(id)).collect()
+    };
+    for session in ended {
+        *session.started.lock().unwrap() = true;
+        session.runtime.lock().unwrap().take();
+    }
+}
+
+/// A setup master adopted at `connection`'s key serves only the route its job signed in to.
+/// Before a connect rides it, one whose route is not the saved connection's ends (C12): a
+/// connection saved from a host setup's preparation with another login than the setup used
+/// would otherwise run as the account the setup signed in to. Asked without waiting: when the
+/// saved connection can't be read at once, the master ends too, which costs a second sign-in
+/// at worst.
+fn retire_misbound_setup_masters(connection: &str) {
+    let bound = SESSIONS
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .values()
+        .any(|session| {
+            session.info.connection_id == connection
+                && session.adopted.load(Ordering::Acquire)
+                && matches!(session.purpose, Purpose::Setup { .. })
+        });
+    if !bound {
+        return;
+    }
+    let saved = manager().ok().and_then(|manager| {
+        manager.registry.try_lock().ok().map(|registry| {
+            registry
+                .connections
+                .iter()
+                .find(|c| c.id == connection)
+                .map(super::setup::route_digest)
+        })
+    });
+    match saved {
+        // Nothing saved under this key yet: the master is the setup job's own.
+        Some(None) => {}
+        Some(Some(route)) => {
+            retire_setup_masters(connection, Some(&route));
+        }
+        None => {
+            retire_setup_masters(connection, None);
+        }
+    }
+}
+
 /// Called while holding the connection lifecycle guard; only handoff may connect
 /// a pending native authentication session and change its verified node/epoch.
 pub(super) fn ensure_connect_available(connection: &str) -> Result<()> {
+    retire_misbound_setup_masters(connection);
     let mut sessions = SESSIONS
         .lock()
         .map_err(|_| anyhow::anyhow!("Authentication state unavailable"))?;
@@ -306,24 +556,38 @@ fn session(id: &str, controller: &str) -> Result<Arc<AuthSession>> {
 }
 pub async fn validate(id: &str, controller: &str) -> Result<String> {
     let session = session(id, controller)?;
-    let current = binding(&session.info.connection_id).await?;
-    ensure!(
-        *session.binding.lock().unwrap() == current,
-        "Saved connection changed; close authentication and start again"
-    );
+    match &session.purpose {
+        Purpose::Connection => {
+            let current = binding(&session.info.connection_id).await?;
+            ensure!(
+                *session.binding.lock().unwrap() == current,
+                "Saved connection changed; close authentication and start again"
+            );
+        }
+        // A setup sign-in is bound to its job's route, while the job is known.
+        Purpose::Setup { job_id, route, .. } => ensure!(
+            super::setup::sign_in_route(job_id).as_ref() == Some(route),
+            "Setup changed or ended; close the sign-in and start again"
+        ),
+    }
     Ok(session.info.connection_id.clone())
 }
 pub async fn attach(id: &str, controller: &str) -> Result<mpsc::Receiver<TerminalEvent>> {
-    let connection = session(id, controller)?.info.connection_id.clone();
-    let manager = manager()?;
+    let current = session(id, controller)?;
+    let connection = current.info.connection_id.clone();
+    let manager = session_manager(&current)?;
+    drop(current);
     let _lifecycle = manager.connection_guard(&connection).await?;
     validate(id, controller).await?;
     let session = session(id, controller)?;
-    let fresh = foreground_plan(
-        manager
-            .authentication_plan(&session.info.connection_id)
-            .await?,
-    );
+    let fresh = foreground_plan(match &session.purpose {
+        Purpose::Connection => {
+            manager
+                .authentication_plan(&session.info.connection_id)
+                .await?
+        }
+        Purpose::Setup { job_id, .. } => super::setup::sign_in_plan(job_id).await?,
+    });
     ensure!(
         fresh.args == session.plan.args,
         "SSH authentication plan changed; start again"
@@ -352,10 +616,22 @@ fn command(plan: &AuthenticationPlan) -> CommandBuilder {
         if biorouter_mcp::developer::shell::is_daemon_private_env_key(&name) {
             continue;
         }
+        // A development profile's sign-in sees only what it needs, plus the askpass helper a
+        // test daemon was started with, so an automated test can sign in to an account that
+        // takes a password (OW-9). Unset, they pass nothing.
         if profile.is_some()
             && !matches!(
                 name.as_ref(),
-                "PATH" | "LANG" | "LC_ALL" | "SystemRoot" | "WINDIR" | "ComSpec" | "PATHEXT"
+                "PATH"
+                    | "LANG"
+                    | "LC_ALL"
+                    | "SystemRoot"
+                    | "WINDIR"
+                    | "ComSpec"
+                    | "PATHEXT"
+                    | "SSH_ASKPASS"
+                    | "SSH_ASKPASS_REQUIRE"
+                    | "DISPLAY"
             )
         {
             continue;
@@ -655,8 +931,23 @@ pub fn shutdown() {
 /// A failure after the session is found is a [`HandoffFailed`]: the connection is disconnected
 /// and its `last_error` carries [`HANDOFF_FAILED_MESSAGE`], while the diagnostic text and cause
 /// go to the log.
+///
+/// One failure keeps the signed-in master (design OW-9): the server has no Crew program for
+/// this account ([`HandoffFailed::bridge_missing`]). The session is adopted, so its window
+/// shows nothing more and a Connect may ride it, and the connection's `last_error_code` is
+/// `crew_bridge_missing`; setting Crew up then needs no second password. Nothing was sent to a
+/// broker, and the next Connect verifies one from scratch.
+///
+/// A setup job's sign-in is adopted once its master is up, and connects nothing.
 pub async fn handoff(id: &str, controller: &str) -> Result<bool> {
-    let connection = session(id, controller)?.info.connection_id.clone();
+    let current = session(id, controller)?;
+    if let Purpose::Setup { job_id, target, .. } = &current.purpose {
+        let (job_id, target) = (job_id.clone(), target.clone());
+        drop(current);
+        return handoff_setup(id, controller, &job_id, &target).await;
+    }
+    let connection = current.info.connection_id.clone();
+    drop(current);
     let manager = manager()?;
     let _lifecycle = manager.connection_guard(&connection).await?;
     // A replaced or cancelled session must not clean up a later connection.
@@ -664,12 +955,22 @@ pub async fn handoff(id: &str, controller: &str) -> Result<bool> {
     match handoff_locked(id, controller).await {
         Ok(adopted) => Ok(adopted),
         Err(cause) => {
-            let _ = manager.disconnect_locked(&connection).await;
+            let keep_master = missing_bridge(&cause);
+            if keep_master {
+                if let Ok(session) = session(id, controller) {
+                    session.adopted.store(true, Ordering::Release);
+                }
+            } else {
+                let _ = manager.disconnect_locked(&connection).await;
+            }
             let mut registry = manager.registry.lock().await;
             if let Some(entry) = registry.connections.iter_mut().find(|c| c.id == connection) {
                 entry.last_error = Some(HANDOFF_FAILED_MESSAGE.into());
             }
             drop(registry);
+            if keep_master {
+                manager.note_error_code(&connection, &cause, HANDOFF_FAILED_MESSAGE);
+            }
             let failure = HandoffFailed::wrap(cause);
             if let Some(typed) = failure.downcast_ref::<HandoffFailed>() {
                 tracing::warn!(connection = %connection, "{}", typed.log_message());
@@ -677,6 +978,54 @@ pub async fn handoff(id: &str, controller: &str) -> Result<bool> {
             Err(failure)
         }
     }
+}
+/// [`handoff`] for a setup job's sign-in: adopt the exact owned master at the job's control
+/// path, then tell the job.
+async fn handoff_setup(id: &str, controller: &str, job_id: &str, target: &str) -> Result<bool> {
+    let current = session(id, controller)?;
+    let key = current.info.connection_id.clone();
+    let manager = session_manager(&current)?;
+    drop(current);
+    let _lifecycle = manager.connection_guard(&key).await?;
+    validate(id, controller).await?;
+    let session = session(id, controller)?;
+    if session.adopted.load(Ordering::Acquire) {
+        return Ok(true);
+    }
+    let pid = session
+        .runtime
+        .lock()
+        .unwrap()
+        .as_ref()
+        .context("Authentication terminal unavailable")?
+        .pid;
+    let control = session
+        .plan
+        .args
+        .windows(2)
+        .find(|args| args[0] == "-S")
+        .context("Owned SSH control path missing")?[1]
+        .clone();
+    if !master_ready(&control, target, pid).await? {
+        return Ok(false);
+    }
+    validate(id, controller).await?;
+    {
+        let sessions = SESSIONS.lock().unwrap();
+        ensure!(
+            sessions
+                .get(id)
+                .is_some_and(|current| Arc::ptr_eq(current, &session)),
+            "Authentication was cancelled during handoff"
+        );
+        ensure!(
+            session.runtime.lock().unwrap().is_some(),
+            "Authentication process ended during handoff"
+        );
+    }
+    session.adopted.store(true, Ordering::Release);
+    super::setup::signed_in(job_id);
+    Ok(true)
 }
 async fn handoff_locked(id: &str, controller: &str) -> Result<bool> {
     validate(id, controller).await?;
@@ -763,8 +1112,10 @@ async fn master_ready(control: &str, target: &str, pid: u32) -> Result<bool> {
 }
 /// Complete teardown under the same connection generation used for adoption.
 pub async fn detach(id: &str, controller: &str) -> Result<()> {
-    let connection = session(id, controller)?.info.connection_id.clone();
-    let manager = manager()?;
+    let current = session(id, controller)?;
+    let connection = current.info.connection_id.clone();
+    let manager = session_manager(&current)?;
+    drop(current);
     let _lifecycle = manager.connection_guard(&connection).await?;
     let current = session(id, controller)?;
     if !current.adopted.load(Ordering::Acquire) {
@@ -772,12 +1123,20 @@ pub async fn detach(id: &str, controller: &str) -> Result<()> {
     }
     Ok(())
 }
+/// Stop a sign-in and disconnect its connection. A setup job's sign-in has no connection to
+/// disconnect: stopping it ends its master, which is its terminal's own process.
 pub async fn cancel_and_disconnect(id: &str, controller: &str) -> Result<()> {
-    let connection = session(id, controller)?.info.connection_id.clone();
-    let manager = manager()?;
+    let current = session(id, controller)?;
+    let connection = current.info.connection_id.clone();
+    let manager = session_manager(&current)?;
+    let setup = matches!(current.purpose, Purpose::Setup { .. });
+    drop(current);
     let _lifecycle = manager.connection_guard(&connection).await?;
     session(id, controller)?;
     cancel(id, controller)?;
+    if setup {
+        return Ok(());
+    }
     manager.disconnect_locked(&connection).await
 }
 
@@ -850,6 +1209,9 @@ pub struct InvitationAdvanced {
     pub remote_root: Option<String>,
     #[serde(default)]
     pub remote_execution: bool,
+    /// What the connection's agents may do on the server (design OW-6). Default: `folder`.
+    #[serde(default)]
+    pub remote_access: RemoteAccess,
     /// A prepared hosting identity (`POST /crew/devices/prepare`), when a host saves their own
     /// workspace from what `biorouter-crew start` printed.
     #[serde(default)]
@@ -1323,6 +1685,48 @@ struct PlannedRoute {
     proxy_jump: Option<String>,
 }
 
+impl PlannedRoute {
+    /// The same login under the person's own name for it (G5): its port is the entry's, and
+    /// so is its route when it sets one; otherwise the invitation's jump host hint stays. A
+    /// connection already saved for the workspace under the planned login keeps it, so pasting
+    /// again finds that connection rather than a conflict.
+    fn under_own_alias(mut self, alias: Option<&OwnAlias>, saved: Option<&Connection>) -> Self {
+        let Some(alias) = alias else {
+            return self;
+        };
+        if saved.is_some_and(|saved| self.ssh_target.as_deref() == Some(saved.ssh_target.as_str()))
+        {
+            return self;
+        }
+        self.ssh_target = Some(alias.name.clone());
+        self.port = None;
+        if alias.sets_route {
+            self.proxy_jump = None;
+        }
+        self
+    }
+}
+
+/// G5: the person's own `Host` entry for the login an invitation would save, when they chose
+/// no server login, port or jump host and the server is not this machine. A choice of theirs,
+/// or loopback on the server itself, is kept exactly as planned.
+async fn own_alias(
+    invitation: &WorkspaceInvitation,
+    overrides: &InvitationOverrides,
+    here: bool,
+) -> Option<OwnAlias> {
+    let advanced = &overrides.advanced;
+    let typed_login = advanced
+        .ssh_target
+        .as_deref()
+        .is_some_and(|alias| !alias.trim().is_empty());
+    if here || typed_login || advanced.port.is_some() || advanced.proxy_jump.is_some() {
+        return None;
+    }
+    let route = planned_route(invitation, overrides, here).ok()?;
+    own_alias_for_login(route.ssh_target.as_deref()?, route.port).await
+}
+
 /// The SSH login and route saving would use. `here`: the invitation's server is this machine
 /// ([`super::local_host`]), so the route is `localhost`, with no jump host unless the person
 /// typed one (W2-DMN-2). A login the person chose is theirs either way.
@@ -1463,6 +1867,7 @@ fn save_input(
         workspace_public_key: invitation.workspace_public_key.clone(),
         remote_root: advanced.remote_root.clone(),
         remote_execution: advanced.remote_execution,
+        remote_access: advanced.remote_access,
         cluster_connection_id: None,
         mode,
         institution_id,
@@ -1490,11 +1895,14 @@ fn reusable_or_replaceable(
     }
 }
 
+/// `own_alias`: the person's own `Host` entry for the planned login ([`own_alias`]), which
+/// [`PlannedRoute::under_own_alias`] saves in its place.
 fn plan_invitation(
     parsed: &ParsedInvitation,
     overrides: &InvitationOverrides,
     connections: &[Connection],
     here: bool,
+    own_alias: Option<&OwnAlias>,
 ) -> Result<InvitationPlan, InvitationRefused> {
     let invitation = &parsed.invitation;
     let advanced = &overrides.advanced;
@@ -1528,8 +1936,9 @@ fn plan_invitation(
     if mode == ClusterMode::Private && institution_id.is_none() {
         missing.push(InvitationMissing::Institution);
     }
-    let (existing, replaceable) =
-        reusable_or_replaceable(saved_match(connections, invitation)?, &route);
+    let matched = saved_match(connections, invitation)?;
+    let route = route.under_own_alias(own_alias, matched.as_ref());
+    let (existing, replaceable) = reusable_or_replaceable(matched, &route);
     let name = planned_name(
         invitation,
         advanced,
@@ -1872,9 +2281,6 @@ fn hello_is_stale(hello: &super::BrokerHello, workspace: &Value) -> bool {
         || hello.workspace_name.as_deref() != name
 }
 
-/// Where an SSH login really goes: the lowercase hostname and port `ssh -G` resolves under
-/// the same configuration the bridge reads, else the login's own host part and port. `None`
-/// for a login that can't safely be passed to `ssh`.
 /// Whether this computer's SSH settings sign in to the invitation's server as another account
 /// than the one it names (W2-DMN-3): asked only when the login saving would use is the
 /// invitation's own (`{invitee}@{server}`), and answered only for a `User` the person's settings
@@ -1959,6 +2365,9 @@ async fn configured_user(name: &str, port: Option<u16>) -> Option<String> {
     resolved.ok().flatten()
 }
 
+/// Where an SSH login really goes: the lowercase hostname and port `ssh -G` resolves under
+/// the same configuration the bridge reads, else the login's own host part and port. `None`
+/// for a login that can't safely be passed to `ssh`.
 pub(super) async fn ssh_endpoint(target: &str, port: Option<u16>) -> Option<(String, u16)> {
     if !safe_atom(target) {
         return None;
@@ -2023,7 +2432,9 @@ impl CrewManager {
     /// legacy `biorouter-crew status` JSON) and preview it, or save a connection pinned exactly
     /// as it says: the workspace ID, workspace key, socket and host UID are never taken from
     /// anywhere else. Saving goes through the ordinary save path, so a Private save needs an
-    /// institution, which the invitation of a Private workspace supplies.
+    /// institution, which the invitation of a Private workspace supplies. The login saved is
+    /// `{username}@{server}`, or the person's own `Host` entry for that same login when they
+    /// chose no login, port or jump host (G5, `own_alias`).
     ///
     /// A preview saves nothing and touches no credential. A save of a workspace this computer
     /// already has returns that connection when the settings agree (so a repeated paste never
@@ -2045,8 +2456,10 @@ impl CrewManager {
             Some(host) => super::local_host::names_this_machine(host),
             None => false,
         };
+        let alias = own_alias(&parsed.invitation, &overrides, here).await;
+        let alias = alias.as_ref();
         if preview {
-            let plan = plan_invitation(&parsed, &overrides, &self.list().await, here)?;
+            let plan = plan_invitation(&parsed, &overrides, &self.list().await, here, alias)?;
             let mut preview = plan.preview;
             preview.institution_conflict = self.institution_conflict(&preview).await;
             if let Some(target) = preview.ssh_target.as_deref() {
@@ -2056,7 +2469,7 @@ impl CrewManager {
             return Ok(InvitationOutcome::Preview(Box::new(preview)));
         }
         let _serial = INVITATION_SAVES.lock().await;
-        let plan = plan_invitation(&parsed, &overrides, &self.list().await, here)?;
+        let plan = plan_invitation(&parsed, &overrides, &self.list().await, here, alias)?;
         if let Some(missing) = plan.preview.missing.first() {
             return Err(missing_refusal(*missing, &plan.preview).into());
         }
@@ -2871,6 +3284,7 @@ mod admission_tests {
             workspace_public_key: key.into(),
             remote_root: None,
             remote_execution: false,
+            remote_access: Default::default(),
             cluster_connection_id: uuid::Uuid::new_v4().to_string(),
             mode: ClusterMode::Private,
             institution_id: Some("ucsf".into()),
@@ -3376,6 +3790,7 @@ mod admission_tests {
             size: dimensions(80, 24).unwrap(),
             started: Mutex::new(true),
             runtime: Mutex::new(None),
+            purpose: Purpose::Connection,
         };
         SESSIONS
             .lock()
@@ -3393,6 +3808,9 @@ mod admission_tests {
             .log_message()
             .contains("Authentication terminal unavailable"));
         assert!(!typed.workspace_identity_mismatch());
+        // Only a missing Crew program keeps the master (OW-9); this cause disconnected.
+        assert!(!typed.bridge_missing());
+        assert!(SESSIONS.lock().unwrap().get(&auth_id).is_none());
         let saved = manager.connection(&connection_id).await.unwrap();
         assert_eq!(saved.status, "disconnected");
         assert_eq!(saved.last_error.as_deref(), Some(HANDOFF_FAILED_MESSAGE));
@@ -3403,6 +3821,25 @@ mod admission_tests {
         let identity = identity.downcast_ref::<HandoffFailed>().unwrap();
         assert!(identity.workspace_identity_mismatch());
         assert_eq!(identity.api_code(), HANDOFF_FAILED_CODE);
+        assert!(!identity.bridge_missing());
+
+        // A missing Crew program, however deep in the chain, is said as one, under the code
+        // older clients map.
+        let missing = HandoffFailed::wrap(
+            anyhow::Error::new(super::super::SshFailure {
+                kind: super::super::SshFailureKind::BridgeMissing,
+                code: "ssh_eof".into(),
+                status: "exit_127".into(),
+                description: "SSH closed before the broker answered".into(),
+                detail: None,
+                host: None,
+                outcome_unknown: false,
+            })
+            .context("while connecting"),
+        );
+        let missing = missing.downcast_ref::<HandoffFailed>().unwrap();
+        assert!(missing.bridge_missing());
+        assert_eq!(missing.api_code(), HANDOFF_FAILED_CODE);
 
         SESSIONS.lock().unwrap().remove(&auth_id);
         manager
@@ -3411,6 +3848,67 @@ mod admission_tests {
             .await
             .connections
             .retain(|c| c.id != connection_id);
+    }
+
+    /// A development profile's sign-in passes the daemon's askpass helper (and the display it
+    /// asks on) when one is set, so an automated test can sign in to an account that takes a
+    /// password (OW-9), and still nothing else the daemon holds; unset, nothing changes.
+    #[cfg(unix)]
+    #[test]
+    fn a_development_sign_in_passes_an_askpass_helper_only_when_set() {
+        if !crate::test_sandbox::in_a_process_of_its_own() {
+            return;
+        }
+        let root = tempfile::tempdir().unwrap();
+        let profile = root.path().join("profile").to_string_lossy().into_owned();
+        let plan = AuthenticationPlan {
+            program: "ssh".into(),
+            args: vec!["-M".into(), "lab".into()],
+            connection_id: "c".into(),
+            authentication_id: "a".into(),
+        };
+        let seam = ["SSH_ASKPASS", "SSH_ASKPASS_REQUIRE", "DISPLAY"];
+        {
+            let _env = crate::test_sandbox::relocate_path_root_and(
+                profile.as_str(),
+                [
+                    ("BIOROUTER_DEV_PROFILE_ROOT", Some(profile.as_str())),
+                    ("SSH_ASKPASS", Some("/opt/test/askpass")),
+                    ("SSH_ASKPASS_REQUIRE", Some("force")),
+                    ("DISPLAY", Some(":0")),
+                    ("SSH_AUTH_SOCK", Some("/tmp/agent.sock")),
+                ],
+            );
+            let built = command(&plan);
+            assert_eq!(
+                seam.map(|name| built
+                    .get_env(name)
+                    .map(|v| v.to_string_lossy().into_owned())),
+                [
+                    Some("/opt/test/askpass".to_owned()),
+                    Some("force".to_owned()),
+                    Some(":0".to_owned())
+                ]
+            );
+            assert!(built.get_env("SSH_AUTH_SOCK").is_none());
+            assert_eq!(
+                built.get_env("HOME"),
+                Some(Path::new(&profile).join("home").as_os_str())
+            );
+        }
+        let _env = crate::test_sandbox::relocate_path_root_and(
+            profile.as_str(),
+            [
+                ("BIOROUTER_DEV_PROFILE_ROOT", Some(profile.as_str())),
+                ("SSH_ASKPASS", None),
+                ("SSH_ASKPASS_REQUIRE", None),
+                ("DISPLAY", None),
+            ],
+        );
+        let built = command(&plan);
+        for name in seam {
+            assert!(built.get_env(name).is_none(), "{name}");
+        }
     }
 
     /// Point the profile, credentials and `ssh` of this process at `root`: file credentials
@@ -3741,6 +4239,160 @@ fi
                 .as_deref(),
             Some("hpc")
         );
+    }
+
+    /// G5: with no login, port or jump host of their own, an invitation is saved under the
+    /// person's own `Host` entry for the very login it plans (the same user, host name and
+    /// port), so the identity file and route they keep there apply. A choice of theirs, the
+    /// server's own loopback login, and a connection already saved under the planned login
+    /// are kept as they are.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn an_invitation_is_saved_under_the_persons_own_alias_for_its_login() {
+        if !crate::test_sandbox::in_a_process_of_its_own() {
+            return;
+        }
+        let root = fixture_root("own-alias");
+        let _env = isolated_env(&root);
+        async fn planned(
+            manager: &CrewManager,
+            message: &str,
+            overrides: InvitationOverrides,
+        ) -> Option<String> {
+            preview_with(manager, message, overrides)
+                .await
+                .unwrap()
+                .ssh_target
+        }
+        let bob: &[&str] = &["user bob", "hostname hpc.example.org", "port 22"];
+        let robert: &[&str] = &["user robert", "hostname hpc.example.org", "port 22"];
+        let other_port: &[&str] = &["user bob", "hostname hpc.example.org", "port 2222"];
+        let local: &[&str] = &["user bob", "hostname localhost", "port 22"];
+        let delegated: &[&str] = &[
+            "user bob",
+            "hostname hpc.example.org",
+            "port 22",
+            "gssapidelegatecredentials yes",
+        ];
+        write_fake_ssh(
+            &root,
+            &[
+                ("bob@hpc.example.org", bob),
+                ("robert@hpc.example.org", robert),
+                ("bob@localhost", local),
+                ("lab-robert", robert),
+                ("lab-port", other_port),
+                ("lab-delegated", delegated),
+                ("lab-hpc", bob),
+                ("lab-local", local),
+            ],
+            &[],
+        );
+        let config = root.join("profile/home/.ssh/config");
+        fs::create_dir_all(config.parent().unwrap()).unwrap();
+        let earlier = CrewManager::new(root.join("earlier")).unwrap();
+        let message = crew_invitation::message(&lab_invitation()).unwrap();
+        // Saved before the person had an entry for the server, under the planned login.
+        let before = saved_of(
+            earlier
+                .connection_from_invitation(&message, false, InvitationOverrides::default())
+                .await
+                .unwrap(),
+        );
+        assert_eq!(before.ssh_target, "bob@hpc.example.org");
+        fs::write(
+            &config,
+            "Host lab-robert\n  User robert\nHost lab-port\n  Port 2222\nHost lab-delegated\n  GSSAPIDelegateCredentials yes\nHost lab-hpc\n  User bob\n  IdentityFile /keys/lab\nHost lab-local\n",
+        )
+        .unwrap();
+
+        // Another account and another port are other logins, and an entry Crew's connection
+        // preflight refuses (delegated credentials) could not connect; the entry for this one
+        // that Crew can use is.
+        let manager = CrewManager::new(root.join("crew")).unwrap();
+        let preview = preview_with(&manager, &message, InvitationOverrides::default())
+            .await
+            .unwrap();
+        assert_eq!(
+            (preview.ssh_target.as_deref(), preview.port),
+            (Some("lab-hpc"), None)
+        );
+        assert_eq!(preview.server_label.as_deref(), Some("lab-hpc"));
+        assert_eq!(preview.login_mismatch, None);
+        let saved = saved_of(
+            manager
+                .connection_from_invitation(&message, false, InvitationOverrides::default())
+                .await
+                .unwrap(),
+        );
+        assert_eq!((saved.ssh_target.as_str(), saved.port), ("lab-hpc", None));
+        let again = saved_of(
+            manager
+                .connection_from_invitation(&message, false, InvitationOverrides::default())
+                .await
+                .unwrap(),
+        );
+        assert_eq!(again.id, saved.id);
+        // A connection saved under the planned login keeps it: pasting again finds it.
+        let kept = saved_of(
+            earlier
+                .connection_from_invitation(&message, false, InvitationOverrides::default())
+                .await
+                .unwrap(),
+        );
+        assert_eq!(
+            (kept.id.as_str(), kept.ssh_target.as_str()),
+            (before.id.as_str(), "bob@hpc.example.org")
+        );
+
+        // A username the person typed is matched like the invitation's.
+        let typed_user = InvitationOverrides {
+            username: Some("robert".into()),
+            ..Default::default()
+        };
+        assert_eq!(
+            planned(&manager, &message, typed_user).await.as_deref(),
+            Some("lab-robert")
+        );
+        // A login, port or jump host the person chose is theirs, exactly as typed.
+        let advanced = |advanced: InvitationAdvanced| InvitationOverrides {
+            advanced,
+            ..Default::default()
+        };
+        for choice in [
+            InvitationAdvanced {
+                ssh_target: Some("bob@hpc.example.org".into()),
+                ..Default::default()
+            },
+            InvitationAdvanced {
+                port: Some(22),
+                ..Default::default()
+            },
+            InvitationAdvanced {
+                proxy_jump: Some("gateway.example.org".into()),
+                ..Default::default()
+            },
+        ] {
+            assert_eq!(
+                planned(&manager, &message, advanced(choice))
+                    .await
+                    .as_deref(),
+                Some("bob@hpc.example.org")
+            );
+        }
+        // On the server itself the login is loopback, whatever entry names it.
+        let on_the_server = crew_invitation::message(&WorkspaceInvitation {
+            ssh_host: Some("localhost".into()),
+            ..lab_invitation()
+        })
+        .unwrap();
+        assert_eq!(
+            planned(&manager, &on_the_server, InvitationOverrides::default())
+                .await
+                .as_deref(),
+            Some("bob@localhost")
+        );
+        let _ = fs::remove_dir_all(root);
     }
 
     /// W2-DMN-3: an invitation that names another account than the one this computer's SSH
@@ -4620,7 +5272,8 @@ fi
     }
 
     /// D-ALIAS: the preview names the server by the joiner's own SSH alias for the address the
-    /// invitation carries, while the login it would save keeps that address.
+    /// invitation carries, while the login it would save keeps that address: this alias signs
+    /// in as the local account, not as the invited one, so it is another login (G5).
     #[cfg(unix)]
     #[tokio::test]
     async fn a_preview_names_the_server_by_the_joiners_own_alias() {
@@ -4633,9 +5286,12 @@ fi
             &[
                 (
                     "bob@hpc.example.org",
-                    &["hostname hpc.example.org", "port 22"],
+                    &["user bob", "hostname hpc.example.org", "port 22"],
                 ),
-                ("hpc-alias", &["hostname hpc.example.org", "port 22"]),
+                (
+                    "hpc-alias",
+                    &["user localme", "hostname hpc.example.org", "port 22"],
+                ),
                 ("elsewhere", &["hostname other.example.org", "port 22"]),
             ],
             &[],

@@ -2,6 +2,7 @@ import { useEffect, useId, useRef, useState, type ReactNode } from 'react';
 import { Button } from '../../ui/button';
 import { Disclosure } from '../../ui/disclosure';
 import { cn } from '../../../utils';
+import { managesChannel, mayDeleteChannel } from '../dialogs/governance';
 import { channelName, PersonName, teamName } from '../identity';
 import { aboutCopy } from './copy';
 import { COPY_FEEDBACK_MS, copyText, usePanePresentation } from './presentation';
@@ -42,10 +43,12 @@ function Row({
  * everyday rows (Q3-26), as Connection settings keeps its own. The disclosure sits above the
  * danger zone, never in it: a harmless copy under "Archive channel…" read as dangerous (T-67). The
  * copy answers on itself: "Copied" (or "Couldn't copy") for a moment, also spoken (Q2-34). The
- * owner's actions open the same dialog intents as the channel menu; the broker decides.
+ * owner's actions open the same dialog intents as the channel menu, under the same rules: Rename
+ * and Archive for whoever manages the channel (its owner, or any member of an open workspace),
+ * Transfer for the owner, Delete channel… where `mayDeleteChannel` says so. The broker decides.
  */
 export function AboutTab({ canRename = false, className }: AboutTabProps) {
-  const { crew, channel, team, dir, isOwner } = usePanePresentation();
+  const { crew, channel, team, dir, isOwner, snapshot } = usePanePresentation();
   const dangerId = useId();
   const [copyOutcome, setCopyOutcome] = useState<'copied' | 'failed' | null>(null);
   const timer = useRef<number | null>(null);
@@ -72,7 +75,12 @@ export function AboutTab({ canRename = false, className }: AboutTabProps) {
       : copyOutcome === 'failed'
         ? aboutCopy.copyFailed
         : null;
+  const manageTools = managesChannel(snapshot, channel) && !channel.archived;
   const ownerTools = isOwner && !channel.archived;
+  const canDelete = mayDeleteChannel(snapshot, channel, {
+    capabilities: crew.capabilities,
+    viewerIsHost: crew.isHost,
+  });
   const restricted = channel.classification !== 'public_safe';
 
   return (
@@ -81,7 +89,7 @@ export function AboutTab({ canRename = false, className }: AboutTabProps) {
         <Row
           label={aboutCopy.name}
           action={
-            ownerTools && canRename ? (
+            manageTools && canRename ? (
               <Button
                 type="button"
                 variant="ghost"
@@ -157,25 +165,42 @@ export function AboutTab({ canRename = false, className }: AboutTabProps) {
         </span>
       </Disclosure>
 
-      {ownerTools && (
+      {(manageTools || canDelete) && (
         <section aria-labelledby={dangerId} className="flex flex-col gap-2">
           <h3 id={dangerId} className="text-caps text-text-muted">
             {aboutCopy.dangerZone}
           </h3>
-          <div>
-            <Button
-              type="button"
-              variant="destructive"
-              size="sm"
-              onClick={() =>
-                crew.openDialog({
-                  kind: 'confirm',
-                  confirm: { action: 'archive-channel', channelId: channel.id },
-                })
-              }
-            >
-              {aboutCopy.archive}
-            </Button>
+          <div className="flex flex-wrap gap-2">
+            {manageTools && (
+              <Button
+                type="button"
+                variant="destructive"
+                size="sm"
+                onClick={() =>
+                  crew.openDialog({
+                    kind: 'confirm',
+                    confirm: { action: 'archive-channel', channelId: channel.id },
+                  })
+                }
+              >
+                {aboutCopy.archive}
+              </Button>
+            )}
+            {canDelete && (
+              <Button
+                type="button"
+                variant="destructive"
+                size="sm"
+                onClick={() =>
+                  crew.openDialog({
+                    kind: 'confirm',
+                    confirm: { action: 'delete-channel', channelId: channel.id },
+                  })
+                }
+              >
+                {aboutCopy.delete}
+              </Button>
+            )}
           </div>
         </section>
       )}

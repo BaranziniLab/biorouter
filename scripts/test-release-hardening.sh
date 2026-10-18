@@ -60,6 +60,30 @@ SOURCE_SHA="$(git -C "$ROOT" rev-parse HEAD)"
   rm -f "$ROOT/changed-during-build.txt"
 )
 
+# The Linux Crew broker every desktop bundle carries must be the one linux-backend built for
+# this release, never bytes an earlier run left in target/.
+(
+  start_release_provenance "$VERSION"
+  broker="$ROOT/target/x86_64-unknown-linux-gnu/release/biorouter-crew"
+  mkdir -p "$(dirname "$broker")"
+  printf 'first broker\n' >"$broker"
+  # Refused for the reason named, not merely refused: a fixture this small fails later
+  # anyway (it has no stage-crew-broker.sh), so a bare non-zero status would prove nothing.
+  refusal() { (stage_crew_broker "$VERSION" "$FIXTURE_ROOT/staged-broker") 2>&1 && fail "staging a Crew broker unexpectedly succeeded"; }
+  out="$(refusal)" || true
+  case "$out" in *"has not built its linux Crew broker"*) ;; *) fail "unrecorded broker staged or refused for another reason: $out" ;; esac
+  record_crew_broker "$VERSION"
+  record_crew_broker "$VERSION"
+  [ "$(release_provenance_value "$(release_provenance_file "$VERSION")" crew_broker)" \
+      = "$(release_file_sha256 "$broker")" ] \
+    || fail "linux-backend did not record exactly one crew_broker digest"
+  printf 'a later build\n' >"$broker"
+  out="$(refusal)" || true
+  case "$out" in *"is not the broker linux-backend built"*) ;; *) fail "foreign broker bytes staged or refused for another reason: $out" ;; esac
+  [ ! -e "$FIXTURE_ROOT/staged-broker" ] || fail "a refused Crew broker was staged"
+  rm -rf "$ROOT/target"
+)
+
 # Plain fixture bytes exercise provenance, not archive extraction or signing.
 # The production recorder obtains these rows from verify-computer-use-artifact.py.
 record_fixture_asset() {

@@ -1,10 +1,10 @@
 # Privacy and security
 
-> **What this is.** The Crew manual page on privacy and security: which AI models may read your work, and what other people can see.
-> **Status:** Current. Checked against the Crew code on 2026-09-28.
+> **What this is.** The Crew manual page on privacy and security: which AI models may read your work, what other people can see, and what full agent access and open workspaces risk.
+> **Status:** Current. Checked against the Crew code on 2026-10-16.
 > **Audience:** Lab members who use Crew in the Biorouter desktop app, and workspace hosts.
 
-Privacy in Crew decides which AI models may read your lab's messages and files, never which people see them. Only people the host lets in see a workspace, and only a channel's members see the channel. The host is the member who runs the workspace on the server. A word in braces, such as {workspace}, stands for a name Crew fills in.
+Privacy in Crew decides which AI models may read your lab's messages and files, never which people see them. Only people who were let in see a workspace, by the host or in an open workspace by any member, and only a channel's members see the channel. The host is the member who runs the workspace on the server. A word in braces, such as {workspace}, stands for a name Crew fills in.
 
 ## What Private and Public allow
 
@@ -124,7 +124,34 @@ Crew reaches the server over SSH and connects only to a server whose key is alre
 
 Crew refuses to share credential files such as `.env`, `secrets.*`, private keys, cloud credentials and password stores. It judges each file by its name and by its content, reading the first and last 64 KB of the file, so a renamed key file is refused too. A credential in the middle of a file larger than 128 KB is beyond this check. It shares public keys such as `id_ed25519.pub`. It also refuses to save into a credential or settings folder. See [Messages and files](messages-and-files.md).
 
-Your remote work folder, under **Advanced** in **Connection settings…**, cannot be your home folder or overlap a protected folder such as `~/.ssh` or `~/.aws`. Only a private model can use it.
+With **In a folder** access, your remote work folder cannot be your home folder or overlap a protected folder such as `~/.ssh` or `~/.aws`. Only a private model can use it. With full access the agent can reach those folders, so Crew's secret guard reads each command and file path the way the server would, and refuses one that names a credential file, and it withholds results that carry a key or token ([Full access to the server](#full-access-to-the-server)).
+
+## Full access to the server
+
+**As me on the server**, the full level of [agent access](agents-and-chat-access.md#what-your-agent-may-do-on-the-server), lets your agent run commands as your own server account. It is your choice, for your account only, and it is the default for a connection made by joining or hosting, because agents that compute on the server need it. Choose **In a folder** or **Off** in **Connection settings…** if you do not want it.
+
+What it risks:
+
+- **Your whole account.** The agent can read and change anything your account can, use the network, and start programs that keep running after its access ends. A misled agent could delete files, send data off the server, or replace your own copy of Crew there.
+- **Other people's words.** Messages, files and the workspace context written by other members reach your agent. Crew tells it to treat them as information, never as instructions, but a crafted message can still try to steer it. Use a private model you trust, and give tasks that say what to touch.
+- **Host accounts.** If you host the workspace from that account, your agent can read everything the workspace stores, including channels you are not in.
+
+What it does not change:
+
+- A public model never gets any server access, whatever the level.
+- Your device keys stay on this computer, so the agent still cannot sign in to Crew as you, change memberships or privacy, or approve its own access.
+- Each command is announced in the task's steps by its program and length, never its text, and the secret guard still refuses credential files and withholds credentials from results.
+- Revoking a chat, or a task's end, stops new commands. A detached job keeps running until it ends or you stop it.
+
+### Open workspaces trust every member
+
+A workspace the host creates is open. In an open workspace every member can rename, archive and delete any team or channel they are in, add and remove people in them, join any of them, invite new people and let them in. Only the host removes someone from the workspace, changes its privacy or governance, renames it or deletes it.
+
+- A new member is added to every team and every channel that is not archived, so they can read everything already posted in all of them, files included.
+- Any member can delete a channel or a team for everyone, and nobody can bring it back.
+- Adding people in an open workspace does not end agent access, so a task or chat that reads a channel goes on reading it after someone new joins.
+
+The host can switch the workspace to managed at any time ([Choose who manages the workspace](hosting-a-workspace.md#choose-who-manages-the-workspace)), and back. Switching to managed also stops invitations made by members from admitting anyone.
 
 ## What other people can see
 
@@ -132,9 +159,9 @@ Other members see your name, `@username` and posts in channels you share, with t
 
 In Crew, the host sees only the channels the host is in, plus the members, people waiting to join, and a warning when a computer shows a different code. The host never sees your password, the verification codes you sign in with, or your keys, and cannot start, stop or approve your agent. Some workspace changes end every agent's access, yours included ([Why settings changes end access](agents-and-chat-access.md#why-settings-changes-end-access)).
 
-> **Warning.** The workspace's data sits in files owned by the host's server account. That account, programs running under it and the server's administrators can read everything, including Restricted messages and channels the host is not in.
+> **Warning.** The workspace's data sits in files owned by the host's server account. That account, programs running under it, including the host's agent with full access, and the server's administrators can read everything, including Restricted messages and channels the host is not in.
 
-A history file under the host's account records each change and who made it. Nothing is removed from it, but the host's account can edit it. Crew has no screen for it. See [Administration](administration.md).
+A history file under the host's account records each change and who made it. Deleting a channel or a team removes it, its files and its messages from the workspace, but the history file keeps the old records, unreadable in Crew, until the host deletes the whole workspace. The host's account can edit that file. Crew has no screen for it. See [Deletion and retention](administration.md#deletion-and-retention).
 
 ### Other accounts on the server
 

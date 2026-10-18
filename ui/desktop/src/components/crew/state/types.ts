@@ -1,8 +1,11 @@
 import type {
   Channel,
   CrewConnection,
+  CrewContextDraft,
   CrewMessage,
   CrewMessagePeople,
+  CrewRemoteAccess,
+  CrewWorkspaceDeleted,
   ObservedRun,
   Snapshot,
   Team,
@@ -71,8 +74,13 @@ export interface CrewDraft {
 }
 
 /** The body the daemon accepts for `POST /crew/connections` and `PATCH /crew/connections/{id}`. */
-/** `POST /crew/connections` and `PATCH …/{id}`: the body the daemon's spec declares (CROSSCUT-6). */
-export type SaveConnectionInput = Api.SaveConnection;
+/**
+ * `POST /crew/connections` and `PATCH …/{id}`: the body the daemon's spec declares (CROSSCUT-6),
+ * with the agent access level of the open-workspaces contract (OW-6) until the spec declares it.
+ * `remote_access` is sent only for `full`: the daemon's default is `folder`, so a body without it
+ * means folder, and a daemon before the contract never sees a field it would refuse.
+ */
+export type SaveConnectionInput = Api.SaveConnection & { remote_access?: CrewRemoteAccess };
 
 /** `POST /crew/devices/prepare`: the prepared (or recovered) hosting identity. */
 export type PreparedDevice = Api.PreparedDevice;
@@ -98,7 +106,7 @@ export type CrewJoinStatus =
   | 'unsupported'
   | (string & {});
 
-export type WorkspaceSettingsTab = 'general' | 'people' | 'privacy' | 'agent-access';
+export type WorkspaceSettingsTab = 'general' | 'people' | 'privacy' | 'context' | 'agent-access';
 export type DetailsTab = 'about' | 'members' | 'files' | 'access';
 
 /** Every confirmation of the spec's confirmation table that is a dialog (not an inline two-step). */
@@ -109,6 +117,9 @@ export type ConfirmIntent =
   | { action: 'set-institution'; institutionId: string }
   | { action: 'remove-person'; principalId: string }
   | { action: 'archive-channel'; channelId: string }
+  | { action: 'delete-channel'; channelId: string }
+  | { action: 'delete-team'; teamId: string }
+  | { action: 'delete-workspace'; connectionId: string }
   | { action: 'remove-channel-member'; channelId: string; principalId: string }
   | { action: 'remove-connection'; connectionId: string }
   | { action: 'stop-task'; runId: string };
@@ -139,15 +150,32 @@ export type DialogIntent =
   | { kind: 'edit-profile' }
   | { kind: 'keys' }
   | { kind: 'share-path' }
+  /**
+   * An open workspace's teams and channels the person is not in, each with Join (OW-2). With a
+   * team, that team's channels only.
+   */
+  | { kind: 'browse-channels'; teamId?: string }
   /** Sign in is tracked by `signIn`; opening this intent is the same as `openSignIn()`. */
   | { kind: 'sign-in' }
   | { kind: 'confirm'; confirm: ConfirmIntent };
 export type DialogKind = DialogIntent['kind'];
 
+/**
+ * What Ask my agent opens with when the composer opens it for `@agent` (OW-10): the task's words
+ * without the trigger, the whole draft they came from (cleared on success only while it is still
+ * that draft), and whether to open the model picker at once (the model was blocked or missing).
+ * Memory only: `rememberPaneIntent` keeps no agent intent, so task words never reach storage.
+ */
+export interface AgentPaneSeed {
+  task: string;
+  draft: string;
+  pickModel?: boolean;
+}
+
 /** The one non-modal details pane has one mode at a time. */
 export type PaneIntent =
   | { mode: 'details'; tab?: DetailsTab }
-  | { mode: 'agent' }
+  | { mode: 'agent'; seed?: AgentPaneSeed }
   | { mode: 'chat-access'; sessionId?: string };
 export type PaneMode = PaneIntent['mode'];
 
@@ -185,6 +213,12 @@ export interface CrewActionError {
    * connection verifies again, so it is dismissed then instead of staying under "Connected".
    */
   transport?: boolean;
+  /**
+   * What the person was doing when it failed, where the surface words it differently: `task-start`
+   * is an agent task started from the composer with `@agent` (OW-10), which the composer leads with
+   * "Couldn't start your agent." rather than "Couldn't send."
+   */
+  action?: 'task-start';
 }
 
 /**
@@ -201,10 +235,14 @@ export interface LostDraft {
   body: string;
 }
 
-/** What an error may say beyond its words: the composer it belongs to, and whether it is the link's. */
+/**
+ * What an error may say beyond its words: the composer it belongs to, whether it is the link's, and
+ * what the person was doing (`CrewActionError.action`).
+ */
 export interface ErrorDetails {
   destination?: string;
   transport?: boolean;
+  action?: 'task-start';
 }
 
 /**
@@ -259,6 +297,24 @@ export interface StartOwnedRunInput {
    * `clearBodyIfEquals(seed)` after a start.
    */
   clearBody?: boolean;
+  /**
+   * Which surface started it, and so where a failure is told: `pane` (the default) in Ask my
+   * agent's slot, `composer` in the composer's note with its own lead (`@agent`, OW-10). Never sent
+   * to the daemon.
+   */
+  surface?: 'pane' | 'composer';
+}
+
+/**
+ * `@agent` from the composer (OW-10): the task's words without the trigger, the draft they came
+ * from, the model the consent line showed (started exactly as shown, never re-read at Enter) and
+ * the channels it reads besides this one.
+ */
+export interface AskAgentInput {
+  prompt: string;
+  draftBody: string;
+  model: { provider: string; model: string };
+  contextChannels: string[];
 }
 
 /**
@@ -301,6 +357,20 @@ export interface CrewController {
   updateConnection(id: string, input: SaveConnectionInput): Promise<CrewConnection>;
   /** DELETE and reload the list. Throws on failure. */
   removeConnection(id: string): Promise<void>;
+  /**
+   * The host deletes the workspace on its server for everyone (OW-5): `POST …/workspace/delete`,
+   * after which the daemon has removed the connection here too, and the list is read again. Throws
+   * on failure. Absent on a stand-in controller.
+   */
+  deleteWorkspace?(
+    id: string,
+    input: { workspace_id: string; expected_name: string | null }
+  ): Promise<CrewWorkspaceDeleted>;
+  /**
+   * A context document drafted from the server's fixed probe over this connection (OW-8): `POST
+   * …/context/draft`. Nothing is saved. Throws on failure. Absent on a stand-in controller.
+   */
+  draftWorkspaceContext?(id: string): Promise<CrewContextDraft>;
   /** Prepare or recover the hosting identity. Throws on failure. */
   prepareHostingDevice(): Promise<PreparedDevice>;
   /**
@@ -484,8 +554,18 @@ export interface CrewController {
   dismissLostDraft?(id: number): void;
 
   // Owned runs (module-scoped unknown-outcome lock, C10)
-  /** Records its error under `pane:agent`; resolves true only when the start was accepted. */
+  /**
+   * Records its error under `pane:agent`, or the composer's for `surface: 'composer'`; resolves
+   * true only when the start was accepted.
+   */
   startOwnedRun(input: StartOwnedRunInput): Promise<boolean>;
+  /**
+   * Start the person's agent from the composer (`@agent`, `/agent`, `/task`; OW-10): the same
+   * request as Ask my agent's, with its errors in the composer. On success the submitted words
+   * leave the draft and words typed since stay. Absent on a stand-in controller, where the composer
+   * opens Ask my agent instead.
+   */
+  askAgent?(input: AskAgentInput): Promise<boolean>;
   /** Where a start whose outcome is unknown went, while that lock holds; else null. */
   unknownRunDestination: UnknownRunDestination | null;
   inspectedPriorRun: boolean;

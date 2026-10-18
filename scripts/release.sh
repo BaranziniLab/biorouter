@@ -366,7 +366,23 @@ cmd_linux-backend() {
   bash "$ROOT/scripts/check-crew-broker-join.sh" \
     "$ROOT/target/x86_64-unknown-linux-gnu/release/biorouter-crew" \
     || die "the linux Crew broker was built without the join-by-name feature"
+  record_crew_broker "$v"
   log "linux backend compiled"
+}
+
+# Every desktop bundle carries the Linux broker the Crew setup service installs on a server
+# (OW-9; stage_crew_broker below). It must be the broker THIS release compiled, not one an
+# earlier run left in target/: `assert_release_source` vouches for HEAD and the tree, never
+# for a file. So linux-backend records the digest here and staging refuses any other bytes.
+# A `crew_broker` row, not an `asset` one, so the 11-asset counts are untouched.
+record_crew_broker() { # <version>
+  local manifest tmp
+  manifest="$(release_provenance_file "$1")"
+  tmp="$(mktemp "${manifest}.XXXXXX")"
+  awk -F '\t' '$1 != "crew_broker"' "$manifest" >"$tmp"
+  printf 'crew_broker\t%s\n' \
+    "$(release_file_sha256 "$ROOT/target/x86_64-unknown-linux-gnu/release/biorouter-crew")" >>"$tmp"
+  mv "$tmp" "$manifest"
 }
 
 # The Linux baseline is Debian 11 / Ubuntu 22.04 / RHEL-Rocky 9, i.e. glibc 2.31.
@@ -470,9 +486,34 @@ build_computer_use_helper() { # <target>
   python3 "$ROOT/scripts/computer-use-runtime.py" build "$target" --signing-identity "$SIGN_IDENTITY"
 }
 
-stage_bin() { # <src-dir> <ext>
+stage_bin() { # <src-dir> <version>
   rm -rf "$DESK/src/bin"; mkdir -p "$DESK/src/bin"
-  cp -p "$1/biorouter${2:-}" "$1/biorouterd${2:-}" "$DESK/src/bin/"
+  cp -p "$1/biorouter" "$1/biorouterd" "$DESK/src/bin/"
+  stage_crew_broker "$2" "$DESK/src/bin/crew-broker/linux-x86_64"
+}
+
+# Stage the Linux Crew broker linux-backend built, with the manifest the setup service trusts,
+# for a desktop bundle: <bin>/crew-broker/linux-x86_64/{biorouter-crew,manifest.json}. The
+# bundle calls below set BIOROUTER_REQUIRE_CREW_BROKER=1, so prepare-platform-binaries.js and
+# forge's postPackage refuse a release bundle without it.
+#
+# The mac bundles are packaged here and the Linux and Windows ones in CI (adopt-ci), so their
+# brokers are separate builds of one commit, and Rust builds are not reproducible: the digests
+# differ by design. Each bundle's own manifest describes the copy it carries.
+stage_crew_broker() { # <version> <dest dir>
+  local v="$1" dest="$2" want staged
+  local broker="$ROOT/target/x86_64-unknown-linux-gnu/release/biorouter-crew"
+  want="$(release_provenance_value "$(release_provenance_file "$v")" crew_broker)" \
+    || die "release $v has not built its linux Crew broker, which every desktop bundle carries. Run: scripts/release.sh linux-backend $v"
+  [ -f "$broker" ] || die "linux Crew broker missing at $broker. Run: scripts/release.sh linux-backend $v"
+  [ "$(release_file_sha256 "$broker")" = "$want" ] \
+    || die "$broker is not the broker linux-backend built for $v. Run: scripts/release.sh linux-backend $v"
+  ensure_docker
+  bash "$ROOT/scripts/stage-crew-broker.sh" "$broker" "$dest" \
+    || die "could not stage the linux Crew broker (output above)"
+  staged="$(python3 -I -c 'import json, sys; print(json.load(open(sys.argv[1]))["sha256"])' "$dest/manifest.json")"
+  [ "$staged" = "$want" ] || die "the staged Crew broker manifest names $staged, not the broker built for $v ($want)"
+  log "staged the linux Crew broker ($want) at ${dest#"$ROOT"/}"
 }
 
 # ── mac packaging (sign + notarize, Node 24 via hermit) ───────────────────────
@@ -480,9 +521,10 @@ cmd_mac-arm64() {
   local v="$1"; assert_release_source "$v"; activate_hermit; load_apple_creds; ensure_mac_dmg_deps
   ls /Volumes/Biorouter* >/dev/null 2>&1 && { umount /Volumes/Biorouter* 2>/dev/null || true; }
   python3 "$ROOT/scripts/computer-use-runtime.py" verify darwin-arm64 --require-signed
-  stage_bin "$ROOT/target/release"
+  stage_bin "$ROOT/target/release" "$v"
   log "building + notarizing macOS arm64 dmg"
-  ( cd "$DESK" && APPLE_ID="$APPLE_ID" APPLE_APP_SPECIFIC_PASSWORD="$APPLE_APP_SPECIFIC_PASSWORD" npm run bundle:default )
+  ( cd "$DESK" && APPLE_ID="$APPLE_ID" APPLE_APP_SPECIFIC_PASSWORD="$APPLE_APP_SPECIFIC_PASSWORD" \
+      BIOROUTER_REQUIRE_CREW_BROKER=1 npm run bundle:default )
   # ⚠ Assert, do not announce. `bundle:default` used to end in `|| echo …`, which
   # turned every failure into exit 0, so this phase could not fail and printed a
   # path for a dmg it had not built. The `||` is gone from package.json now; this
@@ -499,9 +541,10 @@ cmd_mac-intel() {
   local v="$1"; assert_release_source "$v"; activate_hermit; load_apple_creds; ensure_mac_dmg_deps
   ls /Volumes/Biorouter* >/dev/null 2>&1 && { umount /Volumes/Biorouter* 2>/dev/null || true; }
   python3 "$ROOT/scripts/computer-use-runtime.py" verify darwin-x64 --require-signed
-  stage_bin "$ROOT/target/x86_64-apple-darwin/release"
+  stage_bin "$ROOT/target/x86_64-apple-darwin/release" "$v"
   log "building + notarizing macOS Intel dmg"
-  ( cd "$DESK" && APPLE_ID="$APPLE_ID" APPLE_APP_SPECIFIC_PASSWORD="$APPLE_APP_SPECIFIC_PASSWORD" npm run bundle:intel )
+  ( cd "$DESK" && APPLE_ID="$APPLE_ID" APPLE_APP_SPECIFIC_PASSWORD="$APPLE_APP_SPECIFIC_PASSWORD" \
+      BIOROUTER_REQUIRE_CREW_BROKER=1 npm run bundle:intel )
   local dmg="$DESK/out/make/Biorouter-$v-x64.dmg"
   local updater_zip="$DESK/out/make/$X64_ZIP_REL/Biorouter-darwin-x64-$v.zip"
   [ -f "$dmg" ] || die "mac-intel reported success but produced no dmg at $dmg"
@@ -519,8 +562,9 @@ cmd_windows() {
   build_computer_use_helper win32-x64
   rm -rf "$DESK/src/bin"; mkdir -p "$DESK/src/bin"
   cp -f "$WR/biorouterd.exe" "$WR/biorouter.exe" "$WR"/*.dll "$DESK/src/bin/"
+  stage_crew_broker "$v" "$DESK/src/bin/crew-broker/linux-x86_64"
   log "packaging Windows zip"
-  ( cd "$DESK" && npm run bundle:windows )
+  ( cd "$DESK" && BIOROUTER_REQUIRE_CREW_BROKER=1 npm run bundle:windows )
   local zip="$DESK/out/make/zip/win32/x64/Biorouter-win32-x64-$v.zip"
   [ -f "$zip" ] || die "windows reported success but produced no zip at $zip"
   record_release_asset "$v" "$zip" "win32-x64"
@@ -543,9 +587,12 @@ cmd_linux() {
   local v="$1"; assert_release_source "$v"; ensure_docker
   [ -f "$ROOT/target/x86_64-unknown-linux-gnu/release/biorouterd" ] || die "linux backend missing — run: scripts/release.sh backends $v"
   build_computer_use_helper linux-x64
+  # build-linux-deb.sh copies this into the packages; staging needs Docker, which its container lacks.
+  stage_crew_broker "$v" "$ROOT/target/crew-broker/linux-x86_64"
   log "packaging Linux deb + rpm (docker)"
   docker volume create biorouter-linux-npm-cache >/dev/null 2>&1 || true
   docker run --rm --platform linux/amd64 -v "$ROOT":/ws -v biorouter-linux-npm-cache:/root/.npm \
+    -e BIOROUTER_REQUIRE_CREW_BROKER=1 \
     "$(node -e 'console.log(require(process.argv[1]).image)' "$ROOT/ui/desktop/scripts/linux-native-baseline.json")" bash /ws/ui/desktop/scripts/build-linux-deb.sh \
     || die "the linux docker build failed — see the output above"
   # Assert the artifacts EXIST before announcing them. A bash function returns
@@ -784,6 +831,23 @@ cmd_adopt-ci() (
 )
 
 # ── verify ────────────────────────────────────────────────────────────────────
+# The check prepare-platform-binaries.js and forge's postPackage make while packaging
+# (ui/desktop/scripts/crew-broker-resources.js), with the broker required, as a release is.
+check_bundled_crew_broker() { # <resources bin dir> <version>
+  local problems
+  if problems="$(cd "$DESK" && node -e '
+      const { inspectCrewBroker } = require("./scripts/crew-broker-resources");
+      const result = inspectCrewBroker(process.argv[1], { required: true, appVersion: process.argv[2] });
+      result.problems.forEach((problem) => console.log(problem));
+      process.exit(result.problems.length > 0 ? 1 : 0);
+    ' "$1" "$2")"; then
+    log "Crew broker in ${1#"$DESK"/} matches its manifest ✓"
+  else
+    printf 'Crew broker in %s is not usable:\n%s\n' "$1" "$problems"
+    return 1
+  fi
+}
+
 cmd_verify() {
   local v="$1" ok=1
   assert_release_source "$v"
@@ -818,6 +882,9 @@ cmd_verify() {
              "$DESK/out/Biorouter-darwin-x64/Biorouter.app"; do
     if [ -d "$app" ]; then
       "$ROOT/scripts/check-auth-helper-bundled.sh" "$app" || ok=0
+      # Read back out of the signed, stapled app: the setup service sends these bytes to a
+      # server and refuses them unless they match the manifest beside them.
+      check_bundled_crew_broker "$app/Contents/Resources/bin" "$v" || ok=0
     fi
   done
   # The electron-updater manifest is generated at publish time; verify it if
