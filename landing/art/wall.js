@@ -23,12 +23,21 @@
    spellings (wall.css); one whose question still runs too tall takes the
    tiny spelling, and a title that does not fit takes its short form. If the
    visitor leaves the wall where an event has no room, the wall eases back
-   to the middle before the next pass. */
+   to the middle before the next pass.
+
+   Stops. The wall goes only as far as the narrower chat stays readable: it
+   keeps a title, every message it shows at rest, a question in at most the
+   short spelling, and its tool row and model name whole where they are whole
+   at rest. stops() measures that once per frame size, so the wall halts at a
+   chat that still reads as a chat, never at a sliver. Where a phone's chats
+   are tight even at rest, the wall still travels up to MIN_TRAVEL each way,
+   as far as the chat keeps its title, its messages and its question. */
 (function () {
   'use strict';
   if (!window.BR || !BR.art) return;
 
-  var MIN = 12, MAX = 88;
+  var FLOOR = 15, CEIL = 85; // percent; the farthest stops() ever looks
+  var MIN_TRAVEL = 8;        // percent; the wall always moves at least this far each way
   var SLOP = 8;       // px; a touch moves the wall only once it travels this far sideways
   var EVT_MIN = 96;   // px; an event needs a column at least this wide
   var GAP = 10;       // px; clear space kept between messages, events and the composer
@@ -158,7 +167,6 @@
     root.innerHTML =
       '<div class="wall-stage" aria-hidden="true">' + PUBLIC + PRIVATE + WALL + '</div>' +
       '<input class="wall-input" type="range" min="0" max="100" value="50" step="1" ' +
-      'aria-valuemin="' + MIN + '" aria-valuemax="' + MAX + '" ' +
       'aria-label="Move the wall between the private chat and the public chat">';
 
     var q = function (s) { return root.querySelector(s); };
@@ -314,6 +322,48 @@
 
     function hasRoom(i) { return !panes[i].pane.classList.contains('wall-no-evt'); }
 
+    // What a chat shows, to compare it with the same chat at rest.
+    function look(P) {
+      var ttx = P.pane.querySelector('.wall-ttx'), cn = P.pane.querySelector('.wall-cn');
+      return {
+        title: !P.pane.classList.contains('wall-no-title'),
+        drops: P.drops, lv: P.lv, bs: P.bs,
+        tool: !shown(ttx) || !overflows(ttx),
+        name: !shown(cn) || !overflows(cn)
+      };
+    }
+    // Everything the note at the top asks of a chat at the wall's stop.
+    function readable(now, rest) {
+      return keeps(now, rest) && now.bs <= Math.max(3, rest.bs) &&
+        (now.tool || !rest.tool) && (now.name || !rest.name);
+    }
+    // The least of it: the title, the messages and the question's spelling.
+    // MIN_TRAVEL may trim a word from a phone's chat, never a message.
+    function keeps(now, rest) {
+      return (now.title || !rest.title) && now.drops <= rest.drops && now.lv <= Math.max(1, rest.lv);
+    }
+    // Move the wall out from the middle one percent at a time until the chat
+    // it narrows fails the test, and return the last split that passed.
+    function walk(P, rest, dir, limit, test) {
+      var v = 50;
+      while (v !== limit) {
+        place(v + dir); fitPane(P);
+        if (!test(look(P), rest)) break;
+        v += dir;
+      }
+      return v;
+    }
+    function stops() {
+      place(50);
+      panes.forEach(fitPane);
+      var rest = panes.map(look);
+      lo = Math.min(walk(panes[0], rest[0], -1, FLOOR, readable), walk(panes[0], rest[0], -1, 50 - MIN_TRAVEL, keeps));
+      hi = Math.max(walk(panes[1], rest[1], 1, CEIL, readable), walk(panes[1], rest[1], 1, 50 + MIN_TRAVEL, keeps));
+      input.setAttribute('aria-valuemin', String(lo));
+      input.setAttribute('aria-valuemax', String(hi));
+    }
+    var lo = 50 - MIN_TRAVEL, hi = 50 + MIN_TRAVEL;
+
     // Measure the frame, then choose each chat's reference arrangement with
     // the wall in the middle. Runs at mount and when the frame resizes.
     var LADDER = {
@@ -339,9 +389,9 @@
         }
         if (!found) { P.refEvt = 'none'; P.refDrops = 0; }
       });
-      place(keep);
+      stops();
       fitted = -1;
-      fit();
+      setSplit(keep, true);
     }
     function place(v) { split = v; root.style.setProperty('--split', v + '%'); }
 
@@ -362,7 +412,7 @@
     // it is painted. With `now` they are laid out at once (the wall's own
     // moves, which already run once per frame).
     function setSplit(v, now) {
-      v = Math.max(MIN, Math.min(MAX, v));
+      v = Math.max(lo, Math.min(hi, v));
       place(v);
       var r = Math.round(v);
       if (+input.value !== r) input.value = String(r);
