@@ -26,12 +26,27 @@
   </tbody>
 </table></div>
 <p>In v1.92.1 and earlier, Llama Server offers Gemma 4 and Qwen3.6 models and picks one by memory: Gemma 4 E4B (<code>gemma4</code>) below 64 GB, Gemma 4 12B (<code>gemma4-12b</code>) at 64 GB or more. After v1.92.1, a model name from an earlier version, such as either of those, runs Qwen3.8 27B.</p>
-<p>Both models in the table need 32 GB of memory the GPU can use, and 48 GB is recommended; on a Mac, that is the unified memory. On a smaller machine they still run, slowly. On an Intel Mac the bundled server has no GPU acceleration, so replies come at a few tokens per second. Any other model works too: give a Hugging Face spec such as <code>owner/repo:Q4_K_M</code> as the model name. To download a model before you need it:</p>
+<p>Both models in the table need 32 GB of memory the GPU can use. <a href="#providers-computer">Choose a computer for local models</a> says what to expect at each size. Any other model works too: give a Hugging Face spec such as <code>owner/repo:Q4_K_M</code> as the model name. To download a model before you need it:</p>
 <pre><code>biorouter models local pull qwen3.8-27b
 biorouter models local list</code></pre>
 <p>The context window is sized to your memory. After v1.92.1 it is 128k tokens at 48 GB or more, otherwise 64k; in v1.92.1 and earlier, 128k at 64 GB or more, 64k at 16 GB or more, otherwise 32k. Set <code>LLAMACPP_CONTEXT_SIZE</code> to fix it. Thinking is off by default; <code>LLAMACPP_ENABLE_THINKING=true</code> turns it on.</p>
 <p><strong>Ollama</strong> (<code>ollama</code>) uses an <a href="https://ollama.com">Ollama</a> server you already run on this computer. Use Ollama 0.32.12 or later, which <code>qwen3.8:27b</code> needs, pull a model (<code>ollama pull qwen3.8:27b</code>) and select it. Default model: <code>qwen3.8:27b</code> after v1.92.1, <code>qwen3</code> in v1.92.1 and earlier. Biorouter also supports <code>gemma4:31b</code>. Other models may write their tool calls as text instead of making them. Biorouter sets the context window it needs; <code>OLLAMA_NUM_CTX</code> overrides it.</p>
 <div class="note"><p>Local means this computer. If <code>OLLAMA_HOST</code> or <code>LLAMACPP_EXTERNAL_HOST</code> points at another machine, Biorouter treats that provider as public. An Ollama cloud model is public too, even on this computer's Ollama, because Ollama answers it from ollama.com.</p></div>
+
+<h2 id="providers-computer">Choose a computer for local models</h2>
+<p>A local model runs in the memory the GPU can use. On a Mac with Apple silicon, that is the Mac's unified memory, and three things must fit in it at once: the model (about 22 to 25 GB for either model above, with its context window), Biorouter itself, and the data you are working on. On Windows or Linux, it is the graphics card's own memory, not the computer's RAM, and the model must fit there.</p>
+<div class="doc-table-scroll"><table>
+  <thead><tr><th>Memory the GPU can use</th><th>What to expect</th></tr></thead>
+  <tbody>
+    <tr><td>Under&nbsp;32&nbsp;GB</td><td>Not recommended. The models are still offered, with a warning, but may fail to load or run very slowly.</td></tr>
+    <tr><td>32&nbsp;GB</td><td>The minimum. The models run, with a 64k context window and less room for other apps.</td></tr>
+    <tr><td>48&nbsp;GB</td><td>Recommended. Llama Server uses a 128k context window (Ollama from 64&nbsp;GB), so a chat holds more before it is summarized.</td></tr>
+    <tr><td>64&nbsp;to&nbsp;128&nbsp;GB</td><td>For large datasets, or other demanding work running at the same time.</td></tr>
+  </tbody>
+</table></div>
+<p>An Intel Mac, or any computer without a fast GPU, is slow whatever its memory, because the model runs on the processor: a few tokens per second, and many minutes before each chat's first reply. On Linux, the Llama Server that comes with Biorouter also runs on the processor, so use Ollama with GPU support there.</p>
+<p>Each model needs about 20 GB of free disk space.</p>
+<p>The first reply in a chat is the slowest, because the model first reads 31,000 or more tokens of Biorouter's instructions and tools. On an M4 Max, Qwen3.8 27B takes about 2.5 minutes for that; a chip with fewer GPU cores, such as a Pro or base M chip, takes longer. If a reply times out, raise <code>OLLAMA_TIMEOUT</code> or <code>LLAMACPP_TIMEOUT</code> (in seconds), or turn off extensions the chat does not need so the prompt is shorter.</p>
 
 <h2 id="providers-institutional">Institutional</h2>
 <p>These endpoints are run by UCSF, so prompts and replies stay under UCSF's agreements. Each asks only for your Versa credentials; the endpoint is set for you.</p>

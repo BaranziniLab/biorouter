@@ -132,7 +132,7 @@ biorouter doctor --fix
 biorouter doctor --fix uv</code></pre>
 
 <h2 id="cli-reference">Reference</h2>
-<p>Short names: <code>s</code> and <code>sessions</code> for <code>session</code>, <code>kb</code> for <code>knowledge</code>, <code>ext</code> for <code>extension</code>, <code>sched</code> for <code>schedule</code>, <code>p</code> and <code>ps</code> for <code>project</code> and <code>projects</code>, <code>install-cli</code> for <code>setup-path</code>, <code>headless</code> for <code>serve</code>. The <code>workflow</code>, <code>schedule</code> and <code>doctor</code> commands are covered above. Environment variables are on <a href="#config-env">Configuration</a>, except <a href="#cli-ref-env">terminal settings</a> only the command line reads and the two under <a href="#cli-serve">Browser access</a>.</p>
+<p>Short names: <code>s</code> and <code>sessions</code> for <code>session</code>, <code>kb</code> for <code>knowledge</code>, <code>ext</code> for <code>extension</code>, <code>sched</code> for <code>schedule</code>, <code>p</code> and <code>ps</code> for <code>project</code> and <code>projects</code>, <code>install-cli</code> for <code>setup-path</code>, <code>headless</code> for <code>serve</code>. The <code>workflow</code>, <code>schedule</code> and <code>doctor</code> commands are covered above. Environment variables are on <a href="#config-env">Configuration</a>, except <a href="#cli-ref-env">terminal settings</a> only the command line reads and the three under <a href="#cli-serve">Browser access</a>.</p>
 
 <h3 id="cli-ref-session"><code>session</code></h3>
 <div class="doc-table-scroll"><table class="ref doc-options">
@@ -310,6 +310,7 @@ sudo dnf install ./biorouter-cli-*-1.x86_64.rpm</code></pre></li>
     <tr><td><code class="code-token">--token</code></td><td>Use a fixed token instead of a new one. Other accounts can read it in <code>ps</code>; <a href="#cli-serve-token">The access token</a> has a safer way.</td></tr>
     <tr><td><code class="code-token">--no-token</code></td><td>Serve with no token. Refused unless the address is local.</td></tr>
     <tr><td><code class="code-token">--web-dir</code></td><td>The folder holding the built interface, when <code>serve</code> cannot find it. It must contain an <code>index.html</code>. <code class="code-token">BIOROUTER_SERVE_UI</code> does the same.</td></tr>
+    <tr><td><code class="code-token">--public-url</code></td><td>The <code>https://</code> address a reverse proxy serves the interface at, path included. <code>serve</code> prints it with the token. <code class="code-token">BIOROUTER_PUBLIC_URL</code> does the same. Added after v1.93.0.</td></tr>
     <tr><td><code class="code-token">--computer-use-approval</code></td><td>Set a Biorouter Copilot approval key of at least 16 characters, typed at the terminal. It is never saved.</td></tr>
   </tbody>
 </table></div>
@@ -326,10 +327,12 @@ sudo dnf install ./biorouter-cli-*-1.x86_64.rpm</code></pre></li>
 <p>For one person, keep the local address and forward the port over SSH, then open the printed address in a browser on your own computer.</p>
 <pre>
 <code>ssh -N -L 8765:127.0.0.1:8765 user@remote-host</code></pre>
-<p>To serve other machines on the network, listen on every address. A token is then required, and <code>serve</code> prints a second address that other machines can use.</p>
+<p>To reach it without SSH, put an HTTPS reverse proxy in front of it. The proxy must pass WebSocket connections through and keep the browser's <code>Sec-Fetch-*</code> headers. It must also forward the original <code>Host</code> and set <code>X-Forwarded-Proto: https</code>, unless you give <code>serve</code> the address people open with <code class="code-token">--public-url</code>, added after v1.93.0. That address may include a path on a shared hostname, which the proxy removes before it forwards a request.</p>
 <pre>
-<code>biorouter serve --host 0.0.0.0</code></pre>
-<div class="note warn"><p><strong>Exposing the port exposes the agent.</strong> The browser can do what the desktop app does: run shell commands, read and write files, and spend your model credits, on the serving machine, as the account that started <code>serve</code>. There is one token and no user accounts, and the connection is plain HTTP. Beyond a trusted lab network, put a reverse proxy with TLS in front of it and limit who can reach the port.</p></div>
+<code>biorouter serve --port 8765 \
+  --public-url https://hub.example.org/biorouter/</code></pre>
+<p><code>serve</code> prints that address with the token; open it with its trailing slash. A link opened at another address says so and names this one. A plain <code>http://</code> address on the network is refused, even with the token, so <code class="code-token">--host 0.0.0.0</code> is only for a proxy on another machine. On JupyterHub, jupyter-server-proxy can start <code>serve</code> for each person; the <a href="https://github.com/BaranziniLab/biorouter/blob/main/docs/deployment/browser-access.md#jupyterhub">browser access guide</a> has the configuration.</p>
+<div class="note warn"><p><strong>Exposing the port exposes the agent.</strong> The browser can do what the desktop app does: run shell commands, read and write files, and spend your model credits, on the serving machine, as the account that started <code>serve</code>. There is one token and no user accounts. <code>serve</code> itself speaks plain HTTP, so limit who can reach the port and the proxy.</p></div>
 <p>For a service that restarts on its own, keep the fixed token in an environment file that only the service account can read. The <a href="https://github.com/BaranziniLab/biorouter/blob/main/docs/deployment/headless-linux.md">headless Linux guide</a> has a systemd unit.</p>
 
 <h3 id="serve-fixed-model">The model is fixed</h3>
@@ -349,6 +352,7 @@ sudo dnf install ./biorouter-cli-*-1.x86_64.rpm</code></pre></li>
     <tr><td>Changing the model or provider</td><td>No, by design. See above.</td></tr>
     <tr><td>Crew</td><td>No, and it says so before you try: opening Crew shows &ldquo;Crew needs the Biorouter desktop app&rdquo;. Every Crew action needs proof that a person is at this computer, which the desktop app and <code>biorouter crew</code> supply themselves; the daemon <code>serve</code> starts never holds it. Use Crew in the desktop app or with <code>biorouter crew</code> in a terminal on your own computer.</td></tr>
     <tr><td>Approvals that need proof a person acted</td><td>A note takes the place of the buttons, and the agent is not offered skill or extension installs and removals. Run <code>biorouter skill</code> and <code>biorouter extension</code> on the host instead.</td></tr>
+    <tr><td>Browsing the marketplace</td><td>Yes. After v1.93.0 the browser reads the live catalog from biorouter.ucsf.edu itself; when it cannot, it shows the catalog bundled with Biorouter. Installs download on the serving machine.</td></tr>
     <tr><td>Resetting app data</td><td>No. On the host, use <code>biorouter session remove</code> and the other remove commands.</td></tr>
     <tr><td>File and folder pickers</td><td>No dialog. Type a path on the serving machine, not on the computer running the browser.</td></tr>
     <tr><td>Biorouter Copilot</td><td>Only when <code>serve</code> started with <code class="code-token">--computer-use-approval</code>. It controls the serving machine's desktop.</td></tr>

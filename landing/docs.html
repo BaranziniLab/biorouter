@@ -208,7 +208,7 @@
 <h2 id="app-settings">Settings</h2>
 <p>Settings has three tabs.</p>
 <ul>
-  <li><strong>Models.</strong> Default model shows the model new chats start on, with <strong>Change…</strong>, and the providers, with <strong>Manage…</strong>. Local models lists the local models you have and can install, and deletes ones you no longer need. The Danger zone has <strong>Reset…</strong>, which clears the provider and model new chats start on.</li>
+  <li><strong>Models.</strong> Default model shows the model new chats start on, with <strong>Change…</strong>. Under it, after v1.93.0, <strong>Crew tasks</strong> sets the model for <a href="#crew-ask-my-agent">agent tasks in Crew</a>; it reads "Same as new chats" until you choose one. Then come the providers, with <strong>Manage…</strong>. Local models lists the local models you have and can install, and deletes ones you no longer need. The Danger zone has <strong>Reset…</strong>, which clears the provider and model new chats start on.</li>
   <li><strong>Chat.</strong> Approvals sets how much the agent does without asking: Autonomous, Manual, Smart or Chat only (see <a href="#vaulting">Security</a>), the per-tool permissions and the maximum turns. Display decides whether tool calls start expanded or collapsed and turns spellcheck on or off. Capabilities sets the built-in abilities new chats start with. The tab also holds Memory, Contexts (skills that ship with Biorouter), App SDK and Project hints (<code>.biorouterhints</code>).</li>
   <li><strong>App.</strong> Configuration edits the settings file. Privacy holds the private and public protection, which is on by default. General covers notifications, the menu bar icon (and the Dock icon on macOS), prevent sleep, whether agents may open tabs on their own, and showing costs. Appearance sets the theme, the color palette and the text size. Usage appears while costs are shown. Then come About (version, updates and feedback) and the Danger zone (reset).</li>
 </ul>
@@ -389,7 +389,7 @@ biorouter doctor --fix
 biorouter doctor --fix uv</code></pre>
 
 <h2 id="cli-reference">Reference</h2>
-<p>Short names: <code>s</code> and <code>sessions</code> for <code>session</code>, <code>kb</code> for <code>knowledge</code>, <code>ext</code> for <code>extension</code>, <code>sched</code> for <code>schedule</code>, <code>p</code> and <code>ps</code> for <code>project</code> and <code>projects</code>, <code>install-cli</code> for <code>setup-path</code>, <code>headless</code> for <code>serve</code>. The <code>workflow</code>, <code>schedule</code> and <code>doctor</code> commands are covered above. Environment variables are on <a href="#config-env">Configuration</a>, except <a href="#cli-ref-env">terminal settings</a> only the command line reads and the two under <a href="#cli-serve">Browser access</a>.</p>
+<p>Short names: <code>s</code> and <code>sessions</code> for <code>session</code>, <code>kb</code> for <code>knowledge</code>, <code>ext</code> for <code>extension</code>, <code>sched</code> for <code>schedule</code>, <code>p</code> and <code>ps</code> for <code>project</code> and <code>projects</code>, <code>install-cli</code> for <code>setup-path</code>, <code>headless</code> for <code>serve</code>. The <code>workflow</code>, <code>schedule</code> and <code>doctor</code> commands are covered above. Environment variables are on <a href="#config-env">Configuration</a>, except <a href="#cli-ref-env">terminal settings</a> only the command line reads and the three under <a href="#cli-serve">Browser access</a>.</p>
 
 <h3 id="cli-ref-session"><code>session</code></h3>
 <div class="doc-table-scroll"><table class="ref doc-options">
@@ -567,6 +567,7 @@ sudo dnf install ./biorouter-cli-*-1.x86_64.rpm</code></pre></li>
     <tr><td><code class="code-token">--token</code></td><td>Use a fixed token instead of a new one. Other accounts can read it in <code>ps</code>; <a href="#cli-serve-token">The access token</a> has a safer way.</td></tr>
     <tr><td><code class="code-token">--no-token</code></td><td>Serve with no token. Refused unless the address is local.</td></tr>
     <tr><td><code class="code-token">--web-dir</code></td><td>The folder holding the built interface, when <code>serve</code> cannot find it. It must contain an <code>index.html</code>. <code class="code-token">BIOROUTER_SERVE_UI</code> does the same.</td></tr>
+    <tr><td><code class="code-token">--public-url</code></td><td>The <code>https://</code> address a reverse proxy serves the interface at, path included. <code>serve</code> prints it with the token. <code class="code-token">BIOROUTER_PUBLIC_URL</code> does the same. Added after v1.93.0.</td></tr>
     <tr><td><code class="code-token">--computer-use-approval</code></td><td>Set a Biorouter Copilot approval key of at least 16 characters, typed at the terminal. It is never saved.</td></tr>
   </tbody>
 </table></div>
@@ -583,10 +584,12 @@ sudo dnf install ./biorouter-cli-*-1.x86_64.rpm</code></pre></li>
 <p>For one person, keep the local address and forward the port over SSH, then open the printed address in a browser on your own computer.</p>
 <pre>
 <code>ssh -N -L 8765:127.0.0.1:8765 user@remote-host</code></pre>
-<p>To serve other machines on the network, listen on every address. A token is then required, and <code>serve</code> prints a second address that other machines can use.</p>
+<p>To reach it without SSH, put an HTTPS reverse proxy in front of it. The proxy must pass WebSocket connections through and keep the browser's <code>Sec-Fetch-*</code> headers. It must also forward the original <code>Host</code> and set <code>X-Forwarded-Proto: https</code>, unless you give <code>serve</code> the address people open with <code class="code-token">--public-url</code>, added after v1.93.0. That address may include a path on a shared hostname, which the proxy removes before it forwards a request.</p>
 <pre>
-<code>biorouter serve --host 0.0.0.0</code></pre>
-<div class="note warn"><p><strong>Exposing the port exposes the agent.</strong> The browser can do what the desktop app does: run shell commands, read and write files, and spend your model credits, on the serving machine, as the account that started <code>serve</code>. There is one token and no user accounts, and the connection is plain HTTP. Beyond a trusted lab network, put a reverse proxy with TLS in front of it and limit who can reach the port.</p></div>
+<code>biorouter serve --port 8765 \
+  --public-url https://hub.example.org/biorouter/</code></pre>
+<p><code>serve</code> prints that address with the token; open it with its trailing slash. A link opened at another address says so and names this one. A plain <code>http://</code> address on the network is refused, even with the token, so <code class="code-token">--host 0.0.0.0</code> is only for a proxy on another machine. On JupyterHub, jupyter-server-proxy can start <code>serve</code> for each person; the <a href="https://github.com/BaranziniLab/biorouter/blob/main/docs/deployment/browser-access.md#jupyterhub">browser access guide</a> has the configuration.</p>
+<div class="note warn"><p><strong>Exposing the port exposes the agent.</strong> The browser can do what the desktop app does: run shell commands, read and write files, and spend your model credits, on the serving machine, as the account that started <code>serve</code>. There is one token and no user accounts. <code>serve</code> itself speaks plain HTTP, so limit who can reach the port and the proxy.</p></div>
 <p>For a service that restarts on its own, keep the fixed token in an environment file that only the service account can read. The <a href="https://github.com/BaranziniLab/biorouter/blob/main/docs/deployment/headless-linux.md">headless Linux guide</a> has a systemd unit.</p>
 
 <h3 id="serve-fixed-model">The model is fixed</h3>
@@ -606,6 +609,7 @@ sudo dnf install ./biorouter-cli-*-1.x86_64.rpm</code></pre></li>
     <tr><td>Changing the model or provider</td><td>No, by design. See above.</td></tr>
     <tr><td>Crew</td><td>No, and it says so before you try: opening Crew shows &ldquo;Crew needs the Biorouter desktop app&rdquo;. Every Crew action needs proof that a person is at this computer, which the desktop app and <code>biorouter crew</code> supply themselves; the daemon <code>serve</code> starts never holds it. Use Crew in the desktop app or with <code>biorouter crew</code> in a terminal on your own computer.</td></tr>
     <tr><td>Approvals that need proof a person acted</td><td>A note takes the place of the buttons, and the agent is not offered skill or extension installs and removals. Run <code>biorouter skill</code> and <code>biorouter extension</code> on the host instead.</td></tr>
+    <tr><td>Browsing the marketplace</td><td>Yes. After v1.93.0 the browser reads the live catalog from biorouter.ucsf.edu itself; when it cannot, it shows the catalog bundled with Biorouter. Installs download on the serving machine.</td></tr>
     <tr><td>Resetting app data</td><td>No. On the host, use <code>biorouter session remove</code> and the other remove commands.</td></tr>
     <tr><td>File and folder pickers</td><td>No dialog. Type a path on the serving machine, not on the computer running the browser.</td></tr>
     <tr><td>Biorouter Copilot</td><td>Only when <code>serve</code> started with <code class="code-token">--computer-use-approval</code>. It controls the serving machine's desktop.</td></tr>
@@ -663,12 +667,27 @@ sudo dnf install ./biorouter-cli-*-1.x86_64.rpm</code></pre></li>
   </tbody>
 </table></div>
 <p>In v1.92.1 and earlier, Llama Server offers Gemma 4 and Qwen3.6 models and picks one by memory: Gemma 4 E4B (<code>gemma4</code>) below 64 GB, Gemma 4 12B (<code>gemma4-12b</code>) at 64 GB or more. After v1.92.1, a model name from an earlier version, such as either of those, runs Qwen3.8 27B.</p>
-<p>Both models in the table need 32 GB of memory the GPU can use, and 48 GB is recommended; on a Mac, that is the unified memory. On a smaller machine they still run, slowly. On an Intel Mac the bundled server has no GPU acceleration, so replies come at a few tokens per second. Any other model works too: give a Hugging Face spec such as <code>owner/repo:Q4_K_M</code> as the model name. To download a model before you need it:</p>
+<p>Both models in the table need 32 GB of memory the GPU can use. <a href="#providers-computer">Choose a computer for local models</a> says what to expect at each size. Any other model works too: give a Hugging Face spec such as <code>owner/repo:Q4_K_M</code> as the model name. To download a model before you need it:</p>
 <pre><code>biorouter models local pull qwen3.8-27b
 biorouter models local list</code></pre>
 <p>The context window is sized to your memory. After v1.92.1 it is 128k tokens at 48 GB or more, otherwise 64k; in v1.92.1 and earlier, 128k at 64 GB or more, 64k at 16 GB or more, otherwise 32k. Set <code>LLAMACPP_CONTEXT_SIZE</code> to fix it. Thinking is off by default; <code>LLAMACPP_ENABLE_THINKING=true</code> turns it on.</p>
 <p><strong>Ollama</strong> (<code>ollama</code>) uses an <a href="https://ollama.com">Ollama</a> server you already run on this computer. Use Ollama 0.32.12 or later, which <code>qwen3.8:27b</code> needs, pull a model (<code>ollama pull qwen3.8:27b</code>) and select it. Default model: <code>qwen3.8:27b</code> after v1.92.1, <code>qwen3</code> in v1.92.1 and earlier. Biorouter also supports <code>gemma4:31b</code>. Other models may write their tool calls as text instead of making them. Biorouter sets the context window it needs; <code>OLLAMA_NUM_CTX</code> overrides it.</p>
 <div class="note"><p>Local means this computer. If <code>OLLAMA_HOST</code> or <code>LLAMACPP_EXTERNAL_HOST</code> points at another machine, Biorouter treats that provider as public. An Ollama cloud model is public too, even on this computer's Ollama, because Ollama answers it from ollama.com.</p></div>
+
+<h2 id="providers-computer">Choose a computer for local models</h2>
+<p>A local model runs in the memory the GPU can use. On a Mac with Apple silicon, that is the Mac's unified memory, and three things must fit in it at once: the model (about 22 to 25 GB for either model above, with its context window), Biorouter itself, and the data you are working on. On Windows or Linux, it is the graphics card's own memory, not the computer's RAM, and the model must fit there.</p>
+<div class="doc-table-scroll"><table>
+  <thead><tr><th>Memory the GPU can use</th><th>What to expect</th></tr></thead>
+  <tbody>
+    <tr><td>Under&nbsp;32&nbsp;GB</td><td>Not recommended. The models are still offered, with a warning, but may fail to load or run very slowly.</td></tr>
+    <tr><td>32&nbsp;GB</td><td>The minimum. The models run, with a 64k context window and less room for other apps.</td></tr>
+    <tr><td>48&nbsp;GB</td><td>Recommended. Llama Server uses a 128k context window (Ollama from 64&nbsp;GB), so a chat holds more before it is summarized.</td></tr>
+    <tr><td>64&nbsp;to&nbsp;128&nbsp;GB</td><td>For large datasets, or other demanding work running at the same time.</td></tr>
+  </tbody>
+</table></div>
+<p>An Intel Mac, or any computer without a fast GPU, is slow whatever its memory, because the model runs on the processor: a few tokens per second, and many minutes before each chat's first reply. On Linux, the Llama Server that comes with Biorouter also runs on the processor, so use Ollama with GPU support there.</p>
+<p>Each model needs about 20 GB of free disk space.</p>
+<p>The first reply in a chat is the slowest, because the model first reads 31,000 or more tokens of Biorouter's instructions and tools. On an M4 Max, Qwen3.8 27B takes about 2.5 minutes for that; a chip with fewer GPU cores, such as a Pro or base M chip, takes longer. If a reply times out, raise <code>OLLAMA_TIMEOUT</code> or <code>LLAMACPP_TIMEOUT</code> (in seconds), or turn off extensions the chat does not need so the prompt is shorter.</p>
 
 <h2 id="providers-institutional">Institutional</h2>
 <p>These endpoints are run by UCSF, so prompts and replies stay under UCSF's agreements. Each asks only for your Versa credentials; the endpoint is set for you.</p>
@@ -1533,6 +1552,7 @@ biorouter apps serve cohort-explorer</code></pre>
 <h1>Crew</h1>
 <p class="doc-lede">Crew is where a lab works together in the Biorouter desktop app: channels, shared files, and agent tasks the whole channel can see. One member, the host, runs the workspace on a shared Linux server.</p>
 <p>The examples use the workspace <code>chen-lab</code> on the server <code>lab.example.edu</code>, hosted by Alice Chen (<code>@alice</code>), and the member Bob Lee (<code>@bob</code>). A word in braces, such as {team}, is a name Crew fills in. Every dialog, message and command is in the <a href="https://github.com/BaranziniLab/biorouter/tree/main/docs/crew">Crew manual</a> on GitHub.</p>
+<div class="note"><p>This page describes Crew after v1.93.0, with automatic setup, open workspaces, deletion, agents that work on the server and <code>@agent</code>. For v1.93.0 itself, read the <a href="https://github.com/BaranziniLab/biorouter/tree/v1.93.0/docs/crew">v1.93.0 Crew manual</a>.</p></div>
 
 <figure class="doc-figure">
   <div class="flow">
@@ -1549,7 +1569,7 @@ biorouter apps serve cohort-explorer</code></pre>
 <ul>
   <li>Open it from <strong>Crew</strong> in the sidebar, below <strong>New chat</strong>.</li>
   <li>A workspace holds teams, and a team holds channels. You see only the channels you are in. There are no direct messages.</li>
-  <li>Only the host invites people, lets them in and removes them. A channel owner, at first its creator, manages each channel.</li>
+  <li>A new workspace is open: every member can invite people, let them in and manage teams and channels, and a person who joins is added to all of them. The host can make it managed, so that a team's creator and a channel's owner manage them and only the host invites. Only the host removes people from the workspace, changes its privacy or deletes it.</li>
   <li>Privacy is <strong>Private</strong> or <strong>Public</strong>. It decides which AI models may read the workspace, not which people see it. Each channel is labeled "Restricted" or "Public-safe". Only a local model or one approved for the workspace's institution may read a Restricted channel.</li>
   <li>The desktop app and the <code>biorouter crew</code> commands share one background service on your computer, so both show the same workspaces.</li>
 </ul>
@@ -1558,7 +1578,7 @@ biorouter apps serve cohort-explorer</code></pre>
 <ul>
   <li><strong>The desktop app.</strong> Tested on macOS. Crew does not work in a web browser opened with <code>biorouter serve</code>, which shows "Crew needs the Biorouter desktop app" in its place.</li>
   <li><strong>A server account.</strong> Your own login on the lab's Linux server, with an SSH key, a password or a verification code. Your IT team provides it.</li>
-  <li><strong>Crew on the server.</strong> The program <code>biorouter-crew</code>, installed in <code>~/.local/bin</code> of every account that connects, the host's included. You install it yourself, or IT does.</li>
+  <li><strong>Crew on the server.</strong> Its server program, <code>biorouter-crew</code>, in <code>~/.local/bin</code> of every account that connects. When you join or host, Biorouter installs it in your own account, without administrator rights.</li>
   <li><strong>A verified server.</strong> The server's SSH host key in your known hosts file. Crew never accepts a new server by itself, so check the fingerprint with IT once.</li>
   <li><strong>An invitation.</strong> The host sends it. It expires after 24 hours.</li>
 </ul>
@@ -1578,46 +1598,58 @@ biorouter apps serve cohort-explorer</code></pre>
   <li><strong>Open the Join dialog</strong> In Crew, choose <strong>Join a workspace</strong>. If you already have a workspace, choose <strong>Add a workspace</strong> and then <strong>Join a workspace…</strong> in the workspace menu.</li>
   <li><strong>Paste the invitation</strong> Paste the whole message into <strong>Invitation from your host</strong>. If the summary names the wrong workspace or host, choose <strong>Cancel</strong>.</li>
   <li><strong>Check your username</strong> The name in <strong>Your username on lab.example.edu</strong> is your server login, not your email address.</li>
-  <li><strong>Join</strong> Choose <strong>Join chen-lab</strong>. If the server asks for a password or a code, type it in the Sign in window.</li>
+  <li><strong>Choose what your agent may do</strong> Check <strong>Your agent on lab.example.edu</strong>. It starts at <strong>As me on the server</strong>, which lets your agent run commands as your account there. Choose <strong>In a folder</strong> or <strong>Off</strong> to give it less. See <a href="#crew-server-access">Agents on the server</a>.</li>
+  <li><strong>Join</strong> Choose <strong>Join chen-lab</strong>. If Crew is not in your server account yet, Biorouter installs it there. If the server asks for a password or a code, type it in the Sign in window.</li>
   <li><strong>Send your code</strong> Crew shows "Send Alice this code:" and your code. Choose <strong>Copy</strong> and send the code to the host.</li>
 </ol>
-<p>When the host enters your code, the workspace opens by itself. Until then the status row reads "Not joined yet". For a second computer, ask the host to invite you again with <strong>Add another device for @bob</strong> turned on.</p>
+<p>When the host, or in an open workspace any member, enters your code, the workspace opens by itself. Until then the status row reads "Not joined yet". In an open workspace you are added to every team and channel. For a second computer, ask the host to invite you again with <strong>Add another device for @bob</strong> turned on.</p>
 <div class="note warn"><p><strong>Your code is not the fingerprint.</strong> The Join dialog can also show the workspace fingerprint. Never send it. To check an invitation, ask the host to read the fingerprint from their workspace menu. If the two differ, do not join.</p></div>
 <p>More in <a href="https://github.com/BaranziniLab/biorouter/blob/main/docs/crew/joining-a-workspace.md">Joining a workspace</a>.</p>
 
 <h2 id="crew-host">Host a workspace</h2>
-<p>You need a login on the server with Crew installed in your own account, the server in your known hosts file, and your institution's short ID, such as <code>ucsf</code>.</p>
+<p>You need a login on the server, the server in your known hosts file, and your institution's short ID, such as <code>ucsf</code>.</p>
 <ol class="steps">
   <li><strong>Open the Host dialog</strong> In Crew, choose <strong>Host a new workspace</strong>. If you already have a workspace, choose <strong>Add a workspace</strong> and then <strong>Host a new workspace…</strong> in the workspace menu.</li>
   <li><strong>Name it</strong> Type a <strong>Workspace name</strong>. Anyone who can sign in to the server can see it, so keep patient and sample IDs out of it.</li>
-  <li><strong>Give your login</strong> Type <strong>Your server login</strong>, such as <code>alice@lab.example.edu</code>. Keep <strong>Private</strong>, check the institution, and choose <strong>Continue</strong>.</li>
-  <li><strong>Start Crew on the server</strong> Choose <strong>Start it for me</strong>. If it cannot sign in, open <strong>Run it yourself in a terminal</strong>, run the commands it shows, and paste their output into <strong>Paste what it printed</strong>.</li>
-  <li><strong>Create it</strong> Choose <strong>Create workspace</strong>. This computer becomes the workspace's first admin device.</li>
-  <li><strong>Set the institution</strong> When Crew asks "Mark chen-lab as a UCSF workspace?", choose <strong>Mark as UCSF</strong>. It cannot be changed later, and agents cannot work in the workspace until it is set.</li>
+  <li><strong>Give your login</strong> Type <strong>Your server login</strong>, such as <code>alice@lab.example.edu</code>. Keep <strong>Private</strong>, check the institution and <strong>Your agent on lab.example.edu</strong>, as when you join, and choose <strong>Continue</strong>.</li>
+  <li><strong>Set up and start Crew</strong> Choose <strong>Set up and start Crew</strong>. Biorouter installs Crew in your server account and starts the workspace. If the server asks for a password or a code, type it in the Sign in window. If setup stops because other accounts can change a folder above the workspace, choose <strong>Fix it for me</strong>. If setup cannot reach the server, open <strong>Run it yourself in a terminal</strong>, run the commands it shows, and paste their output into <strong>Paste what it printed</strong>.</li>
+  <li><strong>Create it</strong> Choose <strong>Create workspace</strong>. This computer becomes the workspace's first admin device. Create also makes the workspace open and drafts its workspace context from the server. With <strong>Private</strong>, it marks the workspace with your institution, which cannot be changed later.</li>
+  <li><strong>Set the institution if asked</strong> If Create did not mark the workspace and Crew asks "Mark chen-lab as a UCSF workspace?", choose <strong>Mark as UCSF</strong>. Agents cannot work in the workspace until it is set.</li>
 </ol>
+<p>From a terminal, one command does all of this:</p>
+<pre><code>biorouter crew host \
+  --name chen-lab \
+  --server alice@lab.example.edu \
+  --institution ucsf</code></pre>
 <p>The "Get chen-lab ready" checklist lists what is left. Set your name before you invite anyone, because each invitation carries it.</p>
 
 <h3 id="crew-invite">Invite people and let them in</h3>
 <ol class="steps">
-  <li><strong>Invite</strong> Choose <strong>Invite people to chen-lab…</strong> in the workspace menu. Type the person's server login in <strong>Username</strong>, such as <code>bob</code>, and choose <strong>Invite</strong>.</li>
+  <li><strong>Invite</strong> Choose <strong>Invite people to chen-lab…</strong> in the workspace menu. Type the person's server login in <strong>Username</strong>, such as <code>bob</code>, and choose <strong>Invite</strong>. In an open workspace, any member can invite.</li>
   <li><strong>Send the invitation</strong> Choose <strong>Copy</strong> and send the message to the person, with the server's SSH fingerprint from IT if they have not used this server before.</li>
   <li><strong>Let them in</strong> When the person sends their code, choose <strong>Let in…</strong> beside their name under "Waiting to join", paste the code, and choose <strong>Let Bob in</strong>.</li>
-  <li><strong>Add them to a team</strong> When their computer checks in, tick channels under <strong>Channels in {team}</strong> and choose <strong>Add to {team}</strong>. A person in no team sees no channels.</li>
+  <li><strong>Add them to a team</strong> In an open workspace they are already in every team and channel, so choose <strong>Done</strong>. In a managed one, when their computer checks in, tick channels under <strong>Channels in {team}</strong> and choose <strong>Add to {team}</strong>. A person in no team sees no channels.</li>
 </ol>
 <div class="note warn"><p><strong>Approve only a code the person sent you.</strong> If Crew warns that a computer showed a different code, check the code with the person directly. To correct a mistyped code, choose <strong>Let in…</strong>, enter the right one, and choose <strong>Replace code</strong>.</p></div>
 <p>After the server restarts, the host starts the workspace again, as <a href="#crew-administrators">Server setup</a> says. More in <a href="https://github.com/BaranziniLab/biorouter/blob/main/docs/crew/hosting-a-workspace.md">Hosting a workspace</a>.</p>
 
+<h3 id="crew-delete-workspace">Delete the workspace</h3>
+<p>In the workspace menu, choose <strong>People…</strong>, then the <strong>General</strong> tab of "chen-lab settings". Under "Danger zone", choose <strong>Delete workspace…</strong>, type the workspace's name, and choose <strong>Delete workspace</strong>. This deletes it for everyone and cannot be undone. Each member's connection bar then says "The host deleted chen-lab." with <strong>Remove from this computer…</strong>, which is all they can do.</p>
+
 <h2 id="crew-teams-channels-people">Teams, channels and people</h2>
 <div class="doc-table-scroll"><table>
-  <thead><tr><th>Task</th><th>Who can do it</th></tr></thead>
+  <thead><tr><th>Task</th><th>Managed workspace</th><th>Open workspace</th></tr></thead>
   <tbody>
-    <tr><td>Create a team, or a channel in your team</td><td>Anyone in the workspace</td></tr>
-    <tr><td>Add people</td><td>The team's creator or the channel owner, and the host in a team or channel the host is in</td></tr>
-    <tr><td>Rename, archive or hand over a channel, or remove its members</td><td>The channel owner</td></tr>
-    <tr><td>Remove someone from the workspace</td><td>The host</td></tr>
+    <tr><td>Create a team, or a channel in your team</td><td>Anyone</td><td>Anyone</td></tr>
+    <tr><td>Join a team or channel</td><td>Someone adds you</td><td>Anyone, with <strong>Browse channels</strong></td></tr>
+    <tr><td>Add people</td><td>The team's creator or the channel owner, and the host in a team or channel the host is in</td><td>Any member of the team or channel</td></tr>
+    <tr><td>Rename, archive or delete a channel, or remove its members</td><td>The channel owner</td><td>Any member of the channel</td></tr>
+    <tr><td>Delete a team, with its channels</td><td>The team's creator</td><td>Any member of the team</td></tr>
+    <tr><td>Invite people and let them in</td><td>The host</td><td>Any member</td></tr>
+    <tr><td>Remove someone from the workspace, or delete it</td><td>The host</td><td>The host</td></tr>
   </tbody>
 </table></div>
-<p>People you add do not need to accept, and an agent cannot add people. A channel's label is chosen when it is created and cannot be changed. Archiving a channel cannot be undone. More in <a href="https://github.com/BaranziniLab/biorouter/blob/main/docs/crew/teams-channels-and-people.md">Teams, channels and people</a>.</p>
+<p>A workspace created with v1.93.0 or earlier stays managed. The host switches it between open and managed on the <strong>General</strong> tab of "chen-lab settings", under <strong>Who can manage teams and channels</strong>. People you add do not need to accept, and an agent cannot add people. A channel's label is chosen when it is created and cannot be changed. Archiving a channel cannot be undone. Deleting a channel or a team removes its messages and files for everyone, and nobody can bring it back. Only a channel's owner hands it over. More in <a href="https://github.com/BaranziniLab/biorouter/blob/main/docs/crew/teams-channels-and-people.md">Teams, channels and people</a>.</p>
 
 <h2 id="crew-messages-files">Messages and files</h2>
 <ul>
@@ -1660,24 +1692,25 @@ biorouter apps serve cohort-explorer</code></pre>
 <h2 id="crew-agents">Agents in a channel</h2>
 <p>An agent can work in a channel in two ways. Both run on your computer with your model, post as your agent where everyone in the channel sees it, and have access for one hour at most.</p>
 <div class="doc-table-scroll"><table>
-  <thead><tr><th><span class="sr-only">Detail</span></th><th>Ask my agent</th><th>A chat connected with /crew</th></tr></thead>
+  <thead><tr><th><span class="sr-only">Detail</span></th><th>A task</th><th>A chat connected with /crew</th></tr></thead>
   <tbody>
-    <tr><td>Kind</td><td>One task. The agent posts its result and its access ends.</td><td>An ordinary Biorouter chat that you keep talking to.</td></tr>
-    <tr><td>Reads</td><td>Its channel and its files, and up to 16 more channels under <strong>Also read</strong></td><td>Its channels and their files, up to 20 including its own</td></tr>
+    <tr><td>Kind</td><td>One task, from <strong>Ask my agent</strong> or <code>@agent</code>. The agent posts its result and its access ends.</td><td>An ordinary Biorouter chat that you keep talking to.</td></tr>
+    <tr><td>Reads</td><td>Its channel and its files, and up to 16 more channels under <strong>Also read</strong>. In an open workspace, every channel you are in.</td><td>Its channels and their files, up to 20 including its own</td></tr>
     <tr><td>Posts</td><td>Your task, then its result</td><td>In its one channel</td></tr>
     <tr><td>Stop it</td><td>Choose <strong>Stop</strong> on its row</td><td>Choose <strong>Revoke access</strong> in the chat</td></tr>
   </tbody>
 </table></div>
-<p>Access ends for every agent in the workspace when someone is added to a team or channel, or removed from a channel or the workspace, when a channel is archived or offered to a new owner, and when the workspace's privacy or institution changes. A change to your own connection's privacy, settings or institution ends your own chats' access. Renaming a team, a channel or the workspace does not.</p>
+<p>Access ends for every agent in the workspace when someone is removed from a channel or the workspace, or, in a managed workspace, added to a team or channel, when a channel is archived or offered to a new owner, and when the workspace's privacy or institution changes. Deleting a channel or a team ends the access of agents that read it. A change to your own connection's privacy, settings or institution ends your own chats' access. Renaming a team, a channel or the workspace does not.</p>
 
 <h3 id="crew-ask-my-agent">Ask my agent</h3>
 <ol class="steps">
   <li><strong>Open the pane</strong> In the channel that should get the result, choose <strong>Ask my agent</strong>, the robot icon left of Send.</li>
   <li><strong>Write the task</strong> Type it in <strong>Task</strong>. Enter starts a new line.</li>
-  <li><strong>Check the model</strong> Check <strong>Model</strong>, or choose <strong>Change</strong>. To let the agent read other channels, open <strong>Advanced</strong> and tick them under <strong>Also read</strong>.</li>
+  <li><strong>Check the model</strong> <strong>Model</strong> starts on your model for Crew tasks, which <strong>Settings&nbsp;→&nbsp;Models&nbsp;→&nbsp;Crew tasks</strong> sets. Choose <strong>Change</strong> for another. To let the agent read other channels, open <strong>Advanced</strong> and tick them under <strong>Also read</strong>.</li>
   <li><strong>Start it</strong> Choose <strong>Start my agent and allow posting here</strong>. The task's row in the channel shows its status, such as "Working…".</li>
 </ol>
 <p>Crew posts your whole task in the channel, so do not paste data you would not post there yourself. "Waiting for your approval" means the agent needs your answer: choose <strong>Review</strong>. The result ends with a line from Crew that names the shared files the task read, or says it read none. Trust that line over the agent's words.</p>
+<p>You can also start a task from the message box: type <code>@agent</code>, <code>/agent</code> or <code>/task</code> at the start of a message, then the task, and press Enter. The line under the text says which model starts and what the task reads. As with <strong>Ask my agent</strong>, Crew posts the whole task in the channel.</p>
 
 <h3 id="crew-connect-a-chat">Connect a chat with /crew</h3>
 <p>The chat needs at least one sent message, a model, no reply in progress, and no attachments in its message box.</p>
@@ -1687,7 +1720,7 @@ biorouter apps serve cohort-explorer</code></pre>
   <li><strong>Allow</strong> Read what the pane says the chat will be able to do, then choose <strong>Allow</strong>. The pane shows "Connected." and the time access ends.</li>
   <li><strong>Go back to the chat</strong> Choose <strong>Back to chat</strong>. The chat shows a "Crew · #methods" chip and <strong>Revoke access</strong>.</li>
 </ol>
-<p>The chat can read its channels and their files, and post in its one channel. It cannot use other Biorouter tools, such as the shell or files on your computer, and these limits stay after its access ends. The first access fixes the chat's workspace, channel and model for good. To end access, choose <strong>Revoke access</strong>, then <strong>Revoke</strong>. Deleting a chat does not revoke its access.</p>
+<p>The chat can read its channels and their files, post in its one channel, and with a private model use the server as your connection allows. It cannot use other Biorouter tools, such as the shell or files on your computer, and these limits stay after its access ends. The first access fixes the chat's workspace, channel and model for good. To end access, choose <strong>Revoke access</strong>, then <strong>Revoke</strong>. Deleting a chat does not revoke its access.</p>
 
 <h3 id="crew-models">Which models may read</h3>
 <div class="doc-table-scroll"><table>
@@ -1695,12 +1728,24 @@ biorouter apps serve cohort-explorer</code></pre>
   <tbody>
     <tr><td>Local, such as Llama Server or Ollama, or approved for the workspace's institution</td><td>Allowed</td><td>Allowed</td></tr>
     <tr><td>Private, approved elsewhere or stating no institution</td><td>Refused</td><td>Allowed</td></tr>
-    <tr><td>Public</td><td>Refused</td><td>Allowed, except the remote work folder</td></tr>
+    <tr><td>Public</td><td>Refused</td><td>Allowed, except anything on the server</td></tr>
     <tr><td>Claude Code or Codex</td><td>Refused</td><td>Refused</td></tr>
   </tbody>
 </table></div>
 <p>Workspaces start Private, so you usually need a local model or one approved for your institution. A model is approved when its provider carries your institution, as the Versa providers on the Institutional tab carry UCSF. You cannot approve one yourself. Both panes say why a model will be refused before you start.</p>
-<p>Either kind of agent can also use your connection's <strong>Remote work folder</strong> on the server. What it reads there is protected, so only a local model or one approved for the workspace's institution may use the folder. More in <a href="https://github.com/BaranziniLab/biorouter/blob/main/docs/crew/agents-and-chat-access.md">Agents and chat access</a>.</p>
+
+<h3 id="crew-server-access">Agents on the server</h3>
+<p>Each connection says what your agents may do on the lab server. Choose it when you join or host, or later in <strong>Connection settings…</strong> in the workspace menu. It applies to every task and connected chat through that connection, and only with a local model or one approved for the workspace's institution.</p>
+<div class="doc-table-scroll"><table>
+  <thead><tr><th>Level</th><th>What your agent may do</th></tr></thead>
+  <tbody>
+    <tr><td><strong>Off</strong></td><td>Nothing on the server.</td></tr>
+    <tr><td><strong>In a folder</strong></td><td>Reads and writes one folder. With <strong>Let my agent run commands in this folder</strong>, it also runs commands there. They have no network, cannot start other programs, and need Linux 6.2 or newer on the server.</td></tr>
+    <tr><td><strong>As me on the server</strong></td><td>Runs commands as your own account, with your files, programs and network. Long work can run as a job that keeps running after the task ends, and the agent can copy files between the channel and the server.</td></tr>
+  </tbody>
+</table></div>
+<div class="note warn"><p><strong>A new connection starts at As me on the server.</strong> Your agent can then read and change anything your account can, and other people's messages and files can try to steer it, so use a private model you trust. If you host the workspace from that account, it can also read channels you are not in.</p></div>
+<p>Before it works on the server, every member's agent reads the workspace context: a short page about the server, such as where data lives, which software is there and how jobs run. Crew drafts it from the server when the workspace is created. In an open workspace every member edits it on the <strong>Context</strong> tab of "chen-lab settings", and in a managed one only the host does. More in <a href="https://github.com/BaranziniLab/biorouter/blob/main/docs/crew/agents-and-chat-access.md">Agents and chat access</a>.</p>
 
 <h2 id="crew-limits">Limits</h2>
 <p>A file can be up to 1 GiB, one computer runs at most four agent tasks at once, and a workspace keeps up to 16 MiB of state and 10 GiB of shared files. <a href="https://github.com/BaranziniLab/biorouter/blob/main/docs/crew/administration.md#workspace-limits">Workspace limits</a> lists the rest.</p>
@@ -1708,6 +1753,7 @@ biorouter apps serve cohort-explorer</code></pre>
 <h2 id="crew-command-line">Command line</h2>
 <p>The <code>biorouter crew</code> commands reach the same workspaces as the app, on macOS and Linux. Add <code class="code-token">--help</code> after any command for its options.</p>
 <ul>
+  <li><code>setup</code> installs Crew in your server account and connects. On a new connection it also gives agents <strong>As me on the server</strong>; add <code class="code-token">--agent-access folder</code> or <code>off</code> for less. <code>doctor --server LOGIN</code> checks a server without changing anything. <code>defaults set --provider PROVIDER --model MODEL</code> sets the model Crew tasks start on, and <code>connections set-access off</code>, <code>folder</code> or <code>full</code> sets what agents may do on the server.</li>
   <li>Workspace and credentials commands start the background service when needed and connect without a daemon approval secret. <code class="code-token">--no-start</code> connects only to an existing service. <code>daemon status</code> checks the status without starting it.</li>
   <li>Setting up or unlocking a Crew vault still asks for its passphrase. In a script, <code class="code-token">--passphrase-stdin</code> reads that passphrase from the first line of standard input.</li>
   <li><code class="code-token">--approval-key-stdin</code> remains accepted for older scripts: it reads and ignores the first line of standard input. It cannot be combined with <code class="code-token">--passphrase-stdin</code>.</li>
@@ -1717,20 +1763,19 @@ biorouter apps serve cohort-explorer</code></pre>
 <pre><code># Join a workspace
 biorouter crew connections \
   join-invitation ./lab.txt
-biorouter crew auth
+biorouter crew setup
 biorouter crew join
 
 # Post, then start an agent task
 biorouter crew send methods \
   --text 'Plate reader data is in.'
-biorouter crew tasks start methods \
-  --text "Summarize this week" \
-  --provider PROVIDER --model MODEL \
-  --allow-posting</code></pre>
+biorouter crew ask methods \
+  Summarize this week</code></pre>
 <p><code>privacy set-personal public</code> and <code>privacy set-workspace public</code> ask you to type the workspace name first, as the desktop app does. In a script, add <code>--confirm WORKSPACE</code>. More in <a href="https://github.com/BaranziniLab/biorouter/blob/main/docs/crew/command-line.md">Command line</a>.</p>
 
 <h2 id="crew-troubleshooting">When something goes wrong</h2>
 <p>If Crew says a feature needs a newer background service, quit and reopen Biorouter. On macOS and Linux it replaces the older service. For command-line use, run <code>biorouter crew daemon stop</code>, then your command again. An open app starts a new service and reconnects automatically.</p>
+<p>If Crew says "Crew isn’t set up for your account on lab.example.edu", choose <strong>Set up Crew for my account</strong>, and Biorouter installs it.</p>
 <p>The status row names your connection's state, such as Connected, Offline or Sign-in needed, and the main area or the connection bar says what to do next. After a network drop, Crew reconnects by itself for up to an hour, and it never sends a message twice. If the server's identity changed, do not connect. Copy the details for your IT team instead. <a href="https://github.com/BaranziniLab/biorouter/blob/main/docs/crew/connections-and-troubleshooting.md">Connections and troubleshooting</a> lists every status and message.</p>
 
 <h2 id="crew-administrators">Server setup for administrators</h2>
@@ -1739,8 +1784,9 @@ biorouter crew tasks start methods \
   <li>Linux on x86_64 with glibc 2.31 or newer, and a valid <code>/etc/machine-id</code> owned by root.</li>
   <li>A local disk for the workspace's state. NFS, CIFS and SMB are refused.</li>
   <li>An ordinary account for the host, and each member's own account on the same machine.</li>
+  <li>Linux 6.2 or newer (Landlock ABI 3) for agents that run commands <strong>In a folder</strong>. On an older kernel, such as Ubuntu 22.04's original 5.15 kernel, they run commands only with <strong>As me on the server</strong>.</li>
 </ul>
-<p>Take <code>biorouter-crew</code> from the <code>biorouter-cli</code> deb or rpm on the <a href="https://github.com/BaranziniLab/biorouter/releases">release page</a> and install it in <code>~/.local/bin</code> in each account. It needs no administrator rights. Nothing starts the workspace when the server boots, so after every restart the host runs <code>start</code> again. Crew has no backup tool. SSH encryption alone does not make a deployment HIPAA compliant: your institution decides approval, retention and backup. <a href="https://github.com/BaranziniLab/biorouter/blob/main/docs/crew/administration.md">Administration</a> has the install commands, the full requirements and the upgrade steps.</p>
+<p>Biorouter installs <code>biorouter-crew</code> in <code>~/.local/bin</code> of each account itself, over SSH, when that person joins or hosts. It sends its own copy, which ships with the desktop app and the <code>biorouter-cli</code> packages, and needs no administrator rights. <code>biorouter crew doctor --server LOGIN</code> checks a server first and changes nothing. Nothing starts the workspace when the server boots, so after every restart the host runs <code>start</code> again. Crew has no backup tool. SSH encryption alone does not make a deployment HIPAA compliant: your institution decides approval, retention and backup. <a href="https://github.com/BaranziniLab/biorouter/blob/main/docs/crew/administration.md">Administration</a> has the manual install, the full requirements and the upgrade steps.</p>
 
 </div>
 
