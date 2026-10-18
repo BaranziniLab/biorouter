@@ -257,11 +257,11 @@ pub fn served_operator_capability(
 }
 
 /// Whether `headers` carry the cookie of the document a serve daemon served.
+/// Any value of it counts: a browser also sends a stale one a previous launch
+/// set at a longer path, and sends it first (`routes::web_ui::session_cookies`).
 fn from_served_document(headers: &axum::http::HeaderMap, operator: &ServedOperator) -> bool {
-    served_document_matches(
-        crate::routes::web_ui::session_cookie(headers),
-        &operator.browser_token,
-    )
+    crate::routes::web_ui::session_cookies(headers)
+        .any(|presented| served_document_matches(Some(presented), &operator.browser_token))
 }
 
 /// Does the presented cookie carry the served document's token?
@@ -497,7 +497,9 @@ pub fn mint_app_launch(app_id: &str) -> String {
 /// never sent back, so every app refused its own page. `HttpOnly` keeps the
 /// page's own script from reading it,
 /// and `SameSite=Strict` keeps it off every request another site starts: the
-/// two flags `routes::web_ui` sets on the served document's cookie.
+/// two flags `routes::web_ui` sets on the served document's cookie. The page
+/// route appends the third, `Secure`, when the browser is at an `https` address
+/// ([`browser_used_https`]), which this function cannot see.
 ///
 /// ⚠ `Path` decides which requests the browser attaches the cookie to, and is
 /// NOT a boundary between pages: every app is served from the daemon's one
@@ -534,8 +536,11 @@ pub fn forget_app_access(app_id: &str) {
     app_access().forget(app_id);
 }
 
-/// The access cookie a request carries, if any.
-fn app_access_cookie(headers: &axum::http::HeaderMap) -> Option<&str> {
+/// Every value of the access cookie a request carries. A browser keeps one per
+/// `Path` and sends them all, the longest path first, so a caller asks whether
+/// any of them grants access rather than reading the first, as
+/// `routes::web_ui::session_cookies` does for the same reason.
+fn app_access_cookies(headers: &axum::http::HeaderMap) -> impl Iterator<Item = &str> {
     let name = app_access_cookie_name();
     headers
         .get_all(axum::http::header::COOKIE)
@@ -543,7 +548,7 @@ fn app_access_cookie(headers: &axum::http::HeaderMap) -> Option<&str> {
         .filter_map(|value| value.to_str().ok())
         .flat_map(|value| value.split(';'))
         .filter_map(|pair| pair.split_once('='))
-        .find(|(key, _)| key.trim() == name)
+        .filter(move |(key, _)| key.trim() == name)
         .map(|(_, value)| value.trim())
 }
 
@@ -621,7 +626,7 @@ fn app_access_granted_by(
         return true;
     }
     let access = app_access();
-    if app_access_cookie(headers).is_some_and(|value| access.cookie_matches(app.id, value)) {
+    if app_access_cookies(headers).any(|value| access.cookie_matches(app.id, value)) {
         return true;
     }
     app.page
@@ -683,6 +688,69 @@ pub fn reached_over_a_secure_context(
     host_is_loopback(host)
         || carries_fetch_metadata(headers)
         || is_a_websocket_upgrade_from_an_https_page(headers)
+}
+
+/// Whether the browser sent this request to an `https` address, as far as the
+/// daemon can tell. It decides whether a cookie set in answer carries `Secure`
+/// (`routes::web_ui::secure_attribute`): the session cookie the token exchange
+/// sets and an app's access cookie. `declared` is the origin `biorouter serve
+/// --public-url` declared (`routes::PublicUrl`), if any.
+///
+/// - A `Host` that names the declared `https` origin: the browser addressed it.
+/// - Any other address that is not loopback: a browser sends Fetch Metadata only
+///   to an https or loopback URL, and only such a request (or a WebSocket
+///   handshake from an `https` page) reaches a cookie at all
+///   ([`reached_over_a_secure_context`]). A declared `https` address says the
+///   same of a client that sends no metadata, which is not a browser and keeps
+///   whatever it is given.
+/// - A loopback `Host`: plain `http` to this machine, the one case where
+///   `Secure` would break the cookie, since the browser would never send it back
+///   over `http`. Unless an `https` address was declared AND a proxy forwarded
+///   the request (it carries `X-Forwarded-For`, `X-Forwarded-Host`,
+///   `X-Forwarded-Proto` or `Forwarded`): a proxy that rewrites `Host` to the
+///   daemon's own reaches here so. A browser on this machine sends none of those
+///   headers, so a client that writes one marks only its own cookie `Secure`.
+///
+/// ⚠ A hardening flag, never a gate: a wrong `false` leaves a cookie that works
+/// without the flag, as every cookie did before it, and nothing here admits or
+/// refuses a request.
+pub fn browser_used_https(
+    headers: &axum::http::HeaderMap,
+    uri: &axum::http::Uri,
+    declared: Option<&str>,
+) -> bool {
+    let host = match headers.get(axum::http::header::HOST) {
+        Some(value) => match value.to_str() {
+            Ok(host) => host,
+            Err(_) => return false,
+        },
+        None => match uri.authority() {
+            Some(authority) => authority.as_str(),
+            None => return false,
+        },
+    };
+    let declared_https = declared.and_then(|origin| origin.strip_prefix("https://"));
+    if declared_https.is_some_and(|authority| host.trim().eq_ignore_ascii_case(authority)) {
+        return true;
+    }
+    if host_is_loopback(host) {
+        return declared_https.is_some() && was_forwarded_by_a_proxy(headers);
+    }
+    declared_https.is_some()
+        || carries_fetch_metadata(headers)
+        || is_a_websocket_upgrade_from_an_https_page(headers)
+}
+
+/// Whether a request carries a header only a forwarding proxy writes.
+fn was_forwarded_by_a_proxy(headers: &axum::http::HeaderMap) -> bool {
+    [
+        "x-forwarded-for",
+        "x-forwarded-host",
+        "x-forwarded-proto",
+        "forwarded",
+    ]
+    .iter()
+    .any(|name| headers.contains_key(*name))
 }
 
 /// Whether a request is a WebSocket handshake opened by a page served over
@@ -2232,6 +2300,109 @@ mod tests {
             &headers,
             Some(&operator)
         ));
+    }
+
+    /// A browser keeps one cookie per `Path` under a name and sends every one
+    /// that covers the request, the longest path first. A stale value in front
+    /// (a launch that declared a longer `--public-url` path, an app redeemed
+    /// under a proxy prefix as well as at the root) must not hide the one that
+    /// grants access: any value that matches counts, and only one that matches.
+    #[test]
+    fn a_stale_cookie_in_front_does_not_hide_the_one_that_grants_access() {
+        let page = is_app_browser_get(&Method::GET, "/apps/stale-cookie-app/").unwrap();
+        let granted = |cookie: &str, operator: Option<&ServedOperator>| {
+            let mut headers = axum::http::HeaderMap::new();
+            headers.insert(axum::http::header::COOKIE, cookie.parse().unwrap());
+            app_access_granted_by(&page, None, &headers, operator)
+        };
+
+        let fresh = cookie_for("stale-cookie-app");
+        let (name, _) = fresh.split_once('=').unwrap();
+        let stale = format!("{name}={}", "0".repeat(64));
+        assert!(granted(&format!("{stale}; {fresh}"), None));
+        assert!(!granted(&stale, None));
+        assert!(!granted(&format!("{stale}; {stale}"), None));
+
+        let operator = ServedOperator {
+            browser_token: "served-document-token".into(),
+            capability: biorouter::privacy::ProviderTier::Public,
+        };
+        let served = "biorouter_session=served-document-token";
+        assert!(granted(
+            &format!("biorouter_session=stale; {served}"),
+            Some(&operator)
+        ));
+        assert!(!granted(
+            "biorouter_session=stale; biorouter_session=older",
+            Some(&operator)
+        ));
+    }
+
+    /// `Secure` on a cookie the daemon sets, decided from the request and the
+    /// declared address. Never on plain `http` to loopback, where it would keep
+    /// the cookie off every later request and `serve` would refuse its own link.
+    #[test]
+    fn a_cookie_is_marked_secure_only_where_the_browser_used_https() {
+        use super::browser_used_https;
+        let request = |host: Option<&str>, extra: &[(&str, &str)]| {
+            let mut headers = axum::http::HeaderMap::new();
+            if let Some(host) = host {
+                headers.insert(axum::http::header::HOST, host.parse().unwrap());
+            }
+            for (name, value) in extra {
+                headers.insert(
+                    axum::http::HeaderName::from_bytes(name.as_bytes()).unwrap(),
+                    value.parse().unwrap(),
+                );
+            }
+            headers
+        };
+        let metadata = [
+            ("sec-fetch-mode", "navigate"),
+            ("sec-fetch-dest", "document"),
+        ];
+        let none = axum::http::Uri::default();
+        let declared = Some("https://hub.test:18443");
+
+        // Plain loopback http, with or without a declared https address.
+        for declared in [None, declared] {
+            for host in ["127.0.0.1:8765", "localhost:8765", "[::1]:8765"] {
+                assert!(
+                    !browser_used_https(&request(Some(host), &metadata), &none, declared),
+                    "{host} {declared:?}"
+                );
+            }
+        }
+        // A proxy that keeps Host: the browser's metadata says https.
+        assert!(browser_used_https(
+            &request(Some("biorouter.example.org"), &metadata),
+            &none,
+            None
+        ));
+        // The declared https address itself, including on a loopback name.
+        assert!(browser_used_https(
+            &request(Some("hub.test:18443"), &[]),
+            &none,
+            declared
+        ));
+        assert!(browser_used_https(
+            &request(Some("localhost:18443"), &[]),
+            &none,
+            Some("https://localhost:18443")
+        ));
+        // A proxy that rewrote Host to the daemon's: only with https declared,
+        // and only when the request says a proxy forwarded it.
+        for forwarded in ["x-forwarded-for", "x-forwarded-proto", "forwarded"] {
+            let headers = request(Some("127.0.0.1:8765"), &[(forwarded, "x")]);
+            assert!(browser_used_https(&headers, &none, declared), "{forwarded}");
+            assert!(!browser_used_https(&headers, &none, None), "{forwarded}");
+            assert!(
+                !browser_used_https(&headers, &none, Some("http://localhost:8765")),
+                "{forwarded}"
+            );
+        }
+        // No Host and no authority: not a browser.
+        assert!(!browser_used_https(&request(None, &metadata), &none, None));
     }
 
     // --- The failed-attempt throttle (QA-D F3) ------------------------------

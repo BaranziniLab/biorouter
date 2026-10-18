@@ -81,6 +81,9 @@ use std::borrow::Cow;
 pub const RECOVERED_FROM_TEXT_KEY: &str = "recovered_from_text";
 /// Metadata key naming which leak shape (L1-L5) a recovered call came from.
 pub const RECOVERED_FORMAT_KEY: &str = "recovered_format";
+/// `_meta` key on the text [`recover_leaked_tool_calls`] releases only because
+/// the stream failed while it was held back; see [`is_released_at_error`].
+pub const RELEASED_AT_ERROR_KEY: &str = "released_at_error";
 
 /// TIER2's prose limit: the observed L3/L4 preambles were 50-70 characters.
 const TIER2_MAX_PROSE_CHARS: usize = 400;
@@ -1079,7 +1082,10 @@ enum Mode {
 /// - At the turn's usage item — the complete-turn signal, carrying the finish
 ///   reason — held text is recovered if the finish reason is not `length`
 ///   (G3); otherwise, or if recovery fails, it is released as one text item.
-/// - An error releases held text first, so a partial reply is not lost.
+/// - An error releases held text first, so a partial reply is not lost, but
+///   marked ([`is_released_at_error`]): nobody has seen it, and whether it
+///   should be seen depends on whether the error is retried, which only the
+///   agent knows. Whitespace alone is dropped (R14).
 // One `try_stream!` state machine, like the stream decoders beside it: the
 // hold-back state (mode, held text, whether a structured call was seen, the
 // reply id) is the generator's locals, read on every arm.
@@ -1097,8 +1103,9 @@ pub fn recover_leaked_tool_calls(
             let item = match stream.next().await {
                 None => break,
                 Some(Err(error)) => {
-                    if !held.is_empty() {
-                        yield text_item(std::mem::take(&mut held), message_id.as_deref());
+                    if !held.trim().is_empty() {
+                        let text = held.trim_start().to_string();
+                        yield (Some(released_at_error(text_message(text, message_id.as_deref()))), None, None);
                     }
                     Err(error)?;
                     break;
@@ -1311,6 +1318,54 @@ fn text_message(text: String, id: Option<&str>) -> Message {
 
 fn text_item(text: String, id: Option<&str>) -> ProviderStreamItem {
     (Some(text_message(text, id)), None, None)
+}
+
+/// `message` with every text item marked [`RELEASED_AT_ERROR_KEY`].
+fn released_at_error(mut message: Message) -> Message {
+    for content in &mut message.content {
+        if let MessageContent::Text(text) = content {
+            text.meta
+                .get_or_insert_with(rmcp::model::Meta::new)
+                .insert(RELEASED_AT_ERROR_KEY.to_string(), Value::Bool(true));
+        }
+    }
+    message
+}
+
+/// Whether `message` is text [`recover_leaked_tool_calls`] held back as a
+/// possible tool call and released only because an error followed it, which
+/// is always the stream's next item. Nobody has seen it.
+///
+/// The agent decides what becomes of it once it reads that error. Retried, the
+/// text is dropped: shown and kept, it was a visible, saved fragment of a call
+/// (`{"name": "developer__shell", "arguments": {"comm`), and the retry was told
+/// to continue it, so the model wrote the rest of the JSON as text. When the
+/// error ends the turn, the text is shown and kept like any partial reply,
+/// after [`without_released_at_error_mark`].
+pub fn is_released_at_error(message: &Message) -> bool {
+    !message.content.is_empty() && message.content.iter().all(|content| {
+        matches!(
+            content,
+            MessageContent::Text(text)
+                if text.meta.as_ref().is_some_and(|meta| meta.contains_key(RELEASED_AT_ERROR_KEY))
+        )
+    })
+}
+
+/// `message` without the mark [`is_released_at_error`] reads, so it is stored
+/// and shown as the plain text it is.
+pub fn without_released_at_error_mark(mut message: Message) -> Message {
+    for content in &mut message.content {
+        if let MessageContent::Text(text) = content {
+            if let Some(meta) = text.meta.as_mut() {
+                meta.remove(RELEASED_AT_ERROR_KEY);
+                if meta.is_empty() {
+                    text.meta = None;
+                }
+            }
+        }
+    }
+    message
 }
 
 #[cfg(test)]
@@ -1786,6 +1841,69 @@ mod tests {
             5,
             "R16 applies to structured calls too"
         );
+    }
+
+    /// `items`, then the in-stream llama-server shared-cache frame, through
+    /// recovery: what came out ahead of the error, and the error.
+    async fn run_into_error(
+        items: Vec<ProviderStreamItem>,
+    ) -> (Vec<ProviderStreamItem>, ProviderError) {
+        let mut items: Vec<Result<ProviderStreamItem, ProviderError>> =
+            items.into_iter().map(Ok).collect();
+        items.push(Err(ProviderError::ServerError(
+            "Context size has been exceeded.".to_string(),
+        )));
+        let mut stream = recover_leaked_tool_calls(
+            Box::pin(futures::stream::iter(items)),
+            RecoveryContext {
+                tools: tools(),
+                provider: "test",
+                model: "m".to_string(),
+            },
+        );
+        let mut out = Vec::new();
+        loop {
+            match stream.next().await {
+                Some(Ok(item)) => out.push(item),
+                Some(Err(error)) => return (out, error),
+                None => panic!("the error must come through"),
+            }
+        }
+    }
+
+    /// Text held back as a possible call goes out ahead of the error that cut
+    /// it, marked, because nobody has seen it and only the agent knows whether
+    /// the error will be retried. Live against a scripted llama-server, the
+    /// unmarked fragment was shown, saved, and continued by the retry.
+    #[tokio::test]
+    async fn an_error_releases_held_text_marked_and_whitespace_not_at_all() {
+        let fragment = r#"{"name": "developer__shell", "arguments": {"comm"#;
+        let (out, error) = run_into_error(chunks(fragment)).await;
+        assert!(matches!(error, ProviderError::ServerError(_)), "{error}");
+        assert_eq!(out.len(), 1, "the held text, once, ahead of the error");
+        let message = out[0].0.clone().expect("the held text");
+        assert!(is_released_at_error(&message));
+        assert_eq!(message.id.as_deref(), Some("m1"));
+        let plain = without_released_at_error_mark(message);
+        assert!(!is_released_at_error(&plain));
+        assert_eq!(plain.as_concat_text(), fragment);
+        assert!(
+            plain.content.iter().all(
+                |content| matches!(content, MessageContent::Text(text) if text.meta.is_none())
+            ),
+            "nothing of the mark is stored"
+        );
+
+        // R14: whitespace alone is not a reply, so nothing goes out.
+        let (out, _) = run_into_error(chunks("\n\n")).await;
+        assert_eq!(out.len(), 0, "whitespace is not released");
+
+        // Text already shown was never held, so nothing is marked.
+        let (out, _) = run_into_error(chunks("Hello there, friend.")).await;
+        assert!(!out.is_empty());
+        assert!(out
+            .iter()
+            .all(|(message, _, _)| !message.as_ref().is_some_and(is_released_at_error)));
     }
 
     /// L8: a whole-message payload in the template's CALL tag is recovered,

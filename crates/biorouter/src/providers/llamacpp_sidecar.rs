@@ -1327,9 +1327,12 @@ fn backend_failure_message(model: &str, ctx_size: Option<usize>, tail: &str) -> 
              {advice}"
         )
     } else {
+        // No "try again": the chat shows this right before "Trying again
+        // (1/1)…", while Biorouter is already retrying, and the notice that
+        // ends a turn adds its own advice.
         format!(
-            "Llama Server's GPU backend failed while running {model} and has been restarted; \
-             try again.\n\nllama-server output:\n{tail}"
+            "Llama Server's GPU backend failed while running {model}. Biorouter stopped that \
+             server, and the next request starts a fresh one.\n\nllama-server output:\n{tail}"
         )
     }
 }
@@ -3665,6 +3668,26 @@ mod tests {
         assert!(!is_compute_error(
             "Server error (500 Internal Server Error): Context size has been exceeded."
         ));
+    }
+
+    /// The chat shows a compute failure right before "Trying again (1/1)…", so
+    /// it must not also tell the person to try again (live, against a scripted
+    /// llama-server: "…has been restarted; try again. … Trying again (1/1)…").
+    #[test]
+    fn a_compute_failure_does_not_ask_the_person_to_try_again() {
+        let message = backend_failure_message("qwen3.8-27b", Some(131_072), "E decode: failed");
+        assert!(
+            message.starts_with(
+                "Llama Server's GPU backend failed while running qwen3.8-27b. Biorouter stopped \
+                 that server, and the next request starts a fresh one."
+            ),
+            "{message}"
+        );
+        assert!(!message.to_lowercase().contains("try again"), "{message}");
+        assert!(
+            message.ends_with("llama-server output:\nE decode: failed"),
+            "{message}"
+        );
     }
 
     /// A GPU out-of-memory mid-request offers a smaller window only while there
