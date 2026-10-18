@@ -39,7 +39,7 @@ flags after the builder has run; see below.
 | `-p` | Headless (non-interactive) mode. | — |
 | `--setting-sources ""` | Load **no** settings sources. | **Yes** — see below |
 | `--strict-mcp-config` | Use only the MCP servers BioRouter passes. | **Yes** — see below |
-| `--tools ""` | Disable the child's own built-in tools. | **Yes** — see below |
+| `--tools ""` (`--tools ToolSearch` with a bridge) | Disable the child's own built-in tools, keeping only the schema loader when there are bridged tools to defer. | **Yes** — see below |
 | `--mcp-config <file>` | BioRouter's tools, when the turn has a bridge. | — |
 | `--permission-mode bypassPermissions` | Only alongside `--mcp-config`; see [the tool bridge](tool-bridge.md#transport-loopback-http-and-the-url-is-the-credential). | — |
 | `--system-prompt <prompt>` | Replace Claude Code's default prompt with BioRouter's. | — |
@@ -84,6 +84,24 @@ This is the flag that makes every other BioRouter control meaningful. A file rea
 itself does not pass `.biorouterignore`; a shell command it runs itself does not pass the command
 policy or the sensitive-operations inspector. Switching the built-ins off and routing tools back
 through BioRouter is what keeps one enforcement path rather than two.
+
+⚠ **One built-in is kept when the turn has a bridge: `ToolSearch`.** It is how Claude Code defers
+MCP tool schemas, listing the bridged tools by name and loading a schema only when the model reaches
+for that tool. `--tools ""` removes it, and the CLI then puts every bridged schema into every
+request. Measured on 2026-10-18 with claude 2.1.296 and the default BioRouter roster (77 tools, 123
+KB of schema JSON), the first request of a fresh chat on Opus 5.5 was **76,560 tokens** with
+`--tools ""` and **31,001** with `--tools ToolSearch`, which is what Versa's API path sends for the
+same chat. `ToolSearch` reads only the schemas of tools the child already holds and runs nothing,
+so the child's capabilities are unchanged. Three things ride with it:
+
+- `ENABLE_TOOL_SEARCH=true` is set on the child, because a user's own `ENABLE_TOOL_SEARCH=false`
+  drops `ToolSearch` again (measured: back to 57,523 tokens on Haiku 4.5).
+- Its calls are swallowed before the mirror (`claude_stream.rs`, rule 7): mirrored, they would be
+  cards for a tool BioRouter never offered, and the next turn's flattened history would carry them.
+- Without a bridge there is nothing to defer, so the flag stays `--tools ""`.
+
+`a_bridged_child_keeps_only_the_schema_loader` and `the_isolation_flags_are_always_present` pin
+both shapes.
 
 ### `--bare` must never be passed
 
@@ -137,7 +155,7 @@ additions, appended in `ClaudeCodeProvider::stream`
 
 Neither is security-relevant on its own, and that is the point worth stating: **every isolation flag
 above is present unchanged on the streaming path**. `--setting-sources ""`, `--strict-mcp-config`,
-`--tools ""` and the absence of `--bare` are properties of the shared builder that both paths call,
+`--tools` and the absence of `--bare` are properties of the shared builder that both paths call,
 so a streamed turn is isolated exactly as a blocking one is.
 
 ## Codex: the thread parameters

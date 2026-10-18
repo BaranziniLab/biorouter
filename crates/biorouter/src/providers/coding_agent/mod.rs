@@ -45,7 +45,8 @@
 //! # What the child agent may and may not do
 //!
 //! Both CLIs are full agents with their own file and shell tools. Those are
-//! switched **off** (`--tools ""`, `sandbox: read-only`), because a tool the child
+//! switched **off** (`--tools ""`, or only the `ToolSearch` schema loader when
+//! there are bridged tools to defer; `sandbox: read-only`), because a tool the child
 //! runs itself is invisible to BioRouter's inspectors, permission modes,
 //! `.biorouterignore` and vault. What the child gets instead is BioRouter's own
 //! tools, over MCP, executed by BioRouter's dispatcher — so every existing gate

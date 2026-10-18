@@ -55,16 +55,50 @@ than `--append-system-prompt` adding to the default, and why Codex's `baseInstru
 `thread/start` — see
 [the flags that are not optional](child-agent-isolation.md#the-system-prompt-is-replaced-not-appended).
 
-## Tool-schema cost, and why it is cheaper than it looks
+## Context occupancy: what a chat costs the window, against an API model
 
-A 60-tool surface measured about **5.2k prompt tokens on Claude — and they were cache reads**, not
-fresh input. The tool list is a stable prefix, so both vendors' prompt caching absorbs most of its
-cost after the first turn.
+The question this section answers is not what a turn bills but how fast a chat fills the model's
+context window, which is what the composer's ring shows and what auto-compaction acts on. The
+target is parity with an API provider running the same chat: a coding-agent chat should not drain
+its window faster than Versa does.
 
-That is the same reason re-sending the conversation each turn is affordable; see below. It is also
-why the usage figures are reported with the cache buckets kept separate: the live context gauge counts
-the cached prefix as occupancy, while the billed total does not double-count it. The bucket
-arithmetic differs per vendor and is described in
+Measured on 2026-10-18 through a sandboxed `biorouterd` with the default extension set (77 bridged
+tools), the same four turns on each provider: three multi-tool tasks and a one-line reply.
+
+| Provider | First request of a fresh chat | Context after 4 turns | What the gauge showed |
+| --- | --- | --- | --- |
+| Versa, `gpt-5.6-sol` (API) | ~31.8k | 33.2k | the same |
+| Codex, `gpt-6-astra` | 26.6k | 29.2k | the same |
+| Claude Code, Haiku 4.5, before | 58.0k | 59.4k | **175k, then 295k** of 200k |
+| Claude Code, Opus 5.5, before | 76.6k | — | — |
+| Claude Code, Opus 5.5, after | 31.0k | — | the same |
+| Claude Code, Haiku 4.5, after | 23.1k | — | the same |
+
+Two defects made Claude Code the outlier, and both are fixed:
+
+- **The gauge summed every request in the turn.** `result.usage` adds up the child's requests, one
+  per tool round trip, so each tool call put roughly one more whole context on the gauge. See
+  [usage accounting](how-it-works.md#usage-accounting-for-a-turn-that-billed-no-tokens).
+- **Every bridged tool schema rode in every request.** `--tools ""` also removed `ToolSearch`, the
+  built-in Claude Code uses to defer MCP schemas, so the child carried all 77 schemas (123 KB of
+  JSON, about 45k tokens on Opus 5.5) where Codex defers them natively and Versa's API path gets the
+  compact Code Execution surface. A bridged child now keeps `ToolSearch` and nothing else; see
+  [what the child may not do](child-agent-isolation.md#--tools---the-childs-own-read-edit-and-bash-stay-off).
+
+The conversation itself is not where the window goes. The flattened history is leaner than an API
+provider's: thinking is dropped, user-only blocks are filtered, and a tool result is capped at 4,000
+characters. In the four-turn run above it added about 1.4k tokens on Claude Code and 4.4k on Versa.
+What remains is the fixed prefix, BioRouter's system prompt (about 78 KB with the default
+extensions, much of it per-extension instructions) and the tool surface, which every provider pays.
+
+⚠ The 1,527-token system prompt in the table above was measured with a near-empty extension set; with
+the defaults it is about 78 KB. And Claude's newer tokenizers count the same JSON-heavy prefix as
+more tokens than Haiku's (76.6k against 58.0k before the fix), so compare providers on the same
+chat rather than across releases.
+
+The usage figures keep the cache buckets separate for the same reason: the gauge counts the cached
+prefix as occupancy, while the billed total does not double-count it. The bucket arithmetic differs
+per vendor and is described in
 [usage accounting](how-it-works.md#usage-accounting-for-a-turn-that-billed-no-tokens).
 
 ## Why history is flattened rather than replayed

@@ -214,12 +214,22 @@ impl BudgetTracker {
     pub fn record_usage(&mut self, provider: &str, usage: &ProviderUsage) {
         let input = usage.usage.input_tokens.unwrap_or(0).max(0) as u64;
         let output = usage.usage.output_tokens.unwrap_or(0).max(0) as u64;
-        let total = usage
+        // The larger of what the call billed and what it occupied. For an API
+        // provider one call is one request and the two agree. A coding-agent
+        // provider runs a whole child loop in one call: its billed buckets sum
+        // every request, while `total_tokens` is the context gauge, the LAST
+        // request alone (`claude_stream`, rule 6; Codex's `tokenUsage.last`).
+        // Counting the gauge would let a reply's spend past the cap.
+        let occupied = usage
             .usage
             .total_tokens
             .filter(|t| *t > 0)
             .map_or(input + output, |t| t as u64);
-        self.tokens = self.tokens.saturating_add(total);
+        let billed = usage
+            .usage
+            .billed_total()
+            .map_or(0, |t| u64::try_from(t).unwrap_or(0));
+        self.tokens = self.tokens.saturating_add(occupied.max(billed));
 
         // Only the dollar axis needs pricing, and only when it is bounded.
         if self.limits.max_usd.is_none() {
@@ -478,6 +488,24 @@ mod tests {
             BudgetAction::Proceed,
             "we must not stop a reply on a cost we cannot compute"
         );
+    }
+
+    /// A coding-agent call reports the context gauge (its last request) in
+    /// `total_tokens` and the whole child loop's spend in the billed buckets.
+    /// The token cap counts the spend.
+    #[test]
+    fn a_coding_agent_call_counts_what_it_billed_not_its_last_request() {
+        let mut tracker = BudgetTracker::new(ReplyBudget {
+            max_tokens: Some(100_000),
+            ..Default::default()
+        });
+        // The recorded three-request Claude Code turn: 89,409 billed, 30,362 held.
+        let usage = ProviderUsage::new(
+            "claude-opus-5-5".to_string(),
+            Usage::new(Some(6), Some(258), Some(30_362)).with_cache(Some(87_563), Some(1_582)),
+        );
+        tracker.record_usage("claude_code", &usage);
+        assert_eq!(tracker.snapshot_at(Duration::ZERO).tokens, 89_409);
     }
 
     #[test]

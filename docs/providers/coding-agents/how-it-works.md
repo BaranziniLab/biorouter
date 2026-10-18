@@ -420,6 +420,19 @@ must not overlap:
 In both cases the `total_tokens` reported for the live context gauge deliberately *includes* the
 cached prefix, because that is context occupancy rather than a bill.
 
+⚠ **And in both cases it is the LAST request's context, never the turn's sum.** One provider call
+is a whole child loop, one API request per tool round trip, and both vendors' turn-level figures
+add those requests up. The billed buckets above are rightly sums; the gauge is not, because context
+does not accumulate across requests. Codex takes it from `tokenUsage.last`
+(`coding_agent/codex_stream.rs`). Claude Code read the `result` sum until 2026-10-18, so a Haiku 4.5
+turn with four tool calls showed **175,391 of a 200,000 window** against a real 59,374 and the
+next showed 294,875, while auto-compaction concluded that "the system prompt and tools alone are over
+the compaction threshold" and gave up. It now takes each main-session request's own usage from the
+stream (`message_start`, overlaid by `message_delta`), falling back to `result.usage.iterations`
+(which names only the final request) and then to the sum only when `num_turns` is 1; see
+`claude_stream::terminal_usage`. The per-reply token budget counts what a call billed, so it still
+sees the whole loop (`agents/budget.rs`).
+
 ## Errors are typed, not collapsed
 
 Setup failures and turn failures are mapped onto typed provider errors so the retry layer can
