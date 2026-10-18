@@ -1311,11 +1311,10 @@ fn backend_failure_message(model: &str, ctx_size: Option<usize>, tail: &str) -> 
             Some(window) if window > LLAMACPP_AGENT_CONTEXT_SIZE => format!(
                 "Quit other apps or local models that hold GPU memory, or set \
                  LLAMACPP_CONTEXT_SIZE to {LLAMACPP_AGENT_CONTEXT_SIZE} (not lower: Biorouter's \
-                 instructions and tool definitions alone take about 31,000-40,000 tokens), and \
-                 try again."
+                 instructions and tool definitions alone take about 31,000-40,000 tokens)."
             ),
             _ => format!(
-                "Quit other apps or local models that hold GPU memory and try again. A smaller \
+                "Quit other apps or local models that hold GPU memory. A smaller \
                  context window will not help: {LLAMACPP_AGENT_CONTEXT_SIZE} tokens is the \
                  smallest Biorouter runs a local model with, because its instructions and tool \
                  definitions alone take about 31,000-40,000 tokens. If this keeps happening, use \
@@ -1323,8 +1322,8 @@ fn backend_failure_message(model: &str, ctx_size: Option<usize>, tail: &str) -> 
             ),
         };
         format!(
-            "Llama Server ran out of GPU memory while running {model} and has been restarted. \
-             {advice}"
+            "Llama Server ran out of GPU memory while running {model}. Biorouter stopped that \
+             server, and the next request starts a fresh one. {advice}"
         )
     } else {
         // No "try again": the chat shows this right before "Trying again
@@ -3658,7 +3657,10 @@ mod tests {
         assert!(looks_like_memory_failure(tail));
         let message = backend_failure_message("gemma4-31b", Some(131_072), tail);
         assert!(message.contains("ran out of GPU memory"), "{message}");
-        assert!(message.contains("restarted"), "{message}");
+        assert!(
+            message.contains("Biorouter stopped that server"),
+            "{message}"
+        );
         let other = backend_failure_message("gemma4-31b", Some(131_072), "E decode: failed");
         assert!(other.contains("E decode: failed"), "{other}");
 
@@ -3688,6 +3690,31 @@ mod tests {
             message.ends_with("llama-server output:\nE decode: failed"),
             "{message}"
         );
+    }
+
+    /// The out-of-memory notice is a compute-failure notice too, shown right
+    /// before "Trying again (1/1)…": it keeps its advice but must not ask the
+    /// person to try again, nor say a server was restarted that was stopped.
+    #[test]
+    fn an_out_of_memory_failure_does_not_ask_the_person_to_try_again() {
+        let tail =
+            "E error: Insufficient Memory (00000008:kIOGPUCommandBufferCallbackErrorOutOfMemory)";
+        for window in [Some(131_072), Some(65_536), None] {
+            let message = backend_failure_message("qwen3.8-27b", window, tail);
+            assert!(
+                message.starts_with(
+                    "Llama Server ran out of GPU memory while running qwen3.8-27b. Biorouter \
+                     stopped that server, and the next request starts a fresh one. Quit other \
+                     apps or local models that hold GPU memory"
+                ),
+                "{window:?}: {message}"
+            );
+            assert!(
+                !message.to_lowercase().contains("try again"),
+                "{window:?}: {message}"
+            );
+            assert!(!message.contains("restarted"), "{window:?}: {message}");
+        }
     }
 
     /// A GPU out-of-memory mid-request offers a smaller window only while there

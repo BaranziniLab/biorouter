@@ -44,7 +44,7 @@ use super::formats::ollama::{
     OLLAMA_CHAT_PATH,
 };
 use super::formats::text_tool_calls::{
-    recover_in_message, recover_leaked_tool_calls, RecoveryContext,
+    continues_a_reply, recover_in_message, recover_leaked_tool_calls, RecoveryContext,
 };
 use super::retry::{ProviderRetry, TimeoutRetry};
 use super::utils::{
@@ -1595,6 +1595,9 @@ struct NativeTurn {
     /// Whether the turn's one corrective retry is already spent.
     retried: bool,
     memory: Option<LoadedModelObserver>,
+    /// Read when the turn opened, inside the agent's provider call: the
+    /// stream is read later, outside it.
+    continues_reply: bool,
 }
 
 /// A native turn: decode, recover leaked calls (TIER1), guard, and — at most
@@ -1627,6 +1630,7 @@ fn native_turn(turn: NativeTurn, first: Response, first_log: RequestLog) -> Mess
             tools,
             mut retried,
             memory,
+            continues_reply,
         } = turn;
         let model = model_config.model_name.clone();
         let mut next_response = Some((first, first_log));
@@ -1669,6 +1673,7 @@ fn native_turn(turn: NativeTurn, first: Response, first_log: RequestLog) -> Mess
                     tools: tools.clone(),
                     provider: "ollama",
                     model: model.clone(),
+                    continues_reply,
                 },
             );
             let mut guard = TurnGuard::new(check.clone());
@@ -2477,6 +2482,7 @@ impl OllamaProvider {
             tools: tools.to_vec(),
             retried: false,
             memory: self.memory_observer(model_config),
+            continues_reply: continues_a_reply(),
         };
         match outcome {
             NativeOutcome::Ok(response) => Ok(Some(native_turn(turn, response, log))),
@@ -2659,6 +2665,7 @@ impl OllamaProvider {
                 tools: tools.to_vec(),
                 provider: "ollama",
                 model: self.model.model_name.clone(),
+                continues_reply: continues_a_reply(),
             },
         );
         Ok(guard_turn(

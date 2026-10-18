@@ -1060,6 +1060,37 @@ pub struct RecoveryContext {
     /// For the log line.
     pub provider: &'static str,
     pub model: String,
+    /// This completion continues a reply already shown: a cut-off reply being
+    /// retried, or continued past its output limit. Its first text joins that
+    /// reply, so its leading whitespace is the separator between the two and
+    /// is kept; a reply that is whitespace alone is still dropped (R14).
+    pub continues_reply: bool,
+}
+
+tokio::task_local! {
+    /// Set by the agent around a provider call that continues a reply
+    /// ([`RecoveryContext::continues_reply`]); a local provider reads it where
+    /// it opens its stream, inside that call.
+    pub static CONTINUES_A_REPLY: bool;
+}
+
+/// Whether the provider call in progress continues a reply already shown
+/// ([`CONTINUES_A_REPLY`]); false outside the agent's scope.
+pub fn continues_a_reply() -> bool {
+    CONTINUES_A_REPLY
+        .try_with(|continues| *continues)
+        .unwrap_or(false)
+}
+
+/// Held text as its release shows it: without its leading whitespace (R14),
+/// unless the completion continues a reply, where that whitespace separates
+/// the continuation from the text it joins.
+fn released(held: &str, continues_reply: bool) -> &str {
+    if continues_reply {
+        held
+    } else {
+        held.trim_start()
+    }
 }
 
 #[derive(PartialEq)]
@@ -1104,7 +1135,7 @@ pub fn recover_leaked_tool_calls(
                 None => break,
                 Some(Err(error)) => {
                     if !held.trim().is_empty() {
-                        let text = held.trim_start().to_string();
+                        let text = released(&held, context.continues_reply).to_string();
                         yield (Some(released_at_error(text_message(text, message_id.as_deref()))), None, None);
                     }
                     Err(error)?;
@@ -1142,7 +1173,7 @@ pub fn recover_leaked_tool_calls(
                             } else {
                                 mode = Mode::Passthrough;
                                 // R14: leading whitespace is not an answer.
-                                release.push_str(held.trim_start());
+                                release.push_str(released(&held, context.continues_reply));
                                 held.clear();
                             }
                         }
@@ -1152,7 +1183,7 @@ pub fn recover_leaked_tool_calls(
                     // G2: a structured call. What was held is text, shown as
                     // text, ahead of the call.
                     if !held.trim().is_empty() {
-                        release.insert_str(0, held.trim_start());
+                        release.insert_str(0, released(&held, context.continues_reply));
                     }
                     held.clear();
                     mode = Mode::Passthrough;
@@ -1216,10 +1247,10 @@ pub fn recover_leaked_tool_calls(
                                         .iter()
                                         .position(|c| matches!(c, MessageContent::ToolRequest(_)))
                                         .unwrap_or(message.content.len());
-                                    message.content.insert(at, MessageContent::text(text.trim_start().to_string()));
+                                    message.content.insert(at, MessageContent::text(released(&text, context.continues_reply).to_string()));
                                     message
                                 }
-                                None => text_message(text.trim_start().to_string(), message_id.as_deref()),
+                                None => text_message(released(&text, context.continues_reply).to_string(), message_id.as_deref()),
                             };
                             yield (Some(message), Some(usage), pending);
                             continue;
@@ -1236,7 +1267,7 @@ pub fn recover_leaked_tool_calls(
         if !held.trim().is_empty() {
             // The stream ended without a usage item: not a confirmed complete
             // turn (G3), so whatever was held is shown as the text it is.
-            yield text_item(held.trim_start().to_string(), message_id.as_deref());
+            yield text_item(released(&held, context.continues_reply).to_string(), message_id.as_deref());
         }
     })
 }
@@ -1717,6 +1748,7 @@ mod tests {
                 tools: tools(),
                 provider: "test",
                 model: "m".to_string(),
+                continues_reply: false,
             },
         )
         .try_collect()
@@ -1859,6 +1891,7 @@ mod tests {
                 tools: tools(),
                 provider: "test",
                 model: "m".to_string(),
+                continues_reply: false,
             },
         );
         let mut out = Vec::new();
@@ -1904,6 +1937,86 @@ mod tests {
         assert!(out
             .iter()
             .all(|(message, _, _)| !message.as_ref().is_some_and(is_released_at_error)));
+    }
+
+    /// A completion that continues a reply already shown keeps the whitespace
+    /// it starts with. llama-server cuts between tokens and a token carries its
+    /// leading space, so trimming it joined a retried reply as "brown
+    /// foxjumps over" (live, against a scripted llama-server). A fresh reply
+    /// still loses it, and whitespace alone is still no reply (R14).
+    #[tokio::test]
+    async fn a_continued_reply_keeps_the_whitespace_that_joins_it() {
+        async fn shown(items: Vec<ProviderStreamItem>, continues_reply: bool) -> String {
+            let stream: MessageStream = Box::pin(futures::stream::iter(
+                items.into_iter().map(Ok::<_, ProviderError>),
+            ));
+            let out: Vec<ProviderStreamItem> = recover_leaked_tool_calls(
+                stream,
+                RecoveryContext {
+                    tools: tools(),
+                    provider: "test",
+                    model: "m".to_string(),
+                    continues_reply,
+                },
+            )
+            .try_collect()
+            .await
+            .unwrap();
+            out.iter()
+                .filter_map(|(message, _, _)| message.as_ref())
+                .map(Message::as_concat_text)
+                .collect()
+        }
+        let text = |text: &str| {
+            (
+                Some(assistant(vec![MessageContent::text(text)])),
+                None,
+                None,
+            )
+        };
+        let cases: Vec<(&str, Vec<ProviderStreamItem>)> = vec![
+            // Shown as it arrives.
+            (" jumps over the lazy dog.", {
+                let mut items = chunks(" jumps over the lazy dog.");
+                items.push((None, Some(usage("stop")), None));
+                items
+            }),
+            ("\n\nThey are clever.", {
+                let mut items = chunks("\n\nThey are clever.");
+                items.push((None, Some(usage("stop")), None));
+                items
+            }),
+            // Held as a possible call, then released as text.
+            (
+                " {\"x\": 1} is JSON.",
+                vec![
+                    text(" {"),
+                    text("\"x\": 1} is JSON."),
+                    (None, Some(usage("stop")), None),
+                ],
+            ),
+            // Held until a usage cut at its limit.
+            (
+                " {\"name\": \"x\"",
+                vec![
+                    text(" {\"name\": \"x\""),
+                    (None, Some(usage("length")), None),
+                ],
+            ),
+            // Held until the stream ended without a usage.
+            (" {\"name\": \"x\"", vec![text(" {\"name\": \"x\"")]),
+        ];
+        for (expected, items) in cases {
+            assert_eq!(shown(items.clone(), true).await, expected, "{expected:?}");
+            assert_eq!(
+                shown(items, false).await,
+                expected.trim_start(),
+                "a fresh reply: {expected:?}"
+            );
+        }
+        let mut whitespace = chunks("  \n");
+        whitespace.push((None, Some(usage("stop")), None));
+        assert_eq!(shown(whitespace, true).await, "", "R14");
     }
 
     /// L8: a whole-message payload in the template's CALL tag is recovered,

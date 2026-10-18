@@ -1275,6 +1275,11 @@ struct CutStreamProvider {
     failures: usize,
     first: &'static str,
     recover: bool,
+    /// What a call after the failures answers.
+    answer: &'static str,
+    /// A call that never answers, not even with headers: a retry held by a
+    /// busy server, which the person stops while it waits.
+    held_call: Option<usize>,
     /// The agent-visible text of every request, `<info-msg>` block stripped.
     sent: Mutex<Vec<Vec<String>>>,
     /// Whether each request carried the `<info-msg>` block.
@@ -1288,9 +1293,21 @@ impl CutStreamProvider {
             failures,
             first,
             recover,
+            answer: CUT_ANSWER,
+            held_call: None,
             sent: Mutex::default(),
             with_block: Mutex::default(),
         }
+    }
+
+    fn answering(mut self, answer: &'static str) -> Self {
+        self.answer = answer;
+        self
+    }
+
+    fn holding_call(mut self, call: usize) -> Self {
+        self.held_call = Some(call);
+        self
     }
 
     fn record(&self, messages: &[Message]) {
@@ -1352,10 +1369,13 @@ impl Provider for CutStreamProvider {
         tools: &[Tool],
     ) -> Result<MessageStream, ProviderError> {
         use biorouter::providers::formats::text_tool_calls::{
-            recover_leaked_tool_calls, RecoveryContext,
+            continues_a_reply, recover_leaked_tool_calls, RecoveryContext,
         };
         self.record(messages);
         let call = self.calls.fetch_add(1, Ordering::SeqCst);
+        if self.held_call == Some(call) {
+            std::future::pending::<()>().await;
+        }
         let id = format!("reply-{call}");
         let items: Vec<Result<ProviderStreamItem, ProviderError>> = if call < self.failures {
             let mut items: Vec<Result<ProviderStreamItem, ProviderError>> = self
@@ -1382,7 +1402,7 @@ impl Provider for CutStreamProvider {
             );
             usage.finish_reason = Some("stop".to_string());
             vec![Ok((
-                Some(Message::assistant().with_id(id).with_text(CUT_ANSWER)),
+                Some(Message::assistant().with_id(id).with_text(self.answer)),
                 Some(usage),
                 None,
             ))]
@@ -1395,6 +1415,7 @@ impl Provider for CutStreamProvider {
                     tools: tools.to_vec(),
                     provider: "llamacpp",
                     model: "mock-model".to_string(),
+                    continues_reply: continues_a_reply(),
                 },
             )
         } else {
@@ -1636,4 +1657,232 @@ async fn a_partial_reply_ending_in_whitespace_keeps_the_block() {
         "both requests carry the block"
     );
     assert!(reply.shown.iter().any(|text| text == CUT_ANSWER));
+}
+
+/// Live, against a scripted llama-server: a reply cut after "The quick brown
+/// fox" was continued with " jumps over the lazy dog.", and recovery dropped
+/// the continuation's leading space, so the CLI printed "foxjumps" and the
+/// stored rows read "fox" and "jumps over the lazy dog.". The retry continues
+/// the reply, so the space that joins the two is kept.
+#[tokio::test]
+async fn a_retried_partial_reply_keeps_the_space_that_joins_it() {
+    const CONTINUED: &str = " jumps over the lazy dog.";
+    let provider =
+        Arc::new(CutStreamProvider::new("The quick brown fox", 1, true).answering(CONTINUED));
+    let reply = reply_through_a_cut_stream(provider.clone()).await;
+
+    assert_eq!(provider.calls.load(Ordering::SeqCst), 2);
+    assert!(!reply.aborted);
+    assert!(
+        reply.shown.iter().any(|text| text == CONTINUED),
+        "{:?}",
+        reply.shown
+    );
+    let replies: String = reply
+        .stored
+        .iter()
+        .filter_map(|row| row.strip_prefix("Assistant: "))
+        .collect();
+    assert_eq!(
+        replies, "The quick brown fox jumps over the lazy dog.",
+        "{:?}",
+        reply.stored
+    );
+    assert!(
+        reply
+            .stored
+            .iter()
+            .any(|row| row.contains("biorouter-loop-guard")),
+        "the continuation still follows its note: {:?}",
+        reply.stored
+    );
+}
+
+/// Live, against a scripted llama-server: a Stop while the retry of a cut-off
+/// reply was waiting left its "Continue the reply from exactly where it
+/// stopped" note in the history, and the person's next message was sent behind
+/// it in one user message, so the model continued the stopped sentence instead
+/// of answering. The settled turn hides the note from the model, on each of the
+/// runner's paths: it drops the stream and settles the turn (a Stop, or a
+/// failed stream), or the stream runs out on its own after the cancel and only
+/// the "Stopped." notice is written.
+#[tokio::test]
+async fn a_stop_while_a_retry_waits_retires_its_note() {
+    stop_while_a_retry_waits(Abandoned::Stopped).await;
+}
+
+#[tokio::test]
+async fn a_stop_the_reply_loop_sees_retires_the_retry_note_too() {
+    stop_while_a_retry_waits(Abandoned::StoppedInTheLoop).await;
+}
+
+#[tokio::test]
+async fn a_stream_that_fails_while_a_retry_waits_retires_its_note() {
+    stop_while_a_retry_waits(Abandoned::Failed).await;
+}
+
+/// Live, with the CLI: a Ctrl-C while the retry waited settled nothing, so
+/// `biorouter run -r -t test` sent "[note]\ntest" in one user message and the
+/// model echoed the note. The CLI and ACP settle no turn and write no "Stopped."
+/// notice; they retire the note themselves, whether the reply loop saw the
+/// cancel and its stream ran out (what the CLI measured) or the client dropped
+/// the stream first.
+#[tokio::test]
+async fn a_client_that_settles_no_turn_retires_the_retry_note_itself() {
+    stop_while_a_retry_waits(Abandoned::ByTheClientAfterTheLoop).await;
+}
+
+#[tokio::test]
+async fn a_client_that_drops_the_stream_retires_the_retry_note_itself() {
+    stop_while_a_retry_waits(Abandoned::DroppedByTheClient).await;
+}
+
+#[derive(PartialEq)]
+enum Abandoned {
+    Stopped,
+    StoppedInTheLoop,
+    Failed,
+    ByTheClientAfterTheLoop,
+    DroppedByTheClient,
+}
+
+async fn stop_while_a_retry_waits(how: Abandoned) {
+    let provider = Arc::new(CutStreamProvider::new("The quick brown fox", 1, true).holding_call(1));
+    let overrides = HashMap::from([
+        (
+            "BIOROUTER_MISTAKE_STREAK_DETECTION".to_string(),
+            "true".to_string(),
+        ),
+        (
+            "BIOROUTER_PROVIDER_ERROR_RETRIES".to_string(),
+            "1".to_string(),
+        ),
+    ]);
+    with_config_overrides(overrides, async {
+        let (agent, sessions, session_id, _work, _data, _permissions) =
+            test_agent(provider.clone()).await;
+        let session_config = || SessionConfig {
+            id: session_id.clone(),
+            schedule_id: None,
+            max_turns: Some(4),
+            max_tool_calls: None,
+            budget: None,
+            retry_config: None,
+            reasoning_effort: None,
+        };
+
+        // The runner's in-flight rows: every message since the last persisted
+        // batch. A Stop drops the stream and hands them to the settlement.
+        let mut in_flight: Vec<Message> = Vec::new();
+        let cancel = tokio_util::sync::CancellationToken::new();
+        {
+            let stream = agent
+                .reply(
+                    Message::user().with_text("Write one sentence about foxes."),
+                    session_config(),
+                    Some(cancel.clone()),
+                )
+                .await
+                .unwrap();
+            tokio::pin!(stream);
+            tokio::time::timeout(Duration::from_secs(10), async {
+                while provider.calls.load(Ordering::SeqCst) < 2 {
+                    match tokio::time::timeout(Duration::from_millis(50), stream.next()).await {
+                        Ok(Some(event)) => match event.unwrap() {
+                            AgentEvent::Message(message) => in_flight.push(message),
+                            AgentEvent::MessagesPersisted(_) => in_flight.clear(),
+                            _ => {}
+                        },
+                        Ok(None) => panic!("the turn ended before its retry was sent"),
+                        Err(_) => {}
+                    }
+                }
+            })
+            .await
+            .expect("the retry is sent");
+            if matches!(
+                how,
+                Abandoned::StoppedInTheLoop | Abandoned::ByTheClientAfterTheLoop
+            ) {
+                cancel.cancel();
+                tokio::time::timeout(Duration::from_secs(10), async {
+                    while let Some(event) = stream.next().await {
+                        event.unwrap();
+                    }
+                })
+                .await
+                .expect("the stopped turn ends");
+            }
+        }
+        match how {
+            Abandoned::StoppedInTheLoop => {
+                agent.record_turn_stopped(&session_id).await.unwrap();
+            }
+            Abandoned::ByTheClientAfterTheLoop => {
+                agent.retire_unanswered_retry_note(&session_id).await;
+            }
+            Abandoned::DroppedByTheClient => {
+                cancel.cancel();
+                agent.retire_unanswered_retry_note(&session_id).await;
+            }
+            Abandoned::Stopped | Abandoned::Failed => {
+                agent
+                    .settle_interrupted_turn(&session_id, &in_flight, how == Abandoned::Stopped)
+                    .await
+                    .unwrap();
+            }
+        }
+
+        let stream = agent
+            .reply(Message::user().with_text("test"), session_config(), None)
+            .await
+            .unwrap();
+        tokio::pin!(stream);
+        tokio::time::timeout(Duration::from_secs(10), async {
+            while let Some(event) = stream.next().await {
+                event.unwrap();
+            }
+        })
+        .await
+        .expect("the next reply settles");
+
+        let sent = provider.sent.lock().unwrap().clone();
+        assert_eq!(sent.len(), 3, "{sent:?}");
+        assert!(
+            sent[1]
+                .iter()
+                .any(|row| row.contains("biorouter-loop-guard")),
+            "the retry was sent behind its note: {sent:?}"
+        );
+        assert_eq!(
+            sent[2].last().map(String::as_str),
+            Some("User: test"),
+            "{sent:?}"
+        );
+        assert!(
+            sent[2]
+                .iter()
+                .all(|row| !row.contains("biorouter-loop-guard")),
+            "{sent:?}"
+        );
+        let stored = sessions
+            .get_session(&session_id, true)
+            .await
+            .unwrap()
+            .conversation
+            .unwrap();
+        let notes: Vec<&Message> = stored
+            .messages()
+            .iter()
+            .filter(|message| message.as_concat_text().contains("biorouter-loop-guard"))
+            .collect();
+        assert_eq!(notes.len(), 1, "the note is kept, not deleted");
+        assert!(!notes[0].is_agent_visible(), "{:?}", notes[0]);
+        assert!(stored
+            .messages()
+            .iter()
+            .any(|message| message.is_agent_visible()
+                && message.as_concat_text() == "The quick brown fox"));
+    })
+    .await;
 }
