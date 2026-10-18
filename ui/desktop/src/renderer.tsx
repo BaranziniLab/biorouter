@@ -554,7 +554,11 @@ if (needsHeadlessElectron || typeof window.appConfig === 'undefined') {
           await headlessPost(headlessConfig.headlessBaseUrl, '/registry/download', { url }),
           'Could not download registry asset on the headless server'
         ),
-      fetchRegistry: async (url: string) => fetch(url).then((response) => response.json()),
+      // No main process to ask, so the page fetches the live catalogue itself.
+      // Imported on first use, which keeps the registry module and its bundled
+      // snapshot out of the entry chunk. It used to take a URL nobody passes.
+      fetchRegistry: async () =>
+        (await import('./components/baam/registry')).fetchRegistryInBrowser(),
       installDependency: async () => ({ success: false, error: 'Not available in browser mode' }),
       // Absent from this stub entirely until now, so the dependency modal's calls
       // rejected rather than degrading. Empty list = "nothing to report", which is

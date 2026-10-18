@@ -128,9 +128,22 @@ cannot gate the initial document. The exchange is therefore:
    answers a short page of the daemon's own origin that moves the browser on to the interface's
    mount (`./`, so it stays under a proxy's path prefix). It is a page
    and not a redirect because a redirect keeps a `SameSite=Strict` cookie off a navigation another
-   site started, and `serve --open` starts one from a `file:` page (below).
-3. `GET /` with that cookie returns the shell, with the daemon's secret injected into it.
+   site started, and `serve --open` starts one from a `file:` page (below). The cookie is also
+   `Secure` when the browser reached the address over `https` (`auth::browser_used_https`), and
+   never on plain `http` to loopback, where the browser would then never send it back.
+3. `GET /` with that cookie returns the shell, with the daemon's secret injected into it. Any
+   `biorouter_session` cookie the request carries counts, not only the first: a browser keeps one
+   per `Path`, sends the longest path first, and an earlier launch with a longer `--public-url`
+   path leaves one behind.
 4. From then on the application presents `X-Secret-Key` exactly as the desktop renderer does.
+
+**A valid link opened at the wrong address.** With `--public-url` naming a path, the session
+cookie is scoped to that path, and a browser that redeems the token anywhere else never sends it
+back. The proxy strips the path, so the daemon cannot see where the browser is. The exchange
+therefore also sets `biorouter_exchanged`, a marker with no `Path` (the browser scopes it to the
+address it is really on), a value random per daemon run and nothing of the token. When the marker
+comes back without a session cookie, the refusal names the declared address
+("This is not the address Biorouter was started with") instead of asking for the token.
 
 **How `--open` hands the address to a browser.** The address carries the token, which works until
 the daemon stops, and whoever redeems it gets the shell and the daemon's secret with it. A browser

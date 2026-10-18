@@ -461,13 +461,21 @@ fn launch_bounce(cookie: Option<String>) -> Response {
 /// so the token does not linger in the address bar or the `Referer` of anything
 /// the page loads. `auth::check_token` has already admitted the request, by that
 /// token, the cookie, or the secret; a token that is spent, expired or for
-/// another app sets nothing.
-async fn serve_index(Path(id): Path<String>, Query(query): Query<PageQuery>) -> Response {
+/// another app sets nothing. The cookie carries `Secure` when the browser is at
+/// an `https` address (`web_ui::secure_attribute`), as behind a TLS proxy.
+async fn serve_index(
+    Path(id): Path<String>,
+    Query(query): Query<PageQuery>,
+    headers: axum::http::HeaderMap,
+    uri: axum::http::Uri,
+) -> Response {
     if let Some(token) = query.t.as_deref() {
         if validate_artifact_id(&id).is_err() {
             return (StatusCode::BAD_REQUEST, "invalid app id").into_response();
         }
-        let cookie = biorouter_server::auth::redeem_app_launch(&id, token);
+        let secure = super::web_ui::secure_attribute(&headers, &uri, super::declared_public_url());
+        let cookie = biorouter_server::auth::redeem_app_launch(&id, token)
+            .map(|cookie| format!("{cookie}{secure}"));
         return launch_bounce(cookie);
     }
     let st = store();
@@ -9102,6 +9110,8 @@ mod tests {
             super::serve_index(
                 Path("hrd1-launch".to_string()),
                 Query(super::PageQuery { t }),
+                axum::http::HeaderMap::new(),
+                axum::http::Uri::default(),
             )
         };
         let set_cookie = |response: &axum::response::Response| {
@@ -9173,6 +9183,48 @@ mod tests {
             .unwrap();
         assert!(String::from_utf8_lossy(&html).contains("wsToken"));
         super::store().delete("hrd1-launch").unwrap();
+    }
+
+    /// Behind an https proxy the app's access cookie is `Secure`, as the served
+    /// interface's own is (`web_ui::secure_attribute`); on plain `http` to
+    /// loopback, where `Secure` would keep it off every later request, it is not.
+    #[tokio::test]
+    async fn the_app_cookie_is_secure_only_behind_https() {
+        use axum::extract::{Path, Query};
+        use axum::http::{header, HeaderMap};
+
+        let redeem = |host: &'static str| async move {
+            let mut headers = HeaderMap::new();
+            headers.insert(header::HOST, host.parse().unwrap());
+            headers.insert("sec-fetch-mode", "navigate".parse().unwrap());
+            headers.insert("sec-fetch-dest", "document".parse().unwrap());
+            let token = biorouter_server::auth::mint_app_launch("secure-cookie-app");
+            let bounce = super::serve_index(
+                Path("secure-cookie-app".to_string()),
+                Query(super::PageQuery { t: Some(token) }),
+                headers,
+                "/apps/secure-cookie-app/".parse().unwrap(),
+            )
+            .await;
+            bounce
+                .headers()
+                .get(header::SET_COOKIE)
+                .expect("a fresh link sets the cookie")
+                .to_str()
+                .unwrap()
+                .to_string()
+        };
+        let proxied = redeem("hub.example.org").await;
+        assert!(
+            proxied.ends_with("; HttpOnly; SameSite=Strict; Secure"),
+            "{proxied}"
+        );
+        let loopback = redeem("127.0.0.1:8765").await;
+        assert!(
+            loopback.ends_with("; HttpOnly; SameSite=Strict"),
+            "{loopback}"
+        );
+        assert!(!loopback.contains("Secure"), "{loopback}");
     }
 
     /// The launch answer names the link on the daemon's own listener as well as
@@ -9438,6 +9490,8 @@ mod tests {
         let resp = super::serve_index(
             axum::extract::Path(id.to_string()),
             axum::extract::Query(super::PageQuery { t: None }),
+            axum::http::HeaderMap::new(),
+            axum::http::Uri::default(),
         )
         .await;
         let status = resp.status();

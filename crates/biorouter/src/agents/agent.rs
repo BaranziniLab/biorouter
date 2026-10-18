@@ -2495,6 +2495,84 @@ fn provider_retry_notice(error: &ProviderError, attempt: u32, limit: u32) -> Str
     format!("The model call failed: {reason}. Trying again ({attempt}/{limit})…")
 }
 
+/// What becomes of text a local provider held back as a possible tool call
+/// and released only because an error cut it
+/// (`text_tool_calls::is_released_at_error`), once `next`, that error, is read.
+///
+/// Nothing, when the error will be retried: nobody has seen the text, and it
+/// is most often part of a call written as text. Live, against a scripted
+/// llama-server, `{"name": "developer__shell", "arguments": {"comm` and the
+/// shared-cache frame were shown and saved as a reply, and the retry, told to
+/// continue that reply, wrote the rest of the JSON as text. Dropped, nothing
+/// reaches the conversation and the retry is the same request. After any
+/// other error, including one that ends the turn, the text is shown and kept
+/// without its mark, as before, so the person sees what the model wrote.
+fn released_at_error_outcome(
+    held: Message,
+    next: &Result<crate::providers::base::ProviderStreamItem, ProviderError>,
+    mistakes: &crate::agents::mistakes::MistakeTracker,
+    config: &crate::agents::mistakes::MistakeConfig,
+) -> Option<Message> {
+    match next {
+        Err(error) if mistakes.would_retry(config, error) => None,
+        _ => Some(crate::providers::formats::text_tool_calls::without_released_at_error_mark(held)),
+    }
+}
+
+#[cfg(test)]
+mod released_at_error_outcome_tests {
+    use super::*;
+    use crate::agents::mistakes::{MistakeConfig, MistakeTracker};
+
+    /// Text released at an error, as `text_tool_calls` marks it.
+    fn released() -> Message {
+        let mut message = Message::assistant().with_text("{\"name\": \"developer__shell\"");
+        if let Some(MessageContent::Text(text)) = message.content.first_mut() {
+            let mut meta = rmcp::model::Meta::new();
+            meta.insert(
+                crate::providers::formats::text_tool_calls::RELEASED_AT_ERROR_KEY.to_string(),
+                serde_json::Value::Bool(true),
+            );
+            text.meta = Some(meta);
+        }
+        assert!(crate::providers::formats::text_tool_calls::is_released_at_error(&message));
+        message
+    }
+
+    #[test]
+    fn dropped_only_when_the_error_will_be_retried() {
+        let config = MistakeConfig::default();
+        let fresh = MistakeTracker::default();
+        let transient = Err(ProviderError::ServerError(
+            "Context size has been exceeded.".into(),
+        ));
+        assert_eq!(
+            released_at_error_outcome(released(), &transient, &fresh, &config),
+            None
+        );
+
+        let fatal = Err(ProviderError::Authentication("bad key".into()));
+        let kept = released_at_error_outcome(released(), &fatal, &fresh, &config).expect("shown");
+        assert!(!crate::providers::formats::text_tool_calls::is_released_at_error(&kept));
+        assert_eq!(kept.as_concat_text(), "{\"name\": \"developer__shell\"");
+
+        let mut spent = MistakeTracker::default();
+        let _ = spent.observe_provider_error(
+            &config,
+            &ProviderError::ServerError("first".into()),
+            crate::agents::mistakes::RetryPoint::Resend,
+        );
+        assert!(
+            released_at_error_outcome(released(), &transient, &spent, &config).is_some(),
+            "a spent budget ends the turn, so the text is shown"
+        );
+        assert!(
+            released_at_error_outcome(released(), &Ok((None, None, None)), &fresh, &config)
+                .is_some()
+        );
+    }
+}
+
 #[cfg(test)]
 mod provider_retry_notice_tests {
     use super::*;
@@ -11510,6 +11588,10 @@ impl Agent {
                 // failure. The terminal event is emitted only after usage and
                 // conversation state are durable.
                 let mut pending_turn_abort: Option<(TurnAbortCode, String)> = None;
+                // Text a local provider held back as a possible tool call and
+                // released only because an error cut it. It waits for that
+                // error, the stream's next item: see `released_at_error_outcome`.
+                let mut released_at_error: Option<Box<Message>> = None;
 
                 // #107: race the provider's own output against a request for a
                 // human decision, exactly as the tool-batch loop below does and
@@ -11648,6 +11730,27 @@ impl Agent {
                     if is_token_cancelled(&cancel_token) {
                         break;
                     }
+
+                    if let Some(held) = released_at_error.take() {
+                        if let Some(message) =
+                            released_at_error_outcome(*held, &next, &mistakes, &mistake_config)
+                        {
+                            let message = named(message);
+                            made_user_visible_progress |= message_has_user_visible_progress(&message);
+                            ever_made_user_visible_progress |= made_user_visible_progress;
+                            yield AgentEvent::Message(message.clone());
+                            messages_to_add.push(message);
+                        }
+                    }
+                    let next = match next {
+                        Ok((Some(response), None, None))
+                            if crate::providers::formats::text_tool_calls::is_released_at_error(&response) =>
+                        {
+                            released_at_error = Some(Box::new(response));
+                            continue;
+                        }
+                        next => next,
+                    };
 
                     match next {
                         Ok((response, usage, pending)) => {
@@ -12634,6 +12737,17 @@ impl Agent {
                             }
                         }
                     }
+                }
+                // The loop left (a cancel, a steer restart) before the error
+                // behind released text was read: it is kept, as before.
+                if let Some(held) = released_at_error.take() {
+                    let message = named(
+                        crate::providers::formats::text_tool_calls::without_released_at_error_mark(*held),
+                    );
+                    made_user_visible_progress |= message_has_user_visible_progress(&message);
+                    ever_made_user_visible_progress |= made_user_visible_progress;
+                    yield AgentEvent::Message(message.clone());
+                    messages_to_add.push(message);
                 }
 
                 // D13: the provider call is over, so it owes no more

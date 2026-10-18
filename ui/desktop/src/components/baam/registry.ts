@@ -139,6 +139,57 @@ function withBudget<T>(promise: Promise<T>): Promise<T | null> {
 }
 
 /**
+ * The live catalogue, published with the website. `main.ts` fetches this same
+ * address for the desktop as its own `REGISTRY_URL`, which cannot be imported
+ * from here; `registry.test.ts` holds the two equal.
+ */
+export const LIVE_REGISTRY_URL = 'https://biorouter.ucsf.edu/registry.json';
+
+/** The browser's own bound on the live fetch, the main process's 10 s. */
+const BROWSER_REGISTRY_TIMEOUT_MS = 10_000;
+
+/**
+ * `window.electron.fetchRegistry` for a page `biorouter serve` served, where
+ * there is no main process to ask. It answers the shape the desktop's
+ * `registry:fetch` does, so {@link loadRegistry} reads both alike.
+ *
+ * ⚠ It used to be `fetch(url)` with the URL as a parameter, and nothing passes
+ * one: every Extensions and marketplace visit in a browser requested
+ * `<mount>/undefined` (a 403 from the daemon) and showed only the bundled
+ * snapshot. The page fetches the live document directly: its content policy's
+ * `connect-src` allows `https:`, and the site answers with
+ * `Access-Control-Allow-Origin: *`. There is no last-good copy in a browser, so
+ * a failure is an `{ error }`, and the snapshot is shown, as on a desktop that
+ * has never fetched.
+ */
+export async function fetchRegistryInBrowser(
+  fetchImpl: typeof fetch = fetch
+): Promise<{ registry: BaamRegistry; fetchedAt: string; stale: false } | { error: string }> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), BROWSER_REGISTRY_TIMEOUT_MS);
+  try {
+    const response = await fetchImpl(LIVE_REGISTRY_URL, {
+      headers: { Accept: 'application/json' },
+      credentials: 'omit',
+      // The page's own address names the operator's host, a JupyterHub's for
+      // one; the site has no use for it, and the desktop's fetch sends none.
+      referrerPolicy: 'no-referrer',
+      signal: controller.signal,
+    });
+    if (!response.ok) return { error: `HTTP ${response.status}` };
+    const registry = (await response.json()) as BaamRegistry;
+    if (!registry || !Array.isArray(registry.extensions) || !Array.isArray(registry.skills)) {
+      return { error: 'The response was not a marketplace catalog' };
+    }
+    return { registry, fetchedAt: new Date().toISOString(), stale: false };
+  } catch (err) {
+    return { error: err instanceof Error ? err.message : String(err) };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
  * Load the marketplace registry. Tries the live registry.json published with the
  * website; the main process falls back to its last-good copy and this falls back
  * again to the snapshot bundled with the app, so Browse always works offline.

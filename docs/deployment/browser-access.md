@@ -109,8 +109,9 @@ carries a credential instead.
   `?t=` parameter, and different every time. It is shown once, in the terminal; there is nowhere
   else to read it back from.
 - **Opening the address exchanges it for a cookie.** The daemon validates the token, sets an
-  `HttpOnly`, `SameSite=Strict` session cookie named `biorouter_session`, and answers a short page
-  that moves the browser on to `/`. The token then disappears from the address bar and from the
+  `HttpOnly`, `SameSite=Strict` session cookie named `biorouter_session` (also `Secure` when the
+  browser reached the address over `https`), and answers a short page that moves the browser on
+  to `/`. The token then disappears from the address bar and from the
   tab's back and forward list, and it is not in the `Referer` of anything the page later loads. A
   page rather than a redirect, because a redirect would lose the cookie when the address was opened
   from a file, which is how `--open` opens it.
@@ -221,7 +222,8 @@ biorouter serve --port 8765 --public-url https://hub.example.org/biorouter/
    page whose address matches the `Host` and `X-Forwarded-Proto` headers the daemon receives,
    which a chain of proxies may not preserve.
 3. The access cookie is limited to that path, so it is not sent to other servers on the same
-   hostname.
+   hostname. A valid link opened at any other address therefore cannot keep you signed in, and the
+   page says *This is not the address Biorouter was started with* and names the declared one.
 
 The proxy must pass the browser's `Sec-Fetch-*` request headers through, which proxies do unless
 configured to remove them. The browser sends them only to an `https` or loopback address, and the
@@ -333,6 +335,7 @@ differs:
 | Resetting app data (Settings → App → Danger zone → Reset data) | **Not available, and it says so before you try.** A reset deletes chats, knowledge bases and the rest for good, private ones included, so the daemon performs one only for a request that proves a person asked, which only the desktop application can send. The Reset data button is disabled, with a note under it saying why. On the machine running `biorouter serve`, reset from Settings in the Biorouter app there, or remove items from a terminal there with `biorouter session remove`, `schedule remove`, `skill remove` and `extension remove` ([SD-8](serve-decisions.md#sd-8--a-control-that-can-never-work-here-says-so-rather-than-failing-on-click)). |
 | Model and provider selection | **Not available.** See [The model is fixed before you start](#the-model-is-fixed-before-you-start). |
 | Crew | **Not available, and it says so before you try.** Opening **Crew** in the browser shows "Crew needs the Biorouter desktop app", and nothing on that page asks the daemon for Crew data. A chat shows no Crew bar. Every Crew action, even listing saved workspaces, needs proof that a person is at this computer, which the desktop application and `biorouter crew` supply themselves; the daemon `biorouter serve` starts never holds it. A Crew request that reaches it anyway is refused with `crew_human_authority_unavailable` and the sentence "Crew isn't available in a browser opened with biorouter serve…", and no setting in the browser changes that. Use Crew in the desktop application, or with `biorouter crew` in a terminal, on your own computer. See the [Crew user manual](../crew/README.md) and [SD-8](serve-decisions.md#sd-8--a-control-that-can-never-work-here-says-so-rather-than-failing-on-click). |
+| Browsing the marketplace (Browse extensions, Browse skills) | Works. The page reads the live catalogue from `https://biorouter.ucsf.edu/registry.json` itself, so the browser, not the serving machine, has to reach that site. When it cannot, the catalogue bundled with Biorouter is shown, and the dialog says *showing bundled catalog (offline)*. Installs download through the serving machine. |
 | File and folder pickers | No native dialog. You type a path, and it is a path **on the machine running the daemon**, not on the machine holding the browser. |
 | Artifacts and diagnostics bundles | The artifact side panel works as usual. Opening an artifact outside the panel opens a new tab; a diagnostics bundle downloads as a file. |
 | Sending a region of the preview to the chat, and the agent's screenshot of the panel | **Not available, and it says so before you try.** Both are a picture taken by the desktop application's window, the only thing that can see into the sandboxed frames most previews draw in, and a browser page has no such window. The camera button in the panel's header is disabled and its tooltip says why; an agent that asks for a screenshot is told to read the panel's text instead, which works ([SD-8](serve-decisions.md#sd-8--a-control-that-can-never-work-here-says-so-rather-than-failing-on-click)). |
@@ -409,6 +412,11 @@ chat client shortening the link, or a bookmark saved after the address changed t
 printed. If the launch has since restarted, the token has changed; read the new one from the
 terminal.
 
+**The tab says this is not the address Biorouter was started with.** The token is valid, but
+`serve` was started with `--public-url` naming another address, and the access cookie works only
+under that address's path. Open the address the page names, with the `?t=` part `serve` printed.
+To use the address you are on instead, restart `serve` with `--public-url` set to it.
+
 **The page loads but nothing connects.** Check that you are on the address `serve` printed. The
 live views are WebSockets, and the daemon admits one only from the scheme, host and port the
 browser used. Behind a reverse proxy, pass that address with `--public-url` (see
@@ -417,6 +425,16 @@ from the `Host` and `X-Forwarded-Proto` headers, so the proxy must forward the o
 set `X-Forwarded-Proto: https`, and a chain of proxies that appends `http` to that header refuses
 every live view. The daemon logs each refusal as
 `rejected workspace WS: cross-origin connect rejected`, with the origin it was given.
+
+**Behind a proxy, a built app says "No Biorouter backend" and suggests `biorouterd agent`.**
+Biorouter is running: it served the app's page. What failed is the app's live connection, a
+WebSocket, which the daemon refused for the reason in the entry above. JupyterHub's chain causes
+it when `serve` has no `--public-url`, because the scheme reaches the daemon as `https,http`. Pass
+`--public-url` with the address in the browser's address bar (see
+[Behind a reverse proxy](#behind-a-reverse-proxy)) and reopen the app. The daemon logs each refusal
+as `rejected app agent WebSocket: cross-origin connect rejected`. The banner cannot tell a refused
+connection from a daemon that is not running, so its advice to start `biorouterd agent` is for an
+exported app opened with no daemon behind it.
 
 **Behind a proxy, the page says to open Biorouter through localhost or HTTPS.** The browser's
 `Sec-Fetch-*` request headers did not arrive. Check that the address in the browser is `https`,

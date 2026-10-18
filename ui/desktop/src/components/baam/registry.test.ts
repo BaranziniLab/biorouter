@@ -1,8 +1,13 @@
+import { readFileSync } from 'node:fs';
+import * as path from 'node:path';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   catalogFreshnessLine,
   effectivePrivacy,
   extensionProvenance,
+  fetchRegistryInBrowser,
+  FALLBACK_REGISTRY,
+  LIVE_REGISTRY_URL,
   loadRegistry,
   REGISTRY_LOAD_BUDGET_MS,
   type BaamRegistry,
@@ -266,5 +271,87 @@ describe('the prose the badge travels with', () => {
     );
     expect(catalogFreshnessLine({ live: false, fetchedAt: 'not-a-date' })).not.toMatch(/bundled/i);
     expect(catalogFreshnessLine({ live: true })).toBeNull();
+  });
+});
+
+/**
+ * A page `biorouter serve` served has no main process, so `renderer.tsx` stands
+ * in for `window.electron.fetchRegistry`. Since 1.87.0 that stand-in was
+ * `async (url) => fetch(url)`, and `loadRegistry` passes no URL: every
+ * Extensions and marketplace visit in a browser requested `<mount>/undefined`,
+ * which the daemon refused, and only the bundled snapshot was ever shown.
+ */
+describe('the browser stand-in for the main process fetch', () => {
+  const liveDocument = {
+    version: 2,
+    source: 'live',
+    skills: [],
+    extensions: [{ extension_name: 'liveonlyagent', privacy: 'private' }],
+  };
+
+  function answering(response: Partial<Response> | Error) {
+    return vi.fn<typeof fetch>(async () => {
+      if (response instanceof Error) throw response;
+      return response as Response;
+    });
+  }
+
+  it('fetches the live catalogue the desktop does, and loadRegistry reads it as live', async () => {
+    const fetchImpl = answering({ ok: true, status: 200, json: async () => liveDocument });
+    (window as unknown as { electron: unknown }).electron = {
+      fetchRegistry: () => fetchRegistryInBrowser(fetchImpl),
+    };
+    const { registry, live, fetchedAt } = await loadRegistry();
+
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(fetchImpl.mock.calls[0][0]).toBe(LIVE_REGISTRY_URL);
+    expect(String(fetchImpl.mock.calls[0][0])).not.toMatch(/undefined/);
+    // The site's catalogue is public; neither the browser's credentials nor the
+    // address of the page asking (the operator's host) has any business on it.
+    expect(fetchImpl.mock.calls[0][1]).toMatchObject({
+      credentials: 'omit',
+      referrerPolicy: 'no-referrer',
+    });
+    expect(live).toBe(true);
+    expect(fetchedAt).toBeTruthy();
+    expect(registry.source).toBe('live');
+  });
+
+  it.each([
+    ['a network failure', new Error('Failed to fetch')],
+    ['a refusal', { ok: false, status: 403, json: async () => ({}) }],
+    ['a page that is not a catalogue', { ok: true, status: 200, json: async () => ({ html: 1 }) }],
+  ])('falls back to the bundled snapshot quietly on %s', async (_case, response) => {
+    const fetchImpl = answering(response as Partial<Response> | Error);
+    const answer = await fetchRegistryInBrowser(fetchImpl);
+    expect(answer).toHaveProperty('error');
+
+    (window as unknown as { electron: unknown }).electron = { fetchRegistry: async () => answer };
+    const { registry, live } = await loadRegistry();
+    expect(live).toBe(false);
+    expect(registry).toBe(FALLBACK_REGISTRY);
+  });
+
+  /**
+   * `main.ts` imports Electron and cannot be imported here, so the desktop's
+   * address is read from its source: two spellings of one address drift
+   * silently, and the browser would show a different catalogue.
+   */
+  it('names the address main.ts fetches for the desktop', () => {
+    const main = readFileSync(path.join(__dirname, '..', '..', 'main.ts'), 'utf-8');
+    const declared = main.match(/^const REGISTRY_URL = '([^']+)';$/m);
+    expect(declared?.[1]).toBe(LIVE_REGISTRY_URL);
+  });
+
+  /**
+   * The stand-in itself cannot be imported: `renderer.tsx` boots the app. So
+   * its source is held to calling this module's fetch with no argument of its
+   * own, which is the call `loadRegistry` makes.
+   */
+  it('is the stand-in renderer.tsx installs, taking no URL', () => {
+    const renderer = readFileSync(path.join(__dirname, '..', '..', 'renderer.tsx'), 'utf-8');
+    const standIn = renderer.match(/^\s*fetchRegistry: (.*(?:\n\s+.*)?),$/m)?.[1] ?? '';
+    expect(standIn).toMatch(/^async \(\) =>/);
+    expect(standIn).toMatch(/fetchRegistryInBrowser\(\)/);
   });
 });

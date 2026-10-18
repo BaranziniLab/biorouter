@@ -6,6 +6,7 @@ import {
   basenameFromPath,
   decodeResourceHtml,
   dirnameFromPath,
+  executedCallFiles,
   extensionFromPath,
   fileArtifactPathsFromToolCall,
   analyzeDelimitedColumns,
@@ -1038,6 +1039,222 @@ describe('fileArtifactPathsFromToolCall — code_execution wrapper', () => {
     expect(
       fileArtifactPathsFromToolCall('code_execution__execute_code', { code: 42 }, WORKING_DIR)
     ).toEqual([]);
+  });
+
+  // Measured with GPT-5.5: the script built the command in a variable and passed
+  // the name, the file was written, and the panel never offered it. A name was
+  // looked up only inside a `${…}` template, never as the argument itself.
+  it('resolves a command passed as a name bound to a string — the measured repro', () => {
+    const code = [
+      'import { shell } from "developer";',
+      'const cmd = "mkdir -p /tmp/smoke && printf \'# Notes\\n\' > /tmp/smoke/smoke-notes.md";',
+      'shell({ command: cmd });',
+    ].join('\n');
+    expect(exec(code)).toEqual(['/tmp/smoke/smoke-notes.md']);
+  });
+
+  it.each([
+    [
+      'a path passed as a name',
+      'const p = "/work/b.md"; text_editor({ command: "write", path: p, file_text: "x" });',
+      ['/work/b.md'],
+    ],
+    [
+      'a shorthand path',
+      'const path = "/work/c.md"; text_editor({ command: "write", path, file_text: body });',
+      ['/work/c.md'],
+    ],
+    [
+      'a shorthand command',
+      'const command = "echo x > /work/d.csv"; shell({ command });',
+      ['/work/d.csv'],
+    ],
+    [
+      'a name bound to a template over a name',
+      'const dir = "/work"; const out = `${dir}/e.md`; write_file({ path: out, content: "x" });',
+      ['/work/e.md'],
+    ],
+    [
+      'a String.raw command in a name',
+      'const cmd = String.raw`set -e\nprintf "x" > /work/f.md`;\nshell({ command: cmd });',
+      ['/work/f.md'],
+    ],
+    ['a quoted key', 'write_file({ "path": "/work/g.md", content: "x" });', ['/work/g.md']],
+  ])('resolves %s', (_label, code, expected) => {
+    expect(exec(code)).toEqual(expected);
+  });
+
+  it.each([
+    ['a name bound to a concatenation', 'const p = "/work/" + name; write_file({ path: p });'],
+    ['a literal with a suffix expression', 'write_file({ path: "/work/report" + ext });'],
+    ['a name assigned twice', 'let p = "/work/a.md"; p = "/work/b.md"; write_file({ path: p });'],
+    [
+      'a name declared twice',
+      'const p = "/work/a.md"; for (const p of paths) write_file({ path: p });',
+    ],
+    ['a name nothing binds', 'write_file({ path: target });'],
+    ['a spread that could supply the path', 'write_file({ path: "/work/a.md", ...overrides });'],
+    [
+      'a text_editor view through a name',
+      'const c = "view"; text_editor({ command: c, path: "/work/a.md" });',
+    ],
+  ])('skips %s rather than guessing', (_label, code) => {
+    expect(exec(code)).toEqual([]);
+  });
+
+  it('reads keys only at the top level of the call object', () => {
+    const code =
+      'write_file({ content: "x, path: \'/etc/passwd\'", meta: { path: "/etc/hosts" }, path: "/work/real.md" });';
+    expect(exec(code)).toEqual(['/work/real.md']);
+  });
+
+  it('applies the command gate to str_replace_editor too', () => {
+    expect(exec('str_replace_editor({ command: "view", path: "/work/a.md" });')).toEqual([]);
+    expect(exec('str_replace_editor({ command: "str_replace", path: "/work/a.md" });')).toEqual([
+      '/work/a.md',
+    ]);
+  });
+});
+
+// The result of an execute_code call records every call its script made, with
+// the arguments it ran with and whether it succeeded (`biorouter/tool-calls`).
+// That is read in preference to the source; the scan is the fallback for a
+// result from before the records existed.
+describe('fileArtifactPathsFromToolCall — a script result’s call records', () => {
+  type Call = { tool: string; args: string; status: string };
+  const resultWith = (calls: unknown, extra: Record<string, unknown> = {}) => ({
+    status: 'success',
+    value: { content: [], _meta: { 'biorouter/tool-calls': calls, ...extra } },
+  });
+  const ok = (tool: string, args: unknown): Call => ({
+    tool,
+    args: typeof args === 'string' ? args : JSON.stringify(args),
+    status: 'ok',
+  });
+  const failed = (tool: string, args: unknown): Call => ({ ...ok(tool, args), status: 'error' });
+  const exec = (code: string, result: unknown) =>
+    fileArtifactPathsFromToolCall(
+      'code_execution__execute_code',
+      { code, tool_graph: [] },
+      WORKING_DIR,
+      result
+    );
+  // A record's args are cut at 2 KB and end with an ellipsis, exactly as the
+  // backend's `truncate_record_text` writes them.
+  const truncated = (args: Record<string, unknown>) => `${JSON.stringify(args).slice(0, 2048)}…`;
+
+  it('reads the resolved arguments, whatever the script computed them from', () => {
+    const code = 'for (const name of names) shell({ command: build(name) });';
+    const result = resultWith([
+      ok('developer__shell', { command: 'printf hi > /tmp/smoke/a.md' }),
+      ok('developer__text_editor', { command: 'write', path: 'notes/b.md', file_text: 'x' }),
+    ]);
+    expect(exec(code, result)).toEqual(['/tmp/smoke/a.md', '/home/ada/project/notes/b.md']);
+  });
+
+  it('adds nothing from a call that failed, though the source names it', () => {
+    const code = 'shell({ command: "printf hi > /tmp/smoke/a.md" });';
+    const result = resultWith([
+      failed('developer__shell', { command: 'printf hi > /tmp/smoke/a.md' }),
+    ]);
+    expect(exec(code, result)).toEqual([]);
+  });
+
+  it('adds nothing for a call the script never made, though the source names it', () => {
+    const code = 'if (false) write_file({ path: "/tmp/never.md" }); todo_update({ id: "1" });';
+    expect(exec(code, resultWith([ok('todo__todo_update', { id: '1' })]))).toEqual([]);
+  });
+
+  it('keeps the direct rules: a view and a read-only office operation write nothing', () => {
+    const result = resultWith([
+      ok('developer__text_editor', { command: 'view', path: '/tmp/a.md' }),
+      ok('computercontroller__xlsx_tool', { operation: 'get_cell', path: '/tmp/b.xlsx' }),
+      ok('computercontroller__xlsx_tool', { operation: 'update_cell', path: '/tmp/c.xlsx' }),
+    ]);
+    expect(exec('', result)).toEqual(['/tmp/c.xlsx']);
+  });
+
+  it('reads the path of a write whose args were cut, from the fields before the cut', () => {
+    const args = { command: 'write', path: '/tmp/big.md', file_text: 'line\n'.repeat(1000) };
+    const result = resultWith([ok('developer__text_editor', truncated(args))]);
+    expect(exec('text_editor(opts);', result)).toEqual(['/tmp/big.md']);
+  });
+
+  it('falls back to the source when a cut write named its path after the cut', () => {
+    const args = { command: 'write', file_text: 'line\n'.repeat(1000), path: '/tmp/late.md' };
+    const code = 'text_editor({ command: "write", file_text: body, path: "/tmp/late.md" });';
+    expect(exec(code, resultWith([ok('developer__text_editor', truncated(args))]))).toEqual([
+      '/tmp/late.md',
+    ]);
+    // With no source to fall back on, a cut it cannot read claims nothing.
+    expect(
+      exec('text_editor(opts);', resultWith([ok('developer__text_editor', truncated(args))]))
+    ).toEqual([]);
+  });
+
+  it('never reads a cut write without its command', () => {
+    const args = { path: '/tmp/a.md', file_text: 'x'.repeat(4000), command: 'view' };
+    expect(exec('', resultWith([ok('developer__text_editor', truncated(args))]))).toEqual([]);
+  });
+
+  it('falls back to the source, minus failed calls, when calls went unrecorded', () => {
+    const code = [
+      'write_file({ path: "/tmp/scanned.md", content: "x" });',
+      'write_file({ path: "/tmp/failed.md", content: "x" });',
+    ].join('\n');
+    const result = resultWith(
+      [
+        ok('developer__write_file', { path: '/tmp/recorded.md' }),
+        failed('developer__write_file', { path: '/tmp/failed.md' }),
+      ],
+      { 'biorouter/tool-calls-dropped': 3 }
+    );
+    expect(exec(code, result)).toEqual(['/tmp/recorded.md', '/tmp/scanned.md']);
+  });
+
+  it('scans the source for a result from before the records existed', () => {
+    const code = 'const cmd = "printf hi > /tmp/old.md"; shell({ command: cmd });';
+    expect(exec(code, { status: 'success', value: { content: [] } })).toEqual(['/tmp/old.md']);
+    expect(exec(code, undefined)).toEqual(['/tmp/old.md']);
+  });
+
+  it('reads a call result passed without the message wrapper', () => {
+    const result = {
+      content: [],
+      _meta: { 'biorouter/tool-calls': [ok('developer__write_file', { path: '/tmp/a.md' })] },
+    };
+    expect(executedCallFiles(result)).toEqual({
+      written: ['/tmp/a.md'],
+      failed: [],
+      complete: true,
+    });
+  });
+
+  it('treats a malformed successful record as unreadable rather than as nothing', () => {
+    const files = executedCallFiles(
+      resultWith([{ tool: 'developer__shell', status: 'ok' }, null, 7])
+    );
+    expect(files).toEqual({ written: [], failed: [], complete: false });
+  });
+
+  it('anchors a cut shell command only when its targets need no anchor', () => {
+    const absolute = {
+      command: 'printf x > /tmp/abs.md',
+      timeout: 1,
+      working_directory: `/w${'x'.repeat(4000)}`,
+    };
+    const relative = {
+      command: 'printf x > rel.md',
+      timeout: 1,
+      working_directory: `/w${'x'.repeat(4000)}`,
+    };
+    expect(
+      executedCallFiles(resultWith([ok('developer__shell', truncated(absolute))]), WORKING_DIR)
+    ).toEqual({ written: ['/tmp/abs.md'], failed: [], complete: true });
+    expect(
+      executedCallFiles(resultWith([ok('developer__shell', truncated(relative))]), WORKING_DIR)
+        ?.complete
+    ).toBe(false);
   });
 });
 

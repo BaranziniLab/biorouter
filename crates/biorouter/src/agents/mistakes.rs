@@ -198,12 +198,23 @@ pub enum RetryPoint {
 /// inserted as its own user row after trailing tool results, so the request as
 /// sent never ends on one. `added` is what this iteration produced before it
 /// failed.
+///
+/// Whitespace alone is not a partial reply, as it is not an answer anywhere
+/// else in the stream decoding (R14): a first call that streamed `"\n\n"` and
+/// then failed used to be told to continue a reply it had not begun.
 pub fn retry_point(
     conversation: &[crate::conversation::message::Message],
     added: &[crate::conversation::message::Message],
 ) -> RetryPoint {
     use crate::conversation::message::MessageContent;
-    if added.iter().any(|message| message.is_agent_visible()) {
+    let began_a_reply = added.iter().any(|message| {
+        message.is_agent_visible()
+            && message.content.iter().any(|content| match content {
+                MessageContent::Text(text) => !text.text.trim().is_empty(),
+                _ => true,
+            })
+    });
+    if began_a_reply {
         return RetryPoint::AfterPartialReply;
     }
     let follows_tool_results = conversation
@@ -356,6 +367,15 @@ impl MistakeTracker {
         self.provider_errors = 0;
     }
 
+    /// Whether [`Self::observe_provider_error`] would retry `error` now. The
+    /// reply loop asks before it records the error, to decide what becomes of
+    /// text that was released only because the error cut it.
+    pub fn would_retry(&self, config: &MistakeConfig, error: &ProviderError) -> bool {
+        config.enabled
+            && is_recoverable(error)
+            && self.provider_errors < config.provider_error_retries
+    }
+
     /// A provider call failed. Decide whether this reply gets another attempt.
     pub fn observe_provider_error(
         &mut self,
@@ -364,7 +384,7 @@ impl MistakeTracker {
         point: RetryPoint,
     ) -> ProviderErrorAction {
         let spent = self.provider_errors;
-        if !config.enabled || !is_recoverable(error) || spent >= config.provider_error_retries {
+        if !self.would_retry(config, error) {
             return ProviderErrorAction::Stop {
                 notice: stop_notice(error, spent),
             };
@@ -502,14 +522,23 @@ fn recovery_notice(
              {NOT_FROM_THE_USER}"
         )),
         RetryPoint::AfterToolResults => Some(format!(
-            "The model call after the tool results above did not complete: {error}. No tool ran \
+            "The model call after the tool results above did not complete: {}. No tool ran \
              in it, and Biorouter is retrying ({attempt}/{limit}). If the failure looks like \
              something about the request itself (an oversized or malformed payload, an \
              unsupported argument), take a smaller or simpler next step than the one you were \
              about to take; otherwise continue the user's task as you would have. \
-             {NOT_FROM_THE_USER}"
+             {NOT_FROM_THE_USER}",
+            without_end_stop(&error.to_string())
         )),
     }
+}
+
+/// `text` without the full stop it ends in, for a frame that supplies its own:
+/// the shared-cache error ends "as Biorouter's own Llama Server does.", and
+/// the note read "does.. No tool ran". The user-facing retry notice trims the
+/// same way.
+fn without_end_stop(text: &str) -> &str {
+    text.trim_end().trim_end_matches(['.', '!', '?']).trim_end()
 }
 
 /// The user-facing message when the turn ends on a provider error.
@@ -938,6 +967,86 @@ mod tests {
             .with_text("notice")
             .with_visibility(true, false)];
         assert_eq!(retry_point(&asked, &shown_only_partial), RetryPoint::Resend);
+    }
+
+    /// Live against a scripted llama-server, a first call that streamed only
+    /// "\n\n" before the shared-cache frame was told to continue a reply it had
+    /// not begun. Whitespace is not a reply (R14), so the retry is a re-send.
+    #[test]
+    fn whitespace_alone_is_not_a_partial_reply() {
+        use crate::conversation::message::Message;
+
+        let asked = vec![Message::user().with_text("test")];
+        let blank = vec![
+            Message::assistant().with_text("\n\n"),
+            Message::assistant().with_text(" \t"),
+        ];
+        assert_eq!(retry_point(&asked, &blank), RetryPoint::Resend);
+
+        let mut mid_task = asked.clone();
+        mid_task.push(Message::user().with_tool_response(
+            "call-1",
+            Ok(CallToolResult::success(vec![Content::text("done")])),
+        ));
+        assert_eq!(retry_point(&mid_task, &blank), RetryPoint::AfterToolResults);
+
+        let begun = vec![Message::assistant().with_text("\n\nThe")];
+        assert_eq!(retry_point(&asked, &begun), RetryPoint::AfterPartialReply);
+    }
+
+    /// The error text ends in a full stop of its own, and the note's frame
+    /// supplies one, which read "…as Biorouter's own Llama Server does.. No
+    /// tool ran in it".
+    #[test]
+    fn the_mid_task_note_has_one_full_stop_after_the_error() {
+        let error = ProviderError::ServerError(
+            "A server that runs one request at a time cannot hit this: start it with \
+             --parallel 1, as Biorouter's own Llama Server does."
+                .to_string(),
+        );
+        let notice = recovery_notice(&error, RetryPoint::AfterToolResults, 1, 1).expect("a note");
+        assert!(
+            notice.contains("Llama Server does. No tool ran in it"),
+            "{notice}"
+        );
+        assert!(!notice.contains(".."), "{notice}");
+
+        let bare = ProviderError::ServerError("502".to_string());
+        let notice = recovery_notice(&bare, RetryPoint::AfterToolResults, 1, 1).expect("a note");
+        assert!(
+            notice.contains("Server error: 502. No tool ran"),
+            "{notice}"
+        );
+    }
+
+    /// `would_retry` is the decision `observe_provider_error` makes, asked
+    /// without spending the budget.
+    #[test]
+    fn would_retry_answers_as_the_error_is_then_handled() {
+        let config = MistakeConfig::default();
+        let mut tracker = MistakeTracker::default();
+        let transient = ProviderError::ServerError("Context size has been exceeded.".to_string());
+        let fatal = ProviderError::Authentication("bad key".to_string());
+
+        assert!(!tracker.would_retry(&config, &fatal));
+        assert!(!tracker.would_retry(&MistakeConfig::disabled(), &transient));
+        assert!(tracker.would_retry(&config, &transient));
+        assert!(
+            tracker.would_retry(&config, &transient),
+            "asking spends nothing"
+        );
+        assert!(matches!(
+            tracker.observe_provider_error(&config, &transient, RetryPoint::Resend),
+            ProviderErrorAction::Recover { .. }
+        ));
+        assert!(
+            !tracker.would_retry(&config, &transient),
+            "the budget is spent"
+        );
+        assert!(matches!(
+            tracker.observe_provider_error(&config, &transient, RetryPoint::Resend),
+            ProviderErrorAction::Stop { .. }
+        ));
     }
 
     #[test]

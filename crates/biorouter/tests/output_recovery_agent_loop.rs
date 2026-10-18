@@ -20,7 +20,9 @@ use biorouter::conversation::message::{Message, MessageContent};
 use biorouter::model::ModelConfig;
 use biorouter::privacy::affiliation::ModelAffiliation;
 use biorouter::privacy::ProviderTier;
-use biorouter::providers::base::{Provider, ProviderMetadata, ProviderUsage, Usage};
+use biorouter::providers::base::{
+    MessageStream, Provider, ProviderMetadata, ProviderStreamItem, ProviderUsage, Usage,
+};
 use biorouter::providers::errors::{ProviderError, ProviderErrorKind};
 use biorouter::providers::utils::map_http_error_to_provider_error;
 use biorouter::session::session_manager::SessionType;
@@ -1256,4 +1258,382 @@ async fn reasoning_only_max_tokens_replays_signed_reasoning_once_and_finishes() 
     assert!(final_text);
     let counts = session_manager.get_token_counts(&session_id).await.unwrap();
     assert_eq!(counts.accumulated_output_tokens, Some(10));
+}
+
+/// What a tool call written as text looks like when llama-server's shared-cache
+/// collision cuts it partway (live, against a scripted llama-server).
+const CUT_CALL: &str = r#"{"name": "developer__shell", "arguments": {"comm"#;
+const CUT_ANSWER: &str = "The command printed hi.";
+
+/// A streaming provider whose first `failures` calls stream `first` in small
+/// chunks and then fail with llama-server's in-stream shared-cache error, a
+/// retryable server fault. With `recover`, the chunks go through the local
+/// providers' text recovery, as on Llama Server and Ollama, which holds back
+/// text that could still be a tool call.
+struct CutStreamProvider {
+    calls: AtomicUsize,
+    failures: usize,
+    first: &'static str,
+    recover: bool,
+    /// The agent-visible text of every request, `<info-msg>` block stripped.
+    sent: Mutex<Vec<Vec<String>>>,
+    /// Whether each request carried the `<info-msg>` block.
+    with_block: Mutex<Vec<bool>>,
+}
+
+impl CutStreamProvider {
+    fn new(first: &'static str, failures: usize, recover: bool) -> Self {
+        Self {
+            calls: AtomicUsize::new(0),
+            failures,
+            first,
+            recover,
+            sent: Mutex::default(),
+            with_block: Mutex::default(),
+        }
+    }
+
+    fn record(&self, messages: &[Message]) {
+        let visible: Vec<&Message> = messages
+            .iter()
+            .filter(|message| message.is_agent_visible())
+            .collect();
+        self.with_block
+            .lock()
+            .unwrap()
+            .push(visible.iter().any(|message| {
+                message
+                    .as_concat_text()
+                    .contains(biorouter::agents::extension_manager::MOIM_OPEN_TAG)
+            }));
+        self.sent.lock().unwrap().push(
+            visible
+                .iter()
+                .map(|message| {
+                    format!(
+                        "{:?}: {}",
+                        message.role,
+                        without_per_request_context(&message.as_concat_text()).trim()
+                    )
+                })
+                .collect(),
+        );
+    }
+}
+
+#[async_trait]
+impl Provider for CutStreamProvider {
+    async fn complete(
+        &self,
+        _system_prompt: &str,
+        _messages: &[Message],
+        _tools: &[Tool],
+    ) -> Result<(Message, ProviderUsage), ProviderError> {
+        Ok((
+            Message::assistant().with_text(CUT_ANSWER),
+            ProviderUsage::new("mock-model".to_string(), Usage::default()),
+        ))
+    }
+
+    async fn complete_with_model(
+        &self,
+        _model_config: &ModelConfig,
+        system_prompt: &str,
+        messages: &[Message],
+        tools: &[Tool],
+    ) -> Result<(Message, ProviderUsage), ProviderError> {
+        self.complete(system_prompt, messages, tools).await
+    }
+
+    async fn stream(
+        &self,
+        _system: &str,
+        messages: &[Message],
+        tools: &[Tool],
+    ) -> Result<MessageStream, ProviderError> {
+        use biorouter::providers::formats::text_tool_calls::{
+            recover_leaked_tool_calls, RecoveryContext,
+        };
+        self.record(messages);
+        let call = self.calls.fetch_add(1, Ordering::SeqCst);
+        let id = format!("reply-{call}");
+        let items: Vec<Result<ProviderStreamItem, ProviderError>> = if call < self.failures {
+            let mut items: Vec<Result<ProviderStreamItem, ProviderError>> = self
+                .first
+                .as_bytes()
+                .chunks(5)
+                .map(|chunk| {
+                    let chunk = String::from_utf8(chunk.to_vec()).unwrap();
+                    Ok((
+                        Some(Message::assistant().with_id(id.clone()).with_text(chunk)),
+                        None,
+                        None,
+                    ))
+                })
+                .collect();
+            items.push(Err(ProviderError::ServerError(
+                "Context size has been exceeded.".to_string(),
+            )));
+            items
+        } else {
+            let mut usage = ProviderUsage::new(
+                "mock-model".to_string(),
+                Usage::new(Some(10), Some(5), Some(15)),
+            );
+            usage.finish_reason = Some("stop".to_string());
+            vec![Ok((
+                Some(Message::assistant().with_id(id).with_text(CUT_ANSWER)),
+                Some(usage),
+                None,
+            ))]
+        };
+        let stream: MessageStream = Box::pin(futures::stream::iter(items));
+        Ok(if self.recover {
+            recover_leaked_tool_calls(
+                stream,
+                RecoveryContext {
+                    tools: tools.to_vec(),
+                    provider: "llamacpp",
+                    model: "mock-model".to_string(),
+                },
+            )
+        } else {
+            stream
+        })
+    }
+
+    fn supports_streaming(&self) -> bool {
+        true
+    }
+
+    fn get_model_config(&self) -> ModelConfig {
+        ModelConfig::new_or_fail("mock-model")
+    }
+
+    fn metadata() -> ProviderMetadata {
+        AlternatingStormProvider::metadata()
+    }
+
+    fn get_name(&self) -> &str {
+        "output-recovery-mock"
+    }
+}
+
+#[derive(Default)]
+struct CutStreamReply {
+    /// User-visible text and notices, in the order they were yielded.
+    shown: Vec<String>,
+    /// The stored conversation's rows, as `"{role}: {text}"`.
+    stored: Vec<String>,
+    /// Whether any stored text item still carries a `_meta`.
+    stored_meta: bool,
+    aborted: bool,
+}
+
+/// One reply to "Run echo hi in the shell." against `provider`, with one
+/// provider-error retry, as shipped.
+async fn reply_through_a_cut_stream(provider: Arc<CutStreamProvider>) -> CutStreamReply {
+    let overrides = HashMap::from([
+        (
+            "BIOROUTER_MISTAKE_STREAK_DETECTION".to_string(),
+            "true".to_string(),
+        ),
+        (
+            "BIOROUTER_PROVIDER_ERROR_RETRIES".to_string(),
+            "1".to_string(),
+        ),
+    ]);
+    with_config_overrides(overrides, async {
+        let (agent, sessions, session_id, _work, _data, _permissions) = test_agent(provider).await;
+        let mut reply = CutStreamReply::default();
+        tokio::time::timeout(Duration::from_secs(10), async {
+            let stream = agent
+                .reply(
+                    Message::user().with_text("Run echo hi in the shell."),
+                    SessionConfig {
+                        id: session_id.clone(),
+                        schedule_id: None,
+                        max_turns: Some(4),
+                        max_tool_calls: None,
+                        budget: None,
+                        retry_config: None,
+                        reasoning_effort: None,
+                    },
+                    None,
+                )
+                .await
+                .unwrap();
+            tokio::pin!(stream);
+            while let Some(event) = stream.next().await {
+                match event.unwrap() {
+                    AgentEvent::Message(message) if message.is_user_visible() => {
+                        for content in &message.content {
+                            match content {
+                                MessageContent::Text(text) => reply.shown.push(text.text.clone()),
+                                MessageContent::SystemNotification(notice) => {
+                                    reply.shown.push(notice.msg.clone())
+                                }
+                                _ => {}
+                            }
+                        }
+                    }
+                    AgentEvent::TurnAborted { .. } => reply.aborted = true,
+                    _ => {}
+                }
+            }
+        })
+        .await
+        .expect("the reply settles");
+        let stored = sessions
+            .get_session(&session_id, true)
+            .await
+            .unwrap()
+            .conversation
+            .unwrap();
+        for message in stored.messages() {
+            reply
+                .stored
+                .push(format!("{:?}: {}", message.role, message.as_concat_text()));
+            reply.stored_meta |= message.content.iter().any(
+                |content| matches!(content, MessageContent::Text(text) if text.meta.is_some()),
+            );
+        }
+        reply
+    })
+    .await
+}
+
+/// Live, against a scripted llama-server: the fragment was shown and saved as a
+/// reply, the retry was told to "continue the reply from exactly where it
+/// stopped", and the model wrote the rest of the JSON as text. Nobody had seen
+/// the fragment (it was held back as a possible call), so a retried error now
+/// drops it, and the retry is the request that was sent.
+#[tokio::test]
+async fn a_call_cut_by_a_retried_error_is_neither_shown_nor_kept() {
+    let provider = Arc::new(CutStreamProvider::new(CUT_CALL, 1, true));
+    let reply = reply_through_a_cut_stream(provider.clone()).await;
+
+    assert_eq!(provider.calls.load(Ordering::SeqCst), 2);
+    let sent = provider.sent.lock().unwrap().clone();
+    assert_eq!(sent[0], sent[1], "the retry re-sends the same request");
+    assert!(
+        sent[1]
+            .iter()
+            .all(|row| !row.contains("biorouter-loop-guard")),
+        "{sent:?}"
+    );
+    assert!(
+        reply
+            .shown
+            .iter()
+            .all(|text| !text.contains("developer__shell")),
+        "{:?}",
+        reply.shown
+    );
+    assert!(reply
+        .shown
+        .iter()
+        .any(|text| text.contains("Trying again (1/1)")));
+    assert!(reply.shown.iter().any(|text| text == CUT_ANSWER));
+    assert!(!reply.aborted);
+    assert!(
+        reply
+            .stored
+            .iter()
+            .all(|row| !row.contains("developer__shell") && !row.contains("biorouter-loop-guard")),
+        "{:?}",
+        reply.stored
+    );
+}
+
+/// When the error ends the turn, the person still sees what the model wrote,
+/// ahead of the notice, and it is stored as plain text.
+#[tokio::test]
+async fn a_call_cut_by_an_error_that_ends_the_turn_is_shown_before_the_notice() {
+    let provider = Arc::new(CutStreamProvider::new(CUT_CALL, 2, true));
+    let reply = reply_through_a_cut_stream(provider.clone()).await;
+
+    assert_eq!(provider.calls.load(Ordering::SeqCst), 2);
+    let sent = provider.sent.lock().unwrap().clone();
+    assert_eq!(sent[0], sent[1], "the first retry was still a re-send");
+    assert!(reply.aborted);
+    let fragment = reply
+        .shown
+        .iter()
+        .position(|text| text == CUT_CALL)
+        .unwrap_or_else(|| panic!("the fragment is shown: {:?}", reply.shown));
+    let notice = reply
+        .shown
+        .iter()
+        .position(|text| text.starts_with("Ran into this error"))
+        .unwrap_or_else(|| panic!("the stop notice: {:?}", reply.shown));
+    assert!(fragment < notice, "{:?}", reply.shown);
+    assert_eq!(
+        reply
+            .shown
+            .iter()
+            .filter(|text| text.contains("developer__shell"))
+            .count(),
+        1,
+        "the first attempt's fragment was dropped: {:?}",
+        reply.shown
+    );
+    assert!(
+        reply
+            .stored
+            .iter()
+            .any(|row| row == &format!("Assistant: {CUT_CALL}")),
+        "{:?}",
+        reply.stored
+    );
+    assert!(!reply.stored_meta, "the mark is not stored");
+}
+
+/// Live, against a scripted llama-server: a first call that streamed only
+/// "\n\n" was told to continue a reply it had not begun, and the retry went
+/// without the `<info-msg>` block because trimming that row counted as an
+/// unexpected issue. Through a provider without text recovery, so the
+/// whitespace reaches the conversation.
+#[tokio::test]
+async fn a_whitespace_partial_is_a_resend_that_keeps_the_block() {
+    let provider = Arc::new(CutStreamProvider::new("\n\n", 1, false));
+    let reply = reply_through_a_cut_stream(provider.clone()).await;
+
+    assert_eq!(provider.calls.load(Ordering::SeqCst), 2);
+    let sent = provider.sent.lock().unwrap().clone();
+    assert!(
+        sent[1]
+            .iter()
+            .all(|row| !row.contains("biorouter-loop-guard")),
+        "{sent:?}"
+    );
+    assert_eq!(sent[0], sent[1], "the retry re-sends the same request");
+    assert_eq!(
+        provider.with_block.lock().unwrap().as_slice(),
+        [true, true],
+        "both requests carry the block"
+    );
+    assert!(reply.shown.iter().any(|text| text == CUT_ANSWER));
+}
+
+/// The retry after a cut-off reply that ends in a space keeps the block.
+#[tokio::test]
+async fn a_partial_reply_ending_in_whitespace_keeps_the_block() {
+    let provider = Arc::new(CutStreamProvider::new("The quick brown fox ", 1, false));
+    let reply = reply_through_a_cut_stream(provider.clone()).await;
+
+    assert_eq!(provider.calls.load(Ordering::SeqCst), 2);
+    let sent = provider.sent.lock().unwrap().clone();
+    assert!(
+        sent[1]
+            .iter()
+            .any(|row| row.contains("biorouter-loop-guard")),
+        "a cut-off reply is still continued: {sent:?}"
+    );
+    assert_eq!(
+        provider.with_block.lock().unwrap().as_slice(),
+        [true, true],
+        "both requests carry the block"
+    );
+    assert!(reply.shown.iter().any(|text| text == CUT_ANSWER));
 }

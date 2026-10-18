@@ -113,6 +113,11 @@ use tower_http::services::ServeDir;
 /// The name of the session cookie the token exchange sets.
 const SESSION_COOKIE: &str = "biorouter_session";
 
+/// The name of the cookie that says a browser redeemed a valid token at the
+/// address it is on, set beside the session cookie when that one is scoped to a
+/// declared path ([`WebUi::wrong_address`]).
+const EXCHANGED_COOKIE: &str = "biorouter_exchanged";
+
 /// Everything the serving path needs, resolved once at startup.
 #[derive(Clone)]
 pub struct WebUi {
@@ -128,6 +133,14 @@ pub struct WebUi {
     /// (`routes::PublicUrl`). Behind JupyterHub every user's server shares one
     /// hostname, and a cookie at `/` would carry this token to all of them.
     cookie_path: String,
+    /// The address `--public-url` declared, the declaration `cookie_path` came
+    /// from. Its scheme decides `Secure` behind a proxy that rewrites `Host`
+    /// ([`secure_attribute`]), and a browser that redeemed its token somewhere
+    /// else is pointed at it ([`WebUi::wrong_address`]).
+    public: Option<super::PublicUrl>,
+    /// The value of [`EXCHANGED_COOKIE`]: random per daemon run, so the cookie a
+    /// previous daemon set does not count, and it carries nothing of the token.
+    exchange_marker: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -147,6 +160,9 @@ impl WebUi {
     ///
     /// `public_path` is the path of the address `biorouter serve --public-url`
     /// declared, `/` or a prefix with no trailing slash, and scopes the cookie.
+    /// The rest of that declaration is read from where `commands::agent` read
+    /// the path, [`super::declared_public_url`], because the path alone does not
+    /// carry the scheme or the address to name.
     pub fn new(
         web_dir: &Path,
         secret_key: &str,
@@ -158,7 +174,52 @@ impl WebUi {
             index_html: inject_runtime_config(&raw, secret_key),
             browser_token,
             cookie_path: public_path.unwrap_or("/").to_string(),
+            public: super::declared_public_url()
+                .filter(|declared| public_path == Some(declared.path()))
+                .cloned(),
+            exchange_marker: hex::encode(rand::random::<[u8; 16]>()),
         })
+    }
+
+    /// Does the request carry a session cookie holding the token? Any of them
+    /// counts ([`session_cookies`]); each is compared in constant time.
+    fn cookie_matches(&self, headers: &HeaderMap) -> bool {
+        self.browser_token.is_none()
+            || session_cookies(headers).any(|presented| self.token_matches(Some(presented)))
+    }
+
+    /// The `Set-Cookie` values a redeemed token answers with: the session
+    /// cookie, scoped to the declared path, and, when that path is not `/`, the
+    /// [`EXCHANGED_COOKIE`] marker with no `Path`, which the browser scopes to
+    /// the address it is really on. The marker comes back on the next request
+    /// whether or not that address is under the declared path; the session
+    /// cookie comes back only when it is. That difference is the whole of
+    /// [`WebUi::wrong_address`]'s evidence.
+    fn exchange_cookies(&self, token: &str, secure: &str) -> Vec<String> {
+        let mut cookies = vec![format!(
+            "{SESSION_COOKIE}={token}; Path={}; HttpOnly; SameSite=Strict{secure}",
+            self.cookie_path
+        )];
+        if self.cookie_path != "/" {
+            cookies.push(format!(
+                "{EXCHANGED_COOKIE}={}; Max-Age=300; HttpOnly; SameSite=Strict{secure}",
+                self.exchange_marker
+            ));
+        }
+        cookies
+    }
+
+    /// The declared address, when a request without a usable session cookie
+    /// comes from a browser that redeemed a valid token at another address:
+    /// the marker [`WebUi::exchange_cookies`] set came back and the session
+    /// cookie did not, so the browser is outside the path the cookie is scoped
+    /// to. The proxy strips that path before the daemon sees it, so the cookies
+    /// are the only witness the daemon has.
+    fn wrong_address(&self, headers: &HeaderMap) -> Option<&super::PublicUrl> {
+        let public = self.public.as_ref()?;
+        cookie_values(headers, EXCHANGED_COOKIE)
+            .any(|presented| super::secret_matches(presented, &self.exchange_marker))
+            .then_some(public)
     }
 
     fn token_matches(&self, presented: Option<&str>) -> bool {
@@ -237,23 +298,32 @@ fn inject_runtime_config(raw: &str, secret_key: &str) -> String {
     }
 }
 
-/// Read one cookie out of a `Cookie` header.
+/// Every value a request carries for the cookie `name`, in the order sent.
 ///
-/// Hand-rolled rather than pulling in a cookie crate: one name is read and one
-/// is written, and the parsing rule -- split on `;`, then on the first `=` --
-/// is the whole of what is needed.
-fn cookie_value<'a>(headers: &'a HeaderMap, name: &str) -> Option<&'a str> {
+/// Hand-rolled rather than pulling in a cookie crate: the parsing rule -- split
+/// on `;`, then on the first `=` -- is the whole of what is needed.
+///
+/// ⚠ All of them, not the first. A browser sends every cookie whose `Path`
+/// covers the request, the longest path first, and two cookies of one name
+/// with different paths are both kept. After `biorouter serve --public-url
+/// https://hub/user/a/proxy/9999/` set its cookie at that path, a later
+/// `serve` without the flag sets a fresh one at `/` under the same name, and
+/// the browser then sends the stale, longer-path value first. Reading only the
+/// first refused every new link with "This link needs its access token".
+fn cookie_values<'a>(headers: &'a HeaderMap, name: &'a str) -> impl Iterator<Item = &'a str> {
     headers
-        .get(header::COOKIE)?
-        .to_str()
-        .ok()?
-        .split(';')
+        .get_all(header::COOKIE)
+        .iter()
+        .filter_map(|value| value.to_str().ok())
+        .flat_map(|value| value.split(';'))
         .filter_map(|pair| pair.split_once('='))
-        .find(|(k, _)| k.trim() == name)
+        .filter(move |(k, _)| k.trim() == name)
         .map(|(_, v)| v.trim())
 }
 
-/// The session cookie the token exchange set, if the request carries one.
+/// The session cookies the request carries: every value of the cookie the
+/// token exchange sets. A caller asks whether ANY of them is the token, never
+/// reads one (see [`cookie_values`]).
 ///
 /// The one reader of [`SESSION_COOKIE`]: the shell below asks it whether to
 /// serve the document, and `auth::served_operator_capability` asks it whether a
@@ -264,8 +334,8 @@ fn cookie_value<'a>(headers: &'a HeaderMap, name: &str) -> Option<&'a str> {
 /// authentication on an API route: `check_token` still demands `X-Secret-Key`
 /// there, so the cookie can only narrow a caller that already holds the secret,
 /// never admit one that does not.
-pub(crate) fn session_cookie(headers: &HeaderMap) -> Option<&str> {
-    cookie_value(headers, SESSION_COOKIE)
+pub(crate) fn session_cookies(headers: &HeaderMap) -> impl Iterator<Item = &str> {
+    cookie_values(headers, SESSION_COOKIE)
 }
 
 /// The application shell, and the token-for-cookie exchange that gates it.
@@ -305,19 +375,28 @@ async fn index(
     // the `Referer` of anything the page later loads.
     if let Some(token) = query.t.as_deref() {
         if ui.token_matches(Some(token)) {
-            return exchange_bounce(
-                &format!(
-                    "{SESSION_COOKIE}={token}; Path={}; HttpOnly; SameSite=Strict",
-                    ui.cookie_path
-                ),
-                &mount,
-            );
+            // The cookie holds the CONFIGURED token, never the text the URL
+            // presented. With none configured every `?t=` matches, and copying
+            // it would let a `;` in it add cookie attributes, and a CR or LF
+            // fail the response; such a daemon checks no cookie, so it sets none
+            // and only moves the browser on.
+            let cookies = match ui.browser_token.as_deref() {
+                Some(expected) => {
+                    let secure = secure_attribute(&headers, &uri, ui.public.as_ref());
+                    ui.exchange_cookies(expected, secure)
+                }
+                None => Vec::new(),
+            };
+            return exchange_bounce(&cookies, &mount);
         }
         return unauthorized();
     }
 
-    if !ui.token_matches(session_cookie(&headers)) {
-        return unauthorized();
+    if !ui.cookie_matches(&headers) {
+        return match ui.wrong_address(&headers) {
+            Some(public) => wrong_address(public),
+            None => unauthorized(),
+        };
     }
 
     Response::builder()
@@ -445,8 +524,8 @@ fn not_a_navigation() -> Response<Body> {
 /// because the page's policy allows no script, and no token in the page: the
 /// cookie carries it, and the address the page moves to is the mount
 /// ([`mount_href`]), relative, so the browser stays under a proxy's path prefix.
-fn exchange_bounce(cookie: &str, mount: &str) -> Response<Body> {
-    Response::builder()
+fn exchange_bounce(cookies: &[String], mount: &str) -> Response<Body> {
+    let mut bounce = Response::builder()
         .status(StatusCode::OK)
         .header(header::CONTENT_TYPE, "text/html; charset=utf-8")
         .header(header::CACHE_CONTROL, "no-store")
@@ -455,10 +534,32 @@ fn exchange_bounce(cookie: &str, mount: &str) -> Response<Body> {
             header::CONTENT_SECURITY_POLICY,
             "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; \
              form-action 'none'; frame-ancestors 'none'",
-        )
-        .header(header::SET_COOKIE, cookie)
+        );
+    for cookie in cookies {
+        bounce = bounce.header(header::SET_COOKIE, cookie);
+    }
+    bounce
         .body(Body::from(exchange_bounce_html(mount)))
         .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
+}
+
+/// `"; Secure"` for a cookie set in answer to a request the browser sent to an
+/// `https` address, as `auth::browser_used_https` decides it from the request
+/// and the address `--public-url` declared; nothing otherwise. Never on a plain
+/// `http` address, loopback included: the browser would then keep the cookie
+/// off every request there, and `biorouter serve` on `http://127.0.0.1` would
+/// refuse its own link. Shared with an app's launch link (`routes::apps`).
+pub(crate) fn secure_attribute(
+    headers: &HeaderMap,
+    uri: &Uri,
+    public: Option<&super::PublicUrl>,
+) -> &'static str {
+    let declared = public.map(|public| public.origin().to_string());
+    if biorouter_server::auth::browser_used_https(headers, uri, declared.as_deref()) {
+        "; Secure"
+    } else {
+        ""
+    }
 }
 
 /// `mount` is a [`mount_href`], only `.` and `..` segments, so it needs no
@@ -485,6 +586,54 @@ fn unauthorized() -> Response<Body> {
          the <code>?t=</code> part. It is shown once per launch.</p>",
     )
         .into_response()
+}
+
+/// The refusal for a browser that redeemed a valid token at an address other
+/// than the one `--public-url` declared ([`WebUi::wrong_address`]): the
+/// session cookie is scoped to the declared path, so the token worked and the
+/// cookie never came back. Names the declared address, never the token. The
+/// address is the operator's, and `ps` already shows it to every account on
+/// the machine.
+fn wrong_address(public: &super::PublicUrl) -> Response<Body> {
+    let address = match public.path() {
+        "/" => format!("{}/", public.origin()),
+        path => format!("{}{path}/", public.origin()),
+    };
+    let address = html_text(&address);
+    (
+        StatusCode::UNAUTHORIZED,
+        [
+            (header::CONTENT_TYPE, "text/html; charset=utf-8"),
+            (header::CACHE_CONTROL, "no-store"),
+        ],
+        format!(
+            "<!doctype html><meta charset=utf-8><title>Biorouter</title>\
+             <body style=\"font:15px system-ui;margin:3rem auto;max-width:32rem\">\
+             <h1 style=\"font-size:1.2rem\">This is not the address Biorouter was started with</h1>\
+             <p>The access token was accepted, but Biorouter was started for \
+             <code>{address}</code>, and its access cookie works only there.</p>\
+             <p>Open that address with the <code>?t=</code> part \
+             <code>biorouter serve</code> printed. To use this address instead, \
+             restart <code>biorouter serve</code> with <code>--public-url</code> set to it.</p>"
+        ),
+    )
+        .into_response()
+}
+
+/// `text` safe to place in HTML text or a quoted attribute.
+fn html_text(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for c in text.chars() {
+        match c {
+            '&' => out.push_str("&amp;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            '"' => out.push_str("&quot;"),
+            '\'' => out.push_str("&#39;"),
+            c => out.push(c),
+        }
+    }
+    out
 }
 
 /// Add the web interface to an already-layered API router.
@@ -518,6 +667,8 @@ mod tests {
             index_html: "<html><head></head><body>shell</body></html>".to_string(),
             browser_token: token.map(str::to_string),
             cookie_path: "/".to_string(),
+            public: None,
+            exchange_marker: "marker".to_string(),
         }
     }
 
@@ -579,8 +730,11 @@ mod tests {
             header::COOKIE,
             "other=1; biorouter_session=tok; third=3".parse().unwrap(),
         );
-        assert_eq!(cookie_value(&headers, SESSION_COOKIE), Some("tok"));
-        assert_eq!(cookie_value(&headers, "absent"), None);
+        assert_eq!(
+            cookie_values(&headers, SESSION_COOKIE).collect::<Vec<_>>(),
+            ["tok"]
+        );
+        assert_eq!(cookie_values(&headers, "absent").next(), None);
     }
 
     #[test]
@@ -590,7 +744,7 @@ mod tests {
             header::COOKIE,
             "evil_biorouter_session=tok".parse().unwrap(),
         );
-        assert_eq!(cookie_value(&headers, SESSION_COOKIE), None);
+        assert_eq!(cookie_values(&headers, SESSION_COOKIE).next(), None);
     }
 
     /// The daemon secret rides in the document. A cache anywhere between the
@@ -776,6 +930,8 @@ mod tests {
             ),
             browser_token: Some("tok".into()),
             cookie_path: "/".to_string(),
+            public: None,
+            exchange_marker: "marker".to_string(),
         };
         for forwarded in [None, Some("https")] {
             for token in [None, Some("tok")] {
@@ -870,6 +1026,8 @@ mod tests {
             ),
             browser_token: None,
             cookie_path: "/".to_string(),
+            public: None,
+            exchange_marker: "marker".to_string(),
         };
         for (uri, mount) in [("/", "./"), ("/x/y/z", "../../")] {
             let res = index(
@@ -891,6 +1049,33 @@ mod tests {
                 "{uri}: {body}"
             );
             assert_eq!(body.matches("<base").count(), 1, "{body}");
+        }
+    }
+
+    /// A daemon with no token configured accepts any `?t=`, so the exchange
+    /// must not copy it into a cookie: `x; Domain=evil.test` would have added an
+    /// attribute, and a CR or LF would have failed the response with a 500. It
+    /// sets no cookie at all and still moves the browser on.
+    #[tokio::test]
+    async fn a_daemon_without_a_token_writes_no_cookie_from_the_url() {
+        let ui = ui_with(None);
+        for presented in ["x; Domain=evil.test", "x\r\nX-Injected: 1", "anything"] {
+            let res = index(
+                State(ui.clone()),
+                cookie_request(Some("navigate"), Some("document")),
+                Query(IndexQuery {
+                    t: Some(presented.into()),
+                }),
+                Uri::default(),
+            )
+            .await;
+            assert_eq!(res.status(), StatusCode::OK, "{presented:?}");
+            assert!(
+                res.headers().get(header::SET_COOKIE).is_none(),
+                "{presented:?}: {:?}",
+                res.headers().get_all(header::SET_COOKIE)
+            );
+            assert!(res.headers().get("x-injected").is_none(), "{presented:?}");
         }
     }
 
@@ -918,6 +1103,257 @@ mod tests {
         assert!(cookie.contains("; Path=/user/a/proxy/8765; "), "{cookie}");
     }
 
+    /// Every `Set-Cookie` a response carries, in order.
+    fn set_cookies(res: &Response<Body>) -> Vec<String> {
+        res.headers()
+            .get_all(header::SET_COOKIE)
+            .iter()
+            .map(|value| value.to_str().unwrap().to_string())
+            .collect()
+    }
+
+    async fn body_text(res: Response<Body>) -> String {
+        let body = axum::body::to_bytes(res.into_body(), 64 * 1024)
+            .await
+            .unwrap();
+        String::from_utf8(body.to_vec()).unwrap()
+    }
+
+    /// A navigation through an https proxy to the shell, carrying `cookie`.
+    fn proxied_navigation(host: &str, cookie: Option<&str>) -> HeaderMap {
+        let mut headers = HeaderMap::new();
+        headers.insert(header::HOST, host.parse().unwrap());
+        headers.insert("sec-fetch-mode", "navigate".parse().unwrap());
+        headers.insert("sec-fetch-dest", "document".parse().unwrap());
+        if let Some(cookie) = cookie {
+            headers.insert(header::COOKIE, cookie.parse().unwrap());
+        }
+        headers
+    }
+
+    /// The live test of PR #404 (2026-10-17): `serve --public-url
+    /// https://hub.test:18443/user/minrk/proxy/9999/` set its cookie at that
+    /// path; restarted without the flag, `serve` set a fresh one at `/` under the
+    /// same name. Chrome keeps both and sends the longer path first, so a reader
+    /// of the first value answered every new link "This link needs its access
+    /// token".
+    #[tokio::test]
+    async fn a_stale_cookie_at_a_longer_path_does_not_shadow_the_fresh_one() {
+        let ui = ui_with(Some("fresh"));
+        for headers in [
+            proxied_navigation(
+                "hub.test:18443",
+                Some("biorouter_session=stale; biorouter_session=fresh"),
+            ),
+            // Split across two header lines, as HTTP/2 allows.
+            {
+                let mut headers =
+                    proxied_navigation("hub.test:18443", Some("other=1; biorouter_session=stale"));
+                headers.append(header::COOKIE, "biorouter_session=fresh".parse().unwrap());
+                headers
+            },
+        ] {
+            let res = index(
+                State(ui.clone()),
+                headers,
+                Query(IndexQuery { t: None }),
+                "/".parse().unwrap(),
+            )
+            .await;
+            assert_eq!(res.status(), StatusCode::OK);
+        }
+        // Neither stale value alone, nor a pair of wrong ones, opens it.
+        let res = index(
+            State(ui),
+            proxied_navigation(
+                "hub.test:18443",
+                Some("biorouter_session=stale; biorouter_session=older"),
+            ),
+            Query(IndexQuery { t: None }),
+            "/".parse().unwrap(),
+        )
+        .await;
+        assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    /// The cookie names `Secure` exactly when the browser is at an `https`
+    /// address, and never on plain `http` to loopback, where the browser would
+    /// then never send it back and `serve` on `http://127.0.0.1` would refuse
+    /// its own link.
+    #[tokio::test]
+    async fn the_session_cookie_is_secure_only_behind_https() {
+        let declared = crate::routes::PublicUrl::parse("https://hub.test:18443/u/a/").unwrap();
+        let exchange = |public: Option<crate::routes::PublicUrl>, headers: HeaderMap| {
+            let ui = WebUi {
+                cookie_path: public
+                    .as_ref()
+                    .map_or("/", crate::routes::PublicUrl::path)
+                    .to_string(),
+                public,
+                ..ui_with(Some("tok"))
+            };
+            async move {
+                let res = index(
+                    State(ui),
+                    headers,
+                    Query(IndexQuery {
+                        t: Some("tok".into()),
+                    }),
+                    "/".parse().unwrap(),
+                )
+                .await;
+                assert_eq!(res.status(), StatusCode::OK);
+                set_cookies(&res)
+            }
+        };
+        let rewritten_by_a_proxy = {
+            let mut headers = proxied_navigation("127.0.0.1:8765", None);
+            headers.insert("x-forwarded-for", "10.0.0.7".parse().unwrap());
+            headers
+        };
+        for (case, public, headers, secure) in [
+            (
+                "loopback http",
+                None,
+                proxied_navigation("127.0.0.1:8765", None),
+                false,
+            ),
+            (
+                "loopback http with an https address declared",
+                Some(declared.clone()),
+                proxied_navigation("127.0.0.1:8765", None),
+                false,
+            ),
+            (
+                "an https proxy that keeps Host",
+                None,
+                proxied_navigation("biorouter.example.org", None),
+                true,
+            ),
+            (
+                "the declared https address",
+                Some(declared.clone()),
+                proxied_navigation("hub.test:18443", None),
+                true,
+            ),
+            (
+                "a proxy that rewrites Host, https declared",
+                Some(declared.clone()),
+                rewritten_by_a_proxy.clone(),
+                true,
+            ),
+            (
+                "a proxy that rewrites Host, nothing declared",
+                None,
+                rewritten_by_a_proxy,
+                false,
+            ),
+        ] {
+            let cookies = exchange(public, headers).await;
+            assert!(!cookies.is_empty(), "{case}");
+            for cookie in cookies {
+                assert_eq!(cookie.ends_with("; Secure"), secure, "{case}: {cookie}");
+            }
+        }
+    }
+
+    /// `serve --public-url https://hub.test:18443/user/minrk/biorouter/`
+    /// opened at `/user/minrk/proxy/9999/` instead: the token is valid and the
+    /// cookie, scoped to the declared path, never comes back. The refusal says
+    /// which address to open rather than that the link lacks its token.
+    #[tokio::test]
+    async fn a_valid_token_redeemed_at_another_address_names_the_declared_one() {
+        let public =
+            crate::routes::PublicUrl::parse("https://hub.test:18443/user/minrk/biorouter/")
+                .unwrap();
+        let ui = WebUi {
+            cookie_path: public.path().to_string(),
+            public: Some(public),
+            ..ui_with(Some("c0ffee5ecre7"))
+        };
+        let exchanged = index(
+            State(ui.clone()),
+            proxied_navigation("hub.test:18443", None),
+            Query(IndexQuery {
+                t: Some("c0ffee5ecre7".into()),
+            }),
+            "/".parse().unwrap(),
+        )
+        .await;
+        assert_eq!(exchanged.status(), StatusCode::OK);
+        let cookies = set_cookies(&exchanged);
+        assert_eq!(cookies.len(), 2, "{cookies:?}");
+        assert!(
+            cookies[0].starts_with("biorouter_session=c0ffee5ecre7; Path=/user/minrk/biorouter;"),
+            "{cookies:?}"
+        );
+        // The marker carries no `Path`, so the browser scopes it to where it
+        // really is, and none of the token.
+        assert!(
+            cookies[1].starts_with("biorouter_exchanged=marker;"),
+            "{cookies:?}"
+        );
+        assert!(!cookies[1].contains("Path="), "{cookies:?}");
+        assert!(!cookies[1].contains("c0ffee5ecre7"), "{cookies:?}");
+
+        // Back with the marker and no session cookie: outside the declared path.
+        let res = index(
+            State(ui.clone()),
+            proxied_navigation("hub.test:18443", Some("biorouter_exchanged=marker")),
+            Query(IndexQuery { t: None }),
+            "/".parse().unwrap(),
+        )
+        .await;
+        assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(res.headers()[header::CACHE_CONTROL], "no-store");
+        let body = body_text(res).await;
+        assert!(
+            body.contains("not the address Biorouter was started with"),
+            "{body}"
+        );
+        assert!(
+            body.contains("<code>https://hub.test:18443/user/minrk/biorouter/</code>"),
+            "{body}"
+        );
+        assert!(!body.contains("c0ffee5ecre7"), "{body}");
+
+        // A marker of another daemon run, or none, gets the usual answer.
+        for cookie in [Some("biorouter_exchanged=another"), None] {
+            let res = index(
+                State(ui.clone()),
+                proxied_navigation("hub.test:18443", cookie),
+                Query(IndexQuery { t: None }),
+                "/".parse().unwrap(),
+            )
+            .await;
+            assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
+            assert!(
+                body_text(res).await.contains("needs its access token"),
+                "{cookie:?}"
+            );
+        }
+
+        // At the root a cookie always comes back, so no marker is set.
+        let res = index(
+            State(ui_with(Some("tok"))),
+            proxied_navigation("hub.test:18443", None),
+            Query(IndexQuery {
+                t: Some("tok".into()),
+            }),
+            "/".parse().unwrap(),
+        )
+        .await;
+        assert_eq!(set_cookies(&res).len(), 1);
+    }
+
+    #[test]
+    fn html_text_escapes_what_a_url_path_may_hold() {
+        assert_eq!(
+            html_text("https://h/a&b'c\"<d>"),
+            "https://h/a&amp;b&#39;c&quot;&lt;d&gt;"
+        );
+    }
+
     #[tokio::test]
     async fn authority_without_a_host_header_still_checks_the_shell_address() {
         let res = index(
@@ -939,6 +1375,8 @@ mod tests {
             index_html: inject_runtime_config("<html><head></head><body></body></html>", "s3cr3t"),
             browser_token: Some("tok".into()),
             cookie_path: "/".to_string(),
+            public: None,
+            exchange_marker: "marker".to_string(),
         };
         for (mode, dest) in [
             (Some("cors"), Some("empty")),

@@ -72,6 +72,26 @@ fn strip_existing_moim(messages: &mut Vec<Message>) {
 const MOIM_PREAMBLE: &str = "Automatic context from Biorouter, not a message from the user. \
                              Do not reply to it; continue the user's task.";
 
+/// What normalizing the conversation with the block in it may report without
+/// the block being dropped: the merges the block's own user row causes, and
+/// two cleanups of rows the conversation already holds (trailing whitespace
+/// trimmed from an assistant reply, and a row that is empty, or left empty by
+/// that trim, removed). A request sent without the block is normalized the
+/// same way, so neither says anything about where the block went.
+///
+/// The cleanups used to drop the block. A reply cut off by a retried server
+/// error is kept, and it often ends in whitespace (`"The quick brown fox "`),
+/// so the retry was sent without it (live, against a scripted llama-server).
+/// The same went for every later request in a chat whose stored history has
+/// an assistant reply ending in a newline. Anything else, such as a tool
+/// request or response the block's position orphaned, still drops it.
+const EXPECTED_ISSUES: [&str; 4] = [
+    "Merged consecutive user messages",
+    "Merged consecutive assistant messages",
+    "Trimmed trailing whitespace from assistant message",
+    "Removed empty message",
+];
+
 /// Put [`MOIM_PREAMBLE`] first in the block, directly after the opening tag and
 /// ahead of any reminder, so the size cap (which keeps the head) never removes it.
 fn with_preamble(moim: String) -> String {
@@ -151,8 +171,9 @@ pub async fn inject_moim(
         let (fixed, issues) = normalizer.normalize(Conversation::new_unvalidated(messages));
 
         let has_unexpected_issues = issues.iter().any(|issue| {
-            !issue.contains("Merged consecutive user messages")
-                && !issue.contains("Merged consecutive assistant messages")
+            !EXPECTED_ISSUES
+                .iter()
+                .any(|expected| issue.contains(expected))
         });
 
         if has_unexpected_issues {
@@ -490,6 +511,85 @@ mod tests {
             "{block}"
         );
         assert_eq!(block.matches(MOIM_PREAMBLE).count(), 1, "{block}");
+    }
+
+    /// A reply cut off by a retried server error is kept, and it often ends in
+    /// whitespace. Trimming it used to drop the block from the retry (live,
+    /// against a scripted llama-server: "MOIM injection caused unexpected
+    /// issues: [Trimmed trailing whitespace from assistant message, ...]"), and
+    /// from every later request of a chat whose history holds such a reply.
+    #[tokio::test]
+    async fn trailing_whitespace_in_a_reply_keeps_the_block() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let em = ExtensionManager::new_without_provider(temp_dir.path().to_path_buf());
+        let note = Message::user()
+            .with_text("<biorouter-loop-guard>\ncontinue\n</biorouter-loop-guard>")
+            .with_visibility(false, true);
+        for conversation in [
+            // The retry after a cut-off reply.
+            vec![
+                Message::user().with_text("Write one sentence about foxes."),
+                Message::assistant().with_text("The quick brown fox "),
+                note.clone(),
+            ],
+            // A reply that was only whitespace.
+            vec![
+                Message::user().with_text("test"),
+                Message::assistant().with_text("\n\n"),
+                note,
+            ],
+            // A later turn, after a stored reply that ends in a newline.
+            vec![
+                Message::user().with_text("Write two lines about foxes."),
+                Message::assistant().with_text("Foxes are quick.\nFoxes are clever.\n"),
+                Message::user().with_text("Thanks"),
+            ],
+        ] {
+            let (result, injected) = inject_moim(
+                "test-session-id",
+                Conversation::new_unvalidated(conversation),
+                &em,
+                &PathBuf::from("/test/dir"),
+                &SharedNormalizer::new(),
+                None,
+                None,
+            )
+            .await;
+            assert!(injected, "{:?}", result.messages());
+            assert_eq!(count_info_msgs(&result), 1);
+        }
+    }
+
+    /// A cleanup the block's position can cause still drops it: here the
+    /// normalizer removes a tool request nothing answers.
+    #[tokio::test]
+    async fn an_orphaned_tool_request_still_drops_the_block() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let em = ExtensionManager::new_without_provider(temp_dir.path().to_path_buf());
+        let conv = Conversation::new_unvalidated(vec![
+            Message::user().with_text("Search for something"),
+            Message::assistant().with_tool_request(
+                "search_1",
+                Ok(CallToolRequestParams {
+                    task: None,
+                    name: "search".into(),
+                    arguments: None,
+                    meta: None,
+                }),
+            ),
+            Message::user().with_text("never mind"),
+        ]);
+        let (_, injected) = inject_moim(
+            "test-session-id",
+            conv,
+            &em,
+            &PathBuf::from("/test/dir"),
+            &SharedNormalizer::new(),
+            None,
+            None,
+        )
+        .await;
+        assert!(!injected);
     }
 
     /// BR-2: a cap of 0 disables MOIM truncation.
