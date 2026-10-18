@@ -925,23 +925,31 @@ impl RunCompletion {
 /// `counted` is whether the run was counted toward `max_runs` when it started
 /// (a timer tick); a refused counted run gives that firing back, in memory and in
 /// the file, by the same read-modify-write that counted it.
+///
+/// ⚠ **The file first, then the flag and the token together, under the `jobs`
+/// lock.** `claim_run_slot` publishes `currently_running` and the cancel token
+/// as one fact under that lock (#148A), and this retires them the same way. It
+/// used to clear the flag before the write and leave the caller to unregister
+/// after it, and on a slow disk the next tick fit in between: it saw the job
+/// free, claimed it and registered ITS token, and this run's late unregister
+/// then removed that token. The newer run was left with no flag and no token,
+/// so a Stop could cancel nothing, and the next `sync_with_file` adopted the
+/// file's mid-run count, which auto-paused a capped `/loop` that had never run
+/// (`a_refused_timer_tick_does_not_spend_a_run`, on Windows CI, 2026-10-18).
+/// While the write is in flight the flag still reads running, so a tick skips
+/// as it does for any run in progress.
 async fn record_run_completion(
     storage_path: &Path,
     jobs: &Arc<Mutex<JobsMap>>,
+    running_tasks: &Arc<StdMutex<RunningTasksMap>>,
     job_id: &str,
     result: &Result<String>,
     counted: bool,
 ) -> bool {
     let completion = RunCompletion::from_result(result, Utc::now()).for_a_counted_run(counted);
-    {
-        let mut jobs_guard = jobs.lock().await;
-        if let Some((_, job)) = jobs_guard.get_mut(job_id) {
-            completion.apply(job);
-        }
-    }
     let id = job_id.to_string();
     let for_disk = completion.clone();
-    match persist_change(storage_path, move |list| {
+    let still_on_disk = match persist_change(storage_path, move |list| {
         Ok(edit_job(list, &id, |stored| for_disk.apply(stored)))
     })
     .await
@@ -952,7 +960,14 @@ async fn record_run_completion(
             // A failed write is not evidence the job is gone; keep it.
             true
         }
+    };
+    let mut jobs_guard = jobs.lock().await;
+    if let Some((_, job)) = jobs_guard.get_mut(job_id) {
+        completion.apply(job);
     }
+    unregister_running_task(running_tasks, job_id);
+    drop(jobs_guard);
+    still_on_disk
 }
 
 /// The cancel-token registry is a plain `std::sync::Mutex` on purpose.
@@ -1185,20 +1200,19 @@ async fn run_cron_tick(
     )
     .await;
 
-    // Completion BEFORE unregistering: the two together are what "this job is
-    // running" means, and clearing the flag first is what keeps
-    // `kill_running_job` from seeing a running job with no token to cancel.
+    // Clears the flag and unregisters the token together, after the file
+    // write; see `record_run_completion` for why the order is load-bearing.
     // `true`: this firing was counted toward `max_runs` above, so a refused run
     // gives it back.
     let still_on_disk = record_run_completion(
         &local_storage_path,
         &current_jobs_arc,
+        &running_tasks,
         &task_job_id,
         &result,
         true,
     )
     .await;
-    unregister_running_task(&running_tasks, &task_job_id);
     if !still_on_disk {
         forget_job(&current_jobs_arc, &cron_handle, &task_job_id).await;
     }
@@ -2030,11 +2044,17 @@ impl Scheduler {
 
             let result = execute_job(job_to_run, jobs.clone(), job_id.clone(), cancel_token).await;
 
-            // Completion BEFORE unregistering — see the cron path for why.
+            // Flag and token retire together — see `record_run_completion`.
             // `false`: "Run now" was never counted, so there is nothing to give back.
-            let still_on_disk =
-                record_run_completion(&storage_path, &jobs, &job_id, &result, false).await;
-            unregister_running_task(&running_tasks, &job_id);
+            let still_on_disk = record_run_completion(
+                &storage_path,
+                &jobs,
+                &running_tasks,
+                &job_id,
+                &result,
+                false,
+            )
+            .await;
             if !still_on_disk {
                 forget_job(&jobs, &cron_handle, &job_id).await;
             }
@@ -4978,6 +4998,67 @@ mod tests {
             registered < guard_dropped,
             "run_now must register the token inside the `jobs` lock, not after it"
         );
+    }
+
+    /// The other half of the same fact: a finishing run retires its flag and its
+    /// token together, after its file write, so a tick that fires during that
+    /// write sees a run in progress instead of claiming the job and having its
+    /// token removed by the finishing run's late unregister.
+    ///
+    /// Deterministic where the CI failure was not: the test holds the schedule
+    /// file's lock, which freezes the completion inside its write. Fails the
+    /// implementation that cleared `currently_running` before writing.
+    #[tokio::test]
+    async fn a_finishing_run_cannot_take_the_next_runs_token() {
+        let temp_dir = tempdir().unwrap();
+        let storage_path = temp_dir.path().join("schedule.json");
+        let workflow = create_test_workflow(temp_dir.path(), "racy");
+        let scheduler = Scheduler::new(
+            storage_path.clone(),
+            Arc::new(SessionManager::new(temp_dir.path().to_path_buf())),
+        )
+        .await
+        .unwrap();
+        scheduler
+            .add_scheduled_job(dormant_job("racy", &workflow), false)
+            .await
+            .unwrap();
+        let claim = |token: &CancellationToken| {
+            let token = token.clone();
+            let (jobs, tasks) = (scheduler.jobs.clone(), scheduler.running_tasks.clone());
+            async move { claim_run_slot(&jobs, &tasks, "racy", &token, Utc::now()).await }
+        };
+
+        let first = CancellationToken::new();
+        assert!(matches!(claim(&first).await, RunSlot::Claimed(_)));
+
+        let held = ScheduleFileLock::acquire(&storage_path).unwrap();
+        let completion = {
+            let (path, jobs, tasks) = (
+                storage_path.clone(),
+                scheduler.jobs.clone(),
+                scheduler.running_tasks.clone(),
+            );
+            tokio::spawn(async move {
+                let refused: Result<String> = Err(anyhow!("refused"));
+                record_run_completion(&path, &jobs, &tasks, "racy", &refused, true).await
+            })
+        };
+        sleep(Duration::from_millis(300)).await;
+
+        let second = CancellationToken::new();
+        assert!(
+            matches!(claim(&second).await, RunSlot::Skipped),
+            "a tick during the previous run's completion write must skip, not claim"
+        );
+
+        drop(held);
+        assert!(completion.await.unwrap(), "the job is still in the file");
+
+        assert!(matches!(claim(&second).await, RunSlot::Claimed(_)));
+        scheduler.kill_running_job("racy").await.unwrap();
+        assert!(second.is_cancelled(), "the new run's token survived");
+        assert!(!first.is_cancelled());
     }
 
     /// The classifier is only worth anything if `execute_job` actually goes
