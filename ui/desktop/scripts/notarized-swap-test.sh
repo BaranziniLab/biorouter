@@ -32,7 +32,9 @@
 # is already open it hands over to that instance and exits.
 #
 # Config is sandboxed via XDG_CONFIG_HOME so the user's real ~/.config/biorouter
-# is never touched.
+# is never touched, and BIOROUTER_PATH_ROOT gives the test app its own data and
+# its own background service: without it the test app finds the installed
+# app's shared daemon, sees an older version, and replaces it under that app.
 set -uo pipefail
 
 DESK="$(cd "$(dirname "$0")/.." && pwd)"
@@ -42,12 +44,19 @@ NEW_ZIP="${NEW_ZIP:-$DESK/out/make/zip/darwin/arm64/Biorouter-darwin-arm64-$NEW_
 OLD_APP="${OLD_APP:-$DESK/test-builds/old/Biorouter.app}"
 PORT="${PORT:-8799}"
 FEED_VER="${FEED_VER:-$NEW_VER}"
+# Squirrel.Mac checks the whole update's signature before it hands it to ShipIt:
+# seconds on an idle Mac, minutes on a busy one (2.5 min measured beside a
+# release build, 2026-10-18).
+WAIT_SECS="${WAIT_SECS:-420}"
 SHIPIT_LOG="$HOME/Library/Caches/com.electron.biorouter.ShipIt/ShipIt_stderr.log"
 SHIPIT_LINES_BEFORE="$( [ -f "$SHIPIT_LOG" ] && wc -l < "$SHIPIT_LOG" | tr -d ' ' || echo 0 )"
 
 WORK="$(mktemp -d /tmp/br-swap.XXXXXX)"
-SERVE="$WORK/serve"; RUNDIR="$WORK/run"; CFG="$WORK/config"
-mkdir -p "$SERVE" "$RUNDIR" "$CFG/biorouter"
+# /tmp is a symlink to /private/tmp, and LaunchServices and ShipIt report the
+# resolved path, so processes and log lines are matched on this unique tail.
+RUN_TAG="$(basename "$WORK")/run/Biorouter.app"
+SERVE="$WORK/serve"; RUNDIR="$WORK/run"; CFG="$WORK/config"; PATH_ROOT="$WORK/root"
+mkdir -p "$SERVE" "$RUNDIR" "$CFG/biorouter" "$PATH_ROOT"
 
 # Seed the sandboxed config with the real (small) config so the backend starts
 # and the app reaches the updater — but NOT the 624MB extensions, and never the
@@ -61,7 +70,7 @@ done
 cleanup() {
   [ -n "${SRV_PID:-}" ] && kill "$SRV_PID" 2>/dev/null
   [ -n "${APP_PID:-}" ] && kill "$APP_PID" 2>/dev/null
-  pkill -f "$RUNDIR/Biorouter.app" 2>/dev/null
+  pkill -f "$RUN_TAG" 2>/dev/null
 }
 trap cleanup EXIT
 
@@ -90,30 +99,45 @@ curl -fsS "http://127.0.0.1:$PORT/latest-mac.yml" >/dev/null || { echo "FAIL: se
 
 echo "==> launching OLD app pointed at local feed (auto-install on download)"
 BIN="$APP/Contents/MacOS/Biorouter"
-USERDATA="$WORK/userdata"; mkdir -p "$USERDATA"
+# --user-data-dir must be a directory this user owns with mode 0700, or the app
+# refuses it with a modal error before it logs anything (applicationDataProfile.ts).
+USERDATA="$WORK/userdata"; mkdir -p "$USERDATA"; chmod 700 "$USERDATA"
 APPLOG="$USERDATA/logs/main.log"   # electron-log writes here (packaged builds)
 # --user-data-dir isolates this test instance's state (logs, updater cache,
 # window state) from the user's running Biorouter — no shared-state collisions.
-XDG_CONFIG_HOME="$CFG" \
-BIOROUTER_DISABLE_KEYRING=true \
-BIOROUTER_UPDATE_FEED_URL="http://127.0.0.1:$PORT" \
-BIOROUTER_UPDATE_AUTO_INSTALL=1 \
-ENABLE_DEV_UPDATES=true \
-  "$BIN" --user-data-dir="$USERDATA" >"$WORK/stdout.log" 2>&1 &
-APP_PID=$!
+# ⚠ Launched through LaunchServices (`open`), as Finder launches it, not by
+# running the executable. Squirrel.Mac starts ShipIt as a per-user launchd job,
+# and from a process started in an agent or SSH shell that job did not start
+# (measured 2026-10-18: the request was written and ShipIt never ran, or ran
+# minutes later), which reads exactly like the bug this test looks for.
+open -n -o "$WORK/stdout.log" --stderr "$WORK/stdout.log" \
+  --env XDG_CONFIG_HOME="$CFG" \
+  --env BIOROUTER_PATH_ROOT="$PATH_ROOT" \
+  --env BIOROUTER_DISABLE_KEYRING=true \
+  --env BIOROUTER_UPDATE_FEED_URL="http://127.0.0.1:$PORT" \
+  --env BIOROUTER_UPDATE_AUTO_INSTALL=1 \
+  --env ENABLE_DEV_UPDATES=true \
+  "$APP" --args --user-data-dir="$USERDATA"
+APP_PID=""
+for _ in $(seq 1 20); do
+  APP_PID="$(pgrep -f "$RUN_TAG/Contents/MacOS/Biorouter" | head -1)"
+  [ -n "$APP_PID" ] && break
+  sleep 0.5
+done
+[ -n "$APP_PID" ] || { echo "FAIL: the app did not start"; exit 1; }
 
 # New ShipIt lines since this run started.
 shipit_since() { [ -f "$SHIPIT_LOG" ] && tail -n +"$((SHIPIT_LINES_BEFORE + 1))" "$SHIPIT_LOG" || true; }
 
-echo "==> waiting for quit, install and relaunch (up to ~180s)"
+echo "==> waiting for quit, install and relaunch (up to ${WAIT_SECS}s)"
 RESULT="timeout"
 EXITED="no"
-for i in $(seq 1 36); do
+for i in $(seq 1 $((WAIT_SECS / 5))); do
   sleep 5
   NOW="$(/usr/libexec/PlistBuddy -c 'Print CFBundleShortVersionString' "$PLIST" 2>/dev/null || echo '?')"
   kill -0 "$APP_PID" 2>/dev/null || EXITED="yes"
   echo "    [$((i*5))s] on-disk version = $NOW, old process exited = $EXITED"
-  if shipit_since | grep -q "Successfully launched application at file://$APP/"; then
+  if shipit_since | grep -q "Successfully launched application at file://.*$RUN_TAG/"; then
     RESULT="relaunched"; break
   fi
 done
