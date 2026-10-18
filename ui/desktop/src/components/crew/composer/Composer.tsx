@@ -1,6 +1,7 @@
 import {
   useCallback,
   useEffect,
+  useId,
   useLayoutEffect,
   useMemo,
   useRef,
@@ -12,16 +13,33 @@ import {
   type ReactNode,
   type Ref,
 } from 'react';
+import type { ProviderDetails } from '../../../api';
 import { Button } from '../../ui/button';
 import { Note } from '../../ui/note';
 import { Tooltip, TooltipContent, TooltipTrigger } from '../../ui/Tooltip';
 import { ArrowUp, Bot, Loader2, X } from '../../icons/app-icons';
 import { cn } from '../../../utils';
-import { channelSlug } from '../identity';
+import { channelName, channelNamesAcrossTeams, channelSlug } from '../identity';
+import { agentCopy, unknownOutcomeCopy } from '../pane/copy';
+import { ModelTierMarks } from '../pane/CrewModelPicker';
+import {
+  isAffiliationRefusal,
+  isPublicModelRefusal,
+  knownInstitutions,
+  modelDisplay,
+  modelRefusalText,
+  remoteAccessText,
+  taskStartCheck,
+  usePanePresentation,
+  wideRunChannels,
+  workspaceInstitutionLabel,
+  type TaskStartCheck,
+} from '../pane/presentation';
+import { useConfiguredModels } from '../pane/useConfiguredModels';
 import { crewActionCopy } from '../state/copy';
 import { POST_NOTE_CODES, postDestination } from '../state/crewSend';
 import { draftTooLongToKeep } from '../state/draftStash';
-import type { CrewActionError, DraftFile, DraftReference } from '../state/types';
+import type { AgentPaneSeed, CrewActionError, DraftFile, DraftReference } from '../state/types';
 import { useCrew, useCrewErrorSlot, useCrewSurfaceReset } from '../state/CrewControllerContext';
 import { postedLabel, useAttachmentIndexVersion } from '../files/attachmentIndex';
 import { filesCopy } from '../files/copy';
@@ -34,10 +52,28 @@ import {
 } from '../files/FileDropZone';
 import { canShareDroppedFiles, useCrewUpload, type CrewShareNames } from '../files/useCrewUpload';
 import { serverLabel, workspaceTitle } from '../sidebar/sidebarView';
+import {
+  agentNameTaken,
+  agentStartState,
+  parseAgentInvocation,
+  type AgentStartState,
+  type SuggestionQuery,
+} from './agentInvocation';
 import { AttachMenu } from './AttachMenu';
 import { ComposerChips } from './ComposerChips';
+import {
+  buildSuggestions,
+  ComposerSuggestions,
+  suggestionId,
+  useComposerSuggestions,
+  type ComposerSuggestion,
+} from './ComposerSuggestions';
 import { composerCopy } from './copy';
 import './composer.css';
+
+/** A draft whose first word is `@` or `/` something: the agent's models may be about to matter. */
+const LEADING_SIGIL = /^\s*[@/]/;
+const NO_CHANNELS: string[] = [];
 
 /** The daemon's attachment limit (`local_files::MAX_SIZE`): 1 GiB. */
 export const CREW_ATTACHMENT_LIMIT = 1024 * 1024 * 1024;
@@ -119,8 +155,19 @@ export interface ComposerProps {
  *   resolves the dropped `File` itself, and only Share yields the file capability. Both then
  *   start the upload with the exact legacy `beginTransfer` payload. The renderer never reads a
  *   file or hands a path to anything.
+ * - **`@agent`, `/agent`, `/task`** as the draft's first word start the person's own agent on a
+ *   task in this channel (design OW-10, `agentInvocation.ts`), on their model for Crew tasks
+ *   (OW-11). Before Enter a consent line inside the card says what Enter will do — the model and its
+ *   tier, where the agent posts, what it reads and may do on the server — and Send reads "Start
+ *   agent task". Enter is the consent. It starts the task through `askAgent` (Ask my agent's request
+ *   exactly), or opens Ask my agent with the words when the pane must decide: no task yet, a model
+ *   that would be refused here or none, a start whose outcome is unknown. A draft with files, or
+ *   longer than a task may be, starts nothing and the line says why. "Post as a message" posts the
+ *   draft as written. Typing `@` or `/` offers the agent and the channel's people in a suggestion
+ *   list (`ComposerSuggestions`), which takes Enter only to insert a row.
  *
- * React authorizes nothing here: the daemon and broker decide every post and every upload.
+ * React authorizes nothing here: the daemon and broker decide every post, every upload and every
+ * task.
  */
 export function Composer({ note, inputRef, agentPaneId }: ComposerProps) {
   const controller = useCrew();
@@ -160,6 +207,9 @@ export function Composer({ note, inputRef, agentPaneId }: ComposerProps) {
   // note went with it. So it goes on the person's own edits (typing, removing a chip), a send, its
   // dismiss control, a new drop or paste, and the surface resets listed below.
   const [extraFiles, setExtraFiles] = useState('');
+  // "Post as a message" (OW-10): this draft posts as written, `@agent` and all, until it no longer
+  // reads as a task.
+  const [literal, setLiteral] = useState(false);
   const latestUpload = useRef(upload);
   latestUpload.current = upload;
   // What the native share confirmation calls this channel and its workspace: display text only.
@@ -234,8 +284,11 @@ export function Composer({ note, inputRef, agentPaneId }: ComposerProps) {
       reason === 'protected-cleared' ||
       reason === 'channel-changed' ||
       reason === 'channel-revoked'
-    )
+    ) {
       setExtraFiles('');
+      // "Post as a message" was said of one channel's draft.
+      setLiteral(false);
+    }
   });
 
   // The observer clears the draft when the verified privacy scope changes under it (a new
@@ -351,6 +404,121 @@ export function Composer({ note, inputRef, agentPaneId }: ComposerProps) {
   }
   const agentOpen = ui.pane?.mode === 'agent';
 
+  // `@agent`, `/agent`, `/task` (OW-10): the person's own draft, and nothing else, can start their
+  // agent. A message from anyone else is never parsed.
+  const { workspace, dir } = usePanePresentation();
+  const nameTaken = useMemo(() => agentNameTaken(snapshot), [snapshot]);
+  const parsed = useMemo(
+    () => parseAgentInvocation(draft.body, { agentNameTaken: nameTaken }),
+    [draft.body, nameTaken]
+  );
+  useEffect(() => {
+    if (!parsed) setLiteral(false);
+  }, [parsed]);
+  const invocation = literal ? null : parsed;
+  // The models are read the first time a draft could need them, not on every mount.
+  const models = useConfiguredModels({
+    optional: true,
+    enabled: parsed !== null || LEADING_SIGIL.test(draft.body),
+  });
+  const taskModel = models.taskDefault;
+  const taskProvider = models.providers?.find((item) => item.name === taskModel?.provider);
+  const shownModel = taskModel ? modelDisplay(taskModel, taskProvider) : null;
+  const shownModelName = shownModel
+    ? agentCopy.modelChoice(shownModel.model, shownModel.provider)
+    : '';
+  // An open workspace whose broker reads wide: `@agent` reads every channel the person is in.
+  const wide = useMemo(
+    () => wideRunChannels({ snapshot, channel, capabilities: controller.capabilities }),
+    [snapshot, channel, controller.capabilities]
+  );
+  const contextChannels = wide ?? NO_CHANNELS;
+  const channelLabels = useMemo(
+    () => channelNamesAcrossTeams(snapshot?.channels ?? [], snapshot?.teams ?? []),
+    [snapshot]
+  );
+  // The pane's own checks, on the model the consent line names (OW-10): the two never disagree.
+  const check = taskStartCheck({
+    provider: taskProvider,
+    providers: models.providers,
+    connection: controller.connection,
+    snapshot,
+    channel,
+    contextChannels,
+    workspace,
+    channelLabel: (item) => channelLabels.get(item.id) ?? channelName(item),
+    model: shownModel?.model ?? null,
+  });
+  const agentState: AgentStartState | null = invocation
+    ? agentStartState({
+        invocation,
+        hasFiles: draft.attachments.length > 0 || draft.references.length > 0,
+        unknownOutcome: controller.unknownRunDestination !== null,
+        modelsKnown: models.providers !== null || models.failure !== null,
+        hasModel: taskModel !== null,
+        blockText: check.blockText,
+      })
+    : null;
+  const startingTask = isPending('run.start');
+  const starting = useRef(false);
+  const openAgentPane = (seed: AgentPaneSeed) => openPane({ mode: 'agent', seed });
+  /**
+   * Enter, or the send button: a message as before, else what the consent line said it would do.
+   * A start is single flight: the pending `run.start` (shared with the pane) and, until that
+   * renders, a ref.
+   */
+  const submitNow = () => {
+    if (!invocation || !agentState) return sendNow();
+    latestUpload.current.dismissError();
+    setExtraFiles('');
+    const seed = { task: invocation.prompt, draft: draft.body };
+    switch (agentState.kind) {
+      case 'files':
+      case 'too-long':
+        // Nothing starts; the line under the text says why.
+        return;
+      case 'empty':
+      case 'unknown-outcome':
+      case 'loading':
+        return openAgentPane(seed);
+      case 'no-model':
+      case 'blocked':
+        return openAgentPane({ ...seed, pickModel: true });
+      case 'ready':
+        break;
+    }
+    if (!taskModel || startingTask || starting.current) return;
+    const ask = controller.askAgent;
+    if (!ask) return openAgentPane(seed);
+    starting.current = true;
+    // Exactly the model the line showed, never one read again at Enter.
+    void ask({
+      prompt: invocation.prompt,
+      draftBody: draft.body,
+      model: taskModel,
+      contextChannels,
+    }).finally(() => {
+      starting.current = false;
+    });
+  };
+  const known = useMemo(() => knownInstitutions(models.providers), [models.providers]);
+  const taskError = (failure: CrewActionError) =>
+    taskStartNote({
+      error: failure,
+      check,
+      model: shownModel?.model ?? agentCopy.model,
+      institution:
+        check.institution?.label ??
+        workspaceInstitutionLabel(controller.connection, snapshot, known),
+      onChooseModel: () =>
+        openAgentPane({
+          task: parsed?.prompt ?? '',
+          draft: draft.body,
+          pickModel: true,
+        }),
+      onOpenPane: () => openAgentPane({ task: parsed?.prompt ?? '', draft: draft.body }),
+    });
+
   // Another channel's failure never shows here, nor comes along into it (QA M5).
   const composerError =
     ownsError &&
@@ -363,6 +531,7 @@ export function Composer({ note, inputRef, agentPaneId }: ComposerProps) {
   });
   const notes = composerNote({
     error: composerError,
+    taskError,
     tooLongToKeep: draftTooLongToKeep(draft.body),
     uploadError: upload.error,
     onDismissUpload: dismissUploadError,
@@ -410,6 +579,66 @@ export function Composer({ note, inputRef, agentPaneId }: ComposerProps) {
         onRemoveAttachment={removeOwnAttachment}
         onRemoveReference={removeOwnReference}
         onSend={sendNow}
+        onSubmit={submitNow}
+        agentMode={invocation !== null}
+        agentRefused={agentState?.kind === 'files' || agentState?.kind === 'too-long'}
+        startingTask={startingTask}
+        renderAgentLine={(hintId) =>
+          agentState ? (
+            <AgentConsentLine
+              id={hintId}
+              state={agentState}
+              slug={name}
+              model={shownModelName}
+              provider={taskProvider}
+              privateOnly={check.privateOnly}
+              reads={contextChannels.length + 1}
+              access={remoteAccessText(controller.connection)}
+              onChange={() =>
+                openAgentPane({
+                  task: invocation?.prompt ?? '',
+                  draft: draft.body,
+                  pickModel: true,
+                })
+              }
+              onPostAsMessage={() => setLiteral(true)}
+            />
+          ) : literal && parsed ? (
+            <div className="crew-compose-agent" data-tone="neutral">
+              <p id={hintId} className="crew-compose-agent-text">
+                {composerCopy.postingAsMessage}
+              </p>
+              <span className="crew-compose-agent-actions">
+                <Button
+                  type="button"
+                  variant="link"
+                  className="h-auto p-0 text-supporting"
+                  onClick={() => setLiteral(false)}
+                >
+                  {composerCopy.startTaskInstead}
+                </Button>
+              </span>
+            </div>
+          ) : null
+        }
+        buildRows={(query) =>
+          buildSuggestions({
+            query,
+            snapshot,
+            channel,
+            slug: name,
+            dir,
+            agentNameTaken: nameTaken,
+            agentDetail: shownModelName ? (
+              <>
+                {composerCopy.agentRowDetail(shownModelName, name)}{' '}
+                <ModelTierMarks provider={taskProvider} privateOnly={check.privateOnly} />
+              </>
+            ) : (
+              composerCopy.agentRowDetail(null, name)
+            ),
+          })
+        }
         posting={isPending('send')}
         agentOpen={agentOpen}
         agentPaneId={agentPaneId}
@@ -499,6 +728,175 @@ function sendNote(error: CrewActionError): ReactNode {
 }
 
 /**
+ * A start from the composer that failed (`@agent`, OW-10), above the card: "Couldn't start your
+ * agent." and the reason in its own node, a model refusal in Ask my agent's words with **Choose
+ * another model**, and a start whose outcome is unknown as the pane's gate title with **Open Ask my
+ * agent**, where the gate is (C9 to C12). The draft keeps the task's words either way.
+ */
+function taskStartNote({
+  error,
+  check,
+  model,
+  institution,
+  onChooseModel,
+  onOpenPane,
+}: {
+  error: CrewActionError;
+  check: TaskStartCheck;
+  model: string;
+  institution: string | null;
+  onChooseModel(): void;
+  onOpenPane(): void;
+}): ReactNode {
+  if (error.code === 'crew_start_outcome_unknown')
+    return (
+      <Note
+        tone="warning"
+        role="alert"
+        action={
+          <Button type="button" variant="secondary" size="sm" onClick={onOpenPane}>
+            {composerCopy.openAskMyAgent}
+          </Button>
+        }
+      >
+        <span>{unknownOutcomeCopy.title}</span>
+      </Note>
+    );
+  const modelRefused = isAffiliationRefusal(error) || isPublicModelRefusal(error);
+  const reason =
+    modelRefusalText({
+      error,
+      mismatch: check.mismatchText,
+      publicText: check.publicText,
+      model,
+      institution,
+    }) ?? error.message;
+  return (
+    <Note
+      tone="danger"
+      role="alert"
+      action={
+        modelRefused ? (
+          <Button type="button" variant="secondary" size="sm" onClick={onChooseModel}>
+            {composerCopy.chooseAnotherModel}
+          </Button>
+        ) : undefined
+      }
+    >
+      <span>{composerCopy.startErrorLead}</span> <span>{reason}</span>
+    </Note>
+  );
+}
+
+/**
+ * The consent line under the text while the draft starts a task (OW-10): what Enter will do, said
+ * before Enter, because Enter is the consent. When Enter starts the task it names the model and
+ * its tier mark (the same chip Ask my agent shows), where the agent posts, what it reads and what
+ * it may do on the server; otherwise it says what Enter does instead, or why nothing starts. The
+ * words are a live region, so they are heard as they change; the links beside them are not.
+ *
+ * **Change** opens Ask my agent on its model picker with the task's words; **Post as a message**
+ * sends this draft as written.
+ */
+function AgentConsentLine({
+  id,
+  state,
+  slug,
+  model,
+  provider,
+  privateOnly,
+  reads,
+  access,
+  onChange,
+  onPostAsMessage,
+}: {
+  id: string;
+  state: AgentStartState;
+  slug: string;
+  model: string;
+  provider: ProviderDetails | undefined;
+  privateOnly: boolean;
+  /** How many channels the task reads, the one it posts in included. */
+  reads: number;
+  access: string | null;
+  onChange(): void;
+  onPostAsMessage(): void;
+}) {
+  let tone: 'neutral' | 'warning' = 'neutral';
+  let text: ReactNode;
+  switch (state.kind) {
+    case 'ready':
+      text = (
+        <>
+          <span className="crew-compose-agent-model">
+            {composerCopy.agentStartsWith(model)}{' '}
+            <ModelTierMarks provider={provider} privateOnly={privateOnly} />.
+          </span>{' '}
+          <span>
+            {reads > 1 ? composerCopy.agentReadsWide(reads, slug) : composerCopy.agentReads(slug)}
+          </span>
+          {access && <span className="crew-compose-agent-access">{access}</span>}
+        </>
+      );
+      break;
+    case 'blocked':
+      tone = 'warning';
+      text = `${state.text} ${composerCopy.agentOpensPicker}`;
+      break;
+    case 'no-model':
+      text = composerCopy.agentNoModel;
+      break;
+    case 'loading':
+      text = composerCopy.agentLoading;
+      break;
+    case 'empty':
+      text = composerCopy.agentEmpty;
+      break;
+    case 'unknown-outcome':
+      tone = 'warning';
+      text = composerCopy.agentUnknownOutcome;
+      break;
+    case 'files':
+      tone = 'warning';
+      text = composerCopy.agentFiles;
+      break;
+    case 'too-long':
+      tone = 'warning';
+      text = composerCopy.agentTooLong;
+      break;
+  }
+  return (
+    <div className="crew-compose-agent" data-tone={tone}>
+      <Bot className="crew-compose-agent-icon" aria-hidden />
+      <p id={id} className="crew-compose-agent-text" role="status">
+        {text}
+      </p>
+      <span className="crew-compose-agent-actions">
+        {state.kind === 'ready' && (
+          <Button
+            type="button"
+            variant="link"
+            className="h-auto p-0 text-supporting"
+            aria-label={composerCopy.agentChangeName}
+            onClick={onChange}
+          >
+            {composerCopy.agentChange}
+          </Button>
+        )}
+        <Button
+          type="button"
+          variant="link"
+          className="h-auto p-0 text-supporting"
+          onClick={onPostAsMessage}
+        >
+          {composerCopy.postAsMessage}
+        </Button>
+      </span>
+    </div>
+  );
+}
+
+/**
  * The one note directly above the card, in priority order: the send's answer, an upload failure,
  * the note about several dropped files, a draft too long to keep across a channel switch
  * (MSG2-N4), the picker a drop just opened, then the layout's standing note. One at a time, so
@@ -519,6 +917,7 @@ function sendNote(error: CrewActionError): ReactNode {
  */
 function composerNote({
   error,
+  taskError,
   tooLongToKeep,
   uploadError,
   onDismissUpload,
@@ -528,6 +927,8 @@ function composerNote({
   note,
 }: {
   error: CrewActionError | null;
+  /** How a failed `@agent` start reads (`taskStartNote`); a send's answer is `sendNote`'s. */
+  taskError(error: CrewActionError): ReactNode;
   tooLongToKeep: boolean;
   uploadError: string;
   onDismissUpload(): void;
@@ -538,7 +939,7 @@ function composerNote({
 }): ReactNode {
   let content: ReactNode = null;
   if (error) {
-    content = sendNote(error);
+    content = error.action === 'task-start' ? taskError(error) : sendNote(error);
   } else if (uploadError) {
     content = (
       <Note tone="danger" role="alert" action={<DismissNote onDismiss={onDismissUpload} />}>
@@ -577,6 +978,18 @@ interface ComposerCardProps {
   onRemoveAttachment(id: string): void;
   onRemoveReference(id: string): void;
   onSend(): void;
+  /** Enter and Send: `onSend` for a message, the agent's start for `@agent` (OW-10). */
+  onSubmit(): void;
+  /** The draft starts a task: Send reads "Start agent task" and the consent line shows. */
+  agentMode: boolean;
+  /** Nothing starts for this draft (files, too long); the consent line says why. */
+  agentRefused: boolean;
+  /** A task is being started, from here or from Ask my agent. */
+  startingTask: boolean;
+  /** The consent line (or the "posts as a message" line), whose words carry `hintId`. */
+  renderAgentLine(hintId: string): ReactNode;
+  /** The suggestion rows for the word before the caret. */
+  buildRows(query: SuggestionQuery): ComposerSuggestion[];
   posting: boolean;
   agentOpen: boolean;
   agentPaneId?: string;
@@ -661,6 +1074,12 @@ function ComposerCard({
   onRemoveAttachment,
   onRemoveReference,
   onSend,
+  onSubmit,
+  agentMode,
+  agentRefused,
+  startingTask,
+  renderAgentLine,
+  buildRows,
   posting,
   agentOpen,
   agentPaneId,
@@ -678,6 +1097,21 @@ function ComposerCard({
     [inputRef]
   );
   const hasContent = Boolean(body.trim()) || attachments.length > 0 || references.length > 0;
+  const hintId = useId();
+  const listId = useId();
+  const agentLine = renderAgentLine(hintId);
+
+  // The suggestion list follows the caret (`suggestionQuery`); `null` is "at the end".
+  const [caretAt, setCaretAt] = useState<number | null>(null);
+  const [focused, setFocused] = useState(false);
+  const suggestions = useComposerSuggestions({
+    body,
+    caret: caretAt ?? body.length,
+    focused,
+    build: buildRows,
+  });
+  // Where the caret goes once an accepted row's text is in the box.
+  const placeCaret = useRef<number | null>(null);
 
   // Auto-grow: one row at rest, up to the stylesheet's 40vh cap, then it scrolls. Not animated
   // (the spec lists composer auto-grow among what must not move). Where there is no layout
@@ -691,8 +1125,35 @@ function ComposerCard({
   }, [body]);
 
   const caret = useRestoredDraftCaret(textarea, body);
+  // After an accepted row: the caret goes after what it inserted, not to the end.
+  useLayoutEffect(() => {
+    const at = placeCaret.current;
+    const node = textarea.current;
+    if (at === null || !node) return;
+    placeCaret.current = null;
+    node.setSelectionRange(at, at);
+    setCaretAt(at);
+  }, [body]);
+  /** Insert a suggestion row's text. It starts nothing: Enter does, once the list is closed. */
+  const acceptRow = (index: number) => {
+    const next = suggestions.accept(index);
+    if (!next) return;
+    // The person's own edit, so the restored-draft rule leaves the caret to `placeCaret`.
+    caret.typed(next.body);
+    placeCaret.current = next.caret;
+    setBody(next.body);
+    textarea.current?.focus();
+  };
 
   const onKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
+    // An open suggestion list takes its keys first (Enter and Tab accept a row); it ignores every
+    // key while an input method is composing, as the rest of this handler does.
+    const listed = suggestions.onKeyDown(e);
+    if (listed === 'accept') {
+      acceptRow(suggestions.active);
+      return;
+    }
+    if (listed) return;
     if (
       e.key !== 'Enter' ||
       e.shiftKey ||
@@ -701,7 +1162,7 @@ function ComposerCard({
     )
       return;
     e.preventDefault();
-    if (!e.repeat) onSend();
+    if (!e.repeat) onSubmit();
   };
   /**
    * A pasted file goes to the upload path; pasted words stay words. Copying cells or rich text
@@ -740,6 +1201,15 @@ function ComposerCard({
         onPauseUpload={(transfer) => void upload.pause(transfer)}
         onResumeUpload={(transfer) => void upload.resume(transfer)}
       />
+      {suggestions.open && (
+        <ComposerSuggestions
+          id={listId}
+          rows={suggestions.rows}
+          active={suggestions.active}
+          onHover={suggestions.setActive}
+          onPick={acceptRow}
+        />
+      )}
       <textarea
         ref={setTextarea}
         className="crew-compose-input block w-full resize-none border-none bg-transparent px-0 py-1.5 text-body text-text-default placeholder:text-text-muted"
@@ -749,20 +1219,36 @@ function ComposerCard({
         // Laid out in the direction of what is typed (QA M13): Hebrew or Arabic runs right to left.
         dir="auto"
         value={body}
+        // The suggestion list it offers (`@agent`, `/task`, people): named, and its row pointed at,
+        // while focus stays here. The accessible name stays the pinned "Message #name" (C6).
+        aria-autocomplete="list"
+        aria-controls={suggestions.open ? listId : undefined}
+        aria-activedescendant={
+          suggestions.open ? suggestionId(listId, suggestions.active) : undefined
+        }
+        aria-describedby={agentLine ? hintId : undefined}
         // Writable while a post is on its way (QA M8): what is typed now stays, because success
         // takes out only what was sent.
         onChange={(event) => {
           caret.typed(event.target.value);
           setBody(event.target.value);
+          setCaretAt(event.target.selectionStart);
+          setFocused(true);
         }}
+        onSelect={(event) => setCaretAt(event.currentTarget.selectionStart)}
         onKeyDown={(event) => {
           caret.touched();
           onKeyDown(event);
         }}
         onPointerDown={caret.touched}
-        onFocus={caret.focused}
+        onFocus={(event) => {
+          setFocused(true);
+          caret.focused(event);
+        }}
+        onBlur={() => setFocused(false)}
         onPaste={onPaste}
       />
+      {agentLine}
       <div className="crew-compose-controls">
         <AttachMenu
           onUpload={() => void upload.upload()}
@@ -783,34 +1269,49 @@ function ComposerCard({
           {composerCopy.askAgent}
         </Button>
         <span className="crew-compose-spacer" />
+        {/* One node in both modes. For a draft that starts a task it is "Start agent task", described
+            by the consent line, and disabled while a task is starting (single flight) or when
+            nothing would start; "Send message" stays its name for every other draft (C6). */}
         <Tooltip>
           <TooltipTrigger asChild>
             <span className="crew-compose-send">
               <Button
                 type="button"
                 shape="round"
-                variant={hasContent ? 'default' : 'secondary'}
-                data-variant={hasContent ? 'default' : 'secondary'}
-                aria-label={composerCopy.send}
-                aria-busy={posting || undefined}
-                disabled={!hasContent && !posting}
-                className={cn(!hasContent && 'cursor-not-allowed disabled:opacity-100')}
+                variant={hasContent || agentMode ? 'default' : 'secondary'}
+                data-variant={hasContent || agentMode ? 'default' : 'secondary'}
+                aria-label={agentMode ? composerCopy.startTask : composerCopy.send}
+                aria-describedby={agentMode && agentLine ? hintId : undefined}
+                aria-busy={(agentMode ? startingTask : posting) || undefined}
+                disabled={agentMode ? startingTask || agentRefused : !hasContent && !posting}
+                className={cn(
+                  !agentMode && !hasContent && 'cursor-not-allowed disabled:opacity-100'
+                )}
                 onClick={() => {
-                  if (!posting) onSend();
+                  if (agentMode) onSubmit();
+                  else if (!posting) onSend();
                   // After a send the person keeps typing: focus goes back to the text, not to a
                   // button that is about to be disabled by the emptied draft.
                   textarea.current?.focus();
                 }}
               >
-                {posting ? (
+                {(agentMode ? startingTask : posting) ? (
                   <Loader2 className="size-4 animate-spin" aria-hidden />
+                ) : agentMode ? (
+                  <Bot className="size-4" aria-hidden />
                 ) : (
                   <ArrowUp className="size-4" aria-hidden />
                 )}
               </Button>
             </span>
           </TooltipTrigger>
-          <TooltipContent>{posting ? composerCopy.sending : composerCopy.send}</TooltipContent>
+          <TooltipContent>
+            {agentMode
+              ? composerCopy.startTaskTooltip
+              : posting
+                ? composerCopy.sending
+                : composerCopy.send}
+          </TooltipContent>
         </Tooltip>
       </div>
     </div>

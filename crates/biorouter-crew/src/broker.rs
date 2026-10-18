@@ -389,6 +389,11 @@ struct State {
     /// broker built without the feature never drops a pending join from state.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pending_joins: BTreeMap<String, PendingJoin>,
+    /// The workspace's context document (OW-8). Serialized only once it is first set, so a
+    /// journal that never held one replays and re-serializes byte for byte, and an older broker
+    /// (which ignores unknown fields) replays a journal that did.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    context: Option<WorkspaceContext>,
 }
 #[derive(Serialize, Deserialize)]
 struct Record {
@@ -837,22 +842,31 @@ const BLOB_MAX_BYTES: u64 = 1024 * MIB;
 const WORKSPACE_BLOB_BYTES: u64 = 10 * 1024 * MIB;
 const WORKSPACE_BLOBS: usize = 10_000;
 /// The host's own operations that may use the administrative headroom.
-const ADMIN_METHODS: [&str; 6] = [
+const ADMIN_METHODS: [&str; 8] = [
     "enrollment.invite",
     "enrollment.approve",
     "enrollment.cancel",
     "enrollment.revoke",
     "policy.set",
     "workspace.rename",
+    "workspace.set_governance",
+    "workspace.delete",
 ];
 /// Operations that only take access away. Anyone may use the administrative headroom for them,
 /// so a full workspace never keeps a person in a channel or an agent running: each adds at
-/// most a bounded idempotency result, and one member's results are capped.
-const ACCESS_REMOVAL_METHODS: [&str; 3] = ["run.revoke", "membership.revoke", "channel.archive"];
+/// most a bounded idempotency result, and one member's results are capped. Deleting a channel
+/// or a team also shrinks the state.
+const ACCESS_REMOVAL_METHODS: [&str; 5] = [
+    "run.revoke",
+    "membership.revoke",
+    "channel.archive",
+    "channel.delete",
+    "team.delete",
+];
 /// Methods that add records to the actor's share of the state: a member past
 /// [`Quotas::member_state_bytes`] is refused them. Everything else changes records in place,
 /// removes them, or adds a bounded amount (a read position, a membership).
-const SHARE_METHODS: [&str; 8] = [
+const SHARE_METHODS: [&str; 9] = [
     "message.post",
     "run.project",
     "run.create",
@@ -861,7 +875,64 @@ const SHARE_METHODS: [&str; 8] = [
     "invitation.create",
     "team.create",
     "channel.create",
+    "workspace.context.set",
 ];
+/// At most this many channels one run may read (`wide_runs_v1`; it was 20). Every worker
+/// request rechecks each of them, and what an agent reads of them is byte-bounded.
+const RUN_SOURCE_CHANNELS: usize = 100;
+/// Every request but `hello` once the host has deleted the workspace (OW-5), ahead of
+/// authentication, so a member's daemon learns it rather than seeing the broker as offline.
+/// A member's bridge fails with the same line once the broker has erased the workspace and
+/// stopped, from the [`RUNTIME_TOMBSTONE`] it left (L7).
+const WORKSPACE_DELETED: &str =
+    "workspace_deleted: The host deleted this workspace. Remove it from this computer.";
+/// How long after `workspace.delete` the broker keeps answering `workspace_deleted` before it
+/// erases its files and exits: long enough for connected members' daemons to hear it.
+const DELETE_GRACE_SECS: u64 = 30;
+/// The marker `workspace.delete` writes into the state directory before erasing anything and
+/// removes last, so a directory a crash left half-erased is never mistaken for an empty one
+/// (where the next `start` would create a new workspace without a word).
+const DELETED_MARKER: &str = "DELETED";
+/// Where the [`DELETED_MARKER`] is written before it is renamed into place, so the marker never
+/// exists without the workspace ID in it.
+const DELETED_MARKER_TEMP: &str = ".DELETED.tmp";
+/// The file a deleted workspace's runtime directory keeps once its broker has erased the
+/// workspace and stopped (OW-5, L7): the workspace's ID, readable by every account. A member's
+/// bridge that then finds no broker there says the host deleted the workspace
+/// ([`WORKSPACE_DELETED`]) rather than that nothing is running, whether the member was
+/// connected and idle through the grace period or offline. Only the host account and root can
+/// write in that directory. It stays until `/tmp` is cleaned: a later `start` never reuses the
+/// directory (a new workspace gets a new random one), and a recorded directory that holds one
+/// reads as unusable, so the workspace moves ([`relocate_runtime`]).
+const RUNTIME_TOMBSTONE: &str = "deleted";
+/// A team's `#general` goes only with its team (`channel.delete`).
+const GENERAL_DELETE: &str =
+    "invalid_params: #general belongs to its team. Delete the team instead.";
+/// `channel.delete` or `team.delete` through an agent's grant. The worker allowlist refuses it
+/// first; this is the second, method-level wall.
+const DELETE_AGENT_REFUSED: &str = "forbidden: only a person can delete channels or teams";
+/// A governance-only method (`team.join`, `channel.join`) in a managed workspace.
+const JOIN_NEEDS_OPEN: &str =
+    "forbidden: In this workspace, the owner or the host adds people. Ask them to add you.";
+/// A request to manage teams, channels or people through an agent's grant, refused inside the
+/// method behind the worker allowlist.
+const PERSON_REQUIRED: &str = "forbidden: only a person can do this";
+/// What a delete names no longer has the name the person confirmed (`expected_name`): the
+/// snapshot they chose from was stale, or rewritten on the way.
+const CHANNEL_NAME_CHANGED: &str =
+    "name_changed: This channel was renamed since you chose it. Check its name and try again.";
+const TEAM_NAME_CHANGED: &str =
+    "name_changed: This team was renamed since you chose it. Check its name and try again.";
+const WORKSPACE_NAME_CHANGED: &str =
+    "name_changed: This workspace was renamed since you chose it. Check its name and try again.";
+/// The largest workspace context document, in bytes of UTF-8 text.
+const CONTEXT_MAX_BYTES: usize = 64 * 1024;
+/// `workspace.context.set` from a revision that is no longer the current one.
+const CONTEXT_CONFLICT: &str = "revision_conflict: Someone changed the workspace context since you opened it. Reload it, then make your change again.";
+/// A run without a remote work folder asked for something only a work folder allows. The
+/// folder is the member's own connection setting, not anyone's approval, so the sentence says
+/// where to set it.
+const NO_REMOTE_FOLDER: &str = "forbidden: This task has no remote work folder. Set one in Connection settings, then start a new task.";
 const MEMBER_STATE_QUOTA: &str = "quota_exceeded: You have used your share of this workspace's storage. Reading still works; ask the workspace host about starting a new workspace.";
 const MEMBER_JOURNAL_QUOTA: &str = "quota_exceeded: You have made as many changes as one member's share of this workspace's audit journal allows. Reading still works; ask the workspace host about starting a new workspace.";
 /// A snapshot's invitations, runs and references are each capped at this many serialized
@@ -1128,6 +1199,8 @@ fn recovered_state(
                     institution_id: None,
                     policy_epoch: 1,
                     name: initial_name.map(str::to_owned),
+                    governance: Governance::Managed,
+                    deleted_at: None,
                 },
                 bootstrap_key: bootstrap_key.into(),
                 workspace_signing_key: digest(token().as_bytes()),
@@ -1148,6 +1221,7 @@ fn recovered_state(
                 sequence: 0,
                 read_positions: BTreeMap::new(),
                 pending_joins: BTreeMap::new(),
+                context: None,
             }
         }
     };
@@ -1264,6 +1338,9 @@ impl Broker {
             );
         }
         let root = canonical_root.as_path();
+        // An erase a crash interrupted (OW-5): never reopened, so a `start` cannot quietly put
+        // a new workspace where the deleted one was being removed.
+        refuse_marked(root)?;
         #[cfg(target_os = "linux")]
         {
             let path = std::ffi::CString::new(root.as_os_str().as_encoded_bytes())?;
@@ -1494,6 +1571,22 @@ impl Broker {
     pub fn workspace(&self) -> &Workspace {
         &self.state.workspace
     }
+    /// Whether the host deleted the workspace at least [`DELETE_GRACE_SECS`] before `now`, so
+    /// its files are due to be erased.
+    fn erase_due(&self, now: u64) -> bool {
+        self.state
+            .workspace
+            .deleted_at
+            .is_some_and(|at| now >= at.saturating_add(DELETE_GRACE_SECS))
+    }
+    /// What the runtime watch does once a deleted workspace's grace period is over at `now`:
+    /// erase the state directory ([`erase_store`]) and return what was left; `None` before
+    /// then. The broker must not be used afterwards. Test builds only.
+    #[cfg(feature = "test-seams")]
+    pub fn erase_if_due(&self, now: u64) -> Option<Result<Vec<String>>> {
+        self.erase_due(now)
+            .then(|| erase_store(&self.root, &self.state.workspace.id))
+    }
     /// `principal`'s device made a signed request on `conn`.
     fn note_presence(&mut self, conn: &mut Connection, principal: &str) {
         let now = Instant::now();
@@ -1584,6 +1677,9 @@ impl Broker {
         if req.method == "hello" {
             return self.hello(req);
         }
+        // Once the host deleted the workspace (OW-5) nothing but `hello` is answered, ahead of
+        // every pre-authentication method, so nobody signs in, joins or bootstraps it again.
+        ensure!(self.state.workspace.deleted_at.is_none(), WORKSPACE_DELETED);
         if req.method == "auth.challenge" {
             return self.challenge(uid, conn, req);
         }
@@ -1615,6 +1711,7 @@ impl Broker {
                 | "blob.status"
                 | "reference.get"
                 | "profile.suggest"
+                | "workspace.context.get"
         ) {
             return self.read(&actor, req);
         }
@@ -1659,6 +1756,7 @@ impl Broker {
                         | "blob.status"
                         | "reference.create"
                         | "reference.get"
+                        | "workspace.context.get"
                 ),
                 "forbidden: worker operation unavailable"
             );
@@ -1784,6 +1882,7 @@ impl Broker {
                 return Err(error);
             }
         };
+        let pending_file_removals = removed_attachments(&self.state, &state, expired_uploads);
         let host = self.manager(&self.state, &actor.id).is_ok();
         let method = req.method.as_str();
         let administrative = host && actor.run.is_none() && ADMIN_METHODS.contains(&method);
@@ -1841,7 +1940,7 @@ impl Broker {
             return Err(error);
         }
         // Only once the removal is journaled: a failed commit keeps both.
-        for blob_id in expired_uploads {
+        for blob_id in pending_file_removals {
             let _ = fs::remove_file(self.root.join("blobs").join(blob_id));
         }
         Ok(result)
@@ -1853,11 +1952,13 @@ impl Broker {
             // The host may add people to a channel it is not in (direct add), so its retry of
             // that add is re-authorized as the host, not as a member. Likewise a member's retry
             // of leaving a channel (they are no longer in it, and the result is the one they
-            // were given), and the host's of acting on a channel whose owner left the workspace.
+            // were given), the host's of acting on a channel whose owner left the workspace,
+            // and anyone's of deleting a channel, which no longer exists for anyone to be in.
             let host_add =
                 req.method == "channel.add_member" && self.manager(&self.state, &actor.id).is_ok();
             let outside = Self::is_leave(req, &actor.id)
-                || self.stewards_orphaned_channel(&self.state, actor, req);
+                || self.stewards_orphaned_channel(&self.state, actor, req)
+                || req.method == "channel.delete";
             if !host_add && !outside {
                 self.channel(&self.state, &actor.id, channel, false)?;
             }
@@ -1928,9 +2029,13 @@ impl Broker {
             .to_bytes(),
         );
         let mut hello = json!({"protocol":1,"workspace_id":workspace.id,"host_uid":workspace.host_uid,"mode":workspace.mode,"institution_id":workspace.institution_id,"policy_epoch":workspace.policy_epoch,"name":workspace.name,"workspace_public_key":public_key,"node_id":node_id,"workspace_key_fingerprint":digest(&key.verifying_key().to_bytes()),"challenge_nonce":nonce,"signature":signature,"signature_v2":signature_v2,"capabilities":capabilities,"unsupported":["arbitrary_shell","remote_filesystem","network_filesystem","cross_workspace_release"]});
-        // Unsigned, for display only: whether this broker is still saving changes. An older
-        // broker sends no `state`, which a client reads as unknown.
+        // Unsigned: whether this broker is still saving changes, or the host deleted the
+        // workspace and it is about to erase itself. The storage state is for display only; a
+        // member's daemon ends the connection on `deleted` (L7), as it does on the equally
+        // unsigned `workspace_deleted` refusal of any other request. An older broker sends no
+        // `state`, which a client reads as unknown.
         match &self.storage_fault {
+            _ if workspace.deleted_at.is_some() => hello["state"] = json!("deleted"),
             None => hello["state"] = json!("running"),
             Some(fault) => {
                 hello["state"] = json!("storage_failed");
@@ -1944,8 +2049,8 @@ impl Broker {
         Ok(hello)
     }
     /// What `hello` advertises, in the order it advertises it (the v2 signature covers the
-    /// order).
-    fn capabilities() -> Vec<&'static str> {
+    /// order). `biorouter-crew --version --output-format json` reports the same list.
+    pub fn capabilities() -> Vec<&'static str> {
         #[allow(unused_mut)]
         let mut capabilities = vec![
             "human_chat",
@@ -1956,6 +2061,11 @@ impl Broker {
             "unique_names_v1",
             "direct_add_v1",
             "presence_v1",
+            "open_governance_v1",
+            "delete_v1",
+            "workspace_context_v1",
+            "remote_access_v1",
+            "wide_runs_v1",
         ];
         #[cfg(feature = "join-by-name")]
         capabilities.push("join_by_name_v1");
@@ -2057,10 +2167,12 @@ impl Broker {
             (Some(expected), Some(principal)) if principal.id == expected && principal.username == current_username => principal.clone(),
             (None, None) => {
                 Self::ensure_username_free(&state, uid, &current_username)?;
-                Principal {
+                let principal = Principal {
                     id: id(), uid, username: current_username.clone(), nickname: current_username,
                     avatar: None, active: true,
-                }
+                };
+                admit_everywhere(&mut state, &principal.id);
+                principal
             }
             _ => bail!("identity_mismatch: enrollment principal changed; request a new invitation explicitly identifying the existing principal or offboard the old account"),
         };
@@ -2313,8 +2425,23 @@ impl Broker {
             "blob.status" => self.read_blob_status(actor, req),
             "blob.read" => self.read_blob_read(actor, req),
             "profile.suggest" => self.read_profile_suggest(actor),
+            "workspace.context.get" => self.read_workspace_context(actor),
             _ => bail!("unsupported: method unavailable"),
         }
+    }
+    /// `workspace.context.get {}`: the workspace context document, or `null` before anyone
+    /// wrote one. Any member, and any agent's grant, since every member's agent is meant to read
+    /// it; an agent on a public model only in a Public workspace, since in a Private one the
+    /// document describes a server that only private models may hear about.
+    fn read_workspace_context(&self, actor: &Actor) -> Result<Value> {
+        let s = &self.state;
+        if let Some(run) = &actor.run {
+            ensure!(
+                !run.public_provider || s.workspace.mode == Mode::Public,
+                "privacy_denied: The workspace context is not shared with public models in a Private workspace."
+            );
+        }
+        Ok(json!({ "context": s.context }))
     }
     fn message_wire(message: &Message) -> Value {
         let mut value = json!(message);
@@ -2479,6 +2606,8 @@ impl Broker {
             Self::snapshot_invitations(s, &index, &actor.id, now);
         let mut workspace = json!(s.workspace);
         workspace["host_principal_id"] = json!(host_principal_id(s));
+        // Stored only when open; said either way here, so a client never has to infer it.
+        workspace["governance"] = json!(s.workspace.governance);
         let principals = self.snapshot_principals(s, &index, host);
         let actor_wire = Self::actor_wire(s, &index, &actor.id);
         // The actor's live runs only (a revoked, expired or superseded run grants nothing),
@@ -2510,6 +2639,20 @@ impl Broker {
         let mut snapshot = json!({"workspace":workspace,"protected_channel_ids":[],"actor":actor_wire,"principals":principals,"former_principals":[],"teams":[],"channels":[],"invitations":invitations_wire,"runs":runs,"read_positions":{},"unread":{},"references":references,"totals":totals});
         // Presence is display only: it is in memory, never journaled, and grants nothing.
         snapshot["online_principal_ids"] = json!(self.online_principal_ids(s));
+        // At most 64 KiB of text, so it always fits beside the rest: teams and channels take
+        // what is left ([`Self::fill_places`]).
+        snapshot["context"] = json!(s.context);
+        let open = open_governance(s);
+        if open {
+            // What the actor may join on their own (`team.join`, `channel.join`): every team
+            // they are not in, and every unarchived channel of their teams they are not in.
+            let (joinable_teams, teams_total) = Self::joinable_teams(s, &actor.id);
+            let (joinable_channels, channels_total) = Self::joinable_channels(s, &actor.id);
+            snapshot["joinable_teams"] = Value::Array(joinable_teams);
+            snapshot["joinable_channels"] = Value::Array(joinable_channels);
+            snapshot["totals"]["joinable_teams"] = json!(teams_total);
+            snapshot["totals"]["joinable_channels"] = json!(channels_total);
+        }
         if host {
             snapshot["usage"] = self.usage(s);
             let refusals: BTreeMap<&str, usize> = self
@@ -2519,10 +2662,12 @@ impl Broker {
                 .filter(|(_, count)| *count > 0)
                 .collect();
             snapshot["name_collision_refusals"] = json!(refusals);
-            #[cfg(feature = "join-by-name")]
-            {
-                snapshot["pending_joins"] = join::project_for_manager(self, s);
-            }
+        }
+        // Whoever may admit joiners sees who is waiting: the host, or in an open workspace
+        // every member. Never a code, key, UID or join ID.
+        #[cfg(feature = "join-by-name")]
+        if host || open {
+            snapshot["pending_joins"] = join::project_for_manager(self, s);
         }
         self.fill_places(
             &mut snapshot,
@@ -2926,6 +3071,55 @@ impl Broker {
             })
             .collect()
     }
+    /// Open governance only: the teams `actor_id` is not in, each `{id, name, display_name,
+    /// handle, member_count}` (active members), as many as fit in one snapshot section, with how
+    /// many there are in all. Every member may join any of them, so naming them is the point.
+    fn joinable_teams(s: &State, actor_id: &str) -> (Vec<Value>, usize) {
+        let joinable: Vec<Value> = s
+            .teams
+            .values()
+            .filter(|team| !team.members.contains(actor_id))
+            .map(|team| {
+                json!({
+                    "id": team.id,
+                    "name": team.name,
+                    "display_name": sanitize_team_name(&team.name),
+                    "handle": name_key(&team.name),
+                    "member_count": active_count(s, &team.members),
+                })
+            })
+            .collect();
+        let total = joinable.len();
+        (within_budget(joinable), total)
+    }
+    /// Open governance only: the unarchived channels of `actor_id`'s teams that they are not in,
+    /// each `{id, team_id, name, display_name, handle, classification, member_count}`, within
+    /// one snapshot section, with the total.
+    fn joinable_channels(s: &State, actor_id: &str) -> (Vec<Value>, usize) {
+        let joinable: Vec<Value> = s
+            .channels
+            .values()
+            .filter(|channel| !channel.archived && !channel.members.contains(actor_id))
+            .filter(|channel| {
+                s.teams
+                    .get(&channel.team_id)
+                    .is_some_and(|team| team.members.contains(actor_id))
+            })
+            .map(|channel| {
+                json!({
+                    "id": channel.id,
+                    "team_id": channel.team_id,
+                    "name": channel.name,
+                    "display_name": sanitize_channel_name(&channel.name),
+                    "handle": name_key(&channel.name),
+                    "classification": channel.classification,
+                    "member_count": active_count(s, &channel.members),
+                })
+            })
+            .collect();
+        let total = joinable.len();
+        (within_budget(joinable), total)
+    }
     /// An invitation as its invitee or inviter sees it: the target's current name (the
     /// team's, or the channel's plus its team's), who invited, and whether it has expired.
     /// Naming the target to its intended invitee is the purpose of an invitation.
@@ -3067,9 +3261,12 @@ impl Broker {
         let root = run
             .remote_root
             .as_ref()
-            .ok_or_else(|| anyhow!("forbidden: run has no remote path approval"))?;
+            .ok_or_else(|| anyhow!(NO_REMOTE_FOLDER))?;
+        // `access` decides which helper the owner's bridge runs; a bridge that finds none (an
+        // older broker) stays in folder mode. `owner_id` keys full-access jobs, which any run of
+        // the same owner may read, and `channel_id` is where a shared server file is uploaded.
         Ok(
-            json!({"root":root,"allow_execute":run.remote_execution,"public_provider":run.public_provider,"run_id":run.id,"policy_epoch":run.policy_epoch,"expires_at":run.expires_at}),
+            json!({"root":root,"allow_execute":run.remote_execution,"public_provider":run.public_provider,"run_id":run.id,"policy_epoch":run.policy_epoch,"expires_at":run.expires_at,"access":run.remote_access.as_str(),"owner_id":run.owner_id,"channel_id":run.channel_id}),
         )
     }
     fn read_context_manifest(&self, actor: &Actor, _req: &Request) -> Result<Value> {
@@ -3195,6 +3392,13 @@ impl Broker {
             "channel.create" => self.mutate_channel_create(s, actor, req),
             "channel.rename" => self.mutate_channel_rename(s, actor, req),
             "workspace.rename" => self.mutate_workspace_rename(s, actor, req),
+            "workspace.set_governance" => self.mutate_workspace_set_governance(s, actor, req),
+            "workspace.delete" => self.mutate_workspace_delete(s, actor, req),
+            "workspace.context.set" => self.mutate_workspace_context_set(s, actor, req),
+            "team.join" => self.mutate_team_join(s, actor, req),
+            "channel.join" => self.mutate_channel_join(s, actor, req),
+            "channel.delete" => self.mutate_channel_delete(s, actor, req),
+            "team.delete" => self.mutate_team_delete(s, actor, req),
             "invitation.create" => self.mutate_invitation_create(s, actor, req),
             "invitation.accept" => self.mutate_invitation_accept(s, actor, req),
             "team.add_member" => self.mutate_team_add_member(s, actor, req),
@@ -3342,7 +3546,7 @@ impl Broker {
         #[cfg(feature = "join-by-name")]
         {
             let (uid, username) = (principal.uid, principal.username.clone());
-            join::on_principal_revoked(s, uid, &username);
+            join::on_principal_revoked(s, target, uid, &username);
         }
         s.devices.retain(|_, d| d.principal_id != target);
         s.enrollments.retain(|_, e| {
@@ -3410,7 +3614,17 @@ impl Broker {
         let name = Self::team_name_for(s, p, None)?;
         let team_id = id();
         let channel_id = id();
-        let members = BTreeSet::from([who.clone()]);
+        let mut members = BTreeSet::from([who.clone()]);
+        if open_governance(s) {
+            // OW-3: a new team in an open workspace has everyone in it, and so does its
+            // `#general`. Nobody's existing grant reads more for it, so the epoch stays.
+            members.extend(
+                s.principals
+                    .values()
+                    .filter(|p| p.active)
+                    .map(|p| p.id.clone()),
+            );
+        }
         let team = Team {
             id: team_id.clone(),
             name,
@@ -3459,13 +3673,24 @@ impl Broker {
             Some(v) => serde_json::from_value(v.clone())?,
             None => Classification::Restricted,
         };
+        let mut members = BTreeSet::from([who.clone()]);
+        if open_governance(s) {
+            // OW-3: a new channel in an open workspace has every active member of its team.
+            let team = s.teams.get(team_id).expect("checked team");
+            members.extend(
+                team.members
+                    .iter()
+                    .filter(|id| s.principals.get(*id).is_some_and(|p| p.active))
+                    .cloned(),
+            );
+        }
         let c = Channel {
             id: id(),
             team_id: team_id.into(),
             name,
             created_by: who.clone(),
             owner_id: who.clone(),
-            members: BTreeSet::from([who.clone()]),
+            members,
             archived: false,
             classification,
             pending_owner: None,
@@ -3517,16 +3742,18 @@ impl Broker {
         );
         Ok(name)
     }
-    /// `team.rename {team_id, name}`: the team's creator only. The ID, memberships and
-    /// invitations are unchanged; the old name is free at once.
+    /// `team.rename {team_id, name}`: the team's creator only, or in an open workspace any of
+    /// its members. The ID, memberships and invitations are unchanged; the old name is free at
+    /// once.
     fn mutate_team_rename(&self, s: &mut State, actor: &Actor, req: &Request) -> Result<Value> {
         let p = &req.params;
         let who = &actor.id;
         let team_id = text(p, "team_id")?;
+        let open = open_to_people(s, actor);
         ensure!(
-            s.teams
-                .get(team_id)
-                .is_some_and(|team| team.created_by == *who && team.members.contains(who)),
+            s.teams.get(team_id).is_some_and(|team| {
+                (team.created_by == *who || open) && team.members.contains(who)
+            }),
             "forbidden: team creator required"
         );
         let name = Self::team_name_for(s, p, Some(team_id))?;
@@ -3534,15 +3761,16 @@ impl Broker {
         team.name = name;
         Ok(json!(team))
     }
-    /// `channel.rename {channel_id, name}`: the channel's current owner only, and not while
-    /// archived (an archived channel is read-only and keeps its name reserved).
+    /// `channel.rename {channel_id, name}`: the channel's current owner only, or in an open
+    /// workspace any of its members, and not while archived (an archived channel is read-only
+    /// and keeps its name reserved).
     fn mutate_channel_rename(&self, s: &mut State, actor: &Actor, req: &Request) -> Result<Value> {
         let p = &req.params;
         let who = &actor.id;
         let channel_id = text(p, "channel_id")?;
         let channel = self.channel(s, who, channel_id, true)?;
         ensure!(
-            channel.owner_id == *who,
+            channel.owner_id == *who || open_to_people(s, actor),
             "forbidden: current owner required"
         );
         let team_id = channel.team_id.clone();
@@ -3583,6 +3811,130 @@ impl Broker {
         }
         Ok(json!(s.workspace))
     }
+    /// `workspace.set_governance {governance: "open"|"managed"}` (`open_governance_v1`, OW-1):
+    /// the host only, as a person. It changes who may manage teams, channels and joiners, never
+    /// what any grant may read, so the epoch stays. Setting the governance the workspace already
+    /// has is a successful no-op.
+    fn mutate_workspace_set_governance(
+        &self,
+        s: &mut State,
+        actor: &Actor,
+        req: &Request,
+    ) -> Result<Value> {
+        self.manager(s, &actor.id)?;
+        ensure!(
+            actor.run.is_none(),
+            "forbidden: human host decision required"
+        );
+        let governance = match req.params.get("governance").and_then(Value::as_str) {
+            Some("open") => Governance::Open,
+            Some("managed") => Governance::Managed,
+            _ => bail!("invalid_params: governance must be open or managed"),
+        };
+        #[cfg(feature = "join-by-name")]
+        if open_governance(s) && governance == Governance::Managed {
+            join::on_governance_managed(self, s);
+        }
+        s.workspace.governance = governance;
+        Ok(json!({ "governance": governance }))
+    }
+    /// `workspace.delete {workspace_id, expected_name}` (`delete_v1`, OW-5): the host only, as a
+    /// person, naming the workspace by its ID and by its current name (`null` for an unnamed
+    /// one), both inside the signature.
+    ///
+    /// It commits the tombstone: every device, legacy enrollment, pending join and grant goes
+    /// and every run is revoked, so nobody gets in again, even through a broker without
+    /// `delete_v1` replaying this journal. From then on every request but `hello` is refused
+    /// [`WORKSPACE_DELETED`], and [`DELETE_GRACE_SECS`] later the broker erases its files and
+    /// exits ([`finish_deletion`]).
+    fn mutate_workspace_delete(
+        &self,
+        s: &mut State,
+        actor: &Actor,
+        req: &Request,
+    ) -> Result<Value> {
+        let p = &req.params;
+        self.manager(s, &actor.id)?;
+        ensure!(
+            actor.run.is_none(),
+            "forbidden: human host decision required"
+        );
+        ensure!(
+            text(p, "workspace_id")? == s.workspace.id,
+            "invalid_params: That isn't this workspace's ID. Refresh and try again."
+        );
+        let expected = match p.get("expected_name") {
+            Some(Value::Null) => None,
+            Some(Value::String(name)) => Some(name.as_str()),
+            _ => bail!("invalid_params: expected_name must be the workspace's name, or null for a workspace without one"),
+        };
+        ensure!(
+            expected == s.workspace.name.as_deref(),
+            WORKSPACE_NAME_CHANGED
+        );
+        s.workspace.deleted_at = Some(now());
+        s.devices.clear();
+        s.enrollments.clear();
+        s.pending_joins.clear();
+        s.grants.clear();
+        for run in s.runs.values_mut() {
+            run.revoked = true;
+        }
+        s.workspace.policy_epoch += 1;
+        Ok(json!({
+            "deleted": true,
+            "workspace_id": s.workspace.id,
+            "erase_after_seconds": DELETE_GRACE_SECS,
+        }))
+    }
+    /// `workspace.context.set {text, expected_revision}` (`workspace_context_v1`, OW-8): a
+    /// person replaces the workspace context document, the host in a managed workspace and any
+    /// member in an open one. `expected_revision` is the revision the editor started from (0
+    /// before the first), so of two people editing at once the second is refused
+    /// [`CONTEXT_CONFLICT`] rather than silently overwriting the first.
+    ///
+    /// At most [`CONTEXT_MAX_BYTES`] of text; line breaks and tabs are kept and any other control
+    /// character is refused. The text counts toward its editor's share of the state while the
+    /// revision is theirs, and every revision stays in the journal. The epoch stays: the
+    /// document is reference information and authorizes nothing.
+    fn mutate_workspace_context_set(
+        &self,
+        s: &mut State,
+        actor: &Actor,
+        req: &Request,
+    ) -> Result<Value> {
+        let p = &req.params;
+        let who = &actor.id;
+        ensure!(actor.run.is_none(), PERSON_REQUIRED);
+        if !open_governance(s) {
+            self.manager(s, who)?;
+        }
+        let text = p
+            .get("text")
+            .and_then(Value::as_str)
+            .ok_or_else(|| anyhow!("invalid_params: text must be a string"))?;
+        ensure!(
+            text.len() <= CONTEXT_MAX_BYTES,
+            "invalid_params: The workspace context is longer than 64 KiB. Shorten it, then save it again."
+        );
+        ensure!(
+            !text
+                .chars()
+                .any(|c| c.is_control() && !matches!(c, '\n' | '\r' | '\t')),
+            "invalid_params: The workspace context has a control character in it. Remove it, then save it again."
+        );
+        let current = s.context.as_ref().map_or(0, |context| context.revision);
+        ensure!(number(p, "expected_revision")? == current, CONTEXT_CONFLICT);
+        let context = WorkspaceContext {
+            text: text.to_owned(),
+            revision: current + 1,
+            updated_by: who.clone(),
+            updated_at: now(),
+        };
+        let result = json!({"revision": context.revision, "updated_at": context.updated_at});
+        s.context = Some(context);
+        Ok(result)
+    }
     fn mutate_invitation_create(
         &self,
         s: &mut State,
@@ -3598,14 +3950,21 @@ impl Broker {
             s.principals.get(principal).is_some_and(|p| p.active),
             "forbidden: principal unavailable"
         );
+        // In an open workspace any member of the team or channel invites (OW-2).
+        let open = open_to_people(s, actor);
         match kind {
             "team" => ensure!(
-                s.teams.get(target).is_some_and(|t| t.created_by == *who),
+                s.teams
+                    .get(target)
+                    .is_some_and(|t| t.created_by == *who || (open && t.members.contains(who))),
                 "forbidden: team owner required"
             ),
             "channel" => {
                 let c = self.channel(s, who, target, true)?;
-                ensure!(c.owner_id == *who, "forbidden: current owner required");
+                ensure!(
+                    c.owner_id == *who || open,
+                    "forbidden: current owner required"
+                );
                 ensure!(
                     s.teams
                         .get(&c.team_id)
@@ -3662,13 +4021,21 @@ impl Broker {
             .filter(|i| i.principal_id == *who && i.expires_at >= now())
             .ok_or_else(|| anyhow!("forbidden: invitation unavailable"))?
             .clone();
+        // The inviter must still hold the authority they invited with: the team's creator or the
+        // channel's owner, or in an open workspace still an active member of it (OW-2).
+        let open = open_governance(s);
+        let inviter_active = s
+            .principals
+            .get(&invitation.inviter_id)
+            .is_some_and(|p| p.active);
         if invitation.kind == "team" {
             let team = s
                 .teams
                 .get_mut(&invitation.target_id)
                 .ok_or_else(|| anyhow!("forbidden: team unavailable"))?;
             ensure!(
-                team.created_by == invitation.inviter_id,
+                team.created_by == invitation.inviter_id
+                    || (open && inviter_active && team.members.contains(&invitation.inviter_id)),
                 "forbidden: invitation authority changed"
             );
             team.members.insert(who.clone());
@@ -3683,13 +4050,19 @@ impl Broker {
                 .get_mut(&invitation.target_id)
                 .ok_or_else(|| anyhow!("forbidden: channel unavailable"))?;
             ensure!(
-                c.owner_id == invitation.inviter_id && !c.archived,
+                (c.owner_id == invitation.inviter_id
+                    || (open && inviter_active && c.members.contains(&invitation.inviter_id)))
+                    && !c.archived,
                 "forbidden: invitation authority changed"
             );
             c.members.insert(who.clone());
         }
         s.invitations.remove(&invitation.id);
-        s.workspace.policy_epoch += 1;
+        // OW-3: an addition in an open workspace widens no existing grant, so it leaves every
+        // agent running. In a managed one every membership change ends them, as it always has.
+        if !open {
+            s.workspace.policy_epoch += 1;
+        }
         Ok(json!({"accepted":true}))
     }
     /// `team.add_member {team_id, principal_id, expected_username, channel_ids?}` (direct add,
@@ -3701,11 +4074,15 @@ impl Broker {
     /// Every check runs before anything changes, so one refused channel refuses the whole add.
     /// A member already in the team and every listed channel is a successful no-op that leaves
     /// the policy epoch alone; any real addition moves it, as `invitation.accept` does.
+    ///
+    /// In an open workspace (OW-2) any member of the team adds people, into the channels of it
+    /// they are in themselves, and an addition leaves the epoch alone (OW-3).
     fn mutate_team_add_member(&self, s: &mut State, actor: &Actor, req: &Request) -> Result<Value> {
         let p = &req.params;
         let who = &actor.id;
         ensure!(actor.run.is_none(), DIRECT_ADD_AGENT_REFUSED);
         let host = self.manager(s, who).is_ok();
+        let open = open_governance(s);
         let team_id = text(p, "team_id")?;
         let team = s
             .teams
@@ -3713,7 +4090,7 @@ impl Broker {
             .filter(|team| host || team.members.contains(who))
             .ok_or_else(|| anyhow!("forbidden: team unavailable"))?;
         ensure!(
-            host || team.created_by == *who,
+            host || open || team.created_by == *who,
             "forbidden: Only the team's owner or the workspace host can add people to it."
         );
         let principal_id = text(p, "principal_id")?;
@@ -3738,7 +4115,7 @@ impl Broker {
                 .filter(|c| c.team_id == team_id && (host || c.members.contains(who)))
                 .ok_or_else(|| anyhow!(DIRECT_ADD_UNKNOWN_CHANNEL))?;
             ensure!(
-                host || channel.owner_id == *who,
+                host || open || channel.owner_id == *who,
                 "forbidden: You can only add people to channels you own. Uncheck #{} and try again.",
                 channel.name
             );
@@ -3772,7 +4149,9 @@ impl Broker {
                     || (invitation.target_id != team_id
                         && !added_channels.contains(&invitation.target_id))
             });
-            s.workspace.policy_epoch += 1;
+            if !open {
+                s.workspace.policy_epoch += 1;
+            }
         }
         Ok(json!({
             "team_id": team_id,
@@ -3782,9 +4161,10 @@ impl Broker {
         }))
     }
     /// `channel.add_member {channel_id, principal_id, expected_username}` (direct add): the
-    /// channel's owner or the workspace host adds a member of the channel's team. As
-    /// [`Self::mutate_team_add_member`], an existing member is a no-op that leaves the epoch
-    /// alone.
+    /// channel's owner or the workspace host adds a member of the channel's team, or in an open
+    /// workspace any member of the channel does. As [`Self::mutate_team_add_member`], an
+    /// existing member is a no-op that leaves the epoch alone, and so is any addition in an
+    /// open workspace.
     fn mutate_channel_add_member(
         &self,
         s: &mut State,
@@ -3795,6 +4175,7 @@ impl Broker {
         let who = &actor.id;
         ensure!(actor.run.is_none(), DIRECT_ADD_AGENT_REFUSED);
         let host = self.manager(s, who).is_ok();
+        let open = open_governance(s);
         let channel_id = text(p, "channel_id")?;
         let channel = if host {
             s.channels
@@ -3804,7 +4185,7 @@ impl Broker {
             self.channel(s, who, channel_id, false)?
         };
         ensure!(
-            host || channel.owner_id == *who,
+            host || open || channel.owner_id == *who,
             "forbidden: Only the channel's owner or the workspace host can add people to it."
         );
         ensure!(
@@ -3831,7 +4212,9 @@ impl Broker {
             s.invitations.retain(|_, invitation| {
                 invitation.principal_id != target || invitation.target_id != channel_id
             });
-            s.workspace.policy_epoch += 1;
+            if !open {
+                s.workspace.policy_epoch += 1;
+            }
         }
         Ok(json!({
             "channel_id": channel_id,
@@ -3879,7 +4262,10 @@ impl Broker {
     /// longer an active member of the workspace has nobody left to manage it, so the host
     /// archives it or removes its members, from outside it too
     /// ([`Self::stewards_orphaned_channel`]). Nobody removes a channel's owner, the host never
-    /// overrides an owner who is still a member, and only the owner transfers.
+    /// overrides an owner who is still a member, and only the owner transfers. In an open
+    /// workspace every member of the channel may archive it or remove anyone but its owner.
+    ///
+    /// Each of them bumps the epoch, open or not: a removal or an archive takes access away.
     fn mutate_channel_archive(&self, s: &mut State, actor: &Actor, req: &Request) -> Result<Value> {
         let p = &req.params;
         let who = &actor.id;
@@ -3895,12 +4281,15 @@ impl Broker {
         };
         let owner = c.owner_id == *who;
         let leaving = !owner && Self::is_leave(req, who);
+        // In an open workspace any member of the channel archives it or removes someone from
+        // it (OW-2). Nobody still removes its owner, and only the owner transfers it.
+        let open = method != "channel.transfer" && open_to_people(s, actor);
         ensure!(
             leaving || !c.archived,
             "channel_archived: channel is read-only"
         );
         ensure!(
-            owner || leaving || stewarding,
+            owner || leaving || stewarding || open,
             "forbidden: current owner required"
         );
         match method {
@@ -3959,13 +4348,16 @@ impl Broker {
         req.method == "membership.revoke"
             && req.params.get("principal_id").and_then(Value::as_str) == Some(actor_id)
     }
-    /// Whether `actor` is the host, as a person, archiving (`channel.archive`) or removing a
-    /// member from (`membership.revoke`) a channel whose owner is no longer an active member of
-    /// the workspace, and so can act on it without being in it. An offboarded owner's channels
-    /// would otherwise stay as they are for good, with every member someone added to them.
+    /// Whether `actor` is the host, as a person, archiving (`channel.archive`), deleting
+    /// (`channel.delete`) or removing a member from (`membership.revoke`) a channel whose owner
+    /// is no longer an active member of the workspace, and so can act on it without being in
+    /// it. An offboarded owner's channels would otherwise stay as they are for good, with every
+    /// member someone added to them.
     fn stewards_orphaned_channel(&self, s: &State, actor: &Actor, req: &Request) -> bool {
-        matches!(req.method.as_str(), "channel.archive" | "membership.revoke")
-            && actor.run.is_none()
+        matches!(
+            req.method.as_str(),
+            "channel.archive" | "channel.delete" | "membership.revoke"
+        ) && actor.run.is_none()
             && self.manager(s, &actor.id).is_ok()
             && req
                 .params
@@ -3997,6 +4389,152 @@ impl Broker {
         s.invitations.retain(|_, i| i.target_id != channel);
         s.workspace.policy_epoch += 1;
         Ok(json!(c))
+    }
+    /// `team.join {team_id}` (`open_governance_v1`): in an open workspace any member joins a
+    /// team, and its `#general`, on their own, and their invitations to either are spent. The
+    /// epoch stays, as for every addition in an open workspace (OW-3). In a managed workspace
+    /// the owner or the host adds people instead.
+    fn mutate_team_join(&self, s: &mut State, actor: &Actor, req: &Request) -> Result<Value> {
+        let who = &actor.id;
+        ensure!(actor.run.is_none(), PERSON_REQUIRED);
+        ensure!(open_governance(s), JOIN_NEEDS_OPEN);
+        let team_id = text(&req.params, "team_id")?;
+        let team = s
+            .teams
+            .get_mut(team_id)
+            .ok_or_else(|| anyhow!("forbidden: team unavailable"))?;
+        team.members.insert(who.clone());
+        let general = team.general_channel_id.clone();
+        s.channels
+            .get_mut(&general)
+            .ok_or_else(|| anyhow!("storage_corrupt"))?
+            .members
+            .insert(who.clone());
+        s.invitations.retain(|_, invitation| {
+            invitation.principal_id != *who
+                || (invitation.target_id != team_id && invitation.target_id != general)
+        });
+        Ok(json!({"team_id": team_id, "joined": true}))
+    }
+    /// `channel.join {channel_id}` (`open_governance_v1`): in an open workspace any member of a
+    /// channel's team joins it on their own, unless it is archived, and their invitations to it
+    /// are spent. The epoch stays (OW-3).
+    fn mutate_channel_join(&self, s: &mut State, actor: &Actor, req: &Request) -> Result<Value> {
+        let who = &actor.id;
+        ensure!(actor.run.is_none(), PERSON_REQUIRED);
+        ensure!(open_governance(s), JOIN_NEEDS_OPEN);
+        let channel_id = text(&req.params, "channel_id")?;
+        // A channel of a team the actor is not in reads exactly as one that doesn't exist.
+        let channel = s
+            .channels
+            .get(channel_id)
+            .filter(|channel| {
+                s.teams
+                    .get(&channel.team_id)
+                    .is_some_and(|team| team.members.contains(who))
+            })
+            .ok_or_else(|| anyhow!("forbidden: channel unavailable"))?;
+        ensure!(
+            !channel.archived,
+            "channel_archived: #{} is archived, so no one can join it.",
+            channel.name
+        );
+        s.channels
+            .get_mut(channel_id)
+            .expect("checked channel")
+            .members
+            .insert(who.clone());
+        s.invitations.retain(|_, invitation| {
+            invitation.principal_id != *who || invitation.target_id != channel_id
+        });
+        Ok(json!({"channel_id": channel_id, "joined": true}))
+    }
+    /// `channel.delete {channel_id, expected_name?}` (`delete_v1`, OW-4): a person removes a
+    /// channel, archived or not: its owner, the host for a channel whose owner left the
+    /// workspace ([`Self::stewards_orphaned_channel`]), or in an open workspace any of its
+    /// members. A team's `#general` goes only with its team. `expected_name` (inside the
+    /// signature) must still be the channel's name, so a stale or rewritten snapshot cannot
+    /// steer the delete onto a channel that was renamed since.
+    ///
+    /// Only map entries are removed ([`remove_channel`]): the channel's messages stay in the
+    /// state and the journal, readable by nobody because their channel is gone. The epoch
+    /// stays, since every run that named the channel is revoked and nobody else's reads
+    /// change.
+    fn mutate_channel_delete(&self, s: &mut State, actor: &Actor, req: &Request) -> Result<Value> {
+        let p = &req.params;
+        let who = &actor.id;
+        ensure!(actor.run.is_none(), DELETE_AGENT_REFUSED);
+        let channel_id = text(p, "channel_id")?;
+        let stewarding = self.stewards_orphaned_channel(s, actor, req);
+        let c = if stewarding {
+            s.channels
+                .get(channel_id)
+                .ok_or_else(|| anyhow!("forbidden: channel unavailable"))?
+        } else {
+            self.channel(s, who, channel_id, false)?
+        };
+        ensure!(
+            c.owner_id == *who || stewarding || open_governance(s),
+            "forbidden: current owner required"
+        );
+        let team_id = c.team_id.clone();
+        ensure!(
+            s.teams
+                .get(&team_id)
+                .is_some_and(|team| team.general_channel_id != channel_id),
+            GENERAL_DELETE
+        );
+        check_expected_name(p, &c.name, Some('#'), CHANNEL_NAME_CHANGED)?;
+        let removed = remove_channel(s, channel_id);
+        Ok(json!({
+            "deleted": true,
+            "channel_id": channel_id,
+            "team_id": team_id,
+            "removed_attachments": removed.attachments,
+            "removed_references": removed.references,
+        }))
+    }
+    /// `team.delete {team_id, expected_name?}` (`delete_v1`, OW-4): a person removes a team
+    /// with every channel in it, its `#general` and channels the deleter is not in included:
+    /// its creator while still in it, the host when the creator is no longer an active member,
+    /// or in an open workspace any member of the team. As [`Self::mutate_channel_delete`], map
+    /// entries only, and the epoch stays.
+    fn mutate_team_delete(&self, s: &mut State, actor: &Actor, req: &Request) -> Result<Value> {
+        let p = &req.params;
+        let who = &actor.id;
+        ensure!(actor.run.is_none(), DELETE_AGENT_REFUSED);
+        let team_id = text(p, "team_id")?;
+        let host = self.manager(s, who).is_ok();
+        let team = s
+            .teams
+            .get(team_id)
+            .ok_or_else(|| anyhow!("forbidden: team unavailable"))?;
+        let member = team.members.contains(who);
+        let stewarding = host
+            && team.created_by != *who
+            && !s
+                .principals
+                .get(&team.created_by)
+                .is_some_and(|creator| creator.active);
+        ensure!(member || stewarding, "forbidden: team unavailable");
+        ensure!(
+            stewarding || team.created_by == *who || open_governance(s),
+            "forbidden: team creator required"
+        );
+        check_expected_name(p, &team.name, None, TEAM_NAME_CHANGED)?;
+        let channels: Vec<String> = s
+            .channels
+            .values()
+            .filter(|channel| channel.team_id == team_id)
+            .map(|channel| channel.id.clone())
+            .collect();
+        for channel_id in &channels {
+            remove_channel(s, channel_id);
+        }
+        s.teams.remove(team_id);
+        s.invitations
+            .retain(|_, invitation| invitation.target_id != team_id);
+        Ok(json!({"deleted": true, "team_id": team_id, "channels": channels.len()}))
     }
     fn message_restricted(
         &self,
@@ -4170,7 +4708,7 @@ impl Broker {
         let mut sources = strings(p, "source_channels")?;
         sources.insert(channel.into());
         ensure!(
-            sources.len() <= 20,
+            sources.len() <= RUN_SOURCE_CHANNELS,
             "quota_exceeded: too many context channels"
         );
         let consent = Self::run_policy_consent(s, p)?;
@@ -4198,6 +4736,56 @@ impl Broker {
             (1..=3600).contains(&expires),
             "invalid_params: expiry must be 1..3600 seconds"
         );
+        let (remote_root, remote_execution, remote_access) =
+            self.run_remote_scope(s, who, p, &consent)?;
+        let protected_context =
+            Self::is_protected_context(s, &sources, &consent.personal_mode, remote_root.as_deref());
+        ensure!(
+            consent.expected_protected_context == protected_context,
+            "stale_policy: selected context protection changed; refresh and authorize again"
+        );
+        Self::enforce_institution_policy(
+            s,
+            &sources,
+            &consent.personal_mode,
+            remote_root.as_deref(),
+            &consent.provider_affiliation,
+            consent.connection_institution_id.as_deref(),
+        )?;
+        let run = Run {
+            protected_context,
+            provider_affiliation: consent.provider_affiliation,
+            workspace_institution_id: consent.workspace_institution_id,
+            connection_institution_id: consent.connection_institution_id,
+            remote_root,
+            remote_execution,
+            remote_access,
+            id: id(),
+            owner_id: who.clone(),
+            channel_id: channel.into(),
+            source_channels: sources,
+            provider_policy_id: display_text(p, "provider_policy_id", 1024)?.into(),
+            public_provider: consent.public_provider,
+            personal_mode: consent.personal_mode,
+            policy_epoch: s.workspace.policy_epoch,
+            expires_at: now() + expires,
+            revoked: false,
+        };
+        let credential = token();
+        s.grants
+            .insert(digest(credential.as_bytes()), run.id.clone());
+        s.runs.insert(run.id.clone(), run.clone());
+        Ok(json!({"run":run,"credential":credential}))
+    }
+    /// The remote half of a `run.create` request, validated and never applied: the work folder,
+    /// whether commands may run in it, and the access they run with. It only reads `s`.
+    fn run_remote_scope(
+        &self,
+        s: &State,
+        who: &str,
+        p: &Value,
+        consent: &RunPolicyConsent,
+    ) -> Result<(Option<String>, bool, RemoteAccess)> {
         let remote_root = match p.get("remote_root") {
             None | Some(Value::Null) => None,
             Some(_) => Some(display_text(p, "remote_root", 4096)?.to_owned()),
@@ -4223,43 +4811,20 @@ impl Broker {
             !remote_execution || remote_root.is_some(),
             "invalid_params: execution requires remote root"
         );
-        let protected_context =
-            Self::is_protected_context(s, &sources, &consent.personal_mode, remote_root.as_deref());
-        ensure!(
-            consent.expected_protected_context == protected_context,
-            "stale_policy: selected context protection changed; refresh and authorize again"
-        );
-        Self::enforce_institution_policy(
-            s,
-            &sources,
-            &consent.personal_mode,
-            remote_root.as_deref(),
-            &consent.provider_affiliation,
-            consent.connection_institution_id.as_deref(),
-        )?;
-        let run = Run {
-            protected_context,
-            provider_affiliation: consent.provider_affiliation,
-            workspace_institution_id: consent.workspace_institution_id,
-            connection_institution_id: consent.connection_institution_id,
-            remote_root,
-            remote_execution,
-            id: id(),
-            owner_id: who.clone(),
-            channel_id: channel.into(),
-            source_channels: sources,
-            provider_policy_id: display_text(p, "provider_policy_id", 1024)?.into(),
-            public_provider: consent.public_provider,
-            personal_mode: consent.personal_mode,
-            policy_epoch: s.workspace.policy_epoch,
-            expires_at: now() + expires,
-            revoked: false,
+        let remote_access = match p.get("remote_access") {
+            None | Some(Value::Null) => RemoteAccess::Folder,
+            Some(value) => serde_json::from_value(value.clone()).map_err(|_| {
+                anyhow!("invalid_params: remote_access must be \"folder\" or \"full\".")
+            })?,
         };
-        let credential = token();
-        s.grants
-            .insert(digest(credential.as_bytes()), run.id.clone());
-        s.runs.insert(run.id.clone(), run.clone());
-        Ok(json!({"run":run,"credential":credential}))
+        // Full access runs as the owner's whole account, so it needs everything a confined
+        // command needs: a work folder, the person's execution grant and a private model.
+        ensure!(
+            remote_access == RemoteAccess::Folder
+                || (remote_root.is_some() && remote_execution && !consent.public_provider),
+            "invalid_params: Full remote access needs a remote root, remote execution and a private provider."
+        );
+        Ok((remote_root, remote_execution, remote_access))
     }
     fn mutate_run_revoke(&self, s: &mut State, actor: &Actor, req: &Request) -> Result<Value> {
         let p = &req.params;
@@ -4307,7 +4872,7 @@ impl Broker {
             let root = run
                 .remote_root
                 .as_ref()
-                .ok_or_else(|| anyhow!("forbidden: run has no remote path approval"))?;
+                .ok_or_else(|| anyhow!(NO_REMOTE_FOLDER))?;
             ensure!(
                 Path::new(path).starts_with(root),
                 "forbidden: reference outside approved remote root"
@@ -4625,6 +5190,19 @@ fn prune_retained(s: &mut State, now: u64, quotas: &Quotas) -> Pruned {
     }
     Pruned { uploads, runs }
 }
+/// The attachments whose files go once `after` is journaled: the unfinished uploads that aged
+/// out (`expired`), and every other attachment `before` held and `after` does not, which
+/// `channel.delete` and `team.delete` remove.
+fn removed_attachments(before: &State, after: &State, mut expired: Vec<String>) -> Vec<String> {
+    let removed: Vec<String> = before
+        .blobs
+        .keys()
+        .filter(|blob_id| !after.blobs.contains_key(*blob_id) && !expired.contains(*blob_id))
+        .cloned()
+        .collect();
+    expired.extend(removed);
+    expired
+}
 /// What [`prune_retained`] removed that outlives the state.
 struct Pruned {
     /// Unfinished uploads, whose files are deleted once the commit lands.
@@ -4683,8 +5261,9 @@ fn remember(s: &mut State, quotas: &Quotas, actor: &str, key: String, cached: Ca
 
 /// The serialized bytes of the records `principal` created and holds against
 /// [`Quotas::member_state_bytes`]: their messages (their agents' included), runs with their
-/// grants, attachments, references, invitations sent, and the teams and channels they
-/// created. Idempotency results and read positions are bounded separately.
+/// grants, attachments, references, invitations sent, the teams and channels they created,
+/// and the workspace context while the revision is theirs. Idempotency results and read
+/// positions are bounded separately.
 fn member_state_bytes(s: &State, principal: &str) -> usize {
     fn total<T: Serialize>(items: impl Iterator<Item = T>) -> usize {
         items.fold(0, |sum, item| sum.saturating_add(json_len(&item)))
@@ -4701,6 +5280,7 @@ fn member_state_bytes(s: &State, principal: &str) -> usize {
         total(s.invitations.values().filter(|i| i.inviter_id == principal)),
         total(s.teams.values().filter(|t| t.created_by == principal)),
         total(s.channels.values().filter(|c| c.created_by == principal)),
+        total(s.context.iter().filter(|c| c.updated_by == principal)),
     ]
     .into_iter()
     .fold(0, usize::saturating_add)
@@ -4759,6 +5339,38 @@ fn shared_name<'a>(p: &'a Value, key: &str, what: SharedName) -> Result<&'a str>
     Ok(value)
 }
 
+/// Whether the workspace is open (OW-1): every active member manages its teams and channels.
+fn open_governance(s: &State) -> bool {
+    s.workspace.governance == Governance::Open
+}
+/// Whether an open workspace's relaxed rule applies to `actor`: the workspace is open and the
+/// request is a person's own. An agent's grant never manages anything, open or not; the worker
+/// allowlist refuses it first, and this is the second wall.
+fn open_to_people(s: &State, actor: &Actor) -> bool {
+    open_governance(s) && actor.run.is_none()
+}
+/// How many of `members` are active members of the workspace.
+fn active_count(s: &State, members: &BTreeSet<String>) -> usize {
+    members
+        .iter()
+        .filter(|id| s.principals.get(*id).is_some_and(|p| p.active))
+        .count()
+}
+/// OW-3: in an open workspace, a member is admitted (`auth.join`, legacy `auth.enroll`) into
+/// every team and every unarchived channel at once. Adding them widens no existing grant, so
+/// the epoch stays. A managed workspace adds them nowhere.
+fn admit_everywhere(s: &mut State, principal_id: &str) {
+    if !open_governance(s) {
+        return;
+    }
+    for team in s.teams.values_mut() {
+        team.members.insert(principal_id.to_owned());
+    }
+    for channel in s.channels.values_mut().filter(|channel| !channel.archived) {
+        channel.members.insert(principal_id.to_owned());
+    }
+}
+
 /// The host's active principal, injected into the snapshot's `workspace` at projection time
 /// and never stored (it would be journaled otherwise).
 fn host_principal_id(s: &State) -> Option<&str> {
@@ -4785,6 +5397,72 @@ fn check_expected_username(s: &State, params: &Value, principal_id: &str) -> Res
         TARGET_MISMATCH
     );
     Ok(())
+}
+
+/// If `params` carries `expected_name` (the team or channel name the person confirmed, inside
+/// their signature, with one leading `sigil` allowed), `name` must still be exactly that, as
+/// [`check_expected_username`] does for people; `changed` otherwise.
+fn check_expected_name(
+    params: &Value,
+    name: &str,
+    sigil: Option<char>,
+    changed: &'static str,
+) -> Result<()> {
+    let expected = match params.get("expected_name") {
+        None | Some(Value::Null) => return Ok(()),
+        Some(Value::String(expected)) => expected.as_str(),
+        Some(_) => bail!("invalid_params: expected_name must be a string"),
+    };
+    let expected = sigil
+        .and_then(|sigil| expected.strip_prefix(sigil))
+        .unwrap_or(expected);
+    ensure!(expected == name, changed);
+    Ok(())
+}
+
+/// What [`remove_channel`] removed besides the channel itself.
+struct RemovedChannel {
+    attachments: usize,
+    references: usize,
+}
+
+/// Remove `channel_id` from the live state, for `channel.delete` and `team.delete` (OW-4), with
+/// map removals only, which a broker without `delete_v1` replays: the channel, every attachment
+/// and reference posted in it or derived from it (nobody could ever read them again),
+/// invitations to it, and everyone's read position in it. Every run that writes to it or reads
+/// it is revoked.
+///
+/// Its messages stay. `messages` is one array, which the journal could only rewrite whole, and
+/// once the channel is gone nobody can read them, nor any message elsewhere derived from it
+/// ([`Broker::visible`]). The attachments' files go once the removal is journaled
+/// ([`Broker::apply_mutation`]).
+fn remove_channel(s: &mut State, channel_id: &str) -> RemovedChannel {
+    let derived =
+        |own: &str, sources: &BTreeSet<String>| own == channel_id || sources.contains(channel_id);
+    s.channels.remove(channel_id);
+    let before = s.blobs.len();
+    s.blobs
+        .retain(|_, blob| !derived(&blob.channel_id, &blob.source_channels));
+    let attachments = before - s.blobs.len();
+    let before = s.references.len();
+    s.references
+        .retain(|_, reference| !derived(&reference.channel_id, &reference.source_channels));
+    let references = before - s.references.len();
+    s.invitations
+        .retain(|_, invitation| invitation.target_id != channel_id);
+    let suffix = format!(":{channel_id}");
+    s.read_positions.retain(|key, _| !key.ends_with(&suffix));
+    for run in s
+        .runs
+        .values_mut()
+        .filter(|run| derived(&run.channel_id, &run.source_channels))
+    {
+        run.revoked = true;
+    }
+    RemovedChannel {
+        attachments,
+        references,
+    }
 }
 
 /// The teams and channels a snapshot lists ([`Broker::places_within`]), with their wires.
@@ -5290,6 +5968,32 @@ fn write_runtime(root: &Path, info: &Value) -> Result<()> {
     fs::rename(path, root.join("runtime.json"))?;
     sync_dir(root)
 }
+/// Connections a broker holds at once, in all and per account. A full-access bridge holds one
+/// and each of its file copies another (at most four, `remote_full`'s `MAX_TRANSFERS`).
+const MAX_CONNECTIONS: usize = 256;
+const MAX_CONNECTIONS_PER_UID: usize = 8;
+const SERVER_FULL: &str =
+    "quota_exceeded: The workspace server has too many connections open. Try again shortly.";
+const ACCOUNT_FULL: &str = "quota_exceeded: This account already has 8 connections open to the workspace server. Wait for a Crew file copy to finish, or close another Crew connection, and try again.";
+/// Tell a connection over the limits why it is closed, in the one frame it reads first, so it
+/// fails with a reason instead of finding the stream at its end. The write never waits: a fresh
+/// connection's buffer takes one short frame.
+fn refuse_connection(stream: UnixStream, refusal: &str) {
+    let response = Response {
+        id: String::new(),
+        result: None,
+        error: Some(ProtocolError {
+            code: "quota_exceeded".into(),
+            message: refusal.into(),
+        }),
+    };
+    if let Ok(mut bytes) = serde_json::to_vec(&response) {
+        bytes.push(b'\n');
+        let mut stream = stream;
+        let _ = stream.set_nonblocking(true);
+        let _ = stream.write_all(&bytes);
+    }
+}
 struct ConnectionPermit {
     counts: Arc<Mutex<BTreeMap<u32, usize>>>,
     uid: u32,
@@ -5314,8 +6018,34 @@ pub fn serve(root: &Path, bootstrap_key: &str, name: Option<&str>) -> Result<()>
         cfg!(target_os = "linux"),
         "unsupported: serve requires Linux"
     );
+    // An erase a crash interrupted after its marker went in (OW-5): the host confirmed it, so
+    // it is finished, never reopened.
+    if let Some(marked) = deleted_marker(root).ok().flatten() {
+        private_dir(root)?;
+        let workspace_id = marked_workspace(root, marked);
+        let stored = stored_workspace(root).ok().flatten();
+        let answer = erase_stopped(root, workspace_id.as_deref().unwrap_or_default(), stored)?;
+        println!("{answer}");
+        return Ok(());
+    }
     let node_id = node_identity()?;
     let mut broker = Broker::open_inner(root, bootstrap_key, Box::new(SystemDirectory), name)?;
+    if broker.state.workspace.deleted_at.is_some() {
+        // The broker stopped between the tombstone and the erase (OW-5). Nobody can be
+        // connected to a broker that is starting, so the erase is finished now.
+        let workspace_id = broker.state.workspace.id.clone();
+        let runtime = broker.state.runtime_basename.clone();
+        let leftovers = erase_store(&broker.root, &workspace_id)?;
+        if let Some(basename) = runtime {
+            let uid = broker.state.workspace.host_uid;
+            retire_runtime(&broker.runtime_root, uid, &basename, &workspace_id);
+        }
+        println!(
+            "{}",
+            json!({"deleted": true, "workspace_id": workspace_id, "leftovers": leftovers})
+        );
+        return Ok(());
+    }
     if let Some(name) = name {
         match broker.state.workspace.name.as_deref() {
             Some(stored) if stored == name => {}
@@ -5361,8 +6091,15 @@ pub fn serve(root: &Path, bootstrap_key: &str, name: Option<&str>) -> Result<()>
             let mut counts = active
                 .lock()
                 .map_err(|_| anyhow!("connection limits unavailable"))?;
-            if counts.values().sum::<usize>() >= 256 || counts.get(&uid).copied().unwrap_or(0) >= 8
-            {
+            let refusal = if counts.values().sum::<usize>() >= MAX_CONNECTIONS {
+                Some(SERVER_FULL)
+            } else if counts.get(&uid).copied().unwrap_or(0) >= MAX_CONNECTIONS_PER_UID {
+                Some(ACCOUNT_FULL)
+            } else {
+                None
+            };
+            if let Some(refusal) = refusal {
+                refuse_connection(stream, refusal);
                 continue;
             }
             *counts.entry(uid).or_default() += 1;
@@ -5392,23 +6129,343 @@ fn path_identity(path: &Path) -> Option<(u64, u64)> {
 fn runtime_intact(socket: &Path, bound: (u64, u64)) -> bool {
     path_identity(socket) == Some(bound)
 }
+/// How often a running broker checks whether a workspace its host deleted is due to be erased.
+const DELETE_WATCH_INTERVAL: Duration = Duration::from_secs(1);
 /// Stop the broker once its socket path no longer leads to the socket it bound: the runtime
 /// directory was removed (by root or a `/tmp` cleaner) and perhaps re-created by another
 /// account. Nobody can connect any more and `stop` can no longer verify the process, while it
 /// still holds the writer lock, so it exits and lets the next `start` restore the path or move
 /// the workspace to a new one. It waits for the request in progress, so no commit is cut short.
+///
+/// The same thread ends a deleted workspace ([`finish_deletion`]) once its grace period is
+/// over, so it wakes every [`DELETE_WATCH_INTERVAL`] and looks at the socket every
+/// [`RUNTIME_WATCH_INTERVAL`].
 fn watch_runtime(socket: PathBuf, bound: (u64, u64), broker: Arc<Mutex<Broker>>) {
-    std::thread::spawn(move || loop {
-        std::thread::sleep(RUNTIME_WATCH_INTERVAL);
-        if !runtime_intact(&socket, bound) {
-            let _held = broker.lock();
-            eprintln!(
-                "runtime_lost: {} no longer leads to this broker; stopping so the next start can restore or move it",
-                socket.display()
-            );
-            std::process::exit(75);
+    std::thread::spawn(move || {
+        let mut since_check = Duration::ZERO;
+        loop {
+            std::thread::sleep(DELETE_WATCH_INTERVAL);
+            since_check += DELETE_WATCH_INTERVAL;
+            if let Ok(held) = broker.lock() {
+                if held.erase_due(now()) {
+                    finish_deletion(&held, &socket, bound);
+                }
+            }
+            if since_check < RUNTIME_WATCH_INTERVAL {
+                continue;
+            }
+            since_check = Duration::ZERO;
+            if !runtime_intact(&socket, bound) {
+                let _held = broker.lock();
+                eprintln!(
+                    "runtime_lost: {} no longer leads to this broker; stopping so the next start can restore or move it",
+                    socket.display()
+                );
+                std::process::exit(75);
+            }
         }
     });
+}
+/// The end of a workspace its host deleted (OW-5), once connected members have had
+/// [`DELETE_GRACE_SECS`] to hear `workspace_deleted`: erase the state directory
+/// ([`erase_store`]), and, while the runtime socket is still the one this broker bound, leave
+/// the [`RUNTIME_TOMBSTONE`] in its directory and remove the socket, and exit. A member whose
+/// daemon sent nothing in the grace period, or who was offline, learns it from the tombstone
+/// (L7). Should the tombstone fail, the directory goes with the socket, as before it existed.
+/// Called with the broker's lock held, so no request is answered in between.
+fn finish_deletion(broker: &Broker, socket: &Path, bound: (u64, u64)) -> ! {
+    let workspace_id = &broker.state.workspace.id;
+    let root = broker.root.display();
+    let erased = erase_store(&broker.root, workspace_id);
+    match &erased {
+        Ok(leftovers) if leftovers.is_empty() => {
+            eprintln!("workspace_deleted: erased workspace {workspace_id} from {root}")
+        }
+        Ok(leftovers) => eprintln!(
+            "workspace_deleted: erased workspace {workspace_id}; {root} stays, holding files Crew did not create: {}",
+            leftovers.join(", ")
+        ),
+        Err(error) => eprintln!(
+            "workspace_deleted: could not finish erasing workspace {workspace_id} ({error:#}); finish with biorouter-crew delete --state-dir {root} --workspace-id {workspace_id}"
+        ),
+    }
+    if runtime_intact(socket, bound) {
+        // Written even when the erase failed: the host deleted the workspace either way.
+        let kept = socket
+            .parent()
+            .is_some_and(|directory| leave_runtime_tombstone(directory, workspace_id));
+        let _ = fs::remove_file(socket);
+        if !kept {
+            if let Some(directory) = socket.parent() {
+                let _ = fs::remove_dir(directory);
+            }
+        }
+    }
+    std::process::exit(if erased.is_ok() { 0 } else { 74 })
+}
+/// Leave the [`RUNTIME_TOMBSTONE`] naming `workspace_id` in `directory`, a deleted workspace's
+/// runtime directory this account owns: created exclusively, never through a symbolic link,
+/// and readable by every account whatever the umask. Whether it was written whole; a file it
+/// could not finish is removed again.
+fn leave_runtime_tombstone(directory: &Path, workspace_id: &str) -> bool {
+    if !broker_id(workspace_id) {
+        return false;
+    }
+    let path = directory.join(RUNTIME_TOMBSTONE);
+    let Ok(mut file) = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o644)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
+        .open(&path)
+    else {
+        return false;
+    };
+    let written = file
+        .set_permissions(fs::Permissions::from_mode(0o644))
+        .and_then(|()| file.write_all(workspace_id.as_bytes()))
+        .and_then(|()| file.sync_all());
+    if written.is_err() {
+        let _ = fs::remove_file(&path);
+    }
+    written.is_ok()
+}
+/// Whether `directory` is a runtime directory of `owner`'s holding the [`RUNTIME_TOMBSTONE`] of
+/// `workspace`, checked as [`check_runtime_socket`] checks a socket: the directory (not a
+/// symbolic link) is `owner`'s and no other account can write into it, and the tombstone is a
+/// regular file `owner` owns with one link, opened without following a symbolic link and read
+/// only up to a bound. Only `owner` and root can make one.
+fn runtime_tombstone_names(directory: &Path, owner: u32, workspace: &str) -> bool {
+    let Ok(dir) = fs::symlink_metadata(directory) else {
+        return false;
+    };
+    if !(dir.is_dir() && dir.uid() == owner && dir.mode() & 0o022 == 0 && broker_id(workspace)) {
+        return false;
+    }
+    let Ok(file) = OpenOptions::new()
+        .read(true)
+        // A FIFO in its place must not stall the bridge.
+        .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC | libc::O_NONBLOCK)
+        .open(directory.join(RUNTIME_TOMBSTONE))
+    else {
+        return false;
+    };
+    let Ok(metadata) = file.metadata() else {
+        return false;
+    };
+    if !(metadata.is_file() && metadata.uid() == owner && metadata.nlink() == 1) {
+        return false;
+    }
+    let mut bytes = Vec::new();
+    file.take(128).read_to_end(&mut bytes).is_ok()
+        && String::from_utf8_lossy(&bytes).trim() == workspace
+}
+/// Whether the host deleted `workspace` (OW-5, L7), as the tombstone its broker left says: in
+/// the runtime directory the member's connection was saved with (`socket`'s), or in another of
+/// `owner`'s runtime directories in `root` the workspace had moved to ([`moved_workspace`]).
+/// Asked only once no broker answers for the workspace anywhere, so a broker running for it is
+/// always the answer, whatever an old tombstone says. As for a moved broker, ownership is
+/// checked before at most [`SIBLING_PROBE_LIMIT`] other directories are read.
+fn workspace_tombstoned(root: &Path, socket: &Path, owner: u32, workspace: &str) -> bool {
+    let saved = socket.parent();
+    if saved.is_some_and(|directory| runtime_tombstone_names(directory, owner, workspace)) {
+        return true;
+    }
+    let Ok(entries) = fs::read_dir(root) else {
+        return false;
+    };
+    let saved = saved.and_then(Path::file_name);
+    let mut candidates: Vec<PathBuf> = entries
+        .filter_map(|entry| entry.ok()?.file_name().into_string().ok())
+        .filter(|name| {
+            runtime_basename_of(name, owner) && Some(std::ffi::OsStr::new(name)) != saved
+        })
+        .map(|name| root.join(name))
+        .filter(|directory| {
+            fs::symlink_metadata(directory)
+                .is_ok_and(|dir| dir.is_dir() && dir.uid() == owner && dir.mode() & 0o022 == 0)
+        })
+        .collect();
+    candidates.sort();
+    candidates.truncate(SIBLING_PROBE_LIMIT);
+    candidates
+        .iter()
+        .any(|directory| runtime_tombstone_names(directory, owner, workspace))
+}
+/// Whether `name` is an ID exactly as [`id`] makes them (a hyphenated, lowercase UUID): what
+/// the broker names workspaces and blob files by.
+fn broker_id(name: &str) -> bool {
+    Uuid::parse_str(name).is_ok_and(|id| id.hyphenated().to_string() == name)
+}
+/// What `root`'s [`DELETED_MARKER`] says, which an erase a crash interrupted left: `None` when
+/// there is no marker; `Some(Some(id))` when it names the workspace being erased; `Some(None)`
+/// when it names none, as a write that a full disk or a crash cut short left it before markers
+/// were written whole. An erase was started either way: the host confirmed it, and only which
+/// workspace it was is then for the journal to say.
+fn deleted_marker(root: &Path) -> Result<Option<Option<String>>> {
+    let file = match OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
+        .open(root.join(DELETED_MARKER))
+    {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => {
+            return Err(error).context("unsafe_storage: cannot read the deleted-workspace marker")
+        }
+    };
+    let mut bytes = Vec::new();
+    file.take(128).read_to_end(&mut bytes)?;
+    let id = String::from_utf8_lossy(&bytes).trim().to_owned();
+    Ok(Some(broker_id(&id).then_some(id)))
+}
+/// The workspace an interrupted erase in `root` was removing: the marker's ID, or the
+/// journal's when the marker names none.
+fn marked_workspace(root: &Path, marked: Option<String>) -> Option<String> {
+    marked.or_else(|| {
+        stored_workspace(root)
+            .ok()
+            .flatten()
+            .map(|stored| stored.id)
+    })
+}
+/// Refuse `root` while it holds a [`DELETED_MARKER`], naming the command that finishes the
+/// erase.
+fn refuse_marked(root: &Path) -> Result<()> {
+    if let Some(marked) = deleted_marker(root)? {
+        let workspace_id =
+            marked_workspace(root, marked).unwrap_or_else(|| "<the workspace's ID>".into());
+        bail!(
+            "workspace_deleted: This state directory holds a workspace its host deleted. Finish removing it: biorouter-crew delete --state-dir {} --workspace-id {workspace_id}",
+            root.display()
+        );
+    }
+    Ok(())
+}
+/// Erase a deleted workspace's state directory `root`, removing only the files the broker
+/// creates and never anything recursively, since `--state-dir` may name a directory that held
+/// other files first. The [`DELETED_MARKER`] goes in first and comes out last, so a crash part
+/// of the way leaves a directory every later open refuses, never one a `start` would quietly
+/// fill with a new workspace.
+///
+/// A file is removed only when it is a regular file this account owns with one link. What is
+/// left (anything else, and whatever a removal failed for) keeps `root` in place, and the
+/// names are returned: the leftovers.
+fn erase_store(root: &Path, workspace_id: &str) -> Result<Vec<String>> {
+    let euid = unsafe { libc::geteuid() };
+    let marker = root.join(DELETED_MARKER);
+    // Written whole beside it and renamed into place: a full disk or a crash leaves either no
+    // marker (and nothing erased) or one naming the workspace, never an empty one.
+    let temporary = root.join(DELETED_MARKER_TEMP);
+    let mut file = private_file(&temporary, false)?;
+    file.set_len(0)?;
+    file.write_all(workspace_id.as_bytes())?;
+    file.sync_all()?;
+    drop(file);
+    fs::rename(&temporary, &marker)?;
+    sync_dir(root)?;
+    let ours = |path: &Path| {
+        fs::symlink_metadata(path).is_ok_and(|m| m.is_file() && m.uid() == euid && m.nlink() == 1)
+    };
+    let blobs = root.join("blobs");
+    if fs::symlink_metadata(&blobs).is_ok_and(|m| m.is_dir() && m.uid() == euid) {
+        for entry in fs::read_dir(&blobs)? {
+            let entry = entry?;
+            // Blob files are named by their ID; anything else in `blobs/` is not the broker's
+            // and stays, as a leftover.
+            let blob = entry.file_name().to_str().is_some_and(broker_id);
+            let path = entry.path();
+            if blob && ours(&path) {
+                let _ = fs::remove_file(&path);
+            }
+        }
+        let _ = fs::remove_dir(&blobs);
+    }
+    for entry in fs::read_dir(root)? {
+        let entry = entry?;
+        let created = entry.file_name().to_str().is_some_and(|name| {
+            matches!(
+                name,
+                "journal.jsonl" | "runtime.json" | "broker.log" | DELETED_MARKER_TEMP
+            ) || name.starts_with("torn-tail-")
+                || (name.starts_with(".runtime-") && name.ends_with(".tmp"))
+        });
+        if created && ours(&entry.path()) {
+            let _ = fs::remove_file(entry.path());
+        }
+    }
+    // Still held by a running broker, which is fine: unlinking a locked file releases nothing.
+    let lock = root.join("writer.lock");
+    if ours(&lock) {
+        let _ = fs::remove_file(&lock);
+    }
+    fs::remove_file(&marker)?;
+    sync_dir(root)?;
+    if fs::remove_dir(root).is_ok() {
+        return Ok(Vec::new());
+    }
+    let mut leftovers = Vec::new();
+    for entry in fs::read_dir(root)? {
+        let entry = entry?;
+        let name = entry.file_name().to_string_lossy().into_owned();
+        match fs::read_dir(entry.path()) {
+            Ok(inside) if name == "blobs" => leftovers.extend(
+                inside
+                    .filter_map(|entry| entry.ok())
+                    .map(|entry| format!("blobs/{}", entry.file_name().to_string_lossy())),
+            ),
+            _ => leftovers.push(name),
+        }
+    }
+    leftovers.sort();
+    Ok(leftovers)
+}
+/// Retire a deleted workspace's runtime directory `runtime_root/basename` when nothing listens
+/// in it: a directory `uid` owns that no other account can write into, holding at most a stale
+/// `broker.sock` of `uid`'s and a [`RUNTIME_TOMBSTONE`]. The stale socket goes, and the
+/// directory stays with the tombstone naming `workspace_id` in it, so members learn the host
+/// deleted the workspace (L7); with none (no ID to name, or it could not be written) the
+/// directory goes too. A tombstone already there is kept as it is. Anything else is left
+/// exactly as it is, as [`reclaim_runtime_socket`] leaves it.
+fn retire_runtime(runtime_root: &Path, uid: u32, basename: &str, workspace_id: &str) {
+    use std::os::unix::fs::FileTypeExt;
+    if !runtime_basename_of(basename, uid) {
+        return;
+    }
+    let directory = runtime_root.join(basename);
+    let Ok(metadata) = fs::symlink_metadata(&directory) else {
+        return;
+    };
+    if !metadata.is_dir() || metadata.uid() != uid || metadata.mode() & 0o022 != 0 {
+        return;
+    }
+    let Ok(entries) = fs::read_dir(&directory) else {
+        return;
+    };
+    let mut tombstoned = false;
+    for entry in entries {
+        match entry.map(|entry| entry.file_name()) {
+            Ok(name) if name == "broker.sock" => {}
+            Ok(name) if name == RUNTIME_TOMBSTONE => tombstoned = true,
+            _ => return,
+        }
+    }
+    let socket = directory.join("broker.sock");
+    if let Ok(metadata) = fs::symlink_metadata(&socket) {
+        if !(metadata.file_type().is_socket() && metadata.uid() == uid) {
+            return;
+        }
+        match UnixStream::connect(&socket) {
+            Err(error) if error.kind() == std::io::ErrorKind::ConnectionRefused => {
+                let _ = fs::remove_file(&socket);
+            }
+            _ => return,
+        }
+    }
+    if tombstoned || leave_runtime_tombstone(&directory, workspace_id) {
+        return;
+    }
+    let _ = fs::remove_dir(&directory);
 }
 fn serve_client(stream: UnixStream, uid: u32, broker: Arc<Mutex<Broker>>) -> Result<()> {
     let mut connection = Connection::new();
@@ -5454,20 +6511,38 @@ fn serve_requests(
 }
 /// A connection to `workspace`'s broker, which `owner` runs, with the `hello` it answered: at
 /// `socket`, the path the member's saved connection names, or, when that path no longer leads
-/// to the workspace, wherever in `root` the broker has moved to ([`moved_workspace`]).
+/// to the workspace, wherever in `root` the broker has moved to ([`moved_workspace`]). When no
+/// broker answers for it anywhere and its broker left the tombstone of a deleted workspace
+/// ([`workspace_tombstoned`]), the refusal is [`WORKSPACE_DELETED`], so the member's daemon
+/// says the host deleted it rather than that it is not running (L7).
 fn open_workspace(
     root: &Path,
     socket: &Path,
     owner: u32,
     workspace: &str,
 ) -> Result<(UnixStream, BufReader<UnixStream>, Value)> {
-    match connect_workspace(socket, owner, workspace, None) {
-        Ok(found) => Ok(found),
-        Err(error) => {
-            let pinned = socket.parent().and_then(Path::file_name);
-            moved_workspace(root, owner, workspace, pinned).ok_or(error)
-        }
+    open_workspace_at(root, socket, owner, workspace)
+        .map(|(_, stream, reader, hello)| (stream, reader, hello))
+}
+/// [`open_workspace`], with the socket the broker answered at first.
+fn open_workspace_at(
+    root: &Path,
+    socket: &Path,
+    owner: u32,
+    workspace: &str,
+) -> Result<(PathBuf, UnixStream, BufReader<UnixStream>, Value)> {
+    let error = match connect_workspace(socket, owner, workspace, None) {
+        Ok((stream, reader, hello)) => return Ok((socket.to_path_buf(), stream, reader, hello)),
+        Err(error) => error,
+    };
+    let pinned = socket.parent().and_then(Path::file_name);
+    if let Some(found) = moved_workspace(root, owner, workspace, pinned) {
+        return Ok(found);
     }
+    if workspace_tombstoned(root, socket, owner, workspace) {
+        bail!(WORKSPACE_DELETED);
+    }
+    Err(error)
 }
 /// Connect to the broker at `socket` and check it is `workspace`'s, run by `owner`: the socket
 /// and its directory are `owner`'s ([`check_runtime_socket`]), the listener runs as `owner`,
@@ -5490,6 +6565,10 @@ fn connect_workspace(
     let hello: Response = serde_json::from_slice(
         &read_frame(&mut reader)?.ok_or_else(|| anyhow!("broker disconnected"))?,
     )?;
+    // A refusal (a connection over the broker's limits) is the broker's own sentence.
+    if let Some(error) = hello.error {
+        bail!("{}", error.message);
+    }
     let hello = hello.result.unwrap_or(Value::Null);
     ensure!(
         hello.get("workspace_id").and_then(Value::as_str) == Some(workspace),
@@ -5512,13 +6591,14 @@ fn connect_workspace(
 /// checks the workspace key's signature on its own `hello`, exactly as for the saved path.
 /// As when a start checks its siblings, ownership is checked before at most
 /// [`SIBLING_PROBE_LIMIT`] directories are tried, each bounded by [`SIBLING_PROBE_TIMEOUT`], so
-/// entries another account creates can neither take those slots nor stall the search.
+/// entries another account creates can neither take those slots nor stall the search. The
+/// socket it answered at comes first.
 fn moved_workspace(
     root: &Path,
     owner: u32,
     workspace: &str,
     pinned: Option<&std::ffi::OsStr>,
-) -> Option<(UnixStream, BufReader<UnixStream>, Value)> {
+) -> Option<(PathBuf, UnixStream, BufReader<UnixStream>, Value)> {
     let mut candidates: Vec<PathBuf> = fs::read_dir(root)
         .ok()?
         .filter_map(|entry| entry.ok()?.file_name().into_string().ok())
@@ -5531,7 +6611,9 @@ fn moved_workspace(
     candidates.sort();
     candidates.truncate(SIBLING_PROBE_LIMIT);
     candidates.into_iter().find_map(|socket| {
-        connect_workspace(&socket, owner, workspace, Some(SIBLING_PROBE_TIMEOUT)).ok()
+        let (stream, reader, hello) =
+            connect_workspace(&socket, owner, workspace, Some(SIBLING_PROBE_TIMEOUT)).ok()?;
+        Some((socket, stream, reader, hello))
     })
 }
 pub fn bridge(socket: &Path, owner: u32, workspace: &str) -> Result<()> {
@@ -5540,14 +6622,59 @@ pub fn bridge(socket: &Path, owner: u32, workspace: &str) -> Result<()> {
         "unsupported: bridge requires Linux"
     );
     let root = runtime_root_of(socket)?;
-    let (stream, reader, _) = open_workspace(root, socket, owner, workspace)?;
+    let (connected, stream, reader, _) = open_workspace_at(root, socket, owner, workspace)?;
+    // A full-access transfer opens its own connection the same way, so the relay never waits
+    // on it.
+    let reconnect: crate::remote_full::Connect = {
+        let (root, socket, workspace) = (
+            root.to_path_buf(),
+            socket.to_path_buf(),
+            workspace.to_owned(),
+        );
+        Arc::new(move || {
+            open_workspace(&root, &socket, owner, &workspace)
+                .map(|(stream, reader, _)| (stream, reader))
+        })
+    };
     // Standard input is read through a buffer the relay can see into: it waits on the input
     // descriptor only when that buffer is empty.
     use std::os::fd::AsFd;
     let mut input = BufReader::new(File::from(std::io::stdin().as_fd().try_clone_to_owned()?));
     let stdout = std::io::stdout();
     let mut output = stdout.lock();
-    relay(&mut input, &mut output, stream, reader)
+    relay(&mut input, &mut output, stream, reader, &reconnect).map_err(|error| {
+        // A broker that went because its host deleted the workspace left the tombstone in its
+        // directory before it stopped: say so, so a member connected through the grace period
+        // learns it now (L7).
+        let deleted = connected
+            .parent()
+            .is_some_and(|directory| runtime_tombstone_names(directory, owner, workspace));
+        if deleted {
+            anyhow!(WORKSPACE_DELETED)
+        } else {
+            error
+        }
+    })
+}
+/// Write `response` to the daemon as one frame. An answer too large for a frame is replaced by
+/// a refusal under the same ID rather than ending the bridge.
+fn write_response(output: &mut impl Write, response: Response) -> Result<()> {
+    let mut bytes = serde_json::to_vec(&response)?;
+    if bytes.len() >= MAX_FRAME {
+        bytes = serde_json::to_vec(&Response {
+            id: response.id,
+            result: None,
+            error: Some(ProtocolError {
+                code: "response_too_large".into(),
+                message: "response_too_large: The answer was larger than one frame. Ask for less."
+                    .into(),
+            }),
+        })?;
+    }
+    bytes.push(b'\n');
+    output.write_all(&bytes)?;
+    output.flush()?;
+    Ok(())
 }
 /// What a bridge answers a request it could not hand to the broker: nothing of it reached the
 /// workspace, so nothing changed and it is safe to send again once reconnected. The member's
@@ -5565,11 +6692,16 @@ const BROKER_GONE: &str =
 /// (R-5). Waiting on the daemon alone, it noticed a broker that died only when the next
 /// request failed, and the member read "Connected" for up to two and a half minutes. A request
 /// that could not be written to the broker is answered [`NOT_DELIVERED`] before it exits.
+///
+/// `bridge.*` requests are the bridge's own (design OW-6, OW-8) and are answered here, never
+/// forwarded, an unknown one with a local refusal. `reconnect` opens the second broker
+/// connection a full-access transfer runs on.
 fn relay(
     input: &mut BufReader<File>,
     output: &mut impl Write,
     mut stream: UnixStream,
     mut reader: BufReader<UnixStream>,
+    reconnect: &crate::remote_full::Connect,
 ) -> Result<()> {
     loop {
         if input.buffer().is_empty() {
@@ -5588,45 +6720,22 @@ fn relay(
             return Ok(());
         };
         let request: Request = serde_json::from_slice(&frame)?;
-        if request.method.starts_with("remote.") {
-            let result = (|| -> Result<Value> {
-                ensure!(
-                    request.auth.is_none() && request.credential.is_some(),
-                    "forbidden: remote helper requires scoped worker credential"
-                );
-                let scope_request = Request {
-                    version: request.version,
-                    id: request.id.clone(),
-                    method: "run.remote_scope".into(),
-                    params: json!({}),
-                    auth: None,
-                    credential: request.credential.clone(),
-                };
-                let mut scope_bytes = serde_json::to_vec(&scope_request)?;
-                scope_bytes.push(b'\n');
-                stream.write_all(&scope_bytes)?;
-                stream.flush()?;
-                let scope_response: Response = serde_json::from_slice(
-                    &read_frame(&mut reader)?.ok_or_else(|| anyhow!("broker disconnected"))?,
-                )?;
-                if let Some(error) = scope_response.error {
-                    bail!("{}: {}", error.code, error.message);
-                }
-                let scope = scope_response
-                    .result
-                    .ok_or_else(|| anyhow!("invalid_response"))?;
-                let result = crate::remote::handle(&request.method, &request.params, &scope)?;
-                stream.write_all(&scope_bytes)?;
-                stream.flush()?;
-                let recheck: Response = serde_json::from_slice(
-                    &read_frame(&mut reader)?.ok_or_else(|| anyhow!("broker disconnected"))?,
-                )?;
-                if let Some(error) = recheck.error {
-                    bail!("{}: permission changed during remote operation; effect may already have occurred: {}",error.code,error.message);
-                }
-                ensure!(recheck.result.as_ref()==Some(&scope),"permission_changed: remote scope changed during operation; effect may already have occurred");
-                Ok(result)
-            })();
+        if request.method.starts_with("bridge.") {
+            let response = match crate::probe::bridge_method(&request.method) {
+                Ok(value) => Response {
+                    id: request.id,
+                    result: Some(value),
+                    error: None,
+                },
+                Err(error) => Response {
+                    id: request.id,
+                    result: None,
+                    error: Some(protocol_error(&error)),
+                },
+            };
+            write_response(output, response)?;
+        } else if request.method.starts_with("remote.") {
+            let result = remote_operation(&request, &mut stream, &mut reader, reconnect);
             let response = match result {
                 Ok(value) => Response {
                     id: request.id,
@@ -5642,11 +6751,7 @@ fn relay(
                     }),
                 },
             };
-            let mut bytes = serde_json::to_vec(&response)?;
-            ensure!(bytes.len() < MAX_FRAME, "response_too_large");
-            bytes.push(b'\n');
-            output.write_all(&bytes)?;
-            output.flush()?;
+            write_response(output, response)?;
         } else {
             if stream
                 .write_all(&frame)
@@ -5664,6 +6769,60 @@ fn relay(
             output.flush()?;
         }
     }
+}
+/// Run one `remote.*` request for [`relay`]: ask the broker for the worker credential's remote
+/// scope, run the operation inside it, then ask again and refuse the result if the scope changed
+/// while it ran.
+fn remote_operation(
+    request: &Request,
+    stream: &mut UnixStream,
+    reader: &mut BufReader<UnixStream>,
+    reconnect: &crate::remote_full::Connect,
+) -> Result<Value> {
+    ensure!(
+        request.auth.is_none() && request.credential.is_some(),
+        "forbidden: remote helper requires scoped worker credential"
+    );
+    let scope_request = Request {
+        version: request.version,
+        id: request.id.clone(),
+        method: "run.remote_scope".into(),
+        params: json!({}),
+        auth: None,
+        credential: request.credential.clone(),
+    };
+    let mut scope_bytes = serde_json::to_vec(&scope_request)?;
+    scope_bytes.push(b'\n');
+    stream.write_all(&scope_bytes)?;
+    stream.flush()?;
+    let scope_response: Response = serde_json::from_slice(
+        &read_frame(reader)?.ok_or_else(|| anyhow!("broker disconnected"))?,
+    )?;
+    if let Some(error) = scope_response.error {
+        bail!("{}: {}", error.code, error.message);
+    }
+    let scope = scope_response
+        .result
+        .ok_or_else(|| anyhow!("invalid_response"))?;
+    let link = crate::remote_full::BrokerLink {
+        connect: reconnect.clone(),
+        credential: request.credential.clone().unwrap_or_default(),
+    };
+    let result = crate::remote::handle(&request.method, &request.params, &scope, &link)?;
+    stream.write_all(&scope_bytes)?;
+    stream.flush()?;
+    let recheck: Response = serde_json::from_slice(
+        &read_frame(reader)?.ok_or_else(|| anyhow!("broker disconnected"))?,
+    )?;
+    if let Some(error) = recheck.error {
+        bail!(
+            "{}: permission changed during remote operation; effect may already have occurred: {}",
+            error.code,
+            error.message
+        );
+    }
+    ensure!(recheck.result.as_ref()==Some(&scope),"permission_changed: remote scope changed during operation; effect may already have occurred");
+    Ok(result)
 }
 /// Wait until the daemon's `input` has something to read or the broker's `stream` signals
 /// anything at all: `(input_ready, broker_gone)`. Readable, hung up or failed, a broker that
@@ -5746,9 +6905,101 @@ pub fn lifecycle(command: &str, root: &Path, key: &str, name: Option<&str>) -> R
     }
 }
 
+/// `biorouter-crew delete (--state-dir PATH | --name NAME) --workspace-id UUID` (OW-5): erase a
+/// stopped broker's workspace, as `workspace.delete` does for a running one, and finish an
+/// erase a crash interrupted. The ID is the confirmation: it must be the one the state
+/// directory holds, in its journal or in the [`DELETED_MARKER`] the interrupted erase left.
+/// Refused `writer_active` while a broker holds the directory. Answers `{deleted, workspace_id,
+/// leftovers}`, the leftovers being what the broker did not create and so left in place.
+pub fn delete_workspace(root: &Path, workspace_id: &str) -> Result<Value> {
+    match fs::symlink_metadata(root) {
+        Ok(metadata) => ensure!(
+            metadata.is_dir()
+                && metadata.uid() == unsafe { libc::geteuid() }
+                && metadata.mode() & 0o077 == 0,
+            "unsafe_storage: state directory must be owner-only and not a symlink"
+        ),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => bail!(
+            "not_found: There is no workspace state directory at {}.",
+            root.display()
+        ),
+        Err(error) => return Err(error.into()),
+    }
+    // Past an interrupted erase the marker names the workspace, and the journal may already be
+    // gone or cut short; before one, the journal is what names it. A marker that names nothing
+    // (cut short by a full disk or a crash) leaves it to the journal too.
+    let marker = deleted_marker(root)?;
+    let stored = match (&marker, stored_workspace(root)) {
+        (Some(_), stored) => stored.ok().flatten(),
+        (None, stored) => stored?,
+    };
+    let held = marker
+        .clone()
+        .flatten()
+        .or_else(|| stored.as_ref().map(|stored| stored.id.clone()));
+    match held {
+        Some(held) => ensure!(
+            held == workspace_id,
+            "identity_mismatch: This state directory holds workspace {held}, not {workspace_id}."
+        ),
+        // An erase was started, which the host confirmed then, and nothing names its workspace
+        // any more: the ID given is the one to finish with.
+        None if marker.is_some() => {}
+        None => bail!("not_found: This state directory holds no workspace."),
+    }
+    erase_stopped(root, workspace_id, stored)
+}
+
+/// Erase the stopped workspace `workspace_id` in `root` (whose journal said `stored`): under
+/// the writer lock, then retire the runtime directory it last listened in, leaving the
+/// tombstone members' bridges read there ([`retire_runtime`]).
+fn erase_stopped(
+    root: &Path,
+    workspace_id: &str,
+    stored: Option<StoredWorkspace>,
+) -> Result<Value> {
+    // The same lock a broker holds for as long as it runs.
+    let lock = private_file(&root.join("writer.lock"), false)?;
+    ensure!(
+        unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0,
+        "writer_active: A broker is running from this state directory. Stop it first: biorouter-crew stop --state-dir {}",
+        root.display()
+    );
+    let _lock = WriterLock {
+        file: lock,
+        owner_pid: unsafe { libc::getpid() },
+    };
+    // The runtime directory the workspace last listened in, found before the erase removes
+    // the journal and the runtime descriptor that name it.
+    let runtime = stored
+        .and_then(|stored| stored.runtime_basename)
+        .or_else(|| {
+            read_runtime_descriptor(root)
+                .ok()
+                .flatten()
+                .and_then(|info| {
+                    let socket = PathBuf::from(info.get("socket")?.as_str()?);
+                    Some(socket.parent()?.file_name()?.to_str()?.to_owned())
+                })
+        });
+    let leftovers = erase_store(root, workspace_id)?;
+    if let Some(basename) = runtime {
+        retire_runtime(
+            Path::new("/tmp"),
+            unsafe { libc::geteuid() },
+            &basename,
+            workspace_id,
+        );
+    }
+    // Empty only when `serve` finished an erase nothing named any more.
+    let workspace_id = (!workspace_id.is_empty()).then_some(workspace_id);
+    Ok(json!({"deleted": true, "workspace_id": workspace_id, "leftovers": leftovers}))
+}
+
 /// What `status` prints for the broker `info` describes, which answered `hello`: the runtime
-/// descriptor with `"state":"running"` and the workspace's name, or, when the broker has
-/// stopped saving changes, a refusal telling the host what to do.
+/// descriptor with `"state":"running"` (or `"deleted"`, while a deleted workspace counts down
+/// to its erase) and the workspace's name, or, when the broker has stopped saving changes, a
+/// refusal telling the host what to do.
 fn status_answer(root: &Path, mut info: Value, hello: &Value) -> Result<Value> {
     if hello.get("state").and_then(Value::as_str) == Some("storage_failed") {
         let full = hello["storage"]["code"].as_str() == Some("storage_full");
@@ -5772,7 +7023,11 @@ fn status_answer(root: &Path, mut info: Value, hello: &Value) -> Result<Value> {
             fault.host_instruction(&root)
         );
     }
-    info["state"] = json!("running");
+    info["state"] = if hello.get("state").and_then(Value::as_str) == Some("deleted") {
+        json!("deleted")
+    } else {
+        json!("running")
+    };
     info["name"] = hello.get("name").cloned().unwrap_or(Value::Null);
     Ok(info)
 }
@@ -5789,6 +7044,9 @@ fn start(root: &Path, key: &str, name: Option<&str>) -> Result<Value> {
         validate_workspace_name(name).map_err(|error| anyhow!(error.wire()))?;
     }
     private_dir(root)?;
+    // A deleted workspace an erase did not finish is never started; `serve` would finish the
+    // erase, which is `delete`'s to say.
+    refuse_marked(root)?;
     if let Some(name) = name {
         let stored = stored_workspace(root)?;
         if let Some(stored_name) = stored.as_ref().and_then(|stored| stored.name.as_deref()) {
@@ -6448,6 +7706,143 @@ mod runtime_tests {
         );
         let _ = fs::remove_dir_all(&root);
     }
+
+    /// A runtime directory of this account's at `root/crew-<uid>-<fill × 32>`, with `mode`.
+    fn runtime_directory(root: &Path, fill: char, mode: u32) -> (String, PathBuf) {
+        let uid = unsafe { libc::geteuid() };
+        let basename = format!("crew-{uid}-{}", fill.to_string().repeat(32));
+        let directory = root.join(&basename);
+        fs::create_dir(&directory).unwrap();
+        fs::set_permissions(&directory, fs::Permissions::from_mode(mode)).unwrap();
+        (basename, directory)
+    }
+
+    /// L7: the tombstone a deleted workspace's broker leaves is written whole, readable by
+    /// every account, never written over, and read only from its host's own runtime directory
+    /// as a regular file the host owns with one link, naming exactly that workspace.
+    #[test]
+    fn a_tombstone_is_read_only_from_its_hosts_own_runtime_directory() {
+        let root = short_root();
+        let uid = unsafe { libc::geteuid() };
+        let workspace = Uuid::new_v4().to_string();
+        let (_, directory) = runtime_directory(&root, 'a', 0o711);
+        assert!(!runtime_tombstone_names(&directory, uid, &workspace));
+        assert!(!leave_runtime_tombstone(&directory, "not-a-workspace-id"));
+        assert!(!directory.join(RUNTIME_TOMBSTONE).exists());
+
+        assert!(leave_runtime_tombstone(&directory, &workspace));
+        let tombstone = directory.join(RUNTIME_TOMBSTONE);
+        assert_eq!(fs::read_to_string(&tombstone).unwrap(), workspace);
+        assert_eq!(
+            fs::symlink_metadata(&tombstone).unwrap().mode() & 0o7777,
+            0o644,
+            "members' bridges read it"
+        );
+        assert!(runtime_tombstone_names(&directory, uid, &workspace));
+        assert!(!runtime_tombstone_names(
+            &directory,
+            uid,
+            &Uuid::new_v4().to_string()
+        ));
+        assert!(!runtime_tombstone_names(
+            &directory,
+            uid.wrapping_add(1),
+            &workspace
+        ));
+        assert!(
+            !leave_runtime_tombstone(&directory, &Uuid::new_v4().to_string()),
+            "never written over"
+        );
+        assert_eq!(fs::read_to_string(&tombstone).unwrap(), workspace);
+
+        // A second link to it, as another account could make to a file it can read where
+        // hard links are not protected, is not the broker's file.
+        let (_, linked) = runtime_directory(&root, 'b', 0o711);
+        fs::hard_link(&tombstone, linked.join(RUNTIME_TOMBSTONE)).unwrap();
+        assert!(!runtime_tombstone_names(&linked, uid, &workspace));
+        assert!(!runtime_tombstone_names(&directory, uid, &workspace));
+        fs::remove_file(linked.join(RUNTIME_TOMBSTONE)).unwrap();
+        // A symbolic link in its place is never followed.
+        std::os::unix::fs::symlink(&tombstone, linked.join(RUNTIME_TOMBSTONE)).unwrap();
+        assert!(!runtime_tombstone_names(&linked, uid, &workspace));
+        // A directory other accounts can write into says nothing, whatever it holds.
+        let (_, writable) = runtime_directory(&root, 'c', 0o777);
+        fs::write(writable.join(RUNTIME_TOMBSTONE), &workspace).unwrap();
+        assert!(!runtime_tombstone_names(&writable, uid, &workspace));
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// L7: with no broker for the workspace anywhere, a bridge whose saved runtime directory,
+    /// or the one the workspace moved to, holds its tombstone fails with `workspace_deleted`,
+    /// so the member's daemon offers to remove it rather than reconnecting forever. Another
+    /// workspace's tombstone, or one in a directory other accounts can write into, leaves the
+    /// saved path's own error.
+    #[test]
+    fn a_bridge_reads_the_tombstone_its_workspaces_broker_left() {
+        let root = short_root();
+        let uid = unsafe { libc::geteuid() };
+        let workspace = Uuid::new_v4().to_string();
+        let (_, saved) = runtime_directory(&root, 'a', 0o711);
+        let pinned = saved.join("broker.sock");
+        let not_running = |root: &Path| {
+            let error = open_workspace(root, &pinned, uid, &workspace).expect_err("no broker");
+            assert!(
+                error.downcast_ref::<std::io::Error>().is_some(),
+                "{error:#}"
+            );
+        };
+        not_running(&root);
+        assert!(leave_runtime_tombstone(&saved, &Uuid::new_v4().to_string()));
+        not_running(&root);
+        let (_, writable) = runtime_directory(&root, 'b', 0o777);
+        fs::write(writable.join(RUNTIME_TOMBSTONE), &workspace).unwrap();
+        not_running(&root);
+
+        let (_, moved) = runtime_directory(&root, 'c', 0o711);
+        assert!(leave_runtime_tombstone(&moved, &workspace));
+        let error = open_workspace(&root, &pinned, uid, &workspace).expect_err("deleted");
+        assert_eq!(error.to_string(), WORKSPACE_DELETED);
+        let _ = fs::remove_dir_all(&root);
+
+        let root = short_root();
+        let (_, saved) = runtime_directory(&root, 'a', 0o711);
+        assert!(leave_runtime_tombstone(&saved, &workspace));
+        let error = open_workspace(&root, &saved.join("broker.sock"), uid, &workspace)
+            .expect_err("deleted");
+        assert_eq!(error.to_string(), WORKSPACE_DELETED);
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// L7: retiring a deleted workspace's runtime directory removes its stale socket and keeps
+    /// the directory with the tombstone in it, and keeps a tombstone already there as it is.
+    /// With no workspace ID to name, the directory goes, as before tombstones; a live listener
+    /// leaves everything in place.
+    #[test]
+    fn retiring_a_deleted_workspaces_runtime_directory_leaves_its_tombstone() {
+        let root = short_root();
+        let uid = unsafe { libc::geteuid() };
+        let workspace = Uuid::new_v4().to_string();
+
+        let (basename, directory) = runtime_directory(&root, 'a', 0o711);
+        drop(UnixListener::bind(directory.join("broker.sock")).unwrap());
+        retire_runtime(&root, uid, &basename, &workspace);
+        assert!(fs::symlink_metadata(directory.join("broker.sock")).is_err());
+        assert!(runtime_tombstone_names(&directory, uid, &workspace));
+        retire_runtime(&root, uid, &basename, &Uuid::new_v4().to_string());
+        assert!(runtime_tombstone_names(&directory, uid, &workspace));
+
+        let (basename, directory) = runtime_directory(&root, 'b', 0o711);
+        drop(UnixListener::bind(directory.join("broker.sock")).unwrap());
+        retire_runtime(&root, uid, &basename, "");
+        assert!(!directory.exists());
+
+        let (basename, directory) = runtime_directory(&root, 'c', 0o711);
+        let _live = UnixListener::bind(directory.join("broker.sock")).unwrap();
+        retire_runtime(&root, uid, &basename, &workspace);
+        assert!(directory.join("broker.sock").exists());
+        assert!(!directory.join(RUNTIME_TOMBSTONE).exists());
+        let _ = fs::remove_dir_all(&root);
+    }
 }
 
 #[cfg(test)]
@@ -6648,10 +8043,104 @@ mod bridge_tests {
         std::thread::spawn(move || {
             let reader = BufReader::new(bridge_side.try_clone().unwrap());
             let mut output = Vec::new();
-            let result = relay(&mut input, &mut output, bridge_side, reader);
+            let reconnect: crate::remote_full::Connect =
+                Arc::new(|| bail!("no second broker connection in this test"));
+            let result = relay(&mut input, &mut output, bridge_side, reader, &reconnect);
             let _ = sender.send((result, output));
         });
         receiver
+    }
+
+    /// A broker that records every frame it receives and answers each `{ok: true}`.
+    fn recording_broker(broker_side: UnixStream) -> Arc<Mutex<Vec<Value>>> {
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let record = seen.clone();
+        std::thread::spawn(move || {
+            let mut reader = BufReader::new(broker_side.try_clone().unwrap());
+            let mut writer = broker_side;
+            while let Ok(Some(request)) = read_frame(&mut reader) {
+                let request: Value = serde_json::from_slice(&request).unwrap();
+                let answer = json!({"id": request["id"], "result": {"ok": true}});
+                record.lock().unwrap().push(request);
+                writer.write_all(format!("{answer}\n").as_bytes()).unwrap();
+            }
+        });
+        seen
+    }
+
+    fn answers(output: &[u8]) -> Vec<Value> {
+        output
+            .split(|b| *b == b'\n')
+            .filter(|line| !line.is_empty())
+            .map(|line| serde_json::from_slice::<Value>(line).unwrap())
+            .collect()
+    }
+
+    /// `bridge.hello` and `bridge.probe` are answered by the bridge itself, and any other
+    /// `bridge.*` method is refused there: none of them ever reaches the broker, while an
+    /// ordinary request after them still does.
+    #[test]
+    fn bridge_methods_are_answered_locally_and_never_forwarded() {
+        let (input, mut daemon) = stdin_pipe();
+        let (bridge_side, broker_side) = UnixStream::pair().unwrap();
+        let seen = recording_broker(broker_side);
+        let finished = spawn_relay(input, bridge_side);
+        for (id, method) in [
+            ("hello", "bridge.hello"),
+            ("probe", "bridge.probe"),
+            ("other", "bridge.delete_everything"),
+        ] {
+            daemon
+                .write_all(
+                    format!("{{\"version\":1,\"id\":\"{id}\",\"method\":\"{method}\",\"params\":{{}}}}\n")
+                        .as_bytes(),
+                )
+                .unwrap();
+        }
+        daemon.write_all(&frame("post")).unwrap();
+        drop(daemon);
+        let (result, output) = finished.recv_timeout(Duration::from_secs(30)).unwrap();
+        result.unwrap();
+        let answers = answers(&output);
+        assert_eq!(answers.len(), 4, "{answers:?}");
+        assert_eq!(answers[0]["id"], "hello");
+        assert_eq!(
+            answers[0]["result"]["capabilities"],
+            json!(["remote_full_v1", "remote_transfer_v1", "bridge_probe_v1"])
+        );
+        assert_eq!(
+            answers[0]["result"]["bridge_version"],
+            env!("CARGO_PKG_VERSION")
+        );
+        assert_eq!(answers[1]["result"]["schema"], 1);
+        assert_eq!(answers[2]["error"]["code"], "unsupported");
+        assert_eq!(answers[3]["result"]["ok"], true);
+        let seen = seen.lock().unwrap();
+        assert_eq!(
+            seen.len(),
+            1,
+            "only the ordinary request reached the broker: {seen:?}"
+        );
+        assert_eq!(seen[0]["method"], "message.post");
+    }
+
+    /// A `remote.*` frame without a worker credential is refused by the bridge, and the broker
+    /// is never asked for its scope.
+    #[test]
+    fn a_remote_request_without_a_credential_is_refused_locally() {
+        let (input, mut daemon) = stdin_pipe();
+        let (bridge_side, broker_side) = UnixStream::pair().unwrap();
+        let seen = recording_broker(broker_side);
+        let finished = spawn_relay(input, bridge_side);
+        daemon
+            .write_all(b"{\"version\":1,\"id\":\"shell\",\"method\":\"remote.shell\",\"params\":{\"command\":\"id\"}}\n")
+            .unwrap();
+        drop(daemon);
+        let (result, output) = finished.recv_timeout(Duration::from_secs(5)).unwrap();
+        result.unwrap();
+        let answers = answers(&output);
+        assert_eq!(answers[0]["error"]["code"], "remote_operation_denied");
+        assert!(seen.lock().unwrap().is_empty());
     }
 
     fn frame(id: &str) -> Vec<u8> {

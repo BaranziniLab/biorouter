@@ -148,6 +148,30 @@ describe('deriveConnectionStatus, row by row', () => {
     expect(status({ notJoined: true, verified: true })).toBe('connected');
   });
 
+  // G8: the main area said "The host deleted gui-lab." while this row read "Updates unavailable",
+  // a word that sends the person to Retry against a server with nothing left on it.
+  it('reads "Deleted by host" once the host deleted the workspace, before every other word', () => {
+    expect(status({ observationError: true, workspaceDeleted: true })).toBe('workspace-deleted');
+    expect(status({ connection: disconnected, workspaceDeleted: true })).toBe('workspace-deleted');
+    expect(
+      status({
+        connection: disconnected,
+        lastConnectFailure: failure('host_key_unknown'),
+        inFlight: true,
+        verified: true,
+        reconnecting: true,
+        notJoined: true,
+        workspaceDeleted: true,
+      })
+    ).toBe('workspace-deleted');
+    expect(status({ observationError: true, workspaceDeleted: false })).toBe('updates-unavailable');
+    expect(CONNECTION_STATUS['workspace-deleted']).toMatchObject({
+      word: 'Deleted by host',
+      tone: 'idle',
+      spinner: false,
+    });
+  });
+
   it('reads "Offline" for a saved-disconnected connection with no failure (after an app restart)', () => {
     expect(status({ connection: disconnected })).toBe('offline');
     expect(status({ connection: disconnected, observationError: true })).toBe('offline');
@@ -273,6 +297,33 @@ describe('deriveCrewScreen, row by row', () => {
     expect(screen({ connection: disconnected, lastConnectFailure: failure(kind) })).toBe(
       'not-set-up'
     );
+  });
+
+  it('is workspace-deleted once the host deleted it, whatever the last connect said (L6)', () => {
+    expect(screen({ connection: disconnected, workspaceDeleted: true })).toBe('workspace-deleted');
+    // Its server exited after the erase, or asks for a password nobody needs to type now.
+    expect(
+      screen({
+        connection: disconnected,
+        lastConnectFailure: failure('broker_not_running'),
+        workspaceDeleted: true,
+      })
+    ).toBe('workspace-deleted');
+    expect(
+      screen({
+        connection: disconnected,
+        lastConnectFailure: failure('auth_required'),
+        workspaceDeleted: true,
+      })
+    ).toBe('workspace-deleted');
+    expect(screen({ connection: connected, observationError: true, workspaceDeleted: true })).toBe(
+      'workspace-deleted'
+    );
+    // A verified view still on screen stays, the connection bar saying it.
+    expect(screen({ view: workspace, channelId: 'channel-1', workspaceDeleted: true })).toBe(
+      'channel'
+    );
+    expect(screen({ connection: disconnected })).toBe('offline');
   });
 
   it('is join for a connected person who is not a member', () => {

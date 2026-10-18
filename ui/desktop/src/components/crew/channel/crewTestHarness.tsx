@@ -33,6 +33,8 @@ export const connection = {
   institution_id: 'ucsf',
   status: 'connected' as const,
   remote_execution: false,
+  remote_access: 'folder' as const,
+  workspace_deleted: false,
 };
 
 export const alice = {
@@ -100,6 +102,7 @@ export type FixtureSnapshot = {
     policy_epoch: number;
     institution_id?: string | null;
     name?: string | null;
+    governance?: 'open' | 'managed';
   };
   actor: Record<string, unknown> & { id: string };
   principals: Record<string, unknown>[];
@@ -135,6 +138,8 @@ export interface ObserverOptions {
   snapshot?: FixtureSnapshot;
   runs?: ObservedRun[];
   messages?: Record<string, unknown>[];
+  /** What the broker's signed `hello` advertises; absent, the frame says nothing. */
+  capabilities?: string[];
 }
 
 export function stateFrame(options: ObserverOptions = {}) {
@@ -148,6 +153,7 @@ export function stateFrame(options: ObserverOptions = {}) {
     snapshot,
     runs: options.runs ?? [],
     cursor: null,
+    ...(options.capabilities ? { capabilities: options.capabilities } : {}),
   };
 }
 

@@ -13,7 +13,9 @@ import type {
  * Dialogs whose content is drawn from the verified snapshot. A refresh (except for the ones that
  * {@link survivesRefresh}) or a lost verification closes them; Join, Host, Connection settings,
  * Keys, Invite people and Let in stay open because they are about the connection or hold a result
- * the person still has to copy.
+ * the person still has to copy. Deleting a workspace is about the connection too: its own request
+ * ends the view while it is on its way (the broker stops, OW-5), and the answer must still land
+ * in the confirmation that sent it.
  */
 export function isSnapshotBoundDialog(dialog: DialogIntent): boolean {
   switch (dialog.kind) {
@@ -25,9 +27,13 @@ export function isSnapshotBoundDialog(dialog: DialogIntent): boolean {
     case 'rename':
     case 'edit-profile':
     case 'share-path':
+    case 'browse-channels':
       return true;
     case 'confirm':
-      return dialog.confirm.action !== 'remove-connection';
+      return (
+        dialog.confirm.action !== 'remove-connection' &&
+        dialog.confirm.action !== 'delete-workspace'
+      );
     default:
       return false;
   }

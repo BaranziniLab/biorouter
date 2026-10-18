@@ -29,25 +29,30 @@ import { serverLabel } from '../sidebar/sidebarView';
 import { useCrew, useCrewErrorSlot } from '../state/CrewControllerContext';
 import { focusIsLost } from '../state/focusReturn';
 import type { ErrorSource, PreparedDevice } from '../state/types';
-import { hostCopy, INSTALL_COMMANDS, joinCopy } from './copy';
+import { hostCopy, joinCopy } from './copy';
 import {
   AgentAccessFields,
+  agentAccessSettings,
+  agentFolderInvalid,
   Field,
   FieldErrorsProvider,
   PrivacyFields,
-  remoteFolderInvalid,
   useFormValidation,
   useInitialFocus,
   useMounted,
   useOpenGeneration,
+  type AgentAccess,
 } from './fields';
 import {
   HOST_START_POLL_MS,
   readHostRun,
   startHostRun,
   stopHostRun,
+  type HostStartResult,
   type HostStartRun,
 } from './hostStart';
+import type { SetupRun } from './setup';
+import { ManualInstall, SetupProgress, useSetupArtifact, useSetupJob } from './SetupProgress';
 import { updateJoinContext, useJoinContext } from './joinContext';
 import { advancedInvalid, WORKSPACE_KEY_PATTERN } from './JoinDialog';
 import {
@@ -179,7 +184,8 @@ type CreatePhase =
 const STEP_NUMBER: Record<Exclude<Step, 'label'>, number> = { name: 1, start: 2, create: 3 };
 
 /**
- * Where "Start it for me" stands (D-HOST). `starting`: the request is on its way. `running`: the
+ * Where the older start stands (D-HOST), or the reading of what a setup's start printed (OW-9).
+ * `starting`: the request is on its way. `running`: the
  * daemon is running the commands; `output` grows as they print. `reading`: they finished and
  * printed Crew's answer, which is being read as a paste is. `problem`: it didn't get there, and
  * `message` says why and what to do instead.
@@ -260,16 +266,22 @@ export interface HostDialogProps {
  *
  * - **Name**: the workspace name, the host's server login, privacy and institution. Continue
  *   prepares (or recovers) this computer's hosting identity by itself.
- * - **Start**: the command to run on the server, copyable, with an optional terminal embedded
- *   below it — nothing is typed or run for the person. They paste what it printed; the daemon
- *   parses it.
+ * - **Start**: the commands that start Crew on the server, copyable. "Set up and start Crew"
+ *   (OW-9) has the daemon install Crew in the host's account when it is missing, sign in through
+ *   the Sign in window when the server asks, and run exactly those commands, in plain steps; a
+ *   daemon before setup runs only the commands (D-HOST). Folded beneath: running them yourself in
+ *   a terminal and pasting what they printed, and the manual install of the broker this build
+ *   carries.
  * - **Create**: the confirmation "Initialize as workspace host" never had (L3). It saves the
  *   connection with the prepared identity, connects (Sign in opens by itself if the server asks),
  *   and asks the workspace to make this computer its first admin device (`auth.bootstrap`).
  *
- * A Private workspace without an institution label is then asked once to take the host's
- * institution — an irreversible label, so it has its own "Mark as {id}", with what it does and
- * what Not now leaves open (Q3-45). A host setup interrupted after saving is remembered on this
+ * A Private workspace with the institution chosen on Name is marked with it as Create finishes,
+ * as `biorouter crew host` does (G4): the label can't be undone, so Create says so before the
+ * person commits, and nothing asks again. A Private workspace left without a label that way (a
+ * resumed setup, whose Name this dialog never showed, or a Public choice on a connection that
+ * names an institution) is asked once instead, with its own "Mark as {id}", what it does and what
+ * Not now leaves open (Q3-45). A host setup interrupted after saving is remembered on this
  * computer and resumes at Create.
  */
 export function HostDialog({ open, onOpenChange }: HostDialogProps) {
@@ -318,7 +330,20 @@ function HostDialogView({ open, onClose }: { open: boolean; onClose: () => void 
   const [connectionName, setConnectionName] = useState('');
   const [remoteRoot, setRemoteRoot] = useState('');
   const [remoteExecution, setRemoteExecution] = useState(false);
+  /** As me on the server unless the person chose otherwise, or the daemon can't take it (OW-6). */
+  const [access, setAccess] = useState<AgentAccess>('full');
+  const [accessEdited, setAccessEdited] = useState(false);
   const [prepared, setPrepared] = useState<PreparedDevice | null>(null);
+  /** The broker this build carries; `supported` is false for a daemon before automatic setup. */
+  const setupSupport = useSetupArtifact(open);
+  /** Set up and start Crew answered that the daemon predates setup: the older start, from then on. */
+  const [setupOutdated, setSetupOutdated] = useState(false);
+  const setupUnavailable = setupOutdated || setupSupport.supported === false;
+  /** What a finished host setup made on the server, for Create (OW-8, OW-9). */
+  const [setupResult, setSetupResult] = useState<{
+    workFolder: string | null;
+    contextDraft: string | null;
+  } | null>(null);
 
   // Start
   const [pasted, setPasted] = useState('');
@@ -336,14 +361,14 @@ function HostDialogView({ open, onClose }: { open: boolean; onClose: () => void 
   /** The preview an `incomplete` paste produced, whose details prefill the typed fields. */
   const [partial, setPartial] = useState<CrewInvitationPreview | null>(null);
   const [terminal, setTerminal] = useState(false);
-  /** "Run it yourself in a terminal": the manual path, folded under "Start it for me" (D-HOST). */
+  /** "Run it yourself in a terminal": the manual path, folded under "Set up and start Crew". */
   const [manualOpen, setManualOpen] = useState(false);
   const [run, setRun] = useState<StartRun>({ phase: 'idle' });
   const startRef = useRef<HTMLButtonElement>(null);
   const outputRef = useRef<HTMLPreElement>(null);
   const submitRef = useRef<HTMLButtonElement>(null);
   const nameRef = useRef<HTMLInputElement>(null);
-  /** Where focus goes once the step it was on has gone: Start it for me, or Create workspace. */
+  /** Where focus goes once the step it was on has gone: Set up and start Crew, or Create workspace. */
   const [focusNext, setFocusNext] = useState<'start' | 'submit' | null>(null);
   const startHintId = useId();
   const labelLaterId = useId();
@@ -382,6 +407,11 @@ function HostDialogView({ open, onClose }: { open: boolean; onClose: () => void 
     if (suggestedInstitution && !institutionEdited && !institution)
       setInstitution(suggestedInstitution);
   }, [suggestedInstitution, institutionEdited, institution]);
+
+  // A background service before the contract would refuse As me on the server: start off instead.
+  useEffect(() => {
+    if (setupSupport.supported === false && !accessEdited) setAccess('off');
+  }, [setupSupport.supported, accessEdited]);
 
   // Open on the workspace name, and keep focus there while the menu that opened the dialog closes
   // (Q2-27). A host setup that resumes at Create opens on Create's own content instead.
@@ -463,6 +493,8 @@ function HostDialogView({ open, onClose }: { open: boolean; onClose: () => void 
   }, [phase, crew]);
 
   const bootstrapStarted = useRef(false);
+  /** This dialog made the workspace (`auth.bootstrap` succeeded): it finishes setting it up. */
+  const bootstrappedHere = useRef(false);
   /** The observation error that stood when verifying began (T-09). */
   const staleRefreshError = useRef<string | null>(null);
   useEffect(() => {
@@ -484,6 +516,7 @@ function HostDialogView({ open, onClose }: { open: boolean; onClose: () => void 
           setConnectSettled(false);
           return;
         }
+        bootstrappedHere.current = true;
         // The host never joins, so the join flow's name offer would never reach them: make it
         // here, for the checklist to ask before the first invitation goes out (Q3-51).
         updateJoinContext(connectionId, { hostSetup: false, joining: false, suggestName: true });
@@ -512,12 +545,81 @@ function HostDialogView({ open, onClose }: { open: boolean; onClose: () => void 
   // How the label reads in the question's words: "UCSF", never `ucsf` (Q4-47). The ID written is
   // still `labelInstitution`.
   const labelName = institutionLabel(labelInstitution, knownInstitutions) ?? labelInstitution ?? '';
+  // The institution the person chose on Name with Private, which Create writes as the workspace's
+  // own label (G4). Never on a resumed setup: this dialog never showed it Name, and the field
+  // there holds only the configured default.
+  const chosenInstitution =
+    !resumeId && mode === 'private' && isInstitutionId(institution.trim())
+      ? institution.trim()
+      : null;
+  const chosenName =
+    institutionLabel(chosenInstitution, knownInstitutions) ?? chosenInstitution ?? '';
+
+  // A workspace this dialog bootstrapped takes the institution chosen on Name, is opened to
+  // everyone who joins and is given its first context document once it verifies (G4, OW-1, OW-8),
+  // in the order `biorouter crew host` does them, before the close. Governance and the context
+  // only when the broker says it takes them; a refusal is reported, and never stops the dialog:
+  // the workspace exists, and Workspace settings and Get {workspace} ready do the same.
+  const [finishing, setFinishing] = useState<'idle' | 'running' | 'done'>('idle');
+  /** Create marked the workspace (or said why it couldn't): the label question is not asked. */
+  const markedHere = useRef(false);
+  const finishWorkspace = async () => {
+    const capabilities = latest.current.capabilities ?? [];
+    let marked = false;
+    if (chosenInstitution) {
+      markedHere.current = true;
+      // The label step's request, with the canonical ID.
+      marked = await crew
+        .request(
+          'policy.set',
+          { mode: 'private', institution_id: chosenInstitution },
+          { mutation: true }
+        )
+        .then(
+          () => true,
+          () => {
+            crew.reportError(hostCopy.markFailed(workspaceLabel, chosenName), 'global');
+            return false;
+          }
+        );
+    }
+    if (capabilities.includes('open_governance_v1')) {
+      await crew
+        .request('workspace.set_governance', { governance: 'open' }, { mutation: true })
+        .catch(() => crew.reportError(hostCopy.governanceFailed(workspaceLabel), 'global'));
+    }
+    const draft = setupResult?.contextDraft;
+    if (draft && capabilities.includes('workspace_context_v1')) {
+      await crew
+        .request('workspace.context.set', { text: draft, expected_revision: 0 }, { mutation: true })
+        .catch(() => crew.reportError(hostCopy.contextFailed(workspaceLabel), 'global'));
+    }
+    // The view read before the label still shows the workspace unmarked: read it again, as the
+    // label step's own request does.
+    if (marked) await latest.current.refresh().catch(() => undefined);
+  };
 
   useEffect(() => {
     if (phase !== 'verifying') return;
+    if (verified && crew.snapshot && bootstrappedHere.current && finishing !== 'done') {
+      if (finishing === 'idle') {
+        setFinishing('running');
+        void finishWorkspace().finally(() => {
+          if (mounted.current) setFinishing('done');
+        });
+      }
+      return;
+    }
     if (verified && crew.snapshot) {
       const workspace = crew.snapshot.workspace;
-      if (workspace.mode === 'private' && !workspace.institution_id && labelInstitution) {
+      // Create marked it already, or reported why it couldn't, with where to do it: a second
+      // question would ask what Name answered (G4).
+      if (
+        workspace.mode === 'private' &&
+        !workspace.institution_id &&
+        labelInstitution &&
+        !markedHere.current
+      ) {
         setPhase('labelling');
         setStep('label');
       } else {
@@ -537,7 +639,9 @@ function HostDialogView({ open, onClose }: { open: boolean; onClose: () => void 
       setPhase('idle');
       onClose();
     }
-  }, [phase, verified, crew.snapshot, crew.refreshError, labelInstitution, onClose]);
+    // `finishWorkspace` is recreated every render; `finishing` runs it once.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [phase, verified, crew.snapshot, crew.refreshError, labelInstitution, onClose, finishing]);
 
   // ── Step actions ──────────────────────────────────────────────────────────────────────────
   const continueFromName = async () => {
@@ -549,8 +653,10 @@ function HostDialogView({ open, onClose }: { open: boolean; onClose: () => void 
     setPreparing(false);
     if (!result) return;
     setPrepared(result);
-    // A run from an earlier visit to Start described the login as it was then.
+    // A run or setup from an earlier visit to Start described the login as it was then.
     setRun({ phase: 'idle' });
+    job.reset();
+    setSetupResult(null);
     // The word step 1 showed is the dialog's from here on (Q4-34).
     setServerWord(typedServer || null);
     setStep('start');
@@ -605,11 +711,11 @@ function HostDialogView({ open, onClose }: { open: boolean; onClose: () => void 
     setStep('create');
   };
 
-  // ── Start it for me (D-HOST) ───────────────────────────────────────────────────────────────
+  // ── Set up and start Crew (OW-9), and the older start it falls back to (D-HOST) ────────────
   /** The commands the Start step shows: what the daemon must run, character for character. */
   const shownCommands = prepared ? hostStartCommands(slug, prepared.public_key) : '';
-  const runActive = run.phase === 'starting' || run.phase === 'running' || run.phase === 'reading';
-
+  /** The commands shown when Set up and start Crew was pressed: the job's tripwire. */
+  const shownAtSetup = useRef('');
   /** A run that didn't get there: say why, and open the manual path, which always works. */
   const runProblem = useCallback((message: string, output = '') => {
     setRun({ phase: 'problem', output, message });
@@ -617,12 +723,84 @@ function HostDialogView({ open, onClose }: { open: boolean; onClose: () => void 
   }, []);
 
   /**
-   * On the person's click only. The request names the host setup, the workspace name and the
-   * login they typed; the daemon builds the command from its own hosting key, runs it over SSH as
-   * that login and nothing else, and refuses without proof that a person asked.
+   * A finished host setup: the daemon ran its own copy of the start commands. One that differs
+   * from what the person saw is never read (the same tripwire the older start keeps); otherwise
+   * what they printed is read as a paste is, and Create follows.
+   */
+  const settleSetup = (status: SetupRun) => {
+    const outcome = status.outcome;
+    if (!outcome?.host) {
+      runProblem(hostCopy.startUnreadable, status.output);
+      return;
+    }
+    if (outcome.hostCommand !== shownAtSetup.current) {
+      runProblem(hostCopy.startCommandChanged);
+      return;
+    }
+    setSetupResult({ workFolder: outcome.workFolder, contextDraft: outcome.contextDraft });
+    void readStartResult(outcome.host, status.output);
+  };
+  const job = useSetupJob({
+    server: foundServer,
+    onFinished: settleSetup,
+    // Crew installed but did not start the workspace: say what the start printed, as the older
+    // start does.
+    describe: (status) =>
+      status.outcome?.host?.kind === 'problem'
+        ? startProblemText(status.outcome.host.problem, status.outcome.host.detail, foundServer)
+        : null,
+  });
+  const jobShown = job.phase === 'starting' || job.phase === 'running' || job.phase === 'failed';
+  /** The older start, or reading what either printed, is under way. */
+  const startActive =
+    run.phase === 'starting' || run.phase === 'running' || run.phase === 'reading';
+  const runActive = job.busy || startActive;
+
+  /**
+   * On the person's click only. The job names this computer's host setup, the workspace name and
+   * the login they typed; the daemon installs Crew in that account when it is missing, asks for a
+   * sign-in when the server wants one, and runs its own copy of the start commands. A daemon before
+   * automatic setup takes the older start instead, which can do neither.
+   */
+  const setUpAndStart = async () => {
+    if (!prepared || runActive || busy) return;
+    if (setupUnavailable) {
+      void startForMe();
+      return;
+    }
+    setRun({ phase: 'idle' });
+    shownAtSetup.current = shownCommands;
+    const result = await job.start({
+      target: {
+        kind: 'pending',
+        preparation_id: prepared.preparation_id,
+        ssh_target: serverLogin.trim(),
+        port: portValue ?? null,
+        identity_file: identityFile.trim() || null,
+        proxy_jump: proxyJump.trim() || null,
+      },
+      intent: 'host',
+      workspace_name: slug,
+    });
+    if (!mounted.current) return;
+    if (result === 'outdated') {
+      setSetupOutdated(true);
+      void startForMe();
+    }
+  };
+  // A setup that didn't get there opens the manual path, which always works, as a start does.
+  const jobPhase = job.phase;
+  useEffect(() => {
+    if (jobPhase === 'failed') setManualOpen(true);
+  }, [jobPhase]);
+
+  /**
+   * The older start (D-HOST). The request names the host setup, the workspace name and the login
+   * they typed; the daemon builds the command from its own hosting key, runs it over SSH as that
+   * login and nothing else, and refuses without proof that a person asked.
    */
   const startForMe = async () => {
-    if (!prepared || runActive || busy) return;
+    if (!prepared || run.phase === 'starting' || run.phase === 'running' || busy) return;
     const shown = shownCommands;
     setRun({ phase: 'starting' });
     let status: HostStartRun;
@@ -676,21 +854,23 @@ function HostDialogView({ open, onClose }: { open: boolean; onClose: () => void 
       );
       return;
     }
-    if (status.result.kind === 'problem') {
-      runProblem(
-        startProblemText(status.result.problem, status.result.detail, foundServer),
-        status.output
-      );
+    await readStartResult(status.result, status.output);
+  };
+
+  /** What the start commands printed, by either way of running them: read it as a paste is read. */
+  const readStartResult = async (result: HostStartResult, output: string) => {
+    if (result.kind === 'problem') {
+      runProblem(startProblemText(result.problem, result.detail, foundServer), output);
       return;
     }
-    setRun({ phase: 'reading', output: status.output });
-    const outcome = await readPaste(status.result.text, foundServer);
+    setRun({ phase: 'reading', output });
+    const outcome = await readPaste(result.text, foundServer);
     if (!mounted.current) return;
     switch (outcome.kind) {
       case 'found':
         setRun({ phase: 'idle' });
         pinFound(outcome.preview);
-        // Start it for me leaves with the Start step: Create workspace takes focus.
+        // The start leaves with the Start step: Create workspace takes focus.
         setFocusNext('submit');
         return;
       case 'incomplete':
@@ -700,17 +880,17 @@ function HostDialogView({ open, onClose }: { open: boolean; onClose: () => void 
         applyOutcome(outcome, '');
         return;
       case 'bad':
-        runProblem(hostCopy.startUnreadable, status.output);
+        runProblem(hostCopy.startUnreadable, output);
         return;
       case 'failed':
-        runProblem(outcome.message, status.output);
+        runProblem(outcome.message, output);
         return;
     }
   };
 
   // Read a running start again until it ends. Closing the dialog stops reading, not the run: a
-  // start stopped halfway could leave the server half set up, and choosing Start it for me again
-  // answers the same run.
+  // start stopped halfway could leave the server half set up, and choosing Set up and start Crew
+  // again answers the same run.
   const runningJob = run.phase === 'running' ? run.jobId : null;
   const runningOutput = run.phase === 'running' ? run.output : null;
   const runningReads = run.phase === 'running' ? run.reads : null;
@@ -747,7 +927,8 @@ function HostDialogView({ open, onClose }: { open: boolean; onClose: () => void 
 
   // Stop leaves with the run: pressing it ends the run, and a run that ends by itself takes it too.
   // Focus that was on it would fall to the page or the dialog's frame (Q2-20, Q2-27), so it goes to
-  // Start it for me, which stays. Only when focus is lost: a person who moved on keeps their place.
+  // Set up and start Crew, which stays. Only when focus is lost: a person who moved on keeps their
+  // place.
   const runPhase = run.phase;
   const lastRunPhase = useRef(runPhase);
   useLayoutEffect(() => {
@@ -755,6 +936,14 @@ function HostDialogView({ open, onClose }: { open: boolean; onClose: () => void 
     lastRunPhase.current = runPhase;
     if (left && focusIsLost()) startRef.current?.focus();
   }, [runPhase]);
+  // The setup's Stop leaves with the job the same way.
+  const jobBusy = job.busy;
+  const lastJobBusy = useRef(jobBusy);
+  useLayoutEffect(() => {
+    const left = lastJobBusy.current && !jobBusy;
+    lastJobBusy.current = jobBusy;
+    if (left && focusIsLost()) startRef.current?.focus();
+  }, [jobBusy]);
 
   // Keep the newest output in view as it arrives.
   const shownOutput = run.phase === 'idle' || run.phase === 'starting' ? '' : run.output;
@@ -851,8 +1040,13 @@ function HostDialogView({ open, onClose }: { open: boolean; onClose: () => void 
         owner_uid: pinned.owner_uid,
         workspace_id: pinned.workspace_id,
         workspace_public_key: pinned.workspace_public_key,
-        remote_root: remoteRoot.trim() || undefined,
-        remote_execution: remoteRoot.trim() ? remoteExecution : false,
+        // As me on the server rides the folder the setup made when none was typed (OW-6, OW-9).
+        ...agentAccessSettings(
+          access,
+          remoteRoot,
+          remoteExecution,
+          setupResult?.workFolder ?? null
+        ),
         mode,
         institution_id: institutionId,
         preparation_id: prepared.preparation_id,
@@ -899,7 +1093,7 @@ function HostDialogView({ open, onClose }: { open: boolean; onClose: () => void 
     event.preventDefault();
     if (busy) return;
     if (step === 'name') {
-      const agentHidden = !agentOpen && remoteFolderInvalid(remoteRoot);
+      const agentHidden = !agentOpen && agentFolderInvalid(access, remoteRoot);
       const advancedHidden = !advancedOpen && advancedInvalid(port, '');
       if (agentHidden || advancedHidden) {
         if (agentHidden) setAgentOpen(true);
@@ -909,7 +1103,7 @@ function HostDialogView({ open, onClose }: { open: boolean; onClose: () => void 
       }
     }
     if (step === 'start') {
-      // Start it for me is running: it moves on by itself.
+      // A setup or start is running: it moves on by itself.
       if (runActive) return;
       // Continue belongs to the manual path: a submit while it is folded opens it and asks for
       // the paste there.
@@ -1128,11 +1322,19 @@ function HostDialogView({ open, onClose }: { open: boolean; onClose: () => void 
                   </div>
                   <AgentAccessFields
                     server={server}
+                    user={sshUsername(serverLogin)}
                     open={agentOpen}
                     onOpenChange={setAgentOpen}
+                    access={access}
+                    onAccess={(next) => {
+                      setAccessEdited(true);
+                      setAccess(next);
+                    }}
                     remoteRoot={remoteRoot}
                     remoteExecution={remoteExecution}
                     disabled={busy}
+                    fullAvailable={setupSupport.supported !== false}
+                    hostWorkspace={slug || null}
                     onRemoteRoot={setRemoteRoot}
                     onRemoteExecution={setRemoteExecution}
                   />
@@ -1198,17 +1400,8 @@ function HostDialogView({ open, onClose }: { open: boolean; onClose: () => void 
               {step === 'start' && prepared ? (
                 <>
                   <h3 className="text-label text-text-default">{hostCopy.startHeading(server)}</h3>
-                  <p className="text-body text-text-default">
-                    {hostCopy.runThis(server, sshUsername(serverLogin))}
-                  </p>
-                  {/* One command per line, scrolling sideways rather than wrapping mid-flag. The
-                      same text both ways: Start it for me runs exactly this (D-HOST). */}
-                  <CopyField
-                    multiline
-                    className="crew-onboard-command"
-                    label={hostCopy.commandLabel}
-                    value={shownCommands}
-                  />
+                  {/* The step leads with its one action and its plain steps (U1): the commands it
+                      runs are for a person who runs them themselves, under Run it yourself. */}
                   <div className="crew-onboard-stack" data-testid="crew-host-start-for-me">
                     <div className="crew-onboard-row">
                       <Button
@@ -1221,9 +1414,9 @@ function HostDialogView({ open, onClose }: { open: boolean; onClose: () => void 
                         aria-disabled={runActive || busy || undefined}
                         className="crew-onboard-waiting"
                         aria-describedby={startHintId}
-                        onClick={() => void startForMe()}
+                        onClick={() => void setUpAndStart()}
                       >
-                        {hostCopy.startForMe}
+                        {hostCopy.setUpAndStart}
                       </Button>
                       {run.phase === 'running' ? (
                         <Button type="button" variant="secondary" onClick={stopRun}>
@@ -1232,10 +1425,20 @@ function HostDialogView({ open, onClose }: { open: boolean; onClose: () => void 
                       ) : null}
                     </div>
                     <p id={startHintId} className="text-supporting text-text-muted">
-                      {hostCopy.startForMeHint(server, sshUsername(serverLogin))}
+                      {setupUnavailable
+                        ? hostCopy.startForMeHint(server, sshUsername(serverLogin))
+                        : hostCopy.setUpAndStartHint(server, sshUsername(serverLogin))}
                     </p>
+                    {jobShown ? (
+                      <SetupProgress
+                        job={job}
+                        intent="host"
+                        server={foundServer}
+                        testId="crew-host-setup"
+                      />
+                    ) : null}
                     <p className="crew-onboard-row text-supporting text-text-muted" role="status">
-                      {runActive ? (
+                      {startActive ? (
                         <>
                           <Spinner />
                           {run.phase === 'reading'
@@ -1292,6 +1495,17 @@ function HostDialogView({ open, onClose }: { open: boolean; onClose: () => void 
                     onOpenChange={setManualOpen}
                   >
                     <div className="crew-onboard-form" data-testid="crew-host-run-yourself">
+                      <p className="text-body text-text-default">
+                        {hostCopy.runThis(server, sshUsername(serverLogin))}
+                      </p>
+                      {/* One command per line, scrolling sideways rather than wrapping mid-flag.
+                          The same text every way: setup and the older start run exactly this. */}
+                      <CopyField
+                        multiline
+                        className="crew-onboard-command"
+                        label={hostCopy.commandLabel}
+                        value={shownCommands}
+                      />
                       <p className="text-body text-text-default">
                         {hostCopy.runYourselfBody(server, sshUsername(serverLogin))}
                       </p>
@@ -1365,7 +1579,16 @@ function HostDialogView({ open, onClose }: { open: boolean; onClose: () => void 
                     </div>
                   </Disclosure>
                   <Disclosure label={hostCopy.notInstalled(foundServer)}>
-                    <CopyField multiline label={hostCopy.installLabel} value={INSTALL_COMMANDS} />
+                    <ManualInstall
+                      artifact={setupSupport.artifact}
+                      server={foundServer}
+                      route={{
+                        ssh_target: serverLogin,
+                        port: portValue ?? null,
+                        proxy_jump: proxyJump,
+                        identity_file: identityFile,
+                      }}
+                    />
                   </Disclosure>
                   <p className="text-supporting text-text-muted">{hostCopy.consequence}</p>
                 </>
@@ -1404,6 +1627,13 @@ function HostDialogView({ open, onClose }: { open: boolean; onClose: () => void 
                   <p className="text-body text-text-default">
                     {hostCopy.createBody(workspaceLabel)}
                   </p>
+                  {/* Create also writes the label Name chose, which can't be undone: said here,
+                      before the person commits, rather than asked again after (G4). */}
+                  {chosenInstitution ? (
+                    <p className="text-body text-text-default" data-testid="crew-host-create-label">
+                      {hostCopy.createLabel(workspaceLabel, chosenName)}
+                    </p>
+                  ) : null}
                   {createNote ? (
                     <Note tone="warning" role="status">
                       {createNote}

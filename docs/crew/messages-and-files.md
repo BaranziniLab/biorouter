@@ -1,8 +1,9 @@
 # Messages and files
 
 > **What this is.** How to write, read and copy messages in a Crew channel, how Crew keeps unsent
-> drafts, and how to share files from your computer or the lab server.
-> **Status:** Current.
+> drafts, how to share and list files from your computer or the lab server, and what happens to a
+> deleted channel's messages and files.
+> **Status:** Current. Checked against the Crew code on 2026-10-16.
 > **Audience:** Crew members who use the Biorouter desktop app.
 
 This page assumes you have joined a workspace (see [Joining a workspace](joining-a-workspace.md)).
@@ -18,6 +19,10 @@ The message box at the bottom of a channel holds the paperclip button (tooltip "
    server path.
 4. The message appears at the bottom, dimmed, with "Sending…", and turns normal once posted.
    Sending also marks the channel as read.
+
+A message that starts with `@agent`, `/agent` or `/task` starts an agent task instead of being
+posted, and the send button is named "Start agent task" (tooltip "Start your agent") while it does. See
+[Start a task from the message box](agents-and-chat-access.md#start-a-task-from-the-message-box).
 
 If sending fails, a red note above the box starts with "Couldn’t send." and gives the reason. Your
 text and files stay. Fix the cause and press Send again. An unchanged message is never posted twice.
@@ -136,9 +141,10 @@ is back when you return.
   draft is too long to keep when you switch channel. Attach it as a file."
 - Crew clears a draft, and says so, when the workspace's or your connection's privacy or
   institution changes.
-- When you lose access to a channel that held your draft, a note above the message box says
-  "#methods held your unsent draft, which can’t be sent there now. Copy it before you close this
-  note." Choose **Copy draft**, then **Dismiss**. The draft is gone once you dismiss the note.
+- When a channel that held your draft closes, because you lost access to it or it was deleted, a
+  note above the message box says "#methods held your unsent draft, which can’t be sent there
+  now. Copy it before you close this note." Choose **Copy draft**, then **Dismiss**. The draft is
+  gone once you dismiss the note.
 
 ## Share a file from your computer
 
@@ -258,6 +264,10 @@ Scroll up in the messages to list older files. If **Attach** says the upload no 
 upload the file again. After "Message sent, but its upload record couldn’t be cleared.", use
 **Remove from list** on that file.
 
+From a terminal, `biorouter crew files list methods` lists the files shared in a channel, newest
+first, each with its name, size, who shared it and when, and the attachment ID that
+`files download` takes. See [Share files and server paths](command-line.md#share-files-and-server-paths).
+
 ## Pause, resume and clear transfers
 
 A transfer is one upload or download on this computer.
@@ -292,6 +302,28 @@ check that it exists.
    name.
 4. Choose **Add to message**, then press Send. Readers see the label, "Not uploaded" and the path
    with a **Copy** button. A reader copies the path to use the file on the server.
+
+## Deleted channels
+
+A channel can be deleted by its owner, or in an open workspace by any of its members, and a
+team's channels go with the team ([Delete a channel](teams-channels-and-people.md#delete-a-channel)).
+Crew says it "Removes #methods, its files and its messages from the workspace."
+
+- The channel leaves everyone's sidebar. If you have it open, it closes with "#methods was
+  deleted, so it was closed." In a managed workspace Crew can't tell a deleted channel from one you
+  were removed from, unless its whole team was deleted, and says "#methods is no longer available
+  to you, so it was closed." instead. An unsent draft there gets the note described in
+  [Drafts you leave behind](#drafts-you-leave-behind).
+- Its shared files are deleted from the server, and its server paths and file cards go with it.
+  A file you saved on your computer stays there.
+- Agent tasks and chats that read the channel lose their access.
+- Its messages are no longer readable by anyone in Crew. They stay in the workspace's history file
+  on the server until the host deletes the whole workspace, so the host's server account and the
+  server's administrators can still read that file. Delete the workspace, or ask IT, when the
+  text must be gone from the server too ([Deletion and retention](administration.md#deletion-and-retention)).
+
+When the host deletes the workspace itself, everything it kept on the server goes, history file
+included.
 
 ## Related documentation
 

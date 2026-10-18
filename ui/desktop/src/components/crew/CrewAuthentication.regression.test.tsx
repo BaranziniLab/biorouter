@@ -241,4 +241,55 @@ describe('CrewAuthentication', () => {
     expect(terminal?.dispose).not.toHaveBeenCalled();
     expect(mocks.disposeTerminalSession).not.toHaveBeenCalled();
   });
+
+  it('signs in for a setup job on the setup bridge, with the same exit-0-only completion', async () => {
+    const createSetup = vi.fn().mockResolvedValue({ success: true, sessionId: 'session-8' });
+    window.electron = {
+      ...window.electron,
+      createCrewSetupAuthentication: createSetup,
+    } as unknown as typeof window.electron;
+    const onConnected = vi.fn();
+    render(
+      <CrewAuthentication
+        target={{ kind: 'setup', jobId: 'job-1' }}
+        onConnected={onConnected}
+        onClose={vi.fn()}
+      />
+    );
+    await waitFor(() => expect(createSetup).toHaveBeenCalledWith('job-1'));
+    expect(mocks.createCrewAuthentication).not.toHaveBeenCalled();
+    await waitFor(() =>
+      expect(mocks.resizeTerminalSession).toHaveBeenCalledWith('session-8', 80, 12)
+    );
+    await act(async () => {
+      mocks.exitListeners[0]?.({ sessionId: 'session-8', exitCode: 1 });
+    });
+    expect(onConnected).not.toHaveBeenCalled();
+    expect(screen.getByRole('alert')).toHaveTextContent('SSH authentication ended (exit 1)');
+  });
+
+  it('hands a sign-in that found Crew missing to the caller, and says nothing went wrong', async () => {
+    const onBridgeMissing = vi.fn();
+    mocks.createCrewAuthentication.mockResolvedValue({ success: true, sessionId: 'session-9' });
+    render(
+      <CrewAuthentication
+        connectionId="connection-9"
+        onConnected={vi.fn()}
+        onClose={vi.fn()}
+        onBridgeMissing={onBridgeMissing}
+      />
+    );
+    await waitFor(() =>
+      expect(mocks.resizeTerminalSession).toHaveBeenCalledWith('session-9', 80, 12)
+    );
+    await act(async () => {
+      mocks.exitListeners[0]?.({
+        sessionId: 'session-9',
+        exitCode: 1,
+        code: 'crew_bridge_missing',
+      } as { sessionId: string; exitCode: number | null });
+    });
+    expect(onBridgeMissing).toHaveBeenCalledOnce();
+    expect(screen.queryByRole('alert')).toBeNull();
+  });
 });

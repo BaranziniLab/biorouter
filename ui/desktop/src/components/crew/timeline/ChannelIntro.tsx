@@ -1,6 +1,7 @@
 import { Button } from '../../ui/button';
 import { Hash } from '../../icons/app-icons';
 import type { Channel, Snapshot } from '../crewApi';
+import { isOpenWorkspace } from '../dialogs/governance';
 import { PersonName, channelSlug, personLabel, type PeopleDirectory } from '../identity';
 import { SetupChecklist } from '../onboarding/SetupChecklist';
 import { useCrew } from '../state/CrewControllerContext';
@@ -18,7 +19,10 @@ import { timelineCopy } from './copy';
  * channel surface (Q4-21). The sidebar already says that other channels appear
  * once someone adds you, so this is only the next step, and it names the
  * workspace's host, as the no-team state does (Q2-64). (Crew lists no channel
- * to a non-member, so nothing here can name the ones you are not in.)
+ * to a non-member, so nothing here can name the ones you are not in.) In an
+ * open workspace nobody needs to be asked: a member came in to every team and
+ * channel, and joins the rest from Browse channels… in the workspace menu
+ * (OW-2, OW-3), so that is what it names instead.
  *
  * The action (Q4-23):
  * - while nobody else is in the workspace, only the setup checklist's one line —
@@ -53,8 +57,13 @@ export function ChannelIntro({
   const host = dir.viewerIsHost ? null : dir.host;
   const hostName =
     host && !host.isFormer && host.username ? personLabel(host, 'authority', dir) : null;
-  const askHost = timelineCopy.introOtherChannels(hostName);
-  const alone = aloneInWorkspace(crew.snapshot ?? crew.lastVerified?.snapshot ?? null);
+  const shown = crew.snapshot ?? crew.lastVerified?.snapshot ?? null;
+  const otherChannels = dir.viewerIsHost
+    ? ''
+    : isOpenWorkspace(shown)
+      ? timelineCopy.introBrowseChannels
+      : timelineCopy.introOtherChannels(hostName);
+  const alone = aloneInWorkspace(shown);
   return (
     <div
       className="crew-channel-intro"
@@ -70,8 +79,8 @@ export function ChannelIntro({
         <PersonName person={channel.created_by} context="inline" dir={dir} />
         {timelineCopy.introCreatedBy}
       </p>
-      {askHost && (
-        <p className="crew-channel-intro-hint text-supporting text-text-muted">{askHost}</p>
+      {otherChannels && (
+        <p className="crew-channel-intro-hint text-supporting text-text-muted">{otherChannels}</p>
       )}
       {owner && !channel.archived && !alone && (
         <Button

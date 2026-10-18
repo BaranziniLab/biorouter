@@ -5,6 +5,7 @@ const { resolve } = require('path');
 const { mkdirSync, writeFileSync } = require('fs');
 const { verifyPackagedDependencies } = require('./scripts/verify-packaged-dependencies');
 const { verifyComputerUse } = require('./scripts/computer-use-resources');
+const { crewBrokerRequired, inspectCrewBroker } = require('./scripts/crew-broker-resources');
 const { prepareNativeDependencies } = require('./scripts/prepare-native-dependencies');
 
 // ⚠ Read from package.json, NOT `process.env.npm_package_version`. That variable
@@ -118,7 +119,17 @@ let cfg = {
             'Developer ID Application: University of California at San Francisco (F3YYBXAFJ8)',
           hardenedRuntime: true,
           // The helper is signed before its byte manifest is generated.
-          ignore: (file) => file.includes('/computer-use/BioRouter Computer Use.app'),
+          //
+          // The Crew broker under bin/crew-broker/ is a Linux ELF the setup
+          // service copies to a server (OW-9). @electron/osx-sign would otherwise
+          // hand every file it judges binary to codesign, which "signs" a
+          // non-Mach-O file by writing extended attributes onto it. Skipped, the
+          // ELF is sealed by the app's CodeResources like any other resource,
+          // which is the trust root its manifest relies on. Notarization reads
+          // Mach-O only, so the ELF does not reach it.
+          ignore: (file) =>
+            file.includes('/computer-use/BioRouter Computer Use.app') ||
+            file.includes('/crew-broker/'),
           entitlements: 'entitlements.plist',
           'entitlements-inherit': 'entitlements.plist',
           'signature-flags': 'library',
@@ -260,6 +271,15 @@ module.exports = {
           resolve(resources, 'computer-use'),
           `${options.platform}-${options.arch}`
         );
+        // The packaged copy, not the staged one: prepare-platform-binaries.js
+        // checked src/bin, and this is what the setup service will read.
+        const crewBroker = inspectCrewBroker(resolve(resources, 'bin'), {
+          required: crewBrokerRequired(),
+          appVersion: APP_VERSION,
+        });
+        if (crewBroker.problems.length > 0) {
+          throw new Error(`Crew broker in ${resources}: ${crewBroker.problems.join('; ')}`);
+        }
       }
     },
   },

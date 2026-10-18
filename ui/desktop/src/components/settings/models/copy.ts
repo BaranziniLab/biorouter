@@ -24,6 +24,26 @@ export const defaultModelCopy = {
   manageName: 'Configure providers',
 } as const;
 
+/**
+ * The Default model section's **Crew tasks** row (Crew design OW-11): the model Ask my agent and
+ * `@agent` start a Crew task on, stored as `CREW_TASK_MODEL`.
+ */
+export const crewTaskModelCopy = {
+  row: 'Crew tasks',
+  help: 'Ask my agent and @agent in Crew start on this model. A workspace can still refuse a model its institution has not approved.',
+  /** The value while Crew tasks use the model new chats start on, and the picker's first row. */
+  sameAsNewChats: 'Same as new chats',
+  change: 'Change…',
+  /** The button's accessible name. */
+  changeName: 'Choose the model for Crew tasks',
+  /** The picker's list. */
+  listLabel: 'Models for Crew tasks',
+  /** The stored model names a provider that is not set up, or one Crew cannot use. */
+  unavailable: (model: string) =>
+    `${model} isn’t set up for Crew, so tasks use the model for new chats.`,
+  saveFailed: (reason: string) => `Couldn’t save. ${reason}`,
+} as const;
+
 /** `256k`: a context window in thousands of tokens, the unit every row, summary and detail uses. */
 const contextAmount = (tokens: number | null | undefined) => {
   if (typeof tokens !== 'number' || !Number.isFinite(tokens) || tokens <= 0) return null;

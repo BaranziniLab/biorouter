@@ -3,7 +3,13 @@ import { useLocation, useSearchParams } from 'react-router-dom';
 import type * as Api from '../../../api/types.gen';
 import { useSameRouteReset } from '../../../hooks/useSameRouteReset';
 import { CREW_RECONNECTING } from '../api/errors';
-import { crewHttp, crewRequest, type CrewConnection, type Snapshot } from '../crewApi';
+import {
+  crewHttp,
+  crewRequest,
+  type CrewConnection,
+  type CrewContextDraft,
+  type Snapshot,
+} from '../crewApi';
 import { connectionNames } from '../identity/objectNames';
 import { crewActionCopy } from './copy';
 import { useCrewActions } from './crewActions';
@@ -14,8 +20,13 @@ import {
   usePostCheck,
   usePostInFlight,
 } from './crewSend';
-import { useCrewRunStart } from './crewRunStart';
-import { arrivalConnectDecision, isMembershipEnded } from './connectFailure';
+import { runSources, useCrewRunStart } from './crewRunStart';
+import {
+  arrivalConnectDecision,
+  isMembershipEnded,
+  isWorkspaceDeleted,
+  workspaceKnownDeleted,
+} from './connectFailure';
 import { deriveConnectionStatus, deriveCrewScreen } from './crewStatus';
 import { useCrewSurfaces } from './crewSurfaces';
 import { rememberedLastChannel, rememberLastChannel } from './draftStash';
@@ -116,6 +127,7 @@ export function useCrewController(options: CrewControllerOptions = {}): CrewCont
     dismissError,
     dismissErrorFrom,
     dismissErrorIfShown,
+    replaceErrorIfShown,
     dismissTransportError,
     isPending,
   } = actions;
@@ -144,6 +156,7 @@ export function useCrewController(options: CrewControllerOptions = {}): CrewCont
     saveConnection,
     updateConnection: patchConnection,
     removeConnection,
+    deleteWorkspace,
     prepareHostingDevice,
   } = useCrewConnections(generation);
   /**
@@ -232,6 +245,7 @@ export function useCrewController(options: CrewControllerOptions = {}): CrewCont
     draft,
     reportError,
     dismissError,
+    replaceError: replaceErrorIfShown,
     composerNoteFor,
     closeSignIn,
     setJoinStatus,
@@ -748,8 +762,9 @@ export function useCrewController(options: CrewControllerOptions = {}): CrewCont
         leaveEndToSave(lostId);
         return;
       }
-      // A membership the workspace ended is final: nothing is observed again or followed for it.
-      const ended = isMembershipEnded(record);
+      // A membership the workspace ended is final, and so is a workspace its host deleted (OW-5):
+      // nothing is observed again or followed for either.
+      const ended = isMembershipEnded(record) || isWorkspaceDeleted(record);
       if (record?.status === 'connected' && !ended && takeQuietReobserve(lostId, Date.now())) {
         // Still being decided until the new view verifies (`onVerifiedFrame`), or until that
         // observation ends too and this decides again: "Reconnecting…" once that takes a while.
@@ -783,7 +798,8 @@ export function useCrewController(options: CrewControllerOptions = {}): CrewCont
    * save that leaves it disconnected is followed once it is back.
    */
   const savedStatus = savedConnection?.status;
-  const savedMembershipEnded = isMembershipEnded(savedConnection);
+  const savedMembershipEnded =
+    isMembershipEnded(savedConnection) || isWorkspaceDeleted(savedConnection);
   const followLatest = useRef(followOffline);
   followLatest.current = followOffline;
   useEffect(() => {
@@ -845,6 +861,9 @@ export function useCrewController(options: CrewControllerOptions = {}): CrewCont
       await refresh();
     });
   };
+  // Nothing is saved: the draft goes into the person's editor, and Save is theirs (OW-8).
+  const draftWorkspaceContext = (id: string) =>
+    crewHttp<CrewContextDraft>(`/connections/${encodeURIComponent(id)}/context/draft`, 'POST', {});
   const grantSession = async ({
     contextChannels,
     sessionId = grantSessionId ?? undefined,
@@ -863,7 +882,7 @@ export function useCrewController(options: CrewControllerOptions = {}): CrewCont
         expected_policy_epoch: observedPrivacy.policyEpoch,
         expected_workspace_policy_epoch: snapshot.workspace.policy_epoch,
         channel_id: channelId,
-        context_channels: [channelId, ...contextChannels],
+        context_channels: runSources(channelId, contextChannels),
       } satisfies Api.GrantSessionRequest
     );
   };
@@ -878,6 +897,7 @@ export function useCrewController(options: CrewControllerOptions = {}): CrewCont
     runs,
     generation,
     setBody: draft.setBody,
+    clearSentBody: draft.clearSentBody,
     restartObservation,
     resetSurfaces,
     act,
@@ -942,7 +962,14 @@ export function useCrewController(options: CrewControllerOptions = {}): CrewCont
   const isReconnecting = reconnecting !== null && reconnecting === connectionId;
   const inFlight = isPending('connect') || isPending('sign-in') || surfaces.signIn.open;
   const verifiedHere = connectionVerifiedThisSession(connectionId) || joinStatus === 'joined';
-  const membershipEnded = isMembershipEnded(savedConnection);
+  const membershipEnded = isMembershipEnded(savedConnection) || isWorkspaceDeleted(savedConnection);
+  // The host deleted the workspace, by the saved record, the last connect or the ended view: the
+  // main area and the status row say it from this one answer (G8).
+  const workspaceDeleted = workspaceKnownDeleted({
+    saved: savedConnection,
+    lastConnectFailure: connectFailure,
+    observationCode: refreshErrorCode,
+  });
 
   /**
    * SECURITY-SENSITIVE (human review). Connect on arrival from a chat's "Connect in Crew" (Q3-08):
@@ -1013,6 +1040,8 @@ export function useCrewController(options: CrewControllerOptions = {}): CrewCont
     saveConnection,
     updateConnection,
     removeConnection,
+    deleteWorkspace,
+    draftWorkspaceContext,
     prepareHostingDevice,
     connect,
     disconnect,
@@ -1086,6 +1115,7 @@ export function useCrewController(options: CrewControllerOptions = {}): CrewCont
     dismissLostDraft,
 
     startOwnedRun: runStart.startOwnedRun,
+    askAgent: runStart.askAgent,
     unknownRunDestination: runStart.unknownRunDestination,
     inspectedPriorRun: runStart.inspectedPriorRun,
     setInspectedPriorRun: runStart.setInspectedPriorRun,
@@ -1120,6 +1150,7 @@ export function useCrewController(options: CrewControllerOptions = {}): CrewCont
       reverifying: reverifying && lossPending !== connectionId,
       reconnecting: isReconnecting,
       awaitingSave,
+      workspaceDeleted,
     }),
     screen: deriveCrewScreen({
       connectionsState,
@@ -1134,6 +1165,7 @@ export function useCrewController(options: CrewControllerOptions = {}): CrewCont
       notJoined,
       reconnecting: isReconnecting,
       awaitingSave,
+      workspaceDeleted,
     }),
     effectivePrivacy:
       shownVerified && snapshot && observedPrivacy

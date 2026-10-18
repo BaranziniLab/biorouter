@@ -58,6 +58,20 @@ contents:
     file_info:
       mode: 0755
 
+  # The same broker again, with the manifest the Crew setup service trusts (OW-9): the service
+  # copies it into a server account over SSH, and checks the bytes it sends against this
+  # manifest. scripts/build-cli-linux-packages.sh stages both from the binary above with
+  # scripts/stage-crew-broker.sh, so the two copies are one build. /usr/libexec rather than
+  # beside biorouterd for the reason the Copilot helper's entry below gives.
+  - src: ./target/crew-broker/linux-x86_64/biorouter-crew
+    dst: /usr/libexec/biorouter/crew-broker/linux-x86_64/biorouter-crew
+    file_info:
+      mode: 0755
+  - src: ./target/crew-broker/linux-x86_64/manifest.json
+    dst: /usr/libexec/biorouter/crew-broker/linux-x86_64/manifest.json
+    file_info:
+      mode: 0644
+
   - src: ./target/cli-helpers/linux-x64/esbuild
     dst: /usr/libexec/biorouter/esbuild
     file_info:

@@ -81,7 +81,6 @@ pub const CLI_WRITTEN_FIELDS: &[&str] = &["error", "code", "request_id", "broker
 
 /// A daemon value kept for JSON output, bounded so a malformed answer cannot grow it: strings
 /// to 4096 characters, lists to 64 items, objects to 32 fields, three levels deep.
-#[cfg(any(unix, test))]
 fn bounded_field(value: &Value, depth: usize) -> Value {
     match value {
         Value::String(text) => Value::String(text.chars().take(4096).collect()),
@@ -140,6 +139,20 @@ impl DaemonRefusal {
     #[cfg(test)]
     pub fn for_test(status: u16, body: Value) -> Self {
         daemon_refusal(status, Some(&body), "Daemon refused the request")
+    }
+
+    /// A failure the daemon reported inside an answer rather than as a refusal: a setup job's
+    /// `error`, `{code, message, detail, host}` (OW-9). It is read as a refusal with the same
+    /// fields would be, so a person reads the same sentence and a script the same code, detail
+    /// and host.
+    pub fn reported(status: u16, error: &Value) -> Self {
+        let body = json!({
+            "error": error.get("message"),
+            "code": error.get("code"),
+            "detail": error.get("detail"),
+            "host": error.get("host"),
+        });
+        daemon_refusal(status, Some(&body), "Crew setup failed")
     }
 }
 
@@ -312,7 +325,6 @@ impl std::fmt::Display for DaemonRefusal {
 
 impl std::error::Error for DaemonRefusal {}
 
-#[cfg(any(unix, test))]
 fn daemon_refusal(status: u16, value: Option<&Value>, fallback: &str) -> DaemonRefusal {
     let message = value
         .and_then(|value| value.get("error").or_else(|| value.get("message")))
@@ -372,12 +384,10 @@ fn daemon_refusal(status: u16, value: Option<&Value>, fallback: &str) -> DaemonR
 }
 
 /// What an older daemon wrote before the broker's JSON error object.
-#[cfg(any(unix, test))]
 const LEGACY_BROKER_REFUSAL: &str = "Crew broker refused request: ";
 
 /// A broker code as the broker writes one (`[a-z][a-z0-9_]*`), capped like `kind`. Anything
 /// else is not a code and is dropped rather than printed.
-#[cfg(any(unix, test))]
 fn broker_code_text(code: &str) -> Option<String> {
     let mut chars = code.chars();
     let shaped = chars.next().is_some_and(|first| first.is_ascii_lowercase())
@@ -387,7 +397,6 @@ fn broker_code_text(code: &str) -> Option<String> {
 
 /// `Crew broker refused request: {"code":…,"message":…}` from a daemon that predates
 /// `broker_code`: the code, and the broker's own text (its message, else the code alone).
-#[cfg(any(unix, test))]
 fn legacy_broker_refusal(text: &str) -> Option<(String, String)> {
     let encoded = text.trim().strip_prefix(LEGACY_BROKER_REFUSAL)?;
     let error = serde_json::from_str::<Value>(encoded).ok()?;
@@ -406,7 +415,6 @@ fn legacy_broker_refusal(text: &str) -> Option<(String, String)> {
 /// would act on escaped: control characters and invisible formatting. `escape_debug` used to
 /// run here and printed `the model\'s` in text and `model\\'s` in JSON, so a script matching
 /// the daemon's canonical sentence missed it.
-#[cfg(any(unix, test))]
 fn terminal_safe(message: &str) -> String {
     let mut out = String::with_capacity(message.len());
     for ch in message.chars() {
@@ -420,7 +428,6 @@ fn terminal_safe(message: &str) -> String {
 }
 
 /// [`terminal_safe`] line by line: the line breaks stay, and nothing else a terminal acts on.
-#[cfg(any(unix, test))]
 fn terminal_safe_lines(text: &str) -> String {
     text.split('\n')
         .map(|line| terminal_safe(line.strip_suffix('\r').unwrap_or(line)))
@@ -695,10 +702,50 @@ impl CrewClient {
         }
     }
 
+    /// `crew auth`: sign in to a saved connection's server, and succeed only once the daemon has
+    /// verified and kept the connection behind the sign-in.
     pub async fn authenticate_ssh(&self, connection_id: &str) -> Result<Value> {
+        // SF2-N6: the usage refusal (exit 2, `crew_needs_terminal`), like every other command
+        // that needs a person at a terminal, before anything else is checked.
+        #[cfg(unix)]
+        sign_in_possible(std::io::stdin().is_terminal() && std::io::stdout().is_terminal())?;
+        ensure!(
+            connection_id
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'-'),
+            "Invalid connection ID"
+        );
+        let signed_in = self
+            .authenticate_ssh_at(
+                &format!("/crew/connections/{connection_id}/authentication"),
+                AUTH_NEEDS_A_TERMINAL,
+            )
+            .await?;
+        ensure!(
+            signed_in["authenticated"].as_bool() == Some(true),
+            "SSH authentication ended before the daemon verified and retained the broker connection"
+        );
+        Ok(signed_in)
+    }
+
+    /// The sign-in terminal the daemon prepares at `prepare_path`: a saved connection's
+    /// `…/authentication`, or a setup job's `/crew/setup/{job}/authentication` (OW-9), whose
+    /// sign-in setup then rides. The server's own prompts (host key, password, verification
+    /// code) are shown here in raw mode and answered from this keyboard; the terminal itself is
+    /// `GET /crew/authentication/{id}/terminal` either way. `no_terminal` is the usage refusal
+    /// said when there is no terminal to sign in at.
+    ///
+    /// Answers `{authentication_id, exit_code, authenticated}`. Whether that sign-in is what
+    /// the caller needed is the caller's to judge: setup asks its job, `crew auth` requires
+    /// `authenticated`.
+    pub async fn authenticate_ssh_at(
+        &self,
+        prepare_path: &str,
+        no_terminal: &str,
+    ) -> Result<Value> {
         #[cfg(not(unix))]
         {
-            let _ = connection_id;
+            let _ = (prepare_path, no_terminal);
             bail!("Shared Crew terminal authentication is unavailable on this platform");
         }
         #[cfg(unix)]
@@ -709,21 +756,24 @@ impl CrewClient {
             };
             use futures::{SinkExt, StreamExt};
             use tokio_tungstenite::tungstenite::Message;
-            // SF2-N6: the usage refusal (exit 2, `crew_needs_terminal`), like every other
-            // command that needs a person at a terminal.
-            sign_in_possible(std::io::stdin().is_terminal() && std::io::stdout().is_terminal())?;
+            needs_terminal::require(
+                std::io::stdin().is_terminal() && std::io::stdout().is_terminal(),
+                no_terminal,
+            )?;
             ensure!(
-                connection_id
-                    .bytes()
-                    .all(|b| b.is_ascii_alphanumeric() || b == b'-'),
-                "Invalid connection ID"
+                prepare_path.starts_with("/crew/")
+                    && prepare_path.ends_with("/authentication")
+                    && prepare_path
+                        .bytes()
+                        .all(|b| b.is_ascii_alphanumeric() || b"-_/".contains(&b)),
+                "Invalid sign-in path"
             );
             let controller = uuid::Uuid::new_v4().to_string();
             // A pty a script opened (`ssh -tt`) can report 0x0, which the daemon refuses.
             let (cols, rows) = terminal::size().map_or(DEFAULT_SIGN_IN_SIZE, |(cols, rows)| {
                 sign_in_terminal_size(cols, rows)
             });
-            let started = self.request("POST", &format!("/crew/connections/{connection_id}/authentication"), Some(json!({"request_id": uuid::Uuid::new_v4().to_string(), "controller_id": controller, "cols": cols, "rows": rows}))).await?;
+            let started = self.request("POST", prepare_path, Some(json!({"request_id": uuid::Uuid::new_v4().to_string(), "controller_id": controller, "cols": cols, "rows": rows}))).await?;
             let id = started["authentication_id"]
                 .as_str()
                 .context("Daemon returned no authentication ID")?;
@@ -750,6 +800,9 @@ impl CrewClient {
                             let value: Value = serde_json::from_str(&text)?;
                             if value["type"] == "exit" { exit_code = value["exit_code"].as_i64(); authenticated = value["authenticated"].as_bool() == Some(true); break; }
                             if value["type"] == "error" {
+                                if let Some(missing) = bridge_missing_frame(&value) {
+                                    return Err(missing.into());
+                                }
                                 let message = value.get("code").and_then(Value::as_str)
                                     .and_then(biorouter::crew::authentication::terminal_failure_message)
                                     .unwrap_or("SSH authentication ended; inspect the daemon's connection status");
@@ -782,13 +835,24 @@ impl CrewClient {
                 }
             }
             socket.close(None).await.ok();
-            ensure!(
-                authenticated,
-                "SSH authentication ended before the daemon verified and retained the broker connection"
-            );
-            Ok(json!({"authentication_id":id,"exit_code":exit_code,"authenticated":true}))
+            Ok(json!({"authentication_id":id,"exit_code":exit_code,"authenticated":authenticated}))
         }
     }
+}
+
+/// The sign-in terminal's error frame for a sign-in that worked on a server with no Crew in the
+/// account (C13, C28): its `code` stays `crew_handoff_failed` for older clients, and
+/// `bridge_missing: true` says what it is. Read as the connect failure it is,
+/// `crew_bridge_missing`, so the person is told to set Crew up, and `crew join` and setup act on
+/// it. `None` for any other frame.
+#[cfg_attr(not(unix), allow(dead_code))]
+fn bridge_missing_frame(frame: &Value) -> Option<DaemonRefusal> {
+    (frame["type"] == "error" && frame["bridge_missing"].as_bool() == Some(true)).then(|| {
+        DaemonRefusal::reported(
+            409,
+            &json!({"code": "crew_bridge_missing", "message": frame.get("error")}),
+        )
+    })
 }
 
 /// What `crew auth` says with no terminal to show the server's prompts in (SF2-N6). A server that
@@ -1838,14 +1902,14 @@ pub async fn credentials_control(
 #[cfg(all(test, unix))]
 mod tests {
     use super::{
-        credentials_control, daemon_control, daemon_refusal, key_refused, no_vault_to_unlock,
-        open_daemon_owner_lock, read_observer_frames, require_supported_platform,
-        secret_prompt_possible, sign_in_possible, sign_in_terminal_size, vault_passphrase,
-        wait_for_daemon_stop, CrewClient, DaemonRefusal, EventDecoder, Restated,
-        AUTH_NEEDS_A_TERMINAL, DAEMON_NEEDS_RESTART, DAEMON_NEEDS_RESTART_CODE, DAEMON_NOT_RUNNING,
-        DAEMON_NOT_RUNNING_CODE, MAX_SSE_FRAME, NEW_VAULT_PASSPHRASE, NO_VAULT_NO_KEYRING,
-        NO_VAULT_TO_UNLOCK, NO_VAULT_TO_UNLOCK_CODE, NO_VAULT_TO_UNLOCK_FILES, VAULT_PASSPHRASE,
-        VAULT_PASSPHRASE_AGAIN,
+        bridge_missing_frame, credentials_control, daemon_control, daemon_refusal, key_refused,
+        no_vault_to_unlock, open_daemon_owner_lock, read_observer_frames,
+        require_supported_platform, secret_prompt_possible, sign_in_possible,
+        sign_in_terminal_size, vault_passphrase, wait_for_daemon_stop, CrewClient, DaemonRefusal,
+        EventDecoder, Restated, AUTH_NEEDS_A_TERMINAL, DAEMON_NEEDS_RESTART,
+        DAEMON_NEEDS_RESTART_CODE, DAEMON_NOT_RUNNING, DAEMON_NOT_RUNNING_CODE, MAX_SSE_FRAME,
+        NEW_VAULT_PASSPHRASE, NO_VAULT_NO_KEYRING, NO_VAULT_TO_UNLOCK, NO_VAULT_TO_UNLOCK_CODE,
+        NO_VAULT_TO_UNLOCK_FILES, VAULT_PASSPHRASE, VAULT_PASSPHRASE_AGAIN,
     };
     use crate::commands::needs_terminal::NeedsTerminal;
     use biorouter::crew::observation::ObserveEvent;
@@ -2760,6 +2824,26 @@ mod tests {
         );
         let none = daemon_refusal(400, Some(&serde_json::json!({"error": "x"})), "fallback");
         assert_eq!(none.detail(), None);
+    }
+
+    /// C13, C28: the frame the daemon really sends when a sign-in worked and the server has no
+    /// Crew in the account (`handoff_failure_frame`): `crew_handoff_failed` with
+    /// `bridge_missing`, read as `crew_bridge_missing`. The same code without the flag stays
+    /// what it was.
+    #[test]
+    fn a_sign_in_without_crew_on_the_server_is_crew_bridge_missing() {
+        let frame = serde_json::json!({
+            "type": "error", "code": "crew_handoff_failed",
+            "error": "Signed in, but Crew couldn't start on the server.", "bridge_missing": true
+        });
+        let missing = bridge_missing_frame(&frame).expect("a missing bridge");
+        assert_eq!(missing.kind.as_deref(), Some("crew_bridge_missing"));
+        assert_eq!(missing.status, 409);
+        let plain =
+            serde_json::json!({"type": "error", "code": "crew_handoff_failed", "error": "x"});
+        assert!(bridge_missing_frame(&plain).is_none());
+        let exit = serde_json::json!({"type": "exit", "bridge_missing": true});
+        assert!(bridge_missing_frame(&exit).is_none());
     }
 
     /// A 403 that says the key was not accepted marks the daemon as one this command cannot

@@ -15,10 +15,10 @@ use axum::response::{IntoResponse, Response};
 use axum::Json;
 use biorouter::crew::authentication::InvitationMissing;
 use biorouter::crew::observation::RunView;
-use biorouter::crew::{ClusterMode, Connection, GrantRow, ServerStorage};
+use biorouter::crew::{ClusterMode, Connection, GrantRow, ServerAccess, ServerStorage};
 use biorouter_server::crew::transfers::Receipt;
 use serde::de::DeserializeOwned;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use utoipa::ToSchema;
 
@@ -117,6 +117,7 @@ pub enum CrewErrorCode {
     CrewBrokerNotRunning,
     CrewHandoffFailed,
     CrewWorkspaceIdentityMismatch,
+    CrewWorkspaceDeleted,
     // A request the workspace was sent.
     CrewNotSent,
     CrewOutcomeUnknown,
@@ -176,6 +177,30 @@ pub enum CrewErrorCode {
     CrewHostStartNotFound,
     CrewHostStartTimedOut,
     CrewHostStartCancelled,
+    // Setting Crew up on a server (OW-9).
+    CrewSetupBusy,
+    CrewSetupNotFound,
+    CrewSetupCancelled,
+    CrewSetupTimedOut,
+    CrewSetupSignInExpired,
+    CrewSetupNotWaitingForSignIn,
+    CrewSetupServerUnreadable,
+    CrewSetupStartFailed,
+    CrewSetupChanged,
+    CrewHostStorageUnsafe,
+    CrewServerProbeUnsupported,
+    CrewInstallArtifactUnavailable,
+    CrewInstallUnsupportedPlatform,
+    CrewInstallDependencyMissing,
+    CrewInstallIncompatible,
+    CrewInstallUnexpectedTarget,
+    CrewInstallChecksumToolMissing,
+    CrewInstallNoSpace,
+    CrewInstallPermissionDenied,
+    CrewInstallBusy,
+    CrewInstallTransferIncomplete,
+    CrewInstallChecksumMismatch,
+    CrewInstallOutcomeUnknown,
 }
 
 /// A Crew route's refusal: `code` and `error` always, and beside them only the fields that
@@ -320,6 +345,15 @@ pub struct CrewConnectionView {
     /// connection is not connected, or its server is an older one that does not say). Display
     /// only: the server's word, unsigned.
     pub server_storage: Option<ServerStorage>,
+    /// What this connection's agents can do on its server, as its last verified connect found
+    /// (design OW-6): whether full access is available (the workspace's server and the person's
+    /// own Crew there both take it), whether commands can be confined to a folder, and the
+    /// bridge's version, Landlock ABI, account and home. `null` before this daemon first
+    /// connected it. Display only: the broker and the bridge enforce every level.
+    pub server_access: Option<ServerAccess>,
+    /// The workspace's host deleted it: its server answered `crew_workspace_deleted`, so the
+    /// person can only remove the connection from this computer.
+    pub workspace_deleted: bool,
 }
 
 /// `GET /crew/connections`.
@@ -334,6 +368,39 @@ pub struct CrewConnectionList {
 pub struct CrewConnectionRemoved {
     /// Always `true`.
     pub removed: bool,
+}
+
+/// `POST /crew/connections/{id}/workspace/delete`: delete the connection's workspace on its
+/// server, as its host (design OW-5).
+#[derive(Debug, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct DeleteWorkspaceRequest {
+    /// The workspace to delete: the connection's own, or nothing is sent.
+    pub workspace_id: String,
+    /// The workspace's stored name, as the person confirmed it, or `null` for a workspace that
+    /// has no stored name (one from before names). Always sent: the workspace refuses it when
+    /// its name is no longer this one (`name_changed`), so `null` deletes only a workspace that
+    /// still has none.
+    #[serde(deserialize_with = "Option::deserialize")]
+    #[schema(required = true)]
+    pub expected_name: Option<String>,
+    /// The request's idempotency key, so a retry after `crew_outcome_unknown` is the same
+    /// deletion. Optional.
+    #[serde(default)]
+    pub request_id: Option<String>,
+}
+
+/// `POST /crew/connections/{id}/workspace/delete`.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct CrewWorkspaceDeleted {
+    /// Always `true`: the workspace is deleted on its server.
+    pub deleted: bool,
+    pub workspace_id: String,
+    /// Always `true`: the connection was removed from this computer, with its keys.
+    pub removed: bool,
+    /// Seconds until the server erases the workspace's files, as it said; `null` when the
+    /// workspace had already been deleted.
+    pub erase_after_seconds: Option<u64>,
 }
 
 /// `POST /crew/connections/{id}/disconnect`.

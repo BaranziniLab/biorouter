@@ -1,7 +1,7 @@
 use anyhow::{bail, Result};
 
 #[cfg(unix)]
-const USAGE: &str = "usage: biorouter-crew serve|start|status|stop (--state-dir PATH | --name NAME) [--name NAME] [--bootstrap-key HEX]; bridge --stdio --socket PATH --owner-uid UID --workspace-id UUID";
+const USAGE: &str = "usage: biorouter-crew serve|start|status|stop (--state-dir PATH | --name NAME) [--name NAME] [--bootstrap-key HEX]; delete (--state-dir PATH | --name NAME) --workspace-id UUID; bridge --stdio --socket PATH --owner-uid UID --workspace-id UUID; probe|doctor [--output-format json]";
 
 /// Where a named workspace keeps its state when `--state-dir` is not given:
 /// `$HOME/.local/share/biorouter-crew/<name>`. The name is validated first, so it is a plain
@@ -22,16 +22,43 @@ fn default_state_dir(name: &str) -> Result<std::path::PathBuf> {
         .join(name))
 }
 
+/// Whether `--output-format json` was asked for; any other format is refused.
+#[cfg(unix)]
+fn json_output(args: &[String]) -> Result<bool> {
+    match args.windows(2).find(|pair| pair[0] == "--output-format") {
+        None if args.iter().any(|arg| arg == "--output-format") => {
+            bail!("--output-format requires a format (json)")
+        }
+        None => Ok(false),
+        Some(pair) if pair[1] == "json" => Ok(true),
+        Some(pair) => bail!("unsupported output format {}; use json", pair[1]),
+    }
+}
+
 #[cfg(unix)]
 fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let command = args.first().map(String::as_str).unwrap_or("help");
     if matches!(command, "--version" | "-V") {
-        println!("biorouter-crew {}", env!("CARGO_PKG_VERSION"));
+        if json_output(&args)? {
+            // A cheap compatibility check for setup: the broker's capabilities (what `hello`
+            // advertises) and the bridge's own.
+            println!(
+                "{}",
+                serde_json::json!({
+                    "version": env!("CARGO_PKG_VERSION"),
+                    "protocol": biorouter_crew::PROTOCOL_VERSION,
+                    "capabilities": biorouter_crew::Broker::capabilities(),
+                    "bridge_capabilities": biorouter_crew::probe::BRIDGE_CAPABILITIES,
+                })
+            );
+        } else {
+            println!("biorouter-crew {}", env!("CARGO_PKG_VERSION"));
+        }
         return Ok(());
     }
     if matches!(command, "help" | "--help" | "-h") {
-        println!("Usage: biorouter-crew start --name NAME --bootstrap-key HEX [--state-dir PATH]\n       biorouter-crew serve|start|status|stop --state-dir PATH [--name NAME] [--bootstrap-key HEX]\n       biorouter-crew bridge --stdio --socket PATH --owner-uid UID --workspace-id UUID\n       biorouter-crew --version\n--name names the workspace (lowercase letters, numbers and hyphens); without --state-dir its state lives in ~/.local/share/biorouter-crew/NAME. start prints the workspace's invitation line (brcrew1:...) to paste into Crew.\nBroker and bridge operations require Linux.");
+        println!("Usage: biorouter-crew start --name NAME --bootstrap-key HEX [--state-dir PATH]\n       biorouter-crew serve|start|status|stop --state-dir PATH [--name NAME] [--bootstrap-key HEX]\n       biorouter-crew delete (--state-dir PATH | --name NAME) --workspace-id UUID\n       biorouter-crew bridge --stdio --socket PATH --owner-uid UID --workspace-id UUID\n       biorouter-crew probe|doctor [--output-format json]\n       biorouter-crew --version [--output-format json]\n--name names the workspace (lowercase letters, numbers and hyphens); without --state-dir its state lives in ~/.local/share/biorouter-crew/NAME. start prints the workspace's invitation line (brcrew1:...) to paste into Crew. delete erases a stopped workspace's state directory, only the files Crew created; --workspace-id must be the ID of the workspace it holds. probe prints fixed facts about this server and account as JSON; doctor adds what blocks hosting here and what limits agents.\nBroker and bridge operations require Linux.");
         return Ok(());
     }
 
@@ -42,6 +69,20 @@ fn main() -> Result<()> {
     };
     if command == "__crew-exec" {
         biorouter_crew::remote::exec_helper()?;
+    } else if command == "__crew-run" {
+        let directory = args
+            .get(1)
+            .ok_or_else(|| anyhow::anyhow!("__crew-run requires a job directory"))?;
+        biorouter_crew::remote_full::supervise(std::path::Path::new(directory))?;
+    } else if matches!(command, "probe" | "doctor") {
+        // JSON is the only format, so the flag is optional; anything else is refused.
+        json_output(&args)?;
+        let facts = if command == "probe" {
+            biorouter_crew::probe::probe()
+        } else {
+            biorouter_crew::probe::doctor()
+        };
+        println!("{}", serde_json::to_string_pretty(&facts)?);
     } else if command == "bridge" {
         biorouter_crew::bridge(
             std::path::Path::new(
@@ -52,7 +93,7 @@ fn main() -> Result<()> {
                 .parse()?,
             option("--workspace-id").ok_or_else(|| anyhow::anyhow!("--workspace-id required"))?,
         )?;
-    } else if matches!(command, "serve" | "start" | "status" | "stop") {
+    } else if matches!(command, "serve" | "start" | "status" | "stop" | "delete") {
         let name = option("--name");
         if args.iter().any(|arg| arg == "--name") && name.is_none() {
             bail!("--name requires a workspace name");
@@ -77,7 +118,12 @@ fn main() -> Result<()> {
             ),
         };
         let key = option("--bootstrap-key").unwrap_or("");
-        if command == "serve" {
+        if command == "delete" {
+            let workspace_id = option("--workspace-id").ok_or_else(|| {
+                anyhow::anyhow!("--workspace-id required: the ID of the workspace to delete")
+            })?;
+            println!("{}", biorouter_crew::delete_workspace(&root, workspace_id)?);
+        } else if command == "serve" {
             biorouter_crew::serve(&root, key, name)?;
         } else {
             let name = if command == "start" { name } else { None };

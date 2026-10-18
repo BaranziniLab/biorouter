@@ -76,6 +76,8 @@ export interface RadioRowOption<T extends string> {
   value: T;
   label: string;
   detail?: string;
+  /** This one choice can't be made now; its `detail` says why. */
+  disabled?: boolean;
 }
 
 export interface RadioRowsProps<T extends string> {
@@ -110,7 +112,7 @@ export function RadioRows<T extends string>({
           name={name}
           value={option.value}
           checked={value === option.value}
-          disabled={disabled}
+          disabled={disabled || option.disabled}
           onChange={() => onChange(option.value)}
           label={option.label}
           secondaryLabel={option.detail}

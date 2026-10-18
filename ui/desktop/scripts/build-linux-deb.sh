@@ -52,6 +52,23 @@ cp "$LINUX_RELEASE/biorouterd" "$BIN_DIR/biorouterd"
 chmod +x "$BIN_DIR/biorouterd"
 echo "  Installed Linux x64: biorouterd"
 
+# The Linux Crew broker the setup service installs on a server (OW-9), when the caller staged
+# one with scripts/stage-crew-broker.sh. That script needs Docker, which this container does
+# not have, so it runs on the host first and this only copies. prepare-platform-binaries.js
+# below checks the copy against its manifest and, in a release build, requires it. Without a
+# staged one, whatever src/bin/crew-broker already holds (a `just stage-crew-broker`) stays.
+CREW_BROKER_STAGED="$PROJECT_ROOT/target/crew-broker/linux-x86_64"
+if [ -f "$CREW_BROKER_STAGED/biorouter-crew" ] && [ -f "$CREW_BROKER_STAGED/manifest.json" ]; then
+    rm -rf "$BIN_DIR/crew-broker"
+    mkdir -p "$BIN_DIR/crew-broker/linux-x86_64"
+    cp "$CREW_BROKER_STAGED/biorouter-crew" "$CREW_BROKER_STAGED/manifest.json" \
+        "$BIN_DIR/crew-broker/linux-x86_64/"
+    chmod 0755 "$BIN_DIR/crew-broker/linux-x86_64/biorouter-crew"
+    echo "  Installed Linux x64: crew-broker/linux-x86_64"
+else
+    echo "  No staged Crew broker at $CREW_BROKER_STAGED"
+fi
+
 cd "$DESKTOP_DIR"
 npm ci --cache /root/.npm
 

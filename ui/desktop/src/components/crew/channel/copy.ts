@@ -48,6 +48,8 @@ export const channelCopy = {
     rename: 'Rename…',
     transfer: 'Transfer ownership…',
     archive: 'Archive channel…',
+    /** OW-4: last, destructive, after Archive; never on a team's #general. */
+    delete: 'Delete channel…',
   },
 } as const;
 

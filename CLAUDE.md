@@ -2115,6 +2115,30 @@ replaced a standalone `biorouter-headless` binary and its Linux tarball, both de
   biorouter-server` first. CI runs it in the `serve` job, because the workspace test job is
   `--lib --bins` and never runs an integration binary.
 
+### Crew (lab workspaces on a shared server)
+
+User manual: [`docs/crew/`](docs/crew/README.md). Design contracts: `docs/crew/design/`, the October 2026
+setup, open governance, deletion and full-access contract in
+[`open-workspaces-and-automatic-setup.md`](docs/crew/design/open-workspaces-and-automatic-setup.md).
+
+- **Where the code is.** One Linux binary, `biorouter-crew`, is both the host's broker and each member's
+  bridge: `crates/biorouter-crew` (`broker.rs`, `broker/join.rs`, `remote.rs` for folder mode,
+  `remote_full.rs` for full access, `probe.rs`). The daemon side is `crates/biorouter/src/crew/` (`mod.rs`
+  the manager, `setup.rs` the setup service the GUI and CLI share, `context.rs`, `host_start.rs`), routes in
+  `crates/biorouter-server/src/routes/crew*.rs`, agent tools in `agents/crew_extension.rs`, the CLI in
+  `crates/biorouter-cli/src/commands/crew/`, the GUI in `ui/desktop/src/components/crew/`.
+- **Every build carries the broker** (`crew-broker/linux-x86_64/` beside `biorouterd`, with a manifest), and
+  setup sends it over SSH. Cross-build and stage it with
+  `scripts/build-crew-broker-linux.sh ui/desktop/src/bin/crew-broker/linux-x86_64` (`just stage-crew-broker`,
+  needs Docker); `BIOROUTER_CREW_BROKER_DIR` points a dev daemon at another copy.
+- ⚠ **Folder mode needs Landlock ABI 3 (Linux 6.2+).** On an older kernel (Ubuntu 22.04's 5.15, such as
+  `leo.ucsf.edu`) every folder command is refused, and only full access ("As me on the server") runs commands.
+- **The live two-account harness is not in the repo.** It lives in `~/biorouter-runs/crewleo/` (findings,
+  evidence and scripts against real accounts): read it for context, never commit it.
+- `node scripts/check-crew-manual.mjs` holds the manual to the code (mutant suite:
+  `node --test scripts/check-crew-manual.test.mjs`). A new `crew_*` code, quoted string or data path needs
+  its line in `docs/crew/`.
+
 ### Communication Flow
 
 ```

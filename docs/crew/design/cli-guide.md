@@ -1,7 +1,7 @@
 # BioRouter Crew: native CLI and shared desktop daemon
 
 > **What this is.** How to use `biorouter crew` from a terminal: the shared desktop daemon and its credentials, the per-account remote executable, joining a workspace, naming people, teams and channels, messages, files, agents, chat grants and recovery.
-> **Status:** Current. Describes `biorouter crew` on `main` as of 2026-09-27, after that day's CLI fixes (confirmations for destructive commands, connect failures in words, the `watch` starting point and one JSON value per line for streamed commands). It is not a release or end-to-end acceptance claim: the commands are tested against a scripted daemon, and joining by invitation also needs a broker built with the `join-by-name` feature, on by default since 2026-09-25 (see [Join a workspace](#join-a-workspace)). [Revoke access](#revoke-access) and the grant states describe the source as of 2026-09-25 (`dc274655`), after the automatic revocation retry landed. The second round of fixes for the 2026-09-27 live QA (wave 2) changed how names print, what `members add` says, what `members` marks, what reading marks read, the JSON error contract and the retry advice; each changed passage says *Amended by wave 2* and names the QA finding (F10, M11, M18, M20, DW-10, R-3). The third round of 2026-09-28 added `join-invitation --replace`, the terminal refusal of `auth` without a terminal and the steady re-probe of a stopped workspace server; those passages name their T3 finding. On 2026-09-29 the human approval secret was removed: whoever starts the daemon writes a user-action key file that every client reads, so nothing asks for a secret. [The command-line manual](../command-line.md) is kept in step with the code and wins where the two disagree.
+> **Status:** Current. Describes `biorouter crew` on `main` as of 2026-09-27, after that day's CLI fixes (confirmations for destructive commands, connect failures in words, the `watch` starting point and one JSON value per line for streamed commands). It is not a release or end-to-end acceptance claim: the commands are tested against a scripted daemon, and joining by invitation also needs a broker built with the `join-by-name` feature, on by default since 2026-09-25 (see [Join a workspace](#join-a-workspace)). [Revoke access](#revoke-access) and the grant states describe the source as of 2026-09-25 (`dc274655`), after the automatic revocation retry landed. The second round of fixes for the 2026-09-27 live QA (wave 2) changed how names print, what `members add` says, what `members` marks, what reading marks read, the JSON error contract and the retry advice; each changed passage says *Amended by wave 2* and names the QA finding (F10, M11, M18, M20, DW-10, R-3). The third round of 2026-09-28 added `join-invitation --replace`, the terminal refusal of `auth` without a terminal and the steady re-probe of a stopped workspace server; those passages name their T3 finding. On 2026-09-29 the human approval secret was removed: whoever starts the daemon writes a user-action key file that every client reads, so nothing asks for a secret. On 2026-10-16 the [open workspaces and automatic setup](open-workspaces-and-automatic-setup.md) change added `setup`, `doctor`, `host`, `ask`, `defaults`, `connections set-access`, `files list`, the join and delete commands for teams and channels, and `workspace delete`, `governance` and `context`; those passages say *Amended by OW* and name the decision (OW-1 to OW-12). On 2026-10-17 the live finding L8 changed what `join`'s own setup gives a connection never set up from this computer; that passage says *Amended by L8*. [The command-line manual](../command-line.md) is kept in step with the code and wins where the two disagree.
 > **Audience:** People who use Crew from a terminal, and developers and testers of the Crew CLI.
 
 The native CLI and the desktop Crew panel call the same daemon services for connections, membership, transfers, policy and owned tasks, and the same daemon resolves the names both of them accept. Crew is BioRouter's shared workspace for a lab: a small broker process runs under one member's Unix account on a Linux server, and every member reaches it over their own SSH login.
@@ -46,6 +46,8 @@ The default secret prompts hide input. At a terminal, `credentials init` asks fo
 For privacy-sensitive actions, add `--expected-mode private` or `--expected-mode public`, for example `biorouter crew --connection lab --expected-mode private send methods --text 'Hello'`. The daemon refuses a mismatched saved mode instead of changing it. This optional expectation applies to `send`, `tasks start`, `grants grant`, and file upload, download and resume selection; omission preserves existing behavior. It does not change the connection's privacy setting or apply to file cleanup.
 
 ## Install the remote executable before connecting
+
+*Amended by OW-9.* `biorouter crew setup` installs it for you, over the SSH session, from the broker the Biorouter build carries (`crew-broker/linux-x86_64/` beside `biorouterd`, or `BIOROUTER_CREW_BROKER_DIR` in development). It checks the size, SHA-256 and `--version` on the server, installs with one rename and keeps the copy it replaced as `biorouter-crew.previous`. It never downgrades, keeps an older copy that runs unless given `--replace-existing`, and replaces a same-version copy whose SHA-256 differs. `setup --server LOGIN` installs for a server with no saved connection; `setup` with a saved connection installs and connects; `doctor` (or `setup --check`) changes nothing. Joining and hosting run the same service, so the manual install below is for a server the service cannot reach.
 
 Every connecting ordinary Unix account on the Linux SSH host needs its own executable at **`~/.local/bin/biorouter-crew`**. The daemon invokes that exact path for `bridge --stdio`; an executable only in `/usr/local/bin` or `/usr/bin`, or available only through `PATH`, does not satisfy this prerequisite. The account hosting the broker needs it too.
 
@@ -110,7 +112,15 @@ The host starts the broker once and invites each person by their username on the
 
 ### Host a workspace
 
-Prepare this computer's hosting identity, then start the broker on the server as your own account with the public key it printed. `--name` names the workspace: 1 to 40 lowercase letters, digits and dashes. With `--name`, the state directory defaults to `~/.local/share/biorouter-crew/<name>`; `--state-dir PATH` still sets it explicitly.
+*Amended by OW-1, OW-8 and OW-9.* One command does the whole host flow:
+
+```bash
+biorouter crew host --name lab --server alice@hpc.ucsf.edu --institution ucsf
+```
+
+It prepares the hosting identity, runs a host setup job (probe, sign in if asked, install, start), saves and connects the connection with the work folder the job made and full access, bootstraps, sets the privacy and institution with `policy.set`, sets governance to `open` (a broker without `open_governance_v1` stays managed and says so) and saves the drafted workspace context. It asks `Go ahead?` first, and needs `--yes` without a terminal. A Private workspace without `--institution` is refused with `crew_institution_required` (exit 2). Storage that other accounts can write above the state directory refuses with `crew_host_storage_unsafe` before the start, and `--fix-permissions` lets the job run `chmod go-w` on exactly the folders it named. A failure after the start names what is done and the command that finishes it.
+
+The steps it runs, by hand: prepare this computer's hosting identity, then start the broker on the server as your own account with the public key it printed. `--name` names the workspace: 1 to 40 lowercase letters, digits and dashes. With `--name`, the state directory defaults to `~/.local/share/biorouter-crew/<name>`; `--state-dir PATH` still sets it explicitly.
 
 ```bash
 biorouter crew connections prepare --show-ids
@@ -167,9 +177,11 @@ Save the host's message to a file, check what it says, save the connection, sign
 ```bash
 biorouter crew connections join-invitation ./lab-invitation.txt --preview
 biorouter crew connections join-invitation ./lab-invitation.txt
-biorouter crew --connection lab auth
+biorouter crew --connection lab setup
 biorouter crew --connection lab join
 ```
+
+*Amended by OW-6 and OW-9.* `setup` signs in (asking in the terminal when the server wants a password or a code), installs the broker in the joiner's account when it is missing and connects. On a connection with no work folder yet it also sets full access with a new `~/crew-work/<workspace>` folder, as the desktop's Join does; `--agent-access off|folder|full` names the level instead, and `off` changes nothing. `join` itself runs the same member setup when its connect finds `crew_bridge_missing`, or, with a terminal to sign in at, `crew_ssh_auth_required`, so a fresh account joins in one step. *Amended by L8.* On a connection never set up from this computer (it has never connected, so its `node_id` is null, and no bridge has answered for it, so `server_access` is null) that setup gives agents what `setup` gives, full access where there is no work folder, with the same one warning; the warning names `connections set-access folder` and `set-access off`, since `join` takes no level. On a connection that connected before, it sends no `agent_access`, so a level the person chose, off included, stays (C10). Once joined, a connection with no work folder ends `join` with `Your agent can't work on lab-ubuntu yet. To let it, run biorouter crew --connection lab connections set-access full.`, or `set-access folder --folder /path/on/the/server` where the server says full access isn't available; JSON output is the join status alone, as before. `auth` still signs in and connects when Crew is already there.
 
 - **The preview is the privacy decision.** It names the workspace, the host and the server, shows the fingerprint and the workspace's privacy (`Workspace privacy: Private · ucsf`), and says how this computer will treat it (`You'll join as Private · ucsf.`). If you choose another institution than the workspace's, it says so (`lab uses ucsf; you chose foreign-lab.`). One computer can't use one server for two institutions, so when another saved connection already reaches the same server under a different institution, the preview warns before you save: `You already use this server for foreign-lab (foreign-synthetic). lab uses ucsf; one computer can't mix institutions on the same server.` Connecting such a connection is refused in the same words. Without `--yes` the command asks `Save this connection? [y/N]` before saving anything. `--mode` and `--institution` change your own choice; `--username` sets your username on the server (default: the one the host invited); `--name` names the connection on this computer (default: the workspace's name). `--ssh-target`, `--port`, `--identity-file` and `--proxy-jump` (empty for none) override the server hints; a relative `--identity-file`, or one starting with `~/`, is made absolute before it is sent, because the daemon takes only absolute paths.
 - **Pasting instead of a file:** `connections join-invitation -` reads the message from stdin (end it with Ctrl-D). Because there is then no terminal to ask in, it saves only with `--yes`; check it with `--preview` first.
@@ -257,6 +269,8 @@ Names are unique, and the broker enforces it:
 
 Rename with `teams rename analysis-lab 'Analysis Group'` (the team's creator), `channels rename analysis-lab/methods protocols` (the channel's owner) or `workspace rename NEW` (the host). A rename keeps the object's ID, so history, invitations and grants are unaffected.
 
+*Amended by OW-1 to OW-5.* In an open workspace (`workspace.governance` is `open`), any member of a team or channel renames, archives and deletes it and adds people to it, `teams join TEAM` and `channels join CHANNEL` join one, and any member runs `enroll invite` and `enroll approve`. `workspace governance open|managed` is the host's switch. `channels delete CHANNEL` and `teams delete TEAM` ask first (`--yes` in a script) and send the name the person confirmed as `expected_name`, so a rename in between refuses with `name_changed`; a team's `#general` goes only with its team. `workspace delete` (host) asks for the workspace's name (`--confirm NAME` in a script), sends the snapshot's stored name, or `null` for a workspace that has none, then removes the connection here. `workspace context show|set FILE|edit|draft [--save]` reads and writes the context document, `set` and `edit` naming the revision they replace so a newer save refuses with `revision_conflict`.
+
 To invite a member of the workspace to a team you created or a channel you own:
 
 ```bash
@@ -307,6 +321,8 @@ When the daemon ends a watch, text output says why in one sentence, for example 
 
 ## Transfer attachments or share remote references
 
+*Amended on 2026-10-16.* `files list CHANNEL [--limit N]` lists a channel's shared files, newest first, with name, size, who shared it, when and the attachment ID `files download` takes.
+
 ```bash
 biorouter crew --connection lab --request-id upload-analysis-001 files upload methods ./analysis.txt
 
@@ -341,6 +357,8 @@ biorouter crew --connection lab send methods --reference REFERENCE_ID
 Creating a reference does not upload, download or validate that remote path's contents.
 
 ## Run your own agent or grant an existing conversation access
+
+*Amended by OW-6, OW-10, OW-11 and OW-12.* `--provider` and `--model` are optional together: without them a task starts on `CREW_TASK_MODEL` (`defaults set|show|clear`), else `BIOROUTER_PROVIDER` and `BIOROUTER_MODEL`, and with neither it exits 2 with `crew_task_model_required`. `ask CHANNEL TEXT…` is `tasks start` with that model and `--allow-posting`. A task runs at most 60 turns, 200 tool calls and 55 minutes, and in an open workspace on a broker with `wide_runs_v1` may read 99 channels besides its own. What it may do on the server follows the connection's level, which `connections set-access off|folder|full [--folder PATH] [--yes]` sets; `full` asks first.
 
 Choose an already configured provider and model allowed by the workspace and your personal privacy mode:
 

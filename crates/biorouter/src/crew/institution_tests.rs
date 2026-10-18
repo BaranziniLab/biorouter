@@ -82,6 +82,7 @@ fn connection(
         workspace_public_key: "11".repeat(32),
         remote_root: remote_root.map(str::to_owned),
         remote_execution: false,
+        remote_access: Default::default(),
         cluster_connection_id: "institution-fixture-cluster".into(),
         mode,
         institution_id: institution_id.map(str::to_owned),
@@ -189,13 +190,15 @@ fn origin_mismatch_is_rejected_even_for_local_context() {
 #[test]
 fn protected_sources_requires_known_channels_and_marks_hidden_sources() {
     let visible = snapshot(json!(null), ClusterMode::Public, 1, json!(["private"]));
-    assert!(institution::protected_sources(&visible, "private", &[], "lab").unwrap());
+    assert!(institution::protected_sources(&visible, "private", &[], "lab", 20).unwrap());
     assert!(
-        !institution::protected_sources(&visible, "general", &["general".into()], "lab").unwrap()
+        !institution::protected_sources(&visible, "general", &["general".into()], "lab", 20)
+            .unwrap()
     );
-    assert!(institution::protected_sources(&visible, "missing", &[], "lab").is_err());
+    assert!(institution::protected_sources(&visible, "missing", &[], "lab", 20).is_err());
     assert!(
-        institution::protected_sources(&visible, "general", &["missing".into()], "lab").is_err()
+        institution::protected_sources(&visible, "general", &["missing".into()], "lab", 20)
+            .is_err()
     );
 
     let mut channels = Vec::new();
@@ -209,14 +212,19 @@ fn protected_sources_requires_known_channels_and_marks_hidden_sources() {
     let sources = (0..20)
         .map(|index| format!("channel-{index}"))
         .collect::<Vec<_>>();
-    assert!(institution::protected_sources(&too_many, "channel-20", &sources, "lab").is_err());
+    assert!(institution::protected_sources(&too_many, "channel-20", &sources, "lab", 20).is_err());
     assert!(institution::protected_sources(
         &json!({"channels": [{"id": "general"}]}),
         "general",
         &[],
-        "lab"
+        "lab",
+        20
     )
     .is_err());
+    // A server that advertises wide runs takes up to 100 channels, the destination included.
+    assert!(
+        !institution::protected_sources(&too_many, "channel-20", &sources, "lab", 100).unwrap()
+    );
 }
 
 /// W2-DMN-9: a channel ID a complete snapshot lists nowhere (another workspace's, say) is not in
@@ -226,8 +234,9 @@ fn protected_sources_requires_known_channels_and_marks_hidden_sources() {
 #[test]
 fn a_channel_the_workspace_does_not_list_is_named_as_not_in_it() {
     let visible = snapshot(json!(null), ClusterMode::Public, 1, json!([]));
-    let foreign = institution::protected_sources(&visible, "general", &["elsewhere".into()], "lab")
-        .unwrap_err();
+    let foreign =
+        institution::protected_sources(&visible, "general", &["elsewhere".into()], "lab", 20)
+            .unwrap_err();
     assert_eq!(foreign.to_string(), "That channel isn't in lab.");
     assert_eq!(
         CrewRefusal::find(&foreign).map(CrewRefusal::code),
@@ -237,7 +246,8 @@ fn a_channel_the_workspace_does_not_list_is_named_as_not_in_it() {
     let mut partial = visible.clone();
     partial["totals"] = json!({"channels": 150});
     let unconfirmed =
-        institution::protected_sources(&partial, "general", &["beyond".into()], "lab").unwrap_err();
+        institution::protected_sources(&partial, "general", &["beyond".into()], "lab", 20)
+            .unwrap_err();
     assert!(CrewRefusal::find(&unconfirmed).is_none());
     assert_eq!(
         unconfirmed.to_string(),
@@ -246,8 +256,9 @@ fn a_channel_the_workspace_does_not_list_is_named_as_not_in_it() {
     // A whole list, counted, is not partial.
     let mut whole = visible;
     whole["totals"] = json!({"channels": 2});
-    let foreign = institution::protected_sources(&whole, "general", &["elsewhere".into()], "lab")
-        .unwrap_err();
+    let foreign =
+        institution::protected_sources(&whole, "general", &["elsewhere".into()], "lab", 20)
+            .unwrap_err();
     assert!(CrewRefusal::find(&foreign).is_some());
 }
 

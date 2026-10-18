@@ -30,6 +30,7 @@ REL="target/x86_64-unknown-linux-gnu/release"
 DESK="ui/desktop"
 WEB="$DESK/src/web"
 ESBUILD_DIR="target/cli-helpers/linux-x64"
+CREW_BROKER_DIR="target/crew-broker/linux-x86_64"
 OUT="dist/cli"
 DEB="$OUT/biorouter-cli_${VERSION}_amd64.deb"
 RPM="$OUT/biorouter-cli-${VERSION}-1.x86_64.rpm"
@@ -54,6 +55,11 @@ br_require_command node "The pinned esbuild helper is verified and staged with N
 # default `join-by-name` feature passes every smoke test below and lets nobody join by invitation.
 bash "$ROOT/scripts/check-crew-broker-join.sh" "$REL/biorouter-crew" \
   || die "$REL/biorouter-crew was built without the join-by-name feature"
+# The copy the Crew setup service installs on a server, with its manifest (OW-9;
+# packaging/biorouter-cli.yaml ships it under /usr/libexec/biorouter/crew-broker).
+log "staging the Crew broker and its manifest ($CREW_BROKER_DIR)"
+bash "$ROOT/scripts/stage-crew-broker.sh" "$REL/biorouter-crew" "$CREW_BROKER_DIR" \
+  || die "could not stage $REL/biorouter-crew for the Crew setup service"
 
 python3 "$ROOT/scripts/computer-use-runtime.py" verify linux-x64
 
@@ -108,6 +114,12 @@ docker run --rm --platform linux/amd64 -v "$ROOT/$OUT":/pkg debian:bookworm-slim
   crew_version=$(biorouter-crew --version)
   case "$crew_version" in "biorouter-crew "*) ;; *) exit 1 ;; esac
   biorouter-crew --help
+  broker=/usr/libexec/biorouter/crew-broker/linux-x86_64
+  crew_sha=$(sha256sum /usr/bin/biorouter-crew | cut -d" " -f1)
+  test -x "$broker/biorouter-crew"
+  test "$(sha256sum "$broker/biorouter-crew" | cut -d" " -f1)" = "$crew_sha"
+  grep -Fq "\"sha256\": \"$crew_sha\"" "$broker/manifest.json"
+  test "$("$broker/biorouter-crew" --version)" = "$crew_version"
   biorouter doctor --no-update --format json >/dev/null
   test -s /usr/share/biorouter/web/index.html
   test -n "$(ls -A /usr/share/biorouter/web/assets)"
@@ -134,6 +146,12 @@ docker run --rm --platform linux/amd64 -v "$ROOT/$OUT":/pkg rockylinux:9 bash -e
   crew_version=$(biorouter-crew --version)
   case "$crew_version" in "biorouter-crew "*) ;; *) exit 1 ;; esac
   biorouter-crew --help
+  broker=/usr/libexec/biorouter/crew-broker/linux-x86_64
+  crew_sha=$(sha256sum /usr/bin/biorouter-crew | cut -d" " -f1)
+  test -x "$broker/biorouter-crew"
+  test "$(sha256sum "$broker/biorouter-crew" | cut -d" " -f1)" = "$crew_sha"
+  grep -Fq "\"sha256\": \"$crew_sha\"" "$broker/manifest.json"
+  test "$("$broker/biorouter-crew" --version)" = "$crew_version"
   biorouter doctor --no-update --format json >/dev/null
   test -s /usr/share/biorouter/web/index.html
   test -n "$(ls -A /usr/share/biorouter/web/assets)"

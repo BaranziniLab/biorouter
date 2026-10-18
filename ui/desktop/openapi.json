@@ -2161,7 +2161,7 @@
         "operationId": "crew_list_connections",
         "responses": {
           "200": {
-            "description": "Every connection saved on this computer, each with `server_label`, the person's own name for its server (their SSH alias when one maps to the address, else the host; display only), and `last_error_code` when the daemon has a code for `last_error`: `crew_membership_ended` (the workspace refused this computer or its person as no longer a member, so the daemon stops dialling it), an SSH failure's code or `crew_workspace_identity_mismatch`. `server_storage` says when a connected workspace's server has stopped saving changes (`code` `storage_full` or `storage_failed`, `since` when); `null` while it saves or when that is not known",
+            "description": "Every connection saved on this computer, each with `server_label`, the person's own name for its server (their SSH alias when one maps to the address, else the host; display only), and `last_error_code` when the daemon has a code for `last_error`: `crew_membership_ended` (the workspace refused this computer or its person as no longer a member, so the daemon stops dialling it), an SSH failure's code or `crew_workspace_identity_mismatch`. `server_storage` says when a connected workspace's server has stopped saving changes (`code` `storage_full` or `storage_failed`, `since` when); `null` while it saves or when that is not known. `server_access` says what agents can do on the server as the last connect found (whether full access is available, whether commands can be confined, the bridge's version, account and home); `null` before the first connect. `workspace_deleted` is `true` once the workspace answered `crew_workspace_deleted`: its host deleted it, so the person can only remove it from this computer",
             "content": {
               "application/json": {
                 "schema": {
@@ -2693,6 +2693,89 @@
           },
           "403": {
             "description": "No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no user-action key",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CrewError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`crew_workspace_deleted`: the workspace's host deleted it (its server said so, or the bridge found the tombstone its server left), so the connection is never dialled again and can only be removed from this computer; `workspace` names it",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CrewError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/crew/connections/{id}/context/draft": {
+      "post": {
+        "tags": [
+          "Crew"
+        ],
+        "summary": "The server's facts, and the workspace context document drafted from them (OW-8).",
+        "description": "Runs `biorouter-crew probe` in the connection's account over its own control path, never\nprompting; the draft is for a person to read and save, and nothing is saved here.",
+        "operationId": "crew_context_draft",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "The saved connection",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "`draft` (Markdown) and the `facts` it was drafted from",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ContextDraft"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "An SSH failure's code (`crew_ssh_auth_required`: sign in first; `crew_ssh_key_refused`, `crew_ssh_host_key_unknown`, `crew_ssh_host_key_changed`, `crew_ssh_unreachable`, `crew_ssh_failed`), or `crew_request_refused` for an SSH configuration the preflight refuses",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CrewError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no user-action key",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CrewError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`crew_connection_not_found`: no saved connection has that ID",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CrewError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`crew_server_probe_unsupported`: the Crew program in the account is too old to describe the server (set Crew up again); `crew_setup_server_unreadable`: its answer could not be read; `crew_setup_timed_out`: it did not answer in time",
             "content": {
               "application/json": {
                 "schema": {
@@ -3243,7 +3326,7 @@
             }
           },
           "409": {
-            "description": "`crew_not_connected`: the connection is down and nothing is dialling it again, so connect it (signing in if asked) and try again; `workspace` names it. Nothing was sent",
+            "description": "`crew_not_connected`: the connection is down and nothing is dialling it again, so connect it (signing in if asked) and try again; `workspace` names it. Nothing was sent. `crew_workspace_deleted`: the workspace's host deleted it, so it answers nothing else and the connection can only be removed from this computer; `workspace` names it",
             "content": {
               "application/json": {
                 "schema": {
@@ -3820,6 +3903,119 @@
           },
           "503": {
             "description": "`crew_revocation_unconfirmed`: stopped here and saved (`stopped_on_this_device`), not yet confirmed by the workspace (`remote_revocation_confirmed: false`; `detail` says why). Biorouter asks the workspace again by itself; retrying asks at once. A task's grant adds `task_status` and `task_status_error`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CrewError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/crew/connections/{id}/workspace/delete": {
+      "post": {
+        "tags": [
+          "Crew"
+        ],
+        "summary": "Delete the connection's workspace on its server, as its host (design OW-5), then remove the",
+        "description": "connection from this computer as `DELETE /crew/connections/{id}` does.",
+        "operationId": "crew_delete_workspace",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "The saved connection",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DeleteWorkspaceRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Deleted on its server, which erases its files after `erase_after_seconds`, and removed from this computer with its keys. A workspace that was already deleted (it answered `crew_workspace_deleted`) is removed from this computer all the same, with `erase_after_seconds` `null`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CrewWorkspaceDeleted"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`crew_request_invalid` for a body that is not JSON; `crew_request_refused` for a `workspace_id` that is not the connection's own, an empty name, a server whose Crew cannot delete workspaces yet, or a deletion the workspace refused (`broker_code` `forbidden`: only its host may delete it; `name_changed`: its name is no longer the one typed); `crew_credential_store_unavailable` or `crew_credential_store_refused` when the device key cannot be read",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CrewError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no user-action key",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CrewError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`crew_not_connected`: the connection is down and nothing is dialling it again, so connect it and try again; `workspace` names it. Nothing was sent. `crew_registry_unreadable`: the workspace was deleted, but Crew's saved settings on this computer can't be read by this build, so the connection is still saved",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CrewError"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "`crew_request_invalid`: the body is larger than the route takes",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CrewError"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "`crew_request_invalid`: the body is not sent as `application/json`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CrewError"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "`crew_request_invalid`: a body with a missing, mistyped or unknown field; `detail` says which",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CrewError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The request did not go through: `crew_not_sent` (nothing reached the workspace), `crew_outcome_unknown` (the bridge was lost after the request was written, so whether the workspace was deleted is not known; retry with `request_id`, which answers `crew_workspace_deleted` if it was) or `crew_reconnecting` (Biorouter is dialling the workspace again; `workspace` names it)",
             "content": {
               "application/json": {
                 "schema": {
@@ -4579,6 +4775,343 @@
           },
           "503": {
             "description": "The workspace could not be asked for the snapshot: `crew_not_sent` (nothing reached it; `ssh_code` when an SSH failure caused it) or `crew_reconnecting` (Biorouter is dialling it again; `workspace` names it). Nothing changed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CrewError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/crew/setup": {
+      "post": {
+        "tags": [
+          "Crew"
+        ],
+        "summary": "Set Crew up on a server (OW-9).",
+        "description": "Check the server, sign in when it asks for a password or a code, install this app's Crew\nprogram in the account, then start the workspace (`host`) or connect (`member`). The body\nnames no command: every step is a fixed script.",
+        "operationId": "crew_setup_start",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SetupRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The job, started (or the one already under way for the same server and intent): poll `GET /crew/setup/{job_id}`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SetupStatus"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`crew_request_invalid`: a body that is not JSON, a field the route does not take, a workspace name, login or route outside what a connection allows, a `host` job without a pending host setup and a name, or a `member` job without a saved connection; `crew_request_refused` for an SSH configuration the preflight refuses",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CrewError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no user-action key",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CrewError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`crew_connection_not_found`: no saved connection has that ID",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CrewError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`crew_host_setup_unknown`: no pending host setup with that ID on this computer; `crew_host_setup_used`: it already has a saved connection; `crew_setup_busy`: another kind of job is under way for this server, or too many jobs at once",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CrewError"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "`crew_request_invalid`: the body is larger than the route takes",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CrewError"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "`crew_request_invalid`: the body is not sent as `application/json`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CrewError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/crew/setup/artifact": {
+      "get": {
+        "tags": [
+          "Crew"
+        ],
+        "summary": "The Crew server program this daemon installs.",
+        "operationId": "crew_setup_artifact",
+        "responses": {
+          "200": {
+            "description": "The program, checked against its manifest and this daemon's version: `source` is `bundled` (part of this app) or `dev` (from `BIOROUTER_CREW_BROKER_DIR`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SetupArtifact"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no user-action key",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CrewError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`crew_install_artifact_unavailable`: this build has no Crew server program, or the one it has does not match its manifest or this daemon's version",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CrewError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/crew/setup/{job_id}": {
+      "get": {
+        "tags": [
+          "Crew"
+        ],
+        "summary": "Where a setup job stands.",
+        "operationId": "crew_setup_status",
+        "parameters": [
+          {
+            "name": "job_id",
+            "in": "path",
+            "description": "The job `POST /crew/setup` answered",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "`state` is `running`, `needs_sign_in` (open `POST /crew/setup/{job_id}/authentication`), `finished` (`outcome`), `failed` or `cancelled` (`error`: a typed code and a sentence, such as `crew_setup_cancelled`, `crew_setup_timed_out`, `crew_setup_sign_in_expired`, `crew_setup_start_failed` (`detail` is what Crew printed), `crew_host_storage_unsafe` (other accounts can write to a folder above where the workspace is kept; `detail` lists them, and starting again with `fix_storage_permissions` fixes the account's own), `crew_setup_changed`, `crew_install_checksum_mismatch` or an SSH code)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SetupStatus"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no user-action key",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CrewError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`crew_setup_not_found`: no such job on this computer",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CrewError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "Crew"
+        ],
+        "summary": "Stop a setup job.",
+        "operationId": "crew_setup_cancel",
+        "parameters": [
+          {
+            "name": "job_id",
+            "in": "path",
+            "description": "The job to stop",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Stopped; stopping a finished job changes nothing",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CrewCancelled"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no user-action key",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CrewError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`crew_setup_not_found`: no such job on this computer",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CrewError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/crew/setup/{job_id}/authentication": {
+      "post": {
+        "tags": [
+          "Crew"
+        ],
+        "summary": "Open the sign-in a setup job waits for. Its terminal is `GET /crew/authentication/{id}/terminal`.",
+        "operationId": "crew_setup_authentication_prepare",
+        "parameters": [
+          {
+            "name": "job_id",
+            "in": "path",
+            "description": "The job waiting for a sign-in",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SetupSignIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The sign-in, ready for its terminal. Once its master is up the job carries on over it, and so do the start, Create and the connect",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AuthenticationSession"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`crew_request_invalid` for a body that is not JSON or not this route's; `crew_request_refused` for a sign-in already open for this server under another controller, or one that could not start",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CrewError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no user-action key",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CrewError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`crew_setup_not_found`: no such job on this computer",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CrewError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`crew_setup_not_waiting_for_sign_in`: the job is not at `needs_sign_in`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CrewError"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "`crew_request_invalid`: the body is larger than the route takes",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CrewError"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "`crew_request_invalid`: the body is not sent as `application/json`",
             "content": {
               "application/json": {
                 "schema": {
@@ -10776,6 +11309,7 @@
           "workspace_id",
           "workspace_public_key",
           "remote_execution",
+          "remote_access",
           "cluster_connection_id",
           "mode",
           "policy_epoch",
@@ -10838,6 +11372,9 @@
           },
           "public_key": {
             "type": "string"
+          },
+          "remote_access": {
+            "$ref": "#/components/schemas/RemoteAccess"
           },
           "remote_execution": {
             "type": "boolean",
@@ -10903,6 +11440,24 @@
             ]
           }
         ]
+      },
+      "ContextDraft": {
+        "type": "object",
+        "description": "A connection's server facts and the context document drafted from them\n(`POST /crew/connections/{id}/context/draft`).",
+        "required": [
+          "draft",
+          "facts"
+        ],
+        "properties": {
+          "draft": {
+            "type": "string",
+            "description": "The draft, in Markdown ([`super::context::render_workspace_context`])."
+          },
+          "facts": {
+            "type": "object",
+            "description": "The facts, exactly as `biorouter-crew probe --output-format json` answered them."
+          }
+        }
       },
       "ContinuationLeaseErrorResponse": {
         "type": "object",
@@ -11142,13 +11697,22 @@
           {
             "type": "object",
             "required": [
-              "server_label"
+              "server_label",
+              "workspace_deleted"
             ],
             "properties": {
               "last_error_code": {
                 "allOf": [
                   {
                     "$ref": "#/components/schemas/CrewErrorCode"
+                  }
+                ],
+                "nullable": true
+              },
+              "server_access": {
+                "allOf": [
+                  {
+                    "$ref": "#/components/schemas/ServerAccess"
                   }
                 ],
                 "nullable": true
@@ -11164,6 +11728,10 @@
                   }
                 ],
                 "nullable": true
+              },
+              "workspace_deleted": {
+                "type": "boolean",
+                "description": "The workspace's host deleted it: its server answered `crew_workspace_deleted`, so the\nperson can only remove the connection from this computer."
               }
             }
           }
@@ -11393,6 +11961,7 @@
           "crew_broker_not_running",
           "crew_handoff_failed",
           "crew_workspace_identity_mismatch",
+          "crew_workspace_deleted",
           "crew_not_sent",
           "crew_outcome_unknown",
           "crew_reconnecting",
@@ -11443,7 +12012,30 @@
           "crew_host_start_busy",
           "crew_host_start_not_found",
           "crew_host_start_timed_out",
-          "crew_host_start_cancelled"
+          "crew_host_start_cancelled",
+          "crew_setup_busy",
+          "crew_setup_not_found",
+          "crew_setup_cancelled",
+          "crew_setup_timed_out",
+          "crew_setup_sign_in_expired",
+          "crew_setup_not_waiting_for_sign_in",
+          "crew_setup_server_unreadable",
+          "crew_setup_start_failed",
+          "crew_setup_changed",
+          "crew_host_storage_unsafe",
+          "crew_server_probe_unsupported",
+          "crew_install_artifact_unavailable",
+          "crew_install_unsupported_platform",
+          "crew_install_dependency_missing",
+          "crew_install_incompatible",
+          "crew_install_unexpected_target",
+          "crew_install_checksum_tool_missing",
+          "crew_install_no_space",
+          "crew_install_permission_denied",
+          "crew_install_busy",
+          "crew_install_transfer_incomplete",
+          "crew_install_checksum_mismatch",
+          "crew_install_outcome_unknown"
         ]
       },
       "CrewFileDiscarded": {
@@ -11711,6 +12303,35 @@
       "CrewWorkspaceAnswer": {
         "description": "The workspace's own answer, forwarded unchanged: a protocol request's result\n(`POST /crew/connections/{id}/request`) or a chat's context manifest. Its shape is the\nCrew broker protocol's, not this API's."
       },
+      "CrewWorkspaceDeleted": {
+        "type": "object",
+        "description": "`POST /crew/connections/{id}/workspace/delete`.",
+        "required": [
+          "deleted",
+          "workspace_id",
+          "removed"
+        ],
+        "properties": {
+          "deleted": {
+            "type": "boolean",
+            "description": "Always `true`: the workspace is deleted on its server."
+          },
+          "erase_after_seconds": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Seconds until the server erases the workspace's files, as it said; `null` when the\nworkspace had already been deleted.",
+            "nullable": true,
+            "minimum": 0
+          },
+          "removed": {
+            "type": "boolean",
+            "description": "Always `true`: the connection was removed from this computer, with its keys."
+          },
+          "workspace_id": {
+            "type": "string"
+          }
+        }
+      },
       "CrossAffiliationGrantRequest": {
         "type": "object",
         "description": "Issue #56 Task 49 (DR-26): the user accepting ONE cross-institutional data\nflow.\n\n⚠ **There is no `affiliation` field, and there must not be one.** The grant is\nkeyed on the affiliation of the model bound *right now*, read by the daemon\nfrom the same sample that produced the warning. A client-supplied institution\nwould let a caller record an acceptance for a triple the user was never shown\n— which is the one thing this control exists to prevent.",
@@ -11906,6 +12527,31 @@
             "type": "string"
           }
         }
+      },
+      "DeleteWorkspaceRequest": {
+        "type": "object",
+        "description": "`POST /crew/connections/{id}/workspace/delete`: delete the connection's workspace on its\nserver, as its host (design OW-5).",
+        "required": [
+          "workspace_id",
+          "expected_name"
+        ],
+        "properties": {
+          "expected_name": {
+            "type": "string",
+            "description": "The workspace's stored name, as the person confirmed it, or `null` for a workspace that\nhas no stored name (one from before names). Always sent: the workspace refuses it when\nits name is no longer this one (`name_changed`), so `null` deletes only a workspace that\nstill has none.",
+            "nullable": true
+          },
+          "request_id": {
+            "type": "string",
+            "description": "The request's idempotency key, so a retry after `crew_outcome_unknown` is the same\ndeletion. Optional.",
+            "nullable": true
+          },
+          "workspace_id": {
+            "type": "string",
+            "description": "The workspace to delete: the connection's own, or nothing is sent."
+          }
+        },
+        "additionalProperties": false
       },
       "DetectProviderRequest": {
         "type": "object",
@@ -13730,6 +14376,9 @@
             "type": "string",
             "description": "A jump route. An empty string means none, even when the invitation suggests one.",
             "nullable": true
+          },
+          "remote_access": {
+            "$ref": "#/components/schemas/RemoteAccess"
           },
           "remote_execution": {
             "type": "boolean"
@@ -17184,6 +17833,14 @@
           }
         }
       },
+      "RemoteAccess": {
+        "type": "string",
+        "description": "What a connection's agents may do on the server (design OW-6). `Folder` is the confined work\nfolder Crew always had; `Full` runs commands as the person's own account through their own\nbridge. \"Off\" is the absence of a work folder, not a level.",
+        "enum": [
+          "folder",
+          "full"
+        ]
+      },
       "RemoveExtensionRequest": {
         "type": "object",
         "required": [
@@ -18068,6 +18725,9 @@
             "type": "string",
             "nullable": true
           },
+          "remote_access": {
+            "$ref": "#/components/schemas/RemoteAccess"
+          },
           "remote_execution": {
             "type": "boolean"
           },
@@ -18304,6 +18964,46 @@
           "required": {
             "type": "boolean",
             "description": "Whether the request can be satisfied without this one."
+          }
+        }
+      },
+      "ServerAccess": {
+        "type": "object",
+        "description": "What a connection's agents can do on its server, as this computer learned it at the\nconnection's last verified connect (design OW-6): the workspace server's capabilities and the\nperson's own bridge's `bridge.hello`. Served as a saved connection's `server_access`, so\nConnection settings can say what is missing (an older server, an older bridge, a kernel that\ncannot confine commands) before anyone tries. Display only: a full-access run is offered\nonly when both say so, and the broker and the bridge enforce it.",
+        "required": [
+          "full_access_available"
+        ],
+        "properties": {
+          "bridge_version": {
+            "type": "string",
+            "description": "The person's own `biorouter-crew` on the server; `null` when it predates `bridge.hello`.",
+            "nullable": true
+          },
+          "confined_execution_available": {
+            "type": "boolean",
+            "description": "The bridge can confine commands to a work folder (the server's kernel has Landlock ABI\n3 or later); `null` when the bridge is older and does not say.",
+            "nullable": true
+          },
+          "full_access_available": {
+            "type": "boolean",
+            "description": "The workspace server takes full-access runs (`remote_access_v1`) and the person's own\nbridge can run commands as their account (`remote_full_v1`)."
+          },
+          "home": {
+            "type": "string",
+            "description": "That account's home folder on the server; `null` when it did not say.",
+            "nullable": true
+          },
+          "landlock_abi": {
+            "type": "integer",
+            "format": "int32",
+            "description": "The server kernel's Landlock ABI, as the bridge read it; `null` when it did not say.",
+            "nullable": true,
+            "minimum": 0
+          },
+          "user": {
+            "type": "string",
+            "description": "The server account the bridge runs as; `null` when it did not say.",
+            "nullable": true
           }
         }
       },
@@ -18945,6 +19645,250 @@
           }
         }
       },
+      "SetupArtifact": {
+        "type": "object",
+        "description": "The program this daemon installs (`GET /crew/setup/artifact`).",
+        "required": [
+          "version",
+          "target",
+          "sha256",
+          "size",
+          "source"
+        ],
+        "properties": {
+          "sha256": {
+            "type": "string",
+            "description": "Its SHA-256, as 64 lowercase hex digits."
+          },
+          "size": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "source": {
+            "type": "string",
+            "description": "`bundled` (part of this app) or `dev` (a development copy from\n`BIOROUTER_CREW_BROKER_DIR`)."
+          },
+          "target": {
+            "type": "string",
+            "description": "The platform it is built for: `x86_64-unknown-linux-gnu`."
+          },
+          "version": {
+            "type": "string",
+            "description": "What its `--version` prints after `biorouter-crew `."
+          }
+        }
+      },
+      "SetupError": {
+        "type": "object",
+        "description": "Why a job stopped.",
+        "required": [
+          "code",
+          "message"
+        ],
+        "properties": {
+          "code": {
+            "type": "string",
+            "description": "The SSH codes (`crew_ssh_auth_required`, `crew_ssh_key_refused`,\n`crew_ssh_host_key_unknown`, `crew_ssh_host_key_changed`, `crew_ssh_unreachable`,\n`crew_bridge_missing`, `crew_broker_not_running`, `crew_ssh_failed`), a connect's\n(`crew_workspace_identity_mismatch`, `crew_request_refused`), or one of setup's own:\n`crew_setup_cancelled`, `crew_setup_timed_out`, `crew_setup_sign_in_expired`,\n`crew_setup_server_unreadable` (the server's answer could not be read),\n`crew_setup_start_failed` (Crew did not start the workspace; see `outcome.host`, and\n`detail` for what Crew printed), `crew_host_storage_unsafe` (other accounts can write to\na folder above where the workspace is kept; `detail` lists them one per line, and\n`fix_storage_permissions` lets setup fix the ones the account owns),\n`crew_setup_changed` (the connection's login or route changed while the job ran),\n`crew_install_artifact_unavailable`, `crew_install_unsupported_platform`,\n`crew_install_dependency_missing`, `crew_install_incompatible` (the program there does\nnot run or name its version), `crew_install_unexpected_target` (a link, a folder or\nanother account's file where the program goes), `crew_install_checksum_tool_missing`,\n`crew_install_no_space`, `crew_install_permission_denied`, `crew_install_busy` (another\ninstall in the account), `crew_install_transfer_incomplete`,\n`crew_install_checksum_mismatch` (nothing was replaced) or\n`crew_install_outcome_unknown` (the connection dropped after the transfer; set up again\nto check)."
+          },
+          "detail": {
+            "type": "string",
+            "description": "The server's or OpenSSH's own bounded words, for Copy details.",
+            "nullable": true
+          },
+          "host": {
+            "type": "string",
+            "description": "The SSH hop a connect failure concerns.",
+            "nullable": true
+          },
+          "message": {
+            "type": "string",
+            "description": "One plain sentence for a person."
+          }
+        }
+      },
+      "SetupInstalled": {
+        "type": "object",
+        "description": "The account's Crew program, as the check found it.",
+        "required": [
+          "path",
+          "state"
+        ],
+        "properties": {
+          "path": {
+            "type": "string",
+            "description": "Always `~/.local/bin/biorouter-crew`."
+          },
+          "problem": {
+            "type": "string",
+            "description": "Why it cannot be used or replaced, for a person.",
+            "nullable": true
+          },
+          "runnable": {
+            "type": "boolean",
+            "description": "Whether `--version` ran and named a version; `null` when there is no file.",
+            "nullable": true
+          },
+          "sha256": {
+            "type": "string",
+            "nullable": true
+          },
+          "state": {
+            "type": "string",
+            "description": "`missing`, `file`, `symlink`, `dir` or `other`."
+          },
+          "version": {
+            "type": "string",
+            "nullable": true
+          }
+        }
+      },
+      "SetupIntent": {
+        "type": "string",
+        "description": "What the job is for.",
+        "enum": [
+          "check",
+          "install",
+          "host",
+          "member"
+        ]
+      },
+      "SetupOutcome": {
+        "type": "object",
+        "description": "What a job did, once it is done.",
+        "required": [
+          "reused",
+          "previous_kept"
+        ],
+        "properties": {
+          "connection_id": {
+            "type": "string",
+            "description": "A member's connection, connected and verified.",
+            "nullable": true
+          },
+          "context_draft": {
+            "type": "string",
+            "description": "The first context document, drafted from the server's facts (Markdown).",
+            "nullable": true
+          },
+          "host": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/StartOutput"
+              }
+            ],
+            "nullable": true
+          },
+          "host_command": {
+            "type": "string",
+            "description": "The start command that ran, character for character what the Host dialog shows.",
+            "nullable": true
+          },
+          "installed_version": {
+            "type": "string",
+            "description": "The Crew program in the account now.",
+            "nullable": true
+          },
+          "previous_kept": {
+            "type": "boolean",
+            "description": "The program replaced stays as `~/.local/bin/biorouter-crew.previous`."
+          },
+          "remote_access": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/RemoteAccess"
+              }
+            ],
+            "nullable": true
+          },
+          "reused": {
+            "type": "boolean",
+            "description": "The program already there was kept: the same version as this app's, a newer one, or an\nolder one that was not to be replaced."
+          },
+          "upgraded_from": {
+            "allOf": [
+              {
+                "type": "object",
+                "description": "A Crew program a job replaced ([`SetupOutcome::upgraded_from`]).",
+                "required": [
+                  "installed_version",
+                  "installed_sha256"
+                ],
+                "properties": {
+                  "installed_sha256": {
+                    "type": "string",
+                    "description": "The SHA-256 of the program now installed."
+                  },
+                  "installed_version": {
+                    "type": "string",
+                    "description": "The version now installed."
+                  },
+                  "sha256": {
+                    "type": "string",
+                    "description": "The replaced program's SHA-256, as 64 lowercase hex digits.",
+                    "nullable": true
+                  },
+                  "version": {
+                    "type": "string",
+                    "description": "The version the replaced program named, when it named one.",
+                    "nullable": true
+                  }
+                }
+              }
+            ],
+            "nullable": true
+          },
+          "work_folder": {
+            "type": "string",
+            "description": "The workspace's work folder on the server, as its canonical path.",
+            "nullable": true
+          }
+        }
+      },
+      "SetupRequest": {
+        "type": "object",
+        "description": "What to set up (`POST /crew/setup`).",
+        "required": [
+          "target",
+          "intent"
+        ],
+        "properties": {
+          "agent_access": {
+            "allOf": [
+              {
+                "type": "string",
+                "description": "A member's agent access, as setup is asked to set it (design OW-6).",
+                "enum": [
+                  "off",
+                  "folder",
+                  "full"
+                ]
+              }
+            ],
+            "nullable": true
+          },
+          "fix_storage_permissions": {
+            "type": "boolean",
+            "description": "Take write access for other accounts away (`chmod go-w`) from the folders the job finds\nabove where the workspace is kept, which the account owns, when Crew would otherwise\nrefuse to start there (`crew_host_storage_unsafe`). Only a host's job reads it."
+          },
+          "intent": {
+            "$ref": "#/components/schemas/SetupIntent"
+          },
+          "replace_existing": {
+            "type": "boolean",
+            "description": "Replace a Crew program in the account that is older than this app's, or that does not\nrun. The one replaced stays as `biorouter-crew.previous`. A newer one is never replaced;\none of this app's version that is another build of it (another SHA-256) is replaced\nwhether or not this is set."
+          },
+          "target": {
+            "$ref": "#/components/schemas/SetupTarget"
+          },
+          "workspace_name": {
+            "type": "string",
+            "description": "The workspace's name (`lab`, `chen-lab`), as the broker's rule allows it. A host's job\nneeds it; a member's uses it for the work folder when given.",
+            "nullable": true
+          }
+        },
+        "additionalProperties": false
+      },
       "SetupResponse": {
         "type": "object",
         "required": [
@@ -18958,6 +19902,284 @@
           "success": {
             "type": "boolean"
           }
+        }
+      },
+      "SetupServer": {
+        "type": "object",
+        "description": "What the server said about itself. Each field is `null` until the check has read it.",
+        "required": [
+          "login",
+          "storage_unsafe"
+        ],
+        "properties": {
+          "arch": {
+            "type": "string",
+            "nullable": true
+          },
+          "checksum_tool": {
+            "type": "string",
+            "description": "The tool the server checks a SHA-256 with: `sha256sum`, `shasum` or `openssl`.",
+            "nullable": true
+          },
+          "free_kib": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Free space in the account's home folder, in KiB.",
+            "nullable": true,
+            "minimum": 0
+          },
+          "glibc": {
+            "type": "string",
+            "nullable": true
+          },
+          "home": {
+            "type": "string",
+            "nullable": true
+          },
+          "kernel": {
+            "type": "string",
+            "nullable": true
+          },
+          "login": {
+            "type": "string",
+            "description": "The SSH login the job uses."
+          },
+          "os": {
+            "type": "string",
+            "nullable": true
+          },
+          "storage_unsafe": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Folders above where a host's workspace is kept (`~/.local/share/biorouter-crew`), as\ntheir real paths, that this account owns and other accounts may write to (group or other\nwrite, no sticky bit). Crew won't start a workspace under them\n(`crew_host_storage_unsafe`) until `chmod go-w` takes that away."
+          },
+          "uid": {
+            "type": "integer",
+            "format": "int32",
+            "nullable": true,
+            "minimum": 0
+          },
+          "user": {
+            "type": "string",
+            "nullable": true
+          }
+        }
+      },
+      "SetupSignIn": {
+        "type": "object",
+        "description": "Open a setup job's sign-in, as a connection's is opened.",
+        "required": [
+          "request_id",
+          "controller_id",
+          "cols",
+          "rows"
+        ],
+        "properties": {
+          "cols": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "controller_id": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "rows": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          }
+        },
+        "additionalProperties": false
+      },
+      "SetupStage": {
+        "type": "object",
+        "required": [
+          "name",
+          "state"
+        ],
+        "properties": {
+          "detail": {
+            "type": "string",
+            "description": "A few words on what the step found or why it was skipped, for a person.",
+            "nullable": true
+          },
+          "name": {
+            "$ref": "#/components/schemas/SetupStageName"
+          },
+          "state": {
+            "$ref": "#/components/schemas/SetupStageState"
+          }
+        }
+      },
+      "SetupStageName": {
+        "type": "string",
+        "description": "A step of a job, in the order a job takes them.",
+        "enum": [
+          "check",
+          "sign_in",
+          "install",
+          "start",
+          "connect",
+          "work_folder",
+          "context",
+          "done"
+        ]
+      },
+      "SetupStageState": {
+        "type": "string",
+        "enum": [
+          "pending",
+          "running",
+          "done",
+          "skipped",
+          "failed"
+        ]
+      },
+      "SetupState": {
+        "type": "string",
+        "description": "Where a job stands.",
+        "enum": [
+          "running",
+          "needs_sign_in",
+          "finished",
+          "failed",
+          "cancelled"
+        ]
+      },
+      "SetupStatus": {
+        "type": "object",
+        "description": "A job, as `GET /crew/setup/{job_id}` answers it.",
+        "required": [
+          "job_id",
+          "intent",
+          "state",
+          "stage",
+          "stages",
+          "server"
+        ],
+        "properties": {
+          "artifact": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/SetupArtifact"
+              }
+            ],
+            "nullable": true
+          },
+          "error": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/SetupError"
+              }
+            ],
+            "nullable": true
+          },
+          "installed": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/SetupInstalled"
+              }
+            ],
+            "nullable": true
+          },
+          "intent": {
+            "$ref": "#/components/schemas/SetupIntent"
+          },
+          "job_id": {
+            "type": "string"
+          },
+          "outcome": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/SetupOutcome"
+              }
+            ],
+            "nullable": true
+          },
+          "server": {
+            "$ref": "#/components/schemas/SetupServer"
+          },
+          "stage": {
+            "$ref": "#/components/schemas/SetupStageName"
+          },
+          "stages": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SetupStage"
+            }
+          },
+          "state": {
+            "$ref": "#/components/schemas/SetupState"
+          }
+        }
+      },
+      "SetupTarget": {
+        "oneOf": [
+          {
+            "type": "object",
+            "description": "A saved connection: its login, route and control path.",
+            "required": [
+              "connection_id",
+              "kind"
+            ],
+            "properties": {
+              "connection_id": {
+                "type": "string"
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "connection"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "This computer's pending host setup (`POST /crew/devices/prepare`), with the login and\nroute the person typed. Its sign-in is kept for the connection the setup becomes.",
+            "required": [
+              "preparation_id",
+              "ssh_target",
+              "kind"
+            ],
+            "properties": {
+              "identity_file": {
+                "type": "string",
+                "nullable": true
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "pending"
+                ]
+              },
+              "port": {
+                "type": "integer",
+                "format": "int32",
+                "nullable": true,
+                "minimum": 0
+              },
+              "preparation_id": {
+                "type": "string"
+              },
+              "proxy_jump": {
+                "type": "string",
+                "nullable": true
+              },
+              "ssh_target": {
+                "type": "string"
+              }
+            }
+          }
+        ],
+        "description": "Which server, and which account on it.",
+        "discriminator": {
+          "propertyName": "kind"
         }
       },
       "Severity": {

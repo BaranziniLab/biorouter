@@ -256,6 +256,77 @@ describe('observeCrew NDJSON framing', () => {
     expect(older).not.toHaveProperty('totals');
   });
 
+  it('keeps governance, the context document and what may be joined, only in their own shapes', async () => {
+    const received = async (snapshot: Record<string, unknown>) => {
+      const receive = vi.fn();
+      vi.stubGlobal(
+        'fetch',
+        vi
+          .fn()
+          .mockResolvedValue(
+            responseFromChunks([
+              encoder.encode(`${stateFrame({ snapshot })}\n${reconnectFrame()}\n`),
+            ])
+          )
+      );
+      await observeCrew('connection-1', undefined, null, new AbortController().signal, receive);
+      return (receive.mock.calls[0][0] as { snapshot: Record<string, unknown> }).snapshot;
+    };
+    const base = {
+      actor: { id: 'actor-1', uid: 1, username: 'alice' },
+      principals: [],
+      invitations: [],
+      runs: [],
+      channels: [],
+      teams: [],
+    };
+    const workspace = { id: 'workspace-1', host_uid: 1, mode: 'private', policy_epoch: 3 };
+
+    const kept = await received({
+      ...base,
+      workspace: { ...workspace, governance: 'open' },
+      context: { text: '# leo', revision: 2, updated_by: 'actor-1', updated_at: 1_790_000_000 },
+      joinable_teams: [{ id: 'team-2', name: 'Imaging', member_count: 3 }, { id: 'no-name' }],
+      joinable_channels: [
+        { id: 'c-1', team_id: 'team-1', name: 'raw', classification: 'restricted', extra: 1 },
+      ],
+    });
+    expect((kept.workspace as { governance?: string }).governance).toBe('open');
+    expect(kept.context).toEqual({
+      text: '# leo',
+      revision: 2,
+      updated_by: 'actor-1',
+      updated_at: 1_790_000_000,
+    });
+    expect(kept.joinable_teams).toEqual([{ id: 'team-2', name: 'Imaging', member_count: 3 }]);
+    expect(kept.joinable_channels).toEqual([
+      { id: 'c-1', team_id: 'team-1', name: 'raw', classification: 'restricted' },
+    ]);
+
+    // A context the contract places on the workspace is read from there too.
+    const onWorkspace = await received({
+      ...base,
+      workspace: { ...workspace, context: { text: 'x', revision: 0 } },
+    });
+    expect(onWorkspace.context).toEqual({ text: 'x', revision: 0 });
+
+    // Governance decides which controls are offered, never what is allowed: an unknown word is
+    // dropped, so the workspace reads as managed.
+    const dropped = await received({
+      ...base,
+      workspace: { ...workspace, governance: 'anarchy' },
+      context: { text: 7, revision: 1 },
+      joinable_teams: 'all',
+    });
+    expect(dropped.workspace).not.toHaveProperty('governance');
+    expect(dropped).not.toHaveProperty('context');
+    expect(dropped).not.toHaveProperty('joinable_teams');
+
+    // `null` is the broker saying there is no context yet.
+    const none = await received({ ...base, workspace, context: null });
+    expect(none.context).toBeNull();
+  });
+
   it('cancels the reader when the caller aborts an in-flight observation', async () => {
     let releaseRead!: () => void;
     const reader = {

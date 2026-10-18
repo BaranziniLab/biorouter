@@ -4,12 +4,12 @@ import { Button } from '../../ui/button';
 import { CopyField } from '../../ui/copy-field';
 import { Disclosure } from '../../ui/disclosure';
 import { Input } from '../../ui/input';
-import { Switch } from '../../ui/switch';
-import { Copy } from '../../icons/app-icons';
+import { Note } from '../../ui/note';
+import { AlertTriangle, Copy } from '../../icons/app-icons';
 import type { CrewConnection } from '../crewApi';
 import { connectionServer, isInstitutionId } from '../identity';
 import { useInitialFocus } from '../onboarding/fields';
-import { connectionServerLabel } from '../onboarding/joinText';
+import { connectionServerLabel, sshUsername } from '../onboarding/joinText';
 import { useFocusReturn } from '../state/focusReturn';
 import { connectionUpdateBody } from '../state/useCrewConnections';
 import type { ErrorSource, SaveConnectionInput } from '../state/types';
@@ -36,6 +36,12 @@ const CONFIRM_SOURCE: ErrorSource = 'dialog:confirm';
 const SAVE_KEY = 'connection.update';
 const DEFAULT_PORT = 22;
 
+/**
+ * What the connection's agents may do on the server (OW-6): `off` is no work folder, `folder` the
+ * confined work folder, `full` commands as the person's own account.
+ */
+export type AgentAccessLevel = 'off' | 'folder' | 'full';
+
 /** The editable part of a saved connection, as the form holds it. */
 interface ConnectionForm {
   name: string;
@@ -43,17 +49,29 @@ interface ConnectionForm {
   port: string;
   identity_file: string;
   proxy_jump: string;
+  access: AgentAccessLevel;
+  /** Kept while Off hides the field, so choosing a level again never loses what was typed. */
   remote_root: string;
+  /**
+   * The saved record's confined-commands flag, kept for In a folder until the level is chosen
+   * again: a files-only folder saved before the levels stays files-only through an unrelated save.
+   */
   remote_execution: boolean;
   mode: 'private' | 'public';
   /** Kept while the field is hidden, so toggling the mode never loses what was typed. */
   institution: string;
 }
 
-type AdvancedField = 'port' | 'identity_file' | 'proxy_jump' | 'remote_root';
+type AdvancedField = 'port' | 'identity_file' | 'proxy_jump';
 
 /** A field a save refusal is about, which then says it under itself (DW-04). */
-type RefusedField = 'name' | 'login' | 'institution' | AdvancedField;
+type RefusedField = 'name' | 'login' | 'institution' | 'remote_root' | AdvancedField;
+
+/** The level a saved record is at: full needs its folder, and no folder is Off. */
+export function accessLevelOf(connection: CrewConnection): AgentAccessLevel {
+  if (!connection.remote_root) return 'off';
+  return connection.remote_access === 'full' ? 'full' : 'folder';
+}
 
 function formFrom(connection: CrewConnection): ConnectionForm {
   return {
@@ -62,6 +80,7 @@ function formFrom(connection: CrewConnection): ConnectionForm {
     port: connection.port ? String(connection.port) : '',
     identity_file: connection.identity_file ?? '',
     proxy_jump: connection.proxy_jump ?? '',
+    access: accessLevelOf(connection),
     remote_root: connection.remote_root ?? '',
     remote_execution: connection.remote_execution,
     mode: connection.mode,
@@ -71,16 +90,14 @@ function formFrom(connection: CrewConnection): ConnectionForm {
 
 /**
  * Advanced opens by itself when the saved record already uses anything inside it. Workspace details
- * is a separate disclosure and never opens by itself (QA T-33): a remote folder is the normal setup
- * for anyone who lets an agent work, and that must not put machine IDs on the default path.
+ * is a separate disclosure and never opens by itself (QA T-33). The work folder is not in Advanced:
+ * it belongs to the agent's access level, which is on the default path.
  */
 export function advancedInUse(connection: CrewConnection): boolean {
   return Boolean(
     (connection.port && connection.port !== DEFAULT_PORT) ||
     connection.identity_file ||
-    connection.proxy_jump ||
-    connection.remote_root ||
-    connection.remote_execution
+    connection.proxy_jump
   );
 }
 
@@ -130,7 +147,6 @@ function hiddenProblem(
 ): AdvancedField | null {
   if (portProblem(form.port)) return 'port';
   if (identityProblem(form.identity_file, saved.identity_file, platform)) return 'identity_file';
-  if (rootProblem(form.remote_root)) return 'remote_root';
   return null;
 }
 
@@ -154,6 +170,8 @@ function refusedField(
   if (/^SSH target must/i.test(text)) return { field: 'login', text: copy.loginInvalid };
   if (/^Invalid ProxyJump route/i.test(text))
     return { field: 'proxy_jump', text: copy.jumpHostsInvalid };
+  // The daemon's own sentence, written for a person (OW-6): full access needs a real folder.
+  if (/^Full access needs a default folder/i.test(text)) return { field: 'remote_root', text };
   const institutionRefused =
     error.code === 'crew_institution_mismatch' ||
     /have different institutions|institutions differ|resolved affiliation/i.test(text);
@@ -184,20 +202,28 @@ function institutionToSave(form: ConnectionForm, saved: CrewConnection): string 
   return isInstitutionId(typed) ? typed : (saved.institution_id ?? null);
 }
 
-/** The full body the PATCH sends (L18: the daemon replaces the whole record). */
+/**
+ * The full body the PATCH sends (L18: the daemon replaces the whole record). The access level is
+ * written as the daemon stores it (OW-6): Off sends no folder; In a folder a folder, with confined
+ * commands; As me on the server a folder, commands and `remote_access: full`, which is sent only
+ * then, since a body without it means folder.
+ */
 function connectionSettingsBody(saved: CrewConnection, form: ConnectionForm): SaveConnectionInput {
-  const root = form.remote_root.trim();
+  const root = form.access === 'off' ? '' : form.remote_root.trim();
+  const { remote_access: _savedAccess, ...body } = connectionUpdateBody(saved);
+  const full = Boolean(root) && form.access === 'full';
   return {
-    ...connectionUpdateBody(saved),
+    ...body,
     name: form.name.trim(),
     ssh_target: form.ssh_target.trim(),
     port: form.port.trim() ? Number(form.port) : undefined,
     identity_file: form.identity_file.trim() || undefined,
     proxy_jump: form.proxy_jump.trim() || undefined,
     remote_root: root || undefined,
-    remote_execution: root ? form.remote_execution : false,
+    remote_execution: root ? full || form.remote_execution : false,
     mode: form.mode,
     institution_id: institutionToSave(form, saved),
+    ...(full ? { remote_access: 'full' as const } : {}),
   };
 }
 
@@ -207,7 +233,6 @@ function advancedSummary(form: ConnectionForm): string {
     form.identity_file.trim() ? copy.summaryIdentity : copy.summarySshDefaults,
   ];
   if (form.proxy_jump.trim()) parts.push(copy.summaryJump(form.proxy_jump.trim()));
-  if (form.remote_root.trim()) parts.push(copy.summaryFolder(form.remote_root.trim()));
   return copy.advancedSummary(parts);
 }
 
@@ -224,6 +249,8 @@ export interface ConnectionSettingsDialogProps {
  * - A real `<form>` with a `type="submit"` button and no `noValidate`, so the browser's own
  *   validation refuses an incomplete connection before any request (C8). Institution is required
  *   exactly when the connection is Private, and survives toggling the mode.
+ * - "What can your agent do on {server}?" (OW-6) is the person's choice of Off, In a folder or
+ *   As me on the server, with the folder the level needs ({@link AgentAccessFields}).
  * - Advanced holds the optional fields and opens by itself when the record already uses one; a
  *   submit that would fail on a hidden field opens it and focuses that field.
  * - Saving a Private connection as Public first asks for the workspace's name
@@ -250,7 +277,7 @@ export function ConnectionSettingsDialog({ connectionId, onClose }: ConnectionSe
 }
 
 function ConnectionSettingsForm({ saved, onClose }: { saved: CrewConnection; onClose(): void }) {
-  const { crew, workspace, phrase, snapshot } = useDialogView(saved.id);
+  const { crew, workspace, phrase, snapshot, server, dir } = useDialogView(saved.id);
   const formId = React.useId();
   const ids = {
     name: `${formId}-name`,
@@ -260,7 +287,6 @@ function ConnectionSettingsForm({ saved, onClose }: { saved: CrewConnection; onC
     identity: `${formId}-identity`,
     jump: `${formId}-jump`,
     root: `${formId}-root`,
-    execution: `${formId}-execution`,
   };
   const [form, setForm] = React.useState<ConnectionForm>(() => formFrom(saved));
   // The OS a local path is judged by: this computer's, which is the daemon's (W2-UIW-13).
@@ -327,9 +353,35 @@ function ConnectionSettingsForm({ saved, onClose }: { saved: CrewConnection; onC
   const refusedHere = (field: RefusedField) => (refused?.field === field ? refused.text : null);
   const typedIdentityProblem = identityProblem(form.identity_file, saved.identity_file, platform);
   const identityError = typedIdentityProblem ?? refusedHere('identity_file');
-  const rootError = rootProblem(form.remote_root);
+  const usesFolder = form.access !== 'off';
+  const typedRootProblem = usesFolder ? rootProblem(form.remote_root) : null;
+  const rootError = typedRootProblem ?? refusedHere('remote_root');
   const identityRef = useCustomValidity<HTMLInputElement>(typedIdentityProblem);
-  const rootRef = useCustomValidity<HTMLInputElement>(rootProblem(form.remote_root));
+  const rootRef = useCustomValidity<HTMLInputElement>(typedRootProblem);
+  const access = saved.server_access ?? null;
+  // The account commands would run as: the bridge's own word, else the saved login's user.
+  const accountUser = access?.user ?? sshUsername(saved.ssh_target) ?? null;
+  const account = accountUser ? `@${accountUser}` : null;
+  // The bridge or broker predates full access: offered only where it is already the saved level,
+  // so the person can still see, and leave, what they have (OW-6). Unknown (before the first
+  // connect) is left to the daemon, which refuses a start it cannot honour.
+  const fullUnavailable =
+    access?.full_access_available === false && accessLevelOf(saved) !== 'full';
+  const confinedUnavailable = access?.confined_execution_available === false;
+  const chooseAccess = (level: AgentAccessLevel) => {
+    if (refusedRef.current) dismissOwnError();
+    setForm((current) => ({
+      ...current,
+      access: level,
+      // Choosing a level that runs commands turns them on; Off keeps the folder typed, unsent.
+      remote_execution: level === 'off' ? current.remote_execution : true,
+      // Full access starts in the account's home unless a folder is already there.
+      remote_root:
+        level === 'full' && !current.remote_root.trim() && access?.home
+          ? access.home
+          : current.remote_root,
+    }));
+  };
 
   // A hidden field that would fail: open Advanced, then focus the field once it has mounted.
   React.useEffect(() => {
@@ -402,7 +454,6 @@ function ConnectionSettingsForm({ saved, onClose }: { saved: CrewConnection; onC
     void save(body, SOURCE);
   };
 
-  const root = form.remote_root.trim();
   const institutionError =
     (institutionInvalid ? copy.institutionPattern : null) ??
     refusedHere('institution') ??
@@ -527,6 +578,21 @@ function ConnectionSettingsForm({ saved, onClose }: { saved: CrewConnection; onC
           </Field>
         ) : null}
 
+        <AgentAccessFields
+          ids={{ root: ids.root }}
+          server={server}
+          form={form}
+          rootRef={rootRef}
+          rootError={rootError}
+          account={account}
+          fullUnavailable={fullUnavailable}
+          confinedUnavailable={confinedUnavailable}
+          hostsHere={Boolean(snapshot) && dir.viewerIsHost}
+          workspace={workspace}
+          onAccess={chooseAccess}
+          onRoot={(value) => update('remote_root', value)}
+        />
+
         <Disclosure
           label={copy.advanced}
           summary={advancedSummary(form)}
@@ -582,48 +648,6 @@ function ConnectionSettingsForm({ saved, onClose }: { saved: CrewConnection; onC
                 onChange={(event) => update('proxy_jump', event.target.value)}
               />
             </Field>
-            <Field id={ids.root} label={copy.remoteRoot} error={rootError ?? undefined}>
-              <Input
-                id={ids.root}
-                ref={rootRef}
-                autoComplete="off"
-                spellCheck={false}
-                pattern={ABSOLUTE_PATH_PATTERN}
-                title={copy.remoteRootPattern}
-                placeholder={copy.remoteRootPlaceholder}
-                aria-invalid={rootError ? true : undefined}
-                aria-describedby={rootError ? helpId(ids.root) : undefined}
-                value={form.remote_root}
-                onChange={(event) => update('remote_root', event.target.value)}
-              />
-            </Field>
-            <div className="flex min-w-0 items-center justify-between gap-3">
-              <label htmlFor={ids.execution} className="text-label text-text-default">
-                {copy.remoteExecution}
-                {!root ? (
-                  <span className="mt-0.5 block text-supporting text-text-muted">
-                    {copy.remoteExecutionNeedsFolder}
-                  </span>
-                ) : null}
-              </label>
-              <Switch
-                id={ids.execution}
-                checked={Boolean(root) && form.remote_execution}
-                disabled={!root}
-                aria-describedby={root ? `${ids.execution}-help` : undefined}
-                onCheckedChange={(checked) => update('remote_execution', checked)}
-              />
-            </div>
-            {/* What a command there cannot do (HPC-N1), before the person turns it on. */}
-            {root ? (
-              <p
-                id={`${ids.execution}-help`}
-                className="-mt-1 text-supporting text-text-muted"
-                data-crew-remote-execution-help=""
-              >
-                {copy.remoteExecutionHelp}
-              </p>
-            ) : null}
           </div>
         </Disclosure>
 
@@ -658,6 +682,110 @@ function ConnectionSettingsForm({ saved, onClose }: { saved: CrewConnection; onC
         />
       ) : null}
     </ModalShell>
+  );
+}
+
+/**
+ * "What can your agent do on {server}?" (OW-6): Off, In a folder or As me on the server, the
+ * person's own choice for their own account, then the folder the level needs.
+ *
+ * - As me on the server is offered only where the bridge says it can (`server_access`), and says
+ *   why where it cannot ("Update Crew on {server} first."). Choosing it fills the folder with the
+ *   account's home when none is typed, and shows the one warning, in place: Save is the consent,
+ *   with no typing (the owner's ruling, "user warns, agent never").
+ * - In a folder says what a confined command cannot do (HPC-N1), or, on a kernel that cannot
+ *   confine one, that only files work there.
+ * - Off keeps whatever folder was typed, hidden and unsent, so choosing a level again finds it.
+ *
+ * React allows nothing here: the daemon validates the record, and every start is admitted by the
+ * daemon and the broker, which refuse any level to a public model.
+ */
+function AgentAccessFields({
+  ids,
+  server,
+  form,
+  rootRef,
+  rootError,
+  account,
+  fullUnavailable,
+  confinedUnavailable,
+  hostsHere,
+  workspace,
+  onAccess,
+  onRoot,
+}: {
+  ids: { root: string };
+  server: string;
+  form: ConnectionForm;
+  rootRef: React.RefObject<HTMLInputElement | null>;
+  rootError: string | null;
+  /** `@user`, the server account commands run as, or null when unknown. */
+  account: string | null;
+  fullUnavailable: boolean;
+  confinedUnavailable: boolean;
+  /** The person hosts this workspace in this account: full access reaches its files. */
+  hostsHere: boolean;
+  workspace: string;
+  onAccess(level: AgentAccessLevel): void;
+  onRoot(value: string): void;
+}) {
+  const level = form.access;
+  const folderHelp =
+    level === 'full'
+      ? copy.fullFolderHelp
+      : confinedUnavailable
+        ? copy.confinedUnavailable(server)
+        : copy.remoteExecutionHelp;
+  return (
+    <div className="flex min-w-0 flex-col gap-3" data-crew-agent-access={level}>
+      <RadioRows<AgentAccessLevel>
+        label={copy.access(server)}
+        name={`${ids.root}-access`}
+        value={level}
+        onChange={onAccess}
+        options={[
+          { value: 'off', label: copy.accessOff, detail: copy.accessOffDetail(server) },
+          { value: 'folder', label: copy.accessFolder, detail: copy.accessFolderDetail },
+          {
+            value: 'full',
+            label: copy.accessFull,
+            detail: fullUnavailable
+              ? copy.accessFullUnavailable(server)
+              : copy.accessFullDetail(account),
+            disabled: fullUnavailable,
+          },
+        ]}
+      />
+      {level !== 'off' ? (
+        <Field
+          id={ids.root}
+          label={copy.remoteRoot}
+          helper={folderHelp}
+          error={rootError ?? undefined}
+        >
+          <Input
+            id={ids.root}
+            ref={rootRef}
+            required
+            autoComplete="off"
+            spellCheck={false}
+            pattern={ABSOLUTE_PATH_PATTERN}
+            title={copy.remoteRootPattern}
+            placeholder={copy.remoteRootPlaceholder}
+            aria-invalid={rootError ? true : undefined}
+            aria-describedby={helpId(ids.root)}
+            value={form.remote_root}
+            onChange={(event) => onRoot(event.target.value)}
+          />
+        </Field>
+      ) : null}
+      {level === 'full' ? (
+        <Note tone="warning" icon={AlertTriangle} testId="crew-full-access-warning">
+          <p>{copy.fullWarning(account ?? 'you', server)}</p>
+          {hostsHere ? <p className="mt-1">{copy.fullWarningHost(workspace)}</p> : null}
+        </Note>
+      ) : null}
+    </div>
   );
 }
 

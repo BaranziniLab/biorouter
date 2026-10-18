@@ -57,6 +57,12 @@ export interface CrewActions {
   /** Dismiss `error` only while it is still the one on show. */
   dismissErrorIfShown(error: CrewActionError): void;
   /**
+   * Put `next` in place of the error on show while it still reads `message` with `code`, keeping
+   * its source and everything else: a later sentence that knows more replaces one that knew less,
+   * and never an error that has since taken its place (G7).
+   */
+  replaceErrorIfShown(message: string, code: string, next: string): void;
+  /**
    * Dismiss the error on show when it was the link's failure (`transport`): the connection has
    * verified again, so it no longer describes anything (QA R-4: a stale transport error stayed
    * under a green "Connected").
@@ -113,6 +119,7 @@ export function useCrewActions(): CrewActions {
         ...(code !== undefined ? { code } : {}),
         ...(details?.destination !== undefined ? { destination: details.destination } : {}),
         ...(details?.transport ? { transport: true } : {}),
+        ...(details?.action ? { action: details.action } : {}),
       }),
     []
   );
@@ -123,6 +130,15 @@ export function useCrewActions(): CrewActions {
   );
   const dismissErrorIfShown = useCallback(
     (shown: CrewActionError) => setError((current) => (current === shown ? null : current)),
+    []
+  );
+  const replaceErrorIfShown = useCallback(
+    (message: string, code: string, next: string) =>
+      setError((current) =>
+        current && current.message === message && current.code === code
+          ? { ...current, message: next }
+          : current
+      ),
     []
   );
   const dismissTransportError = useCallback(
@@ -153,6 +169,7 @@ export function useCrewActions(): CrewActions {
     dismissError,
     dismissErrorFrom,
     dismissErrorIfShown,
+    replaceErrorIfShown,
     dismissTransportError,
     isPending,
     busy: pending.size > 0,

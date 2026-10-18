@@ -53,6 +53,46 @@ impl Classification {
     }
 }
 
+/// Who manages a workspace's teams, channels and people (design OW-1, OW-2).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
+pub enum Governance {
+    /// Every member may manage teams, channels and people, and let people in.
+    Open,
+    /// Channel owners and team creators manage them, and only the host lets people in.
+    Managed,
+}
+
+impl Governance {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Open => "open",
+            Self::Managed => "managed",
+        }
+    }
+}
+
+/// What a connection's agents may do on its server (design OW-6).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
+pub enum AgentAccess {
+    /// Nothing on the server: no work folder.
+    Off,
+    /// Read, write and run commands in one folder, confined to it.
+    Folder,
+    /// Run commands as your own account on the server, anywhere it can reach.
+    Full,
+}
+
+impl AgentAccess {
+    /// The level as a setup request names it (`SetupRequest.agent_access`).
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Off => "off",
+            Self::Folder => "folder",
+            Self::Full => "full",
+        }
+    }
+}
+
 #[derive(Args)]
 pub struct CrewOptions {
     /// Saved connection: its name, its SSH target or its ID. Required when more than one
@@ -103,6 +143,14 @@ pub enum CrewCommand {
     Credentials(CredentialCommand),
     /// Show saved connections and their daemon-reported state.
     Status,
+    /// Install or update Crew's server program in your own account on a server, over SSH. For
+    /// a saved connection it then connects.
+    Setup(SetupArgs),
+    /// Check a server for Crew without changing anything, the same as setup --check.
+    Doctor(ServerArgs),
+    /// Host a new workspace from start to finish: install Crew in your account on the server,
+    /// start the workspace, save and connect it here, and set it up open to every member.
+    Host(Box<HostArgs>),
     /// List, save, change or remove this computer's saved connections.
     #[command(subcommand)]
     Connections(ConnectionCommand),
@@ -113,9 +161,11 @@ pub enum CrewCommand {
     /// Close the selected SSH connection.
     Disconnect,
     /// Join the workspace a saved connection points to: show this computer's code for the
-    /// host, then wait until they let you in.
+    /// host, then wait until they let you in. Sets Crew up in your account on the server first
+    /// when it isn't there yet.
     Join(JoinArgs),
-    /// Show the workspace, set it up once as its host, or rename it.
+    /// Show the workspace, set it up once as its host, rename or delete it, choose who manages
+    /// it, or keep its context document.
     #[command(subcommand)]
     Workspace(WorkspaceCommand),
     /// Invite people to the workspace, let them in with their code, or remove them (host).
@@ -123,10 +173,10 @@ pub enum CrewCommand {
     Enroll(EnrollmentCommand),
     /// List the people in the selected workspace, or add one to a team or channel.
     Members(MembersArgs),
-    /// List, create or rename teams.
+    /// List, create, rename, join or delete teams.
     #[command(subcommand)]
     Teams(TeamCommand),
-    /// List, create, rename, archive or mark channels read.
+    /// List, create, rename, archive, join, delete or mark channels read.
     #[command(subcommand)]
     Channels(ChannelCommand),
     /// Invite a member to a team or channel, or accept an invitation.
@@ -184,6 +234,18 @@ pub enum CrewCommand {
     /// Start, follow or stop your own agent tasks.
     #[command(subcommand)]
     Tasks(TaskCommand),
+    /// Ask your agent in a channel: tasks start with your model for Crew tasks, allowed to post
+    /// its result there.
+    Ask {
+        /// The channel the task reads and posts to: methods, '#methods' or analysis-lab/methods.
+        channel: String,
+        /// What to ask. Several words are joined with spaces.
+        #[arg(required = true, num_args = 1..)]
+        text: Vec<String>,
+    },
+    /// Show, set or clear the model Crew tasks start on when you don't name one.
+    #[command(subcommand)]
+    Defaults(DefaultsCommand),
     /// Give a chat access to Crew, list access, or revoke it.
     #[command(subcommand)]
     Grants(GrantCommand),
@@ -255,6 +317,93 @@ pub enum ConnectionCommand {
         #[arg(long = "for", value_name = "PERSON")]
         invitee: Option<String>,
     },
+    /// Choose what agents may do on the selected connection's server: nothing (off), work in
+    /// one folder (folder), or run commands as you (full). Full asks first; add --yes where
+    /// there is no terminal to ask in.
+    SetAccess {
+        /// off, folder or full.
+        #[arg(value_enum)]
+        access: AgentAccess,
+        /// The work folder on the server, as a full path (or ~/ once this computer has
+        /// connected). Default: the connection's folder.
+        #[arg(long, value_name = "PATH")]
+        folder: Option<String>,
+        /// Give full access without asking. Needed when there is no terminal to ask in.
+        #[arg(long)]
+        yes: bool,
+    },
+}
+
+/// The server a setup is for, when it is not a saved connection's.
+#[derive(Args)]
+pub struct ServerArgs {
+    /// The SSH login to set up: an alias from your SSH settings or user@host. Default: the
+    /// selected saved connection's server.
+    #[arg(long, value_name = "LOGIN")]
+    pub server: Option<String>,
+    /// The server's SSH port.
+    #[arg(long, requires = "server")]
+    pub port: Option<u16>,
+    /// The SSH private key file to sign in with. A relative path or a leading ~/ is made
+    /// absolute before it is sent.
+    #[arg(long, requires = "server")]
+    pub identity_file: Option<String>,
+    /// A jump route.
+    #[arg(long, requires = "server")]
+    pub proxy_jump: Option<String>,
+}
+
+/// `setup`: install Crew's server program in your own account (design OW-9).
+#[derive(Args)]
+pub struct SetupArgs {
+    #[command(flatten)]
+    pub target: ServerArgs,
+    /// Replace an older copy of Crew, or a file Biorouter didn't put there, at
+    /// ~/.local/bin/biorouter-crew. The old one is kept beside it.
+    #[arg(long, conflicts_with = "check")]
+    pub replace_existing: bool,
+    /// Only check the server, changing nothing (the same as biorouter crew doctor).
+    #[arg(long)]
+    pub check: bool,
+    /// What agents may do on the server through the saved connection: nothing (off), work in
+    /// one folder (folder), or run commands as you (full). Default: full when the connection
+    /// has no work folder yet; otherwise it is left as it is.
+    #[arg(long, value_enum, conflicts_with_all = ["check", "server"])]
+    pub agent_access: Option<AgentAccess>,
+}
+
+/// `host`: a new workspace, from installing Crew to an open workspace with its context.
+#[derive(Args)]
+pub struct HostArgs {
+    /// The workspace's name: lowercase letters, numbers and dashes.
+    #[arg(long)]
+    pub name: String,
+    /// The SSH login to host it as: an alias from your SSH settings or user@host.
+    #[arg(long, value_name = "LOGIN")]
+    pub server: String,
+    /// The workspace's institution, which a Private workspace requires (like ucsf).
+    #[arg(long = "institution")]
+    pub institution_id: Option<String>,
+    /// The workspace's privacy for everyone.
+    #[arg(long, value_enum, default_value = "private")]
+    pub mode: PrivacyMode,
+    /// The server's SSH port.
+    #[arg(long)]
+    pub port: Option<u16>,
+    /// The SSH private key file to sign in with. A relative path or a leading ~/ is made
+    /// absolute before it is sent.
+    #[arg(long)]
+    pub identity_file: Option<String>,
+    /// A jump route.
+    #[arg(long)]
+    pub proxy_jump: Option<String>,
+    /// Let setup remove write access for others (chmod go-w) from the folders of yours above
+    /// Crew's storage that other accounts can write to. Hosting is refused while they can.
+    #[arg(long)]
+    pub fix_permissions: bool,
+    /// Go ahead without asking. Needed when there is no terminal to ask in.
+    #[arg(long)]
+    pub yes: bool,
 }
 
 /// `connections join-invitation`: the invitation and the choices the Join screen offers.
@@ -329,6 +478,44 @@ pub enum WorkspaceCommand {
     Rename {
         /// The new name.
         name: String,
+    },
+    /// Delete the workspace on its server for everyone, then remove it from this computer
+    /// (host). Asks you to type its name; add --confirm NAME where there is no terminal.
+    Delete {
+        /// Confirm by typing the workspace's name again. Required when there is no terminal
+        /// to ask in.
+        #[arg(long, value_name = "NAME")]
+        confirm: Option<String>,
+    },
+    /// Choose who manages teams, channels and people (host): open lets every member, managed
+    /// keeps it to channel owners, team creators and you.
+    Governance {
+        /// open or managed.
+        #[arg(value_enum)]
+        governance: Governance,
+    },
+    /// Show or change the workspace's context document: what every member's agent is told
+    /// about the server.
+    #[command(subcommand)]
+    Context(ContextCommand),
+}
+
+#[derive(Subcommand)]
+pub enum ContextCommand {
+    /// Print the context document, with who changed it last.
+    Show,
+    /// Replace the context document with a Markdown file, up to 64 KB. Use - for stdin.
+    Set {
+        /// The Markdown file, or - for stdin.
+        input: PathBuf,
+    },
+    /// Edit the context document in $VISUAL or $EDITOR, then save it.
+    Edit,
+    /// Draft a context document from a fixed check of the server, and print it.
+    Draft {
+        /// Save the draft as the context document too.
+        #[arg(long)]
+        save: bool,
     },
 }
 
@@ -417,9 +604,9 @@ pub struct MembersArgs {
 
 #[derive(Subcommand)]
 pub enum MembersCommand {
-    /// Add a workspace member to a team you own (with its #general and any channels of it you
-    /// own), or to channels you own. They already joined the workspace, so there is nothing
-    /// for them to accept.
+    /// Add a workspace member to a team (with its #general and the channels of it you name),
+    /// or to channels: ones you own, or, in an open workspace, any you are in. They already
+    /// joined the workspace, so there is nothing for them to accept.
     #[command(
         after_help = "Examples:\n  biorouter crew members add @bob --team \"Analysis Lab\" --channel '#methods'\n  biorouter crew members add @bob --channel analysis-lab/methods",
         group(ArgGroup::new("place").required(true).multiple(true).args(["team", "channels"]))
@@ -453,6 +640,20 @@ pub enum TeamCommand {
         team: String,
         /// The new name.
         name: String,
+    },
+    /// Join a team, with its #general, in an open workspace.
+    Join {
+        /// The team: its name or handle.
+        team: String,
+    },
+    /// Delete a team for everyone, with all its channels and their messages and files. Asks
+    /// first; add --yes where there is no terminal to ask in.
+    Delete {
+        /// The team: its name or handle.
+        team: String,
+        /// Delete without asking. Needed when there is no terminal to ask in.
+        #[arg(long)]
+        yes: bool,
     },
 }
 
@@ -497,6 +698,20 @@ pub enum ChannelCommand {
         channel: String,
         /// The new name.
         name: String,
+    },
+    /// Join a channel of one of your teams, in an open workspace.
+    Join {
+        /// The channel: methods, '#methods' or analysis-lab/methods.
+        channel: String,
+    },
+    /// Delete a channel for everyone, with its messages and files. A team's #general goes only
+    /// with its team. Asks first; add --yes where there is no terminal to ask in.
+    Delete {
+        /// The channel: methods, '#methods' or analysis-lab/methods.
+        channel: String,
+        /// Delete without asking. Needed when there is no terminal to ask in.
+        #[arg(long)]
+        yes: bool,
     },
 }
 
@@ -695,6 +910,15 @@ pub enum FileCommand {
         /// The file's attachment ID, which history --show-ids prints beside its name.
         attachment: String,
     },
+    /// List the files shared in a channel, newest first: name, size, who shared it, when, and
+    /// the attachment ID files download takes.
+    List {
+        /// The channel: methods, '#methods' or analysis-lab/methods.
+        channel: String,
+        /// How many files to list, 1 to 200.
+        #[arg(long, default_value_t = 50, value_parser = clap::value_parser!(u16).range(1..=200))]
+        limit: u16,
+    },
 }
 
 #[derive(Subcommand)]
@@ -706,12 +930,13 @@ pub enum TaskCommand {
         channel: String,
         #[command(flatten)]
         prompt: TextInput,
-        /// The provider's name in your Biorouter configuration.
-        #[arg(long)]
-        provider: String,
-        /// The model to run.
-        #[arg(long)]
-        model: String,
+        /// The provider's name in your Biorouter configuration. Without it, your model for
+        /// Crew tasks (crew defaults), else your default model for new chats.
+        #[arg(long, requires = "model")]
+        provider: Option<String>,
+        /// The model to run. Give it with --provider, or leave both out.
+        #[arg(long, requires = "provider")]
+        model: Option<String>,
         /// Another channel the task may read. Repeat for more.
         #[arg(long = "context-channel")]
         context_channels: Vec<String>,
@@ -736,6 +961,24 @@ pub enum TaskCommand {
         /// The task's ID.
         run: String,
     },
+}
+
+/// The model Crew tasks start on when none is named (design OW-11).
+#[derive(Subcommand)]
+pub enum DefaultsCommand {
+    /// Show the model Crew tasks start on, and where it comes from.
+    Show,
+    /// Set the model Crew tasks start on, for every workspace on this computer.
+    Set {
+        /// The provider's name in your Biorouter configuration.
+        #[arg(long)]
+        provider: String,
+        /// The model to run.
+        #[arg(long)]
+        model: String,
+    },
+    /// Go back to your default model for new chats.
+    Clear,
 }
 
 #[derive(Subcommand)]
@@ -954,6 +1197,28 @@ mod tests {
             };
             assert_eq!((got.as_str(), name.as_str()), (channel, "data"));
 
+            let CrewCommand::Channels(ChannelCommand::Delete { channel: got, yes }) =
+                parse(&["channels", "delete", channel, "--yes"]).command
+            else {
+                panic!("channel delete")
+            };
+            assert_eq!((got.as_str(), yes), (channel, true));
+
+            let CrewCommand::Channels(ChannelCommand::Join { channel: got }) =
+                parse(&["channels", "join", channel]).command
+            else {
+                panic!("channel join")
+            };
+            assert_eq!(got, channel);
+
+            let CrewCommand::Ask { channel: got, text } =
+                parse(&["ask", channel, "Sum", "the counts"]).command
+            else {
+                panic!("ask")
+            };
+            assert_eq!(got, channel);
+            assert_eq!(text, ["Sum", "the counts"]);
+
             let CrewCommand::Ownership(OwnershipCommand::Accept { channel: got }) =
                 parse(&["ownership", "accept", channel]).command
             else {
@@ -1138,6 +1403,20 @@ mod tests {
                 panic!("teams rename")
             };
             assert_eq!((got.as_str(), name.as_str()), (team, "Analysis Lab 2"));
+
+            let CrewCommand::Teams(TeamCommand::Delete { team: got, yes }) =
+                parse(&["teams", "delete", team]).command
+            else {
+                panic!("teams delete")
+            };
+            assert_eq!((got.as_str(), yes), (team, false));
+
+            let CrewCommand::Teams(TeamCommand::Join { team: got }) =
+                parse(&["teams", "join", team]).command
+            else {
+                panic!("teams join")
+            };
+            assert_eq!(got, team);
         }
         let CrewCommand::Workspace(WorkspaceCommand::Rename { name }) =
             parse(&["workspace", "rename", "lab"]).command
@@ -1340,6 +1619,250 @@ mod tests {
         assert!(refused(&["enroll", "invite", "@bob", "--public-key", "k"]));
     }
 
+    /// OW-9: setup takes a server or the selected connection, doctor is setup that only
+    /// checks, and host names the workspace and the login to host it as.
+    #[test]
+    fn setup_doctor_and_host_parse() {
+        let CrewCommand::Setup(args) = parse(&[
+            "setup",
+            "--server",
+            "bob@hpc.ucsf.edu",
+            "--port",
+            "2222",
+            "--replace-existing",
+        ])
+        .command
+        else {
+            panic!("setup")
+        };
+        assert_eq!(args.target.server.as_deref(), Some("bob@hpc.ucsf.edu"));
+        assert_eq!(args.target.port, Some(2222));
+        assert!(args.replace_existing && !args.check);
+
+        // A saved connection, chosen with the global --connection.
+        let options = parse(&["--connection", "UCSF HPC", "setup", "--check"]);
+        let CrewCommand::Setup(args) = options.command else {
+            panic!("setup --check")
+        };
+        assert!(args.check && args.target.server.is_none());
+        assert_eq!(options.connection.as_deref(), Some("UCSF HPC"));
+        assert!(args.agent_access.is_none());
+
+        // The agent access a member's setup gives the saved connection; it means nothing to a
+        // check or to a server with no saved connection.
+        for (word, level) in [
+            ("off", AgentAccess::Off),
+            ("folder", AgentAccess::Folder),
+            ("full", AgentAccess::Full),
+        ] {
+            let CrewCommand::Setup(args) = parse(&["setup", "--agent-access", word]).command else {
+                panic!("setup --agent-access")
+            };
+            assert_eq!(args.agent_access, Some(level));
+            assert_eq!(level.as_str(), word);
+        }
+        assert!(refused(&["setup", "--agent-access", "full", "--check"]));
+        assert!(refused(&[
+            "setup",
+            "--agent-access",
+            "full",
+            "--server",
+            "hpc"
+        ]));
+        assert!(refused(&["setup", "--agent-access", "everything"]));
+
+        let CrewCommand::Doctor(target) = parse(&["doctor", "--server", "hpc"]).command else {
+            panic!("doctor")
+        };
+        assert_eq!(target.server.as_deref(), Some("hpc"));
+
+        let CrewCommand::Host(args) = parse(&[
+            "host",
+            "--name",
+            "chen-lab",
+            "--server",
+            "alice@leo.ucsf.edu",
+            "--institution",
+            "ucsf",
+            "--yes",
+        ])
+        .command
+        else {
+            panic!("host")
+        };
+        assert_eq!(
+            (args.name.as_str(), args.server.as_str()),
+            ("chen-lab", "alice@leo.ucsf.edu")
+        );
+        assert_eq!(args.institution_id.as_deref(), Some("ucsf"));
+        assert!(matches!(args.mode, PrivacyMode::Private) && args.yes);
+        assert!(!args.fix_permissions);
+        let CrewCommand::Host(args) = parse(&[
+            "host", "--name", "lab", "--server", "hpc", "--mode", "public",
+        ])
+        .command
+        else {
+            panic!("host --mode public")
+        };
+        assert!(matches!(args.mode, PrivacyMode::Public) && !args.yes);
+        let CrewCommand::Host(args) = parse(&[
+            "host",
+            "--name",
+            "lab",
+            "--server",
+            "hpc",
+            "--fix-permissions",
+        ])
+        .command
+        else {
+            panic!("host --fix-permissions")
+        };
+        assert!(args.fix_permissions);
+    }
+
+    /// L8: a channel's files are listed newest first, up to --limit.
+    #[test]
+    fn files_list_parses() {
+        let CrewCommand::Files(FileCommand::List { channel, limit }) =
+            parse(&["files", "list", "#methods"]).command
+        else {
+            panic!("files list")
+        };
+        assert_eq!((channel.as_str(), limit), ("#methods", 50));
+        let CrewCommand::Files(FileCommand::List { limit, .. }) =
+            parse(&["files", "list", "methods", "--limit", "5"]).command
+        else {
+            panic!("files list --limit")
+        };
+        assert_eq!(limit, 5);
+        assert!(refused(&["files", "list", "methods", "--limit", "0"]));
+        assert!(refused(&["files", "list", "methods", "--limit", "201"]));
+        assert!(refused(&["files", "list"]));
+    }
+
+    /// OW-4, OW-1, OW-8: deleting the workspace takes a typed name, governance one of two
+    /// words, and the context document a file, an editor or a draft.
+    #[test]
+    fn workspace_delete_governance_and_context_parse() {
+        let CrewCommand::Workspace(WorkspaceCommand::Delete { confirm }) =
+            parse(&["workspace", "delete", "--confirm", "lab"]).command
+        else {
+            panic!("workspace delete")
+        };
+        assert_eq!(confirm.as_deref(), Some("lab"));
+        let CrewCommand::Workspace(WorkspaceCommand::Delete { confirm }) =
+            parse(&["workspace", "delete"]).command
+        else {
+            panic!("workspace delete without --confirm")
+        };
+        assert!(confirm.is_none());
+
+        for (word, governance) in [("open", Governance::Open), ("managed", Governance::Managed)] {
+            let CrewCommand::Workspace(WorkspaceCommand::Governance { governance: got }) =
+                parse(&["workspace", "governance", word]).command
+            else {
+                panic!("workspace governance")
+            };
+            assert_eq!(got, governance);
+        }
+        assert!(refused(&["workspace", "governance", "anyone"]));
+
+        assert!(matches!(
+            parse(&["workspace", "context", "show"]).command,
+            CrewCommand::Workspace(WorkspaceCommand::Context(ContextCommand::Show))
+        ));
+        assert!(matches!(
+            parse(&["workspace", "context", "edit"]).command,
+            CrewCommand::Workspace(WorkspaceCommand::Context(ContextCommand::Edit))
+        ));
+        let CrewCommand::Workspace(WorkspaceCommand::Context(ContextCommand::Set { input })) =
+            parse(&["workspace", "context", "set", "-"]).command
+        else {
+            panic!("context set")
+        };
+        assert_eq!(input, PathBuf::from("-"));
+        let CrewCommand::Workspace(WorkspaceCommand::Context(ContextCommand::Draft { save })) =
+            parse(&["workspace", "context", "draft", "--save"]).command
+        else {
+            panic!("context draft")
+        };
+        assert!(save);
+    }
+
+    /// OW-6 and OW-11: agent access is one of three levels, and the model for Crew tasks is
+    /// optional on tasks start and set by provider and model together.
+    #[test]
+    fn access_levels_and_the_crew_task_model_parse() {
+        let CrewCommand::Connections(ConnectionCommand::SetAccess {
+            access,
+            folder,
+            yes,
+        }) = parse(&[
+            "connections",
+            "set-access",
+            "full",
+            "--folder",
+            "/pool1/home/bob/crew-work/lab",
+            "--yes",
+        ])
+        .command
+        else {
+            panic!("set-access")
+        };
+        assert_eq!(access, AgentAccess::Full);
+        assert_eq!(folder.as_deref(), Some("/pool1/home/bob/crew-work/lab"));
+        assert!(yes);
+        for (word, level) in [("off", AgentAccess::Off), ("folder", AgentAccess::Folder)] {
+            let CrewCommand::Connections(ConnectionCommand::SetAccess { access, .. }) =
+                parse(&["connections", "set-access", word]).command
+            else {
+                panic!("set-access {word}")
+            };
+            assert_eq!(access, level);
+        }
+
+        let CrewCommand::Tasks(TaskCommand::Start {
+            provider, model, ..
+        }) = parse(&[
+            "tasks",
+            "start",
+            "methods",
+            "--text",
+            "x",
+            "--allow-posting",
+        ])
+        .command
+        else {
+            panic!("tasks start with the default model")
+        };
+        assert!(provider.is_none() && model.is_none());
+
+        assert!(matches!(
+            parse(&["defaults", "show"]).command,
+            CrewCommand::Defaults(DefaultsCommand::Show)
+        ));
+        assert!(matches!(
+            parse(&["defaults", "clear"]).command,
+            CrewCommand::Defaults(DefaultsCommand::Clear)
+        ));
+        let CrewCommand::Defaults(DefaultsCommand::Set { provider, model }) = parse(&[
+            "defaults",
+            "set",
+            "--provider",
+            "versa_azure",
+            "--model",
+            "gpt-5.5",
+        ])
+        .command
+        else {
+            panic!("defaults set")
+        };
+        assert_eq!(
+            (provider.as_str(), model.as_str()),
+            ("versa_azure", "gpt-5.5")
+        );
+    }
+
     /// CLI-17: `--help` is where the manual sends people, so every command and group says what
     /// it does, and every positional argument what it takes.
     #[test]
@@ -1399,6 +1922,33 @@ mod tests {
             &["send", "methods"],
             &["enroll", "approve", "@bob", "7QK2-M9XA"],
             &["enroll", "approve", "@bob", "7QK2-M9XA-3JTP-WZ4\u{0414}"],
+            // A provider without its model, or a model without its provider.
+            &[
+                "tasks",
+                "start",
+                "methods",
+                "--text",
+                "hi",
+                "--provider",
+                "p",
+                "--allow-posting",
+            ],
+            &[
+                "tasks",
+                "start",
+                "methods",
+                "--text",
+                "hi",
+                "--model",
+                "m",
+                "--allow-posting",
+            ],
+            &["ask", "methods"],
+            &["defaults", "set", "--provider", "p"],
+            &["setup", "--check", "--replace-existing"],
+            &["doctor", "--port", "22"],
+            &["host", "--name", "lab"],
+            &["connections", "set-access", "everything"],
         ] {
             let error = usage(args);
             assert_eq!(error.exit_code(), 2, "{args:?}: {error}");

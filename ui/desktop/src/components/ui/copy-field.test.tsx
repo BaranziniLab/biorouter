@@ -10,8 +10,8 @@ import {
   CopyField,
 } from './copy-field';
 import { inviteCopy } from '../crew/dialogs/copy';
-import { INSTALL_COMMANDS } from '../crew/onboarding/copy';
 import { hostStartCommands, workspaceSlug } from '../crew/onboarding/joinText';
+import { manualInstallCommands } from '../crew/onboarding/setup';
 
 const MAIN_CSS = readFileSync(join(__dirname, '../../styles/main.css'), 'utf8');
 
@@ -560,7 +560,23 @@ describe('CopyField', () => {
       const longestSlug = workspaceSlug('w'.repeat(80));
       expect(longestSlug).toHaveLength(40);
       const start = hostStartCommands(longestSlug, 'f'.repeat(64));
-      for (const commands of [start, INSTALL_COMMANDS, inviteCopy.installCommands]) {
+      // The manual install at its longest likely shape: a jump host, a port and a saved path.
+      const install = manualInstallCommands(
+        {
+          version: '10.100.1000',
+          target: 'x86_64-unknown-linux-gnu',
+          sha256: 'e'.repeat(64),
+          size: 1,
+          source: 'bundled',
+        },
+        {
+          ssh_target: 'alice.longname@hpc-login.example.edu',
+          port: 2222,
+          proxy_jump: 'gateway.example.edu',
+        },
+        '/Users/alice/Downloads/biorouter-crew-10.100.1000-linux-x86_64'
+      );
+      for (const commands of [start, install, inviteCopy.installCommands]) {
         expect(Array.from(commands).length).toBeLessThanOrEqual(COPY_FIELD_CLAMP_CHARS);
         const { container, unmount } = render(
           <CopyField value={commands} label="commands" multiline />

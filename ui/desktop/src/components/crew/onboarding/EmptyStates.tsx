@@ -1,5 +1,5 @@
 import { useEffect, useId, useLayoutEffect, useRef, useState, type RefObject } from 'react';
-import { Hash, Inbox, KeyRound, Server, Users } from '../../icons/app-icons';
+import { Hash, Inbox, KeyRound, Server, Trash2, Users } from '../../icons/app-icons';
 import { Button } from '../../ui/button';
 import { CopyField } from '../../ui/copy-field';
 import { EmptyState } from '../../ui/empty-state';
@@ -14,6 +14,7 @@ import {
 import type { Invitation, Snapshot } from '../crewApi';
 import { serverLabel } from '../sidebar/sidebarView';
 import { savedFailureKind, type ConnectFailureKind } from '../state/connectFailure';
+import { crewObservationCopy } from '../state/copy';
 import { useCrew } from '../state/CrewControllerContext';
 import { canFocus, focusIsLost, restoreFocusSoon } from '../state/focusReturn';
 import type { CrewController } from '../state/types';
@@ -296,6 +297,49 @@ export function OfflineState() {
         }
         description={redialing ? emptyCopy.redialBody(attemptTime(redialSince)) : description}
         actions={actions}
+      />
+    </SetupScreen>
+  );
+}
+
+/**
+ * The host deleted the workspace (OW-5, L6): the one thing left is removing it from this
+ * computer, through the same confirmation the connection bar and Connection settings use. Nothing
+ * here connects, and a server that is gone on purpose gets no start line. The connection bar says
+ * nothing more while this screen is up.
+ */
+export function WorkspaceDeletedState() {
+  const { connectionId, openDialog } = useCrew();
+  const workspace = useConnectionLabel();
+  const removeRef = useRef<HTMLButtonElement>(null);
+  // The screen replaced what had focus (a Connect, a closed dialog's opener): put it on the one
+  // thing to do here.
+  useEffect(() => {
+    if (focusIsLost()) removeRef.current?.focus();
+  }, []);
+  return (
+    <SetupScreen>
+      <EmptyState
+        icon={Trash2}
+        title={crewObservationCopy.workspaceDeleted(workspace)}
+        description={emptyCopy.deletedBody}
+        actions={
+          connectionId ? (
+            <Button
+              ref={removeRef}
+              type="button"
+              variant="secondary"
+              onClick={() =>
+                openDialog({
+                  kind: 'confirm',
+                  confirm: { action: 'remove-connection', connectionId },
+                })
+              }
+            >
+              {crewObservationCopy.removeFromComputer}
+            </Button>
+          ) : undefined
+        }
       />
     </SetupScreen>
   );

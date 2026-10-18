@@ -186,12 +186,14 @@ fn lists_fewer_channels(snapshot: &Value) -> bool {
 /// its channels (another workspace's, or never one): `crew_channel_not_in_workspace` says so
 /// (W2-DMN-9). One missing from a partial list may be a real channel beyond it, so it is only
 /// refused as unconfirmed. Either way nothing unlisted is granted, since its protection cannot
-/// be read.
+/// be read. At most `limit` channels, the destination included: the workspace server's own
+/// limit (`CrewManager::run_source_limit`).
 pub(super) fn protected_sources(
     snapshot: &Value,
     channel: &str,
     sources: &[String],
     workspace: &str,
+    limit: usize,
 ) -> Result<bool> {
     let channels = snapshot["channels"]
         .as_array()
@@ -201,7 +203,7 @@ pub(super) fn protected_sources(
         .map(String::as_str)
         .chain([channel])
         .collect();
-    ensure!(selected.len() <= 20, "Too many Crew context channels");
+    ensure!(selected.len() <= limit, "Too many Crew context channels");
     if !selected.iter().all(|id| {
         channels
             .iter()
