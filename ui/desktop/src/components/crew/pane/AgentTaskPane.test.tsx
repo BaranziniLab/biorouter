@@ -201,6 +201,10 @@ describe('AgentTaskPane', () => {
     const user = userEvent.setup();
     renderCrew(Layout);
     await waitFor(() => expect(currentCrew().status).toBe('connected'));
+    // Type only once the channel is selected: selecting it puts back that channel's kept draft,
+    // so text typed before the selection lands was replaced (empty) when it did, which failed
+    // this test intermittently on CI (2026-10-18). What is under test is the seeding below.
+    await waitFor(() => expect(currentCrew().channel?.id).toBe(general.id));
     fireEvent.change(screen.getByLabelText('Message #general'), {
       target: { value: 'Plot counts by sample' },
     });
