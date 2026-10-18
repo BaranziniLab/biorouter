@@ -1069,6 +1069,8 @@ describe('HostDialog', () => {
         outcome: {
           installedVersion: '1.94.0',
           reused: false,
+          previousKept: false,
+          replacedVersion: null,
           host: { kind: 'found', text: LINE },
           hostCommand: SHOWN,
           connectionId: null,

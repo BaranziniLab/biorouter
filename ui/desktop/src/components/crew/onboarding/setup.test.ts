@@ -234,6 +234,8 @@ describe('setupRunFrom', () => {
     expect(run.outcome).toEqual({
       installedVersion: '1.94.0',
       reused: true,
+      previousKept: false,
+      replacedVersion: null,
       host: { kind: 'found', text: 'brcrew1:abc' },
       hostCommand: 'umask 077',
       connectionId: null,
@@ -243,6 +245,37 @@ describe('setupRunFrom', () => {
     });
     expect(setupActive(run)).toBe(false);
     expect(plainStage(run)).toBe('ready');
+  });
+
+  it('reads which program an install replaced, and only a version that can be shown', () => {
+    const replacing = (upgraded_from: unknown) =>
+      setupRunFrom({
+        ...RUNNING,
+        state: 'finished',
+        stage: 'done',
+        outcome: {
+          installed_version: '1.93.0',
+          reused: false,
+          previous_kept: true,
+          upgraded_from,
+        },
+      }).outcome;
+    const sameVersion = {
+      version: '1.93.0',
+      sha256: 'fe'.repeat(32),
+      installed_version: '1.93.0',
+      installed_sha256: 'f4'.repeat(32),
+    };
+    expect(replacing(sameVersion)).toMatchObject({ previousKept: true, replacedVersion: '1.93.0' });
+    expect(replacing({ ...sameVersion, version: '1.92.1' })?.replacedVersion).toBe('1.92.1');
+    for (const bad of [
+      null,
+      '1.92.1',
+      { ...sameVersion, version: null },
+      { version: 'not-a-sha' },
+    ]) {
+      expect(replacing(bad)).toMatchObject({ previousKept: true, replacedVersion: null });
+    }
   });
 
   it('reads a failed job’s typed code, sentence and output', () => {

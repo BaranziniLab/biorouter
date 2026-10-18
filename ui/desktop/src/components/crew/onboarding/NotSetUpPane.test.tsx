@@ -137,6 +137,8 @@ describe('NotSetUpPane', () => {
         outcome: {
           installedVersion: '1.94.0',
           reused: false,
+          previousKept: false,
+          replacedVersion: null,
           host: null,
           hostCommand: null,
           connectionId: 'conn-1',

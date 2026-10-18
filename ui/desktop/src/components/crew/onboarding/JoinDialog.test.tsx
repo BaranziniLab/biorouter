@@ -67,6 +67,8 @@ function setupJob(overrides: Partial<SetupRun> = {}): SetupRun {
     outcome: {
       installedVersion: '1.94.0',
       reused: true,
+      previousKept: false,
+      replacedVersion: null,
       host: null,
       hostCommand: null,
       connectionId: 'conn-new',

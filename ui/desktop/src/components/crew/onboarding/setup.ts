@@ -84,6 +84,10 @@ export interface SetupOutcome {
   installedVersion: string | null;
   /** The install already there was kept: nothing was sent. */
   reused: boolean;
+  /** The program this job replaced stays as `~/.local/bin/biorouter-crew.previous`. */
+  previousKept: boolean;
+  /** The version of the program this job replaced (`upgraded_from.version`), when it named one. */
+  replacedVersion: string | null;
   /** A host job: what the start commands printed, read as `/crew/host/start` reads it. */
   host: HostStartResult | null;
   /** A host job: the exact start command text it ran, for the Host dialog's tripwire. */
@@ -174,9 +178,12 @@ function stagesFrom(wire: unknown): SetupStage[] {
 
 function outcomeFrom(wire: unknown): SetupOutcome | null {
   if (!isRecord(wire)) return null;
+  const replaced = isRecord(wire.upgraded_from) ? text(wire.upgraded_from.version) : null;
   return {
     installedVersion: filled(wire.installed_version),
     reused: wire.reused === true,
+    previousKept: wire.previous_kept === true,
+    replacedVersion: replaced && VERSION.test(replaced) ? replaced : null,
     host: hostStartResultFrom(wire.host),
     hostCommand: text(wire.host_command),
     connectionId: filled(wire.connection_id),

@@ -2,7 +2,7 @@ import { fireEvent, render, screen, waitFor, within } from '@testing-library/rea
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { CrewHttpError } from '../crewApi';
 import { setupCopy } from './copy';
-import type { SetupInput, SetupRun } from './setup';
+import { setupRunFrom, type SetupInput, type SetupRun } from './setup';
 import { HOST_STORAGE_UNSAFE_CODE, SetupProgress, useSetupJob } from './SetupProgress';
 
 const mocks = vi.hoisted(() => ({
@@ -144,5 +144,67 @@ describe('a start that failed on the server', () => {
     expect(screen.queryByLabelText(setupCopy.outputLabel)).toBeNull();
     fireEvent.click(screen.getByRole('button', { name: setupCopy.output }));
     expect(screen.getByLabelText(setupCopy.outputLabel)).toHaveTextContent(said);
+  });
+});
+
+describe('an install that replaced a program', () => {
+  /** A finished job as the daemon answers it, with `outcome` laid over a fresh install's. */
+  const finished = (outcome: Record<string, unknown>) =>
+    setupRunFrom({
+      job_id: 'job-1',
+      intent: 'host',
+      state: 'finished',
+      stage: 'done',
+      stages: [
+        { name: 'probe', state: 'done', detail: null },
+        {
+          name: 'install',
+          state: 'done',
+          detail: 'Replaced Crew 1.93.0 with this app’s build of it.',
+        },
+      ],
+      outcome: { installed_version: '1.93.0', reused: false, ...outcome },
+    });
+  const sameVersion = {
+    previous_kept: true,
+    upgraded_from: {
+      version: '1.93.0',
+      sha256: 'fe'.repeat(32),
+      installed_version: '1.93.0',
+      installed_sha256: 'f4'.repeat(32),
+    },
+  };
+  /** What the "Installing Crew in your account" step says once the job finished. */
+  const installStep = async (outcome: Record<string, unknown>) => {
+    mocks.startSetup.mockResolvedValueOnce(finished(outcome));
+    const view = render(<Harness input={HOST} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Start' }));
+    const step = (await screen.findByText(setupCopy.stages.installing)).closest('li')!;
+    await waitFor(() => expect(step).toHaveAttribute('data-state', 'done'));
+    const said = step.textContent;
+    view.unmount();
+    return said;
+  };
+
+  it('says it replaced a same-version copy, or updated an older one, as the command line does', async () => {
+    const replaced = await installStep(sameVersion);
+    expect(replaced).toContain(setupCopy.replaced('1.93.0'));
+    expect(replaced).not.toContain(setupCopy.installed('1.93.0'));
+    expect(
+      await installStep({
+        ...sameVersion,
+        upgraded_from: { ...sameVersion.upgraded_from, version: '1.92.1' },
+      })
+    ).toContain('Updated Crew from 1.92.1 to 1.93.0.');
+    expect(await installStep({ previous_kept: true, upgraded_from: null })).toContain(
+      setupCopy.replacedProgram('1.93.0')
+    );
+  });
+
+  it('still says installed for a fresh install, and already installed for a reuse', async () => {
+    expect(await installStep({ previous_kept: false, upgraded_from: null })).toContain(
+      'Installed Crew 1.93.0.'
+    );
+    expect(await installStep({ reused: true })).toContain('Crew 1.93.0 was already installed.');
   });
 });
