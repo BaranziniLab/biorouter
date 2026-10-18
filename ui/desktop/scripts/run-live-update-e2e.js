@@ -31,6 +31,38 @@ const path = require('path');
 const DESK = path.resolve(__dirname, '..');
 const harness = path.join(__dirname, 'live-update-e2e.js');
 
+/**
+ * Bundle the app's resumable update download for the harness, which is plain
+ * JavaScript inside Electron and cannot import TypeScript. Electron stays
+ * external: the harness runs inside it.
+ */
+function bundleResumableDownload() {
+  const outDir = fs.mkdtempSync(path.join(os.tmpdir(), 'br-live-bundle-'));
+  const entry = path.join(outDir, 'entry.ts');
+  fs.writeFileSync(
+    entry,
+    `export { installResumableUpdaterDownloads } from ${JSON.stringify(
+      path.join(DESK, 'src', 'utils', 'resumableUpdaterDownloads.ts')
+    )};\n` +
+      `export { electronNetOpenPart } from ${JSON.stringify(
+        path.join(DESK, 'src', 'utils', 'electronNetTransport.ts')
+      )};\n`
+  );
+  const outfile = path.join(outDir, 'resumable.cjs');
+  require('esbuild').buildSync({
+    entryPoints: [entry],
+    bundle: true,
+    platform: 'node',
+    format: 'cjs',
+    external: ['electron'],
+    outfile,
+    logLevel: 'error',
+  });
+  return outfile;
+}
+
+let resumableBundle = null;
+
 // The updater writes a cache dir per run under the OS cache dir; clean any of
 // ours so the test leaves no trace.
 function cleanCaches() {
@@ -63,7 +95,7 @@ function electronUsable() {
 }
 
 function runMode(extraArgs) {
-  const env = { ...process.env };
+  const env = { ...process.env, BR_RESUMABLE_BUNDLE: resumableBundle };
   delete env.ELECTRON_RUN_AS_NODE; // ensure GUI Electron, not node mode
   const res = spawnSync(require('electron'), [harness, ...extraArgs], {
     cwd: DESK,
@@ -100,6 +132,7 @@ function main() {
   }
 
   console.log('live electron-updater end-to-end (real Electron process)');
+  resumableBundle = bundleResumableDownload();
 
   // --- valid: full happy path to the installable state ---
   const valid = runMode([]);
@@ -125,8 +158,25 @@ function main() {
   );
   console.log('  ✓ tampered: checking → available → REJECTED (sha512 checksum mismatch)');
 
+  // --- reset: the connection drops 40% in, and the download resumes ---
+  const reset = runMode(['--reset']);
+  assert(reset.terminal === 'downloaded', `reset: reached update-downloaded (got ${reset.terminal})`);
+  assert(reset.zipRequests.length === 2, `reset: two requests for the zip (${reset.zipRequests})`);
+  assert(reset.zipRequests[0] === null, 'reset: the first request asks for the whole file');
+  assert(
+    /^bytes=[1-9]\d*-$/.test(reset.zipRequests[1] || ''),
+    `reset: the second asks for the rest (${reset.zipRequests[1]})`
+  );
+  console.log(`  ✓ reset: dropped 40% in → resumed with ${reset.zipRequests[1]} → update-downloaded`);
+
+  // --- reset, stock electron-updater: the bug this fixes ---
+  const stockReset = runMode(['--reset', '--stock']);
+  assert(stockReset.terminal === 'error', `stock reset: failed (got ${stockReset.terminal})`);
+  const stockErr = stockReset.events.find((e) => e.name === 'error');
+  console.log(`  ✓ stock electron-updater on the same reset fails: ${stockErr.data.message}`);
+
   cleanCaches();
-  console.log('\n2 passed (live Electron engine)');
+  console.log('\n4 passed (live Electron engine)');
 }
 
 try {

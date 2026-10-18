@@ -374,7 +374,8 @@ type ElectronAPI = {
   getVersion: () => string;
   checkForUpdates: () => Promise<{ updateInfo: unknown; error: string | null }>;
   downloadUpdate: () => Promise<{ success: boolean; error: string | null }>;
-  installUpdate: () => void;
+  /** Resolves `{ ok: false, error }` when there is nothing it could install. */
+  installUpdate: () => Promise<{ ok: boolean; error?: string | null } | undefined>;
   restartApp: () => void;
   /**
    * Where the app stands with the shared background service (R-1): `lost` once the instance it
@@ -402,7 +403,15 @@ type ElectronAPI = {
   getUpdateState: () => Promise<{
     updateAvailable: boolean;
     latestVersion?: string;
-    status?: 'checking' | 'available' | 'downloaded' | 'up-to-date' | 'error';
+    status?:
+      | 'idle'
+      | 'checking'
+      | 'available'
+      | 'preparing'
+      | 'downloaded'
+      | 'installing'
+      | 'up-to-date'
+      | 'error';
     percent?: number;
     usingFallback?: boolean;
     error?: string;
@@ -839,8 +848,8 @@ const electronAPI: ElectronAPI = {
   downloadUpdate: (): Promise<{ success: boolean; error: string | null }> => {
     return ipcRenderer.invoke('download-update');
   },
-  installUpdate: (): void => {
-    ipcRenderer.invoke('install-update');
+  installUpdate: (): Promise<{ ok: boolean; error?: string | null } | undefined> => {
+    return ipcRenderer.invoke('install-update');
   },
   restartApp: (): void => {
     ipcRenderer.send('restart-app');

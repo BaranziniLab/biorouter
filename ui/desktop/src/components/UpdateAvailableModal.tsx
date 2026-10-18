@@ -13,6 +13,7 @@ import {
   normalizeVersion,
   hasKnownUpdate,
   needsAssistedDownload,
+  UPDATE_PHASE_ORDER,
   type UpdaterState,
 } from '../utils/updaterState';
 import { OPEN_UPDATE_MODAL_EVENT } from '../utils/updateUiEvents';
@@ -59,13 +60,12 @@ export default function UpdateAvailableModal() {
       ?.then((snapshot) => {
         if (cancelled || !snapshot) return;
         const recovered = stateFromSnapshot(snapshot);
-        setState((prev) => {
+        setState((prev) =>
           // Only adopt the snapshot if it's "further along" than current.
-          const order = ['idle', 'up-to-date', 'checking', 'error', 'available', 'downloaded'];
-          const next =
-            order.indexOf(recovered.phase) > order.indexOf(prev.phase) ? recovered : prev;
-          return next;
-        });
+          UPDATE_PHASE_ORDER.indexOf(recovered.phase) > UPDATE_PHASE_ORDER.indexOf(prev.phase)
+            ? recovered
+            : prev
+        );
       })
       .catch(() => {
         /* no snapshot available — rely on live events */
@@ -118,10 +118,57 @@ export default function UpdateAvailableModal() {
     }
   };
 
-  const handleRestartAndUpdate = () => {
-    // Fire-and-forget: the main process quits the app, installs the staged
-    // update, and relaunches into the new version.
-    window.electron?.installUpdate?.();
+  // ⚠ Awaited, not fire-and-forget. The install used to be fired and
+  // forgotten, so when the main process refused it ("Update file path not
+  // found") the button simply did nothing and nobody was told. The main process
+  // also reports install failures as `install-failed` events; this catches the
+  // ones that are only a rejected call.
+  const handleRestartAndUpdate = async () => {
+    setDownloadError(null);
+    try {
+      const result = await window.electron?.installUpdate?.();
+      if (result && result.ok === false) {
+        setState((prev) =>
+          reduceUpdaterEvent(prev, {
+            event: 'install-failed',
+            data: { message: result.error || 'The update could not be installed.' },
+          })
+        );
+      }
+    } catch (err) {
+      setState((prev) =>
+        reduceUpdaterEvent(prev, {
+          event: 'install-failed',
+          data: { message: err instanceof Error ? err.message : String(err) },
+        })
+      );
+    }
+  };
+
+  // A failed download or install used to leave only "Download from Biorouter":
+  // the next attempt was the three-hourly background check. Try again starts
+  // one now. Assisted mode downloads again; otherwise a fresh check finds the
+  // update and downloads it, resuming from anything already on disk.
+  const handleRetry = async () => {
+    setDownloadError(null);
+    if (state.usingFallback) {
+      await handleDownload();
+      return;
+    }
+    setState((prev) => reduceUpdaterEvent(prev, { event: 'checking-for-update' }));
+    try {
+      const result = await window.electron?.checkForUpdates?.();
+      if (result?.error) {
+        setState((prev) => reduceUpdaterEvent(prev, { event: 'error', data: result.error }));
+      }
+    } catch (err) {
+      setState((prev) =>
+        reduceUpdaterEvent(prev, {
+          event: 'error',
+          data: err instanceof Error ? err.message : String(err),
+        })
+      );
+    }
   };
 
   const openReleasePage = () => {
@@ -136,7 +183,15 @@ export default function UpdateAvailableModal() {
   if (!shouldShowUpdateModal(state)) return null;
 
   const downloaded = state.phase === 'downloaded';
+  const preparing = state.phase === 'preparing';
+  const installing = state.phase === 'installing';
   const isError = state.phase === 'error';
+  // A failed CHECK keeps no version, and retrying one is the Settings page's
+  // Check for updates; a failure with an update in hand gets Try again here.
+  const canRetry = isError && !!state.latestVersion;
+  // Assisted mode cannot restart itself: its install opens the downloaded
+  // installer, so the button must not promise an automatic restart.
+  const assisted = state.usingFallback;
   // Assisted mode, nothing downloading yet: the update is FOUND, not arriving.
   const awaitingDownload = needsAssistedDownload(state) && !downloadRequested;
 
@@ -148,7 +203,7 @@ export default function UpdateAvailableModal() {
       purpose="info"
       title={
         <span className="flex items-center gap-2">
-          {downloaded ? (
+          {downloaded || installing ? (
             <Rocket className="w-5 h-5 flex-none text-background-accent" />
           ) : isError ? (
             <AlertCircle className="w-5 h-5 flex-none text-text-danger" />
@@ -157,17 +212,21 @@ export default function UpdateAvailableModal() {
           )}
           {downloaded
             ? 'Update ready to install'
-            : isError
-              ? 'Update download failed'
-              : awaitingDownload
-                ? 'Update available'
-                : 'Downloading update…'}
+            : installing
+              ? 'Restarting to update…'
+              : preparing
+                ? 'Preparing the update…'
+                : isError
+                  ? 'Update failed'
+                  : awaitingDownload
+                    ? 'Update available'
+                    : 'Downloading update…'}
         </span>
       }
       footer={
         <>
           <Button variant="ghost" size="sm" onClick={dismiss}>
-            {downloaded ? 'Later' : 'Not now'}
+            {downloaded || preparing || installing ? 'Later' : 'Not now'}
           </Button>
           <Button
             variant="secondary"
@@ -186,7 +245,22 @@ export default function UpdateAvailableModal() {
               className="flex items-center gap-2"
             >
               <Rocket className="w-4 h-4" />
-              Restart &amp; update
+              {assisted ? 'Install update' : <>Restart &amp; update</>}
+            </Button>
+          ) : canRetry ? (
+            <Button
+              variant="default"
+              size="sm"
+              onClick={handleRetry}
+              className="flex items-center gap-2"
+            >
+              <Download className="w-4 h-4" />
+              Try again
+            </Button>
+          ) : installing ? (
+            <Button variant="default" size="sm" disabled className="flex items-center gap-2">
+              <Spinner />
+              Restarting…
             </Button>
           ) : awaitingDownload ? (
             <Button
@@ -225,12 +299,33 @@ export default function UpdateAvailableModal() {
           </div>
         )}
 
-        {downloaded && (
+        {downloaded && !assisted && (
           <p className="text-body text-text-default">
             The update has been downloaded. Click{' '}
             <strong className="font-semibold">Restart &amp; update</strong> and Biorouter will
             reopen on the new version automatically. Your settings, chats, and extensions are
             preserved.
+          </p>
+        )}
+
+        {downloaded && assisted && (
+          <p className="text-body text-text-default">
+            The update has been downloaded. Click{' '}
+            <strong className="font-semibold">Install update</strong> to see the installer and the
+            steps to finish. Your settings, chats, and extensions are preserved.
+          </p>
+        )}
+
+        {preparing && (
+          <p className="text-body text-text-default">
+            The update has been downloaded and macOS is checking it before it can be installed. This
+            usually takes a few seconds.
+          </p>
+        )}
+
+        {installing && (
+          <p className="text-body text-text-default">
+            Biorouter is closing to install the update and will reopen on the new version.
           </p>
         )}
 

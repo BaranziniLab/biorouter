@@ -5,7 +5,10 @@ import { Progress } from '../../ui/progress';
 import { SettingRow } from '../../ui/setting-row';
 import {
   initialUpdaterState,
+  isReadyPhase,
   reduceUpdaterEvent,
+  stateFromSnapshot,
+  UPDATE_PHASE_ORDER,
   type UpdaterState,
 } from '../../../utils/updaterState';
 import { aboutCopy } from './copy';
@@ -25,6 +28,10 @@ function statusLine(state: UpdaterState, checkRequested: boolean): ReactNode {
   switch (state.phase) {
     case 'downloaded':
       return aboutCopy.ready(state.latestVersion);
+    case 'preparing':
+      return aboutCopy.preparing(state.latestVersion);
+    case 'installing':
+      return aboutCopy.restarting;
     case 'checking':
       return aboutCopy.checking;
     case 'available':
@@ -79,18 +86,19 @@ export default function UpdateSection() {
     });
 
     // Recover any in-flight/ready update established before this panel opened.
+    // Only an update in hand is adopted: a verdict ("up to date", a failure)
+    // answers a check, and this panel shows those only for its own.
     window.electron
       .getUpdateState?.()
       ?.then((snapshot) => {
         if (!snapshot) return;
-        if (snapshot.status === 'downloaded' || snapshot.updateAvailable) {
-          setState((prev) =>
-            reduceUpdaterEvent(prev, {
-              event: snapshot.status === 'downloaded' ? 'update-downloaded' : 'update-available',
-              data: { version: snapshot.latestVersion, percent: snapshot.percent },
-            })
-          );
-        }
+        const recovered = stateFromSnapshot(snapshot);
+        if (recovered.phase !== 'available' && !isReadyPhase(recovered.phase)) return;
+        setState((prev) =>
+          UPDATE_PHASE_ORDER.indexOf(recovered.phase) > UPDATE_PHASE_ORDER.indexOf(prev.phase)
+            ? recovered
+            : prev
+        );
       })
       .catch(() => {});
 
@@ -117,20 +125,45 @@ export default function UpdateSection() {
     }
   };
 
-  const handleRestartAndUpdate = () => window.electron?.installUpdate?.();
+  // Awaited: a refused install used to leave the button doing nothing at all.
+  const [installRequested, setInstallRequested] = useState(false);
+  const handleRestartAndUpdate = async () => {
+    setInstallRequested(true);
+    try {
+      const result = await window.electron?.installUpdate?.();
+      if (result && result.ok === false) {
+        setState((prev) =>
+          reduceUpdaterEvent(prev, {
+            event: 'install-failed',
+            data: { message: result.error || aboutCopy.failed },
+          })
+        );
+      }
+    } catch (err) {
+      setState((prev) =>
+        reduceUpdaterEvent(prev, {
+          event: 'install-failed',
+          data: { message: err instanceof Error ? err.message : String(err) },
+        })
+      );
+    }
+  };
 
   const { phase } = state;
-  const busy = phase === 'checking' || phase === 'available';
+  const busy = phase === 'checking' || phase === 'available' || phase === 'preparing';
 
-  const status = statusLine(state, checkRequested);
+  const status = statusLine(state, checkRequested || installRequested);
 
   // Each action names itself: the visible words are the accessible name (label in name).
   const action =
-    phase === 'downloaded' ? (
+    phase === 'downloaded' || phase === 'installing' ? (
       <Button
         variant="secondary"
         size="sm"
-        onClick={handleRestartAndUpdate}
+        className={phase === 'installing' ? 'br-action-busy' : undefined}
+        aria-disabled={phase === 'installing' || undefined}
+        aria-busy={phase === 'installing' || undefined}
+        onClick={phase === 'installing' ? undefined : handleRestartAndUpdate}
         aria-label={aboutCopy.restartToUpdate}
       >
         {aboutCopy.restartToUpdate}
@@ -167,7 +200,7 @@ export default function UpdateSection() {
         {action}
       </SettingRow>
 
-      {checkRequested && phase === 'error' && state.error && (
+      {(checkRequested || installRequested) && phase === 'error' && state.error && (
         // The failure stays visible (principle 2), with the one way forward beside it.
         <Note
           tone="danger"

@@ -32,6 +32,10 @@ const STARTUP_PATH_MODULES = [
   'utils/autoUpdater.ts',
   'utils/githubUpdater.ts',
   'utils/updateCheckSchedule.ts',
+  'utils/macUpdateInstall.ts',
+  'utils/resumableDownload.ts',
+  'utils/resumableUpdaterDownloads.ts',
+  'utils/electronNetTransport.ts',
   // ⚠ Added after the fact: `ensureWinShims()` is awaited from `appMain()`
   // BEFORE the first window exists, and it held an `fs.cpSync` of the ~120 MB
   // bundled MinGit tree. It was on the startup path from the day it was

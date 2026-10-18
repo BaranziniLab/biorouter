@@ -9,15 +9,29 @@
 // Event names mirror what `src/utils/autoUpdater.ts` sends through
 // `sendStatusToWindow(event, data)`:
 //   checking-for-update | update-available | update-not-available |
-//   download-progress | update-downloaded | error
+//   download-progress | update-preparing | update-downloaded |
+//   update-installing | install-failed | error
+//
+// The main process folds the same events through this same reducer for its
+// `get-update-state` snapshot, so the two can never disagree.
 
 export type UpdatePhase =
   | 'idle'
   | 'checking'
   | 'available' // update found, downloading in the background
+  | 'preparing' // macOS: downloaded, Squirrel.Mac is staging it (not installable yet)
   | 'downloaded' // fully downloaded, ready for one-click restart+install
+  | 'installing' // the person pressed Restart & update; Biorouter is about to quit
   | 'up-to-date'
   | 'error';
+
+/**
+ * Phases an update has arrived in. A background re-check, its progress or its
+ * error must never take one of these away: the update is still there.
+ */
+export function isReadyPhase(phase: UpdatePhase): boolean {
+  return phase === 'preparing' || phase === 'downloaded' || phase === 'installing';
+}
 
 export interface UpdaterState {
   phase: UpdatePhase;
@@ -124,6 +138,16 @@ function versionFromData(data: unknown): string | undefined {
   return undefined;
 }
 
+function messageFromData(data: unknown): string | undefined {
+  if (typeof data === 'string') return data;
+  if (data instanceof Error) return data.message;
+  if (data && typeof data === 'object' && 'message' in data) {
+    const message = (data as { message?: unknown }).message;
+    if (typeof message === 'string') return message;
+  }
+  return undefined;
+}
+
 function percentFromData(data: unknown): number | undefined {
   if (data && typeof data === 'object' && 'percent' in data) {
     const p = (data as { percent?: unknown }).percent;
@@ -149,13 +173,15 @@ export function reduceUpdaterEvent(prev: UpdaterState, payload: UpdaterEventPayl
   switch (payload.event) {
     case 'checking-for-update':
       // Don't clobber a finished download with a later background re-check.
-      if (prev.phase === 'downloaded') return prev;
+      if (isReadyPhase(prev.phase)) return prev;
       return { ...prev, phase: 'checking', error: undefined };
 
     case 'update-available': {
       const latestVersion = versionFromData(payload.data) ?? prev.latestVersion;
-      // Once downloaded, stay downloaded.
-      if (prev.phase === 'downloaded') return { ...prev, latestVersion };
+      // Once downloaded, stay downloaded, and keep naming the version that IS
+      // downloaded: a newer one announces itself with `update-preparing` once
+      // it has arrived.
+      if (isReadyPhase(prev.phase)) return prev;
       return {
         ...prev,
         phase: 'available',
@@ -166,12 +192,12 @@ export function reduceUpdaterEvent(prev: UpdaterState, payload: UpdaterEventPayl
     }
 
     case 'update-not-available':
-      if (prev.phase === 'downloaded') return prev;
+      if (isReadyPhase(prev.phase)) return prev;
       return { ...prev, phase: 'up-to-date', error: undefined };
 
     case 'download-progress': {
       const percent = percentFromData(payload.data) ?? prev.percent;
-      if (prev.phase === 'downloaded') return prev;
+      if (isReadyPhase(prev.phase)) return prev;
       // Progress is monotonic; never let a stray smaller value rewind the bar.
       return {
         ...prev,
@@ -180,21 +206,39 @@ export function reduceUpdaterEvent(prev: UpdaterState, payload: UpdaterEventPayl
       };
     }
 
+    case 'update-preparing': {
+      const latestVersion = versionFromData(payload.data) ?? prev.latestVersion;
+      return { ...prev, phase: 'preparing', latestVersion, percent: 100, error: undefined };
+    }
+
     case 'update-downloaded': {
       const latestVersion = versionFromData(payload.data) ?? prev.latestVersion;
       return { ...prev, phase: 'downloaded', latestVersion, percent: 100, error: undefined };
     }
 
+    case 'update-installing': {
+      const latestVersion = versionFromData(payload.data) ?? prev.latestVersion;
+      return { ...prev, phase: 'installing', latestVersion, percent: 100, error: undefined };
+    }
+
+    case 'install-failed': {
+      // Unlike `error`, this one is ABOUT the ready update: staging or the
+      // install itself failed, so the Restart button no longer works and must
+      // give way to the reason.
+      const latestVersion = versionFromData(payload.data) ?? prev.latestVersion;
+      return {
+        ...prev,
+        phase: 'error',
+        latestVersion,
+        error: messageFromData(payload.data) ?? 'The update could not be installed. Try again.',
+      };
+    }
+
     case 'error': {
-      const message =
-        typeof payload.data === 'string'
-          ? payload.data
-          : payload.data instanceof Error
-            ? payload.data.message
-            : 'Update failed. Try again.';
+      const message = messageFromData(payload.data) ?? 'Update failed. Try again.';
       // A background error after a successful download must not hide the
       // ready-to-install state — the user can still restart into the update.
-      if (prev.phase === 'downloaded') return prev;
+      if (isReadyPhase(prev.phase)) return prev;
       return { ...prev, phase: 'error', error: message };
     }
 
@@ -203,13 +247,29 @@ export function reduceUpdaterEvent(prev: UpdaterState, payload: UpdaterEventPayl
   }
 }
 
+/**
+ * How far along each phase is, for a view that mounts late and must choose
+ * between the snapshot it fetched and the live events that arrived meanwhile:
+ * it adopts the snapshot only when that is further along.
+ */
+export const UPDATE_PHASE_ORDER: readonly UpdatePhase[] = [
+  'idle',
+  'up-to-date',
+  'checking',
+  'error',
+  'available',
+  'preparing',
+  'downloaded',
+  'installing',
+];
+
 /** Should the startup modal be visible for this state? */
 export function shouldShowUpdateModal(state: UpdaterState): boolean {
-  return state.phase === 'available' || state.phase === 'downloaded' || state.phase === 'error';
+  return state.phase === 'available' || state.phase === 'error' || isReadyPhase(state.phase);
 }
 
 export function hasKnownUpdate(state: UpdaterState): boolean {
-  if (state.phase === 'available' || state.phase === 'downloaded') return true;
+  if (state.phase === 'available' || isReadyPhase(state.phase)) return true;
   return !!state.latestVersion && (state.phase === 'checking' || state.phase === 'error');
 }
 
@@ -234,8 +294,10 @@ export function stateFromSnapshot(
   const latestVersion = snapshot.latestVersion
     ? normalizeVersion(snapshot.latestVersion)
     : undefined;
+  // A status this build does not know (an older or newer main process) falls
+  // back to the boolean rather than becoming a phase nothing renders.
   let phase: UpdatePhase = 'idle';
-  if (snapshot.status) {
+  if (snapshot.status && UPDATE_PHASE_ORDER.includes(snapshot.status)) {
     phase = snapshot.status;
   } else if (snapshot.updateAvailable) {
     phase = 'available';
@@ -244,7 +306,7 @@ export function stateFromSnapshot(
     phase,
     latestVersion,
     percent:
-      typeof snapshot.percent === 'number' ? snapshot.percent : phase === 'downloaded' ? 100 : 0,
+      typeof snapshot.percent === 'number' ? snapshot.percent : isReadyPhase(phase) ? 100 : 0,
     usingFallback: !!snapshot.usingFallback,
     error: snapshot.error,
   };

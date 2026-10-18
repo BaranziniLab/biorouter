@@ -8,6 +8,7 @@ import {
   isNewerVersion,
   normalizeVersion,
   needsAssistedDownload,
+  isReadyPhase,
   type UpdaterState,
 } from './updaterState';
 
@@ -276,6 +277,74 @@ describe('needsAssistedDownload', () => {
     // nothing to download.
     expect(needsAssistedDownload({ phase: 'downloaded', percent: 100, usingFallback: true })).toBe(
       false
+    );
+  });
+});
+
+/**
+ * The macOS install stages. "Downloaded" used to mean "installable", and the
+ * gap between the two is where Restart & update did nothing.
+ */
+describe('reduceUpdaterEvent — macOS staging and install', () => {
+  it('a finished download is "preparing" until Squirrel.Mac has staged it', () => {
+    const state = fold([
+      { event: 'update-available', data: { version: '1.93.2' } },
+      { event: 'update-preparing', data: { version: '1.93.2' } },
+    ]);
+    expect(state).toMatchObject({ phase: 'preparing', latestVersion: '1.93.2', percent: 100 });
+    expect(shouldShowUpdateModal(state)).toBe(true);
+    expect(hasKnownUpdate(state)).toBe(true);
+  });
+
+  it('background checks, progress and errors never take a ready update away', () => {
+    for (const ready of ['update-preparing', 'update-downloaded', 'update-installing']) {
+      const before = fold([{ event: ready, data: { version: '1.93.2' } }]);
+      const after = fold([
+        { event: ready, data: { version: '1.93.2' } },
+        { event: 'checking-for-update' },
+        { event: 'update-available', data: { version: '1.93.3' } },
+        { event: 'download-progress', data: { percent: 5 } },
+        { event: 'update-not-available' },
+        { event: 'error', data: 'offline' },
+      ]);
+      expect(after).toEqual(before);
+    }
+  });
+
+  it('a failed install replaces the ready state with its reason', () => {
+    const state = fold([
+      { event: 'update-downloaded', data: { version: '1.93.2' } },
+      { event: 'update-installing', data: { version: '1.93.2' } },
+      { event: 'install-failed', data: { version: '1.93.2', message: 'could not quit' } },
+    ]);
+    expect(state).toMatchObject({
+      phase: 'error',
+      latestVersion: '1.93.2',
+      error: 'could not quit',
+    });
+  });
+
+  it('a newer version takes over once it has arrived', () => {
+    const state = fold([
+      { event: 'update-downloaded', data: { version: '1.93.2' } },
+      { event: 'update-preparing', data: { version: '1.93.3' } },
+    ]);
+    expect(state).toMatchObject({ phase: 'preparing', latestVersion: '1.93.3' });
+  });
+
+  it('knows which phases hold an update', () => {
+    expect(['preparing', 'downloaded', 'installing'].every((p) => isReadyPhase(p as never))).toBe(
+      true
+    );
+    expect(['available', 'error', 'checking'].some((p) => isReadyPhase(p as never))).toBe(false);
+  });
+
+  it('recovers the new phases from a snapshot, and ignores a status it does not know', () => {
+    expect(stateFromSnapshot({ status: 'preparing', latestVersion: '1.93.2' }).phase).toBe(
+      'preparing'
+    );
+    expect(stateFromSnapshot({ status: 'downloading' as never, updateAvailable: true }).phase).toBe(
+      'available'
     );
   });
 });

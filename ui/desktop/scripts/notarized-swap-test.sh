@@ -10,8 +10,26 @@
 #   $OLD_APP  — signed+notarized Biorouter.app at the OLD version (under test)
 #
 # Flow: serve NEW + latest-mac.yml over local HTTP → run a copy of OLD pointed at
-# that feed with BIOROUTER_UPDATE_AUTO_INSTALL=1 → poll OLD's on-disk version
-# until it flips to NEW (swap succeeded) or times out.
+# that feed with BIOROUTER_UPDATE_AUTO_INSTALL=1 → wait for OLD to quit, ShipIt
+# to install, and ShipIt to RELAUNCH the app.
+#
+# ⚠ It used to stop at the swap: PASS meant the on-disk version flipped, which
+# a ShipIt that installed and never relaunched also produces. "The app doesn't
+# restart after updating" was reported against releases this test had passed.
+# PASS now needs ShipIt's own "Successfully launched application" line for the
+# staged copy, written after this run started.
+#
+# FEED_VER (default NEW_VER) is the version the served manifest claims. Set it
+# above OLD_VER and point NEW_ZIP at the SAME build as OLD_APP to check the
+# whole install and relaunch with one signed build: Squirrel.Mac checks the
+# update's signature, not its version. The on-disk version then stays put, so
+# only the relaunch decides.
+#
+# ⚠ The test app shares ShipIt's state with any installed Biorouter
+# (~/Library/Caches/com.electron.biorouter.ShipIt): an update the installed app
+# had staged is replaced, and that app downloads it again at its next check.
+# The relaunched copy runs without this script's environment, so if Biorouter
+# is already open it hands over to that instance and exits.
 #
 # Config is sandboxed via XDG_CONFIG_HOME so the user's real ~/.config/biorouter
 # is never touched.
@@ -23,6 +41,9 @@ OLD_VER="${OLD_VER:-1.85.5}"
 NEW_ZIP="${NEW_ZIP:-$DESK/out/make/zip/darwin/arm64/Biorouter-darwin-arm64-$NEW_VER.zip}"
 OLD_APP="${OLD_APP:-$DESK/test-builds/old/Biorouter.app}"
 PORT="${PORT:-8799}"
+FEED_VER="${FEED_VER:-$NEW_VER}"
+SHIPIT_LOG="$HOME/Library/Caches/com.electron.biorouter.ShipIt/ShipIt_stderr.log"
+SHIPIT_LINES_BEFORE="$( [ -f "$SHIPIT_LOG" ] && wc -l < "$SHIPIT_LOG" | tr -d ' ' || echo 0 )"
 
 WORK="$(mktemp -d /tmp/br-swap.XXXXXX)"
 SERVE="$WORK/serve"; RUNDIR="$WORK/run"; CFG="$WORK/config"
@@ -48,7 +69,7 @@ echo "==> building update feed (latest-mac.yml + zip) from $NEW_ZIP"
 [ -f "$NEW_ZIP" ] || { echo "FAIL: NEW_ZIP missing: $NEW_ZIP"; exit 1; }
 cp "$NEW_ZIP" "$SERVE/"
 ( cd "$DESK" && node scripts/generate-update-manifests.js \
-    --version "$NEW_VER" --arm64-zip "$SERVE/$(basename "$NEW_ZIP")" --out "$SERVE" >/dev/null )
+    --version "$FEED_VER" --arm64-zip "$SERVE/$(basename "$NEW_ZIP")" --out "$SERVE" >/dev/null )
 [ -f "$SERVE/latest-mac.yml" ] || { echo "FAIL: manifest not generated"; exit 1; }
 echo "    manifest:"; sed 's/^/      /' "$SERVE/latest-mac.yml"
 
@@ -81,13 +102,20 @@ ENABLE_DEV_UPDATES=true \
   "$BIN" --user-data-dir="$USERDATA" >"$WORK/stdout.log" 2>&1 &
 APP_PID=$!
 
-echo "==> polling for in-place swap to $NEW_VER (up to ~150s)"
+# New ShipIt lines since this run started.
+shipit_since() { [ -f "$SHIPIT_LOG" ] && tail -n +"$((SHIPIT_LINES_BEFORE + 1))" "$SHIPIT_LOG" || true; }
+
+echo "==> waiting for quit, install and relaunch (up to ~180s)"
 RESULT="timeout"
-for i in $(seq 1 30); do
+EXITED="no"
+for i in $(seq 1 36); do
   sleep 5
   NOW="$(/usr/libexec/PlistBuddy -c 'Print CFBundleShortVersionString' "$PLIST" 2>/dev/null || echo '?')"
-  echo "    [$((i*5))s] on-disk version = $NOW"
-  if [ "$NOW" = "$NEW_VER" ]; then RESULT="swapped"; break; fi
+  kill -0 "$APP_PID" 2>/dev/null || EXITED="yes"
+  echo "    [$((i*5))s] on-disk version = $NOW, old process exited = $EXITED"
+  if shipit_since | grep -q "Successfully launched application at file://$APP/"; then
+    RESULT="relaunched"; break
+  fi
 done
 
 echo "==> updater log excerpt:"
@@ -95,15 +123,19 @@ grep -iE "feed override|auto-updater|update-(available|downloaded)|checking|squi
 [ -s "$APPLOG" ] || echo "      (no electron-log produced — app may not have started; stdout below)"
 [ -s "$WORK/stdout.log" ] && { echo "      --- stdout ---"; tail -15 "$WORK/stdout.log" | sed 's/^/      /'; }
 
+echo "==> ShipIt log for this run:"
+shipit_since | grep -v "^ " | tail -20 | sed 's/^/      /'
+
 AFTER="$(/usr/libexec/PlistBuddy -c 'Print CFBundleShortVersionString' "$PLIST" 2>/dev/null || echo '?')"
 echo
 echo "==================== RESULT ===================="
-echo "  before: $BEFORE   after: $AFTER   outcome: $RESULT"
-if [ "$RESULT" = "swapped" ] && [ "$AFTER" = "$NEW_VER" ]; then
-  echo "  PASS: notarized in-place auto-update swap succeeded ($BEFORE -> $AFTER)"
+echo "  before: $BEFORE   after: $AFTER   old process exited: $EXITED   outcome: $RESULT"
+if [ "$RESULT" = "relaunched" ] && [ "$AFTER" = "$NEW_VER" ]; then
+  echo "  PASS: installed $AFTER in place and relaunched it"
   exit 0
 fi
-echo "  FAIL: app did not swap to $NEW_VER"
-echo "  (full app log at $WORK/app.log — kept for inspection)"
+[ "$AFTER" != "$NEW_VER" ] && echo "  FAIL: the app on disk is $AFTER, not $NEW_VER"
+[ "$RESULT" != "relaunched" ] && echo "  FAIL: ShipIt did not relaunch the app"
+echo "  (app log at $APPLOG — kept for inspection)"
 trap - EXIT; cleanup
 exit 1

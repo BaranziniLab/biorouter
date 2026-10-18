@@ -1,5 +1,6 @@
 import { autoUpdater, UpdateInfo } from 'electron-updater';
 import {
+  autoUpdater as squirrelMac,
   BrowserWindow,
   ipcMain,
   nativeImage,
@@ -24,6 +25,19 @@ import { githubUpdater } from './githubUpdater';
 import { biorouterVersion } from './biorouterVersion';
 import { loadRecentDirs } from './recentDirs';
 import { scheduleUpdateChecks, type AutomaticUpdateCheckReason } from './updateCheckSchedule';
+import { MacInstallCoordinator } from './macUpdateInstall';
+import {
+  describeUpdateDownloadError,
+  installResumableUpdaterDownloads,
+} from './resumableUpdaterDownloads';
+import { electronNetOpenPart } from './electronNetTransport';
+import {
+  initialUpdaterState,
+  isReadyPhase,
+  reduceUpdaterEvent,
+  type UpdatePhase,
+  type UpdaterState,
+} from './updaterState';
 
 let updateAvailable = false;
 let trayRef: Tray | null = null;
@@ -37,18 +51,54 @@ let githubUpdateInfo: {
   extractedPath?: string;
 } = {};
 
-// Store update state. Richer than a simple boolean so a renderer that mounts
-// after some updater events already fired can fully recover the current view
-// (downloading w/ progress, ready-to-install, error) via `get-update-state`.
-type UpdatePhase = 'checking' | 'available' | 'downloaded' | 'up-to-date' | 'error';
-let lastUpdateState: {
+// The view every window shows, folded by the SAME reducer the renderer runs, so
+// a window that opens late (`get-update-state`) recovers exactly what a window
+// that was open all along is showing. This used to be a second, hand-written
+// copy of the reducer, which is how the two could disagree about what an event
+// means.
+let viewState: UpdaterState = initialUpdaterState;
+
+/** What `get-update-state` returns: null until the updater has said anything. */
+function updateSnapshot(): {
   updateAvailable: boolean;
   latestVersion?: string;
-  status?: UpdatePhase;
-  percent?: number;
-  usingFallback?: boolean;
+  status: UpdatePhase;
+  percent: number;
+  usingFallback: boolean;
   error?: string;
-} | null = null;
+} | null {
+  if (viewState.phase === 'idle') return null;
+  return {
+    updateAvailable: viewState.phase === 'available' || isReadyPhase(viewState.phase),
+    latestVersion: viewState.latestVersion,
+    status: viewState.phase,
+    percent: viewState.percent,
+    usingFallback: viewState.usingFallback,
+    error: viewState.error,
+  };
+}
+
+// The download electron-updater is running for us, if any. `autoDownload` is
+// off: a download started by electron-updater itself could neither be kept
+// from repeating (every three-hourly check re-downloaded and re-staged the same
+// update) nor told apart from a failed check when it errored.
+/** Resolves to the failure message, or null once the download is done. */
+let downloadInFlight: Promise<string | null> | null = null;
+/**
+ * True from the moment a download is requested until it settles. Separate from
+ * `downloadInFlight` because electron-updater may emit the download's `error`
+ * before `downloadUpdate()` has returned the promise to assign.
+ */
+let downloading = false;
+
+// macOS only: Squirrel.Mac's staging and the quit that installs it. See
+// macUpdateInstall.ts for why "downloaded" is not "ready to install".
+const macInstall = new MacInstallCoordinator({
+  quitAndInstall: () => autoUpdater.quitAndInstall(false, true),
+  emit: (event, data) => sendStatusToWindow(event, data),
+  ensureWindow: () => openWindowIfNone(),
+  log: (message) => log.info(`[update] ${message}`),
+});
 
 // Track last reported progress to prevent backward jumps
 let lastReportedProgress = 0;
@@ -207,9 +257,13 @@ export function registerUpdateIpcHandlers() {
           throw new Error(errorMsg);
         }
       } else {
-        // Use electron-updater
-        await autoUpdater.downloadUpdate();
-        return { success: true, error: null };
+        // electron-updater, through the same door as the automatic download, so
+        // a second press joins the running download and a failure is reported
+        // once.
+        const version = viewState.latestVersion;
+        if (!version) throw new Error('No update to download. Check for updates first.');
+        const error = await startUpdateDownload(version);
+        return error ? { success: false, error } : { success: true, error: null };
       }
     } catch (error) {
       log.error('Error downloading update:', error);
@@ -221,13 +275,25 @@ export function registerUpdateIpcHandlers() {
   });
 
   ipcMain.handle('install-update', async () => {
-    if (isUsingGitHubFallback) {
+    // Decided by WHO downloaded the update, not by `isUsingGitHubFallback`.
+    // That flag used to stay set for the life of the process after a single
+    // failed check, and then a macOS update electron-updater had downloaded
+    // was "installed" by the assisted path, which threw "Update file path not
+    // found" into a renderer that never looked: Restart & update did nothing.
+    if (process.platform === 'darwin' && macInstall.pendingVersion !== null) {
+      return macInstall.requestInstall();
+    }
+    if (githubUpdateInfo.downloadPath) {
       // For GitHub fallback, we need to handle the installation differently
       log.info('Installing update from GitHub fallback...');
 
       try {
-        // Use the stored extracted path if available, otherwise download path
-        const updatePath = githubUpdateInfo.extractedPath || githubUpdateInfo.downloadPath;
+        // ⚠ The downloaded FILE, never `extractedPath`. Nothing is extracted any
+        // more: `extractedPath` is the Downloads folder itself, and preferring it
+        // classified a downloaded Setup.exe by the folder's name, so Windows got
+        // the zip instructions and the "Open Folder Only" button that the
+        // installer must never be offered (see updateRequiresQuitFirst).
+        const updatePath = githubUpdateInfo.downloadPath;
 
         if (!updatePath) {
           throw new Error('Update file path not found. Download the update first.');
@@ -281,14 +347,18 @@ export function registerUpdateIpcHandlers() {
           shell.showItemInFolder(updatePath);
         }
         // response === 2 is Cancel
+        return { ok: true };
       } catch (error) {
         log.error('Error installing GitHub update:', error);
-        throw error;
+        return { ok: false, error: error instanceof Error ? error.message : String(error) };
       }
-    } else {
-      // Use electron-updater's built-in install
-      autoUpdater.quitAndInstall(false, true);
     }
+    if (process.platform !== 'darwin' && isReadyPhase(viewState.phase)) {
+      // electron-updater downloaded it on a platform without Squirrel.Mac.
+      autoUpdater.quitAndInstall(false, true);
+      return { ok: true };
+    }
+    return { ok: false, error: 'No update is ready to install yet. Check for updates first.' };
   });
 
   ipcMain.handle('get-current-version', () => {
@@ -296,7 +366,7 @@ export function registerUpdateIpcHandlers() {
   });
 
   ipcMain.handle('get-update-state', () => {
-    return lastUpdateState;
+    return updateSnapshot();
   });
 
   ipcMain.handle('is-using-github-fallback', () => {
@@ -402,9 +472,29 @@ export function setupAutoUpdater(tray?: Tray) {
     log.error('Error getting feed URL:', e);
   }
 
-  // Configure auto-updater settings
-  autoUpdater.autoDownload = true; // Automatically download updates when available
+  // Configure auto-updater settings. Updates still download on their own, but
+  // through startUpdateDownload (on `update-available`), not electron-updater's
+  // autoDownload: see `downloadInFlight`.
+  autoUpdater.autoDownload = false;
   autoUpdater.autoInstallOnAppQuit = true;
+
+  // One dropped connection used to end the download (net::ERR_CONNECTION_RESET,
+  // 1.93.0 → 1.93.1). Resume it instead. See resumableDownload.ts.
+  if (
+    installResumableUpdaterDownloads(autoUpdater, electronNetOpenPart(), (m) =>
+      log.info(`[update] ${m}`)
+    )
+  ) {
+    log.info('Update downloads resume after a dropped connection');
+  }
+
+  if (process.platform === 'darwin') {
+    // Squirrel.Mac's OWN readiness, which is what Restart & update depends on.
+    // Its errors also reach electron-updater's 'error' event, handled below.
+    squirrelMac.on('update-downloaded', () => {
+      if (macInstall.staged()) showUpdateReadyNotification();
+    });
+  }
 
   // Enable updates in development mode for testing
   if (process.env.ENABLE_DEV_UPDATES === 'true') {
@@ -543,13 +633,18 @@ export function setupAutoUpdater(tray?: Tray) {
 
   autoUpdater.on('update-available', (info: UpdateInfo) => {
     log.info('Update available:', info);
+    // electron-updater answered, so it is the path: a fallback chosen after an
+    // earlier failed check no longer applies.
+    isUsingGitHubFallback = false;
     updateAvailable = true;
     updateTrayIcon(true);
     sendStatusToWindow('update-available', info);
+    void startUpdateDownload(info.version);
   });
 
   autoUpdater.on('update-not-available', (info: UpdateInfo) => {
     log.info('Update not available:', info);
+    isUsingGitHubFallback = false;
     clearUpdateAvailabilityUnlessDownloaded();
     sendStatusToWindow('update-not-available', info);
   });
@@ -563,6 +658,18 @@ export function setupAutoUpdater(tray?: Tray) {
       code: 'code' in err ? err.code : undefined,
       toString: err.toString(),
     });
+
+    // A failed download is reported once, by startUpdateDownload, which also
+    // sees this error as its rejection. Treating it here as well sent it down
+    // the check-failure path below, where ERR_CONNECTION_REFUSED switched a
+    // macOS download to the assisted DMG fallback.
+    if (downloading) return;
+    // Squirrel.Mac staging or installing the update: the install failed, and
+    // the person must see why rather than a Restart button that does nothing.
+    if (process.platform === 'darwin' && macInstall.ownsErrors) {
+      macInstall.fail(err.message);
+      return;
+    }
 
     // Check if this is a 404 error (missing update files) or connection error
     if (
@@ -631,32 +738,89 @@ export function setupAutoUpdater(tray?: Tray) {
 
   autoUpdater.on('update-downloaded', (info: UpdateInfo) => {
     log.info('Update downloaded:', info);
-    sendStatusToWindow('update-downloaded', info);
-
-    // Show native notification
-    const notification = new Notification({
-      title: 'Update ready',
-      body: `Version ${info.version} will be installed when you quit Biorouter. Click to install now.`,
-    });
-    notification.show();
-
-    // Optional: Add click handler to install immediately
-    notification.on('click', () => {
-      autoUpdater.quitAndInstall(false, true);
-    });
+    if (process.platform === 'darwin') {
+      // Not installable yet: Squirrel.Mac stages it first, and macInstall says
+      // `update-downloaded` to the windows once it has.
+      macInstall.downloaded(info.version);
+    } else {
+      sendStatusToWindow('update-downloaded', info);
+    }
 
     // Test-only: deterministically trigger the one-click install without a GUI
     // click, so the full quitAndInstall → in-place swap → relaunch path can be
     // exercised in an automated update test. Gated behind BOTH the feed
-    // override and an explicit flag, so it can never fire in production.
+    // override and an explicit flag, so it can never fire in production. It
+    // goes through requestInstall, the path the Restart button takes.
     if (
       process.env.BIOROUTER_UPDATE_FEED_URL &&
       process.env.BIOROUTER_UPDATE_AUTO_INSTALL === '1'
     ) {
       log.info('[test] BIOROUTER_UPDATE_AUTO_INSTALL set. Installing update now');
-      setTimeout(() => autoUpdater.quitAndInstall(false, true), 1500);
+      setTimeout(() => {
+        if (process.platform === 'darwin') macInstall.requestInstall();
+        else autoUpdater.quitAndInstall(false, true);
+      }, 1500);
     }
   });
+}
+
+/** The update is staged; say so outside the app too. Clicking installs it. */
+function showUpdateReadyNotification(): void {
+  const version = macInstall.pendingVersion;
+  if (!version) return;
+  const notification = new Notification({
+    title: 'Update ready',
+    body: `Version ${version} will be installed when you quit Biorouter. Click to install now.`,
+  });
+  notification.on('click', () => macInstall.requestInstall());
+  notification.show();
+}
+
+/**
+ * Download the update electron-updater just found, unless that version is
+ * already downloaded or downloading.
+ *
+ * ⚠ Without the version check every three-hourly check downloaded the same
+ * update again and had Squirrel.Mac stage it again: ShipIt's log on a machine
+ * that left an update waiting shows a fresh "install request" every three
+ * hours, and each one re-opened the window in which Restart & update could
+ * race a half-staged update.
+ */
+function startUpdateDownload(version: string): Promise<string | null> {
+  if (downloadInFlight) {
+    log.info(`[update] A download is already running; not starting one for ${version}`);
+    return downloadInFlight;
+  }
+  if (process.platform === 'darwin' && macInstall.pendingVersion === version) {
+    log.info(`[update] ${version} is already downloaded; not downloading it again`);
+    return Promise.resolve(null);
+  }
+  lastReportedProgress = 0;
+  downloading = true;
+  const download: Promise<string | null> = Promise.resolve()
+    .then(() => autoUpdater.downloadUpdate())
+    .then(() => null)
+    .catch((error: unknown) => {
+      if (error instanceof Error && error.name === 'CancellationError') return null;
+      log.error('[update] Update download failed:', error);
+      const message = describeUpdateDownloadError(error);
+      if (process.platform === 'darwin' && macInstall.ownsErrors) macInstall.fail(message);
+      else sendStatusToWindow('error', message);
+      return message;
+    })
+    .finally(() => {
+      downloading = false;
+      downloadInFlight = null;
+    });
+  downloadInFlight = download;
+  return download;
+}
+
+/** A window to show an update failure in, when the install closed them all. */
+function openWindowIfNone(): void {
+  if (BrowserWindow.getAllWindows().length > 0) return;
+  const recentDirs = loadRecentDirs();
+  ipcMain.emit('create-chat-window', {}, undefined, recentDirs[0] ?? null);
 }
 
 interface UpdaterEvent {
@@ -669,7 +833,7 @@ interface UpdaterEvent {
 function sendStatusToWindow(event: string, data?: unknown) {
   // Keep the persisted snapshot in lockstep with every emitted event so the
   // renderer can recover state if it mounts late (get-update-state).
-  recordStateForEvent(event, data);
+  viewState = reduceUpdaterEvent(viewState, { event, data, usingFallback: isUsingGitHubFallback });
   const windows = BrowserWindow.getAllWindows();
   windows.forEach((win) => {
     // Stamp the mode on EVERY event. The renderer decides between "downloading
@@ -685,83 +849,8 @@ function sendStatusToWindow(event: string, data?: unknown) {
   });
 }
 
-function versionFromData(d: unknown): string | undefined {
-  if (d && typeof d === 'object' && 'version' in d) {
-    const v = (d as { version?: unknown }).version;
-    if (typeof v === 'string') return v;
-  }
-  return undefined;
-}
-
-function percentFromData(d: unknown): number | undefined {
-  if (d && typeof d === 'object' && 'percent' in d) {
-    const p = (d as { percent?: unknown }).percent;
-    if (typeof p === 'number' && Number.isFinite(p)) return Math.round(p);
-  }
-  return undefined;
-}
-
-// Fold an updater event into `lastUpdateState`. A finished download is sticky:
-// later background re-checks/errors must not hide the ready-to-install state.
-function recordStateForEvent(event: string, data?: unknown) {
-  const base = lastUpdateState ?? { updateAvailable: false, percent: 0 };
-  const downloaded = base.status === 'downloaded';
-  switch (event) {
-    case 'checking-for-update':
-      if (downloaded) break;
-      lastUpdateState = { ...base, status: 'checking', usingFallback: isUsingGitHubFallback };
-      break;
-    case 'update-available':
-      lastUpdateState = {
-        updateAvailable: true,
-        latestVersion: versionFromData(data) ?? base.latestVersion,
-        status: downloaded ? 'downloaded' : 'available',
-        percent: base.status === 'available' ? (base.percent ?? 0) : downloaded ? 100 : 0,
-        usingFallback: isUsingGitHubFallback,
-      };
-      break;
-    case 'update-not-available':
-      if (downloaded) break;
-      lastUpdateState = {
-        updateAvailable: false,
-        status: 'up-to-date',
-        percent: 0,
-        usingFallback: isUsingGitHubFallback,
-      };
-      break;
-    case 'download-progress':
-      if (downloaded) break;
-      lastUpdateState = {
-        ...base,
-        updateAvailable: true,
-        status: 'available',
-        percent: Math.max(base.percent ?? 0, percentFromData(data) ?? 0),
-        usingFallback: isUsingGitHubFallback,
-      };
-      break;
-    case 'update-downloaded':
-      lastUpdateState = {
-        updateAvailable: true,
-        latestVersion: versionFromData(data) ?? base.latestVersion,
-        status: 'downloaded',
-        percent: 100,
-        usingFallback: isUsingGitHubFallback,
-      };
-      break;
-    case 'error':
-      if (downloaded) break;
-      lastUpdateState = {
-        ...base,
-        status: 'error',
-        error: typeof data === 'string' ? data : 'Update failed',
-        usingFallback: isUsingGitHubFallback,
-      };
-      break;
-  }
-}
-
 function clearUpdateAvailabilityUnlessDownloaded() {
-  const hasDownloadedUpdate = lastUpdateState?.status === 'downloaded';
+  const hasDownloadedUpdate = isReadyPhase(viewState.phase);
   updateAvailable = hasDownloadedUpdate;
   updateTrayIcon(hasDownloadedUpdate);
 }

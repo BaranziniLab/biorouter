@@ -130,9 +130,11 @@ describe('UpdateAvailableModal — one-click flow', () => {
       error: 'network unreachable',
     });
 
-    expect(await screen.findByText(/Update download failed/i)).toBeTruthy();
+    expect(await screen.findByText(/Update failed/i)).toBeTruthy();
     expect(screen.getByText(/network unreachable/i)).toBeTruthy();
     expect(screen.queryByRole('button', { name: /Restart & Update/i })).toBeNull();
+    // A failure with the update in hand can be retried now, not in three hours.
+    expect(screen.getByRole('button', { name: /Try again/i })).toBeTruthy();
   });
 
   it('a background error after download does not hide the install button', async () => {
@@ -207,6 +209,100 @@ describe('UpdateAvailableModal — one-click flow', () => {
   });
 });
 
+/**
+ * "Restart & update" did nothing on some Macs. These are the ways it could, and
+ * what the dialog says now instead of nothing.
+ */
+describe('UpdateAvailableModal — macOS install', () => {
+  it('offers no install button while macOS is still preparing the update', async () => {
+    render(<UpdateAvailableModal />);
+    emitAct({ event: 'update-preparing', data: { version: '1.93.2' } });
+    requestModal({
+      phase: 'preparing',
+      latestVersion: '1.93.2',
+      percent: 100,
+      usingFallback: false,
+    });
+
+    expect(await screen.findByText(/Preparing the update/i)).toBeTruthy();
+    expect(screen.queryByRole('button', { name: /Restart & Update/i })).toBeNull();
+
+    // Squirrel.Mac staged it: now, and only now, the button works.
+    emitAct({ event: 'update-downloaded', data: { version: '1.93.2' } });
+    expect(await screen.findByRole('button', { name: /Restart & Update/i })).toBeTruthy();
+  });
+
+  it('shows the restart under way', async () => {
+    render(<UpdateAvailableModal />);
+    emitAct({ event: 'update-downloaded', data: { version: '1.93.2' } });
+    requestModal({
+      phase: 'downloaded',
+      latestVersion: '1.93.2',
+      percent: 100,
+      usingFallback: false,
+    });
+    await screen.findByRole('button', { name: /Restart & Update/i });
+
+    emitAct({ event: 'update-installing', data: { version: '1.93.2' } });
+    expect(await screen.findByText(/Restarting to update/i)).toBeTruthy();
+    expect(screen.queryByRole('button', { name: /Restart & Update/i })).toBeNull();
+  });
+
+  it('says why when the main process refuses the install, instead of doing nothing', async () => {
+    installUpdate.mockResolvedValue({ ok: false, error: 'No update is ready to install yet.' });
+    render(<UpdateAvailableModal />);
+    emitAct({ event: 'update-downloaded', data: { version: '1.93.2' } });
+    requestModal({
+      phase: 'downloaded',
+      latestVersion: '1.93.2',
+      percent: 100,
+      usingFallback: false,
+    });
+
+    fireEvent.click(await screen.findByRole('button', { name: /Restart & Update/i }));
+    expect(await screen.findByText('No update is ready to install yet.')).toBeTruthy();
+    expect(screen.getByText(/Update failed/i)).toBeTruthy();
+  });
+
+  it('replaces a ready update with the reason the install failed', async () => {
+    render(<UpdateAvailableModal />);
+    emitAct({ event: 'update-downloaded', data: { version: '1.93.2' } });
+    requestModal({
+      phase: 'downloaded',
+      latestVersion: '1.93.2',
+      percent: 100,
+      usingFallback: false,
+    });
+    await screen.findByRole('button', { name: /Restart & Update/i });
+
+    emitAct({
+      event: 'install-failed',
+      data: { version: '1.93.2', message: 'Cannot update while running on a read-only volume.' },
+    });
+    expect(await screen.findByText(/read-only volume/i)).toBeTruthy();
+    expect(screen.queryByRole('button', { name: /Restart & Update/i })).toBeNull();
+  });
+
+  it('Try again checks for the update again at once', async () => {
+    const checkForUpdates = vi.fn().mockResolvedValue({ updateInfo: null, error: null });
+    (window as unknown as { electron: Record<string, unknown> }).electron.checkForUpdates =
+      checkForUpdates;
+    render(<UpdateAvailableModal />);
+    emitAct({ event: 'update-available', data: { version: '1.93.2' } });
+    emitAct({ event: 'error', data: 'The download kept failing (net::ERR_CONNECTION_RESET).' });
+    requestModal({
+      phase: 'error',
+      latestVersion: '1.93.2',
+      percent: 0,
+      usingFallback: false,
+      error: 'The download kept failing (net::ERR_CONNECTION_RESET).',
+    });
+
+    fireEvent.click(await screen.findByRole('button', { name: /Try again/i }));
+    await waitFor(() => expect(checkForUpdates).toHaveBeenCalledTimes(1));
+  });
+});
+
 describe('UpdateAvailableModal — assisted (non-mac) download', () => {
   /**
    * The Windows bug in one test.
@@ -252,6 +348,22 @@ describe('UpdateAvailableModal — assisted (non-mac) download', () => {
 
     expect(await screen.findByText(/downloading in the background/i)).toBeTruthy();
     expect(screen.queryByRole('button', { name: /Download update/i })).toBeNull();
+  });
+
+  /** The assisted install opens an installer; it must not promise a restart. */
+  it('names the assisted install for what it does', async () => {
+    render(<UpdateAvailableModal />);
+    emitAct({ event: 'update-downloaded', data: { version: '1.86.0' }, usingFallback: true });
+    requestModal({
+      phase: 'downloaded',
+      latestVersion: '1.86.0',
+      percent: 100,
+      usingFallback: true,
+    });
+
+    expect(await screen.findByRole('button', { name: /Install update/i })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: /Restart & Update/i })).toBeNull();
+    expect(screen.queryByText(/reopen on the new version automatically/i)).toBeNull();
   });
 
   /** Once bytes are moving, progress is real again even in assisted mode. */

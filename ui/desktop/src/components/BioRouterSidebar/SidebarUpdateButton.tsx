@@ -6,20 +6,12 @@ import {
   initialUpdaterState,
   reduceUpdaterEvent,
   stateFromSnapshot,
+  UPDATE_PHASE_ORDER,
   type UpdaterState,
 } from '../../utils/updaterState';
 import { requestUpdateModal } from '../../utils/updateUiEvents';
 import { SidebarMenuItem } from '../ui/sidebar';
 import { sidebarCopy } from './copy';
-
-const PHASE_ORDER: UpdaterState['phase'][] = [
-  'idle',
-  'up-to-date',
-  'checking',
-  'error',
-  'available',
-  'downloaded',
-];
 
 export default function SidebarUpdateButton() {
   const [state, setState] = useState<UpdaterState>(initialUpdaterState);
@@ -38,7 +30,7 @@ export default function SidebarUpdateButton() {
         if (cancelled || !snapshot) return;
         const recovered = stateFromSnapshot(snapshot);
         setState((previous) =>
-          PHASE_ORDER.indexOf(recovered.phase) > PHASE_ORDER.indexOf(previous.phase)
+          UPDATE_PHASE_ORDER.indexOf(recovered.phase) > UPDATE_PHASE_ORDER.indexOf(previous.phase)
             ? recovered
             : previous
         );

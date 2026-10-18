@@ -462,7 +462,7 @@ if (needsHeadlessElectron || typeof window.appConfig === 'undefined') {
       }),
       checkForUpdates: async () => null,
       downloadUpdate: async () => ({ success: false, error: null }),
-      installUpdate: () => {},
+      installUpdate: async () => ({ ok: false, error: null }),
       restartApp: () => {},
       onUpdaterEvent: () => () => {},
       // A browser cannot know where a dropped file lives on disk -- and the

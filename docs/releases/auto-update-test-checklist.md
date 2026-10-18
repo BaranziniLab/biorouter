@@ -178,6 +178,59 @@ prompt; after BioRouter restarts on the current version, the button is absent.
   verified no modal appears on detection, clicked the button through the
   accessibility surface, and observed the normal update prompt open.
 
+### Dropped downloads and the restart that did nothing, executed 2026-10-18
+
+Two reports against 1.93.0: "Update download failed" with
+`net::ERR_CONNECTION_RESET` on the way to 1.93.1, and, from earlier releases,
+"the app doesn't restart after the update". Both were real, and both are fixed
+in 1.93.2.
+
+- **The download.** electron-updater fetched the ~250 MB zip in one request with
+  no retry, so one reset ended the update and the next attempt was the
+  three-hourly check, from byte 0. Downloads now go through
+  `utils/resumableDownload.ts`: a dropped connection is followed by a
+  `Range: bytes=<n>-` request for the rest, the checksum is taken over the
+  finished file, and the dialog has **Try again** instead of only "Download from
+  Biorouter".
+- **The restart.** Three ways **Restart & update** did nothing, each now either
+  works or says why (`utils/macUpdateInstall.ts`):
+  - electron-updater's `update-downloaded` fires before Squirrel.Mac has staged
+    the update, and the button appeared then. A click while Squirrel was still
+    working did nothing visible, and quitting by hand then installed the update
+    WITHOUT a relaunch. The dialog now says **Preparing the update…** until
+    Squirrel.Mac's own `update-downloaded`.
+  - A Squirrel.Mac failure after the download (a read-only or translocated app,
+    a bad signature) was hidden by the rule that a background error never hides
+    a ready update. It is now `install-failed`, shown with its reason.
+  - `isUsingGitHubFallback` stayed set for the life of the app after one failed
+    check, and from then on a macOS install went to the assisted path, threw
+    "Update file path not found" and was ignored by the renderer. The install now
+    follows whoever downloaded the update, and the renderer awaits the result.
+- **No re-staging.** Every three-hourly check downloaded the same update again
+  and had Squirrel.Mac stage it again (ShipIt's log showed an "install request"
+  every three hours). A version already downloaded is no longer fetched again.
+- **Windows.** The assisted install classified the Downloads FOLDER rather than
+  the downloaded file, so a downloaded `Biorouter-Setup-<ver>.exe` got the zip
+  instructions and an "Open Folder Only" button that the installer must never be
+  offered.
+
+Evidence:
+
+- [x] `node scripts/run-live-update-e2e.js`: **4 passed** in a real Electron
+  39.8.10 with the real electron-updater. New `reset` mode: the server resets
+  the connection 40% into the zip; with the app's download installed the second
+  request asks for `bytes=2516582-` and the update reaches `update-downloaded`,
+  and with stock electron-updater the same reset fails with
+  `net::ERR_CONNECTION_RESET`, the error in the report.
+- [x] `src/utils/resumableDownload.test.ts` (28), `macUpdateInstall.test.ts`
+  (13), `resumableUpdaterDownloads.test.ts` (9, three of which read the
+  installed electron-updater so an upgrade that moves its internals fails
+  there), and the reducer, dialog and Settings tests for the new states.
+- [x] `scripts/notarized-swap-test.sh` now passes only on ShipIt's
+  "Successfully launched application" line for the staged copy. It used to pass
+  on the swap alone, which a ShipIt that installed and never relaunched also
+  produces. `FEED_VER` lets one signed build serve as its own update.
+
 ### Why Sections B and C still need a human and hardware
 
 Everything that can be validated without minting an Apple-notarized binary and
@@ -217,7 +270,7 @@ Install `X-1` into `/Applications`, launch it, then (with release `X` published)
 
 - [ ] Within ~5s of launch, the lower-left **UPDATE** button appears without interrupting the user; clicking it opens **"Downloading update…"** with current vs new version and a live progress bar advancing 0→100%.
 - [ ] During download the app stays fully usable (not blocked/frozen).
-- [ ] When the download finishes, the modal switches to **"Update ready to install"** with a **Restart & Update** button.
+- [ ] When the download finishes, the modal says **"Preparing the update…"** for a few seconds while Squirrel.Mac stages it, then switches to **"Update ready to install"** with a **Restart & Update** button.
 - [ ] Clicking **Restart & Update**: the app quits, the new `.app` is installed in place, and BioRouter **relaunches automatically** on version `X` — no Finder, no DMG, no drag-and-drop, no manual quit.
 - [ ] After relaunch, **About / Settings shows version `X`**.
 - [ ] Repeat the entire flow on an **Intel** Mac (or Apple Silicon under Rosetta) and confirm it pulls the `x64` zip (check the app log: `electron-updater` logs the chosen file URL — it must contain `x64`, not `arm64`).
@@ -259,7 +312,7 @@ is lost or reset**:
 
 - [ ] **Release without the manifest** (e.g. an older release, or pre-this-change): `electron-updater` 404s on `latest-mac.yml`; the app falls back to `githubUpdater` which auto-downloads the `.dmg` to `~/Downloads` and shows the guided "Open Folder & Quit" dialog. The modal still appears and never crashes. (`UpdaterState.usingFallback === true`.)
 - [ ] **Offline at launch**: no modal, no error spam; app behaves normally. Reconnect → next check surfaces the update.
-- [ ] **Download interrupted** (kill network mid-download): the modal shows an error state; restoring the network and re-checking (Settings) resumes/retries. A background error **after** a completed download does **not** hide the ready-to-install state.
+- [ ] **Download interrupted** (kill network mid-download): the download resumes from where it stopped once the network is back (the log shows `[update] Download interrupted at … resuming`). Left down for over a minute, the modal shows an error with **Try again**, which resumes it. A background error **after** a completed download does **not** hide the ready-to-install state, but an **install** failure does, with its reason.
 - [ ] **Corrupt/altered zip** (tamper with one byte so SHA-512 mismatches the manifest): `electron-updater` rejects the update (signature/checksum failure) and does **not** install — surfaced as an error, app stays on `X-1`.
 - [ ] **Same version** (`latest-mac.yml` version == installed): no update offered; Settings shows "up to date".
 - [ ] **Downgrade** (publish an older version as latest): not offered (`allowDowngrade` is off by default).

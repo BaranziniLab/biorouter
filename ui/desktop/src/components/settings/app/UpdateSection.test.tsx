@@ -171,6 +171,21 @@ describe('Settings > App > About > Version: one-click flow', () => {
     expect(screen.queryByText(/Could not complete the update/i)).toBeNull();
   });
 
+  it('says "preparing" while macOS stages the update, and offers no restart yet', async () => {
+    render(<UpdateSection />);
+    emitAct({ event: 'update-preparing', data: { version: '1.93.2' } });
+    expect(await screen.findByText(aboutCopy.preparing('1.93.2'))).toBeTruthy();
+    expect(screen.queryByRole('button', { name: aboutCopy.restartToUpdate })).toBeNull();
+  });
+
+  it('shows why a refused restart failed instead of doing nothing', async () => {
+    installUpdate.mockResolvedValue({ ok: false, error: 'No update is ready to install yet.' });
+    render(<UpdateSection />);
+    emitAct({ event: 'update-downloaded', data: { version: '1.93.2' } });
+    fireEvent.click(await screen.findByRole('button', { name: aboutCopy.restartToUpdate }));
+    expect(await screen.findByText('No update is ready to install yet.')).toBeTruthy();
+  });
+
   it('recovers a ready-to-install update opened from a fresh Settings panel', async () => {
     (
       window as unknown as { electron: { getUpdateState: ReturnType<typeof vi.fn> } }

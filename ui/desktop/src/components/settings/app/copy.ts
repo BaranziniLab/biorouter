@@ -59,7 +59,11 @@ export const aboutCopy = {
   downloadingLabel: (version: string | null | undefined) => `Downloading ${version ?? 'update'}`,
   ready: (version: string | null | undefined) =>
     version ? `Version ${version} is ready` : 'The update is ready',
+  preparing: (version: string | null | undefined) =>
+    `Preparing ${version ? `version ${version}` : 'the update'} to install…`,
+  restarting: 'Restarting to update…',
   restartToUpdate: 'Restart to update',
+  tryAgain: 'Try again',
   failed: 'Could not complete the update',
   downloadFromSite: 'Download from Biorouter',
   feedback: 'Feedback',

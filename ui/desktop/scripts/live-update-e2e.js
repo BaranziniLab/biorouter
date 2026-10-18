@@ -18,6 +18,17 @@
  * mode=tampered → serve bytes whose sha512 does NOT match the manifest; expect
  *                 electron-updater to REJECT with a sha512/checksum error and
  *                 never reach "downloaded". Proves the integrity gate is real.
+ * mode=reset    → the server RESETS the connection 40% into the zip, the way
+ *                 the 1.93.0 → 1.93.1 update failed with
+ *                 net::ERR_CONNECTION_RESET. With Biorouter's resumable
+ *                 download installed (the default, as in the app) the next
+ *                 request asks for `Range: bytes=<n>-` and the update still
+ *                 reaches "downloaded"; with `--stock` it fails as it used to.
+ *
+ * Unless `--stock` is given, the harness installs the app's own resumable
+ * download (src/utils/resumableUpdaterDownloads.ts + electronNetTransport.ts,
+ * bundled by the runner and passed in BR_RESUMABLE_BUNDLE), so every mode
+ * exercises the code the app ships.
  *
  * Prints a single line: RESULT <json> and exits.
  */
@@ -30,14 +41,21 @@ const crypto = require('crypto');
 const { autoUpdater } = require('electron-updater');
 const { buildMacManifest } = require('./generate-update-manifests.js');
 
-const mode = process.argv.includes('--tampered') ? 'tampered' : 'valid';
+const mode = process.argv.includes('--tampered')
+  ? 'tampered'
+  : process.argv.includes('--reset')
+    ? 'reset'
+    : 'valid';
+const stock = process.argv.includes('--stock');
+/** The Range header of every request for the zip, null when there was none. */
+const zipRequests = [];
 const VERSION = '99.0.0';
 const events = [];
 const cleanupPaths = [];
 let server;
 
 function finish(extra) {
-  const result = { mode, events, ...extra };
+  const result = { mode, stock, events, zipRequests, ...extra };
   // Single, greppable result line.
   process.stdout.write('\nRESULT ' + JSON.stringify(result) + '\n');
   try {
@@ -85,7 +103,7 @@ app.whenReady().then(async () => {
     fs.writeFileSync(zipPath, bad);
   }
 
-  // Serve the release dir.
+  // Serve the release dir. The zip honours Range, as GitHub's CDN does.
   server = http.createServer((req, res) => {
     const name = decodeURIComponent((req.url || '').split('?')[0].replace(/^\//, ''));
     const file = path.join(tmp, name);
@@ -95,8 +113,28 @@ app.whenReady().then(async () => {
       return;
     }
     const stat = fs.statSync(file);
-    res.writeHead(200, { 'content-length': stat.size });
-    fs.createReadStream(file).pipe(res);
+    if (name !== zipName) {
+      res.writeHead(200, { 'content-length': stat.size });
+      fs.createReadStream(file).pipe(res);
+      return;
+    }
+    const range = /bytes=(\d+)-/.exec(req.headers.range || '');
+    zipRequests.push(req.headers.range || null);
+    const start = range ? Number(range[1]) : 0;
+    const body = fs.readFileSync(file).subarray(start);
+    res.writeHead(range ? 206 : 200, {
+      'content-length': body.length,
+      'accept-ranges': 'bytes',
+      ...(range ? { 'content-range': `bytes ${start}-${stat.size - 1}/${stat.size}` } : {}),
+    });
+    if (mode === 'reset' && zipRequests.length === 1) {
+      // Send 40%, then a TCP RST: what a network that drops long transfers does.
+      res.write(body.subarray(0, Math.floor(stat.size * 0.4)), () =>
+        setTimeout(() => res.socket.resetAndDestroy(), 50)
+      );
+      return;
+    }
+    res.end(body);
   });
   await new Promise((r) => server.listen(0, '127.0.0.1', r));
   const port = server.address().port;
@@ -116,6 +154,19 @@ app.whenReady().then(async () => {
   autoUpdater.autoInstallOnAppQuit = false;
   autoUpdater.logger = null;
   autoUpdater.setFeedURL({ provider: 'generic', url });
+
+  if (!stock) {
+    const bundle = process.env.BR_RESUMABLE_BUNDLE;
+    if (!bundle) {
+      finish({ terminal: 'no-bundle' });
+      return;
+    }
+    const { installResumableUpdaterDownloads, electronNetOpenPart } = require(bundle);
+    if (!installResumableUpdaterDownloads(autoUpdater, electronNetOpenPart(), () => {})) {
+      finish({ terminal: 'resumable-not-installed' });
+      return;
+    }
+  }
 
   const record = (name, data) => events.push({ name, data });
   autoUpdater.on('checking-for-update', () => record('checking-for-update'));
