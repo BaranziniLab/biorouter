@@ -270,6 +270,37 @@ export function toolActionPhrase(words: readonly string[]): string {
 }
 
 /**
+ * A plan step, in the model's own words, as a row summary. Models write steps
+ * as imperatives ("run ls -la", "write the requested markdown file"), so a verb
+ * put in front of one read "Ran run ls -la" and "Failed to run write the
+ * requested markdown file". A known opening verb becomes the gerund the row's
+ * state conjugates ("Running ls -la", done "Ran ls -la", failed "Failed to run
+ * ls -la"), and a gerund stays one. Any other opening (a verb this module does
+ * not know, a noun phrase) stands in sentence case in the model's own words,
+ * which {@link toolRowLabel} shows as is while running and once done and names
+ * a failure or a stop before ("Failed: Attempt the command").
+ */
+export function stepActionPhrase(step: string): string {
+  const text = step.replace(/\s+/g, ' ').trim();
+  const match = /^([A-Za-z]+)(?=\s|$)(.*)$/.exec(text);
+  if (match) {
+    const [, word, rest] = match;
+    const lower = word.toLowerCase();
+    const capitalized = sentenceStart(lower);
+    // An acronym in capitals ("SQL", "KB") is a name, not a verb.
+    if (word === lower || word === capitalized) {
+      if (Object.prototype.hasOwnProperty.call(VERB_FORMS, capitalized)) {
+        return `${capitalized}${rest}`;
+      }
+      if (Object.prototype.hasOwnProperty.call(NAME_VERBS, lower)) {
+        return `${NAME_VERBS[lower]}${rest}`;
+      }
+    }
+  }
+  return sentenceStart(text);
+}
+
+/**
  * The visible row label for a summary in a given state.
  *
  * - running: the summary itself ("Reading package.json"); it already says the
@@ -279,10 +310,11 @@ export function toolActionPhrase(words: readonly string[]): string {
  * - stopped: "Stopped reading package.json".
  *
  * A summary that does not open with a known gerund (a tool's display name, a
- * plan step's own words such as "Read the manifest") cannot be conjugated, and
- * a prefix verb would read "Ran Read the manifest". So it stands alone while
- * running (the pulse says so) and once done, and failure or a stop is named
- * before it: "Failed: X", "Stopped: X".
+ * plan step's own words such as "Attempt the command", see
+ * {@link stepActionPhrase}) cannot be conjugated, and a prefix verb would read
+ * "Ran attempt the command". So it stands alone while running (the pulse says
+ * so) and once done, and failure or a stop is named before it: "Failed: X",
+ * "Stopped: X".
  */
 export function toolRowLabel(summary: string, state: ToolRowState): string {
   const match = /^([A-Z][a-z]+)\b(.*)$/s.exec(summary);

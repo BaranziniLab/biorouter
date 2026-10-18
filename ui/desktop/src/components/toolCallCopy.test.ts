@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   inSentence,
+  stepActionPhrase,
   toolActionPhrase,
   toolCallNameWords,
   toolCallPhrase,
@@ -137,6 +138,50 @@ describe('tool names read in sentence case (V2-04)', () => {
       const phrase = toolActionPhrase(words);
       expect(toolRowLabel(phrase, 'done')).not.toBe(phrase);
       expect(toolRowLabel(phrase, 'failed')).toMatch(/^Failed to [a-z]/);
+    }
+  });
+});
+
+// A Code Execution script's row leads with its first plan step, written by the
+// model, usually as an imperative. A verb put in front of that read "Ran run
+// ls -la" and "Failed to run write the requested markdown file".
+describe('stepActionPhrase: a plan step leads with its own verb', () => {
+  it.each([
+    ['run ls -la', 'Running ls -la'],
+    ['write the requested markdown file', 'Writing the requested markdown file'],
+    ['Create the target directory', 'Creating the target directory'],
+    ['Read the manifest', 'Reading the manifest'],
+    ['lookup the cohort', 'Looking up the cohort'],
+    ['  list   KBs ', 'Listing KBs'],
+  ])('turns the imperative %j into the gerund the row conjugates', (step, expected) => {
+    expect(stepActionPhrase(step)).toBe(expected);
+  });
+
+  it('keeps a step that already opens with a gerund', () => {
+    expect(stepActionPhrase('running the smoke test')).toBe('Running the smoke test');
+    expect(stepActionPhrase('Writing notes')).toBe('Writing notes');
+  });
+
+  it.each([
+    ['attempt the command', 'Attempt the command'],
+    ['active KB', 'Active KB'],
+    ['SQL count of samples', 'SQL count of samples'],
+    ['READ the docs', 'READ the docs'],
+    ['read/write the config', 'Read/write the config'],
+    ['constructor of the report', 'Constructor of the report'],
+    ['step 1 of 3: Read the signed manifest', 'Step 1 of 3: Read the signed manifest'],
+  ])('leaves %j in its own words, in sentence case', (step, expected) => {
+    expect(stepActionPhrase(step)).toBe(expected);
+  });
+
+  it('never yields a doubled verb in any state', () => {
+    for (const step of ['run ls -la', 'write the file', 'create the dir', 'attempt the command']) {
+      const summary = stepActionPhrase(step);
+      for (const state of ['running', 'done', 'failed', 'stopped'] as const) {
+        expect(toolRowLabel(summary, state)).not.toMatch(
+          /^(?:Ran|Running|Failed to run|Stopped running) (?:run|write|create|attempt)\b/i
+        );
+      }
     }
   });
 });

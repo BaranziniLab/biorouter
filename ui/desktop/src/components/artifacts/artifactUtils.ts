@@ -660,6 +660,13 @@ const OFFICE_WRITING_OPERATIONS: Record<string, Set<string>> = {
   xlsx_tool: new Set(['update_cell', 'save']),
 };
 
+// Own keys only: a tool named `constructor` must not read `Object`'s.
+function officeWritingOperations(name: string): Set<string> | undefined {
+  return Object.prototype.hasOwnProperty.call(OFFICE_WRITING_OPERATIONS, name)
+    ? OFFICE_WRITING_OPERATIONS[name]
+    : undefined;
+}
+
 // `text_editor`-style commands that leave a file changed on disk. `view` and
 // `undo_edit` do not produce something new to look at.
 const MUTATING_EDITOR_COMMANDS = new Set(['create', 'diff', 'insert', 'str_replace', 'write']);
@@ -763,16 +770,21 @@ export function resolveMarkdownImageSource(src: string, baseDir?: string): Markd
 //
 // Returns absolute paths only — a relative one without a `workingDir` to anchor
 // it would resolve against the wrong directory in the viewer.
+//
+// `toolResult` matters only for a Code Execution call: its result meta records
+// the arguments every call the script made really ran with, which is read in
+// preference to scanning the script's source (see `executedCallFiles`).
 export function fileArtifactPathsFromToolCall(
   toolName: string,
   args: unknown,
-  workingDir?: string
+  workingDir?: string,
+  toolResult?: unknown
 ): string[] {
   const argRecord = asRecord(args);
   if (!argRecord) return [];
   const name = baseToolName(toolName);
 
-  const officeOperations = OFFICE_WRITING_OPERATIONS[name];
+  const officeOperations = officeWritingOperations(name);
   if (officeOperations) {
     const operation = argRecord.operation;
     if (typeof operation !== 'string' || !officeOperations.has(operation)) return [];
@@ -788,8 +800,16 @@ export function fileArtifactPathsFromToolCall(
   // Unwrap the code-execution wrapper (default config) before anything else —
   // the real tool calls live inside its `code` string, not in `argRecord`.
   if (CODE_EXECUTION_TOOLS.has(name)) {
+    const executed = toolResult === undefined ? null : executedCallFiles(toolResult, workingDir);
+    if (executed?.complete) return executed.written;
     const code = argRecord.code;
-    return typeof code === 'string' ? pathsFromCodeBlob(code, workingDir) : [];
+    const scanned = typeof code === 'string' ? pathsFromCodeBlob(code, workingDir) : [];
+    // A result from before the records existed: the scan is all there is.
+    if (!executed) return scanned;
+    // Some successful call could not be read (or went unrecorded), so the scan
+    // fills in, minus every file a call that FAILED named.
+    const failed = new Set(executed.failed);
+    return [...new Set([...executed.written, ...scanned.filter((path) => !failed.has(path))])];
   }
 
   if (name === 'shell' || name === 'bash') {
@@ -899,50 +919,297 @@ function shellRedirectPaths(command: string, workingDir?: string): string[] {
 
 // --- code_execution unwrapping ----------------------------------------------
 //
-// The `code` string is JavaScript source, so extraction is textual and
-// deliberately conservative — it mirrors the direct-call rules (mutating
-// `text_editor` commands, `*_file` writes, `shell` redirect targets) applied to
-// the calls found embedded in the blob, and resolves `` `${dir}/x.md` `` style
-// template paths against simple `const dir = "…"` bindings. A path it cannot
-// resolve (computed interpolation, a python-heredoc write) is skipped rather
-// than guessed — no false artifacts, same posture as the direct path.
+// Two sources, best first. A Code Execution result records every call its
+// script made, with the arguments each one ran with and whether it succeeded
+// (`biorouter/tool-calls` in the result meta, issue #28). That is ground truth,
+// and `executedCallFiles` reads it. A result from before those records existed
+// has only the script, so `pathsFromCodeBlob` reads the source.
+//
+// The source scan is textual and deliberately conservative — it mirrors the
+// direct-call rules (mutating `text_editor` commands, `*_file` writes, `shell`
+// redirect targets) applied to the calls found embedded in the blob, and
+// resolves an argument that is a name bound to a plain string
+// (`const cmd = "…"; shell({ command: cmd })`) or a `` `${dir}/x.md` `` template
+// over such names. A path it cannot resolve (computed interpolation, a name
+// bound twice, a python-heredoc write) is skipped rather than guessed — no
+// false artifacts, same posture as the direct path.
 
-/** `const/let/var NAME = "literal"` string bindings, so a template path like
- *  `` `${dir}/SCHEMA.md` `` in an embedded call can be resolved. Only plain
- *  string / interpolation-free backtick right-hand sides are captured. */
-function scanStringBindings(code: string): Map<string, string> {
-  const bindings = new Map<string, string>();
-  const re =
-    /\b(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*(?:"((?:[^"\\]|\\.)*)"|'((?:[^'\\]|\\.)*)'|`([^`$]*)`)/g;
-  for (const m of code.matchAll(re)) {
-    bindings.set(m[1], (m[2] ?? m[3] ?? m[4] ?? '').replace(/\\(["'`\\])/g, '$1'));
+const EXECUTED_CALLS_META_KEY = 'biorouter/tool-calls';
+const DROPPED_CALLS_META_KEY = 'biorouter/tool-calls-dropped';
+
+/** What a Code Execution result's call records say about the files its script wrote. */
+export type ExecutedCallFiles = {
+  /** Files the script's SUCCESSFUL calls wrote, in call order. */
+  written: string[];
+  /** Files that calls which failed named: never artifacts, and kept out of a fallback scan. */
+  failed: string[];
+  /** False when a successful call's arguments could not be read, or a call went unrecorded. */
+  complete: boolean;
+};
+
+/**
+ * The files a Code Execution script's calls wrote, read off the call records in
+ * its result meta, or null when the result carries none (a result from before
+ * the records existed, or a script that made no call).
+ *
+ * Only a call recorded `ok` counts. The backend cuts a record's `args` at 2 KB,
+ * so a real file's write arrives as a JSON prefix: its complete leading fields
+ * are read (`command` and `path` come before `file_text` in the order models
+ * write them), and a call cut before its rule can be decided makes the answer
+ * incomplete rather than empty.
+ */
+export function executedCallFiles(
+  toolResult: unknown,
+  workingDir?: string
+): ExecutedCallFiles | null {
+  // The message's `{ status, value }` wrapper, or the call result itself.
+  const wrapper = asRecord(toolResult);
+  const value = typeof wrapper?.status === 'string' ? asRecord(wrapper.value) : wrapper;
+  const meta = asRecord(value?._meta);
+  const records = meta?.[EXECUTED_CALLS_META_KEY];
+  if (!Array.isArray(records)) return null;
+  const dropped = meta?.[DROPPED_CALLS_META_KEY];
+  const files: ExecutedCallFiles = {
+    written: [],
+    failed: [],
+    complete: dropped === undefined || dropped === 0,
+  };
+  for (const candidate of records) {
+    const call = asRecord(candidate);
+    const ok = call?.status === 'ok';
+    const paths =
+      typeof call?.tool === 'string' && typeof call.args === 'string'
+        ? executedCallPaths(call.tool, call.args, workingDir)
+        : null;
+    if (paths === null) {
+      if (ok) files.complete = false;
+      continue;
+    }
+    (ok ? files.written : files.failed).push(...paths);
   }
-  return bindings;
+  files.written = [...new Set(files.written)];
+  return files;
 }
 
-/** Resolve one JS string-literal token (quoted or template, optionally
- *  `String.raw`) to its concrete value, substituting `${ident}` from `bindings`.
- *  Returns null if it isn't a string literal or carries an unresolvable
- *  interpolation (a computed expression or an unknown identifier). */
-function resolveStringLiteral(token: string, bindings: Map<string, string>): string | null {
-  const t = token.trim().replace(/^String\.raw\s*/, '');
-  if ((t.startsWith('"') && t.endsWith('"')) || (t.startsWith("'") && t.endsWith("'"))) {
-    return t.slice(1, -1).replace(/\\(.)/g, '$1');
+/** The files one recorded call wrote: `[]` when it writes none, null when its arguments cannot say. */
+function executedCallPaths(tool: string, argsText: string, workingDir?: string): string[] | null {
+  const name = baseToolName(tool);
+  const shell = name === 'shell' || name === 'bash';
+  const office = officeWritingOperations(name);
+  if (!shell && !office && !FILE_WRITING_TOOLS.has(name)) return [];
+  let args: Record<string, unknown> | null = null;
+  try {
+    args = asRecord(JSON.parse(argsText));
+  } catch {
+    // Cut at the backend's cap: read what came before the cut.
   }
-  if (t.startsWith('`') && t.endsWith('`')) {
-    let out = '';
-    for (const part of t.slice(1, -1).split(/(\$\{[^}]*\})/)) {
-      if (part.startsWith('${')) {
-        const id = /^\$\{\s*([A-Za-z_$][\w$]*)\s*\}$/.exec(part);
-        if (!id || !bindings.has(id[1])) return null;
-        out += bindings.get(id[1]);
-      } else {
-        out += part;
+  if (args) return fileArtifactPathsFromToolCall(tool, args, workingDir);
+  const prefix = completeLeadingStrings(argsText);
+  if (!prefix) return null;
+
+  // A key past the cut is unknown, so every key a rule reads must be present.
+  if (shell) {
+    if (typeof prefix.command !== 'string') return null;
+    if ('working_directory' in prefix) {
+      return fileArtifactPathsFromToolCall(tool, prefix, workingDir);
+    }
+    // A cut `working_directory` would move every relative target, so only an
+    // answer that needs no anchor stands.
+    const unanchored = fileArtifactPathsFromToolCall(tool, prefix);
+    const anchored = fileArtifactPathsFromToolCall(tool, prefix, workingDir);
+    return unanchored.length === anchored.length ? unanchored : null;
+  }
+  if (name === 'text_editor' || name === 'str_replace_editor') {
+    if (typeof prefix.command !== 'string') return null;
+    if (!MUTATING_EDITOR_COMMANDS.has(prefix.command)) return [];
+  }
+  if (office) {
+    if (typeof prefix.operation !== 'string') return null;
+    if (!office.has(prefix.operation)) return [];
+  }
+  if (!PATH_ARGUMENT_KEYS.some((key) => typeof prefix[key] === 'string')) return null;
+  return fileArtifactPathsFromToolCall(tool, prefix, workingDir);
+}
+
+/**
+ * The string members of a JSON object that are complete before `text` ends,
+ * for an object the backend cut short. Reading stops at the first member that
+ * runs off the end. Null when `text` does not open an object.
+ */
+function completeLeadingStrings(text: string): Record<string, string> | null {
+  let index = 0;
+  const space = () => {
+    while (index < text.length && /\s/.test(text[index])) index += 1;
+  };
+  // The JSON string opening at `index`, decoded; null when it runs off the end.
+  const string = (): string | null => {
+    const start = index;
+    for (index += 1; index < text.length; index += 1) {
+      if (text[index] === '\\') {
+        index += 1;
+      } else if (text[index] === '"') {
+        index += 1;
+        try {
+          const value: unknown = JSON.parse(text.slice(start, index));
+          return typeof value === 'string' ? value : null;
+        } catch {
+          return null;
+        }
       }
     }
-    return out;
+    return null;
+  };
+  // Past one value that is not a string; false when it runs off the end.
+  const skip = (): boolean => {
+    let depth = 0;
+    while (index < text.length) {
+      const char = text[index];
+      if (char === '"') {
+        if (string() === null) return false;
+        continue;
+      }
+      if (char === '{' || char === '[') {
+        depth += 1;
+      } else if (char === '}' || char === ']') {
+        if (depth === 0) return true;
+        depth -= 1;
+      } else if (char === ',' && depth === 0) {
+        return true;
+      }
+      index += 1;
+    }
+    return false;
+  };
+
+  space();
+  if (text[index] !== '{') return null;
+  index += 1;
+  const fields = new Map<string, string>();
+  for (;;) {
+    space();
+    if (text[index] !== '"') break;
+    const key = string();
+    if (key === null) break;
+    space();
+    if (text[index] !== ':') break;
+    index += 1;
+    space();
+    if (text[index] === '"') {
+      const value = string();
+      if (value === null) break;
+      fields.set(key, value);
+    } else if (!skip()) {
+      break;
+    }
+    space();
+    if (text[index] !== ',') break;
+    index += 1;
   }
-  return null;
+  return Object.fromEntries(fields);
+}
+
+const IDENTIFIER_RE = /^[A-Za-z_$][\w$]*$/;
+
+const JS_ESCAPES: Record<string, string> = {
+  0: '\0',
+  b: '\b',
+  f: '\f',
+  n: '\n',
+  r: '\r',
+  t: '\t',
+  v: '\v',
+};
+
+/** A JavaScript string literal's body with its escapes decoded. */
+function decodeJsEscapes(body: string): string {
+  return body.replace(
+    /\\(?:x([\da-fA-F]{2})|u\{([\da-fA-F]{1,6})\}|u([\da-fA-F]{4})|(\r\n|[\s\S]))/g,
+    (_match, hex?: string, point?: string, unit?: string, other?: string) => {
+      const code = hex ?? point ?? unit;
+      if (code !== undefined) {
+        const value = parseInt(code, 16);
+        return value <= 0x10ffff ? String.fromCodePoint(value) : '';
+      }
+      // A backslash before a line break continues the line.
+      if (other === undefined || /^(?:\r\n|[\n\r\u2028\u2029])$/.test(other)) return '';
+      return JS_ESCAPES[other] ?? other;
+    }
+  );
+}
+
+/** Index of the `quote` that closes a literal whose body starts at `from`, or -1. */
+function closingQuote(text: string, quote: string, from: number): number {
+  for (let index = from; index < text.length; index += 1) {
+    if (text[index] === '\\') index += 1;
+    else if (text[index] === quote) return index;
+  }
+  return -1;
+}
+
+/**
+ * The value of a JS expression that is ONE string literal (quoted, or a
+ * template, optionally `String.raw`) or a bare name bound to one, with
+ * `${ident}` substituted from `bindings`. Null for anything else: a
+ * concatenation, a call, a computed interpolation or an unknown name.
+ */
+function resolveStringLiteral(expression: string, bindings: Map<string, string>): string | null {
+  let text = expression.trim();
+  if (IDENTIFIER_RE.test(text)) return bindings.get(text) ?? null;
+  const raw = /^String\.raw\s*`/.test(text);
+  if (raw) text = text.replace(/^String\.raw\s*/, '');
+  const quote = text[0];
+  if (quote !== '"' && quote !== "'" && quote !== '`') return null;
+  if (closingQuote(text, quote, 1) !== text.length - 1) return null;
+  const body = text.slice(1, -1);
+  if (quote !== '`') return decodeJsEscapes(body);
+  let out = '';
+  for (const part of body.split(/(\$\{[^}]*\})/)) {
+    if (part.startsWith('${')) {
+      const id = /^\$\{\s*([A-Za-z_$][\w$]*)\s*\}$/.exec(part);
+      const value = id ? bindings.get(id[1]) : undefined;
+      if (value === undefined) return null;
+      out += value;
+    } else {
+      out += raw ? part : decodeJsEscapes(part);
+    }
+  }
+  return out;
+}
+
+// `const/let/var NAME = <one string literal>` and the end of the statement: a
+// literal followed by `+ x`, `.trim()` or a call is not the value.
+const STRING_BINDING_RE =
+  /\b(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*((?:String\.raw\s*)?`(?:[^`\\]|\\[\s\S])*`|"(?:[^"\\\n]|\\[\s\S])*"|'(?:[^'\\\n]|\\[\s\S])*')(?=[ \t]*(?:[;,)\]}]|\/[/*]|\r?\n(?![ \t]*[-+*/%.?:&|^=<>[(`,])|$))/g;
+
+/** True when `name` is declared or assigned more than once in `code`. */
+function boundMoreThanOnce(code: string, name: string): boolean {
+  const escaped = name.replace(/\$/g, '\\$');
+  const count = (pattern: string) => code.match(new RegExp(pattern, 'g'))?.length ?? 0;
+  const writes = count(
+    `(?<![\\w$.])${escaped}\\s*(?:\\*\\*|<<|>>>?|&&|\\|\\||\\?\\?|[-+*/%&|^])?=(?![=>])`
+  );
+  const declarations = count(`\\b(?:const|let|var|function|class)\\s+${escaped}(?![\\w$])`);
+  return writes > 1 || declarations > 1;
+}
+
+/** Names bound to one plain string, so `shell({ command: cmd })` and a template
+ *  path like `` `${dir}/SCHEMA.md` `` in an embedded call can be resolved. A
+ *  name declared or assigned twice is left out: the scan does not know scopes,
+ *  so it could not say which value a call saw. */
+function scanStringBindings(code: string): Map<string, string> {
+  const matches = [...code.matchAll(STRING_BINDING_RE)];
+  const ambiguous = new Set<string>();
+  for (const name of new Set(matches.map((match) => match[1]))) {
+    if (boundMoreThanOnce(code, name)) ambiguous.add(name);
+  }
+  const bindings = new Map<string, string>();
+  // In source order, so a template can use a name bound before it.
+  for (const [, name, literal] of matches) {
+    if (ambiguous.has(name)) continue;
+    const value = resolveStringLiteral(literal, bindings);
+    if (value !== null) bindings.set(name, value);
+  }
+  return bindings;
 }
 
 /** Source text of each `callName({ … })` argument object found in `code`, via a
@@ -977,71 +1244,121 @@ function embeddedCallObjects(code: string, callName: string): string[] {
   return objects;
 }
 
-/** The string-literal token assigned to `key` in an object-literal source (only
- *  at a property boundary, so `file_text: "path: …"` can't spoof a `path`). */
-function literalValueForKey(objectSrc: string, key: string): string | null {
-  const re = new RegExp(
-    `(?:^\\s*\\{\\s*|[{,]\\s*)${key}\\s*:\\s*` +
-      `(String\\.raw\\s*\`[^\`]*\`|\`[^\`]*\`|"(?:[^"\\\\]|\\\\.)*"|'(?:[^'\\\\]|\\\\.)*')`
-  );
-  const m = re.exec(objectSrc);
-  return m ? m[1] : null;
+/**
+ * The top-level properties of one object-literal source (`{ … }`, as
+ * `embeddedCallObjects` returns it): each key with its value's source, and a
+ * shorthand `{ command }` as its own name. Only top-level keys count, so
+ * neither a nested object nor a string value (`file_text: "path: …"`) can
+ * spoof one. Null when a spread or a computed key could supply any key.
+ */
+function objectLiteralProperties(objectSrc: string): Map<string, string> | null {
+  if (!objectSrc.startsWith('{') || !objectSrc.endsWith('}')) return null;
+  const body = objectSrc.slice(1, -1);
+  const pieces: string[] = [];
+  let piece = '';
+  let depth = 0;
+  for (let index = 0; index < body.length; index += 1) {
+    const char = body[index];
+    if (char === '"' || char === "'" || char === '`') {
+      const end = closingQuote(body, char, index + 1);
+      if (end === -1) return null;
+      piece += body.slice(index, end + 1);
+      index = end;
+    } else if (char === '/' && body[index + 1] === '/') {
+      // A comment reads as a space, so a quote inside one opens no string.
+      const end = body.indexOf('\n', index);
+      index = end === -1 ? body.length : end - 1;
+      piece += ' ';
+    } else if (char === '/' && body[index + 1] === '*') {
+      const end = body.indexOf('*/', index + 2);
+      if (end === -1) return null;
+      index = end + 1;
+      piece += ' ';
+    } else if (char === ',' && depth === 0) {
+      pieces.push(piece);
+      piece = '';
+    } else {
+      if ('([{'.includes(char)) depth += 1;
+      else if (')]}'.includes(char)) depth -= 1;
+      piece += char;
+    }
+  }
+  pieces.push(piece);
+
+  const properties = new Map<string, string>();
+  for (const candidate of pieces) {
+    const text = candidate.trim();
+    if (!text) continue;
+    if (text.startsWith('...') || text.startsWith('[')) return null;
+    const pair =
+      /^(?:([A-Za-z_$][\w$]*)|"((?:[^"\\]|\\.)*)"|'((?:[^'\\]|\\.)*)')\s*:([\s\S]*)$/.exec(text);
+    if (pair) {
+      properties.set(pair[1] ?? decodeJsEscapes(pair[2] ?? pair[3] ?? ''), pair[4].trim());
+    } else if (IDENTIFIER_RE.test(text)) {
+      properties.set(text, text);
+    }
+    // A method or an accessor holds no value this scan can read.
+  }
+  return properties;
 }
 
 function pathsFromCodeBlob(code: string, workingDir?: string): string[] {
   const bindings = scanStringBindings(code);
   const seen = new Set<string>();
   const out: string[] = [];
-  const add = (resolved: string | null) => {
-    const anchored = resolved ? resolveArtifactPath(resolved, workingDir) : null;
-    if (anchored && !seen.has(anchored)) {
-      seen.add(anchored);
-      out.push(anchored);
+  const add = (path: string | null) => {
+    if (path && !seen.has(path)) {
+      seen.add(path);
+      out.push(path);
     }
   };
-  const pathArgOf = (objectSrc: string): string | null => {
+  const calls = (callName: string): Map<string, string>[] =>
+    embeddedCallObjects(code, callName).flatMap((source) => {
+      const properties = objectLiteralProperties(source);
+      return properties ? [properties] : [];
+    });
+  const valueOf = (properties: Map<string, string>, key: string): string | null => {
+    const source = properties.get(key);
+    return source === undefined ? null : resolveStringLiteral(source, bindings);
+  };
+  const pathArgOf = (properties: Map<string, string>): string | null => {
     for (const key of PATH_ARGUMENT_KEYS) {
-      const token = literalValueForKey(objectSrc, key);
-      const value = token ? resolveStringLiteral(token, bindings) : null;
-      if (value) return value;
+      const value = valueOf(properties, key);
+      if (value) return resolveArtifactPath(value, workingDir);
     }
     return null;
   };
+  // A `command` multiplexes reads and writes, so a write needs a known mutating one.
+  const writes = (properties: Map<string, string>): boolean => {
+    const command = valueOf(properties, 'command');
+    return command !== null && MUTATING_EDITOR_COMMANDS.has(command);
+  };
 
   // Embedded `text_editor` — mutating commands only, mirroring the direct rule.
-  for (const objectSrc of embeddedCallObjects(code, 'text_editor')) {
-    const commandToken = literalValueForKey(objectSrc, 'command');
-    const command = commandToken ? resolveStringLiteral(commandToken, bindings) : null;
-    if (!command || !MUTATING_EDITOR_COMMANDS.has(command)) continue;
-    add(pathArgOf(objectSrc));
+  for (const properties of calls('text_editor')) {
+    if (writes(properties)) add(pathArgOf(properties));
   }
 
-  // Embedded `write_file`/`create_file`/… — inherently writes, no command gate.
+  // Embedded `write_file`/`create_file`/… — no command gate unless one is given.
   for (const tool of FILE_WRITING_TOOLS) {
     if (tool === 'text_editor') continue;
-    for (const objectSrc of embeddedCallObjects(code, tool)) add(pathArgOf(objectSrc));
+    for (const properties of calls(tool)) {
+      if (!properties.has('command') || writes(properties)) add(pathArgOf(properties));
+    }
   }
 
-  // Embedded `shell`/`bash` — redirect / `-o` targets in the command literal.
+  // Embedded `shell`/`bash` — redirect / `-o` targets in the command string.
   for (const callName of ['shell', 'bash']) {
-    for (const objectSrc of embeddedCallObjects(code, callName)) {
-      const commandToken = literalValueForKey(objectSrc, 'command');
-      const command = commandToken ? resolveStringLiteral(commandToken, bindings) : null;
+    for (const properties of calls(callName)) {
+      const command = valueOf(properties, 'command');
       if (!command) continue;
-      const directoryToken = literalValueForKey(objectSrc, 'working_directory');
-      const directory = directoryToken ? resolveStringLiteral(directoryToken, bindings) : null;
-      const hasDirectory = /[,{]\s*working_directory\s*:/.test(objectSrc);
-      const shellDir = hasDirectory
+      const directory = valueOf(properties, 'working_directory');
+      const shellDir = properties.has('working_directory')
         ? directory
           ? (resolveArtifactPath(directory, workingDir) ?? undefined)
           : undefined
         : workingDir;
-      for (const path of shellRedirectPaths(command, shellDir)) {
-        if (!seen.has(path)) {
-          seen.add(path);
-          out.push(path);
-        }
-      }
+      for (const path of shellRedirectPaths(command, shellDir)) add(path);
     }
   }
 

@@ -524,12 +524,12 @@ describe('summarizeToolCall', () => {
           ],
         },
       })
-    ).toBe('Running read the manifest → patch the UI');
+    ).toBe('Reading the manifest → patch the UI');
   });
 
   // V2-R2-4: a script's row carried the bare plan ("list KBs → active KB"), the
   // one line in a turn with no verb and a lowercase start.
-  it('puts the state verb before a script plan, the way every other row reads', () => {
+  it('leads a script plan with a verb the state conjugates, the way every other row reads', () => {
     const summary = summarizeToolCall({
       name: 'code_execution__execute_code',
       arguments: {
@@ -539,10 +539,59 @@ describe('summarizeToolCall', () => {
         ],
       },
     });
-    expect(summary).toBe('Running list KBs → active KB');
-    expect(toolRowLabel(summary, 'done')).toBe('Ran list KBs → active KB');
-    expect(toolRowLabel(summary, 'failed')).toBe('Failed to run list KBs → active KB');
-    expect(toolRowLabel(summary, 'stopped')).toBe('Stopped running list KBs → active KB');
+    expect(summary).toBe('Listing KBs → active KB');
+    expect(toolRowLabel(summary, 'done')).toBe('Listed KBs → active KB');
+    expect(toolRowLabel(summary, 'failed')).toBe('Failed to list KBs → active KB');
+    expect(toolRowLabel(summary, 'stopped')).toBe('Stopped listing KBs → active KB');
+  });
+
+  // Measured with GPT-5.5, which writes its steps as imperatives: a "Running"
+  // put in front of the step read "Ran run ls -la …", "Failed to run write the
+  // requested markdown file…" and "Ran create the target directory…".
+  it.each([
+    [
+      'run ls -la /tmp/smoke',
+      ['Running ls -la /tmp/smoke', 'Ran ls -la /tmp/smoke', 'Failed to run ls -la /tmp/smoke'],
+    ],
+    [
+      'write the requested markdown file',
+      [
+        'Writing the requested markdown file',
+        'Wrote the requested markdown file',
+        'Failed to write the requested markdown file',
+      ],
+    ],
+    [
+      'Create the target directory',
+      [
+        'Creating the target directory',
+        'Created the target directory',
+        'Failed to create the target directory',
+      ],
+    ],
+  ])('takes the verb of a step written as an imperative: %s', (description, expected) => {
+    const summary = summarizeToolCall({
+      name: 'code_execution__execute_code',
+      arguments: { tool_graph: [{ tool: 'developer/shell', description }] },
+    });
+    expect([
+      toolRowLabel(summary, 'running'),
+      toolRowLabel(summary, 'done'),
+      toolRowLabel(summary, 'failed'),
+    ]).toEqual(expected);
+    expect(toolRowLabel(summary, 'done')).not.toMatch(/^Ran (?:run|write|create)\b/i);
+  });
+
+  it('shows a step that opens with no known verb in its own words, failure named before it', () => {
+    const summary = summarizeToolCall({
+      name: 'code_execution__execute_code',
+      arguments: { tool_graph: [{ tool: 'developer/shell', description: 'tally the counts' }] },
+    });
+    expect(summary).toBe('Tally the counts');
+    expect(toolRowLabel(summary, 'running')).toBe('Tally the counts');
+    expect(toolRowLabel(summary, 'done')).toBe('Tally the counts');
+    expect(toolRowLabel(summary, 'failed')).toBe('Failed: Tally the counts');
+    expect(toolRowLabel(summary, 'stopped')).toBe('Stopped: Tally the counts');
   });
 
   it('uses tool identities when graph descriptions are numbered placeholders', () => {
@@ -570,7 +619,7 @@ describe('summarizeToolCall', () => {
           ],
         },
       })
-    ).toBe('Running read queue data');
+    ).toBe('Reading queue data');
   });
 
   it.each([
@@ -601,7 +650,7 @@ describe('summarizeToolCall', () => {
           ],
         },
       })
-    ).toBe('Running step 1 of 3: Read the signed manifest');
+    ).toBe('Step 1 of 3: Read the signed manifest');
   });
 
   it('ignores malformed graph nodes and falls back for an empty graph', () => {
@@ -623,7 +672,7 @@ describe('summarizeToolCall', () => {
         ],
       },
     });
-    expect(label.startsWith('Running read ')).toBe(true);
+    expect(label.startsWith('Reading 🧬')).toBe(true);
     expect(Array.from(label).length).toBeLessThanOrEqual(96);
     expect(() => encodeURIComponent(label)).not.toThrow();
   });
@@ -773,7 +822,7 @@ describe('summarizeToolCall', () => {
     );
 
     fireEvent.click(
-      screen.getByText('Failed to run attempt the command').closest('button') as HTMLElement
+      screen.getByText('Failed: Attempt the command').closest('button') as HTMLElement
     );
 
     const step = screen.getByText('1. Attempt the command');
@@ -782,6 +831,42 @@ describe('summarizeToolCall', () => {
     expect(screen.getByText('Tool call failed')).toBeInTheDocument();
     expect(screen.getByText('The command could not be started')).toBeInTheDocument();
     expect(screen.queryByText('Tool details unavailable')).not.toBeInTheDocument();
+  });
+
+  // Measured with GPT-5.5: "Ran run ls -la …" and "Failed to run write the
+  // requested markdown file…" on a script's row.
+  it.each([
+    ['success', 'run ls -la /tmp/smoke', 'Ran ls -la /tmp/smoke'],
+    ['error', 'write the requested markdown file', 'Failed to write the requested markdown file'],
+  ] as const)('reads a %s script row in the step’s own verb', (status, description, label) => {
+    const toolRequest: ToolRequestMessageContent = {
+      type: 'toolRequest',
+      id: `tool-imperative-${status}`,
+      toolCall: {
+        status: 'success',
+        value: {
+          name: 'code_execution__execute_code',
+          arguments: { tool_graph: [{ tool: 'developer/shell', description }] },
+        },
+      },
+    };
+    render(
+      <ToolCallWithResponse
+        isCancelledMessage={false}
+        toolRequest={toolRequest}
+        toolResponse={{
+          type: 'toolResponse',
+          id: `tool-imperative-${status}`,
+          toolResult:
+            status === 'success'
+              ? { status: 'success', value: { content: [{ type: 'text', text: 'ok' }] } }
+              : { status: 'error', error: 'Permission denied' },
+        }}
+        onOpenArtifact={noopOpenArtifact}
+      />
+    );
+    expect(screen.getByText(label)).toBeInTheDocument();
+    expect(screen.queryByText(/^(?:Ran|Failed to run) (?:run|write)\b/)).not.toBeInTheDocument();
   });
 
   it('treats a successful wrapper with missing content as an empty result', () => {
@@ -1109,7 +1194,7 @@ describe('ToolCallWithResponse executed-call transparency', () => {
 
     // Expand the step row, then the executed-calls section.
     fireEvent.click(
-      screen.getByText(/read the manifest → list the files/).closest('button') as HTMLElement
+      screen.getByText(/read the manifest → list the files/i).closest('button') as HTMLElement
     );
 
     expect(screen.getByText('Read manifest.json')).toBeInTheDocument();
@@ -1144,7 +1229,7 @@ describe('ToolCallWithResponse executed-call transparency', () => {
     );
 
     fireEvent.click(
-      screen.getByText(/read the manifest → list the files/).closest('button') as HTMLElement
+      screen.getByText(/read the manifest → list the files/i).closest('button') as HTMLElement
     );
 
     // The highlighter splits the source into token spans, so assert on the
@@ -1191,7 +1276,7 @@ describe('ToolCallWithResponse executed-call transparency', () => {
     );
 
     fireEvent.click(
-      screen.getByText(/read the manifest → list the files/).closest('button') as HTMLElement
+      screen.getByText(/read the manifest → list the files/i).closest('button') as HTMLElement
     );
 
     // The literal markdown source is visible as text…
@@ -1232,7 +1317,7 @@ describe('ToolCallWithResponse executed-call transparency', () => {
     );
 
     fireEvent.click(
-      screen.getByText(/read the manifest → list the files/).closest('button') as HTMLElement
+      screen.getByText(/read the manifest → list the files/i).closest('button') as HTMLElement
     );
 
     expect(screen.getByText('3 not recorded')).toBeInTheDocument();
@@ -1268,7 +1353,7 @@ describe('ToolCallWithResponse executed-call transparency', () => {
     );
 
     fireEvent.click(
-      screen.getByText(/read the manifest → list the files/).closest('button') as HTMLElement
+      screen.getByText(/read the manifest → list the files/i).closest('button') as HTMLElement
     );
     expect(screen.getByText('2 not recorded')).toBeInTheDocument();
     expect(
