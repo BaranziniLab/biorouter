@@ -99,12 +99,38 @@
 //! flattened to plain text for the next turn anyway
 //! (`providers/coding_agent/transcript.rs:51`), so a stored signature could only
 //! ever be replayed to an endpoint that never sees it.
+//!
+//! # Rule 6: the gauge reads the LAST request, never the `result` sum
+//!
+//! `result.usage` is the sum over every API request the child made in the
+//! turn. Its four buckets are what the turn billed, so they stay sums. But
+//! `total_tokens` is the context gauge, and context does not accumulate across
+//! requests: it is whatever the last request carried. In the recorded
+//! `turn-tools` cell `result.usage` reads 89,409 tokens over three requests
+//! while the context at the end is 30,362, and a live Haiku 4.5 turn with four
+//! tool calls read 175,391 of a 200,000 window against a real 59,374. So the
+//! router keeps each main-session request's own usage (`message_start`, then
+//! `message_delta`), and [`terminal_usage`] takes the gauge from the last one.
+//! Codex reads `tokenUsage.last` for the same reason (`codex_stream.rs`).
+//!
+//! # Rule 7: `ToolSearch` is the child's schema loader, not a tool call
+//!
+//! A bridged child runs with exactly one built-in, `ToolSearch`, so Claude Code
+//! can defer the bridge's tool schemas instead of putting all of them in every
+//! request (see `claude_code.rs`, `CHILD_SCHEMA_LOADER`). Its calls fetch
+//! schemas the child already holds and run nothing on Biorouter's side, so they
+//! are swallowed here: mirrored, they would be cards for a tool Biorouter never
+//! offered, and their results would be flattened into the next turn's prompt.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use serde_json::Value;
 
 use crate::providers::base::Usage;
+
+/// The one built-in a bridged child keeps (rule 7). The flag that enables it is
+/// built from this constant in `claude_code.rs`, so the two cannot disagree.
+pub(crate) const CHILD_SCHEMA_LOADER: &str = "ToolSearch";
 
 /// `system` subtypes this router recognises. A subtype outside this list is
 /// counted by [`ClaudeStreamRouter::unhandled`] so vendor drift shows up as a
@@ -289,8 +315,9 @@ pub(crate) struct TerminalFrame {
     /// Useful as a fallback when no partial messages were streamed; see
     /// [`ClaudeStreamRouter::streamed_any_text`].
     pub(crate) final_text: String,
-    /// The authoritative usage for the whole turn (the sum over its API calls),
-    /// in Biorouter's four disjoint buckets.
+    /// The turn's usage: the four disjoint buckets are the sum over its API
+    /// calls (what it billed), and `total_tokens` is the context the last call
+    /// carried (rule 6), or `None` when neither the stream nor the frame says.
     pub(crate) usage: Usage,
     /// `Some` when this turn failed. See [`classify_result`] for why this is not
     /// simply `subtype != "success"`.
@@ -355,6 +382,18 @@ pub(crate) struct ClaudeStreamRouter {
     /// Tool events diverted away from the decoder. The number this phase most
     /// wants to be able to prove is nonzero.
     diverted_tool_events: usize,
+    /// The latest main-session API request's usage: its `message_start`
+    /// figures with each `message_delta`'s laid over them, because a delta may
+    /// carry only `output_tokens` (rule 6). Survives a `result`, so a steered
+    /// run's next request simply replaces it.
+    request_usage: serde_json::Map<String, Value>,
+    /// The context that request carried, recomputed on every update.
+    last_request_context: Option<i32>,
+    /// Ids of `ToolSearch` calls (rule 7), so their results can be swallowed
+    /// too. Run-wide: the result arrives in a later `user` frame.
+    schema_loader_calls: HashSet<String>,
+    /// `ToolSearch` events swallowed under rule 7.
+    swallowed_schema_loads: usize,
 }
 
 impl ClaudeStreamRouter {
@@ -425,12 +464,19 @@ impl ClaudeStreamRouter {
         match event.get("type").and_then(Value::as_str) {
             Some("message_start") => {
                 self.begin_message();
+                if !is_subagent(frame) {
+                    self.request_usage.clear();
+                }
+                self.note_request_usage(frame, event.get("message").and_then(|m| m.get("usage")));
                 self.forward(event)
             }
             Some("content_block_start") => self.route_block_start(event),
             Some("content_block_delta") => self.route_block_delta(event),
             Some("content_block_stop") => self.route_block_stop(event),
-            Some("message_delta") => self.forward(event),
+            Some("message_delta") => {
+                self.note_request_usage(frame, event.get("usage"));
+                self.forward(event)
+            }
             // Rule 3: forwarding this ends the decoder at the first message.
             Some("message_stop") => RoutedFrame::Ignored,
             Some("ping") => RoutedFrame::Ignored,
@@ -445,6 +491,29 @@ impl ClaudeStreamRouter {
     fn begin_message(&mut self) {
         self.tool_indices.clear();
         self.saw_block_delta = false;
+    }
+
+    /// Record one main-session request's context (rule 6). A subagent's
+    /// requests are its own context, not this session's.
+    fn note_request_usage(&mut self, frame: &Value, usage: Option<&Value>) {
+        if is_subagent(frame) {
+            return;
+        }
+        let Some(fields) = usage.and_then(Value::as_object) else {
+            return;
+        };
+        for (key, value) in fields {
+            self.request_usage.insert(key.clone(), value.clone());
+        }
+        if let Some(context) = request_context(&Value::Object(self.request_usage.clone())) {
+            self.last_request_context = Some(context);
+        }
+    }
+
+    /// Swallow a `ToolSearch` event (rule 7).
+    fn swallow_schema_load(&mut self) -> RoutedFrame {
+        self.swallowed_schema_loads += 1;
+        RoutedFrame::Ignored
     }
 
     /// `content_block_start`: the only frame that says what a block *is*, and
@@ -463,6 +532,11 @@ impl ClaudeStreamRouter {
         let id = string_field(block, "id");
         let name = string_field(block, "name");
         self.tool_indices.insert(index, id.clone());
+        if name == CHILD_SCHEMA_LOADER {
+            // Still marked above, so its deltas and stop stay off the decoder.
+            self.schema_loader_calls.insert(id);
+            return self.swallow_schema_load();
+        }
         self.divert(ToolBlockEvent::Opened { index, id, name })
     }
 
@@ -471,6 +545,9 @@ impl ClaudeStreamRouter {
     fn route_block_delta(&mut self, event: &Value) -> RoutedFrame {
         let index = block_index(event);
         if let Some(id) = self.tool_indices.get(&index).cloned() {
+            if self.schema_loader_calls.contains(&id) {
+                return self.swallow_schema_load();
+            }
             let partial_json = event
                 .get("delta")
                 .map(|d| string_field(d, "partial_json"))
@@ -498,6 +575,9 @@ impl ClaudeStreamRouter {
     fn route_block_stop(&mut self, event: &Value) -> RoutedFrame {
         let index = block_index(event);
         if let Some(id) = self.tool_indices.get(&index).cloned() {
+            if self.schema_loader_calls.contains(&id) {
+                return self.swallow_schema_load();
+            }
             return self.divert(ToolBlockEvent::Closed { index, id });
         }
         self.forward(event)
@@ -507,15 +587,15 @@ impl ClaudeStreamRouter {
     /// duplication (rule 4).
     fn route_assistant(&mut self, frame: &Value) -> RoutedFrame {
         if is_subagent(frame) {
-            // Subagent output is the child's own inner loop. Biorouter runs with
-            // `--tools ""` so it should never appear; filtered defensively
+            // Subagent output is the child's own inner loop. Biorouter gives the
+            // child no `Agent` tool so it should never appear; filtered defensively
             // because attributing it to this turn would be wrong.
             return RoutedFrame::Ignored;
         }
         let Some(blocks) = content_blocks(frame) else {
             return RoutedFrame::Ignored;
         };
-        let calls: Vec<ToolUseBlock> = blocks
+        let (schema_loads, calls): (Vec<ToolUseBlock>, Vec<ToolUseBlock>) = blocks
             .iter()
             .filter(|b| type_field(b) == "tool_use")
             .map(|b| ToolUseBlock {
@@ -523,7 +603,13 @@ impl ClaudeStreamRouter {
                 name: string_field(b, "name"),
                 input: b.get("input").cloned().unwrap_or(Value::Null),
             })
-            .collect();
+            .partition(|call| call.name == CHILD_SCHEMA_LOADER);
+        let swallowed_any = !schema_loads.is_empty();
+        self.schema_loader_calls
+            .extend(schema_loads.into_iter().map(|call| call.id));
+        if calls.is_empty() && swallowed_any {
+            return self.swallow_schema_load();
+        }
         if !calls.is_empty() {
             let message_id = frame.get("message").and_then(|m| opt_string(m, "id"));
             return self.divert(ToolBlockEvent::Call { message_id, calls });
@@ -555,9 +641,17 @@ impl ClaudeStreamRouter {
         let Some(blocks) = content_blocks(frame) else {
             return RoutedFrame::Ignored;
         };
+        let mut swallowed_any = false;
         let results: Vec<ToolResultBlock> = blocks
             .iter()
             .filter(|b| type_field(b) == "tool_result")
+            .filter(|b| {
+                let schema_load = self
+                    .schema_loader_calls
+                    .contains(&string_field(b, "tool_use_id"));
+                swallowed_any |= schema_load;
+                !schema_load
+            })
             .map(|b| ToolResultBlock {
                 tool_use_id: string_field(b, "tool_use_id"),
                 content: b.get("content").cloned().unwrap_or(Value::Null),
@@ -567,7 +661,11 @@ impl ClaudeStreamRouter {
             })
             .collect();
         if results.is_empty() {
-            return RoutedFrame::Ignored;
+            return if swallowed_any {
+                self.swallow_schema_load()
+            } else {
+                RoutedFrame::Ignored
+            };
         }
         self.divert(ToolBlockEvent::Result { results })
     }
@@ -596,7 +694,7 @@ impl ClaudeStreamRouter {
     fn route_result(&mut self, frame: &Value) -> RoutedFrame {
         let terminal = TerminalFrame {
             final_text: string_field(frame, "result"),
-            usage: parse_usage(frame.get("usage")),
+            usage: terminal_usage(frame, self.last_request_context),
             error: classify_result(frame, self.retry_category.as_deref()),
             subtype: opt_string(frame, "subtype"),
             terminal_reason: opt_string(frame, "terminal_reason"),
@@ -662,6 +760,11 @@ impl ClaudeStreamRouter {
     /// Tool events kept away from the Anthropic decoder in this turn.
     pub(crate) fn diverted_tool_events(&self) -> usize {
         self.diverted_tool_events
+    }
+
+    /// `ToolSearch` events swallowed under rule 7.
+    pub(crate) fn swallowed_schema_loads(&self) -> usize {
+        self.swallowed_schema_loads
     }
 }
 
@@ -764,41 +867,90 @@ fn classify_result(frame: &Value, retry_category: Option<&str>) -> Option<Termin
     Some(TerminalError { category, detail })
 }
 
-/// Pull Biorouter's four disjoint token buckets out of the terminal frame.
+/// One integer bucket of an Anthropic usage object.
 ///
-/// Deliberately identical to `providers/claude_code.rs::parse_usage`, which is
-/// private to that module: Claude Code reports the Anthropic API's shape, where
-/// `input_tokens` already **excludes** both cache buckets — exactly the
-/// invariant [`Usage`] documents — so nothing is subtracted here. `total_tokens`
-/// is context occupancy for the live gauge (cache included), not the billed sum.
-fn parse_usage(usage: Option<&Value>) -> Usage {
-    let Some(u) = usage else {
+/// Saturating rather than wrapping: a bogus count must not turn into a negative
+/// token figure that the usage ledger then sums.
+fn usage_field(usage: &Value, key: &str) -> Option<i32> {
+    let raw = usage.get(key).and_then(Value::as_i64)?;
+    Some(i32::try_from(raw).unwrap_or(i32::MAX))
+}
+
+/// The context ONE API request carried: its whole prompt (fresh input plus both
+/// cache buckets) plus what it wrote, which the next request will carry.
+///
+/// When the request reports `iterations` (the API's own breakdown of a request
+/// that sampled more than once, as when it compacted server-side), the last
+/// iteration is the one whose prompt is still in the window.
+fn request_context(usage: &Value) -> Option<i32> {
+    let usage = usage
+        .get("iterations")
+        .and_then(Value::as_array)
+        .and_then(|iterations| iterations.last())
+        .unwrap_or(usage);
+    let buckets = [
+        "input_tokens",
+        "cache_read_input_tokens",
+        "cache_creation_input_tokens",
+        "output_tokens",
+    ]
+    .map(|key| usage_field(usage, key));
+    if buckets.iter().all(Option::is_none) {
+        return None;
+    }
+    Some(
+        buckets
+            .iter()
+            .fold(0i32, |sum, bucket| sum.saturating_add(bucket.unwrap_or(0))),
+    )
+}
+
+/// Biorouter's [`Usage`] for a terminal `result` frame (rule 6).
+///
+/// The four buckets come from `result.usage` as they are: Claude Code reports
+/// the Anthropic API's shape, where `input_tokens` already **excludes** both
+/// cache buckets, exactly the invariant [`Usage`] documents, and the sum over
+/// the turn's requests is what the turn billed.
+///
+/// `total_tokens` is the live context gauge, and it is the LAST request's
+/// context, in order of preference:
+///
+/// 1. `streamed_last`, the last main-session request the router saw. The
+///    blocking path sees no requests and passes `None`.
+/// 2. `result.usage.iterations`, which names the final request only (the
+///    recorded `turn-tools` cell, and claude 2.1.296, both show it).
+/// 3. The sum, but only when `num_turns` says there was one request, which
+///    makes the sum and the last request the same thing.
+///
+/// Otherwise `None`: the compaction check then estimates from the
+/// conversation, which is honest, where the sum would read one whole context
+/// per tool call and push the gauge past the window.
+pub(crate) fn terminal_usage(result: &Value, streamed_last: Option<i32>) -> Usage {
+    let Some(usage) = result.get("usage") else {
         return Usage::default();
     };
-    let get = |k: &str| -> Option<i32> {
-        let raw = u.get(k).and_then(Value::as_i64)?;
-        // Saturating rather than wrapping: a bogus count must not turn into a
-        // negative token figure that the usage ledger then sums.
-        Some(i32::try_from(raw).unwrap_or(i32::MAX))
-    };
+    let input = usage_field(usage, "input_tokens");
+    let output = usage_field(usage, "output_tokens");
+    let cache_read = usage_field(usage, "cache_read_input_tokens");
+    let cache_creation = usage_field(usage, "cache_creation_input_tokens");
 
-    let input = get("input_tokens");
-    let output = get("output_tokens");
-    let cache_read = get("cache_read_input_tokens");
-    let cache_creation = get("cache_creation_input_tokens");
+    let reported_last = usage
+        .get("iterations")
+        .and_then(Value::as_array)
+        .and_then(|iterations| iterations.last())
+        .and_then(request_context);
+    let single_request = result
+        .get("num_turns")
+        .and_then(Value::as_u64)
+        .is_none_or(|turns| turns <= 1);
+    let context = streamed_last
+        .or(reported_last)
+        .or_else(|| single_request.then(|| request_context(usage)).flatten());
 
     Usage {
         input_tokens: input,
         output_tokens: output,
-        total_tokens: match (input, output) {
-            (None, None) => None,
-            _ => Some(
-                input.unwrap_or(0)
-                    + output.unwrap_or(0)
-                    + cache_read.unwrap_or(0)
-                    + cache_creation.unwrap_or(0),
-            ),
-        },
+        total_tokens: context,
         cache_read_input_tokens: cache_read,
         cache_creation_input_tokens: cache_creation,
     }
@@ -1013,8 +1165,11 @@ mod tests {
         assert_eq!(terminal.usage.output_tokens, Some(99));
         assert_eq!(terminal.usage.cache_read_input_tokens, Some(46278));
         assert_eq!(terminal.usage.cache_creation_input_tokens, Some(12534));
-        // Context occupancy for the gauge: all four buckets, not the billed sum.
-        assert_eq!(terminal.usage.total_tokens, Some(4 + 99 + 46278 + 12534));
+        // The billed buckets above are the `result` sum over the turn's two
+        // requests; the gauge is the last request alone (rule 6), from its
+        // `message_start` and `message_delta`: 2 in, 28,789 cached, 1,234
+        // written, 3 out.
+        assert_eq!(terminal.usage.total_tokens, Some(2 + 28789 + 1234 + 3));
         assert!(router.streamed_any_text());
         assert_eq!(router.unhandled(), 0, "every recorded frame is understood");
     }
@@ -1508,5 +1663,128 @@ mod tests {
                 }
             }
         }
+    }
+
+    // ---------------------------------------------------------------------
+    // Rule 6: the gauge is the last request, never the `result` sum.
+    // ---------------------------------------------------------------------
+
+    /// The terminal frame a router produced, after pushing `lines`.
+    fn terminal_after(lines: &[&str]) -> TerminalFrame {
+        let (_, routed) = route_all(lines);
+        routed
+            .into_iter()
+            .find_map(|frame| match frame {
+                RoutedFrame::Terminal(terminal) => Some(terminal),
+                _ => None,
+            })
+            .expect("a terminal frame")
+    }
+
+    /// The recorded three-request `turn-tools` cell, end to end. Its `result`
+    /// sums the requests (87,563 cached, 89,409 in all) and that sum is what
+    /// the turn BILLED; the context at the end is the last request's 30,362.
+    /// Reading the sum as the gauge is what put a four-tool Haiku turn at
+    /// 175,391 of a 200,000 window when the real context was 59,374.
+    #[test]
+    fn a_recorded_tool_turn_reports_the_last_requests_context() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/coding_agent/claude/turn-tools.ndjson");
+        let body = std::fs::read_to_string(&path).expect("the recorded turn-tools cell");
+        let lines: Vec<&str> = body.lines().filter(|l| !l.trim().is_empty()).collect();
+        let terminal = terminal_after(&lines);
+
+        assert_eq!(terminal.usage.total_tokens, Some(2 + 30013 + 344 + 3));
+        assert_eq!(terminal.usage.cache_read_input_tokens, Some(87563));
+        assert_eq!(terminal.usage.cache_creation_input_tokens, Some(1582));
+        assert_eq!(
+            terminal.usage.billed_total(),
+            Some(6 + 258 + 87563 + 1582),
+            "what the turn billed stays the sum over its requests"
+        );
+    }
+
+    /// The same answer with no stream frames at all, from `usage.iterations`,
+    /// which names only the final request.
+    #[test]
+    fn the_result_frame_alone_reports_the_last_request_through_iterations() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/coding_agent/claude/turn-tools.ndjson");
+        let body = std::fs::read_to_string(&path).expect("the recorded turn-tools cell");
+        let result = body
+            .lines()
+            .find(|l| l.contains(r#""type":"result""#))
+            .expect("a result frame");
+        let terminal = terminal_after(&[result]);
+        assert_eq!(terminal.usage.total_tokens, Some(2 + 30013 + 344 + 3));
+    }
+
+    /// The API's own `message_delta` may carry `output_tokens` and nothing else.
+    /// It updates the request it belongs to; it does not become the request.
+    #[test]
+    fn an_output_only_delta_does_not_shrink_the_request() {
+        let start = r#"{"type":"stream_event","event":{"type":"message_start","message":{"id":"m1","type":"message","role":"assistant","content":[],"usage":{"input_tokens":5,"cache_read_input_tokens":40000,"cache_creation_input_tokens":100,"output_tokens":1}}},"parent_tool_use_id":null}"#;
+        let delta = r#"{"type":"stream_event","event":{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":20}},"parent_tool_use_id":null}"#;
+        let result = r#"{"type":"result","subtype":"success","is_error":false,"result":"ok","num_turns":1,"usage":{"input_tokens":5,"cache_read_input_tokens":40000,"cache_creation_input_tokens":100,"output_tokens":20}}"#;
+        let terminal = terminal_after(&[start, delta, result]);
+        assert_eq!(terminal.usage.total_tokens, Some(5 + 40000 + 100 + 20));
+    }
+
+    /// A subagent's requests are its own window, not this session's.
+    #[test]
+    fn a_subagents_requests_do_not_move_the_gauge() {
+        let main = r#"{"type":"stream_event","event":{"type":"message_start","message":{"id":"m1","type":"message","role":"assistant","content":[],"usage":{"input_tokens":2,"cache_read_input_tokens":30000,"cache_creation_input_tokens":0,"output_tokens":7}}},"parent_tool_use_id":null}"#;
+        let sub = r#"{"type":"stream_event","event":{"type":"message_start","message":{"id":"m2","type":"message","role":"assistant","content":[],"usage":{"input_tokens":2,"cache_read_input_tokens":90000,"cache_creation_input_tokens":0,"output_tokens":7}}},"parent_tool_use_id":"toolu_parent"}"#;
+        let result = r#"{"type":"result","subtype":"success","is_error":false,"result":"ok","num_turns":2,"usage":{"input_tokens":4,"cache_read_input_tokens":120000,"cache_creation_input_tokens":0,"output_tokens":14}}"#;
+        let terminal = terminal_after(&[main, sub, result]);
+        assert_eq!(terminal.usage.total_tokens, Some(2 + 30000 + 7));
+    }
+
+    // ---------------------------------------------------------------------
+    // Rule 7: `ToolSearch` is swallowed, every other tool is still diverted.
+    // ---------------------------------------------------------------------
+
+    /// A `ToolSearch` round trip produces nothing for the decoder AND nothing
+    /// for the mirror, while a bridged call in the same turn is diverted as
+    /// before. Shaped like claude 2.1.296's frames for a deferred tool load.
+    #[test]
+    fn a_schema_load_is_swallowed_and_a_bridged_call_is_not() {
+        let start = r#"{"type":"stream_event","event":{"type":"message_start","message":{"id":"m1","type":"message","role":"assistant","content":[],"usage":{"input_tokens":3,"output_tokens":1}}},"parent_tool_use_id":null}"#;
+        let open = r#"{"type":"stream_event","event":{"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"toolu_ts","name":"ToolSearch","input":{}}},"parent_tool_use_id":null}"#;
+        let args = r#"{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\"query\":\"select:mcp__biorouter__developer__shell\"}"}},"parent_tool_use_id":null}"#;
+        let stop = r#"{"type":"stream_event","event":{"type":"content_block_stop","index":0},"parent_tool_use_id":null}"#;
+        let call = r#"{"type":"assistant","message":{"id":"m1","type":"message","role":"assistant","content":[{"type":"tool_use","id":"toolu_ts","name":"ToolSearch","input":{"query":"select:mcp__biorouter__developer__shell"}}]},"parent_tool_use_id":null}"#;
+        let loaded = r#"{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_ts","content":[{"type":"tool_reference","tool_name":"mcp__biorouter__developer__shell"}]}]},"parent_tool_use_id":null}"#;
+        let shell = r#"{"type":"assistant","message":{"id":"m2","type":"message","role":"assistant","content":[{"type":"tool_use","id":"toolu_sh","name":"mcp__biorouter__developer__shell","input":{"command":"echo hi"}}]},"parent_tool_use_id":null}"#;
+        let shell_result = r#"{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_sh","content":[{"type":"text","text":"hi"}]}]},"parent_tool_use_id":null}"#;
+
+        let (router, routed) =
+            route_all(&[start, open, args, stop, call, loaded, shell, shell_result]);
+
+        assert!(
+            matches!(routed[0], RoutedFrame::AnthropicEvent(_)),
+            "message_start still reaches the decoder"
+        );
+        for (i, frame) in routed[1..6].iter().enumerate() {
+            assert!(
+                matches!(frame, RoutedFrame::Ignored),
+                "schema-load frame {} must be swallowed, got {frame:?}",
+                i + 1
+            );
+        }
+        assert!(
+            matches!(&routed[6], RoutedFrame::Tool(ToolBlockEvent::Call { calls, .. })
+                if calls.len() == 1 && calls[0].id == "toolu_sh"),
+            "a bridged call must still be diverted: {:?}",
+            routed[6]
+        );
+        assert!(
+            matches!(&routed[7], RoutedFrame::Tool(ToolBlockEvent::Result { results })
+                if results.len() == 1 && results[0].tool_use_id == "toolu_sh"),
+            "a bridged result must still be diverted: {:?}",
+            routed[7]
+        );
+        assert_eq!(router.swallowed_schema_loads(), 5);
+        assert_eq!(router.unhandled(), 0);
     }
 }

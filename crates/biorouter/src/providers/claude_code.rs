@@ -48,7 +48,9 @@
 //!   personal clinical-database server as `connected` inside a child Biorouter
 //!   thought it was fully isolating. `--tools ""` does *not* cover this; it
 //!   suppresses built-ins only.
-//! * `--tools ""` — the child's own Read/Edit/Bash are switched off. A tool the
+//! * `--tools ""` (`--tools ToolSearch` when the turn has a bridge, so the CLI
+//!   can defer the bridged schemas; see `base_args`) — the child's own
+//!   Read/Edit/Bash are switched off. A tool the
 //!   child runs itself is invisible to Biorouter's inspectors, permission modes,
 //!   `.biorouterignore` and vault. Biorouter's own tools reach it over MCP
 //!   instead, where Biorouter's dispatcher executes them and every existing gate
@@ -76,7 +78,7 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
 use super::base::{
     ConfigKey, MessageStream, ModelInfo, PendingToolCall, Provider, ProviderMetadata,
-    ProviderSteerReceiver, ProviderSteerRequest, ProviderStreamItem, ProviderUsage, Usage,
+    ProviderSteerReceiver, ProviderSteerRequest, ProviderStreamItem, ProviderUsage,
 };
 use super::coding_agent::{
     self, bridge, claude_stream, discovery, effort, env as agent_env, mirror, transcript,
@@ -390,8 +392,24 @@ impl ClaudeCodeProvider {
 
         // The child's own agentic tools are off. Biorouter's tools arrive over
         // MCP, where Biorouter executes them behind its own gates.
+        //
+        // ⚠ With one exception when a bridge exists: `ToolSearch`, which is
+        // what lets Claude Code DEFER the bridge's tool schemas and load each
+        // one when the model reaches for it. `--tools ""` removes it, and the
+        // CLI then puts every bridged schema in every request: measured
+        // 2026-10-18 on claude 2.1.296 with the default Biorouter roster (77
+        // tools, 123 KB of JSON), the first request of a fresh chat was 76,560
+        // tokens on Opus 5.5 and 31,001 with `ToolSearch` kept — what Versa's
+        // API path sends for the same chat. It reads only the schemas of tools
+        // the child already holds and executes nothing, so the child's
+        // capabilities are unchanged. Its calls are swallowed before the mirror
+        // (`claude_stream`, rule 7). Without a bridge there is nothing to defer.
         args.push("--tools".into());
-        args.push(String::new());
+        args.push(if mcp_config.is_some() {
+            claude_stream::CHILD_SCHEMA_LOADER.to_string()
+        } else {
+            String::new()
+        });
 
         // Biorouter's own tools, when this turn has a bridge. `--strict-mcp-config`
         // above means this is the *only* MCP server the child sees, so the set is
@@ -498,6 +516,14 @@ impl ClaudeCodeProvider {
         }
         if let Ok(path) = search.path() {
             cmd.env("PATH", path);
+        }
+
+        // Pinned rather than inherited: a user's own `ENABLE_TOOL_SEARCH=false`
+        // (or an `auto:N` threshold above the roster's share of the window)
+        // would put every bridged schema back into every request. See the
+        // `--tools` comment in `base_args`.
+        if mcp_config.is_some() {
+            cmd.env("ENABLE_TOOL_SEARCH", "true");
         }
 
         cmd.stdin(Stdio::piped())
@@ -756,7 +782,10 @@ impl ClaudeCodeProvider {
             )));
         }
 
-        let usage = parse_usage(result.get("usage"));
+        // The blocking path sees no per-request frames, so the gauge comes from
+        // the frame alone; see `claude_stream::terminal_usage` for why it is
+        // not the `result.usage` sum.
+        let usage = claude_stream::terminal_usage(&result, None);
         let message = Message::new(
             Role::Assistant,
             chrono::Utc::now().timestamp(),
@@ -1268,7 +1297,14 @@ where
         ClaudeFrameOutcome::ConsumerClosed => ClaudeLoopOutcome::Stop(None),
         ClaudeFrameOutcome::Terminal(Ok(usage)) => {
             *context.completed_usage = Some(match context.completed_usage.take() {
-                Some(previous) => previous.combine_with(&usage),
+                Some(previous) => {
+                    // A steered run bills every `result`, but its context is the
+                    // latest one's: `combine_with` adds `total_tokens` too, which
+                    // would put two whole contexts on the gauge.
+                    let mut combined = previous.combine_with(&usage);
+                    combined.usage.total_tokens = usage.usage.total_tokens;
+                    combined
+                }
                 None => usage,
             });
             // D15: the turn is over at a `result` once every steer written into it
@@ -1554,41 +1590,6 @@ fn bridge_mcp_config() -> Result<Option<tempfile::NamedTempFile>, ProviderError>
         ProviderError::ExecutionError(format!("could not write the tool bridge config: {e}"))
     })?;
     Ok(Some(file))
-}
-
-/// Pull Biorouter's four disjoint token buckets out of the CLI's `usage` object.
-///
-/// Claude Code reports the same shape the Anthropic API does, where `input_tokens`
-/// already **excludes** both cache buckets — which is exactly the invariant
-/// [`Usage`] documents, so no subtraction is needed here.
-fn parse_usage(usage: Option<&Value>) -> Usage {
-    let Some(u) = usage else {
-        return Usage::default();
-    };
-    let get = |k: &str| u.get(k).and_then(Value::as_i64).map(|v| v as i32);
-
-    let input = get("input_tokens");
-    let output = get("output_tokens");
-    let cache_read = get("cache_read_input_tokens");
-    let cache_creation = get("cache_creation_input_tokens");
-
-    Usage {
-        input_tokens: input,
-        output_tokens: output,
-        // Context occupancy for the live gauge, which for a cache-aware provider
-        // includes the cache buckets. Deliberately not the billed total.
-        total_tokens: match (input, output) {
-            (None, None) => None,
-            _ => Some(
-                input.unwrap_or(0)
-                    + output.unwrap_or(0)
-                    + cache_read.unwrap_or(0)
-                    + cache_creation.unwrap_or(0),
-            ),
-        },
-        cache_read_input_tokens: cache_read,
-        cache_creation_input_tokens: cache_creation,
-    }
 }
 
 impl ClaudeCodeProvider {
@@ -2044,6 +2045,37 @@ mod tests {
         );
     }
 
+    /// With a bridge, the child keeps exactly ONE built-in: `ToolSearch`, the
+    /// schema loader that lets the CLI defer Biorouter's tool schemas instead
+    /// of putting all of them in every request. Nothing else — no Read, Edit,
+    /// Bash, Agent — and the env pin that keeps a user's own
+    /// `ENABLE_TOOL_SEARCH=false` from re-inflating the prompt rides with it.
+    #[test]
+    fn a_bridged_child_keeps_only_the_schema_loader() {
+        let p = provider();
+        let m = ModelConfig::new("claude-sonnet-4-6").unwrap();
+        let bridge = std::path::Path::new("/tmp/bridge.json");
+
+        let bridged = p.base_args(&m, "SYS", "stream-json", Some(bridge), None);
+        let t = bridged.iter().position(|a| a == "--tools").unwrap();
+        assert_eq!(bridged[t + 1], "ToolSearch");
+        assert_eq!(bridged[t + 1], claude_stream::CHILD_SCHEMA_LOADER);
+
+        let env_of = |mcp: Option<&std::path::Path>| -> Option<String> {
+            p.command_for(&m, "SYS", "stream-json", mcp, None)
+                .as_std()
+                .get_envs()
+                .find(|(key, _)| *key == "ENABLE_TOOL_SEARCH")
+                .and_then(|(_, value)| value.map(|v| v.to_string_lossy().into_owned()))
+        };
+        assert_eq!(env_of(Some(bridge)).as_deref(), Some("true"));
+        assert_eq!(
+            env_of(None),
+            None,
+            "no bridge, nothing to defer, and the user's environment is left alone"
+        );
+    }
+
     /// `--mcp-config` is **variadic**, so nothing that follows it may be a bare
     /// positional: the CLI would swallow it as a second config path and die with
     /// "MCP config file not found: <that argument>". This is not hypothetical — it
@@ -2398,24 +2430,83 @@ mod tests {
     /// documents and what makes `billed_total` reconcile with a vendor bill.
     #[test]
     fn usage_buckets_stay_disjoint() {
-        let v = serde_json::json!({
+        let v = serde_json::json!({"usage": {
             "input_tokens": 10,
             "output_tokens": 45,
             "cache_read_input_tokens": 5232,
             "cache_creation_input_tokens": 907
-        });
-        let u = parse_usage(Some(&v));
+        }});
+        let u = claude_stream::terminal_usage(&v, None);
         assert_eq!(u.input_tokens, Some(10));
         assert_eq!(u.output_tokens, Some(45));
         assert_eq!(u.cache_read_input_tokens, Some(5232));
         assert_eq!(u.cache_creation_input_tokens, Some(907));
+        // One request (no `num_turns` saying otherwise), so its context is
+        // the whole of the turn's usage.
         assert_eq!(u.total_tokens, Some(10 + 45 + 5232 + 907));
     }
 
     #[test]
     fn absent_usage_is_not_invented() {
-        assert_eq!(parse_usage(None).input_tokens, None);
-        assert_eq!(parse_usage(None).total_tokens, None);
+        let none = serde_json::json!({});
+        assert_eq!(
+            claude_stream::terminal_usage(&none, None).input_tokens,
+            None
+        );
+        assert_eq!(
+            claude_stream::terminal_usage(&none, None).total_tokens,
+            None
+        );
+    }
+
+    /// The blocking path's gauge is the LAST request, never the turn's sum.
+    ///
+    /// The `result` frame from the recorded `turn-tools` cell: three requests,
+    /// `usage` summed over them, `usage.iterations` naming the last. Read as a
+    /// sum, the gauge said 89,409; the context at the end was 30,362.
+    #[test]
+    fn a_blocking_turn_with_tool_calls_reports_the_last_requests_context() {
+        let result = serde_json::json!({
+            "type": "result", "subtype": "success", "is_error": false,
+            "result": "done", "num_turns": 3,
+            "usage": {
+                "input_tokens": 6, "cache_creation_input_tokens": 1582,
+                "cache_read_input_tokens": 87563, "output_tokens": 258,
+                "iterations": [{"input_tokens": 2, "output_tokens": 3,
+                    "cache_read_input_tokens": 30013, "cache_creation_input_tokens": 344,
+                    "type": "message"}]
+            }
+        });
+        let init = r#"{"type":"system","subtype":"init","apiKeySource":"none"}"#.to_string();
+        let (_, usage) = provider()
+            .parse_result_object(
+                CLAUDE_CODE_DEFAULT_MODEL,
+                &[init.clone(), result.to_string()],
+                "",
+                exit_ok(),
+            )
+            .expect("a successful result parses");
+        assert_eq!(usage.usage.total_tokens, Some(2 + 30013 + 344 + 3));
+        assert_eq!(
+            usage.usage.billed_total(),
+            Some(6 + 1582 + 87563 + 258),
+            "what the turn billed is still the sum"
+        );
+
+        // Without `iterations` a multi-request sum cannot be split, so the
+        // gauge is left for the compaction check to estimate.
+        let mut bare = result.clone();
+        bare["usage"].as_object_mut().unwrap().remove("iterations");
+        let (_, usage) = provider()
+            .parse_result_object(
+                CLAUDE_CODE_DEFAULT_MODEL,
+                &[init, bare.to_string()],
+                "",
+                exit_ok(),
+            )
+            .expect("a successful result parses");
+        assert_eq!(usage.usage.total_tokens, None);
+        assert_eq!(usage.usage.cache_read_input_tokens, Some(87563));
     }
 
     /// Codex's `a_failed_turn_names_an_unknown_model_and_the_ones_that_exist`,
@@ -3318,6 +3409,9 @@ sys.stdin.readline()
         let usage = usage.expect("the steered run should report combined usage");
         assert_eq!(usage.usage.input_tokens, Some(4));
         assert_eq!(usage.usage.output_tokens, Some(4));
+        // The context is the steered request's alone (3 in, 2 out), not the two
+        // results added together.
+        assert_eq!(usage.usage.total_tokens, Some(5));
     }
 }
 
