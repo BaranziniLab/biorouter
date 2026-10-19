@@ -1624,6 +1624,7 @@ pub(crate) mod tests {
         let cases = vec![
             ("openai", "OPENAI_API_KEY"),
             ("groq", "GROQ_API_KEY"),
+            ("baseten", "BASETEN_API_KEY"),
             ("mistral", "MISTRAL_API_KEY"),
             ("custom_deepseek", "DEEPSEEK_API_KEY"),
             ("xiaomi_mimo", "XIAOMI_MIMO_API_KEY"),

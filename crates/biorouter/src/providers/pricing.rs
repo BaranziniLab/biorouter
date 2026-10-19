@@ -191,7 +191,7 @@ fn resolve_pricing_with_metadata(
     if let Some(pricing) =
         metadata.and_then(|metadata| pricing_from_provider_metadata(metadata, model))
     {
-        return Some(pricing);
+        return Some(with_cache_rates_from(pricing, explicit.as_ref()));
     }
 
     if explicit.is_some() {
@@ -199,6 +199,29 @@ fn resolve_pricing_with_metadata(
     }
 
     canonical_model_pricing(provider, model)
+}
+
+/// Declarative metadata carries input and output rates but no cache rates,
+/// so a model priced there would leave every cached token out of its cost
+/// (`cost_with_pricing` excludes cache tokens it has no rate for). Take the
+/// cache rates from the explicit table, but only when that table agrees on
+/// the input and output rates, so a table that has drifted from the JSON
+/// never lends it a cache rate meant for different prices.
+pub(crate) fn with_cache_rates_from(
+    mut pricing: ProviderModelPricing,
+    explicit: Option<&ProviderModelPricing>,
+) -> ProviderModelPricing {
+    let same_rate = |a: f64, b: f64| (a - b).abs() < 1e-15;
+    if let Some(explicit) = explicit {
+        if same_rate(pricing.input_token_cost, explicit.input_token_cost)
+            && same_rate(pricing.output_token_cost, explicit.output_token_cost)
+            && pricing.currency == explicit.currency
+        {
+            pricing.cache_read_cost = pricing.cache_read_cost.or(explicit.cache_read_cost);
+            pricing.cache_write_cost = pricing.cache_write_cost.or(explicit.cache_write_cost);
+        }
+    }
+    pricing
 }
 
 pub fn pricing_from_provider_metadata(
@@ -227,6 +250,7 @@ fn explicit_provider_model_pricing(provider: &str, model: &str) -> Option<Provid
         "xiaomi_mimo" | "xiaomi-mimo" | "xiaomi" => xiaomi_mimo_pricing(model),
         "custom_deepseek" | "deepseek" => deepseek_pricing(model),
         "moonshot" | "moonshotai" => moonshot_pricing(model),
+        "baseten" => baseten_pricing(model),
         "inception" => inception_pricing(model),
         "mistral" | "mistralai" => mistral_pricing(model),
         "xai" | "x-ai" => xai_pricing(model),
@@ -543,6 +567,78 @@ fn moonshot_pricing(model: &str) -> Option<ProviderModelPricing> {
         .map(|&(_, input, output, context)| {
             ProviderModelPricing::usd_per_million(input, output, context)
         })
+}
+
+/// Baseten Model APIs rates as `(model, $/MTok input, $/MTok output, $/MTok
+/// cached input, context)` for the models `providers/declarative/baseten.json`
+/// ships, read from the `pricing` block of Baseten's `GET /v1/models` and
+/// checked against https://www.baseten.co/pricing/ (2026-10-18). Model ids are
+/// lowercased here because the sync path lowercases before lookup; the JSON
+/// keeps Baseten's own casing, which the API requires.
+///
+/// The cached-input rate is not a fixed fraction of input (about 2% on
+/// DeepSeek V4.1 Flash, 20% on the Nemotrons), so each row states it. GPT OSS
+/// 120B has no cache discount: the API reports its cache read at the input
+/// rate, and the pricing page lists none. There is no cache-write rate: the
+/// OpenAI-format usage Baseten returns has no write bucket to bill. The
+/// declarative JSON has no cache field, so the async path takes
+/// these cache rates from this table ([`with_cache_rates_from`]); the drift
+/// guard is
+/// `config::declarative_providers::tests::baseten_sync_pricing_matches_declarative_metadata`.
+pub(crate) const BASETEN_SYNC_PRICING: &[(&str, f64, f64, f64, u32)] = &[
+    ("zai-org/glm-5.3", 1.40, 4.40, 0.14, 1_048_576),
+    ("zai-org/glm-5.3-fast", 2.10, 6.60, 0.21, 1_048_576),
+    ("zai-org/glm-5.3-flash", 0.15, 0.50, 0.03, 1_048_576),
+    ("moonshotai/kimi-k3", 3.00, 15.00, 0.30, 1_048_576),
+    (
+        "deepseek-ai/deepseek-v4.1-flash",
+        0.30,
+        1.20,
+        0.007,
+        1_048_576,
+    ),
+    (
+        "deepseek-ai/deepseek-v4.1-flash-1017",
+        0.30,
+        1.20,
+        0.007,
+        1_048_576,
+    ),
+    (
+        "deepseek-ai/deepseek-v4-pro-0813",
+        1.32,
+        3.96,
+        0.132,
+        1_048_576,
+    ),
+    ("meta-models/muse-spark-open", 1.25, 4.25, 0.15, 1_048_576),
+    (
+        "nvidia/nvidia-nemotron-3.5-super-vl-120b-a12b",
+        0.20,
+        0.50,
+        0.04,
+        1_048_576,
+    ),
+    (
+        "nvidia/nvidia-nemotron-3-ultra-550b-a55b",
+        0.60,
+        2.40,
+        0.12,
+        202_800,
+    ),
+    ("openai/gpt-oss-120b", 0.10, 0.50, 0.10, 131_072),
+];
+
+fn baseten_pricing(model: &str) -> Option<ProviderModelPricing> {
+    BASETEN_SYNC_PRICING
+        .iter()
+        .find(|(name, _, _, _, _)| *name == model)
+        .map(
+            |&(_, input, output, cache_read, context)| ProviderModelPricing {
+                cache_read_cost: Some(cache_read / 1_000_000.0),
+                ..ProviderModelPricing::usd_per_million(input, output, context)
+            },
+        )
 }
 
 fn inception_pricing(model: &str) -> Option<ProviderModelPricing> {
@@ -897,6 +993,39 @@ mod tests {
         let hosted = provider_model_pricing("openrouter", "moonshotai/kimi-k2.7-code").unwrap();
         assert_eq!(hosted.input_token_cost, 0.6562 / 1_000_000.0);
         assert_eq!(hosted.output_token_cost, 3.30 / 1_000_000.0);
+    }
+
+    /// Both paths price a Baseten model's cached input, whatever casing the
+    /// session stored the slug in. The async path reads baseten.json, which
+    /// has no cache field; without the merge every cached token would be
+    /// left out of the cost (`cache_excluded`), understating it.
+    #[tokio::test]
+    async fn baseten_prices_cached_input_on_both_paths() {
+        let sync = provider_model_pricing("baseten", "zai-org/GLM-5.3").unwrap();
+        let resolved = resolved_provider_model_pricing("baseten", "zai-org/GLM-5.3")
+            .await
+            .unwrap();
+        for pricing in [&sync, &resolved] {
+            assert!((pricing.input_token_cost - 1.40e-6).abs() < 1e-15);
+            assert!((pricing.output_token_cost - 4.40e-6).abs() < 1e-15);
+            assert!((pricing.cache_read_cost.unwrap() - 0.14e-6).abs() < 1e-15);
+            assert_eq!(pricing.cache_write_cost, None);
+
+            let turn = cost_with_pricing(pricing, 1_000_000, 0, 1_000_000, 0);
+            assert!(!turn.cache_excluded);
+            assert!((turn.cost - 1.54).abs() < 1e-9, "{}", turn.cost);
+        }
+    }
+
+    /// A table that disagrees with the JSON on rates lends it no cache rate.
+    #[test]
+    fn cache_rates_are_not_borrowed_across_different_prices() {
+        let json = ProviderModelPricing::usd_per_million(1.00, 2.00, 1_000);
+        let table = ProviderModelPricing {
+            cache_read_cost: Some(0.1e-6),
+            ..ProviderModelPricing::usd_per_million(1.50, 2.00, 1_000)
+        };
+        assert_eq!(with_cache_rates_from(json.clone(), Some(&table)), json);
     }
 
     #[test]

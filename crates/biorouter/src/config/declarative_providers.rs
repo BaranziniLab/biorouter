@@ -542,17 +542,37 @@ mod tests {
     /// fails here instead of shipping divergent prices.
     #[test]
     fn moonshot_sync_pricing_matches_declarative_metadata() {
-        let providers = load_fixed_providers().expect("bundled declarative providers must parse");
-        let moonshot = providers
+        let names: Vec<&str> = crate::providers::pricing::MOONSHOT_SYNC_PRICING
             .iter()
-            .find(|p| p.name == "moonshot")
-            .expect("moonshot.json is bundled");
+            .map(|row| row.0)
+            .collect();
+        assert_sync_pricing_matches_declarative_metadata("moonshot", &names);
+    }
 
-        assert!(!moonshot.models.is_empty());
+    #[test]
+    fn baseten_sync_pricing_matches_declarative_metadata() {
+        let names: Vec<&str> = crate::providers::pricing::BASETEN_SYNC_PRICING
+            .iter()
+            .map(|row| row.0)
+            .collect();
+        assert_sync_pricing_matches_declarative_metadata("baseten", &names);
+    }
+
+    /// The body of the two guards above. The sync path lowercases the model
+    /// id before lookup, so a sync row matches its JSON model case-blind
+    /// (Baseten's ids are mixed-case, and the API needs them that way).
+    fn assert_sync_pricing_matches_declarative_metadata(provider: &str, sync_names: &[&str]) {
+        let providers = load_fixed_providers().expect("bundled declarative providers must parse");
+        let bundled = providers
+            .iter()
+            .find(|p| p.name == provider)
+            .unwrap_or_else(|| panic!("{provider}.json is bundled"));
+
+        assert!(!bundled.models.is_empty());
         // Direction 1: every JSON model is priced on the sync path with the
         // exact same full pricing record.
-        for model in &moonshot.models {
-            let sync = crate::providers::pricing::provider_model_pricing("moonshot", &model.name)
+        for model in &bundled.models {
+            let sync = crate::providers::pricing::provider_model_pricing(provider, &model.name)
                 .unwrap_or_else(|| panic!("{} must be priced on the sync path too", model.name));
             let meta_in = model.input_token_cost.expect("input cost set");
             let meta_out = model.output_token_cost.expect("output cost set");
@@ -576,17 +596,25 @@ mod tests {
                 "{}: the two paths must bill in the same currency",
                 model.name
             );
-            // Neither source carries Moonshot cache rates today. If either
-            // side ever grows one, the other must learn it in the same
-            // change — a one-sided cache rate forks cached-turn costs.
-            assert_eq!(
-                sync.cache_read_cost, None,
-                "{}: sync cache-read rate has no metadata counterpart",
-                model.name
+            // The JSON has no cache fields; the async path takes them from
+            // the sync table once the rates above agree. Resolve it the way
+            // that path does, and the two must land on the same cache rates —
+            // otherwise cached-turn costs fork between the two paths.
+            let resolved = crate::providers::pricing::with_cache_rates_from(
+                crate::providers::pricing::ProviderModelPricing {
+                    input_token_cost: meta_in,
+                    output_token_cost: meta_out,
+                    cache_read_cost: None,
+                    cache_write_cost: None,
+                    currency: model.currency.clone().unwrap_or_else(|| "$".to_string()),
+                    context_length: u32::try_from(model.context_limit).ok(),
+                },
+                Some(&sync),
             );
             assert_eq!(
-                sync.cache_write_cost, None,
-                "{}: sync cache-write rate has no metadata counterpart",
+                (resolved.cache_read_cost, resolved.cache_write_cost),
+                (sync.cache_read_cost, sync.cache_write_cost),
+                "{}: the async path must carry the sync path's cache rates",
                 model.name
             );
             assert_eq!(
@@ -597,14 +625,17 @@ mod tests {
             );
         }
 
-        // Direction 2: every sync-table entry still exists in moonshot.json.
+        // Direction 2: every sync-table entry still exists in the JSON.
         // Removing a model from the JSON while the hardcoded table keeps
         // pricing it would leave the sync path serving a phantom model.
-        for &(name, _, _, _) in crate::providers::pricing::MOONSHOT_SYNC_PRICING {
+        for &name in sync_names {
             assert!(
-                moonshot.models.iter().any(|m| m.name == name),
-                "{name}: priced in pricing::MOONSHOT_SYNC_PRICING but missing from \
-                 moonshot.json; remove it from the sync table or restore it in the JSON"
+                bundled
+                    .models
+                    .iter()
+                    .any(|m| m.name.eq_ignore_ascii_case(name)),
+                "{name}: priced in the {provider} sync table but missing from \
+                 {provider}.json; remove it from the sync table or restore it in the JSON"
             );
         }
     }
@@ -693,6 +724,29 @@ mod tests {
         let providers = load_fixed_providers().expect("bundled declarative providers must parse");
 
         let cases: &[(&str, &[&str], &[&str])] = &[
+            (
+                // Baseten Model APIs (`GET /v1/models`, read 2026-10-18). GLM
+                // 5.3 is the model Baseten's own quickstart uses. Left out:
+                // Beam rejects any multi-turn request whose assistant turns
+                // lack `reasoning_content`, which only Moonshot replays, and
+                // SID-1's 32,768-token window is smaller than Biorouter's own
+                // instructions plus tool schemas.
+                "baseten",
+                &[
+                    "zai-org/GLM-5.3",
+                    "zai-org/GLM-5.3-Fast",
+                    "zai-org/GLM-5.3-Flash",
+                    "moonshotai/Kimi-K3",
+                    "deepseek-ai/DeepSeek-V4.1-Flash",
+                    "deepseek-ai/DeepSeek-V4.1-Flash-1017",
+                    "deepseek-ai/DeepSeek-V4-Pro-0813",
+                    "meta-models/muse-spark-open",
+                    "nvidia/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B",
+                    "nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B",
+                    "openai/gpt-oss-120b",
+                ],
+                &["reflection/Beam-1.0", "sid/sid-1"],
+            ),
             (
                 // deepseek-flash is DeepSeek-V4.1-Flash (GA 2026-09-10), the id
                 // DeepSeek tells users to adopt. deepseek-chat and
@@ -807,6 +861,17 @@ mod tests {
         let providers = load_fixed_providers().expect("bundled declarative providers must parse");
 
         let vision: &[(&str, &str)] = &[
+            // Baseten's `/v1/models` lists `image` in these models'
+            // `input_modalities`; DeepSeek V4 Pro, Nemotron Ultra and GPT OSS
+            // 120B are text-only there.
+            ("baseten", "zai-org/GLM-5.3"),
+            ("baseten", "zai-org/GLM-5.3-Fast"),
+            ("baseten", "zai-org/GLM-5.3-Flash"),
+            ("baseten", "moonshotai/Kimi-K3"),
+            ("baseten", "deepseek-ai/DeepSeek-V4.1-Flash"),
+            ("baseten", "deepseek-ai/DeepSeek-V4.1-Flash-1017"),
+            ("baseten", "meta-models/muse-spark-open"),
+            ("baseten", "nvidia/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B"),
             // DeepSeek's pricing table lists vision for deepseek-flash and
             // "Not supported" for deepseek-v4-pro.
             ("custom_deepseek", "deepseek-flash"),

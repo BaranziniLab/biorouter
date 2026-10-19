@@ -388,6 +388,18 @@ Default model: `openai/gpt-oss-120b`
 
 Available models: `openai/gpt-oss-120b`, `qwen/qwen3.8-27b`, `openai/gpt-oss-20b`, `openai/gpt-oss-safeguard-20b`
 
+#### Baseten
+
+**Environment variable:** `BASETEN_API_KEY`
+
+Provider id `baseten`. Open-weight models hosted on Baseten Model APIs (`https://inference.baseten.co/v1`). Create a key at https://app.baseten.co/settings/api_keys.
+
+Default model: `zai-org/GLM-5.3`
+
+Available models: `zai-org/GLM-5.3`, `zai-org/GLM-5.3-Fast`, `zai-org/GLM-5.3-Flash`, `moonshotai/Kimi-K3`, `deepseek-ai/DeepSeek-V4.1-Flash`, `deepseek-ai/DeepSeek-V4.1-Flash-1017`, `deepseek-ai/DeepSeek-V4-Pro-0813`, `meta-models/muse-spark-open`, `nvidia/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B`, `nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B`, `openai/gpt-oss-120b`
+
+Slugs are case-sensitive, as Baseten spells them. Costs use Baseten's own per-token rates, including its discounted rate for cached input (read from its `/v1/models` and https://www.baseten.co/pricing/ on 2026-10-18), not the model vendors'.
+
 #### Inception
 
 **Environment variable:** `INCEPTION_API_KEY`
