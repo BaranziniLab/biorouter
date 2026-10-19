@@ -581,6 +581,11 @@ pub async fn run(exit_with_parent: Option<u32>) -> Result<()> {
     // and without it a running app needs a restart to notice them.
     biorouter::catalog::spawn_config_watcher();
 
+    // Baseten's models and prices change between releases. Fetch the keyless
+    // feed published beside registry.json now and twice a day; until it
+    // answers, the last good copy on disk or the bundled catalog stands.
+    biorouter::providers::live_catalog::spawn_refresher();
+
     // QA 2026-09-10, F2 — the same problem for `schedule.json`. A schedule
     // another process writes (`biorouter schedule add` when it cannot reach this
     // daemon, which from an agent's shell it never can; a terminal session's

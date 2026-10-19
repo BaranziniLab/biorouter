@@ -146,6 +146,9 @@ pub fn cost_with_pricing(
 pub fn provider_model_pricing(provider: &str, model: &str) -> Option<ProviderModelPricing> {
     let provider = provider.to_ascii_lowercase();
     let model = model.to_ascii_lowercase();
+    if let Some(live) = crate::providers::live_catalog::pricing(&provider, &model) {
+        return Some(live);
+    }
     let explicit = explicit_provider_model_pricing(&provider, &model);
 
     if explicit.is_some() || blocks_fallback_pricing(&provider) {
@@ -169,9 +172,11 @@ pub async fn resolved_provider_model_pricing(
     resolve_pricing_with_metadata(&provider, &model, metadata.as_ref())
 }
 
-/// Resolution order for the async path: hardcoded-only providers
+/// Resolution order for the async path: a live provider catalog
+/// (`providers::live_catalog`, Baseten today) → hardcoded-only providers
 /// ([`blocks_fallback_pricing`]) → provider metadata → the explicit override
-/// table → the canonical catalog. Provider metadata outranks the explicit
+/// table → the canonical catalog. The sync path checks the live catalog first
+/// too, so the two agree while one is loaded. Provider metadata outranks the explicit
 /// sync table so a declarative provider's JSON (e.g.
 /// `providers/declarative/moonshot.json`) stays authoritative here; the sync
 /// table in this file serves sync-only callers (CLI cost line, BR-35 budget)
@@ -183,6 +188,9 @@ fn resolve_pricing_with_metadata(
     model: &str,
     metadata: Option<&ProviderMetadata>,
 ) -> Option<ProviderModelPricing> {
+    if let Some(live) = crate::providers::live_catalog::pricing(provider, model) {
+        return Some(live);
+    }
     let explicit = explicit_provider_model_pricing(provider, model);
     if blocks_fallback_pricing(provider) {
         return explicit;

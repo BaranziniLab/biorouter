@@ -373,6 +373,18 @@ fn load_fixed_providers() -> Result<Vec<DeclarativeProviderConfig>> {
     Ok(res)
 }
 
+/// The models a bundled declarative provider ships in its JSON, before any
+/// live catalog is merged in.
+#[cfg(test)]
+pub(crate) fn bundled_models(provider: &str) -> Vec<crate::providers::base::ModelInfo> {
+    load_fixed_providers()
+        .expect("bundled declarative providers must parse")
+        .into_iter()
+        .find(|config| config.name == provider)
+        .map(|config| config.models)
+        .unwrap_or_default()
+}
+
 /// Read every declarative credential reference without relying on the cached
 /// registry, which may predate a provider configuration edit.
 pub(super) fn credential_references() -> Result<Vec<(String, String)>> {
@@ -403,7 +415,11 @@ pub fn register_declarative_providers(
     let dir = custom_providers_dir();
     let custom_providers = load_custom_providers(&dir)?;
     let fixed_providers = load_fixed_providers()?;
-    for config in fixed_providers {
+    for mut config in fixed_providers {
+        // A bundled provider with a live catalog (Baseten) registers the
+        // catalog's models; `refresh_custom_providers` re-runs this when the
+        // daemon fetches a new one.
+        config.models = crate::providers::live_catalog::merged_models(&config.name, config.models);
         register_declarative_provider(registry, config, ProviderType::Declarative);
     }
 

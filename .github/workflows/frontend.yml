@@ -191,6 +191,12 @@ jobs:
       - name: Generator regression suite
         run: node --test landing/scripts/build-registry.test.mjs
 
+      # The Baseten catalog feed deploy-landing.yml publishes. Its Rust half,
+      # `live_catalog::tests::the_published_feed_format_parses`, reads the
+      # fixture this script wrote, so the two cannot drift apart unnoticed.
+      - name: Provider catalog feed builder
+        run: node --test landing/scripts/build-provider-catalog.test.mjs
+
       # ── Where a document is allowed to live ──────────────────────────────
       # CLAUDE.md states the documentation rule as binding, and `scripts/docs-lint.py`
       # already encodes it — but nothing ran the linter, so two PRs merged in one
