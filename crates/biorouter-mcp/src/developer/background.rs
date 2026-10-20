@@ -1402,6 +1402,16 @@ mod tests {
     /// the OS reports for that child — through the shell wrapper
     /// `configure_shell_command` puts in front of it. The unit tests below can
     /// only simulate that wrapper; this one runs it.
+    ///
+    /// `spawn` returns once the shell is running, and the shell then execs the
+    /// command in the same pid. While that exec is in flight macOS cannot read
+    /// the process's arguments (`KERN_PROCARGS2` fails with EIO, then EINVAL),
+    /// so `ps` prints `(bash)` and no fingerprint can match it. Every spawn
+    /// passes through that window; a loaded `macos-latest` runner asked inside
+    /// it on 2026-10-20. The guard's real callers ask seconds later (the reaper
+    /// at the next start, a kill once its grace period has run), so the test
+    /// waits for the exec to land, bounded like every other wait here: a
+    /// mismatch that persists still fails.
     #[cfg(unix)]
     #[tokio::test]
     async fn recorded_identity_matches_the_live_child_of_a_real_spawn() {
@@ -1410,7 +1420,14 @@ mod tests {
         let job = jobs.job(&id).await.unwrap();
         let pid = job.pid.unwrap();
 
-        let facts = process_facts(pid).expect("ps should describe our own live child");
+        let deadline = Instant::now() + std::time::Duration::from_millis(JOB_WAIT_MS);
+        let facts = loop {
+            let facts = process_facts(pid).expect("ps should describe our own live child");
+            if same_process(Some(&job.identity), &facts) || Instant::now() > deadline {
+                break facts;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        };
         assert!(
             same_process(Some(&job.identity), &facts),
             "a job we just spawned must pass its own pid-reuse guard; recorded {:?}, live {facts:?}",
