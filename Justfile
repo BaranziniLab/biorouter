@@ -28,7 +28,7 @@ check-everything:
     ./scripts/check-vendored-computer-use.sh
     @echo "  → Checking cross-compile recipes have not drifted (glibc floor pin)..."
     ./scripts/check-no-cross-drift.sh
-    @echo "  → Checking the BAAM registry generator still refuses what it must..."
+    @echo "  → Checking the BAAM registry generator and the Baseten feed builder still refuse what they must..."
     just check-registry
     @echo "  → Checking the BAAM private set agrees in all three committed copies..."
     just check-privacy-registry
@@ -46,8 +46,14 @@ check-versions:
 # registry_private.rs). Its refusals are the only thing standing between a
 # mis-tagged card and a private extension silently classified Public, so they
 # need a gate of their own. No npm install: node:test ships with the runtime.
+#
+# The Baseten feed builder rides along: it publishes provider-catalogs/baseten.json
+# beside registry.json, and live_catalog.rs refuses that feed whole for one
+# entry out of bounds, so its refusals need the same gate. Its suite also binds
+# the committed fixture the Rust parser reads to what the script writes.
 check-registry:
     node --test landing/scripts/build-registry.test.mjs
+    node --test landing/scripts/build-provider-catalog.test.mjs
     node landing/scripts/build-registry.mjs --check
 
 # The set of private extensions is committed in three places at once: the

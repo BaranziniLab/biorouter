@@ -843,10 +843,17 @@ impl ModelConfig {
     /// substring fallback for ids we can't enumerate ahead of time. Returns
     /// `None` when neither knows the model.
     fn resolve_context_window(model_name: &str) -> Option<usize> {
-        MODEL_CONTEXT_WINDOWS
-            .get(model_name)
-            .copied()
+        Self::registry_context_window(model_name)
             .or_else(|| Self::get_model_specific_limit(model_name))
+    }
+
+    /// The static registry's own row for exactly `model_name`, and nothing
+    /// else: no substring pattern. A provider whose live catalog states a
+    /// window for a slug this lacks applies it to its own models only
+    /// (`providers::live_catalog::stated_window`), never here, because the
+    /// registry is keyed by name and a slug may be shared between providers.
+    pub fn registry_context_window(model_name: &str) -> Option<usize> {
+        MODEL_CONTEXT_WINDOWS.get(model_name).copied()
     }
 
     /// The context window `model_name` has by virtue of being that model,

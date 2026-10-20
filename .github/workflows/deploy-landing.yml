@@ -2,12 +2,16 @@ name: Deploy landing site
 
 # Publishes the static landing site in landing/ (the former biorouter-landing
 # repo, custom domain biorouter.ucsf.edu) to GitHub Pages. Runs on every push to
-# main that touches the site, so the landing page ships together with the app.
+# main that touches landing/, docs/website/ (the docs page's sources) or this
+# workflow, so the landing page ships together with the app, and once a day, to
+# refresh the Baseten model catalog published beside it.
 #
 # One-time setup before the first successful run (see landing/README.md):
 #   1. Release the biorouter.ucsf.edu custom domain from the old
 #      BaranziniLab/biorouter-landing repo (Settings -> Pages -> remove domain).
 #   2. In THIS repo: Settings -> Pages -> Source = "GitHub Actions".
+#   3. The `baseten-feed` Environment, restricted to main, holding the secret
+#      BASETEN_API_KEY (see `baseten-catalog` below). Done 2026-10-20.
 # The CNAME file in landing/ re-asserts the custom domain on each deploy.
 
 on:
@@ -18,6 +22,10 @@ on:
       - 'docs/website/**'
       - '.github/workflows/deploy-landing.yml'
   workflow_dispatch: {}
+  # Daily, so the Baseten model catalog (see `baseten-catalog` below) is at
+  # most a day old. Off the hour to stay clear of GitHub's busiest minute.
+  schedule:
+    - cron: '17 9 * * *'
 
 # Allow the workflow to mint the OIDC token Pages needs and publish.
 permissions:
@@ -106,8 +114,76 @@ jobs:
       - name: Check the site's layout holds still in a browser
         run: node --test landing/scripts/layout-stability.browser.test.mjs
 
+  # Baseten's model list and prices (`GET /v1/models`) need an API key, and
+  # the app must not. This job reads them with a key held ONLY in the
+  # `baseten-feed` Environment, which is restricted to `main`, so a branch or a
+  # fork's pull request can never run it with the key (this workflow has no
+  # pull_request trigger at all). The key is in the environment of one step,
+  # is sent only as a header, and is never echoed. The step that builds the
+  # published file does not have it.
+  #
+  # What it publishes, provider-catalogs/baseten.json, is read by
+  # crates/biorouter/src/providers/live_catalog.rs. If this job fails (no
+  # secret yet, Baseten down, a response that has shrunk), the deploy below
+  # republishes the feed that is live now, and the app keeps its bundled
+  # catalog until a feed exists. The run still shows red, so someone looks.
+  #
+  # Setup (a repo admin, once): Settings -> Environments -> New environment
+  # `baseten-feed`; Deployment branches = Selected -> `main`; add the
+  # environment secret BASETEN_API_KEY (a Baseten team key with "Call Model
+  # APIs" on one cheap model; listing models runs no inference). The
+  # environment exists: created 2026-10-20, deployments limited to `main`,
+  # secret BASETEN_API_KEY set. Rotating the key means replacing that secret.
+  baseten-catalog:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    environment: baseten-feed
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      # The builder's own suite, before the key is used and before anything is
+      # built: it holds the script to the bounds live_catalog.rs enforces, so a
+      # script that would publish a feed every client refuses fails here, and
+      # the deploy carries the live feed forward. No install and no key needed.
+      - name: Test the feed builder
+        run: node --test landing/scripts/build-provider-catalog.test.mjs
+
+      - name: Fetch Baseten's model catalog
+        env:
+          BASETEN_API_KEY: ${{ secrets.BASETEN_API_KEY }}
+        run: |
+          if [ -z "${BASETEN_API_KEY}" ]; then
+            echo "::error::BASETEN_API_KEY is not set in the baseten-feed environment. The site deploys with the feed that is live now."
+            exit 1
+          fi
+          curl --fail --silent --show-error --max-time 30 \
+            --header "Authorization: Bearer ${BASETEN_API_KEY}" \
+            --output "${RUNNER_TEMP}/baseten-models.json" \
+            https://inference.baseten.co/v1/models
+
+      - name: Build the published feed
+        run: |
+          mkdir -p "${RUNNER_TEMP}/provider-catalogs"
+          node landing/scripts/build-provider-catalog.mjs \
+            "${RUNNER_TEMP}/baseten-models.json" \
+            "${RUNNER_TEMP}/provider-catalogs/baseten.json"
+
+      - name: Hand the feed to the deploy job
+        uses: actions/upload-artifact@v4
+        with:
+          name: provider-catalogs
+          path: ${{ runner.temp }}/provider-catalogs/
+          retention-days: 3
+
   deploy:
-    needs: check
+    needs: [check, baseten-catalog]
+    # A failed catalog must not stop the site: deploy whenever the checks pass.
+    if: ${{ !cancelled() && needs.check.result == 'success' }}
     runs-on: ubuntu-latest
     environment:
       name: github-pages
@@ -115,6 +191,30 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Take the fresh Baseten catalog
+        if: ${{ needs.baseten-catalog.result == 'success' }}
+        uses: actions/download-artifact@v4
+        with:
+          name: provider-catalogs
+          path: landing/provider-catalogs
+
+      # A Pages deploy replaces the whole site, so a run without a fresh feed
+      # would otherwise delete the live one. Carry the live one forward; with
+      # neither (the first runs, before the secret exists) publish none and
+      # the app uses its bundled catalog.
+      - name: Otherwise keep the feed that is live now
+        if: ${{ needs.baseten-catalog.result != 'success' }}
+        run: |
+          mkdir -p landing/provider-catalogs
+          if curl --fail --silent --show-error --max-time 30 \
+              --output landing/provider-catalogs/baseten.json \
+              https://biorouter.ucsf.edu/provider-catalogs/baseten.json; then
+            echo "::warning::Republishing the Baseten catalog that was already live."
+          else
+            rm -f landing/provider-catalogs/baseten.json
+            echo "::warning::No Baseten catalog published; the app uses its bundled one."
+          fi
 
       - name: Configure Pages
         uses: actions/configure-pages@v5

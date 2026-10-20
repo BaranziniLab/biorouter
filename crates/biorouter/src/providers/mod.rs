@@ -28,6 +28,7 @@ pub mod githubcopilot;
 pub mod google;
 pub mod lead_worker;
 pub mod litellm;
+pub mod live_catalog;
 pub mod llamacpp;
 pub mod llamacpp_sidecar;
 pub mod oauth;

@@ -16,7 +16,7 @@ pick one, find the credential it needs, or switch models — read
 the credential variable itself among all other settings, read
 [Environment variables](../configuration/environment-variables.md). Note that this folder
 is not an inventory of every shipping provider: BioRouter has 40+ provider modules under
-`crates/biorouter/src/providers/`, and only the few named below — the two reference pages in
+`crates/biorouter/src/providers/`, and only the few named below — the three reference pages in
 this folder, plus the two local providers (the bundled Llama Server and Ollama) and the two
 coding-agent providers in the subdirectories — are documented here. Every other provider is
 documented only by its own source module.
@@ -25,11 +25,12 @@ documented only by its own source module.
 
 | Document | What it covers |
 | --- | --- |
+| [Baseten provider](baseten.md) | The integration reference for the `baseten` declarative provider: the bundled catalog, the keyless feed that keeps its models and prices current between releases, the daily job that publishes that feed with a key held in a GitHub Environment, where Baseten appears in the app, its known limits, and the verification commands. Current, written 2026-10-19, revised 2026-10-20. |
 | [Xiaomi MiMo provider](xiaomi-mimo.md) | The integration reference for the `xiaomi_mimo` provider — registry wiring, the `XIAOMI_MIMO_API_KEY` / `XIAOMI_MIMO_HOST` contract with its regional endpoints, every selection surface, and the verification commands. Current, written 2026-06-19 against v1.85.3. |
 | [z.ai (GLM) provider](zai-glm.md) | The integration reference for the `zai` provider serving the GLM model family — registry wiring, the `ZAI_API_KEY` / `ZAI_HOST` contract on the OpenAI-compatible surface, every selection surface, and the verification commands. Current, written 2026-06-19 against v1.85.3. |
 
-The two provider references deliberately share a section structure so their surfaces and
-checks can be compared line for line.
+The Xiaomi MiMo and z.ai (GLM) references deliberately share a section structure so their
+surfaces and checks can be compared line for line.
 
 ## Subdirectories
 

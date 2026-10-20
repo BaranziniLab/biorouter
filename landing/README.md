@@ -1,6 +1,6 @@
 # Biorouter website
 
-The static site served at <https://biorouter.ucsf.edu/>. It is published from this folder as it is, with no build step, by [`.github/workflows/deploy-landing.yml`](../.github/workflows/deploy-landing.yml) on every push to `main` that touches `landing/`.
+The static site served at <https://biorouter.ucsf.edu/>. It is published from this folder as it is, with no build step, by [`.github/workflows/deploy-landing.yml`](../.github/workflows/deploy-landing.yml) on every push to `main` that touches `landing/`, `docs/website/` or that workflow, and once a day. The daily run is there for the one file the deploy adds to this folder, `provider-catalogs/baseten.json` (see below).
 
 ## Pages
 
@@ -21,6 +21,7 @@ The static site served at <https://biorouter.ucsf.edu/>. It is published from th
 - `art/<name>.js` and `art/<name>.css`: the small animations. Each registers with `BR.art('<name>', mount)` and fills a `<div data-art="<name>">`. `site.js` starts it when it is on screen and stops it when it leaves, and each one draws a still frame when the visitor asks for reduced motion.
 - `icon.svg`, `icon-transparent.svg`, `icon.png`: the BR mark. Do not edit them; `scripts/check-brand-consistency.sh` compares them with the app's copies.
 - `registry.json`: the marketplace catalog, generated from `baam.html`'s static cards. The app compiles it in.
+- `provider-catalogs/baseten.json`: Baseten's models and prices, which the app reads with no key. It is not in this folder in git. The deploy builds it from Baseten's model list with `scripts/build-provider-catalog.mjs` and publishes it with the site, or publishes the live copy again when that build fails. See [the Baseten provider reference](../docs/providers/baseten.md).
 - `marketplace-search.js`: the BAAM search matcher, shared with a Rust test. Leave its formatting alone.
 - `shared.css`, `theme.js`, `app-mockups.css`, `app-mockups.js`: the previous design's files. No page loads them now; `video/reel` still does, and `scripts/check-consistency.mjs` reads `app-mockups.js`.
 
