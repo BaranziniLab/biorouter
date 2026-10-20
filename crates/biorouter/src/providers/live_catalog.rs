@@ -50,9 +50,6 @@ use crate::providers::pricing::ProviderModelPricing;
 
 pub const BASETEN_CATALOG_URL: &str = "https://biorouter.ucsf.edu/provider-catalogs/baseten.json";
 const PROVIDER: &str = "baseten";
-/// The credential whose presence means Baseten is configured. It gates the
-/// fetch and is never sent with it: the feed needs no key.
-const API_KEY_ENV: &str = "BASETEN_API_KEY";
 /// The day `providers/declarative/baseten.json` and
 /// `pricing::BASETEN_SYNC_PRICING` were last read from Baseten. Move it in the
 /// same change as either of them: a catalog fetched before this day is older
@@ -442,10 +439,12 @@ pub fn spawn_refresher() {
 }
 
 /// Baseten counts as configured once its key is saved, the same test the
-/// provider catalog uses (`routes::utils::keys_are_saved`).
+/// provider catalog uses (`routes::utils::keys_are_saved`). The key gates the
+/// fetch and is never sent with it: the feed needs none. Named as a literal so
+/// `destination_keys`' scan can see and classify it.
 fn baseten_configured() -> bool {
     crate::config::Config::global()
-        .get_secret::<String>(API_KEY_ENV)
+        .get_secret::<String>("BASETEN_API_KEY")
         .is_ok()
 }
 

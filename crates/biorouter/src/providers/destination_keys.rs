@@ -153,6 +153,7 @@ pub const NOT_DESTINATION_CONFIG_KEYS: &[(&str, &str)] = &[
     // above decides that.
     ("ANTHROPIC_API_KEY", "a credential, not where it goes"),
     ("AZURE_OPENAI_API_KEY", "a credential, not where it goes"),
+    ("BASETEN_API_KEY", "a credential, not where it goes"),
     ("DATABRICKS_TOKEN", "a credential, not where it goes"),
     ("GITHUB_COPILOT_TOKEN", "a credential, not where it goes"),
     ("GOOGLE_API_KEY", "a credential, not where it goes"),
