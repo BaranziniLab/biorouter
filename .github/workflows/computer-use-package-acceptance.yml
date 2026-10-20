@@ -1,4 +1,4 @@
-name: Computer Use installed packages
+name: Biorouter Copilot installed packages
 'on':
   workflow_dispatch: null
   push:

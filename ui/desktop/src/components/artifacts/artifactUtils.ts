@@ -650,7 +650,7 @@ const FILE_WRITING_TOOLS = new Set([
   'write_file',
 ]);
 
-// Computer-controller office tools name the workbook/document in `path`, but
+// Web & Documents office tools name the workbook/document in `path`, but
 // multiplex reads and writes behind an operation. Only completed operations
 // that can change bytes should invalidate an already-open preview.
 const OFFICE_WRITING_OPERATIONS: Record<string, Set<string>> = {

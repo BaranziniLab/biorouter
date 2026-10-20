@@ -2537,9 +2537,9 @@ SDK):
     `CapabilitiesSection.test.tsx:34-54`, the only queries of that name (no e2e or crate reads it).
     The same goes for `ContextsSection.tsx:57` and `BrsdkSection.tsx:80`. Add `aria-describedby`.
   - Optional: two caps subgroups, "Tools" and "Agent".
-  - **Copilot:** "Check setup" becomes a row-trailing `secondary sm` button, and the result panel
-    becomes a sibling `Note` after the row. Split `copilot/CopilotSetup.tsx` into a trigger and a
-    panel.
+  - **Biorouter Copilot:** "Check setup" becomes a row-trailing `secondary sm` button, and the
+    result panel becomes a sibling `Note` after the row. Split `copilot/CopilotSetup.tsx` into a
+    trigger and a panel.
 - **Contexts:** 9 `SettingRow`s with help. Optionally say "Loaded only for … tasks" once in the
   header InfoTip.
 - **App SDK:** 4 `SettingRow`s. Keep `px-3 py-2.5` on the row, because `BrsdkSection.test.tsx:37`
@@ -2578,7 +2578,7 @@ SDK):
 
 **Acceptance:**
 - The Chat tab is no longer 3,087px tall. It is about 40% shorter, with one line per row.
-- Copilot's check panel no longer swells the row.
+- Biorouter Copilot's check panel no longer swells the row.
 - Memory has no red icon column and no repeated paragraph.
 
 ---

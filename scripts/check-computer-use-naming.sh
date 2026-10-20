@@ -6,7 +6,7 @@
 # "Codex Computer Use" or "Open Computer Use", which are upstream's.
 #
 # The file is still named check-computer-use-naming.sh, and the workflow step
-# that runs it is still matched by that path in AGENTS.md, BUILDING*.md, the
+# that runs it is still matched by that path in AGENTS.md, the
 # Justfile and .github/workflows/rust.yml. Renaming the file is a separate,
 # coordinated change; renaming the capability is this one.
 #

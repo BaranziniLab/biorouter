@@ -21,7 +21,7 @@
 //!
 //! The creation flag applies only to the process being started. A helper that
 //! launches another console program must set the flag on that child too. The
-//! Windows Copilot helper does this for its per-action PowerShell process.
+//! Windows Biorouter Copilot helper does this for its per-action PowerShell process.
 //!
 //! # Why this lives in the leaf crate
 //!

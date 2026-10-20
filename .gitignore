@@ -99,7 +99,7 @@ scripts/worktrees.manifest
 # elsewhere matches only a real directory, so the symlink itself must be named too.
 ui/desktop/src/bin
 
-# Generated pinned native computer-use resources
+# Generated pinned native Biorouter Copilot helper resources
 ui/desktop/src/computer-use/
 
 # pdf.js runtime assets, copied from pdfjs-dist by ui/desktop/vite-plugins/pdfjsAssets.mts
@@ -107,7 +107,7 @@ ui/desktop/src/computer-use/
 # this covers a vite run whose cwd is the repo root. Build output, never committed.
 /public/pdfjs/
 
-# ── Vendored Computer Use upstream ──────────────────────────────────────────
+# ── Vendored Open Computer Use upstream ─────────────────────────────────────
 # `vendor/computer-use/source/` is a COMPLETE copy of the upstream
 # project at the pinned commit, and the whole point of vendoring it is that a
 # build needs neither the network nor that repository continuing to exist. So it

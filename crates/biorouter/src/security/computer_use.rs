@@ -64,7 +64,7 @@ pub struct ComputerUseStatus {
     pub public_model: bool,
     pub handoff_required: bool,
     pub requested: bool,
-    /// The most recent actual Copilot request, independent of routine task cleanup.
+    /// The most recent actual Biorouter Copilot request, independent of routine task cleanup.
     #[serde(default)]
     pub activity_id: Option<String>,
 }

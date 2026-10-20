@@ -40,7 +40,7 @@ Two existing weaknesses influence the design: `computer_control_impl` bounds a `
 
 ```mermaid
 flowchart TD
-    A[Model or coding-agent bridge] --> B[Computer-use grant: approve once, then continue]
+    A[Model or coding-agent bridge] --> B[Biorouter Copilot grant: approve once, then continue]
     B --> C[Unified Biorouter Copilot Rust facade]
     C --> D[One active controller and current app state]
     D --> E[Per-chat managed connection over stdio MCP]

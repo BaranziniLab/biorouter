@@ -48,7 +48,7 @@ spec's tables are authoritative where this summary is shorter.
 | WS-KNOWLEDGE | `knowledge/**` (tier confirmation logic frozen) | none | Implemented and reviewed; no open high or medium after vision round 4; R-33 awaits a vision check |
 | WS-SETTINGS-A | `SettingsView.tsx`, `settings/{app,chat,mode,permission,response_styles}/**`, theme selectors | section ids for deep links | Implemented and reviewed; no open high or medium after vision round 4 |
 | WS-SETTINGS-M | `settings/{models,providers,reset_provider}/**`, `onboarding/**`, `ProviderGuard.tsx` | none | Implemented and reviewed; a round 4 medium fix awaits vision round 5 |
-| WS-SETTINGS-B | `settings/{capabilities,config,contexts,brsdk,memory}/**`, Copilot setup | none | Implemented and reviewed; no open high or medium after vision round 4 |
+| WS-SETTINGS-B | `settings/{capabilities,config,contexts,brsdk,memory}/**`, Biorouter Copilot setup | none | Implemented and reviewed; no open high or medium after vision round 4 |
 | WS-MOTION | `chatGroups/**`, find in chat, `App.tsx`, `toasts.tsx`, `alerts/**`, `main.ts` window regions, terminal dock | none | Implemented and reviewed; no open high or medium after vision round 4 |
 | WS-LANDING | `landing/**`, `docs/website/**` | none | Implemented and reviewed; no open high or medium after vision round 3 (round 4 did not review the site); the R-32 mockup cards are not reviewed yet |
 | WS-PERF | the sidebar's listing path: `BioRouterSidebar/{useSidebarSessions.ts,sidebarChatView.ts}` helpers, the session listing route in `crates/biorouter-server/src/routes/session.rs` and its queries in `crates/biorouter/src/session/session_manager.rs` | none | Implemented and reviewed; a round 4 medium fix awaits vision round 5 |

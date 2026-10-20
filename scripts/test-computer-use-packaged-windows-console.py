@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Measure a packaged CLI's Rust-to-Go Copilot PowerShell launch on Windows."""
+"""Measure a packaged CLI's Rust-to-Go Biorouter Copilot PowerShell launch on Windows."""
 
 import argparse
 import json
@@ -210,7 +210,7 @@ def observe(cli, wrapper):
                 or child.get("grandparent_pid") != process.pid):
             raise AssertionError(f"PowerShell child did not descend from the packaged CLI and helper: {child}")
         if child.get("verdict") == "visible":
-            raise AssertionError(f"packaged Copilot PowerShell child showed a console: {child}")
+            raise AssertionError(f"packaged Biorouter Copilot PowerShell child showed a console: {child}")
         if child.get("verdict") not in {"none", "hidden"}:
             raise AssertionError(f"PowerShell child did not report a console state: {child}")
         if child.get("startup_hidden") is not True:

@@ -12,7 +12,7 @@
  *     workflows, schedules, code execution. In a normal transcript that is
  *     most rows;
  *   - two extensions' same-named tools collided: `agent_drafter__list_apps`
- *     drew Copilot's Monitor, because `computercontroller__list_apps` exists;
+ *     drew Biorouter Copilot's Monitor, because `computercontroller__list_apps` exists;
  *   - `text_editor` drew the edit mark for a `view`.
  *
  * THE LADDER, first match wins:
@@ -242,12 +242,12 @@ const EXACT: Record<string, ToolGlyphKind> = {
   code_execution__read_module: 'read',
   code_execution__search_modules: 'search',
   agent_drafter__consult: 'agent',
-  // History. Biorouter Copilot used to be the legacy `computercontroller`
-  // server, and its web, document and cache tools moved to `webdocuments`
+  // History. The `computercontroller` key used to serve the legacy Computer
+  // Controller, and its web, document and cache tools moved to `webdocuments`
   // while its scripting tool was removed. A chat saved before that still names
   // them under the old key, and the family row below would draw all of them as
   // desktop control (V2-18). `computer_control` is not listed: it WAS desktop
-  // control, and the Copilot family already draws it.
+  // control, and the Biorouter Copilot family already draws it.
   computercontroller__web_scrape: 'web',
   computercontroller__cache: 'archive',
   computercontroller__pdf_tool: 'document',

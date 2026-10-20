@@ -87,4 +87,4 @@ To make Option A first-class instead of the agent shelling out `curl`, Biorouter
 - [Extensions, skills, and MCP agents](extensions-and-skills-guide.md) — how to actually add the custom stdio extension Option B depends on
 - [Web & Documents](built-in/web-documents.md) — its GET-only URL tool cannot post messages
 - [Secret storage](../security/secret-storage.md) — how `env_keys` secrets such as `SLACK_TOKEN` reach the OS Keychain
-- [Computer Controller multi-app orchestration run](../history/computer-controller-hardening/multi-app-orchestration-run.md) — the hardening run that exercised Slack via UI automation, showing the brittleness this memo proposes routing around
+- [Legacy Computer Controller multi-app orchestration run](../history/computer-controller-hardening/multi-app-orchestration-run.md) — the hardening run that exercised Slack via UI automation, showing the brittleness this memo proposes routing around

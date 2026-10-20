@@ -43,7 +43,7 @@ def validate_tools(tools):
         actual = next(item for item in tools if item["name"] == tool["name"])
         prompt_text = [actual.get("description", ""), *schema_descriptions(actual.get("inputSchema"))]
         if any(RETIRED_PROMPT_NAME.search(text) for text in prompt_text):
-            raise ValueError(f"Retired Copilot name in native tool description: {tool['name']}")
+            raise ValueError(f"Retired Biorouter Copilot name in native tool description: {tool['name']}")
         actual_schema = json.dumps(semantic_schema(actual.get("inputSchema")), sort_keys=True)
         expected_schema = json.dumps(tool["inputSchema"], sort_keys=True)
         if actual_schema != expected_schema:

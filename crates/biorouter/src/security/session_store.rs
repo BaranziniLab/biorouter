@@ -97,7 +97,7 @@
 //!
 //! ⚠ **The fourth seam is still open, and it is the unforgeable one.** A refusal
 //! inside the filesystem tools themselves — `biorouter-mcp`'s developer and
-//! computer-controller servers, which is where `global_memory_file_barrier.rs`
+//! webdocuments servers, which is where `global_memory_file_barrier.rs`
 //! put the equivalent for the memory root — would refuse the store whatever tool,
 //! whatever mode, and whatever route reached them, including an MCP client
 //! talking to `biorouter mcp developer` over stdio with no agent anywhere. That

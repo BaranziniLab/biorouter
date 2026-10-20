@@ -1,4 +1,4 @@
-name: Computer Use native payloads
+name: Biorouter Copilot native payloads
 
 on:
   pull_request:

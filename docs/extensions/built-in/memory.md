@@ -56,7 +56,7 @@ Because they are ordinary files, **you** can inspect, edit or delete them direct
 
 BioRouter itself cannot take that shortcut on the global store. Reading, changing or deleting a machine-wide memory is put to you for approval by category, and that approval would be worth little if the same files could just be opened by other means — so the global store is closed to everything but the memory tools:
 
-- The file tools (`text_editor`, the computer-controller cache) refuse any path inside it and point at the memory tool to use instead.
+- The file tools (`text_editor`, the Web & Documents cache) refuse any path inside it and point at the memory tool to use instead.
 - Tool calls made from inside an `execute_code` script are refused: a script's calls are not shown to you one at a time, so there is nothing for you to approve. The model is told to make the memory call directly.
 - The `/agent/call_tool` API is refused for the same reason.
 - BioRouter's memory server run on its own — `biorouter mcp memory`, for another MCP client outside the app — serves the project-local store only. Nothing there can ask you, so nothing there reaches the machine-wide store.

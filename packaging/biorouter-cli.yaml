@@ -62,7 +62,7 @@ contents:
   # copies it into a server account over SSH, and checks the bytes it sends against this
   # manifest. scripts/build-cli-linux-packages.sh stages both from the binary above with
   # scripts/stage-crew-broker.sh, so the two copies are one build. /usr/libexec rather than
-  # beside biorouterd for the reason the Copilot helper's entry below gives.
+  # beside biorouterd for the reason the Biorouter Copilot helper's entry below gives.
   - src: ./target/crew-broker/linux-x86_64/biorouter-crew
     dst: /usr/libexec/biorouter/crew-broker/linux-x86_64/biorouter-crew
     file_info:

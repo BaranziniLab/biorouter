@@ -83,8 +83,9 @@ jobs:
       - name: Version consistency (CLI = daemon = GUI)
         run: ./scripts/check-version-consistency.sh
       # The capability is "Biorouter Copilot" wherever a person reads it -- never
-      # the removed "Computer Controller", never vendor-qualified. The internal
-      # `computercontroller` identifier is deliberately exempt; see the script.
+      # its former "Computer Use" or the removed "Computer Controller", never
+      # vendor-qualified. The internal `computercontroller` identifier is
+      # deliberately exempt; see the script.
       - name: Biorouter Copilot naming consistency
         run: ./scripts/check-computer-use-naming.sh
 

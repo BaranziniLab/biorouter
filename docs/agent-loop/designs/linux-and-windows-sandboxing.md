@@ -790,12 +790,13 @@ Slices 0 and 1 are independent and can run in parallel. 2 and 3 both depend on 1
    confinement). If read confinement is wanted, Landlock supports it natively and
    Seatbelt does too — it is a policy change, not an architecture change — but it
    breaks vastly more tools than write confinement does.
-5. **Who else spawns processes?** The Computer-Controller server
-   (`computercontroller/platform/{macos,windows,linux}.rs`) and third-party MCP
+5. **Who else spawns processes?** The legacy Computer Controller server
+   (`computercontroller/platform/{macos,windows,linux}.rs`, since removed when
+   Biorouter Copilot replaced the legacy computer tools) and third-party MCP
    extension spawns are **not** covered by this design, exactly as they were not
    covered by BR-64. Once the trait exists (Slice 1), routing them through it is
-   mechanical, and the Computer-Controller script-exec path is the obvious next
-   consumer. Worth a follow-up ticket rather than expanding this one.
+   mechanical, and the legacy Computer Controller script-exec path was the
+   obvious next consumer. Worth a follow-up ticket rather than expanding this one.
 6. **Does the helper re-exec interact with `process_group(0)` / `kill_on_drop`?**
    Believed no — the helper `execve`s in place, so the pid the parent holds *is*
    the shell's pid and it is already in the new process group set by
