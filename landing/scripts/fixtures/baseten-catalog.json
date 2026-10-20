@@ -2,13 +2,11 @@
   "schema_version": 1,
   "provider": "baseten",
   "source": "https://inference.baseten.co/v1/models",
-  "fetched_at": "2026-10-19T18:05:12.652Z",
+  "fetched_at": "2026-10-20T07:58:00.000Z",
   "models": [
     {
       "id": "deepseek-ai/DeepSeek-V4-Flash-0731",
-      "name": "DeepSeek V4 Flash 0731",
       "context_length": 1048576,
-      "max_completion_tokens": 384000,
       "input_modalities": [
         "text"
       ],
@@ -26,9 +24,7 @@
     },
     {
       "id": "deepseek-ai/DeepSeek-V4-Pro-0813",
-      "name": "DeepSeek V4 Pro 0813",
       "context_length": 1048576,
-      "max_completion_tokens": 262144,
       "input_modalities": [
         "text"
       ],
@@ -46,9 +42,7 @@
     },
     {
       "id": "deepseek-ai/DeepSeek-V4.1-Flash",
-      "name": "DeepSeek V4.1 Flash",
       "context_length": 1048576,
-      "max_completion_tokens": 262144,
       "input_modalities": [
         "text",
         "image"
@@ -67,9 +61,7 @@
     },
     {
       "id": "deepseek-ai/DeepSeek-V4.1-Flash-1017",
-      "name": "DeepSeek V4.1 Flash 1017",
       "context_length": 1048576,
-      "max_completion_tokens": 262144,
       "input_modalities": [
         "text",
         "image"
@@ -88,9 +80,7 @@
     },
     {
       "id": "deepseek-ai/DeepSeek-V4.1-Flash-1017-Fast",
-      "name": "DeepSeek V4.1 Flash 1017 Fast",
       "context_length": 1048576,
-      "max_completion_tokens": 262144,
       "input_modalities": [
         "text",
         "image"
@@ -109,9 +99,7 @@
     },
     {
       "id": "deepseek-ai/DeepSeek-V4.1-Flash-Fast",
-      "name": "DeepSeek V4.1 Flash Fast",
       "context_length": 1048576,
-      "max_completion_tokens": 131072,
       "input_modalities": [
         "text",
         "image"
@@ -128,9 +116,7 @@
     },
     {
       "id": "meta-models/muse-spark-open",
-      "name": "Muse Spark Open",
       "context_length": 1048576,
-      "max_completion_tokens": 1048576,
       "input_modalities": [
         "text",
         "image"
@@ -148,9 +134,7 @@
     },
     {
       "id": "moonshotai/Kimi-K3",
-      "name": "Kimi K3",
       "context_length": 1048576,
-      "max_completion_tokens": 262144,
       "input_modalities": [
         "text",
         "image"
@@ -169,9 +153,7 @@
     },
     {
       "id": "nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B",
-      "name": "Nemotron Ultra",
       "context_length": 202800,
-      "max_completion_tokens": 202800,
       "input_modalities": [
         "text"
       ],
@@ -189,9 +171,7 @@
     },
     {
       "id": "nvidia/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B",
-      "name": "Nemotron Super 3.5",
       "context_length": 1048576,
-      "max_completion_tokens": 1048576,
       "input_modalities": [
         "text",
         "image"
@@ -210,9 +190,7 @@
     },
     {
       "id": "openai/gpt-oss-120b",
-      "name": "OpenAI GPT 120B",
       "context_length": 128072,
-      "max_completion_tokens": 128072,
       "input_modalities": [
         "text"
       ],
@@ -231,9 +209,7 @@
     },
     {
       "id": "reflection/Beam-1.0",
-      "name": "Beam",
       "context_length": 1048576,
-      "max_completion_tokens": 131072,
       "input_modalities": [
         "text"
       ],
@@ -251,9 +227,7 @@
     },
     {
       "id": "sid/sid-1",
-      "name": "SID-1",
       "context_length": 32768,
-      "max_completion_tokens": 5000,
       "input_modalities": [
         "text"
       ],
@@ -271,9 +245,7 @@
     },
     {
       "id": "zai-org/GLM-5.2",
-      "name": "GLM 5.2",
       "context_length": 1048576,
-      "max_completion_tokens": 262144,
       "input_modalities": [
         "text",
         "image"
@@ -292,9 +264,7 @@
     },
     {
       "id": "zai-org/GLM-5.2-Fast",
-      "name": "GLM 5.2 Fast",
       "context_length": 1048576,
-      "max_completion_tokens": 262144,
       "input_modalities": [
         "text",
         "image"
@@ -313,9 +283,7 @@
     },
     {
       "id": "zai-org/GLM-5.3",
-      "name": "GLM 5.3",
       "context_length": 1048576,
-      "max_completion_tokens": 262144,
       "input_modalities": [
         "text",
         "image"
@@ -334,9 +302,7 @@
     },
     {
       "id": "zai-org/GLM-5.3-Fast",
-      "name": "GLM 5.3 Fast",
       "context_length": 1048576,
-      "max_completion_tokens": 262144,
       "input_modalities": [
         "text",
         "image"
@@ -355,9 +321,7 @@
     },
     {
       "id": "zai-org/GLM-5.3-Flash",
-      "name": "GLM 5.3 Flash",
       "context_length": 1048576,
-      "max_completion_tokens": 131072,
       "input_modalities": [
         "text",
         "image"

@@ -1,73 +1,96 @@
-//! Live model catalogs for bundled declarative providers — Baseten today.
+//! Live model catalogs for bundled declarative providers, Baseten today.
 //!
 //! `providers/declarative/baseten.json` is a snapshot: its models and prices
 //! change only when a release does. Baseten's own catalog (`GET /v1/models`)
 //! needs an API key, so a scheduled job in `deploy-landing.yml` reads it with a
-//! key held in a GitHub Environment secret and publishes the fields Biorouter
-//! uses to [`BASETEN_CATALOG_URL`], next to `registry.json`. This module reads
-//! that file with no key and no user data on the request.
+//! key held in the `baseten-feed` GitHub Environment and publishes the fields
+//! Biorouter uses to [`BASETEN_CATALOG_URL`], next to `registry.json`. This
+//! module reads that file with no key and no user data on the request.
 //!
 //! Resolution, from most to least current:
-//! 1. the feed, fetched by the daemon at start and every [`REFRESH_EVERY`];
+//! 1. the feed, which the daemon fetches only while Baseten is configured
+//!    ([`spawn_refresher`]);
 //! 2. the last good copy on disk (`<state>/provider-catalogs/baseten.json`),
 //!    which is also what a CLI process with no daemon reads;
 //! 3. the bundled JSON and `pricing::BASETEN_SYNC_PRICING`.
 //!
-//! What the feed may change, and what it may not:
+//! A catalog fetched before the bundled one was read
+//! ([`BUNDLED_CATALOG_AS_OF`]) counts as absent. A release therefore always
+//! outranks a feed or cached copy that predates it, so a feed that stopped
+//! updating (a revoked key, a response the builder refuses) cannot hide a model
+//! a later release ships or bill its old prices over the new ones.
+//!
+//! What a current catalog may change, and what it may not:
 //! - **Prices** (input, output, cached input) win over the bundled ones for
-//!   `baseten`. They are keyed by provider, so they reach no other provider.
+//!   `baseten`. They are keyed by provider, so they reach no other provider. A
+//!   zero input or output price is read as unknown, not as free, so it cannot
+//!   switch off a dollar budget.
 //! - **The model list** shown for `baseten` is the feed's, minus models
-//!   Biorouter cannot drive ([`advertised`]). An empty result keeps the bundled
-//!   list rather than emptying the picker.
-//! - **Context windows** only fill gaps. `MODEL_CONTEXT_WINDOWS` is keyed by
-//!   model name alone and some slugs are shared (`openai/gpt-oss-120b` is also
-//!   Groq's), so a static row always wins and a feed window is used only for a
-//!   slug the static table does not know.
+//!   Biorouter cannot drive ([`LiveCatalog::advertised`]). An empty result
+//!   keeps the bundled list rather than emptying the picker.
+//! - **Context windows** reach only Baseten's own models, and only slugs the
+//!   static `MODEL_CONTEXT_WINDOWS` lacks ([`stated_window`]). That table is
+//!   keyed by model name alone and some slugs are shared (`openai/gpt-oss-120b`
+//!   is also Groq's), so a static row always wins, and a feed window never
+//!   reaches another provider's model of the same name.
 
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, RwLock};
-use std::time::Duration;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Once, RwLock};
+use std::time::{Duration, Instant};
 
+use chrono::{DateTime, NaiveDate, Utc};
 use once_cell::sync::Lazy;
 use serde::Deserialize;
 
 use crate::config::paths::Paths;
+use crate::model::ModelConfig;
 use crate::providers::base::ModelInfo;
 use crate::providers::pricing::ProviderModelPricing;
 
 pub const BASETEN_CATALOG_URL: &str = "https://biorouter.ucsf.edu/provider-catalogs/baseten.json";
 const PROVIDER: &str = "baseten";
+/// The credential whose presence means Baseten is configured. It gates the
+/// fetch and is never sent with it: the feed needs no key.
+const API_KEY_ENV: &str = "BASETEN_API_KEY";
+/// The day `providers/declarative/baseten.json` and
+/// `pricing::BASETEN_SYNC_PRICING` were last read from Baseten. Move it in the
+/// same change as either of them: a catalog fetched before this day is older
+/// than what the release ships, and is ignored.
+const BUNDLED_CATALOG_AS_OF: &str = "2026-10-18";
 const CACHE_SUBPATH: &str = "provider-catalogs/baseten.json";
 const SCHEMA_VERSION: u32 = 1;
+
+// The bounds below are mirrored, under the same names, by
+// `landing/scripts/build-provider-catalog.mjs`, so the builder never publishes
+// a feed this parser refuses; `tests::the_feed_builder_mirrors_these_bounds`
+// holds the two together.
 const MAX_BYTES: usize = 256 * 1024;
 const MAX_MODELS: usize = 512;
 const MAX_ID_BYTES: usize = 128;
-const MIN_CONTEXT: usize = 4_096;
+const MIN_CONTEXT: usize = 4096;
 const MAX_CONTEXT: usize = 16 * 1024 * 1024;
 /// Sanity ceiling on a per-token price: $1,000 per million tokens. A value
 /// above it is a malformed feed, not a price.
 const MAX_TOKEN_COST: f64 = 1e-3;
+
 const FETCH_TIMEOUT: Duration = Duration::from_secs(15);
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
-/// The daemon outlives the app (the shared daemon can run for days), so one
-/// fetch at start is not enough. The feed itself is rebuilt daily.
+/// How often the daemon asks whether a fetch is due. Configuring Baseten in a
+/// running app is noticed within this long.
+const CHECK_EVERY: Duration = Duration::from_secs(60 * 60);
+/// How old the catalog in force may get before the daemon fetches again. The
+/// feed itself is rebuilt daily, and the shared daemon can run for days.
 const REFRESH_EVERY: Duration = Duration::from_secs(12 * 60 * 60);
 
 /// A model must hold Biorouter's instructions plus tool schemas (~31-40k
-/// tokens) with room to work; SID-1's 32,768 cannot.
+/// tokens) with room to work; SID-1's 32,768 cannot. The same floor as
+/// `ollama::OLLAMA_AGENT_CONTEXT_SIZE` and the Llama Server sidecar's.
 const MIN_AGENT_CONTEXT: usize = 65_536;
 /// Models that return HTTP 400 on a multi-turn request whose assistant turns
 /// lack `reasoning_content`, which only the `moonshot` provider replays
-/// (`formats::openai::replays_reasoning_content`).
+/// (`providers::openai::replays_reasoning_content`).
 const NEEDS_REASONING_REPLAY: &[&str] = &["reflection/Beam-1.0"];
-
-const VISION_MIME_TYPES: &[&str] = &[
-    "image/png",
-    "image/jpeg",
-    "image/jpg",
-    "image/webp",
-    "image/gif",
-];
 
 #[derive(Debug, thiserror::Error, PartialEq)]
 pub enum LiveCatalogError {
@@ -75,8 +98,12 @@ pub enum LiveCatalogError {
     TooLarge(usize),
     #[error("catalog is invalid: {0}")]
     Invalid(String),
+    #[error("catalog fetched at {0} predates the bundled one ({BUNDLED_CATALOG_AS_OF})")]
+    Stale(String),
     #[error("catalog fetch failed: {0}")]
     Fetch(String),
+    #[error("provider registry not rebuilt with the new catalog: {0}")]
+    Registry(String),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -90,14 +117,27 @@ pub struct LiveModel {
     pub cache_read_cost: Option<f64>,
 }
 
+impl LiveModel {
+    /// Input and output rates, unless either is zero. The feed has no way to
+    /// say "free" that a broken upstream response could not also say, and a
+    /// zero rate would switch off the dollar budget for the model, so zero
+    /// means unknown.
+    fn rates(&self) -> Option<(f64, f64)> {
+        (self.input_token_cost > 0.0 && self.output_token_cost > 0.0)
+            .then_some((self.input_token_cost, self.output_token_cost))
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct LiveCatalog {
-    pub fetched_at: String,
+    pub fetched_at: DateTime<Utc>,
     pub models: Vec<LiveModel>,
 }
 
+// Unknown fields are ignored rather than refused, so a field the builder adds
+// later does not make every released daemon throw the whole feed away. A change
+// an older parser would misread bumps `schema_version` instead.
 #[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
 struct RawCatalog {
     schema_version: u32,
     provider: String,
@@ -107,14 +147,9 @@ struct RawCatalog {
 }
 
 #[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
 struct RawModel {
     id: String,
-    #[allow(dead_code)]
-    name: Option<String>,
     context_length: u64,
-    #[allow(dead_code)]
-    max_completion_tokens: Option<u64>,
     input_modalities: Vec<String>,
     supported_features: Vec<String>,
     pricing: RawPricing,
@@ -123,7 +158,6 @@ struct RawModel {
 /// Prices stay strings, as Baseten writes them, so the feed never reformats a
 /// float on the way through.
 #[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
 struct RawPricing {
     prompt: String,
     completion: String,
@@ -145,9 +179,12 @@ impl LiveCatalog {
         if raw.provider != PROVIDER {
             return invalid(format!("provider `{}`", raw.provider));
         }
-        if raw.source.is_empty() || raw.fetched_at.is_empty() {
-            return invalid("source and fetched_at are required".to_string());
+        if raw.source.is_empty() {
+            return invalid("source is required".to_string());
         }
+        let Ok(fetched_at) = DateTime::parse_from_rfc3339(&raw.fetched_at) else {
+            return invalid(format!("fetched_at `{}`", raw.fetched_at));
+        };
         if raw.models.is_empty() || raw.models.len() > MAX_MODELS {
             return invalid(format!("{} models", raw.models.len()));
         }
@@ -185,21 +222,29 @@ impl LiveCatalog {
             });
         }
         Ok(Self {
-            fetched_at: raw.fetched_at,
+            fetched_at: fetched_at.with_timezone(&Utc),
             models,
         })
     }
 
+    /// Whether this catalog is older than the one the release ships, in which
+    /// case the release's own data stands.
+    fn predates_bundled(&self) -> bool {
+        self.fetched_at.date_naive() < bundled_as_of()
+    }
+
     /// Prices for `model`, matched case-blind because the pricing paths
-    /// lowercase before lookup.
+    /// lowercase before lookup. `None` when the feed's rate is zero
+    /// ([`LiveModel::rates`]), so the bundled price, if any, applies.
     pub fn pricing(&self, model: &str) -> Option<ProviderModelPricing> {
         let found = self
             .models
             .iter()
             .find(|candidate| candidate.id.eq_ignore_ascii_case(model))?;
+        let (input, output) = found.rates()?;
         Some(ProviderModelPricing {
-            input_token_cost: found.input_token_cost,
-            output_token_cost: found.output_token_cost,
+            input_token_cost: input,
+            output_token_cost: output,
             cache_read_cost: found.cache_read_cost,
             cache_write_cost: None,
             currency: "$".to_string(),
@@ -207,8 +252,13 @@ impl LiveCatalog {
         })
     }
 
-    /// The feed's window for exactly `model` (registry ids are case-sensitive).
-    pub fn context_window(&self, model: &str) -> Option<usize> {
+    /// The window this catalog states for exactly `model` (registry ids are
+    /// case-sensitive), when the static registry has no row for the slug. A
+    /// static row always wins; see the module comment.
+    pub fn stated_window(&self, model: &str) -> Option<usize> {
+        if ModelConfig::registry_context_window(model).is_some() {
+            return None;
+        }
         self.models
             .iter()
             .find(|candidate| candidate.id == model)
@@ -237,25 +287,27 @@ impl LiveCatalog {
             return bundled;
         }
         let window = |live: &LiveModel| {
-            crate::model::ModelConfig::registry_context_window(&live.id)
-                .unwrap_or(live.context_length)
+            ModelConfig::registry_context_window(&live.id).unwrap_or(live.context_length)
         };
-        let apply = |info: &mut ModelInfo, live: &LiveModel| {
-            info.input_token_cost = Some(live.input_token_cost);
-            info.output_token_cost = Some(live.output_token_cost);
-            info.currency = Some("$".to_string());
-            info.supports_vision = Some(live.vision);
-            info.supported_input_mime_types = live
-                .vision
-                .then(|| VISION_MIME_TYPES.iter().map(|m| m.to_string()).collect());
+        let apply = |mut info: ModelInfo, live: &LiveModel| {
+            if let Some((input, output)) = live.rates() {
+                info.input_token_cost = Some(input);
+                info.output_token_cost = Some(output);
+                info.currency = Some("$".to_string());
+            }
+            if live.vision {
+                info.with_vision()
+            } else {
+                info.supported_input_mime_types = None;
+                info.without_vision()
+            }
         };
 
         let mut merged: Vec<ModelInfo> = bundled
             .into_iter()
-            .filter_map(|mut info| {
+            .filter_map(|info| {
                 let live = advertised.iter().find(|live| live.id == info.name)?;
-                apply(&mut info, live);
-                Some(info)
+                Some(apply(info, live))
             })
             .collect();
         let mut added: Vec<&LiveModel> = advertised
@@ -264,12 +316,15 @@ impl LiveCatalog {
             .collect();
         added.sort_by(|a, b| a.id.cmp(&b.id));
         for live in added {
-            let mut info = ModelInfo::new(live.id.clone(), window(live));
-            apply(&mut info, live);
-            merged.push(info);
+            merged.push(apply(ModelInfo::new(live.id.clone(), window(live)), live));
         }
         merged
     }
+}
+
+fn bundled_as_of() -> NaiveDate {
+    NaiveDate::parse_from_str(BUNDLED_CATALOG_AS_OF, "%Y-%m-%d")
+        .expect("BUNDLED_CATALOG_AS_OF is a YYYY-MM-DD date")
 }
 
 fn valid_id(id: &str) -> bool {
@@ -287,9 +342,11 @@ fn parse_token_cost(value: &str) -> Option<f64> {
 
 // ── Process-wide state ─────────────────────────────────────────────────────
 
-/// The current Baseten catalog. Seeded from the last good copy on disk the
-/// first time anything asks; unit tests never read the disk, so a developer's
-/// cached feed cannot change what they assert.
+/// The Baseten catalog last loaded, whatever its age; [`current`] decides
+/// whether it is in force. Seeded from the last good copy on disk the first
+/// time anything asks. Unit tests never read the disk, so a developer's cached
+/// feed cannot change what they assert; `tests/baseten_live_catalog.rs` seeds
+/// one on purpose, in its own process.
 static BASETEN: Lazy<RwLock<Option<Arc<LiveCatalog>>>> = Lazy::new(|| {
     #[cfg(not(test))]
     let seeded = read_cached(&cache_path());
@@ -297,6 +354,10 @@ static BASETEN: Lazy<RwLock<Option<Arc<LiveCatalog>>>> = Lazy::new(|| {
     let seeded = None;
     RwLock::new(seeded)
 });
+
+/// Set when a rebuild of the provider registry failed after the catalog
+/// changed, so the next fetch retries it even when the feed has not moved.
+static REGISTRY_STALE: AtomicBool = AtomicBool::new(false);
 
 fn cache_path() -> PathBuf {
     Paths::in_state_dir(CACHE_SUBPATH)
@@ -317,12 +378,24 @@ fn read_cached(path: &Path) -> Option<Arc<LiveCatalog>> {
     }
 }
 
-/// The live catalog for `provider`, if one is loaded. Only `baseten` has one.
+/// The live catalog in force for `provider`, if any. Only `baseten` has one,
+/// and one older than the bundled catalog is not in force.
 pub fn current(provider: &str) -> Option<Arc<LiveCatalog>> {
     if !provider.eq_ignore_ascii_case(PROVIDER) {
         return None;
     }
-    BASETEN.read().ok()?.clone()
+    let catalog = BASETEN.read().ok()?.clone()?;
+    if catalog.predates_bundled() {
+        static SAID: Once = Once::new();
+        SAID.call_once(|| {
+            tracing::info!(
+                "ignoring the Baseten catalog fetched at {}: it predates the one this release ships",
+                catalog.fetched_at
+            );
+        });
+        return None;
+    }
+    Some(catalog)
 }
 
 /// Live prices for `(provider, model)`, ahead of every bundled table.
@@ -330,66 +403,111 @@ pub(crate) fn pricing(provider: &str, model: &str) -> Option<ProviderModelPricin
     current(provider)?.pricing(model)
 }
 
-/// A feed window for a slug, for [`crate::model::ModelConfig`]'s gap filling.
-pub(crate) fn context_window(model: &str) -> Option<usize> {
-    current(PROVIDER)?.context_window(model)
+/// The window `provider`'s live catalog states for `model`, for the one case
+/// a feed window is used: a Baseten model the static registry has no row for.
+/// `OpenAiProvider::from_custom_config` applies it unless the user pinned a
+/// limit.
+pub fn stated_window(provider: &str, model: &str) -> Option<usize> {
+    current(provider)?.stated_window(model)
 }
 
-/// Every feed window, for the list the desktop resolves windows from.
-pub(crate) fn context_windows() -> Vec<(String, usize)> {
-    current(PROVIDER)
-        .map(|catalog| {
-            catalog
-                .models
-                .iter()
-                .map(|model| (model.id.clone(), model.context_length))
-                .collect()
-        })
-        .unwrap_or_default()
-}
-
-/// `bundled`, or the live list for `provider` when one is loaded.
-pub(crate) fn merged_models(provider: &str, bundled: Vec<ModelInfo>) -> Vec<ModelInfo> {
+/// `bundled`, or the live list for `provider` when one is in force.
+pub fn merged_models(provider: &str, bundled: Vec<ModelInfo>) -> Vec<ModelInfo> {
     match current(provider) {
         Some(catalog) => catalog.merge_models(bundled),
         None => bundled,
     }
 }
 
-/// Fetch the feed now and every [`REFRESH_EVERY`] for the life of the daemon.
-/// Failures are logged and leave the current catalog in place.
+/// While Baseten is configured, fetch the feed whenever the last attempt is
+/// [`REFRESH_EVERY`] old, checking every [`CHECK_EVERY`]. With Baseten not
+/// configured the daemon makes no request at all. Failures are logged and
+/// leave the current catalog in place.
 pub fn spawn_refresher() {
     tokio::spawn(async {
+        let mut attempted: Option<Instant> = None;
         loop {
-            match refresh_once().await {
-                Ok(true) => tracing::info!("Baseten model catalog updated"),
-                Ok(false) => tracing::debug!("Baseten model catalog unchanged"),
-                Err(error) => tracing::info!("Baseten model catalog not refreshed: {error}"),
+            let due = attempted.is_none_or(|at| at.elapsed() >= REFRESH_EVERY);
+            if due && baseten_configured() {
+                match refresh_once().await {
+                    Ok(true) => tracing::info!("Baseten model catalog updated"),
+                    Ok(false) => tracing::debug!("Baseten model catalog unchanged"),
+                    Err(error) => tracing::info!("Baseten model catalog not refreshed: {error}"),
+                }
+                attempted = Some(Instant::now());
             }
-            tokio::time::sleep(REFRESH_EVERY).await;
+            tokio::time::sleep(CHECK_EVERY).await;
         }
     });
+}
+
+/// Baseten counts as configured once its key is saved, the same test the
+/// provider catalog uses (`routes::utils::keys_are_saved`).
+fn baseten_configured() -> bool {
+    crate::config::Config::global()
+        .get_secret::<String>(API_KEY_ENV)
+        .is_ok()
 }
 
 /// One fetch. `Ok(true)` when the catalog changed and the provider registry
 /// was rebuilt with it.
 async fn refresh_once() -> Result<bool, LiveCatalogError> {
     let bytes = fetch().await?;
-    let catalog = LiveCatalog::from_bytes(&bytes)?;
-    if current(PROVIDER).as_deref() == Some(&catalog) {
-        return Ok(false);
+    let loaded = BASETEN.read().ok().and_then(|slot| slot.clone());
+    match apply_fetched(&bytes, &cache_path(), loaded.as_deref())? {
+        Refreshed::Unchanged => {
+            if REGISTRY_STALE.load(Ordering::Relaxed) {
+                rebuild_registry().await?;
+            }
+            Ok(false)
+        }
+        Refreshed::Updated(catalog) => {
+            if let Ok(mut slot) = BASETEN.write() {
+                *slot = Some(Arc::new(catalog));
+            }
+            rebuild_registry().await?;
+            Ok(true)
+        }
     }
-    if let Err(error) = atomic_write(&cache_path(), &bytes) {
+}
+
+/// What one fetched feed does to the catalog in force.
+#[derive(Debug, PartialEq)]
+enum Refreshed {
+    Unchanged,
+    Updated(LiveCatalog),
+}
+
+/// Validate `bytes`, refuse a feed older than the bundled catalog, compare it
+/// with `loaded` and write the cache when it changed. The comparison is by
+/// models alone: `fetched_at` moves every day whether or not anything else
+/// did, and rebuilding the registry for a timestamp would make "updated" mean
+/// nothing. A loaded catalog that is itself older than the bundled one is
+/// replaced even when its models match, so the cache carries a date that is in
+/// force again.
+fn apply_fetched(
+    bytes: &[u8],
+    cache: &Path,
+    loaded: Option<&LiveCatalog>,
+) -> Result<Refreshed, LiveCatalogError> {
+    let catalog = LiveCatalog::from_bytes(bytes)?;
+    if catalog.predates_bundled() {
+        return Err(LiveCatalogError::Stale(catalog.fetched_at.to_rfc3339()));
+    }
+    if loaded.is_some_and(|loaded| !loaded.predates_bundled() && loaded.models == catalog.models) {
+        return Ok(Refreshed::Unchanged);
+    }
+    if let Err(error) = atomic_write(cache, bytes) {
         tracing::warn!("could not cache the Baseten catalog: {error}");
     }
-    if let Ok(mut slot) = BASETEN.write() {
-        *slot = Some(Arc::new(catalog));
-    }
-    // Rebuilds every declarative entry, so the picker sees the new list.
-    if let Err(error) = crate::providers::refresh_custom_providers().await {
-        tracing::warn!("provider registry not rebuilt after a catalog update: {error}");
-    }
-    Ok(true)
+    Ok(Refreshed::Updated(catalog))
+}
+
+/// Rebuild every declarative registry entry, so the picker sees the new list.
+async fn rebuild_registry() -> Result<(), LiveCatalogError> {
+    let result = crate::providers::refresh_custom_providers().await;
+    REGISTRY_STALE.store(result.is_err(), Ordering::Relaxed);
+    result.map_err(|error| LiveCatalogError::Registry(error.to_string()))
 }
 
 async fn fetch() -> Result<Vec<u8>, LiveCatalogError> {
@@ -456,20 +574,34 @@ mod tests {
             r#"["reasoning"]"#
         };
         format!(
-            r#"{{"id":"{id}","name":"{id}","context_length":{context},"max_completion_tokens":{context},
+            r#"{{"id":"{id}","context_length":{context},
                 "input_modalities":{modalities},"supported_features":{features},
                 "pricing":{{"prompt":"{}","completion":"{}","input_cache_read":"{}"}}}}"#,
             prices[0], prices[1], prices[2]
         )
     }
 
-    fn feed(models: &[String]) -> Vec<u8> {
+    fn feed_at(fetched_at: &str, models: &[String]) -> Vec<u8> {
         format!(
             r#"{{"schema_version":1,"provider":"baseten","source":"https://inference.baseten.co/v1/models",
-                "fetched_at":"2026-10-19T00:00:00Z","models":[{}]}}"#,
+                "fetched_at":"{fetched_at}","models":[{}]}}"#,
             models.join(",")
         )
         .into_bytes()
+    }
+
+    fn feed(models: &[String]) -> Vec<u8> {
+        feed_at("2026-10-19T00:00:00Z", models)
+    }
+
+    fn one_model() -> String {
+        model(
+            "a/b",
+            131_072,
+            false,
+            true,
+            ["0.000001", "0.000002", "0.0000001"],
+        )
     }
 
     /// Shaped like Baseten's `/v1/models` on 2026-10-18: one bundled model
@@ -538,37 +670,35 @@ mod tests {
         let glm = &catalog.models[0];
         assert!(glm.vision && glm.tools);
         assert_eq!(glm.cache_read_cost, Some(1.2e-7));
+        assert_eq!(
+            catalog.fetched_at,
+            DateTime::parse_from_rfc3339("2026-10-19T00:00:00Z").unwrap()
+        );
     }
 
     #[test]
     fn a_malformed_feed_is_refused_whole() {
-        let good = || {
-            model(
-                "a/b",
-                131_072,
-                false,
-                true,
-                ["0.000001", "0.000002", "0.0000001"],
-            )
+        let replace = |from: &str, to: &str| {
+            String::from_utf8(feed(&[one_model()]))
+                .unwrap()
+                .replace(from, to)
+                .into_bytes()
         };
         let cases: Vec<(&str, Vec<u8>)> = vec![
-            ("wrong provider", {
-                let text = String::from_utf8(feed(&[good()])).unwrap();
-                text.replace(r#""provider":"baseten""#, r#""provider":"groq""#)
-                    .into_bytes()
-            }),
-            ("future schema", {
-                let text = String::from_utf8(feed(&[good()])).unwrap();
-                text.replace(r#""schema_version":1"#, r#""schema_version":2"#)
-                    .into_bytes()
-            }),
-            ("unknown field", {
-                let text = String::from_utf8(feed(&[good()])).unwrap();
-                text.replace(r#""models":"#, r#""extra":true,"models":"#)
-                    .into_bytes()
-            }),
+            (
+                "wrong provider",
+                replace(r#""provider":"baseten""#, r#""provider":"groq""#),
+            ),
+            (
+                "future schema",
+                replace(r#""schema_version":1"#, r#""schema_version":2"#),
+            ),
+            (
+                "fetched_at that is not RFC 3339",
+                replace("2026-10-19T00:00:00Z", "yesterday"),
+            ),
             ("no models", feed(&[])),
-            ("duplicate id", feed(&[good(), good()])),
+            ("duplicate id", feed(&[one_model(), one_model()])),
             (
                 "id with a space",
                 feed(&[model(
@@ -621,6 +751,19 @@ mod tests {
         );
     }
 
+    /// A field the builder adds later must not make a released daemon refuse
+    /// the whole feed; `schema_version` is for changes an old parser would
+    /// misread.
+    #[test]
+    fn unknown_fields_are_ignored() {
+        let text = String::from_utf8(feed(&[one_model()]))
+            .unwrap()
+            .replace(r#""models":"#, r#""extra":true,"models":"#)
+            .replace(r#""context_length":"#, r#""name":"A B","context_length":"#);
+        let catalog = LiveCatalog::from_bytes(text.as_bytes()).expect("unknown fields parse");
+        assert_eq!(catalog.models[0].id, "a/b");
+    }
+
     #[test]
     fn only_models_biorouter_can_drive_are_advertised() {
         let catalog = sample();
@@ -650,6 +793,15 @@ mod tests {
 
     #[test]
     fn a_shared_slug_keeps_the_registry_window_and_a_new_slug_takes_the_feeds() {
+        // The premise: Groq's static row for gpt-oss-120b exists and differs
+        // from the feed's 128,072, and GLM 5.2 has no row at all. Without both
+        // halves this test would pass whichever window `merge_models` chose.
+        assert_eq!(
+            ModelConfig::registry_context_window("openai/gpt-oss-120b"),
+            Some(131_072)
+        );
+        assert!(ModelConfig::registry_context_window("zai-org/GLM-5.2").is_none());
+
         let merged = sample().merge_models(bundled());
         let window = |name: &str| {
             merged
@@ -658,10 +810,7 @@ mod tests {
                 .unwrap()
                 .context_limit
         };
-        // Groq's row; the feed's 128,072 must not reach it.
         assert_eq!(window("openai/gpt-oss-120b"), 131_072);
-        // Not in MODEL_CONTEXT_WINDOWS, so the feed's window is the model's.
-        assert!(crate::model::ModelConfig::registry_context_window("zai-org/GLM-5.2").is_none());
         assert_eq!(window("zai-org/GLM-5.2"), 1_048_576);
     }
 
@@ -688,22 +837,142 @@ mod tests {
         assert!(sample().pricing("zai-org/glm-9").is_none());
     }
 
+    /// A feed that says a paid model costs nothing is not believed: the
+    /// bundled price stands for a bundled model, and a feed-only model has no
+    /// price rather than a price of zero, which would switch off the budget.
     #[test]
-    fn windows_match_case_sensitively() {
+    fn a_zero_price_is_unknown_not_free() {
+        let catalog = LiveCatalog::from_bytes(&feed(&[
+            model("zai-org/GLM-5.3", 1_048_576, true, true, ["0", "0", "0"]),
+            model("new/model", 1_048_576, false, true, ["0.000001", "0", "0"]),
+        ]))
+        .unwrap();
+        assert!(catalog.pricing("zai-org/GLM-5.3").is_none());
+        assert!(catalog.pricing("new/model").is_none());
+
+        let merged = catalog.merge_models(bundled());
+        assert_eq!(merged[0].name, "zai-org/GLM-5.3");
+        assert_eq!(
+            merged[0].input_token_cost,
+            Some(1.4e-6),
+            "bundled price kept"
+        );
+        let added = merged.iter().find(|m| m.name == "new/model").unwrap();
+        assert_eq!(added.input_token_cost, None);
+        assert_eq!(added.output_token_cost, None);
+    }
+
+    #[test]
+    fn a_window_is_stated_only_for_a_slug_the_registry_lacks() {
         let catalog = sample();
-        assert_eq!(catalog.context_window("zai-org/GLM-5.2"), Some(1_048_576));
-        assert_eq!(catalog.context_window("zai-org/glm-5.2"), None);
+        assert_eq!(catalog.stated_window("zai-org/GLM-5.2"), Some(1_048_576));
+        // Case-sensitive, like the registry.
+        assert_eq!(catalog.stated_window("zai-org/glm-5.2"), None);
+        // A shared slug keeps its static row, not the feed's 128,072.
+        assert_eq!(catalog.stated_window("openai/gpt-oss-120b"), None);
+        // No live catalog is in force in unit tests, so no provider gets one.
+        assert_eq!(stated_window("baseten", "zai-org/GLM-5.2"), None);
+    }
+
+    #[test]
+    fn a_catalog_older_than_the_bundled_one_is_not_in_force() {
+        let day_before =
+            LiveCatalog::from_bytes(&feed_at("2026-10-17T23:59:59Z", &[one_model()])).unwrap();
+        assert!(day_before.predates_bundled());
+        let same_day =
+            LiveCatalog::from_bytes(&feed_at("2026-10-18T00:00:00Z", &[one_model()])).unwrap();
+        assert!(!same_day.predates_bundled());
+    }
+
+    #[test]
+    fn a_fetch_older_than_the_bundled_catalog_is_refused_and_not_cached() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = dir.path().join("baseten.json");
+        let old = feed_at("2026-09-01T00:00:00Z", &[one_model()]);
+        assert!(matches!(
+            apply_fetched(&old, &cache, None),
+            Err(LiveCatalogError::Stale(_))
+        ));
+        assert!(!cache.exists());
+    }
+
+    #[test]
+    fn a_malformed_fetch_leaves_the_cache_alone() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = dir.path().join("baseten.json");
+        assert!(apply_fetched(b"{not json", &cache, None).is_err());
+        assert!(!cache.exists());
+    }
+
+    #[test]
+    fn a_new_feed_is_cached_and_a_redated_one_is_unchanged() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = dir.path().join("baseten.json");
+
+        let first = feed(&[one_model()]);
+        let Refreshed::Updated(loaded) = apply_fetched(&first, &cache, None).unwrap() else {
+            panic!("a first feed is an update");
+        };
+        assert_eq!(std::fs::read(&cache).unwrap(), first);
+
+        // The next day's feed: same models, new `fetched_at`.
+        let next_day = feed_at("2026-10-20T00:00:00Z", &[one_model()]);
+        assert_eq!(
+            apply_fetched(&next_day, &cache, Some(&loaded)).unwrap(),
+            Refreshed::Unchanged
+        );
+        assert_eq!(std::fs::read(&cache).unwrap(), first, "not rewritten");
+
+        // A price change is an update, and is cached.
+        let repriced = feed_at(
+            "2026-10-21T00:00:00Z",
+            &[model(
+                "a/b",
+                131_072,
+                false,
+                true,
+                ["0.000003", "0.000002", "0.0000001"],
+            )],
+        );
+        assert!(matches!(
+            apply_fetched(&repriced, &cache, Some(&loaded)).unwrap(),
+            Refreshed::Updated(_)
+        ));
+        assert_eq!(std::fs::read(&cache).unwrap(), repriced);
+    }
+
+    /// A cached copy older than this release's bundled catalog is replaced by
+    /// a current fetch even when the models match, so the cache is in force
+    /// again for a CLI process that reads only the disk.
+    #[test]
+    fn a_stale_loaded_catalog_is_replaced_by_a_matching_current_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = dir.path().join("baseten.json");
+        let stale =
+            LiveCatalog::from_bytes(&feed_at("2026-09-01T00:00:00Z", &[one_model()])).unwrap();
+        let current_feed = feed(&[one_model()]);
+        assert!(matches!(
+            apply_fetched(&current_feed, &cache, Some(&stale)).unwrap(),
+            Refreshed::Updated(_)
+        ));
+        assert_eq!(std::fs::read(&cache).unwrap(), current_feed);
     }
 
     /// The feed `landing/scripts/build-provider-catalog.mjs` built from
-    /// Baseten's real `/v1/models` on 2026-10-19. This parser and that script
-    /// are the two halves of one format, in two languages; this is the only
-    /// place both meet. Regenerate the fixture with the script, never by hand.
+    /// Baseten's real `/v1/models` response (`fixtures/baseten-models.raw.json`,
+    /// read 2026-10-20). The script's own suite checks that rebuilding the raw
+    /// response gives this file back, and this test that the parser accepts
+    /// it, so the two halves of the format meet here. Regenerate the fixture
+    /// with the script, never by hand.
     #[test]
     fn the_published_feed_format_parses() {
         let bytes = include_bytes!("../../../../landing/scripts/fixtures/baseten-catalog.json");
         let catalog = LiveCatalog::from_bytes(bytes).expect("the script's output parses");
         assert_eq!(catalog.models.len(), 18);
+        assert!(
+            !catalog.predates_bundled(),
+            "the fixture must postdate {BUNDLED_CATALOG_AS_OF}"
+        );
 
         let advertised: Vec<&str> = catalog.advertised().map(|m| m.id.as_str()).collect();
         assert_eq!(
@@ -726,6 +995,63 @@ mod tests {
         assert_eq!(merged.len(), 16);
     }
 
+    /// The bundled snapshot must itself pass the rules the feed is filtered
+    /// by, or a feed listing exactly the bundled models would drop one.
+    #[test]
+    fn every_bundled_model_is_one_the_feed_would_advertise() {
+        for info in crate::config::declarative_providers::bundled_models("baseten") {
+            assert!(
+                info.context_limit >= MIN_AGENT_CONTEXT,
+                "{}: window {} is below the agent floor",
+                info.name,
+                info.context_limit
+            );
+            assert!(
+                !NEEDS_REASONING_REPLAY.contains(&info.name.as_str()),
+                "{} needs reasoning replay",
+                info.name
+            );
+        }
+    }
+
+    /// The builder publishes only what this parser accepts, because it checks
+    /// the same bounds under the same names. Read them from the script itself,
+    /// the way `app_folder` pins its constants against the desktop's copy.
+    #[test]
+    fn the_feed_builder_mirrors_these_bounds() {
+        let script = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../landing/scripts/build-provider-catalog.mjs"
+        ))
+        .expect("the feed builder is in the tree");
+        for (line, value) in [
+            ("export const MIN_CONTEXT = 4096;", MIN_CONTEXT),
+            ("export const MAX_CONTEXT = 16 * 1024 * 1024;", MAX_CONTEXT),
+            ("export const MAX_BYTES = 256 * 1024;", MAX_BYTES),
+            ("export const MAX_ID_BYTES = 128;", MAX_ID_BYTES),
+            ("export const MAX_MODELS = 512;", MAX_MODELS),
+        ] {
+            assert!(
+                script.contains(line),
+                "build-provider-catalog.mjs must declare `{line}`"
+            );
+            let declared = line
+                .trim_start_matches(|c: char| !c.is_ascii_digit())
+                .trim_end_matches(';')
+                .split(" * ")
+                .map(|factor| factor.parse::<usize>().expect("a numeric factor"))
+                .product::<usize>();
+            assert_eq!(declared, value, "{line}");
+        }
+        assert!(script.contains("export const MAX_TOKEN_COST = 1e-3;"));
+        assert_eq!(MAX_TOKEN_COST, 1e-3);
+    }
+
+    #[test]
+    fn the_bundled_date_is_a_date() {
+        assert_eq!(bundled_as_of().to_string(), BUNDLED_CATALOG_AS_OF);
+    }
+
     #[test]
     fn unit_tests_never_see_a_cached_feed() {
         assert!(current("baseten").is_none());
@@ -738,17 +1064,7 @@ mod tests {
         let path = dir.path().join("baseten.json");
         std::fs::write(&path, b"{not json").unwrap();
         assert!(read_cached(&path).is_none());
-        atomic_write(
-            &path,
-            &feed(&[model(
-                "a/b",
-                131_072,
-                false,
-                true,
-                ["0.000001", "0.000002", "0.0000001"],
-            )]),
-        )
-        .unwrap();
+        atomic_write(&path, &feed(&[one_model()])).unwrap();
         assert_eq!(read_cached(&path).unwrap().models.len(), 1);
     }
 }

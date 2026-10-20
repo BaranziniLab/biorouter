@@ -398,7 +398,7 @@ Default model: `zai-org/GLM-5.3`
 
 Available models: `zai-org/GLM-5.3`, `zai-org/GLM-5.3-Fast`, `zai-org/GLM-5.3-Flash`, `moonshotai/Kimi-K3`, `deepseek-ai/DeepSeek-V4.1-Flash`, `deepseek-ai/DeepSeek-V4.1-Flash-1017`, `deepseek-ai/DeepSeek-V4-Pro-0813`, `meta-models/muse-spark-open`, `nvidia/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B`, `nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B`, `openai/gpt-oss-120b`
 
-This list and the prices refresh daily from Baseten's catalog, with no extra setup, so the picker can show models released after your version of Biorouter. Offline, the last list Biorouter saw or the list above is used. See [the Baseten provider reference](../providers/baseten.md).
+Once your Baseten key is saved, this list and the prices refresh from Baseten's catalog at most twice a day, so the picker can show models released after your version of Biorouter. Without a key Biorouter asks for nothing. Offline, the last list Biorouter saw or the list above is used, unless it is older than the list above. See [the Baseten provider reference](../providers/baseten.md).
 
 Slugs are case-sensitive, as Baseten spells them. Costs use Baseten's own per-token rates, including its discounted rate for cached input (read from its `/v1/models` and https://www.baseten.co/pricing/ on 2026-10-18), not the model vendors'.
 

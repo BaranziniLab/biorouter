@@ -2,13 +2,16 @@ name: Deploy landing site
 
 # Publishes the static landing site in landing/ (the former biorouter-landing
 # repo, custom domain biorouter.ucsf.edu) to GitHub Pages. Runs on every push to
-# main that touches the site, so the landing page ships together with the app,
-# and once a day, to refresh the Baseten model catalog published beside it.
+# main that touches landing/, docs/website/ (the docs page's sources) or this
+# workflow, so the landing page ships together with the app, and once a day, to
+# refresh the Baseten model catalog published beside it.
 #
 # One-time setup before the first successful run (see landing/README.md):
 #   1. Release the biorouter.ucsf.edu custom domain from the old
 #      BaranziniLab/biorouter-landing repo (Settings -> Pages -> remove domain).
 #   2. In THIS repo: Settings -> Pages -> Source = "GitHub Actions".
+#   3. The `baseten-feed` Environment, restricted to main, holding the secret
+#      BASETEN_API_KEY (see `baseten-catalog` below). Done 2026-10-20.
 # The CNAME file in landing/ re-asserts the custom domain on each deploy.
 
 on:
@@ -128,7 +131,9 @@ jobs:
   # Setup (a repo admin, once): Settings -> Environments -> New environment
   # `baseten-feed`; Deployment branches = Selected -> `main`; add the
   # environment secret BASETEN_API_KEY (a Baseten team key with "Call Model
-  # APIs" on one cheap model; listing models runs no inference).
+  # APIs" on one cheap model; listing models runs no inference). The
+  # environment exists: created 2026-10-20, deployments limited to `main`,
+  # secret BASETEN_API_KEY set. Rotating the key means replacing that secret.
   baseten-catalog:
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -140,6 +145,13 @@ jobs:
         uses: actions/checkout@v4
         with:
           persist-credentials: false
+
+      # The builder's own suite, before the key is used and before anything is
+      # built: it holds the script to the bounds live_catalog.rs enforces, so a
+      # script that would publish a feed every client refuses fails here, and
+      # the deploy carries the live feed forward. No install and no key needed.
+      - name: Test the feed builder
+        run: node --test landing/scripts/build-provider-catalog.test.mjs
 
       - name: Fetch Baseten's model catalog
         env:

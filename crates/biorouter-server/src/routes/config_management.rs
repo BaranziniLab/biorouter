@@ -1504,14 +1504,16 @@ pub async fn get_provider_models(
         biorouter::config::declarative_providers::load_provider(name.as_str()).ok();
     // TODO(Douwe): support a get models url for custom providers
     if let Some(loaded_provider) = loaded_provider {
-        return Ok(Json(
-            loaded_provider
-                .config
-                .models
-                .into_iter()
-                .map(|m| m.name)
-                .collect::<Vec<_>>(),
-        ));
+        // A bundled provider with a live catalog (Baseten) answers with the
+        // list the registry and the picker show, not the snapshot it shipped.
+        // A custom file of the same name takes precedence in `load_provider`
+        // and is the user's own list, so it is not merged.
+        let models = if loaded_provider.is_editable {
+            loaded_provider.config.models
+        } else {
+            biorouter::providers::live_catalog::merged_models(&name, loaded_provider.config.models)
+        };
+        return Ok(Json(models.into_iter().map(|m| m.name).collect()));
     }
 
     let all = get_providers()

@@ -228,6 +228,16 @@ impl OpenAiProvider {
         model: ModelConfig,
         config: DeclarativeProviderConfig,
     ) -> Result<Self> {
+        // A model only a live catalog knows (a slug Baseten's feed added) has
+        // no row in the name-keyed registry, so budget with the window the
+        // catalog states for it. A limit the user pinned stays, because
+        // `context_limit` is set only by a pin, and no other provider's model
+        // of the same name can get it: `stated_window` answers for the
+        // catalog's own provider alone.
+        let model = match super::live_catalog::stated_window(&config.name, &model.model_name) {
+            Some(window) if model.context_limit.is_none() => model.with_context_limit(Some(window)),
+            _ => model,
+        };
         let global_config = crate::config::Config::global();
         let api_key: String = global_config
             .get_secret(&config.api_key_env)

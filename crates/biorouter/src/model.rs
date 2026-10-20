@@ -842,19 +842,16 @@ impl ModelConfig {
     /// This model's own context window: exact registry entry first, then the
     /// substring fallback for ids we can't enumerate ahead of time. Returns
     /// `None` when neither knows the model.
-    ///
-    /// Between the two sits a live provider catalog's exact window
-    /// (`providers::live_catalog`), which only fills a gap: a static row
-    /// always wins, because the registry is keyed by name and a slug may be
-    /// shared between providers.
     fn resolve_context_window(model_name: &str) -> Option<usize> {
         Self::registry_context_window(model_name)
-            .or_else(|| crate::providers::live_catalog::context_window(model_name))
             .or_else(|| Self::get_model_specific_limit(model_name))
     }
 
     /// The static registry's own row for exactly `model_name`, and nothing
-    /// else: no live catalog, no substring pattern.
+    /// else: no substring pattern. A provider whose live catalog states a
+    /// window for a slug this lacks applies it to its own models only
+    /// (`providers::live_catalog::stated_window`), never here, because the
+    /// registry is keyed by name and a slug may be shared between providers.
     pub fn registry_context_window(model_name: &str) -> Option<usize> {
         MODEL_CONTEXT_WINDOWS.get(model_name).copied()
     }
@@ -870,11 +867,9 @@ impl ModelConfig {
     /// Whether this model has its **own** entry in [`MODEL_CONTEXT_WINDOWS`],
     /// rather than borrowing a window from a substring pattern or the default.
     /// Every model a provider advertises must satisfy this — see the
-    /// `context_windows` integration test. A live catalog's exact window
-    /// counts: it is the model's own, stated by its provider, not inherited.
+    /// `context_windows` integration test.
     pub fn has_declared_context_window(model_name: &str) -> bool {
         MODEL_CONTEXT_WINDOWS.contains_key(model_name)
-            || crate::providers::live_catalog::context_window(model_name).is_some()
     }
 
     /// The (pattern, window) list served to clients that resolve a window from a
@@ -887,30 +882,19 @@ impl ModelConfig {
     /// follow, for ids the registry doesn't know. Without the exact entries the
     /// UI would report a different window than the agent actually uses.
     pub fn get_all_model_limits() -> Vec<ModelLimitConfig> {
-        let mut exact: Vec<(String, usize)> = MODEL_CONTEXT_WINDOWS
+        let mut exact: Vec<(&str, usize)> = MODEL_CONTEXT_WINDOWS
             .iter()
-            .map(|(name, limit)| (name.to_string(), *limit))
+            .map(|(name, limit)| (*name, *limit))
             .collect();
-        // A live catalog's windows for slugs the registry lacks, so the UI
-        // resolves the same window `resolve_context_window` does.
-        for (name, limit) in crate::providers::live_catalog::context_windows() {
-            if !MODEL_CONTEXT_WINDOWS.contains_key(name.as_str()) {
-                exact.push((name, limit));
-            }
-        }
         // Longest first so an exact id wins; then by name to keep output stable
         // (HashMap iteration order is not).
-        exact.sort_by(|a, b| b.0.len().cmp(&a.0.len()).then_with(|| a.0.cmp(&b.0)));
+        exact.sort_by(|a, b| b.0.len().cmp(&a.0.len()).then_with(|| a.0.cmp(b.0)));
 
         exact
             .into_iter()
-            .chain(
-                MODEL_SPECIFIC_LIMITS
-                    .iter()
-                    .map(|(p, l)| (p.to_string(), *l)),
-            )
+            .chain(MODEL_SPECIFIC_LIMITS.iter().map(|(p, l)| (*p, *l)))
             .map(|(pattern, context_limit)| ModelLimitConfig {
-                pattern,
+                pattern: pattern.to_string(),
                 context_limit,
             })
             .collect()

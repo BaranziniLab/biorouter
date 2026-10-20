@@ -581,9 +581,10 @@ pub async fn run(exit_with_parent: Option<u32>) -> Result<()> {
     // and without it a running app needs a restart to notice them.
     biorouter::catalog::spawn_config_watcher();
 
-    // Baseten's models and prices change between releases. Fetch the keyless
-    // feed published beside registry.json now and twice a day; until it
-    // answers, the last good copy on disk or the bundled catalog stands.
+    // Baseten's models and prices change between releases. While Baseten is
+    // configured, fetch the keyless feed published beside registry.json at
+    // most twice a day; with it not configured, nothing is requested. Until a
+    // feed answers, the last good copy on disk or the bundled catalog stands.
     biorouter::providers::live_catalog::spawn_refresher();
 
     // QA 2026-09-10, F2 — the same problem for `schedule.json`. A schedule

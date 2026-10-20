@@ -191,10 +191,14 @@ jobs:
       - name: Generator regression suite
         run: node --test landing/scripts/build-registry.test.mjs
 
-      # The Baseten catalog feed deploy-landing.yml publishes. Its Rust half,
-      # `live_catalog::tests::the_published_feed_format_parses`, reads the
-      # fixture this script wrote, so the two cannot drift apart unnoticed.
+      # The Baseten catalog feed deploy-landing.yml publishes. The suite's
+      # round trip rebuilds landing/scripts/fixtures/baseten-catalog.json from
+      # the committed raw response and fails if it differs, and live_catalog.rs's
+      # tests parse that same fixture, so the script, the fixture and the parser
+      # cannot drift apart unnoticed. `!cancelled()` like its neighbours, so a
+      # failure in the registry suite above does not hide this one.
       - name: Provider catalog feed builder
+        if: ${{ !cancelled() }}
         run: node --test landing/scripts/build-provider-catalog.test.mjs
 
       # ── Where a document is allowed to live ──────────────────────────────

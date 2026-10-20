@@ -13,6 +13,7 @@
 //! treated as two models, never reconciled into one number.
 
 use biorouter::model::ModelConfig;
+use biorouter::providers::live_catalog;
 use biorouter::providers::providers;
 
 /// (provider, model, declared window) for every model in the registry.
@@ -33,7 +34,10 @@ async fn every_advertised_model_has_its_own_declared_window() {
     let rows = advertised_models().await;
     let missing: Vec<_> = rows
         .iter()
-        .filter(|(_, model, _)| !ModelConfig::has_declared_context_window(model))
+        .filter(|(provider, model, _)| {
+            !ModelConfig::has_declared_context_window(model)
+                && live_catalog::stated_window(provider, model).is_none()
+        })
         .map(|(provider, model, declared)| format!("  {provider}/{model} (declared {declared})"))
         .collect();
 
@@ -53,6 +57,13 @@ async fn every_advertised_model_has_its_own_declared_window() {
 /// OpenAI API provider, so it keeps the API window and Codex states its own.
 const CODEX: &str = "codex";
 
+// A second way a provider states a window of its own: a model only its live
+// catalog lists (Baseten's daily feed can add slugs between releases) has no
+// registry row, so the provider budgets with the catalog's window for it
+// (`live_catalog::stated_window`, applied in `OpenAiProvider::from_custom_config`).
+// No catalog is in force in a fresh checkout or in CI, so these rows appear
+// only where a feed has been cached, and only for that provider.
+
 #[tokio::test]
 async fn provider_declared_windows_match_the_registry() {
     let rows = advertised_models().await;
@@ -61,6 +72,8 @@ async fn provider_declared_windows_match_the_registry() {
         .filter_map(|(provider, model, declared)| {
             let resolved = if provider == CODEX {
                 biorouter::providers::codex::CODEX_CONTEXT_WINDOW
+            } else if let Some(stated) = live_catalog::stated_window(provider, model) {
+                stated
             } else {
                 ModelConfig::context_window_for(model)
             };
@@ -146,6 +159,12 @@ async fn the_uis_pattern_scan_lands_on_each_models_true_window() {
         .await
         .iter()
         .filter_map(|(provider, model, _)| {
+            // A window the provider states for its own model reaches the UI
+            // through that provider's `known_models`, which `ChatInput.tsx`
+            // reads before it falls back to this scan.
+            if live_catalog::stated_window(provider, model).is_some() {
+                return None;
+            }
             let truth = ModelConfig::context_window_for(model);
             match ui_would_show(model) {
                 Some(shown) if shown == truth => None,
