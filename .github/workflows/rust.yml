@@ -67,9 +67,10 @@ jobs:
     # These budgets are deliberately well ABOVE the measured maxima (warm
     # cache, 2026-08-27: guards 0.1m, cross-check 8.2m, test 15.0m, serve
     # 9.5m) so a merely slow run is never failed -- they exist to make a HANG
-    # cheap and legible, not to police duration. A deadlock now costs 40
-    # minutes of runner time instead of six hours, on every branch that
-    # pushes.
+    # cheap and legible, not to police duration. A deadlock now costs at most
+    # an hour of runner time instead of six, on every branch that pushes.
+    # (The `test` job's budget was 40 until 2026-10-18, when its cold runs
+    # reached it; that job's comment has the numbers.)
     timeout-minutes: 10
     if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
@@ -159,7 +160,24 @@ jobs:
   #      NOTE: windows-latest is MSVC; we SHIP mingw/gnu. Job 2 covers the gnu
   #      ABI, this job covers the Windows behaviour. Both are load-bearing.
   test:
-    timeout-minutes: 40
+    # ⚠ Sized for a COLD cache, because main's first run after any change to
+    # the cache key (a dependency in Cargo.lock, the toolchain, a CARGO_* env)
+    # is cold by design, and an evicted cache makes it cold without one. 40
+    # was set when this job took 15 minutes warm; the integration-binary step
+    # and the socket gate have since doubled that, and the budget stayed. So a
+    # cold ubuntu run was a red X with every step green. Measured over the
+    # completed runs of 2026-10-10..18, by rust-cache's own restore line:
+    #
+    #   ubuntu  warm 21.3-31.0m (n=52)   cold 30.5-40.2m (n=10, eight >37;
+    #           39156748556 and 39158205693 were cancelled at 40.0 and 40.2
+    #           with every step, "Complete job" included, green)
+    #   macos   warm 14.3-38.2m (n=60)   cold 20.1-37.6m (n=6)
+    #   windows warm 15.5-29.7m (n=54)   cold 21.3-31.6m (n=8), and one cold
+    #           run still in `cargo test` when 40 hit (39057096529, main)
+    #
+    # 60 keeps the margin this file promises above those maxima (see `guards`)
+    # and still makes a hang cost an hour rather than six.
+    timeout-minutes: 60
     if: github.event_name != 'schedule'
     strategy:
       fail-fast: false
@@ -198,6 +216,30 @@ jobs:
         shell: bash
         run: echo 'CARGO_PROFILE_TEST_DEBUG=0' >> "$GITHUB_ENV"
 
+      # ⚠ rust-cache folds EVERY installed toolchain into its key: it runs
+      # `rustup toolchain list` and hashes `rustc -vV` of each one. The runner
+      # image ships its own `stable`, which nothing here builds with
+      # (rust-toolchain.toml pins 1.92), so each image that moves that stable
+      # changes every Rust cache key in the repository at once. Measured: image
+      # 20260901.588 -> 20261002.596 moved it from 1.98.1 to 1.99.0, the ubuntu
+      # key went from `...-15238ee1-c299e55f` to `...-edf29d0d-c299e55f`, and
+      # every ubuntu run built cold from 2026-10-10 until main next saved, on
+      # 10-12 (37.0-39.2 minutes each). While an image rolls out, runners on
+      # the old and new images compute different keys, and main ends up saving
+      # both. Removing every toolchain but the pinned one keeps the key on what
+      # this build actually compiles with. `serve`, frontend.yml and
+      # apps-smoke.yml do the same before their rust-cache steps.
+      - name: Keep only the pinned Rust toolchain (stable cache key)
+        shell: bash
+        run: |
+          set -euo pipefail
+          pinned=$(rustup show active-toolchain | tr -d '\r' | cut -d' ' -f1)
+          [ -n "$pinned" ]
+          for t in $(rustup toolchain list | tr -d '\r' | cut -d' ' -f1); do
+            if [ "$t" != "$pinned" ]; then rustup toolchain uninstall "$t"; fi
+          done
+          rustup toolchain list
+
       # ⚠ `cache-on-failure` is what breaks a self-perpetuating deadlock, not a
       # convenience. rust-cache's post step is skipped whenever the job does not
       # succeed, so a job that cannot finish never saves a cache, is cold on the
@@ -230,6 +272,18 @@ jobs:
       # A PR that changes Cargo.lock still builds cold and cannot save; that is
       # the accepted cost, and it is much smaller than three OSes' worth of
       # write-only caches evicting the shared ones on every push.
+      #
+      # ⚠ The rule only works if EVERY cache writer follows it, and until
+      # 2026-10-18 this was the only one that did. On 2026-10-18 the release
+      # branch's package workflows saved two cross caches (2.6 GB, readable by
+      # that branch alone and never read again) at 18:16-18:18, the repository
+      # went past 10 GB, and GitHub evicted the least recently used entry: this
+      # job's ubuntu cache, last read at 17:39:11, one second before `serve`'s.
+      # The next two pushes to main (39156748556, 39158205693) found "No cache
+      # found" for an unchanged key and were cancelled at 40 minutes. `serve`,
+      # frontend.yml and apps-smoke.yml now save from main only as well, and
+      # the two GUI package workflows no longer persist a cache at all (their
+      # files say why). Main's own caches come to about 8.3 GB of the 10.
       - uses: Swatinem/rust-cache@v2
         with:
           key: ${{ matrix.os }}
@@ -578,9 +632,26 @@ jobs:
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: "1.92"
+      # Same as the `test` job: the image's own toolchain must not reach the
+      # cache key.
+      - name: Keep only the pinned Rust toolchain (stable cache key)
+        shell: bash
+        run: |
+          set -euo pipefail
+          pinned=$(rustup show active-toolchain | tr -d '\r' | cut -d' ' -f1)
+          [ -n "$pinned" ]
+          for t in $(rustup toolchain list | tr -d '\r' | cut -d' ' -f1); do
+            if [ "$t" != "$pinned" ]; then rustup toolchain uninstall "$t"; fi
+          done
+          rustup toolchain list
+      # Saves from main only, like `test` and for the reason given there. When
+      # main's copy was evicted (2026-10-11/12), every PR's first run here
+      # wrote its own 1.9 GB copy that no other branch could read, which
+      # pushed the repository further past the ceiling.
       - uses: Swatinem/rust-cache@v2
         with:
           key: serve
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - uses: actions/setup-node@v4
         with:
           node-version: 24

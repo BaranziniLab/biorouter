@@ -42,19 +42,26 @@ jobs:
     timeout-minutes: 100
     steps:
       - uses: actions/checkout@v4
-      # ⚠ `release.sh` `run_cross_release` deliberately destroys its target
-      # volume before every release build, because cached objects keep stale
-      # glibc symbol versions. This job keeps a cache instead, and that is only
-      # safe because `check-glibc-floor.sh` runs afterwards on what was actually
-      # produced — and again in the packaging job on what is about to be
-      # packaged. Remove either assertion and this cache becomes the hole.
-      - uses: actions/cache@v4
-        with:
-          path: |
-            .cross-cache/registry
-            .cross-cache/target/x86_64-unknown-linux-gnu
-          key: cross-x86_64-unknown-linux-gnu-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', 'scripts/cross-env.sh') }}
-          restore-keys: cross-x86_64-unknown-linux-gnu-
+      # ⚠ No persisted cache: the cross target dir starts empty on every run,
+      # as `release.sh` `run_cross_release` makes its own (it destroys its
+      # target volume before every release build, because cached objects keep
+      # stale glibc symbol versions). `check-glibc-floor.sh` still runs here on
+      # what was produced and again in the packaging job, whatever the cache.
+      #
+      # This job used to restore and save `cross-<triple>-<Cargo.lock hash>`
+      # through actions/cache, and that cache cost more than it saved. Measured
+      # 2026-09-24..10-18, this job takes 34.7-37.5 min cold and 19.3-23.6
+      # warm (n=12), against a 100 minute limit. A save from a release
+      # branch is readable by that branch alone, and none was read again
+      # (release/1.92.0, 1.93.1 and 1.93.2 each dispatched this once). Each
+      # save is 1.2 GB here and 1.4 GB in windows-gui-packages.yml, and on
+      # 2026-10-18 that pair pushed the repository past GitHub's 10 GB cache
+      # limit, which evicted rust.yml's ubuntu test cache and cancelled the
+      # next two pushes to main (see the note at that job's rust-cache step).
+      # Saving from main only would not fit either: main's own caches come to
+      # about 8.3 GB, and rust.yml's cross-check restores this same key prefix
+      # on every run, so the pair would stay resident and push one of the test
+      # caches out instead. Do not add a cache here without finding the room.
 
       # This is the ONLY supported way to produce shipped Linux binaries: it
       # pins the bullseye image and then asserts the floor it just built against.
