@@ -3398,6 +3398,8 @@ data: [DONE]
         "anthropic.claude-sonnet-5",
         "kimi-k3",
         "moonshotai/kimi-k3",
+        // Baseten keeps the vendor casing, and the id is sent as written.
+        "moonshotai/Kimi-K3",
         "databricks-kimi-k3",
     ];
 
