@@ -44,13 +44,10 @@ jobs:
     timeout-minutes: 100
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/cache@v4
-        with:
-          path: |
-            .cross-cache/registry
-            .cross-cache/target/x86_64-pc-windows-gnu
-          key: cross-x86_64-pc-windows-gnu-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', 'scripts/cross-env.sh') }}
-          restore-keys: cross-x86_64-pc-windows-gnu-
+      # No persisted cache, for the reasons linux-gui-packages.yml gives at its
+      # build step. Measured 2026-09-29..10-18, this job takes 30.8-39.1 min
+      # cold and 19.3-21.0 warm (n=8), against a 100 minute limit, and a
+      # release branch's 1.4 GB save here was never read again.
 
       # Also stages the mingw runtime DLLs beside the exes ($WIN_DLL_STAGE).
       - name: Cross-build the Windows backend

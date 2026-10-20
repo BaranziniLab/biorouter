@@ -75,9 +75,24 @@ jobs:
         with:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
 
+      # The image's own toolchain must not reach the cache key, and only main
+      # saves. rust.yml's `test` job has the measurements behind both.
+      - name: Keep only the pinned Rust toolchain (stable cache key)
+        working-directory: ${{ github.workspace }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          pinned=$(rustup show active-toolchain | tr -d '\r' | cut -d' ' -f1)
+          [ -n "$pinned" ]
+          for t in $(rustup toolchain list | tr -d '\r' | cut -d' ' -f1); do
+            if [ "$t" != "$pinned" ]; then rustup toolchain uninstall "$t"; fi
+          done
+          rustup toolchain list
+
       - uses: Swatinem/rust-cache@v2
         with:
           key: openapi-contract
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Install Rust native build dependencies
         working-directory: ${{ github.workspace }}
