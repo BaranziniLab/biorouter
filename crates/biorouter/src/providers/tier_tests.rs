@@ -175,6 +175,7 @@ async fn the_private_set_is_a_table_of_reviewed_decisions() {
         "vertex",
         "google",
         "groq",
+        "baseten",
         "unknown_provider",
     ] {
         assert_eq!(

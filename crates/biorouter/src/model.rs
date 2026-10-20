@@ -308,6 +308,25 @@ static MODEL_CONTEXT_WINDOWS: Lazy<HashMap<&'static str, usize>> = Lazy::new(|| 
         ("mistral-small-3-2-24b-instruct", 256_000),
         // ── MiniMax ──
         ("minimax/minimax-m3", 1_048_576),
+        // ── Baseten-hosted ──
+        // Baseten Model APIs slugs keep the vendor's own casing, and the
+        // registry is an exact lookup, so they get rows of their own. Windows
+        // are the `context_length` Baseten's `GET /v1/models` reports (read
+        // 2026-10-18). openai/gpt-oss-120b keeps the 131,072 row it shares
+        // with Groq below, although Baseten reports 128,072 for it: measured
+        // 2026-10-20, Baseten answered a 131,033-token prompt and refused a
+        // 131,182-token one with "maximum allowed input length of 131040
+        // tokens", so 131,072 is the window it actually serves.
+        ("zai-org/GLM-5.3", 1_048_576),
+        ("zai-org/GLM-5.3-Fast", 1_048_576),
+        ("zai-org/GLM-5.3-Flash", 1_048_576),
+        ("moonshotai/Kimi-K3", 1_048_576),
+        ("deepseek-ai/DeepSeek-V4.1-Flash", 1_048_576),
+        ("deepseek-ai/DeepSeek-V4.1-Flash-1017", 1_048_576),
+        ("deepseek-ai/DeepSeek-V4-Pro-0813", 1_048_576),
+        ("meta-models/muse-spark-open", 1_048_576),
+        ("nvidia/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B", 1_048_576),
+        ("nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B", 202_800),
         // ── Groq-hosted ──
         ("groq/compound", 131_072),
         ("groq/compound-mini", 131_072),

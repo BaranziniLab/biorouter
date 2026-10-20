@@ -1,14 +1,14 @@
 # Choosing a model provider
 
 > **What this is.** A reference of Biorouter's supported LLM providers: the credentials each one needs, its default model, a representative model list, and how to switch provider or override the choice per session.
-> **Status:** Current. The provider list, default models and model lists below were checked against `crates/biorouter/src/providers/` on 2026-09-25, except the two local providers (Llama Server and Ollama), checked on 2026-10-10, and the Versa API Azure and Versa API Bedrock lists, which were checked against the code and the UCSF gateway on 2026-10-05 (the Versa API Azure default and list order against the code on 2026-10-07). The provider panel section was checked against [`ui/desktop/src/components/settings/providers/providerOrdering.ts`](../../ui/desktop/src/components/settings/providers/providerOrdering.ts) on 2026-10-10.
+> **Status:** Current. The provider list, default models and model lists below were checked against `crates/biorouter/src/providers/` on 2026-09-25, except the two local providers (Llama Server and Ollama), checked on 2026-10-10, and the Versa API Azure and Versa API Bedrock lists, which were checked against the code and the UCSF gateway on 2026-10-05 (the Versa API Azure default and list order against the code on 2026-10-07). The Baseten section was checked against the code and Baseten's `GET /v1/models` on 2026-10-18. The provider panel section was checked against [`ui/desktop/src/components/settings/providers/providerOrdering.ts`](../../ui/desktop/src/components/settings/providers/providerOrdering.ts) on 2026-10-10.
 > **Audience:** end users
 
 Biorouter connects to a wide range of LLM providers: commercial cloud APIs, institution-hosted services, and local models. You select and configure providers in the provider panel of the app: open **Settings** > **Models**, then choose **Manage…** on the **Providers** row.
 
 **UCSF users:** For institution-managed access, start with **Versa API Azure** (`versa_azure`, the UCSF ChatGPT models) or **Versa API Bedrock** (`versa_bedrock`, the UCSF-hosted Anthropic models). The generic **Azure OpenAI** and **Amazon Bedrock** providers are the commercial ones, not the UCSF institutional ones. For fully local inference, use **Llama Server** or **Ollama**.
 
-> **Note.** The model lists on this page are hand-maintained snapshots, last checked against the code on 2026-09-25 (the two Versa lists on 2026-10-05), and they drift. The authoritative values are the `*_DEFAULT_MODEL` and `*_KNOWN_MODELS` constants in `crates/biorouter/src/providers/`, and the bundled JSON files in `crates/biorouter/src/providers/declarative/` for DeepSeek, Groq, Inception, Mistral AI and Moonshot AI. Treat the live model picker, which fetches from the provider, as authoritative.
+> **Note.** The model lists on this page are hand-maintained snapshots, last checked against the code on 2026-09-25 (the two Versa lists on 2026-10-05), and they drift. The authoritative values are the `*_DEFAULT_MODEL` and `*_KNOWN_MODELS` constants in `crates/biorouter/src/providers/`, and the bundled JSON files in `crates/biorouter/src/providers/declarative/` for Baseten, DeepSeek, Groq, Inception, Mistral AI and Moonshot AI. Treat the live model picker, which fetches from the provider, as authoritative.
 
 The **default model** is the one Biorouter uses when you configure a provider without naming a model. The desktop model picker preselects the first model in a provider's list when you switch to that provider, and that is not always the default named here.
 
@@ -387,6 +387,18 @@ Provider id `groq`. Open-weight models served on Groq hardware.
 Default model: `openai/gpt-oss-120b`
 
 Available models: `openai/gpt-oss-120b`, `qwen/qwen3.8-27b`, `openai/gpt-oss-20b`, `openai/gpt-oss-safeguard-20b`
+
+#### Baseten
+
+**Environment variable:** `BASETEN_API_KEY`
+
+Provider id `baseten`. Open-weight models hosted on Baseten Model APIs (`https://inference.baseten.co/v1`). Create a key at https://app.baseten.co/settings/api_keys.
+
+Default model: `zai-org/GLM-5.3`
+
+Available models: `zai-org/GLM-5.3`, `zai-org/GLM-5.3-Fast`, `zai-org/GLM-5.3-Flash`, `moonshotai/Kimi-K3`, `deepseek-ai/DeepSeek-V4.1-Flash`, `deepseek-ai/DeepSeek-V4.1-Flash-1017`, `deepseek-ai/DeepSeek-V4-Pro-0813`, `meta-models/muse-spark-open`, `nvidia/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B`, `nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B`, `openai/gpt-oss-120b`
+
+Slugs are case-sensitive, as Baseten spells them. Costs use Baseten's own per-token rates, including its discounted rate for cached input (read from its `/v1/models` and https://www.baseten.co/pricing/ on 2026-10-18), not the model vendors'.
 
 #### Inception
 
