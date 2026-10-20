@@ -300,7 +300,7 @@ Each card contains:
 
 5. **Biorouter v1.91.2 Release** (September 2026)
    - Link: https://github.com/BaranziniLab/biorouter/releases/tag/v1.91.2
-   - What's new: Copilot status appears only in conversations that request it and can be dismissed; prompts and slash commands use its current name; Windows child processes request hidden console windows; chat gains quoted selections, persistent drafts, active extensions in the slash picker, and adjustable text sizes
+   - What's new: Biorouter Copilot status appears only in conversations that request it and can be dismissed; prompts and slash commands use its current name; Windows child processes request hidden console windows; chat gains quoted selections, persistent drafts, active extensions in the slash picker, and adjustable text sizes
 
 6. **Biorouter v1.91.1 Release** (September 2026)
    - Link: https://github.com/BaranziniLab/biorouter/releases/tag/v1.91.1
