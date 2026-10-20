@@ -312,9 +312,11 @@ static MODEL_CONTEXT_WINDOWS: Lazy<HashMap<&'static str, usize>> = Lazy::new(|| 
         // Baseten Model APIs slugs keep the vendor's own casing, and the
         // registry is an exact lookup, so they get rows of their own. Windows
         // are the `context_length` Baseten's `GET /v1/models` reports (read
-        // 2026-10-18). openai/gpt-oss-120b is shared with Groq below at
-        // 131,072; Baseten reports 128,072 for it, which looks like a typo for
-        // 128k, and the row is keyed by id, so the two cannot differ.
+        // 2026-10-18). openai/gpt-oss-120b keeps the 131,072 row it shares
+        // with Groq below, although Baseten reports 128,072 for it: measured
+        // 2026-10-20, Baseten answered a 131,033-token prompt and refused a
+        // 131,182-token one with "maximum allowed input length of 131040
+        // tokens", so 131,072 is the window it actually serves.
         ("zai-org/GLM-5.3", 1_048_576),
         ("zai-org/GLM-5.3-Fast", 1_048_576),
         ("zai-org/GLM-5.3-Flash", 1_048_576),
