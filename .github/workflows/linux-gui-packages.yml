@@ -295,7 +295,7 @@ jobs:
           # is the mode-mangling this whole workflow exists to avoid, so read it
           # back off the packaged copy.
           ocu="$res/computer-use/ocu"
-          [ -x "$ocu" ] || { echo "::error::the Copilot helper is not executable in the deb: $(ls -l "$ocu" 2>&1)"; exit 1; }
+          [ -x "$ocu" ] || { echo "::error::the Biorouter Copilot helper is not executable in the deb: $(ls -l "$ocu" 2>&1)"; exit 1; }
           echo "ocu in the deb: $(ls -l "$ocu" | awk '{print $1}')"
 
           # No other platform's executables may ride along. The recursive sweep

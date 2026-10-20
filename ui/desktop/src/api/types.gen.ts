@@ -702,7 +702,7 @@ export type ComputerUseSessionRequest = {
 
 export type ComputerUseStatus = {
     /**
-     * The most recent actual Copilot request, independent of routine task cleanup.
+     * The most recent actual Biorouter Copilot request, independent of routine task cleanup.
      */
     activity_id?: string | null;
     challenge_id: string;

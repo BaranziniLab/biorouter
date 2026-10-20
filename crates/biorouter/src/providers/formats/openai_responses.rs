@@ -1623,7 +1623,7 @@ mod tests {
         Ok(())
     }
 
-    /// An image a tool returns to the model (a Copilot screen capture, the
+    /// An image a tool returns to the model (a Biorouter Copilot screen capture, the
     /// developer image processor) reaches it. `flattened_text` has no text for
     /// an image, so it used to vanish into an empty output; now the output
     /// says an image follows, and the image comes as a user item after it —

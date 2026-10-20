@@ -341,7 +341,7 @@ requires approval; internal tool calls continue under that request's grant. Stop
 The launcher reads the passphrase without echoing it, sends only its SHA-256 digest on
 stdin with a `computer-use:` scope, and clears the raw passphrase from its own buffer.
 The browser sends `X-Computer-Use-Key` only for Biorouter Copilot consent; it does not save the
-key. This proof is accepted only by the computer-use consent route. Browser cookies and
+key. This proof is accepted only by the Biorouter Copilot consent route. Browser cookies and
 the ordinary API secret do not establish human consent, and the scoped key cannot change
 providers, privacy tiers, or extension permissions. Ten unsuccessful approval attempts
 in one minute temporarily block further key checks; wait a minute before trying again.

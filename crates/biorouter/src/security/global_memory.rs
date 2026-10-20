@@ -533,7 +533,7 @@ pub fn global_memory_gate(tool_name: &str, args: &Map<String, Value>) -> Option<
     // same disclosure the card exists for, and `rm -rf <store>` the same
     // destruction, with a tool this gate does not recognise.
     //
-    // The developer and computer-controller servers now refuse the store at the
+    // The developer and webdocuments servers now refuse the store at the
     // filesystem boundary, which is the unforgeable half. The shell resolves no
     // path, so its *literal* references are caught here — refused rather than
     // asked, because approving "run this shell command" is not consent to
@@ -1235,7 +1235,7 @@ record_result(all);"#;
     /// disclosure the consent card exists for, and `rm -rf <store>` is the same
     /// destruction, taken with a tool the gate does not recognise.
     ///
-    /// The developer and computer-controller servers refuse the store at the
+    /// The developer and webdocuments servers refuse the store at the
     /// filesystem boundary, which is unforgeable — but the shell resolves no
     /// path, so its literal references have to be caught here. Denied, not
     /// asked: an approval card for "run this shell command" is not consent to

@@ -582,7 +582,7 @@ cmd_windows() {
 }
 
 # ── linux packaging (fully dockerized; run LAST — corrupts node_modules) ───────
-# Not on the release path: adopt-ci takes the GUI deb/rpm from linux-gui-packages.yml, because Docker Desktop on this host left the container's computer-use files unreadable (see the adopt-ci block).
+# Not on the release path: adopt-ci takes the GUI deb/rpm from linux-gui-packages.yml, because Docker Desktop on this host left the container's Biorouter Copilot helper files in out/resources/computer-use/ unreadable (see the adopt-ci block).
 cmd_linux() {
   local v="$1"; assert_release_source "$v"; ensure_docker
   [ -f "$ROOT/target/x86_64-unknown-linux-gnu/release/biorouterd" ] || die "linux backend missing — run: scripts/release.sh backends $v"

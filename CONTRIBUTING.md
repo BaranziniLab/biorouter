@@ -157,8 +157,9 @@ develop on.
 `just check-everything` is the single precommit entry point. It chains
 `cargo fmt`, the clippy lint script, `npm run lint:check`, the OpenAPI schema
 check, the version, brand, and cross-compile-drift consistency checks, the
-Biorouter Copilot naming gate (which rejects the string "Computer Controller" anywhere
-a person reads it), and the two BAAM registry gates.
+Biorouter Copilot naming gate (which rejects the former name "Computer Use" and
+the removed "Computer Controller" anywhere a person reads it), and the two BAAM
+registry gates.
 
 ### Regenerating the OpenAPI schema
 

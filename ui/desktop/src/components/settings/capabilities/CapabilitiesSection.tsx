@@ -23,7 +23,7 @@ interface CapabilityItemProps {
 /**
  * A switch with something before it. `SettingRow` hands its one child the id, the label's
  * `aria-labelledby` and the help's `aria-describedby`; this passes all three to the switch and
- * leaves the extra control (Copilot's "Check setup") outside that naming.
+ * leaves the extra control (Biorouter Copilot's "Check setup") outside that naming.
  */
 function SwitchWithLead({ lead, ...switchProps }: SwitchProps & { lead: React.ReactNode }) {
   return (

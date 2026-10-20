@@ -1916,7 +1916,8 @@ mod tests {
     /// ⚠ The coverage this replaced was an ACCIDENT, which is the whole reason
     /// moving the tool removed it silently.
     ///
-    /// `cache` was `computercontroller__cache` until the Computer Use change,
+    /// `cache` was `computercontroller__cache` until the Computer Use (now
+    /// Biorouter Copilot) change,
     /// and that name matches [`MUTATING_NAME_HINTS`] — not because anything in
     /// it is a verb, but because `"put"` is a substring of `"com·put·er"`. So
     /// EVERY `computercontroller__*` tool graded as mutating, `cache delete`

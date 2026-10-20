@@ -30,7 +30,7 @@ pub fn tools() -> Vec<Tool> {
     definitions.into_iter().map(|(name, description, properties, required)| {
         let mut schema = json!({"type":"object","properties":properties,"additionalProperties":false});
         if !required.is_empty() { schema["required"] = json!(required); }
-        serde_json::from_value(json!({"name":name,"description":description,"inputSchema":schema,"annotations":{"readOnlyHint":matches!(name,"list_apps"|"get_app_state"|"screen_capture"),"openWorldHint":true}})).expect("static computer-use tool contract")
+        serde_json::from_value(json!({"name":name,"description":description,"inputSchema":schema,"annotations":{"readOnlyHint":matches!(name,"list_apps"|"get_app_state"|"screen_capture"),"openWorldHint":true}})).expect("static Biorouter Copilot tool contract")
     }).collect()
 }
 

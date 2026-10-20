@@ -6168,7 +6168,7 @@ body:has(.biorouter-modal-surface [data-slot='select-content'][data-state='open'
    `bg-*` and `text-*` utilities live in the `utilities` layer and would win a layered rule. A
    button that is WORKING (`aria-busy`) keeps its colour: the composer's Send is disabled while a
    chat starts and must stay the accent with its spinner. `aria-disabled` is named too, for the
-   buttons that fade without the attribute (the Copilot permission check). Forced colours repaint
+   buttons that fade without the attribute (the Biorouter Copilot permission check). Forced colours repaint
    the fill and the ink, so the system button edge is all this leaves to them. */
 .br-button-inert:is(:disabled, [aria-disabled='true']):not([aria-busy='true']) {
   background-color: var(--br-control-ground, var(--background-fill));

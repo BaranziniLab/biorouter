@@ -994,7 +994,7 @@ Run Biorouter and reach it from a browser. `serve` starts the `biorouterd` daemo
 - **`--token <TOKEN>`**: Use this access token instead of generating a fresh one. The flag stays on the command line while `serve` runs, where other accounts on the machine can read it, so `serve` prints a note saying so. To keep a token private, set `BIOROUTER_BROWSER_TOKEN` in the environment instead
 - **`--no-token`**: Serve without an access token. Refused for a non-loopback bind, and cannot be combined with `--token`
 - **`--web-dir <DIR>`**: Directory holding the built interface. Takes precedence over `BIOROUTER_SERVE_UI`; whichever of the two is used must contain an `index.html`, or `serve` refuses to start. Located automatically when neither is set
-- **`--computer-use-approval`**: Interactively set a computer-use approval key for the browser session. Requires a terminal
+- **`--computer-use-approval`**: Interactively set a Biorouter Copilot approval key for the browser session. Requires a terminal
 - **`--open`**: Open a browser once the server is ready. The browser is handed a page only your account can read, which carries the address, and never the address itself: the address holds the access token, and a browser's command line can be read by other accounts on the machine. The page is removed two minutes later, or when `serve` stops
 
 **Usage:**
@@ -1135,10 +1135,11 @@ agent's next response. They are not navigation commands and do not grant permiss
 The desktop picker inserts references as chips, keeping their exact identifiers and
 current display names. If a custom extension uses a bundled capability name, rename
 it in Settings → Extensions before referring to it explicitly; those ambiguous custom
-entries are omitted from the picker. Biorouter Copilot replaces the old computer-controller display
-name; the `computercontroller` identifier remains compatible. `/extend` is not an
-extension command: it gives guidance to use `/ext:` instead. Copilot still requires its
-normal runtime, OS permissions, and per-task approval.
+entries are omitted from the picker. Biorouter Copilot replaces the former Computer Use
+and legacy Computer Controller display names; the `computercontroller` identifier remains
+compatible. `/extend` is not an extension command: it gives guidance to use `/ext:`
+instead. Biorouter Copilot still requires its normal runtime, OS permissions, and per-task
+approval.
 
 The desktop also offers `/knowledge` as a Knowledge reference shortcut and `/diverge`
 to continue an existing conversation in a new chat. The message action is also labelled

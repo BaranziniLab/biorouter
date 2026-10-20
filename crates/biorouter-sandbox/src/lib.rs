@@ -17,7 +17,7 @@
 //!   bind-mounted workspace.
 //!
 //! The trait is intentionally small and `async` so callers (the Developer and
-//! Computer-Controller MCP servers) can route their shell/script execution
+//! Compute MCP servers) can route their shell/script execution
 //! through whichever backend the app's manifest grants.
 
 use std::path::{Component, Path, PathBuf};

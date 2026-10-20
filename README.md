@@ -69,7 +69,7 @@ Work with papers, genes, diseases, drugs, cohorts, and experimental data in the 
 | **Build and reuse tools** | Create small research apps with Agent Drafter, run parallel chats, and save or schedule recurring tasks as workflows. |
 | **Work with your lab** | In Crew, chat in channels, share files and give AI agents tasks the whole channel can see, in a workspace one lab member hosts on a shared Linux server. |
 
-Copilot keeps observations and approvals separate for each chat. The applications themselves share a desktop, so choose the model before opening sensitive records or research data. See [Copilot setup and limits](docs/extensions/built-in/computer-controller.md).
+Biorouter Copilot keeps observations and approvals separate for each chat. The applications themselves share a desktop, so choose the model before opening sensitive records or research data. See [Biorouter Copilot setup and limits](docs/extensions/built-in/computer-controller.md).
 
 Crew runs in the desktop app and in the `biorouter crew` commands, not in a `biorouter serve` browser. Each member connects with their own server account over SSH. Crew's Private and Public settings decide which AI models may read the workspace, and the stricter of your connection's and the workspace's setting applies. See the [Crew user manual](docs/crew/README.md).
 

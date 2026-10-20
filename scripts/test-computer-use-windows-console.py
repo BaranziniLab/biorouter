@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Compare Windows Copilot helper child-console behavior with its pre-fix build."""
+"""Compare Windows Biorouter Copilot helper child-console behavior with its pre-fix build."""
 
 import argparse
 import json

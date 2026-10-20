@@ -43,7 +43,7 @@ not guarantee that every application, display server, or packaged environment su
 | Windows | An interactive signed-in desktop; Windows PowerShell and .NET UI Automation available under local policy. | No UAC/secure-desktop control or automatic elevation. Window capture uses visible screen pixels, so overlapping windows can appear in the result; minimized windows may be unavailable. |
 | Linux X11 | An active X11 desktop and user D-Bus session; Python 3, GI bindings, AT-SPI, and GDK 3/GTK 3 dependencies. | Application accessibility support varies. Window capture uses visible screen pixels and may include overlapping windows; minimized windows may be unavailable. Xvfb alone does not establish working accessibility or input. |
 | Linux Wayland | Accessibility discovery depends on the compositor, user session, and AT-SPI support. | **Pixel capture is currently unsupported.** The helper reports that a consented desktop portal is required; list-only discovery is not proof that capture or input works. |
-| Headless service/container | A desktop session and its dependencies would need to be explicitly available to the backend. | No desktop means no computer use. Ordinary chat and Web & Documents remain independent. |
+| Headless service/container | A desktop session and its dependencies would need to be explicitly available to the backend. | No desktop means Biorouter Copilot is unavailable. Ordinary chat and Web & Documents remain independent. |
 
 Use the runtime's diagnostics and returned errors to determine what is available on the actual
 host. Native unit tests and a successful protocol handshake do not establish cross-platform GUI

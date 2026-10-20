@@ -196,7 +196,7 @@ let cfg = {
 };
 
 /**
- * Stop rpmbuild rewriting the Computer Use helper behind our back.
+ * Stop rpmbuild rewriting the Biorouter Copilot helper behind our back.
  *
  * `%__os_install_post` runs over the buildroot. On Debian/Ubuntu rpm 4.18 that
  * includes `brp-strip-comment-note`, whose selector is the COMPLEMENT of

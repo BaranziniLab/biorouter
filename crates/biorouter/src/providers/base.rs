@@ -807,7 +807,7 @@ pub trait Provider: Send + Sync {
     /// Get the name of this provider instance
     fn get_name(&self) -> &str;
 
-    /// HTTP(S) origin(s) that can receive this chat's computer-use results.
+    /// HTTP(S) origin(s) that can receive this chat's Biorouter Copilot results.
     /// Never include credentials, paths, query strings, or fragments.
     fn computer_use_destination(&self) -> Option<String> {
         None
