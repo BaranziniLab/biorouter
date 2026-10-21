@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Docs · Biorouter</title>
-<meta name="description" content="Biorouter documentation: install, models, private and public chats, extensions, skills, workflows, knowledge bases, built apps, Crew and the command line. Documents biorouter v1.93.2.">
+<meta name="description" content="Biorouter documentation: install, models, private and public chats, extensions, skills, workflows, knowledge bases, built apps, Crew and the command line. Documents biorouter v1.93.4.">
 <meta name="theme-color" content="#ffffff">
 <link rel="icon" href="icon-transparent.svg" type="image/svg+xml">
 <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -72,7 +72,7 @@
   <main class="docs-main" id="docs-main">
 <div class="doc-page" id="doc-getstarted">
 <h1>Getting started</h1>
-<p class="doc-lede">Install the app, connect a model and start a chat. These docs describe <code style="white-space: nowrap">biorouter v1.93.2</code> on Windows, macOS and Linux.</p>
+<p class="doc-lede">Install the app, connect a model and start a chat. These docs describe <code style="white-space: nowrap">biorouter v1.93.4</code> on Windows, macOS and Linux.</p>
 
 <h2 id="getstarted-install">Install</h2>
 <p>Download the file for your computer from the <a href="download.html">Download page</a> or from <a href="https://github.com/BaranziniLab/biorouter/releases">GitHub Releases</a>.</p>
@@ -655,7 +655,7 @@ sudo dnf install ./biorouter-cli-*-1.x86_64.rpm</code></pre></li>
 </table></div>
 <p>Choose a provider's row, then <strong>Configure</strong>, and enter its credentials. Biorouter checks them with the provider before it saves them. In a terminal, <code>biorouter configure</code> lists the same providers as one list. <a href="#vaulting">Security</a> explains where credentials are kept.</p>
 <p>A chat becomes private once a turn runs on a private model. <a href="#privacy">Private and public</a> explains what that changes.</p>
-<div class="note"><p>The model picker reads each provider's live list of models, so it is the place to see what you can use today. The defaults below are what Biorouter picks when you configure a provider without naming a model. The newest release is v1.93.2; where a default changed after v1.92.1, the page names both. An existing setup keeps its saved main model.</p></div>
+<div class="note"><p>The model picker reads each provider's live list of models, so it is the place to see what you can use today. The defaults below are what Biorouter picks when you configure a provider without naming a model. The newest release is v1.93.4; where a default changed after v1.92.1, the page names both. An existing setup keeps its saved main model.</p></div>
 
 <h2 id="providers-local">Local</h2>
 <p><strong>Llama Server</strong> (<code>llamacpp</code>) comes with the desktop app and needs no setup and no key. Choose a model, then <strong>Download &amp; run</strong>. The model downloads once, or starts from a copy already on your computer; after that, nothing leaves your computer.</p>
@@ -737,7 +737,7 @@ npm install -g @openai/codex@latest</code></pre></li>
     <tr><td><strong>Amazon Bedrock</strong></td><td><code>us.anthropic.claude-sonnet-4-6</code></td></tr>
     <tr><td><strong>AWS SageMaker TGI</strong></td><td><code>sagemaker-tgi-endpoint</code></td></tr>
     <tr><td><strong>Azure OpenAI</strong></td><td><code>gpt-6-sol-2026-09-22</code></td></tr>
-    <tr><td><strong>Baseten</strong></td><td><code>zai-org/GLM-5.3</code>, added after v1.93.2</td></tr>
+    <tr><td><strong>Baseten</strong></td><td><code>zai-org/GLM-5.3</code>, added in v1.93.4</td></tr>
     <tr><td><strong>Databricks</strong></td><td><code>databricks-claude-sonnet-4-6</code></td></tr>
     <tr><td><strong>DeepSeek</strong></td><td><code>deepseek-flash</code></td></tr>
     <tr><td><strong>GCP Vertex AI</strong></td><td><code>gemini-3.8-flash</code></td></tr>
@@ -756,7 +756,7 @@ npm install -g @openai/codex@latest</code></pre></li>
     <tr><td><strong>z.ai</strong></td><td><code>glm-5.3</code></td></tr>
   </tbody>
 </table></div>
-<p>Most take one API key. Its setting is named after the provider, and an environment variable of the same name works too: <code>ANTHROPIC_API_KEY</code>, <code>OPENAI_API_KEY</code>, <code>GOOGLE_API_KEY</code>, <code>BASETEN_API_KEY</code> (after v1.93.2), <code>DEEPSEEK_API_KEY</code>, <code>GROQ_API_KEY</code>, <code>INCEPTION_API_KEY</code>, <code>MISTRAL_API_KEY</code>, <code>MOONSHOT_API_KEY</code>, <code>OPENROUTER_API_KEY</code>, <code>VENICE_API_KEY</code>, <code>XAI_API_KEY</code>, <code>XIAOMI_MIMO_API_KEY</code> and <code>ZAI_API_KEY</code>. The others sign in differently:</p>
+<p>Most take one API key. Its setting is named after the provider, and an environment variable of the same name works too: <code>ANTHROPIC_API_KEY</code>, <code>OPENAI_API_KEY</code>, <code>GOOGLE_API_KEY</code>, <code>BASETEN_API_KEY</code> (added in v1.93.4), <code>DEEPSEEK_API_KEY</code>, <code>GROQ_API_KEY</code>, <code>INCEPTION_API_KEY</code>, <code>MISTRAL_API_KEY</code>, <code>MOONSHOT_API_KEY</code>, <code>OPENROUTER_API_KEY</code>, <code>VENICE_API_KEY</code>, <code>XAI_API_KEY</code>, <code>XIAOMI_MIMO_API_KEY</code> and <code>ZAI_API_KEY</code>. The others sign in differently:</p>
 <ul>
   <li><strong>Amazon Bedrock</strong> and <strong>AWS SageMaker TGI</strong> (listed in the app as Amazon SageMaker TGI) use your AWS profile or credentials, including SSO. SageMaker also needs <code>SAGEMAKER_ENDPOINT_NAME</code>.</li>
   <li><strong>Azure OpenAI</strong> needs your endpoint and deployment name, with a key or your Azure sign in.</li>
@@ -1029,7 +1029,7 @@ biorouter run --provider versa_azure -t "Summarize ./notes.md"</code></pre>
 <p>Before it starts an extension through <code>npx</code> or <code>uvx</code>, Biorouter looks the package up in the OSV database of known malicious packages and refuses to start one that is listed.</p>
 
 <h2 id="extensions-built-in">Built-in extensions</h2>
-<p>These ship with Biorouter, so there is nothing to install. Defaults are those of biorouter v1.93.2. <a href="#extensions-switches">Turn extensions on and off</a> says where each one is switched.</p>
+<p>These ship with Biorouter, so there is nothing to install. Defaults are those of biorouter v1.93.4. <a href="#extensions-switches">Turn extensions on and off</a> says where each one is switched.</p>
 <div class="doc-table-scroll"><table>
   <thead><tr><th>Extension</th><th>Default</th><th>What it does</th></tr></thead>
   <tbody>

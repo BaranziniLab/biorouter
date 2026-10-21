@@ -5,7 +5,7 @@ Landing site for UCSF Biorouter. Design: the desktop app's own look on the web. 
 
 **Color palette:** white paper (#ffffff), warm ink (#2a2520), coral (#b85a32, rails #cf6d47), UCSF navy (#052049). The values mirror the app's Parchment light tokens in `site.css`.
 **Font:** Arial first, the app's interface stack (`--font`); Inter 600 only for the wordmark and the BR mark; one monospace stack for code. The type scale is shared with the app: 12, 13, 14, 17 and 24 plus a 16px reading size and two clamps for titles (`--fs-*` in `site.css`).
-**Version:** v1.93.2 (October 2026)
+**Version:** v1.93.4 (October 2026)
 
 ---
 
@@ -38,7 +38,7 @@ GitHub: https://github.com/BaranziniLab/biorouter
 
 ### Banner / Hero
 - Biorouter logo (icon.png) with glow animation
-- Version badge: "v1.93.2 Now Available"
+- Version badge: "v1.93.4 Now Available"
 - Headline: "UCSF Biorouter"
 - Subheading: AI-powered integrated research environment tagline
 - CTA buttons: Download, Documentation, GitHub
@@ -94,7 +94,7 @@ Chips for: UCSF Azure OpenAI (highlight), UCSF Amazon Bedrock (highlight), Anthr
 
 ### Bottom Links
 - About & Acknowledgements (→ about.html)
-- v1.93.2 Release Notes (https://github.com/BaranziniLab/biorouter/releases/tag/v1.93.2)
+- v1.93.4 Release Notes (https://github.com/BaranziniLab/biorouter/releases/tag/v1.93.4)
 - Baranzini Lab (https://baranzinilab.ucsf.edu/)
 
 ---
@@ -104,7 +104,7 @@ Chips for: UCSF Azure OpenAI (highlight), UCSF Amazon Bedrock (highlight), Anthr
 ### Hero
 - Title: "Biorouter for your computer." (the second line in the quiet ink)
 - Buttons: the installer for this computer, then "All platforms"
-- Meta line: "Free and open source · v1.93.2 · the release date from GitHub · Release notes"
+- Meta line: "Free and open source · v1.93.4 · the release date from GitHub · Release notes"
 
 ### Smart OS Detection
 JavaScript detects the visitor's OS and shows the recommended download button prominently.
@@ -116,22 +116,22 @@ JavaScript detects the visitor's OS and shows the recommended download button pr
 - Linux → amd64.deb (default for Linux)
 - Unknown/iOS/Android → show all options without a primary
 
-### Download Links (v1.93.2)
+### Download Links (v1.93.4)
 | Platform | File | URL |
 |---|---|---|
-| macOS Apple Silicon | Biorouter-1.93.2-arm64.dmg | https://github.com/BaranziniLab/biorouter/releases/download/v1.93.2/Biorouter-1.93.2-arm64.dmg |
-| macOS Intel | Biorouter-1.93.2-x64.dmg | https://github.com/BaranziniLab/biorouter/releases/download/v1.93.2/Biorouter-1.93.2-x64.dmg |
-| Windows x64 | Biorouter-win32-x64-1.93.2.zip | https://github.com/BaranziniLab/biorouter/releases/download/v1.93.2/Biorouter-win32-x64-1.93.2.zip |
-| Linux Ubuntu/Pop!_OS | biorouter_1.93.2_amd64.deb | https://github.com/BaranziniLab/biorouter/releases/download/v1.93.2/biorouter_1.93.2_amd64.deb |
-| Linux Fedora/RHEL | Biorouter-1.93.2-1.x86_64.rpm | https://github.com/BaranziniLab/biorouter/releases/download/v1.93.2/Biorouter-1.93.2-1.x86_64.rpm |
-| Linux CLI Debian/Ubuntu | biorouter-cli_1.93.2_amd64.deb | https://github.com/BaranziniLab/biorouter/releases/download/v1.93.2/biorouter-cli_1.93.2_amd64.deb |
-| Linux CLI Fedora/RHEL | biorouter-cli-1.93.2-1.x86_64.rpm | https://github.com/BaranziniLab/biorouter/releases/download/v1.93.2/biorouter-cli-1.93.2-1.x86_64.rpm |
+| macOS Apple Silicon | Biorouter-1.93.4-arm64.dmg | https://github.com/BaranziniLab/biorouter/releases/download/v1.93.4/Biorouter-1.93.4-arm64.dmg |
+| macOS Intel | Biorouter-1.93.4-x64.dmg | https://github.com/BaranziniLab/biorouter/releases/download/v1.93.4/Biorouter-1.93.4-x64.dmg |
+| Windows x64 | Biorouter-win32-x64-1.93.4.zip | https://github.com/BaranziniLab/biorouter/releases/download/v1.93.4/Biorouter-win32-x64-1.93.4.zip |
+| Linux Ubuntu/Pop!_OS | biorouter_1.93.4_amd64.deb | https://github.com/BaranziniLab/biorouter/releases/download/v1.93.4/biorouter_1.93.4_amd64.deb |
+| Linux Fedora/RHEL | Biorouter-1.93.4-1.x86_64.rpm | https://github.com/BaranziniLab/biorouter/releases/download/v1.93.4/Biorouter-1.93.4-1.x86_64.rpm |
+| Linux CLI Debian/Ubuntu | biorouter-cli_1.93.4_amd64.deb | https://github.com/BaranziniLab/biorouter/releases/download/v1.93.4/biorouter-cli_1.93.4_amd64.deb |
+| Linux CLI Fedora/RHEL | biorouter-cli-1.93.4-1.x86_64.rpm | https://github.com/BaranziniLab/biorouter/releases/download/v1.93.4/biorouter-cli-1.93.4-1.x86_64.rpm |
 
 ### Install Commands
 - macOS: Open DMG and drag Biorouter.app to /Applications
 - Windows: Unzip and run Biorouter.exe
-- Linux Debian: sudo apt install ./biorouter_1.93.2_amd64.deb
-- Linux RPM: sudo dnf install ./Biorouter-1.93.2-1.x86_64.rpm
+- Linux Debian: sudo apt install ./biorouter_1.93.4_amd64.deb
+- Linux RPM: sudo dnf install ./Biorouter-1.93.4-1.x86_64.rpm
 
 ### Setup Note / Info Box
 After installing, users should:
@@ -282,43 +282,47 @@ Each card contains:
 ## Tab 5 — About (`about.html`)
 
 ### News
-1. **Biorouter v1.93.2 Release** (October 2026)
+1. **Biorouter v1.93.4 Release** (October 2026)
+   - Link: https://github.com/BaranziniLab/biorouter/releases/tag/v1.93.4
+   - What's new: Baseten joins the public providers with eleven open-weight models, including GLM 5.3, Kimi K3, DeepSeek V4.1 and GPT OSS 120B; chat costs use Baseten's prices, including cached input; Baseten's model list and prices stay current between releases from a public catalog Biorouter reads only while a Baseten key is saved
+
+2. **Biorouter v1.93.2 Release** (October 2026)
    - Link: https://github.com/BaranziniLab/biorouter/releases/tag/v1.93.2
    - What's new: replaces v1.93.1; an update download continues after a dropped connection instead of failing with net::ERR_CONNECTION_RESET; Restart & update waits until macOS has prepared the update and then reopens Biorouter, or says why it could not; the update dialog has Try again; plus everything in v1.93.1: Claude Code chats use about as much of the context window as Versa, Crew sets itself up on a shared Linux server with your server login, Llama Server retries a reply cut by a shared memory collision, and biorouter serve works behind HTTPS proxies and path prefixes, including JupyterHub
 
-2. **Biorouter v1.93.0 Release** (October 2026)
+3. **Biorouter v1.93.0 Release** (October 2026)
    - Link: https://github.com/BaranziniLab/biorouter/releases/tag/v1.93.0
    - What's new: simpler desktop controls and chat organization; clearer local inference failures and text tool-call handling; browser-free checks before built app build, launch, serving and export; exported launchers reuse the service on macOS and Linux; private /bug reports open for your review; Crew is in Settings > Chat > Capabilities
 
-3. **Biorouter v1.92.1 Release** (October 2026)
+4. **Biorouter v1.92.1 Release** (October 2026)
    - Link: https://github.com/BaranziniLab/biorouter/releases/tag/v1.92.1
    - What's new: Versa API Azure adds GPT-5.6 Sol, Terra and Luna, sent through the Responses API; Versa API Bedrock lists only the Claude models UCSF serves, adding Sonnet 5 and dropping Opus 5.5 and Opus 5; long GPT-5.6 chats compact instead of stopping
 
-4. **Biorouter v1.92.0 Release** (September 2026)
+5. **Biorouter v1.92.0 Release** (September 2026)
    - Link: https://github.com/BaranziniLab/biorouter/releases/tag/v1.92.0
    - What's new: Crew brings shared lab channels, files and agent tasks; macOS and Linux connect to the background service silently; new models are available; Copy works again in chats and previews
 
-5. **Biorouter v1.91.2 Release** (September 2026)
+6. **Biorouter v1.91.2 Release** (September 2026)
    - Link: https://github.com/BaranziniLab/biorouter/releases/tag/v1.91.2
    - What's new: Biorouter Copilot status appears only in conversations that request it and can be dismissed; prompts and slash commands use its current name; Windows child processes request hidden console windows; chat gains quoted selections, persistent drafts, active extensions in the slash picker, and adjustable text sizes
 
-6. **Biorouter v1.91.1 Release** (September 2026)
+7. **Biorouter v1.91.1 Release** (September 2026)
    - Link: https://github.com/BaranziniLab/biorouter/releases/tag/v1.91.1
    - What's new: on Windows, Biorouter's network sockets no longer leak into the programs it starts, so ports are released and the tunnel closes cleanly; on macOS, inline-Python extensions no longer occasionally fail to start; and the test suite's flaky failures are fixed at their causes
 
-7. **Biorouter v1.91.0 Release** (September 2026)
+8. **Biorouter v1.91.0 Release** (September 2026)
    - Link: https://github.com/BaranziniLab/biorouter/releases/tag/v1.91.0
    - What's new: Biorouter Copilot observes and controls the desktop with an approval for every request, web and documents become their own capability, office contexts load only when needed, Windows gets its first installer and a long list of fixes, and third-party attribution is now correct
 
-8. **Biorouter v1.90.5 Release** (September 2026)
+9. **Biorouter v1.90.5 Release** (September 2026)
    - Link: https://github.com/BaranziniLab/biorouter/releases/tag/v1.90.5
    - What's new: chats keep their place when a tab closes mid-reply, streamed text keeps repeated tokens at chunk boundaries, mid-turn steering stays queued until the running turn consumes it, the artifact preview adapts between a side panel and a vertical layout, and scheduled work follows the caller's reach
 
-9. **Biorouter v1.90.0 Release** (September 2026)
+10. **Biorouter v1.90.0 Release** (September 2026)
    - Link: https://github.com/BaranziniLab/biorouter/releases/tag/v1.90.0
    - What's new: every tool driven across providers, and a review run before the drive
 
-10. **UCSF AI Research Day** (2026)
+11. **UCSF AI Research Day** (2026)
    - Link: https://ai.ucsf.edu/researchday
    - Biorouter to be featured
 
