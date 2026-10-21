@@ -70,6 +70,14 @@ const probes = [
 const sha = (bytes) => createHash("sha256").update(bytes).digest("hex");
 const root = mkdtempSync(join(tmpdir(), "biorouter-ps-digest-"));
 const command = process.env.BIOROUTER_TEST_POWERSHELL || "powershell.exe";
+// A PowerShell start that times out says nothing about the digest. On
+// 2026-10-21 the job's first powershell.exe start missed a 15 s bound on main
+// (8f2dad53f, a docs-only commit) while the three after it finished with the
+// expected digests. So a run that times out is retried, each attempt bounded at
+// 60 s; any other failure, a wrong digest included, still fails at once.
+const timeoutMs =
+  Number(process.env.BIOROUTER_TEST_POWERSHELL_TIMEOUT_MS) || 60000;
+const attempts = 3;
 let failed = false;
 try {
   for (const withMain of [true, false]) {
@@ -116,24 +124,34 @@ foreach ($path in @((Join-Path $Dir 'pages/index.html'), (Join-Path $Dir 'assets
 @{ powershell = $PSVersionTable.PSVersion.ToString(); digest = $actual } | ConvertTo-Json -Compress\n`,
         "utf8",
       );
-      const output = spawnSync(
-        command,
-        [
-          "-NoLogo",
-          "-NoProfile",
-          "-NonInteractive",
-          "-ExecutionPolicy",
-          "Bypass",
-          "-File",
-          probe,
-        ],
-        {
-          env: { ...process.env, BIOROUTER_PATH_ROOT: join(root, "recipient") },
-          encoding: "utf8",
-          timeout: 15000,
-          maxBuffer: 1024 * 1024,
-        },
-      );
+      let output;
+      for (let attempt = 1; attempt <= attempts; attempt += 1) {
+        output = spawnSync(
+          command,
+          [
+            "-NoLogo",
+            "-NoProfile",
+            "-NonInteractive",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            probe,
+          ],
+          {
+            env: {
+              ...process.env,
+              BIOROUTER_PATH_ROOT: join(root, "recipient"),
+            },
+            encoding: "utf8",
+            timeout: timeoutMs,
+            maxBuffer: 1024 * 1024,
+          },
+        );
+        if (output.error?.code !== "ETIMEDOUT") break;
+        console.error(
+          `${variant}: PowerShell did not finish within ${timeoutMs} ms (attempt ${attempt} of ${attempts})`,
+        );
+      }
       let result;
       try {
         result = JSON.parse(output.stdout);
