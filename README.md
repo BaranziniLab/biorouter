@@ -4,7 +4,7 @@
 
 # UCSF Biorouter
 
-**An open-source AI workspace for biomedical research**
+**An open-source, AI-native research environment for biomedical work with sensitive data**
 
 <p>
   <a href="https://opensource.org/licenses/Apache-2.0"><img src="https://img.shields.io/badge/License-Apache_2.0-blue.svg" alt="Apache 2.0 License"></a>
@@ -18,7 +18,13 @@
 
 </div>
 
-Biorouter brings AI models, research tools, and your data into one workspace. Built at the [Baranzini Lab](https://baranzinilab.ucsf.edu/) at UCSF, it runs as a desktop app, a terminal CLI, or a browser interface.
+Research is iterative, and AI agents fit that work best. Researchers also need to work with sensitive data, and today's services cover one need or the other: commercial coding agents are built around their vendor's cloud models, while institutional services offer chat or model access with no agent around it. Biorouter is an agent for that gap. It connects local, institutional and public models through one interface and keeps private work away from public models.
+
+- **Private stays private.** The models and data sources a chat uses decide whether it is private or public, and a private chat cannot move to a public model.
+- **Share the method, not the data.** A workflow records the model, instructions, extensions and skills behind an analysis, never its data, so another site can rerun it on its own records.
+- **Built for biomedical research.** Connectors for electronic health records, the SPOKE knowledge graph, literature, omics and lab tools install with a click or a one-sentence request.
+
+Built at the [Baranzini Lab](https://baranzinilab.ucsf.edu/) at UCSF, Biorouter runs as a desktop app, a terminal CLI, or a browser interface, and works inside Jupyter as an ACP agent.
 
 ## Choose your model
 
