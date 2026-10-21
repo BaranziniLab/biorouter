@@ -4,7 +4,7 @@
 
 # UCSF Biorouter
 
-**An open-source, AI-native research environment for biomedical work with sensitive data**
+**A secure AI-native biomedical research environment**
 
 <p>
   <a href="https://opensource.org/licenses/Apache-2.0"><img src="https://img.shields.io/badge/License-Apache_2.0-blue.svg" alt="Apache 2.0 License"></a>
@@ -18,13 +18,13 @@
 
 </div>
 
-Research is iterative, and AI agents fit that work best. Researchers also need to work with sensitive data, and today's services cover one need or the other: commercial coding agents are built around their vendor's cloud models, while institutional services offer chat or model access with no agent around it. Biorouter is an agent for that gap. It connects local, institutional and public models through one interface and keeps private work away from public models.
+Biomedical research asks two things of AI at once. Research is iterative, and an agent can help at every step from idea to report. Patient records, identifiable data and unpublished results must stay inside a secure institutional environment. Existing tools meet one need or the other: commercial agents such as Claude Code and Codex send work to outside servers, while institutional chatbots and model APIs keep data inside but offer no agent. Biorouter is one environment for both: a single interface to local, institutional and public models that keeps private work private.
 
-- **Private stays private.** The models and data sources a chat uses decide whether it is private or public, and a private chat cannot move to a public model.
-- **Share the method, not the data.** A workflow records the model, instructions, extensions and skills behind an analysis, never its data, so another site can rerun it on its own records.
-- **Built for biomedical research.** Connectors for electronic health records, the SPOKE knowledge graph, literature, omics and lab tools install with a click or a one-sentence request.
+- **Private work stays private.** The models and connections a chat uses decide whether it is private or public, and private chats are routed only to private models.
+- **Share workflows, not data.** A workflow records the models, extensions, prompts and skills behind an analysis, but not its data, so each site reruns it on its own records.
+- **Biomedical connectors.** Connectors for electronic health records, the SPOKE knowledge graph, literature, omics and lab systems install with a click or a sentence.
 
-Built at the [Baranzini Lab](https://baranzinilab.ucsf.edu/) at UCSF, Biorouter runs as a desktop app, a terminal CLI, or a browser interface, and works inside Jupyter as an ACP agent.
+Use Biorouter as an agent in JupyterLab through the Agent Client Protocol (ACP), in a terminal, in the desktop app, or served from a terminal and opened in a browser, with the same agents and privacy settings in each. It is built at the [Baranzini Lab](https://baranzinilab.ucsf.edu/) at UCSF.
 
 ## Choose your model
 
