@@ -57,6 +57,7 @@ use biorouter::session::SessionManager;
 use futures::StreamExt;
 use rmcp::model::{CallToolResult, Content, Tool};
 use tempfile::TempDir;
+use tokio::sync::{mpsc, oneshot};
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 
@@ -1081,6 +1082,16 @@ const GOOD_SUMMARY: &str = "## User Intent\nThe user asked for a plot.\n\
      ## Technical Concepts\nPlotting, data frames.\n\
      ## Files\nnone\n## Pending Tasks\nnone\n";
 
+struct SnapshotAppendRequest {
+    snapshot_call: usize,
+    acknowledge: oneshot::Sender<()>,
+}
+
+struct SnapshotAppendGate {
+    after_main_calls: usize,
+    requests: mpsc::UnboundedSender<SnapshotAppendRequest>,
+}
+
 /// A provider whose summarization round-trip takes real wall-clock time and
 /// announces itself, so appenders can be aimed precisely at the window between
 /// the compaction's snapshot and its write-back. Everything appended while
@@ -1103,6 +1114,7 @@ struct SlowSummarizer {
     /// test outside the loop can tell "a compaction deliberately summarized this
     /// message away" from "something destroyed it".
     payloads: Mutex<Vec<String>>,
+    snapshot_appender: Option<SnapshotAppendGate>,
 }
 
 impl SlowSummarizer {
@@ -1133,8 +1145,25 @@ impl Provider for SlowSummarizer {
                 .lock()
                 .unwrap()
                 .push(_system_prompt.to_string());
-            self.summarizer_calls.fetch_add(1, Ordering::SeqCst);
+            let snapshot_call = self.summarizer_calls.fetch_add(1, Ordering::SeqCst) + 1;
             self.summarizing.store(true, Ordering::SeqCst);
+            if let Some(gate) = self
+                .snapshot_appender
+                .as_ref()
+                .filter(|gate| self.main_calls.load(Ordering::SeqCst) >= gate.after_main_calls)
+            {
+                let (acknowledge, acknowledged) = oneshot::channel();
+                gate.requests
+                    .send(SnapshotAppendRequest {
+                        snapshot_call,
+                        acknowledge,
+                    })
+                    .expect("the snapshot appender must remain available");
+                tokio::time::timeout(Duration::from_secs(10), acknowledged)
+                    .await
+                    .expect("the snapshot appender must acknowledge its write")
+                    .expect("the snapshot appender must finish its write");
+            }
             tokio::time::sleep(self.window).await;
             self.summarizing.store(false, Ordering::SeqCst);
             return Ok((Message::assistant().with_text(GOOD_SUMMARY), usage));
@@ -1209,6 +1238,7 @@ async fn a_live_turn_compacting_cannot_lose_concurrent_appends() {
         context_limit: 100_000,
         session_id: OnceLock::new(),
         payloads: Mutex::new(Vec::new()),
+        snapshot_appender: None,
     });
 
     let agent = Arc::new(Agent::with_config(AgentConfig::new(
@@ -1502,9 +1532,9 @@ async fn a_rewrite_basis_cannot_cross_a_wipe_that_recycled_the_session_id() {
 /// would be excused. Every swap lands in this test, and the aimed tests in
 /// `conversation_writeback_freshness.rs` cover the declined path directly.
 ///
-/// It is a net, not a proof: a run in which no append happens to land inside a
-/// window passes vacuously. That is why the aimed tests exist as well — and why
-/// this one asserts a floor on how many appends were genuinely owed.
+/// The hammer remains unsynchronized. A separate final-snapshot rendezvous
+/// guarantees that at least one acknowledged append remains owed, even when
+/// later compactions legitimately summarize every append from the hammer.
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn a_live_turn_recovering_from_two_overflows_cannot_lose_concurrent_appends() {
     /// How many turns to run back to back. Each opens its own set of windows.
@@ -1515,6 +1545,7 @@ async fn a_live_turn_recovering_from_two_overflows_cannot_lose_concurrent_append
     let sm = Arc::new(SessionManager::new(data_dir.path().to_path_buf()));
 
     let summarizing = Arc::new(AtomicBool::new(false));
+    let (snapshot_requests, mut snapshots) = mpsc::unbounded_channel();
     let provider = Arc::new(SlowSummarizer {
         summarizing: Arc::clone(&summarizing),
         summarizer_calls: AtomicUsize::new(0),
@@ -1528,6 +1559,12 @@ async fn a_live_turn_recovering_from_two_overflows_cannot_lose_concurrent_append
         context_limit: 100,
         session_id: OnceLock::new(),
         payloads: Mutex::new(Vec::new()),
+        // Every snapshot after the final overflow participates, so an extra
+        // compaction cannot summarize away the only guaranteed owed marker.
+        snapshot_appender: Some(SnapshotAppendGate {
+            after_main_calls: 3 * TURNS - 1,
+            requests: snapshot_requests,
+        }),
     });
 
     let agent = Arc::new(Agent::with_config(AgentConfig::new(
@@ -1575,8 +1612,32 @@ async fn a_live_turn_recovering_from_two_overflows_cannot_lose_concurrent_append
         let summarizing = Arc::clone(&summarizing);
         tokio::spawn(async move {
             let mut written = Vec::new();
+            let mut snapshot_appends = Vec::new();
             let mut i = 0usize;
             while !turn_done.load(Ordering::SeqCst) {
+                while let Ok(request) = snapshots.try_recv() {
+                    let uid = format!("snapshot-{}", request.snapshot_call);
+                    let text = format!(
+                        "FINAL-SNAPSHOT-{:04} from another writer",
+                        request.snapshot_call
+                    );
+                    assert!(summarizing.load(Ordering::SeqCst));
+                    loop {
+                        match sm.add_message(&id, &user(&uid, &text)).await {
+                            Ok(_) => break,
+                            Err(e) if is_busy(&e.to_string()) => {
+                                tokio::task::yield_now().await;
+                            }
+                            Err(e) => panic!("append {uid} failed for a non-lock reason: {e}"),
+                        }
+                    }
+                    assert!(summarizing.load(Ordering::SeqCst));
+                    snapshot_appends.push((request.snapshot_call, uid, text));
+                    request
+                        .acknowledge
+                        .send(())
+                        .expect("the summarizer must wait until the append is acknowledged");
+                }
                 let uid = format!("hammer-{i}");
                 // FIXED WIDTH: the marker is matched against the summarizer's
                 // payload below, and `NOTE-7 ` would also match inside
@@ -1599,7 +1660,7 @@ async fn a_live_turn_recovering_from_two_overflows_cannot_lose_concurrent_append
                 i += 1;
                 tokio::task::yield_now().await;
             }
-            written
+            (written, snapshot_appends)
         })
     };
 
@@ -1627,7 +1688,7 @@ async fn a_live_turn_recovering_from_two_overflows_cannot_lose_concurrent_append
         }
     }
     turn_done.store(true, Ordering::SeqCst);
-    let appended = appender.await.unwrap();
+    let (mut appended, snapshot_appends) = appender.await.unwrap();
 
     assert_eq!(
         provider.main_calls.load(Ordering::SeqCst),
@@ -1654,8 +1715,26 @@ async fn a_live_turn_recovering_from_two_overflows_cannot_lose_concurrent_append
         appended.len()
     );
 
+    let (final_snapshot, final_uid, final_text) = snapshot_appends
+        .last()
+        .expect("the final compaction must rendezvous with the appender");
+    assert_eq!(
+        *final_snapshot,
+        provider.summarizer_calls.load(Ordering::SeqCst),
+        "the guaranteed append must land inside the final snapshot-to-writeback window"
+    );
+    appended.extend(
+        snapshot_appends
+            .iter()
+            .map(|(_, uid, text)| (uid.clone(), text.clone(), true)),
+    );
+
     // Everything a compaction actually SAW is fair game; everything else is owed.
     let shown_to_a_summarizer = provider.payloads.lock().unwrap().join("\n");
+    assert!(
+        !shown_to_a_summarizer.contains(final_text.as_str()),
+        "no compaction may have seen the final snapshot's acknowledged append"
+    );
     let (summarizable, owed): (Vec<_>, Vec<_>) = appended
         .iter()
         .partition(|(_, text, _)| shown_to_a_summarizer.contains(text.as_str()));
@@ -1664,6 +1743,7 @@ async fn a_live_turn_recovering_from_two_overflows_cannot_lose_concurrent_append
         "every single append was handed to some compaction, so the invariant \
          below has nothing to assert"
     );
+    assert!(owed.iter().any(|(uid, _, _)| uid == final_uid));
 
     let final_conversation = stored(&sm, &session.id).await;
     assert_no_duplicates(&final_conversation, "two-overflow turn");
