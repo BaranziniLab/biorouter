@@ -2019,7 +2019,7 @@
             }
           },
           "400": {
-            "description": "Refused (issue #56, DR-27): `BIOROUTER_PRIVACY_MIXING_POLICY` is one of 'open', 'standard' or 'strict'. Also `BIOROUTER_MAX_TURNS`, which must be a whole number of at least 1"
+            "description": "Refused (issue #56, DR-27): `BIOROUTER_PRIVACY_MIXING_POLICY` is one of 'open', 'standard' or 'strict'. Also `BIOROUTER_MAX_TURNS`, which must be a whole number of at least 0 (0 means unlimited)"
           },
           "403": {
             "description": "Refused: `BIOROUTER_PRIVACY_TIERS` is the master privacy switch and may only be written from Settings > App > Privacy, with its typed confirmation, or (issue #56, DR-27) relaxing `BIOROUTER_PRIVACY_MIXING_POLICY` needed a system authentication that did not happen"
