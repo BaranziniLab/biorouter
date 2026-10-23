@@ -1047,11 +1047,14 @@ fn observation_progress(
     let Some(fingerprint) = current.fingerprint else {
         return false;
     };
-    if fresh_input
-        && !calls[..index]
-            .iter()
-            .any(|previous| previous.call.same_shape(&current.call) && previous.outcome.is_some())
+    if let Some(previous) = calls[..index]
+        .iter()
+        .rev()
+        .find(|previous| previous.call.same_shape(&current.call) && previous.outcome.is_some())
     {
+        return previous.fingerprint != Some(fingerprint);
+    }
+    if fresh_input {
         return true;
     }
     let previous = calls[..index].iter().rev().find(|previous| {
@@ -2292,7 +2295,7 @@ mod tests {
                 &mut messages,
                 "developer__shell",
                 serde_json::json!({"command": format!("mkdir -p {prefix}{}", index % 2)}),
-                ok_result(""),
+                ok_result(if index % 2 == 0 { "A" } else { "B" }),
             );
         }
         let findings = inspect_next(
