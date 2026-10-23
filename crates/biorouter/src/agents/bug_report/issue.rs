@@ -180,9 +180,10 @@ pub fn render_body(draft: &Draft, evidence: &Evidence, private: bool) -> String 
     } else {
         body.push_str(&format!(
             "\n<details>\n<summary>Failed tool calls in the reporting session \
-             ({} of {} calls; {} distinct failed operations)</summary>\n\n",
+             ({} of {} calls; {} caught nested failures; {} distinct failed operations)</summary>\n\n",
             evidence.total_failed_calls,
             evidence.total_tool_calls,
+            evidence.total_failed_nested_calls,
             evidence.total_failed_operations
         ));
         for failure in &evidence.failures {
@@ -532,6 +533,7 @@ mod tests {
                 looks_deliberate: false,
             }],
             total_failed_calls: 2,
+            total_failed_nested_calls: 0,
             total_failed_operations: 0,
             total_tool_calls: 7,
             recent_user_messages: vec!["build the crate".into()],

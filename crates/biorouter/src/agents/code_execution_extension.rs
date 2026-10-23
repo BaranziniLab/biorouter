@@ -96,7 +96,7 @@ type ToolCallRequest = (
     tokio::sync::oneshot::Sender<Result<String, ScriptFailure>>,
 );
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 struct ErrorProvenance {
     kind: ToolErrorKind,
     retryable: bool,
@@ -2294,6 +2294,8 @@ struct ToolCallRecord {
     /// deliberately kept out of the user's view.
     #[serde(skip_serializing_if = "Option::is_none")]
     error: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    failure: Option<ErrorProvenance>,
     /// Size of the result handed back to the script on success.
     #[serde(skip_serializing_if = "Option::is_none")]
     result_bytes: Option<usize>,
@@ -2311,6 +2313,7 @@ impl ToolCallRecord {
             args: truncate_record_text(args_json, MAX_TOOL_CALL_RECORD_TEXT_BYTES),
             status: "ok",
             error: None,
+            failure: None,
             result_bytes: Some(result_bytes),
             todo_task: None,
             operation: None,
@@ -2335,6 +2338,10 @@ impl ToolCallRecord {
             args: truncate_record_text(args_json, MAX_TOOL_CALL_RECORD_TEXT_BYTES),
             status: "error",
             error: Some(error),
+            failure: Some(ErrorProvenance {
+                kind: ToolErrorKind::parse(kind).unwrap_or(ToolErrorKind::ToolFailure),
+                retryable: ToolErrorKind::parse(kind).is_some_and(ToolErrorKind::retryable),
+            }),
             result_bytes: None,
             todo_task: None,
             operation: None,
@@ -3776,12 +3783,18 @@ impl CodeExecutionClient {
                         record.operation = operation;
                         record
                     }
-                    Err(_) => ToolCallRecord::failed(
-                        &tool_name,
-                        &arguments,
-                        user_error.as_deref(),
-                        failure_kind,
-                    ),
+                    Err(error) => {
+                        let mut record = ToolCallRecord::failed(
+                            &tool_name,
+                            &arguments,
+                            user_error.as_deref(),
+                            failure_kind,
+                        );
+                        if let Some(provenance) = error.provenance {
+                            record.failure = Some(provenance);
+                        }
+                        record
+                    }
                 };
                 collected_artifacts
                     .lock()
@@ -5148,6 +5161,50 @@ mod tests {
         assert_ne!(caught.is_error, Some(true));
         assert!(caught.structured_content.is_none());
         assert!(result_text(&caught).contains("recovered"));
+        let record = &caught
+            .meta
+            .as_ref()
+            .unwrap()
+            .get(TOOL_CALLS_META_KEY)
+            .unwrap()[0];
+        assert_eq!(
+            record["failure"],
+            serde_json::json!({"kind": "not_found", "retryable": false})
+        );
+        let failures = crate::agents::tool_errors::nested_tool_failures(
+            "code_execution__execute_code",
+            &Ok(caught),
+        );
+        assert_eq!(failures.len(), 1);
+        assert_eq!(failures[0].error.kind, ToolErrorKind::NotFound);
+    }
+
+    #[tokio::test]
+    async fn caught_tool_telemetry_retains_explicit_retryability_without_private_error_text() {
+        let mut failed = CallToolResult::error(vec![
+            Content::text("assistant-only diagnostic").with_audience(vec![Role::Assistant]),
+            Content::text("User-visible synthetic failure").with_audience(vec![Role::User]),
+        ]);
+        failed.structured_content = Some(serde_json::json!({"error": {
+            "kind": "timeout", "retryable": false, "message": "fixture failure",
+        }}));
+        let result = execute_with_tool_result(
+            r#"import { run } from "fixture"; try { run({}); } catch (error) {} record_result("handled");"#,
+            failed,
+        ).await;
+        assert_ne!(result.is_error, Some(true));
+        let record = &result
+            .meta
+            .as_ref()
+            .unwrap()
+            .get(TOOL_CALLS_META_KEY)
+            .unwrap()[0];
+        assert_eq!(
+            record["failure"],
+            serde_json::json!({"kind": "timeout", "retryable": false})
+        );
+        assert_eq!(record["error"], "User-visible synthetic failure");
+        assert!(!record.to_string().contains("assistant-only diagnostic"));
     }
 
     #[test]

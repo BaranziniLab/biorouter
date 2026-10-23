@@ -287,6 +287,16 @@ pub fn tool_outcome(tool_name: &str, result: &ToolResult<CallToolResult>) -> Too
             crate::agents::operation_outcome::observed_operations(tool_name, result)
                 .into_iter()
                 .find_map(|(_, operation)| operation.failure())
+                .or_else(|| {
+                    crate::agents::tool_errors::nested_tool_failures(tool_name, result)
+                        .into_iter()
+                        .next()
+                        .map(|failure| {
+                            let mut error = failure.error;
+                            error.message = format!("{}: {}", failure.tool_name, error.message);
+                            error
+                        })
+                })
         {
             return ToolOutcome {
                 tool_name: tool_name.to_string(),
