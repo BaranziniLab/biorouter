@@ -2307,17 +2307,35 @@ mod tests {
                 serde_json::json!({"command": format!("mkdir -p {prefix}{}", index % 2)}),
                 ok_result(if index % 2 == 0 { "A" } else { "B" }),
             );
+            if index >= 2 {
+                assert!(!tool_progress_since(&messages, messages.len() - 1));
+            }
         }
-        let findings = inspect_next(
+        let warning = inspect_next(
             &inspector,
             &messages,
             "developer__shell",
             serde_json::json!({"command": format!("mkdir -p {prefix}0")}),
         )
         .await;
-        assert_eq!(findings[0].action, InspectionAction::Deny);
+        assert_eq!(warning[0].action, InspectionAction::Warn);
+        assert!(!tool_progress_since(&messages, messages.len() - 1));
+        completed_call(
+            &mut messages,
+            "developer__shell",
+            serde_json::json!({"command": format!("mkdir -p {prefix}0")}),
+            ok_result("A"),
+        );
+        let stopped = inspect_next(
+            &inspector,
+            &messages,
+            "developer__shell",
+            serde_json::json!({"command": format!("mkdir -p {prefix}1")}),
+        )
+        .await;
+        assert_eq!(stopped[0].action, InspectionAction::Deny);
         assert!(matches!(
-            findings[0].finding_id.as_deref(),
+            stopped[0].finding_id.as_deref(),
             Some(REPETITION_NEAR_DUP_HARD_FINDING_ID | REPETITION_OSCILLATION_HARD_FINDING_ID)
         ));
         assert!(!tool_progress_since(&messages, messages.len() - 1));
