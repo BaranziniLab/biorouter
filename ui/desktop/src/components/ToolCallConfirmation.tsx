@@ -252,7 +252,7 @@ export default function ToolConfirmation({
     </div>
   ) : null;
 
-  if (isCancelledMessage) {
+  if (isCancelledMessage && !clicked && !isClicked) {
     return (
       <div className="biorouter-message-content text-body">
         <TranscriptRow icon={X} label={APPROVAL_COPY.canceled} />
