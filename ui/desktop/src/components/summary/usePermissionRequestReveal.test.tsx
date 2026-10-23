@@ -41,13 +41,13 @@ const initial: Props = {
   transcriptMounted: true,
 };
 
-let frames: Map<number, FrameRequestCallback>;
+let frames: Map<number, (time: number) => void>;
 let frameId: number;
 
 beforeEach(() => {
   frames = new Map();
   frameId = 0;
-  vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => {
+  vi.stubGlobal('requestAnimationFrame', (callback: (time: number) => void) => {
     frames.set(++frameId, callback);
     return frameId;
   });
