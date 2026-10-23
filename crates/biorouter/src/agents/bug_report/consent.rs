@@ -31,6 +31,7 @@ impl AuditRecord {
     fn record(&self, decision: &'static str) {
         tracing::info!(
             target: "biorouter::security_audit",
+            parent: None,
             event = "bug_report_publication",
             attempt_id = %self.attempt_id,
             repository = %self.repository,
@@ -275,6 +276,12 @@ mod tests {
             .with_writer(move || writer.clone())
             .finish();
         tracing::subscriber::with_default(subscriber, || {
+            let parent = tracing::info_span!(
+                target: "biorouter::agents",
+                "dispatch_tool_call",
+                session = "PRIVATE_SESSION_TRANSCRIPT_FIXTURE"
+            );
+            let _entered = parent.enter();
             PublicationReview::new(
                 DEFAULT_REPO,
                 "unpublished fixture title",
@@ -339,5 +346,8 @@ mod tests {
         assert!(!logs.contains("unpublished fixture title"));
         assert!(!logs.contains("private fixture body"));
         assert!(!logs.contains("sensitive fixture stderr"));
+        assert!(!logs.contains("dispatch_tool_call"));
+        assert!(!logs.contains("PRIVATE_SESSION_TRANSCRIPT_FIXTURE"));
+        assert!(!logs.contains("session="));
     }
 }
