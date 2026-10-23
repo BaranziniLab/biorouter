@@ -20,16 +20,14 @@ where
             state.end()
         }
         Err(err) => {
-            // BR-51: the wire form of a failed tool call kept only its *text*.
-            // The MCP error code and any structured payload the server attached
-            // were dropped on the way to disk, so a reloaded conversation could
-            // no longer tell a retryable blip from a hard failure. The taxonomy
-            // rides along as two flat, optional fields — old readers ignore them,
-            // and `error` still carries the whole human-readable message.
+            // Keep the display and flat taxonomy for older readers, but restore
+            // from the original fields: Display includes code and data, so
+            // treating it as a message recursively nests them on every reload.
             let taxonomy = classify_error_data(err);
-            let mut state = serializer.serialize_struct("ToolResult", 4)?;
+            let mut state = serializer.serialize_struct("ToolResult", 5)?;
             state.serialize_field("status", "error")?;
             state.serialize_field("error", &err.to_string())?;
+            state.serialize_field("error_data", err)?;
             state.serialize_field("error_kind", taxonomy.kind.as_str())?;
             state.serialize_field("retryable", &taxonomy.retryable)?;
             state.end()
@@ -37,9 +35,8 @@ where
     }
 }
 
-/// Rebuild the [`ErrorData`] for a persisted error, re-attaching the taxonomy as
-/// its `data` payload so a reloaded result classifies exactly as the live one did
-/// (rather than being re-guessed from prose that may have been truncated).
+/// Read historical errors that saved only their display text and taxonomy.
+/// Their original code and data cannot be reconstructed from that text.
 fn error_data_with_taxonomy(
     error: String,
     error_kind: Option<String>,
@@ -57,6 +54,20 @@ fn error_data_with_taxonomy(
             ENVELOPE_KEY: { "kind": kind.as_str(), "retryable": retryable, "message": error }
         })),
     }
+}
+
+fn deserialize_persisted_error<'de, D>(deserializer: D) -> Result<Option<ErrorData>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let Some(value) = Option::<serde_json::Value>::deserialize(deserializer)? else {
+        return Ok(None);
+    };
+    let mut error = ErrorData::deserialize(&value).map_err(serde::de::Error::custom)?;
+    // An explicitly null MCP data payload differs from an absent payload;
+    // Option<Value>'s derived deserializer otherwise collapses the two.
+    error.data = value.get("data").cloned();
+    Ok(Some(error))
 }
 
 #[derive(Deserialize)]
@@ -103,6 +114,8 @@ where
         Error {
             status: String,
             error: String,
+            #[serde(default, deserialize_with = "deserialize_persisted_error")]
+            error_data: Option<ErrorData>,
             // BR-51. Absent on anything written before the taxonomy existed, so
             // the kind is re-derived from the text in that case.
             #[serde(default)]
@@ -138,11 +151,14 @@ where
         ResultFormat::Error {
             status,
             error,
+            error_data,
             error_kind,
             retryable,
         } => {
             if status == "error" {
-                Ok(Err(error_data_with_taxonomy(error, error_kind, retryable)))
+                Ok(Err(error_data.unwrap_or_else(|| {
+                    error_data_with_taxonomy(error, error_kind, retryable)
+                })))
             } else {
                 Err(serde::de::Error::custom(format!(
                     "Expected status 'error', got '{}'",
@@ -185,6 +201,8 @@ pub mod call_tool_result {
             Error {
                 status: String,
                 error: String,
+                #[serde(default, deserialize_with = "super::deserialize_persisted_error")]
+                error_data: Option<ErrorData>,
                 // BR-51, as above: optional, so a pre-taxonomy record still reads.
                 #[serde(default)]
                 error_kind: Option<String>,
@@ -229,13 +247,14 @@ pub mod call_tool_result {
             ResultFormat::Error {
                 status,
                 error,
+                error_data,
                 error_kind,
                 retryable,
             } => {
                 if status == "error" {
-                    Ok(Err(super::error_data_with_taxonomy(
-                        error, error_kind, retryable,
-                    )))
+                    Ok(Err(error_data.unwrap_or_else(|| {
+                        super::error_data_with_taxonomy(error, error_kind, retryable)
+                    })))
                 } else {
                     Err(serde::de::Error::custom(format!(
                         "Expected status 'error', got '{}'",
@@ -335,6 +354,106 @@ mod tests {
     struct Wrapper {
         #[serde(with = "call_tool_result")]
         tool_result: ToolResult<CallToolResult>,
+    }
+
+    #[derive(Serialize, Deserialize)]
+    struct ToolCallWrapper {
+        #[serde(
+            serialize_with = "super::serialize",
+            deserialize_with = "super::deserialize"
+        )]
+        tool_call: ToolResult<CallToolRequestParams>,
+    }
+
+    #[test]
+    fn repeated_result_round_trips_preserve_error_fields_and_wire_size() {
+        for data in [
+            None,
+            Some(serde_json::Value::Null),
+            Some(serde_json::json!({
+                "error": {"kind": "timeout", "retryable": false, "message": "upstream slow"},
+                "upstream": {"code": 17, "details": ["diagnostic", {"retry_after": 10}]},
+            })),
+            Some(serde_json::json!(["original", {"code": -32002}])),
+        ] {
+            let original = ErrorData::new(
+                ErrorCode::RESOURCE_NOT_FOUND,
+                "Tool 'fixture__missing' not found",
+                data,
+            );
+            let wrapper = Wrapper {
+                tool_result: Err(original.clone()),
+            };
+            let expected = serde_json::to_string(&wrapper).unwrap();
+            let mut saved = expected.clone();
+            for _ in 0..3 {
+                let loaded: Wrapper = serde_json::from_str(&saved).unwrap();
+                assert_eq!(loaded.tool_result.as_ref().unwrap_err(), &original);
+                saved = serde_json::to_string(&loaded).unwrap();
+                assert_eq!(saved, expected);
+            }
+        }
+    }
+
+    #[test]
+    fn repeated_request_round_trips_preserve_the_original_error() {
+        let original = ErrorData::new(
+            ErrorCode::RESOURCE_NOT_FOUND,
+            "-32603: -32002: literal upstream diagnostic",
+            Some(serde_json::json!({
+                "error": {"kind": "transient", "retryable": false, "message": "try later"},
+                "request_id": "fixture-request",
+            })),
+        );
+        let wrapper = ToolCallWrapper {
+            tool_call: Err(original.clone()),
+        };
+        let expected = serde_json::to_string(&wrapper).unwrap();
+        let mut saved = expected.clone();
+        for _ in 0..3 {
+            let loaded: ToolCallWrapper = serde_json::from_str(&saved).unwrap();
+            assert_eq!(loaded.tool_call.as_ref().unwrap_err(), &original);
+            saved = serde_json::to_string(&loaded).unwrap();
+            assert_eq!(saved, expected);
+        }
+    }
+
+    #[test]
+    fn historical_errors_keep_their_saved_taxonomy_and_stabilize_after_migration() {
+        let error = "-32002: upstream diagnostic includes 404";
+        for field in ["tool_result", "tool_call"] {
+            let legacy = serde_json::json!({
+                (field): {
+                    "status": "error",
+                    "error": error,
+                    "error_kind": "timeout",
+                    "retryable": false,
+                }
+            });
+            let (restored, saved) = if field == "tool_result" {
+                let loaded: Wrapper = serde_json::from_value(legacy).unwrap();
+                let restored = loaded.tool_result.as_ref().unwrap_err().clone();
+                let saved = serde_json::to_string(&loaded).unwrap();
+                let reloaded: Wrapper = serde_json::from_str(&saved).unwrap();
+                assert_eq!(reloaded.tool_result.as_ref().unwrap_err(), &restored);
+                assert_eq!(serde_json::to_string(&reloaded).unwrap(), saved);
+                (restored, saved)
+            } else {
+                let loaded: ToolCallWrapper = serde_json::from_value(legacy).unwrap();
+                let restored = loaded.tool_call.as_ref().unwrap_err().clone();
+                let saved = serde_json::to_string(&loaded).unwrap();
+                let reloaded: ToolCallWrapper = serde_json::from_str(&saved).unwrap();
+                assert_eq!(reloaded.tool_call.as_ref().unwrap_err(), &restored);
+                assert_eq!(serde_json::to_string(&reloaded).unwrap(), saved);
+                (restored, saved)
+            };
+            assert_eq!(restored.message, error);
+            let classified = classify_error_data(&restored);
+            assert_eq!(classified.kind, ToolErrorKind::Timeout);
+            assert!(!classified.retryable);
+            let saved: serde_json::Value = serde_json::from_str(&saved).unwrap();
+            assert_eq!(saved[field]["error_data"]["message"], error);
+        }
     }
 
     #[test]
