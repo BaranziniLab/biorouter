@@ -564,6 +564,7 @@ fn gh_create_command(
     body_file: &Path,
 ) -> tokio::process::Command {
     let mut create = tokio::process::Command::new(program);
+    biorouter_mcp::developer::shell::no_console_window(&mut create);
     configure_gh_create(&mut create, repo, title, body_file);
     create
 }
@@ -595,7 +596,6 @@ fn configure_gh_create(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true);
-    biorouter_mcp::developer::shell::no_console_window(create);
 }
 
 async fn file_with_gh_at(
