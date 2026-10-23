@@ -2348,6 +2348,20 @@ impl ToolCallRecord {
         }
     }
 
+    fn failed_with_provenance(
+        tool: &str,
+        args_json: &str,
+        user_error: Option<&str>,
+        kind: &'static str,
+        provenance: Option<ErrorProvenance>,
+    ) -> Self {
+        let mut record = Self::failed(tool, args_json, user_error, kind);
+        if let Some(provenance) = provenance {
+            record.failure = Some(provenance);
+        }
+        record
+    }
+
     /// Serialized size this record contributes to the `biorouter/tool-calls`
     /// array — what the total budget is charged. The +2 covers the record's
     /// separator and its share of the array brackets, so the sum strictly
@@ -3783,18 +3797,13 @@ impl CodeExecutionClient {
                         record.operation = operation;
                         record
                     }
-                    Err(error) => {
-                        let mut record = ToolCallRecord::failed(
-                            &tool_name,
-                            &arguments,
-                            user_error.as_deref(),
-                            failure_kind,
-                        );
-                        if let Some(provenance) = error.provenance {
-                            record.failure = Some(provenance);
-                        }
-                        record
-                    }
+                    Err(error) => ToolCallRecord::failed_with_provenance(
+                        &tool_name,
+                        &arguments,
+                        user_error.as_deref(),
+                        failure_kind,
+                        error.provenance,
+                    ),
                 };
                 collected_artifacts
                     .lock()
