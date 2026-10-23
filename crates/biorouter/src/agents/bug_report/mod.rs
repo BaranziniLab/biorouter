@@ -80,9 +80,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::conversation::Conversation;
 use crate::mcp_utils::ToolResult;
-use crate::pending_user_action::{
-    PendingUserActions, ToolApprovalRequest, UserActionOutcome, UserActionRequest,
-};
+use crate::pending_user_action::{PendingUserActions, ToolApprovalRequest, UserActionRequest};
 use crate::permission::tool_risk::ToolRisk;
 use crate::privacy::SessionClassification;
 use crate::session::session_manager::Session;
@@ -1214,7 +1212,7 @@ fn manual_receipt(repo: &str, title: &str, body: &str, gh_unavailable: bool, not
 mod tests {
     use super::*;
     use crate::conversation::message::{Message, MessageContent, ToolRequest, ToolResponse};
-    use crate::pending_user_action::{DecisionAuthority, ResolveOutcome};
+    use crate::pending_user_action::{DecisionAuthority, ResolveOutcome, UserActionOutcome};
     use crate::permission::Permission;
     use crate::session::session_manager::SessionType;
     use rmcp::model::{CallToolRequestParams, CallToolResult, Content};

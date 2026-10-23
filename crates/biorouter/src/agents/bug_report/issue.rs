@@ -39,7 +39,7 @@ use std::process::Stdio;
 use std::time::Duration;
 
 use super::evidence::Evidence;
-use super::redact::{self, MAX_COMPOSE_URL_CHARS};
+use super::redact::MAX_COMPOSE_URL_CHARS;
 
 /// Where a report goes. A constant, not configuration.
 pub const DEFAULT_REPO: &str = "BaranziniLab/biorouter";
@@ -644,6 +644,7 @@ async fn file_with_gh_at(
 mod tests {
     use super::*;
     use crate::agents::bug_report::evidence::{Evidence, ToolFailure};
+    use crate::agents::bug_report::redact;
     use crate::agents::tool_errors::ToolErrorKind;
 
     fn evidence() -> Evidence {
