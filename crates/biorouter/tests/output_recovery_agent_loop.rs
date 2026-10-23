@@ -1524,7 +1524,10 @@ const HTTP_PARTIAL: &str = "The synthetic result";
 const HTTP_CONTINUED: &str = " is complete.";
 const MALFORMED_STREAM_SENTINEL: &str = "SYNTHETIC_PRIVATE_STREAM_SENTINEL";
 
-async fn reply_through_malformed_ollama_http(failures: usize) -> (CutStreamReply, Vec<Value>) {
+async fn reply_through_malformed_ollama_http(
+    failures: usize,
+    validates_prompt: bool,
+) -> (CutStreamReply, Vec<Value>) {
     let server = MockServer::start().await;
     Mock::given(method("POST"))
         .and(path("/api/show"))
@@ -1548,16 +1551,32 @@ async fn reply_through_malformed_ollama_http(failures: usize) -> (CutStreamReply
     let sent = calls.clone();
     Mock::given(method("POST"))
         .and(path("/v1/chat/completions"))
-        .respond_with(move |_: &wiremock::Request| {
-            let failed = sent.fetch_add(1, Ordering::SeqCst) < failures;
-            let chunk = json!({
-                "id": "synthetic-stream", "model": "synthetic-model",
-                "choices": [{"index": 0, "delta": {"content": if failed { HTTP_PARTIAL } else { HTTP_CONTINUED }}, "finish_reason": null}]
+        .respond_with(move |request: &wiremock::Request| {
+            let call = sent.fetch_add(1, Ordering::SeqCst);
+            let failed = call < failures;
+            let id = format!("synthetic-stream-{call}");
+            let content = if failed {
+                HTTP_PARTIAL.to_string()
+            } else if validates_prompt {
+                HTTP_CONTINUED.to_string()
+            } else {
+                format!("{HTTP_PARTIAL}{HTTP_CONTINUED}")
+            };
+            let mut chunk = json!({
+                "id": id, "model": "synthetic-model",
+                "choices": [{"index": 0, "delta": {"content": content}, "finish_reason": null}]
             });
+            if validates_prompt {
+                chunk["usage"] = json!({
+                    "prompt_tokens": request.body.len(), "completion_tokens": 5,
+                    "total_tokens": request.body.len() + 5
+                });
+            }
             let ending = if failed {
                 format!("data: {{intentionally malformed {MALFORMED_STREAM_SENTINEL}\n\n")
             } else {
-                "data: {\"id\":\"synthetic-stream\",\"model\":\"synthetic-model\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n".to_string()
+                let final_chunk = json!({"id": id, "model": "synthetic-model", "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]});
+                format!("data: {final_chunk}\n\ndata: [DONE]\n\n")
             };
             ResponseTemplate::new(200)
                 .set_body_raw(format!("data: {chunk}\n\n{ending}"), "text/event-stream")
@@ -1651,7 +1670,7 @@ async fn reply_through_malformed_ollama_http(failures: usize) -> (CutStreamReply
 
 #[tokio::test]
 async fn malformed_ollama_http_stream_retries_and_preserves_the_partial_answer() {
-    let (reply, requests) = reply_through_malformed_ollama_http(1).await;
+    let (reply, requests) = reply_through_malformed_ollama_http(1, true).await;
     assert_eq!(requests.len(), 2, "one HTTP retry");
     assert!(!reply.aborted, "{:?}", reply.abort_codes);
     let answer: String = reply
@@ -1677,8 +1696,34 @@ async fn malformed_ollama_http_stream_retries_and_preserves_the_partial_answer()
 }
 
 #[tokio::test]
+async fn malformed_ollama_http_stream_resends_when_prompt_validation_held_the_answer() {
+    let (reply, requests) = reply_through_malformed_ollama_http(1, false).await;
+    assert_eq!(requests.len(), 2, "one HTTP retry");
+    assert!(!reply.aborted, "{:?}", reply.abort_codes);
+    let answer: String = reply
+        .stored
+        .iter()
+        .filter_map(|row| row.strip_prefix("Assistant: "))
+        .collect();
+    assert_eq!(answer, format!("{HTTP_PARTIAL}{HTTP_CONTINUED}"));
+    let retry = requests[1]["messages"].to_string();
+    assert!(
+        !retry.contains(HTTP_PARTIAL),
+        "the held text was never shown: {retry}"
+    );
+    assert!(
+        !retry.contains("Continue the reply from exactly where it stopped"),
+        "{retry}"
+    );
+    for row in reply.shown.iter().chain(&reply.stored) {
+        assert!(!row.contains("Retrying will not help"), "{row}");
+        assert!(!row.contains(MALFORMED_STREAM_SENTINEL), "{row}");
+    }
+}
+
+#[tokio::test]
 async fn repeated_malformed_ollama_http_streams_exhaust_the_retry_budget() {
-    let (reply, requests) = reply_through_malformed_ollama_http(usize::MAX).await;
+    let (reply, requests) = reply_through_malformed_ollama_http(usize::MAX, false).await;
     assert_eq!(requests.len(), 2, "the retry budget bounds real HTTP calls");
     assert_eq!(
         reply.abort_codes,

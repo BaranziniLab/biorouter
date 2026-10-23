@@ -879,9 +879,10 @@ prompt: |
      no delta during text and tool-call streams, valid Azure annotations, and malformed chunks.
      Require a useful provider error without echoing the raw response payload.
      Serve a partial answer followed by malformed JSON over real loopback HTTP/SSE through
-     Ollama's `/api/chat` 404 fallback. Require one bounded continuation that preserves the
-     partial answer, a successful clean retry, and typed network exhaustion when both attempts
-     are malformed. Raw malformed content must stay out of chat and stored errors.
+     Ollama's `/api/chat` 404 fallback. Require a bounded resend when prompt validation held
+     the answer, a continuation preserving an already validated partial answer, a successful
+     clean retry, and typed network exhaustion when both attempts are malformed. Raw malformed
+     content must stay out of chat and stored errors.
   2. Exercise the Versa request tests for Quick, Normal, and Deep on GPT-5.5. Assert the actual
      request body, including supported reasoning parameters and absence of unsupported temperature.
   3. Exercise the reasoning menu and chat request regressions for two existing conversations,
