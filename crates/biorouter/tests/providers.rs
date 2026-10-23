@@ -907,7 +907,7 @@ async fn test_versa_bedrock_provider_sonnet_5() -> Result<()> {
     .await
 }
 
-/// The other half of the 2026-10-05 measurement: Opus 5.5 and Opus 5 left
+/// The other half of the 2026-10-05 measurement: Opus 5 and Opus 4.7 stay off
 /// `VERSA_BEDROCK_KNOWN_MODELS` because UCSF's account is refused them
 /// (`AccessDeniedException`), and a chat still bound to one must hear that the
 /// MODEL was refused, not that its working key pair was. If this starts
@@ -931,7 +931,7 @@ async fn test_versa_bedrock_refuses_models_ucsf_does_not_serve() -> Result<()> {
     }
     drop(_lock);
 
-    for model in ["us.anthropic.claude-opus-5-5", "us.anthropic.claude-opus-5"] {
+    for model in ["us.anthropic.claude-opus-5", "us.anthropic.claude-opus-4-7"] {
         let provider = create_with_named_model("versa_bedrock", model).await?;
         let error = match provider
             .complete(
@@ -1489,7 +1489,7 @@ async fn test_versa_bedrock_every_offered_model() -> Result<()> {
 }
 
 /// The models taken OUT of the two catalogs, through BioRouter:
-///   * Versa Bedrock: `us.anthropic.claude-opus-5-5` is sent, AWS refuses it
+///   * Versa Bedrock: `us.anthropic.claude-opus-5` is sent, AWS refuses it
 ///     (`AccessDeniedException`), and the user hears a model refusal naming
 ///     the offered models, on both paths, promptly (not retried).
 ///   * Versa Azure: `gpt-6-sol-2026-09-22` has no deployment, so it is refused
@@ -1503,7 +1503,7 @@ async fn test_versa_removed_models_are_refused() -> Result<()> {
     let prompt = [Message::user().with_text("Reply with the single word OK.")];
 
     // Bedrock: sent, refused by AWS, surfaced as a model refusal.
-    let removed = "us.anthropic.claude-opus-5-5";
+    let removed = "us.anthropic.claude-opus-5";
     let provider = create_with_named_model("versa_bedrock", removed).await?;
     for path in [CallPath::Blocking, CallPath::Streaming] {
         let started = std::time::Instant::now();

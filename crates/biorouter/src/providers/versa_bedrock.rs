@@ -41,7 +41,7 @@ use super::formats::bedrock::{
 /// Opus 4.7 and Fable 5.1 ("User: arn:aws:iam::…:user/managed-service-account-
 /// mulesoft-ai is not authorized to perform: bedrock:InvokeModel on resource:
 /// …inference-profile/us.anthropic.…"). Read as a rejected pair, a chat still
-/// bound to Opus 5.5 after it left the list told the user to replace a key
+/// bound to a model that left the list told the user to replace a key
 /// pair that works. It is a `RequestFailed` whose words classify as
 /// `ModelUnavailable`, the same shape `versa_azure` gives a model with no
 /// deployment, so the turn stops on the first try and names the models that do
@@ -156,7 +156,9 @@ pub const VERSA_BEDROCK_DEFAULT_MODEL: &str = "us.anthropic.claude-opus-4-8";
 //     4 (`-sonnet-4-20250514-v1:0`), and for every `global.` and in-region
 //     `anthropic.` profile. The key pair works; the account may not invoke
 //     them. Opus 5.5 and Opus 5 were listed here, unverified, from 2026-09-25
-//     until this measurement removed them. `versa_refusal` turns that 403
+//     until this measurement removed them. Opus 5.5 and Sonnet 5.5 have since
+//     been enabled and are listed again (2026-10-22); the rest of this group
+//     is still refused. `versa_refusal` turns that 403
 //     into a model refusal, not a rejected key pair, for a chat still bound
 //     to one of them.
 //   * Fable, every version, stays off this list even if a later probe finds
@@ -179,6 +181,11 @@ pub const VERSA_BEDROCK_KNOWN_MODELS: &[&str] = &[
     // identifier is invalid" — 4.8 and 4.6 genuinely differ in id shape on
     // this account. Still the default (see above).
     "us.anthropic.claude-opus-4-8",
+    // Opus 5.5 (1M context, $4/$20) and Sonnet 5.5 (1M context, $2/$10).
+    // Enabled on UCSF's account after the 2026-10-05 IAM refusal recorded
+    // above; the user reported both available on 2026-10-22.
+    "us.anthropic.claude-opus-5-5",
+    "us.anthropic.claude-sonnet-5-5",
     // Sonnet 5 (1M context, $2/$10). First answered through the proxy on
     // 2026-10-05. Adaptive-only, so `formats::bedrock` sends it no
     // temperature, and it takes the Claude 64K default output allowance.
@@ -806,7 +813,7 @@ mod tests {
     const MODEL_REFUSED: &str = "User: arn:aws:iam::000000000000:user/\
          managed-service-account-mulesoft-ai is not authorized to perform: \
          bedrock:InvokeModel on resource: arn:aws:bedrock:us-west-2:000000000000:\
-         inference-profile/us.anthropic.claude-opus-5-5";
+         inference-profile/us.anthropic.claude-opus-5";
 
     /// The refusal a chat still bound to a model that left the list gets: the
     /// model is named, the pair is said to work, the offered models are listed,
@@ -840,7 +847,7 @@ mod tests {
 
     #[test]
     fn a_model_the_account_may_not_invoke_is_not_a_rejected_key_pair() {
-        let model = "us.anthropic.claude-opus-5-5";
+        let model = "us.anthropic.claude-opus-5";
         // The sentence reaches `versa_refusal` either as the gateway's own
         // words or inside the typed exception the classifier formatted.
         for (detail, said) in [
@@ -880,7 +887,7 @@ mod tests {
         for model in VERSA_BEDROCK_KNOWN_MODELS {
             let refused = versa_refusal(
                 ProviderError::Authentication("Failed to call Bedrock".to_string()),
-                Some(MODEL_REFUSED.replace("us.anthropic.claude-opus-5-5", model)),
+                Some(MODEL_REFUSED.replace("us.anthropic.claude-opus-5", model)),
                 model,
             );
             let text = refused.to_string();
@@ -892,8 +899,15 @@ mod tests {
             assert!(!text.contains("does not serve"), "{text}");
             assert!(text.contains("Your key pair works"), "{text}");
             assert!(text.contains("versa@ucsf.edu"), "{text}");
+            // Whole-id matches only: `claude-sonnet-5` is a prefix of the
+            // offered `claude-sonnet-5-5`.
             assert_eq!(
-                text.matches(*model).count(),
+                text.match_indices(*model)
+                    .filter(|(at, _)| {
+                        !text[at + model.len()..]
+                            .starts_with(|c: char| c.is_ascii_alphanumeric() || c == '-')
+                    })
+                    .count(),
                 1,
                 "{model} is named once, as the refused model, never as an alternative: {text}"
             );
@@ -918,7 +932,7 @@ mod tests {
     /// streaming request.
     #[tokio::test]
     async fn a_typed_access_denied_for_the_model_reaches_the_user_as_a_model_refusal() {
-        let model = "us.anthropic.claude-opus-5-5";
+        let model = "us.anthropic.claude-opus-5";
         let refusal = || {
             axum::http::Response::builder()
                 .status(403)
@@ -1175,6 +1189,8 @@ mod tests {
             VERSA_BEDROCK_KNOWN_MODELS,
             [
                 "us.anthropic.claude-opus-4-8",
+                "us.anthropic.claude-opus-5-5",
+                "us.anthropic.claude-sonnet-5-5",
                 "us.anthropic.claude-sonnet-5",
                 "us.anthropic.claude-opus-4-6-v1",
                 "us.anthropic.claude-sonnet-4-6",
@@ -1184,12 +1200,10 @@ mod tests {
         );
         for refused in [
             // AccessDeniedException from UCSF's IAM policy (2026-10-05).
-            "us.anthropic.claude-opus-5-5",
             "us.anthropic.claude-opus-5",
             "us.anthropic.claude-opus-4-7",
             "us.anthropic.claude-fable-5-1",
             "us.anthropic.claude-fable-5",
-            "us.anthropic.claude-sonnet-5-5",
             "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
             "us.anthropic.claude-sonnet-4-20250514-v1:0",
             // Answers, but Bedrock Legacy with an end of life of 2027-01-08.
@@ -1271,9 +1285,9 @@ mod tests {
     /// reasoning, on the real wire, while the same history for Opus 4.8 keeps
     /// it — the stripping is keyed on the model and nothing else.
     ///
-    /// Opus 5.5 is no longer offered here (UCSF's account is refused it,
-    /// 2026-10-05), but a typed-in or previously bound id still reaches this
-    /// request builder, and the builder is the one the public card shares.
+    /// Opus 5.5 is offered here again (enabled on UCSF's account, 2026-10-22);
+    /// the id is a preserved-thinking model, and the builder is the one the
+    /// public card shares.
     #[tokio::test]
     async fn converse_strips_replayed_reasoning_only_for_preserved_thinking_models() {
         let history = [
