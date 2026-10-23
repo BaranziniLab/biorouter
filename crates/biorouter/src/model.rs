@@ -155,6 +155,7 @@ static MODEL_CONTEXT_WINDOWS: Lazy<HashMap<&'static str, usize>> = Lazy::new(|| 
         ("claude-sonnet-4.5", 200_000),
         ("claude-sonnet-4.6", 1_000_000),
         ("claude-sonnet-5", 1_000_000),
+        ("claude-sonnet-5-5", 1_000_000),
         ("us.anthropic.claude-haiku-4-5-20251001-v1:0", 200_000),
         ("us.anthropic.claude-opus-4-5-20251101-v1:0", 200_000),
         ("us.anthropic.claude-opus-4-6-v1", 1_000_000),
@@ -175,6 +176,7 @@ static MODEL_CONTEXT_WINDOWS: Lazy<HashMap<&'static str, usize>> = Lazy::new(|| 
         ("us.anthropic.claude-sonnet-4-5-20250929-v1:0", 200_000),
         ("us.anthropic.claude-sonnet-4-6", 1_000_000),
         ("us.anthropic.claude-sonnet-5", 1_000_000),
+        ("us.anthropic.claude-sonnet-5-5", 1_000_000),
         // ── Google ──
         ("gemini-2.5-flash", 1_048_576),
         ("gemini-2.5-flash-image", 1_048_576),
