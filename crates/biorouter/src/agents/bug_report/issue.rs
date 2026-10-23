@@ -164,26 +164,7 @@ pub fn render_body(draft: &Draft, evidence: &Evidence, private: bool) -> String 
         None => body.push_str(NO_SUSPECTED_CAUSE),
     }
 
-    body.push_str("\n\n---\n\n**Please provide the following information**\n");
-    body.push_str(&format!(
-        "- **OS & Arch:** {} {} ({})\n",
-        evidence.os, evidence.os_version, evidence.architecture
-    ));
-    body.push_str("- **Interface:** Biorouter agent (reported from a chat)\n");
-    body.push_str(&format!("- **Version:** v{}\n", evidence.app_version));
-    body.push_str(&format!(
-        "- **Extensions enabled:** {}\n",
-        if evidence.enabled_extensions.is_empty() {
-            "none".to_string()
-        } else {
-            evidence.enabled_extensions.join(", ")
-        }
-    ));
-    body.push_str(&format!(
-        "- **Provider & Model:** {} – {}\n",
-        evidence.provider.as_deref().unwrap_or("not set"),
-        evidence.model.as_deref().unwrap_or("not set"),
-    ));
+    append_environment(&mut body, evidence);
 
     body.push_str("\n---\n\n**Additional context**\n");
     if let Some(additional) = draft.additional.as_ref().map(|a| a.trim()) {
@@ -239,6 +220,29 @@ pub fn render_body(draft: &Draft, evidence: &Evidence, private: bool) -> String 
     body.push_str("</sub>\n");
 
     body
+}
+
+fn append_environment(body: &mut String, evidence: &Evidence) {
+    body.push_str("\n\n---\n\n**Please provide the following information**\n");
+    body.push_str(&format!(
+        "- **OS & Arch:** {} {} ({})\n",
+        evidence.os, evidence.os_version, evidence.architecture
+    ));
+    body.push_str("- **Interface:** Biorouter agent (reported from a chat)\n");
+    body.push_str(&format!("- **Version:** v{}\n", evidence.app_version));
+    body.push_str(&format!(
+        "- **Extensions enabled:** {}\n",
+        if evidence.enabled_extensions.is_empty() {
+            "none".to_string()
+        } else {
+            evidence.enabled_extensions.join(", ")
+        }
+    ));
+    body.push_str(&format!(
+        "- **Provider & Model:** {} – {}\n",
+        evidence.provider.as_deref().unwrap_or("not set"),
+        evidence.model.as_deref().unwrap_or("not set"),
+    ));
 }
 
 /// The **Suspected cause** line of a report that supplied no diagnosis.
