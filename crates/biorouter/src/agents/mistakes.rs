@@ -628,6 +628,7 @@ mod tests {
 
     fn failed(tool: &str) -> ToolOutcome {
         ToolOutcome {
+            retryable_override: None,
             tool_name: tool.to_string(),
             failure: Some(format!("{tool} blew up")),
             kind: Some(ToolErrorKind::ToolFailure),
@@ -637,6 +638,7 @@ mod tests {
     /// A failure of a class a retry could survive (BR-51).
     fn failed_transiently(tool: &str) -> ToolOutcome {
         ToolOutcome {
+            retryable_override: None,
             tool_name: tool.to_string(),
             failure: Some(format!("{tool} could not reach the server")),
             kind: Some(ToolErrorKind::Transient),
@@ -645,6 +647,7 @@ mod tests {
 
     fn succeeded(tool: &str) -> ToolOutcome {
         ToolOutcome {
+            retryable_override: None,
             tool_name: tool.to_string(),
             failure: None,
             kind: None,
@@ -754,6 +757,7 @@ mod tests {
         let mut tracker = MistakeTracker::default();
 
         let malformed = ToolOutcome {
+            retryable_override: None,
             tool_name: MALFORMED_TOOL_NAME.to_string(),
             failure: Some("invalid json in arguments".to_string()),
             kind: Some(ToolErrorKind::InvalidArgs),

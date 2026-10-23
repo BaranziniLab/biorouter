@@ -2,13 +2,18 @@ use crate::agents::code_delta::{CodeDeltaTally, CODE_DELTA_META_KEY};
 use crate::agents::extension::PlatformExtensionContext;
 use crate::agents::extension_manager::get_parameter_names;
 use crate::agents::mcp_client::{Error, McpClientTrait, McpMeta};
+use crate::agents::operation_outcome::OperationOutcome;
 use crate::agents::platform_tools;
+use crate::agents::tool_errors::{
+    classify_call_result, classify_error_data, ToolError, ToolErrorKind,
+};
 use anyhow::Result;
 use async_trait::async_trait;
 use base64::Engine as _;
 use boa_engine::builtins::promise::PromiseState;
 use boa_engine::context::HostHooks;
 use boa_engine::module::{Module, ModuleLoader, Referrer, SyntheticModuleInitializer};
+use boa_engine::object::JsObject;
 use boa_engine::realm::Realm;
 use boa_engine::{
     js_string, Context, JsError, JsNativeError, JsResult, JsString, JsValue, NativeFunction, Source,
@@ -88,8 +93,65 @@ static INSTALL_JS_PANIC_HOOK: Once = Once::new();
 type ToolCallRequest = (
     String,
     String,
-    tokio::sync::oneshot::Sender<Result<String, String>>,
+    tokio::sync::oneshot::Sender<Result<String, ScriptFailure>>,
 );
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ErrorProvenance {
+    kind: ToolErrorKind,
+    retryable: bool,
+}
+
+impl From<ToolError> for ErrorProvenance {
+    fn from(error: ToolError) -> Self {
+        Self {
+            kind: error.kind,
+            retryable: error.retryable,
+        }
+    }
+}
+
+#[derive(Debug)]
+struct ScriptFailure {
+    message: String,
+    provenance: Option<ErrorProvenance>,
+}
+
+impl From<String> for ScriptFailure {
+    fn from(message: String) -> Self {
+        Self {
+            message,
+            provenance: None,
+        }
+    }
+}
+
+impl std::fmt::Display for ScriptFailure {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.message.fmt(formatter)
+    }
+}
+
+impl ScriptFailure {
+    fn into_js_error(self, context: &mut Context) -> JsError {
+        let object = JsNativeError::error()
+            .with_message(self.message)
+            .to_opaque(context);
+        if let Some(provenance) = self.provenance {
+            TOOL_ERROR_OBJECTS
+                .with(|objects| objects.borrow_mut().push((object.clone(), provenance)));
+        }
+        JsError::from_opaque(object.into())
+    }
+
+    fn envelope(&self) -> Option<Value> {
+        self.provenance.map(|provenance| {
+            let mut error = ToolError::new(provenance.kind, self.message.clone());
+            error.retryable = provenance.retryable;
+            error.to_envelope()
+        })
+    }
+}
 
 /// Whether a dispatched name reaches this extension's `execute_code`: the
 /// prefixed form, or the bare one `ExtensionManager::prefixed_tool_name`
@@ -645,6 +707,10 @@ thread_local! {
     /// Where the value last passed to `record_result` held `undefined`
     /// ([`undefined_paths`]): the values `record_result` leaves out.
     static RECORDED_UNDEFINED: std::cell::RefCell<Vec<String>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+    // Only the same uncaught exception inherits a tool's classification. A
+    // script may catch a tool error and throw an unrelated error afterwards.
+    static TOOL_ERROR_OBJECTS: std::cell::RefCell<Vec<(JsObject, ErrorProvenance)>> =
         const { std::cell::RefCell::new(Vec::new()) };
 }
 
@@ -1631,8 +1697,10 @@ fn module_not_found_message(specifier: &str, available: &[String]) -> String {
     } else {
         message.push_str(&format!(
             " Importable modules are exactly: {}. Nothing else can be imported. \
-             Call search_modules to find which one holds the tool you need, or \
-             read_module(\"<module>\") to list its tools.",
+             Outside execute_code, call the top-level tool code_execution__search_modules \
+             to find the tool you need, or code_execution__read_module with \
+             module_path=\"<module>\" to list its tools. These are not JavaScript \
+             globals, and code_execution is not an importable module.",
             available.join(", ")
         ));
     }
@@ -1838,7 +1906,7 @@ fn create_tool_function(full_tool_name: String) -> NativeFunction {
                 .ok_or_else(|| JsNativeError::error().with_message("Channel unavailable"))?;
 
             rx.blocking_recv()
-                .map_err(|e| e.to_string())
+                .map_err(|e| ScriptFailure::from(e.to_string()))
                 .and_then(|r| r)
                 .map(|result| {
                     let value = parse_result_to_js(&result, ctx);
@@ -1853,7 +1921,7 @@ fn create_tool_function(full_tool_name: String) -> NativeFunction {
                     });
                     value
                 })
-                .map_err(|e| JsNativeError::error().with_message(e).into())
+                .map_err(|error| error.into_js_error(ctx))
         },
         full_tool_name,
     )
@@ -1966,19 +2034,22 @@ fn run_js_module(
     tools: &[ToolInfo],
     call_tx: mpsc::UnboundedSender<ToolCallRequest>,
 ) -> Result<String, String> {
-    run_js_script(code, tools, call_tx).map(|output| output.text)
+    run_js_script(code, tools, call_tx)
+        .map(|output| output.text)
+        .map_err(|error| error.message)
 }
 
 fn run_js_script(
     code: &str,
     tools: &[ToolInfo],
     call_tx: mpsc::UnboundedSender<ToolCallRequest>,
-) -> Result<ScriptOutput, String> {
+) -> Result<ScriptOutput, ScriptFailure> {
     if code.len() > MAX_JS_SOURCE_BYTES {
         return Err(format!(
             "JavaScript source exceeds the {} byte limit",
             MAX_JS_SOURCE_BYTES
-        ));
+        )
+        .into());
     }
     install_js_panic_hook();
     CALL_TX.with(|tx| *tx.borrow_mut() = Some(call_tx));
@@ -1992,9 +2063,9 @@ fn run_js_script(
         let message =
             panic_payload_message(payload.as_ref()).unwrap_or("unknown JavaScript engine panic");
         if message == BOA_RUNTIME_LIMIT_PANIC {
-            Err("JavaScript execution limit exceeded".to_string())
+            Err("JavaScript execution limit exceeded".to_string().into())
         } else {
-            Err(format!("JavaScript engine failure: {message}"))
+            Err(format!("JavaScript engine failure: {message}").into())
         }
     });
     CALL_TX.with(|tx| *tx.borrow_mut() = None);
@@ -2007,9 +2078,20 @@ fn run_js_script(
 fn clear_result_records() {
     RESULT_KINDS.with(|kinds| kinds.borrow_mut().clear());
     RECORDED_UNDEFINED.with(|paths| paths.borrow_mut().clear());
+    TOOL_ERROR_OBJECTS.with(|objects| objects.borrow_mut().clear());
 }
 
-fn run_js_module_inner(code: &str, tools: &[ToolInfo]) -> Result<ScriptOutput, String> {
+fn rejected_tool_error_provenance(value: &JsValue) -> Option<ErrorProvenance> {
+    value.as_object().and_then(|rejected| {
+        TOOL_ERROR_OBJECTS.with(|objects| {
+            objects.borrow().iter().find_map(|(object, provenance)| {
+                JsObject::equals(object, &rejected).then_some(*provenance)
+            })
+        })
+    })
+}
+
+fn run_js_module_inner(code: &str, tools: &[ToolInfo]) -> Result<ScriptOutput, ScriptFailure> {
     let loader = Rc::new(ToolModuleLoader::default());
     let mut ctx = Context::builder()
         .module_loader(loader.clone())
@@ -2077,7 +2159,8 @@ fn run_js_module_inner(code: &str, tools: &[ToolInfo]) -> Result<ScriptOutput, S
                 Err(format!(
                     "JavaScript result exceeds the {} byte limit",
                     MAX_JS_RESULT_BYTES
-                ))
+                )
+                .into())
             } else {
                 let undefined = if recorded {
                     RECORDED_UNDEFINED.with(|paths| paths.borrow().clone())
@@ -2097,16 +2180,19 @@ fn run_js_module_inner(code: &str, tools: &[ToolInfo]) -> Result<ScriptOutput, S
                 })
             }
         }
-        PromiseState::Rejected(err) => Err(format!(
-            "Module error: {}",
-            annotate_js_error_for_script(
-                code,
-                tools,
-                &err.display().to_string(),
-                &text_only_tools()
-            )
-        )),
-        PromiseState::Pending => Err("Module evaluation did not complete".to_string()),
+        PromiseState::Rejected(err) => Err(ScriptFailure {
+            message: format!(
+                "Module error: {}",
+                annotate_js_error_for_script(
+                    code,
+                    tools,
+                    &err.display().to_string(),
+                    &text_only_tools()
+                )
+            ),
+            provenance: rejected_tool_error_provenance(&err),
+        }),
+        PromiseState::Pending => Err("Module evaluation did not complete".to_string().into()),
     }
 }
 
@@ -2214,6 +2300,8 @@ struct ToolCallRecord {
     /// Presentation-only projection of a matching, user-visible Todo result.
     #[serde(skip_serializing_if = "Option::is_none")]
     todo_task: Option<TodoTaskRecord>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    operation: Option<OperationOutcome>,
 }
 
 impl ToolCallRecord {
@@ -2225,6 +2313,7 @@ impl ToolCallRecord {
             error: None,
             result_bytes: Some(result_bytes),
             todo_task: None,
+            operation: None,
         }
     }
 
@@ -2248,6 +2337,7 @@ impl ToolCallRecord {
             error: Some(error),
             result_bytes: None,
             todo_task: None,
+            operation: None,
         }
     }
 
@@ -2694,6 +2784,8 @@ impl CodeExecutionClient {
                   have two or more calls that must be chained, or logic to run between them.
 
                 IMPORTANT: All tool calls are SYNCHRONOUS. Do NOT use async/await.
+                Discovery uses the top-level code_execution__search_modules and code_execution__read_module
+                tools OUTSIDE execute_code. They are not JavaScript globals, and code_execution is not importable.
 
                 Workflow (for genuine multi-call chaining only):
                     1. If you do not know the tool, call search_modules once. Its results include complete imports and signatures.
@@ -2906,6 +2998,7 @@ impl CodeExecutionClient {
                     None => format!("Error: {error}"),
                 };
                 let mut result = CallToolResult::error(vec![Content::text(text)]);
+                result.structured_content = error.envelope();
                 result.meta = meta;
                 Ok(result)
             }
@@ -3137,8 +3230,9 @@ impl CodeExecutionClient {
         tool_name: &str,
         result: &CallToolResult,
         collected_artifacts: &Mutex<CollectedArtifacts>,
-    ) -> (Result<String, String>, &'static str, Option<String>) {
+    ) -> (Result<String, ScriptFailure>, &'static str, Option<String>) {
         let is_error = result.is_error.unwrap_or(false);
+        let provenance = classify_call_result(result).map(ErrorProvenance::from);
         // Images and renderable resources must remain MCP content: converting
         // them to a JS string loses the pixels the model needs for visual QA.
         // Keep their original audience annotations, just as direct calls do.
@@ -3180,7 +3274,7 @@ impl CodeExecutionClient {
         let failure_kind = if value.is_err() {
             "result_too_large"
         } else {
-            "tool_failure"
+            provenance.map_or("tool_failure", |error| error.kind.as_str())
         };
         if is_error {
             let user_error = user_tool_result_text(&result.content);
@@ -3202,12 +3296,15 @@ impl CodeExecutionClient {
             // script throws, so an uncaught failure surfaces at the step
             // level already attributed.
             let value = match value {
-                Ok(message) => Err(format!("Tool error from {tool_name}: {message}")),
-                Err(error) => Err(error),
+                Ok(message) => Err(ScriptFailure {
+                    message: format!("Tool error from {tool_name}: {message}"),
+                    provenance,
+                }),
+                Err(error) => Err(error.into()),
             };
             (value, failure_kind, user_error)
         } else {
-            (value, failure_kind, None)
+            (value.map_err(ScriptFailure::from), failure_kind, None)
         }
     }
 
@@ -3260,7 +3357,7 @@ impl CodeExecutionClient {
         failure_kind: &'static str,
         user_note: Option<&str>,
         error: String,
-        response_tx: tokio::sync::oneshot::Sender<Result<String, String>>,
+        response_tx: tokio::sync::oneshot::Sender<Result<String, ScriptFailure>>,
     ) {
         collected_artifacts
             .lock()
@@ -3271,7 +3368,7 @@ impl CodeExecutionClient {
                 user_note,
                 failure_kind,
             ));
-        let _ = response_tx.send(Err(error));
+        let _ = response_tx.send(Err(error.into()));
     }
 
     /// QA finding F7: put one script call to the agent's judge, if there is one.
@@ -3336,10 +3433,11 @@ impl CodeExecutionClient {
         collected_artifacts: &Arc<Mutex<CollectedArtifacts>>,
         cancellation_token: &CancellationToken,
     ) -> (
-        Result<String, String>,
+        Result<String, ScriptFailure>,
         &'static str,
         Option<String>,
         Option<TodoTaskRecord>,
+        Option<OperationOutcome>,
     ) {
         // Issue #141, as DEFENCE IN DEPTH — not as the path the model takes.
         //
@@ -3359,16 +3457,18 @@ impl CodeExecutionClient {
         // depend on a live manager: the tool would not be there either way.
         if platform_tools::is_platform_tool_name(tool_name) {
             return (
-                Err(agent_loop_tool_refusal(tool_name)),
+                Err(agent_loop_tool_refusal(tool_name).into()),
                 "agent_loop_tool",
+                None,
                 None,
                 None,
             );
         }
         let Some(manager) = extension_manager.and_then(std::sync::Weak::upgrade) else {
             return (
-                Err("Extension manager not available".to_string()),
+                Err("Extension manager not available".to_string().into()),
                 "unavailable",
+                None,
                 None,
                 None,
             );
@@ -3392,18 +3492,32 @@ impl CodeExecutionClient {
                         .as_ref()
                         .ok()
                         .and_then(|_| todo_task_from_result(tool_name, arguments, &result));
-                    (value, kind, user, todo_task)
+                    (
+                        value,
+                        kind,
+                        user,
+                        todo_task,
+                        OperationOutcome::from_call(&result),
+                    )
                 }
-                Err(e) => (
-                    Err(format!("Tool error from {tool_name}: {}", e.message)),
-                    "tool_failure",
-                    None,
-                    None,
-                ),
+                Err(e) => {
+                    let provenance = ErrorProvenance::from(classify_error_data(&e));
+                    (
+                        Err(ScriptFailure {
+                            message: format!("Tool error from {tool_name}: {}", e.message),
+                            provenance: Some(provenance),
+                        }),
+                        provenance.kind.as_str(),
+                        None,
+                        None,
+                        None,
+                    )
+                }
             },
             Err(e) => (
-                Err(format!("Dispatch error from {tool_name}: {e}")),
+                Err(format!("Dispatch error from {tool_name}: {e}").into()),
                 "dispatch_error",
+                None,
                 None,
                 None,
             ),
@@ -3622,22 +3736,24 @@ impl CodeExecutionClient {
                     continue;
                 }
             };
-            let (result, mut failure_kind, user_error, todo_task) = Self::dispatch_sub_call(
-                &session_id,
-                cap,
-                &tool_name,
-                &arguments,
-                extension_manager.as_ref(),
-                &collected_artifacts,
-                &cancellation_token,
-            )
-            .await;
+            let (result, mut failure_kind, user_error, todo_task, operation) =
+                Self::dispatch_sub_call(
+                    &session_id,
+                    cap,
+                    &tool_name,
+                    &arguments,
+                    extension_manager.as_ref(),
+                    &collected_artifacts,
+                    &cancellation_token,
+                )
+                .await;
             let result = result.and_then(|value| {
                 if value.len() > MAX_JS_TOOL_RESULT_BYTES {
                     failure_kind = "result_too_large";
-                    Err(format!(
-                        "Tool result exceeds the {MAX_JS_TOOL_RESULT_BYTES} byte limit"
-                    ))
+                    Err(
+                        format!("Tool result exceeds the {MAX_JS_TOOL_RESULT_BYTES} byte limit")
+                            .into(),
+                    )
                 } else {
                     Ok(value)
                 }
@@ -3645,7 +3761,10 @@ impl CodeExecutionClient {
             // Centralized attribution: whichever path failed, the error the
             // script (and therefore the step-level result) sees names the
             // tool — see `attribute_sub_call_error`.
-            let result = result.map_err(|error| attribute_sub_call_error(&tool_name, error));
+            let result = result.map_err(|mut error| {
+                error.message = attribute_sub_call_error(&tool_name, error.message);
+                error
+            });
             // Per-call telemetry for the UI's executed-calls view (issue #28).
             // The Err string is intentionally NOT recorded — see
             // `ToolCallRecord::failed`.
@@ -3654,6 +3773,7 @@ impl CodeExecutionClient {
                     Ok(value) => {
                         let mut record = ToolCallRecord::ok(&tool_name, &arguments, value.len());
                         record.todo_task = todo_task;
+                        record.operation = operation;
                         record
                     }
                     Err(_) => ToolCallRecord::failed(
@@ -3735,6 +3855,9 @@ impl McpClientTrait for CodeExecutionClient {
                           "child_process", "http", "https", "crypto", "process", and no fetch/require.
                           Use a listed effective capability module for files or commands when one is present.
                         - Module names are case-sensitive capability or extension names, not package names.
+                        - Discovery tools code_execution__search_modules and code_execution__read_module
+                          are called OUTSIDE execute_code. They are not JavaScript globals, and
+                          code_execution is not an importable module.
 
                         MULTILINE SCRIPT ARGUMENTS:
                         - String.raw`...` ONLY preserves backslashes (\n stays two characters). It does NOT
@@ -3906,6 +4029,8 @@ impl McpClientTrait for CodeExecutionClient {
 
                 For an unfamiliar task, call search_modules once. Its results contain complete imports and signatures.
                 Use read_module only when you know the module but the needed tool was not in the search results.
+                Call the top-level code_execution__search_modules and code_execution__read_module tools
+                outside execute_code. They are not JavaScript globals, and code_execution is not importable.
             "#},
             server_list.join(", ")
         ))
@@ -3979,7 +4104,7 @@ mod tests {
     async fn a_script_naming_a_platform_tool_is_told_to_call_it_directly() {
         let collected = Arc::new(Mutex::new(CollectedArtifacts::default()));
         for name in platform_tools::PLATFORM_TOOL_NAMES {
-            let (result, kind, _user, _todo) = CodeExecutionClient::dispatch_sub_call(
+            let (result, kind, _user, _todo, _operation) = CodeExecutionClient::dispatch_sub_call(
                 "session-141",
                 crate::privacy::CallCapability::for_test_restricted(),
                 name,
@@ -3989,7 +4114,9 @@ mod tests {
                 &CancellationToken::new(),
             )
             .await;
-            let error = result.expect_err("the sandbox cannot run an agent-loop tool");
+            let error = result
+                .expect_err("the sandbox cannot run an agent-loop tool")
+                .message;
             assert_eq!(kind, "agent_loop_tool", "{name}: {error}");
             assert!(
                 error.contains(name),
@@ -4387,7 +4514,7 @@ mod tests {
         .await;
         let error = value.expect_err("a failed call throws in the script");
         assert_eq!(
-            error,
+            error.message,
             format!("Tool error from developer__shell: {output}"),
             "the output that says why must reach the script"
         );
@@ -4403,7 +4530,7 @@ mod tests {
         let (value, _, _) =
             CodeExecutionClient::completed_sub_call_outcome("developer__shell", &bare, &collected)
                 .await;
-        assert!(value.unwrap_err().contains("command failed"));
+        assert!(value.unwrap_err().message.contains("command failed"));
     }
 
     #[tokio::test]
@@ -4784,7 +4911,7 @@ mod tests {
             .expect_err("no manager: the call must fail");
         // Even this infrastructure failure names its tool for the script.
         assert_eq!(
-            error,
+            error.message,
             "Tool error from developer__shell: Extension manager not available"
         );
         drop(call_tx);
@@ -4807,17 +4934,29 @@ mod tests {
         assert!(record.result_bytes.is_none());
     }
 
-    struct TodoMetadataResultClient(CallToolResult);
+    struct ToolResultClient {
+        tool_name: String,
+        result: CallToolResult,
+    }
 
     #[async_trait::async_trait]
-    impl McpClientTrait for TodoMetadataResultClient {
+    impl McpClientTrait for ToolResultClient {
         async fn list_tools(
             &self,
             _next_cursor: Option<String>,
             _cancel_token: CancellationToken,
         ) -> Result<ListToolsResult, Error> {
             Ok(ListToolsResult {
-                tools: Vec::new(),
+                tools: vec![McpTool::new(
+                    self.tool_name.clone(),
+                    "Synthetic tool result fixture".to_string(),
+                    Arc::new(
+                        serde_json::json!({"type": "object", "properties": {}})
+                            .as_object()
+                            .unwrap()
+                            .clone(),
+                    ),
+                )],
                 next_cursor: None,
                 meta: None,
             })
@@ -4830,12 +4969,241 @@ mod tests {
             _meta: McpMeta,
             _cancel_token: CancellationToken,
         ) -> Result<CallToolResult, Error> {
-            Ok(self.0.clone())
+            Ok(self.result.clone())
         }
 
         fn get_info(&self) -> Option<&InitializeResult> {
             None
         }
+    }
+
+    async fn execute_with_failed_tool(
+        code: &str,
+        output: &str,
+        kind: &str,
+        retryable: bool,
+    ) -> CallToolResult {
+        let mut result = CallToolResult::error(vec![
+            Content::text(output).with_audience(vec![Role::Assistant]),
+            Content::text(output).with_audience(vec![Role::User]),
+        ]);
+        result.structured_content = Some(serde_json::json!({"error": {
+            "kind": kind, "retryable": retryable, "message": "fixture command failed",
+        }}));
+        execute_with_tool_result(code, result).await
+    }
+
+    async fn execute_with_tool_result(code: &str, result: CallToolResult) -> CallToolResult {
+        let temp = tempfile::tempdir().unwrap();
+        let session_manager = Arc::new(crate::session::SessionManager::new(
+            temp.path().to_path_buf(),
+        ));
+        let session = session_manager
+            .create_session(
+                temp.path().to_path_buf(),
+                "tool error provenance".into(),
+                crate::session::SessionType::User,
+            )
+            .await
+            .unwrap();
+        let manager = Arc::new(crate::agents::ExtensionManager::new(
+            Arc::new(Mutex::new(None)),
+            Arc::clone(&session_manager),
+        ));
+        manager
+            .add_client(
+                "fixture".to_string(),
+                crate::agents::extension::ExtensionConfig::Platform {
+                    name: "fixture".into(),
+                    description: "Tool result fixture".into(),
+                    bundled: Some(true),
+                    available_tools: Vec::new(),
+                },
+                Arc::new(ToolResultClient {
+                    tool_name: "run".into(),
+                    result,
+                }),
+                None,
+                None,
+            )
+            .await;
+        let client = CodeExecutionClient::new(PlatformExtensionContext {
+            extension_manager: Some(Arc::downgrade(&manager)),
+            session_manager,
+        })
+        .unwrap();
+        client
+            .handle_execute_code(
+                &session.id,
+                crate::privacy::CallCapability::for_test_restricted(),
+                Some(
+                    serde_json::json!({"code": code})
+                        .as_object()
+                        .unwrap()
+                        .clone(),
+                ),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn successful_status_lookups_keep_operation_failure_without_throwing() {
+        for code in [
+            r#"import { run } from "fixture"; record_result(run({}));"#,
+            r#"import { run } from "fixture"; try { const status = run({}); record_result({ handled: status.status === "failed" }); } catch (error) { throw new Error("lookup unexpectedly threw"); }"#,
+        ] {
+            let mut lookup =
+                CallToolResult::success(vec![Content::text("Synthetic status lookup completed")]);
+            lookup.structured_content = Some(serde_json::json!({"status": "failed"}));
+            let operation = serde_json::json!({"version": 1, "id": "fixture-operation", "status": "failed", "error": {
+                "code": "fixture_failed", "kind": "timeout", "message": "Synthetic job exceeded its deadline", "retryable": false
+            }});
+            lookup.meta = Some(rmcp::model::Meta(
+                serde_json::json!({"io.biorouter/operation": operation})
+                    .as_object()
+                    .unwrap()
+                    .clone(),
+            ));
+            let result = execute_with_tool_result(code, lookup).await;
+            assert_ne!(result.is_error, Some(true), "{result:?}");
+            assert!(classify_call_result(&result).is_none());
+            let meta = result.meta.as_ref().unwrap();
+            assert!(meta
+                .get(crate::agents::operation_outcome::OPERATION_META_KEY)
+                .is_none());
+            let record = &meta.get(TOOL_CALLS_META_KEY).unwrap()[0];
+            assert_eq!(record["status"], "ok");
+            assert_eq!(record["operation"]["status"], "failed");
+            let observed = crate::agents::operation_outcome::observed_operations(
+                "code_execution__execute_code",
+                &Ok(result),
+            );
+            assert_eq!(observed.len(), 1);
+            assert_eq!(observed[0].0, "fixture__run");
+            let error = observed[0].1.failure().unwrap();
+            assert_eq!(error.kind, ToolErrorKind::Timeout);
+            assert!(!error.retryable);
+        }
+    }
+
+    #[tokio::test]
+    async fn execute_code_preserves_tool_classification_despite_misleading_output() {
+        for (output, kind, retryable) in [
+            ("404", "tool_failure", false),
+            (
+                "401 permission denied; timeout; dns lookup failed",
+                "tool_failure",
+                false,
+            ),
+            ("ordinary diagnostic output", "not_found", false),
+            ("ordinary diagnostic output", "timeout", false),
+            ("ordinary diagnostic output", "transient", true),
+        ] {
+            let result = execute_with_failed_tool(
+                r#"import { run } from "fixture"; run({});"#,
+                output,
+                kind,
+                retryable,
+            )
+            .await;
+            let classified = classify_call_result(&result).expect("failed tool stays failed");
+            assert_eq!(classified.kind.as_str(), kind, "{output}");
+            assert_eq!(classified.retryable, retryable, "{output}");
+            assert!(result_text(&result).contains(output));
+            assert!(result_text(&result).contains("fixture__run"));
+        }
+    }
+
+    #[tokio::test]
+    async fn execute_code_only_retains_the_uncaught_tool_exception_classification() {
+        let rethrown = execute_with_failed_tool(
+            r#"import { run } from "fixture"; try { run({}); } catch (error) { throw error; }"#,
+            "404",
+            "tool_failure",
+            false,
+        )
+        .await;
+        assert_eq!(
+            classify_call_result(&rethrown).unwrap().kind,
+            ToolErrorKind::ToolFailure
+        );
+        assert!(rethrown.structured_content.is_some());
+
+        let replaced = execute_with_failed_tool(
+            r#"import { run } from "fixture"; try { run({}); } catch (error) { throw new Error("independent script mistake"); }"#,
+            "404", "not_found", false,
+        ).await;
+        assert!(replaced.structured_content.is_none());
+        assert_eq!(
+            classify_call_result(&replaced).unwrap().kind,
+            ToolErrorKind::ToolFailure
+        );
+
+        let caught = execute_with_failed_tool(
+            r#"import { run } from "fixture"; try { run({}); } catch (error) {} record_result("recovered");"#,
+            "404", "not_found", false,
+        ).await;
+        assert_ne!(caught.is_error, Some(true));
+        assert!(caught.structured_content.is_none());
+        assert!(result_text(&caught).contains("recovered"));
+    }
+
+    #[test]
+    fn tool_exception_provenance_is_scoped_to_the_exact_exception_and_run() {
+        let tools = one_tool("fixture", "run");
+        let (tx, mut rx) = mpsc::unbounded_channel::<ToolCallRequest>();
+        let responder = std::thread::spawn(move || {
+            for kind in [ToolErrorKind::NotFound, ToolErrorKind::Timeout] {
+                let (_, _, reply) = rx.blocking_recv().unwrap();
+                reply
+                    .send(Err(ScriptFailure {
+                        message: "fixture failure".into(),
+                        provenance: Some(ErrorProvenance {
+                            kind,
+                            retryable: false,
+                        }),
+                    }))
+                    .unwrap();
+            }
+        });
+        let error = run_js_script(
+            r#"import { run } from "fixture"; try { run({}); } catch (error) {} run({});"#,
+            &tools,
+            tx,
+        )
+        .unwrap_err();
+        responder.join().unwrap();
+        assert_eq!(
+            error.provenance,
+            Some(ErrorProvenance {
+                kind: ToolErrorKind::Timeout,
+                retryable: false
+            })
+        );
+        TOOL_ERROR_OBJECTS.with(|objects| assert!(objects.borrow().is_empty()));
+
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let independent =
+            run_js_script("throw new Error('fixture failure');", &tools, tx).unwrap_err();
+        assert!(independent.provenance.is_none());
+    }
+
+    #[test]
+    fn preserved_tool_error_envelopes_keep_a_bounded_summary() {
+        let error = ScriptFailure {
+            message: "diagnostic output\n".repeat(1000),
+            provenance: Some(ErrorProvenance {
+                kind: ToolErrorKind::ToolFailure,
+                retryable: false,
+            }),
+        };
+        let envelope = error.envelope().unwrap();
+        let message = envelope["error"]["message"].as_str().unwrap();
+        assert!(message.len() < 5000);
+        assert!(message.contains("full output is in the tool result"));
+        assert!(error.message.len() > 10000);
     }
 
     fn todo_metadata_content(id: &str, title: &str) -> Content {
@@ -4879,7 +5247,10 @@ mod tests {
                     bundled: Some(true),
                     available_tools: Vec::new(),
                 },
-                Arc::new(TodoMetadataResultClient(result)),
+                Arc::new(ToolResultClient {
+                    tool_name: tool_name.split_once("__").unwrap().1.to_string(),
+                    result,
+                }),
                 None,
                 None,
             )
@@ -4912,7 +5283,7 @@ mod tests {
         assert_eq!(collected.tool_calls.len(), 1);
         (
             serde_json::to_value(&collected.tool_calls[0]).unwrap(),
-            script_result,
+            script_result.map_err(|error| error.message),
         )
     }
 
@@ -6055,6 +6426,24 @@ record_result({ status: out.trim() });"#,
             error.contains("search_modules"),
             "error must point at the recovery path, got: {error}"
         );
+    }
+
+    #[test]
+    fn discovery_recovery_hints_name_the_top_level_tool_boundary() {
+        let tools = one_tool("developer", "shell");
+        for module in ["code_execution", "unknown_fixture"] {
+            let (tx, _rx) = mpsc::unbounded_channel();
+            let script = format!("import * as tools from {module:?};");
+            let error = run_js_module(&script, &tools, tx).unwrap_err();
+            assert!(error.contains("code_execution__search_modules"), "{error}");
+            assert!(error.contains("code_execution__read_module"), "{error}");
+            assert!(error.contains("Outside execute_code"), "{error}");
+            assert!(error.contains("not JavaScript globals"), "{error}");
+            assert!(
+                error.contains("code_execution is not an importable module"),
+                "{error}"
+            );
+        }
     }
 
     /// Node/browser builtins are the guesses that actually occur in the wild, so
@@ -7337,7 +7726,7 @@ mod gate_c_bridge_tests {
         let weak = Arc::downgrade(&manager);
         let artifacts = Arc::new(Mutex::new(CollectedArtifacts::default()));
 
-        let (result, kind, _user, _todo_task) = CodeExecutionClient::dispatch_sub_call(
+        let (result, kind, _user, _todo_task, _operation) = CodeExecutionClient::dispatch_sub_call(
             "gate-c",
             crate::privacy::CallCapability::for_test(crate::privacy::ProviderTier::Public, true),
             "ucsfomopagent__data_sources",
@@ -7349,8 +7738,9 @@ mod gate_c_bridge_tests {
         .await;
 
         assert_eq!(kind, "dispatch_error");
-        let text =
-            result.expect_err("a script must not reach a private extension from a public model");
+        let text = result
+            .expect_err("a script must not reach a private extension from a public model")
+            .message;
         // The WHOLE refusal: `Tool '…' not found` also names the extension, so
         // asserting on the name alone would pass on a fixture that never loaded
         // it.
@@ -7374,7 +7764,7 @@ mod gate_c_bridge_tests {
         let weak = Arc::downgrade(&manager);
         let artifacts = Arc::new(Mutex::new(CollectedArtifacts::default()));
 
-        let (result, kind, _user, _todo_task) = CodeExecutionClient::dispatch_sub_call(
+        let (result, kind, _user, _todo_task, _operation) = CodeExecutionClient::dispatch_sub_call(
             "gate-c",
             crate::privacy::CallCapability::for_test(crate::privacy::ProviderTier::Private, true),
             "ucsfomopagent__data_sources",

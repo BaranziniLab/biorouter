@@ -211,6 +211,8 @@ pub struct ToolOutcome {
     /// BR-51: the taxonomy class of the failure, `None` on success (or when the
     /// taxonomy is disabled and the outcome was built without one).
     pub kind: Option<ToolErrorKind>,
+    /// Authoritative operation retryability; absent keeps the legacy kind-based behavior.
+    pub retryable_override: Option<bool>,
 }
 
 impl ToolOutcome {
@@ -218,7 +220,10 @@ impl ToolOutcome {
     /// for a success (there is nothing to retry) and for any unclassified failure
     /// — the conservative answer, matching the pre-BR-51 assumption.
     pub fn retryable(&self) -> bool {
-        self.failure.is_some() && self.kind.is_some_and(ToolErrorKind::retryable)
+        self.failure.is_some()
+            && self
+                .retryable_override
+                .unwrap_or_else(|| self.kind.is_some_and(ToolErrorKind::retryable))
     }
 }
 
@@ -277,11 +282,26 @@ fn failure_text(result: &ToolResult<CallToolResult>) -> Option<String> {
 /// whether the taxonomy annotated the text or not (and, when it did, is read back
 /// off the header rather than re-guessed).
 pub fn tool_outcome(tool_name: &str, result: &ToolResult<CallToolResult>) -> ToolOutcome {
+    if crate::agents::tool_errors::classify(result).is_none() {
+        if let Some(error) =
+            crate::agents::operation_outcome::observed_operations(tool_name, result)
+                .into_iter()
+                .find_map(|(_, operation)| operation.failure())
+        {
+            return ToolOutcome {
+                tool_name: tool_name.to_string(),
+                failure: Some(error_signature(&error.message)),
+                kind: Some(error.kind),
+                retryable_override: Some(error.retryable),
+            };
+        }
+    }
     let failure = failure_text(result)
         .as_deref()
         .map(error_signature)
         .filter(|signature| !signature.is_empty());
     ToolOutcome {
+        retryable_override: None,
         tool_name: tool_name.to_string(),
         kind: failure
             .is_some()
@@ -381,7 +401,11 @@ pub fn latest_failure_kind(outcomes: &[ToolOutcome], tool_name: &str) -> Option<
 
 /// Is `tool_name`'s current failing run made of failures a retry could survive?
 fn streak_is_retryable(outcomes: &[ToolOutcome], tool_name: &str) -> bool {
-    latest_failure_kind(outcomes, tool_name).is_some_and(ToolErrorKind::retryable)
+    outcomes
+        .iter()
+        .rev()
+        .find(|outcome| outcome.tool_name == tool_name)
+        .is_some_and(ToolOutcome::retryable)
 }
 
 /// BR-31: the nudge (if any) owed to `tool_name` after its latest result, given
@@ -402,6 +426,7 @@ pub fn failure_loop_nudge(
     let streak = failing_streak(outcomes, tool_name, config.similarity_threshold);
     let fired = |threshold: Option<u32>| threshold.is_some_and(|at| at > 0 && streak >= at);
     let kind = latest_failure_kind(outcomes, tool_name);
+    let retryable = streak_is_retryable(outcomes, tool_name);
 
     if fired(config.escalate_at) {
         Some(escalated_failure_nudge(
@@ -411,11 +436,12 @@ pub fn failure_loop_nudge(
             // in, so do not threaten the model with a block that will not come.
             config
                 .hard_stop_at
-                .filter(|_| config.deny_retryable || !kind.is_some_and(ToolErrorKind::retryable)),
+                .filter(|_| config.deny_retryable || !retryable),
             kind,
+            retryable,
         ))
     } else if fired(config.soft_warn_at) {
-        Some(soft_failure_nudge(tool_name, streak, kind))
+        Some(soft_failure_nudge(tool_name, streak, kind, retryable))
     } else {
         None
     }
@@ -425,12 +451,16 @@ pub fn failure_loop_nudge(
 /// repeated. "Running it again will produce the same error again" is true of a
 /// missing file and false of a flaky network — telling the model the wrong one
 /// is worse than telling it nothing.
-fn failure_diagnosis(kind: Option<ToolErrorKind>) -> String {
+fn failure_diagnosis(kind: Option<ToolErrorKind>, retryable: bool) -> String {
     match kind {
-        Some(kind) if kind.retryable() => format!(
+        Some(kind) if retryable => format!(
             " The failures are classified '{}', i.e. retryable, so the tool itself may recover, \
              but blind repetition is not a plan: back off, change the request, or take a \
              different route.",
+            kind.as_str()
+        ),
+        Some(kind) if kind.retryable() => format!(
+            " The failures are classified '{}', but the operation reports that this failure is not retryable.",
             kind.as_str()
         ),
         Some(kind) => format!(
@@ -442,13 +472,18 @@ fn failure_diagnosis(kind: Option<ToolErrorKind>) -> String {
     }
 }
 
-fn soft_failure_nudge(tool_name: &str, streak: u32, kind: Option<ToolErrorKind>) -> String {
-    let repetition = if kind.is_some_and(ToolErrorKind::retryable) {
+fn soft_failure_nudge(
+    tool_name: &str,
+    streak: u32,
+    kind: Option<ToolErrorKind>,
+    retryable: bool,
+) -> String {
+    let repetition = if retryable {
         "Running it again may well produce the same error again."
     } else {
         "Running it again will produce the same error again."
     };
-    let diagnosis = failure_diagnosis(kind);
+    let diagnosis = failure_diagnosis(kind, retryable);
     format!(
         "No progress: '{tool_name}' has now failed {streak} times in a row with the \
          same error. {repetition} Read what the \
@@ -462,6 +497,7 @@ fn escalated_failure_nudge(
     streak: u32,
     hard_stop_at: Option<u32>,
     kind: Option<ToolErrorKind>,
+    retryable: bool,
 ) -> String {
     let stop_clause = match hard_stop_at {
         Some(at) if at > streak => format!(
@@ -474,7 +510,7 @@ fn escalated_failure_nudge(
         ),
         None => String::new(),
     };
-    let diagnosis = failure_diagnosis(kind);
+    let diagnosis = failure_diagnosis(kind, retryable);
     format!(
         "You are not making progress: '{tool_name}' has failed {streak} times in a row \
          with the same error, and the earlier warning changed nothing. Stop retrying it. \
@@ -854,12 +890,14 @@ fn call_observations(messages: &[Message], limit: usize) -> Vec<CallObservation>
             observation.outcome = Some(tool_outcome(&observation.call.name, &response.tool_result));
             observation.response_index = Some(index);
             if let Ok(result) = &response.tool_result {
-                if observation
-                    .outcome
-                    .as_ref()
-                    .is_some_and(|outcome| outcome.failure.is_none())
+                observation.active_job = active_operation_result(&observation.call, result);
+                if result.is_error != Some(true)
+                    && observation
+                        .outcome
+                        .as_ref()
+                        .is_some_and(|outcome| outcome.failure.is_none())
                 {
-                    observation.active_job = active_job_result(&observation.call, result);
+                    observation.active_job |= active_job_result(&observation.call, result);
                     observation.fingerprint = Some(result_fingerprint(result));
                 }
             }
@@ -923,7 +961,42 @@ fn active_job_state(value: &Value) -> bool {
         })
 }
 
+fn active_operation_result(call: &InternalToolCall, result: &CallToolResult) -> bool {
+    use crate::agents::operation_outcome::{OperationOutcome, OperationStatus};
+
+    if result.is_error == Some(true) {
+        return false;
+    }
+    let active = |operation: OperationOutcome| {
+        matches!(
+            operation.status,
+            OperationStatus::Queued | OperationStatus::Running
+        )
+    };
+    OperationOutcome::from_call(result).is_some_and(active)
+        || (crate::agents::code_execution_extension::is_execute_code_call(&call.name)
+            && result
+                .meta
+                .as_ref()
+                .and_then(|meta| meta.get("biorouter/tool-calls"))
+                .and_then(Value::as_array)
+                .is_some_and(|records| {
+                    records
+                        .iter()
+                        .filter(|record| record.get("status").and_then(Value::as_str) == Some("ok"))
+                        .filter_map(|record| record.get("operation"))
+                        .filter_map(OperationOutcome::from_value)
+                        .any(active)
+                }))
+}
+
 fn active_job_result(call: &InternalToolCall, result: &CallToolResult) -> bool {
+    if result.is_error == Some(true) {
+        return false;
+    }
+    if active_operation_result(call, result) {
+        return true;
+    }
     if result
         .structured_content
         .as_ref()
@@ -967,12 +1040,12 @@ fn observation_progress(
     threshold: f32,
 ) -> bool {
     let current = &calls[index];
-    let Some(fingerprint) = current.fingerprint else {
-        return false;
-    };
     if current.active_job {
         return true;
     }
+    let Some(fingerprint) = current.fingerprint else {
+        return false;
+    };
     let previous = calls[..index].iter().rev().find(|previous| {
         previous.call.near_matches(&current.call, threshold) && previous.outcome.is_some()
     });
@@ -1683,6 +1756,7 @@ mod tests {
 
     fn failed(tool_name: &str, error: &str) -> ToolOutcome {
         ToolOutcome {
+            retryable_override: None,
             tool_name: tool_name.to_string(),
             failure: Some(error_signature(error)),
             kind: Some(crate::agents::tool_errors::kind_from_text(error)),
@@ -1691,6 +1765,7 @@ mod tests {
 
     fn succeeded(tool_name: &str) -> ToolOutcome {
         ToolOutcome {
+            retryable_override: None,
             tool_name: tool_name.to_string(),
             failure: None,
             kind: None,
@@ -1967,6 +2042,32 @@ mod tests {
         assert!(matches!(result.action, InspectionAction::Deny));
     }
 
+    #[test]
+    fn a_terminal_timeout_operation_respects_an_explicit_no_retry_claim() {
+        let mut result =
+            CallToolResult::success(vec![rmcp::model::Content::text("Status lookup completed")]);
+        result.meta = Some(rmcp::model::Meta(serde_json::json!({"io.biorouter/operation": {
+            "version": 1, "id": "fixture", "status": "failed", "error": {
+                "code": "job_deadline", "kind": "timeout", "message": "Synthetic deadline expired", "retryable": false
+            }
+        }}).as_object().unwrap().clone()));
+        let outcome = tool_outcome("fixture__status", &Ok(result));
+        assert_eq!(outcome.kind, Some(ToolErrorKind::Timeout));
+        assert!(!outcome.retryable());
+        let outcomes = vec![outcome; 6];
+        let config = FailureLoopConfig {
+            deny_retryable: false,
+            ..FailureLoopConfig::default()
+        };
+        let inspector = RepetitionInspector::new(None).with_failure_loop(config);
+        assert!(inspector
+            .inspect_failure_loop("request", "fixture__status", &outcomes)
+            .is_some());
+        let nudge = failure_loop_nudge(&config, &outcomes, "fixture__status").unwrap();
+        assert!(nudge.contains("not retryable"), "{nudge}");
+        assert!(!nudge.contains("may recover"), "{nudge}");
+    }
+
     /// An unclassified failure (a `ToolOutcome` built without the taxonomy) must
     /// behave exactly as it did before BR-51: conservatively, as a hard failure.
     #[test]
@@ -1975,6 +2076,7 @@ mod tests {
             RepetitionInspector::new(None).with_failure_loop(FailureLoopConfig::default());
         let outcomes = vec![
             ToolOutcome {
+                retryable_override: None,
                 tool_name: "fetch".to_string(),
                 failure: Some("timed out".to_string()),
                 kind: None,
@@ -2169,6 +2271,172 @@ mod tests {
         assert!(!active_job_result(
             &shell,
             &ok_result("job another [test], status: running (60s elapsed)").unwrap()
+        ));
+    }
+
+    fn operation_result(status: &str, nested: bool) -> CallToolResult {
+        let operation = serde_json::json!({"version": 1, "id": "build-1", "status": status});
+        let meta = if nested {
+            serde_json::json!({"biorouter/tool-calls": [{
+                "tool": "fixture__status", "status": "ok", "args": "{}", "operation": operation
+            }]})
+        } else {
+            serde_json::json!({"io.biorouter/operation": operation})
+        };
+        let mut result = ok_result("Status lookup completed").unwrap();
+        result.meta = Some(rmcp::model::Meta(meta.as_object().unwrap().clone()));
+        result
+    }
+
+    #[tokio::test]
+    async fn metadata_only_active_operations_allow_direct_and_nested_long_polling() {
+        let inspector = RepetitionInspector::staged(3, 5);
+        for nested in [false, true] {
+            let name = if nested {
+                "code_execution__execute_code"
+            } else {
+                "fixture__status"
+            };
+            let args = if nested {
+                serde_json::json!({"code": "record_result(status({job_id: 'build-1'}))"})
+            } else {
+                serde_json::json!({"job_id": "build-1"})
+            };
+            for status in ["queued", "running"] {
+                let mut messages = Vec::new();
+                for _ in 0..250 {
+                    completed_call(
+                        &mut messages,
+                        name,
+                        args.clone(),
+                        Ok(operation_result(status, nested)),
+                    );
+                }
+                assert!(inspect_next(&inspector, &messages, name, args.clone())
+                    .await
+                    .is_empty());
+                assert!(tool_progress_since(&messages, messages.len() - 1));
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn terminal_operation_metadata_does_not_keep_a_loop_alive() {
+        let inspector = RepetitionInspector::staged(3, 5);
+        for nested in [false, true] {
+            let name = if nested {
+                "code_execution__execute_code"
+            } else {
+                "fixture__status"
+            };
+            for status in ["completed", "failed", "cancelled"] {
+                let mut messages = Vec::new();
+                for _ in 0..5 {
+                    completed_call(
+                        &mut messages,
+                        name,
+                        serde_json::json!({}),
+                        Ok(operation_result(status, nested)),
+                    );
+                }
+                let verdict =
+                    inspect_next(&inspector, &messages, name, serde_json::json!({})).await;
+                assert_eq!(verdict[0].action, InspectionAction::Deny);
+                assert!(!tool_progress_since(&messages, messages.len() - 1));
+            }
+        }
+    }
+
+    fn mixed_operation_result(status: &str) -> CallToolResult {
+        let mut result = operation_result(status, true);
+        result.meta.as_mut().unwrap().get_mut("biorouter/tool-calls").unwrap().as_array_mut().unwrap().push(serde_json::json!({
+            "tool": "fixture__status", "status": "ok", "args": "{}", "operation": {
+                "version": 1, "id": "failed-job", "status": "failed", "error": {
+                    "code": "job_failed", "kind": "tool_failure", "message": "Synthetic job failed", "retryable": false
+                }
+            }
+        }));
+        result
+    }
+
+    #[tokio::test]
+    async fn a_failed_operation_does_not_interrupt_another_identified_active_job() {
+        let inspector = RepetitionInspector::new(None)
+            .with_semantic(SemanticLoopConfig::default())
+            .with_failure_loop(FailureLoopConfig::default());
+        let name = "code_execution__execute_code";
+        let args = serde_json::json!({"code": "record_result(statuses())"});
+        let mut messages = Vec::new();
+        for _ in 0..250 {
+            completed_call(
+                &mut messages,
+                name,
+                args.clone(),
+                Ok(mixed_operation_result("running")),
+            );
+        }
+        assert!(inspect_next(&inspector, &messages, name, args.clone())
+            .await
+            .is_empty());
+        assert!(tool_progress_since(&messages, messages.len() - 1));
+        let observations = call_observations(&messages, LOOP_WINDOW);
+        assert!(observations
+            .last()
+            .unwrap()
+            .outcome
+            .as_ref()
+            .unwrap()
+            .failure
+            .is_some());
+        assert!(observations.last().unwrap().fingerprint.is_none());
+        for index in 0..6 {
+            let mut result = mixed_operation_result("completed");
+            result.content = vec![rmcp::model::Content::text(format!(
+                "lookup iteration {index}"
+            ))];
+            completed_call(&mut messages, name, args.clone(), Ok(result));
+        }
+        let verdict = inspect_next(&inspector, &messages, name, args).await;
+        assert_eq!(verdict[0].action, InspectionAction::Deny);
+        assert_eq!(
+            verdict[0].finding_id.as_deref(),
+            Some(FAILURE_LOOP_HARD_FINDING_ID)
+        );
+        assert!(!tool_progress_since(&messages, messages.len() - 1));
+    }
+
+    #[tokio::test]
+    async fn transport_errors_cannot_claim_an_active_operation() {
+        let inspector = RepetitionInspector::staged(3, 5);
+        for nested in [false, true] {
+            let name = if nested {
+                "code_execution__execute_code"
+            } else {
+                "fixture__status"
+            };
+            let args = serde_json::json!({"job_id": "build-1"});
+            let mut messages = Vec::new();
+            for _ in 0..5 {
+                let mut result = operation_result("running", nested);
+                result.is_error = Some(true);
+                completed_call(&mut messages, name, args.clone(), Ok(result));
+            }
+            let verdict = inspect_next(&inspector, &messages, name, args).await;
+            assert_eq!(verdict[0].action, InspectionAction::Deny);
+            assert!(!tool_progress_since(&messages, messages.len() - 1));
+        }
+    }
+
+    #[test]
+    fn nested_active_metadata_requires_the_builtin_dispatcher() {
+        let result = operation_result("running", true);
+        assert!(!active_job_result(
+            &call("fixture__read_json", serde_json::json!({})),
+            &result
+        ));
+        assert!(active_job_result(
+            &call("code_execution__execute_code", serde_json::json!({})),
+            &result
         ));
     }
 

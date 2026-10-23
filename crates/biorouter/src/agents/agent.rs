@@ -6365,6 +6365,7 @@ impl Agent {
                     outcomes.push(outcome);
                 }
                 Err(error) => outcomes.push(crate::tool_monitor::ToolOutcome {
+                    retryable_override: None,
                     tool_name: crate::agents::mistakes::MALFORMED_TOOL_NAME.to_string(),
                     failure: Some(error.message.to_string()),
                     // BR-51: a call the model emitted malformed never reached a

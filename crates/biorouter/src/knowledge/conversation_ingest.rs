@@ -629,6 +629,20 @@ mod tests {
     /// transcript is not worth writing up.
     struct SilentCompleter;
 
+    struct RateLimitedCompleter;
+
+    #[async_trait::async_trait]
+    impl Completer for RateLimitedCompleter {
+        async fn complete(
+            &self,
+            _system: &str,
+            _messages: &[biorouter_mcp::knowledge::subagent::loop_::LlmMessage],
+            _tools: &[rmcp::model::Tool],
+        ) -> anyhow::Result<biorouter_mcp::knowledge::subagent::loop_::LlmReply> {
+            anyhow::bail!("Rate limit exceeded")
+        }
+    }
+
     #[async_trait::async_trait]
     impl Completer for SilentCompleter {
         async fn complete(
@@ -952,6 +966,96 @@ mod tests {
                 .map(|mut d| d.next().is_none())
                 .unwrap_or(true),
             "no Soul page may exist after a failed Meditation"
+        );
+    }
+
+    #[tokio::test]
+    async fn retrying_a_failed_conversation_ingest_reuses_the_retained_raw_source() {
+        use biorouter_mcp::knowledge::{
+            macros::ingest::{IngestCurationFailure, IngestFailurePhase},
+            raw,
+        };
+
+        let tmp = tempfile::tempdir().unwrap();
+        let svc = KnowledgeService::new(tmp.path().to_path_buf());
+        svc.create_base("retry", "Retry", None).unwrap();
+        let mut session = base_session();
+        session.conversation = Some(Conversation::new_unvalidated(vec![
+            Message::user().with_text("Keep this generic research note."),
+            Message::assistant().with_text("A durable finding."),
+        ]));
+        let (_manager_dir, manager) = empty_session_manager();
+        let mut source_id = None;
+        for attempt in 0..3 {
+            let bounds = SubAgentBounds {
+                max_wall: if attempt == 1 {
+                    std::time::Duration::ZERO
+                } else {
+                    SubAgentBounds::default().max_wall
+                },
+                ..SubAgentBounds::default()
+            };
+            let completer: Box<dyn Completer> = if attempt == 0 {
+                Box::new(RateLimitedCompleter)
+            } else {
+                Box::new(SilentCompleter)
+            };
+            let err = ingest_conversation(
+                &svc,
+                ConversationIngestArgs {
+                    kb_id: "retry".into(),
+                    caller_capability: crate::privacy::ProviderTier::Public,
+                    caller_affiliation: None,
+                    session_manager: manager.clone(),
+                    sessions: vec![session.clone()],
+                    completer,
+                    focus: None,
+                    bounds,
+                    event_sink: None,
+                    cancel: None,
+                },
+            )
+            .await
+            .expect_err("all three fixture curations must fail");
+            let failure = err.downcast_ref::<IngestCurationFailure>().unwrap();
+            assert_eq!(failure.phase, IngestFailurePhase::RolledBack);
+            let expected_source = source_id.get_or_insert_with(|| failure.source_id.clone());
+            assert_eq!(&failure.source_id, expected_source);
+            assert_eq!(failure.raw_commit_sha.is_some(), attempt == 0);
+            assert!(err.to_string().contains("raw source"));
+            let cause = match attempt {
+                0 => "Rate limit exceeded",
+                1 => "TimeBudgetReached",
+                _ => "no knowledge pages",
+            };
+            assert!(err.to_string().contains(cause), "{err}");
+            assert_eq!(
+                raw::list_sources(&svc.root().join("retry")).unwrap().len(),
+                1
+            );
+        }
+
+        session
+            .conversation
+            .as_mut()
+            .unwrap()
+            .push(Message::user().with_text("A new finding changes this transcript."));
+        let rendered = render_conversation(&session);
+        let changed = svc
+            .add_raw_source(
+                "retry",
+                SourceInput::Text {
+                    text: rendered.markdown,
+                    title: Some(rendered.title),
+                },
+                None,
+            )
+            .await
+            .unwrap();
+        assert_ne!(Some(changed.source_id), source_id);
+        assert_eq!(
+            raw::list_sources(&svc.root().join("retry")).unwrap().len(),
+            2
         );
     }
 

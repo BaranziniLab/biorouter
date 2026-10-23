@@ -234,7 +234,7 @@ pub struct ToolError {
 const MAX_TOOL_ERROR_MESSAGE_CHARS: usize = 4096;
 
 impl ToolError {
-    fn new(kind: ToolErrorKind, message: impl Into<String>) -> Self {
+    pub(crate) fn new(kind: ToolErrorKind, message: impl Into<String>) -> Self {
         let message = message.into();
         let at = extract_location(&message);
         let message = if message.chars().count() > MAX_TOOL_ERROR_MESSAGE_CHARS {
@@ -266,7 +266,7 @@ impl ToolError {
         )
     }
 
-    fn to_envelope(&self) -> Value {
+    pub(crate) fn to_envelope(&self) -> Value {
         json!({ ENVELOPE_KEY: self })
     }
 }
@@ -340,17 +340,21 @@ impl ToolErrorTaxonomyConfig {
 pub fn classify(result: &ToolResult<CallToolResult>) -> Option<ToolError> {
     match result {
         Err(error) => Some(classify_error_data(error)),
-        Ok(call) if call.is_error == Some(true) => {
-            let text = error_text(call);
-            // The tool's own envelope wins over anything we could infer.
-            let from_tool = call
-                .structured_content
-                .as_ref()
-                .and_then(|sc| envelope_from_value(sc, &text));
-            Some(from_tool.unwrap_or_else(|| classify_text(&text)))
-        }
-        Ok(_) => None,
+        Ok(call) => classify_call_result(call),
     }
+}
+
+/// Classify a borrowed completed call without copying its output or artifacts.
+pub(crate) fn classify_call_result(call: &CallToolResult) -> Option<ToolError> {
+    if call.is_error != Some(true) {
+        return None;
+    }
+    let text = error_text(call);
+    let from_tool = call
+        .structured_content
+        .as_ref()
+        .and_then(|sc| envelope_from_value(sc, &text));
+    Some(from_tool.unwrap_or_else(|| classify_text(&text)))
 }
 
 /// Classify a transport/protocol error (the `Err` arm of a tool result).

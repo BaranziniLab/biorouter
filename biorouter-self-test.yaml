@@ -22,6 +22,7 @@ activities:
   - Exercise isolated OKF, BioOKF, and built-in Soul migration round trips
   - Generate and execute test workflows
   - Test error boundaries and security controls
+  - Verify asynchronous operation failures remain visible without turning successful status lookups into tool errors
   - Validate the Settings reset contract and its active-work safety gate
   - Verify provider error handling, conversation-scoped reasoning, and saved-credential deletion safeguards
   - Verify local inference executes tools and preserves results across turns
@@ -38,7 +39,7 @@ parameters:
     input_type: string
     requirement: optional
     default: "all"
-    description: "Which test phases to run: all, basic, extensions, computer_use, crew, apps, previews, subagents, knowledge, workflows, reset, providers, local_inference, agent_loop, office, advanced"
+    description: "Which test phases to run: all, basic, extensions, computer_use, crew, apps, previews, subagents, knowledge, workflows, reset, providers, local_inference, agent_loop, operation_outcome, office, advanced"
   
   - key: test_depth
     input_type: string
@@ -940,6 +941,29 @@ prompt: |
      fixture, report these desktop assertions NOT OBSERVABLE instead of changing real settings.
   4. Write phase4e_agent_loop.md below {{ workspace_dir }} with PASS, FAIL, BLOCKED or
      NOT OBSERVABLE for each check and identify any unverified behavior separately.
+  {% endif %}
+
+  {% if test_depth != "fixture_only" and (test_phases == "all" or "operation_outcome" in test_phases) %}
+  ## PHASE 4F: Asynchronous Operation Outcomes
+
+  Use only synthetic operations. Do not submit a real database job or read controlled data.
+  Preserve all active chats, connector configuration and user settings.
+
+  1. From the repository root run `cargo test -p biorouter --test operation_outcome_contract`.
+     Require successful status lookups to retain `isError: false` while the failed-operation
+     census counts each extension/job pair once. Repeated polls, transcript reload, ordinary
+     JSON with status failed, and malformed or unknown envelopes must be covered.
+  2. Run the tracked Code Execution regression
+     `cargo test -p biorouter --lib successful_status_lookups_keep_operation_failure_without_throwing`.
+     A script returning or inspecting a failed job status must complete successfully and
+     retain the nested operation record. It must not invent an exception.
+  3. If an isolated desktop fixture is available, inspect a synthetic failed-job status card.
+     Require a distinct Operation failed notice and a successful status-lookup label, with
+     the original status payload available. Inspect a script's nested-call view as well.
+     Without a desktop driver, report those visual assertions NOT OBSERVABLE.
+  4. Record the actual commands, exit codes and assertions in phase4f_operation_outcome.md
+     below {{ workspace_dir }}. Missing fixtures or skipped executions are not passes.
+     Run sequentially with other builds and tests to respect the resource budget.
   {% endif %}
 
   ## 📊 PHASE 5: Final Report Generation

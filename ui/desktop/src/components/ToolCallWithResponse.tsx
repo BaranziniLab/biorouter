@@ -1,4 +1,11 @@
 import './tool-call.css';
+import {
+  isCodeExecutionTool,
+  operationFromToolResult,
+  operationFailureText,
+  parseOperationOutcome,
+  type OperationOutcome,
+} from '../utils/operationOutcome';
 import { ToolContentPreview } from './ToolContentPreview';
 import { ToolCallStatus } from './ToolCallStatusIndicator';
 import { toolGlyphFor } from '../utils/toolGlyph';
@@ -76,6 +83,7 @@ type ExecutedToolCall = {
   error?: string;
   resultBytes?: number;
   todoTask?: { id: string; title: string };
+  operation?: OperationOutcome;
 };
 
 const MAX_EXECUTED_ARGUMENT_BYTES = 2048 + 3; // Backend cap plus a UTF-8 ellipsis.
@@ -198,6 +206,7 @@ function normalizeExecutedCalls(value: unknown): ExecutedToolCall[] {
         error: typeof record.error === 'string' && record.error.trim() ? record.error : undefined,
         resultBytes: typeof record.result_bytes === 'number' ? record.result_bytes : undefined,
         todoTask: normalizeExecutedTodoTask(record),
+        operation: parseOperationOutcome(record.operation) ?? undefined,
       },
     ];
   });
@@ -1421,6 +1430,7 @@ function ToolCallView({
   const isToolDetails = toolCall?.arguments && Object.entries(toolCall.arguments).length > 0;
 
   const toolError = getToolResultError(toolResponse?.toolResult);
+  const operationError = operationFailureText(operationFromToolResult(toolResponse?.toolResult));
 
   // Issue #56, DR-26 / Task 57. A cross-institutional refusal Gate C would clear
   // on a grant — the ONE refusal in this feature whose way out is a thing the
@@ -1455,8 +1465,12 @@ function ToolCallView({
   // declared tool_graph plan — never force-matched to it, since loops and
   // conditionals mean plan and execution can legitimately differ.
   const resultMeta = (toolResponse?.toolResult as ToolResultWithMeta | undefined)?.value?._meta;
-  const executedCalls = normalizeExecutedCalls(resultMeta?.['biorouter/tool-calls']);
-  const droppedCallCount = resultMeta?.['biorouter/tool-calls-dropped'];
+  const executedCalls = isCodeExecutionTool(toolCall.name)
+    ? normalizeExecutedCalls(resultMeta?.['biorouter/tool-calls'])
+    : [];
+  const droppedCallCount = isCodeExecutionTool(toolCall.name)
+    ? resultMeta?.['biorouter/tool-calls-dropped']
+    : undefined;
   const droppedExecutedCalls =
     typeof droppedCallCount === 'number' &&
     Number.isSafeInteger(droppedCallCount) &&
@@ -1578,6 +1592,7 @@ function ToolCallView({
     executedCalls.length > 0 ||
     droppedExecutedCalls > 0 ||
     Boolean(toolError) ||
+    Boolean(operationError) ||
     (logs?.length ?? 0) > 0 ||
     showProgress ||
     visibleResults.length > 0 ||
@@ -1615,6 +1630,15 @@ function ToolCallView({
 
       {(executedCalls.length > 0 || droppedExecutedCalls > 0) && (
         <ExecutedCallsView calls={executedCalls} dropped={droppedExecutedCalls} />
+      )}
+
+      {operationError && !toolError && (
+        <div className="flex min-w-0 flex-col gap-2">
+          <ToolFailureNotice title="Operation failed" message={operationError} />
+          <span className="text-supporting text-text-muted">
+            Status lookup completed successfully.
+          </span>
+        </div>
       )}
 
       {toolError && (
@@ -1678,13 +1702,21 @@ function ToolCallView({
     <TranscriptRow
       icon={glyph.Icon}
       glyph={glyph.kind}
-      label={toolRowLabel(toolSummary, rowState)}
+      label={
+        operationError && !toolError
+          ? `Operation failed · ${toolRowLabel(toolSummary, rowState)}`
+          : toolRowLabel(toolSummary, rowState)
+      }
       meta={metaParts.length > 0 ? metaParts.join(' ') : undefined}
       running={loadingStatus === 'loading'}
       // A failed call says so before it is opened: the verb ("Failed to …")
       // and the line's ink, not only the well's "Tool call failed" (V2-11).
-      tone={rowState === 'failed' ? 'danger' : 'muted'}
-      statusLabel={TOOL_ROW_COPY.statusLabel(toolCallStatus)}
+      tone={rowState === 'failed' || operationError ? 'danger' : 'muted'}
+      statusLabel={
+        operationError && !toolError
+          ? 'Operation failed; status lookup completed'
+          : TOOL_ROW_COPY.statusLabel(toolCallStatus)
+      }
       open={isOpen}
       onOpenChange={setOpenChoice}
       triggerClassName="br-tool-disclosure"
@@ -1843,6 +1875,7 @@ function ExecutedCallsView({ calls, dropped }: { calls: ExecutedToolCall[]; drop
 }
 
 function ExecutedCallRow({ call }: { call: ExecutedToolCall }) {
+  const operationError = operationFailureText(call.operation ?? null);
   const parsedArgs = parsedCallArguments(call.args);
   const taskSummary = call.todoTask
     ? summarizeTodoCall('todo_update', parsedArgs ?? {}, undefined, lineValue(call.todoTask.title))
@@ -1855,9 +1888,17 @@ function ExecutedCallRow({ call }: { call: ExecutedToolCall }) {
       <TranscriptRow
         icon={glyph.Icon}
         glyph={glyph.kind}
-        label={toolRowLabel(summary, call.status === 'error' ? 'failed' : 'done')}
-        tone={call.status === 'error' ? 'danger' : 'muted'}
-        statusLabel={TOOL_ROW_COPY.statusLabel(call.status === 'error' ? 'error' : 'success')}
+        label={
+          operationError && call.status === 'ok'
+            ? `Operation failed · ${toolRowLabel(summary, 'done')}`
+            : toolRowLabel(summary, call.status === 'error' ? 'failed' : 'done')
+        }
+        tone={call.status === 'error' || operationError ? 'danger' : 'muted'}
+        statusLabel={
+          operationError && call.status === 'ok'
+            ? 'Operation failed; status lookup completed'
+            : TOOL_ROW_COPY.statusLabel(call.status === 'error' ? 'error' : 'success')
+        }
       />
       <div className="flex min-w-0 flex-col gap-2 pl-6">
         {parsedArgs && Object.keys(parsedArgs).length > 0 ? (
@@ -1875,6 +1916,7 @@ function ExecutedCallRow({ call }: { call: ExecutedToolCall }) {
           <div className="text-supporting text-text-muted">{TOOL_ROW_COPY.noArguments}</div>
         )}
         {call.error && <ToolFailureNotice message={call.error} />}
+        {operationError && <ToolFailureNotice title="Operation failed" message={operationError} />}
       </div>
     </div>
   );

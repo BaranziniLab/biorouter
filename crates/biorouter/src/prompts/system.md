@@ -31,7 +31,7 @@ Effective module tools: {% for tool in capability.available_tools %}`{{tool}}`{%
 {% if capability.directly_callable_tools %}
 Directly callable this turn: {% for tool in capability.directly_callable_tools %}`{{capability.name}}__{{tool}}`{% if not loop.last %}, {% endif %}{% endfor %}.
 {% elif code_execution_mode and code_execute_available %}
-These tools are available through the Code Execution module, not as direct calls.
+Call these tools inside `code_execution__execute_code` by importing from "{{capability.name}}".
 {% else %}
 No tool from this capability is directly callable this turn.
 {% endif %}

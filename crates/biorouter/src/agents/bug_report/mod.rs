@@ -381,12 +381,12 @@ fn render_digest(evidence: &Evidence, scrubbed_working_dir: &str) -> String {
         scrubbed_working_dir,
     ));
     out.push_str(&format!(
-        "Tool calls in this chat: {} total, {} failed.\n",
-        evidence.total_tool_calls, evidence.total_failed_calls
+        "Tool calls in this chat: {} total, {} failed. Distinct failed operations: {}.\n",
+        evidence.total_tool_calls, evidence.total_failed_calls, evidence.total_failed_operations
     ));
 
     if evidence.failures.is_empty() {
-        out.push_str("\nNo failed tool calls are recorded in this chat.\n");
+        out.push_str("\nNo failed tool calls or operations are recorded in this chat.\n");
         return out;
     }
 
@@ -1381,6 +1381,7 @@ mod tests {
             session_id: "s".into(),
             failures: Vec::new(),
             total_failed_calls: 0,
+            total_failed_operations: 0,
             total_tool_calls: 0,
             recent_user_messages: Vec::new(),
             externalized_results: 0,
