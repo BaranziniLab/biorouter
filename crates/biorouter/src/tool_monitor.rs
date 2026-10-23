@@ -2059,7 +2059,7 @@ mod tests {
             deny_retryable: false,
             ..FailureLoopConfig::default()
         };
-        let inspector = RepetitionInspector::new(None).with_failure_loop(config);
+        let inspector = RepetitionInspector::new(None).with_failure_loop(config.clone());
         assert!(inspector
             .inspect_failure_loop("request", "fixture__status", &outcomes)
             .is_some());
