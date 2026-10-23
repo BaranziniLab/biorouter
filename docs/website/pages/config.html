@@ -8,7 +8,7 @@
 <code>BIOROUTER_PROVIDER: llamacpp
 BIOROUTER_MODEL: qwen3.8-27b
 BIOROUTER_MODE: smart_approve
-BIOROUTER_MAX_TURNS: 100</code></pre>
+BIOROUTER_MAX_TURNS: 0</code></pre>
 <p>Credentials are kept elsewhere; see <a href="#vaulting-secrets">Security</a>. <code>biorouter info -v</code> prints the values stored in <code>config.yaml</code>.</p>
 
 <h2 id="config-files">Where files live</h2>
@@ -60,7 +60,7 @@ BIOROUTER_MAX_TURNS: 100</code></pre>
     <tr><td><code class="code-token">BIOROUTER_PROVIDER</code></td><td>The provider, for example <code>llamacpp</code>. Names are on <a href="#providers">Models and providers</a>.</td></tr>
     <tr><td><code class="code-token">BIOROUTER_MODEL</code></td><td>The model, for example <code>qwen3.8-27b</code>.</td></tr>
     <tr><td><code class="code-token">BIOROUTER_MODE</code></td><td>The permission mode: <code>auto</code> (the default), <code>approve</code>, <code>smart_approve</code> or <code>chat</code>. See <a href="#vaulting-modes">Permission modes</a>.</td></tr>
-    <tr><td><code class="code-token">BIOROUTER_MAX_TURNS</code></td><td>Turns the agent may take without you. Default <code>100</code>.</td></tr>
+    <tr><td><code class="code-token">BIOROUTER_MAX_TURNS</code></td><td>Turns the agent may take without you. Default <code>0</code> means Unlimited; a positive value sets a limit.</td></tr>
     <tr><td><code class="code-token">BIOROUTER_AUTO_COMPACT_THRESHOLD</code></td><td>The share of the context window at which a chat is summarized. Default <code>0.8</code>; <code>0</code> turns it off.</td></tr>
   </tbody>
 </table></div>
@@ -68,6 +68,7 @@ BIOROUTER_MAX_TURNS: 100</code></pre>
 <div class="doc-table-scroll"><table class="doc-options">
   <thead><tr><th>Variable</th><th>What it does</th></tr></thead>
   <tbody>
+    <tr><td><code class="code-token">BIOROUTER_MAX_TOOL_CALLS</code></td><td>Tool calls the agent may make without you. Default <code>0</code> means Unlimited; a positive value sets a limit.</td></tr>
     <tr><td><code class="code-token">BIOROUTER_SUBAGENT_MAX_TURNS</code></td><td>The turn limit for a subagent. Default <code>25</code>.</td></tr>
     <tr><td><code class="code-token">BIOROUTER_CONTEXT_LIMIT</code></td><td>Overrides the model's context window, in tokens. Useful for a model Biorouter does not know.</td></tr>
     <tr><td><code class="code-token">BIOROUTER_DISABLE_KEYRING</code></td><td>Any value keeps secrets in <code>secrets.yaml</code> instead of the credential store.</td></tr>

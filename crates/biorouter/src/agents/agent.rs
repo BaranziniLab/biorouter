@@ -103,22 +103,9 @@ use tokio::sync::{mpsc, oneshot, Mutex, Notify};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, instrument, warn};
 
-/// Turns a reply may take without asking the user to continue.
-///
-/// ⚠ Public because two CLI surfaces have to agree with it, and both once did
-/// not: `--max-turns`' help text announced 1000, and `biorouter configure`
-/// pre-filled 1000 as the "current" value when nothing was set, so accepting
-/// the dialog WROTE 1000 and raised the real limit tenfold. Read this constant
-/// rather than restating the number.
-pub const DEFAULT_MAX_TURNS: u32 = 100;
-/// Absolute cap on the number of tool calls in a single reply, summed across all
-/// iterations. `max_turns` counts provider round-trips, but one round-trip can
-/// fan out many parallel tool calls, so a few iterations can run an unbounded
-/// number of tools with ever-changing args (which the exact-duplicate guard
-/// misses). This is the backstop for that. Generous by default so it never bites
-/// normal work; overridable per session (`max_tool_calls`) or globally
-/// (`BIOROUTER_MAX_TOOL_CALLS`).
-const DEFAULT_MAX_TOOL_CALLS: u32 = 200;
+/// Default reply limits. Zero means unlimited; finite limits remain opt-in.
+pub const DEFAULT_MAX_TURNS: u32 = 0;
+const DEFAULT_MAX_TOOL_CALLS: u32 = 0;
 /// BR-29 staged repetition guard, soft stage: the Nth consecutive byte-identical
 /// tool call earns a non-blocking warning injected into the model's context (the
 /// call still runs). Overridable with `BIOROUTER_REPETITION_SOFT_WARN`.
@@ -2352,14 +2339,7 @@ fn resolve_reply_loop_policy(
     }
 }
 
-/// The stored `BIOROUTER_MAX_TURNS`, or `None` when it is absent or unusable.
-///
-/// Only a whole number of at least 1 is a limit. Clearing the settings field
-/// stores `0`, and honouring it stopped every new chat before its first model
-/// call ("0 actions without user input"); a negative or non-numeric value used
-/// to fail to parse and fall back without a word. Both now fall back to
-/// [`DEFAULT_MAX_TURNS`] with a warning that names the stored value, logged
-/// once per distinct value rather than on every reply.
+/// Zero explicitly removes the limit; invalid values inherit the default.
 fn configured_max_turns(raw: Option<serde_json::Value>) -> Option<u32> {
     let raw = raw?;
     let parsed = match &raw {
@@ -2367,10 +2347,7 @@ fn configured_max_turns(raw: Option<serde_json::Value>) -> Option<u32> {
         serde_json::Value::String(text) => text.trim().parse::<u64>().ok(),
         _ => None,
     };
-    if let Some(turns) = parsed
-        .filter(|turns| *turns >= 1)
-        .and_then(|turns| u32::try_from(turns).ok())
-    {
+    if let Some(turns) = parsed.and_then(|turns| u32::try_from(turns).ok()) {
         return Some(turns);
     }
     static LAST_WARNED: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
@@ -2380,8 +2357,8 @@ fn configured_max_turns(raw: Option<serde_json::Value>) -> Option<u32> {
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     if last.as_deref() != Some(shown.as_str()) {
         tracing::warn!(
-            "BIOROUTER_MAX_TURNS is set to {shown}, which is not a whole number of at least 1; \
-             using the default of {DEFAULT_MAX_TURNS}"
+            "BIOROUTER_MAX_TURNS is set to {shown}, which is not a whole non-negative number; \
+             using the unlimited default"
         );
         *last = Some(shown);
     }
@@ -6175,8 +6152,7 @@ impl Agent {
         // Add repetition inspector (lower priority - basic repetition checking).
         // BR-29: staged — a soft, non-blocking warning first, a hard stop only if
         // the model keeps repeating itself through it.
-        // BR-30: plus the semantic heuristics (near-duplicate arg tweaks, A/B/A/B
-        // oscillation), which are warn-only unless a hard stop is configured.
+        // Semantic guards require completed, unchanged work before stopping.
         let config = Config::global();
         let soft_warn_at = config
             .get_param::<u32>("BIOROUTER_REPETITION_SOFT_WARN")
@@ -6199,10 +6175,8 @@ impl Agent {
 
     /// BR-30: resolve the semantic loop-detection config.
     ///
-    /// Defaults are deliberately warn-only — a heuristic that denies a call it
-    /// misread is worse than one that nudges. Operators who want enforcement set
-    /// `BIOROUTER_LOOP_NEAR_DUP_HARD_STOP` / `BIOROUTER_LOOP_OSCILLATION_HARD_STOP`
-    /// (a value of 0 keeps the stage off).
+    /// Warn before stopping completed work that keeps repeating without progress.
+    /// A zero threshold disables its stage.
     fn semantic_loop_config(config: &Config) -> SemanticLoopConfig {
         let defaults = SemanticLoopConfig::default();
         let positive = |value: u32| (value > 0).then_some(value);
@@ -6236,9 +6210,8 @@ impl Agent {
 
     /// BR-31: resolve the repeated-failing-result ("no progress") config.
     ///
-    /// Unlike BR-30's heuristics this ships with its hard stage on: a run of
-    /// identical *failures* is observed evidence, not a similarity guess. Each
-    /// stage is individually disabled by setting it to 0
+    /// Persistent identical failures stop after recovery warnings. Each stage
+    /// is individually disabled by setting it to 0
     /// (`BIOROUTER_FAILURE_LOOP_HARD_STOP=0` keeps the nudges but never blocks);
     /// `BIOROUTER_FAILURE_LOOP_DETECTION=false` turns the whole detector off.
     fn failure_loop_config(config: &Config) -> FailureLoopConfig {
@@ -6265,9 +6238,6 @@ impl Agent {
                 .get_param::<u32>("BIOROUTER_FAILURE_LOOP_HARD_STOP")
                 .ok()
                 .map_or(defaults.hard_stop_at, positive),
-            // BR-51: opt in to hard-stopping a streak of *retryable* failures
-            // (timeouts, transient dependency errors), which is off by default —
-            // blocking the retry that would have worked is worse than one more.
             deny_retryable: config
                 .get_param::<bool>("BIOROUTER_FAILURE_LOOP_DENY_RETRYABLE")
                 .unwrap_or(defaults.deny_retryable),
@@ -6296,7 +6266,8 @@ impl Agent {
             return Vec::new();
         }
 
-        let mut outcomes = crate::tool_monitor::tool_outcomes_since_last_user_turn(history);
+        let mut outcomes =
+            crate::tool_monitor::tool_outcomes_since_last_progress(history, &self.failure_loop);
         let mut failed_tools: Vec<String> = Vec::new();
 
         for request in requests {
@@ -11281,7 +11252,7 @@ impl Agent {
                 }
 
                 if !std::mem::take(&mut restart_steer_reissue) {
-                    turns_taken += 1;
+                    turns_taken = turns_taken.saturating_add(1);
                 }
                 // Surface turn progress so an observer (CLI/GUI/logs) can tell how
                 // much of the per-turn action budget has been used, and so a
@@ -11293,14 +11264,14 @@ impl Agent {
                 // model — instead of stopping on a message that was accepted and
                 // then shown to nobody. One reset per human steer, never for an
                 // agent's injection, so the bound is still the person's typing.
-                if turns_taken > max_turns && self.has_pending_user_direct_steer() {
+                if max_turns > 0 && turns_taken > max_turns && self.has_pending_user_direct_steer() {
                     info!(
                         actions = turns_taken,
                         "a steer arrived at the action limit; counting actions from it"
                     );
                     turns_taken = 1;
                 }
-                if turns_taken > max_turns {
+                if max_turns > 0 && turns_taken > max_turns {
                     self.record_turn_exit(TurnExit::ResumableForUserInput);
                     crate::agents::subagent_handle::begin_parent_closing(&session_config.id);
                     native_supervision_required = true;
@@ -11320,14 +11291,14 @@ impl Agent {
                     );
                     break;
                 }
-                if tool_calls_taken > max_tool_calls && self.has_pending_user_direct_steer() {
+                if max_tool_calls > 0 && tool_calls_taken > max_tool_calls && self.has_pending_user_direct_steer() {
                     info!(
                         tool_calls = tool_calls_taken,
                         "a steer arrived at the tool-call limit; counting calls from it"
                     );
                     tool_calls_taken = 0;
                 }
-                if tool_calls_taken > max_tool_calls {
+                if max_tool_calls > 0 && tool_calls_taken > max_tool_calls {
                     self.record_turn_exit(TurnExit::ResumableForUserInput);
                     crate::agents::subagent_handle::begin_parent_closing(&session_config.id);
                     native_supervision_required = true;
@@ -11494,7 +11465,7 @@ impl Agent {
                         // The model gets a short grace window to write its wrap-up;
                         // after that the turn ends whether or not it complied.
                         stall_deadline =
-                            Some(turns_taken + crate::agents::stall::STALL_WRAPUP_GRACE);
+                            Some(turns_taken.saturating_add(crate::agents::stall::STALL_WRAPUP_GRACE));
                         // #66 SHAPE 2: model-only, like the nudge above.
                         let (wrapup, published) = persist_steering_message(
                             &session_manager,
@@ -11569,7 +11540,7 @@ impl Agent {
                         // summarize where it got to. The hard stop above fires only
                         // if it ignores that.
                         budget_deadline = Some(
-                            turns_taken + crate::agents::budget::BUDGET_WRAPUP_GRACE,
+                            turns_taken.saturating_add(crate::agents::budget::BUDGET_WRAPUP_GRACE),
                         );
                         // #66 SHAPE 2: model-only, like the stall wrap-up above.
                         let (wrapup, published) = persist_steering_message(
@@ -13124,6 +13095,12 @@ impl Agent {
                 if let Some(published) = named_after_earlier_yield(messages_to_add.iter()) {
                     yield published;
                 }
+                let new_response_ids = messages_to_add
+                    .iter()
+                    .flat_map(|message| message.content.iter())
+                    .filter_map(|part| part.as_tool_response())
+                    .map(|response| response.id.clone())
+                    .collect();
                 fold_iteration_into_conversation(
                     &mut conversation,
                     &mut signed_replay_context,
@@ -13132,6 +13109,12 @@ impl Agent {
                     did_retry_reset_this_iteration,
                     signed_replay_invalidated_this_iteration,
                 );
+                if !stall_watch.has_given_up()
+                    && crate::tool_monitor::tool_progress_for_responses(conversation.messages(), &new_response_ids)
+                {
+                    stall_watch.record_progress();
+                    stall_deadline = None;
+                }
                 if exit_chat
                     && pending_turn_abort.is_none()
                     && signed_replay_context.is_some()
@@ -24770,12 +24753,9 @@ mod max_turns_setting_tests {
         .await
     }
 
-    /// W2-DMN-15: clearing the settings field stores `0`, and a reply that
-    /// honoured it stopped before its first model call. Anything below 1, or
-    /// anything that is not a whole number, is treated as unset.
     #[tokio::test]
-    async fn a_stored_limit_below_one_falls_back_to_the_default() {
-        for stored in ["0", "-5", "\"0\"", "\"-5\"", "\"many\"", "2.5"] {
+    async fn invalid_stored_limits_fall_back_to_the_unlimited_default() {
+        for stored in ["-5", "\"-5\"", "\"many\"", "2.5"] {
             assert_eq!(
                 resolved_with_stored(stored).await,
                 DEFAULT_MAX_TURNS,
@@ -24791,11 +24771,53 @@ mod max_turns_setting_tests {
         assert_eq!(resolved_with_stored("1").await, 1);
     }
 
+    #[tokio::test]
+    async fn explicit_unlimited_session_overrides_finite_global_limits_in_every_effort() {
+        crate::config::with_config_overrides(
+            HashMap::from([
+                ("BIOROUTER_MAX_TURNS".to_string(), "7".to_string()),
+                ("BIOROUTER_MAX_TOOL_CALLS".to_string(), "9".to_string()),
+            ]),
+            async {
+                let mut session = session_without_limit();
+                session.max_turns = Some(0);
+                session.max_tool_calls = Some(0);
+                for effort in [
+                    ReasoningEffort::Quick,
+                    ReasoningEffort::Normal,
+                    ReasoningEffort::Deep,
+                ] {
+                    let policy = resolve_reply_loop_policy(effort, &session);
+                    assert_eq!(policy.max_turns, 0);
+                    assert_eq!(policy.max_tool_calls, 0);
+                }
+            },
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn stored_zero_removes_both_limits() {
+        crate::config::with_config_overrides(
+            HashMap::from([
+                ("BIOROUTER_MAX_TURNS".to_string(), "0".to_string()),
+                ("BIOROUTER_MAX_TOOL_CALLS".to_string(), "0".to_string()),
+            ]),
+            async {
+                let policy =
+                    resolve_reply_loop_policy(ReasoningEffort::Normal, &session_without_limit());
+                assert_eq!(policy.max_turns, 0);
+                assert_eq!(policy.max_tool_calls, 0);
+            },
+        )
+        .await;
+    }
+
     #[test]
-    fn only_a_whole_number_of_at_least_one_is_a_limit() {
+    fn zero_is_unlimited_and_positive_whole_numbers_are_limits() {
         use serde_json::json;
         assert_eq!(configured_max_turns(None), None);
-        assert_eq!(configured_max_turns(Some(json!(0))), None);
+        assert_eq!(configured_max_turns(Some(json!(0))), Some(0));
         assert_eq!(configured_max_turns(Some(json!(-5))), None);
         assert_eq!(configured_max_turns(Some(json!(" 12 "))), Some(12));
         assert_eq!(

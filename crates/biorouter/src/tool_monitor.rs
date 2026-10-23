@@ -7,6 +7,7 @@ use anyhow::Result;
 use async_trait::async_trait;
 use rmcp::model::{CallToolRequestParams, CallToolResult, Role};
 use serde_json::{Map, Value};
+use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 /// Inspector name used by the repetition guard; the agent keys the honest
@@ -22,11 +23,11 @@ pub const REPETITION_SOFT_FINDING_ID: &str = "REP-002";
 
 /// BR-30 near-duplicate ("arg-tweak") repetition, soft stage.
 pub const REPETITION_NEAR_DUP_SOFT_FINDING_ID: &str = "REP-003";
-/// BR-30 near-duplicate ("arg-tweak") repetition, hard stage (opt-in).
+/// BR-30 near-duplicate ("arg-tweak") repetition, hard stage.
 pub const REPETITION_NEAR_DUP_HARD_FINDING_ID: &str = "REP-004";
 /// BR-30 A/B/A/B oscillation, soft stage.
 pub const REPETITION_OSCILLATION_SOFT_FINDING_ID: &str = "REP-005";
-/// BR-30 A/B/A/B oscillation, hard stage (opt-in).
+/// BR-30 A/B/A/B oscillation, hard stage.
 pub const REPETITION_OSCILLATION_HARD_FINDING_ID: &str = "REP-006";
 /// BR-31 repeated-failing-result guard, hard stage: the next call to a tool that
 /// has already failed the same way `hard_stop_at` times in a row is denied.
@@ -38,6 +39,9 @@ pub const DEFAULT_NEAR_DUP_SOFT_WARN: u32 = 4;
 /// Nth call of an `A/B/A/B` alternation that earns a non-blocking warning
 /// (4 = two full cycles, the same trigger OpenHands' `StuckDetector` uses).
 pub const DEFAULT_OSCILLATION_SOFT_WARN: u32 = 4;
+/// Persistent near-duplicate or alternating calls without a changed result stop
+/// after the model has had another full warning window to recover.
+pub const DEFAULT_SEMANTIC_HARD_STOP: u32 = 8;
 /// How similar two normalized argument sets must be to count as "the same call
 /// with a tweak". Deliberately high: a different filename or a different numeric
 /// range scores far below this, so ordinary iteration over distinct inputs does
@@ -91,11 +95,9 @@ const VOLATILE_ARG_KEYS: &[&str] = &[
 
 /// BR-30: configuration for the semantic (beyond byte-exact) loop heuristics.
 ///
-/// Both heuristics ship **warn-only** by default: they inject an advisory nudge
-/// into the model's context (via the BR-29 soft-warning plumbing) and never deny
-/// a call. The hard stages exist and are wired, but are opt-in — heuristics can
-/// false-positive, and the byte-exact guard (BR-29) plus the absolute tool-call
-/// ceiling remain the enforcing backstops.
+/// Both heuristics warn before stopping persistent repetition. Completed calls
+/// with changed results clear their window, so long tasks are judged by progress
+/// rather than their total number of actions. Each stage can be disabled.
 #[derive(Debug, Clone)]
 pub struct SemanticLoopConfig {
     /// Master switch for both heuristics.
@@ -119,9 +121,9 @@ impl Default for SemanticLoopConfig {
             enabled: true,
             similarity_threshold: DEFAULT_ARG_SIMILARITY_THRESHOLD,
             near_dup_soft_warn: Some(DEFAULT_NEAR_DUP_SOFT_WARN),
-            near_dup_hard_stop: None,
+            near_dup_hard_stop: Some(DEFAULT_SEMANTIC_HARD_STOP),
             oscillation_soft_warn: Some(DEFAULT_OSCILLATION_SOFT_WARN),
-            oscillation_hard_stop: None,
+            oscillation_hard_stop: Some(DEFAULT_SEMANTIC_HARD_STOP),
         }
     }
 }
@@ -166,16 +168,9 @@ pub struct FailureLoopConfig {
     /// Nth consecutive identical failure after which the next call to the tool is
     /// denied. `None` disables the hard stage (nudge-only).
     pub hard_stop_at: Option<u32>,
-    /// BR-51: also hard-stop a streak of *retryable* failures (timeouts, transient
-    /// dependency errors).
-    ///
-    /// Off by default, and that is the one thing the taxonomy changes about BR-31.
-    /// The hard stop's whole justification is "a byte-identical failure cannot
-    /// become a success" — which is exactly false for a timeout or a connection
-    /// reset: the far end may simply have been down, and blocking the call that
-    /// would have worked strands the turn. The nudges still fire at every stage
-    /// (the model is told it is hammering something flaky), and the absolute
-    /// tool-call ceiling remains the backstop against an unbounded retry loop.
+    /// Stop persistent retryable failures after the same recovery warnings.
+    /// A successful changed result clears the streak before a later retry;
+    /// `false` keeps retryable failures advisory-only.
     pub deny_retryable: bool,
 }
 
@@ -187,7 +182,7 @@ impl Default for FailureLoopConfig {
             soft_warn_at: Some(DEFAULT_FAILURE_SOFT_WARN),
             escalate_at: Some(DEFAULT_FAILURE_ESCALATE_WARN),
             hard_stop_at: Some(DEFAULT_FAILURE_HARD_STOP),
-            deny_retryable: false,
+            deny_retryable: true,
         }
     }
 }
@@ -360,7 +355,7 @@ pub fn failing_streak(outcomes: &[ToolOutcome], tool_name: &str, threshold: f32)
     };
 
     let mut streak = 1u32;
-    for outcome in own.take(LOOP_WINDOW) {
+    for outcome in own {
         match outcome.failure.as_deref() {
             Some(previous) if signatures_match(previous, signature, threshold) => streak += 1,
             _ => break,
@@ -726,7 +721,7 @@ fn trailing_near_dup_run(seq: &[InternalToolCall], threshold: f32) -> (u32, bool
     };
     let mut run = 1u32;
     let mut all_exact = true;
-    for previous in seq.iter().rev().skip(1).take(LOOP_WINDOW) {
+    for previous in seq.iter().rev().skip(1) {
         if !previous.near_matches(current, threshold) {
             break;
         }
@@ -760,7 +755,7 @@ fn trailing_oscillation_run(seq: &[InternalToolCall]) -> u32 {
         } else {
             previous
         };
-        if !seq[index].same_shape(expected) || run as usize >= LOOP_WINDOW {
+        if !seq[index].same_shape(expected) {
             break;
         }
         run += 1;
@@ -796,29 +791,257 @@ fn last_user_turn_index(messages: &[Message]) -> usize {
         .unwrap_or(0)
 }
 
-/// The tool calls made since the last genuine user turn, capped to the recent
-/// window.
-fn calls_since_last_user_turn(messages: &[Message]) -> Vec<InternalToolCall> {
+#[derive(Debug)]
+struct CallObservation {
+    id: String,
+    call: InternalToolCall,
+    outcome: Option<ToolOutcome>,
+    fingerprint: Option<[u8; 32]>,
+    active_job: bool,
+    response_index: Option<usize>,
+}
+
+struct RepetitionHistory {
+    calls: Vec<InternalToolCall>,
+    completed: Vec<InternalToolCall>,
+    outcomes: Vec<ToolOutcome>,
+    limit: usize,
+}
+
+fn call_observations(messages: &[Message], limit: usize) -> Vec<CallObservation> {
     let start = last_user_turn_index(messages);
-
-    let mut calls: Vec<InternalToolCall> = messages[start..]
+    let mut calls = Vec::with_capacity(limit.min(LOOP_WINDOW));
+    let mut first_request_index = messages.len();
+    'messages: for (index, message) in messages.iter().enumerate().skip(start).rev() {
+        for request in message
+            .content
+            .iter()
+            .rev()
+            .filter_map(|part| part.as_tool_request())
+        {
+            if let Some(call) = InternalToolCall::from_request(request) {
+                first_request_index = index;
+                calls.push(CallObservation {
+                    id: request.id.clone(),
+                    call,
+                    outcome: None,
+                    fingerprint: None,
+                    active_job: false,
+                    response_index: None,
+                });
+                if calls.len() == limit {
+                    break 'messages;
+                }
+            }
+        }
+    }
+    calls.reverse();
+    let indices: HashMap<_, _> = calls
         .iter()
-        .flat_map(|message| message.content.iter())
-        .filter_map(|content| content.as_tool_request())
-        .filter_map(InternalToolCall::from_request)
+        .enumerate()
+        .map(|(i, call)| (call.id.clone(), i))
         .collect();
-
-    if calls.len() > LOOP_WINDOW {
-        calls.drain(..calls.len() - LOOP_WINDOW);
+    for (index, message) in messages.iter().enumerate().skip(first_request_index) {
+        for response in message
+            .content
+            .iter()
+            .filter_map(|part| part.as_tool_response())
+        {
+            let Some(&call_index) = indices.get(&response.id) else {
+                continue;
+            };
+            let observation = &mut calls[call_index];
+            observation.outcome = Some(tool_outcome(&observation.call.name, &response.tool_result));
+            observation.response_index = Some(index);
+            if let Ok(result) = &response.tool_result {
+                if observation
+                    .outcome
+                    .as_ref()
+                    .is_some_and(|outcome| outcome.failure.is_none())
+                {
+                    observation.active_job = active_job_result(&observation.call, result);
+                    observation.fingerprint = Some(result_fingerprint(result));
+                }
+            }
+        }
     }
     calls
 }
 
+fn result_fingerprint(result: &CallToolResult) -> [u8; 32] {
+    let mut value = serde_json::json!({
+        "content": result.content,
+        "structured_content": result.structured_content,
+    });
+    if let Some(content) = value.get_mut("content").and_then(Value::as_array_mut) {
+        for part in content {
+            if let Some(text) = part.get("text").and_then(Value::as_str) {
+                if let Ok(parsed) = serde_json::from_str::<Value>(text) {
+                    part["text"] = parsed;
+                }
+            }
+        }
+    }
+    let bytes = serde_json::to_vec(&normalize_args(&value)).unwrap_or_default();
+    Sha256::digest(bytes).into()
+}
+
+fn active_job_state(value: &Value) -> bool {
+    let Some(object) = value.as_object() else {
+        return false;
+    };
+    let has_id = [
+        "job_id",
+        "jobId",
+        "operation_id",
+        "operationId",
+        "task_id",
+        "taskId",
+        "session_id",
+        "sessionId",
+        "run_id",
+        "runId",
+        "check_run_id",
+    ]
+    .iter()
+    .any(|key| {
+        object
+            .get(*key)
+            .is_some_and(|id| id.as_str().is_some_and(|id| !id.is_empty()) || id.is_u64())
+    });
+    has_id
+        && ["status", "state"].iter().any(|key| {
+            object
+                .get(*key)
+                .and_then(Value::as_str)
+                .is_some_and(|state| {
+                    matches!(
+                        state.to_ascii_lowercase().as_str(),
+                        "pending" | "queued" | "running" | "in_progress" | "in-progress"
+                    )
+                })
+        })
+}
+
+fn active_job_result(call: &InternalToolCall, result: &CallToolResult) -> bool {
+    if result
+        .structured_content
+        .as_ref()
+        .is_some_and(active_job_state)
+        || result
+            .content
+            .iter()
+            .filter_map(|part| part.as_text())
+            .any(|text| {
+                serde_json::from_str::<Value>(&text.text)
+                    .ok()
+                    .as_ref()
+                    .is_some_and(active_job_state)
+            })
+    {
+        return true;
+    }
+    // The built-in shell predates structured job results. Match its actual
+    // job-bound status header, never arbitrary tool prose containing "running".
+    if call.name.rsplit("__").next() != Some("shell_status") {
+        return false;
+    }
+    let Some(id) = call.parameters.get("job_id").and_then(Value::as_str) else {
+        return false;
+    };
+    result
+        .content
+        .iter()
+        .filter_map(|part| part.as_text())
+        .any(|text| {
+            text.text.lines().next().is_some_and(|line| {
+                line.starts_with(&format!("job {id} [")) && line.contains("], status: running (")
+            })
+        })
+}
+
+fn observation_progress(
+    calls: &[CallObservation],
+    index: usize,
+    fresh_input: bool,
+    threshold: f32,
+) -> bool {
+    let current = &calls[index];
+    let Some(fingerprint) = current.fingerprint else {
+        return false;
+    };
+    if current.active_job {
+        return true;
+    }
+    let previous = calls[..index].iter().rev().find(|previous| {
+        previous.call.near_matches(&current.call, threshold) && previous.outcome.is_some()
+    });
+    match previous {
+        Some(previous) => previous.fingerprint != Some(fingerprint),
+        None => fresh_input,
+    }
+}
+
+fn last_progress_index(
+    calls: &[CallObservation],
+    fresh_input: bool,
+    threshold: f32,
+) -> Option<usize> {
+    (0..calls.len())
+        .rev()
+        .find(|index| observation_progress(calls, *index, fresh_input, threshold))
+}
+
+/// Whether a newly completed tool call produced a changed successful result,
+/// succeeded on a new input, or confirmed that an identified job is still active.
+/// Only a bounded recent window is retained while comparing results.
+pub fn tool_progress_since(messages: &[Message], start_index: usize) -> bool {
+    let calls = call_observations(messages, LOOP_WINDOW);
+    (0..calls.len()).any(|index| {
+        calls[index]
+            .response_index
+            .is_some_and(|response| response >= start_index)
+            && observation_progress(&calls, index, true, DEFAULT_ARG_SIMILARITY_THRESHOLD)
+    })
+}
+
+/// Check newly completed response identities even when compaction renumbered
+/// the conversation while the tool batch was running.
+pub fn tool_progress_for_responses(messages: &[Message], response_ids: &HashSet<String>) -> bool {
+    let calls = call_observations(messages, LOOP_WINDOW);
+    (0..calls.len()).any(|index| {
+        response_ids.contains(&calls[index].id)
+            && calls[index].response_index.is_some()
+            && observation_progress(&calls, index, true, DEFAULT_ARG_SIMILARITY_THRESHOLD)
+    })
+}
+
+/// Failure evidence after the most recent successful change of approach.
+/// Re-reading an unchanged result does not repeatedly clear a failing streak.
+pub fn tool_outcomes_since_last_progress(
+    messages: &[Message],
+    config: &FailureLoopConfig,
+) -> Vec<ToolOutcome> {
+    let limit = [config.soft_warn_at, config.escalate_at, config.hard_stop_at]
+        .into_iter()
+        .flatten()
+        .max()
+        .unwrap_or(0)
+        .max(LOOP_WINDOW as u32) as usize;
+    let calls = call_observations(messages, limit);
+    let start = last_progress_index(&calls, true, DEFAULT_ARG_SIMILARITY_THRESHOLD).unwrap_or(0);
+    calls
+        .into_iter()
+        .skip(start)
+        .filter_map(|call| call.outcome)
+        .collect()
+}
+
 /// Staged repetition guard (BR-29).
 ///
-/// Exact tool-call signatures (same name, byte-identical arguments) are counted
-/// within the current user turn, including the current batch. A new user turn
-/// resets the count.
+/// Exact tool-call signatures are counted while completed results remain
+/// unchanged, including duplicates in the current batch. Successful changed
+/// results, active jobs and a new user turn clear the no-progress window.
 ///
 /// * `soft_warn_at` — the call still runs, but a non-blocking warning is emitted
 ///   (`InspectionAction::Warn`) and injected into the model's context so it can
@@ -829,7 +1052,7 @@ fn calls_since_last_user_turn(messages: &[Message]) -> Vec<InternalToolCall> {
 /// gives the model one chance to break the loop itself.
 /// BR-30 adds two heuristics on top, over the calls made since the last user
 /// turn: *near-duplicate* repeats (same tool, arguments only tweaked) and
-/// *`A/B/A/B` oscillation*. Both are warn-only by default.
+/// *`A/B/A/B` oscillation*. Both warn before blocking persistent repetition.
 ///
 /// BR-31 adds the result-aware stage: a tool that keeps *failing the same way*
 /// is denied here, on its next call. The nudges that precede that stop are
@@ -863,12 +1086,12 @@ impl RepetitionInspector {
     /// Staged guard: warn on the `soft_warn_at`-th identical call, deny on the
     /// `hard_stop_at`-th. If `soft_warn_at >= hard_stop_at` the soft stage never
     /// fires and this degrades to a hard stop. The BR-30 semantic heuristics run
-    /// with their default (warn-only) configuration; override with
+    /// with their default staged configuration; override with
     /// [`RepetitionInspector::with_semantic`].
     pub fn staged(soft_warn_at: u32, hard_stop_at: u32) -> Self {
         Self {
-            soft_warn_at: Some(soft_warn_at),
-            hard_stop_at: Some(hard_stop_at),
+            soft_warn_at: (soft_warn_at > 0).then_some(soft_warn_at),
+            hard_stop_at: (hard_stop_at > 0).then_some(hard_stop_at),
             semantic: SemanticLoopConfig::default(),
             failure: FailureLoopConfig::default(),
         }
@@ -886,6 +1109,60 @@ impl RepetitionInspector {
         self
     }
 
+    fn history(&self, messages: &[Message]) -> RepetitionHistory {
+        let history_limit = [
+            self.soft_warn_at,
+            self.hard_stop_at,
+            self.semantic.near_dup_soft_warn,
+            self.semantic.near_dup_hard_stop,
+            self.semantic.oscillation_soft_warn,
+            self.semantic.oscillation_hard_stop,
+            self.failure.soft_warn_at,
+            self.failure.escalate_at,
+            self.failure.hard_stop_at,
+        ]
+        .into_iter()
+        .flatten()
+        .max()
+        .unwrap_or(0)
+        .max(LOOP_WINDOW as u32) as usize;
+        let observations = call_observations(messages, history_limit);
+        let progress =
+            last_progress_index(&observations, false, self.semantic.similarity_threshold);
+        let start = progress
+            .map(|index| index + usize::from(observations[index].active_job))
+            .unwrap_or(0);
+        let turn_calls: Vec<_> = observations
+            .iter()
+            .skip(start)
+            .map(|item| item.call.clone())
+            .collect();
+        let outcomes = if self.failure.enabled {
+            let start =
+                last_progress_index(&observations, true, self.semantic.similarity_threshold)
+                    .unwrap_or(0);
+            observations
+                .iter()
+                .skip(start)
+                .filter_map(|call| call.outcome.clone())
+                .collect()
+        } else {
+            Vec::new()
+        };
+        let completed = observations
+            .iter()
+            .skip(start)
+            .filter(|item| item.outcome.is_some())
+            .map(|item| item.call.clone())
+            .collect();
+        RepetitionHistory {
+            calls: turn_calls,
+            completed,
+            outcomes,
+            limit: history_limit,
+        }
+    }
+
     /// The message the model sees in place of the tool result when a call is
     /// hard-stopped. It states the *real* reason — the repetition guard fired —
     /// rather than claiming the user declined (which was the old, misleading
@@ -893,7 +1170,7 @@ impl RepetitionInspector {
     fn hard_stop_reason(tool_name: &str, repeat_count: u32) -> String {
         format!(
             "Biorouter stopped this tool call: '{tool_name}' has now been called \
-             with identical arguments {repeat_count} times in this user turn. The user did \
+             with identical arguments {repeat_count} times without a changed result. The user did \
              NOT decline it; this is an automatic repetition guard. Repeating the \
              same call will not produce a different result. Change approach: vary \
              the arguments, use a different tool, or explain what is blocking you \
@@ -902,14 +1179,53 @@ impl RepetitionInspector {
     }
 
     /// Non-blocking nudge injected into the model's context. The call still ran.
-    fn soft_warn_reason(tool_name: &str, repeat_count: u32, hard_stop_at: u32) -> String {
+    fn soft_warn_reason(tool_name: &str, repeat_count: u32, hard_stop_at: Option<u32>) -> String {
+        let stop = hard_stop_at
+            .map(|limit| {
+                format!(" It will be stopped automatically on the {limit}th unchanged call.")
+            })
+            .unwrap_or_default();
         format!(
             "Repetition warning: you have called '{tool_name}' with identical \
-             arguments {repeat_count} times in this user turn. It will be stopped \
-             automatically on the {hard_stop_at}th identical call this turn. \
+             arguments {repeat_count} times without a changed result.{stop} \
              Change approach now: vary the arguments, use a different tool, or \
              explain what is blocking you and stop."
         )
+    }
+
+    fn inspect_exact(
+        &self,
+        request_id: &str,
+        tool_name: &str,
+        repeat_count: u32,
+    ) -> Option<(InspectionResult, u32)> {
+        let (action, reason, finding_id) = if self.hard_stop_at.is_some_and(|at| repeat_count >= at)
+        {
+            (
+                InspectionAction::Deny,
+                Self::hard_stop_reason(tool_name, repeat_count),
+                REPETITION_HARD_FINDING_ID,
+            )
+        } else if self.soft_warn_at.is_some_and(|at| repeat_count >= at) {
+            (
+                InspectionAction::Warn,
+                Self::soft_warn_reason(tool_name, repeat_count, self.hard_stop_at),
+                REPETITION_SOFT_FINDING_ID,
+            )
+        } else {
+            return None;
+        };
+        Some((
+            InspectionResult {
+                tool_request_id: request_id.to_string(),
+                action,
+                reason,
+                confidence: 1.0,
+                inspector_name: REPETITION_INSPECTOR_NAME.to_string(),
+                finding_id: Some(finding_id.to_string()),
+            },
+            repeat_count,
+        ))
     }
 
     /// BR-30 near-duplicate nudge. Hedged, because the heuristic can be wrong:
@@ -966,6 +1282,7 @@ impl RepetitionInspector {
         tool_request_id: &str,
         tool_name: &str,
         window: &[InternalToolCall],
+        completed: &[InternalToolCall],
     ) -> Option<(InspectionResult, u32)> {
         if !self.semantic.enabled {
             return None;
@@ -977,25 +1294,35 @@ impl RepetitionInspector {
         // it here when at least one member differs (an actual argument tweak).
         let near_dup_run = if all_exact { 0 } else { near_dup_run };
         let oscillation_run = trailing_oscillation_run(window);
+        let mut confirmed = completed.to_vec();
+        confirmed.push(window.last()?.clone());
+        let (confirmed_near, confirmed_exact) =
+            trailing_near_dup_run(&confirmed, self.semantic.similarity_threshold);
+        let confirmed_near = if confirmed_exact {
+            0
+        } else {
+            confirmed_near.saturating_sub(1)
+        };
+        let confirmed_oscillation = trailing_oscillation_run(&confirmed).saturating_sub(1);
 
         let fired = |threshold: Option<u32>, run: u32| -> bool {
             threshold.is_some_and(|at| at > 0 && run >= at)
         };
 
         let (action, reason, finding_id, run) =
-            if fired(self.semantic.near_dup_hard_stop, near_dup_run) {
+            if fired(self.semantic.near_dup_hard_stop, confirmed_near) {
                 (
                     InspectionAction::Deny,
-                    Self::near_dup_stop_reason(tool_name, near_dup_run),
+                    Self::near_dup_stop_reason(tool_name, confirmed_near),
                     REPETITION_NEAR_DUP_HARD_FINDING_ID,
-                    near_dup_run,
+                    confirmed_near,
                 )
-            } else if fired(self.semantic.oscillation_hard_stop, oscillation_run) {
+            } else if fired(self.semantic.oscillation_hard_stop, confirmed_oscillation) {
                 (
                     InspectionAction::Deny,
-                    Self::oscillation_stop_reason(tool_name, oscillation_run),
+                    Self::oscillation_stop_reason(tool_name, confirmed_oscillation),
                     REPETITION_OSCILLATION_HARD_FINDING_ID,
-                    oscillation_run,
+                    confirmed_oscillation,
                 )
             } else if fired(self.semantic.near_dup_soft_warn, near_dup_run) {
                 (
@@ -1110,11 +1437,20 @@ impl ToolInspector for RepetitionInspector {
         session: &crate::session::Session,
     ) -> Result<Vec<InspectionResult>> {
         let mut results = Vec::new();
-        if self.hard_stop_at.is_none() && !self.semantic.enabled && !self.failure.enabled {
+        if self.soft_warn_at.is_none()
+            && self.hard_stop_at.is_none()
+            && !self.semantic.enabled
+            && !self.failure.enabled
+        {
             return Ok(results);
         }
 
-        let turn_calls = calls_since_last_user_turn(messages);
+        let RepetitionHistory {
+            calls: turn_calls,
+            completed,
+            outcomes,
+            limit: history_limit,
+        } = self.history(messages);
         let mut seen: HashMap<String, u32> = HashMap::new();
         for call in &turn_calls {
             *seen.entry(call.signature()).or_insert(0) += 1;
@@ -1126,16 +1462,6 @@ impl ToolInspector for RepetitionInspector {
             Vec::new()
         };
 
-        // BR-31: what the calls in this turn actually *returned*. Only history is
-        // available here — the batch being inspected has not run yet — which is
-        // exactly right: the guard blocks the call *after* a run of identical
-        // failures.
-        let outcomes = if self.failure.enabled {
-            tool_outcomes_since_last_user_turn(messages)
-        } else {
-            Vec::new()
-        };
-
         for tool_request in tool_requests {
             if let Some(call) = InternalToolCall::from_request(tool_request) {
                 let count = seen.entry(call.signature()).or_insert(0);
@@ -1143,7 +1469,7 @@ impl ToolInspector for RepetitionInspector {
                 let repeat_count = *count;
 
                 window.push(call);
-                if window.len() > LOOP_WINDOW {
+                if window.len() > history_limit {
                     window.remove(0);
                 }
 
@@ -1153,57 +1479,20 @@ impl ToolInspector for RepetitionInspector {
                     .map(|tool_call| tool_call.name.to_string())
                     .unwrap_or_else(|_| "unknown".to_string());
 
-                let exact_result = self.hard_stop_at.and_then(|hard_stop_at| {
-                    if repeat_count >= hard_stop_at {
-                        Some((
-                            InspectionResult {
-                                tool_request_id: tool_request.id.clone(),
-                                action: InspectionAction::Deny,
-                                reason: Self::hard_stop_reason(&tool_name, repeat_count),
-                                confidence: 1.0,
-                                inspector_name: REPETITION_INSPECTOR_NAME.to_string(),
-                                finding_id: Some(REPETITION_HARD_FINDING_ID.to_string()),
-                            },
-                            repeat_count,
-                        ))
-                    } else if self
-                        .soft_warn_at
-                        .is_some_and(|soft_warn_at| repeat_count >= soft_warn_at)
-                    {
-                        Some((
-                            InspectionResult {
-                                tool_request_id: tool_request.id.clone(),
-                                action: InspectionAction::Warn,
-                                reason: Self::soft_warn_reason(
-                                    &tool_name,
-                                    repeat_count,
-                                    hard_stop_at,
-                                ),
-                                confidence: 1.0,
-                                inspector_name: REPETITION_INSPECTOR_NAME.to_string(),
-                                finding_id: Some(REPETITION_SOFT_FINDING_ID.to_string()),
-                            },
-                            repeat_count,
-                        ))
-                    } else {
-                        None
-                    }
-                });
+                let exact_result = self.inspect_exact(&tool_request.id, &tool_name, repeat_count);
 
                 let failure_result =
                     self.inspect_failure_loop(&tool_request.id, &tool_name, &outcomes);
 
-                // One verdict per call, no double nudge. A Deny outranks a Warn;
-                // between the two denies, the byte-exact guard's is the more
-                // specific proof, so it keeps precedence.
-                let verdict = match (exact_result, failure_result) {
-                    (Some(exact), Some(_)) if exact.0.action == InspectionAction::Deny => {
-                        Some(exact)
-                    }
-                    (_, Some(failure)) => Some(failure),
-                    (Some(exact), None) => Some(exact),
-                    (None, None) => self.inspect_semantic(&tool_request.id, &tool_name, &window),
-                };
+                let semantic_result =
+                    self.inspect_semantic(&tool_request.id, &tool_name, &window, &completed);
+                let verdict = [exact_result, failure_result, semantic_result]
+                    .into_iter()
+                    .flatten()
+                    .min_by_key(|(result, _)| match result.action {
+                        InspectionAction::Deny => 0,
+                        _ => 1,
+                    });
                 if let Some((result, run)) = verdict {
                     // BR-67: the guard tripping is exactly the moment an operator
                     // needs on the record — which guard, on which tool, at what
@@ -1632,9 +1921,12 @@ mod tests {
     /// is nudged, never blocked — blocking the retry that would finally have
     /// worked strands the turn.
     #[test]
-    fn a_retryable_streak_is_nudged_but_not_blocked() {
-        let inspector =
-            RepetitionInspector::new(None).with_failure_loop(FailureLoopConfig::default());
+    fn retryable_streaks_can_be_configured_advisory_only() {
+        let config = FailureLoopConfig {
+            deny_retryable: false,
+            ..FailureLoopConfig::default()
+        };
+        let inspector = RepetitionInspector::new(None).with_failure_loop(config.clone());
         let outcomes = vec![failed("fetch", "operation timed out"); 6];
         assert_eq!(
             failing_streak(&outcomes, "fetch", DEFAULT_ERROR_SIMILARITY_THRESHOLD),
@@ -1642,8 +1934,8 @@ mod tests {
         );
 
         // Nudged: the model is told it is hammering something flaky…
-        let nudge = failure_loop_nudge(&FailureLoopConfig::default(), &outcomes, "fetch")
-            .expect("a six-failure streak nudges");
+        let nudge =
+            failure_loop_nudge(&config, &outcomes, "fetch").expect("a six-failure streak nudges");
         assert!(nudge.contains("timeout"), "{nudge}");
         // …and not threatened with a block that will not come.
         assert!(!nudge.contains("blocked"), "{nudge}");
@@ -1662,18 +1954,16 @@ mod tests {
         assert_eq!(streak, 6);
     }
 
-    /// The operator can opt back into the pre-BR-51 behaviour.
+    /// Persistent retryable errors are also evidence when recovery changed nothing.
     #[test]
-    fn deny_retryable_opts_back_into_blocking_a_flaky_streak() {
-        let inspector = RepetitionInspector::new(None).with_failure_loop(FailureLoopConfig {
-            deny_retryable: true,
-            ..FailureLoopConfig::default()
-        });
+    fn persistent_retryable_errors_stop_after_the_recovery_window() {
+        let inspector =
+            RepetitionInspector::new(None).with_failure_loop(FailureLoopConfig::default());
         let outcomes = vec![failed("fetch", "operation timed out"); 6];
 
         let (result, _) = inspector
             .inspect_failure_loop("req-1", "fetch", &outcomes)
-            .expect("opted in, so the streak is denied");
+            .expect("persistent unchanged failure is denied by default");
         assert!(matches!(result.action, InspectionAction::Deny));
     }
 
@@ -1695,5 +1985,532 @@ mod tests {
         assert!(inspector
             .inspect_failure_loop("req-1", "fetch", &outcomes)
             .is_some());
+    }
+
+    fn completed_call(
+        messages: &mut Vec<Message>,
+        name: &str,
+        args: Value,
+        result: ToolResult<CallToolResult>,
+    ) {
+        let id = format!("request_{}", messages.len());
+        messages.push(Message::assistant().with_tool_request(
+            &id,
+            Ok(CallToolRequestParams {
+                task: None,
+                meta: None,
+                name: name.to_string().into(),
+                arguments: args.as_object().cloned(),
+            }),
+        ));
+        messages.push(Message::user().with_tool_response(&id, result));
+    }
+
+    async fn inspect_next(
+        inspector: &RepetitionInspector,
+        messages: &[Message],
+        name: &str,
+        args: Value,
+    ) -> Vec<InspectionResult> {
+        let message = Message::assistant().with_tool_request(
+            "next",
+            Ok(CallToolRequestParams {
+                task: None,
+                meta: None,
+                name: name.to_string().into(),
+                arguments: args.as_object().cloned(),
+            }),
+        );
+        let request = message.content[0].as_tool_request().unwrap().clone();
+        inspector
+            .inspect(
+                &[request],
+                messages,
+                BioRouterMode::Approve,
+                &crate::session::Session::default(),
+            )
+            .await
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn changed_results_allow_more_than_the_old_call_ceiling() {
+        let inspector = RepetitionInspector::staged(3, 5);
+        let mut messages = Vec::new();
+        for index in 0..250 {
+            let start = messages.len();
+            completed_call(
+                &mut messages,
+                "read_file",
+                serde_json::json!({"path": "progress.log"}),
+                ok_result(&format!("completed item {index}")),
+            );
+            assert!(tool_progress_since(&messages, start));
+            assert!(inspect_next(
+                &inspector,
+                &messages,
+                "read_file",
+                serde_json::json!({"path": "progress.log"})
+            )
+            .await
+            .is_empty());
+        }
+        assert_eq!(call_observations(&messages, LOOP_WINDOW).len(), LOOP_WINDOW);
+    }
+
+    #[tokio::test]
+    async fn unchanged_successes_warn_then_stop() {
+        let inspector = RepetitionInspector::staged(3, 5);
+        let mut messages = Vec::new();
+        for _ in 0..2 {
+            completed_call(
+                &mut messages,
+                "read_file",
+                serde_json::json!({"path": "main.rs"}),
+                ok_result("unchanged"),
+            );
+        }
+        let warning = inspect_next(
+            &inspector,
+            &messages,
+            "read_file",
+            serde_json::json!({"path": "main.rs"}),
+        )
+        .await;
+        assert_eq!(warning[0].action, InspectionAction::Warn);
+        for _ in 0..2 {
+            completed_call(
+                &mut messages,
+                "read_file",
+                serde_json::json!({"path": "main.rs"}),
+                ok_result("unchanged"),
+            );
+        }
+        let stopped = inspect_next(
+            &inspector,
+            &messages,
+            "read_file",
+            serde_json::json!({"path": "main.rs"}),
+        )
+        .await;
+        assert_eq!(stopped[0].action, InspectionAction::Deny);
+        assert!(!tool_progress_since(&messages, messages.len() - 1));
+    }
+
+    #[tokio::test]
+    async fn unchanged_oscillation_stops_but_changing_results_do_not() {
+        let inspector = RepetitionInspector::new(None).with_semantic(SemanticLoopConfig::default());
+        let mut messages = Vec::new();
+        for index in 0..8 {
+            let name = if index % 2 == 0 { "inspect" } else { "check" };
+            completed_call(
+                &mut messages,
+                name,
+                serde_json::json!({"id": 1}),
+                ok_result(name),
+            );
+        }
+        let stopped = inspect_next(
+            &inspector,
+            &messages,
+            "inspect",
+            serde_json::json!({"id": 1}),
+        )
+        .await;
+        assert_eq!(
+            stopped[0].finding_id.as_deref(),
+            Some(REPETITION_OSCILLATION_HARD_FINDING_ID)
+        );
+        completed_call(
+            &mut messages,
+            "check",
+            serde_json::json!({"id": 1}),
+            ok_result("new result"),
+        );
+        assert!(inspect_next(
+            &inspector,
+            &messages,
+            "inspect",
+            serde_json::json!({"id": 1})
+        )
+        .await
+        .is_empty());
+    }
+
+    #[tokio::test]
+    async fn identified_active_jobs_can_be_polled_without_a_turn_cutoff() {
+        let inspector = RepetitionInspector::staged(3, 5);
+        let mut messages = Vec::new();
+        for _ in 0..250 {
+            let mut result = ok_result("no new output").unwrap();
+            result.structured_content =
+                Some(serde_json::json!({"job_id": "build-1", "status": "running"}));
+            completed_call(
+                &mut messages,
+                "job_status",
+                serde_json::json!({"job_id": "build-1"}),
+                Ok(result),
+            );
+        }
+        assert!(inspect_next(
+            &inspector,
+            &messages,
+            "job_status",
+            serde_json::json!({"job_id": "build-1"})
+        )
+        .await
+        .is_empty());
+        assert!(tool_progress_since(&messages, messages.len() - 1));
+        let shell = call(
+            "developer__shell_status",
+            serde_json::json!({"job_id": "shell-1"}),
+        );
+        assert!(active_job_result(&shell, &ok_result("job shell-1 [test], status: running (60s elapsed)\nnew output since last check:\n(no new output)").unwrap()));
+        assert!(!active_job_result(
+            &shell,
+            &ok_result("job another [test], status: running (60s elapsed)").unwrap()
+        ));
+    }
+
+    #[tokio::test]
+    async fn running_prose_or_unidentified_status_does_not_disable_the_guards() {
+        let inspector = RepetitionInspector::staged(3, 5);
+        for text in [
+            "the word running appears in this file",
+            r#"{"status":"running"}"#,
+        ] {
+            let mut messages = Vec::new();
+            for _ in 0..5 {
+                completed_call(
+                    &mut messages,
+                    "read_file",
+                    serde_json::json!({"path": "main.rs"}),
+                    ok_result(text),
+                );
+            }
+            let results = inspect_next(
+                &inspector,
+                &messages,
+                "read_file",
+                serde_json::json!({"path": "main.rs"}),
+            )
+            .await;
+            assert_eq!(results[0].action, InspectionAction::Deny);
+        }
+    }
+
+    #[tokio::test]
+    async fn a_successful_repair_allows_retrying_a_previously_failing_tool() {
+        let inspector =
+            RepetitionInspector::new(None).with_failure_loop(FailureLoopConfig::default());
+        let mut messages = Vec::new();
+        for _ in 0..6 {
+            completed_call(
+                &mut messages,
+                "shell",
+                serde_json::json!({"command": "cargo build"}),
+                error_result("cargo: command not found"),
+            );
+        }
+        assert_eq!(
+            inspect_next(
+                &inspector,
+                &messages,
+                "shell",
+                serde_json::json!({"command": "cargo build"})
+            )
+            .await[0]
+                .action,
+            InspectionAction::Deny
+        );
+        completed_call(
+            &mut messages,
+            "text_editor",
+            serde_json::json!({"command": "replace", "path": "toolchain.env"}),
+            ok_result("updated toolchain path"),
+        );
+        assert!(inspect_next(
+            &inspector,
+            &messages,
+            "shell",
+            serde_json::json!({"command": "cargo build"})
+        )
+        .await
+        .is_empty());
+    }
+
+    #[tokio::test]
+    async fn configured_thresholds_larger_than_the_default_window_are_respected() {
+        let inspector = RepetitionInspector::new(Some(30));
+        let mut messages = Vec::new();
+        for _ in 0..30 {
+            completed_call(
+                &mut messages,
+                "read_file",
+                serde_json::json!({"path": "main.rs"}),
+                ok_result("unchanged"),
+            );
+        }
+        let results = inspect_next(
+            &inspector,
+            &messages,
+            "read_file",
+            serde_json::json!({"path": "main.rs"}),
+        )
+        .await;
+        assert_eq!(results[0].action, InspectionAction::Deny);
+    }
+
+    #[tokio::test]
+    async fn semantic_default_warning_has_a_recovery_window_before_stopping() {
+        let inspector = RepetitionInspector::new(None).with_semantic(SemanticLoopConfig::default());
+        let mut messages = Vec::new();
+        let prefix = "same long search command argument ".repeat(8);
+        for index in 0..8 {
+            let args = serde_json::json!({"command": format!("{prefix}{index}")});
+            let results = inspect_next(&inspector, &messages, "shell", args.clone()).await;
+            if index >= 3 {
+                assert_eq!(results[0].action, InspectionAction::Warn);
+            } else {
+                assert!(results.is_empty());
+            }
+            completed_call(&mut messages, "shell", args, ok_result("no matches"));
+        }
+        let args = serde_json::json!({"command": format!("{prefix}8")});
+        let stopped = inspect_next(&inspector, &messages, "shell", args.clone()).await;
+        assert_eq!(
+            stopped[0].finding_id.as_deref(),
+            Some(REPETITION_NEAR_DUP_HARD_FINDING_ID)
+        );
+        let warn_only = RepetitionInspector::new(None).with_semantic(SemanticLoopConfig {
+            near_dup_hard_stop: None,
+            ..SemanticLoopConfig::default()
+        });
+        assert_eq!(
+            inspect_next(&warn_only, &messages, "shell", args).await[0].action,
+            InspectionAction::Warn
+        );
+    }
+
+    #[test]
+    fn successful_pagination_is_progress_but_metadata_only_changes_are_not() {
+        let mut messages = Vec::new();
+        for page in 0..50 {
+            let start = messages.len();
+            completed_call(
+                &mut messages,
+                "list_pages",
+                serde_json::json!({"page": page}),
+                ok_result(&format!("page {page}")),
+            );
+            assert!(tool_progress_since(&messages, start));
+        }
+        let mut result = ok_result("unchanged").unwrap();
+        result.structured_content = Some(serde_json::json!({"timestamp": "first"}));
+        completed_call(
+            &mut messages,
+            "read",
+            serde_json::json!({"id": 1}),
+            Ok(result.clone()),
+        );
+        let start = messages.len();
+        result.structured_content = Some(serde_json::json!({"timestamp": "second"}));
+        completed_call(
+            &mut messages,
+            "read",
+            serde_json::json!({"id": 1}),
+            Ok(result),
+        );
+        assert!(!tool_progress_since(&messages, start));
+        for timestamp in ["first", "second"] {
+            let start = messages.len();
+            completed_call(
+                &mut messages,
+                "read_json",
+                serde_json::json!({"id": 1}),
+                ok_result(
+                    &serde_json::json!({"timestamp": timestamp, "value": "same"}).to_string(),
+                ),
+            );
+            if timestamp == "second" {
+                assert!(!tool_progress_since(&messages, start));
+            }
+        }
+    }
+
+    #[test]
+    fn configured_failure_warnings_above_the_default_history_window_are_reachable() {
+        let config = FailureLoopConfig {
+            soft_warn_at: Some(30),
+            escalate_at: Some(35),
+            hard_stop_at: Some(40),
+            ..FailureLoopConfig::default()
+        };
+        let mut messages = Vec::new();
+        for count in 1..=250 {
+            completed_call(
+                &mut messages,
+                "read_file",
+                serde_json::json!({"path": "missing.rs"}),
+                error_result("No such file or directory"),
+            );
+            let outcomes = tool_outcomes_since_last_progress(&messages, &config);
+            assert_eq!(outcomes.len(), count.min(40));
+            if count == 29 {
+                assert!(failure_loop_nudge(&config, &outcomes, "read_file").is_none());
+            } else if count == 30 {
+                let warning = failure_loop_nudge(&config, &outcomes, "read_file").unwrap();
+                assert!(warning.contains("failed 30 times"), "{warning}");
+                assert!(!warning.contains("earlier warning"), "{warning}");
+            } else if count == 40 {
+                let warning = failure_loop_nudge(&config, &outcomes, "read_file").unwrap();
+                assert!(warning.contains("failed 40 times"), "{warning}");
+                assert!(warning.contains("earlier warning"), "{warning}");
+                let inspector = RepetitionInspector::new(None).with_failure_loop(config.clone());
+                assert!(inspector
+                    .inspect_failure_loop("next", "read_file", &outcomes)
+                    .is_some());
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn retryable_failures_allow_transient_recovery_before_the_hard_stage() {
+        let inspector =
+            RepetitionInspector::new(None).with_failure_loop(FailureLoopConfig::default());
+        let mut messages = Vec::new();
+        for _ in 0..3 {
+            completed_call(
+                &mut messages,
+                "fetch",
+                serde_json::json!({"url": "https://example.test/data"}),
+                error_result("HTTP 429 rate limit exceeded"),
+            );
+        }
+        assert!(inspect_next(
+            &inspector,
+            &messages,
+            "fetch",
+            serde_json::json!({"url": "https://example.test/data"})
+        )
+        .await
+        .is_empty());
+        completed_call(
+            &mut messages,
+            "fetch",
+            serde_json::json!({"url": "https://example.test/data"}),
+            ok_result("new data"),
+        );
+        for _ in 0..3 {
+            completed_call(
+                &mut messages,
+                "fetch",
+                serde_json::json!({"url": "https://example.test/data"}),
+                error_result("HTTP 429 rate limit exceeded"),
+            );
+        }
+        assert!(inspect_next(
+            &inspector,
+            &messages,
+            "fetch",
+            serde_json::json!({"url": "https://example.test/data"})
+        )
+        .await
+        .is_empty());
+    }
+
+    #[tokio::test]
+    async fn unobserved_distinct_batch_calls_are_not_semantically_denied() {
+        let inspector = RepetitionInspector::new(None).with_semantic(SemanticLoopConfig::default());
+        let prefix = "read a long distinct-input search ".repeat(8);
+        let requests = (0..20)
+            .map(|index| {
+                let message = Message::assistant().with_tool_request(
+                    format!("batch-{index}"),
+                    Ok(CallToolRequestParams {
+                        task: None,
+                        meta: None,
+                        name: "search".into(),
+                        arguments: Some(
+                            serde_json::from_value(
+                                serde_json::json!({"query": format!("{prefix}{index}")}),
+                            )
+                            .unwrap(),
+                        ),
+                    }),
+                );
+                message.content[0].as_tool_request().unwrap().clone()
+            })
+            .collect::<Vec<_>>();
+        let results = inspector
+            .inspect(
+                &requests,
+                &[],
+                BioRouterMode::Approve,
+                &crate::session::Session::default(),
+            )
+            .await
+            .unwrap();
+        assert!(results
+            .iter()
+            .all(|result| result.action == InspectionAction::Warn));
+    }
+
+    #[tokio::test]
+    async fn a_configured_soft_warning_works_with_the_hard_stage_disabled() {
+        let inspector = RepetitionInspector::staged(30, 0)
+            .with_semantic(SemanticLoopConfig::disabled())
+            .with_failure_loop(FailureLoopConfig::disabled());
+        let mut messages = Vec::new();
+        for _ in 0..29 {
+            completed_call(
+                &mut messages,
+                "read_file",
+                serde_json::json!({"path": "main.rs"}),
+                ok_result("unchanged"),
+            );
+        }
+        let results = inspect_next(
+            &inspector,
+            &messages,
+            "read_file",
+            serde_json::json!({"path": "main.rs"}),
+        )
+        .await;
+        assert_eq!(results[0].action, InspectionAction::Warn);
+        assert!(!results[0].reason.contains("stopped automatically"));
+    }
+
+    #[test]
+    fn response_identity_detects_progress_after_a_history_rewrite() {
+        let mut messages = Vec::new();
+        for index in 0..30 {
+            completed_call(
+                &mut messages,
+                "read",
+                serde_json::json!({"id": index}),
+                ok_result("old data"),
+            );
+        }
+        let old_length = messages.len();
+        completed_call(
+            &mut messages,
+            "read",
+            serde_json::json!({"id": "new"}),
+            ok_result("new data"),
+        );
+        let response_id = messages.last().unwrap().content[0]
+            .as_tool_response()
+            .unwrap()
+            .id
+            .clone();
+        let response_ids = HashSet::from([response_id]);
+        let rewritten = messages.split_off(old_length);
+        assert!(!tool_progress_since(&rewritten, old_length));
+        assert!(tool_progress_for_responses(&rewritten, &response_ids));
+        assert!(!tool_progress_for_responses(
+            &rewritten,
+            &HashSet::from(["unrelated".to_string()])
+        ));
     }
 }

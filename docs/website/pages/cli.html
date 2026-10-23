@@ -146,7 +146,7 @@ biorouter doctor --fix uv</code></pre>
     <tr><td><code class="code-token">--provider</code></td><td>Use this provider for this chat. <code class="code-token">--model</code> picks its model.</td></tr>
     <tr><td><code class="code-token">--with-builtin</code></td><td>Turn on built in extensions by name, as <code>developer,memory</code>.</td></tr>
     <tr><td><code class="code-token">--with-extension</code></td><td>A local extension from a command, as <code>"ENV=value command args"</code>, or a remote one with <code>--with-streamable-http-extension URL</code>. Both repeat.</td></tr>
-    <tr><td><code class="code-token">--max-turns</code></td><td>Turns the agent may take without your input. Default 100.</td></tr>
+    <tr><td><code class="code-token">--max-turns</code></td><td>Turns the agent may take without your input. Default 0 means Unlimited; a positive value sets a limit.</td></tr>
     <tr><td><code class="code-token">--max-tool-repetitions</code></td><td>Limit identical calls to one tool in a row.</td></tr>
     <tr><td><code class="code-token">--debug</code></td><td>Show full tool output and full paths.</td></tr>
     <tr><td><code class="code-token">--shared-daemon</code></td><td>Run in the shared background service the desktop app and <code>biorouter crew</code> use. It starts the service when needed and connects silently. <code class="code-token">--no-start</code> requires an existing service; <code class="code-token">--create-only</code> creates the chat without running it. The older <code class="code-token">--approval-key-stdin</code> option reads and ignores the first input line.</td></tr>

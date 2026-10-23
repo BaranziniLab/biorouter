@@ -559,6 +559,20 @@ fn requests(calls: Vec<CallToolRequestParams>) -> Vec<ToolRequest> {
         .collect()
 }
 
+fn completed_calls(calls: Vec<CallToolRequestParams>) -> Vec<Message> {
+    calls
+        .into_iter()
+        .enumerate()
+        .flat_map(|(index, call)| {
+            let id = format!("completed-{index}");
+            [
+                Message::assistant().with_tool_request(&id, Ok(call)),
+                Message::user().with_tool_response(&id, Ok(tool_ok("unchanged result"))),
+            ]
+        })
+        .collect()
+}
+
 // The BR-30 case the exact-signature guard misses entirely: the model keeps calling
 // the same tool, nudging the arguments by a character each time.
 #[tokio::test]
@@ -679,9 +693,9 @@ async fn test_exact_repeats_get_exactly_one_verdict() {
     }
 }
 
-// Both semantic stages are warn-only by default. Enforcement is opt-in.
+// Pending batches can warn; semantic enforcement requires completed evidence.
 #[tokio::test]
-async fn test_semantic_hard_stops_are_opt_in() {
+async fn test_semantic_hard_stops_require_completed_evidence() {
     let tweaks = vec![
         shell("cat /etc/hosts | grep -n biorouter-dev-host"),
         shell("cat /etc/hosts | grep -n biorouter-dev-hos"),
@@ -698,14 +712,16 @@ async fn test_semantic_hard_stops_are_opt_in() {
         default_results
             .iter()
             .all(|result| result.action == InspectionAction::Warn),
-        "default config must never deny on a heuristic: {default_results:?}"
+        "a pending batch has no observed no-progress evidence: {default_results:?}"
     );
 
     let strict = RepetitionInspector::staged(3, 5).with_semantic(SemanticLoopConfig {
         near_dup_hard_stop: Some(4),
         ..SemanticLoopConfig::default()
     });
-    let strict_results = inspect(&strict, &requests(tweaks)).await;
+    let next = tweaks.last().unwrap().clone();
+    let history = completed_calls(tweaks);
+    let strict_results = inspect_with_history(&strict, &requests(vec![next]), &history).await;
 
     assert_eq!(strict_results.len(), 1);
     assert_eq!(strict_results[0].action, InspectionAction::Deny);
@@ -721,7 +737,7 @@ async fn test_semantic_hard_stops_are_opt_in() {
 }
 
 #[tokio::test]
-async fn test_oscillation_hard_stop_is_opt_in() {
+async fn test_configured_oscillation_hard_stop_uses_completed_results() {
     let cycle = vec![
         call_with("read_file", json!({"path": "main.rs"})),
         shell("cargo build"),
@@ -733,7 +749,9 @@ async fn test_oscillation_hard_stop_is_opt_in() {
         oscillation_hard_stop: Some(4),
         ..SemanticLoopConfig::default()
     });
-    let results = inspect(&strict, &requests(cycle)).await;
+    let next = cycle[0].clone();
+    let history = completed_calls(cycle);
+    let results = inspect_with_history(&strict, &requests(vec![next]), &history).await;
 
     assert_eq!(results.len(), 1);
     assert_eq!(results[0].action, InspectionAction::Deny);

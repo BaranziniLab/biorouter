@@ -18,6 +18,7 @@ activities:
   - Build, lint, and execute an Apps SDK v2 reference app
   - Create and orchestrate subagents for meta-testing
   - Validate live steering, detached supervision, close-tab survival, and provider restoration
+  - Verify productive tasks can exceed the old turn/tool limits while explicit limits and Stop still work
   - Exercise isolated OKF, BioOKF, and built-in Soul migration round trips
   - Generate and execute test workflows
   - Test error boundaries and security controls
@@ -37,7 +38,7 @@ parameters:
     input_type: string
     requirement: optional
     default: "all"
-    description: "Which test phases to run: all, basic, extensions, computer_use, crew, apps, previews, subagents, knowledge, workflows, reset, providers, local_inference, office, advanced"
+    description: "Which test phases to run: all, basic, extensions, computer_use, crew, apps, previews, subagents, knowledge, workflows, reset, providers, local_inference, agent_loop, office, advanced"
   
   - key: test_depth
     input_type: string
@@ -915,6 +916,30 @@ prompt: |
   4. Write phase4d_local_inference.md with PASS or FAIL for each assertion and any observed
      provider error. Do not claim a context window or memory measurement that was not
      exposed by the harness. The external verifier checks the saved scripts and outputs.
+  {% endif %}
+
+  {% if test_depth != "fixture_only" and (test_phases == "all" or "agent_loop" in test_phases) %}
+  ## PHASE 4E: Long-Running Agent Tasks
+
+  Use deterministic fixtures to verify long tasks without paying for hundreds of live
+  model requests. Preserve the user's saved settings, provider, credentials and active chats.
+
+  1. From the repository root, run `cargo test -p biorouter --test long_horizon_agent_loop`.
+     The tracked tests must prove that productive work passes both the former 100-turn and
+     200-tool-call limits, explicitly chosen limits still stop, and cancellation stops an
+     unlimited reply. Record the actual test names, exit code and result. A missing test
+     binary, failed build or skipped execution is not a pass. Run sequentially with other
+     builds and tests to respect the machine's resource budget.
+  2. Run the tracked tool-monitor and stall-guard regressions. Verify repeated failed or
+     unchanged action cycles receive recovery guidance before a persistent loop stops.
+     Changing successful results and active-job waits must remain allowed. Do not create
+     a live infinite loop or claim the model itself proved the deterministic assertions.
+  3. When a disposable desktop fixture is available, confirm an unset Max turns setting
+     shows Unlimited, a saved positive limit remains unchanged, and selecting Unlimited
+     saves zero. Clearing the field must not remove the saved limit. Without an isolated
+     fixture, report these desktop assertions NOT OBSERVABLE instead of changing real settings.
+  4. Write phase4e_agent_loop.md below {{ workspace_dir }} with PASS, FAIL, BLOCKED or
+     NOT OBSERVABLE for each check and identify any unverified behavior separately.
   {% endif %}
 
   ## 📊 PHASE 5: Final Report Generation

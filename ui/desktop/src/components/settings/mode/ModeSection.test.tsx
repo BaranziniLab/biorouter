@@ -234,7 +234,7 @@ describe('Settings > Chat > Approvals', () => {
       render(<ModeSection />);
       const turns = screen.getByRole('spinbutton', { name: approvalsCopy.maxTurns });
       expect(turns).toBeEnabled();
-      expect(turns).toHaveValue(100);
+      expect(turns).toHaveValue(0);
     });
 
     it('keeps the last answer when a later read fails, rather than the default', async () => {
@@ -260,7 +260,7 @@ describe('Settings > Chat > Approvals', () => {
         await screen.findByRole('button', { name: `${approvalsCopy.mode} Autonomous` })
       ).toBeEnabled();
       await waitFor(() =>
-        expect(screen.getByRole('spinbutton', { name: approvalsCopy.maxTurns })).toHaveValue(100)
+        expect(screen.getByRole('spinbutton', { name: approvalsCopy.maxTurns })).toHaveValue(0)
       );
       logged.mockRestore();
     });

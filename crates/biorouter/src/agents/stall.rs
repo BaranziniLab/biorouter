@@ -35,10 +35,10 @@
 //!    naming the loop and demanding a different approach. Nothing is blocked.
 //! 2. The checker keeps flagging the *same* loop ([`StallCheckConfig::stall_limit`]
 //!    near-identical reasons in a row) or flags any loop
-//!    [`StallCheckConfig::max_flags`] times → **give up**: the model is told to
+//!    [`StallCheckConfig::max_flags`] times without intervening progress → **give up**: the model is told to
 //!    stop and hand the user a best-effort answer, and the turn is hard-bounded
 //!    to a short grace period after that so a model that ignores the instruction
-//!    cannot keep spinning to the `max_turns` cap.
+//!    cannot keep spinning after confirmed lack of progress.
 //!
 //! Everything is config-gated: `BIOROUTER_STALL_CHECK=false` turns the whole
 //! thing off, and each threshold has its own key (see [`StallCheckConfig::from_config`]).
@@ -66,7 +66,7 @@ pub const DEFAULT_STALL_CHECK_EVERY: u32 = 10;
 /// Consecutive near-identical "you're looping" reasons that count as a
 /// confirmed, non-converging stall (the generalization of `GOAL_STALL_LIMIT`).
 pub const DEFAULT_STALL_LIMIT: u32 = 2;
-/// Total "you're looping" verdicts in one turn after which the agent gives up
+/// Consecutive "you're looping" verdicts without intervening progress before giving up
 /// even if the reasons keep changing (the generalization of `GOAL_MAX_ITERATIONS`).
 pub const DEFAULT_STALL_MAX_FLAGS: u32 = 4;
 /// Iterations the model gets to deliver its best-effort answer after a give-up
@@ -134,7 +134,7 @@ pub struct StallCheckConfig {
     pub interval: u32,
     /// Consecutive near-identical looping reasons that force a give-up.
     pub stall_limit: u32,
-    /// Total looping verdicts in a turn that force a give-up regardless.
+    /// Looping verdicts without intervening progress that force a give-up.
     pub max_flags: u32,
 }
 
@@ -238,22 +238,33 @@ impl StallWatch {
         self.given_up
     }
 
+    /// Clear earlier suspicions when completed work demonstrates progress.
+    pub fn record_progress(&mut self) {
+        if !self.given_up {
+            self.last_reason = None;
+            self.stall_count = 0;
+            self.flags = 0;
+        }
+    }
+
     /// Fold one verdict into the watch. `None` = "no loop detected / no verdict".
     pub fn record(&mut self, verdict: Option<&str>, config: &StallCheckConfig) -> StallAction {
         let Some(reason) = verdict else {
-            // Progress (or no evidence): the streak is over.
-            self.last_reason = None;
-            self.stall_count = 0;
+            self.record_progress();
             return StallAction::Proceed;
         };
 
-        self.flags += 1;
+        self.flags = self.flags.saturating_add(1);
         let repeated = self
             .last_reason
             .as_deref()
             .map(|prev| similar_reasons(prev, reason))
             .unwrap_or(false);
-        self.stall_count = if repeated { self.stall_count + 1 } else { 0 };
+        self.stall_count = if repeated {
+            self.stall_count.saturating_add(1)
+        } else {
+            0
+        };
         self.last_reason = Some(reason.to_string());
 
         let stalled = self.stall_count >= config.stall_limit;
@@ -366,7 +377,7 @@ Respond with ONLY a JSON object, no prose, no code fences:
 {"looping": false} if the agent is making progress, or
 {"looping": true, "reason": "<one sentence: what it keeps repeating, and what it should do instead>"} if it is stuck.
 
-Be conservative. Long, varied, advancing work is NOT a loop: different tools, different files, new information, or steady movement through a plan all mean {"looping": false}. The excerpt is only a tail, so earlier progress is not visible; never infer a loop from what is missing. Report a loop ONLY when the excerpt itself shows concrete repetition or a lack of progress."#;
+Be conservative. Waiting for an identified active job, checking changing CI/build results, or reading successive pages is legitimate progress. Repeated tool arguments alone do not prove a loop; compare the results. Long, varied, advancing work is NOT a loop: different tools, different files, new information, or steady movement through a plan all mean {"looping": false}. The excerpt is only a tail, so earlier progress is not visible; never infer a loop from what is missing. Report a loop ONLY when the excerpt itself shows concrete repetition or a lack of progress."#;
 
 #[derive(Deserialize)]
 struct LoopVerdict {
@@ -639,11 +650,44 @@ mod tests {
         watch.record(Some(reason), &config);
         watch.record(None, &config);
         // Same complaint again, but the streak was broken: back to a nudge, not
-        // a give-up (the flag ceiling still counts it).
+        // a give-up: a clean verdict also clears the previous flags.
         assert!(matches!(
             watch.record(Some(reason), &config),
             StallAction::Nudge { .. }
         ));
+    }
+
+    #[test]
+    fn healthy_progress_prevents_historical_flags_from_accumulating() {
+        let config = StallCheckConfig::default();
+        for explicit_progress in [false, true] {
+            let mut watch = StallWatch::default();
+            for index in 0..100 {
+                assert!(matches!(
+                    watch.record(Some(&format!("repeated step {index}")), &config),
+                    StallAction::Nudge { .. }
+                ));
+                if explicit_progress {
+                    watch.record_progress();
+                } else {
+                    assert_eq!(watch.record(None, &config), StallAction::Proceed);
+                }
+            }
+            assert!(!watch.has_given_up());
+            assert_eq!(watch.last_reason(), None);
+        }
+    }
+
+    #[test]
+    fn progress_does_not_resurrect_a_turn_already_wrapping_up() {
+        let mut watch = StallWatch::default();
+        let config = StallCheckConfig::default();
+        for _ in 0..3 {
+            watch.record(Some("identical unchanged circular reasoning"), &config);
+        }
+        assert!(watch.has_given_up());
+        watch.record_progress();
+        assert!(watch.has_given_up());
     }
 
     // ── verdict parsing ──
