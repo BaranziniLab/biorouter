@@ -1,6 +1,7 @@
 use anyhow::Result;
 use std::env;
 use std::path::PathBuf;
+use std::process::Stdio;
 use tokio::process::Command;
 use tokio::sync::OnceCell;
 
@@ -67,7 +68,10 @@ async fn get_shell_path_async() -> Result<String> {
 
 async fn get_unix_path_async(shell: &str) -> Result<String> {
     let mut command = Command::new(shell);
-    command.args(["-l", "-i", "-c", "echo $PATH"]);
+    command
+        .args(["-l", "-i", "-c", "echo $PATH"])
+        .stdin(Stdio::null())
+        .kill_on_drop(true);
     crate::developer::shell::strip_daemon_private_env(&mut command);
     crate::developer::shell::no_console_window(&mut command);
     let output = command
@@ -101,14 +105,20 @@ async fn get_windows_path_async(shell: &str) -> Result<String> {
     let output = match shell_name {
         "pwsh" | "powershell" => {
             let mut command = Command::new(shell);
-            command.args(["-NoLogo", "-Command", "$env:PATH"]);
+            command
+                .args(["-NoLogo", "-Command", "$env:PATH"])
+                .stdin(Stdio::null())
+                .kill_on_drop(true);
             crate::developer::shell::strip_daemon_private_env(&mut command);
             crate::developer::shell::no_console_window(&mut command);
             command.output().await
         }
         _ => {
             let mut command = Command::new(shell);
-            command.args(["/c", "echo %PATH%"]);
+            command
+                .args(["/c", "echo %PATH%"])
+                .stdin(Stdio::null())
+                .kill_on_drop(true);
             crate::developer::shell::strip_daemon_private_env(&mut command);
             crate::developer::shell::no_console_window(&mut command);
             command.output().await
@@ -132,4 +142,67 @@ async fn get_windows_path_async(shell: &str) -> Result<String> {
     }
 
     Ok(path)
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt;
+    use std::time::Duration;
+
+    struct ProcessCleanup(Option<libc::pid_t>);
+
+    impl Drop for ProcessCleanup {
+        fn drop(&mut self) {
+            if let Some(pid) = self.0 {
+                unsafe { libc::kill(pid, libc::SIGKILL) };
+            }
+        }
+    }
+
+    fn process_exists(pid: libc::pid_t) -> bool {
+        let result = unsafe { libc::kill(pid, 0) };
+        result == 0 || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
+    }
+
+    #[tokio::test]
+    async fn cancelling_path_discovery_kills_its_shell_child() {
+        let dir = tempfile::tempdir().unwrap();
+        let shell = dir.path().join("fake-shell");
+        let marker = dir.path().join("pid");
+        std::fs::write(
+            &shell,
+            "#!/bin/sh\nprintf '%s\\n' \"$$\" > \"${0%/*}/pid\"\nexec /bin/sleep 30\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&shell, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let task = tokio::spawn(async move { get_unix_path_async(shell.to_str().unwrap()).await });
+
+        let pid = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                if let Ok(pid) = tokio::fs::read_to_string(&marker).await {
+                    if let Ok(pid) = pid.trim().parse::<libc::pid_t>() {
+                        break pid;
+                    }
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await;
+        task.abort();
+        let outcome = task.await;
+        let pid = pid.expect("the fake shell must announce its child before cancellation");
+        assert!(pid > 0);
+        let mut cleanup = ProcessCleanup(Some(pid));
+        assert!(outcome.unwrap_err().is_cancelled());
+
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while process_exists(pid) {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("cancelling PATH discovery must kill and reap its shell child");
+        cleanup.0 = None;
+    }
 }

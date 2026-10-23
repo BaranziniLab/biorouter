@@ -34,7 +34,8 @@
 //! caller degrades to telling the user to paste, which is worse than a link and
 //! much better than a dead one.
 
-use std::path::Path;
+use std::ffi::OsStr;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::Duration;
 
@@ -192,23 +193,7 @@ pub fn render_body(draft: &Draft, evidence: &Evidence, private: bool) -> String 
         }
     }
 
-    if evidence.failures.is_empty() {
-        body.push_str("\nNo failed tool calls were recorded in the reporting session.\n");
-    } else {
-        body.push_str(&format!(
-            "\n<details>\n<summary>Failed tool calls in the reporting session \
-             ({} of {} calls)</summary>\n\n",
-            evidence.total_failed_calls, evidence.total_tool_calls
-        ));
-        for failure in &evidence.failures {
-            body.push_str(&failure.to_line());
-            body.push('\n');
-            if let Some(arguments) = &failure.arguments {
-                body.push_str(&format!("  - arguments: `{arguments}`\n"));
-            }
-        }
-        body.push_str("\n</details>\n");
-    }
+    append_failure_counts(&mut body, evidence);
 
     if evidence.externalized_results > 0 {
         body.push_str(&format!(
@@ -229,12 +214,48 @@ pub fn render_body(draft: &Draft, evidence: &Evidence, private: bool) -> String 
     if !private {
         body.push_str(
             " A full diagnostics bundle (transcript, redacted config, logs) can be attached \
-             from **Chat summary → Diagnostics → Generate diagnostics**.",
+             from **Chat summary → Diagnostics → Generate diagnostics**. It contains \
+             conversation content: review and remove personal details before sharing it.",
         );
     }
     body.push_str("</sub>\n");
 
     body
+}
+
+fn append_failure_counts(body: &mut String, evidence: &Evidence) {
+    if evidence.failures.is_empty() {
+        body.push_str("\nNo failed tool calls were recorded in the reporting session.\n");
+    } else {
+        body.push_str(&format!(
+            "\n<details>\n<summary>Failed tool calls in the reporting session \
+             ({} of {} calls)</summary>\n\n",
+            evidence.total_failed_calls, evidence.total_tool_calls
+        ));
+        for failure in &evidence.failures {
+            // Arguments and output can contain personal data that no credential
+            // regex can identify. Only typed, content-free counts leave the chat.
+            body.push_str(&format!(
+                "- {}: {} failed call(s), {}{}\n",
+                failure.kind.as_str(),
+                failure.occurrences,
+                if failure.retryable {
+                    "retryable"
+                } else {
+                    "not retryable"
+                },
+                if failure.looks_deliberate {
+                    "; may be an intentional refusal"
+                } else {
+                    ""
+                },
+            ));
+        }
+        body.push_str(
+            "\nTool arguments and output are omitted. Include a sanitized reproduction \
+             in the report fields above when needed.\n\n</details>\n",
+        );
+    }
 }
 
 /// The **Suspected cause** line of a report that supplied no diagnosis.
@@ -342,7 +363,45 @@ pub async fn gh_ready() -> bool {
     if running_under_test() {
         return false;
     }
-    let mut probe = tokio::process::Command::new("gh");
+    let Some(program) = gh_program().await else {
+        return false;
+    };
+    gh_ready_at(&program).await
+}
+
+fn gh_in_paths(inherited: Option<&OsStr>, shell_dirs: &[PathBuf], cwd: &Path) -> Option<PathBuf> {
+    if let Some(inherited) = inherited {
+        if let Ok(program) = which::which_in("gh", Some(inherited), cwd) {
+            return Some(program);
+        }
+    }
+    if shell_dirs.is_empty() {
+        return None;
+    }
+    let shell_path = std::env::join_paths(shell_dirs).ok()?;
+    which::which_in("gh", Some(shell_path), cwd).ok()
+}
+
+async fn gh_program() -> Option<PathBuf> {
+    let cwd = std::env::current_dir().ok()?;
+    let inherited = std::env::var_os("PATH");
+    if let Some(program) = gh_in_paths(inherited.as_deref(), &[], &cwd) {
+        return Some(program);
+    }
+    // Finder-launched daemons do not inherit the login shell's Homebrew PATH.
+    // Use the same bounded, credential-filtered discovery as the developer shell.
+    let shell_dirs = tokio::time::timeout(
+        GH_PROBE_TIMEOUT,
+        biorouter_mcp::developer::paths::get_shell_path_dirs(),
+    )
+    .await
+    .ok()?
+    .ok()?;
+    gh_in_paths(None, shell_dirs, &cwd)
+}
+
+async fn gh_ready_at(program: &Path) -> bool {
+    let mut probe = tokio::process::Command::new(program);
     probe
         .args(["auth", "status", "--hostname", "github.com"])
         .env("GH_PROMPT_DISABLED", "1")
@@ -350,7 +409,8 @@ pub async fn gh_ready() -> bool {
         .env("NO_COLOR", "1")
         .stdin(Stdio::null())
         .stdout(Stdio::null())
-        .stderr(Stdio::null());
+        .stderr(Stdio::null())
+        .kill_on_drop(true);
     // `gh` is a console program and `biorouterd` is started DETACHED on Windows,
     // so it owns no console for a child to inherit and Windows gives this one a
     // brand-new, VISIBLE console unless it is asked not to (#368).
@@ -454,7 +514,10 @@ pub async fn file_with_gh(
         anyhow::bail!("refusing to create a GitHub issue from a test build; nothing was posted");
     }
     tokio::fs::write(body_file, body).await?;
-    let mut create = tokio::process::Command::new("gh");
+    let program = gh_program()
+        .await
+        .ok_or_else(|| anyhow::anyhow!("`gh` was not found in the daemon or login shell PATH"))?;
+    let mut create = tokio::process::Command::new(program);
     create
         .args([
             "issue",
@@ -471,7 +534,8 @@ pub async fn file_with_gh(
         .env("GH_PROMPT_DISABLED", "1")
         .env("GH_NO_UPDATE_NOTIFIER", "1")
         .env("NO_COLOR", "1")
-        .stdin(Stdio::null());
+        .stdin(Stdio::null())
+        .kill_on_drop(true);
     biorouter_mcp::developer::shell::no_console_window(&mut create);
     let output = tokio::time::timeout(GH_TIMEOUT, create.output())
         .await
@@ -664,11 +728,100 @@ mod tests {
     }
 
     #[test]
-    fn the_failure_list_is_rendered_with_its_counts_and_arguments() {
+    fn the_failure_list_contains_only_structured_counts() {
         let body = render_body(&draft(), &evidence(), false);
         assert!(body.contains("2 of 7 calls"), "{body}");
-        assert!(body.contains("`developer__shell` ×2"), "{body}");
-        assert!(body.contains("cargo build"), "{body}");
+        assert!(
+            body.contains("not_found: 2 failed call(s), not retryable"),
+            "{body}"
+        );
+        assert!(!body.contains("arguments:"), "{body}");
+        assert!(body.contains("Running `cargo build`"), "{body}");
+    }
+
+    fn fake_gh(dir: &Path, contents: &str) -> PathBuf {
+        let program = dir.join(if cfg!(windows) { "gh.exe" } else { "gh" });
+        std::fs::write(&program, contents).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o700)).unwrap();
+        }
+        program
+    }
+
+    #[test]
+    fn gh_resolution_falls_back_to_the_login_shell_path() {
+        let inherited = tempfile::tempdir().unwrap();
+        let shell = tempfile::tempdir().unwrap();
+        let program = fake_gh(shell.path(), "#!/bin/sh\nexit 0\n");
+        assert_eq!(
+            gh_in_paths(
+                Some(inherited.path().as_os_str()),
+                &[shell.path().to_path_buf()],
+                inherited.path(),
+            ),
+            Some(program),
+        );
+        assert!(gh_in_paths(Some(inherited.path().as_os_str()), &[], inherited.path()).is_none());
+    }
+
+    #[test]
+    fn gh_resolution_keeps_an_executable_already_on_the_daemon_path() {
+        let inherited = tempfile::tempdir().unwrap();
+        let shell = tempfile::tempdir().unwrap();
+        let program = fake_gh(inherited.path(), "#!/bin/sh\nexit 0\n");
+        fake_gh(shell.path(), "#!/bin/sh\nexit 1\n");
+        assert_eq!(
+            gh_in_paths(
+                Some(inherited.path().as_os_str()),
+                &[shell.path().to_path_buf()],
+                inherited.path()
+            ),
+            Some(program),
+        );
+    }
+
+    #[test]
+    fn missing_path_configuration_does_not_search_the_working_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        fake_gh(dir.path(), "#!/bin/sh\nexit 0\n");
+        assert!(gh_in_paths(None, &[], dir.path()).is_none());
+    }
+
+    #[tokio::test]
+    #[cfg(unix)]
+    async fn resolved_gh_is_probed_noninteractively_and_auth_failure_is_retained() {
+        let dir = tempfile::tempdir().unwrap();
+        let program = fake_gh(dir.path(), "#!/bin/sh\n[ \"$1 $2 $3 $4\" = 'auth status --hostname github.com' ] && [ \"$GH_PROMPT_DISABLED\" = 1 ] && ! read -r unexpected\n");
+        assert!(gh_ready_at(&program).await);
+        fake_gh(dir.path(), "#!/bin/sh\nexit 1\n");
+        assert!(!gh_ready_at(&program).await);
+    }
+
+    #[test]
+    fn public_drafts_do_not_copy_personal_data_from_recorded_failures() {
+        let mut evidence = evidence();
+        evidence.failures[0].arguments = Some(
+            r#"{"command":"echo 'Example Person, born 1990-01-02' > Example-Person.html; exit 3"}"#
+                .into(),
+        );
+        evidence.failures[0].message =
+            "Failed rendering Example-Person.html for Example Person, born 1990-01-02".into();
+        evidence.failures[0].tool_name = Some("unknown_Example_Person".into());
+        for private in [false, true] {
+            let body = render_body(&draft(), &evidence, private);
+            for personal in [
+                "Example Person",
+                "Example-Person",
+                "1990-01-02",
+                "unknown_Example",
+            ] {
+                assert!(!body.contains(personal), "{body}");
+            }
+            assert!(body.contains("2 of 7 calls"));
+            assert!(body.contains("not_found"));
+        }
     }
 
     /// A report with no steps still renders a `To Reproduce` section, because
