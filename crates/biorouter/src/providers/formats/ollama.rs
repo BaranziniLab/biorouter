@@ -1331,6 +1331,7 @@ pub fn mark_incomplete(error: ProviderError) -> ProviderError {
     match error {
         ProviderError::RequestFailed(text) => ProviderError::RequestFailed(format!("{text}{NOTE}")),
         ProviderError::ServerError(text) => ProviderError::ServerError(format!("{text}{NOTE}")),
+        ProviderError::StreamDecode(text) => ProviderError::StreamDecode(format!("{text}{NOTE}")),
         ProviderError::ExecutionError(text) => {
             ProviderError::ExecutionError(format!("{text}{NOTE}"))
         }

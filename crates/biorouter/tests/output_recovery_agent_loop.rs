@@ -14,6 +14,7 @@ use biorouter::agents::extension::ExtensionConfig;
 use biorouter::agents::turn_abort::TurnAbortCode;
 use biorouter::agents::types::{RetryConfig, SuccessCheck};
 use biorouter::agents::{Agent, AgentConfig, AgentEvent, SessionConfig};
+use biorouter::config::declarative_providers::{DeclarativeProviderConfig, ProviderEngine};
 use biorouter::config::permission::PermissionManager;
 use biorouter::config::{with_config_overrides, BioRouterMode};
 use biorouter::conversation::message::{Message, MessageContent};
@@ -24,14 +25,18 @@ use biorouter::providers::base::{
     MessageStream, Provider, ProviderMetadata, ProviderStreamItem, ProviderUsage, Usage,
 };
 use biorouter::providers::errors::{ProviderError, ProviderErrorKind};
+use biorouter::providers::ollama::OllamaProvider;
 use biorouter::providers::utils::map_http_error_to_provider_error;
 use biorouter::session::session_manager::SessionType;
 use biorouter::session::SessionManager;
 use futures::StreamExt;
 use rmcp::model::{CallToolRequestParams, ErrorCode, ErrorData, Tool};
 use rmcp::object;
+use serde_json::{json, Value};
 use tempfile::TempDir;
 use tracing::instrument::WithSubscriber;
+use wiremock::matchers::{method, path};
+use wiremock::{Mock, MockServer, ResponseTemplate};
 
 const CONTINUATION: &str = "Your previous response was cut off because it reached the output length limit (finish_reason=\"length\"). Continue exactly where you left off, and do not repeat what you already wrote.";
 
@@ -1513,6 +1518,182 @@ struct CutStreamReply {
     abort_codes: Vec<TurnAbortCode>,
     stored_tool_results: Vec<String>,
     completed_operation: String,
+}
+
+const HTTP_PARTIAL: &str = "The synthetic result";
+const HTTP_CONTINUED: &str = " is complete.";
+const MALFORMED_STREAM_SENTINEL: &str = "SYNTHETIC_PRIVATE_STREAM_SENTINEL";
+
+async fn reply_through_malformed_ollama_http(failures: usize) -> (CutStreamReply, Vec<Value>) {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/api/show"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "capabilities": ["completion", "tools"],
+            "model_info": {"general.architecture": "llama", "llama.context_length": 1048576}
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/version"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"version": "0.40.2"})))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/api/chat"))
+        .respond_with(ResponseTemplate::new(404).set_body_string("404 page not found"))
+        .mount(&server)
+        .await;
+    let calls = Arc::new(AtomicUsize::new(0));
+    let sent = calls.clone();
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions"))
+        .respond_with(move |_: &wiremock::Request| {
+            let failed = sent.fetch_add(1, Ordering::SeqCst) < failures;
+            let chunk = json!({
+                "id": "synthetic-stream", "model": "synthetic-model",
+                "choices": [{"index": 0, "delta": {"content": if failed { HTTP_PARTIAL } else { HTTP_CONTINUED }}, "finish_reason": null}]
+            });
+            let ending = if failed {
+                format!("data: {{intentionally malformed {MALFORMED_STREAM_SENTINEL}\n\n")
+            } else {
+                "data: {\"id\":\"synthetic-stream\",\"model\":\"synthetic-model\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n".to_string()
+            };
+            ResponseTemplate::new(200)
+                .set_body_raw(format!("data: {chunk}\n\n{ending}"), "text/event-stream")
+        })
+        .mount(&server)
+        .await;
+    let provider = OllamaProvider::from_custom_config(
+        ModelConfig::new_or_fail(&format!("stream-recovery-{}", uuid::Uuid::new_v4())),
+        DeclarativeProviderConfig {
+            name: "synthetic-stream-recovery".to_string(),
+            engine: ProviderEngine::Ollama,
+            display_name: "Synthetic stream recovery".to_string(),
+            description: None,
+            api_key_env: "NOT_USED".to_string(),
+            base_url: server.uri(),
+            models: vec![],
+            headers: None,
+            timeout_seconds: Some(10),
+            supports_streaming: Some(true),
+        },
+    )
+    .unwrap();
+    let overrides = HashMap::from([
+        ("BIOROUTER_MISTAKE_STREAK_DETECTION".into(), "true".into()),
+        ("BIOROUTER_PROVIDER_ERROR_RETRIES".into(), "1".into()),
+    ]);
+    let reply = with_config_overrides(overrides, async {
+        let (agent, sessions, session_id, _work, _data, _permissions) =
+            test_agent(Arc::new(provider)).await;
+        let mut reply = CutStreamReply::default();
+        tokio::time::timeout(Duration::from_secs(20), async {
+            let stream = agent
+                .reply(
+                    Message::user().with_text("Describe the synthetic result without using tools."),
+                    SessionConfig {
+                        id: session_id.clone(),
+                        schedule_id: None,
+                        max_turns: Some(4),
+                        max_tool_calls: None,
+                        budget: None,
+                        retry_config: None,
+                        reasoning_effort: None,
+                    },
+                    None,
+                )
+                .await
+                .unwrap();
+            tokio::pin!(stream);
+            while let Some(event) = stream.next().await {
+                match event.unwrap() {
+                    AgentEvent::Message(message) if message.is_user_visible() => {
+                        for content in &message.content {
+                            match content {
+                                MessageContent::Text(text) => reply.shown.push(text.text.clone()),
+                                MessageContent::SystemNotification(notice) => {
+                                    reply.shown.push(notice.msg.clone())
+                                }
+                                _ => {}
+                            }
+                        }
+                    }
+                    AgentEvent::TurnAborted { code, .. } => {
+                        reply.aborted = true;
+                        reply.abort_codes.push(code);
+                    }
+                    _ => {}
+                }
+            }
+        })
+        .await
+        .expect("the HTTP stream recovery settles");
+        let stored = sessions.get_session(&session_id, true).await.unwrap();
+        for message in stored.conversation.unwrap().messages() {
+            reply
+                .stored
+                .push(format!("{:?}: {}", message.role, message.as_concat_text()));
+        }
+        reply
+    })
+    .await;
+    let requests = server
+        .received_requests()
+        .await
+        .unwrap()
+        .iter()
+        .filter(|request| request.url.path() == "/v1/chat/completions")
+        .map(|request| serde_json::from_slice(&request.body).unwrap())
+        .collect();
+    (reply, requests)
+}
+
+#[tokio::test]
+async fn malformed_ollama_http_stream_retries_and_preserves_the_partial_answer() {
+    let (reply, requests) = reply_through_malformed_ollama_http(1).await;
+    assert_eq!(requests.len(), 2, "one HTTP retry");
+    assert!(!reply.aborted, "{:?}", reply.abort_codes);
+    let answer: String = reply
+        .stored
+        .iter()
+        .filter_map(|row| row.strip_prefix("Assistant: "))
+        .collect();
+    assert_eq!(answer, format!("{HTTP_PARTIAL}{HTTP_CONTINUED}"));
+    let retry = requests[1]["messages"].to_string();
+    assert!(retry.contains(HTTP_PARTIAL), "{retry}");
+    assert!(
+        retry.contains("Continue the reply from exactly where it stopped"),
+        "{retry}"
+    );
+    assert!(reply
+        .shown
+        .iter()
+        .any(|row| row.contains("Trying again (1/1)")));
+    for row in reply.shown.iter().chain(&reply.stored) {
+        assert!(!row.contains("Retrying will not help"), "{row}");
+        assert!(!row.contains(MALFORMED_STREAM_SENTINEL), "{row}");
+    }
+}
+
+#[tokio::test]
+async fn repeated_malformed_ollama_http_streams_exhaust_the_retry_budget() {
+    let (reply, requests) = reply_through_malformed_ollama_http(usize::MAX).await;
+    assert_eq!(requests.len(), 2, "the retry budget bounds real HTTP calls");
+    assert_eq!(
+        reply.abort_codes,
+        [TurnAbortCode::ProviderFailure {
+            kind: ProviderErrorKind::Network
+        }]
+    );
+    assert!(reply
+        .shown
+        .iter()
+        .any(|row| row.contains("already retried it once")));
+    for row in reply.shown.iter().chain(&reply.stored) {
+        assert!(!row.contains("Retrying will not help"), "{row}");
+        assert!(!row.contains(MALFORMED_STREAM_SENTINEL), "{row}");
+    }
 }
 
 /// One reply to "Run echo hi in the shell." against `provider`, with one

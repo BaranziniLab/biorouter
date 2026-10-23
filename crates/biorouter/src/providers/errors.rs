@@ -19,6 +19,11 @@ pub enum ProviderError {
     #[error("Server error: {0}")]
     ServerError(String),
 
+    /// Malformed JSON in an established response stream. Created at the parser
+    /// boundary so arbitrary provider error text cannot opt into a retry.
+    #[error("Stream decode error: {0}")]
+    StreamDecode(String),
+
     #[error("Request failed: {0}")]
     RequestFailed(String),
 
@@ -258,6 +263,7 @@ impl ProviderError {
             ProviderError::Authentication(_) => ProviderErrorKind::Auth,
             ProviderError::RateLimitExceeded { .. } => ProviderErrorKind::RateLimit,
             ProviderError::ServerError(_) => ProviderErrorKind::Server,
+            ProviderError::StreamDecode(_) => ProviderErrorKind::Network,
             ProviderError::ContextLengthExceeded(_) => ProviderErrorKind::ContextLength,
             // `RequestFailed` is what `From<anyhow::Error>` produces for a
             // reqwest failure, so it covers timeouts/connection errors — but it
@@ -278,6 +284,7 @@ impl ProviderError {
             ProviderError::ContextLengthExceeded(_) => "context_length",
             ProviderError::RateLimitExceeded { .. } => "rate_limit",
             ProviderError::ServerError(_) => "server",
+            ProviderError::StreamDecode(_) => "stream_decode",
             ProviderError::RequestFailed(_) => "request",
             ProviderError::ExecutionError(_) => "execution",
             ProviderError::UsageError(_) => "usage",
@@ -387,7 +394,18 @@ mod tests {
     }
 
     #[test]
-    fn malformed_stream_payloads_are_not_transport_failures() {
+    fn typed_stream_decode_failures_are_retryable() {
+        let error = ProviderError::StreamDecode(
+            "Failed to parse streaming chunk: invalid JSON at line 1 column 2".into(),
+        );
+        assert_eq!(error.kind(), ProviderErrorKind::Network);
+        assert!(error.kind().is_transient());
+        assert!(crate::agents::mistakes::is_recoverable(&error));
+        assert!(!crate::providers::retry::is_timeout(&error));
+    }
+
+    #[test]
+    fn untyped_parse_messages_are_not_transport_failures() {
         for details in [
             "Stream decode error: Failed to parse streaming chunk: missing field delta",
             "Stream decode error: expected value at line 1 column 1",
