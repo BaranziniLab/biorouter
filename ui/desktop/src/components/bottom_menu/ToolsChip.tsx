@@ -12,9 +12,8 @@ import { SkillsPanel, useSkillPicker } from './BottomMenuSkillSelection';
 import { TOOLS_COPY } from './copy';
 
 /**
- * The composer's Tools chip (spec 3.7): one control, labelled "Tools" and the
- * sum of the extensions, skills and knowledge bases this chat can reach. It
- * opens one popover over the chip: one list at a time (a search field, a scope
+ * The composer's Tools chip: one label, with enabled counts in its tooltip.
+ * It opens one popover over the chip: one list at a time (a search field, a scope
  * line and switch rows) with the segmented control (Extensions, Skills,
  * Knowledge) under it, directly above the chip.
  *
@@ -111,9 +110,9 @@ export function ToolsChip({ sessionId, handOffKey }: ToolsChipProps) {
     inputRef.current?.focus();
   }, [segment]);
 
-  // The three lists live for as long as the composer does, so the chip's number
-  // is right before the popover is ever opened. Each re-reads its source when
-  // its own list comes on screen.
+  // The three lists live for as long as the composer does, so its tooltip
+  // has the right counts before the popover is ever opened. Each list re-reads
+  // its source when it comes on screen.
   const extensions = useExtensionPicker(sessionId, {
     open: open && segment === 'extensions',
     // "Show this chat's extensions" from elsewhere in the app.
@@ -127,11 +126,11 @@ export function ToolsChip({ sessionId, handOffKey }: ToolsChipProps) {
 
   const counts = [extensions.activeCount, skills.activeCount, knowledge.visibleCount] as const;
 
-  // ⚠ **The number is shown only once all three lists have answered for THIS
+  // ⚠ **Counts are exposed only once all three lists have answered for THIS
   // chat** (V2-R7-3, principle 10). Summed as each arrived, a chat switch read
   // "Tools 2", then 5, then 4: the configuration's fallback, then each list in
   // turn. A number shown and then withdrawn is the class V2-R5-5 fixed for the
-  // summary rail. So the chip reads "Tools" alone until it can state a fact.
+  // summary rail. Wait until all three figures stand.
   //
   // Two cases keep the last settled figures instead of hiding them:
   // - the same chat, when one list goes back to asking (the knowledge selection
@@ -157,15 +156,12 @@ export function ToolsChip({ sessionId, handOffKey }: ToolsChipProps) {
     setSettled({ chat, counts });
   }
   useComposerHandOff(handOffKey, TOOLS_HAND_OFF, settled);
-  // The figures the chip states, or none. The number, the accessible name and
-  // the tooltip all say the same figures: a carried number is named as one.
+  // The accessible name and tooltip share the same settled figures.
   const shown: SettledTools['counts'] | null = ready
     ? counts
     : settled !== null && (settled.chat === chat || (settled.chat === null && chat !== null))
       ? settled.counts
       : null;
-  const shownTotal = shown === null ? null : shown[0] + shown[1] + shown[2];
-
   const onOpenChange = (next: boolean) => {
     setOpen(next);
     if (!next) {
@@ -185,9 +181,9 @@ export function ToolsChip({ sessionId, handOffKey }: ToolsChipProps) {
               data-testid="composer-tools-chip"
               className="br-picker-chip"
               aria-label={shown !== null ? TOOLS_COPY.chipLabel(...shown) : TOOLS_COPY.chip}
+              aria-busy={shown === null}
             >
               <span>{TOOLS_COPY.chip}</span>
-              {shownTotal !== null && <span className="br-picker-chip__count">{shownTotal}</span>}
               <ChevronDown className="br-picker-chip__chevron" aria-hidden="true" />
             </button>
           </PopoverTrigger>

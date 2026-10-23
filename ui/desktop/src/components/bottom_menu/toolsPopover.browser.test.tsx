@@ -369,9 +369,11 @@ describe('the Tools popover keeps its segmented control above the chip (R-25)', 
       const tab = await open(height);
       try {
         const first = await measure(tab, 'extensions');
-        // The stand-in chip is the app's own: the three lists have answered, so it
-        // states their sum (1 + 1 + 1) and the popover is measured against that width.
-        expect(await tab.textContent('[data-testid="composer-tools-chip"]')).toBe('Tools3');
+        const chip = tab.locator('[data-testid="composer-tools-chip"]');
+        expect(await chip.textContent()).toBe('Tools');
+        expect(await chip.getAttribute('aria-label')).toBe(
+          'Tools: 1 extension, 1 skill, 1 knowledge base'
+        );
         for (const segment of SEGMENTS) {
           const { frames, under } =
             segment === 'extensions'

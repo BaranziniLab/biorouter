@@ -227,12 +227,8 @@
 }
 
 /*
- * The model menu's Effort section (R-26): a head row ("Effort", its InfoTip,
- * and the current stop on the right) over one slider that fills the menu. The
- * label keeps the menu's group-label look (12px, 500, muted, 12px in from the
- * edge); the slider's own 8px rail inset then puts the thumb's outer edge on
- * that same 12px line at either end. The slider's geometry is the primitive's
- * (`.br-slider*`, main.css).
+ * The model menu's effort label and control share the menu's 12px text inset.
+ * Segments and the sliding selection use the shared primitive's geometry.
  */
 .br-effort {
   padding: 6px 12px 8px;
@@ -251,14 +247,7 @@
   font-weight: 500;
 }
 
-.br-effort__value {
-  margin-inline-start: auto;
-  padding-inline-start: 8px;
-  color: var(--text-default);
-  white-space: nowrap;
-}
-
-.br-effort__slider {
+.br-effort__control {
   margin-top: 4px;
 }
 

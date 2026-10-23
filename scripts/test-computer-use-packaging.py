@@ -3,11 +3,13 @@
 import importlib.util
 import json
 from pathlib import Path
+import re
 import struct
 import subprocess
 import tempfile
 import unittest
 import zipfile
+import zlib
 
 spec = importlib.util.spec_from_file_location("runtime", Path(__file__).with_name("computer-use-runtime.py"))
 runtime = importlib.util.module_from_spec(spec)
@@ -162,6 +164,56 @@ class NativeContractTests(unittest.TestCase):
                 tool["inputSchema"]["properties"][parameter][keyword] = boolean
                 with self.assertRaisesRegex(ValueError, "Native schema mismatch"):
                     protocol.validate_tools(tools)
+
+
+class CursorArtworkTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        path = Path(self.temp.name) / "biorouter-cursor.png"
+        runtime.draw_cursor(path)
+        data = path.read_bytes()
+        self.assertEqual(data[:8], b"\x89PNG\r\n\x1a\n")
+        offset, compressed = 8, b""
+        while offset < len(data):
+            length = struct.unpack_from(">I", data, offset)[0]
+            kind, body = data[offset + 4:offset + 8], data[offset + 8:offset + 8 + length]
+            if kind == b"IHDR":
+                self.width, self.height, depth, color, _, _, _ = struct.unpack(">IIBBBBB", body)
+                self.assertEqual((depth, color), (8, 6))
+            elif kind == b"IDAT":
+                compressed += body
+            offset += length + 12
+        raw = zlib.decompress(compressed)
+        self.pixels = {}
+        for y in range(self.height):
+            row = raw[y * (self.width * 4 + 1):(y + 1) * (self.width * 4 + 1)]
+            self.assertEqual(row[0], 0)
+            for x in range(self.width):
+                self.pixels[x, y] = tuple(row[1 + x * 4:5 + x * 4])
+        self.visible = {point: color for point, color in self.pixels.items() if color[3] > 0}
+
+    def tearDown(self):
+        self.temp.cleanup()
+
+    def test_compact_artwork_keeps_the_native_tip_anchor(self):
+        self.assertEqual((self.width, self.height), (126, 126))
+        branding = (runtime.VENDOR / "patches/0001-branding.patch").read_text()
+        anchor = re.search(r"\+    static let tipAnchor = CGPoint\(x: ([\d.]+), y: ([\d.]+)\)", branding)
+        tip_x, tip_y = float(anchor[1]), self.height - float(anchor[2])
+        self.assertEqual(min(x for x, _ in self.visible), tip_x)
+        self.assertEqual(min(y for _, y in self.visible), tip_y)
+        self.assertGreater(self.pixels[int(tip_x), int(tip_y)][3], 0)
+        self.assertLessEqual(max(x for x, _ in self.visible) - tip_x + 1, 20)
+        self.assertLessEqual(max(y for _, y in self.visible) - tip_y + 1, 24)
+
+    def test_neutral_pointer_has_a_light_edge_and_antialiased_transparency(self):
+        opaque = [color for color in self.visible.values() if color[3] == 255]
+        self.assertGreater(sum(max(color[:3]) < 65 for color in opaque), len(opaque) / 2)
+        self.assertTrue(any(min(color[:3]) > 220 for color in self.visible.values()))
+        self.assertTrue(all(max(color[:3]) - min(color[:3]) <= 20 for color in self.visible.values()))
+        self.assertTrue(any(0 < color[3] < 255 for color in self.visible.values()))
+        self.assertEqual(self.pixels[0, 0], (0, 0, 0, 0))
+        self.assertEqual(self.pixels[125, 125], (0, 0, 0, 0))
 
 
 class PayloadTests(unittest.TestCase):

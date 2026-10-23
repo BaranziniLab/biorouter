@@ -1,15 +1,7 @@
 // @vitest-environment node
 /**
- * R-26 (owner message 13): the model menu's Effort section, measured in Chromium inside a real
- * Radix `DropdownMenu`, with the real `Slider`, `InfoTip` and effort store.
- *
- * jsdom can test the wiring (ModelsBottomBar.effort.test.tsx) but not three things that only a
- * layout engine and real input can: that the head row and the slider line up on the menu's 12px
- * text edge, that a real press and drag inside an open MENU (which steals focus on pointer moves
- * and closes on outside presses) sets the stop and leaves the menu open, and that the arrow keys
- * really carry focus between the menu's rows and the thumb. `pickers.css` and the
- * `@ws WS-PRIMITIVES` blocks of `main.css` supply the styles; Tailwind does not run, so the
- * menu's own width and padding are set inline at the recipe's values (w-72, p-1).
+ * The effort segments inside a real Radix menu: labels occupy their clickable segments,
+ * the shared thumb slides between selections, and menu navigation can enter and leave the group.
  */
 import { readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
@@ -95,7 +87,7 @@ function App() {
     (listener) => subscribeToReasoningEffort(SCOPE, listener),
     () => getReasoningEffort(SCOPE)
   );
-  const thumb = React.useRef<HTMLSpanElement>(null);
+  const control = React.useRef<HTMLDivElement>(null);
   (window as unknown as { __effort: () => string }).__effort = () => getReasoningEffort(SCOPE);
   return (
     <div style={{ position: 'fixed', left: 40, bottom: 40 }}>
@@ -105,9 +97,9 @@ function App() {
           id="menu"
           side="top"
           align="start"
-          onKeyDownCapture={(event) => moveFocusAcrossEffort(event, thumb.current)}
+          onKeyDownCapture={(event) => moveFocusAcrossEffort(event, control.current)}
         >
-          <EffortSection scope={SCOPE} effort={effort} thumbRef={thumb} />
+          <EffortSection scope={SCOPE} effort={effort} controlRef={control} />
           <DropdownMenuSeparator />
           <DropdownMenuItem id="change">Change model…</DropdownMenuItem>
           <DropdownMenuItem id="lead">Lead and worker…</DropdownMenuItem>
@@ -137,7 +129,7 @@ const near = (actual: number, expected: number, what: string) =>
     EPSILON
   );
 
-describe('the model menu’s Effort slider in a real layout engine (R-26)', () => {
+describe('the model menu’s labelled effort segments in a real layout engine', () => {
   let browser: Browser | null = null;
   let script = '';
   let css = '';
@@ -175,7 +167,7 @@ describe('the model menu’s Effort slider in a real layout engine (R-26)', () =
     );
     await tab.addScriptTag({ content: script });
     await tab.click('#chip');
-    await tab.waitForSelector('[data-testid="effort-slider"]');
+    await tab.waitForSelector('[data-testid="effort-control"]');
     await tab.waitForTimeout(250);
     return tab;
   }
@@ -183,7 +175,7 @@ describe('the model menu’s Effort slider in a real layout engine (R-26)', () =
   const effort = (tab: Page) =>
     tab.evaluate(() => (window as unknown as { __effort: () => string }).__effort());
 
-  it('lines the head row and the slider up on the menu’s 12px text edge', async (ctx) => {
+  it('puts all labels inside full-width segments on the menu’s text edge', async (ctx) => {
     if (!browser) return ctx.skip();
     const tab = await open();
     try {
@@ -191,94 +183,118 @@ describe('the model menu’s Effort slider in a real layout engine (R-26)', () =
         const box = (selector: string) => document.querySelector(selector)!.getBoundingClientRect();
         const section = box('[data-testid="effort-section"]');
         const label = document.querySelector('.br-effort__label')!;
-        const value = document.querySelector('[data-testid="effort-value"]')!;
+        const control = box('[data-testid="effort-control"]');
+        const selected = box('[role="radio"][aria-checked="true"]');
+        const thumb = box('[data-slot="segmented-thumb"]');
         return {
           sectionLeft: section.left,
           sectionRight: section.right,
           labelLeft: label.getBoundingClientRect().left,
           labelSize: getComputedStyle(label).fontSize,
           labelWeight: getComputedStyle(label).fontWeight,
-          valueRight: value.getBoundingClientRect().right,
-          valueText: value.textContent,
-          valueSize: getComputedStyle(value).fontSize,
-          slider: box('[data-testid="effort-slider"]'),
-          thumb: box('[role="slider"]'),
+          duplicateValue: document.querySelector('[data-testid="effort-value"]') !== null,
+          control,
           head: box('.br-effort__head'),
+          selected,
+          thumb,
+          segments: Array.from(document.querySelectorAll('[role="radio"]')).map((item) => {
+            const segment = item.getBoundingClientRect();
+            const text = item.querySelector('.br-segmented-label')!.getBoundingClientRect();
+            return {
+              label: item.textContent,
+              width: segment.width,
+              height: segment.height,
+              inside:
+                text.left >= segment.left &&
+                text.right <= segment.right &&
+                text.top >= segment.top &&
+                text.bottom <= segment.bottom,
+            };
+          }),
         };
       });
-      near(m.labelLeft - m.sectionLeft, 12, '"Effort" on the 12px text edge');
-      near(m.sectionRight - m.valueRight, 12, 'current stop on the 12px trailing edge');
+      near(m.labelLeft - m.sectionLeft, 12, 'Effort label inset');
       expect(m.labelSize).toBe('12px');
       expect(m.labelWeight).toBe('500');
-      expect(m.valueSize).toBe('12px');
-      expect(m.valueText).toBe('Normal');
-      // The slider fills the section inside its padding, 24px tall, under the head row.
-      near(m.slider.left - m.sectionLeft, 12, 'slider left');
-      near(m.sectionRight - m.slider.right, 12, 'slider right');
-      near(m.slider.height, 24, 'slider height');
-      expect(m.slider.top).toBeGreaterThanOrEqual(m.head.bottom);
-      // Normal is the middle stop.
-      near(
-        m.thumb.left + m.thumb.width / 2,
-        m.slider.left + m.slider.width / 2,
-        'Normal thumb centred'
-      );
+      expect(m.duplicateValue).toBe(false);
+      near(m.control.left - m.sectionLeft, 12, 'control left inset');
+      near(m.sectionRight - m.control.right, 12, 'control right inset');
+      near(m.control.height, 28, 'shared segmented track height');
+      expect(m.control.top).toBeGreaterThanOrEqual(m.head.bottom);
+      expect(m.segments.map((segment) => segment.label)).toEqual(['Quick', 'Normal', 'Deep']);
+      for (const segment of m.segments) {
+        expect(segment.inside).toBe(true);
+        near(segment.height, 24, 'shared segment height');
+        near(segment.width, (m.control.width - 4) / 3, 'equal segment width');
+      }
+      near(m.thumb.left, m.selected.left, 'thumb starts at Normal');
+      near(m.thumb.width, m.selected.width, 'thumb covers the selected segment');
     } finally {
       await tab.close();
     }
   });
 
-  it('sets the stop a press or a drag ends on, and leaves the menu open', async (ctx) => {
+  it('applies clicked labels immediately, keeps the menu open, and slides the shared thumb', async (ctx) => {
     if (!browser) return ctx.skip();
     const tab = await open();
     try {
-      const slider = (await tab.locator('[data-testid="effort-slider"]').boundingBox())!;
-      const y = slider.y + slider.height / 2;
-      // A press near the right end.
-      await tab.mouse.click(slider.x + slider.width - 4, y);
+      await tab.emulateMedia({ reducedMotion: 'no-preference' });
+      const thumb = tab.locator('[data-slot="segmented-thumb"]');
+      const before = (await thumb.boundingBox())!;
+      const transition = await thumb.evaluate((node) => getComputedStyle(node).transitionProperty);
+      expect(transition).toContain('translate');
+      await tab.getByRole('radio', { name: 'Deep', exact: true }).click();
       expect(await effort(tab)).toBe('deep');
-      // A drag back to the left end, released there.
-      await tab.mouse.move(slider.x + slider.width - 8, y);
-      await tab.mouse.down();
-      await tab.mouse.move(slider.x + slider.width / 2, y, { steps: 4 });
-      await tab.mouse.move(slider.x + 2, y, { steps: 4 });
-      await tab.mouse.up();
-      expect(await effort(tab)).toBe('quick');
       await tab.waitForTimeout(250);
-      const m = await tab.evaluate(() => ({
-        open: document.querySelector('[data-testid="effort-section"]') !== null,
-        value: document.querySelector('[data-testid="effort-value"]')?.textContent,
-        valuetext: document.querySelector('[role="slider"]')?.getAttribute('aria-valuetext'),
-      }));
-      expect(m).toEqual({ open: true, value: 'Quick', valuetext: 'Quick' });
+      const after = (await thumb.boundingBox())!;
+      expect(after.x).toBeGreaterThan(before.x);
+      const deep = (await tab.getByRole('radio', { name: 'Deep', exact: true }).boundingBox())!;
+      near(after.x, deep.x, 'thumb lands under Deep');
+      await tab.getByRole('radio', { name: 'Quick', exact: true }).click();
+      expect(await effort(tab)).toBe('quick');
+      expect(await tab.locator('[data-testid="effort-section"]').count()).toBe(1);
+      expect(
+        await tab.getByRole('radio', { name: 'Quick', exact: true }).getAttribute('aria-checked')
+      ).toBe('true');
     } finally {
       await tab.close();
     }
   });
 
-  it('carries focus between the rows and the thumb with the arrow keys', async (ctx) => {
+  it('carries focus between menu rows and the selected segment without changing effort', async (ctx) => {
     if (!browser) return ctx.skip();
     const tab = await open();
     try {
       const focused = () =>
         tab.evaluate(() => {
           const el = document.activeElement;
-          return el?.getAttribute('role') === 'slider' ? 'thumb' : (el?.id ?? null);
+          return el?.getAttribute('role') === 'radio' ? el.textContent : (el?.id ?? null);
         });
       await tab.focus('#change');
       await tab.keyboard.press('ArrowUp');
-      expect(await focused()).toBe('thumb');
+      expect(await focused()).toBe('Normal');
+      expect(await effort(tab)).toBe('normal');
+      await tab.keyboard.press('ArrowUp');
+      expect(await focused()).toBe('Normal');
+      expect(await effort(tab)).toBe('normal');
       await tab.keyboard.press('ArrowRight');
+      await expect.poll(focused).toBe('Deep');
       expect(await effort(tab)).toBe('deep');
-      await tab.keyboard.press('ArrowLeft');
-      await tab.keyboard.press('ArrowLeft');
+      await tab.keyboard.press('Home');
+      await expect.poll(focused).toBe('Quick');
       expect(await effort(tab)).toBe('quick');
+      await tab.keyboard.press('End');
+      await expect.poll(focused).toBe('Deep');
+      expect(await effort(tab)).toBe('deep');
       await tab.keyboard.press('ArrowDown');
       expect(await focused()).toBe('change');
-      // Row to row is Radix's own, which moves focus on a timer.
+      await tab.keyboard.press('ArrowUp');
+      expect(await focused()).toBe('Deep');
+      expect(await effort(tab)).toBe('deep');
+      await tab.keyboard.press('ArrowDown');
       await tab.keyboard.press('ArrowDown');
       await expect.poll(focused).toBe('lead');
-      expect(await effort(tab)).toBe('quick');
+      expect(await effort(tab)).toBe('deep');
     } finally {
       await tab.close();
     }

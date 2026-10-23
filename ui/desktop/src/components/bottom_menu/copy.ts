@@ -18,11 +18,11 @@ function count(n: number, one: string, many: string): string {
 
 export const TOOLS_COPY = {
   chip: 'Tools',
-  /** The chip's accessible name: the three numbers its one figure adds up. */
+  /** Counts stay available to assistive technology without opening the popover. */
   chipLabel: (extensions: number, skills: number, knowledge: number) =>
     `Tools: ${count(extensions, 'extension', 'extensions')}, ${count(skills, 'skill', 'skills')}, ${count(knowledge, 'knowledge base', 'knowledge bases')}`,
   chipTooltip: (extensions: number, skills: number, knowledge: number) =>
-    `${count(extensions, 'extension', 'extensions')} · ${count(skills, 'skill', 'skills')} · ${count(knowledge, 'knowledge base', 'knowledge bases')}`,
+    `${count(extensions + skills + knowledge, 'tool', 'tools')} enabled · ${count(extensions, 'extension', 'extensions')} · ${count(skills, 'skill', 'skills')} · ${count(knowledge, 'knowledge base', 'knowledge bases')}`,
   segmentsLabel: 'Tool lists',
   segments: {
     extensions: 'Extensions',

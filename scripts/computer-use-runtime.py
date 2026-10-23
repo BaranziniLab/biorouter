@@ -190,18 +190,53 @@ def source_checkout(source):
 
 
 def draw_cursor(path):
-    # Original blue arrow geometry; no upstream/reference artwork is copied.
     width = height = 126
-    polygon = [(60, 56), (60, 80), (66, 74), (72, 86), (77, 83), (71, 71), (83, 71)]
+    # AppKit's (60, 70) tip anchor is (60, 56) in this top-origin PNG.
+    polygon = [(60, 56), (60.7, 77.8), (66.1, 73.1), (69.1, 78.2),
+               (72.4, 76.2), (69.4, 71.2), (77.8, 70.4)]
+    fill = (42, 37, 32)
+    edge = (244, 240, 230)
+    edge_width = 0.75
+    samples = 4
+    sides = list(zip(polygon, polygon[1:] + polygon[:1]))
+    left, right = min(int(x) for x, _ in polygon), max(int(x) for x, _ in polygon)
+    top, bottom = min(int(y) for _, y in polygon), max(int(y) for _, y in polygon)
+
     def inside(x, y):
         crossings = 0
-        for i, (ax, ay) in enumerate(polygon):
-            bx, by = polygon[(i + 1) % len(polygon)]
+        for (ax, ay), (bx, by) in sides:
             if (ay > y) != (by > y) and x < (bx - ax) * (y - ay) / (by - ay) + ax:
                 crossings += 1
         return crossings % 2
-    raw = b"".join(b"\0" + b"".join(bytes((30, 112, 220, 255)) if inside(x, y) else bytes(4)
-                                    for x in range(width)) for y in range(height))
+
+    def near_edge(x, y):
+        for (ax, ay), (bx, by) in sides:
+            dx, dy = bx - ax, by - ay
+            along = max(0, min(1, ((x - ax) * dx + (y - ay) * dy) / (dx * dx + dy * dy)))
+            if (x - ax - along * dx) ** 2 + (y - ay - along * dy) ** 2 < edge_width ** 2:
+                return True
+        return False
+
+    rows = []
+    for y in range(height):
+        row = bytearray(b"\0")
+        for x in range(width):
+            colors = []
+            if left <= x <= right and top <= y <= bottom:
+                for sy in range(samples):
+                    for sx in range(samples):
+                        px, py = x + (sx + 0.5) / samples, y + (sy + 0.5) / samples
+                        if inside(px, py):
+                            colors.append(edge if near_edge(px, py) else fill)
+            if colors:
+                row.extend(round(sum(color[channel] for color in colors) / len(colors))
+                           for channel in range(3))
+                row.append(round(255 * len(colors) / (samples * samples)))
+            else:
+                row.extend(bytes(4))
+        rows.append(row)
+    raw = b"".join(rows)
+
     def chunk(kind, data):
         return struct.pack(">I", len(data)) + kind + data + struct.pack(">I", zlib.crc32(kind + data))
     path.write_bytes(b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, 6, 0, 0, 0))
