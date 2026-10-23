@@ -47,12 +47,11 @@
 //! * The approval card leads with a loud warning (its `prompt`, which the
 //!   desktop draws as a warning banner) naming why the chat is private and
 //!   what to read the body for, before the verbatim body.
-//! * `gh` is never used from a private chat, and is not even probed: approving
-//!   it publishes with no further look. Approval opens a prefilled compose page
-//!   instead (or hands the text back when it is too long for one), so the
-//!   user's own Submit on GitHub is the disclosure.
+//! * A proof-backed Allow once publishes only the exact reviewed report to the
+//!   fixed Biorouter tracker. The digest, destination, time and decision are
+//!   recorded in the security audit log. The source chat stays private.
 //! * A classification that could not be read is treated as private: warned,
-//!   and never auto-published. It is not refused — a store read that failed is
+//!   and subject to the same report-specific consent. A store read that failed is
 //!   no reason to stop a user reporting a bug.
 //!
 //! ⚠ This used to REFUSE from a private chat and hand the finished report
@@ -67,6 +66,7 @@
 //! session's classification either way, so the fact is in front of the user
 //! regardless. The switch is read once, in [`handle_report_bug`], and threaded.
 
+mod consent;
 pub mod evidence;
 pub mod issue;
 pub mod redact;
@@ -88,6 +88,7 @@ use crate::privacy::SessionClassification;
 use crate::session::session_manager::Session;
 use crate::session::SessionManager;
 
+use consent::{PublicationAttempt, PublicationFailure, PublicationResult, PublicationReview};
 use evidence::Evidence;
 use issue::{Draft, Filer};
 
@@ -237,13 +238,12 @@ fn steps_arg(arguments: &Value) -> Vec<String> {
     }
 }
 
-/// Is this chat treated as private for filing: warned on the card, never
-/// published by approval alone?
+/// Is this chat treated as private for filing: warned on the card and limited
+/// to the fixed destination after exact-report, proof-backed consent?
 ///
 /// `tier` is the STORED classification, `None` when the store could not be
 /// read. An unknown classification counts as private — the safe reading, and
-/// one that costs the user nothing but a warning and a page they submit
-/// themselves.
+/// one that requires the private-report warning and destination restriction.
 ///
 /// ⚠ Pure, taking the master switch as an ARGUMENT rather than reading it. The
 /// switch is a process-global atomic, and a test that flipped it to exercise
@@ -258,23 +258,16 @@ fn treat_as_private(tier: Option<SessionClassification>, tiers_enabled: bool) ->
 /// How the report will reach GitHub, decided before the card so the card can
 /// say which.
 ///
-/// ⚠ A private chat NEVER gets [`Filer::GhCli`], however ready `gh` is:
-/// approving it creates the public issue on the spot, and the premise that
-/// makes filing from a private chat acceptable is that the user still presses
-/// Submit on GitHub themselves. Pure, because `issue::gh_ready()` answers
-/// `false` in every test binary — this rule can only be pinned here.
-///
-/// `Manual`'s `gh_unavailable` is `!private`: past the first arm, a chat that
-/// is not private had `gh` probed and found not ready, and a private one never
-/// probed it, so the hand-back may blame `gh` only in the first case.
-fn choose_filer(private: bool, gh_ready: bool, compose: Option<String>) -> Filer {
-    if gh_ready && !private {
+/// Private reports require the same proof-backed, exact-report Allow once as
+/// public ones; choosing a transport never grants permission to publish.
+fn choose_filer(gh_ready: bool, compose: Option<String>) -> Filer {
+    if gh_ready {
         return Filer::GhCli;
     }
     match compose {
         Some(url) => Filer::ComposeUrl(url),
         None => Filer::Manual {
-            gh_unavailable: !private,
+            gh_unavailable: true,
         },
     }
 }
@@ -350,8 +343,7 @@ async fn conversation_for(
         // A read that fails still yields a conversation, because a degraded
         // report beats no report — but it yields NO classification, and the
         // filing half then treats the chat as private (`treat_as_private`):
-        // warned, and never published by approval alone. A degraded privacy
-        // reading must not be the one that publishes.
+        // warned, fixed-destination and subject to exact-report consent.
         Err(error) => session
             .conversation
             .clone()
@@ -586,10 +578,9 @@ fn private_warning(stored: Option<&StoredClassification>) -> String {
     format!(
         "{lead} The report below was written from it and becomes public if you submit it. \
          Before you approve, read it for patient or participant data, credentials, \
-         unpublished results or institutional information; the failure list quotes raw tool \
-         output. From a private chat nothing is posted automatically: approving only opens a \
-         prefilled GitHub page (its address carries the text to github.com, but nothing is \
-         published) or hands the text back, and you decide there whether to submit."
+         unpublished results or institutional information. Allow once authorizes only this \
+         exact reviewed report, not this conversation or its diagnostics bundle. The chat \
+         remains PRIVATE and no future report is authorized."
     )
 }
 
@@ -603,12 +594,9 @@ fn private_warning(stored: Option<&StoredClassification>) -> String {
 /// first 4,000 characters of a longer body would collect consent for text
 /// nobody was shown, and it would say so only in a one-line truncation note.
 ///
-/// Doubling [`redact::MAX_ISSUE_BODY_CHARS`] is the pre-image of a body that
-/// has ALREADY passed `validate_issue`: pretty JSON escapes every newline and
-/// quote to two characters and indents, so a 60,000-character body renders to
-/// well under 120,000. The frame stays bounded, by this tool's own validation
-/// rather than by a cap shared with tools that have none.
-const APPROVAL_PREVIEW_CHARS: usize = redact::MAX_ISSUE_BODY_CHARS * 2;
+/// JSON can expand a control character to six characters. The margin covers
+/// the bounded title and metadata so even an escape-heavy valid report fits.
+const APPROVAL_PREVIEW_CHARS: usize = redact::MAX_ISSUE_BODY_CHARS * 6 + 4_096;
 
 /// Build the approval card.
 ///
@@ -629,10 +617,11 @@ fn approval_request(
     quoted_from_transcript: bool,
 ) -> UserActionRequest {
     let arguments = serde_json::json!({
-        "repository": format!("github.com/{repo}"),
+        "repository": issue::publication_destination(repo),
         "title": title,
         "body": body,
         "labels": [issue::LABEL],
+        "reportDigest": consent::report_digest(repo, title, body),
         "chatPrivacyTier": match privacy.stored.as_ref().map(|stored| stored.tier) {
             Some(SessionClassification::Private) => "private",
             Some(SessionClassification::Public) => "public",
@@ -935,22 +924,19 @@ async fn file_report(
         .is_some_and(|description| description.from_transcript);
     let (draft, body, title_scrub) = prepare_report(inputs, privacy.private)?;
     let repo = issue::repo();
-
-    // ⚠ A private chat does not even PROBE `gh`: the probe is a network round
-    // trip on the path to the card, and its answer could not be used.
-    let gh_ready = !privacy.private && issue::gh_ready().await;
-    let filer = choose_filer(
-        privacy.private,
-        gh_ready,
-        issue::compose_url(&repo, &draft.title, &body),
-    );
-
     if session.id.is_empty() {
         return Err(invalid_params(
             "Filing a bug report needs a visible chat, because the user has to approve \
              the exact text before it is published.",
         ));
     }
+
+    let review = PublicationReview::new(&repo, &draft.title, &body, privacy.private)
+        .map_err(invalid_params)?;
+    let filer = choose_filer(
+        issue::gh_ready().await,
+        issue::compose_url(&repo, &draft.title, &body),
+    );
 
     let parked = PendingUserActions::global().park(
         Some(&session.id),
@@ -964,33 +950,47 @@ async fn file_report(
             quoted_from_transcript,
         ),
     );
-    match parked.wait(APPROVAL_TTL, cancel.as_ref()).await {
-        UserActionOutcome::Approved { .. } => {}
-        outcome => {
+    let outcome = parked.wait(APPROVAL_TTL, cancel.as_ref()).await;
+    let grant = match review.approve(&outcome) {
+        Ok(grant) => grant,
+        Err(reason) => {
             return text(format!(
                 "Nothing was filed: the approval {}. The report is written and ready — \
                  say the word and I will ask again.",
-                outcome.refusal_detail()
+                reason
             ));
         }
-    }
+    };
 
     // `install_extension`'s re-check, for the same reason: approval binds the
     // exact thing shown, not merely the intention. A destination that changed
     // between the card and the click gets a new card.
     if issue::repo() != repo {
+        grant.refuse("refused_changed_destination");
         return Err(invalid_params(format!(
             "The destination repository changed after you approved (it was \
              github.com/{repo}). Nothing was filed."
         )));
     }
     if cancel.as_ref().is_some_and(CancellationToken::is_cancelled) {
+        grant.refuse("cancelled_after_approval");
         return text(
             "The turn was cancelled after you approved, so nothing was filed.".to_string(),
         );
     }
-
-    post_report(filer, &repo, &draft, &body, &title_scrub, privacy.private).await
+    let attempt = grant
+        .begin(&repo, &draft.title, &body)
+        .map_err(invalid_params)?;
+    post_report(
+        filer,
+        &repo,
+        &draft,
+        &body,
+        &title_scrub,
+        privacy.private,
+        attempt,
+    )
+    .await
 }
 
 /// The compose path's receipt, after [`issue::open_in_browser`] answered.
@@ -1035,6 +1035,7 @@ async fn post_report(
     body: &str,
     title_scrub: &redact::Scrubbed,
     private: bool,
+    attempt: PublicationAttempt,
 ) -> ToolResult<Vec<Content>> {
     let attach = if private {
         "\n\nTell the user this now, in your reply: do NOT attach the diagnostics bundle \
@@ -1048,69 +1049,154 @@ async fn post_report(
 
     match filer {
         Filer::GhCli => {
-            let body_file = std::env::temp_dir()
-                .join(format!("biorouter-bug-report-{}.md", uuid::Uuid::new_v4()));
-            match issue::file_with_gh(repo, &draft.title, body, &body_file).await {
-                Ok(url) => text(format!(
-                    "Filed: {url}\n\nTitle: {}\nRedacted before posting: {}.{attach}",
-                    draft.title,
-                    title_scrub.summary()
-                )),
+            let body_file = match tempfile::Builder::new()
+                .prefix("biorouter-bug-report-")
+                .suffix(".md")
+                .tempfile()
+            {
+                Ok(file) => file,
                 Err(error) => {
+                    attempt.failure(PublicationFailure::LocalStaging);
+                    attempt.finish(PublicationResult::Failed);
+                    return Err(invalid_params(format!(
+                        "Could not stage the reviewed report: {error}"
+                    )));
+                }
+            };
+            match issue::file_with_gh(repo, &draft.title, body, body_file.path()).await {
+                Ok(url) => {
+                    attempt.finish(PublicationResult::Published);
+                    text(format!(
+                        "Filed: {url}\n\nTitle: {}\nRedacted before posting: {}.{attach}",
+                        draft.title,
+                        title_scrub.summary()
+                    ))
+                }
+                Err(issue::GhPublicationError::OutcomeUnknown(reason)) => {
+                    unknown_publication_report(
+                        repo,
+                        &draft.title,
+                        body,
+                        reason,
+                        if private { attach } else { "" },
+                        attempt,
+                    )
+                }
+                Err(issue::GhPublicationError::NotSubmitted(reason)) => {
+                    attempt.failure(PublicationFailure::GitHubCli);
                     // Falling back rather than failing: the user approved this
                     // exact text, and a `gh` that broke is not a reason to make
                     // them start over. Opening the page is a lesser act than
                     // the one they approved — it posts nothing.
                     let fallback = issue::compose_url(repo, &draft.title, body);
-                    text(match fallback {
+                    match fallback {
                         Some(url) => {
                             let opened = issue::open_in_browser(&url).await;
-                            format!(
-                                "The GitHub CLI could not create the issue ({error}), so \
+                            attempt.finish_browser(opened);
+                            text(format!(
+                                "The GitHub CLI could not start publication ({reason}), so \
                                  nothing was posted. {}{attach}",
                                 compose_url_receipt(&url, opened)
-                            )
+                            ))
                         }
-                        None => format!(
-                            "The GitHub CLI could not create the issue ({error}), so nothing \
-                             was posted, and the report is too large for a prefilled link. \
-                             Open https://github.com/{repo}/issues/new and paste this:\n\n\
-                             ----- title -----\n{}\n\n----- body -----\n{body}",
-                            draft.title
-                        ),
-                    })
+                        None => {
+                            staged_manual_report(
+                                repo,
+                                &draft.title,
+                                body,
+                                false,
+                                if private { attach } else { "" },
+                                attempt,
+                            )
+                            .await
+                        }
+                    }
                 }
             }
         }
         // The card promised a page in the browser; this is where it opens.
         Filer::ComposeUrl(url) => {
             let opened = issue::open_in_browser(&url).await;
+            attempt.finish_browser(opened);
             text(format!(
                 "{}\n\nRedacted before posting: {}.{attach}",
                 compose_url_receipt(&url, opened),
                 title_scrub.summary()
             ))
         }
-        // A private chat's usual fallback when the body is too long for a link,
-        // so it carries the private warning too. The public sentence is left
+        // A long report's fallback when direct filing is unavailable. The public sentence is left
         // off here: it tells the user how to attach the bundle to an issue that
         // does not exist yet, and the body they are about to paste already
         // says where the bundle is.
-        Filer::Manual { gh_unavailable } => text(manual_receipt(
-            repo,
-            &draft.title,
-            body,
-            gh_unavailable,
-            if private { attach } else { "" },
-        )),
+        Filer::Manual { gh_unavailable } => {
+            staged_manual_report(
+                repo,
+                &draft.title,
+                body,
+                gh_unavailable,
+                if private { attach } else { "" },
+                attempt,
+            )
+            .await
+        }
     }
+}
+
+fn unknown_publication_report(
+    repo: &str,
+    title: &str,
+    body: &str,
+    reason: &str,
+    note: &str,
+    attempt: PublicationAttempt,
+) -> ToolResult<Vec<Content>> {
+    let report = match issue::stage_report(title, body) {
+        Ok(path) => format!("Saved reviewed report: `{}`", path.display()),
+        Err(_) => {
+            attempt.failure(PublicationFailure::LocalStaging);
+            format!("----- title -----\n{title}\n\n----- body -----\n{body}")
+        }
+    };
+    attempt.finish(PublicationResult::OutcomeUnknown);
+    text(format!(
+        "The GitHub submission outcome is unknown ({reason}). The issue may already exist. \
+         Check https://{}/issues before any retry or manual submission. No further \
+         publication was attempted.{note}\n\n{report}",
+        issue::publication_destination(repo),
+    ))
+}
+
+async fn staged_manual_report(
+    repo: &str,
+    title: &str,
+    body: &str,
+    gh_unavailable: bool,
+    note: &str,
+    attempt: PublicationAttempt,
+) -> ToolResult<Vec<Content>> {
+    let Ok(path) = issue::stage_report(title, body) else {
+        attempt.failure(PublicationFailure::LocalStaging);
+        attempt.finish(PublicationResult::ReviewedReportReturned);
+        return text(manual_receipt(repo, title, body, gh_unavailable, note));
+    };
+    let url = format!("https://github.com/{repo}/issues/new");
+    let opened = issue::open_in_browser(&url).await;
+    attempt.finish(PublicationResult::ReviewedReportSaved);
+    text(format!(
+        "The reviewed report is saved locally, but nothing was posted because {}.{note}\n\n\
+         Saved reviewed report: `{}`\n\n{} {url}\n\n\
+         Use the Markdown file's first heading as the issue title and the rest as the body. \
+         Only this reviewed report is in the file; no transcript or diagnostics bundle was exported.",
+        issue::manual_reason(gh_unavailable),
+        path.display(),
+        if opened { "Opened the issue submission page:" } else { "Open the issue submission page:" },
+    ))
 }
 
 /// The hand-back's receipt: the whole report, to paste.
 ///
 /// Its reason is [`issue::manual_reason`], the clause the card used, so it
-/// names `gh` only when `gh` was probed and failed — never from a private chat,
-/// where it was not probed and may well be signed in.
+/// names `gh` only when the readiness probe found it unavailable.
 ///
 /// `note` (empty, or starting with a blank line) goes BEFORE the text to paste:
 /// after it, nothing marks where the body ends, and a note there reads as the
@@ -1963,47 +2049,94 @@ mod tests {
         );
     }
 
-    /// ⚠ The rule that makes filing from a private chat acceptable: the user
-    /// still presses Submit on GitHub themselves. `gh` creates the issue the
-    /// moment the card is approved, so a private chat must never get it — and
-    /// `issue::gh_ready()` is `false` in every test binary, so this is the only
-    /// place the rule can be pinned.
     #[test]
-    fn a_private_chat_never_gets_the_filer_that_publishes_on_approval() {
-        let url = || Some("https://github.com/x/y/issues/new?body=z".to_string());
-        for gh_ready in [true, false] {
-            for compose in [url(), None] {
-                let filer = choose_filer(true, gh_ready, compose.clone());
-                assert!(
-                    !filer.publishes_on_approval(),
-                    "private, gh_ready={gh_ready}, compose={compose:?} chose {filer:?}"
-                );
-                assert_eq!(
-                    filer,
-                    match compose {
-                        Some(url) => Filer::ComposeUrl(url),
-                        // `gh` was never probed, so the hand-back must not
-                        // blame it.
-                        None => Filer::Manual {
-                            gh_unavailable: false,
-                        },
-                    }
-                );
-            }
-        }
-        // A public chat keeps the behaviour it always had.
-        assert_eq!(choose_filer(false, true, url()), Filer::GhCli);
-        assert_eq!(choose_filer(false, true, None), Filer::GhCli);
-        assert_eq!(
-            choose_filer(false, false, url()),
-            Filer::ComposeUrl(url().unwrap())
-        );
-        assert_eq!(
-            choose_filer(false, false, None),
+    fn a_reviewed_private_report_can_use_the_cli_even_when_too_large_for_a_url() {
+        let title = "Fixture status panel remains blank";
+        let draft = Draft {
+            title: title.into(),
+            description: "The fixture panel remains blank after a successful status lookup.".into(),
+            steps: vec!["Open the synthetic fixture panel.".into()],
+            expected: "The fixture status appears.".into(),
+            suspected_cause: None,
+            additional: None,
+        };
+        let mut body = issue::render_body(&draft, &evidence_for("1.93.4"), true);
+        body.push_str(&"\n".repeat(redact::MAX_COMPOSE_URL_CHARS / 2));
+        assert!(redact::validate_issue(title, &body, None).is_empty());
+        assert!(issue::compose_url(issue::DEFAULT_REPO, title, &body).is_none());
+        let review = PublicationReview::new(issue::DEFAULT_REPO, title, &body, true).unwrap();
+        let filer = choose_filer(true, issue::compose_url(issue::DEFAULT_REPO, title, &body));
+        assert_eq!(filer, Filer::GhCli);
+        let grant = review
+            .approve(&UserActionOutcome::Approved {
+                permission: Permission::AllowOnce,
+            })
+            .unwrap();
+        assert!(grant.begin(issue::DEFAULT_REPO, title, &body).is_ok());
+        assert_eq!(choose_filer(true, None), Filer::GhCli);
+        assert!(matches!(
+            choose_filer(false, None),
             Filer::Manual {
                 gh_unavailable: true
             }
+        ));
+    }
+
+    #[tokio::test]
+    async fn private_report_consent_is_proof_backed_single_use_and_keeps_the_chat_private() {
+        let (_dir, manager, session) = session_with_failures(2).await;
+        manager
+            .update(&session.id)
+            .raise_privacy(SessionClassification::Private, "mcp:fixture")
+            .apply()
+            .await
+            .unwrap();
+        let session_id = session.id.clone();
+        let running = tokio::spawn({
+            let manager = Arc::clone(&manager);
+            let session = session.clone();
+            async move { handle_report_bug(file_args(), &session, manager, None).await }
+        });
+        let (id, arguments, _prompt, running) = raised_card(&session_id, running).await;
+        let approved = || UserActionOutcome::Approved {
+            permission: Permission::AllowOnce,
+        };
+        let registry = PendingUserActions::global();
+        let decide =
+            |scope, authority| registry.resolve_in_session(scope, &id, approved(), authority);
+        assert_eq!(
+            decide(&session_id, DecisionAuthority::unproven()),
+            ResolveOutcome::Unproven
         );
+        assert!(registry.is_pending(&id));
+        assert_eq!(
+            decide(
+                "fixture-other-session",
+                DecisionAuthority::for_test_proven()
+            ),
+            ResolveOutcome::Unknown
+        );
+        let title = arguments["title"].as_str().unwrap();
+        let body = arguments["body"].as_str().unwrap();
+        assert_eq!(
+            arguments["reportDigest"].as_str(),
+            Some(consent::report_digest(issue::DEFAULT_REPO, title, body).as_str())
+        );
+        assert_eq!(
+            decide(&session_id, DecisionAuthority::for_test_proven()),
+            ResolveOutcome::Delivered
+        );
+        assert_eq!(
+            decide(&session_id, DecisionAuthority::for_test_proven()),
+            ResolveOutcome::Unknown
+        );
+        let receipt = body_of(&running.await.unwrap());
+        assert!(!receipt.contains("Filed:"));
+        assert!(receipt.contains("do NOT attach the diagnostics bundle"));
+        let stored = manager.get_session(&session_id, false).await.unwrap();
+        assert_eq!(stored.privacy_tier, SessionClassification::Private);
+        assert_eq!(stored.privacy_reason.as_deref(), Some("mcp:fixture"));
+        assert!(!registry.has_pending_in_session(&session_id));
     }
 
     /// The hand-back receipt carries the whole report and, like the card,
@@ -2036,6 +2169,47 @@ mod tests {
         for needle in ["GitHub CLI", "`gh`", "signed in"] {
             assert!(!private.contains(needle), "{private}");
         }
+    }
+
+    #[test]
+    fn an_unknown_submission_keeps_the_report_without_asserting_it_was_not_posted() {
+        let title = "Synthetic fixture title";
+        let body = "Reviewed synthetic body";
+        let attempt = PublicationReview::new(issue::DEFAULT_REPO, title, body, true)
+            .unwrap()
+            .approve(&UserActionOutcome::Approved {
+                permission: Permission::AllowOnce,
+            })
+            .unwrap()
+            .begin(issue::DEFAULT_REPO, title, body)
+            .unwrap();
+        let receipt = body_of(&unknown_publication_report(
+            issue::DEFAULT_REPO,
+            title,
+            body,
+            "the GitHub CLI response timed out",
+            "\n\nDo NOT attach the private diagnostics bundle.",
+            attempt,
+        ));
+        assert!(receipt.contains("outcome is unknown"));
+        assert!(receipt.contains("issue may already exist"));
+        assert!(receipt.contains("before any retry or manual submission"));
+        assert!(receipt.contains("Do NOT attach the private diagnostics bundle"));
+        assert!(!receipt.contains("nothing was posted"));
+        assert!(!receipt.contains("/issues/new"));
+        assert!(!receipt.contains("Filed:"));
+        let path = receipt
+            .split("Saved reviewed report: `")
+            .nth(1)
+            .unwrap()
+            .split('`')
+            .next()
+            .unwrap();
+        assert_eq!(
+            std::fs::read_to_string(path).unwrap(),
+            format!("# {title}\n\n{body}")
+        );
+        std::fs::remove_file(path).unwrap();
     }
 
     fn tool_approval(request: UserActionRequest) -> ToolApprovalRequest {
@@ -2083,9 +2257,9 @@ mod tests {
             );
             for needle in [
                 "patient or participant data",
-                "the failure list quotes raw tool output",
-                "nothing is posted automatically",
-                "you decide there whether to submit",
+                "only this exact reviewed report",
+                "not this conversation or its diagnostics bundle",
+                "remains PRIVATE and no future report is authorized",
                 // The card's own text after the warning is unchanged.
                 "world-readable and permanent",
             ] {
@@ -2106,6 +2280,36 @@ mod tests {
                 "the body rides verbatim"
             );
         }
+    }
+
+    #[test]
+    fn the_exact_report_preview_survives_worst_case_json_escaping() {
+        use crate::conversation::tool_preview::ToolPreview;
+
+        let body = "\u{0001}".repeat(redact::MAX_ISSUE_BODY_CHARS);
+        let request = tool_approval(approval_request(
+            "Fixture issue title",
+            &body,
+            issue::DEFAULT_REPO,
+            &Filer::GhCli,
+            &ChatPrivacy {
+                stored: stored(SessionClassification::Private, Some("mcp:fixture")),
+                private: true,
+            },
+            false,
+        ));
+        let Some(ToolPreview::Arguments { json, truncated }) = request.preview else {
+            panic!("a report must show its exact content")
+        };
+        assert!(!truncated);
+        let shown: Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(shown["body"].as_str(), Some(body.as_str()));
+        assert_eq!(
+            shown["reportDigest"].as_str(),
+            Some(
+                consent::report_digest(issue::DEFAULT_REPO, "Fixture issue title", &body).as_str()
+            )
+        );
     }
 
     /// Every reason the vocabulary names completes "This chat is PRIVATE: it …"
@@ -2277,8 +2481,7 @@ mod tests {
         );
         assert!(
             !prompt.contains("CREATE a public issue"),
-            "a private chat must never be offered the filer that publishes on approval: \
-             {prompt}"
+            "test builds must not offer a live GitHub submission: {prompt}"
         );
 
         registry.resolve_in_session(
@@ -2366,7 +2569,7 @@ mod tests {
     ///
     /// Independent of the master switch, so it runs everywhere — and it is the
     /// one test that APPROVES a card, which is safe by construction: a private
-    /// chat never gets `gh`, `file_with_gh` refuses from a test binary anyway,
+    /// `gh_ready` is false and `file_with_gh` refuses from a test binary,
     /// and `open_in_browser` opens nothing from one. What it proves is what the
     /// user is told after approving: the link, verbatim, and that the
     /// diagnostics bundle must stay off a public issue.
@@ -2419,10 +2622,8 @@ mod tests {
         );
     }
 
-    /// ⚠ The hand-back is a private chat's usual fallback (a body too long for
-    /// a link), so it carries the do-not-attach warning too. A public chat's
-    /// hand-back says nothing about the bundle: the body it hands over already
-    /// says where the bundle is.
+    /// Staging a long report preserves the private-bundle warning without
+    /// exporting anything beyond the reviewed title and body.
     #[tokio::test]
     async fn a_private_hand_back_tells_the_user_not_to_attach_the_bundle() {
         let draft = Draft {
@@ -2445,13 +2646,40 @@ mod tests {
                     "**Describe the bug**\n\nblank",
                     &title_scrub,
                     private,
+                    PublicationReview::new(
+                        issue::DEFAULT_REPO,
+                        &draft.title,
+                        "**Describe the bug**\n\nblank",
+                        private,
+                    )
+                    .unwrap()
+                    .approve(&UserActionOutcome::Approved {
+                        permission: Permission::AllowOnce,
+                    })
+                    .unwrap()
+                    .begin(
+                        issue::DEFAULT_REPO,
+                        &draft.title,
+                        "**Describe the bug**\n\nblank",
+                    )
+                    .unwrap(),
                 )
                 .await,
             );
-            assert!(
-                receipt.ends_with("----- body -----\n**Describe the bug**\n\nblank"),
-                "the text to paste must end the receipt: {receipt}"
+            let path = receipt
+                .split("Saved reviewed report: `")
+                .nth(1)
+                .unwrap()
+                .split('`')
+                .next()
+                .unwrap();
+            let staged = std::fs::read_to_string(path).unwrap();
+            assert_eq!(
+                staged,
+                "# Chart panel renders blank\n\n**Describe the bug**\n\nblank"
             );
+            std::fs::remove_file(path).unwrap();
+            assert!(receipt.contains("https://github.com/BaranziniLab/biorouter/issues/new"));
             assert_eq!(
                 receipt.contains("do NOT attach the diagnostics bundle"),
                 private,
