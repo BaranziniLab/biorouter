@@ -431,6 +431,13 @@ pub fn redact_call_tool_result(result: &mut CallToolResult) -> Option<Redaction>
     if let Some(structured) = result.structured_content.as_mut() {
         redact_value(structured, &mut redaction);
     }
+    if let Some(operation) = result
+        .meta
+        .as_mut()
+        .and_then(|meta| meta.get_mut(crate::agents::operation_outcome::OPERATION_META_KEY))
+    {
+        redact_value(operation, &mut redaction);
+    }
     if redaction.count == 0 {
         return None;
     }

@@ -35,6 +35,7 @@ pub mod mcp_client;
 pub mod mcp_pool;
 pub mod mistakes;
 pub mod moim;
+pub mod operation_outcome;
 // The one approval card `platform__manage_workflow` and `platform__manage_schedule`
 // park before they change the user's setup — shared so the two cannot disagree
 // about whether to ask (QA 2026-09-10, F1).

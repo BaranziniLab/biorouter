@@ -193,12 +193,16 @@ pub fn render_body(draft: &Draft, evidence: &Evidence, private: bool) -> String 
     }
 
     if evidence.failures.is_empty() {
-        body.push_str("\nNo failed tool calls were recorded in the reporting session.\n");
+        body.push_str(
+            "\nNo failed tool calls or operations were recorded in the reporting session.\n",
+        );
     } else {
         body.push_str(&format!(
             "\n<details>\n<summary>Failed tool calls in the reporting session \
-             ({} of {} calls)</summary>\n\n",
-            evidence.total_failed_calls, evidence.total_tool_calls
+             ({} of {} calls; {} distinct failed operations)</summary>\n\n",
+            evidence.total_failed_calls,
+            evidence.total_tool_calls,
+            evidence.total_failed_operations
         ));
         for failure in &evidence.failures {
             body.push_str(&failure.to_line());
@@ -524,6 +528,7 @@ mod tests {
                 looks_deliberate: false,
             }],
             total_failed_calls: 2,
+            total_failed_operations: 0,
             total_tool_calls: 7,
             recent_user_messages: vec!["build the crate".into()],
             externalized_results: 0,
