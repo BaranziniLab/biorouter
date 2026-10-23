@@ -559,7 +559,7 @@ fn requests(calls: Vec<CallToolRequestParams>) -> Vec<ToolRequest> {
         .collect()
 }
 
-fn completed_calls(calls: Vec<CallToolRequestParams>) -> Vec<Message> {
+fn completed_calls(calls: Vec<CallToolRequestParams>, result: CallToolResult) -> Vec<Message> {
     calls
         .into_iter()
         .enumerate()
@@ -567,7 +567,7 @@ fn completed_calls(calls: Vec<CallToolRequestParams>) -> Vec<Message> {
             let id = format!("completed-{index}");
             [
                 Message::assistant().with_tool_request(&id, Ok(call)),
-                Message::user().with_tool_response(&id, Ok(tool_ok("unchanged result"))),
+                Message::user().with_tool_response(&id, Ok(result.clone())),
             ]
         })
         .collect()
@@ -720,7 +720,7 @@ async fn test_semantic_hard_stops_require_completed_evidence() {
         ..SemanticLoopConfig::default()
     });
     let next = tweaks.last().unwrap().clone();
-    let history = completed_calls(tweaks);
+    let history = completed_calls(tweaks, tool_error("unchanged failure"));
     let strict_results = inspect_with_history(&strict, &requests(vec![next]), &history).await;
 
     assert_eq!(strict_results.len(), 1);
@@ -750,7 +750,7 @@ async fn test_configured_oscillation_hard_stop_uses_completed_results() {
         ..SemanticLoopConfig::default()
     });
     let next = cycle[0].clone();
-    let history = completed_calls(cycle);
+    let history = completed_calls(cycle, tool_ok("unchanged result"));
     let results = inspect_with_history(&strict, &requests(vec![next]), &history).await;
 
     assert_eq!(results.len(), 1);

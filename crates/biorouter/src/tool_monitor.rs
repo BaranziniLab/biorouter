@@ -840,6 +840,7 @@ struct CallObservation {
 struct RepetitionHistory {
     calls: Vec<InternalToolCall>,
     completed: Vec<InternalToolCall>,
+    near_dup_completed: Vec<InternalToolCall>,
     outcomes: Vec<ToolOutcome>,
     limit: usize,
 }
@@ -1046,6 +1047,13 @@ fn observation_progress(
     let Some(fingerprint) = current.fingerprint else {
         return false;
     };
+    if fresh_input
+        && !calls[..index]
+            .iter()
+            .any(|previous| previous.call.same_shape(&current.call) && previous.outcome.is_some())
+    {
+        return true;
+    }
     let previous = calls[..index].iter().rev().find(|previous| {
         previous.call.near_matches(&current.call, threshold) && previous.outcome.is_some()
     });
@@ -1210,13 +1218,13 @@ impl RepetitionInspector {
             .skip(start)
             .map(|item| item.call.clone())
             .collect();
+        let fresh_progress_start =
+            last_progress_index(&observations, true, self.semantic.similarity_threshold)
+                .unwrap_or(0);
         let outcomes = if self.failure.enabled {
-            let start =
-                last_progress_index(&observations, true, self.semantic.similarity_threshold)
-                    .unwrap_or(0);
             observations
                 .iter()
-                .skip(start)
+                .skip(fresh_progress_start)
                 .filter_map(|call| call.outcome.clone())
                 .collect()
         } else {
@@ -1228,9 +1236,18 @@ impl RepetitionInspector {
             .filter(|item| item.outcome.is_some())
             .map(|item| item.call.clone())
             .collect();
+        // Similar successful inputs can be distinct work with identical output.
+        // Keep cycle evidence, but require new no-progress evidence for a near-duplicate stop.
+        let near_dup_completed = observations
+            .iter()
+            .skip(start.max(fresh_progress_start))
+            .filter(|item| item.outcome.is_some())
+            .map(|item| item.call.clone())
+            .collect();
         RepetitionHistory {
             calls: turn_calls,
             completed,
+            near_dup_completed,
             outcomes,
             limit: history_limit,
         }
@@ -1356,6 +1373,7 @@ impl RepetitionInspector {
         tool_name: &str,
         window: &[InternalToolCall],
         completed: &[InternalToolCall],
+        near_dup_completed: &[InternalToolCall],
     ) -> Option<(InspectionResult, u32)> {
         if !self.semantic.enabled {
             return None;
@@ -1367,7 +1385,7 @@ impl RepetitionInspector {
         // it here when at least one member differs (an actual argument tweak).
         let near_dup_run = if all_exact { 0 } else { near_dup_run };
         let oscillation_run = trailing_oscillation_run(window);
-        let mut confirmed = completed.to_vec();
+        let mut confirmed = near_dup_completed.to_vec();
         confirmed.push(window.last()?.clone());
         let (confirmed_near, confirmed_exact) =
             trailing_near_dup_run(&confirmed, self.semantic.similarity_threshold);
@@ -1376,7 +1394,9 @@ impl RepetitionInspector {
         } else {
             confirmed_near.saturating_sub(1)
         };
-        let confirmed_oscillation = trailing_oscillation_run(&confirmed).saturating_sub(1);
+        let mut confirmed_cycle = completed.to_vec();
+        confirmed_cycle.push(window.last()?.clone());
+        let confirmed_oscillation = trailing_oscillation_run(&confirmed_cycle).saturating_sub(1);
 
         let fired = |threshold: Option<u32>, run: u32| -> bool {
             threshold.is_some_and(|at| at > 0 && run >= at)
@@ -1521,6 +1541,7 @@ impl ToolInspector for RepetitionInspector {
         let RepetitionHistory {
             calls: turn_calls,
             completed,
+            near_dup_completed,
             outcomes,
             limit: history_limit,
         } = self.history(messages);
@@ -1557,8 +1578,13 @@ impl ToolInspector for RepetitionInspector {
                 let failure_result =
                     self.inspect_failure_loop(&tool_request.id, &tool_name, &outcomes);
 
-                let semantic_result =
-                    self.inspect_semantic(&tool_request.id, &tool_name, &window, &completed);
+                let semantic_result = self.inspect_semantic(
+                    &tool_request.id,
+                    &tool_name,
+                    &window,
+                    &completed,
+                    &near_dup_completed,
+                );
                 let verdict = [exact_result, failure_result, semantic_result]
                     .into_iter()
                     .flatten()
@@ -2199,6 +2225,91 @@ mod tests {
         assert!(!tool_progress_since(&messages, messages.len() - 1));
     }
 
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn distinct_successful_shell_targets_remain_advisory() {
+        let inspector = RepetitionInspector::staged(3, 5);
+        let directory = tempfile::tempdir().unwrap();
+        let mut messages = Vec::new();
+        for index in 1..=12 {
+            let target = format!(
+                "output/this-is-a-long-common-prefix-for-distinct-batch-directories/part-{index}"
+            );
+            let args = serde_json::json!({"command": format!("mkdir -p {target}")});
+            let findings =
+                inspect_next(&inspector, &messages, "developer__shell", args.clone()).await;
+            assert!(
+                findings
+                    .iter()
+                    .all(|finding| finding.action == InspectionAction::Warn),
+                "distinct target {index} must be allowed: {findings:?}"
+            );
+            let output = std::process::Command::new("mkdir")
+                .current_dir(directory.path())
+                .args(["-p", &target])
+                .output()
+                .unwrap();
+            assert!(output.status.success(), "{output:?}");
+            assert!(output.stdout.is_empty(), "{output:?}");
+            assert!(output.stderr.is_empty(), "{output:?}");
+            assert!(directory.path().join(&target).is_dir());
+            completed_call(
+                &mut messages,
+                "developer__shell",
+                args,
+                ok_result(std::str::from_utf8(&output.stdout).unwrap()),
+            );
+        }
+    }
+
+    #[test]
+    fn similar_successful_new_inputs_are_progress() {
+        let mut messages = Vec::new();
+        let prefix = "output/this-is-a-long-common-prefix-for-distinct-batch-directories/part-";
+        for index in 1..=2 {
+            let start = messages.len();
+            completed_call(
+                &mut messages,
+                "developer__shell",
+                serde_json::json!({"command": format!("mkdir -p {prefix}{index}")}),
+                ok_result(""),
+            );
+            assert!(tool_progress_since(&messages, start), "input {index}");
+            assert!(tool_progress_for_responses(
+                &messages,
+                &HashSet::from([format!("request_{start}")])
+            ));
+        }
+    }
+
+    #[tokio::test]
+    async fn unchanged_successful_similar_input_cycle_still_stops() {
+        let inspector = RepetitionInspector::new(None).with_semantic(SemanticLoopConfig::default());
+        let mut messages = Vec::new();
+        let prefix = "output/this-is-a-long-common-prefix-for-distinct-batch-directories/part-";
+        for index in 0..8 {
+            completed_call(
+                &mut messages,
+                "developer__shell",
+                serde_json::json!({"command": format!("mkdir -p {prefix}{}", index % 2)}),
+                ok_result(""),
+            );
+        }
+        let findings = inspect_next(
+            &inspector,
+            &messages,
+            "developer__shell",
+            serde_json::json!({"command": format!("mkdir -p {prefix}0")}),
+        )
+        .await;
+        assert_eq!(findings[0].action, InspectionAction::Deny);
+        assert!(matches!(
+            findings[0].finding_id.as_deref(),
+            Some(REPETITION_NEAR_DUP_HARD_FINDING_ID | REPETITION_OSCILLATION_HARD_FINDING_ID)
+        ));
+        assert!(!tool_progress_since(&messages, messages.len() - 1));
+    }
+
     #[tokio::test]
     async fn unchanged_oscillation_stops_but_changing_results_do_not() {
         let inspector = RepetitionInspector::new(None).with_semantic(SemanticLoopConfig::default());
@@ -2543,7 +2654,7 @@ mod tests {
             } else {
                 assert!(results.is_empty());
             }
-            completed_call(&mut messages, "shell", args, ok_result("no matches"));
+            completed_call(&mut messages, "shell", args, error_result("no matches"));
         }
         let args = serde_json::json!({"command": format!("{prefix}8")});
         let stopped = inspect_next(&inspector, &messages, "shell", args.clone()).await;
