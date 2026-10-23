@@ -43,6 +43,7 @@
 //! Everything is config-gated: `BIOROUTER_STALL_CHECK=false` turns the whole
 //! thing off, and each threshold has its own key (see [`StallCheckConfig::from_config`]).
 
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -291,6 +292,7 @@ impl StallWatch {
 /// calls and their outcomes — a stuck agentic turn is usually all tool traffic
 /// and no prose, so a text-only tail would show the checker nothing to judge.
 pub fn progress_tail(conversation: &Conversation) -> Option<String> {
+    let tool_names = tail_tool_names(conversation);
     let mut entries: Vec<String> = Vec::new();
     let mut budget = TAIL_MAX_CHARS;
 
@@ -298,7 +300,7 @@ pub fn progress_tail(conversation: &Conversation) -> Option<String> {
         if entries.len() >= TAIL_MESSAGES || budget == 0 {
             break;
         }
-        for entry in render_message(message).into_iter().rev() {
+        for entry in render_message(message, &tool_names).into_iter().rev() {
             if entries.len() >= TAIL_MESSAGES || budget == 0 {
                 break;
             }
@@ -315,9 +317,41 @@ pub fn progress_tail(conversation: &Conversation) -> Option<String> {
     Some(entries.join("\n"))
 }
 
+fn tail_tool_names(conversation: &Conversation) -> HashMap<&str, &str> {
+    let response_ids: HashSet<_> = conversation
+        .messages()
+        .iter()
+        .rev()
+        .flat_map(|message| message.content.iter().rev())
+        .filter_map(|content| content.as_tool_response())
+        .take(TAIL_MESSAGES)
+        .map(|response| response.id.as_str())
+        .collect();
+    let mut names = HashMap::new();
+    for request in conversation
+        .messages()
+        .iter()
+        .rev()
+        .flat_map(|message| message.content.iter().rev())
+        .filter_map(|content| content.as_tool_request())
+    {
+        if response_ids.contains(request.id.as_str()) {
+            if let Ok(call) = &request.tool_call {
+                names
+                    .entry(request.id.as_str())
+                    .or_insert(call.name.as_ref());
+            }
+        }
+        if names.len() == response_ids.len() {
+            break;
+        }
+    }
+    names
+}
+
 /// One conversation message → zero or more tail lines (text, tool calls, tool
 /// results), in order.
-fn render_message(message: &Message) -> Vec<String> {
+fn render_message(message: &Message, tool_names: &HashMap<&str, &str>) -> Vec<String> {
     let role = match message.role {
         rmcp::model::Role::User => "user",
         rmcp::model::Role::Assistant => "assistant",
@@ -340,7 +374,11 @@ fn render_message(message: &Message) -> Vec<String> {
             continue;
         }
         if let Some(response) = content.as_tool_response() {
-            let outcome = crate::tool_monitor::tool_outcome("tool", &response.tool_result);
+            let tool_name = tool_names
+                .get(response.id.as_str())
+                .copied()
+                .unwrap_or("tool");
+            let outcome = crate::tool_monitor::tool_outcome(tool_name, &response.tool_result);
             let body = content.as_tool_response_text().unwrap_or_default();
             let status = if outcome.failure.is_some() {
                 "error"
@@ -733,6 +771,75 @@ mod tests {
         assert!(tail.contains("cargo build"), "{tail}");
         assert!(tail.contains("tool result [error]"), "{tail}");
         assert!(tail.contains("cannot find crate"), "{tail}");
+    }
+
+    #[test]
+    fn nested_operation_failure_requires_the_matching_builtin_request() {
+        for (name, expected_status) in [
+            ("code_execution__execute_code", "error"),
+            ("execute_code", "error"),
+            ("external__execute_code", "ok"),
+        ] {
+            let mut conversation = Conversation::default();
+            conversation.push(Message::assistant().with_tool_request(
+                "status",
+                Ok(rmcp::model::CallToolRequestParams {
+                    task: None,
+                    meta: None,
+                    name: name.into(),
+                    arguments: None,
+                }),
+            ));
+            for _ in 0..TAIL_MESSAGES {
+                conversation.push(Message::assistant().with_text("Other useful work"));
+            }
+            let mut result =
+                CallToolResult::success(vec![Content::text("Status lookup completed")]);
+            result.meta = Some(rmcp::model::Meta(serde_json::json!({"biorouter/tool-calls": [{
+                "tool": "fixture__status", "status": "ok", "args": "{}", "operation": {
+                    "version": 1, "id": "fixture-job", "status": "failed", "error": {
+                        "code": "query_failed", "kind": "tool_failure", "message": "Synthetic job failed", "retryable": false
+                    }
+                }
+            }]}).as_object().unwrap().clone()));
+            conversation.push(Message::user().with_tool_response("status", Ok(result)));
+            let tail = progress_tail(&conversation).unwrap();
+            assert!(
+                tail.contains(&format!(
+                    "tool result [{expected_status}]: Status lookup completed"
+                )),
+                "{tail}"
+            );
+            assert!(
+                !tail.contains("tool call:"),
+                "the matching request is outside the displayed tail"
+            );
+        }
+    }
+
+    #[test]
+    fn tail_keeps_request_names_only_for_its_recent_response_window() {
+        let mut conversation = Conversation::default();
+        for index in 0..250 {
+            let id = format!("request-{index}");
+            conversation.push(Message::assistant().with_tool_request(
+                &id,
+                Ok(rmcp::model::CallToolRequestParams {
+                    task: None,
+                    meta: None,
+                    name: "fixture__status".into(),
+                    arguments: None,
+                }),
+            ));
+            conversation.push(Message::user().with_tool_response(
+                &id,
+                Ok(CallToolResult::success(vec![Content::text("done")])),
+            ));
+        }
+        let names = tail_tool_names(&conversation);
+        assert_eq!(names.len(), TAIL_MESSAGES);
+        assert!(names.contains_key("request-249"));
+        assert!(!names.contains_key("request-0"));
     }
 
     #[test]

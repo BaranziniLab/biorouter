@@ -2291,12 +2291,11 @@ mod tests {
     #[tokio::test]
     async fn metadata_only_active_operations_allow_direct_and_nested_long_polling() {
         let inspector = RepetitionInspector::staged(3, 5);
-        for nested in [false, true] {
-            let name = if nested {
-                "code_execution__execute_code"
-            } else {
-                "fixture__status"
-            };
+        for (name, nested) in [
+            ("fixture__status", false),
+            ("code_execution__execute_code", true),
+            ("execute_code", true),
+        ] {
             let args = if nested {
                 serde_json::json!({"code": "record_result(status({job_id: 'build-1'}))"})
             } else {
@@ -2434,10 +2433,12 @@ mod tests {
             &call("fixture__read_json", serde_json::json!({})),
             &result
         ));
-        assert!(active_job_result(
-            &call("code_execution__execute_code", serde_json::json!({})),
-            &result
-        ));
+        for name in ["code_execution__execute_code", "execute_code"] {
+            assert!(active_job_result(
+                &call(name, serde_json::json!({})),
+                &result
+            ));
+        }
     }
 
     #[tokio::test]
