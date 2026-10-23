@@ -1317,7 +1317,7 @@ where
             // The body ended without `done: true`: the server went away mid-turn.
             // Held tool calls are dropped — a call that was never confirmed
             // complete must not execute.
-            Err(anyhow::Error::new(ProviderError::RequestFailed(
+            Err(anyhow::Error::new(ProviderError::StreamIncomplete(
                 "Ollama's response ended before the turn was complete; no tool call from it was run. Retry the message.".to_string(),
             )))?;
         }
@@ -1332,6 +1332,9 @@ pub fn mark_incomplete(error: ProviderError) -> ProviderError {
         ProviderError::RequestFailed(text) => ProviderError::RequestFailed(format!("{text}{NOTE}")),
         ProviderError::ServerError(text) => ProviderError::ServerError(format!("{text}{NOTE}")),
         ProviderError::StreamDecode(text) => ProviderError::StreamDecode(format!("{text}{NOTE}")),
+        ProviderError::StreamIncomplete(text) => {
+            ProviderError::StreamIncomplete(format!("{text}{NOTE}"))
+        }
         ProviderError::ExecutionError(text) => {
             ProviderError::ExecutionError(format!("{text}{NOTE}"))
         }
@@ -2188,6 +2191,9 @@ mod tests {
             "\n",
         );
         let error = decode(body).await.unwrap_err();
+        let provider = error.downcast_ref::<ProviderError>().unwrap();
+        assert!(matches!(provider, ProviderError::StreamIncomplete(_)));
+        assert!(crate::agents::mistakes::is_recoverable(provider));
         assert!(error
             .to_string()
             .contains("ended before the turn was complete"));

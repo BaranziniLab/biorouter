@@ -867,7 +867,7 @@ prompt: |
   Use these exact focused commands; do not run broad `cargo test ... -- --list` discovery,
   which can execute harnessless integration binaries even when a filter selects no tests:
   - `cargo test -p biorouter --test openai_stream_boundaries`
-  - `cargo test -p biorouter --test output_recovery_agent_loop malformed_ollama_http`
+  - `cargo test -p biorouter --test output_recovery_agent_loop ollama_http_stream`
   - `cargo test -p biorouter --lib providers::versa_azure`
   - `cargo test -p biorouter --lib model_capability_tests`
   - `cargo test -p biorouter --test extension_credential_lifecycle`
@@ -881,8 +881,10 @@ prompt: |
      Serve a partial answer followed by malformed JSON over real loopback HTTP/SSE through
      Ollama's `/api/chat` 404 fallback. Require a bounded resend when prompt validation held
      the answer, a continuation preserving an already validated partial answer, a successful
-     clean retry, and typed network exhaustion when both attempts are malformed. Raw malformed
-     content must stay out of chat and stored errors.
+     clean retry, and typed network exhaustion when both attempts are malformed. Also serve valid
+     JSON deltas followed by a clean EOF without a finish reason or `[DONE]`: require bounded
+     resend/recovery and typed network exhaustion. Raw malformed content must stay out of chat
+     and stored errors.
   2. Exercise the Versa request tests for Quick, Normal, and Deep on GPT-5.5. Assert the actual
      request body, including supported reasoning parameters and absence of unsupported temperature.
   3. Exercise the reasoning menu and chat request regressions for two existing conversations,

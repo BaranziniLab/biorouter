@@ -1493,6 +1493,14 @@ async fn a_v1_stream_that_just_ends_is_a_transport_failure() {
     )
     .await;
     let turn = run_turn(&provider, &harness_tools()).await;
+    assert!(matches!(
+        &turn.error,
+        Some(ProviderError::StreamIncomplete(_))
+    ));
+    assert_eq!(
+        turn.error.as_ref().unwrap().kind(),
+        biorouter::providers::errors::ProviderErrorKind::Network
+    );
     assert!(
         turn.error().contains("ended before the turn was complete"),
         "{}",

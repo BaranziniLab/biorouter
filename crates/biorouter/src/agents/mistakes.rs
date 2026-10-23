@@ -245,7 +245,9 @@ pub fn retry_point(
 /// has its own progressive-compaction ladder for it (BR-13).
 pub fn is_recoverable(error: &ProviderError) -> bool {
     match error {
-        ProviderError::ServerError(_) | ProviderError::StreamDecode(_) => true,
+        ProviderError::ServerError(_)
+        | ProviderError::StreamDecode(_)
+        | ProviderError::StreamIncomplete(_) => true,
         ProviderError::RequestFailed(_) => matches!(
             error.kind(),
             crate::providers::errors::ProviderErrorKind::Server

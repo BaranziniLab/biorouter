@@ -1524,9 +1524,16 @@ const HTTP_PARTIAL: &str = "The synthetic result";
 const HTTP_CONTINUED: &str = " is complete.";
 const MALFORMED_STREAM_SENTINEL: &str = "SYNTHETIC_PRIVATE_STREAM_SENTINEL";
 
-async fn reply_through_malformed_ollama_http(
+#[derive(Clone, Copy)]
+enum StreamFault {
+    MalformedJson,
+    MissingTerminalMarker,
+}
+
+async fn reply_through_faulty_ollama_http(
     failures: usize,
     validates_prompt: bool,
+    fault: StreamFault,
 ) -> (CutStreamReply, Vec<Value>) {
     let server = MockServer::start().await;
     Mock::given(method("POST"))
@@ -1573,7 +1580,10 @@ async fn reply_through_malformed_ollama_http(
                 });
             }
             let ending = if failed {
-                format!("data: {{intentionally malformed {MALFORMED_STREAM_SENTINEL}\n\n")
+                match fault {
+                    StreamFault::MalformedJson => format!("data: {{intentionally malformed {MALFORMED_STREAM_SENTINEL}\n\n"),
+                    StreamFault::MissingTerminalMarker => String::new(),
+                }
             } else {
                 let final_chunk = json!({"id": id, "model": "synthetic-model", "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]});
                 format!("data: {final_chunk}\n\ndata: [DONE]\n\n")
@@ -1670,7 +1680,8 @@ async fn reply_through_malformed_ollama_http(
 
 #[tokio::test]
 async fn malformed_ollama_http_stream_retries_and_preserves_the_partial_answer() {
-    let (reply, requests) = reply_through_malformed_ollama_http(1, true).await;
+    let (reply, requests) =
+        reply_through_faulty_ollama_http(1, true, StreamFault::MalformedJson).await;
     assert_eq!(requests.len(), 2, "one HTTP retry");
     assert!(!reply.aborted, "{:?}", reply.abort_codes);
     let answer: String = reply
@@ -1697,7 +1708,8 @@ async fn malformed_ollama_http_stream_retries_and_preserves_the_partial_answer()
 
 #[tokio::test]
 async fn malformed_ollama_http_stream_resends_when_prompt_validation_held_the_answer() {
-    let (reply, requests) = reply_through_malformed_ollama_http(1, false).await;
+    let (reply, requests) =
+        reply_through_faulty_ollama_http(1, false, StreamFault::MalformedJson).await;
     assert_eq!(requests.len(), 2, "one HTTP retry");
     assert!(!reply.aborted, "{:?}", reply.abort_codes);
     let answer: String = reply
@@ -1723,7 +1735,8 @@ async fn malformed_ollama_http_stream_resends_when_prompt_validation_held_the_an
 
 #[tokio::test]
 async fn repeated_malformed_ollama_http_streams_exhaust_the_retry_budget() {
-    let (reply, requests) = reply_through_malformed_ollama_http(usize::MAX, false).await;
+    let (reply, requests) =
+        reply_through_faulty_ollama_http(usize::MAX, false, StreamFault::MalformedJson).await;
     assert_eq!(requests.len(), 2, "the retry budget bounds real HTTP calls");
     assert_eq!(
         reply.abort_codes,
@@ -1739,6 +1752,59 @@ async fn repeated_malformed_ollama_http_streams_exhaust_the_retry_budget() {
         assert!(!row.contains("Retrying will not help"), "{row}");
         assert!(!row.contains(MALFORMED_STREAM_SENTINEL), "{row}");
     }
+}
+
+#[tokio::test]
+async fn incomplete_ollama_http_stream_resends_and_recovers() {
+    let (reply, requests) =
+        reply_through_faulty_ollama_http(1, false, StreamFault::MissingTerminalMarker).await;
+    assert_eq!(requests.len(), 2, "one HTTP retry after a clean EOF");
+    assert!(!reply.aborted, "{:?}", reply.abort_codes);
+    let answer: String = reply
+        .stored
+        .iter()
+        .filter_map(|row| row.strip_prefix("Assistant: "))
+        .collect();
+    assert_eq!(answer, format!("{HTTP_PARTIAL}{HTTP_CONTINUED}"));
+    let retry = requests[1]["messages"].to_string();
+    assert!(
+        !retry.contains(HTTP_PARTIAL),
+        "the incomplete reply was held: {retry}"
+    );
+    assert!(
+        !retry.contains("Continue the reply from exactly where it stopped"),
+        "{retry}"
+    );
+    assert!(reply
+        .shown
+        .iter()
+        .any(|row| row.contains("Trying again (1/1)")));
+    assert!(reply
+        .shown
+        .iter()
+        .all(|row| !row.contains("Retrying will not help")));
+}
+
+#[tokio::test]
+async fn repeated_incomplete_ollama_http_streams_exhaust_the_retry_budget() {
+    let (reply, requests) =
+        reply_through_faulty_ollama_http(usize::MAX, false, StreamFault::MissingTerminalMarker)
+            .await;
+    assert_eq!(requests.len(), 2, "the retry budget bounds real HTTP calls");
+    assert_eq!(
+        reply.abort_codes,
+        [TurnAbortCode::ProviderFailure {
+            kind: ProviderErrorKind::Network
+        }]
+    );
+    assert!(reply
+        .shown
+        .iter()
+        .any(|row| row.contains("already retried it once")));
+    assert!(reply
+        .shown
+        .iter()
+        .all(|row| !row.contains("Retrying will not help")));
 }
 
 /// One reply to "Run echo hi in the shell." against `provider`, with one

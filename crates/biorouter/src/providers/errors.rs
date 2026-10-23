@@ -24,6 +24,9 @@ pub enum ProviderError {
     #[error("Stream decode error: {0}")]
     StreamDecode(String),
 
+    #[error("Incomplete response stream: {0}")]
+    StreamIncomplete(String),
+
     #[error("Request failed: {0}")]
     RequestFailed(String),
 
@@ -263,7 +266,9 @@ impl ProviderError {
             ProviderError::Authentication(_) => ProviderErrorKind::Auth,
             ProviderError::RateLimitExceeded { .. } => ProviderErrorKind::RateLimit,
             ProviderError::ServerError(_) => ProviderErrorKind::Server,
-            ProviderError::StreamDecode(_) => ProviderErrorKind::Network,
+            ProviderError::StreamDecode(_) | ProviderError::StreamIncomplete(_) => {
+                ProviderErrorKind::Network
+            }
             ProviderError::ContextLengthExceeded(_) => ProviderErrorKind::ContextLength,
             // `RequestFailed` is what `From<anyhow::Error>` produces for a
             // reqwest failure, so it covers timeouts/connection errors — but it
@@ -285,6 +290,7 @@ impl ProviderError {
             ProviderError::RateLimitExceeded { .. } => "rate_limit",
             ProviderError::ServerError(_) => "server",
             ProviderError::StreamDecode(_) => "stream_decode",
+            ProviderError::StreamIncomplete(_) => "stream_incomplete",
             ProviderError::RequestFailed(_) => "request",
             ProviderError::ExecutionError(_) => "execution",
             ProviderError::UsageError(_) => "usage",
@@ -398,6 +404,15 @@ mod tests {
         let error = ProviderError::StreamDecode(
             "Failed to parse streaming chunk: invalid JSON at line 1 column 2".into(),
         );
+        assert_eq!(error.kind(), ProviderErrorKind::Network);
+        assert!(error.kind().is_transient());
+        assert!(crate::agents::mistakes::is_recoverable(&error));
+        assert!(!crate::providers::retry::is_timeout(&error));
+    }
+
+    #[test]
+    fn typed_incomplete_streams_are_retryable() {
+        let error = ProviderError::StreamIncomplete("No terminal marker arrived.".into());
         assert_eq!(error.kind(), ProviderErrorKind::Network);
         assert!(error.kind().is_transient());
         assert!(crate::agents::mistakes::is_recoverable(&error));
