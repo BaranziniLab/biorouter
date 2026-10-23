@@ -361,8 +361,7 @@ impl MistakeTracker {
             && self.kinds.iter().copied().all(ToolErrorKind::retryable)
     }
 
-    /// A provider response arrived. Whatever went wrong before, the provider is
-    /// answering again — the error streak is over.
+    /// A provider response finished successfully, ending the error streak.
     pub fn observe_provider_success(&mut self) {
         self.provider_errors = 0;
     }

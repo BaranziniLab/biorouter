@@ -1264,6 +1264,8 @@ async fn reasoning_only_max_tokens_replays_signed_reasoning_once_and_finishes() 
 /// collision cuts it partway (live, against a scripted llama-server).
 const CUT_CALL: &str = r#"{"name": "developer__shell", "arguments": {"comm"#;
 const CUT_ANSWER: &str = "The command printed hi.";
+const BODY_READ_FAILURE: &str = "Stream decode error: error decoding response body";
+const COMPLETED_OPERATION: &str = "completed-before-stream-failure";
 
 /// A streaming provider whose first `failures` calls stream `first` in small
 /// chunks and then fail with llama-server's in-stream shared-cache error, a
@@ -1275,6 +1277,9 @@ struct CutStreamProvider {
     failures: usize,
     first: &'static str,
     recover: bool,
+    response_body_error: bool,
+    prior_tool: bool,
+    prior_tool_directory: Mutex<Option<String>>,
     /// What a call after the failures answers.
     answer: &'static str,
     /// A call that never answers, not even with headers: a retry held by a
@@ -1284,6 +1289,7 @@ struct CutStreamProvider {
     sent: Mutex<Vec<Vec<String>>>,
     /// Whether each request carried the `<info-msg>` block.
     with_block: Mutex<Vec<bool>>,
+    request_tool_results: Mutex<Vec<Vec<String>>>,
 }
 
 impl CutStreamProvider {
@@ -1293,10 +1299,14 @@ impl CutStreamProvider {
             failures,
             first,
             recover,
+            response_body_error: false,
+            prior_tool: false,
+            prior_tool_directory: Mutex::default(),
             answer: CUT_ANSWER,
             held_call: None,
             sent: Mutex::default(),
             with_block: Mutex::default(),
+            request_tool_results: Mutex::default(),
         }
     }
 
@@ -1310,11 +1320,31 @@ impl CutStreamProvider {
         self
     }
 
+    fn failing_response_body(mut self) -> Self {
+        self.response_body_error = true;
+        self
+    }
+
+    fn after_successful_tool(mut self) -> Self {
+        self.prior_tool = true;
+        self
+    }
+
     fn record(&self, messages: &[Message]) {
         let visible: Vec<&Message> = messages
             .iter()
             .filter(|message| message.is_agent_visible())
             .collect();
+        self.request_tool_results.lock().unwrap().push(
+            visible
+                .iter()
+                .flat_map(|message| &message.content)
+                .filter_map(|content| match content {
+                    MessageContent::ToolResponse(response) => Some(response.id.clone()),
+                    _ => None,
+                })
+                .collect(),
+        );
         self.with_block
             .lock()
             .unwrap()
@@ -1377,7 +1407,36 @@ impl Provider for CutStreamProvider {
             std::future::pending::<()>().await;
         }
         let id = format!("reply-{call}");
-        let items: Vec<Result<ProviderStreamItem, ProviderError>> = if call < self.failures {
+        let is_prior_tool = self.prior_tool && call == 0;
+        let failed_call = call.saturating_sub(usize::from(self.prior_tool));
+        let items: Vec<Result<ProviderStreamItem, ProviderError>> = if is_prior_tool {
+            let command = if cfg!(windows) {
+                "[System.IO.File]::AppendAllText('completed-operation.txt', 'done')"
+            } else {
+                "printf done >> completed-operation.txt"
+            };
+            let mut usage = ProviderUsage::new(
+                "mock-model".to_string(),
+                Usage::new(Some(10), Some(5), Some(15)),
+            );
+            usage.finish_reason = Some("tool_calls".to_string());
+            vec![Ok((
+                Some(Message::assistant().with_id(id).with_tool_request(
+                    COMPLETED_OPERATION,
+                    Ok(CallToolRequestParams {
+                        task: None,
+                        meta: None,
+                        name: "developer__shell".into(),
+                        arguments: Some(object!({
+                            "command": command,
+                            "working_directory": self.prior_tool_directory.lock().unwrap().clone()
+                        })),
+                    }),
+                )),
+                Some(usage),
+                None,
+            ))]
+        } else if failed_call < self.failures {
             let mut items: Vec<Result<ProviderStreamItem, ProviderError>> = self
                 .first
                 .as_bytes()
@@ -1391,9 +1450,11 @@ impl Provider for CutStreamProvider {
                     ))
                 })
                 .collect();
-            items.push(Err(ProviderError::ServerError(
-                "Context size has been exceeded.".to_string(),
-            )));
+            items.push(Err(if self.response_body_error {
+                ProviderError::RequestFailed(BODY_READ_FAILURE.to_string())
+            } else {
+                ProviderError::ServerError("Context size has been exceeded.".to_string())
+            }));
             items
         } else {
             let mut usage = ProviderUsage::new(
@@ -1449,11 +1510,15 @@ struct CutStreamReply {
     /// Whether any stored text item still carries a `_meta`.
     stored_meta: bool,
     aborted: bool,
+    abort_codes: Vec<TurnAbortCode>,
+    stored_tool_results: Vec<String>,
+    completed_operation: String,
 }
 
 /// One reply to "Run echo hi in the shell." against `provider`, with one
 /// provider-error retry, as shipped.
 async fn reply_through_a_cut_stream(provider: Arc<CutStreamProvider>) -> CutStreamReply {
+    let prior_tool = provider.prior_tool;
     let overrides = HashMap::from([
         (
             "BIOROUTER_MISTAKE_STREAK_DETECTION".to_string(),
@@ -1465,7 +1530,12 @@ async fn reply_through_a_cut_stream(provider: Arc<CutStreamProvider>) -> CutStre
         ),
     ]);
     with_config_overrides(overrides, async {
-        let (agent, sessions, session_id, _work, _data, _permissions) = test_agent(provider).await;
+        let (agent, sessions, session_id, work, _data, _permissions) =
+            test_agent(provider.clone()).await;
+        if prior_tool {
+            *provider.prior_tool_directory.lock().unwrap() =
+                Some(work.path().to_string_lossy().into_owned());
+        }
         let mut reply = CutStreamReply::default();
         tokio::time::timeout(Duration::from_secs(10), async {
             let stream = agent
@@ -1498,13 +1568,21 @@ async fn reply_through_a_cut_stream(provider: Arc<CutStreamProvider>) -> CutStre
                             }
                         }
                     }
-                    AgentEvent::TurnAborted { .. } => reply.aborted = true,
+                    AgentEvent::TurnAborted { code, .. } => {
+                        reply.aborted = true;
+                        reply.abort_codes.push(code);
+                    }
                     _ => {}
                 }
             }
         })
         .await
         .expect("the reply settles");
+        if prior_tool {
+            reply.completed_operation =
+                std::fs::read_to_string(work.path().join("completed-operation.txt"))
+                    .expect("the prior tool operation completed");
+        }
         let stored = sessions
             .get_session(&session_id, true)
             .await
@@ -1512,6 +1590,12 @@ async fn reply_through_a_cut_stream(provider: Arc<CutStreamProvider>) -> CutStre
             .conversation
             .unwrap();
         for message in stored.messages() {
+            reply
+                .stored_tool_results
+                .extend(message.content.iter().filter_map(|content| match content {
+                    MessageContent::ToolResponse(response) => Some(response.id.clone()),
+                    _ => None,
+                }));
             reply
                 .stored
                 .push(format!("{:?}: {}", message.role, message.as_concat_text()));
@@ -1522,6 +1606,100 @@ async fn reply_through_a_cut_stream(provider: Arc<CutStreamProvider>) -> CutStre
         reply
     })
     .await
+}
+
+#[tokio::test]
+async fn a_response_body_failure_continues_after_completed_tool_work() {
+    const PARTIAL: &str = "The completed command";
+    const CONTINUED: &str = " remains completed.";
+    let provider = Arc::new(
+        CutStreamProvider::new(PARTIAL, 1, false)
+            .failing_response_body()
+            .after_successful_tool()
+            .answering(CONTINUED),
+    );
+    let reply = reply_through_a_cut_stream(provider.clone()).await;
+
+    assert_eq!(provider.calls.load(Ordering::SeqCst), 3);
+    assert!(!reply.aborted, "{:?}", reply.abort_codes);
+    assert_eq!(reply.completed_operation, "done", "the tool ran once");
+    assert_eq!(reply.stored_tool_results, [COMPLETED_OPERATION]);
+    assert_eq!(
+        provider.request_tool_results.lock().unwrap().as_slice(),
+        [vec![], vec![COMPLETED_OPERATION], vec![COMPLETED_OPERATION]],
+        "both the failed model call and its retry retain the completed tool result"
+    );
+    let sent = provider.sent.lock().unwrap();
+    assert!(sent[2].iter().any(|row| row.contains(PARTIAL)), "{sent:?}");
+    assert!(
+        sent[2]
+            .iter()
+            .any(|row| row.contains("Continue the reply from exactly where it stopped")),
+        "{sent:?}"
+    );
+    let answer: String = reply
+        .stored
+        .iter()
+        .filter_map(|row| row.strip_prefix("Assistant: "))
+        .collect();
+    assert_eq!(answer, format!("{PARTIAL}{CONTINUED}"));
+    assert!(reply
+        .shown
+        .iter()
+        .any(|row| row.contains("Trying again (1/1)")));
+    assert!(reply
+        .shown
+        .iter()
+        .all(|row| !row.contains("Retrying will not help")));
+}
+
+#[tokio::test]
+async fn repeated_partial_response_body_failures_exhaust_the_retry_budget() {
+    let provider = Arc::new(
+        CutStreamProvider::new("A streamed prefix", usize::MAX, false).failing_response_body(),
+    );
+    let reply = reply_through_a_cut_stream(provider.clone()).await;
+
+    assert_eq!(provider.calls.load(Ordering::SeqCst), 2);
+    assert_eq!(
+        reply.abort_codes,
+        [TurnAbortCode::ProviderFailure {
+            kind: ProviderErrorKind::Network,
+        }]
+    );
+    assert!(reply
+        .shown
+        .iter()
+        .any(|row| row.contains("already retried it once")));
+    assert!(reply.shown.iter().any(|row| row.contains("Please retry")));
+    assert!(reply
+        .shown
+        .iter()
+        .all(|row| !row.contains("Retrying will not help")));
+}
+
+#[tokio::test]
+async fn repeated_response_body_failures_without_output_exhaust_the_retry_budget() {
+    let provider = Arc::new(CutStreamProvider::new("", usize::MAX, false).failing_response_body());
+    let reply = reply_through_a_cut_stream(provider.clone()).await;
+
+    assert_eq!(provider.calls.load(Ordering::SeqCst), 2);
+    assert_eq!(
+        reply.abort_codes,
+        [TurnAbortCode::ProviderFailure {
+            kind: ProviderErrorKind::Network,
+        }]
+    );
+    let sent = provider.sent.lock().unwrap();
+    assert_eq!(
+        sent[0], sent[1],
+        "nothing streamed, so retry the same request"
+    );
+    assert!(reply.shown.iter().any(|row| row.contains("Please retry")));
+    assert!(reply
+        .shown
+        .iter()
+        .all(|row| !row.contains("Retrying will not help")));
 }
 
 /// Live, against a scripted llama-server: the fragment was shown and saved as a
