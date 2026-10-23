@@ -907,6 +907,41 @@ async fn test_versa_bedrock_provider_sonnet_5() -> Result<()> {
     .await
 }
 
+/// Opus 5.5 over the Versa proxy: refused by UCSF's IAM policy on 2026-10-05,
+/// enabled by 2026-10-22. Pinned literally, like the tests above.
+#[tokio::test]
+#[ignore = "live billed Versa Bedrock call; run deliberately with --ignored"]
+async fn test_versa_bedrock_provider_opus_5_5() -> Result<()> {
+    run_live_suite(
+        "versa_bedrock (opus-5-5)",
+        "versa_bedrock",
+        "us.anthropic.claude-opus-5-5",
+        &[
+            Credential::EnvOrSecret("VERSA_BEDROCK_ACCESS_KEY_ID"),
+            Credential::EnvOrSecret("VERSA_BEDROCK_SECRET_ACCESS_KEY"),
+        ],
+        None,
+    )
+    .await
+}
+
+/// Sonnet 5.5 over the Versa proxy: same history as Opus 5.5 above.
+#[tokio::test]
+#[ignore = "live billed Versa Bedrock call; run deliberately with --ignored"]
+async fn test_versa_bedrock_provider_sonnet_5_5() -> Result<()> {
+    run_live_suite(
+        "versa_bedrock (sonnet-5-5)",
+        "versa_bedrock",
+        "us.anthropic.claude-sonnet-5-5",
+        &[
+            Credential::EnvOrSecret("VERSA_BEDROCK_ACCESS_KEY_ID"),
+            Credential::EnvOrSecret("VERSA_BEDROCK_SECRET_ACCESS_KEY"),
+        ],
+        None,
+    )
+    .await
+}
+
 /// The other half of the 2026-10-05 measurement: Opus 5 and Opus 4.7 stay off
 /// `VERSA_BEDROCK_KNOWN_MODELS` because UCSF's account is refused them
 /// (`AccessDeniedException`), and a chat still bound to one must hear that the
