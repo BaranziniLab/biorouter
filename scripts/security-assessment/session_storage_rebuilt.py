@@ -158,6 +158,48 @@ except sqlite3.Error as error:
 result['observer_denied']=result['raw_file_denied'] and result['sqlite_denied']
 print(json.dumps(result))
 """
+LEGACY_PREPARE_PROBE = """
+import json, os, sqlite3
+from contextlib import closing
+from pathlib import Path
+assert os.geteuid() == 10001
+database = Path('/home/br/app-root/data/sessions/sessions.db')
+with closing(sqlite3.connect(database)) as connection:
+    journal_mode = connection.execute('PRAGMA journal_mode').fetchone()[0]
+    checkpoint = connection.execute('PRAGMA wal_checkpoint(TRUNCATE)').fetchone()
+    assert checkpoint[0] == 0 and checkpoint[1] == checkpoint[2], 'Legacy fixture checkpoint was incomplete'
+for path in database.parent.iterdir():
+    if path.name in ('sessions.db', 'sessions.db-wal', 'sessions.db-shm'):
+        path.chmod(0o644)
+print(json.dumps({'checkpoint':checkpoint,'source_journal_mode':journal_mode}))
+"""
+LEGACY_OBSERVER_PROBE = """
+import json, os, shutil, sqlite3, tempfile
+from contextlib import closing
+from pathlib import Path
+assert os.geteuid() == 10002
+database = Path('/home/br/app-root/data/sessions/sessions.db')
+result = {'observer_euid':os.geteuid(),'positive_control_method':'copied_readable_database',
+    'raw_file_read':False,'copy_succeeded':False,'copied_sqlite_read':False,
+    'synthetic_marker_read':False,'has_daemon_secret':'BIOROUTER_SERVER__SECRET_KEY' in os.environ}
+try:
+    with database.open('rb') as source:
+        result['raw_file_read'] = source.read(16) == b'SQLite format 3\\0'
+    with tempfile.TemporaryDirectory(prefix='biorouter-legacy-readable-') as temporary:
+        directory = Path(temporary)
+        copied_database = directory / 'sessions.db'
+        shutil.copyfile(database, copied_database)
+        copied_database.chmod(0o600)
+        result.update(copy_succeeded=True,copy_directory_mode=oct(directory.stat().st_mode & 511),
+            copy_database_mode=oct(copied_database.stat().st_mode & 511))
+        with closing(sqlite3.connect(copied_database)) as connection:
+            names = [row[0] for row in connection.execute('SELECT name FROM sessions')]
+        result['copied_sqlite_read'] = True
+        result['synthetic_marker_read'] = 'SYNTHETIC_REBUILT_HISTORY' in names
+except (OSError, sqlite3.Error) as error:
+    result['copy_query_error_class'] = type(error).__name__
+print(json.dumps(result))
+"""
 ISOLATION_PROBE = """
 import json, os
 from pathlib import Path
@@ -337,10 +379,15 @@ def main(args):
             stop_daemon(container)
             result["phase"] = "legacy_positive_control"
             inside(container, OWNER, ["chmod", "755", ROOT + "/data/sessions"])
-            inside(container, OWNER, ["python3", "-c", "import sqlite3; from pathlib import Path; p=Path('/home/br/app-root/data/sessions/sessions.db'); c=sqlite3.connect(p); c.execute('PRAGMA wal_checkpoint(TRUNCATE)').fetchall(); c.close(); [f.chmod(0o644) for f in p.parent.iterdir() if f.name in ('sessions.db','sessions.db-wal','sessions.db-shm')]"])
-            outsider_legacy = json.loads(inside(container, OBSERVER, ["python3", "-c", OBSERVER_PROBE]).stdout)
+            legacy_prepared = json.loads(inside(container, OWNER, ["python3", "-c", LEGACY_PREPARE_PROBE]).stdout)
+            outsider_legacy = json.loads(inside(container, OBSERVER, ["python3", "-c", LEGACY_OBSERVER_PROBE]).stdout)
+            outsider_legacy["owner_preparation"] = legacy_prepared
             record_case(result, "observer_legacy_readable_control", outsider_legacy,
-                        {"raw_open_allowed": not outsider_legacy["raw_file_denied"], "sqlite_allowed": not outsider_legacy["sqlite_denied"],
+                        {"raw_open_allowed": outsider_legacy["raw_file_read"],
+                         "observer_private_copy": outsider_legacy["copy_succeeded"]
+                         and outsider_legacy.get("copy_directory_mode") == "0o700"
+                         and outsider_legacy.get("copy_database_mode") == "0o600",
+                         "copied_sqlite_query_allowed": outsider_legacy["copied_sqlite_read"],
                          "synthetic_title_read": outsider_legacy["synthetic_marker_read"], "no_secret": not outsider_legacy["has_daemon_secret"]})
             result["phase"] = "restart_and_repair"
             start_daemon(container, secret)

@@ -7,6 +7,7 @@ import io
 import json
 import os
 from pathlib import Path
+import sqlite3
 import subprocess
 import tempfile
 from types import SimpleNamespace
@@ -149,6 +150,67 @@ class UndoFixtureTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, 'fixture assertions failed'):
             HARNESS.record_undo_observer(result, 'observer_fresh_undo', observed)
         self.assertFalse(result['cases'][0]['assertions']['parents_traversable'])
+
+
+class LegacyHistoryFixtureTests(unittest.TestCase):
+    def execute_probe(self, probe, database, uid):
+        source = probe.replace("Path('/home/br/app-root/data/sessions/sessions.db')",
+                               f"Path({str(database)!r})")
+        output = io.StringIO()
+        with patch.object(os, 'geteuid', return_value=uid), patch('sys.stdout', output):
+            exec(compile(source, '<legacy-history-probe>', 'exec'), {})
+        return json.loads(output.getvalue())
+
+    def test_readable_wal_database_is_queried_only_from_a_private_copy(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary) / 'source'
+            directory.mkdir(mode=0o755)
+            database = directory / 'sessions.db'
+            connection = sqlite3.connect(database)
+            self.assertEqual(connection.execute('PRAGMA journal_mode=WAL').fetchone()[0], 'wal')
+            connection.execute('CREATE TABLE sessions (name TEXT)')
+            connection.execute('INSERT INTO sessions VALUES (?)', ('SYNTHETIC_REBUILT_HISTORY',))
+            connection.commit()
+            connection.close()
+
+            prepared = self.execute_probe(HARNESS.LEGACY_PREPARE_PROBE, database, 10001)
+            self.assertEqual(prepared['source_journal_mode'], 'wal')
+            self.assertEqual(prepared['checkpoint'], [0, 0, 0])
+            self.assertEqual(sorted(path.name for path in directory.iterdir()), ['sessions.db'])
+            original = (database.read_bytes(), database.stat().st_mode, directory.stat().st_mode)
+
+            with patch.object(sqlite3, 'connect', wraps=sqlite3.connect) as connect:
+                observed = self.execute_probe(HARNESS.LEGACY_OBSERVER_PROBE, database, 10002)
+
+            self.assertEqual(observed['positive_control_method'], 'copied_readable_database')
+            self.assertTrue(observed['raw_file_read'])
+            self.assertTrue(observed['copy_succeeded'])
+            self.assertTrue(observed['copied_sqlite_read'])
+            self.assertTrue(observed['synthetic_marker_read'])
+            self.assertEqual(observed['copy_directory_mode'], '0o700')
+            self.assertEqual(observed['copy_database_mode'], '0o600')
+            connect.assert_called_once()
+            copied_database = connect.call_args.args[0]
+            self.assertNotEqual(copied_database, database)
+            self.assertNotEqual(copied_database.parent, directory)
+            self.assertFalse(copied_database.parent.exists())
+            self.assertEqual((database.read_bytes(), database.stat().st_mode, directory.stat().st_mode), original)
+            self.assertEqual(sorted(path.name for path in directory.iterdir()), ['sessions.db'])
+
+    def test_incomplete_checkpoint_is_rejected_before_readable_modes_are_applied(self):
+        for checkpoint in ((1, 4, 3), (0, 4, 3)):
+            with self.subTest(checkpoint=checkpoint), tempfile.TemporaryDirectory() as temporary:
+                database = Path(temporary) / 'sessions.db'
+                database.write_bytes(b'SYNTHETIC_UNCHECKPOINTED_DATABASE')
+                database.chmod(0o600)
+                connection = Mock()
+                connection.execute.side_effect = [Mock(fetchone=Mock(return_value=('wal',))),
+                                                  Mock(fetchone=Mock(return_value=checkpoint))]
+                with patch.object(sqlite3, 'connect', return_value=connection):
+                    with self.assertRaisesRegex(AssertionError, 'checkpoint was incomplete'):
+                        self.execute_probe(HARNESS.LEGACY_PREPARE_PROBE, database, 10001)
+                connection.close.assert_called_once()
+                self.assertEqual(database.stat().st_mode & 0o777, 0o600)
 
 
 if __name__ == "__main__":
