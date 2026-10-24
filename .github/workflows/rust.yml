@@ -410,11 +410,11 @@ jobs:
       # The cross-platform-sensitive suites BR-70 exists to prove, run on every
       # OS they apply to. The workspace step above already runs the sandbox,
       # developer shell/background and security unit tests through their library
-      # targets. The sandbox's integration target is the one `tests/` binary
-      # that runs on every OS (the rest follow in the next step, ubuntu only);
-      # name it directly rather than executing those unit tests a second time.
+      # targets. The sandbox integration runs on every OS; Windows also runs
+      # bounded_fs to exercise its retained-handle and ACL fixtures natively.
+      # Ubuntu runs bounded_fs in the offline integration step below.
       - name: cargo test (sandbox integration)
-        run: cargo test -p biorouter-sandbox --test sandbox --locked --no-fail-fast
+        run: cargo test -p biorouter-sandbox --test sandbox ${{ matrix.os == 'windows-latest' && '--test bounded_fs' || '' }} --locked --no-fail-fast
 
       # ── Every other `tests/*.rs` binary, bar a table of exceptions ─────────
       #
