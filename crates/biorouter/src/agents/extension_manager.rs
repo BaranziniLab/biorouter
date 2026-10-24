@@ -641,6 +641,37 @@ fn dispatch_meta(
     meta
 }
 
+fn apply_dispatch_admissions(
+    meta: &mut McpMeta,
+    client_config: &ExtensionConfig,
+    computer_permit: Option<&crate::security::computer_use::ComputerUsePermit>,
+    file_admission: Option<&crate::folder_access::FileAdmission>,
+) -> bool {
+    if let Some(permit) = computer_permit {
+        meta.computer_use_generation = Some(permit.generation.clone());
+    }
+    if let Some(admission) = file_admission {
+        meta.file_access_token = Some(admission.authority.token().to_string());
+        meta.file_access_action = Some(admission.action_id.clone());
+    }
+
+    let trusted_file_owner = matches!(client_config, ExtensionConfig::Builtin { name, .. } if name == "developer" || name == "files");
+    meta.post_edit_diagnostics = trusted_file_owner
+        && crate::agents::post_edit_diagnostics::PostEditDiagnosticsConfig::from_config()
+            .is_active();
+    meta.post_edit_diagnostics
+}
+
+async fn register_dispatch_notifications(
+    client: &McpClientBox,
+) -> (
+    Option<String>,
+    tokio::sync::mpsc::Receiver<rmcp::model::ServerNotification>,
+) {
+    let _phase = crate::agents::phase_timing::Phase::start("mcp.register_dispatch");
+    client.register_dispatch().await
+}
+
 /// Run one tool call, and withhold any credential material in what it returns
 /// before it can reach a model (H1).
 ///
@@ -3482,64 +3513,8 @@ impl ExtensionManager {
             )
             .await?;
 
-        // Issue #56 Gate C, beside BR-23's SecretGuard block below for the
-        // reason that block's own comment states: this is the single choke
-        // point every tool call flows through. FOUR production paths converge
-        // here and only ONE of them carries a `ToolInspector` — the agent loop
-        // (`Agent::dispatch_tool_call`), `POST /agent/call_tool`, the
-        // `execute_code` JS bridge (`CodeExecutionClient::dispatch_sub_call`,
-        // which re-enters THIS function, not the Agent's) and
-        // `Agent::call_prefetch_tool`, which runs BEFORE the turn. A gate
-        // written as an inspector would be invisible to three of the four.
-        //
-        // `ext_class` is read off the RESOLVED RECORD, never off the tool-name
-        // string. `normalize()` permits `_`, so extensions keyed `a` and `a__b`
-        // both match `a__b__c` by prefix. `get_client_for_tool` settles that
-        // with the single longest-key-wins resolver in its body — the SAME one
-        // Gate E filters the tool list with, introduced by Task 16 exactly so
-        // the two gates cannot disagree about who owns a name. (This comment
-        // used to say the routing was a `starts_with` scan of a HashMap in
-        // nondeterministic order. That was true, and is what Task 16 fixed.)
-        // Re-deriving the tier from the string here would reintroduce the
-        // disagreement one layer down, where nothing would catch it; instead it
-        // comes out of the same snapshot as the client and the config, so there
-        // is no second lookup to drift from the first either.
-        //
-        // `cap` is a PARAMETER. Gate C does not sample and cannot:
-        // `dispatch_tool_call` has no way to read the provider any more. That
-        // is what makes this decision, the built-in `_meta` bit and the
-        // Platform extensions' capability provably the same decision.
-        //
-        // `cap.enforced()` is DR-15's master opt-out, read here inside the gate
-        // rather than through an `is_enabled()` wrapper — one auditable line
-        // rather than an absent gate. It is the SAME predicate in every gate;
-        // do not introduce a second, narrower flag for this one.
-        if cap.enforced() {
-            if let Some(err) =
-                crate::privacy::refusal::privacy_refusal(&client_name, ext_class.tier, cap.tier())
-            {
-                return Err(err.into());
-            }
-        }
-
-        // Issue #56 Tasks 48 and 49, DR-26's THIRD axis. See
-        // [`Self::cross_affiliation_denial`], which is where the whole rationale
-        // lives; it is a separate function only because the repo's
-        // `clippy::too_many_lines` baseline caps this one, and it is still called
-        // from ABOVE `let fut = async move`, so it decides at admission.
-        if let Some(err) = self
-            .cross_affiliation_denial(session_id, &client_name, &ext_class, cap)
-            .await
-        {
-            return Err(err.into());
-        }
-
-        // BR-23: the central secret-redaction boundary — see
-        // [`Self::secret_guard_denial`], which is where the whole rationale
-        // lives.
-        if let Some(err) = self.secret_guard_denial(&tool_call).await {
-            return Err(err.into());
-        }
+        self.authorize_dispatch_boundaries(session_id, &client_name, &ext_class, cap, &tool_call)
+            .await?;
 
         let file_admission = self
             .admit_file_access(
@@ -3563,7 +3538,6 @@ impl ExtensionManager {
         }
 
         let arguments = tool_call.arguments.clone();
-        let client = client.clone();
         // BR-54: on a shared (pooled) client this mints a per-dispatch progress
         // token and returns a receiver that gets ONLY this dispatch's
         // notifications; on an unpooled client it is the legacy broadcast
@@ -3572,9 +3546,8 @@ impl ExtensionManager {
         // `mcp.register_dispatch_wait` span is gone. `register_dispatch()` is
         // still real work (it mints a progress token and installs a routing
         // entry) and keeps its own span.
-        let register_call = crate::agents::phase_timing::Phase::start("mcp.register_dispatch");
-        let (progress_token, notifications_receiver) = client.register_dispatch().await;
-        drop(register_call);
+        let (progress_token, notifications_receiver) =
+            register_dispatch_notifications(&client).await;
         let session_id = session_id.to_string();
 
         // Issue #56: built HERE, not inside the future below. `register_dispatch()`
@@ -3591,19 +3564,12 @@ impl ExtensionManager {
             progress_token,
             workspace_child_scope_only,
         );
-        if let Some(permit) = &computer_permit {
-            meta.computer_use_generation = Some(permit.generation.clone());
-        }
-        if let Some(admission) = &file_admission {
-            meta.file_access_token = Some(admission.authority.token().to_string());
-            meta.file_access_action = Some(admission.action_id.clone());
-        }
-
-        let trusted_file_owner = matches!(&client_config, ExtensionConfig::Builtin { name, .. } if name == "developer" || name == "files");
-        meta.post_edit_diagnostics = trusted_file_owner
-            && crate::agents::post_edit_diagnostics::PostEditDiagnosticsConfig::from_config()
-                .is_active();
-        let diagnostics_enabled = meta.post_edit_diagnostics;
+        let diagnostics_enabled = apply_dispatch_admissions(
+            &mut meta,
+            &client_config,
+            computer_permit.as_ref(),
+            file_admission.as_ref(),
+        );
 
         let fut = async move {
             let _file_authority = file_admission;
@@ -3648,6 +3614,76 @@ impl ExtensionManager {
                 Some(Box::new(ReceiverStream::new(notifications_receiver)))
             },
         })
+    }
+
+    async fn authorize_dispatch_boundaries(
+        &self,
+        session_id: &str,
+        client_name: &str,
+        ext_class: &crate::privacy::ExtensionClassification,
+        cap: crate::privacy::CallCapability,
+        tool_call: &CallToolRequestParams,
+    ) -> Result<()> {
+        // Issue #56 Gate C, beside BR-23's SecretGuard block below for the
+        // reason that block's own comment states: this is the single choke
+        // point every tool call flows through. FOUR production paths converge
+        // here and only ONE of them carries a `ToolInspector` — the agent loop
+        // (`Agent::dispatch_tool_call`), `POST /agent/call_tool`, the
+        // `execute_code` JS bridge (`CodeExecutionClient::dispatch_sub_call`,
+        // which re-enters THIS function, not the Agent's) and
+        // `Agent::call_prefetch_tool`, which runs BEFORE the turn. A gate
+        // written as an inspector would be invisible to three of the four.
+        //
+        // `ext_class` is read off the RESOLVED RECORD, never off the tool-name
+        // string. `normalize()` permits `_`, so extensions keyed `a` and `a__b`
+        // both match `a__b__c` by prefix. `get_client_for_tool` settles that
+        // with the single longest-key-wins resolver in its body — the SAME one
+        // Gate E filters the tool list with, introduced by Task 16 exactly so
+        // the two gates cannot disagree about who owns a name. (This comment
+        // used to say the routing was a `starts_with` scan of a HashMap in
+        // nondeterministic order. That was true, and is what Task 16 fixed.)
+        // Re-deriving the tier from the string here would reintroduce the
+        // disagreement one layer down, where nothing would catch it; instead it
+        // comes out of the same snapshot as the client and the config, so there
+        // is no second lookup to drift from the first either.
+        //
+        // `cap` is a PARAMETER. Gate C does not sample and cannot:
+        // `dispatch_tool_call` has no way to read the provider any more. That
+        // is what makes this decision, the built-in `_meta` bit and the
+        // Platform extensions' capability provably the same decision.
+        //
+        // `cap.enforced()` is DR-15's master opt-out, read here inside the gate
+        // rather than through an `is_enabled()` wrapper — one auditable line
+        // rather than an absent gate. It is the SAME predicate in every gate;
+        // do not introduce a second, narrower flag for this one.
+        if cap.enforced() {
+            if let Some(err) =
+                crate::privacy::refusal::privacy_refusal(client_name, ext_class.tier, cap.tier())
+            {
+                return Err(err.into());
+            }
+        }
+
+        // Issue #56 Tasks 48 and 49, DR-26's THIRD axis. See
+        // [`Self::cross_affiliation_denial`], which is where the whole rationale
+        // lives; it is a separate function only because the repo's
+        // `clippy::too_many_lines` baseline caps this one, and it is still called
+        // from ABOVE `let fut = async move`, so it decides at admission.
+        if let Some(err) = self
+            .cross_affiliation_denial(session_id, client_name, ext_class, cap)
+            .await
+        {
+            return Err(err.into());
+        }
+
+        // BR-23: the central secret-redaction boundary — see
+        // [`Self::secret_guard_denial`], which is where the whole rationale
+        // lives.
+        if let Some(err) = self.secret_guard_denial(tool_call).await {
+            return Err(err.into());
+        }
+
+        Ok(())
     }
 
     async fn admit_file_access(

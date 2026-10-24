@@ -7301,44 +7301,50 @@ impl Agent {
                 *extension_state_changed |= mutation.persist_extension_state;
             }
         }
-        {
-            let (response_value, error_text) = match &output {
-                Ok(res) => {
-                    let mut value = serde_json::to_value(res).ok();
-                    if let (Some(Value::Object(value)), Some(receipt)) =
-                        (&mut value, &diagnostics_receipt)
-                    {
-                        let meta = value
-                            .entry("_meta")
-                            .or_insert_with(|| serde_json::json!({}));
-                        if let Some(meta) = meta.as_object_mut() {
-                            meta.insert(
-                                crate::agents::post_edit_diagnostics::DIAGNOSTICS_RECEIPT_META_KEY
-                                    .to_owned(),
-                                Value::String(receipt.clone()),
-                            );
-                        }
-                    }
-                    if res.is_error == Some(true) {
-                        let text = value
-                            .as_ref()
-                            .map(|v| v.to_string())
-                            .unwrap_or_else(|| "tool returned an error".to_string());
-                        (value, Some(text))
-                    } else {
-                        (value, None)
-                    }
-                }
-                Err(e) => (None, Some(e.to_string())),
-            };
-            post_tool_results.push((request_id.clone(), response_value, error_text));
-        }
+        let (response_value, error_text) =
+            Self::post_tool_result_payload(&output, diagnostics_receipt.as_deref());
+        post_tool_results.push((request_id.clone(), response_value, error_text));
         if let Some(response_msg) = request_to_response_map.get(&request_id) {
             let metadata = request_metadata.get(&request_id).and_then(|m| m.as_ref());
             let mut response = response_msg.lock().await;
             *response = response
                 .clone()
                 .with_tool_response_with_metadata(request_id, output, metadata);
+        }
+    }
+
+    fn post_tool_result_payload(
+        output: &ToolResult<CallToolResult>,
+        diagnostics_receipt: Option<&str>,
+    ) -> (Option<Value>, Option<String>) {
+        match output {
+            Ok(res) => {
+                let mut value = serde_json::to_value(res).ok();
+                if let (Some(Value::Object(value)), Some(receipt)) =
+                    (&mut value, diagnostics_receipt)
+                {
+                    let meta = value
+                        .entry("_meta")
+                        .or_insert_with(|| serde_json::json!({}));
+                    if let Some(meta) = meta.as_object_mut() {
+                        meta.insert(
+                            crate::agents::post_edit_diagnostics::DIAGNOSTICS_RECEIPT_META_KEY
+                                .to_owned(),
+                            Value::String(receipt.to_owned()),
+                        );
+                    }
+                }
+                if res.is_error == Some(true) {
+                    let text = value
+                        .as_ref()
+                        .map(|v| v.to_string())
+                        .unwrap_or_else(|| "tool returned an error".to_string());
+                    (value, Some(text))
+                } else {
+                    (value, None)
+                }
+            }
+            Err(e) => (None, Some(e.to_string())),
         }
     }
 
