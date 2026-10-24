@@ -170,7 +170,7 @@ impl SecretGuard {
                 }
             }
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(error) => return Err(error),
+            Err(error) => return Err(std::io::Error::new(error.kind(), format!("Cannot read security policy '{}': {error}. Repair this policy file before retrying file access.", cwd.join(".biorouterignore").display()))),
         }
         Ok(Self {
             ignore: builder.build().unwrap_or_else(|_| Gitignore::empty()),

@@ -218,7 +218,11 @@ impl CodeAnalyzer {
         tracing::debug!("Analyzing file {:?} in {:?} mode", path, mode);
 
         let bound = traverser.bound(path)?;
-        let cache_key = bound.bound.try_history_key().map_err(file_error)?;
+        let cache_key = bound
+            .bound
+            .try_history_key()
+            .map_err(file_error)?
+            .join(format!("language-{}", lang::get_language_identifier(path)));
         let metadata = bound.bound.metadata().map_err(|e| {
             tracing::error!("Failed to get file metadata for {:?}: {}", path, e);
             ErrorData::new(

@@ -391,6 +391,20 @@ mod tests {
         use rmcp::handler::server::wrapper::Parameters;
         let root = tempfile::tempdir().unwrap();
         let server = DeveloperServer::new().with_working_dir(root.path().to_path_buf());
+        let default_result = server
+            .text_editor(Parameters(TextEditorParams {
+                path: "source.rs".into(),
+                command: "write".into(),
+                file_text: Some("fn main() {}".into()),
+                diff: None,
+                view_range: None,
+                old_str: None,
+                new_str: None,
+                insert_line: None,
+            }))
+            .await
+            .unwrap();
+        assert!(default_result.meta.is_none());
         for source in ["fn main( {", "fn main() {}"] {
             let mut meta = Meta::default();
             meta.0
