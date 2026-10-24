@@ -1,16 +1,23 @@
 use std::fs::File;
 use std::io;
-use std::mem::MaybeUninit;
+use std::mem::{size_of, MaybeUninit};
 use std::os::windows::io::{AsRawHandle, FromRawHandle};
 use std::path::{Path, PathBuf};
 
 use cap_std::fs::{Dir, Metadata, OpenOptions};
-use windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE;
-use windows_sys::Win32::Storage::FileSystem::{
-    GetFileInformationByHandle, ReOpenFile, BY_HANDLE_FILE_INFORMATION, FILE_FLAG_BACKUP_SEMANTICS,
-    FILE_FLAG_OPEN_REPARSE_POINT, FILE_GENERIC_READ, FILE_SHARE_DELETE, FILE_SHARE_READ,
-    FILE_SHARE_WRITE,
+use windows_sys::Wdk::Foundation::OBJECT_ATTRIBUTES;
+use windows_sys::Wdk::Storage::FileSystem::{
+    NtCreateFile, FILE_DIRECTORY_FILE, FILE_OPEN, FILE_OPEN_REPARSE_POINT,
+    FILE_SYNCHRONOUS_IO_NONALERT,
 };
+use windows_sys::Win32::Foundation::{
+    RtlNtStatusToDosError, STATUS_PENDING, STATUS_SUCCESS, UNICODE_STRING,
+};
+use windows_sys::Win32::Storage::FileSystem::{
+    GetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION, FILE_GENERIC_READ, FILE_SHARE_DELETE,
+    FILE_SHARE_READ, FILE_SHARE_WRITE,
+};
+use windows_sys::Win32::System::IO::IO_STATUS_BLOCK;
 
 use super::{
     nofollow_options, private_options, refused, reject_reparse, BoundedDirEntry, RootIdentity,
@@ -47,16 +54,40 @@ fn identity(file: &File) -> io::Result<RootIdentity> {
 fn reopen(file: &File, share_delete: bool) -> io::Result<File> {
     let share =
         FILE_SHARE_READ | FILE_SHARE_WRITE | if share_delete { FILE_SHARE_DELETE } else { 0 };
-    let handle = unsafe {
-        ReOpenFile(
-            file.as_raw_handle(),
+    let mut empty_name = [0u16];
+    let name = UNICODE_STRING {
+        Length: 0,
+        MaximumLength: size_of::<u16>() as u16,
+        Buffer: empty_name.as_mut_ptr(),
+    };
+    let attributes = OBJECT_ATTRIBUTES {
+        Length: size_of::<OBJECT_ATTRIBUTES>() as u32,
+        RootDirectory: file.as_raw_handle(),
+        ObjectName: &name,
+        ..OBJECT_ATTRIBUTES::default()
+    };
+    let mut status_block = IO_STATUS_BLOCK::default();
+    status_block.Anonymous.Status = STATUS_PENDING;
+    let mut handle = std::ptr::null_mut();
+    // ReOpenFile can reject directories. An empty native name reopens this
+    // retained object with explicit directory semantics, without pathname lookup.
+    let status = unsafe {
+        NtCreateFile(
+            &mut handle,
             FILE_GENERIC_READ,
+            &attributes,
+            &mut status_block,
+            std::ptr::null(),
+            0,
             share,
-            FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT,
+            FILE_OPEN,
+            FILE_DIRECTORY_FILE | FILE_SYNCHRONOUS_IO_NONALERT | FILE_OPEN_REPARSE_POINT,
+            std::ptr::null(),
+            0,
         )
     };
-    if handle == INVALID_HANDLE_VALUE {
-        let error = io::Error::last_os_error();
+    if status != STATUS_SUCCESS {
+        let error = io::Error::from_raw_os_error(unsafe { RtlNtStatusToDosError(status) } as i32);
         return Err(io::Error::new(
             error.kind(),
             format!("The authorized folder is busy or unavailable: {error}. Finish moving or closing this folder, then retry the original operation."),
@@ -221,9 +252,66 @@ mod tests {
     use std::os::windows::fs::OpenOptionsExt;
     use std::sync::mpsc;
     use std::time::Duration;
-    use windows_sys::Win32::Storage::FileSystem::{DELETE, FILE_READ_ATTRIBUTES};
+    use windows_sys::Win32::Storage::FileSystem::{
+        DELETE, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_READ_ATTRIBUTES,
+    };
 
     use crate::bounded_fs::{AccessMode, BoundedFs};
+
+    #[test]
+    fn volume_root_and_ordinary_directories_can_be_captured_and_leased() {
+        let fixture = tempfile::tempdir().unwrap();
+        let mut volume_root = PathBuf::new();
+        for component in fixture.path().components() {
+            match component {
+                std::path::Component::Prefix(_) | std::path::Component::RootDir => {
+                    volume_root.push(component.as_os_str());
+                }
+                _ => break,
+            }
+        }
+        for path in [volume_root.as_path(), fixture.path()] {
+            let original = Dir::open_ambient_dir(path, cap_std::ambient_authority()).unwrap();
+            let original_identity =
+                identity(&original.try_clone().unwrap().into_std_file()).unwrap();
+            let captured = PinnedDir::capture(original.into_std_file()).unwrap();
+            let lease = captured.lease().unwrap();
+            assert_eq!(captured.identity(), original_identity);
+            assert_eq!(
+                identity(&lease.directory.into_std_file()).unwrap(),
+                original_identity
+            );
+        }
+    }
+
+    #[test]
+    fn ordinary_directory_leases_allow_listing_and_file_mutations() {
+        let fixture = tempfile::tempdir().unwrap();
+        let selected = fixture.path().join("workspace");
+        fs::create_dir(&selected).unwrap();
+        fs::write(selected.join("file.txt"), "approved").unwrap();
+        let filesystem = BoundedFs::open(&selected).unwrap();
+        let entries = filesystem
+            .bind(".", AccessMode::Read)
+            .unwrap()
+            .list()
+            .unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].name, "file.txt");
+        let file = filesystem.bind("file.txt", AccessMode::Write).unwrap();
+        assert_eq!(file.read().unwrap(), b"approved");
+        file.atomic_write(b"edited").unwrap();
+        let renamed = filesystem.bind("renamed.txt", AccessMode::Write).unwrap();
+        file.rename_to(&renamed).unwrap();
+        assert_eq!(renamed.read().unwrap(), b"edited");
+        renamed.remove_file().unwrap();
+        assert!(filesystem
+            .bind(".", AccessMode::Read)
+            .unwrap()
+            .list()
+            .unwrap()
+            .is_empty());
+    }
 
     #[test]
     fn directory_moves_wait_for_the_operation_lease_then_keep_the_captured_object() {
