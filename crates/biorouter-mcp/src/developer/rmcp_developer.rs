@@ -42,10 +42,14 @@ use super::shell::{
     kill_process_group,
 };
 use super::text_editor::{
-    save_file_history, text_editor_insert, text_editor_replace, text_editor_undo, text_editor_view,
-    text_editor_write,
+    save_file_history, text_editor_insert_bounded as text_editor_insert,
+    text_editor_replace_bounded as text_editor_replace,
+    text_editor_undo_bounded as text_editor_undo, text_editor_view_bounded as text_editor_view,
+    text_editor_write_bounded as text_editor_write,
 };
 use super::undo_history::{self, FileHistory};
+use crate::file_access::{absolute_file_path, file_error, EditorAccess};
+use biorouter_sandbox::bounded_fs::{AccessMode, BoundedFs};
 use std::time::Duration;
 
 /// The `_meta` key Biorouter's MCP client writes the dispatching chat's id
@@ -392,6 +396,9 @@ pub struct DeveloperServer {
     /// bind time (it did not exist yet), in which case there is nothing to
     /// compare against and the path alone remains the boundary.
     canonical_working_dir: Option<PathBuf>,
+    workspace_filesystem: Option<Arc<BoundedFs>>,
+    skill_filesystem: Option<Arc<BoundedFs>>,
+    skill_anchor: Option<(Arc<BoundedFs>, PathBuf)>,
     // Skills installed by Biorouter may be inspected from any project. This
     // canonical root grants reads only, without widening the editor's write jail.
     skill_read_root: Option<PathBuf>,
@@ -829,7 +836,12 @@ impl DeveloperServer {
             bash_env_file: None,
             working_dir: None,
             canonical_working_dir: None,
+            workspace_filesystem: BoundedFs::open(&base).ok().map(Arc::new),
+            skill_filesystem: BoundedFs::open(crate::paths::in_config_dir("skills"))
+                .ok()
+                .map(Arc::new),
             skill_read_root: Self::bind_skill_read_root(&crate::paths::in_config_dir("skills")),
+            skill_anchor: Self::bind_skill_anchor(&crate::paths::in_config_dir("skills")),
             foreground_timeout: super::shell::foreground_timeout_from_env(),
         }
     }
@@ -880,6 +892,7 @@ impl DeveloperServer {
         self.file_history = Arc::new(FileHistory::persistent(&dir));
         self.secret_guard = SecretGuard::for_dir(&dir);
         self.canonical_working_dir = std::fs::canonicalize(&dir).ok();
+        self.workspace_filesystem = BoundedFs::open(&dir).ok().map(Arc::new);
         self.working_dir = Some(dir);
         self
     }
@@ -1013,7 +1026,11 @@ impl DeveloperServer {
             if self.is_ignored(&resolved) {
                 continue;
             }
-            let _ = self.file_history.snapshot(&resolved);
+            if let Ok(access) = self.editor_access(rmcp::model::Meta::default()) {
+                if let Ok(path) = access.bind(&resolved, AccessMode::Read) {
+                    let _ = self.file_history.snapshot_bounded(&path.bound);
+                }
+            }
         }
     }
 
@@ -1029,24 +1046,31 @@ impl DeveloperServer {
         name = "text_editor",
         description = "Perform text editing operations on files in the working directory. View also supports Biorouter's installed skills outside the working directory. Commands: view (show file content), write (create/overwrite file), str_replace (edit file), insert (insert at line), undo_edit (undo last change)."
     )]
-    pub async fn text_editor(
+    pub async fn text_editor_with_context(
         &self,
         params: Parameters<TextEditorParams>,
+        context: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, ErrorData> {
+        self.text_editor_authorized(params, context.meta).await
+    }
+
+    async fn text_editor_authorized(
+        &self,
+        params: Parameters<TextEditorParams>,
+        meta: rmcp::model::Meta,
     ) -> Result<CallToolResult, ErrorData> {
         let params = params.0;
-        let path = self.resolve_path_scoped(&params.path, params.command == "view")?;
-
-        // Check if file is ignored before proceeding with any text editor operation
-        if self.is_ignored(&path) {
-            return Err(ErrorData::new(
-                ErrorCode::INTERNAL_ERROR,
-                format!(
-                    "Access to '{}' is restricted by .biorouterignore",
-                    path.display()
-                ),
-                None,
-            ));
-        }
+        let access = self.editor_access(meta)?;
+        let requested =
+            absolute_file_path(&params.path, access.workspace.root()).map_err(file_error)?;
+        let path = access.bind(
+            &requested,
+            if params.command == "view" || params.diff.is_some() {
+                AccessMode::Read
+            } else {
+                AccessMode::Write
+            },
+        )?;
 
         match params.command.as_str() {
             "view" => {
@@ -1146,6 +1170,37 @@ impl DeveloperServer {
                 None,
             )),
         }
+    }
+
+    fn editor_access(&self, meta: rmcp::model::Meta) -> Result<EditorAccess, ErrorData> {
+        let workspace = self.workspace_filesystem.clone().ok_or_else(|| {
+            file_error(
+                "The session workspace could not be opened; choose an existing folder and retry",
+            )
+        })?;
+        Ok(EditorAccess {
+            workspace,
+            skills: self.skill_filesystem.clone().or_else(|| {
+                let (anchor, relative) = self.skill_anchor.as_ref()?;
+                let path = anchor.bind(relative, AccessMode::Read).ok()?;
+                if path.relative_path() != relative {
+                    return None;
+                }
+                path.open_dir().ok().map(Arc::new)
+            }),
+            guard: self.secret_guard.clone(),
+            meta,
+        })
+    }
+
+    /// Direct library calls retain workspace-only authority; broker grants
+    /// enter exclusively through the MCP request metadata handler.
+    pub async fn text_editor(
+        &self,
+        params: Parameters<TextEditorParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        self.text_editor_authorized(params, rmcp::model::Meta::default())
+            .await
     }
 
     /// Execute a command in the shell.
@@ -2080,6 +2135,17 @@ impl DeveloperServer {
         self.resolve_path_jailed(path_str)
     }
 
+    fn bind_skill_anchor(configured: &Path) -> Option<(Arc<BoundedFs>, PathBuf)> {
+        let root = Self::bind_skill_read_root(configured)?;
+        let mut existing = root.as_path();
+        while !existing.is_dir() {
+            existing = existing.parent()?;
+        }
+        let filesystem = Arc::new(BoundedFs::open(existing).ok()?);
+        let relative = root.strip_prefix(filesystem.root()).ok()?.to_path_buf();
+        Some((filesystem, relative))
+    }
+
     fn bind_skill_read_root(configured: &Path) -> Option<PathBuf> {
         let ancestor = configured.ancestors().find(|path| path.exists())?;
         let canonical = ancestor.canonicalize().ok()?;
@@ -2693,6 +2759,7 @@ mod tests {
         std::fs::write(&script, "echo installed\n").unwrap();
         let mut server = DeveloperServer::new().with_working_dir(project.path().to_path_buf());
         server.skill_read_root = Some(skills.path().canonicalize().unwrap());
+        server.skill_filesystem = Some(Arc::new(BoundedFs::open(skills.path()).unwrap()));
 
         let params = |command: &str| {
             Parameters(TextEditorParams {
@@ -2725,6 +2792,7 @@ mod tests {
         std::fs::write(skills.path().join(".biorouterignore"), "private.txt\n").unwrap();
         let mut server = DeveloperServer::new().with_working_dir(project.path().to_path_buf());
         server.skill_read_root = Some(skills.path().canonicalize().unwrap());
+        server.skill_filesystem = Some(Arc::new(BoundedFs::open(skills.path()).unwrap()));
         for name in [".env", "private.txt"] {
             let path = skills.path().join(name);
             std::fs::write(&path, "confidential").unwrap();
@@ -2746,6 +2814,7 @@ mod tests {
         std::os::unix::fs::symlink(target, &link).unwrap();
         let mut server = DeveloperServer::new().with_working_dir(project.path().to_path_buf());
         server.skill_read_root = Some(skills.path().canonicalize().unwrap());
+        server.skill_filesystem = Some(Arc::new(BoundedFs::open(skills.path()).unwrap()));
         assert!(server
             .resolve_path_scoped(link.to_str().unwrap(), true)
             .is_err());
@@ -2758,6 +2827,8 @@ mod tests {
         let skills = config.path().join("new-config/skills");
         let mut server = DeveloperServer::new().with_working_dir(project.path().to_path_buf());
         server.skill_read_root = DeveloperServer::bind_skill_read_root(&skills);
+        server.skill_filesystem = None;
+        server.skill_anchor = DeveloperServer::bind_skill_anchor(&skills);
         std::fs::create_dir_all(&skills).unwrap();
         let script = skills.join("SKILL.md");
         std::fs::write(&script, "Installed after the server started.").unwrap();
@@ -2776,6 +2847,8 @@ mod tests {
         let skills = config.path().join("skills");
         let mut server = DeveloperServer::new().with_working_dir(project.path().to_path_buf());
         server.skill_read_root = DeveloperServer::bind_skill_read_root(&skills);
+        server.skill_filesystem = None;
+        server.skill_anchor = DeveloperServer::bind_skill_anchor(&skills);
         std::fs::write(outside.path().join("notes.txt"), "outside").unwrap();
         std::os::unix::fs::symlink(outside.path(), &skills).unwrap();
         assert!(server
@@ -2860,7 +2933,7 @@ mod tests {
         for path in ["file-link", "dir-link/new.txt"] {
             let err = server.text_editor(write(path)).await.unwrap_err();
             assert_eq!(err.code, ErrorCode::INVALID_PARAMS);
-            assert!(err.message.contains("dangling symlink"));
+            assert!(err.message.contains("symbolic link"));
         }
         assert!(!outside_file.exists());
         assert!(!outside_dir.exists());
@@ -2910,7 +2983,7 @@ mod tests {
         for path in ["file-link", "dir-link/new.txt"] {
             let err = server.text_editor(create_patch(path)).await.unwrap_err();
             assert_eq!(err.code, ErrorCode::INVALID_PARAMS);
-            assert!(err.message.contains("dangling symlink"));
+            assert!(err.message.contains("symbolic link"));
         }
         assert!(!outside_file.exists());
         assert!(!outside_dir.exists());
@@ -2921,7 +2994,7 @@ mod tests {
         ] {
             let err = server.text_editor(create_patch(path)).await.unwrap_err();
             assert_eq!(err.code, ErrorCode::INVALID_PARAMS);
-            assert!(err.message.contains("outside the base directory"));
+            assert!(err.message.contains("authorized directory"));
             assert!(!outside.join("missing").exists());
         }
 
@@ -3629,7 +3702,9 @@ mod tests {
         // Simulate the append the shell command would perform.
         std::fs::write(&out, "before\nmore\n").unwrap();
 
-        text_editor_undo(&out, &server.file_history).await.unwrap();
+        super::super::text_editor::text_editor_undo(&out, &server.file_history)
+            .await
+            .unwrap();
         assert_eq!(std::fs::read_to_string(&out).unwrap(), "before\n");
     }
 

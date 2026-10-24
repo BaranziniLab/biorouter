@@ -97,7 +97,13 @@ new file mode 100644
         );
 
         // Verify history was saved
-        assert!(history.depth(&file_path) > 0);
+        assert!(
+            history.depth(
+                &crate::file_access::test_editor_path(&file_path)
+                    .bound
+                    .history_key()
+            ) > 0
+        );
     }
 
     #[tokio::test]

@@ -109,6 +109,7 @@ tar = "0.4.46"
 flate2 = "1.1.9"
 xz2 = "0.1.7"
 bzip2 = "0.6.1"
+similar = "2"
 
 [dev-dependencies]
 # Issue #56: `knowledge::tier_user`'s two source audits walk `crates/` to pin the

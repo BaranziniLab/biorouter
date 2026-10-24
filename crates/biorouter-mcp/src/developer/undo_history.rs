@@ -70,17 +70,18 @@ impl FileHistory {
 
     /// Snapshot the current on-disk content of `path` (empty string if it does
     /// not yet exist) onto its undo stack.
+    #[cfg(test)]
     pub fn snapshot(&self, path: &Path) -> std::io::Result<()> {
         let content = if path.exists() {
             std::fs::read_to_string(path)?
         } else {
             String::new()
         };
-        self.push(path, content);
+        self.record(path, content);
         Ok(())
     }
 
-    fn push(&self, path: &Path, content: String) {
+    pub(crate) fn record(&self, path: &Path, content: String) {
         let mut guard = self.inner.lock().unwrap();
         let stack = guard.entry(path.to_path_buf()).or_default();
         stack.push(content);
@@ -92,6 +93,7 @@ impl FileHistory {
     }
 
     /// Pop the most recent snapshot for `path`, if any.
+    #[cfg(test)]
     pub fn pop(&self, path: &Path) -> Option<String> {
         let mut guard = self.inner.lock().unwrap();
         let popped = guard.get_mut(path).and_then(Vec::pop);
@@ -99,6 +101,37 @@ impl FileHistory {
             self.persist(&guard);
         }
         popped
+    }
+
+    pub(crate) fn snapshot_bounded(
+        &self,
+        path: &biorouter_sandbox::bounded_fs::BoundedPath,
+    ) -> std::io::Result<()> {
+        let content = match path.read_to_string() {
+            Ok(content) => content,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
+            Err(error) => return Err(error),
+        };
+        self.record(&path.history_key(), content);
+        Ok(())
+    }
+
+    pub(crate) fn restore_with(
+        &self,
+        path: &Path,
+        restore: impl FnOnce(&str) -> std::io::Result<()>,
+    ) -> std::io::Result<bool> {
+        let mut guard = self.inner.lock().unwrap();
+        let Some(stack) = guard.get_mut(path) else {
+            return Ok(false);
+        };
+        let Some(content) = stack.last() else {
+            return Ok(false);
+        };
+        restore(content)?;
+        stack.pop();
+        self.persist(&guard);
+        Ok(true)
     }
 
     fn persist(&self, map: &HashMap<PathBuf, Vec<String>>) {

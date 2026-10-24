@@ -145,6 +145,43 @@ impl SecretGuard {
         Self::build(cwd, &ignore_sources(cwd))
     }
 
+    pub(crate) fn for_bounded_path(
+        path: &biorouter_sandbox::bounded_fs::BoundedPath,
+    ) -> std::io::Result<Self> {
+        let cwd = path.root();
+        let mut builder = GitignoreBuilder::new(cwd);
+        let mut machine_builder = GitignoreBuilder::new(cwd);
+        for pattern in DEFAULT_SECRET_PATTERNS {
+            let _ = builder.add_line(None, pattern);
+            let _ = machine_builder.add_line(None, pattern);
+        }
+        if let Ok(dirs) = crate::paths::platform_dirs() {
+            let global = dirs.config.join(".biorouterignore");
+            let _ = builder.add(&global);
+            let _ = machine_builder.add(&global);
+        }
+        match path.read_root_policy().and_then(|bytes| {
+            String::from_utf8(bytes)
+                .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))
+        }) {
+            Ok(content) => {
+                for line in content.lines() {
+                    let _ = builder.add_line(Some(cwd.join(".biorouterignore")), line);
+                }
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error),
+        }
+        Ok(Self {
+            ignore: builder.build().unwrap_or_else(|_| Gitignore::empty()),
+            machine_wide: machine_builder
+                .build()
+                .unwrap_or_else(|_| Gitignore::empty()),
+            root: cwd.to_path_buf(),
+            canonical_root: cwd.to_path_buf(),
+        })
+    }
+
     /// Build a guard from an explicit, already-resolved list of ignore files.
     ///
     /// `sources` must be exactly what [`ignore_sources`] returns for `cwd` —

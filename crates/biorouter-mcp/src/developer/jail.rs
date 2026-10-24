@@ -11,7 +11,8 @@
 
 use std::path::{Component, Path, PathBuf};
 
-use biorouter_sandbox::resolve_in_workspace;
+use biorouter_sandbox::bounded_fs::{AccessMode, BoundedFs, BoundedPath};
+use std::sync::Arc;
 
 /// Reasons a path is refused by the jail.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -37,9 +38,10 @@ impl std::fmt::Display for JailError {
 impl std::error::Error for JailError {}
 
 /// A workspace jail rooted at a single directory.
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct Jail {
     root: PathBuf,
+    filesystem: Option<Arc<BoundedFs>>,
     writable: bool,
     /// Path-component names that are always denied (matched anywhere in the path).
     denied_components: Vec<String>,
@@ -49,8 +51,11 @@ impl Jail {
     /// A jail at `root`. `writable` gates all write operations. The vault dir
     /// (`.vault`) and VCS metadata (`.git`) are always denied.
     pub fn new(root: impl Into<PathBuf>, writable: bool) -> Self {
+        let root = root.into();
+        let filesystem = BoundedFs::open(&root).ok().map(Arc::new);
         Jail {
-            root: root.into(),
+            root,
+            filesystem,
             writable,
             denied_components: vec![".vault".to_string(), ".git".to_string()],
         }
@@ -70,27 +75,39 @@ impl Jail {
         self.writable
     }
 
-    /// Resolve a workspace-relative (or absolute) path to a real path inside the
-    /// jail, enforcing read-only and the denied set. `need_write` must be true
-    /// for any operation that mutates the file.
-    pub fn resolve(&self, requested: &str, need_write: bool) -> Result<PathBuf, JailError> {
+    pub fn bind(&self, requested: &str, need_write: bool) -> Result<BoundedPath, JailError> {
         if need_write && !self.writable {
             return Err(JailError::ReadOnly(requested.to_string()));
         }
-        // Defence in depth: reject denied components before touching the FS.
-        let req_path = Path::new(requested);
-        if self.has_denied_component(req_path) {
+        if self.has_denied_component(Path::new(requested)) {
             return Err(JailError::Denied(requested.to_string()));
         }
-        let resolved = resolve_in_workspace(&self.root, requested, need_write)
+        let filesystem = self
+            .filesystem
+            .as_ref()
+            .ok_or_else(|| JailError::Escape(requested.to_string()))?;
+        let bound = filesystem
+            .bind(
+                requested,
+                if need_write {
+                    AccessMode::Write
+                } else {
+                    AccessMode::Read
+                },
+            )
             .map_err(|_| JailError::Escape(requested.to_string()))?;
-        // Re-check the *canonicalized* path: `resolve_in_workspace` returns the
-        // candidate (unfollowed) path, so a symlink that lands in a denied area
-        // (e.g. `peek` → `.vault`) is only visible after resolving links.
-        if self.has_denied_component(&canonical_realish(&resolved)) {
+        if self.has_denied_component(bound.relative_path())
+            || crate::memory::is_in_global_memory_store(&bound.absolute_path())
+        {
             return Err(JailError::Denied(requested.to_string()));
         }
-        Ok(resolved)
+        Ok(bound)
+    }
+
+    /// The returned name is for display only. File operations use `bind` so
+    /// validation and I/O retain the same directory capability.
+    pub fn resolve(&self, requested: &str, need_write: bool) -> Result<PathBuf, JailError> {
+        Ok(self.bind(requested, need_write)?.absolute_path())
     }
 
     fn has_denied_component(&self, p: &Path) -> bool {
@@ -102,30 +119,6 @@ impl Jail {
                 false
             }
         })
-    }
-}
-
-/// Canonicalize the deepest existing ancestor of `p` and re-append the
-/// not-yet-existing tail, so symlinks in the path are resolved for denied-area
-/// checks even when the leaf doesn't exist yet (a new-file write).
-fn canonical_realish(p: &Path) -> PathBuf {
-    let mut cur: &Path = p;
-    loop {
-        if cur.exists() {
-            if let Ok(c) = cur.canonicalize() {
-                if cur == p {
-                    return c;
-                }
-                if let Ok(tail) = p.strip_prefix(cur) {
-                    return c.join(tail);
-                }
-            }
-            return p.to_path_buf();
-        }
-        match cur.parent() {
-            Some(parent) => cur = parent,
-            None => return p.to_path_buf(),
-        }
     }
 }
 
