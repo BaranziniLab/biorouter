@@ -5,6 +5,7 @@ import ast
 import importlib.util
 import json
 from pathlib import Path
+import subprocess
 from types import SimpleNamespace
 import unittest
 from unittest.mock import Mock, patch
@@ -58,6 +59,22 @@ class OwnerResponseTests(unittest.TestCase):
         self.assertIn("BIOROUTER_SERVER__SECRET_KEY", args)
         self.assertNotIn(secret, " ".join(args))
         self.assertEqual(command.call_args.kwargs["env"]["BIOROUTER_SERVER__SECRET_KEY"], secret)
+
+    def test_graceful_stop_allows_a_slow_drain_and_confirms_process_exit(self):
+        alive = subprocess.CompletedProcess([], 0)
+        stopped = subprocess.CompletedProcess([], 1)
+        with patch.object(HARNESS, "inside", side_effect=[alive, alive, alive, stopped]) as inside, \
+                patch.object(HARNESS.time, "monotonic", side_effect=[0, 1, 15, 29]), \
+                patch.object(HARNESS.time, "sleep"):
+            HARNESS.stop_daemon("synthetic")
+        self.assertEqual(inside.call_count, 4)
+
+    def test_graceful_stop_timeout_never_counts_as_an_exit(self):
+        with patch.object(HARNESS, "inside") as inside, \
+                patch.object(HARNESS.time, "monotonic", side_effect=[0, 31]):
+            with self.assertRaisesRegex(RuntimeError, "did not stop"):
+                HARNESS.stop_daemon("synthetic")
+        self.assertEqual(inside.call_count, 1)
 
 
 if __name__ == "__main__":

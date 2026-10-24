@@ -127,7 +127,8 @@ def start_daemon(container, secret):
 
 def stop_daemon(container):
     inside(container, OWNER, ["sh", "-c", "kill -TERM $(cat /home/br/daemon.pid)"])
-    for _ in range(60):
+    deadline = time.monotonic() + 30
+    while time.monotonic() < deadline:
         if inside(container, OWNER, ["sh", "-c", "kill -0 $(cat /home/br/daemon.pid)"], check=False).returncode != 0:
             return
         time.sleep(0.2)
@@ -257,13 +258,15 @@ def main(args):
         finally:
             try:
                 label = command(["docker", "inspect", "--format", '{{ index .Config.Labels "org.biorouter.assessment" }}', container], check=False)
-                if label.stdout.strip() == "rebuilt-session-storage":
-                    try:
-                        capture_daemon_logs(output, f"repetition-{repetition}-final", container, secret)
-                    finally:
-                        cleanup = command(["docker", "rm", "-f", container], check=False)
-                        if cleanup.returncode:
-                            raise RuntimeError("test-owned container cleanup failed")
+                if label.returncode or label.stdout.strip() != "rebuilt-session-storage":
+                    raise RuntimeError("container identity could not be verified; deletion was not attempted")
+                try:
+                    capture_daemon_logs(output, f"repetition-{repetition}-final", container, secret)
+                finally:
+                    cleanup = command(["docker", "rm", "-f", container], check=False)
+                    if cleanup.returncode:
+                        raise RuntimeError("test-owned container cleanup failed")
+                    result["cleanup"] = {"label_verified": True, "removed": True}
             except Exception as error:
                 result.update(status="failed", cleanup_error=str(error).replace(secret, "<synthetic-daemon-secret>"))
             observed_cases = {case["case_id"] for case in result["cases"]}
