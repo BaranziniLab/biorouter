@@ -555,11 +555,11 @@ async fn approve_for_native_client(
     owner: biorouter::native_client::NativeClient,
     other: biorouter::native_client::NativeClient,
 ) {
-    let job = biorouter::native_client::scope(Some(owner.clone()), async {
-        fixture.start(
+    let (job,) = biorouter::native_client::scope(Some(owner.clone()), async {
+        (fixture.start(
             vec![(target.to_path_buf(), AccessMode::Read)],
             CancellationToken::new(),
-        )
+        ),)
     })
     .await;
     let id = fixture.pending().await;
@@ -668,8 +668,8 @@ async fn native_disconnect_revokes_retained_once_paths_and_derived_directories()
     let fixture = Fixture::new();
     let lease = NativeClientLease::register().unwrap();
     let owner = lease.client();
-    let job = scope(Some(owner.clone()), async {
-        fixture.start_plan(
+    let (job,) = scope(Some(owner.clone()), async {
+        (fixture.start_plan(
             FileAccessPlan {
                 requests: vec![FileAccessRequest {
                     path: fixture.external.clone(),
@@ -678,7 +678,7 @@ async fn native_disconnect_revokes_retained_once_paths_and_derived_directories()
                 }],
             },
             CancellationToken::new(),
-        )
+        ),)
     })
     .await;
     let id = fixture.pending().await;
@@ -730,11 +730,11 @@ async fn native_disconnect_releases_pending_folder_and_workspace_remains_availab
     use biorouter::native_client::{scope, NativeClientLease};
     let fixture = Fixture::new();
     let lease = NativeClientLease::register().unwrap();
-    let job = scope(Some(lease.client()), async {
-        fixture.start(
+    let (job,) = scope(Some(lease.client()), async {
+        (fixture.start(
             vec![(fixture.external.join("completed.csv"), AccessMode::Read)],
             CancellationToken::new(),
-        )
+        ),)
     })
     .await;
     let id = fixture.pending().await;
