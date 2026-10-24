@@ -2,6 +2,7 @@ use crate::agents::code_delta::{CodeDeltaTally, CODE_DELTA_META_KEY};
 use crate::agents::extension::PlatformExtensionContext;
 use crate::agents::extension_manager::get_parameter_names;
 use crate::agents::mcp_client::{Error, McpClientTrait, McpMeta};
+use crate::agents::operation_outcome::OperationOutcome;
 use crate::agents::platform_tools;
 use crate::agents::tool_errors::{
     classify_call_result, classify_error_data, ToolError, ToolErrorKind,
@@ -95,7 +96,7 @@ type ToolCallRequest = (
     tokio::sync::oneshot::Sender<Result<String, ScriptFailure>>,
 );
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 struct ErrorProvenance {
     kind: ToolErrorKind,
     retryable: bool,
@@ -2293,12 +2294,16 @@ struct ToolCallRecord {
     /// deliberately kept out of the user's view.
     #[serde(skip_serializing_if = "Option::is_none")]
     error: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    failure: Option<ErrorProvenance>,
     /// Size of the result handed back to the script on success.
     #[serde(skip_serializing_if = "Option::is_none")]
     result_bytes: Option<usize>,
     /// Presentation-only projection of a matching, user-visible Todo result.
     #[serde(skip_serializing_if = "Option::is_none")]
     todo_task: Option<TodoTaskRecord>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    operation: Option<OperationOutcome>,
 }
 
 impl ToolCallRecord {
@@ -2308,8 +2313,10 @@ impl ToolCallRecord {
             args: truncate_record_text(args_json, MAX_TOOL_CALL_RECORD_TEXT_BYTES),
             status: "ok",
             error: None,
+            failure: None,
             result_bytes: Some(result_bytes),
             todo_task: None,
+            operation: None,
         }
     }
 
@@ -2331,9 +2338,28 @@ impl ToolCallRecord {
             args: truncate_record_text(args_json, MAX_TOOL_CALL_RECORD_TEXT_BYTES),
             status: "error",
             error: Some(error),
+            failure: Some(ErrorProvenance {
+                kind: ToolErrorKind::parse(kind).unwrap_or(ToolErrorKind::ToolFailure),
+                retryable: ToolErrorKind::parse(kind).is_some_and(ToolErrorKind::retryable),
+            }),
             result_bytes: None,
             todo_task: None,
+            operation: None,
         }
+    }
+
+    fn failed_with_provenance(
+        tool: &str,
+        args_json: &str,
+        user_error: Option<&str>,
+        kind: &'static str,
+        provenance: Option<ErrorProvenance>,
+    ) -> Self {
+        let mut record = Self::failed(tool, args_json, user_error, kind);
+        if let Some(provenance) = provenance {
+            record.failure = Some(provenance);
+        }
+        record
     }
 
     /// Serialized size this record contributes to the `biorouter/tool-calls`
@@ -3432,6 +3458,7 @@ impl CodeExecutionClient {
         &'static str,
         Option<String>,
         Option<TodoTaskRecord>,
+        Option<OperationOutcome>,
     ) {
         // Issue #141, as DEFENCE IN DEPTH — not as the path the model takes.
         //
@@ -3455,12 +3482,14 @@ impl CodeExecutionClient {
                 "agent_loop_tool",
                 None,
                 None,
+                None,
             );
         }
         let Some(manager) = extension_manager.and_then(std::sync::Weak::upgrade) else {
             return (
                 Err("Extension manager not available".to_string().into()),
                 "unavailable",
+                None,
                 None,
                 None,
             );
@@ -3484,7 +3513,13 @@ impl CodeExecutionClient {
                         .as_ref()
                         .ok()
                         .and_then(|_| todo_task_from_result(tool_name, arguments, &result));
-                    (value, kind, user, todo_task)
+                    (
+                        value,
+                        kind,
+                        user,
+                        todo_task,
+                        OperationOutcome::from_call(&result),
+                    )
                 }
                 Err(e) => {
                     let provenance = ErrorProvenance::from(classify_error_data(&e));
@@ -3496,12 +3531,14 @@ impl CodeExecutionClient {
                         provenance.kind.as_str(),
                         None,
                         None,
+                        None,
                     )
                 }
             },
             Err(e) => (
                 Err(format!("Dispatch error from {tool_name}: {e}").into()),
                 "dispatch_error",
+                None,
                 None,
                 None,
             ),
@@ -3720,16 +3757,17 @@ impl CodeExecutionClient {
                     continue;
                 }
             };
-            let (result, mut failure_kind, user_error, todo_task) = Self::dispatch_sub_call(
-                &session_id,
-                cap,
-                &tool_name,
-                &arguments,
-                extension_manager.as_ref(),
-                &collected_artifacts,
-                &cancellation_token,
-            )
-            .await;
+            let (result, mut failure_kind, user_error, todo_task, operation) =
+                Self::dispatch_sub_call(
+                    &session_id,
+                    cap,
+                    &tool_name,
+                    &arguments,
+                    extension_manager.as_ref(),
+                    &collected_artifacts,
+                    &cancellation_token,
+                )
+                .await;
             let result = result.and_then(|value| {
                 if value.len() > MAX_JS_TOOL_RESULT_BYTES {
                     failure_kind = "result_too_large";
@@ -3756,13 +3794,15 @@ impl CodeExecutionClient {
                     Ok(value) => {
                         let mut record = ToolCallRecord::ok(&tool_name, &arguments, value.len());
                         record.todo_task = todo_task;
+                        record.operation = operation;
                         record
                     }
-                    Err(_) => ToolCallRecord::failed(
+                    Err(error) => ToolCallRecord::failed_with_provenance(
                         &tool_name,
                         &arguments,
                         user_error.as_deref(),
                         failure_kind,
+                        error.provenance,
                     ),
                 };
                 collected_artifacts
@@ -4086,7 +4126,7 @@ mod tests {
     async fn a_script_naming_a_platform_tool_is_told_to_call_it_directly() {
         let collected = Arc::new(Mutex::new(CollectedArtifacts::default()));
         for name in platform_tools::PLATFORM_TOOL_NAMES {
-            let (result, kind, _user, _todo) = CodeExecutionClient::dispatch_sub_call(
+            let (result, kind, _user, _todo, _operation) = CodeExecutionClient::dispatch_sub_call(
                 "session-141",
                 crate::privacy::CallCapability::for_test_restricted(),
                 name,
@@ -4965,6 +5005,17 @@ mod tests {
         kind: &str,
         retryable: bool,
     ) -> CallToolResult {
+        let mut result = CallToolResult::error(vec![
+            Content::text(output).with_audience(vec![Role::Assistant]),
+            Content::text(output).with_audience(vec![Role::User]),
+        ]);
+        result.structured_content = Some(serde_json::json!({"error": {
+            "kind": kind, "retryable": retryable, "message": "fixture command failed",
+        }}));
+        execute_with_tool_result(code, result).await
+    }
+
+    async fn execute_with_tool_result(code: &str, result: CallToolResult) -> CallToolResult {
         let temp = tempfile::tempdir().unwrap();
         let session_manager = Arc::new(crate::session::SessionManager::new(
             temp.path().to_path_buf(),
@@ -4981,13 +5032,6 @@ mod tests {
             Arc::new(Mutex::new(None)),
             Arc::clone(&session_manager),
         ));
-        let mut result = CallToolResult::error(vec![
-            Content::text(output).with_audience(vec![Role::Assistant]),
-            Content::text(output).with_audience(vec![Role::User]),
-        ]);
-        result.structured_content = Some(serde_json::json!({"error": {
-            "kind": kind, "retryable": retryable, "message": "fixture command failed",
-        }}));
         manager
             .add_client(
                 "fixture".to_string(),
@@ -5024,6 +5068,46 @@ mod tests {
             )
             .await
             .unwrap()
+    }
+
+    #[tokio::test]
+    async fn successful_status_lookups_keep_operation_failure_without_throwing() {
+        for code in [
+            r#"import { run } from "fixture"; record_result(run({}));"#,
+            r#"import { run } from "fixture"; try { const status = run({}); record_result({ handled: status.status === "failed" }); } catch (error) { throw new Error("lookup unexpectedly threw"); }"#,
+        ] {
+            let mut lookup =
+                CallToolResult::success(vec![Content::text("Synthetic status lookup completed")]);
+            lookup.structured_content = Some(serde_json::json!({"status": "failed"}));
+            let operation = serde_json::json!({"version": 1, "id": "fixture-operation", "status": "failed", "error": {
+                "code": "fixture_failed", "kind": "timeout", "message": "Synthetic job exceeded its deadline", "retryable": false
+            }});
+            lookup.meta = Some(rmcp::model::Meta(
+                serde_json::json!({"io.biorouter/operation": operation})
+                    .as_object()
+                    .unwrap()
+                    .clone(),
+            ));
+            let result = execute_with_tool_result(code, lookup).await;
+            assert_ne!(result.is_error, Some(true), "{result:?}");
+            assert!(classify_call_result(&result).is_none());
+            let meta = result.meta.as_ref().unwrap();
+            assert!(meta
+                .get(crate::agents::operation_outcome::OPERATION_META_KEY)
+                .is_none());
+            let record = &meta.get(TOOL_CALLS_META_KEY).unwrap()[0];
+            assert_eq!(record["status"], "ok");
+            assert_eq!(record["operation"]["status"], "failed");
+            let observed = crate::agents::operation_outcome::observed_operations(
+                "code_execution__execute_code",
+                &Ok(result),
+            );
+            assert_eq!(observed.len(), 1);
+            assert_eq!(observed[0].0, "fixture__run");
+            let error = observed[0].1.failure().unwrap();
+            assert_eq!(error.kind, ToolErrorKind::Timeout);
+            assert!(!error.retryable);
+        }
     }
 
     #[tokio::test]
@@ -5086,6 +5170,50 @@ mod tests {
         assert_ne!(caught.is_error, Some(true));
         assert!(caught.structured_content.is_none());
         assert!(result_text(&caught).contains("recovered"));
+        let record = &caught
+            .meta
+            .as_ref()
+            .unwrap()
+            .get(TOOL_CALLS_META_KEY)
+            .unwrap()[0];
+        assert_eq!(
+            record["failure"],
+            serde_json::json!({"kind": "not_found", "retryable": false})
+        );
+        let failures = crate::agents::tool_errors::nested_tool_failures(
+            "code_execution__execute_code",
+            &Ok(caught),
+        );
+        assert_eq!(failures.len(), 1);
+        assert_eq!(failures[0].error.kind, ToolErrorKind::NotFound);
+    }
+
+    #[tokio::test]
+    async fn caught_tool_telemetry_retains_explicit_retryability_without_private_error_text() {
+        let mut failed = CallToolResult::error(vec![
+            Content::text("assistant-only diagnostic").with_audience(vec![Role::Assistant]),
+            Content::text("User-visible synthetic failure").with_audience(vec![Role::User]),
+        ]);
+        failed.structured_content = Some(serde_json::json!({"error": {
+            "kind": "timeout", "retryable": false, "message": "fixture failure",
+        }}));
+        let result = execute_with_tool_result(
+            r#"import { run } from "fixture"; try { run({}); } catch (error) {} record_result("handled");"#,
+            failed,
+        ).await;
+        assert_ne!(result.is_error, Some(true));
+        let record = &result
+            .meta
+            .as_ref()
+            .unwrap()
+            .get(TOOL_CALLS_META_KEY)
+            .unwrap()[0];
+        assert_eq!(
+            record["failure"],
+            serde_json::json!({"kind": "timeout", "retryable": false})
+        );
+        assert_eq!(record["error"], "User-visible synthetic failure");
+        assert!(!record.to_string().contains("assistant-only diagnostic"));
     }
 
     #[test]
@@ -7664,7 +7792,7 @@ mod gate_c_bridge_tests {
         let weak = Arc::downgrade(&manager);
         let artifacts = Arc::new(Mutex::new(CollectedArtifacts::default()));
 
-        let (result, kind, _user, _todo_task) = CodeExecutionClient::dispatch_sub_call(
+        let (result, kind, _user, _todo_task, _operation) = CodeExecutionClient::dispatch_sub_call(
             "gate-c",
             crate::privacy::CallCapability::for_test(crate::privacy::ProviderTier::Public, true),
             "ucsfomopagent__data_sources",
@@ -7702,7 +7830,7 @@ mod gate_c_bridge_tests {
         let weak = Arc::downgrade(&manager);
         let artifacts = Arc::new(Mutex::new(CollectedArtifacts::default()));
 
-        let (result, kind, _user, _todo_task) = CodeExecutionClient::dispatch_sub_call(
+        let (result, kind, _user, _todo_task, _operation) = CodeExecutionClient::dispatch_sub_call(
             "gate-c",
             crate::privacy::CallCapability::for_test(crate::privacy::ProviderTier::Private, true),
             "ucsfomopagent__data_sources",

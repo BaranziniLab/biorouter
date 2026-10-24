@@ -1,15 +1,16 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { Button } from '../../ui/button';
 import { Input } from '../../ui/input';
 import { SettingRow } from '../../ui/setting-row';
 import { approvalsCopy } from '../chat/copy';
 
 /**
  * The agent's own default, `biorouter::agents::DEFAULT_MAX_TURNS`, shown when
- * nothing is saved. This field used to show 1000 while the agent used 100.
+ * nothing is saved. Zero means Unlimited.
  * `ConversationLimitsDropdown.test.tsx` reads the Rust constant so the two
  * cannot drift again.
  */
-export const DEFAULT_MAX_TURNS = 100;
+export const DEFAULT_MAX_TURNS = 0;
 
 /** The largest value the daemon's `u32` setting can hold. */
 const MAX_TURNS_CEILING = 4_294_967_295;
@@ -23,9 +24,8 @@ export const MAX_TURNS_SAVE_DELAY_MS = 400;
 /**
  * A max-turns entry as a limit, or `null` when it is not one.
  *
- * Only a whole number of at least 1 is a limit. An empty field is NOT 0:
- * `Number('')` is 0, and saving it made every new chat stop before its first
- * model call. A negative number was saved too, and silently ignored.
+ * Zero explicitly selects Unlimited. An empty field is not zero, so clearing
+ * a saved limit never silently removes it.
  */
 export function parseMaxTurns(text: string): number | null {
   const trimmed = text.trim();
@@ -33,20 +33,20 @@ export function parseMaxTurns(text: string): number | null {
     return null;
   }
   const value = Number(trimmed);
-  return value >= 1 && value <= MAX_TURNS_CEILING ? value : null;
+  return value >= 0 && value <= MAX_TURNS_CEILING ? value : null;
 }
 
 interface MaxTurnsRowProps {
   /**
    * The saved `BIOROUTER_MAX_TURNS` exactly as stored, or `null` when none is
-   * saved. A stored value that is not a limit (0, a negative number) is shown as
+   * saved. A stored value that is invalid (such as a negative number) is shown as
    * it is, so the person can see it and fix it.
    */
   maxTurns: number | null;
   onMaxTurnsChange: (value: number) => void;
   /**
    * False until the saved value has been read. The field is then blank and disabled, because the
-   * default it would show (100) may not be what is saved, and a number typed into it would be
+   * default it would show may not be what is saved, and a number typed into it would be
    * replaced by the answer. Defaults to true for a caller that already holds the value.
    */
   loaded?: boolean;
@@ -117,8 +117,8 @@ export const MaxTurnsRow = ({ maxTurns, onMaxTurnsChange, loaded = true }: MaxTu
     !loaded || draftValue !== null
       ? null
       : storedIsInvalid && draft === String(maxTurns)
-        ? `The saved value, ${maxTurns}, is not a whole number of at least 1. Enter a new value.`
-        : 'Enter a whole number of at least 1.';
+        ? `The saved value, ${maxTurns}, is not a whole number of at least 0. Enter a new value.`
+        : 'Enter a whole number of at least 0.';
 
   const handleChange = (text: string) => {
     setDraft(text);
@@ -139,6 +139,21 @@ export const MaxTurnsRow = ({ maxTurns, onMaxTurnsChange, loaded = true }: MaxTu
     <SettingRow
       label={approvalsCopy.maxTurns}
       help={approvalsCopy.maxTurnsHelp}
+      value={
+        <Button
+          type="button"
+          variant={loaded && draftValue === 0 ? 'secondary' : 'ghost'}
+          size="sm"
+          disabled={!loaded}
+          aria-pressed={loaded && draftValue === 0}
+          onClick={() => {
+            handleChange('0');
+            flushSave();
+          }}
+        >
+          Unlimited
+        </Button>
+      }
       status={
         message ? (
           <span className="text-text-danger" id="max-turns-problem" role="alert">
@@ -149,7 +164,7 @@ export const MaxTurnsRow = ({ maxTurns, onMaxTurnsChange, loaded = true }: MaxTu
     >
       <Input
         type="number"
-        min="1"
+        min="0"
         step="1"
         value={loaded ? draft : ''}
         disabled={!loaded}

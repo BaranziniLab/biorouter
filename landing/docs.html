@@ -403,7 +403,7 @@ biorouter doctor --fix uv</code></pre>
     <tr><td><code class="code-token">--provider</code></td><td>Use this provider for this chat. <code class="code-token">--model</code> picks its model.</td></tr>
     <tr><td><code class="code-token">--with-builtin</code></td><td>Turn on built in extensions by name, as <code>developer,memory</code>.</td></tr>
     <tr><td><code class="code-token">--with-extension</code></td><td>A local extension from a command, as <code>"ENV=value command args"</code>, or a remote one with <code>--with-streamable-http-extension URL</code>. Both repeat.</td></tr>
-    <tr><td><code class="code-token">--max-turns</code></td><td>Turns the agent may take without your input. Default 100.</td></tr>
+    <tr><td><code class="code-token">--max-turns</code></td><td>Turns the agent may take without your input. Default 0 means Unlimited; a positive value sets a limit.</td></tr>
     <tr><td><code class="code-token">--max-tool-repetitions</code></td><td>Limit identical calls to one tool in a row.</td></tr>
     <tr><td><code class="code-token">--debug</code></td><td>Show full tool output and full paths.</td></tr>
     <tr><td><code class="code-token">--shared-daemon</code></td><td>Run in the shared background service the desktop app and <code>biorouter crew</code> use. It starts the service when needed and connects silently. <code class="code-token">--no-start</code> requires an existing service; <code class="code-token">--create-only</code> creates the chat without running it. The older <code class="code-token">--approval-key-stdin</code> option reads and ignores the first input line.</td></tr>
@@ -1822,12 +1822,12 @@ biorouter crew ask methods \
 <h2 id="agentloop-limits">Loop limits</h2>
 <p>Several checks watch a long turn for repetition and runaway cost. Most warn the model first.</p>
 <ul>
-  <li><strong>Exact repeats.</strong> The same call with the same arguments: a warning at 3, and the fifth identical call is refused.</li>
-  <li><strong>Near repeats.</strong> Nearly the same call, or two calls taking turns: a warning at 4.</li>
+  <li><strong>Exact repeats.</strong> The same call with the same arguments and no changing result: a warning at 3, and the fifth identical call is refused. New successful results reset the count.</li>
+  <li><strong>Near repeats.</strong> Nearly the same calls, or a repeating sequence of calls, with no progress: a warning at 4 and a persistent cycle is refused at 8. Changing successful results and waits on running work reset the count.</li>
   <li><strong>Repeated failure.</strong> The same failure from the same tool: a nudge at 3, then “change approach or ask the user” at 5. After 6, the next call to that tool is refused.</li>
   <li><strong>Failures in a row.</strong> Failed calls to any tool: a nudge at 3. At 6, the model is told to change route or hand the work back to you.</li>
   <li><strong>Stalls.</strong> A check for a stall after 30 actions in one turn, then every 10. A confirmed stall gets a short grace period to answer, then the turn stops.</li>
-  <li><strong>Work without your input.</strong> The turn stops at 100 turns or 200 tool calls and names the limit. Quick reasoning effort halves both, and Deep doubles them. Set <code class="code-token">BIOROUTER_MAX_TURNS</code> or <code class="code-token">BIOROUTER_MAX_TOOL_CALLS</code> to change them; the command line also takes a turn limit for one run (see <a href="#cli-ref-session">Command line</a>). A message you add to the turn resets both counts.</li>
+  <li><strong>Work without your input.</strong> Ordinary chats have no fixed turn or tool-call limit by default. Existing positive limits are kept. Choose Unlimited in Settings → Chat → Approvals, or set either limit to <code>0</code>, to remove it. Quick reasoning effort halves positive limits, and Deep doubles them; Unlimited stays unlimited. Set <code class="code-token">BIOROUTER_MAX_TURNS</code> or <code class="code-token">BIOROUTER_MAX_TOOL_CALLS</code> to change them; the command line also takes a turn limit for one run (see <a href="#cli-ref-session">Command line</a>). A message you add to the turn resets both counts.</li>
   <li><strong>Reply budget.</strong> A limit on the time, tokens or cost of one reply. Off by default. Set <code class="code-token">BIOROUTER_REPLY_BUDGET_SECONDS</code>, <code class="code-token">BIOROUTER_REPLY_BUDGET_TOKENS</code> or <code class="code-token">BIOROUTER_REPLY_BUDGET_USD</code> for a warning, a request to wrap up, then a stop.</li>
 </ul>
 
@@ -1899,7 +1899,7 @@ biorouter session attach &lt;id&gt;</code></pre>
 <code>BIOROUTER_PROVIDER: llamacpp
 BIOROUTER_MODEL: qwen3.8-27b
 BIOROUTER_MODE: smart_approve
-BIOROUTER_MAX_TURNS: 100</code></pre>
+BIOROUTER_MAX_TURNS: 0</code></pre>
 <p>Credentials are kept elsewhere; see <a href="#vaulting-secrets">Security</a>. <code>biorouter info -v</code> prints the values stored in <code>config.yaml</code>.</p>
 
 <h2 id="config-files">Where files live</h2>
@@ -1951,7 +1951,7 @@ BIOROUTER_MAX_TURNS: 100</code></pre>
     <tr><td><code class="code-token">BIOROUTER_PROVIDER</code></td><td>The provider, for example <code>llamacpp</code>. Names are on <a href="#providers">Models and providers</a>.</td></tr>
     <tr><td><code class="code-token">BIOROUTER_MODEL</code></td><td>The model, for example <code>qwen3.8-27b</code>.</td></tr>
     <tr><td><code class="code-token">BIOROUTER_MODE</code></td><td>The permission mode: <code>auto</code> (the default), <code>approve</code>, <code>smart_approve</code> or <code>chat</code>. See <a href="#vaulting-modes">Permission modes</a>.</td></tr>
-    <tr><td><code class="code-token">BIOROUTER_MAX_TURNS</code></td><td>Turns the agent may take without you. Default <code>100</code>.</td></tr>
+    <tr><td><code class="code-token">BIOROUTER_MAX_TURNS</code></td><td>Turns the agent may take without you. Default <code>0</code> means Unlimited; a positive value sets a limit.</td></tr>
     <tr><td><code class="code-token">BIOROUTER_AUTO_COMPACT_THRESHOLD</code></td><td>The share of the context window at which a chat is summarized. Default <code>0.8</code>; <code>0</code> turns it off.</td></tr>
   </tbody>
 </table></div>
@@ -1959,6 +1959,7 @@ BIOROUTER_MAX_TURNS: 100</code></pre>
 <div class="doc-table-scroll"><table class="doc-options">
   <thead><tr><th>Variable</th><th>What it does</th></tr></thead>
   <tbody>
+    <tr><td><code class="code-token">BIOROUTER_MAX_TOOL_CALLS</code></td><td>Tool calls the agent may make without you. Default <code>0</code> means Unlimited; a positive value sets a limit.</td></tr>
     <tr><td><code class="code-token">BIOROUTER_SUBAGENT_MAX_TURNS</code></td><td>The turn limit for a subagent. Default <code>25</code>.</td></tr>
     <tr><td><code class="code-token">BIOROUTER_CONTEXT_LIMIT</code></td><td>Overrides the model's context window, in tokens. Useful for a model Biorouter does not know.</td></tr>
     <tr><td><code class="code-token">BIOROUTER_DISABLE_KEYRING</code></td><td>Any value keeps secrets in <code>secrets.yaml</code> instead of the credential store.</td></tr>

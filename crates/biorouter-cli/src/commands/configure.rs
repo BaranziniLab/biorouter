@@ -2231,7 +2231,7 @@ pub fn configure_max_turns_dialog() -> anyhow::Result<()> {
         .unwrap_or(biorouter::agents::DEFAULT_MAX_TURNS);
 
     let max_turns_input: String =
-        cliclack::input("Set maximum number of agent turns without user input:")
+        cliclack::input("Set maximum agent turns without user input (0 = unlimited):")
             .placeholder(&current_max_turns.to_string())
             .default_input(&current_max_turns.to_string())
             .validate(|input: &String| parse_max_turns(input).map(|_| ()))
@@ -2240,29 +2240,25 @@ pub fn configure_max_turns_dialog() -> anyhow::Result<()> {
     let max_turns = parse_max_turns(&max_turns_input).map_err(anyhow::Error::msg)?;
     config.set_param("BIOROUTER_MAX_TURNS", max_turns)?;
 
-    cliclack::outro(format!(
-        "Max turns set to {max_turns}: Biorouter asks for your input after {max_turns} actions in a row."
-    ))?;
+    let message = if max_turns == 0 {
+        "Max turns set to Unlimited: useful work can continue until completion or Stop.".to_string()
+    } else {
+        format!(
+            "Max turns set to {max_turns}: Biorouter asks for your input after {max_turns} actions in a row."
+        )
+    };
+    cliclack::outro(message)?;
 
     Ok(())
 }
 
-/// A max-turns entry as a limit, or the sentence saying why it is not one.
-/// The same rule as Settings and `/config/upsert`: only a whole number of at
-/// least 1, because a stored 0 stops every new chat before its first reply.
-///
-/// T3-SH-8: one sentence for every entry that is not a limit, the one Settings
-/// shows. 0 used to get "Max turns must be at least 1" and -5 "Enter a whole
-/// number of at least 1", two answers to one mistake.
+/// Zero selects unlimited turns; an empty entry never silently removes a limit.
 fn parse_max_turns(input: &str) -> Result<u32, &'static str> {
-    match input.trim().parse::<u32>() {
-        Ok(value) if value >= 1 => Ok(value),
-        _ => Err(MAX_TURNS_REFUSAL),
-    }
+    input.trim().parse::<u32>().map_err(|_| MAX_TURNS_REFUSAL)
 }
 
 /// Settings' own sentence (`ConversationLimitsDropdown.tsx`), asserted there too.
-const MAX_TURNS_REFUSAL: &str = "Enter a whole number of at least 1.";
+const MAX_TURNS_REFUSAL: &str = "Enter a whole number of at least 0.";
 
 /// Handle OpenRouter authentication
 pub async fn handle_openrouter_auth() -> anyhow::Result<()> {
@@ -2814,16 +2810,16 @@ mod max_turns_tests {
     /// W2-PRV-10: `configure` refuses what Settings and `/config/upsert` refuse,
     /// and (T3-SH-8) in the one sentence Settings uses, whatever was typed.
     #[test]
-    fn configure_accepts_only_a_whole_number_of_at_least_one() {
+    fn configure_accepts_unlimited_or_a_positive_limit() {
         let settings =
             std::fs::read_to_string(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(
                 "../../ui/desktop/src/components/settings/mode/ConversationLimitsDropdown.tsx",
             ))
             .expect("the Settings field's source");
-        for refused in ["", "0", "-5", "2.5", "many", "4294967296"] {
+        for refused in ["", "-5", "2.5", "many", "4294967296"] {
             let refusal = parse_max_turns(refused).expect_err(refused);
             assert_eq!(
-                refusal, "Enter a whole number of at least 1.",
+                refusal, "Enter a whole number of at least 0.",
                 "{refused:?}"
             );
             assert!(
@@ -2831,6 +2827,7 @@ mod max_turns_tests {
                 "Settings says it differently"
             );
         }
+        assert_eq!(parse_max_turns("0"), Ok(0));
         assert_eq!(parse_max_turns("1"), Ok(1));
         assert_eq!(parse_max_turns(" 250 "), Ok(250));
     }

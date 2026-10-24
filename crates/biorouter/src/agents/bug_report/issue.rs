@@ -229,12 +229,17 @@ pub fn render_body(draft: &Draft, evidence: &Evidence, private: bool) -> String 
 
 fn append_failure_counts(body: &mut String, evidence: &Evidence) {
     if evidence.failures.is_empty() {
-        body.push_str("\nNo failed tool calls were recorded in the reporting session.\n");
+        body.push_str(
+            "\nNo failed tool calls or operations were recorded in the reporting session.\n",
+        );
     } else {
         body.push_str(&format!(
             "\n<details>\n<summary>Failed tool calls in the reporting session \
-             ({} of {} calls)</summary>\n\n",
-            evidence.total_failed_calls, evidence.total_tool_calls
+             ({} of {} calls; {} caught nested failures; {} distinct failed operations)</summary>\n\n",
+            evidence.total_failed_calls,
+            evidence.total_tool_calls,
+            evidence.total_failed_nested_calls,
+            evidence.total_failed_operations
         ));
         for failure in &evidence.failures {
             // Arguments and output can contain personal data that no credential
@@ -660,6 +665,8 @@ mod tests {
                 looks_deliberate: false,
             }],
             total_failed_calls: 2,
+            total_failed_nested_calls: 0,
+            total_failed_operations: 0,
             total_tool_calls: 7,
             recent_user_messages: vec!["build the crate".into()],
             externalized_results: 0,
@@ -809,6 +816,22 @@ mod tests {
         );
         assert!(!body.contains("arguments:"), "{body}");
         assert!(body.contains("Running `cargo build`"), "{body}");
+    }
+
+    #[test]
+    fn operation_failure_counts_do_not_restore_private_failure_details() {
+        let mut evidence = evidence();
+        evidence.total_failed_nested_calls = 3;
+        evidence.total_failed_operations = 4;
+        evidence.failures[0].arguments = Some("PRIVATE_ARGUMENT_SENTINEL".into());
+        evidence.failures[0].message = "PRIVATE_OUTPUT_SENTINEL".into();
+        let body = render_body(&draft(), &evidence, false);
+        assert!(
+            body.contains("3 caught nested failures; 4 distinct failed operations"),
+            "{body}"
+        );
+        assert!(!body.contains("PRIVATE_ARGUMENT_SENTINEL"), "{body}");
+        assert!(!body.contains("PRIVATE_OUTPUT_SENTINEL"), "{body}");
     }
 
     fn fake_gh(dir: &Path, contents: &str) -> PathBuf {

@@ -40,7 +40,8 @@ export const approvalsCopy = {
   /** The Edit button's name: its own word plus what it edits (label in name). */
   editToolPermissions: 'Edit tool permissions',
   maxTurns: 'Max turns',
-  maxTurnsHelp: 'Agent turns before Biorouter asks you to continue.',
+  maxTurnsHelp:
+    'Agent turns before Biorouter asks you to continue. Unlimited (0) lets useful work continue; you can Stop at any time.',
 } as const;
 
 export type ApprovalModeKey = (typeof approvalsCopy.modes)[number]['key'];

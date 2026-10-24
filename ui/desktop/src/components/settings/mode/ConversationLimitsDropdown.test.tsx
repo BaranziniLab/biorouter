@@ -21,10 +21,6 @@ function openLimits() {
   return screen.getByRole('spinbutton', { name: approvalsCopy.maxTurns });
 }
 
-// W2-PRV-10: clearing the field saved 0 (`Number('')`), which stopped every new
-// chat before its first model call; -5 was saved and ignored; a saved 0 was
-// hidden behind the default; and the default shown was 1000 against the
-// agent's 100.
 describe('Max turns', () => {
   beforeEach(() => {
     config.read.mockReset();
@@ -42,12 +38,18 @@ describe('Max turns', () => {
 
     render(<MaxTurnsRow maxTurns={null} onMaxTurnsChange={vi.fn()} />);
     expect(openLimits()).toHaveValue(DEFAULT_MAX_TURNS);
+    expect(screen.getByRole('button', { name: 'Unlimited' })).toHaveAttribute(
+      'aria-pressed',
+      'true'
+    );
   });
 
-  it('accepts only a whole number of at least 1; empty is not 0', () => {
-    for (const refused of ['', ' ', '0', '-5', '2.5', '1e3', 'abc', '4294967296']) {
+  it('accepts explicit zero for Unlimited and positive limits; empty is not zero', () => {
+    for (const refused of ['', ' ', '-5', '2.5', '1e3', 'abc', '4294967296']) {
       expect(parseMaxTurns(refused), JSON.stringify(refused)).toBeNull();
     }
+    expect(parseMaxTurns('0')).toBe(0);
+    expect(parseMaxTurns(' 0 ')).toBe(0);
     expect(parseMaxTurns('1')).toBe(1);
     expect(parseMaxTurns(' 250 ')).toBe(250);
   });
@@ -59,17 +61,14 @@ describe('Max turns', () => {
 
     fireEvent.change(field, { target: { value: '' } });
     expect(onChange).not.toHaveBeenCalled();
-    expect(screen.getByRole('alert')).toHaveTextContent('Enter a whole number of at least 1.');
+    expect(screen.getByRole('alert')).toHaveTextContent('Enter a whole number of at least 0.');
     expect(field).toHaveAttribute('aria-invalid', 'true');
     // The problem is part of what the field announces, beside its help.
     expect(field).toHaveAccessibleDescription(
-      `${approvalsCopy.maxTurnsHelp} Enter a whole number of at least 1.`
+      `${approvalsCopy.maxTurnsHelp} Enter a whole number of at least 0.`
     );
 
     fireEvent.change(field, { target: { value: '-5' } });
-    expect(onChange).not.toHaveBeenCalled();
-
-    fireEvent.change(field, { target: { value: '0' } });
     expect(onChange).not.toHaveBeenCalled();
 
     fireEvent.change(field, { target: { value: '25' } });
@@ -79,15 +78,58 @@ describe('Max turns', () => {
     expect(onChange).toHaveBeenCalledTimes(1);
   });
 
-  it('shows a saved 0 as 0, so it can be seen and fixed', async () => {
+  it('shows a saved zero as Unlimited without an error or a rewrite', async () => {
     config.read.mockImplementation(async (key: string) =>
       key === 'BIOROUTER_MAX_TURNS' ? 0 : 'auto'
     );
     render(<ModeSection />);
-    const field = openLimits();
-    await waitFor(() => expect(field).toHaveValue(0));
+    await waitFor(() => expect(openLimits()).toHaveValue(0));
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Unlimited' })).toHaveAttribute(
+      'aria-pressed',
+      'true'
+    );
+    expect(config.upsert).not.toHaveBeenCalled();
+  });
+
+  it('preserves an existing positive limit until Unlimited is selected', async () => {
+    config.read.mockImplementation(async (key: string) =>
+      key === 'BIOROUTER_MAX_TURNS' ? 100 : 'auto'
+    );
+    config.upsert.mockResolvedValue(undefined);
+    render(<ModeSection />);
+    await waitFor(() => expect(openLimits()).toHaveValue(100));
+    const unlimited = screen.getByRole('button', { name: 'Unlimited' });
+    expect(unlimited).toHaveAttribute('aria-pressed', 'false');
+    expect(config.upsert).not.toHaveBeenCalled();
+
+    fireEvent.change(openLimits(), { target: { value: '125' } });
+    fireEvent.click(unlimited);
+    await waitFor(() =>
+      expect(config.upsert).toHaveBeenCalledWith('BIOROUTER_MAX_TURNS', 0, false)
+    );
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 600));
+    });
+    expect(config.upsert).toHaveBeenCalledTimes(1);
+    expect(openLimits()).toHaveValue(0);
+    expect(unlimited).toHaveAttribute('aria-pressed', 'true');
+  });
+
+  it('saves an explicitly typed zero as Unlimited', async () => {
+    const onChange = vi.fn();
+    render(<MaxTurnsRow maxTurns={25} onMaxTurnsChange={onChange} />);
+    fireEvent.change(openLimits(), { target: { value: '0' } });
+    fireEvent.blur(openLimits());
+    expect(onChange).toHaveBeenCalledExactlyOnceWith(0);
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+  });
+
+  it('keeps invalid saved values visible for correction', () => {
+    render(<MaxTurnsRow maxTurns={-5} onMaxTurnsChange={vi.fn()} />);
+    expect(openLimits()).toHaveValue(-5);
     expect(screen.getByRole('alert')).toHaveTextContent(
-      'The saved value, 0, is not a whole number of at least 1. Enter a new value.'
+      'The saved value, -5, is not a whole number of at least 0. Enter a new value.'
     );
   });
 
@@ -119,7 +161,7 @@ describe('Max turns', () => {
     });
 
     expect(field).toHaveValue(null);
-    expect(screen.getByRole('alert')).toHaveTextContent('Enter a whole number of at least 1.');
+    expect(screen.getByRole('alert')).toHaveTextContent('Enter a whole number of at least 0.');
     expect(config.upsert).not.toHaveBeenCalled();
   });
 
@@ -148,7 +190,7 @@ describe('Max turns', () => {
     });
 
     expect(field).toHaveValue(null);
-    expect(screen.getByRole('alert')).toHaveTextContent('Enter a whole number of at least 1.');
+    expect(screen.getByRole('alert')).toHaveTextContent('Enter a whole number of at least 0.');
   });
 
   it('a save of the value already shown does not hide a later change from elsewhere', async () => {

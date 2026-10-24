@@ -17,9 +17,7 @@ export function approvalModeFromConfig(value: unknown): string {
 
 /**
  * The saved Max turns exactly as stored, or `null` when none is saved (the field then shows the
- * agent's default). Every saved number is kept, 0 and negatives included: `if (turns)` hid a
- * saved 0 (the value that stops every new chat) behind the default, so the field looked fine
- * while nothing worked.
+ * agent's default). Zero means Unlimited; invalid saved numbers remain visible for correction.
  */
 export function maxTurnsFromConfig(value: unknown): number | null {
   const stored = typeof value === 'string' && value.trim() !== '' ? Number(value) : value;

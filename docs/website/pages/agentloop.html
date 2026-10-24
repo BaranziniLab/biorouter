@@ -29,12 +29,12 @@
 <h2 id="agentloop-limits">Loop limits</h2>
 <p>Several checks watch a long turn for repetition and runaway cost. Most warn the model first.</p>
 <ul>
-  <li><strong>Exact repeats.</strong> The same call with the same arguments: a warning at 3, and the fifth identical call is refused.</li>
-  <li><strong>Near repeats.</strong> Nearly the same call, or two calls taking turns: a warning at 4.</li>
+  <li><strong>Exact repeats.</strong> The same call with the same arguments and no changing result: a warning at 3, and the fifth identical call is refused. New successful results reset the count.</li>
+  <li><strong>Near repeats.</strong> Nearly the same calls, or a repeating sequence of calls, with no progress: a warning at 4 and a persistent cycle is refused at 8. Changing successful results and waits on running work reset the count.</li>
   <li><strong>Repeated failure.</strong> The same failure from the same tool: a nudge at 3, then “change approach or ask the user” at 5. After 6, the next call to that tool is refused.</li>
   <li><strong>Failures in a row.</strong> Failed calls to any tool: a nudge at 3. At 6, the model is told to change route or hand the work back to you.</li>
   <li><strong>Stalls.</strong> A check for a stall after 30 actions in one turn, then every 10. A confirmed stall gets a short grace period to answer, then the turn stops.</li>
-  <li><strong>Work without your input.</strong> The turn stops at 100 turns or 200 tool calls and names the limit. Quick reasoning effort halves both, and Deep doubles them. Set <code class="code-token">BIOROUTER_MAX_TURNS</code> or <code class="code-token">BIOROUTER_MAX_TOOL_CALLS</code> to change them; the command line also takes a turn limit for one run (see <a href="#cli-ref-session">Command line</a>). A message you add to the turn resets both counts.</li>
+  <li><strong>Work without your input.</strong> Ordinary chats have no fixed turn or tool-call limit by default. Existing positive limits are kept. Choose Unlimited in Settings → Chat → Approvals, or set either limit to <code>0</code>, to remove it. Quick reasoning effort halves positive limits, and Deep doubles them; Unlimited stays unlimited. Set <code class="code-token">BIOROUTER_MAX_TURNS</code> or <code class="code-token">BIOROUTER_MAX_TOOL_CALLS</code> to change them; the command line also takes a turn limit for one run (see <a href="#cli-ref-session">Command line</a>). A message you add to the turn resets both counts.</li>
   <li><strong>Reply budget.</strong> A limit on the time, tokens or cost of one reply. Off by default. Set <code class="code-token">BIOROUTER_REPLY_BUDGET_SECONDS</code>, <code class="code-token">BIOROUTER_REPLY_BUDGET_TOKENS</code> or <code class="code-token">BIOROUTER_REPLY_BUDGET_USD</code> for a warning, a request to wrap up, then a stop.</li>
 </ul>
 
