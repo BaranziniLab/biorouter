@@ -92,6 +92,16 @@ Two things these approvals are guaranteed against, so that "put to you" means wh
 
 An administrator's [managed policy](managed-policy.md) can add further tools to this list.
 
+## File tool scopes
+
+The developer text editor confines writes to the session's working directory,
+independently of permission mode. It can also **view** files under Biorouter's
+installed skills directory (`<config>/skills`), so a skill can be inspected from
+another project. That read scope does not permit edits or links escaping the
+skills directory, and secret-file and `.biorouterignore` rules still apply.
+The shell has its own permission and sandbox checks; its working directory is
+not the text editor's containment policy.
+
 ## Scripts: every call is decided on its own
 
 With the [Code Execution capability](../extensions/built-in/code-execution.md) on — the default
