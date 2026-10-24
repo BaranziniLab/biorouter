@@ -4709,6 +4709,7 @@ mod folder_approval_wake_tests {
         let external = external.canonicalize().unwrap();
         let session = uuid::Uuid::new_v4().to_string();
         let manager = crate::folder_access::FolderAccessManager::default();
+        manager.pin_workspace(&session, &cwd).unwrap();
         let plan = biorouter_mcp::FileAccessPlan {
             requests: vec![biorouter_mcp::FileAccessRequest {
                 path: external.join("result.txt"),

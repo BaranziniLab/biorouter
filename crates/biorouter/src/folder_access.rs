@@ -65,7 +65,7 @@ fn access_covers(granted: AccessMode, requested: AccessMode) -> bool {
     granted == AccessMode::Write || requested == AccessMode::Read
 }
 
-fn authorization_required(folder: &Path, access: AccessMode, reason: &str) -> ErrorData {
+pub(crate) fn authorization_required(folder: &Path, access: AccessMode, reason: &str) -> ErrorData {
     ErrorData::new(
         ErrorCode::INVALID_REQUEST,
         format!(
@@ -293,19 +293,44 @@ impl FolderAccessManager {
         }
     }
 
-    fn roots(&self, session_id: &str, cwd: &Path) -> std::io::Result<Vec<RootGrant>> {
+    pub fn pin_workspace(&self, session_id: &str, cwd: &Path) -> std::io::Result<()> {
+        self.pin_workspace_handle(session_id, cwd, Arc::new(BoundedFs::open(cwd)?));
+        Ok(())
+    }
+
+    pub(crate) fn pin_workspace_handle(
+        &self,
+        session_id: &str,
+        cwd: &Path,
+        filesystem: Arc<BoundedFs>,
+    ) {
         let mut sessions = self.sessions.lock().unwrap_or_else(PoisonError::into_inner);
         let session = sessions.entry(session_id.to_string()).or_default();
         if session.primary.as_ref().is_none_or(|(path, _)| path != cwd) {
-            let root = RootGrant::new(Arc::new(BoundedFs::open(cwd)?), AccessMode::Write);
+            let root = RootGrant::new(filesystem, AccessMode::Write);
             if let Some((_, old)) = session.primary.replace((cwd.to_path_buf(), root)) {
                 old.revoke();
             }
         }
+    }
+
+    fn roots(&self, session_id: &str, cwd: &Path) -> anyhow::Result<Vec<RootGrant>> {
+        let sessions = self.sessions.lock().unwrap_or_else(PoisonError::into_inner);
+        let session = sessions.get(session_id).ok_or_else(|| {
+            authorization_required(
+                cwd,
+                AccessMode::Write,
+                "The workspace has not been bound by this chat's trusted startup. Reopen the chat or select the intended folder before retrying.",
+            )
+        })?;
+        anyhow::ensure!(
+            session.primary.as_ref().is_some_and(|(path, _)| path == cwd),
+            authorization_required(cwd, AccessMode::Write, "The workspace changed without a trusted folder binding. Select the intended folder before retrying.")
+        );
         let mut roots = vec![session
             .primary
             .as_ref()
-            .expect("primary bound above")
+            .expect("primary validated above")
             .1
             .clone()];
         roots.extend(session.grants.iter().map(|grant| grant.root.clone()));
@@ -492,6 +517,21 @@ impl FolderAccessManager {
             });
         }
         biorouter_mcp::preflight_file_access(&actual_plan, cwd)?;
+        anyhow::ensure!(
+            !crate::permission::ToolPermissionStore::load()?.denies_file_access(
+                tool_name,
+                &actual_plan
+                    .requests
+                    .iter()
+                    .map(|request| request.path.clone())
+                    .collect::<Vec<_>>(),
+                cwd,
+                crate::config::Config::global()
+                    .get_param::<bool>("PERMISSION_SCOPED_GRANTS")
+                    .unwrap_or(true),
+            ),
+            "This file operation was denied for a requested directory"
+        );
         let mut roots = self.roots(session_id, cwd)?;
         if let Some(filesystem) = self.skill_read_root() {
             roots.push(RootGrant::new(filesystem, AccessMode::Read));
@@ -550,21 +590,21 @@ mod skill_authority_tests {
         requested: &Path,
     ) -> anyhow::Result<(FileAdmission, String)> {
         let session = Uuid::new_v4().to_string();
-        let admission = manager
-            .admit(
-                &session,
-                "developer__text_editor",
-                workspace,
-                &biorouter_mcp::FileAccessPlan {
-                    requests: vec![biorouter_mcp::FileAccessRequest {
-                        path: requested.to_path_buf(),
-                        access: AccessMode::Read,
-                        recursive: false,
-                    }],
-                },
-                &CancellationToken::new(),
-            )
-            .await?;
+        manager.pin_workspace(&session, workspace)?;
+        let admission = crate::user_surface::without_human_surface(manager.admit(
+            &session,
+            "developer__text_editor",
+            workspace,
+            &biorouter_mcp::FileAccessPlan {
+                requests: vec![biorouter_mcp::FileAccessRequest {
+                    path: requested.to_path_buf(),
+                    access: AccessMode::Read,
+                    recursive: false,
+                }],
+            },
+            &CancellationToken::new(),
+        ))
+        .await?;
         Ok((admission, session))
     }
 

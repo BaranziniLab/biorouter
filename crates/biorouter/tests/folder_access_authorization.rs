@@ -33,12 +33,15 @@ impl Fixture {
         let cwd = cwd.canonicalize().unwrap();
         let external = external.canonicalize().unwrap();
         std::fs::write(external.join("completed.csv"), "gene,value\nSYNTHETIC,1\n").unwrap();
+        let session = Uuid::new_v4().to_string();
+        let manager = Arc::new(FolderAccessManager::default());
+        manager.pin_workspace(&session, &cwd).unwrap();
         Self {
             _temp: temp,
             cwd,
             external,
-            session: Uuid::new_v4().to_string(),
-            manager: Arc::new(FolderAccessManager::default()),
+            session,
+            manager,
         }
     }
 

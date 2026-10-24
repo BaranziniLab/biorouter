@@ -1137,6 +1137,10 @@ pub async fn build_session(session_config: SessionBuilderConfig) -> CliSession {
     // Setup extensions for the agent
     // Extensions need to be added after the session is created because we change directory when resuming a session
 
+    if let Ok(directory) = std::env::current_dir() {
+        agent.extension_manager.set_working_dir(directory).await;
+    }
+
     for warning in biorouter::config::get_warnings() {
         eprintln!("{}", style(format!("Warning: {}", warning)).yellow());
     }

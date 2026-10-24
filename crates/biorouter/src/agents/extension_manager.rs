@@ -421,12 +421,150 @@ pub struct ExtensionManager {
     provider: SharedProvider,
     tools_cache: Mutex<Option<Arc<ToolsSnapshot>>>,
     tools_cache_version: AtomicU64,
-    /// The session's working directory, when known. Extensions loaded from a
-    /// session (`Agent::load_extensions_from_session`) set this so the shell
-    /// tool and child-process extensions run in the directory the user selected
-    /// (e.g. via the GUI folder picker) rather than the daemon's process cwd.
-    /// `None` on non-session paths (CLI), which fall back to the process cwd.
-    working_dir: Mutex<Option<PathBuf>>,
+    working_dir: Mutex<WorkspaceBinding>,
+}
+
+struct WorkspaceBinding {
+    directory: PathBuf,
+    filesystem: Option<Arc<biorouter_sandbox::BoundedFs>>,
+}
+
+impl WorkspaceBinding {
+    fn new(directory: PathBuf) -> Self {
+        Self {
+            filesystem: biorouter_sandbox::BoundedFs::open(&directory)
+                .ok()
+                .map(Arc::new),
+            directory,
+        }
+    }
+}
+
+#[cfg(all(test, unix))]
+mod workspace_file_authority_tests {
+    use super::*;
+    use biorouter_sandbox::{bounded_fs::authorized_path, AccessMode};
+
+    async fn admit(
+        manager: &ExtensionManager,
+        session: &str,
+        path: &Path,
+    ) -> Result<Option<crate::folder_access::FileAdmission>> {
+        let config = ExtensionConfig::Builtin {
+            name: "developer".to_string(),
+            description: String::new(),
+            display_name: None,
+            timeout: None,
+            bundled: None,
+            available_tools: vec![],
+        };
+        let call = CallToolRequestParams {
+            name: "text_editor".into(),
+            arguments: Some(
+                serde_json::json!({"command":"write", "path":path, "file_text":"synthetic update"})
+                    .as_object()
+                    .unwrap()
+                    .clone(),
+            ),
+            meta: None,
+            task: None,
+        };
+        crate::user_surface::without_human_surface(manager.admit_file_access(
+            session,
+            "developer__text_editor",
+            "text_editor",
+            &config,
+            &call,
+            &CancellationToken::new(),
+        ))
+        .await
+    }
+
+    #[tokio::test]
+    async fn workspace_replacement_before_first_file_call_requires_external_approval() {
+        let fixture = tempfile::tempdir().unwrap();
+        let directory = fixture.path().canonicalize().unwrap();
+        let workspace = directory.join("workspace");
+        let outside = directory.join("outside");
+        std::fs::create_dir(&workspace).unwrap();
+        std::fs::create_dir(&outside).unwrap();
+        std::fs::write(outside.join("notes.txt"), "synthetic outside content").unwrap();
+        let manager = ExtensionManager::new_without_provider(directory.join("state"));
+        manager.set_working_dir(workspace.clone()).await;
+        std::fs::rename(&workspace, directory.join("original-workspace")).unwrap();
+        std::os::unix::fs::symlink(&outside, &workspace).unwrap();
+        manager.set_working_dir(workspace.clone()).await;
+        let session = uuid::Uuid::new_v4().to_string();
+        let error = admit(&manager, &session, &workspace.join("notes.txt"))
+            .await
+            .err()
+            .expect("a replaced workspace must not confer new implicit file authority");
+        assert_eq!(
+            error
+                .downcast_ref::<ErrorData>()
+                .unwrap()
+                .data
+                .as_ref()
+                .unwrap()["code"],
+            "authorization_required"
+        );
+        assert_eq!(
+            std::fs::read_to_string(outside.join("notes.txt")).unwrap(),
+            "synthetic outside content"
+        );
+        assert!(!crate::pending_user_action::PendingUserActions::global()
+            .has_pending_in_session(&session));
+        crate::folder_access::FolderAccessManager::global().end_session(&session);
+    }
+
+    #[tokio::test]
+    async fn trusted_workspace_change_revokes_the_old_primary_dispatch() {
+        let fixture = tempfile::tempdir().unwrap();
+        let directory = fixture.path().canonicalize().unwrap();
+        let first = directory.join("first");
+        let second = directory.join("second");
+        std::fs::create_dir(&first).unwrap();
+        std::fs::create_dir(&second).unwrap();
+        let manager = ExtensionManager::new_without_provider(directory.join("state"));
+        let session = uuid::Uuid::new_v4().to_string();
+        manager.set_working_dir(first.clone()).await;
+        let first_path = first.join("notes.txt");
+        let first_admission = admit(&manager, &session, &first_path)
+            .await
+            .unwrap()
+            .unwrap();
+        let captured = authorized_path(
+            first_admission.authority.token(),
+            &session,
+            &first_admission.action_id,
+            &first_path,
+            AccessMode::Write,
+        )
+        .unwrap();
+        manager.set_working_dir(second.clone()).await;
+        let second_path = second.join("notes.txt");
+        let second_admission = admit(&manager, &session, &second_path)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(captured.atomic_write(b"must not be written").is_err());
+        authorized_path(
+            second_admission.authority.token(),
+            &session,
+            &second_admission.action_id,
+            &second_path,
+            AccessMode::Write,
+        )
+        .unwrap()
+        .atomic_write(b"synthetic authorized update")
+        .unwrap();
+        assert!(!first_path.exists());
+        assert_eq!(
+            std::fs::read(second_path).unwrap(),
+            b"synthetic authorized update"
+        );
+        crate::folder_access::FolderAccessManager::global().end_session(&session);
+    }
 }
 
 /// A flattened representation of a resource used by the agent to prepare inference
@@ -1294,7 +1432,9 @@ impl ExtensionManager {
             provider,
             tools_cache: Mutex::new(None),
             tools_cache_version: AtomicU64::new(0),
-            working_dir: Mutex::new(None),
+            working_dir: Mutex::new(WorkspaceBinding::new(
+                std::env::current_dir().unwrap_or_default(),
+            )),
             computer_use: Arc::default(),
         }
     }
@@ -1374,22 +1514,22 @@ impl ExtensionManager {
     /// the GUI folder picker — which restarts the agent and reloads extensions —
     /// takes effect for the shell tool and child-process extensions.
     pub async fn set_working_dir(&self, dir: PathBuf) {
-        *self.working_dir.lock().await = Some(dir);
+        let mut binding = self.working_dir.lock().await;
+        if binding.directory != dir {
+            *binding = WorkspaceBinding::new(dir);
+        }
     }
 
     /// Resolve the working directory for an extension.
-    /// Prefers the session working directory (set via `set_working_dir`), and
-    /// falls back to the process cwd when it is not available (e.g. the CLI).
+    /// Uses the session's trusted binding, initially the process directory and
+    /// updated by `set_working_dir` before loading the session's extensions.
     ///
     /// Deliberately **not** existence-checked: a session directory that has been
     /// deleted is still this session's base, and dropping it here would send the
     /// child no base at all — issue #68's jail widening. Existence is decided
     /// once, at the spawn, by [`prepare_child_environment`].
     async fn resolve_working_dir(&self) -> PathBuf {
-        if let Some(dir) = self.working_dir.lock().await.clone() {
-            return dir;
-        }
-        std::env::current_dir().unwrap_or_default()
+        self.working_dir.lock().await.directory.clone()
     }
 
     pub async fn supports_resources(&self) -> bool {
@@ -3523,7 +3663,10 @@ impl ExtensionManager {
         {
             return Ok(None);
         }
-        let cwd = self.resolve_working_dir().await;
+        let (cwd, filesystem) = {
+            let binding = self.working_dir.lock().await;
+            (binding.directory.clone(), binding.filesystem.clone())
+        };
         let arguments = serde_json::Value::Object(call.arguments.clone().unwrap_or_default());
         let Some(plan) = biorouter_mcp::file_access_plan(tool_name, &arguments, &cwd)? else {
             return Ok(None);
@@ -3560,9 +3703,33 @@ impl ExtensionManager {
                 != Some(false),
             "This file operation was explicitly denied"
         );
+        anyhow::ensure!(
+            !crate::permission::ToolPermissionStore::load()?.denies_file_access(
+                prefixed_name,
+                &plan
+                    .requests
+                    .iter()
+                    .map(|request| request.path.clone())
+                    .collect::<Vec<_>>(),
+                &cwd,
+                Config::global()
+                    .get_param::<bool>("PERMISSION_SCOPED_GRANTS")
+                    .unwrap_or(true),
+            ),
+            "This file operation was denied for a requested directory"
+        );
         biorouter_mcp::preflight_file_access(&plan, &cwd)?;
+        let filesystem = filesystem.ok_or_else(|| {
+            crate::folder_access::authorization_required(
+                &cwd,
+                biorouter_sandbox::AccessMode::Write,
+                "The workspace was unavailable when this chat was bound. Select an available folder before retrying.",
+            )
+        })?;
+        let manager = crate::folder_access::FolderAccessManager::global();
+        manager.pin_workspace_handle(session_id, &cwd, filesystem);
         Ok(Some(
-            crate::folder_access::FolderAccessManager::global()
+            manager
                 .admit(session_id, prefixed_name, &cwd, &plan, cancel)
                 .await?,
         ))
