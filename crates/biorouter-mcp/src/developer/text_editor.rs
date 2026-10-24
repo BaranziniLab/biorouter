@@ -988,12 +988,12 @@ pub async fn apply_diff(
     apply_diff_bounded(&crate::file_access::test_editor_path(path), diff, history).await
 }
 #[cfg(test)]
-pub async fn text_editor_write(path: &PathBuf, text: &str) -> Result<Vec<Content>, ErrorData> {
+pub async fn text_editor_write(path: &Path, text: &str) -> Result<Vec<Content>, ErrorData> {
     text_editor_write_bounded(&crate::file_access::test_editor_path(path), text).await
 }
 #[cfg(test)]
 pub async fn text_editor_replace(
-    path: &PathBuf,
+    path: &Path,
     old: &str,
     new: &str,
     diff: Option<&str>,
@@ -1012,7 +1012,7 @@ pub async fn text_editor_replace(
 }
 #[cfg(test)]
 pub async fn text_editor_undo(
-    path: &PathBuf,
+    path: &Path,
     history: &FileHistory,
 ) -> Result<Vec<Content>, ErrorData> {
     text_editor_undo_bounded(&crate::file_access::test_editor_path(path), history).await

@@ -334,7 +334,7 @@ impl CodeAnalyzer {
 
         tracing::info!("Running focused analysis for symbol '{}'", focus_symbol);
 
-        let files_to_analyze = if traverser.bound(&path)?.is_file() {
+        let files_to_analyze = if traverser.bound(path)?.is_file() {
             vec![path.to_path_buf()]
         } else {
             traverser.collect_files_for_focused(path, params.max_depth)?
@@ -386,7 +386,7 @@ impl CodeAnalyzer {
 
         let mut output = Formatter::format_focused_output(&focus_data);
 
-        if traverser.bound(&path)?.is_file() {
+        if traverser.bound(path)?.is_file() {
             let hint = "NOTE: Focus mode works best with directory paths. \
                         Use a parent directory in the path for cross-file analysis.\n\n";
             output = format!("{}{}", hint, output);
