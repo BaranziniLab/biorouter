@@ -318,6 +318,19 @@ impl CallFacts {
     pub fn is_scopable(&self) -> bool {
         self.command.is_some() || !self.paths.is_empty()
     }
+
+    pub(crate) fn for_file_path(path: &Path, working_dir: &Path) -> Self {
+        match resolve_file_path(path, working_dir) {
+            Some(path) => Self {
+                paths: vec![path],
+                ..Self::default()
+            },
+            None => Self {
+                unresolved: true,
+                ..Self::default()
+            },
+        }
+    }
 }
 
 /// Tool names arrive namespaced (`developer__shell`); the argument shape depends
@@ -365,7 +378,10 @@ fn resolve_path(raw: &str, working_dir: &Path) -> Option<PathBuf> {
     if raw.is_empty() {
         return None;
     }
-    let path = Path::new(raw);
+    resolve_file_path(Path::new(raw), working_dir)
+}
+
+fn resolve_file_path(path: &Path, working_dir: &Path) -> Option<PathBuf> {
     let absolute = if path.is_absolute() {
         path.to_path_buf()
     } else if working_dir.is_absolute() {
