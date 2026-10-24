@@ -11,9 +11,10 @@ use windows_sys::Win32::Security::Authorization::{
     SET_ACCESS, SE_FILE_OBJECT, TRUSTEE_IS_SID, TRUSTEE_IS_USER, TRUSTEE_W,
 };
 use windows_sys::Win32::Security::{
-    EqualSid, GetTokenInformation, IsValidSid, TokenUser, DACL_SECURITY_INFORMATION,
+    EqualSid, GetTokenInformation, IsValidSid, TokenOwner, TokenUser, DACL_SECURITY_INFORMATION,
     OWNER_SECURITY_INFORMATION, PROTECTED_DACL_SECURITY_INFORMATION, PSID,
-    SUB_CONTAINERS_AND_OBJECTS_INHERIT, TOKEN_QUERY, TOKEN_USER,
+    SUB_CONTAINERS_AND_OBJECTS_INHERIT, TOKEN_INFORMATION_CLASS, TOKEN_OWNER, TOKEN_QUERY,
+    TOKEN_USER,
 };
 use windows_sys::Win32::Storage::FileSystem::{
     GetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION, FILE_ALL_ACCESS,
@@ -38,7 +39,10 @@ fn status(code: u32) -> io::Result<()> {
     }
 }
 
-fn current_user() -> io::Result<Vec<usize>> {
+fn current_token_information(
+    information: TOKEN_INFORMATION_CLASS,
+    minimum: usize,
+) -> io::Result<Vec<usize>> {
     let mut token = null_mut();
     if unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) } == 0 {
         return Err(io::Error::last_os_error());
@@ -48,20 +52,20 @@ fn current_user() -> io::Result<Vec<usize>> {
     unsafe {
         GetTokenInformation(
             token.as_raw_handle().cast(),
-            TokenUser,
+            information,
             null_mut(),
             0,
             &mut size,
         );
     }
-    if !(size_of::<TOKEN_USER>() as u32..=65536).contains(&size) {
-        return Err(io::Error::other("invalid current-user token size"));
+    if !(minimum as u32..=65536).contains(&size) {
+        return Err(io::Error::other("invalid current-account token size"));
     }
     let mut buffer = vec![0usize; (size as usize).div_ceil(size_of::<usize>())];
     if unsafe {
         GetTokenInformation(
             token.as_raw_handle().cast(),
-            TokenUser,
+            information,
             buffer.as_mut_ptr().cast(),
             size,
             &mut size,
@@ -73,7 +77,25 @@ fn current_user() -> io::Result<Vec<usize>> {
     Ok(buffer)
 }
 
-fn open_owned(path: &Path, user: PSID) -> io::Result<File> {
+fn current_user() -> io::Result<Vec<usize>> {
+    current_token_information(TokenUser, size_of::<TOKEN_USER>())
+}
+
+fn current_default_owner() -> io::Result<Vec<usize>> {
+    current_token_information(TokenOwner, size_of::<TOKEN_OWNER>())
+}
+
+fn owner_is_current(owner: PSID, user: PSID, default_owner: PSID) -> bool {
+    // Elevated processes can create files owned by their token's default group.
+    !owner.is_null()
+        && unsafe { IsValidSid(owner) } != 0
+        && (unsafe { EqualSid(owner, user) } != 0
+            || (!default_owner.is_null()
+                && unsafe { IsValidSid(default_owner) } != 0
+                && unsafe { EqualSid(owner, default_owner) } != 0))
+}
+
+fn open_owned(path: &Path, user: PSID, default_owner: PSID) -> io::Result<File> {
     let file = OpenOptions::new()
         .read(true)
         .access_mode(READ_CONTROL | WRITE_DAC | FILE_READ_ATTRIBUTES)
@@ -123,8 +145,7 @@ fn open_owned(path: &Path, user: PSID) -> io::Result<File> {
         )
     })?;
     let _descriptor = LocalAllocation(descriptor);
-    if owner.is_null() || unsafe { IsValidSid(owner) } == 0 || unsafe { EqualSid(owner, user) } == 0
-    {
+    if !owner_is_current(owner, user, default_owner) {
         return Err(io::Error::new(
             io::ErrorKind::PermissionDenied,
             "session storage must be owned by the current Windows account",
@@ -162,8 +183,14 @@ fn restrict(file: &File, user: PSID) -> io::Result<()> {
     })
 }
 
-fn owned_tree(path: &Path, user: PSID, directory: bool, files: &mut Vec<File>) -> io::Result<()> {
-    let file = open_owned(path, user)?;
+fn owned_tree(
+    path: &Path,
+    user: PSID,
+    default_owner: PSID,
+    directory: bool,
+    files: &mut Vec<File>,
+) -> io::Result<()> {
+    let file = open_owned(path, user, default_owner)?;
     if directory && !file.metadata()?.is_dir() {
         return Err(io::Error::new(
             io::ErrorKind::NotADirectory,
@@ -174,7 +201,7 @@ fn owned_tree(path: &Path, user: PSID, directory: bool, files: &mut Vec<File>) -
     files.push(file);
     if is_directory {
         for entry in fs::read_dir(path)? {
-            owned_tree(&entry?.path(), user, false, files)?;
+            owned_tree(&entry?.path(), user, default_owner, false, files)?;
         }
     }
     Ok(())
@@ -183,8 +210,10 @@ fn owned_tree(path: &Path, user: PSID, directory: bool, files: &mut Vec<File>) -
 pub(super) fn protect(path: &Path) -> io::Result<()> {
     let token = current_user()?;
     let user = unsafe { (*(token.as_ptr().cast::<TOKEN_USER>())).User.Sid };
+    let default_token = current_default_owner()?;
+    let default_owner = unsafe { (*(default_token.as_ptr().cast::<TOKEN_OWNER>())).Owner };
     for name in ["sessions.db", "sessions.db-wal", "sessions.db-shm"] {
-        let file = match open_owned(&path.join(name), user) {
+        let file = match open_owned(&path.join(name), user, default_owner) {
             Ok(file) => file,
             Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
             Err(error) => return Err(error),
@@ -199,7 +228,7 @@ pub(super) fn protect(path: &Path) -> io::Result<()> {
     // Windows normally permits bypassing directory traversal checks. Repair
     // existing child ACLs as well; a private parent alone does not protect them.
     let mut files = Vec::new();
-    owned_tree(path, user, true, &mut files)?;
+    owned_tree(path, user, default_owner, true, &mut files)?;
     for file in &files {
         restrict(file, user)?;
     }
@@ -214,7 +243,9 @@ mod tests {
     fn assert_current_user_only(path: &Path) {
         let token = current_user().unwrap();
         let user = unsafe { (*(token.as_ptr().cast::<TOKEN_USER>())).User.Sid };
-        let file = open_owned(path, user).unwrap();
+        let default_token = current_default_owner().unwrap();
+        let default_owner = unsafe { (*(default_token.as_ptr().cast::<TOKEN_OWNER>())).Owner };
+        let file = open_owned(path, user, default_owner).unwrap();
         let mut acl: *mut ACL = null_mut();
         let mut descriptor = null_mut();
         status(unsafe {
@@ -266,5 +297,94 @@ mod tests {
         }
         fs::write(sessions.join("new-history"), b"SYNTHETIC_NEW").unwrap();
         assert_current_user_only(&sessions.join("new-history"));
+    }
+
+    #[test]
+    fn ownership_accepts_only_the_process_user_or_its_exact_default_owner() {
+        use windows_sys::Win32::Security::Authorization::ConvertStringSidToSidW;
+        let token = current_user().unwrap();
+        let user = unsafe { (*(token.as_ptr().cast::<TOKEN_USER>())).User.Sid };
+        let default_token = current_default_owner().unwrap();
+        let default_owner = unsafe { (*(default_token.as_ptr().cast::<TOKEN_OWNER>())).Owner };
+        let foreign_sid: Vec<u16> = "S-1-5-21-987654321-123456789-777777777-4242\0"
+            .encode_utf16()
+            .collect();
+        let mut foreign = null_mut();
+        assert_ne!(
+            unsafe { ConvertStringSidToSidW(foreign_sid.as_ptr(), &mut foreign) },
+            0
+        );
+        let _foreign = LocalAllocation(foreign);
+        assert_eq!(unsafe { EqualSid(foreign, user) }, 0);
+        assert_eq!(unsafe { EqualSid(foreign, default_owner) }, 0);
+        assert!(!owner_is_current(foreign, user, default_owner));
+        assert!(!owner_is_current(null_mut(), user, default_owner));
+        assert!(owner_is_current(user, user, default_owner));
+        assert!(owner_is_current(default_owner, user, default_owner));
+    }
+
+    #[tokio::test]
+    async fn default_owner_sqlite_database_and_live_journal_remain_user_only() {
+        use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode};
+        use sqlx::{Connection, SqliteConnection};
+
+        let fixture = tempfile::tempdir().unwrap();
+        let sessions = fixture.path().join("sessions");
+        fs::create_dir(&sessions).unwrap();
+        let database = sessions.join("sessions.db");
+        let options = SqliteConnectOptions::new()
+            .filename(&database)
+            .create_if_missing(true)
+            .journal_mode(SqliteJournalMode::Delete);
+        let mut connection = SqliteConnection::connect_with(&options).await.unwrap();
+        sqlx::query("CREATE TABLE synthetic_fixture (value INTEGER)")
+            .execute(&mut connection)
+            .await
+            .unwrap();
+        sqlx::query("BEGIN IMMEDIATE")
+            .execute(&mut connection)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO synthetic_fixture VALUES (1)")
+            .execute(&mut connection)
+            .await
+            .unwrap();
+        let journal = sessions.join("sessions.db-journal");
+        assert!(journal.is_file());
+        let token = current_user().unwrap();
+        let user = unsafe { (*(token.as_ptr().cast::<TOKEN_USER>())).User.Sid };
+        let default_token = current_default_owner().unwrap();
+        let default_owner = unsafe { (*(default_token.as_ptr().cast::<TOKEN_OWNER>())).Owner };
+        for path in [&database, &journal] {
+            let file = open_owned(path, user, default_owner).unwrap();
+            let mut owner = null_mut();
+            let mut descriptor = null_mut();
+            status(unsafe {
+                GetSecurityInfo(
+                    file.as_raw_handle().cast(),
+                    SE_FILE_OBJECT,
+                    OWNER_SECURITY_INFORMATION,
+                    &mut owner,
+                    null_mut(),
+                    null_mut(),
+                    null_mut(),
+                    &mut descriptor,
+                )
+            })
+            .unwrap();
+            let _descriptor = LocalAllocation(descriptor);
+            assert_ne!(unsafe { EqualSid(owner, default_owner) }, 0);
+        }
+        protect(&sessions).unwrap();
+        for path in [&sessions, &database, &journal] {
+            assert_current_user_only(path);
+        }
+        sqlx::query("ROLLBACK")
+            .execute(&mut connection)
+            .await
+            .unwrap();
+        connection.close().await.unwrap();
+        protect(&sessions).unwrap();
+        assert_current_user_only(&database);
     }
 }

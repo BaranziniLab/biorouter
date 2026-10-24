@@ -302,28 +302,59 @@ mod windows {
 
     fn assert_owner_private(path: &Path) {
         use std::os::windows::fs::OpenOptionsExt;
-        use std::os::windows::io::AsRawHandle;
+        use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
         use windows_sys::Win32::Foundation::LocalFree;
         use windows_sys::Win32::Security::Authorization::{GetSecurityInfo, SE_FILE_OBJECT};
         use windows_sys::Win32::Security::{
-            EqualSid, GetAce, ACCESS_ALLOWED_ACE, ACL, DACL_SECURITY_INFORMATION,
-            OWNER_SECURITY_INFORMATION,
+            EqualSid, GetAce, GetTokenInformation, TokenUser, ACCESS_ALLOWED_ACE, ACL,
+            DACL_SECURITY_INFORMATION, TOKEN_QUERY, TOKEN_USER,
         };
+        use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
+        let mut token = std::ptr::null_mut();
+        assert_ne!(
+            unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) },
+            0
+        );
+        let token = unsafe { OwnedHandle::from_raw_handle(token) };
+        let mut size = 0;
+        unsafe {
+            GetTokenInformation(
+                token.as_raw_handle(),
+                TokenUser,
+                std::ptr::null_mut(),
+                0,
+                &mut size,
+            );
+        }
+        assert!(size as usize >= std::mem::size_of::<TOKEN_USER>());
+        let mut buffer = vec![0usize; (size as usize).div_ceil(std::mem::size_of::<usize>())];
+        assert_ne!(
+            unsafe {
+                GetTokenInformation(
+                    token.as_raw_handle(),
+                    TokenUser,
+                    buffer.as_mut_ptr().cast(),
+                    size,
+                    &mut size,
+                )
+            },
+            0
+        );
+        let user = unsafe { (*(buffer.as_ptr().cast::<TOKEN_USER>())).User.Sid };
         let file = fs::OpenOptions::new()
             .read(true)
             .custom_flags(0x0200_0000)
             .open(path)
             .unwrap();
         let mut acl: *mut ACL = std::ptr::null_mut();
-        let mut owner = std::ptr::null_mut();
         let mut descriptor = std::ptr::null_mut();
         assert_eq!(
             unsafe {
                 GetSecurityInfo(
                     file.as_raw_handle(),
                     SE_FILE_OBJECT,
-                    DACL_SECURITY_INFORMATION | OWNER_SECURITY_INFORMATION,
-                    &mut owner,
+                    DACL_SECURITY_INFORMATION,
+                    std::ptr::null_mut(),
                     std::ptr::null_mut(),
                     &mut acl,
                     std::ptr::null_mut(),
@@ -338,7 +369,7 @@ mod windows {
         assert_ne!(unsafe { GetAce(acl, 0, &mut entry) }, 0);
         let entry = unsafe { &*entry.cast::<ACCESS_ALLOWED_ACE>() };
         assert_ne!(
-            unsafe { EqualSid((&entry.SidStart as *const u32).cast_mut().cast(), owner) },
+            unsafe { EqualSid((&entry.SidStart as *const u32).cast_mut().cast(), user) },
             0
         );
         unsafe {
