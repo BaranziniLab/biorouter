@@ -26,6 +26,7 @@ use std::time::Duration;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
+pub mod bounded_fs;
 pub mod console;
 pub mod docker;
 pub mod environment;
@@ -33,6 +34,7 @@ pub mod local;
 pub mod seatbelt;
 pub mod shell_sandbox;
 
+pub use bounded_fs::{AccessMode, BoundedFs, BoundedPath, DispatchAuthority, RootGrant};
 pub use docker::DockerSandbox;
 pub use local::LocalProcessSandbox;
 
