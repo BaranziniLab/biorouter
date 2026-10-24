@@ -22,6 +22,8 @@ mod test_sandbox;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
 
 use biorouter::conversation::message::Message;
 use biorouter::session::session_manager::SessionType;
@@ -78,6 +80,252 @@ impl Sandbox {
 
 fn text(bytes: &[u8]) -> String {
     String::from_utf8_lossy(bytes).into_owned()
+}
+
+struct OutputFixture {
+    calls: AtomicUsize,
+    external_file: PathBuf,
+}
+
+async fn output_fixture_completion(
+    axum::extract::State(fixture): axum::extract::State<Arc<OutputFixture>>,
+    axum::Json(request): axum::Json<serde_json::Value>,
+) -> axum::response::Response {
+    use axum::response::IntoResponse;
+    fixture.calls.fetch_add(1, Ordering::SeqCst);
+    let editor_advertised = request["tools"].as_array().is_some_and(|tools| {
+        tools
+            .iter()
+            .any(|tool| tool["function"]["name"] == "developer__text_editor")
+    });
+    let tool_completed = request["messages"]
+        .as_array()
+        .is_some_and(|messages| messages.iter().any(|message| message["role"] == "tool"));
+    let message = if editor_advertised && !tool_completed {
+        serde_json::json!({"role":"assistant", "content":null, "tool_calls":[{
+            "id":"cli-output-read", "type":"function", "function":{
+                "name":"developer__text_editor",
+                "arguments":serde_json::json!({"command":"view", "path":fixture.external_file}).to_string()
+            }
+        }]})
+    } else {
+        serde_json::json!({"role":"assistant", "content":"CLI_OUTPUT_CONTROL"})
+    };
+    let reason = if message["tool_calls"].is_array() {
+        "tool_calls"
+    } else {
+        "stop"
+    };
+    if request["stream"] == true {
+        let mut delta = message.clone();
+        if let Some(calls) = delta["tool_calls"].as_array_mut() {
+            calls[0]["index"] = serde_json::json!(0);
+        }
+        let chunk = serde_json::json!({
+            "id":"cli-output-fixture", "object":"chat.completion.chunk",
+            "created":1, "model":"cli-output-fixture:local",
+            "choices":[{"index":0,"delta":delta,"finish_reason":null}]
+        });
+        let end = serde_json::json!({
+            "id":"cli-output-fixture", "object":"chat.completion.chunk",
+            "created":1, "model":"cli-output-fixture:local",
+            "choices":[{"index":0,"delta":{},"finish_reason":reason}]
+        });
+        (
+            [(axum::http::header::CONTENT_TYPE, "text/event-stream")],
+            format!("data: {chunk}\n\ndata: {end}\n\ndata: [DONE]\n\n"),
+        )
+            .into_response()
+    } else {
+        axum::Json(serde_json::json!({
+            "id":"cli-output-fixture", "object":"chat.completion",
+            "created":1, "model":"cli-output-fixture:local",
+            "choices":[{"index":0,"message":message,"finish_reason":reason}]
+        }))
+        .into_response()
+    }
+}
+
+fn output_fixture_router(fixture: Arc<OutputFixture>) -> axum::Router {
+    use axum::routing::{get, post};
+    axum::Router::new()
+        .route(
+            "/api/show",
+            post(|| async {
+                axum::Json(serde_json::json!({
+                    "capabilities":["completion","tools"],
+                    "model_info":{"general.architecture":"llama","llama.context_length":1048576},
+                    "parameters":"num_ctx 1048576"
+                }))
+            }),
+        )
+        .route(
+            "/api/version",
+            get(|| async { axum::Json(serde_json::json!({"version":"0.12.0"})) }),
+        )
+        .route(
+            "/api/tags",
+            get(|| async {
+                axum::Json(serde_json::json!({"models":[{"name":"cli-output-fixture:local"}]}))
+            }),
+        )
+        .route(
+            "/api/chat",
+            post(|| async { (axum::http::StatusCode::NOT_FOUND, "404 page not found") }),
+        )
+        .route("/v1/chat/completions", post(output_fixture_completion))
+        .with_state(fixture)
+}
+
+async fn run_output_format(sandbox: &Sandbox, endpoint: &str, format: &str) -> Output {
+    let mut command = tokio::process::Command::new(env!("CARGO_BIN_EXE_biorouter"));
+    command
+        .args([
+            "run",
+            "--output-format",
+            format,
+            "--text",
+            "Output fixture control",
+        ])
+        .env_clear()
+        .env("HOME", &sandbox.home)
+        .env("USERPROFILE", &sandbox.home)
+        .env("APPDATA", sandbox.home.join("AppData/Roaming"))
+        .env("LOCALAPPDATA", sandbox.home.join("AppData/Local"))
+        .env("XDG_CONFIG_HOME", sandbox.home.join(".config"))
+        .env("XDG_DATA_HOME", sandbox.home.join(".local/share"))
+        .env("XDG_STATE_HOME", sandbox.home.join(".local/state"))
+        .env("BIOROUTER_PATH_ROOT", &sandbox.root)
+        .env("BIOROUTER_DISABLE_KEYRING", "true")
+        .env("BIOROUTER_CLASSIC", "1")
+        .env("OLLAMA_HOST", endpoint)
+        .env("OLLAMA_NUM_CTX", "1048576")
+        .env("TOKIO_WORKER_THREADS", "2")
+        .env("DO_NOT_TRACK", "1")
+        .current_dir(&sandbox.home)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true);
+    for key in ["PATH", "SystemRoot", "WINDIR", "TMP", "TEMP", "TMPDIR"] {
+        if let Some(value) = std::env::var_os(key) {
+            command.env(key, value);
+        }
+    }
+    tokio::time::timeout(std::time::Duration::from_secs(60), command.output())
+        .await
+        .expect("the isolated CLI must finish within 60 seconds")
+        .expect("run the isolated CLI")
+}
+
+fn assert_output_format(output: &Output, format: &str) {
+    let stdout = text(&output.stdout);
+    assert!(
+        output.status.success(),
+        "{format}: {stdout}\n{}",
+        text(&output.stderr)
+    );
+    assert!(stdout.contains("CLI_OUTPUT_CONTROL"), "{format}: {stdout}");
+    assert!(
+        stdout.contains("authorization_required"),
+        "missing actual refusal for {format}: {stdout}"
+    );
+    assert!(
+        !stdout.contains("UNAPPROVED_CONTENT_MUST_NOT_APPEAR"),
+        "{format}: {stdout}"
+    );
+    match format {
+        "json" => {
+            let document: serde_json::Value = serde_json::from_slice(&output.stdout)
+                .unwrap_or_else(|error| {
+                    panic!("entire stdout must be one JSON object: {error}\n{stdout}")
+                });
+            assert_eq!(document["metadata"]["status"], "completed");
+            assert!(document["messages"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .flat_map(|message| message["content"].as_array().unwrap())
+                .any(
+                    |content| content["toolResult"]["error_data"]["data"]["code"]
+                        == "authorization_required"
+                ));
+        }
+        "stream-json" => {
+            let events: Vec<serde_json::Value> = stdout
+                .lines()
+                .map(|line| {
+                    serde_json::from_str(line).unwrap_or_else(|error| {
+                        panic!("every stdout line must be JSON: {error}\n{stdout}")
+                    })
+                })
+                .collect();
+            assert_eq!(events.last().unwrap()["type"], "complete");
+        }
+        "text" => {
+            for expected in [
+                "starting chat",
+                "provider",
+                "ollama",
+                "model",
+                "cli-output-fixture:local",
+                "session",
+                "privacy",
+                "(at start)",
+                "workdir",
+            ] {
+                assert!(
+                    stdout.contains(expected),
+                    "missing human banner {expected}: {stdout}"
+                );
+            }
+        }
+        _ => unreachable!(),
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn run_output_formats_keep_machine_stdout_parseable() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let endpoint = format!("http://{}", listener.local_addr().unwrap());
+    let external = tempfile::TempDir::new().unwrap();
+    let external_file = external.path().join("read-denied.txt");
+    std::fs::write(&external_file, "UNAPPROVED_CONTENT_MUST_NOT_APPEAR\n").unwrap();
+    let fixture = Arc::new(OutputFixture {
+        calls: AtomicUsize::new(0),
+        external_file,
+    });
+    let shutdown = tokio_util::sync::CancellationToken::new();
+    let stop = shutdown.clone();
+    let router = output_fixture_router(fixture.clone());
+    let server = tokio::spawn(async move {
+        axum::serve(listener, router)
+            .with_graceful_shutdown(stop.cancelled_owned())
+            .await
+            .unwrap();
+    });
+
+    for format in ["json", "stream-json", "text"] {
+        let sandbox = Sandbox::new();
+        std::fs::write(
+            sandbox.config_yaml(),
+            "BIOROUTER_PROVIDER: ollama\nBIOROUTER_MODEL: cli-output-fixture:local\ncomputer_use_capabilities_version: 2\nextensions:\n  code_execution:\n    enabled: false\n    type: platform\n    name: code_execution\n    description: Disabled for direct file-access fixture\n    bundled: true\n    available_tools: []\n",
+        )
+        .unwrap();
+        let before = fixture.calls.load(Ordering::SeqCst);
+        let output = run_output_format(&sandbox, &endpoint, format).await;
+        assert!(
+            fixture.calls.load(Ordering::SeqCst) > before,
+            "no actual fixture completion for {format}"
+        );
+        assert_output_format(&output, format);
+    }
+    assert_eq!(
+        std::fs::read_to_string(&fixture.external_file).unwrap(),
+        "UNAPPROVED_CONTENT_MUST_NOT_APPEAR\n"
+    );
+    shutdown.cancel();
+    server.await.unwrap();
 }
 
 /// Every file under `dir` with its bytes, sorted by path.

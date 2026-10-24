@@ -1295,8 +1295,7 @@ pub async fn build_session(session_config: SessionBuilderConfig) -> CliSession {
         session.agent.override_system_prompt(override_prompt).await;
     }
 
-    // Display session information unless in quiet mode
-    if !session_config.quiet {
+    if !session_config.quiet && session_config.output_format == "text" {
         // Issue #56 Task 31 / R10. Re-read rather than reusing the value the
         // start-time check sampled: the bind above ratchets nothing, but a
         // `--no-session` run had no row to read then and has one now, and a
