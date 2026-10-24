@@ -101,7 +101,8 @@ new file mode 100644
             history.depth(
                 &crate::file_access::test_editor_path(&file_path)
                     .bound
-                    .history_key()
+                    .try_history_key()
+                    .unwrap()
             ) > 0
         );
     }

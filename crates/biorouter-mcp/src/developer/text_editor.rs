@@ -197,15 +197,6 @@ fn report_partial_failures(failed_hunks: &[String]) {
 }
 
 pub(crate) fn diff_target_paths(base_path: &Path, diff: &str) -> Result<Vec<PathBuf>, ErrorData> {
-    validate_diff_size(diff)?;
-    let patches = parse_diff_content(diff)?;
-    if patches.len() > MAX_FILES_IN_DIFF {
-        return Err(file_error(format!(
-            "Too many files in diff ({}). Maximum is {} files.",
-            patches.len(),
-            MAX_FILES_IN_DIFF
-        )));
-    }
     diff_target_paths_for_kind(base_path, diff, base_path.is_file())
 }
 
@@ -950,9 +941,11 @@ pub(crate) async fn text_editor_undo_bounded(
     file_history: &FileHistory,
 ) -> Result<Vec<Content>, ErrorData> {
     if file_history
-        .restore_with(&path.bound.history_key(), |previous_content| {
-            path.write(previous_content)
-        })
+        .restore_with(
+            &path.bound.try_history_key().map_err(file_error)?,
+            || path.read_to_string(),
+            |previous_content| path.write(previous_content),
+        )
         .map_err(file_error)?
     {
         Ok(vec![Content::text("Undid the last edit")])
@@ -965,6 +958,7 @@ pub(crate) async fn text_editor_undo_bounded(
     }
 }
 
+#[cfg(test)]
 pub(crate) fn save_file_history(
     path: &EditorPath,
     file_history: &FileHistory,

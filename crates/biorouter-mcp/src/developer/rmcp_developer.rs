@@ -889,10 +889,13 @@ impl DeveloperServer {
     /// resolved to when it was sanctioned lets [`Self::effective_cwd`] notice
     /// that it no longer denotes the same directory.
     pub fn with_working_dir(mut self, dir: PathBuf) -> Self {
-        self.file_history = Arc::new(FileHistory::persistent(&dir));
+        self.workspace_filesystem = BoundedFs::open(&dir).ok().map(Arc::new);
+        self.file_history = Arc::new(match self.workspace_filesystem.as_ref() {
+            Some(filesystem) => FileHistory::persistent_for_filesystem(&dir, filesystem),
+            None => FileHistory::in_memory(),
+        });
         self.secret_guard = SecretGuard::for_dir(&dir);
         self.canonical_working_dir = std::fs::canonicalize(&dir).ok();
-        self.workspace_filesystem = BoundedFs::open(&dir).ok().map(Arc::new);
         self.working_dir = Some(dir);
         self
     }

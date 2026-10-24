@@ -309,6 +309,51 @@ mod tests {
 
     #[cfg(unix)]
     #[tokio::test]
+    async fn brokered_workspace_uses_admission_object_instead_of_new_server_object() {
+        use biorouter_sandbox::bounded_fs::{DispatchAuthority, RootGrant};
+        let fixture = tempfile::tempdir().unwrap();
+        let root = fixture.path().join("workspace");
+        let retained = fixture.path().join("retained");
+        std::fs::create_dir(&root).unwrap();
+        std::fs::write(root.join("file.txt"), "ADMITTED OBJECT").unwrap();
+        let admitted = Arc::new(BoundedFs::open(&root).unwrap());
+        let authority = DispatchAuthority::register(
+            "session",
+            "action",
+            vec![RootGrant::new(admitted, AccessMode::Write)],
+        )
+        .unwrap();
+        std::fs::rename(&root, &retained).unwrap();
+        std::fs::create_dir(&root).unwrap();
+        std::fs::write(root.join("file.txt"), "REPLACEMENT CANARY").unwrap();
+        let mut editor = access(&root);
+        for (key, value) in [
+            ("biorouter-session-id", "session"),
+            ("biorouter-file-access-action", "action"),
+            ("biorouter-file-access-token", authority.token()),
+        ] {
+            editor.meta.0.insert(key.into(), value.into());
+        }
+        let file = editor
+            .bind(&root.join("file.txt"), AccessMode::Write)
+            .unwrap();
+        text_editor_write_bounded(&file, "ADMITTED EDIT")
+            .await
+            .unwrap();
+        assert_eq!(
+            std::fs::read_to_string(retained.join("file.txt"))
+                .unwrap()
+                .trim(),
+            "ADMITTED EDIT"
+        );
+        assert_eq!(
+            std::fs::read_to_string(root.join("file.txt")).unwrap(),
+            "REPLACEMENT CANARY"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
     async fn bound_editor_operations_keep_the_approved_parent_after_substitution() {
         let root = tempfile::tempdir().unwrap();
         let outside = tempfile::tempdir().unwrap();
