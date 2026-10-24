@@ -95,8 +95,11 @@ pub async fn handle_serve(
     public_url: Option<String>,
     open_browser: bool,
     computer_use_approval: bool,
+    folder_access_approval: bool,
 ) -> Result<()> {
-    let computer_use_digest = configure_computer_use_approval(computer_use_approval)?;
+    let computer_use_digest =
+        configure_scoped_approval(computer_use_approval, "Biorouter Copilot")?;
+    let folder_access_digest = configure_scoped_approval(folder_access_approval, "Folder access")?;
     let bind_is_loopback = host_is_loopback(&host);
     // Before anything starts, so a typo is a message here rather than a daemon
     // that refuses to start.
@@ -143,17 +146,18 @@ pub async fn handle_serve(
         public_url.as_deref(),
         &secret_key,
         &web_dir,
-        computer_use_digest.is_some(),
+        computer_use_digest.is_some() || folder_access_digest.is_some(),
     )?;
 
     // The page `--open` hands the browser, removed however this ends: it holds
     // the address, token and all.
     let mut launch_page: Option<PathBuf> = None;
     let outcome: Result<()> = async {
-        if let Some(digest) = computer_use_digest {
+        if computer_use_digest.is_some() || folder_access_digest.is_some() {
             use tokio::io::AsyncWriteExt;
             let mut stdin = child.stdin.take().context("daemon approval pipe is unavailable")?;
-            stdin.write_all(format!("computer-use:{digest}\n").as_bytes()).await?;
+            let digests = serde_json::json!({"computer_use": computer_use_digest, "folder_access": folder_access_digest});
+            stdin.write_all(format!("scoped-v1:{digests}\n").as_bytes()).await?;
             stdin.shutdown().await?;
         }
         tokio::select! {
@@ -181,6 +185,9 @@ pub async fn handle_serve(
         if computer_use_approval {
             eprintln!("  Biorouter Copilot approval is configured. Enter your approval key in the browser when approving a task.");
             eprintln!("  Biorouter Copilot controls this backend host's desktop, not a remote browser's device.");
+        }
+        if folder_access_approval {
+            eprintln!("  Folder approval is configured. Enter its separate key only in the browser folder-access approval field. The key does not authorize other protected actions.");
         }
         if open_browser {
             launch_page = open_in_browser(&url);
@@ -388,22 +395,22 @@ fn print_banner(
     println!("  Press Ctrl-C to stop.\n");
 }
 
-fn configure_computer_use_approval(enabled: bool) -> Result<Option<String>> {
+fn configure_scoped_approval(enabled: bool, scope: &str) -> Result<Option<String>> {
     if !enabled {
         return Ok(None);
     }
     super::needs_terminal::require(
         super::needs_terminal::prompt_can_run(),
-        "Biorouter Copilot approval setup requires an interactive terminal; no flag, environment variable, or piped input can supply the approval key.",
+        &format!("{scope} approval setup requires an interactive terminal; no flag, environment variable, or piped input can supply the approval key."),
     )?;
-    eprintln!("Choose a separate Biorouter Copilot approval key (at least 16 characters). Keep it outside chats and enter it only in the browser approval field. It is never saved.");
+    eprintln!("Choose a separate {scope} approval key (at least 16 characters). Keep it outside chats and enter it only in the matching browser approval field. It is never saved.");
     let key = zeroize::Zeroizing::new(
-        cliclack::password("Biorouter Copilot approval key")
+        cliclack::password(format!("{scope} approval key"))
             .mask('▪')
             .interact()?,
     );
     if key.chars().count() < 16 {
-        bail!("Biorouter Copilot approval key must contain at least 16 characters.");
+        bail!("{scope} approval key must contain at least 16 characters.");
     }
     let repeated = zeroize::Zeroizing::new(
         cliclack::password("Confirm approval key")
@@ -411,7 +418,7 @@ fn configure_computer_use_approval(enabled: bool) -> Result<Option<String>> {
             .interact()?,
     );
     if key.as_str() != repeated.as_str() {
-        bail!("Biorouter Copilot approval keys do not match.");
+        bail!("{scope} approval keys do not match.");
     }
     use sha2::{Digest, Sha256};
     Ok(Some(format!("{:x}", Sha256::digest(key.as_bytes()))))

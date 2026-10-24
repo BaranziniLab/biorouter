@@ -52,7 +52,9 @@ function findingText(prompt: string): string {
 
 const ALLOW_ONCE = 'allow_once';
 const ALWAYS_ALLOW = 'always_allow';
+const ALLOW_SESSION = 'allow_session';
 const DENY = 'deny';
+const CANCEL = 'cancel';
 
 // Global state to track tool confirmation decisions
 // This persists across navigation within the same session
@@ -93,6 +95,9 @@ export default function ToolConfirmation({
   // BR-63, or replayed from an older daemon, simply has neither and the card
   // degrades to its pre-BR-63 shape rather than breaking.
   const { id: toolConfirmationId, toolName, prompt, risk, preview } = data;
+  const folderAccess = preview?.kind === 'folderAccess';
+  const browserFolderAccess = folderAccess && isBrowserSurface();
+  const [folderApprovalKey, setFolderApprovalKey] = useState('');
 
   // Check if we have a stored state for this tool confirmation
   const storedState = toolConfirmationState.get(toolConfirmationId);
@@ -108,9 +113,13 @@ export default function ToolConfirmation({
   // browser surface, and by the daemon's own refusal reason anywhere else (a
   // desktop build talking to a daemon someone started by hand, say).
   const [cannotApprove, setCannotApprove] = useState(() =>
-    isBrowserSurface() ? BROWSER_CANNOT_APPROVE : ''
+    isBrowserSurface() && !folderAccess ? BROWSER_CANNOT_APPROVE : ''
   );
   const sendingRef = useRef(false);
+
+  useEffect(() => {
+    if (isCancelledMessage || isClicked || clicked) setFolderApprovalKey('');
+  }, [isCancelledMessage, isClicked, clicked]);
 
   // Sync internal state with stored state and props
   useEffect(() => {
@@ -145,17 +154,26 @@ export default function ToolConfirmation({
     setConfirmationError('');
     let newActionDisplay;
 
-    if (newStatus === ALWAYS_ALLOW) {
+    if (newStatus === ALLOW_SESSION) {
+      newActionDisplay = 'allowed for this session';
+    } else if (newStatus === ALWAYS_ALLOW) {
       newActionDisplay = APPROVAL_COPY.outcome.alwaysAllow;
     } else if (newStatus === ALLOW_ONCE) {
       newActionDisplay = APPROVAL_COPY.outcome.allowOnce;
+    } else if (newStatus === CANCEL) {
+      newActionDisplay = 'cancelled';
     } else {
       newActionDisplay = APPROVAL_COPY.outcome.deny;
     }
 
     try {
       const response = await confirmToolAction({
-        headers: await userActionHeaders(),
+        headers: {
+          ...(await userActionHeaders()),
+          ...(browserFolderAccess && folderApprovalKey
+            ? { 'X-Folder-Access-Key': folderApprovalKey }
+            : {}),
+        },
         body: {
           sessionId: sessionId,
           id: toolConfirmationId,
@@ -168,6 +186,18 @@ export default function ToolConfirmation({
         acknowledgement && typeof acknowledgement === 'object' && 'status' in acknowledgement
           ? acknowledgement.status
           : undefined;
+      if (folderAccess && response.error) {
+        const explanation =
+          typeof response.error === 'object' && response.error !== null && 'error' in response.error
+            ? response.error.error
+            : undefined;
+        setConfirmationError(
+          typeof explanation === 'string'
+            ? explanation
+            : 'Folder approval was refused. Check the separate approval key and try again; this operation remains pending.'
+        );
+        return;
+      }
       if (refusalIsPermanent(response.error)) {
         const explanation = (response.error as { error?: unknown }).error;
         setCannotApprove(typeof explanation === 'string' ? explanation : BROWSER_CANNOT_APPROVE);
@@ -197,6 +227,7 @@ export default function ToolConfirmation({
     } catch {
       setConfirmationError(APPROVAL_COPY.confirmFailed);
     } finally {
+      setFolderApprovalKey('');
       sendingRef.current = false;
       setIsSending(false);
     }
@@ -263,7 +294,8 @@ export default function ToolConfirmation({
   // Answered: the card has done its job, so it collapses to a transcript row
   // with the outcome and a way to change the standing permission.
   if (clicked) {
-    const declined = status === 'deny' || status === 'unknown' || status === 'already_resolved';
+    const declined =
+      status === DENY || status === CANCEL || status === 'unknown' || status === 'already_resolved';
     return (
       <>
         <div className="biorouter-message-content text-body flex min-w-0 flex-col gap-1">
@@ -277,15 +309,17 @@ export default function ToolConfirmation({
             trailing={
               // The row's own voice (13px muted): a 14px control beside a 13px
               // line read as a second size on one line.
-              <Button
-                type="button"
-                variant="ghost"
-                size="sm"
-                className="text-secondary text-text-muted"
-                onClick={() => setIsModalOpen(true)}
-              >
-                {APPROVAL_COPY.change}
-              </Button>
+              !folderAccess && (
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  className="text-secondary text-text-muted"
+                  onClick={() => setIsModalOpen(true)}
+                >
+                  {APPROVAL_COPY.change}
+                </Button>
+              )
             }
           />
           {findingLine && <div className="pl-6">{findingLine}</div>}
@@ -314,7 +348,13 @@ export default function ToolConfirmation({
                 the answered row renders the SAME string in the body font. The
                 <span> keeps the name a distinct node, which is what lets a test
                 assert on the name alone rather than on the whole sentence. */}
-            {APPROVAL_COPY.question} <span>{friendlyToolName(toolName)}</span>?
+            {folderAccess ? (
+              'Allow access to this external folder?'
+            ) : (
+              <>
+                {APPROVAL_COPY.question} <span>{friendlyToolName(toolName)}</span>?
+              </>
+            )}
           </span>
           {risk && <ToolRiskBadge risk={risk} />}
         </div>
@@ -322,6 +362,24 @@ export default function ToolConfirmation({
         {/* BR-63: the whole point — what the call will actually do. */}
         {preview && <ToolCallPreview preview={preview} />}
 
+        {browserFolderAccess && (
+          <label className="flex flex-col gap-1 text-sm">
+            Folder approval key
+            <input
+              type="password"
+              autoComplete="off"
+              value={folderApprovalKey}
+              onChange={(event) => setFolderApprovalKey(event.target.value)}
+              className="rounded border border-border-default bg-background-default px-2 py-1"
+              aria-describedby={`${toolConfirmationId}-folder-key-help`}
+            />
+            <span id={`${toolConfirmationId}-folder-key-help`} className="text-text-muted">
+              Use the separate key set with biorouter serve --folder-access-approval. It is cleared
+              after each decision and grants no other protected permission. If setup was omitted,
+              restart the server with that flag, then retry the file operation.
+            </span>
+          </label>
+        )}
         {cannotApprove ? (
           // A refusal, so it stays visible (principle 2).
           <p role="status" className="text-body text-text-muted">
@@ -333,7 +391,7 @@ export default function ToolConfirmation({
               type="button"
               size="sm"
               variant="default"
-              disabled={isSending}
+              disabled={isSending || (browserFolderAccess && !folderApprovalKey)}
               onClick={() => handleButtonClick(ALLOW_ONCE)}
             >
               {APPROVAL_COPY.allowOnce}
@@ -341,15 +399,15 @@ export default function ToolConfirmation({
             {/* Only offer "Always allow" when there's no security finding. A
                 permanent grant is not something to decide from a card that
                 exists because an inspector objected. */}
-            {!securityFinding && (
+            {(folderAccess || !securityFinding) && (
               <Button
                 type="button"
                 size="sm"
                 variant="secondary"
-                disabled={isSending}
-                onClick={() => handleButtonClick(ALWAYS_ALLOW)}
+                disabled={isSending || (browserFolderAccess && !folderApprovalKey)}
+                onClick={() => handleButtonClick(folderAccess ? ALLOW_SESSION : ALWAYS_ALLOW)}
               >
-                {APPROVAL_COPY.alwaysAllow}
+                {folderAccess ? 'Allow for this session' : APPROVAL_COPY.alwaysAllow}
               </Button>
             )}
             <Button
@@ -361,6 +419,17 @@ export default function ToolConfirmation({
             >
               {APPROVAL_COPY.deny}
             </Button>
+            {folderAccess && (
+              <Button
+                type="button"
+                size="sm"
+                variant="ghost"
+                disabled={isSending}
+                onClick={() => handleButtonClick(CANCEL)}
+              >
+                Cancel operation
+              </Button>
+            )}
           </div>
         )}
         {confirmationError && (

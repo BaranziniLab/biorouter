@@ -658,9 +658,22 @@ impl Conversation {
 
     async fn confirm_tool(&self, action: &ActionRequiredData, id: &str) -> Result<Interaction> {
         self.notice(&serde_json::to_string_pretty(action)?)?;
+        let folder_access = matches!(
+            action,
+            ActionRequiredData::ToolConfirmation {
+                preview: Some(
+                    biorouter::conversation::tool_preview::ToolPreview::FolderAccess { .. }
+                ),
+                ..
+            }
+        );
         loop {
             let Some(answer) = terminal_input(
-                "Type allow_once or deny (Esc cancels the turn): ",
+                if folder_access {
+                    "Type allow_once, allow_session, or deny (Esc cancels the turn): "
+                } else {
+                    "Type allow_once or deny (Esc cancels the turn): "
+                },
                 false,
                 32,
             )
@@ -668,7 +681,9 @@ impl Conversation {
             else {
                 return Ok(Interaction::Stop);
             };
-            if !matches!(answer.trim(), "allow_once" | "deny") {
+            if !matches!(answer.trim(), "allow_once" | "deny")
+                && !(folder_access && answer.trim() == "allow_session")
+            {
                 continue;
             }
             let result = self.client.request("POST", "/action-required/tool-confirmation", Some(json!({

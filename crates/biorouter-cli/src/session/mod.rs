@@ -2191,7 +2191,33 @@ fn prompt_tool_confirmation(
         eprintln!("\n{artefact}\n");
     }
 
-    let permission_result = if security_prompt.is_none() {
+    let permission_result = if security_prompt
+        .as_deref()
+        .is_some_and(|prompt| prompt.starts_with("External folder access\n"))
+    {
+        cliclack::select(prompt)
+            .item(
+                Permission::DenyOnce,
+                "Deny",
+                "Keep this folder unavailable for this turn",
+            )
+            .item(
+                Permission::AllowOnce,
+                "Allow once",
+                "Allow only the listed files for this operation",
+            )
+            .item(
+                Permission::AlwaysAllow,
+                "Allow for this session",
+                "Include this folder's descendants until revoked or the app exits",
+            )
+            .item(
+                Permission::Cancel,
+                "Cancel",
+                "Cancel the response and file operation",
+            )
+            .interact()
+    } else if security_prompt.is_none() {
         cliclack::select(prompt)
             .item(Permission::AllowOnce, "Allow", "Allow the tool call once")
             .item(

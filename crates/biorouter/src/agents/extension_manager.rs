@@ -3305,6 +3305,17 @@ impl ExtensionManager {
             return Err(err.into());
         }
 
+        let file_admission = self
+            .admit_file_access(
+                session_id,
+                &prefixed_name,
+                &tool_name,
+                &client_config,
+                &tool_call,
+                &cancellation_token,
+            )
+            .await?;
+
         // Issue #56, O5's second trigger. See [`Self::ratchet_for_private_extension`],
         // where the whole rationale lives; it is a separate function for
         // `cross_affiliation_denial`'s reason verbatim — the repo's
@@ -3347,8 +3358,13 @@ impl ExtensionManager {
         if let Some(permit) = &computer_permit {
             meta.computer_use_generation = Some(permit.generation.clone());
         }
+        if let Some(admission) = &file_admission {
+            meta.file_access_token = Some(admission.authority.token().to_string());
+            meta.file_access_action = Some(admission.action_id.clone());
+        }
 
         let fut = async move {
+            let _file_authority = file_admission;
             tracing::debug!(
                 "dispatch_tool_call fut: calling client.call_tool tool={} session_id={}",
                 tool_name,
@@ -3382,6 +3398,64 @@ impl ExtensionManager {
                 Some(Box::new(ReceiverStream::new(notifications_receiver)))
             },
         })
+    }
+
+    async fn admit_file_access(
+        &self,
+        session_id: &str,
+        prefixed_name: &str,
+        tool_name: &str,
+        config: &ExtensionConfig,
+        call: &CallToolRequestParams,
+        cancel: &CancellationToken,
+    ) -> Result<Option<crate::folder_access::FileAdmission>> {
+        if !matches!(config, ExtensionConfig::Builtin { name, .. } if name == "developer" || name == "files")
+        {
+            return Ok(None);
+        }
+        let cwd = self.resolve_working_dir().await;
+        let arguments = serde_json::Value::Object(call.arguments.clone().unwrap_or_default());
+        let Some(plan) = biorouter_mcp::file_access_plan(tool_name, &arguments, &cwd)? else {
+            return Ok(None);
+        };
+        let permissions = crate::config::permission::PermissionManager::instance();
+        for principal in [
+            prefixed_name,
+            tool_name,
+            prefixed_name.split("__").next().unwrap_or(prefixed_name),
+        ] {
+            anyhow::ensure!(
+                permissions.get_user_permission(principal)
+                    != Some(crate::config::permission::PermissionLevel::NeverAllow)
+                    && permissions.get_smart_approve_permission(principal)
+                        != Some(crate::config::permission::PermissionLevel::NeverAllow),
+                "This file operation is forbidden by the user's never-allow preference"
+            );
+        }
+        anyhow::ensure!(
+            crate::managed::ManagedPolicy::load().permission_for(prefixed_name)
+                != Some(crate::managed::ManagedVerdict::Deny),
+            "Blocked by your organization's managed policy."
+        );
+        let mut permission_call = call.clone();
+        permission_call.name = prefixed_name.to_owned().into();
+        let request = crate::conversation::message::ToolRequest {
+            id: String::new(),
+            tool_call: Ok(permission_call),
+            metadata: None,
+            tool_meta: None,
+        };
+        anyhow::ensure!(
+            crate::permission::ToolPermissionStore::load()?.check_permission(&request)
+                != Some(false),
+            "This file operation was explicitly denied"
+        );
+        biorouter_mcp::preflight_file_access(&plan, &cwd)?;
+        Ok(Some(
+            crate::folder_access::FolderAccessManager::global()
+                .admit(session_id, prefixed_name, &cwd, &plan, cancel)
+                .await?,
+        ))
     }
 
     /// Gate C's ratchet: a permitted dispatch into a PRIVATE extension classifies

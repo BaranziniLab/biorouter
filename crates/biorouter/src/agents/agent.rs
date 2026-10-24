@@ -4590,6 +4590,7 @@ fn first_running_tool_name(requests: &[ToolRequest]) -> Option<String> {
 /// One wake of the wait on a tool's approval card.
 pub(crate) enum ApprovalWake<T> {
     Item(Option<T>),
+    ElicitationReady,
     /// A steer was accepted while the card waits (D2/D3). The card is NOT
     /// answered by it: free text is not a permission decision.
     SteerWaiting,
@@ -4601,14 +4602,54 @@ pub(crate) enum ApprovalWake<T> {
 pub(crate) async fn next_approval_wake<T, S>(
     stream: &mut S,
     steers: Option<&Agent>,
+    session_id: &str,
 ) -> ApprovalWake<T>
 where
     S: Stream<Item = T> + Unpin,
 {
     tokio::select! {
         biased;
+        _ = ActionRequiredManager::global().request_arrived(session_id) => ApprovalWake::ElicitationReady,
         _ = unannounced_steer(steers) => ApprovalWake::SteerWaiting,
         item = stream.next() => ApprovalWake::Item(item),
+    }
+}
+
+#[cfg(test)]
+mod folder_approval_wake_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn a_nested_folder_request_wakes_the_tool_approval_stream() {
+        let session = uuid::Uuid::new_v4().to_string();
+        let pending = crate::pending_user_action::PendingUserActions::global().park(
+            Some(&session),
+            None,
+            crate::pending_user_action::UserActionRequest::FolderAccess(
+                crate::pending_user_action::FolderAccessRequest {
+                    action_id: "nested-action".into(),
+                    tool_name: "developer__text_editor".into(),
+                    folder: "/synthetic/results".into(),
+                    access: "read-only".into(),
+                    files: vec!["/synthetic/results/completed.csv".into()],
+                },
+            ),
+        );
+        let mut approval_stream = futures::stream::pending::<()>();
+        let wake = tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            next_approval_wake(&mut approval_stream, None, &session),
+        )
+        .await
+        .unwrap();
+        assert!(matches!(wake, ApprovalWake::ElicitationReady));
+        assert_eq!(
+            ActionRequiredManager::global()
+                .drain_requests(&session)
+                .len(),
+            1
+        );
+        drop(pending);
     }
 }
 
@@ -10121,6 +10162,7 @@ impl Agent {
         // process or none was stored (BR-41).
         self.restore_goal(&session_config.id).await;
 
+        crate::folder_access::FolderAccessManager::global().begin_turn(&session_config.id);
         let message_text = user_message.as_concat_text();
         // The planning gate's reading of this prompt. Classified here, where
         // the prompt text is known, and armed in `reply_internal`, where the
@@ -12203,9 +12245,15 @@ impl Agent {
                                         match next_approval_wake(
                                             &mut tool_approval_stream,
                                             (!permission_check_result.needs_approval.is_empty()).then_some(self),
+                                            &session_config.id,
                                         ).await {
                                             ApprovalWake::Item(Some(msg)) => yield AgentEvent::Message(msg?),
                                             ApprovalWake::Item(None) => break,
+                                            ApprovalWake::ElicitationReady => {
+                                                for msg in self.drain_elicitation_messages(&session_config.id).await {
+                                                    yield AgentEvent::Message(msg);
+                                                }
+                                            }
                                             ApprovalWake::SteerWaiting => {
                                                 yield AgentEvent::SteerWaiting {
                                                     reason: SteerWaitReason::Approval,

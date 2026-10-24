@@ -5,6 +5,7 @@ import { cn } from '../../utils';
 import { ContextWindowIndicator } from '../ContextWindowIndicator';
 import { CostTracker } from './CostTracker';
 import { DirSwitcher } from './DirSwitcher';
+import { FolderAccess } from './FolderAccess';
 
 /**
  * The composer's footer line (spec 3.7): the working folder on the left, the
@@ -88,6 +89,7 @@ export function ComposerFooter({
             onRestartEnd={onRestartEnd}
           />
         )}
+        {sessionId !== null && <FolderAccess key={sessionId} sessionId={sessionId} />}
       </div>
       {inChat && (
         <div className="br-footline__side" data-side="end">

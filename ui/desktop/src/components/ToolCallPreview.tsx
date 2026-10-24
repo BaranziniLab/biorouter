@@ -262,6 +262,24 @@ function ArgumentsPreview({ json, truncated }: { json: string; truncated: boolea
 /** Render whatever the backend resolved this call into. */
 export function ToolCallPreview({ preview }: { preview: ToolPreview }) {
   switch (preview.kind) {
+    case 'folderAccess':
+      return (
+        <div data-testid="folder-access-preview" className="space-y-2 text-body">
+          <p className="break-all font-mono">{preview.folder}</p>
+          <p>
+            {preview.access} access. A session grant includes subfolders and is not remembered after
+            app restart.
+          </p>
+          <p>Allow once applies only to these files in this operation:</p>
+          <ul className="list-disc pl-5">
+            {preview.files.map((file) => (
+              <li className="break-all font-mono" key={file}>
+                {file}
+              </li>
+            ))}
+          </ul>
+        </div>
+      );
     case 'shell':
       return (
         <PreviewFrame

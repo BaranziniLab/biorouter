@@ -306,6 +306,8 @@ fn elicitation_session_scope(meta: &Meta, active: &ActiveCallSessions) -> Option
 #[derive(Clone, Debug)]
 pub struct McpMeta {
     pub session_id: String,
+    pub file_access_token: Option<String>,
+    pub file_access_action: Option<String>,
     pub computer_use_generation: Option<String>,
     /// Per-dispatch MCP progress token. When set, it is sent as the call's
     /// `_meta.progressToken` so the server echoes it — on progress
@@ -359,6 +361,8 @@ impl McpMeta {
     pub fn new(session_id: impl Into<String>, capability: CallCapability) -> Self {
         Self {
             session_id: session_id.into(),
+            file_access_token: None,
+            file_access_action: None,
             computer_use_generation: None,
             progress_token: None,
             capability,
@@ -402,6 +406,18 @@ impl McpMeta {
 
     pub(crate) fn inject_into_extensions(&self, extensions: Extensions) -> Extensions {
         let mut extensions = inject_session_id_into_extensions(extensions, &self.session_id);
+        if let (Some(token), Some(action)) = (&self.file_access_token, &self.file_access_action) {
+            let mut meta = extensions.get::<Meta>().cloned().unwrap_or_default();
+            meta.0.insert(
+                "biorouter-file-access-token".into(),
+                serde_json::Value::String(token.clone()),
+            );
+            meta.0.insert(
+                "biorouter-file-access-action".into(),
+                serde_json::Value::String(action.clone()),
+            );
+            extensions.insert(meta);
+        }
         if let Some(generation) = &self.computer_use_generation {
             let mut meta = extensions.get::<Meta>().cloned().unwrap_or_default();
             meta.0.insert(

@@ -26,6 +26,71 @@ fn prune_computer_use_attempts(attempts: &mut Vec<Instant>, now: Instant) {
 }
 
 static COMPUTER_USE_ACTION_DIGEST: OnceLock<Option<[u8; 32]>> = OnceLock::new();
+static FOLDER_ACCESS_ACTION_DIGEST: OnceLock<Option<[u8; 32]>> = OnceLock::new();
+static FOLDER_ACCESS_FAILED_ATTEMPTS: Mutex<Vec<Instant>> = Mutex::new(Vec::new());
+
+pub fn install_folder_access_action_digest(digest: Option<[u8; 32]>) {
+    let _ = FOLDER_ACCESS_ACTION_DIGEST.set(digest);
+}
+
+pub fn folder_access_action_locked_out() -> bool {
+    let mut attempts = FOLDER_ACCESS_FAILED_ATTEMPTS
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    prune_computer_use_attempts(&mut attempts, Instant::now());
+    attempts.len() >= COMPUTER_USE_ATTEMPT_BUDGET
+}
+
+/// Only the typed folder approval and revocation routes may use this proof.
+/// Its startup digest never confers general user or desktop-control authority.
+pub fn folder_access_action_proof(headers: &axum::http::HeaderMap) -> UserActionProof {
+    let existing = user_action_proof(headers);
+    if existing == UserActionProof::Proven {
+        return existing;
+    }
+    let digest = FOLDER_ACCESS_ACTION_DIGEST.get().and_then(Option::as_ref);
+    if digest.is_none() {
+        return existing;
+    }
+    let mut attempts = FOLDER_ACCESS_FAILED_ATTEMPTS
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    let now = Instant::now();
+    prune_computer_use_attempts(&mut attempts, now);
+    if attempts.len() >= COMPUTER_USE_ATTEMPT_BUDGET {
+        return UserActionProof::Unproven;
+    }
+    let proof = folder_access_proof_with_digest(headers, existing, digest);
+    if proof == UserActionProof::Proven {
+        attempts.clear();
+    } else {
+        attempts.push(now);
+    }
+    proof
+}
+
+fn folder_access_proof_with_digest(
+    headers: &axum::http::HeaderMap,
+    existing: UserActionProof,
+    expected: Option<&[u8; 32]>,
+) -> UserActionProof {
+    if existing == UserActionProof::Proven {
+        return existing;
+    }
+    let Some(expected) = expected else {
+        return existing;
+    };
+    if user_action_matches(
+        headers
+            .get("X-Folder-Access-Key")
+            .and_then(|value| value.to_str().ok()),
+        Some(expected),
+    ) {
+        UserActionProof::Proven
+    } else {
+        UserActionProof::Unproven
+    }
+}
 
 pub fn install_computer_use_action_digest(digest: Option<[u8; 32]>) {
     let _ = COMPUTER_USE_ACTION_DIGEST.set(digest);
@@ -2553,6 +2618,68 @@ mod tests {
             StatusCode::UNAUTHORIZED
         );
         assert_eq!(attempts.len(), 1);
+    }
+}
+
+#[cfg(test)]
+mod folder_access_proof_tests {
+    use super::*;
+
+    #[test]
+    fn folder_key_is_separate_from_api_cookie_copilot_and_general_authority() {
+        let digest: [u8; 32] =
+            <sha2::Sha256 as sha2::Digest>::digest(b"human-held-folder-key").into();
+        for header in [
+            "Cookie",
+            "X-Secret-Key",
+            "X-User-Action",
+            "X-Computer-Use-Key",
+        ] {
+            let mut headers = axum::http::HeaderMap::new();
+            headers.insert(header, "human-held-folder-key".parse().unwrap());
+            assert_eq!(
+                folder_access_proof_with_digest(
+                    &headers,
+                    UserActionProof::NoKeyInstalled,
+                    Some(&digest)
+                ),
+                UserActionProof::Unproven
+            );
+        }
+        let mut headers = axum::http::HeaderMap::new();
+        headers.insert(
+            "X-Folder-Access-Key",
+            "human-held-folder-key".parse().unwrap(),
+        );
+        assert_eq!(
+            folder_access_proof_with_digest(
+                &headers,
+                UserActionProof::NoKeyInstalled,
+                Some(&digest)
+            ),
+            UserActionProof::Proven
+        );
+        assert_eq!(
+            computer_use_proof_with_digest(
+                &headers,
+                UserActionProof::NoKeyInstalled,
+                Some(&digest)
+            ),
+            UserActionProof::Unproven
+        );
+        assert_eq!(
+            folder_access_proof_with_digest(&headers, UserActionProof::NoKeyInstalled, None),
+            UserActionProof::NoKeyInstalled
+        );
+        headers.insert("X-Folder-Access-Key", hex::encode(digest).parse().unwrap());
+        assert_eq!(
+            folder_access_proof_with_digest(
+                &headers,
+                UserActionProof::NoKeyInstalled,
+                Some(&digest)
+            ),
+            UserActionProof::Unproven
+        );
     }
 }
 

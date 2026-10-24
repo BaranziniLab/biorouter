@@ -79,41 +79,65 @@ pub async fn confirm_tool_action(
     // (one lock acquisition) and `resolve_in_session` (a later one) — and a
     // gate whose two halves can observe different instants is the race the
     // sample-once rule exists to close.
-    let authority = match user_action_proof(&headers) {
+    let folder_request = biorouter::pending_user_action::PendingUserActions::global()
+        .requires_user_proof_in_session(&request.session_id, &request.id)
+        && matches!(
+            biorouter::pending_user_action::PendingUserActions::global().peek(&request.id),
+            Some(biorouter::pending_user_action::UserActionRequest::FolderAccess(_))
+        );
+    let folder_decline = folder_request && matches!(request.action.as_str(), "deny" | "cancel");
+    if folder_request
+        && !folder_decline
+        && user_action_proof(&headers) != UserActionProof::Proven
+        && biorouter_server::auth::folder_access_action_locked_out()
+    {
+        return Err(status_only(StatusCode::TOO_MANY_REQUESTS));
+    }
+    let proof = if folder_decline {
+        UserActionProof::Unproven
+    } else if folder_request {
+        biorouter_server::auth::folder_access_action_proof(&headers)
+    } else {
+        user_action_proof(&headers)
+    };
+    let authority = match proof {
+        UserActionProof::Proven if folder_request => {
+            biorouter::pending_user_action::DecisionAuthority::from_folder_access_proof()
+        }
         UserActionProof::Proven => {
             biorouter::pending_user_action::DecisionAuthority::from_user_action_proof()
         }
         _ => biorouter::pending_user_action::DecisionAuthority::unproven(),
     };
-
     if biorouter::pending_user_action::PendingUserActions::global()
         .requires_user_proof_in_session(&request.session_id, &request.id)
+        && proof != UserActionProof::Proven
+        && !folder_decline
     {
-        match user_action_proof(&headers) {
-            UserActionProof::Proven => {}
-            UserActionProof::Unproven => {
-                return Err((
-                    StatusCode::FORBIDDEN,
-                    Json(serde_json::json!({
-                        "status": "refused",
-                        "reason": "unproven",
-                        "error": UNPROVEN_APPROVAL_REFUSAL,
-                    })),
-                ))
-            }
-            UserActionProof::NoKeyInstalled => {
-                return Err((
-                    StatusCode::FORBIDDEN,
-                    Json(serde_json::json!({
-                        "status": "refused",
-                        "reason": "noKeyInstalled",
-                        "error": NO_KEY_APPROVAL_REFUSAL,
-                    })),
-                ))
-            }
-        }
+        let no_key = proof == UserActionProof::NoKeyInstalled;
+        return Err((
+            StatusCode::FORBIDDEN,
+            Json(serde_json::json!({
+                "status": "refused",
+                "reason": if no_key { "noKeyInstalled" } else { "unproven" },
+                "error": if folder_request && no_key {
+                    "Folder approval is not configured. Start the browser server with biorouter serve --folder-access-approval, then retry this file operation and enter the separate approval key."
+                } else if folder_request {
+                    "Enter the separate folder approval key configured at server startup. The pending operation has not been approved."
+                } else if no_key { NO_KEY_APPROVAL_REFUSAL } else { UNPROVEN_APPROVAL_REFUSAL }
+            })),
+        ));
     }
     let permission = match request.action.as_str() {
+        "allow_session"
+            if matches!(
+                biorouter::pending_user_action::PendingUserActions::global().peek(&request.id),
+                Some(biorouter::pending_user_action::UserActionRequest::FolderAccess(_))
+            ) =>
+        {
+            Permission::AlwaysAllow
+        }
+        "cancel" if folder_request => Permission::Cancel,
         "always_allow" => Permission::AlwaysAllow,
         "allow_once" => Permission::AllowOnce,
         "deny" => Permission::DenyOnce,

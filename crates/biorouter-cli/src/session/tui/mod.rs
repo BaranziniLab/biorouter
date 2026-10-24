@@ -752,6 +752,19 @@ async fn run_permission_modal(
             ("Deny", "keep desktop control off"),
             ("Cancel", "cancel response"),
         ]
+    } else if prompt
+        .as_deref()
+        .is_some_and(|text| text.starts_with("External folder access\n"))
+    {
+        vec![
+            ("Deny", "keep this folder unavailable for this turn"),
+            ("Allow", "only the listed files for this operation"),
+            (
+                "Allow for this session",
+                "folder and descendants until revoked or app exit",
+            ),
+            ("Cancel", "cancel response"),
+        ]
     } else if prompt.is_some() {
         vec![
             ("Allow", "allow once"),
@@ -810,7 +823,7 @@ async fn run_permission_modal(
 fn label_to_permission(label: &str) -> Permission {
     match label {
         "Allow" | "Allow task" => Permission::AllowOnce,
-        "Always allow" => Permission::AlwaysAllow,
+        "Always allow" | "Allow for this session" => Permission::AlwaysAllow,
         "Deny" => Permission::DenyOnce,
         _ => Permission::Cancel,
     }
