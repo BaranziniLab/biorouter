@@ -27,6 +27,7 @@ import { TranscriptRow } from './TranscriptRow';
 import { transcriptCopy } from './transcript/copy';
 import { cn } from '../utils';
 import { presentStoredTurnError, TurnErrorRow } from './conversation/ChatTurnError';
+import { messageTurnWasStopped } from './conversation/turnStoppedNotice';
 import { splitAssistantText } from './transcript/transcriptRhythm';
 import { ThinkingClock, thoughtTook, useThoughtDuration } from './transcript/thinkingClock';
 import type { ArtifactSource } from './artifacts/artifactTypes';
@@ -157,6 +158,8 @@ export default function BioRouterMessage({
     [knownFilePathsKey]
   );
   const hasToolConfirmation = toolConfirmationContent !== undefined;
+  const confirmationCancelled =
+    hasToolConfirmation && messageTurnWasStopped(messages, messageIndex);
   const hasElicitation = elicitationContent !== undefined;
 
   const toolResponsesMap = useMemo(() => {
@@ -336,7 +339,7 @@ export default function BioRouterMessage({
             {hasToolConfirmation && (
               <ToolCallConfirmation
                 sessionId={sessionId}
-                isCancelledMessage={false}
+                isCancelledMessage={confirmationCancelled}
                 isClicked={false}
                 actionRequiredContent={toolConfirmationContent}
               />

@@ -16,9 +16,8 @@
 //! * [`Filer::ComposeUrl`] — a prefilled `…/issues/new?body=…` opened in the
 //!   user's browser ([`open_in_browser`]), with the link handed back as well in
 //!   case no browser could be opened. The report is complete and the user's
-//!   click is the submit. It is the ONLY path from a chat classified private:
-//!   `gh` publishes on approval, and from a private chat the user's own Submit
-//!   on GitHub must be the disclosure (see the parent module's privacy ruling).
+//!   click is the submit. Private chats may also use `gh` after proof-backed,
+//!   one-time consent for the exact reviewed report to the fixed tracker.
 //!
 //! Not a third option: a token Biorouter stores. It would need the credential
 //! store, a scope the user has to reason about, and a revocation story, to
@@ -34,15 +33,21 @@
 //! caller degrades to telling the user to paste, which is worse than a link and
 //! much better than a dead one.
 
-use std::path::Path;
+use std::ffi::OsStr;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::Duration;
 
 use super::evidence::Evidence;
-use super::redact::{self, MAX_COMPOSE_URL_CHARS};
+use super::redact::MAX_COMPOSE_URL_CHARS;
 
 /// Where a report goes. A constant, not configuration.
 pub const DEFAULT_REPO: &str = "BaranziniLab/biorouter";
+pub const GITHUB_HOST: &str = "github.com";
+
+pub fn publication_destination(repo: &str) -> String {
+    format!("{GITHUB_HOST}/{repo}")
+}
 
 /// Override for a fork, and for testing against a scratch repository.
 ///
@@ -164,66 +169,6 @@ pub fn render_body(draft: &Draft, evidence: &Evidence, private: bool) -> String 
         None => body.push_str(NO_SUSPECTED_CAUSE),
     }
 
-    append_environment(&mut body, evidence);
-
-    body.push_str("\n---\n\n**Additional context**\n");
-    if let Some(additional) = draft.additional.as_ref().map(|a| a.trim()) {
-        if !additional.is_empty() {
-            body.push_str(&format!("\n{additional}\n"));
-        }
-    }
-
-    if evidence.failures.is_empty() {
-        body.push_str(
-            "\nNo failed tool calls or operations were recorded in the reporting session.\n",
-        );
-    } else {
-        body.push_str(&format!(
-            "\n<details>\n<summary>Failed tool calls in the reporting session \
-             ({} of {} calls; {} caught nested failures; {} distinct failed operations)</summary>\n\n",
-            evidence.total_failed_calls,
-            evidence.total_tool_calls,
-            evidence.total_failed_nested_calls,
-            evidence.total_failed_operations
-        ));
-        for failure in &evidence.failures {
-            body.push_str(&failure.to_line());
-            body.push('\n');
-            if let Some(arguments) = &failure.arguments {
-                body.push_str(&format!("  - arguments: `{arguments}`\n"));
-            }
-        }
-        body.push_str("\n</details>\n");
-    }
-
-    if evidence.externalized_results > 0 {
-        body.push_str(&format!(
-            "\n{} tool result(s) were too large to keep in the transcript and are not \
-             quoted above.\n",
-            evidence.externalized_results
-        ));
-    }
-
-    body.push_str(
-        "\n---\n\n<sub>Filed by Biorouter's own bug reporter from an in-app chat. The \
-         environment and failure list above are read from the reporting session; home \
-         paths, usernames and credential-shaped strings are removed before posting.",
-    );
-    // ⚠ Not from a private chat: the bundle IS that chat's transcript,
-    // unredacted, and this body is the page the user reads on github.com just
-    // before pressing Submit. The receipt tells them not to attach it.
-    if !private {
-        body.push_str(
-            " A full diagnostics bundle (transcript, redacted config, logs) can be attached \
-             from **Chat summary → Diagnostics → Generate diagnostics**.",
-        );
-    }
-    body.push_str("</sub>\n");
-
-    body
-}
-
-fn append_environment(body: &mut String, evidence: &Evidence) {
     body.push_str("\n\n---\n\n**Please provide the following information**\n");
     body.push_str(&format!(
         "- **OS & Arch:** {} {} ({})\n",
@@ -244,6 +189,82 @@ fn append_environment(body: &mut String, evidence: &Evidence) {
         evidence.provider.as_deref().unwrap_or("not set"),
         evidence.model.as_deref().unwrap_or("not set"),
     ));
+
+    body.push_str("\n---\n\n**Additional context**\n");
+    if let Some(additional) = draft.additional.as_ref().map(|a| a.trim()) {
+        if !additional.is_empty() {
+            body.push_str(&format!("\n{additional}\n"));
+        }
+    }
+
+    append_failure_counts(&mut body, evidence);
+
+    if evidence.externalized_results > 0 {
+        body.push_str(&format!(
+            "\n{} tool result(s) were too large to keep in the transcript and are not \
+             quoted above.\n",
+            evidence.externalized_results
+        ));
+    }
+
+    body.push_str(
+        "\n---\n\n<sub>Filed by Biorouter's own bug reporter from an in-app chat. The \
+         environment and failure list above are read from the reporting session; home \
+         paths, usernames and credential-shaped strings are removed before posting.",
+    );
+    // ⚠ Not from a private chat: the bundle IS that chat's transcript,
+    // unredacted, and this body is the page the user reads on github.com just
+    // before pressing Submit. The receipt tells them not to attach it.
+    if !private {
+        body.push_str(
+            " A full diagnostics bundle (transcript, redacted config, logs) can be attached \
+             from **Chat summary → Diagnostics → Generate diagnostics**. It contains \
+             conversation content: review and remove personal details before sharing it.",
+        );
+    }
+    body.push_str("</sub>\n");
+
+    body
+}
+
+fn append_failure_counts(body: &mut String, evidence: &Evidence) {
+    if evidence.failures.is_empty() {
+        body.push_str(
+            "\nNo failed tool calls or operations were recorded in the reporting session.\n",
+        );
+    } else {
+        body.push_str(&format!(
+            "\n<details>\n<summary>Failed tool calls in the reporting session \
+             ({} of {} calls; {} caught nested failures; {} distinct failed operations)</summary>\n\n",
+            evidence.total_failed_calls,
+            evidence.total_tool_calls,
+            evidence.total_failed_nested_calls,
+            evidence.total_failed_operations
+        ));
+        for failure in &evidence.failures {
+            // Arguments and output can contain personal data that no credential
+            // regex can identify. Only typed, content-free counts leave the chat.
+            body.push_str(&format!(
+                "- {}: {} failed call(s), {}{}\n",
+                failure.kind.as_str(),
+                failure.occurrences,
+                if failure.retryable {
+                    "retryable"
+                } else {
+                    "not retryable"
+                },
+                if failure.looks_deliberate {
+                    "; may be an intentional refusal"
+                } else {
+                    ""
+                },
+            ));
+        }
+        body.push_str(
+            "\nTool arguments and output are omitted. Include a sanitized reproduction \
+             in the report fields above when needed.\n\n</details>\n",
+        );
+    }
 }
 
 /// The **Suspected cause** line of a report that supplied no diagnosis.
@@ -267,22 +288,31 @@ pub fn compose_url(repo: &str, title: &str, body: &str) -> Option<String> {
     (url.chars().count() <= MAX_COMPOSE_URL_CHARS).then_some(url)
 }
 
+pub fn stage_report(title: &str, body: &str) -> anyhow::Result<PathBuf> {
+    use std::io::Write;
+
+    let mut file = tempfile::Builder::new()
+        .prefix("biorouter-reviewed-report-")
+        .suffix(".md")
+        .tempfile()?;
+    write!(file, "# {title}\n\n{body}")?;
+    let (_file, path) = file.keep()?;
+    Ok(path)
+}
+
 /// How a report will be filed, decided before the user is asked to approve it —
 /// so the card can say which.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Filer {
-    /// `gh` is installed and already authenticated non-interactively. Never
-    /// chosen for a chat treated as private (`choose_filer` in the parent
-    /// module), because approving it publishes with no further look.
+    /// `gh` is installed and already authenticated non-interactively. A
+    /// proof-backed Allow once for the exact report is required before use.
     GhCli,
     /// Open a prefilled compose page; the user presses Submit.
     ComposeUrl(String),
-    /// Neither: the report is too large for a URL, and `gh` was either found
-    /// unavailable or, from a chat treated as private, never considered.
+    /// The report is too large for a URL and direct filing is unavailable.
     Manual {
-        /// `gh` was probed and is not installed or not signed in. `false` from
-        /// a private chat, where it is never probed: there, "not signed in"
-        /// would be a claim nobody checked.
+        /// `gh` was probed and is not installed or not signed in. A failed
+        /// filing attempt must not make that claim without checking.
         gh_unavailable: bool,
     },
 }
@@ -316,12 +346,10 @@ impl Filer {
                  browser, or gives you its link if no browser can be opened. Nothing is \
                  posted until you press Submit there."
             ),
-            // ⚠ `gh` is named only when it was probed and failed: from a
-            // private chat it is never probed, so "not signed in" would be
-            // untrue there.
+            // A failed submission does not imply missing authentication.
             Self::Manual { gh_unavailable } => format!(
-                "The report will be handed back to you to paste into github.com/{repo} \
-                 yourself, because {}. Nothing is posted.",
+                "Only the reviewed report will be saved as a local Markdown file and the \
+                 new-issue page for github.com/{repo} will open, because {}. Nothing is posted.",
                 manual_reason(*gh_unavailable)
             ),
         }
@@ -351,15 +379,55 @@ pub async fn gh_ready() -> bool {
     if running_under_test() {
         return false;
     }
-    let mut probe = tokio::process::Command::new("gh");
+    let Some(program) = gh_program().await else {
+        return false;
+    };
+    gh_ready_at(&program).await
+}
+
+fn gh_in_paths(inherited: Option<&OsStr>, shell_dirs: &[PathBuf], cwd: &Path) -> Option<PathBuf> {
+    if let Some(inherited) = inherited {
+        if let Ok(program) = which::which_in("gh", Some(inherited), cwd) {
+            return Some(program);
+        }
+    }
+    if shell_dirs.is_empty() {
+        return None;
+    }
+    let shell_path = std::env::join_paths(shell_dirs).ok()?;
+    which::which_in("gh", Some(shell_path), cwd).ok()
+}
+
+async fn gh_program() -> Option<PathBuf> {
+    let cwd = std::env::current_dir().ok()?;
+    let inherited = std::env::var_os("PATH");
+    if let Some(program) = gh_in_paths(inherited.as_deref(), &[], &cwd) {
+        return Some(program);
+    }
+    // Finder-launched daemons do not inherit the login shell's Homebrew PATH.
+    // Use the same bounded, credential-filtered discovery as the developer shell.
+    let shell_dirs = tokio::time::timeout(
+        GH_PROBE_TIMEOUT,
+        biorouter_mcp::developer::paths::get_shell_path_dirs(),
+    )
+    .await
+    .ok()?
+    .ok()?;
+    gh_in_paths(None, shell_dirs, &cwd)
+}
+
+async fn gh_ready_at(program: &Path) -> bool {
+    let mut probe = tokio::process::Command::new(program);
     probe
-        .args(["auth", "status", "--hostname", "github.com"])
+        .args(["auth", "status", "--hostname", GITHUB_HOST])
+        .env("GH_HOST", GITHUB_HOST)
         .env("GH_PROMPT_DISABLED", "1")
         .env("GH_NO_UPDATE_NOTIFIER", "1")
         .env("NO_COLOR", "1")
         .stdin(Stdio::null())
         .stdout(Stdio::null())
-        .stderr(Stdio::null());
+        .stderr(Stdio::null())
+        .kill_on_drop(true);
     // `gh` is a console program and `biorouterd` is started DETACHED on Windows,
     // so it owns no console for a child to inherit and Windows gives this one a
     // brand-new, VISIBLE console unless it is asked not to (#368).
@@ -442,6 +510,25 @@ pub async fn open_in_browser(url: &str) -> bool {
         .unwrap_or(false)
 }
 
+/// A failed response after the child starts cannot prove GitHub rejected it.
+#[derive(Debug, PartialEq, Eq)]
+pub enum GhPublicationError {
+    NotSubmitted(&'static str),
+    OutcomeUnknown(&'static str),
+}
+
+impl std::fmt::Display for GhPublicationError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NotSubmitted(reason) | Self::OutcomeUnknown(reason) => {
+                formatter.write_str(reason)
+            }
+        }
+    }
+}
+
+impl std::error::Error for GhPublicationError {}
+
 /// Create the issue with the user's own `gh`.
 ///
 /// The body goes through a file rather than an argument: an issue body is tens
@@ -452,7 +539,7 @@ pub async fn file_with_gh(
     title: &str,
     body: &str,
     body_file: &Path,
-) -> anyhow::Result<String> {
+) -> Result<String, GhPublicationError> {
     // ⚠ A test that approved the card would create a real, public, permanent
     // issue on someone's tracker — from `cargo test`, on whatever machine
     // happened to have `gh` signed in. No test does today; this makes that a
@@ -460,16 +547,45 @@ pub async fn file_with_gh(
     // fallback path the caller takes on an error is exercised by the same
     // refusal.
     if running_under_test() {
-        anyhow::bail!("refusing to create a GitHub issue from a test build; nothing was posted");
+        return Err(GhPublicationError::NotSubmitted(
+            "refusing to create a GitHub issue from a test build; nothing was posted",
+        ));
     }
-    tokio::fs::write(body_file, body).await?;
-    let mut create = tokio::process::Command::new("gh");
+    tokio::fs::write(body_file, body)
+        .await
+        .map_err(|_| GhPublicationError::NotSubmitted("could not stage the reviewed report"))?;
+    let program = gh_program().await.ok_or(GhPublicationError::NotSubmitted(
+        "`gh` was not found in the daemon or login shell PATH",
+    ))?;
+    let result = file_with_gh_at(&program, repo, title, body_file, GH_TIMEOUT).await;
+    let _ = tokio::fs::remove_file(body_file).await;
+    result
+}
+
+fn gh_create_command(
+    program: &Path,
+    repo: &str,
+    title: &str,
+    body_file: &Path,
+) -> tokio::process::Command {
+    let mut create = tokio::process::Command::new(program);
+    biorouter_mcp::developer::shell::no_console_window(&mut create);
+    configure_gh_create(&mut create, repo, title, body_file);
+    create
+}
+
+fn configure_gh_create(
+    create: &mut tokio::process::Command,
+    repo: &str,
+    title: &str,
+    body_file: &Path,
+) {
     create
         .args([
             "issue",
             "create",
             "--repo",
-            repo,
+            &publication_destination(repo),
             "--title",
             title,
             "--body-file",
@@ -477,47 +593,63 @@ pub async fn file_with_gh(
             "--label",
             LABEL,
         ])
+        .env("GH_HOST", GITHUB_HOST)
         .env("GH_PROMPT_DISABLED", "1")
         .env("GH_NO_UPDATE_NOTIFIER", "1")
         .env("NO_COLOR", "1")
-        .stdin(Stdio::null());
-    biorouter_mcp::developer::shell::no_console_window(&mut create);
-    let output = tokio::time::timeout(GH_TIMEOUT, create.output())
-        .await
-        .map_err(|_| anyhow::anyhow!("`gh issue create` did not finish within {GH_TIMEOUT:?}"))??;
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true);
+}
 
-    // Best effort: the file holds the report, not a credential, but it does not
-    // need to outlive the call.
-    let _ = tokio::fs::remove_file(body_file).await;
+async fn file_with_gh_at(
+    program: &Path,
+    repo: &str,
+    title: &str,
+    body_file: &Path,
+    timeout: Duration,
+) -> Result<String, GhPublicationError> {
+    let mut create = gh_create_command(program, repo, title, body_file);
+    let child = create
+        .spawn()
+        .map_err(|_| GhPublicationError::NotSubmitted("could not start the GitHub CLI"))?;
+    let output = tokio::time::timeout(timeout, child.wait_with_output())
+        .await
+        .map_err(|_| GhPublicationError::OutcomeUnknown("the GitHub CLI response timed out"))?
+        .map_err(|_| {
+            GhPublicationError::OutcomeUnknown("the GitHub CLI response could not be read")
+        })?;
 
     if !output.status.success() {
-        // stderr, scrubbed: `gh` quotes the repository path and sometimes the
-        // user's own login, and this string goes back into the conversation.
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        let scrubbed = redact::scrub(stderr.trim(), dirs::home_dir().as_deref());
-        anyhow::bail!(
-            "`gh issue create` failed: {}",
-            if scrubbed.text.is_empty() {
-                "no output".to_string()
-            } else {
-                scrubbed.text
-            }
-        );
+        return Err(GhPublicationError::OutcomeUnknown(
+            "the GitHub CLI exited without confirming publication",
+        ));
     }
 
     let stdout = String::from_utf8_lossy(&output.stdout);
+    let expected = format!("https://{}/issues/", publication_destination(repo));
     stdout
         .lines()
         .rev()
-        .find(|line| line.trim().starts_with("https://"))
+        .find(|line| {
+            line.trim()
+                .strip_prefix(expected.as_str())
+                .is_some_and(|number| {
+                    !number.is_empty() && number.bytes().all(|byte| byte.is_ascii_digit())
+                })
+        })
         .map(|line| line.trim().to_string())
-        .ok_or_else(|| anyhow::anyhow!("`gh issue create` reported success but printed no URL"))
+        .ok_or(GhPublicationError::OutcomeUnknown(
+            "the GitHub CLI did not return an issue URL for the approved destination",
+        ))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::agents::bug_report::evidence::{Evidence, ToolFailure};
+    use crate::agents::bug_report::redact;
     use crate::agents::tool_errors::ToolErrorKind;
 
     fn evidence() -> Evidence {
@@ -675,11 +807,177 @@ mod tests {
     }
 
     #[test]
-    fn the_failure_list_is_rendered_with_its_counts_and_arguments() {
+    fn the_failure_list_contains_only_structured_counts() {
         let body = render_body(&draft(), &evidence(), false);
         assert!(body.contains("2 of 7 calls"), "{body}");
-        assert!(body.contains("`developer__shell` ×2"), "{body}");
-        assert!(body.contains("cargo build"), "{body}");
+        assert!(
+            body.contains("not_found: 2 failed call(s), not retryable"),
+            "{body}"
+        );
+        assert!(!body.contains("arguments:"), "{body}");
+        assert!(body.contains("Running `cargo build`"), "{body}");
+    }
+
+    #[test]
+    fn operation_failure_counts_do_not_restore_private_failure_details() {
+        let mut evidence = evidence();
+        evidence.total_failed_nested_calls = 3;
+        evidence.total_failed_operations = 4;
+        evidence.failures[0].arguments = Some("PRIVATE_ARGUMENT_SENTINEL".into());
+        evidence.failures[0].message = "PRIVATE_OUTPUT_SENTINEL".into();
+        let body = render_body(&draft(), &evidence, false);
+        assert!(
+            body.contains("3 caught nested failures; 4 distinct failed operations"),
+            "{body}"
+        );
+        assert!(!body.contains("PRIVATE_ARGUMENT_SENTINEL"), "{body}");
+        assert!(!body.contains("PRIVATE_OUTPUT_SENTINEL"), "{body}");
+    }
+
+    fn fake_gh(dir: &Path, contents: &str) -> PathBuf {
+        let program = dir.join(if cfg!(windows) { "gh.exe" } else { "gh" });
+        std::fs::write(&program, contents).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o700)).unwrap();
+        }
+        program
+    }
+
+    #[test]
+    fn gh_resolution_falls_back_to_the_login_shell_path() {
+        let inherited = tempfile::tempdir().unwrap();
+        let shell = tempfile::tempdir().unwrap();
+        let program = fake_gh(shell.path(), "#!/bin/sh\nexit 0\n");
+        assert_eq!(
+            gh_in_paths(
+                Some(inherited.path().as_os_str()),
+                &[shell.path().to_path_buf()],
+                inherited.path(),
+            ),
+            Some(program),
+        );
+        assert!(gh_in_paths(Some(inherited.path().as_os_str()), &[], inherited.path()).is_none());
+    }
+
+    #[test]
+    fn gh_resolution_keeps_an_executable_already_on_the_daemon_path() {
+        let inherited = tempfile::tempdir().unwrap();
+        let shell = tempfile::tempdir().unwrap();
+        let program = fake_gh(inherited.path(), "#!/bin/sh\nexit 0\n");
+        fake_gh(shell.path(), "#!/bin/sh\nexit 1\n");
+        assert_eq!(
+            gh_in_paths(
+                Some(inherited.path().as_os_str()),
+                &[shell.path().to_path_buf()],
+                inherited.path()
+            ),
+            Some(program),
+        );
+    }
+
+    #[test]
+    fn missing_path_configuration_does_not_search_the_working_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        fake_gh(dir.path(), "#!/bin/sh\nexit 0\n");
+        assert!(gh_in_paths(None, &[], dir.path()).is_none());
+    }
+
+    #[tokio::test]
+    #[cfg(unix)]
+    async fn resolved_gh_is_probed_noninteractively_and_auth_failure_is_retained() {
+        let dir = tempfile::tempdir().unwrap();
+        let program = fake_gh(dir.path(), "#!/bin/sh\n[ \"$1 $2 $3 $4\" = 'auth status --hostname github.com' ] && [ \"$GH_HOST\" = github.com ] && [ \"$GH_PROMPT_DISABLED\" = 1 ] && ! read -r unexpected\n");
+        assert!(gh_ready_at(&program).await);
+        fake_gh(dir.path(), "#!/bin/sh\nexit 1\n");
+        assert!(!gh_ready_at(&program).await);
+    }
+
+    #[tokio::test]
+    #[cfg(unix)]
+    async fn publication_pins_the_approved_host_over_a_hostile_gh_host() {
+        let dir = tempfile::tempdir().unwrap();
+        let body_file = dir.path().join("reviewed.md");
+        std::fs::write(&body_file, "Reviewed synthetic body").unwrap();
+        let program = fake_gh(dir.path(), "#!/bin/sh\n[ \"$1 $2 $3 $4\" = 'issue create --repo github.com/BaranziniLab/biorouter' ] || exit 2\n[ \"$GH_HOST\" = github.com ] || exit 3\n[ \"$GH_PROMPT_DISABLED\" = 1 ] || exit 4\n! read -r unexpected || exit 5\nprintf '%s\\n' 'https://github.com/BaranziniLab/biorouter/issues/123'\n");
+        let mut command = tokio::process::Command::new(&program);
+        command.env("GH_HOST", "unapproved-host.invalid");
+        configure_gh_create(
+            &mut command,
+            DEFAULT_REPO,
+            "Synthetic fixture title",
+            &body_file,
+        );
+        let output = command.output().await.unwrap();
+        assert!(output.status.success());
+        let url = file_with_gh_at(
+            &program,
+            DEFAULT_REPO,
+            "Synthetic fixture title",
+            &body_file,
+            Duration::from_secs(2),
+        )
+        .await
+        .unwrap();
+        assert_eq!(url, "https://github.com/BaranziniLab/biorouter/issues/123");
+    }
+
+    #[tokio::test]
+    #[cfg(unix)]
+    async fn spawned_publications_never_treat_an_unconfirmed_response_as_not_submitted() {
+        let dir = tempfile::tempdir().unwrap();
+        let body_file = dir.path().join("reviewed.md");
+        std::fs::write(&body_file, "Reviewed synthetic body").unwrap();
+        let missing = dir.path().join("missing-gh");
+        assert!(matches!(
+            file_with_gh_at(
+                &missing,
+                DEFAULT_REPO,
+                "Fixture title",
+                &body_file,
+                Duration::from_secs(2)
+            )
+            .await,
+            Err(GhPublicationError::NotSubmitted(_))
+        ));
+        for script in [
+            "#!/bin/sh\nexit 0\n",
+            "#!/bin/sh\nprintf '%s\\n' 'private fixture stderr' >&2\nexit 3\n",
+            "#!/bin/sh\nprintf '%s\\n' 'https://unapproved-host.invalid/BaranziniLab/biorouter/issues/123'\n",
+            "#!/bin/sh\nprintf '%s\\n' 'https://github.com/example/other/issues/123'\n",
+            "#!/bin/sh\nexec /bin/sleep 30\n",
+        ] {
+            let program = fake_gh(dir.path(), script);
+            let error = file_with_gh_at(&program, DEFAULT_REPO, "Fixture title", &body_file, Duration::from_millis(50)).await.unwrap_err();
+            assert!(matches!(error, GhPublicationError::OutcomeUnknown(_)), "{error}");
+            assert!(!error.to_string().contains("private fixture stderr"));
+        }
+    }
+
+    #[test]
+    fn public_drafts_do_not_copy_personal_data_from_recorded_failures() {
+        let mut evidence = evidence();
+        evidence.failures[0].arguments = Some(
+            r#"{"command":"echo 'Example Person, born 1990-01-02' > Example-Person.html; exit 3"}"#
+                .into(),
+        );
+        evidence.failures[0].message =
+            "Failed rendering Example-Person.html for Example Person, born 1990-01-02".into();
+        evidence.failures[0].tool_name = Some("unknown_Example_Person".into());
+        for private in [false, true] {
+            let body = render_body(&draft(), &evidence, private);
+            for personal in [
+                "Example Person",
+                "Example-Person",
+                "1990-01-02",
+                "unknown_Example",
+            ] {
+                assert!(!body.contains(personal), "{body}");
+            }
+            assert!(body.contains("2 of 7 calls"));
+            assert!(body.contains("not_found"));
+        }
     }
 
     /// A report with no steps still renders a `To Reproduce` section, because
@@ -709,6 +1007,24 @@ mod tests {
             url.contains("%26%20more"),
             "the ampersand must not split the query: {url}"
         );
+    }
+
+    #[test]
+    fn a_staged_report_contains_only_the_reviewed_title_and_body() {
+        let path = stage_report("Synthetic fixture title", "Reviewed fixture body").unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "# Synthetic fixture title\n\nReviewed fixture body"
+        );
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
+        }
+        std::fs::remove_file(path).unwrap();
     }
 
     /// ⚠ The cap is on the ENCODED url. A body that looks comfortably small in

@@ -245,7 +245,9 @@ pub fn retry_point(
 /// has its own progressive-compaction ladder for it (BR-13).
 pub fn is_recoverable(error: &ProviderError) -> bool {
     match error {
-        ProviderError::ServerError(_) => true,
+        ProviderError::ServerError(_)
+        | ProviderError::StreamDecode(_)
+        | ProviderError::StreamIncomplete(_) => true,
         ProviderError::RequestFailed(_) => matches!(
             error.kind(),
             crate::providers::errors::ProviderErrorKind::Server
@@ -361,8 +363,7 @@ impl MistakeTracker {
             && self.kinds.iter().copied().all(ToolErrorKind::retryable)
     }
 
-    /// A provider response arrived. Whatever went wrong before, the provider is
-    /// answering again — the error streak is over.
+    /// A provider response finished successfully, ending the error streak.
     pub fn observe_provider_success(&mut self) {
         self.provider_errors = 0;
     }

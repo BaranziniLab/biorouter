@@ -249,11 +249,11 @@ fn log_in_stream_error(error: &Value, mapped: &ProviderError) {
 
 fn parse_streaming_chunk(line: &str) -> anyhow::Result<StreamingChunk> {
     let mut value: Value = serde_json::from_str(line).map_err(|error| {
-        anyhow!(
+        ProviderError::StreamDecode(format!(
             "Failed to parse streaming chunk: invalid JSON at line {} column {}",
             error.line(),
             error.column()
-        )
+        ))
     })?;
     if let Some(error) = value.get("error").filter(|error| !error.is_null()) {
         let mapped = in_stream_context_overflow(error)
@@ -1976,6 +1976,21 @@ data: [DONE]
             Some("List first.")
         );
         Ok(())
+    }
+
+    #[test]
+    fn malformed_json_has_a_typed_decode_error_without_the_payload() {
+        let error = parse_streaming_chunk("{SYNTHETIC_PRIVATE_STREAM_SENTINEL").unwrap_err();
+        let provider = error.downcast_ref::<ProviderError>().unwrap();
+        assert!(matches!(provider, ProviderError::StreamDecode(_)));
+        assert!(crate::agents::mistakes::is_recoverable(provider));
+        assert!(!error
+            .to_string()
+            .contains("SYNTHETIC_PRIVATE_STREAM_SENTINEL"));
+
+        let invalid_shape = parse_streaming_chunk(r#"{"id":"x","model":"m"}"#).unwrap_err();
+        assert!(invalid_shape.downcast_ref::<ProviderError>().is_none());
+        assert!(invalid_shape.to_string().contains("invalid chunk shape"));
     }
 
     /// LC-8: llama-server's `return_progress` frames are consumed silently;

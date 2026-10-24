@@ -505,9 +505,11 @@ pub fn report_bug_tool() -> Tool {
             paths, usernames and anything credential-shaped, refuses the report
             if identifying material survives, and requires the user to approve
             the exact text before anything is published. A GitHub issue is
-            public and permanent. From a chat classified private nothing is
-            posted automatically: the user gets a prefilled GitHub page and
-            decides whether to submit.
+            public and permanent. A private chat can publish only one exact
+            reviewed report to the fixed Biorouter tracker after the person
+            clicks Allow once on the trusted approval card. This keeps the
+            chat private and never publishes its transcript or diagnostics
+            bundle. A chat message alone cannot authorize publication.
         "#}
         .to_string(),
         object!({

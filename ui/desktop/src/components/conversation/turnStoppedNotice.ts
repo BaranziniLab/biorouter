@@ -30,6 +30,23 @@ export function transcriptEndsStopped(messages: readonly Message[]): boolean {
   return isTurnStoppedNotice(messages[messages.length - 1]);
 }
 
+/** A later turn's Stop must not change the earlier turn's approval cards. */
+export function messageTurnWasStopped(messages: readonly Message[], index: number): boolean {
+  if (index < 0) return false;
+  for (let next = index + 1; next < messages.length; next++) {
+    const message = messages[next];
+    if (isTurnStoppedNotice(message)) return true;
+    if (
+      message.role === 'user' &&
+      message.metadata.userVisible &&
+      message.content.some((content) => content.type !== 'toolResponse')
+    ) {
+      return false;
+    }
+  }
+  return false;
+}
+
 /**
  * Make a live transcript agree with what a Stop wrote to the store.
  *

@@ -11762,6 +11762,9 @@ impl Agent {
                             // never ran out: measured, 11+ compactions in 26
                             // minutes against Ollama with no end in sight.
                             compaction_attempts = 0;
+                            // Partial chunks can still end in a transport error;
+                            // only a completed request replenishes its retry budget.
+                            mistakes.observe_provider_success();
                             break;
                         }
                         ProviderWake::ElicitationReady => {
@@ -11891,10 +11894,6 @@ impl Agent {
                                 yield AgentEvent::ToolCallPending(pending);
                                 continue;
                             }
-
-                            // BR-66: the provider is answering again; whatever blip
-                            // was retried before is over.
-                            mistakes.observe_provider_success();
 
                             // Emit model change event if provider is lead-worker. Read
                             // off the provider this request runs on: once per streamed
