@@ -988,13 +988,6 @@ pub async fn apply_diff(
     apply_diff_bounded(&crate::file_access::test_editor_path(path), diff, history).await
 }
 #[cfg(test)]
-pub async fn text_editor_view(
-    path: &PathBuf,
-    range: Option<(usize, i64)>,
-) -> Result<Vec<Content>, ErrorData> {
-    text_editor_view_bounded(&crate::file_access::test_editor_path(path), range).await
-}
-#[cfg(test)]
 pub async fn text_editor_write(path: &PathBuf, text: &str) -> Result<Vec<Content>, ErrorData> {
     text_editor_write_bounded(&crate::file_access::test_editor_path(path), text).await
 }
@@ -1013,21 +1006,6 @@ pub async fn text_editor_replace(
         new,
         diff,
         editor,
-        history,
-    )
-    .await
-}
-#[cfg(test)]
-pub async fn text_editor_insert(
-    path: &PathBuf,
-    line: i64,
-    text: &str,
-    history: &FileHistory,
-) -> Result<Vec<Content>, ErrorData> {
-    text_editor_insert_bounded(
-        &crate::file_access::test_editor_path(path),
-        line,
-        text,
         history,
     )
     .await
