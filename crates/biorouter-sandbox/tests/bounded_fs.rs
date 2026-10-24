@@ -599,6 +599,43 @@ mod unix {
             fs::metadata(path).unwrap().permissions().mode() & 0o777,
             0o600
         );
+        assert!(Command::new("/bin/chmod")
+            .args(["+a", "everyone allow read,file_inherit,directory_inherit"])
+            .arg(fixture.path())
+            .status()
+            .unwrap()
+            .success());
+        write(&fs, "normal-new", b"normal-inherited");
+        fs.bind("private-new", AccessMode::Write)
+            .unwrap()
+            .atomic_write_private(b"private-new")
+            .unwrap();
+        let inherited = Command::new("/bin/ls")
+            .arg("-le")
+            .arg(fixture.path().join("normal-new"))
+            .output()
+            .unwrap();
+        assert!(String::from_utf8(inherited.stdout)
+            .unwrap()
+            .contains("everyone"));
+        let private = Command::new("/bin/ls")
+            .arg("-le")
+            .arg(fixture.path().join("private-new"))
+            .output()
+            .unwrap();
+        assert!(!String::from_utf8(private.stdout)
+            .unwrap()
+            .contains("everyone"));
+        assert!(fs
+            .bind(".", AccessMode::Read)
+            .unwrap()
+            .list()
+            .unwrap()
+            .iter()
+            .all(|entry| !entry
+                .name
+                .to_string_lossy()
+                .starts_with(".biorouter-write-")));
     }
 
     #[test]
