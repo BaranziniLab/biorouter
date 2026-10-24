@@ -114,7 +114,7 @@ Available models:
 - `us.anthropic.claude-opus-4-5-20251101-v1:0` (Claude Opus 4.5)
 - `us.anthropic.claude-haiku-4-5-20251001-v1:0` (Claude Haiku 4.5)
 
-Each of these answered a request through the UCSF gateway: Claude Opus 5.5 and Sonnet 5.5 on 2026-10-22, the rest on 2026-10-05.
+The contributor reports successful gateway calls for Claude Opus 5.5 and Sonnet 5.5 on 2026-10-22 in [PR #434](https://github.com/BaranziniLab/biorouter/pull/434). The other listed models answered on 2026-10-05. These are account-specific availability checks. The new models' 1M context windows and base/cache prices follow [Anthropic's model specifications](https://platform.claude.com/docs/en/models/overview) and [pricing](https://platform.claude.com/docs/en/about-claude/pricing); the gateway checks did not measure the full 1M window.
 
 UCSF does not offer Claude Opus 5, Opus 4.7, Sonnet 4.5, Sonnet 4, Fable 5.1 or Fable 5 through Versa. Bedrock refuses requests for them from the UCSF account, so they are not listed. A chat still set to one of them stops with a message that names the models above; your access key pair is not the problem. Claude Fable models would stay off the list even if UCSF enabled them, because Bedrock serves Fable only to accounts whose data retention mode is `aws_review`. Claude Opus 4.1 still answers, but Amazon has marked it legacy and ends it on 2027-01-08, so it is not offered either. Claude Opus 4 and the Claude 3 models are retired on Bedrock.
 

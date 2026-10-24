@@ -141,9 +141,10 @@ pub const VERSA_BEDROCK_DEFAULT_MODEL: &str = "us.anthropic.claude-opus-4-8";
 // comes back for a wrong spelling — so the id shape is whatever AWS publishes;
 // the only open question for a new id is UCSF's entitlement.
 //
-// Every entry below answered a real Converse round-trip through the UCSF proxy
-// on 2026-10-05, newest first within each generation. Users can type any other
-// ID via the "Enter a model not listed..." option once UCSF enables it.
+// The original entries answered a real Converse round-trip through the UCSF
+// proxy on 2026-10-05. PR #434 reports the same check for Opus 5.5 and Sonnet
+// 5.5 on 2026-10-22. Keep the default first for the model picker; users can
+// enter other IDs once UCSF enables them.
 //
 // Measured on 2026-10-05 and deliberately NOT listed:
 //   * Refused by UCSF's IAM policy: AWS answered `AccessDeniedException`
@@ -183,7 +184,7 @@ pub const VERSA_BEDROCK_KNOWN_MODELS: &[&str] = &[
     "us.anthropic.claude-opus-4-8",
     // Opus 5.5 (1M context, $4/$20) and Sonnet 5.5 (1M context, $2/$10).
     // Enabled on UCSF's account after the 2026-10-05 IAM refusal recorded
-    // above; the user reported both available on 2026-10-22.
+    // above; PR #434 reports successful live calls on 2026-10-22.
     "us.anthropic.claude-opus-5-5",
     "us.anthropic.claude-sonnet-5-5",
     // Sonnet 5 (1M context, $2/$10). First answered through the proxy on
@@ -904,8 +905,8 @@ mod tests {
             assert_eq!(
                 text.match_indices(*model)
                     .filter(|(at, _)| {
-                        !text[at + model.len()..]
-                            .starts_with(|c: char| c.is_ascii_alphanumeric() || c == '-')
+                        let (_, suffix) = text.split_at(at + model.len());
+                        !suffix.starts_with(|c: char| c.is_ascii_alphanumeric() || c == '-')
                     })
                     .count(),
                 1,
@@ -1178,9 +1179,8 @@ mod tests {
     }
 
     /// The UI auto-selects `known_models[0]` on a provider switch, so the
-    /// default and the first entry must agree. The list is exactly the ids that
-    /// answered through the UCSF proxy on 2026-10-05, and none that UCSF's
-    /// account refused or that Bedrock retired.
+    /// default and the first entry must agree. Retired models and models the
+    /// UCSF account still refuses stay out of the catalog.
     #[test]
     fn the_offered_list_is_exactly_what_the_ucsf_proxy_answered() {
         assert_eq!(VERSA_BEDROCK_DEFAULT_MODEL, "us.anthropic.claude-opus-4-8");
@@ -1281,41 +1281,73 @@ mod tests {
         );
     }
 
-    /// A Converse request for a preserved-thinking model carries no replayed
-    /// reasoning, on the real wire, while the same history for Opus 4.8 keeps
-    /// it — the stripping is keyed on the model and nothing else.
-    ///
-    /// Opus 5.5 is offered here again (enabled on UCSF's account, 2026-10-22);
-    /// the id is a preserved-thinking model, and the builder is the one the
-    /// public card shares.
     #[tokio::test]
     async fn converse_strips_replayed_reasoning_only_for_preserved_thinking_models() {
+        let call = rmcp::model::CallToolRequestParams {
+            task: None,
+            name: "list_files".into(),
+            arguments: Some(serde_json::Map::new()),
+            meta: None,
+        };
         let history = [
             Message::user().with_text("first"),
             Message::assistant()
                 .with_thinking("", "sig-1")
-                .with_text("answer"),
-            Message::user().with_text("second"),
+                .with_redacted_thinking("cmVkYWN0ZWQ=")
+                .with_text("answer")
+                .with_tool_request("call-1", Ok(call)),
+            Message::user()
+                .with_tool_response(
+                    "call-1",
+                    Ok(rmcp::model::CallToolResult::success(vec![
+                        rmcp::model::Content::text("a.txt"),
+                    ])),
+                )
+                .with_text("second"),
         ];
 
-        for (model, expect_reasoning) in [
-            ("us.anthropic.claude-opus-5-5", false),
-            ("us.anthropic.claude-opus-4-8", true),
-        ] {
-            let (provider, captured) = capturing_provider().await;
-            let _ = provider
-                .converse(&ModelConfig::new_or_fail(model), "system", &history, &[])
-                .await;
-            let request = captured.expect_request();
-            let body = request.body().bytes().expect("buffered request body");
-            let json: serde_json::Value = serde_json::from_slice(body).expect("JSON body");
-            let rendered = json["messages"].to_string();
-            assert_eq!(
-                rendered.contains("reasoningContent"),
-                expect_reasoning,
-                "{model}: {rendered}"
-            );
-            assert_eq!(json["messages"].as_array().unwrap().len(), 3, "{model}");
+        for streaming in [false, true] {
+            for (model, expect_reasoning) in [
+                ("us.anthropic.claude-opus-5-5", false),
+                ("us.anthropic.claude-sonnet-5-5", false),
+                ("us.anthropic.claude-opus-4-8", true),
+            ] {
+                let (provider, captured) = capturing_provider().await;
+                let config = ModelConfig::new_or_fail(model)
+                    .with_max_tokens(Some(12_345))
+                    .with_temperature(Some(0.25));
+                if streaming {
+                    let _ = provider
+                        .converse_stream(&config, "updated system", &history, &[])
+                        .await;
+                } else {
+                    let _ = provider
+                        .converse(&config, "updated system", &history, &[])
+                        .await;
+                }
+                let request = captured.expect_request();
+                let body = request.body().bytes().expect("buffered request body");
+                let json: serde_json::Value = serde_json::from_slice(body).expect("JSON body");
+                let rendered = json["messages"].to_string();
+                assert_eq!(
+                    rendered.contains("reasoningContent"),
+                    expect_reasoning,
+                    "{model}, streaming={streaming}: {rendered}"
+                );
+                assert_eq!(json["messages"].as_array().unwrap().len(), 3, "{model}");
+                let assistant = json["messages"][1]["content"].as_array().unwrap();
+                assert!(assistant.iter().any(|block| block["text"] == "answer"));
+                assert!(assistant
+                    .iter()
+                    .any(|block| block["toolUse"]["toolUseId"] == "call-1"));
+                let response = json["messages"][2]["content"].as_array().unwrap();
+                assert!(response
+                    .iter()
+                    .any(|block| block["toolResult"]["toolUseId"] == "call-1"));
+                assert!(rendered.contains("a.txt"));
+                assert_eq!(json["inferenceConfig"]["maxTokens"], 12_345);
+                assert!(json["inferenceConfig"].get("temperature").is_none());
+            }
         }
     }
 

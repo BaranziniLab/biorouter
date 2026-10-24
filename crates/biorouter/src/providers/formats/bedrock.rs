@@ -272,11 +272,11 @@ fn bedrock_uses_adaptive_thinking(model_name: &str) -> bool {
 /// ConverseStream on both Bedrock providers, so the four request builders
 /// cannot disagree about what history they send.
 ///
-/// For a preserved-thinking model (Opus 5.5, Fable 5.1 — see
+/// For a preserved-thinking model (Opus 5.5, Sonnet 5.5, Fable 5.1 — see
 /// `formats::anthropic::uses_preserved_thinking`) every replayed reasoning
 /// block is stripped first. Their signatures bind the conversation prefix,
-/// BioRouter's prefix moves on every request, and a new Bedrock account gets a
-/// 400 for a replayed block whose prefix changed. The Claude API answers that
+/// which provider callers can edit, and a new Bedrock account gets a 400 for a
+/// replayed block whose prefix changed. The Claude API answers that
 /// with `drop_block`, but on Bedrock the thinking-binding controls beta arrives
 /// per model and is rejected until then (Anthropic platform-availability
 /// table, 2026-09-25), so stripping is the only request that works for every
@@ -3282,6 +3282,8 @@ mod tests {
             "us.anthropic.claude-opus-5-5",
             "us.anthropic.claude-fable-5-1",
             "claude-opus-5-5",
+            "us.anthropic.claude-sonnet-5-5",
+            "claude-sonnet-5-5",
         ] {
             let sent = to_bedrock_messages(model, &history).unwrap();
             assert_eq!(reasoning_blocks(&sent), 0, "{model}");

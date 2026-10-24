@@ -588,7 +588,7 @@ pub(crate) fn uses_adaptive_thinking(model_name: &str) -> bool {
 pub const THINKING_BINDING_CONTROLS_BETA: &str = "thinking-binding-controls-2026-08-01";
 
 /// Models whose thinking blocks are bound to the conversation that produced
-/// them ("preserved thinking"): Claude Opus 5.5 and Fable 5.1.
+/// them ("preserved thinking"): Claude Opus 5.5, Sonnet 5.5 and Fable 5.1.
 ///
 /// Mythos 5.1 is matched too, but Anthropic's preserved-thinking page says it
 /// does NOT run the prefix check (checked 2026-09-25). Keeping it here costs
@@ -605,15 +605,12 @@ pub const THINKING_BINDING_CONTROLS_BETA: &str = "thinking-binding-controls-2026
 /// and on Bedrock / Vertex alike (Anthropic migration guide, "preserved
 /// thinking", checked 2026-09-25).
 ///
-/// BioRouter edits that prefix on almost every request, so replaying these
-/// blocks as they are cannot work for a new account:
-/// - the system prompt carries an hourly timestamp
-///   (`agents/prompt_manager.rs::current_hour_timestamp`) and changes when an
-///   extension is toggled;
-/// - the MOIM `<info-msg>` block is injected into the newest user message of
-///   every provider call and is never persisted (`agents/moim.rs`), so the
-///   copy the previous call carried is gone from the next one — every earlier
-///   block's prefix differs on every request, even inside one tool loop.
+/// A caller can change that prefix when it updates instructions, tools or
+/// earlier context. The agent has its own signed-replay guards, but provider
+/// entry points must also handle callers that do not use that loop. Sonnet 5.5
+/// has the same check on Bedrock (Anthropic's Sonnet 5.5 migration guide,
+/// "Thinking blocks are tied to the model and the conversation", checked
+/// 2026-10-23).
 ///
 /// The direct API answers that with [`apply_thinking_block_binding`]; Bedrock
 /// and Vertex, where the controls beta is not offered yet, strip the blocks
@@ -626,6 +623,8 @@ pub fn uses_preserved_thinking(model_name: &str) -> bool {
     const PRESERVED_THINKING: &[&str] = &[
         "opus-5-5",
         "opus-5.5",
+        "sonnet-5-5",
+        "sonnet-5.5",
         "fable-5-1",
         "fable-5.1",
         "mythos-5-1",
@@ -648,11 +647,8 @@ pub fn uses_preserved_thinking(model_name: &str) -> bool {
 /// itself so the header can never be decided for a different model than the
 /// body names.
 ///
-/// `thinking` is sent as `adaptive` explicitly. These models always think
-/// (`disabled` and `budget_tokens` are both 400s), so this changes nothing
-/// about the request except making room for `block_binding`, which is only
-/// accepted inside the `thinking` object. A `display` the caller already set
-/// is kept.
+/// `block_binding` is accepted only inside adaptive thinking. The request
+/// builder uses that mode for these models; keep any `display` it already set.
 ///
 /// Claude API only: the controls beta arrives per model on Bedrock and Vertex
 /// and is rejected there until then, so those paths must not call this.
@@ -686,14 +682,11 @@ pub fn apply_thinking_block_binding(payload: &mut Value) -> bool {
 /// removed — the path for preserved-thinking models on platforms where
 /// `drop_block` is not available (Bedrock, Vertex).
 ///
-/// Why every block, and not only those of completed turns: the MOIM block (see
-/// [`uses_preserved_thinking`]) moves on each provider call, so even the blocks
-/// of the tool loop still in progress were produced under a prefix the next
-/// request no longer carries. Keeping them would 400 on the second request of
-/// every tool loop for a new account. On the Claude API `drop_block` reaches
-/// the same result from the other side — the first block mismatches, so it
-/// and every later one are dropped — so the two paths agree about what the
-/// model sees. Removing blocks from the front of the history is what
+/// Provider callers can edit earlier context without the agent's signed-replay
+/// guard. Without proof that the prefix is unchanged, no replayed block can be
+/// assumed valid. Keeping an affected block can return 400 on an enforcing
+/// account. The Claude API's `drop_block` instead discards the first mismatched
+/// block and every block after it. Removing blocks from the front of the history is what
 /// Anthropic's rules allow (each block chains to the one before it), and
 /// removing all of them trivially satisfies that; text and tool calls stay.
 ///
@@ -1691,6 +1684,11 @@ mod tests {
             "anthropic/claude-fable-5.1",
             "claude-mythos-5-1",
             "Claude-Opus-5-5",
+            "claude-sonnet-5-5",
+            "anthropic/claude-sonnet-5.5",
+            "us.anthropic.claude-sonnet-5-5",
+            "global.anthropic.claude-sonnet-5-5",
+            "Claude-Sonnet-5-5",
         ] {
             assert!(uses_preserved_thinking(model), "{model}");
         }
@@ -1709,25 +1707,24 @@ mod tests {
         }
     }
 
-    // A deep-effort Opus 5.5 turn already carries `{"type": "adaptive"}`; the
-    // binding must be added to it, not replace it with a budgeted shape, and
-    // must survive alongside max_tokens untouched.
     #[test]
     fn block_binding_rides_inside_adaptive_thinking() -> Result<()> {
-        let mut config = ModelConfig::new_or_fail("claude-opus-5-5")
-            .with_reasoning_effort(Some(ReasoningEffort::Deep));
-        config.max_tokens = Some(8000);
-        let mut payload =
-            create_request(&config, "system", &[Message::user().with_text("hi")], &[])?;
+        for model in ["claude-opus-5-5", "claude-sonnet-5-5"] {
+            let mut config =
+                ModelConfig::new_or_fail(model).with_reasoning_effort(Some(ReasoningEffort::Deep));
+            config.max_tokens = Some(8000);
+            let mut payload =
+                create_request(&config, "system", &[Message::user().with_text("hi")], &[])?;
 
-        assert!(apply_thinking_block_binding(&mut payload));
-        assert_eq!(payload["thinking"]["type"], "adaptive");
-        assert_eq!(
-            payload["thinking"]["block_binding"]["prefix_mismatch_behavior"],
-            "drop_block"
-        );
-        assert!(payload["thinking"].get("budget_tokens").is_none());
-        assert_eq!(payload["max_tokens"], json!(8000));
+            assert!(apply_thinking_block_binding(&mut payload), "{model}");
+            assert_eq!(payload["thinking"]["type"], "adaptive", "{model}");
+            assert_eq!(
+                payload["thinking"]["block_binding"]["prefix_mismatch_behavior"], "drop_block",
+                "{model}"
+            );
+            assert!(payload["thinking"].get("budget_tokens").is_none());
+            assert_eq!(payload["max_tokens"], json!(8000), "{model}");
+        }
         Ok(())
     }
 
@@ -1783,9 +1780,6 @@ mod tests {
             .count()
     }
 
-    // Every replayed block goes — the completed turn's AND the tool loop in
-    // progress, because the MOIM moved since each was produced — while text,
-    // tool calls and tool results stay exactly where they were.
     #[test]
     fn without_replayed_thinking_strips_every_block_and_keeps_the_rest() {
         let call = CallToolRequestParams {

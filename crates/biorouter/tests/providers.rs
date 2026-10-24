@@ -888,9 +888,8 @@ async fn test_versa_bedrock_provider_sonnet_4_6() -> Result<()> {
 }
 
 /// Sonnet 5 over the Versa proxy: the id `VERSA_BEDROCK_KNOWN_MODELS` gained on
-/// 2026-10-05, when it first answered through UCSF's gateway, and the only
-/// Claude 5 model UCSF's account may invoke. Pinned literally, like the test
-/// above, so a change to the list cannot quietly stop covering it.
+/// 2026-10-05, when it first answered through UCSF's gateway. Pinned literally,
+/// like the test above, so a list change cannot quietly stop covering it.
 #[tokio::test]
 #[ignore = "live billed Versa Bedrock call; run deliberately with --ignored"]
 async fn test_versa_bedrock_provider_sonnet_5() -> Result<()> {
