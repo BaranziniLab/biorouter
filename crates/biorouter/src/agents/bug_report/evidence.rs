@@ -27,8 +27,9 @@
 //! so the taxonomy is taken from there rather than re-derived, and a failure
 //! keeps the `kind`/`retryable` grading BR-51 gave it.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
+use crate::agents::operation_outcome::{self, OperationStatus};
 use crate::agents::tool_errors::{self, ToolError, ToolErrorKind};
 use crate::conversation::message::{Message, MessageContent};
 use crate::conversation::Conversation;
@@ -119,6 +120,10 @@ pub struct Evidence {
     pub failures: Vec<ToolFailure>,
     /// Total failed calls, before de-duplication.
     pub total_failed_calls: usize,
+    /// Failed nested calls caught inside successful code execution.
+    pub total_failed_nested_calls: usize,
+    /// Distinct failed operations, keyed by extension and operation id rather than poll count.
+    pub total_failed_operations: usize,
     /// Total tool calls in the session, so "3 of 4 calls failed" is available.
     pub total_tool_calls: usize,
     /// The user's own recent prose, clipped.
@@ -341,6 +346,9 @@ pub fn failures_in(conversation: &Conversation) -> (Vec<ToolFailure>, usize, usi
         })
         .collect();
 
+    collected.extend(operation_failures_in(conversation));
+    collected.extend(nested_failures_in(conversation));
+
     // Most repeated first, then the un-retryable, then transcript order — which
     // `sort_by_key` preserves because it is stable.
     collected.sort_by_key(|failure| {
@@ -352,6 +360,108 @@ pub fn failures_in(conversation: &Conversation) -> (Vec<ToolFailure>, usize, usi
     collected.truncate(MAX_FAILURES);
 
     (collected, total_failed, total_calls, externalized)
+}
+
+pub fn nested_failures_in(conversation: &Conversation) -> Vec<ToolFailure> {
+    let names: HashMap<_, _> = conversation
+        .messages()
+        .iter()
+        .flat_map(|message| &message.content)
+        .filter_map(|content| content.as_tool_request())
+        .filter_map(|request| {
+            request
+                .tool_call
+                .as_ref()
+                .ok()
+                .map(|call| (request.id.as_str(), call.name.as_ref()))
+        })
+        .collect();
+    let mut failures: Vec<ToolFailure> = Vec::new();
+    for response in conversation
+        .messages()
+        .iter()
+        .flat_map(|message| &message.content)
+        .filter_map(|content| content.as_tool_response())
+    {
+        let Some(name) = names.get(response.id.as_str()) else {
+            continue;
+        };
+        for nested in tool_errors::nested_tool_failures(name, &response.tool_result) {
+            let message = clip(&nested.error.message, MESSAGE_CLIP_CHARS);
+            if let Some(existing) = failures.iter_mut().find(|failure| {
+                failure.tool_name.as_deref() == Some(nested.tool_name.as_str())
+                    && failure.kind == nested.error.kind
+                    && failure.message == message
+            }) {
+                existing.occurrences += 1;
+                continue;
+            }
+            failures.push(ToolFailure {
+                tool_name: Some(nested.tool_name),
+                kind: nested.error.kind,
+                retryable: nested.error.retryable,
+                looks_deliberate: looks_deliberate(&nested.error.message),
+                message,
+                occurrences: 1,
+                arguments: nested.arguments.map(|args| clip(&args, 300)),
+            });
+        }
+    }
+    failures
+}
+
+pub fn operation_failures_in(conversation: &Conversation) -> Vec<ToolFailure> {
+    let names: HashMap<_, _> = conversation
+        .messages()
+        .iter()
+        .flat_map(|message| &message.content)
+        .filter_map(|content| content.as_tool_request())
+        .filter_map(|request| {
+            request
+                .tool_call
+                .as_ref()
+                .ok()
+                .map(|call| (request.id.as_str(), call.name.as_ref()))
+        })
+        .collect();
+    let mut seen = HashSet::new();
+    let mut failures = Vec::new();
+    for response in conversation
+        .messages()
+        .iter()
+        .flat_map(|message| &message.content)
+        .filter_map(|content| content.as_tool_response())
+    {
+        let name = names
+            .get(response.id.as_str())
+            .copied()
+            .unwrap_or("(unmatched response)");
+        for (tool_name, operation) in
+            operation_outcome::observed_operations(name, &response.tool_result)
+        {
+            if operation.status != OperationStatus::Failed
+                || !seen.insert((
+                    operation_outcome::extension_name(&tool_name).to_string(),
+                    operation.id.clone(),
+                ))
+            {
+                continue;
+            }
+            let error = operation
+                .failure()
+                .expect("a failed operation has a failure summary");
+            failures.push(ToolFailure {
+                tool_name: Some(tool_name),
+                kind: error.kind,
+                retryable: error.retryable,
+                message: clip(&error.message, MESSAGE_CLIP_CHARS),
+                occurrences: 1,
+                arguments: None,
+                looks_deliberate: false,
+            });
+        }
+    }
+    failures
 }
 
 /// Phrases that carry no information about the bug, only the request to file
@@ -502,6 +612,11 @@ pub fn collect(session: &Session, conversation: &Conversation) -> Evidence {
         session_id: session.id.clone(),
         failures,
         total_failed_calls,
+        total_failed_nested_calls: nested_failures_in(conversation)
+            .iter()
+            .map(|failure| failure.occurrences)
+            .sum(),
+        total_failed_operations: operation_failures_in(conversation).len(),
         total_tool_calls,
         recent_user_messages: recent_user_text(conversation),
         externalized_results,
@@ -693,6 +808,8 @@ mod tests {
             session_id: "s".into(),
             failures,
             total_failed_calls: 0,
+            total_failed_nested_calls: 0,
+            total_failed_operations: 0,
             total_tool_calls: 0,
             recent_user_messages: Vec::new(),
             externalized_results: 0,

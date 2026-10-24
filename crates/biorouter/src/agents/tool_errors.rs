@@ -344,6 +344,88 @@ pub fn classify(result: &ToolResult<CallToolResult>) -> Option<ToolError> {
     }
 }
 
+#[derive(Debug, Clone)]
+pub struct NestedToolFailure {
+    pub tool_name: String,
+    pub arguments: Option<String>,
+    pub error: ToolError,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct NestedFailureProvenance {
+    kind: ToolErrorKind,
+    retryable: bool,
+}
+
+/// Supplemental failures that a successful script caught, authenticated by its request.
+/// Uncaught failures already have an outer error; job outcomes have their own census.
+pub fn nested_tool_failures(
+    tool_name: &str,
+    result: &ToolResult<CallToolResult>,
+) -> Vec<NestedToolFailure> {
+    if !super::code_execution_extension::is_execute_code_call(tool_name) {
+        return Vec::new();
+    }
+    let Ok(call) = result else {
+        return Vec::new();
+    };
+    if call.is_error == Some(true) {
+        return Vec::new();
+    }
+    let Some(records) = call
+        .meta
+        .as_ref()
+        .and_then(|meta| meta.get("biorouter/tool-calls"))
+        .and_then(Value::as_array)
+    else {
+        return Vec::new();
+    };
+    records
+        .iter()
+        .filter(|record| record.get("status").and_then(Value::as_str) == Some("error"))
+        .filter(|record| {
+            record
+                .get("operation")
+                .and_then(super::operation_outcome::OperationOutcome::from_value)
+                .is_none_or(|operation| operation.failure().is_none())
+        })
+        .filter_map(|record| {
+            let name = record.get("tool")?.as_str()?.trim();
+            if name.is_empty() {
+                return None;
+            }
+            let message = record
+                .get("error")
+                .and_then(Value::as_str)
+                .filter(|text| !text.trim().is_empty())
+                .unwrap_or("Nested tool failed (details unavailable).");
+            let mut error = match record.get("failure") {
+                Some(value) => {
+                    let provenance =
+                        serde_json::from_value::<NestedFailureProvenance>(value.clone());
+                    let mut error = ToolError::new(ToolErrorKind::ToolFailure, message);
+                    if let Ok(provenance) = provenance {
+                        error.kind = provenance.kind;
+                        error.retryable = provenance.retryable;
+                    }
+                    error
+                }
+                None => classify_text(message),
+            };
+            error.message = ToolError::new(error.kind, message).message;
+            Some(NestedToolFailure {
+                tool_name: name.chars().take(256).collect(),
+                arguments: record
+                    .get("args")
+                    .and_then(Value::as_str)
+                    .map(|args| args.chars().take(2048).collect()),
+                error,
+            })
+        })
+        .collect()
+}
+
 /// Classify a borrowed completed call without copying its output or artifacts.
 pub(crate) fn classify_call_result(call: &CallToolResult) -> Option<ToolError> {
     if call.is_error != Some(true) {

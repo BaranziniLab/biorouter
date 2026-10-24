@@ -274,7 +274,7 @@ pub struct DetectableProvidersResponse {
         (status = 400, description = "Refused (issue #56, DR-27): \
                                       `BIOROUTER_PRIVACY_MIXING_POLICY` is one of 'open', \
                                       'standard' or 'strict'. Also `BIOROUTER_MAX_TURNS`, which \
-                                      must be a whole number of at least 1"),
+                                      must be a whole number of at least 0 (0 means unlimited)"),
         (status = 403, description = "Refused: `BIOROUTER_PRIVACY_TIERS` is the master privacy \
                                       switch and may only be written from Settings > App > \
                                       Privacy, \
@@ -656,11 +656,8 @@ fn setting_text(value: &Value) -> String {
 /// Why a value cannot be stored under `key`, for the few keys whose shape the
 /// daemon knows, or `None` when it may be written.
 ///
-/// `BIOROUTER_MAX_TURNS` is a limit only as a whole number of at least 1.
-/// Settings saved `0` whenever its field was cleared (`Number('')` is 0), and a
-/// stored 0 stopped every new chat before its first model call; a negative
-/// number was stored and silently ignored. The agent now also treats such a
-/// stored value as unset, but refusing it here keeps it out of the file at all.
+/// Zero explicitly means unlimited turns. Empty and invalid entries must not
+/// silently remove a saved limit.
 fn config_value_refusal(key: &str, value: &Value) -> Option<String> {
     if key != "BIOROUTER_MAX_TURNS" {
         return None;
@@ -670,10 +667,10 @@ fn config_value_refusal(key: &str, value: &Value) -> Option<String> {
         Value::String(text) => text.trim().parse::<u64>().ok(),
         _ => None,
     };
-    match parsed.filter(|turns| *turns >= 1).map(u32::try_from) {
+    match parsed.map(u32::try_from) {
         Some(Ok(_)) => None,
         _ => Some(format!(
-            "Max turns must be a whole number of at least 1, so {value} was not saved."
+            "Max turns must be a whole number of at least 0 (0 means unlimited), so {value} was not saved."
         )),
     }
 }
@@ -3816,18 +3813,13 @@ mod tests {
         assert!(!refusal.contains("Settings > Privacy"), "{refusal}");
     }
 
-    /// W2-PRV-10. Settings saved `0` when its Max turns field was cleared, and
-    /// a stored 0 stopped every new chat before its first model call. The write
-    /// path refuses anything that is not a whole number of at least 1, with a
-    /// sentence, and leaves every other key alone.
+    /// Explicit zero removes the limit; malformed or empty entries do not.
     #[test]
-    fn max_turns_below_one_is_refused_with_a_sentence() {
+    fn max_turns_accepts_unlimited_and_refuses_invalid_values() {
         use serde_json::json;
         for refused in [
-            json!(0),
             json!(-5),
             json!(""),
-            json!("0"),
             json!(" -1 "),
             json!(2.5),
             json!("many"),
@@ -3837,11 +3829,20 @@ mod tests {
             let refusal = config_value_refusal("BIOROUTER_MAX_TURNS", &refused)
                 .unwrap_or_else(|| panic!("{refused} was accepted as a max-turns limit"));
             assert!(
-                refusal.starts_with("Max turns must be a whole number of at least 1"),
+                refusal.starts_with(
+                    "Max turns must be a whole number of at least 0 (0 means unlimited)"
+                ),
                 "{refusal}"
             );
         }
-        for accepted in [json!(1), json!(100), json!("250"), json!(u32::MAX)] {
+        for accepted in [
+            json!(0),
+            json!("0"),
+            json!(1),
+            json!(100),
+            json!("250"),
+            json!(u32::MAX),
+        ] {
             assert_eq!(
                 config_value_refusal("BIOROUTER_MAX_TURNS", &accepted),
                 None,

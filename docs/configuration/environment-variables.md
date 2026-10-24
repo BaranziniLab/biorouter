@@ -142,13 +142,16 @@ These variables control how biorouter manages conversation sessions and context.
 | Variable | Purpose | Values | Default |
 |----------|---------|---------|---------|
 | `BIOROUTER_CONTEXT_STRATEGY` | Controls how biorouter handles context-limit-exceeded situations | `"summarize"`, `"truncate"`, `"clear"`, `"prompt"` | `"prompt"` (interactive), `"summarize"` (headless) |
-| `BIOROUTER_MAX_TURNS` | Maximum number of turns allowed without user input | A whole number of at least 1 (e.g. 10, 50, 100). Any other value, such as `0`, is ignored with a warning in the log, and the default applies | 100 |
+| `BIOROUTER_MAX_TURNS` | Maximum number of turns allowed without user input | A whole number: `0` means Unlimited; a positive number sets a limit. Invalid values are ignored with a warning | 0 (Unlimited) |
+| `BIOROUTER_MAX_TOOL_CALLS` | Maximum number of tool calls allowed without user input | A whole number: `0` means Unlimited; a positive number sets a limit. Invalid values are ignored | 0 (Unlimited) |
 | `BIOROUTER_SUBAGENT_MAX_TURNS` | Sets the maximum turns allowed for a [subagent](../agent-loop/subagents.md) to complete before timeout | Integer (e.g. 25) | 25 |
 | `CONTEXT_FILE_NAMES` | Specifies custom filenames for hint/context files | JSON array of strings (e.g. `["CLAUDE.md", ".biorouterhints"]`) | `[".biorouterhints"]` |
 | `BIOROUTER_CLI_THEME` | [Theme](../cli/command-reference.md#themes) for CLI response markdown | `"light"`, `"dark"`, `"ansi"` | `"dark"` |
 | `BIOROUTER_RANDOM_THINKING_MESSAGES` | Controls whether to show amusing random messages during processing | `"true"`, `"false"` | `"true"` |
 | `BIOROUTER_CLI_SHOW_COST` | Toggles display of model cost estimates in CLI output | `"true"`, `"1"` (case insensitive) to enable | false |
 | `BIOROUTER_AUTO_COMPACT_THRESHOLD` | Percentage threshold at which biorouter automatically summarizes your session | Float between 0.0 and 1.0 (disabled at 0.0) | 0.8 |
+
+Ordinary chats have no turn or tool-call limit by default. Existing positive limits remain in effect until you change them; select **Unlimited** in Settings > Chat > Approvals or set the value to `0`. Stop, explicit reply budgets, and loop recovery remain active. See [Long-running tasks](../agent-loop/long-running-tasks.md).
 
 The lost example block for this section covered these scenarios:
 

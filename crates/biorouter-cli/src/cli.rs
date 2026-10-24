@@ -143,8 +143,8 @@ pub struct SessionOptions {
     #[arg(
         long = "max-turns",
         value_name = "NUMBER",
-        help = "Maximum number of turns allowed without user input (default: 100)",
-        long_help = "Set a limit on how many turns (iterations) the agent can take without asking for user input to continue."
+        help = "Maximum number of turns allowed without user input (default: 0, unlimited)",
+        long_help = "Set a limit on how many turns (iterations) the agent can take without asking for user input to continue. Use 0 for unlimited turns (the default). Existing loop detection and Stop still apply."
     )]
     pub max_turns: Option<u32>,
 }
@@ -3871,7 +3871,7 @@ mod default_max_turns_tests {
             .find(|line| line.contains("Maximum number of turns allowed without user input"))
             .expect("the --max-turns help string moved; update this test with it");
         assert!(
-            line.contains(&format!("(default: {DEFAULT_MAX_TURNS})")),
+            line.contains(&format!("(default: {DEFAULT_MAX_TURNS}, unlimited)")),
             "--max-turns help announces a different default from DEFAULT_MAX_TURNS ({DEFAULT_MAX_TURNS}): {line}"
         );
     }

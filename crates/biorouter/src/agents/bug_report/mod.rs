@@ -371,12 +371,16 @@ fn render_digest(evidence: &Evidence, scrubbed_working_dir: &str) -> String {
         scrubbed_working_dir,
     ));
     out.push_str(&format!(
-        "Tool calls in this chat: {} total, {} failed.\n",
-        evidence.total_tool_calls, evidence.total_failed_calls
+        "Tool calls in this chat: {} total, {} failed. Distinct failed operations: {}.\n",
+        evidence.total_tool_calls, evidence.total_failed_calls, evidence.total_failed_operations
+    ));
+    out.push_str(&format!(
+        "Caught nested tool failures: {}.\n",
+        evidence.total_failed_nested_calls
     ));
 
     if evidence.failures.is_empty() {
-        out.push_str("\nNo failed tool calls are recorded in this chat.\n");
+        out.push_str("\nNo failed tool calls or operations are recorded in this chat.\n");
         return out;
     }
 
@@ -1466,6 +1470,8 @@ mod tests {
             session_id: "s".into(),
             failures: Vec::new(),
             total_failed_calls: 0,
+            total_failed_nested_calls: 0,
+            total_failed_operations: 0,
             total_tool_calls: 0,
             recent_user_messages: Vec::new(),
             externalized_results: 0,
@@ -1478,6 +1484,36 @@ mod tests {
             enabled_extensions: Vec::new(),
             working_dir: "~/demo".into(),
         }
+    }
+
+    #[tokio::test]
+    async fn caught_nested_failures_have_their_own_census_and_inner_tool_headline() {
+        let mut evidence = evidence_for("1.93.4");
+        evidence.total_tool_calls = 2;
+        evidence.total_failed_nested_calls = 1;
+        evidence.failures.push(evidence::ToolFailure {
+            tool_name: Some("fixture__query_job_status".into()),
+            kind: crate::agents::tool_errors::ToolErrorKind::NotFound,
+            retryable: false,
+            message: "Unknown job ID.".into(),
+            occurrences: 1,
+            arguments: None,
+            looks_deliberate: false,
+        });
+        let body = body_of(&analyze(&evidence, None, "~/demo", false).await);
+        assert!(
+            body.contains("2 total, 0 failed. Distinct failed operations: 0."),
+            "{body}"
+        );
+        assert!(body.contains("Caught nested tool failures: 1."), "{body}");
+        assert!(
+            body.contains("fixture__query_job_status failed with not_found"),
+            "{body}"
+        );
+        assert!(
+            !body.contains("No failed tool calls or operations"),
+            "{body}"
+        );
     }
 
     /// ⚠ The conclusive branch sends the model to investigate before it

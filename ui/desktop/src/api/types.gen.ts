@@ -7876,7 +7876,7 @@ export type UpsertConfigData = {
 
 export type UpsertConfigErrors = {
     /**
-     * Refused (issue #56, DR-27): `BIOROUTER_PRIVACY_MIXING_POLICY` is one of 'open', 'standard' or 'strict'. Also `BIOROUTER_MAX_TURNS`, which must be a whole number of at least 1
+     * Refused (issue #56, DR-27): `BIOROUTER_PRIVACY_MIXING_POLICY` is one of 'open', 'standard' or 'strict'. Also `BIOROUTER_MAX_TURNS`, which must be a whole number of at least 0 (0 means unlimited)
      */
     400: unknown;
     /**
