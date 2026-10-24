@@ -85,6 +85,11 @@ pub async fn confirm_tool_action(
             biorouter::pending_user_action::PendingUserActions::global().peek(&request.id),
             Some(biorouter::pending_user_action::UserActionRequest::FolderAccess(_))
         );
+    if folder_request {
+        super::session_reach::session_reach(state.session_manager(), &request.session_id, &headers)
+            .await
+            .map_err(|error| status_only(error.status))?;
+    }
     let folder_decline = folder_request && matches!(request.action.as_str(), "deny" | "cancel");
     let proof = if folder_decline {
         UserActionProof::Unproven
@@ -550,6 +555,116 @@ pub fn routes(state: Arc<AppState>) -> Router {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn a_folder_approval_key_cannot_reach_a_private_or_unknown_session() {
+        if !crate::test_sandbox::in_a_process_of_its_own() {
+            return;
+        }
+        use crate::routes::session::diverge_tests::{
+            install_test_user_action_key, TEST_USER_ACTION_KEY,
+        };
+        use biorouter::pending_user_action::{
+            FolderAccessRequest, PendingUserActions, UserActionOutcome, UserActionRequest,
+        };
+        use biorouter::privacy::SessionClassification;
+        use sha2::Digest;
+
+        install_test_user_action_key();
+        let folder_key = "synthetic-folder-only-approval-key";
+        biorouter_server::auth::install_folder_access_action_digest(Some(
+            sha2::Sha256::digest(folder_key.as_bytes()).into(),
+        ));
+        let mut browser_headers = HeaderMap::new();
+        browser_headers.insert("X-Folder-Access-Key", folder_key.parse().unwrap());
+        assert_eq!(
+            biorouter_server::auth::folder_access_action_proof(&browser_headers),
+            UserActionProof::Proven
+        );
+        let state = AppState::new().await.unwrap();
+        let workspace = tempfile::tempdir().unwrap();
+        let session = state
+            .session_manager()
+            .create_session(
+                workspace.path().to_path_buf(),
+                "Synthetic private folder approval".to_string(),
+                biorouter::session::SessionType::User,
+            )
+            .await
+            .unwrap();
+        state
+            .session_manager()
+            .update(&session.id)
+            .raise_privacy(SessionClassification::Private, "synthetic-folder-approval")
+            .apply()
+            .await
+            .unwrap();
+        let park = |session: &str| {
+            PendingUserActions::global().park(
+                Some(session),
+                None,
+                UserActionRequest::FolderAccess(FolderAccessRequest {
+                    action_id: uuid::Uuid::new_v4().to_string(),
+                    tool_name: "developer__text_editor".to_string(),
+                    folder: workspace.path().display().to_string(),
+                    access: "read-only".to_string(),
+                    once_descendants: false,
+                    files: vec!["synthetic-result.txt".to_string()],
+                }),
+            )
+        };
+        let private = park(&session.id);
+        let unknown_session = uuid::Uuid::new_v4().to_string();
+        let unknown = park(&unknown_session);
+        for (session_id, id) in [
+            (&session.id, private.id()),
+            (&unknown_session, unknown.id()),
+        ] {
+            let result = confirm_tool_action(
+                State(state.clone()),
+                browser_headers.clone(),
+                Json(ConfirmToolActionRequest {
+                    id: id.to_string(),
+                    principal_type: PrincipalType::Tool,
+                    action: "allow_once".to_string(),
+                    session_id: session_id.clone(),
+                }),
+            )
+            .await;
+            assert_eq!(result.err().unwrap().0, StatusCode::FORBIDDEN);
+            assert!(PendingUserActions::global().is_pending(id));
+            assert!(biorouter::folder_access::FolderAccessManager::global()
+                .list_session(session_id)
+                .is_empty());
+        }
+        let mut native_headers = HeaderMap::new();
+        native_headers.insert("X-User-Action", TEST_USER_ACTION_KEY.parse().unwrap());
+        let response = confirm_tool_action(
+            State(state.clone()),
+            native_headers,
+            Json(ConfirmToolActionRequest {
+                id: private.id().to_string(),
+                principal_type: PrincipalType::Tool,
+                action: "allow_once".to_string(),
+                session_id: session.id.clone(),
+            }),
+        )
+        .await
+        .unwrap();
+        assert_eq!(response.0["status"], "delivered");
+        assert!(matches!(
+            private.wait(std::time::Duration::from_secs(1), None).await,
+            UserActionOutcome::Approved {
+                permission: Permission::AllowOnce
+            }
+        ));
+        state
+            .session_manager()
+            .delete_session(&session.id)
+            .await
+            .unwrap();
+    }
 
     /// The hand-written `Debug` impl on [`SubmitSecretsRequest`] is the only
     /// thing keeping a passcode out of a `tracing` line, a panic message, or a
