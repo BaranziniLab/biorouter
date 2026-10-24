@@ -163,23 +163,20 @@ impl EditorAccess {
         } else {
             match self.workspace.bind(requested, access) {
                 Ok(bound) => bound,
-                Err(error) if requested.starts_with(self.workspace.root()) => {
-                    return Err(file_error(format!("Cannot resolve '{}' inside the authorized directory: {error}. If another folder was intended, provide its actual path so access can be approved.", requested.display())));
-                }
-                Err(_)
-                    if access == AccessMode::Read
-                        && self
-                            .skills
-                            .as_ref()
-                            .is_some_and(|root| requested.starts_with(root.root())) =>
-                {
-                    self.skills
+                Err(error) => {
+                    let skill_read = self
+                        .skills
                         .as_ref()
-                        .unwrap()
-                        .bind(requested, access)
-                        .map_err(file_error)?
+                        .filter(|_| access == AccessMode::Read)
+                        .and_then(|root| root.bind(requested, access).ok());
+                    if let Some(bound) = skill_read {
+                        bound
+                    } else if requested.starts_with(self.workspace.root()) {
+                        return Err(file_error(format!("Cannot resolve '{}' inside the authorized directory: {error}. If another folder was intended, provide its actual path so access can be approved.", requested.display())));
+                    } else {
+                        return Err(authorization_required(requested));
+                    }
                 }
-                Err(_) => return Err(authorization_required(requested)),
             }
         };
         let actual = bound.absolute_path();

@@ -86,6 +86,45 @@ fn redirect_target_within_base(base: &Path, target: &str) -> Option<PathBuf> {
     resolved.starts_with(base).then_some(resolved)
 }
 
+fn captured_directory_alias(filesystem: Arc<BoundedFs>, alias: &Path) -> Arc<BoundedFs> {
+    // Retain the opened alias only when it is the already-authorized object.
+    // Later pathname changes cannot redirect I/O through the captured spelling.
+    match BoundedFs::open(alias) {
+        Ok(candidate)
+            if candidate.identity() == filesystem.identity()
+                && candidate.root() == filesystem.root() =>
+        {
+            Arc::new(candidate)
+        }
+        _ => filesystem,
+    }
+}
+
+fn capture_workspace_filesystem(base: &Path) -> Option<Arc<BoundedFs>> {
+    let filesystem = Arc::new(BoundedFs::open(base).ok()?);
+    if let Some(pwd) = std::env::var_os("PWD").map(PathBuf::from) {
+        if pwd.is_absolute() && pwd != base {
+            let captured = captured_directory_alias(filesystem.clone(), &pwd);
+            if !Arc::ptr_eq(&captured, &filesystem) {
+                return Some(captured);
+            }
+        }
+    }
+    #[cfg(target_os = "macos")]
+    let filesystem = if ["/private/var", "/private/tmp", "/private/etc"]
+        .iter()
+        .any(|prefix| base.starts_with(prefix))
+    {
+        match base.strip_prefix("/private") {
+            Ok(suffix) => captured_directory_alias(filesystem, &Path::new("/").join(suffix)),
+            Err(_) => filesystem,
+        }
+    } else {
+        filesystem
+    };
+    Some(filesystem)
+}
+
 /// The text a live `shell_output` notification carries for one line of
 /// output, or `None` when the line is not worth streaming.
 ///
@@ -836,7 +875,7 @@ impl DeveloperServer {
             bash_env_file: None,
             working_dir: None,
             canonical_working_dir: None,
-            workspace_filesystem: BoundedFs::open(&base).ok().map(Arc::new),
+            workspace_filesystem: capture_workspace_filesystem(&base),
             skill_filesystem: BoundedFs::open(crate::paths::in_config_dir("skills"))
                 .ok()
                 .map(Arc::new),
@@ -2487,6 +2526,47 @@ mod tests {
 
     fn create_test_server() -> DeveloperServer {
         DeveloperServer::new()
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn captured_workspace_alias_retains_the_authorized_object_after_retargeting() {
+        let directory = tempfile::tempdir().unwrap();
+        let original = directory.path().join("original");
+        let outside = directory.path().join("outside");
+        let alias = directory.path().join("selected-alias");
+        fs::create_dir(&original).unwrap();
+        fs::create_dir(&outside).unwrap();
+        fs::write(original.join("file.txt"), "authorized").unwrap();
+        fs::write(outside.join("file.txt"), "outside canary").unwrap();
+        std::os::unix::fs::symlink(&original, &alias).unwrap();
+        let retained = Arc::new(BoundedFs::open(&original).unwrap());
+        let captured = captured_directory_alias(retained.clone(), &alias);
+        assert_eq!(captured.identity(), retained.identity());
+        fs::remove_file(&alias).unwrap();
+        std::os::unix::fs::symlink(&outside, &alias).unwrap();
+        let bound = captured
+            .bind(alias.join("file.txt"), AccessMode::Read)
+            .unwrap();
+        assert_eq!(bound.read_to_string().unwrap(), "authorized");
+        assert!(captured
+            .bind(outside.join("file.txt"), AccessMode::Read)
+            .is_err());
+        assert_eq!(
+            fs::read_to_string(outside.join("file.txt")).unwrap(),
+            "outside canary"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_different_directory_is_never_captured_as_a_workspace_alias() {
+        let directory = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let retained = Arc::new(BoundedFs::open(directory.path()).unwrap());
+        let captured = captured_directory_alias(retained.clone(), outside.path());
+        assert!(Arc::ptr_eq(&captured, &retained));
+        assert!(captured.bind(outside.path(), AccessMode::Read).is_err());
     }
 
     /// Enters a directory for the duration of a `#[serial]` test and puts the
