@@ -29,6 +29,7 @@ pub struct FolderGrantView {
 struct SessionGrant {
     view: FolderGrantView,
     root: RootGrant,
+    owner: Option<crate::native_client::NativeClient>,
 }
 
 #[derive(Default)]
@@ -132,6 +133,23 @@ fn validate_plan(
         "Recursive analysis overlaps a remembered directory denial. Choose a narrower allowed folder, or change the remembered denial in Settings before retrying."
     );
     Ok(())
+}
+
+async fn wait_for_folder_approval(
+    pending: crate::pending_user_action::PendingUserAction,
+    owner: Option<&crate::native_client::NativeClient>,
+    cancel: &CancellationToken,
+) -> UserActionOutcome {
+    tokio::select! {
+        biased;
+        () = async {
+            match owner {
+                Some(owner) => owner.ended().await,
+                None => std::future::pending().await,
+            }
+        } => UserActionOutcome::Cancelled,
+        outcome = pending.wait(Duration::from_secs(300), Some(cancel)) => outcome,
+    }
 }
 
 fn access_name(access: AccessMode) -> &'static str {
@@ -413,6 +431,12 @@ impl FolderAccessManager {
                 session
                     .grants
                     .iter()
+                    .filter(|grant| {
+                        crate::native_client::same_owner(
+                            grant.owner.as_ref(),
+                            crate::native_client::current().as_ref(),
+                        )
+                    })
                     .map(|grant| grant.view.clone())
                     .collect()
             })
@@ -424,15 +448,33 @@ impl FolderAccessManager {
         let Some(session) = sessions.get_mut(session_id) else {
             return false;
         };
-        let Some(index) = session
-            .grants
-            .iter()
-            .position(|grant| grant.view.id == grant_id)
-        else {
+        let Some(index) = session.grants.iter().position(|grant| {
+            grant.view.id == grant_id
+                && crate::native_client::same_owner(
+                    grant.owner.as_ref(),
+                    crate::native_client::current().as_ref(),
+                )
+        }) else {
             return false;
         };
         session.grants.remove(index).root.revoke();
         true
+    }
+
+    pub fn expire_native_client(&self, owner: Uuid) {
+        let mut sessions = self.sessions.lock().unwrap_or_else(PoisonError::into_inner);
+        for session in sessions.values_mut() {
+            session.grants.retain(|grant| {
+                let keep = grant
+                    .owner
+                    .as_ref()
+                    .is_none_or(|client| client.id() != owner);
+                if !keep {
+                    grant.root.revoke();
+                }
+                keep
+            });
+        }
     }
 
     pub fn end_session(&self, session_id: &str) {
@@ -491,7 +533,18 @@ impl FolderAccessManager {
             .expect("primary validated above")
             .1
             .clone()];
-        roots.extend(session.grants.iter().map(|grant| grant.root.clone()));
+        roots.extend(
+            session
+                .grants
+                .iter()
+                .filter(|grant| {
+                    crate::native_client::same_owner(
+                        grant.owner.as_ref(),
+                        crate::native_client::current().as_ref(),
+                    )
+                })
+                .map(|grant| grant.root.clone()),
+        );
         Ok(roots)
     }
 
@@ -582,6 +635,13 @@ impl FolderAccessManager {
             )
             .into());
         }
+        let owner = crate::native_client::current();
+        if let Some(owner) = &owner {
+            anyhow::ensure!(
+                owner.is_live(),
+                "The desktop connection ended. Reopen this chat before approving another folder."
+            );
+        }
         let filesystem = Arc::new(BoundedFs::open(folder)?);
         anyhow::ensure!(
             filesystem.root() == folder,
@@ -595,16 +655,30 @@ impl FolderAccessManager {
             None,
             UserActionRequest::FolderAccess(request),
         );
-        match pending.wait(Duration::from_secs(300), Some(cancel)).await {
+        let outcome = wait_for_folder_approval(pending, owner.as_ref(), cancel).await;
+        match outcome {
             UserActionOutcome::Approved {
                 permission: Permission::AllowOnce,
-            } => Ok(once_grants),
+            } => {
+                if let Some(owner) = &owner {
+                    for root in &once_grants {
+                        owner.track(root)?;
+                    }
+                }
+                Ok(once_grants)
+            }
             UserActionOutcome::Approved {
                 permission: Permission::AlwaysAllow,
             } => {
                 let root = RootGrant::new(filesystem, access);
+                if let Some(owner) = &owner {
+                    owner.track(&root)?;
+                }
                 let mut sessions = self.sessions.lock().unwrap_or_else(PoisonError::into_inner);
                 let session = sessions.entry(session_id.to_string()).or_default();
+                session
+                    .grants
+                    .retain(|grant| grant.owner.as_ref().is_none_or(|owner| owner.is_live()));
                 anyhow::ensure!(
                     session.grants.len() < 128,
                     "Revoke an unused folder before authorizing another"
@@ -617,6 +691,7 @@ impl FolderAccessManager {
                         descendants: true,
                     },
                     root: root.clone(),
+                    owner,
                 });
                 Ok(vec![root])
             }

@@ -38,6 +38,7 @@ pub mod marketplace;
 pub mod mcp_utils;
 pub mod model;
 pub mod net;
+pub mod native_client;
 pub mod oauth;
 pub mod observability;
 pub mod pending_user_action;

@@ -17,6 +17,7 @@ import { isSharedDaemonEnabled } from './biorouterdSingleton';
 import { biorouterVersion } from './utils/biorouterVersion';
 import {
   createDaemonProxy,
+  closeNativeClientLifetimes,
   daemonLossOf,
   daemonVersion,
   DaemonKeyRefusedError,
@@ -354,6 +355,8 @@ interface Reattach {
   proxy: DaemonProxy;
 }
 
+const nativeLifetimeApps = new WeakSet<App>();
+
 async function attachSharedDaemon(
   options: StartBiorouterdOptions,
   runtime: DaemonRuntime,
@@ -363,6 +366,10 @@ async function attachSharedDaemon(
   ownedProcess?: ChildProcess,
   errorLog: string[] = []
 ): Promise<BiorouterdResult> {
+  if (!nativeLifetimeApps.has(options.app)) {
+    nativeLifetimeApps.add(options.app);
+    options.app.once('will-quit', closeNativeClientLifetimes);
+  }
   if (reattach) {
     // The same local address, now checked against the new instance. `retarget` verifies it and
     // that it accepts this user-action key before anything changes.
@@ -577,12 +584,14 @@ async function startOrAttachBiorouterd(
         gone = true;
       }
       if (!gone) {
-        // The instance this app verified still answers as itself: nothing to follow. The check
-        // reports it answering, which settles a `gone` loss.
-        const loss = await reattach.proxy.probe();
-        if (loss)
-          throw new Error('The background service stopped answering. Try again in a moment.');
-        return reattachedResult(options, reattach, dir, []);
+        // The daemon can survive loss of this app's approval connection. Reauthenticate and
+        // retarget even for the same instance so that connection can obtain a fresh lifetime.
+        const found = await inspectExistingDaemon(app, existing);
+        if (found.kind === 'usable')
+          return attachSharedDaemon(options, existing, dir, found.key, reattach);
+        throw new Error(
+          'The background service cannot restore this app’s folder approvals. Update or restart that service, then reconnect.'
+        );
       }
       staleInstance = existing.instance_id;
     } else if (existing) {

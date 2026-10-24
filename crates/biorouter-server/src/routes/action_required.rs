@@ -96,7 +96,10 @@ async fn confirmation_authority(
     }
     let authority = match proof {
         UserActionProof::Proven if folder_request => {
-            biorouter::pending_user_action::DecisionAuthority::from_folder_access_proof()
+            match biorouter_server::native_client::from_headers(headers).map_err(status_only)? {
+                Some(client) => biorouter::pending_user_action::DecisionAuthority::from_native_folder_access_proof(&client),
+                None => biorouter::pending_user_action::DecisionAuthority::from_folder_access_proof(),
+            }
         }
         UserActionProof::Proven => {
             biorouter::pending_user_action::DecisionAuthority::from_user_action_proof()

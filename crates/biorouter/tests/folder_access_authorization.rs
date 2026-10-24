@@ -73,11 +73,11 @@ impl Fixture {
         let manager = self.manager.clone();
         let session = self.session.clone();
         let cwd = self.cwd.clone();
-        tokio::spawn(async move {
+        tokio::spawn(biorouter::native_client::carry(async move {
             manager
                 .admit(&session, "developer__text_editor", &cwd, &plan, &cancel)
                 .await
-        })
+        }))
     }
 
     async fn pending(&self) -> String {
@@ -525,4 +525,222 @@ async fn recursive_analysis_once_discloses_descendants_and_stays_read_only() {
     );
     assert!(path(&admission, &fixture.session, &child, AccessMode::Write).is_err());
     assert!(fixture.manager.list_session(&fixture.session).is_empty());
+}
+
+#[tokio::test]
+async fn native_grants_coexist_but_cannot_cross_client_lifetimes() {
+    use biorouter::native_client::{scope, NativeClientLease};
+    let fixture = Fixture::new();
+    let first = NativeClientLease::register().unwrap();
+    let second = NativeClientLease::register().unwrap();
+    let target = fixture.external.join("completed.csv");
+    for owner in [first.client(), second.client()] {
+        let job = scope(Some(owner.clone()), async {
+            fixture.start(
+                vec![(target.clone(), AccessMode::Read)],
+                CancellationToken::new(),
+            )
+        })
+        .await;
+        let id = fixture.pending().await;
+        assert_eq!(
+            fixture.answer(&id, Permission::AlwaysAllow),
+            ResolveOutcome::Unproven
+        );
+        let other = if owner.id() == first.client().id() {
+            second.client()
+        } else {
+            first.client()
+        };
+        assert_eq!(
+            PendingUserActions::global().resolve_in_session(
+                &fixture.session,
+                &id,
+                UserActionOutcome::Approved {
+                    permission: Permission::AlwaysAllow
+                },
+                DecisionAuthority::from_native_folder_access_proof(&other),
+            ),
+            ResolveOutcome::Unproven
+        );
+        assert_eq!(
+            PendingUserActions::global().resolve_in_session(
+                &fixture.session,
+                &id,
+                UserActionOutcome::Approved {
+                    permission: Permission::AlwaysAllow
+                },
+                DecisionAuthority::from_native_folder_access_proof(&owner),
+            ),
+            ResolveOutcome::Delivered
+        );
+        job.await.unwrap().unwrap();
+    }
+    assert!(fixture.manager.list_session(&fixture.session).is_empty());
+    let first_views = scope(Some(first.client()), async {
+        fixture.manager.list_session(&fixture.session)
+    })
+    .await;
+    let second_views = scope(Some(second.client()), async {
+        fixture.manager.list_session(&fixture.session)
+    })
+    .await;
+    assert_eq!(first_views.len(), 1);
+    assert_eq!(second_views.len(), 1);
+    assert_ne!(first_views[0].id, second_views[0].id);
+    assert!(
+        !scope(Some(second.client()), async {
+            fixture.manager.revoke(&fixture.session, &first_views[0].id)
+        })
+        .await
+    );
+    let old_owner = first.client();
+    drop(first);
+    assert!(scope(Some(old_owner), async {
+        fixture.manager.list_session(&fixture.session)
+    })
+    .await
+    .is_empty());
+    assert_eq!(
+        scope(Some(second.client()), async {
+            fixture.manager.list_session(&fixture.session)
+        })
+        .await
+        .len(),
+        1
+    );
+    let next = NativeClientLease::register().unwrap();
+    let denied = scope(
+        Some(next.client()),
+        biorouter::user_surface::without_human_surface(fixture.manager.admit(
+            &fixture.session,
+            "developer__text_editor",
+            &fixture.cwd,
+            &FileAccessPlan {
+                requests: vec![FileAccessRequest {
+                    path: target,
+                    access: AccessMode::Read,
+                    recursive: false,
+                }],
+            },
+            &CancellationToken::new(),
+        )),
+    )
+    .await;
+    assert!(
+        denied.is_err(),
+        "a new app cannot inherit an old client's grant before cleanup"
+    );
+}
+
+#[tokio::test]
+async fn native_disconnect_revokes_retained_once_paths_and_derived_directories() {
+    use biorouter::native_client::{scope, NativeClientLease};
+    let fixture = Fixture::new();
+    let lease = NativeClientLease::register().unwrap();
+    let owner = lease.client();
+    let job = scope(Some(owner.clone()), async {
+        fixture.start_plan(
+            FileAccessPlan {
+                requests: vec![FileAccessRequest {
+                    path: fixture.external.clone(),
+                    access: AccessMode::Read,
+                    recursive: true,
+                }],
+            },
+            CancellationToken::new(),
+        )
+    })
+    .await;
+    let id = fixture.pending().await;
+    assert_eq!(
+        PendingUserActions::global().resolve_in_session(
+            &fixture.session,
+            &id,
+            UserActionOutcome::Approved {
+                permission: Permission::AllowOnce
+            },
+            DecisionAuthority::from_native_folder_access_proof(&owner),
+        ),
+        ResolveOutcome::Delivered
+    );
+    let admission = job.await.unwrap().unwrap();
+    let directory = path(
+        &admission,
+        &fixture.session,
+        &fixture.external,
+        AccessMode::Read,
+    )
+    .unwrap();
+    let derived = directory.open_dir().unwrap();
+    let retained = path(
+        &admission,
+        &fixture.session,
+        &fixture.external.join("completed.csv"),
+        AccessMode::Read,
+    )
+    .unwrap();
+    let child = derived.bind("completed.csv", AccessMode::Read).unwrap();
+    assert!(retained.read_to_string().is_ok());
+    drop(lease);
+    assert!(retained.read_to_string().is_err());
+    assert!(directory.list().is_err());
+    assert!(child.read_to_string().is_err());
+    assert!(derived.bind("completed.csv", AccessMode::Read).is_err());
+    assert!(path(
+        &admission,
+        &fixture.session,
+        &fixture.external.join("completed.csv"),
+        AccessMode::Read
+    )
+    .is_err());
+}
+
+#[tokio::test]
+async fn native_disconnect_releases_pending_folder_and_workspace_remains_available() {
+    use biorouter::native_client::{scope, NativeClientLease};
+    let fixture = Fixture::new();
+    let lease = NativeClientLease::register().unwrap();
+    let job = scope(Some(lease.client()), async {
+        fixture.start(
+            vec![(fixture.external.join("completed.csv"), AccessMode::Read)],
+            CancellationToken::new(),
+        )
+    })
+    .await;
+    let id = fixture.pending().await;
+    drop(lease);
+    assert!(tokio::time::timeout(Duration::from_secs(1), job)
+        .await
+        .unwrap()
+        .unwrap()
+        .is_err());
+    assert!(!PendingUserActions::global().is_pending(&id));
+    let local = fixture.cwd.join("local.txt");
+    std::fs::write(&local, "WORKSPACE_CONTROL").unwrap();
+    let admission = scope(
+        Some(biorouter::native_client::NativeClient::unavailable()),
+        biorouter::user_surface::without_human_surface(fixture.manager.admit(
+            &fixture.session,
+            "developer__text_editor",
+            &fixture.cwd,
+            &FileAccessPlan {
+                requests: vec![FileAccessRequest {
+                    path: local.clone(),
+                    access: AccessMode::Read,
+                    recursive: false,
+                }],
+            },
+            &CancellationToken::new(),
+        )),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        path(&admission, &fixture.session, &local, AccessMode::Read)
+            .unwrap()
+            .read_to_string()
+            .unwrap(),
+        "WORKSPACE_CONTROL"
+    );
 }

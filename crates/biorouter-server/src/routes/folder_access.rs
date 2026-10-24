@@ -35,8 +35,12 @@ pub async fn list_folder_access(
     super::session_reach::session_reach(state.session_manager(), &query.session_id, &headers)
         .await
         .map_err(|error| error.status)?;
+    let client = biorouter_server::native_client::from_headers(&headers)?;
     Ok(Json(
-        FolderAccessManager::global().list_session(&query.session_id),
+        biorouter::native_client::scope(client, async {
+            FolderAccessManager::global().list_session(&query.session_id)
+        })
+        .await,
     ))
 }
 
@@ -59,9 +63,10 @@ pub async fn revoke_folder_access(
     super::session_reach::session_reach(state.session_manager(), &request.session_id, &headers)
         .await
         .map_err(|error| error.status)?;
-    Ok(Json(
-        json!({"revoked": FolderAccessManager::global().revoke(&request.session_id, &request.grant_id)}),
-    ))
+    let client = biorouter_server::native_client::from_headers(&headers)?;
+    Ok(Json(biorouter::native_client::scope(client, async {
+        json!({"revoked": FolderAccessManager::global().revoke(&request.session_id, &request.grant_id)})
+    }).await))
 }
 
 pub fn routes(state: Arc<AppState>) -> Router {

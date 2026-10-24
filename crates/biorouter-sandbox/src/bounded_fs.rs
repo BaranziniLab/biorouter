@@ -1129,6 +1129,20 @@ pub(crate) fn sandbox_path_error(error: io::Error, requested: &str) -> crate::Sa
 }
 
 #[derive(Clone, Debug)]
+pub struct GrantRevocation(std::sync::Weak<AtomicBool>);
+
+impl GrantRevocation {
+    pub fn is_attached(&self) -> bool {
+        self.0.strong_count() > 0
+    }
+    pub fn revoke(&self) {
+        if let Some(live) = self.0.upgrade() {
+            live.store(false, Ordering::Release);
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
 pub struct RootGrant {
     filesystem: Arc<BoundedFs>,
     access: AccessMode,
@@ -1158,6 +1172,10 @@ impl RootGrant {
                 .collect::<io::Result<_>>()?,
         );
         Ok(self)
+    }
+
+    pub fn revocation_handle(&self) -> GrantRevocation {
+        GrantRevocation(Arc::downgrade(&self.live))
     }
 
     pub fn revoke(&self) {

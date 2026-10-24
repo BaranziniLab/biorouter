@@ -3446,22 +3446,26 @@ async fn call_tool(
     // card nobody could answer and never returned. Not a slow download: 180 s
     // with no reply, while their `dryRun` siblings answered in 0.5 s and 9.8 s,
     // and the daemon log showed `calling client.call_tool` with no completion.
-    let dispatched = biorouter::user_surface::without_human_surface(async {
-        let dispatch = agent
-            .extension_manager
-            .dispatch_tool_call(
-                &payload.session_id,
-                tool_call,
-                biorouter::privacy::CallCapability::public_enforced(),
-                CancellationToken::default(),
-            )
-            .await;
-        match dispatch {
-            // Awaited HERE, inside the scope, so the tool body sees the flag.
-            Ok(tool_result) => Ok(tool_result.result.await),
-            Err(error) => Err(error),
-        }
-    })
+    let native_client = biorouter_server::native_client::from_headers(&headers)?;
+    let dispatched = biorouter::native_client::scope(
+        native_client,
+        biorouter::user_surface::without_human_surface(async {
+            let dispatch = agent
+                .extension_manager
+                .dispatch_tool_call(
+                    &payload.session_id,
+                    tool_call,
+                    biorouter::privacy::CallCapability::public_enforced(),
+                    CancellationToken::default(),
+                )
+                .await;
+            match dispatch {
+                // Awaited HERE, inside the scope, so the tool body sees the flag.
+                Ok(tool_result) => Ok(tool_result.result.await),
+                Err(error) => Err(error),
+            }
+        }),
+    )
     .await;
 
     let awaited = match dispatched {

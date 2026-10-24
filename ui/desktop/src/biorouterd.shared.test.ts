@@ -72,6 +72,7 @@ vi.mock('./nativeSecretPrompt', () => ({
 vi.mock('./biorouterdSingleton', () => ({ isSharedDaemonEnabled: () => true }));
 vi.mock('./daemonRuntime', () => ({
   createDaemonProxy: mocks.createProxy,
+  closeNativeClientLifetimes: vi.fn(),
   daemonLossOf: (error: { code?: string; syscall?: string } | null) =>
     error?.syscall === 'connect' && ['ENOENT', 'ECONNREFUSED'].includes(error.code ?? '')
       ? 'gone'

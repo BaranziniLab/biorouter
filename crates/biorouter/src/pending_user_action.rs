@@ -288,7 +288,7 @@ pub enum ResolveOutcome {
 /// write, which would make that property unenforceable. A foreign crate must go
 /// through a named constructor here, the same shape `UserKbTierChange` uses.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct DecisionAuthority(Authority);
+pub struct DecisionAuthority(Authority, Option<Uuid>);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Authority {
@@ -308,23 +308,27 @@ impl DecisionAuthority {
     /// Mint only after the folder-scoped browser approval key was verified.
     /// This authority cannot approve any other protected request kind.
     pub fn from_folder_access_proof() -> Self {
-        Self(Authority::FolderAccess)
+        Self(Authority::FolderAccess, None)
     }
+    pub fn from_native_folder_access_proof(client: &crate::native_client::NativeClient) -> Self {
+        Self(Authority::FolderAccess, Some(client.id()))
+    }
+
     /// Mint ONLY after `auth::user_action_proof` returned `Proven` for the
     /// request being answered.
     pub fn from_user_action_proof() -> Self {
-        Self(Authority::Proven)
+        Self(Authority::Proven, None)
     }
 
     /// A person acted at a surface this process owns.
     pub fn from_local_human_surface() -> Self {
-        Self(Authority::LocalHuman)
+        Self(Authority::LocalHuman, None)
     }
 
     /// No preconditions. The honest answer for every door that cannot tell a
     /// person from a model.
     pub fn unproven() -> Self {
-        Self(Authority::Unproven)
+        Self(Authority::Unproven, None)
     }
 
     /// Stand in for a proven surface, in a test that is exercising something
@@ -337,7 +341,7 @@ impl DecisionAuthority {
     /// constructors instead, and the tests in this module do.
     #[cfg(test)]
     pub(crate) fn for_test_proven() -> Self {
-        Self(Authority::Proven)
+        Self(Authority::Proven, None)
     }
 
     fn may_grant_proof_backed(self, request: &UserActionRequest) -> bool {
@@ -352,6 +356,7 @@ struct Entry {
     owner: Option<String>,
     request: UserActionRequest,
     tx: Option<oneshot::Sender<UserActionOutcome>>,
+    native_client: Option<crate::native_client::NativeClient>,
     /// Other sessions this same card was published into, and from which a
     /// decision is therefore accepted (D10).
     ///
@@ -504,6 +509,11 @@ impl PendingUserActions {
                 owner: owner.map(str::to_string),
                 request: request.clone(),
                 tx: Some(tx),
+                native_client: if matches!(request, UserActionRequest::FolderAccess(_)) {
+                    crate::native_client::current()
+                } else {
+                    None
+                },
                 escalated_to: Vec::new(),
             },
         );
@@ -623,6 +633,20 @@ impl PendingUserActions {
             && entry.request.requires_user_proof()
         {
             return ResolveOutcome::Unproven;
+        }
+        if outcome.is_allowed() && matches!(entry.request, UserActionRequest::FolderAccess(_)) {
+            let expected = entry
+                .native_client
+                .as_ref()
+                .map(crate::native_client::NativeClient::id);
+            if expected != authority.1
+                || entry
+                    .native_client
+                    .as_ref()
+                    .is_some_and(|client| !client.is_live())
+            {
+                return ResolveOutcome::Unproven;
+            }
         }
         let Some(tx) = entry.tx.take() else {
             return ResolveOutcome::Unknown;
@@ -900,9 +924,8 @@ impl PendingUserAction {
 
 impl Drop for PendingUserAction {
     fn drop(&mut self) {
-        if self.rx.is_some() {
-            self.registry.forget(&self.id);
-        }
+        // wait() moves the receiver before polling; cancellation must still remove its entry.
+        self.registry.forget(&self.id);
     }
 }
 
