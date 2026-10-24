@@ -145,7 +145,8 @@ impl SecretGuard {
         Self::build(cwd, &ignore_sources(cwd))
     }
 
-    pub(crate) fn for_bounded_path(
+    /// Load policy through the same retained directory used by a bounded operation.
+    pub fn for_bounded_path(
         path: &biorouter_sandbox::bounded_fs::BoundedPath,
     ) -> std::io::Result<Self> {
         let cwd = path.root();

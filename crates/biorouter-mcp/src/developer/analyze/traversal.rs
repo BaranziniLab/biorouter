@@ -11,6 +11,9 @@ use std::sync::{Arc, Mutex};
 use crate::developer::analyze::types::{AnalysisResult, EntryType};
 use crate::developer::lang;
 
+pub const MAX_ANALYSIS_ENTRIES: usize = 50_000;
+pub const MAX_ANALYSIS_DIRECTORY_DEPTH: u32 = 256;
+
 /// Handles file system traversal with ignore patterns
 pub struct FileTraverser<'a> {
     ignore_patterns: &'a Gitignore,
@@ -105,7 +108,9 @@ impl<'a> FileTraverser<'a> {
             tracing::warn!("Unlimited depth traversal requested for {:?}", path);
         }
 
-        let files = self.collect_files_recursive(path, 0, max_depth, &mut HashSet::new())?;
+        let mut remaining = MAX_ANALYSIS_ENTRIES;
+        let files =
+            self.collect_files_recursive(path, 0, max_depth, &mut HashSet::new(), &mut remaining)?;
 
         tracing::info!("Collected {} files from {:?}", files.len(), path);
         Ok(files)
@@ -118,6 +123,7 @@ impl<'a> FileTraverser<'a> {
         current_depth: u32,
         max_depth: u32,
         visited: &mut HashSet<String>,
+        remaining: &mut usize,
     ) -> Result<Vec<PathBuf>, ErrorData> {
         let mut files = Vec::new();
 
@@ -138,18 +144,27 @@ impl<'a> FileTraverser<'a> {
             tracing::trace!("Reached max depth {} at {:?}", max_depth, path);
             return Ok(files);
         }
+        if current_depth >= MAX_ANALYSIS_DIRECTORY_DEPTH {
+            return Err(file_error(
+                "Analysis is too deeply nested; choose a narrower folder or depth",
+            ));
+        }
 
         let directory = bound.bound.open_dir().map_err(file_error)?;
         if !visited.insert(format!("{:?}", directory.identity())) {
             return Ok(files);
         }
-        let entries = directory
+        let mut entries = directory
             .bind(".", AccessMode::Read)
-            .and_then(|path| path.list())
+            .and_then(|path| path.list_limited(*remaining))
             .map_err(file_error)?;
+        *remaining -= entries.len();
+        entries.sort_by(|left, right| left.name.cmp(&right.name));
+        let directory_guard = SecretGuard::for_bounded_path(&bound.bound).map_err(file_error)?;
         for entry in entries {
-            let entry_path = path.join(entry.name);
-            if self.is_ignored(&entry_path) {
+            let entry_path = path.join(&entry.name);
+            let actual_path = directory.root().join(entry.name);
+            if self.is_ignored(&entry_path) || directory_guard.is_denied(&actual_path) {
                 continue;
             }
             let entry = self.bound(&entry_path)?;
@@ -163,6 +178,7 @@ impl<'a> FileTraverser<'a> {
                     current_depth + 1,
                     max_depth,
                     visited,
+                    remaining,
                 )?;
                 files.append(&mut children);
             }
@@ -184,8 +200,9 @@ impl<'a> FileTraverser<'a> {
         tracing::debug!("Collecting directory results from {:?}", path);
 
         // First collect all files to analyze
+        let mut remaining = MAX_ANALYSIS_ENTRIES;
         let files_to_analyze =
-            self.collect_files_recursive(path, 0, max_depth, &mut HashSet::new())?;
+            self.collect_files_recursive(path, 0, max_depth, &mut HashSet::new(), &mut remaining)?;
 
         // Then analyze them in parallel using Rayon
         let results: Result<Vec<_>, ErrorData> = files_to_analyze

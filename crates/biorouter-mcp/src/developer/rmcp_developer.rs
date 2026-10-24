@@ -1956,12 +1956,13 @@ impl DeveloperServer {
         meta: rmcp::model::Meta,
     ) -> Result<CallToolResult, ErrorData> {
         let params = params.0;
-        let access = self.editor_access(meta)?;
+        let mut access = self.editor_access(meta)?;
+        access.refresh_workspace_guard()?;
         let requested =
             absolute_file_path(&params.path, access.workspace.root()).map_err(file_error)?;
         let path = access.bind(&requested, AccessMode::Read)?;
         self.code_analyzer
-            .analyze_bounded(params, &path, self.secret_guard.gitignore())
+            .analyze_bounded(params, &path, access.guard.gitignore())
     }
 
     /// Process an image file from disk.

@@ -10,6 +10,8 @@ use tokio_util::sync::CancellationToken;
 use utoipa::ToSchema;
 use uuid::Uuid;
 
+mod analysis;
+
 use crate::pending_user_action::{
     FolderAccessRequest, PendingUserActions, UserActionOutcome, UserActionRequest,
 };
@@ -45,13 +47,91 @@ pub struct FolderAccessManager {
 
 impl Default for FolderAccessManager {
     fn default() -> Self {
-        Self::with_skills_dir(&crate::config::paths::Paths::config_dir().join("skills"))
+        Self::with_skills_dir(&crate::agents::skills_extension::skills_root(
+            &crate::config::paths::Paths::config_dir(),
+        ))
     }
 }
 
 pub struct FileAdmission {
     pub authority: DispatchAuthority,
     pub action_id: String,
+}
+
+struct AdmissionContext<'a> {
+    session: &'a str,
+    action: &'a str,
+    tool: &'a str,
+    cwd: &'a Path,
+    cancel: &'a CancellationToken,
+    permissions: &'a crate::permission::ToolPermissionStore,
+    scoped_enabled: bool,
+}
+
+type FileAliases = Vec<(PathBuf, PathBuf)>;
+
+fn resolved_plan(
+    plan: &biorouter_mcp::FileAccessPlan,
+) -> std::io::Result<(biorouter_mcp::FileAccessPlan, FileAliases)> {
+    let mut actual_plan = biorouter_mcp::FileAccessPlan::default();
+    let mut aliases: Vec<(PathBuf, PathBuf)> = Vec::new();
+    for request in &plan.requests {
+        let actual = match aliases
+            .iter()
+            .find(|(original, _)| original == &request.path)
+        {
+            Some((_, actual)) => actual.clone(),
+            None => discover_target(&request.path)?,
+        };
+        if actual != request.path
+            && !aliases
+                .iter()
+                .any(|(original, _)| original == &request.path)
+        {
+            aliases.push((request.path.clone(), actual.clone()));
+        }
+        actual_plan.requests.push(biorouter_mcp::FileAccessRequest {
+            path: actual,
+            access: request.access,
+            recursive: request.recursive,
+        });
+    }
+    Ok((actual_plan, aliases))
+}
+
+fn validate_plan(
+    plan: &biorouter_mcp::FileAccessPlan,
+    context: &AdmissionContext<'_>,
+) -> anyhow::Result<()> {
+    biorouter_mcp::preflight_file_access(plan, context.cwd)?;
+    anyhow::ensure!(
+        !context.permissions.denies_file_access(
+            context.tool,
+            &plan
+                .requests
+                .iter()
+                .map(|request| request.path.clone())
+                .collect::<Vec<_>>(),
+            context.cwd,
+            context.scoped_enabled,
+        ),
+        "This file operation was denied for a requested directory"
+    );
+    anyhow::ensure!(
+        !context.permissions.denies_recursive_file_access(
+            context.tool,
+            &plan
+                .requests
+                .iter()
+                .filter(|request| request.recursive && request.access == AccessMode::Read)
+                .map(|request| request.path.clone())
+                .collect::<Vec<_>>(),
+            context.cwd,
+            context.scoped_enabled,
+        ),
+        "Recursive analysis overlaps a remembered directory denial. Choose a narrower allowed folder, or change the remembered denial in Settings before retrying."
+    );
+    Ok(())
 }
 
 fn access_name(access: AccessMode) -> &'static str {
@@ -556,47 +636,48 @@ impl FolderAccessManager {
         plan: &biorouter_mcp::FileAccessPlan,
         cancel: &CancellationToken,
     ) -> anyhow::Result<FileAdmission> {
+        self.admit_with_analysis(session_id, tool_name, cwd, plan, cancel, None)
+            .await
+    }
+
+    pub async fn admit_analysis(
+        &self,
+        session_id: &str,
+        tool_name: &str,
+        cwd: &Path,
+        plan: &biorouter_mcp::FileAccessPlan,
+        cancel: &CancellationToken,
+        max_depth: u32,
+    ) -> anyhow::Result<FileAdmission> {
+        self.admit_with_analysis(session_id, tool_name, cwd, plan, cancel, Some(max_depth))
+            .await
+    }
+
+    async fn admit_with_analysis(
+        &self,
+        session_id: &str,
+        tool_name: &str,
+        cwd: &Path,
+        plan: &biorouter_mcp::FileAccessPlan,
+        cancel: &CancellationToken,
+        analysis_depth: Option<u32>,
+    ) -> anyhow::Result<FileAdmission> {
         let action_id = Uuid::new_v4().to_string();
-        let mut aliases: Vec<(PathBuf, PathBuf)> = Vec::new();
-        let mut actual_plan = biorouter_mcp::FileAccessPlan::default();
-        for request in &plan.requests {
-            let actual = if let Some((_, actual)) = aliases
-                .iter()
-                .find(|(original, _)| original == &request.path)
-            {
-                actual.clone()
-            } else {
-                discover_target(&request.path)?
-            };
-            if actual != request.path
-                && !aliases
-                    .iter()
-                    .any(|(original, _)| original == &request.path)
-            {
-                aliases.push((request.path.clone(), actual.clone()));
-            }
-            actual_plan.requests.push(biorouter_mcp::FileAccessRequest {
-                path: actual,
-                access: request.access,
-                recursive: request.recursive,
-            });
-        }
-        biorouter_mcp::preflight_file_access(&actual_plan, cwd)?;
-        anyhow::ensure!(
-            !crate::permission::ToolPermissionStore::load()?.denies_file_access(
-                tool_name,
-                &actual_plan
-                    .requests
-                    .iter()
-                    .map(|request| request.path.clone())
-                    .collect::<Vec<_>>(),
-                cwd,
-                crate::config::Config::global()
-                    .get_param::<bool>("PERMISSION_SCOPED_GRANTS")
-                    .unwrap_or(true),
-            ),
-            "This file operation was denied for a requested directory"
-        );
+        let permissions = crate::permission::ToolPermissionStore::load()?;
+        let context = AdmissionContext {
+            session: session_id,
+            action: &action_id,
+            tool: tool_name,
+            cwd,
+            cancel,
+            permissions: &permissions,
+            scoped_enabled: crate::config::Config::global()
+                .get_param::<bool>("PERMISSION_SCOPED_GRANTS")
+                .unwrap_or(true),
+        };
+        let (mut actual_plan, mut aliases) = resolved_plan(plan)?;
+        validate_plan(plan, &context)?;
+        validate_plan(&actual_plan, &context)?;
         let mut roots = self.roots(session_id, cwd)?;
         if let Some(filesystem) = self.skill_read_root() {
             roots.push(RootGrant::new(filesystem, AccessMode::Read));
@@ -615,6 +696,16 @@ impl FolderAccessManager {
                 )
                 .await?,
             );
+        }
+        if let Some(depth) = analysis_depth {
+            self.admit_analysis_targets(
+                &context,
+                &mut actual_plan,
+                &mut roots,
+                &mut aliases,
+                depth,
+            )
+            .await?;
         }
         anyhow::ensure!(
             !cancel.is_cancelled(),
@@ -641,6 +732,100 @@ impl FolderAccessManager {
             authority,
             action_id,
         })
+    }
+
+    async fn admit_analysis_targets(
+        &self,
+        context: &AdmissionContext<'_>,
+        plan: &mut biorouter_mcp::FileAccessPlan,
+        roots: &mut Vec<RootGrant>,
+        aliases: &mut Vec<(PathBuf, PathBuf)>,
+        max_depth: u32,
+    ) -> anyhow::Result<()> {
+        let Some(root) = plan.requests.first().filter(|request| request.recursive) else {
+            return Ok(());
+        };
+        let authority = DispatchAuthority::register_aliases(
+            context.session,
+            context.action,
+            roots.clone(),
+            aliases.clone(),
+        )?;
+        let bound = biorouter_sandbox::bounded_fs::authorized_path(
+            authority.token(),
+            context.session,
+            context.action,
+            &root.path,
+            AccessMode::Read,
+        )?;
+        let mut discovery = analysis::AnalysisDiscovery::new(&bound, max_depth)?;
+        drop(authority);
+        let mut external_folders = HashSet::new();
+        loop {
+            let authority = DispatchAuthority::register_aliases(
+                context.session,
+                context.action,
+                roots.clone(),
+                aliases.clone(),
+            )?;
+            let target = discovery.next_external(
+                &authority,
+                context.session,
+                context.action,
+                context.cancel,
+            )?;
+            let Some(target) = target else { return Ok(()) };
+            let request = biorouter_mcp::FileAccessRequest {
+                path: target.actual.clone(),
+                access: AccessMode::Read,
+                recursive: target.recursive,
+            };
+            validate_plan(
+                &biorouter_mcp::FileAccessPlan {
+                    requests: vec![
+                        request.clone(),
+                        biorouter_mcp::FileAccessRequest {
+                            path: target.requested.clone(),
+                            ..request.clone()
+                        },
+                    ],
+                },
+                context,
+            )?;
+            let folder = existing_containing_folder(&target.actual)?;
+            external_folders.insert(folder.clone());
+            anyhow::ensure!(
+                external_folders.len() <= 128,
+                "Analysis reaches too many external folders; choose a narrower folder or depth"
+            );
+            aliases.push((target.requested, target.actual));
+            let covered = biorouter_sandbox::bounded_fs::authorized_path(
+                authority.token(),
+                context.session,
+                context.action,
+                &request.path,
+                AccessMode::Read,
+            )
+            .is_ok_and(|bound| !request.recursive || bound.open_dir().is_ok());
+            if covered {
+                plan.requests.push(request);
+                continue;
+            }
+            roots.extend(
+                self.approve_folder(
+                    context.session,
+                    context.action,
+                    context.tool,
+                    context.cwd,
+                    &folder,
+                    std::slice::from_ref(&request),
+                    aliases,
+                    context.cancel,
+                )
+                .await?,
+            );
+            plan.requests.push(request);
+        }
     }
 }
 

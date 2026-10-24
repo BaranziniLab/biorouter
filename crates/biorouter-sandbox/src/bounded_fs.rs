@@ -641,6 +641,20 @@ impl BoundedFs {
         relative_components(&relative, true)
     }
 
+    /// Inspect one directory entry without following the link or opening its target.
+    pub fn read_link_contents(&self, name: impl AsRef<Path>) -> io::Result<PathBuf> {
+        if let Some(authorization) = &self.inner.authorization {
+            authorization.check()?;
+        }
+        let names = relative_components(name.as_ref(), false)?;
+        if names.len() != 1 {
+            return Err(refused(
+                "Link discovery requires one direct directory entry",
+            ));
+        }
+        self.inner.directory.read_link_contents(&names[0])
+    }
+
     pub fn bind(&self, path: impl AsRef<Path>, access: AccessMode) -> io::Result<BoundedPath> {
         if let Some(authorization) = &self.inner.authorization {
             authorization.check()?;
@@ -943,11 +957,22 @@ impl BoundedPath {
     }
 
     pub fn list(&self) -> io::Result<Vec<BoundedDirEntry>> {
+        self.list_limited(usize::MAX)
+    }
+
+    pub fn list_limited(&self, max_entries: usize) -> io::Result<Vec<BoundedDirEntry>> {
         self.check(AccessMode::Read)?;
         let directory = open_directory_at(&self.parent(false)?, Path::new(&self.name))?;
         directory
             .entries()?
-            .map(|entry| {
+            .enumerate()
+            .map(|(index, entry)| {
+                if index >= max_entries {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "Analysis contains too many directory entries; choose a narrower folder or depth",
+                    ));
+                }
                 let entry = entry?;
                 let metadata = directory.symlink_metadata(entry.file_name())?;
                 Ok(BoundedDirEntry {
@@ -1230,11 +1255,19 @@ pub fn authorized_path(
         ));
     }
     let mut errors = VecDeque::new();
-    let requested = entry
+    let requested = requested.as_ref();
+    let translated = entry
         .aliases
-        .get(requested.as_ref())
-        .map(PathBuf::as_path)
-        .unwrap_or(requested.as_ref());
+        .iter()
+        .filter_map(|(alias, target)| {
+            requested
+                .strip_prefix(alias)
+                .ok()
+                .map(|suffix| (alias.components().count(), target.join(suffix)))
+        })
+        .max_by_key(|(depth, _)| *depth)
+        .map(|(_, target)| target);
+    let requested = translated.as_deref().unwrap_or(requested);
     for grant in &entry.grants {
         if !grant.access.permits(access) || !grant.live.load(Ordering::Acquire) {
             continue;

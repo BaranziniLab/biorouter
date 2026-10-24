@@ -3694,6 +3694,21 @@ impl ExtensionManager {
         })?;
         let manager = crate::folder_access::FolderAccessManager::global();
         manager.pin_workspace_handle(session_id, &cwd, filesystem);
+        if tool_name == "analyze" {
+            let params: biorouter_mcp::developer::analyze::types::AnalyzeParams =
+                serde_json::from_value(arguments)?;
+            return manager
+                .admit_analysis(
+                    session_id,
+                    prefixed_name,
+                    &cwd,
+                    &plan,
+                    cancel,
+                    params.max_depth,
+                )
+                .await
+                .map(Some);
+        }
         Ok(Some(
             manager
                 .admit(session_id, prefixed_name, &cwd, &plan, cancel)

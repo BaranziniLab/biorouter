@@ -68,6 +68,141 @@ fn absolute_outside_and_parent_traversal_are_rejected() {
 }
 
 #[test]
+fn bounded_listing_stops_at_the_entry_limit() {
+    let fixture = root();
+    let filesystem = BoundedFs::open(fixture.path()).unwrap();
+    for name in ["one", "two", "three"] {
+        write(&filesystem, name, b"synthetic");
+    }
+    let directory = filesystem.bind(".", AccessMode::Read).unwrap();
+    assert_eq!(directory.list_limited(3).unwrap().len(), 3);
+    assert_eq!(
+        directory.list_limited(2).unwrap_err().kind(),
+        io::ErrorKind::InvalidInput
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn link_discovery_inspects_only_a_retained_direct_child() {
+    let fixture = root();
+    let selected = fixture.path().join("selected");
+    let retained = fixture.path().join("retained");
+    std::fs::create_dir(&selected).unwrap();
+    std::os::unix::fs::symlink("../outside", selected.join("link")).unwrap();
+    let filesystem = BoundedFs::open(&selected).unwrap();
+    std::fs::rename(&selected, retained).unwrap();
+    std::fs::create_dir(&selected).unwrap();
+    std::os::unix::fs::symlink("../substitute", selected.join("link")).unwrap();
+    assert_eq!(
+        filesystem.read_link_contents("link").unwrap(),
+        Path::new("../outside")
+    );
+    for name in ["../link", "nested/link", "/link", "."] {
+        denied(filesystem.read_link_contents(name));
+    }
+}
+
+#[test]
+fn recursive_aliases_keep_descendants_inside_their_granted_target_scope() {
+    let fixture = root();
+    let actual = fixture.path().join("actual-library");
+    std::fs::create_dir(&actual).unwrap();
+    let filesystem = Arc::new(BoundedFs::open(&actual).unwrap());
+    write(&filesystem, "nested/source.rs", b"approved source");
+    let alias = fixture.path().join("requested-library");
+    let authority = DispatchAuthority::register_aliases(
+        "session",
+        "recursive",
+        vec![RootGrant::new(filesystem.clone(), AccessMode::Read)],
+        vec![(alias.clone(), actual.clone())],
+    )
+    .unwrap();
+    assert_eq!(
+        authorized_path(
+            authority.token(),
+            "session",
+            "recursive",
+            alias.join("nested/source.rs"),
+            AccessMode::Read
+        )
+        .unwrap()
+        .read()
+        .unwrap(),
+        b"approved source"
+    );
+    denied(authorized_path(
+        authority.token(),
+        "session",
+        "recursive",
+        fixture.path().join("requested-library-sibling/source.rs"),
+        AccessMode::Read,
+    ));
+    denied(authorized_path(
+        authority.token(),
+        "session",
+        "recursive",
+        alias.join("nested/source.rs"),
+        AccessMode::Write,
+    ));
+    let exact = DispatchAuthority::register_aliases(
+        "session",
+        "exact",
+        vec![RootGrant::new(filesystem, AccessMode::Read)
+            .with_targets(vec![actual.clone()])
+            .unwrap()],
+        vec![(alias.clone(), actual)],
+    )
+    .unwrap();
+    assert!(authorized_path(exact.token(), "session", "exact", &alias, AccessMode::Read).is_ok());
+    denied(authorized_path(
+        exact.token(),
+        "session",
+        "exact",
+        alias.join("nested/source.rs"),
+        AccessMode::Read,
+    ));
+}
+
+#[test]
+fn exact_file_alias_cannot_gain_descendants_after_directory_substitution() {
+    let fixture = root();
+    let actual = fixture.path().join("allowed.rs");
+    let alias = fixture.path().join("requested.rs");
+    std::fs::write(&actual, b"approved source").unwrap();
+    let filesystem = Arc::new(BoundedFs::open(fixture.path()).unwrap());
+    let grant = RootGrant::new(filesystem, AccessMode::Read)
+        .with_targets(vec![actual.clone()])
+        .unwrap();
+    let authority = DispatchAuthority::register_aliases(
+        "session",
+        "exact-file",
+        vec![grant],
+        vec![(alias.clone(), actual.clone())],
+    )
+    .unwrap();
+    std::fs::remove_file(&actual).unwrap();
+    std::fs::create_dir(&actual).unwrap();
+    std::fs::write(actual.join("private.rs"), b"unapproved child").unwrap();
+    let substituted = authorized_path(
+        authority.token(),
+        "session",
+        "exact-file",
+        &alias,
+        AccessMode::Read,
+    )
+    .unwrap();
+    denied(substituted.open_dir());
+    denied(authorized_path(
+        authority.token(),
+        "session",
+        "exact-file",
+        alias.join("private.rs"),
+        AccessMode::Read,
+    ));
+}
+
+#[test]
 fn registry_scopes_tokens_to_session_action_mode_and_exact_targets() {
     let fixture = root();
     let fs = Arc::new(BoundedFs::open(fixture.path()).unwrap());

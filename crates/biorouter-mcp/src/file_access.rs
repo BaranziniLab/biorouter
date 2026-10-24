@@ -148,6 +148,30 @@ pub(crate) struct EditorAccess {
 }
 
 impl EditorAccess {
+    pub fn refresh_workspace_guard(&mut self) -> Result<(), ErrorData> {
+        let string = |key: &str| self.meta.0.get(key).and_then(serde_json::Value::as_str);
+        let workspace = if let Some(token) = string("biorouter-file-access-token") {
+            let session = string("biorouter-session-id")
+                .ok_or_else(|| authorization_required(self.workspace.root()))?;
+            let action = string("biorouter-file-access-action")
+                .ok_or_else(|| authorization_required(self.workspace.root()))?;
+            authorized_path(
+                token,
+                session,
+                action,
+                self.workspace.root(),
+                AccessMode::Read,
+            )
+            .map_err(file_error)?
+        } else {
+            self.workspace
+                .bind(".", AccessMode::Read)
+                .map_err(file_error)?
+        };
+        self.guard = SecretGuard::for_bounded_path(&workspace).map_err(file_error)?;
+        Ok(())
+    }
+
     pub fn bind(&self, requested: &Path, access: AccessMode) -> Result<EditorPath, ErrorData> {
         let string = |key: &str| self.meta.0.get(key).and_then(serde_json::Value::as_str);
         // A brokered dispatch must use the broker's retained objects even for
