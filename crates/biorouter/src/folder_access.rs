@@ -223,6 +223,39 @@ fn exact_grants(
         .collect()
 }
 
+fn folder_approval_request(
+    action_id: &str,
+    tool_name: &str,
+    folder: &Path,
+    access: AccessMode,
+    requests: &[biorouter_mcp::FileAccessRequest],
+    aliases: &[(PathBuf, PathBuf)],
+) -> FolderAccessRequest {
+    FolderAccessRequest {
+        action_id: action_id.to_string(),
+        tool_name: tool_name.to_string(),
+        folder: folder.display().to_string(),
+        access: access_name(access).to_string(),
+        once_descendants: requests.iter().any(|request| request.recursive),
+        files: requests
+            .iter()
+            .map(|request| {
+                let path = &request.path;
+                let original = aliases
+                    .iter()
+                    .filter(|(_, actual)| actual == path)
+                    .map(|(original, _)| original.display().to_string())
+                    .collect::<Vec<_>>();
+                if original.is_empty() {
+                    path.display().to_string()
+                } else {
+                    format!("{} (requested as {})", path.display(), original.join(", "))
+                }
+            })
+            .collect(),
+    }
+}
+
 impl FolderAccessManager {
     fn with_skills_dir(configured: &Path) -> Self {
         let skill_anchor = (|| {
@@ -383,6 +416,43 @@ impl FolderAccessManager {
         })
     }
 
+    fn folder_declined_this_turn(&self, session_id: &str, folder: &Path) -> bool {
+        self.sessions
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(session_id)
+            .is_some_and(|session| {
+                session
+                    .denied
+                    .iter()
+                    .any(|denied| folder.starts_with(denied) || denied.starts_with(folder))
+            })
+    }
+
+    fn folder_request_lock(
+        &self,
+        session_id: &str,
+        folder: &Path,
+        access: AccessMode,
+    ) -> Arc<tokio::sync::Mutex<()>> {
+        let key = format!(
+            "{}:{}:{}",
+            session_id,
+            folder.display(),
+            access_name(access)
+        );
+        let mut requests = self.requests.lock().unwrap_or_else(PoisonError::into_inner);
+        requests.retain(|_, lock| lock.strong_count() > 0);
+        match requests.get(&key).and_then(Weak::upgrade) {
+            Some(lock) => lock,
+            None => {
+                let lock = Arc::new(tokio::sync::Mutex::new(()));
+                requests.insert(key, Arc::downgrade(&lock));
+                lock
+            }
+        }
+    }
+
     #[allow(clippy::too_many_arguments)]
     async fn approve_folder(
         &self,
@@ -403,24 +473,7 @@ impl FolderAccessManager {
         } else {
             AccessMode::Read
         };
-        let key = format!(
-            "{}:{}:{}",
-            session_id,
-            folder.display(),
-            access_name(access)
-        );
-        let lock = {
-            let mut requests = self.requests.lock().unwrap_or_else(PoisonError::into_inner);
-            requests.retain(|_, lock| lock.strong_count() > 0);
-            match requests.get(&key).and_then(Weak::upgrade) {
-                Some(lock) => lock,
-                None => {
-                    let lock = Arc::new(tokio::sync::Mutex::new(()));
-                    requests.insert(key.clone(), Arc::downgrade(&lock));
-                    lock
-                }
-            }
-        };
+        let lock = self.folder_request_lock(session_id, folder, access);
         let _serial = tokio::select! {
             () = cancel.cancelled() => return Err(authorization_required(folder, access, "The operation was cancelled.").into()),
             guard = lock.lock() => guard,
@@ -433,18 +486,7 @@ impl FolderAccessManager {
         }) {
             return Ok(vec![root]);
         }
-        let denied = self
-            .sessions
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .get(session_id)
-            .is_some_and(|session| {
-                session
-                    .denied
-                    .iter()
-                    .any(|denied| folder.starts_with(denied) || denied.starts_with(folder))
-            });
-        if denied {
+        if self.folder_declined_this_turn(session_id, folder) {
             return Err(authorization_required(folder, access, "The user declined this folder during the current turn. Do not ask again or broaden the request.").into());
         }
         if crate::user_surface::no_human_surface() {
@@ -461,29 +503,8 @@ impl FolderAccessManager {
             authorization_required(folder, access, "The folder changed while access was being prepared. Retry the original file operation so its current target can be shown for approval.")
         );
         let once_grants = exact_grants(&filesystem, requests)?;
-        let request = FolderAccessRequest {
-            action_id: action_id.to_string(),
-            tool_name: tool_name.to_string(),
-            folder: folder.display().to_string(),
-            access: access_name(access).to_string(),
-            once_descendants: requests.iter().any(|request| request.recursive),
-            files: requests
-                .iter()
-                .map(|request| {
-                    let path = &request.path;
-                    let original = aliases
-                        .iter()
-                        .filter(|(_, actual)| actual == path)
-                        .map(|(original, _)| original.display().to_string())
-                        .collect::<Vec<_>>();
-                    if original.is_empty() {
-                        path.display().to_string()
-                    } else {
-                        format!("{} (requested as {})", path.display(), original.join(", "))
-                    }
-                })
-                .collect(),
-        };
+        let request =
+            folder_approval_request(action_id, tool_name, folder, access, requests, aliases);
         let pending = PendingUserActions::global().park(
             Some(session_id),
             None,

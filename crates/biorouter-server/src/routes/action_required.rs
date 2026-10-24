@@ -51,22 +51,11 @@ fn status_only(status: StatusCode) -> (StatusCode, Json<Value>) {
     (status, Json(serde_json::json!({})))
 }
 
-#[utoipa::path(
-    post,
-    path = "/action-required/tool-confirmation",
-    request_body = ConfirmToolActionRequest,
-    responses(
-        (status = 200, description = "Decision processed; `status` is `delivered` or `unknown`", body = Value),
-        (status = 401, description = "Unauthorized - invalid secret key"),
-        (status = 403, description = "Refused: `reason` is `unproven` (this request carried no proof it came from the user) or `noKeyInstalled` (this daemon can never obtain that proof)", body = Value),
-        (status = 500, description = "Internal server error")
-    )
-)]
-pub async fn confirm_tool_action(
-    State(state): State<Arc<AppState>>,
-    headers: HeaderMap,
-    Json(request): Json<ConfirmToolActionRequest>,
-) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+async fn confirmation_authority(
+    state: &AppState,
+    headers: &HeaderMap,
+    request: &ConfirmToolActionRequest,
+) -> Result<(bool, biorouter::pending_user_action::DecisionAuthority), (StatusCode, Json<Value>)> {
     // ⚠ The two refusals say different things, and returning a bare 403 for
     // both is what made this card unanswerable-and-unexplained in browser mode.
     // A caller who presented no proof is being told "the user decides this"; a
@@ -86,7 +75,7 @@ pub async fn confirm_tool_action(
             Some(biorouter::pending_user_action::UserActionRequest::FolderAccess(_))
         );
     if folder_request {
-        super::session_reach::session_reach(state.session_manager(), &request.session_id, &headers)
+        super::session_reach::session_reach(state.session_manager(), &request.session_id, headers)
             .await
             .map_err(|error| status_only(error.status))?;
     }
@@ -94,9 +83,9 @@ pub async fn confirm_tool_action(
     let proof = if folder_decline {
         UserActionProof::Unproven
     } else if folder_request {
-        biorouter_server::auth::folder_access_action_proof(&headers)
+        biorouter_server::auth::folder_access_action_proof(headers)
     } else {
-        user_action_proof(&headers)
+        user_action_proof(headers)
     };
     if folder_request
         && !folder_decline
@@ -133,6 +122,27 @@ pub async fn confirm_tool_action(
             })),
         ));
     }
+    Ok((folder_request, authority))
+}
+
+#[utoipa::path(
+    post,
+    path = "/action-required/tool-confirmation",
+    request_body = ConfirmToolActionRequest,
+    responses(
+        (status = 200, description = "Decision processed; `status` is `delivered` or `unknown`", body = Value),
+        (status = 401, description = "Unauthorized - invalid secret key"),
+        (status = 403, description = "Refused: `reason` is `unproven` (this request carried no proof it came from the user) or `noKeyInstalled` (this daemon can never obtain that proof)", body = Value),
+        (status = 500, description = "Internal server error")
+    )
+)]
+pub async fn confirm_tool_action(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(request): Json<ConfirmToolActionRequest>,
+) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    let (folder_request, authority) =
+        confirmation_authority(state.as_ref(), &headers, &request).await?;
     let permission = match request.action.as_str() {
         "allow_session"
             if matches!(
