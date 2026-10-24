@@ -31,6 +31,7 @@ pub mod console;
 pub mod docker;
 pub mod environment;
 pub mod local;
+mod owner_private;
 pub mod seatbelt;
 pub mod shell_sandbox;
 

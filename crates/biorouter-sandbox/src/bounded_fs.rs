@@ -123,6 +123,48 @@ fn nofollow_options(directory: bool) -> OpenOptions {
     options
 }
 
+fn private_options(directory: bool) -> OpenOptions {
+    #[allow(unused_mut)]
+    let mut options = nofollow_options(directory);
+    #[cfg(windows)]
+    {
+        use cap_std::fs::OpenOptionsExt;
+        use windows_sys::Win32::Storage::FileSystem::{
+            FILE_READ_ATTRIBUTES, READ_CONTROL, WRITE_DAC,
+        };
+        options.access_mode(FILE_READ_ATTRIBUTES | READ_CONTROL | WRITE_DAC);
+    }
+    options
+}
+
+fn private_directory_at(directory: &Dir, name: &Path) -> io::Result<Dir> {
+    #[allow(unused_mut)]
+    let mut builder = cap_std::fs::DirBuilder::new();
+    #[cfg(unix)]
+    {
+        use cap_std::fs::DirBuilderExt;
+        builder.mode(0o700);
+    }
+    match directory.create_dir_with(name, &builder) {
+        Ok(()) => {}
+        Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
+        Err(error) => return Err(error),
+    }
+    let file = directory
+        .open_with(name, &private_options(true))?
+        .into_std();
+    let metadata = file.metadata()?;
+    reject_reparse(&metadata)?;
+    if !metadata.is_dir() {
+        return Err(io::Error::new(
+            io::ErrorKind::NotADirectory,
+            "Private storage must be a directory",
+        ));
+    }
+    crate::owner_private::protect(&file, true)?;
+    Ok(Dir::from_std_file(file))
+}
+
 fn reject_reparse(metadata: &Metadata) -> io::Result<()> {
     if metadata.file_type().is_symlink() {
         return Err(refused("The selected path changed to a symbolic link"));
@@ -539,6 +581,43 @@ impl BoundedFs {
         self.bind(relative, self.inner.access)?.open_dir()
     }
 
+    pub fn protect_owner_private(&self) -> io::Result<()> {
+        self.bind(".", AccessMode::Write)?
+            .check(AccessMode::Write)?;
+        let file = self
+            .inner
+            .directory
+            .open_with(".", &private_options(true))?
+            .into_std();
+        crate::owner_private::protect(&file, true)
+    }
+
+    pub fn create_private_subdirectory(&self, relative: impl AsRef<Path>) -> io::Result<Self> {
+        let names = relative_components(relative.as_ref(), false)?;
+        if names.is_empty() {
+            return Err(refused("A private subdirectory name is required"));
+        }
+        let mut directory = self.inner.directory.try_clone()?;
+        let mut label = self.root().to_path_buf();
+        for name in names {
+            self.bind(".", AccessMode::Write)?
+                .check(AccessMode::Write)?;
+            directory = private_directory_at(&directory, Path::new(&name))?;
+            label.push(name);
+        }
+        let identity = directory_identity(&directory)?;
+        Ok(Self {
+            inner: Arc::new(Root {
+                directory,
+                canonical: label.clone(),
+                selected: label,
+                identity,
+                access: self.inner.access,
+                authorization: self.inner.authorization.clone(),
+            }),
+        })
+    }
+
     fn relative_request(&self, path: &Path) -> io::Result<Vec<OsString>> {
         let relative = if path.is_absolute() {
             path.strip_prefix(&self.inner.canonical)
@@ -659,6 +738,32 @@ impl BoundedPath {
             identity.created_nanos.unwrap_or(0)
         ))
         .join(&self.relative)
+    }
+
+    pub fn try_history_key(&self) -> io::Result<PathBuf> {
+        self.check(AccessMode::Read)?;
+        let identity = directory_identity(&self.parent(false)?)?;
+        Ok(PathBuf::from(format!(
+            "parent-{:x}-{:x}-{:x}",
+            identity.device,
+            identity.file,
+            identity.created_nanos.unwrap_or(0)
+        ))
+        .join(&self.name))
+    }
+
+    pub fn protect_owner_private(&self) -> io::Result<()> {
+        self.check(AccessMode::Write)?;
+        let file = self
+            .parent(false)?
+            .open_with(&self.name, &private_options(false))?
+            .into_std();
+        let metadata = file.metadata()?;
+        reject_reparse(&metadata)?;
+        if !metadata.is_file() {
+            return Err(refused("Private file storage must be a regular file"));
+        }
+        crate::owner_private::protect(&file, false)
     }
 
     pub fn open_dir(&self) -> io::Result<BoundedFs> {
@@ -823,18 +928,43 @@ impl BoundedPath {
     }
 
     pub fn atomic_write(&self, bytes: &[u8]) -> io::Result<()> {
+        self.atomic_write_inner(bytes, false)
+    }
+
+    pub fn atomic_write_private(&self, bytes: &[u8]) -> io::Result<()> {
+        self.atomic_write_inner(bytes, true)
+    }
+
+    fn atomic_write_inner(&self, bytes: &[u8], private: bool) -> io::Result<()> {
         self.check(AccessMode::Write)?;
         if self.relative.as_os_str().is_empty() {
             return Err(refused("The authorized root is a directory"));
         }
-        let parent = self.parent(true)?;
-        let previous = match parent.open_with(&self.name, &nofollow_options(false)) {
+        let parent = if private {
+            let mut directory = self.parent.try_clone()?;
+            for name in &self.missing_parents {
+                self.check(AccessMode::Write)?;
+                directory = private_directory_at(&directory, Path::new(name))?;
+            }
+            directory
+        } else {
+            self.parent(true)?
+        };
+        let previous_options = if private {
+            private_options(false)
+        } else {
+            nofollow_options(false)
+        };
+        let previous = match parent.open_with(&self.name, &previous_options) {
             Ok(file) => {
                 let file = file.into_std();
                 let metadata = file.metadata()?;
                 reject_reparse(&metadata)?;
                 if !metadata.is_file() || metadata.permissions().readonly() {
                     return Err(refused("The destination is not a writable regular file"));
+                }
+                if private {
+                    crate::owner_private::protect(&file, false)?;
                 }
                 Some((file, metadata.permissions()))
             }
@@ -847,7 +977,11 @@ impl BoundedPath {
         #[cfg(unix)]
         {
             use cap_std::fs::OpenOptionsExt;
-            options.mode(if previous.is_some() { 0o600 } else { 0o666 });
+            options.mode(if private || previous.is_some() {
+                0o600
+            } else {
+                0o666
+            });
         }
         #[cfg(windows)]
         {
@@ -861,7 +995,9 @@ impl BoundedPath {
         }
         let mut file = parent.open_with(&temporary, &options)?.into_std();
         let result = (|| {
-            if let Some((original, permissions)) = previous {
+            if private {
+                crate::owner_private::protect(&file, false)?;
+            } else if let Some((original, permissions)) = previous {
                 copy_ownership(&original, &file)?;
                 file.set_permissions(permissions)?;
                 copy_access_controls(&original, &file)?;

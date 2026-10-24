@@ -258,6 +258,42 @@ fn dispatch_aliases_preserve_approved_actual_target_scope_and_lifetime() {
     ));
 }
 
+#[test]
+fn actual_parent_history_keys_unify_different_approved_root_scopes() {
+    let fixture = root();
+    fs::create_dir(fixture.path().join("child")).unwrap();
+    fs::write(fixture.path().join("child/file"), "existing").unwrap();
+    let ancestor = BoundedFs::open(fixture.path()).unwrap();
+    let child = ancestor.subdirectory("child").unwrap();
+    assert_eq!(
+        ancestor
+            .bind("child/file", AccessMode::Read)
+            .unwrap()
+            .try_history_key()
+            .unwrap(),
+        child
+            .bind("file", AccessMode::Read)
+            .unwrap()
+            .try_history_key()
+            .unwrap()
+    );
+    let new = ancestor.bind("new-parent/file", AccessMode::Write).unwrap();
+    assert_eq!(
+        new.try_history_key().unwrap_err().kind(),
+        io::ErrorKind::NotFound
+    );
+    new.atomic_write(b"new").unwrap();
+    let new_parent = ancestor.subdirectory("new-parent").unwrap();
+    assert_eq!(
+        new.try_history_key().unwrap(),
+        new_parent
+            .bind("file", AccessMode::Read)
+            .unwrap()
+            .try_history_key()
+            .unwrap()
+    );
+}
+
 #[cfg(windows)]
 mod windows {
     use super::*;
@@ -343,6 +379,128 @@ mod unix {
     use super::*;
     use biorouter_sandbox::{DockerSandbox, LocalProcessSandbox, SandboxClient, SandboxSpec};
     use std::os::unix::fs::{symlink, PermissionsExt};
+
+    #[test]
+    fn private_history_repairs_owned_storage_and_new_publication_is_owner_only() {
+        let fixture = root();
+        fs::set_permissions(fixture.path(), fs::Permissions::from_mode(0o755)).unwrap();
+        fs::create_dir(fixture.path().join("history")).unwrap();
+        fs::set_permissions(
+            fixture.path().join("history"),
+            fs::Permissions::from_mode(0o755),
+        )
+        .unwrap();
+        fs::write(fixture.path().join("history/old.json"), "synthetic-old").unwrap();
+        fs::set_permissions(
+            fixture.path().join("history/old.json"),
+            fs::Permissions::from_mode(0o644),
+        )
+        .unwrap();
+        let fs = BoundedFs::open(fixture.path()).unwrap();
+        let history = fs.create_private_subdirectory("history").unwrap();
+        history
+            .bind("old.json", AccessMode::Write)
+            .unwrap()
+            .protect_owner_private()
+            .unwrap();
+        history
+            .bind("nested/new.json", AccessMode::Write)
+            .unwrap()
+            .atomic_write_private(b"synthetic-new")
+            .unwrap();
+        for (path, mode) in [
+            ("history", 0o700),
+            ("history/old.json", 0o600),
+            ("history/nested", 0o700),
+            ("history/nested/new.json", 0o600),
+        ] {
+            assert_eq!(
+                fs::metadata(fixture.path().join(path))
+                    .unwrap()
+                    .permissions()
+                    .mode()
+                    & 0o777,
+                mode,
+                "{path}"
+            );
+        }
+        assert_eq!(
+            fs::metadata(fixture.path()).unwrap().permissions().mode() & 0o777,
+            0o755,
+            "unrelated ancestor permissions must stay intact"
+        );
+        assert_eq!(read(&history, "old.json"), b"synthetic-old");
+        assert_eq!(read(&history, "nested/new.json"), b"synthetic-new");
+    }
+
+    #[test]
+    fn private_storage_never_chmods_a_substituted_link_target() {
+        let fixture = root();
+        let outside = root();
+        fs::write(fixture.path().join("file"), "approved").unwrap();
+        fs::write(outside.path().join("canary"), "outside").unwrap();
+        fs::set_permissions(
+            outside.path().join("canary"),
+            fs::Permissions::from_mode(0o644),
+        )
+        .unwrap();
+        let fs = BoundedFs::open(fixture.path()).unwrap();
+        let bound = fs.bind("file", AccessMode::Write).unwrap();
+        fs::remove_file(fixture.path().join("file")).unwrap();
+        symlink(outside.path().join("canary"), fixture.path().join("file")).unwrap();
+        symlink(outside.path(), fixture.path().join("history")).unwrap();
+        assert!(bound.protect_owner_private().is_err());
+        assert!(bound.atomic_write_private(b"denied").is_err());
+        assert!(fs.create_private_subdirectory("history").is_err());
+        assert_eq!(
+            fs::metadata(outside.path().join("canary"))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o644
+        );
+        assert_eq!(fs::read(outside.path().join("canary")).unwrap(), b"outside");
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn normal_replacement_preserves_acl_and_private_replacement_removes_it() {
+        use std::process::Command;
+        let fixture = root();
+        let path = fixture.path().join("history.json");
+        fs::write(&path, "synthetic-old").unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+        assert!(Command::new("/bin/chmod")
+            .args(["+a", "everyone allow read"])
+            .arg(&path)
+            .status()
+            .unwrap()
+            .success());
+        let acl = || {
+            String::from_utf8(
+                Command::new("/bin/ls")
+                    .arg("-le")
+                    .arg(&path)
+                    .output()
+                    .unwrap()
+                    .stdout,
+            )
+            .unwrap()
+        };
+        assert!(acl().contains("everyone allow read"));
+        let fs = BoundedFs::open(fixture.path()).unwrap();
+        let bound = fs.bind("history.json", AccessMode::Write).unwrap();
+        bound.atomic_write(b"normal-update").unwrap();
+        assert!(acl().contains("everyone allow read"));
+        bound.atomic_write_private(b"private-update").unwrap();
+        assert!(!acl().contains("everyone"));
+        assert_eq!(read(&fs, "history.json"), b"private-update");
+        assert_eq!(
+            fs::metadata(path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+    }
 
     #[test]
     fn contained_links_work_without_authorizing_external_or_dangling_links() {
