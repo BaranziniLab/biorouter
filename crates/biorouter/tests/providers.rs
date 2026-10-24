@@ -888,9 +888,8 @@ async fn test_versa_bedrock_provider_sonnet_4_6() -> Result<()> {
 }
 
 /// Sonnet 5 over the Versa proxy: the id `VERSA_BEDROCK_KNOWN_MODELS` gained on
-/// 2026-10-05, when it first answered through UCSF's gateway, and the only
-/// Claude 5 model UCSF's account may invoke. Pinned literally, like the test
-/// above, so a change to the list cannot quietly stop covering it.
+/// 2026-10-05, when it first answered through UCSF's gateway. Pinned literally,
+/// like the test above, so a list change cannot quietly stop covering it.
 #[tokio::test]
 #[ignore = "live billed Versa Bedrock call; run deliberately with --ignored"]
 async fn test_versa_bedrock_provider_sonnet_5() -> Result<()> {
@@ -907,7 +906,42 @@ async fn test_versa_bedrock_provider_sonnet_5() -> Result<()> {
     .await
 }
 
-/// The other half of the 2026-10-05 measurement: Opus 5.5 and Opus 5 left
+/// Opus 5.5 over the Versa proxy: refused by UCSF's IAM policy on 2026-10-05,
+/// enabled by 2026-10-22. Pinned literally, like the tests above.
+#[tokio::test]
+#[ignore = "live billed Versa Bedrock call; run deliberately with --ignored"]
+async fn test_versa_bedrock_provider_opus_5_5() -> Result<()> {
+    run_live_suite(
+        "versa_bedrock (opus-5-5)",
+        "versa_bedrock",
+        "us.anthropic.claude-opus-5-5",
+        &[
+            Credential::EnvOrSecret("VERSA_BEDROCK_ACCESS_KEY_ID"),
+            Credential::EnvOrSecret("VERSA_BEDROCK_SECRET_ACCESS_KEY"),
+        ],
+        None,
+    )
+    .await
+}
+
+/// Sonnet 5.5 over the Versa proxy: same history as Opus 5.5 above.
+#[tokio::test]
+#[ignore = "live billed Versa Bedrock call; run deliberately with --ignored"]
+async fn test_versa_bedrock_provider_sonnet_5_5() -> Result<()> {
+    run_live_suite(
+        "versa_bedrock (sonnet-5-5)",
+        "versa_bedrock",
+        "us.anthropic.claude-sonnet-5-5",
+        &[
+            Credential::EnvOrSecret("VERSA_BEDROCK_ACCESS_KEY_ID"),
+            Credential::EnvOrSecret("VERSA_BEDROCK_SECRET_ACCESS_KEY"),
+        ],
+        None,
+    )
+    .await
+}
+
+/// The other half of the 2026-10-05 measurement: Opus 5 and Opus 4.7 stay off
 /// `VERSA_BEDROCK_KNOWN_MODELS` because UCSF's account is refused them
 /// (`AccessDeniedException`), and a chat still bound to one must hear that the
 /// MODEL was refused, not that its working key pair was. If this starts
@@ -931,7 +965,7 @@ async fn test_versa_bedrock_refuses_models_ucsf_does_not_serve() -> Result<()> {
     }
     drop(_lock);
 
-    for model in ["us.anthropic.claude-opus-5-5", "us.anthropic.claude-opus-5"] {
+    for model in ["us.anthropic.claude-opus-5", "us.anthropic.claude-opus-4-7"] {
         let provider = create_with_named_model("versa_bedrock", model).await?;
         let error = match provider
             .complete(
@@ -1489,7 +1523,7 @@ async fn test_versa_bedrock_every_offered_model() -> Result<()> {
 }
 
 /// The models taken OUT of the two catalogs, through BioRouter:
-///   * Versa Bedrock: `us.anthropic.claude-opus-5-5` is sent, AWS refuses it
+///   * Versa Bedrock: `us.anthropic.claude-opus-5` is sent, AWS refuses it
 ///     (`AccessDeniedException`), and the user hears a model refusal naming
 ///     the offered models, on both paths, promptly (not retried).
 ///   * Versa Azure: `gpt-6-sol-2026-09-22` has no deployment, so it is refused
@@ -1503,7 +1537,7 @@ async fn test_versa_removed_models_are_refused() -> Result<()> {
     let prompt = [Message::user().with_text("Reply with the single word OK.")];
 
     // Bedrock: sent, refused by AWS, surfaced as a model refusal.
-    let removed = "us.anthropic.claude-opus-5-5";
+    let removed = "us.anthropic.claude-opus-5";
     let provider = create_with_named_model("versa_bedrock", removed).await?;
     for path in [CallPath::Blocking, CallPath::Streaming] {
         let started = std::time::Instant::now();
