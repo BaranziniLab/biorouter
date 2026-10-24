@@ -253,13 +253,17 @@ function ChatPane({ clean, sessionId, composerKey = TAB }: PaneProps) {
   );
 }
 
+const toolCounts = (chip: HTMLElement | null) =>
+  chip?.getAttribute('aria-label')?.match(/\d+/g) ?? [];
+
 /** What the composer states in one frame: the Tools chip, its name, the padlock, the folder. */
 function frame(): string {
   const tools = screen.queryByTestId('composer-tools-chip');
   const model = screen.queryByTestId('model-chip');
   const lock = model?.querySelector('[data-testid="privacy-badge"]') ? '+lock' : 'no lock';
   const folder = screen.queryByTestId('footer-folder')?.textContent ?? '-';
-  return `${tools?.textContent ?? '-'} | ${tools?.getAttribute('aria-label') ?? '-'} | ${lock} | ${folder}`;
+  const counts = toolCounts(tools).join(', ');
+  return `${tools?.textContent ?? '-'} | ${counts || '-'} | ${tools?.getAttribute('aria-label') ?? '-'} | ${lock} | ${folder}`;
 }
 
 /** Every distinct committed state from now on (the observer reports per commit). */
@@ -283,7 +287,7 @@ const settle = (ms: number) =>
     await new Promise((resolve) => setTimeout(resolve, ms));
   });
 
-const SETTLED = `Tools5 | Tools: 2 extensions, 2 skills, 1 knowledge base | +lock | ${CHOSEN_DIR}`;
+const SETTLED = `Tools | 2, 2, 1 | Tools: 2 extensions, 2 skills, 1 knowledge base | +lock | ${CHOSEN_DIR}`;
 
 /** A new tab, answered, with a folder picked before the first message. */
 async function openNewChatWithPickedFolder() {
@@ -294,7 +298,7 @@ async function openNewChatWithPickedFolder() {
 }
 
 describe('a new chat’s first send keeps what the composer states (V2-R8-3)', () => {
-  it('keeps "Tools 5", its name, the padlock and the picked folder in every commit', async () => {
+  it('keeps all three tool counts, their name, the padlock and the picked folder in every commit', async () => {
     const view = await openNewChatWithPickedFolder();
     const fieldBefore = screen.getByTestId('chat-input');
     const record = recordFrames();
@@ -321,6 +325,7 @@ describe('a new chat’s first send keeps what the composer states (V2-R8-3)', (
 
     // The same tab, opened again: it asks for itself.
     const again = render(<ChatPane clean sessionId={null} />);
+    expect(toolCounts(screen.getByTestId('composer-tools-chip'))).toEqual([]);
     expect(screen.getByTestId('composer-tools-chip')).toHaveTextContent(/^Tools$/);
     expect(screen.getByTestId('composer-tools-chip')).toHaveAccessibleName('Tools');
     expect(screen.getByTestId('footer-folder')).toHaveTextContent(DEFAULT_DIR);
@@ -331,13 +336,14 @@ describe('a new chat’s first send keeps what the composer states (V2-R8-3)', (
     const chatA = render(<ChatPane clean={false} sessionId={NEW_CHAT} />);
     await waitFor(() => expect(frame()).toBe(SETTLED));
     chatA.rerender(<ChatPane clean sessionId={OTHER_CHAT} />);
+    expect(toolCounts(screen.getByTestId('composer-tools-chip'))).toEqual([]);
     expect(screen.getByTestId('composer-tools-chip')).toHaveTextContent(/^Tools$/);
     expect(screen.getByTestId('composer-tools-chip')).toHaveAccessibleName('Tools');
     expect(screen.getByTestId('footer-folder')).toHaveTextContent(/^$/);
     // Then its own figures and folder, once they are read.
     await waitFor(() =>
       expect(frame()).toBe(
-        `Tools5 | Tools: 2 extensions, 2 skills, 1 knowledge base | +lock | ${OTHER_DIR}`
+        `Tools | 2, 2, 1 | Tools: 2 extensions, 2 skills, 1 knowledge base | +lock | ${OTHER_DIR}`
       )
     );
     chatA.unmount();

@@ -235,8 +235,8 @@ export default function ModelsBottomBar({
 }: ModelsBottomBarProps) {
   const effort = useReasoningEffortValue(reasoningScope);
   const notesId = useInfoTipId();
-  // The Effort slider's thumb, which the menu's Up and Down keys move focus to.
-  const effortThumbRef = useRef<HTMLSpanElement>(null);
+  // The menu's Up and Down keys enter effort at its selected segment.
+  const effortControlRef = useRef<HTMLDivElement>(null);
   const {
     currentModel,
     currentProvider,
@@ -744,8 +744,8 @@ export default function ModelsBottomBar({
           align="end"
           className="w-72"
           aria-describedby={notes ? notesId : undefined}
-          // The menu's arrow keys visit rows only; this makes the Effort slider one more stop.
-          onKeyDownCapture={(event) => moveFocusAcrossEffort(event, effortThumbRef.current)}
+          // The menu's arrow keys visit rows only; this includes the selected effort segment.
+          onKeyDownCapture={(event) => moveFocusAcrossEffort(event, effortControlRef.current)}
         >
           <div className="px-3 pt-2 pb-1.5">
             <div className="flex items-center text-supporting text-text-muted">
@@ -801,9 +801,8 @@ export default function ModelsBottomBar({
           {effort !== null && reasoningScope && (
             <>
               <DropdownMenuSeparator />
-              {/* R-26: one slider (Quick, Normal, Deep) where three radio rows were. Same
-                  store, same scope, applied at once; the menu stays open. */}
-              <EffortSection scope={reasoningScope} effort={effort} thumbRef={effortThumbRef} />
+              {/* Effort applies immediately to this scope while the menu stays open. */}
+              <EffortSection scope={reasoningScope} effort={effort} controlRef={effortControlRef} />
             </>
           )}
           <DropdownMenuSeparator />

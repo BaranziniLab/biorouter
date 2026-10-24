@@ -392,6 +392,9 @@ pub struct DeveloperServer {
     /// bind time (it did not exist yet), in which case there is nothing to
     /// compare against and the path alone remains the boundary.
     canonical_working_dir: Option<PathBuf>,
+    // Skills installed by Biorouter may be inspected from any project. This
+    // canonical root grants reads only, without widening the editor's write jail.
+    skill_read_root: Option<PathBuf>,
     /// Wall-clock budget for a **foreground** shell command (issue #72), read
     /// once from `BIOROUTER_SHELL_FOREGROUND_TIMEOUT_SECS` at construction so
     /// the value cannot change under a running command. `None` disables the
@@ -826,6 +829,7 @@ impl DeveloperServer {
             bash_env_file: None,
             working_dir: None,
             canonical_working_dir: None,
+            skill_read_root: Self::bind_skill_read_root(&crate::paths::in_config_dir("skills")),
             foreground_timeout: super::shell::foreground_timeout_from_env(),
         }
     }
@@ -1023,14 +1027,14 @@ impl DeveloperServer {
     /// - `undo_edit`: Undo the last edit made to a file.
     #[tool(
         name = "text_editor",
-        description = "Perform text editing operations on files. Commands: view (show file content), write (create/overwrite file), str_replace (edit file), insert (insert at line), undo_edit (undo last change)."
+        description = "Perform text editing operations on files in the working directory. View also supports Biorouter's installed skills outside the working directory. Commands: view (show file content), write (create/overwrite file), str_replace (edit file), insert (insert at line), undo_edit (undo last change)."
     )]
     pub async fn text_editor(
         &self,
         params: Parameters<TextEditorParams>,
     ) -> Result<CallToolResult, ErrorData> {
         let params = params.0;
-        let path = self.resolve_path(&params.path)?;
+        let path = self.resolve_path_scoped(&params.path, params.command == "view")?;
 
         // Check if file is ignored before proceeding with any text editor operation
         if self.is_ignored(&path) {
@@ -2076,9 +2080,23 @@ impl DeveloperServer {
         self.resolve_path_jailed(path_str)
     }
 
+    fn bind_skill_read_root(configured: &Path) -> Option<PathBuf> {
+        let ancestor = configured.ancestors().find(|path| path.exists())?;
+        let canonical = ancestor.canonicalize().ok()?;
+        Some(canonical.join(configured.strip_prefix(ancestor).ok()?))
+    }
+
     /// Resolve `path_str` against the effective working directory and enforce
     /// the session's containment jail.
     fn resolve_path_jailed(&self, path_str: &str) -> Result<PathBuf, ErrorData> {
+        self.resolve_path_scoped(path_str, false)
+    }
+
+    fn resolve_path_scoped(
+        &self,
+        path_str: &str,
+        allow_skill_read: bool,
+    ) -> Result<PathBuf, ErrorData> {
         let expanded = expand_path(path_str);
         let path = Path::new(&expanded);
 
@@ -2125,7 +2143,15 @@ impl DeveloperServer {
                     None,
                 )
             })?;
-            if !canonical_resolved.starts_with(&canonical_cwd) {
+            // Installed skills live outside most projects. Only views may use
+            // that explicit read scope; links out of it remain outside the jail.
+            let skill_read = allow_skill_read
+                && self.skill_read_root.as_ref().is_some_and(|root| {
+                    root.is_dir()
+                        && canonical_resolved.starts_with(root)
+                        && !SecretGuard::for_dir(root).is_denied_resolved(&resolved)
+                });
+            if !canonical_resolved.starts_with(&canonical_cwd) && !skill_read {
                 return Err(ErrorData::new(
                     rmcp::model::ErrorCode::INVALID_PARAMS,
                     format!("Path '{}' is outside the working directory", path_str),
@@ -2656,6 +2682,105 @@ mod tests {
             server.resolve_path_jailed(target_str).is_err(),
             "an outside-working-dir path must always be rejected"
         );
+    }
+
+    #[tokio::test]
+    async fn installed_skill_files_are_readable_but_not_writable_outside_the_project() {
+        let project = tempfile::tempdir().unwrap();
+        let skills = tempfile::tempdir().unwrap();
+        let script = skills.path().join("example/scripts/install_deps.sh");
+        std::fs::create_dir_all(script.parent().unwrap()).unwrap();
+        std::fs::write(&script, "echo installed\n").unwrap();
+        let mut server = DeveloperServer::new().with_working_dir(project.path().to_path_buf());
+        server.skill_read_root = Some(skills.path().canonicalize().unwrap());
+
+        let params = |command: &str| {
+            Parameters(TextEditorParams {
+                path: script.to_string_lossy().into_owned(),
+                command: command.to_string(),
+                file_text: Some("changed".to_string()),
+                diff: None,
+                view_range: None,
+                old_str: Some("installed".to_string()),
+                new_str: Some("changed".to_string()),
+                insert_line: Some(1),
+            })
+        };
+        let result = server.text_editor(params("view")).await.unwrap();
+        assert!(view_result_model_text(&result).contains("echo installed"));
+        for command in ["write", "str_replace", "insert", "undo_edit"] {
+            let err = server.text_editor(params(command)).await.unwrap_err();
+            assert!(err.message.contains("outside the working directory"));
+        }
+        assert_eq!(std::fs::read_to_string(script).unwrap(), "echo installed\n");
+        assert!(server
+            .resolve_path_scoped(project.path().parent().unwrap().to_str().unwrap(), true)
+            .is_err());
+    }
+
+    #[test]
+    fn installed_skill_reads_respect_secret_and_ignore_rules() {
+        let project = tempfile::tempdir().unwrap();
+        let skills = tempfile::tempdir().unwrap();
+        std::fs::write(skills.path().join(".biorouterignore"), "private.txt\n").unwrap();
+        let mut server = DeveloperServer::new().with_working_dir(project.path().to_path_buf());
+        server.skill_read_root = Some(skills.path().canonicalize().unwrap());
+        for name in [".env", "private.txt"] {
+            let path = skills.path().join(name);
+            std::fs::write(&path, "confidential").unwrap();
+            assert!(server
+                .resolve_path_scoped(path.to_str().unwrap(), true)
+                .is_err());
+        }
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn installed_skill_reads_do_not_follow_links_outside_the_skill_root() {
+        let project = tempfile::tempdir().unwrap();
+        let skills = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let target = outside.path().join("notes.txt");
+        std::fs::write(&target, "outside").unwrap();
+        let link = skills.path().join("notes.txt");
+        std::os::unix::fs::symlink(target, &link).unwrap();
+        let mut server = DeveloperServer::new().with_working_dir(project.path().to_path_buf());
+        server.skill_read_root = Some(skills.path().canonicalize().unwrap());
+        assert!(server
+            .resolve_path_scoped(link.to_str().unwrap(), true)
+            .is_err());
+    }
+
+    #[test]
+    fn skills_installed_after_server_start_are_readable() {
+        let project = tempfile::tempdir().unwrap();
+        let config = tempfile::tempdir().unwrap();
+        let skills = config.path().join("new-config/skills");
+        let mut server = DeveloperServer::new().with_working_dir(project.path().to_path_buf());
+        server.skill_read_root = DeveloperServer::bind_skill_read_root(&skills);
+        std::fs::create_dir_all(&skills).unwrap();
+        let script = skills.join("SKILL.md");
+        std::fs::write(&script, "Installed after the server started.").unwrap();
+        assert!(server
+            .resolve_path_scoped(script.to_str().unwrap(), true)
+            .is_ok());
+        assert!(server.resolve_path(script.to_str().unwrap()).is_err());
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn a_late_skills_root_symlink_does_not_grant_reads_outside_the_pinned_scope() {
+        let project = tempfile::tempdir().unwrap();
+        let config = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let skills = config.path().join("skills");
+        let mut server = DeveloperServer::new().with_working_dir(project.path().to_path_buf());
+        server.skill_read_root = DeveloperServer::bind_skill_read_root(&skills);
+        std::fs::write(outside.path().join("notes.txt"), "outside").unwrap();
+        std::os::unix::fs::symlink(outside.path(), &skills).unwrap();
+        assert!(server
+            .resolve_path_scoped(skills.join("notes.txt").to_str().unwrap(), true)
+            .is_err());
     }
 
     /// #2 regression, narrowed by #64: if the session dir is deleted, the editor

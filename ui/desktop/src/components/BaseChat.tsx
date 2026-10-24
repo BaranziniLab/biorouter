@@ -63,6 +63,7 @@ import { composerFollowsUp, useFirstSend } from './summary/useFirstSend';
 import { FirstSendTranscript } from './summary/FirstSendTranscript';
 import { useTranscriptFollow, useTranscriptSettle } from './summary/useTranscriptFollow';
 import { useLateRowHold } from './summary/useLateRowHold';
+import { usePermissionRequestReveal } from './summary/usePermissionRequestReveal';
 import { captureScrollAnchor, useColumnGlide } from '../hooks/useColumnGlide';
 import { DUR, EASE_OUT, isWindowResizing, prefersReducedMotion } from '../styles/motion';
 import { Note } from './ui/note';
@@ -2338,6 +2339,13 @@ function BaseChatContent({
     scrollRef,
     isPreviewStacked: artifactPanel.isStacked,
     transcriptMounted: !isCleanConversation && !sessionLoadError,
+  });
+  usePermissionRequestReveal({
+    sessionId,
+    messages,
+    chatState,
+    transcriptMounted: !isCleanConversation && !sessionLoadError,
+    scrollRef,
   });
 
   // When the list settles: back to the end while the reader follows it (the

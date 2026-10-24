@@ -1100,6 +1100,59 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    #[tokio::test]
+    async fn a_truncated_http_body_is_a_retryable_stream_failure() -> anyhow::Result<()> {
+        use crate::providers::errors::ProviderErrorKind;
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+        let address = listener.local_addr()?;
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await?;
+            let mut request = Vec::new();
+            while !request.ends_with(b"\r\n\r\n") {
+                request.push(socket.read_u8().await?);
+            }
+            let body = "data: {\"model\":\"mock-model\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"Partial answer\"},\"finish_reason\":null}]}\n\n";
+            let headers = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len() + 1024,
+            );
+            socket.write_all(headers.as_bytes()).await?;
+            socket.write_all(body.as_bytes()).await?;
+            socket.shutdown().await?;
+            anyhow::Ok(())
+        });
+        let response = reqwest::Client::builder()
+            .no_proxy()
+            .timeout(std::time::Duration::from_secs(5))
+            .build()?
+            .get(format!("http://{address}/v1/chat/completions"))
+            .send()
+            .await?;
+        let dir = tempfile::tempdir()?;
+        let model = ModelConfig::new("mock-model")?;
+        let log = RequestLog::start_in(dir.path(), ProviderTier::Private, &model, &json!({}))?;
+        let mut stream = stream_openai_compat(response, log)?;
+        let mut text = String::new();
+        let error = loop {
+            match stream.next().await.expect("the truncated body must fail") {
+                Ok((Some(message), _, _)) => text.push_str(&message.as_concat_text()),
+                Ok(_) => {}
+                Err(error) => break error,
+            }
+        };
+        server.await??;
+        assert_eq!(text, "Partial answer");
+        assert_eq!(
+            error.to_string(),
+            "Request failed: Stream decode error: error decoding response body"
+        );
+        assert_eq!(error.kind(), ProviderErrorKind::Network);
+        assert!(crate::agents::mistakes::is_recoverable(&error));
+        Ok(())
+    }
+
     #[test]
     fn http_context_classifier_keeps_tool_array_limits_as_request_failures() {
         let message = "Invalid 'tools': array too long. Expected at most 128 items, but got 129.";

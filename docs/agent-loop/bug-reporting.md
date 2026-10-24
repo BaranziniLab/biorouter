@@ -225,6 +225,14 @@ heading, so a report written by hand from the template still validates without i
 
 ## The redaction harness
 
+Automatic public evidence contains only typed error kinds, retryability and
+failure counts. Raw tool arguments, output and tool names stay in local analysis:
+they can contain names, birth dates, filenames or other personal content that a
+credential scrubber cannot recognize. The agent must write reproduction steps
+with synthetic examples and review all authored fields for personal details.
+The exact-body disclosure and approval controls still apply. A diagnostics bundle
+contains conversation content and must be reviewed before sharing.
+
 Two shapes, deliberately different:
 
 - **`scrub`** rewrites what it recognises — home paths (to `~`), other accounts' usernames,
@@ -294,23 +302,26 @@ the Diagnostics dialog had already rejected: it warns about a private chat's bun
 generates it anyway. The rule now is that the user decides, and the agent never publishes
 from a private chat by itself.
 
-- **No filer that publishes on approval.** `choose_filer` never returns `GhCli` for a
-  private chat, whatever `gh` can do, and `gh` is not even probed (the probe is a network
-  round trip before the card). The report goes out as a prefilled compose page, or is
-  handed back to paste when it is too large for a URL. The disclosure is then the user's
-  own **Submit** on GitHub, with the text in front of them.
-- **A loud card.** The approval prompt opens with a sentence saying the chat is private
-  and why, that the report becomes public if submitted, what to look for in it (patient or
-  participant data, credentials, unpublished results, institutional information), that the
-  failure list quotes raw tool output, and that nothing is posted automatically. The reason
-  clause (`private_reason_clause`) reads "ran on a private model" for a `turn:*`
-  `privacy_reason`, and takes `privacy::declassify::strong_confirmation_reason`'s wording
-  for the other reasons that vocabulary names. An absent or unrecognised reason gets the
-  plain "This chat is classified PRIVATE.", because that function's catch-all is a
-  sentence about the record, written for the declassify control. The desktop
-  draws any `prompt` as a warning banner and hides Always Allow beside it, so this needed
-  no frontend change. `requires_user_proof`, `risk: High` and the verbatim body are
-  unchanged.
+- **One reviewed report, one trusted action.** A private report can use the signed-in
+  `gh` after the person clicks **Allow once** on the proof-backed card. A chat message,
+  an unproven daemon request, Always Allow, a stale card or a different session cannot
+  authorize it. Private reports are restricted to `BaranziniLab/biorouter`; an overridden
+  destination is refused before approval. The grant is consumed for one submission
+  attempt and never changes the chat's classification or authorizes a later report.
+- **The exact bytes are bound.** A v2 domain-separated SHA-256 digest covers the qualified
+  `github.com/OWNER/REPO` destination,
+  title, rendered redacted body and fixed bug label. The digest appears beside the whole
+  title and body on the approval card and is checked again before submission. Security
+  audit events record the attempt ID, digest, destination, UTC time, decision and
+  publication result, including a failed CLI or staging attempt, unknown submission outcome,
+  and cancellation. The `biorouter::security_audit` target survives default app/CLI filters.
+  They contain no report text, conversation, tool arguments, CLI output or privacy reason.
+- **A loud card.** The prompt leads with the stored private classification and its reason,
+  then asks the person to inspect the report for patient or participant data, credentials,
+  unpublished results and institutional information. It says the report becomes public
+  and permanent, only the reviewed report is authorized, and the chat stays private.
+  `requires_user_proof` and risk High remain mandatory. The existing trusted desktop
+  control shows the complete report and withholds Always Allow.
 - **The stored tier wins over the turn's snapshot.** The classification is read from the
   session row at filing time, together with `privacy_reason`, and combined with the
   snapshot by `max`, so a chat that turned private mid-turn files as private. A failed
@@ -327,9 +338,9 @@ broke unrelated tests.
 
 ⚠ The compose URL carries the body in its query string. Opening the page sends the text to
 github.com and leaves it in browser history before anyone presses Submit. "Nothing is
-posted until you press Submit" is true of posting, not of sending, so the card's private
-sentence says the page address carries the text to github.com, and asks the user to read
-the report before approving rather than before submitting.
+posted until you press Submit" concerns publication, not transmission. The proof-backed
+approval of the exact report precedes opening that page too; it never authorizes sending
+the source conversation or diagnostics.
 
 ## Where it is not offered
 
@@ -448,11 +459,14 @@ read-only and unauthenticated; the single `gh` shell-out lives in a CLI workflow
 helper launches an **interactive** `gh auth login`, unusable from a tool call. So there are
 two filers:
 
-1. **The user's own `gh`**, when `gh auth status` succeeds *non-interactively* — stdin is
+1. **The user's own `gh`**, resolved first from the daemon PATH and then from the
+   developer shell's bounded login-shell PATH discovery. Both authentication and
+   issue creation use the resolved executable. When `gh auth status` succeeds *non-interactively* — stdin is
    `null` and prompting is disabled, because the failure mode being guarded against is not
    "gh is missing" but "gh would open a login and hang the turn". This genuinely creates the
    issue, under the user's own account, with no credential passing through Biorouter. It is
-   never used from a private chat, because it publishes the moment the card is approved.
+   available to private reports only after a trusted, one-time approval of the exact
+   reviewed report to the fixed Biorouter tracker.
 2. **A prefilled compose URL**, opened in the browser; the user's click is the submit.
 
 Not a third option: a token Biorouter stores. It would need the credential store, a scope
@@ -461,19 +475,21 @@ project's users already have.
 
 Which filer a report gets is decided before the card, so the card can say which:
 
-| Chat | `gh` signed in | Body fits a URL | Filer |
-|---|---|---|---|
-| Not private | Yes | Either | `GhCli`; a `gh` failure falls back to the compose URL, or to pasting |
-| Not private | No | Yes | `ComposeUrl` |
-| Not private | No | No | `Manual`: the text is handed back to paste |
-| Private, or classification unknown | Not probed | Yes | `ComposeUrl` |
-| Private, or classification unknown | Not probed | No | `Manual` |
+| `gh` signed in | Body fits a URL | Filer after exact-report Allow once |
+|---|---|---|
+| Yes | Either | `GhCli`; a pre-spawn failure falls back to the compose page or staged Markdown |
+| No | Yes | `ComposeUrl`; the person presses Submit on GitHub |
+| No | No | `Manual`; save only the reviewed report as private-permission Markdown and open the ordinary new-issue page |
 
-A `Manual` hand-back names `gh` as a reason only when `gh` was probed and found
-unavailable (`Filer::Manual { gh_unavailable }`, set by `choose_filer`). From a private
-chat it was never probed and may well be signed in, so the card and the receipt say only
-that the report is too large for a prefilled link and is not filed automatically. Both
-take that clause from `issue::manual_reason`.
+The transport choice is the same for public and private chats. The private warning,
+fixed destination, one-use grant and diagnostics exclusion remain independent controls.
+If local staging fails, the complete reviewed report is returned for manual copying.
+The CLI readiness probe and submission both pin `github.com`, regardless of `GH_HOST`.
+After the CLI starts, timeout, nonzero exit, failed response reading or a missing/wrong
+issue URL leave the outcome unknown: GitHub may already have created the issue. The
+reviewed report is saved or returned with a tracker link and an instruction to check
+for an existing issue before retrying. No duplicate compose page opens, and the audit
+records `submission_outcome_unknown` rather than claiming known failure.
 
 **The compose URL opens itself.** After approval, `post_report` opens a `ComposeUrl`, and
 the compose URL a failed `gh` filing falls back to, with `issue::open_in_browser`. That
@@ -529,10 +545,13 @@ injected in the exact form `tool_result_serde` writes. It is there because the u
 build their conversations in Rust and can therefore only exercise shapes the author already
 believed in; the real export is what turned up the third failure nobody had planned for.
 
-The private-chat rules are pinned as pure functions, `treat_as_private` and
-`choose_filer`, as well as through the card. `gh_ready()` is always false under test, so no
-card test could ever observe a `GhCli` choice, and a test that only went through the card
-would pass whether or not a private chat was kept away from `gh`.
+The consent fixtures cover a private report too large for a compose URL, digest mutation,
+fixed-destination enforcement, untrusted and foreign-session decisions, replay, rejection of
+Always Allow, an unchanged private classification, content-free audit events and worst-case
+JSON escaping in the full approval preview. `gh_ready()` and publication remain disabled
+under test; the transport-selection fixture injects readiness without contacting GitHub.
+The existing server proof-gate tests exercise missing, incorrect and valid X-User-Action
+headers on the exact approval route.
 
 ## Related documentation
 

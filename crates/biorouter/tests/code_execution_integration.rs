@@ -626,7 +626,7 @@ async fn search_modules_no_match_is_a_success_with_guidance() {
         meta: None,
         name: "code_execution__search_modules".into(),
         arguments: Some(object!({
-            "terms": ["create skill", "make skill", "skill maker", "draft skill"]
+            "terms": ["qzxwunmatchablefixture"]
         })),
     };
     let dispatched = m
