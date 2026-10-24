@@ -1047,7 +1047,7 @@ impl DeveloperServer {
     /// - `undo_edit`: Undo the last edit made to a file.
     #[tool(
         name = "text_editor",
-        description = "Perform text editing operations on files in the working directory. View also supports Biorouter's installed skills outside the working directory. Commands: view (show file content), write (create/overwrite file), str_replace (edit file), insert (insert at line), undo_edit (undo last change)."
+        description = "Perform text editing operations in the workspace, or ask for explicit folder approval to work on external files in place. View also supports Biorouter's installed skills. Commands: view (show file content), write (create/overwrite file), str_replace (edit file), insert (insert at line), undo_edit (undo last change)."
     )]
     pub async fn text_editor_with_context(
         &self,

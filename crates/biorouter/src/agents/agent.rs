@@ -4618,38 +4618,100 @@ where
 #[cfg(test)]
 mod folder_approval_wake_tests {
     use super::*;
+    use crate::permission::Permission;
+
+    async fn assert_folder_admission_resumes(preapproved: bool) {
+        let fixture = tempfile::tempdir().unwrap();
+        let cwd = fixture.path().join("workspace");
+        let external = fixture.path().join("synthetic-results");
+        std::fs::create_dir(&cwd).unwrap();
+        std::fs::create_dir(&external).unwrap();
+        let cwd = cwd.canonicalize().unwrap();
+        let external = external.canonicalize().unwrap();
+        let session = uuid::Uuid::new_v4().to_string();
+        let manager = crate::folder_access::FolderAccessManager::default();
+        let plan = biorouter_mcp::FileAccessPlan {
+            requests: vec![biorouter_mcp::FileAccessRequest {
+                path: external.join("result.txt"),
+                access: biorouter_sandbox::AccessMode::Write,
+            }],
+        };
+        let cancel = CancellationToken::new();
+        let mut gate =
+            Box::pin(manager.admit(&session, "developer__text_editor", &cwd, &plan, &cancel));
+        let mut approval_stream = if preapproved {
+            let wake = tokio::time::timeout(
+                std::time::Duration::from_secs(1),
+                next_gate_wake(&mut gate, &session, None),
+            )
+            .await
+            .unwrap();
+            assert!(matches!(wake, GateWake::ElicitationReady));
+            futures::stream::once(gate).boxed()
+        } else {
+            let mut stream = futures::stream::once(gate).boxed();
+            let wake = tokio::time::timeout(
+                std::time::Duration::from_secs(1),
+                next_approval_wake(&mut stream, None, &session),
+            )
+            .await
+            .unwrap();
+            assert!(matches!(wake, ApprovalWake::ElicitationReady));
+            stream
+        };
+        let cards = ActionRequiredManager::global().drain_requests(&session);
+        assert_eq!(cards.len(), 1);
+        let id = cards[0]
+            .content
+            .iter()
+            .find_map(|content| match content {
+                MessageContent::ActionRequired(crate::conversation::message::ActionRequired {
+                    data: ActionRequiredData::ToolConfirmation { id, .. },
+                }) => Some(id.clone()),
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(
+            crate::pending_user_action::PendingUserActions::global().resolve_in_session(
+                &session,
+                &id,
+                crate::pending_user_action::UserActionOutcome::Approved {
+                    permission: Permission::AllowOnce
+                },
+                crate::pending_user_action::DecisionAuthority::for_test_proven(),
+            ),
+            crate::pending_user_action::ResolveOutcome::Delivered
+        );
+        let admission =
+            tokio::time::timeout(std::time::Duration::from_secs(1), approval_stream.next())
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap();
+        let target = biorouter_sandbox::bounded_fs::authorized_path(
+            admission.authority.token(),
+            &session,
+            &admission.action_id,
+            external.join("result.txt"),
+            biorouter_sandbox::AccessMode::Write,
+        )
+        .unwrap();
+        target.atomic_write(b"resumed original operation").unwrap();
+        assert_eq!(
+            std::fs::read(external.join("result.txt")).unwrap(),
+            b"resumed original operation"
+        );
+        manager.end_session(&session);
+    }
 
     #[tokio::test]
-    async fn a_nested_folder_request_wakes_the_tool_approval_stream() {
-        let session = uuid::Uuid::new_v4().to_string();
-        let pending = crate::pending_user_action::PendingUserActions::global().park(
-            Some(&session),
-            None,
-            crate::pending_user_action::UserActionRequest::FolderAccess(
-                crate::pending_user_action::FolderAccessRequest {
-                    action_id: "nested-action".into(),
-                    tool_name: "developer__text_editor".into(),
-                    folder: "/synthetic/results".into(),
-                    access: "read-only".into(),
-                    files: vec!["/synthetic/results/completed.csv".into()],
-                },
-            ),
-        );
-        let mut approval_stream = futures::stream::pending::<()>();
-        let wake = tokio::time::timeout(
-            std::time::Duration::from_secs(1),
-            next_approval_wake(&mut approval_stream, None, &session),
-        )
-        .await
-        .unwrap();
-        assert!(matches!(wake, ApprovalWake::ElicitationReady));
-        assert_eq!(
-            ActionRequiredManager::global()
-                .drain_requests(&session)
-                .len(),
-            1
-        );
-        drop(pending);
+    async fn preapproved_file_call_surfaces_folder_card_and_resumes() {
+        assert_folder_admission_resumes(true).await;
+    }
+
+    #[tokio::test]
+    async fn already_tool_approved_call_surfaces_nested_folder_card_and_resumes() {
+        assert_folder_admission_resumes(false).await;
     }
 }
 

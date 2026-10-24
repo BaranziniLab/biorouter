@@ -402,7 +402,7 @@ impl FolderAccessManager {
         cancel: &CancellationToken,
     ) -> anyhow::Result<FileAdmission> {
         let action_id = Uuid::new_v4().to_string();
-        let mut aliases = Vec::new();
+        let mut aliases: Vec<(PathBuf, PathBuf)> = Vec::new();
         let mut actual_plan = biorouter_mcp::FileAccessPlan::default();
         for request in &plan.requests {
             let actual = if let Some((_, actual)) = aliases

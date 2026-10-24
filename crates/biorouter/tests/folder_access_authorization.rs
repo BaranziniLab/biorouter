@@ -9,7 +9,7 @@ use biorouter::pending_user_action::{
 };
 use biorouter::permission::Permission;
 use biorouter_mcp::{FileAccessPlan, FileAccessRequest};
-use biorouter_sandbox::{authorized_path, AccessMode};
+use biorouter_sandbox::{bounded_fs::authorized_path, AccessMode};
 use tempfile::TempDir;
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;

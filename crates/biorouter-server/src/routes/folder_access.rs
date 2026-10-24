@@ -46,13 +46,15 @@ pub async fn revoke_folder_access(
     headers: HeaderMap,
     Json(request): Json<RevokeFolderAccessRequest>,
 ) -> Result<Json<Value>, StatusCode> {
-    if biorouter_server::auth::user_action_proof(&headers) != UserActionProof::Proven
-        && biorouter_server::auth::folder_access_action_locked_out()
-    {
-        return Err(StatusCode::TOO_MANY_REQUESTS);
-    }
-    if folder_access_action_proof(&headers) != UserActionProof::Proven {
-        return Err(StatusCode::FORBIDDEN);
+    let proof = folder_access_action_proof(&headers);
+    if proof != UserActionProof::Proven {
+        return Err(
+            if biorouter_server::auth::folder_access_action_locked_out() {
+                StatusCode::TOO_MANY_REQUESTS
+            } else {
+                StatusCode::FORBIDDEN
+            },
+        );
     }
     super::session_reach::session_reach(state.session_manager(), &request.session_id, &headers)
         .await

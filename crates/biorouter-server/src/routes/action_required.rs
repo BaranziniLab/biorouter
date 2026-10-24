@@ -86,13 +86,6 @@ pub async fn confirm_tool_action(
             Some(biorouter::pending_user_action::UserActionRequest::FolderAccess(_))
         );
     let folder_decline = folder_request && matches!(request.action.as_str(), "deny" | "cancel");
-    if folder_request
-        && !folder_decline
-        && user_action_proof(&headers) != UserActionProof::Proven
-        && biorouter_server::auth::folder_access_action_locked_out()
-    {
-        return Err(status_only(StatusCode::TOO_MANY_REQUESTS));
-    }
     let proof = if folder_decline {
         UserActionProof::Unproven
     } else if folder_request {
@@ -100,6 +93,13 @@ pub async fn confirm_tool_action(
     } else {
         user_action_proof(&headers)
     };
+    if folder_request
+        && !folder_decline
+        && proof != UserActionProof::Proven
+        && biorouter_server::auth::folder_access_action_locked_out()
+    {
+        return Err(status_only(StatusCode::TOO_MANY_REQUESTS));
+    }
     let authority = match proof {
         UserActionProof::Proven if folder_request => {
             biorouter::pending_user_action::DecisionAuthority::from_folder_access_proof()
