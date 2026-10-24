@@ -1065,6 +1065,7 @@ async fn delete_session(
     // the rest, and is idempotent when there is nothing to release.
     let released =
         biorouter::pending_user_action::PendingUserActions::global().cancel_session(&session_id);
+    biorouter::folder_access::FolderAccessManager::global().end_session(&session_id);
     if released > 0 {
         tracing::info!(
             session_id = %session_id,

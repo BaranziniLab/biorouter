@@ -270,12 +270,12 @@ impl WorkspaceServices for ServerWorkspaceServices {
             crate::routes::reply::sse_coalesce_window(),
         ));
         stream.spawn_orphan_reaper(cancel.clone(), crate::turn_stream::orphan_timeout());
-        tokio::spawn(super::turn::run_turn(
+        tokio::spawn(biorouter::native_client::carry(super::turn::run_turn(
             Arc::clone(&self.state),
             request,
             turn_guard,
             cancel,
-        ));
+        )));
 
         Ok(turn_id)
     }

@@ -1,0 +1,7 @@
+
+running 2 tests
+test legacy_permission_file_does_not_restore_automatic_tool_wide_grants ... ok
+test remembered_scope_refuses_unresolved_links_and_preserves_normal_new_files ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+

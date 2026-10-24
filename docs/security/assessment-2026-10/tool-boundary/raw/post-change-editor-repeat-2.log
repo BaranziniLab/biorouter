@@ -1,0 +1,18 @@
+
+running 2 tests
+test path_sandbox::every_integration_binary_is_sandboxed ... ok
+test public_editor_replay_preserves_workspace_boundaries_and_normal_edits ... EDITOR_AUDIT {"operation":"direct_write","path":"file-link","denied":true,"outside_entries":0}
+EDITOR_AUDIT {"operation":"direct_write","path":"dir-link/new.txt","denied":true,"outside_entries":0}
+EDITOR_AUDIT {"operation":"direct_write","path":"outside-link/missing/new.txt","denied":true,"outside_entries":0}
+EDITOR_AUDIT {"operation":"direct_write","control":"normal_file","allowed":true}
+EDITOR_AUDIT {"operation":"direct_write","control":"valid_internal_symlink","allowed":true}
+EDITOR_AUDIT {"operation":"diff_creation","path":"file-link","denied":true,"outside_entries":0}
+EDITOR_AUDIT {"operation":"diff_creation","path":"dir-link/new.txt","denied":true,"outside_entries":0}
+EDITOR_AUDIT {"operation":"diff_creation","path":"outside-link/missing/new.txt","denied":true,"outside_entries":0}
+EDITOR_AUDIT {"operation":"diff_creation","path":"workspace/outside-link/missing/new.txt","denied":true,"outside_entries":0}
+EDITOR_AUDIT {"operation":"diff_creation","control":"normal_file","allowed":true}
+EDITOR_AUDIT {"operation":"diff_creation","control":"overlap_prefixed_internal_nested_file","allowed":true}
+ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+

@@ -1,0 +1,458 @@
+diff --git a/README.md b/README.md
+index 8223a99d9..8d722ba37 100644
+--- a/README.md
++++ b/README.md
+@@ -4,7 +4,7 @@
+ 
+ # UCSF Biorouter
+ 
+-**An open-source, AI-native research environment for biomedical work with sensitive data**
++**A secure AI-native biomedical research environment**
+ 
+ <p>
+   <a href="https://opensource.org/licenses/Apache-2.0"><img src="https://img.shields.io/badge/License-Apache_2.0-blue.svg" alt="Apache 2.0 License"></a>
+@@ -18,13 +18,13 @@
+ 
+ </div>
+ 
+-Research is iterative, and AI agents fit that work best. Researchers also need to work with sensitive data, and today's services cover one need or the other: commercial coding agents are built around their vendor's cloud models, while institutional services offer chat or model access with no agent around it. Biorouter is an agent for that gap. It connects local, institutional and public models through one interface and keeps private work away from public models.
++Biomedical research asks two things of AI at once. Research is iterative, and an agent can help at every step from idea to report. Patient records, identifiable data and unpublished results must stay inside a secure institutional environment. Existing tools meet one need or the other: commercial agents such as Claude Code and Codex send work to outside servers, while institutional chatbots and model APIs keep data inside but offer no agent. Biorouter is one environment for both: a single interface to local, institutional and public models that keeps private work private.
+ 
+-- **Private stays private.** The models and data sources a chat uses decide whether it is private or public, and a private chat cannot move to a public model.
+-- **Share the method, not the data.** A workflow records the model, instructions, extensions and skills behind an analysis, never its data, so another site can rerun it on its own records.
+-- **Built for biomedical research.** Connectors for electronic health records, the SPOKE knowledge graph, literature, omics and lab tools install with a click or a one-sentence request.
++- **Private work stays private.** The models and connections a chat uses decide whether it is private or public, and private chats are routed only to private models.
++- **Share workflows, not data.** A workflow records the models, extensions, prompts and skills behind an analysis, but not its data, so each site reruns it on its own records.
++- **Biomedical connectors.** Connectors for electronic health records, the SPOKE knowledge graph, literature, omics and lab systems install with a click or a sentence.
+ 
+-Built at the [Baranzini Lab](https://baranzinilab.ucsf.edu/) at UCSF, Biorouter runs as a desktop app, a terminal CLI, or a browser interface, and works inside Jupyter as an ACP agent.
++Use Biorouter as an agent in JupyterLab through the Agent Client Protocol (ACP), in a terminal, in the desktop app, or served from a terminal and opened in a browser, with the same agents and privacy settings in each. It is built at the [Baranzini Lab](https://baranzinilab.ucsf.edu/) at UCSF.
+ 
+ ## Choose your model
+ 
+diff --git a/docs/website/pages/providers.html b/docs/website/pages/providers.html
+index f865425b6..be44846b1 100644
+--- a/docs/website/pages/providers.html
++++ b/docs/website/pages/providers.html
+@@ -96,7 +96,7 @@ npm install -g @openai/codex@latest</code></pre></li>
+     <tr><td><strong>Amazon Bedrock</strong></td><td><code>us.anthropic.claude-sonnet-4-6</code></td></tr>
+     <tr><td><strong>AWS SageMaker TGI</strong></td><td><code>sagemaker-tgi-endpoint</code></td></tr>
+     <tr><td><strong>Azure OpenAI</strong></td><td><code>gpt-6-sol-2026-09-22</code></td></tr>
+-    <tr><td><strong>Baseten</strong></td><td><code>zai-org/GLM-5.3</code>, added after v1.93.2</td></tr>
++    <tr><td><strong>Baseten</strong></td><td><code>zai-org/GLM-5.3</code>, added in v1.93.4</td></tr>
+     <tr><td><strong>Databricks</strong></td><td><code>databricks-claude-sonnet-4-6</code></td></tr>
+     <tr><td><strong>DeepSeek</strong></td><td><code>deepseek-flash</code></td></tr>
+     <tr><td><strong>GCP Vertex AI</strong></td><td><code>gemini-3.8-flash</code></td></tr>
+@@ -115,7 +115,7 @@ npm install -g @openai/codex@latest</code></pre></li>
+     <tr><td><strong>z.ai</strong></td><td><code>glm-5.3</code></td></tr>
+   </tbody>
+ </table></div>
+-<p>Most take one API key. Its setting is named after the provider, and an environment variable of the same name works too: <code>ANTHROPIC_API_KEY</code>, <code>OPENAI_API_KEY</code>, <code>GOOGLE_API_KEY</code>, <code>BASETEN_API_KEY</code> (after v1.93.2), <code>DEEPSEEK_API_KEY</code>, <code>GROQ_API_KEY</code>, <code>INCEPTION_API_KEY</code>, <code>MISTRAL_API_KEY</code>, <code>MOONSHOT_API_KEY</code>, <code>OPENROUTER_API_KEY</code>, <code>VENICE_API_KEY</code>, <code>XAI_API_KEY</code>, <code>XIAOMI_MIMO_API_KEY</code> and <code>ZAI_API_KEY</code>. The others sign in differently:</p>
++<p>Most take one API key. Its setting is named after the provider, and an environment variable of the same name works too: <code>ANTHROPIC_API_KEY</code>, <code>OPENAI_API_KEY</code>, <code>GOOGLE_API_KEY</code>, <code>BASETEN_API_KEY</code> (added in v1.93.4), <code>DEEPSEEK_API_KEY</code>, <code>GROQ_API_KEY</code>, <code>INCEPTION_API_KEY</code>, <code>MISTRAL_API_KEY</code>, <code>MOONSHOT_API_KEY</code>, <code>OPENROUTER_API_KEY</code>, <code>VENICE_API_KEY</code>, <code>XAI_API_KEY</code>, <code>XIAOMI_MIMO_API_KEY</code> and <code>ZAI_API_KEY</code>. The others sign in differently:</p>
+ <ul>
+   <li><strong>Amazon Bedrock</strong> and <strong>AWS SageMaker TGI</strong> (listed in the app as Amazon SageMaker TGI) use your AWS profile or credentials, including SSO. SageMaker also needs <code>SAGEMAKER_ENDPOINT_NAME</code>.</li>
+   <li><strong>Azure OpenAI</strong> needs your endpoint and deployment name, with a key or your Azure sign in.</li>
+diff --git a/landing/about.html b/landing/about.html
+index 23f456440..1944a718b 100644
+--- a/landing/about.html
++++ b/landing/about.html
+@@ -130,6 +130,14 @@
+           <span class="news-link">Session details&nbsp;<span aria-hidden="true">→</span></span>
+         </div>
+       </a>
++      <a href="https://github.com/BaranziniLab/biorouter/releases/tag/v1.93.4" class="news-row">
++        <div class="news-date"><span class="day">21</span><span class="mon">Oct</span></div>
++        <div class="news-body">
++          <h3>Biorouter v1.93.4: Baseten models</h3>
++          <p>Baseten joins the public providers with eleven open-weight models, including GLM 5.3, Kimi K3 and DeepSeek V4.1, and its model list and prices stay current between releases. Contributed by Albert Lee at Baseten.</p>
++          <span class="news-link">Release notes&nbsp;<span aria-hidden="true">→</span></span>
++        </div>
++      </a>
+       <a href="https://github.com/BaranziniLab/biorouter/releases/tag/v1.93.2" class="news-row">
+         <div class="news-date"><span class="day">18</span><span class="mon">Oct</span></div>
+         <div class="news-body">
+@@ -154,6 +162,10 @@
+           <span class="news-link">Release notes&nbsp;<span aria-hidden="true">→</span></span>
+         </div>
+       </a>
++    </div>
++    <details class="news-more">
++      <summary>Earlier updates</summary>
++      <div class="news-list news-list-earlier">
+       <a href="https://github.com/BaranziniLab/biorouter/releases/tag/v1.92.0" class="news-row">
+         <div class="news-date"><span class="day">30</span><span class="mon">Sep</span></div>
+         <div class="news-body">
+@@ -162,10 +174,6 @@
+           <span class="news-link">Release notes&nbsp;<span aria-hidden="true">→</span></span>
+         </div>
+       </a>
+-    </div>
+-    <details class="news-more">
+-      <summary>Earlier updates</summary>
+-      <div class="news-list news-list-earlier">
+       <a href="https://github.com/BaranziniLab/biorouter/releases/tag/v1.91.2" class="news-row">
+         <div class="news-date"><span class="day">23</span><span class="mon">Sep</span></div>
+         <div class="news-body">
+diff --git a/landing/assets/landing-site-content.md b/landing/assets/landing-site-content.md
+index adaa3d541..1a96452f8 100644
+--- a/landing/assets/landing-site-content.md
++++ b/landing/assets/landing-site-content.md
+@@ -5,7 +5,7 @@ Landing site for UCSF Biorouter. Design: the desktop app's own look on the web.
+ 
+ **Color palette:** white paper (#ffffff), warm ink (#2a2520), coral (#b85a32, rails #cf6d47), UCSF navy (#052049). The values mirror the app's Parchment light tokens in `site.css`.
+ **Font:** Arial first, the app's interface stack (`--font`); Inter 600 only for the wordmark and the BR mark; one monospace stack for code. The type scale is shared with the app: 12, 13, 14, 17 and 24 plus a 16px reading size and two clamps for titles (`--fs-*` in `site.css`).
+-**Version:** v1.93.2 (October 2026)
++**Version:** v1.93.4 (October 2026)
+ 
+ ---
+ 
+@@ -38,7 +38,7 @@ GitHub: https://github.com/BaranziniLab/biorouter
+ 
+ ### Banner / Hero
+ - Biorouter logo (icon.png) with glow animation
+-- Version badge: "v1.93.2 Now Available"
++- Version badge: "v1.93.4 Now Available"
+ - Headline: "UCSF Biorouter"
+ - Subheading: AI-powered integrated research environment tagline
+ - CTA buttons: Download, Documentation, GitHub
+@@ -94,7 +94,7 @@ Chips for: UCSF Azure OpenAI (highlight), UCSF Amazon Bedrock (highlight), Anthr
+ 
+ ### Bottom Links
+ - About & Acknowledgements (→ about.html)
+-- v1.93.2 Release Notes (https://github.com/BaranziniLab/biorouter/releases/tag/v1.93.2)
++- v1.93.4 Release Notes (https://github.com/BaranziniLab/biorouter/releases/tag/v1.93.4)
+ - Baranzini Lab (https://baranzinilab.ucsf.edu/)
+ 
+ ---
+@@ -104,7 +104,7 @@ Chips for: UCSF Azure OpenAI (highlight), UCSF Amazon Bedrock (highlight), Anthr
+ ### Hero
+ - Title: "Biorouter for your computer." (the second line in the quiet ink)
+ - Buttons: the installer for this computer, then "All platforms"
+-- Meta line: "Free and open source · v1.93.2 · the release date from GitHub · Release notes"
++- Meta line: "Free and open source · v1.93.4 · the release date from GitHub · Release notes"
+ 
+ ### Smart OS Detection
+ JavaScript detects the visitor's OS and shows the recommended download button prominently.
+@@ -116,22 +116,22 @@ JavaScript detects the visitor's OS and shows the recommended download button pr
+ - Linux → amd64.deb (default for Linux)
+ - Unknown/iOS/Android → show all options without a primary
+ 
+-### Download Links (v1.93.2)
++### Download Links (v1.93.4)
+ | Platform | File | URL |
+ |---|---|---|
+-| macOS Apple Silicon | Biorouter-1.93.2-arm64.dmg | https://github.com/BaranziniLab/biorouter/releases/download/v1.93.2/Biorouter-1.93.2-arm64.dmg |
+-| macOS Intel | Biorouter-1.93.2-x64.dmg | https://github.com/BaranziniLab/biorouter/releases/download/v1.93.2/Biorouter-1.93.2-x64.dmg |
+-| Windows x64 | Biorouter-win32-x64-1.93.2.zip | https://github.com/BaranziniLab/biorouter/releases/download/v1.93.2/Biorouter-win32-x64-1.93.2.zip |
+-| Linux Ubuntu/Pop!_OS | biorouter_1.93.2_amd64.deb | https://github.com/BaranziniLab/biorouter/releases/download/v1.93.2/biorouter_1.93.2_amd64.deb |
+-| Linux Fedora/RHEL | Biorouter-1.93.2-1.x86_64.rpm | https://github.com/BaranziniLab/biorouter/releases/download/v1.93.2/Biorouter-1.93.2-1.x86_64.rpm |
+-| Linux CLI Debian/Ubuntu | biorouter-cli_1.93.2_amd64.deb | https://github.com/BaranziniLab/biorouter/releases/download/v1.93.2/biorouter-cli_1.93.2_amd64.deb |
+-| Linux CLI Fedora/RHEL | biorouter-cli-1.93.2-1.x86_64.rpm | https://github.com/BaranziniLab/biorouter/releases/download/v1.93.2/biorouter-cli-1.93.2-1.x86_64.rpm |
++| macOS Apple Silicon | Biorouter-1.93.4-arm64.dmg | https://github.com/BaranziniLab/biorouter/releases/download/v1.93.4/Biorouter-1.93.4-arm64.dmg |
++| macOS Intel | Biorouter-1.93.4-x64.dmg | https://github.com/BaranziniLab/biorouter/releases/download/v1.93.4/Biorouter-1.93.4-x64.dmg |
++| Windows x64 | Biorouter-win32-x64-1.93.4.zip | https://github.com/BaranziniLab/biorouter/releases/download/v1.93.4/Biorouter-win32-x64-1.93.4.zip |
++| Linux Ubuntu/Pop!_OS | biorouter_1.93.4_amd64.deb | https://github.com/BaranziniLab/biorouter/releases/download/v1.93.4/biorouter_1.93.4_amd64.deb |
++| Linux Fedora/RHEL | Biorouter-1.93.4-1.x86_64.rpm | https://github.com/BaranziniLab/biorouter/releases/download/v1.93.4/Biorouter-1.93.4-1.x86_64.rpm |
++| Linux CLI Debian/Ubuntu | biorouter-cli_1.93.4_amd64.deb | https://github.com/BaranziniLab/biorouter/releases/download/v1.93.4/biorouter-cli_1.93.4_amd64.deb |
++| Linux CLI Fedora/RHEL | biorouter-cli-1.93.4-1.x86_64.rpm | https://github.com/BaranziniLab/biorouter/releases/download/v1.93.4/biorouter-cli-1.93.4-1.x86_64.rpm |
+ 
+ ### Install Commands
+ - macOS: Open DMG and drag Biorouter.app to /Applications
+ - Windows: Unzip and run Biorouter.exe
+-- Linux Debian: sudo apt install ./biorouter_1.93.2_amd64.deb
+-- Linux RPM: sudo dnf install ./Biorouter-1.93.2-1.x86_64.rpm
++- Linux Debian: sudo apt install ./biorouter_1.93.4_amd64.deb
++- Linux RPM: sudo dnf install ./Biorouter-1.93.4-1.x86_64.rpm
+ 
+ ### Setup Note / Info Box
+ After installing, users should:
+@@ -282,43 +282,47 @@ Each card contains:
+ ## Tab 5 — About (`about.html`)
+ 
+ ### News
+-1. **Biorouter v1.93.2 Release** (October 2026)
++1. **Biorouter v1.93.4 Release** (October 2026)
++   - Link: https://github.com/BaranziniLab/biorouter/releases/tag/v1.93.4
++   - What's new: Baseten joins the public providers with eleven open-weight models, including GLM 5.3, Kimi K3, DeepSeek V4.1 and GPT OSS 120B; chat costs use Baseten's prices, including cached input; Baseten's model list and prices stay current between releases from a public catalog Biorouter reads only while a Baseten key is saved
++
++2. **Biorouter v1.93.2 Release** (October 2026)
+    - Link: https://github.com/BaranziniLab/biorouter/releases/tag/v1.93.2
+    - What's new: replaces v1.93.1; an update download continues after a dropped connection instead of failing with net::ERR_CONNECTION_RESET; Restart & update waits until macOS has prepared the update and then reopens Biorouter, or says why it could not; the update dialog has Try again; plus everything in v1.93.1: Claude Code chats use about as much of the context window as Versa, Crew sets itself up on a shared Linux server with your server login, Llama Server retries a reply cut by a shared memory collision, and biorouter serve works behind HTTPS proxies and path prefixes, including JupyterHub
+ 
+-2. **Biorouter v1.93.0 Release** (October 2026)
++3. **Biorouter v1.93.0 Release** (October 2026)
+    - Link: https://github.com/BaranziniLab/biorouter/releases/tag/v1.93.0
+    - What's new: simpler desktop controls and chat organization; clearer local inference failures and text tool-call handling; browser-free checks before built app build, launch, serving and export; exported launchers reuse the service on macOS and Linux; private /bug reports open for your review; Crew is in Settings > Chat > Capabilities
+ 
+-3. **Biorouter v1.92.1 Release** (October 2026)
++4. **Biorouter v1.92.1 Release** (October 2026)
+    - Link: https://github.com/BaranziniLab/biorouter/releases/tag/v1.92.1
+    - What's new: Versa API Azure adds GPT-5.6 Sol, Terra and Luna, sent through the Responses API; Versa API Bedrock lists only the Claude models UCSF serves, adding Sonnet 5 and dropping Opus 5.5 and Opus 5; long GPT-5.6 chats compact instead of stopping
+ 
+-4. **Biorouter v1.92.0 Release** (September 2026)
++5. **Biorouter v1.92.0 Release** (September 2026)
+    - Link: https://github.com/BaranziniLab/biorouter/releases/tag/v1.92.0
+    - What's new: Crew brings shared lab channels, files and agent tasks; macOS and Linux connect to the background service silently; new models are available; Copy works again in chats and previews
+ 
+-5. **Biorouter v1.91.2 Release** (September 2026)
++6. **Biorouter v1.91.2 Release** (September 2026)
+    - Link: https://github.com/BaranziniLab/biorouter/releases/tag/v1.91.2
+    - What's new: Biorouter Copilot status appears only in conversations that request it and can be dismissed; prompts and slash commands use its current name; Windows child processes request hidden console windows; chat gains quoted selections, persistent drafts, active extensions in the slash picker, and adjustable text sizes
+ 
+-6. **Biorouter v1.91.1 Release** (September 2026)
++7. **Biorouter v1.91.1 Release** (September 2026)
+    - Link: https://github.com/BaranziniLab/biorouter/releases/tag/v1.91.1
+    - What's new: on Windows, Biorouter's network sockets no longer leak into the programs it starts, so ports are released and the tunnel closes cleanly; on macOS, inline-Python extensions no longer occasionally fail to start; and the test suite's flaky failures are fixed at their causes
+ 
+-7. **Biorouter v1.91.0 Release** (September 2026)
++8. **Biorouter v1.91.0 Release** (September 2026)
+    - Link: https://github.com/BaranziniLab/biorouter/releases/tag/v1.91.0
+    - What's new: Biorouter Copilot observes and controls the desktop with an approval for every request, web and documents become their own capability, office contexts load only when needed, Windows gets its first installer and a long list of fixes, and third-party attribution is now correct
+ 
+-8. **Biorouter v1.90.5 Release** (September 2026)
++9. **Biorouter v1.90.5 Release** (September 2026)
+    - Link: https://github.com/BaranziniLab/biorouter/releases/tag/v1.90.5
+    - What's new: chats keep their place when a tab closes mid-reply, streamed text keeps repeated tokens at chunk boundaries, mid-turn steering stays queued until the running turn consumes it, the artifact preview adapts between a side panel and a vertical layout, and scheduled work follows the caller's reach
+ 
+-9. **Biorouter v1.90.0 Release** (September 2026)
++10. **Biorouter v1.90.0 Release** (September 2026)
+    - Link: https://github.com/BaranziniLab/biorouter/releases/tag/v1.90.0
+    - What's new: every tool driven across providers, and a review run before the drive
+ 
+-10. **UCSF AI Research Day** (2026)
++11. **UCSF AI Research Day** (2026)
+    - Link: https://ai.ucsf.edu/researchday
+    - Biorouter to be featured
+ 
+diff --git a/landing/docs.html b/landing/docs.html
+index 6b9c2abf7..b339e9886 100644
+--- a/landing/docs.html
++++ b/landing/docs.html
+@@ -4,7 +4,7 @@
+ <meta charset="utf-8">
+ <meta name="viewport" content="width=device-width, initial-scale=1">
+ <title>Docs · Biorouter</title>
+-<meta name="description" content="Biorouter documentation: install, models, private and public chats, extensions, skills, workflows, knowledge bases, built apps, Crew and the command line. Documents biorouter v1.93.2.">
++<meta name="description" content="Biorouter documentation: install, models, private and public chats, extensions, skills, workflows, knowledge bases, built apps, Crew and the command line. Documents biorouter v1.93.4.">
+ <meta name="theme-color" content="#ffffff">
+ <link rel="icon" href="icon-transparent.svg" type="image/svg+xml">
+ <link rel="preconnect" href="https://fonts.googleapis.com">
+@@ -72,7 +72,7 @@
+   <main class="docs-main" id="docs-main">
+ <div class="doc-page" id="doc-getstarted">
+ <h1>Getting started</h1>
+-<p class="doc-lede">Install the app, connect a model and start a chat. These docs describe <code style="white-space: nowrap">biorouter v1.93.2</code> on Windows, macOS and Linux.</p>
++<p class="doc-lede">Install the app, connect a model and start a chat. These docs describe <code style="white-space: nowrap">biorouter v1.93.4</code> on Windows, macOS and Linux.</p>
+ 
+ <h2 id="getstarted-install">Install</h2>
+ <p>Download the file for your computer from the <a href="download.html">Download page</a> or from <a href="https://github.com/BaranziniLab/biorouter/releases">GitHub Releases</a>.</p>
+@@ -655,7 +655,7 @@ sudo dnf install ./biorouter-cli-*-1.x86_64.rpm</code></pre></li>
+ </table></div>
+ <p>Choose a provider's row, then <strong>Configure</strong>, and enter its credentials. Biorouter checks them with the provider before it saves them. In a terminal, <code>biorouter configure</code> lists the same providers as one list. <a href="#vaulting">Security</a> explains where credentials are kept.</p>
+ <p>A chat becomes private once a turn runs on a private model. <a href="#privacy">Private and public</a> explains what that changes.</p>
+-<div class="note"><p>The model picker reads each provider's live list of models, so it is the place to see what you can use today. The defaults below are what Biorouter picks when you configure a provider without naming a model. The newest release is v1.93.2; where a default changed after v1.92.1, the page names both. An existing setup keeps its saved main model.</p></div>
++<div class="note"><p>The model picker reads each provider's live list of models, so it is the place to see what you can use today. The defaults below are what Biorouter picks when you configure a provider without naming a model. The newest release is v1.93.4; where a default changed after v1.92.1, the page names both. An existing setup keeps its saved main model.</p></div>
+ 
+ <h2 id="providers-local">Local</h2>
+ <p><strong>Llama Server</strong> (<code>llamacpp</code>) comes with the desktop app and needs no setup and no key. Choose a model, then <strong>Download &amp; run</strong>. The model downloads once, or starts from a copy already on your computer; after that, nothing leaves your computer.</p>
+@@ -737,7 +737,7 @@ npm install -g @openai/codex@latest</code></pre></li>
+     <tr><td><strong>Amazon Bedrock</strong></td><td><code>us.anthropic.claude-sonnet-4-6</code></td></tr>
+     <tr><td><strong>AWS SageMaker TGI</strong></td><td><code>sagemaker-tgi-endpoint</code></td></tr>
+     <tr><td><strong>Azure OpenAI</strong></td><td><code>gpt-6-sol-2026-09-22</code></td></tr>
+-    <tr><td><strong>Baseten</strong></td><td><code>zai-org/GLM-5.3</code>, added after v1.93.2</td></tr>
++    <tr><td><strong>Baseten</strong></td><td><code>zai-org/GLM-5.3</code>, added in v1.93.4</td></tr>
+     <tr><td><strong>Databricks</strong></td><td><code>databricks-claude-sonnet-4-6</code></td></tr>
+     <tr><td><strong>DeepSeek</strong></td><td><code>deepseek-flash</code></td></tr>
+     <tr><td><strong>GCP Vertex AI</strong></td><td><code>gemini-3.8-flash</code></td></tr>
+@@ -756,7 +756,7 @@ npm install -g @openai/codex@latest</code></pre></li>
+     <tr><td><strong>z.ai</strong></td><td><code>glm-5.3</code></td></tr>
+   </tbody>
+ </table></div>
+-<p>Most take one API key. Its setting is named after the provider, and an environment variable of the same name works too: <code>ANTHROPIC_API_KEY</code>, <code>OPENAI_API_KEY</code>, <code>GOOGLE_API_KEY</code>, <code>BASETEN_API_KEY</code> (after v1.93.2), <code>DEEPSEEK_API_KEY</code>, <code>GROQ_API_KEY</code>, <code>INCEPTION_API_KEY</code>, <code>MISTRAL_API_KEY</code>, <code>MOONSHOT_API_KEY</code>, <code>OPENROUTER_API_KEY</code>, <code>VENICE_API_KEY</code>, <code>XAI_API_KEY</code>, <code>XIAOMI_MIMO_API_KEY</code> and <code>ZAI_API_KEY</code>. The others sign in differently:</p>
++<p>Most take one API key. Its setting is named after the provider, and an environment variable of the same name works too: <code>ANTHROPIC_API_KEY</code>, <code>OPENAI_API_KEY</code>, <code>GOOGLE_API_KEY</code>, <code>BASETEN_API_KEY</code> (added in v1.93.4), <code>DEEPSEEK_API_KEY</code>, <code>GROQ_API_KEY</code>, <code>INCEPTION_API_KEY</code>, <code>MISTRAL_API_KEY</code>, <code>MOONSHOT_API_KEY</code>, <code>OPENROUTER_API_KEY</code>, <code>VENICE_API_KEY</code>, <code>XAI_API_KEY</code>, <code>XIAOMI_MIMO_API_KEY</code> and <code>ZAI_API_KEY</code>. The others sign in differently:</p>
+ <ul>
+   <li><strong>Amazon Bedrock</strong> and <strong>AWS SageMaker TGI</strong> (listed in the app as Amazon SageMaker TGI) use your AWS profile or credentials, including SSO. SageMaker also needs <code>SAGEMAKER_ENDPOINT_NAME</code>.</li>
+   <li><strong>Azure OpenAI</strong> needs your endpoint and deployment name, with a key or your Azure sign in.</li>
+@@ -1029,7 +1029,7 @@ biorouter run --provider versa_azure -t "Summarize ./notes.md"</code></pre>
+ <p>Before it starts an extension through <code>npx</code> or <code>uvx</code>, Biorouter looks the package up in the OSV database of known malicious packages and refuses to start one that is listed.</p>
+ 
+ <h2 id="extensions-built-in">Built-in extensions</h2>
+-<p>These ship with Biorouter, so there is nothing to install. Defaults are those of biorouter v1.93.2. <a href="#extensions-switches">Turn extensions on and off</a> says where each one is switched.</p>
++<p>These ship with Biorouter, so there is nothing to install. Defaults are those of biorouter v1.93.4. <a href="#extensions-switches">Turn extensions on and off</a> says where each one is switched.</p>
+ <div class="doc-table-scroll"><table>
+   <thead><tr><th>Extension</th><th>Default</th><th>What it does</th></tr></thead>
+   <tbody>
+diff --git a/landing/download.html b/landing/download.html
+index 429564a98..1e27d7d30 100644
+--- a/landing/download.html
++++ b/landing/download.html
+@@ -4,7 +4,7 @@
+ <meta charset="utf-8">
+ <meta name="viewport" content="width=device-width, initial-scale=1">
+ <title>Download · Biorouter</title>
+-<meta name="description" content="Download Biorouter v1.93.2 for macOS, Windows and Linux. The desktop app includes the biorouter command line tool; Linux servers can install the command line packages on their own.">
++<meta name="description" content="Download Biorouter v1.93.4 for macOS, Windows and Linux. The desktop app includes the biorouter command line tool; Linux servers can install the command line packages on their own.">
+ <meta name="theme-color" content="#ffffff">
+ <link rel="icon" href="icon-transparent.svg" type="image/svg+xml">
+ <link rel="preconnect" href="https://fonts.googleapis.com">
+@@ -50,7 +50,7 @@
+         <p class="get-alt" id="get-alt" hidden></p>
+       </div>
+ 
+-      <p class="dl-meta"><span class="meta-lead">Free and open source</span><span class="meta-sep"> · </span><a href="https://github.com/BaranziniLab/biorouter/releases/latest"><span data-version="v">v1.93.2</span></a><span id="rel-date" class="nw"></span> · <a href="https://github.com/BaranziniLab/biorouter/releases">Release notes</a></p>
++      <p class="dl-meta"><span class="meta-lead">Free and open source</span><span class="meta-sep"> · </span><a href="https://github.com/BaranziniLab/biorouter/releases/latest"><span data-version="v">v1.93.4</span></a><span id="rel-date" class="nw"></span> · <a href="https://github.com/BaranziniLab/biorouter/releases">Release notes</a></p>
+     </div>
+   </section>
+ 
+@@ -67,54 +67,54 @@
+           <tr class="group" role="row"><th colspan="4" scope="rowgroup" role="rowheader">Desktop app <span>with the command line tool</span></th></tr>
+           <tr data-row="mac-arm" role="row">
+             <td class="c-os" role="cell">macOS <span>Apple silicon</span></td>
+-            <td class="c-file" role="cell"><a class="dl-link" href="https://github.com/BaranziniLab/biorouter/releases/download/v1.93.2/Biorouter-1.93.2-arm64.dmg"><code class="file-name">Biorouter-1.93.2-arm64.dmg</code></a></td>
++            <td class="c-file" role="cell"><a class="dl-link" href="https://github.com/BaranziniLab/biorouter/releases/download/v1.93.4/Biorouter-1.93.4-arm64.dmg"><code class="file-name">Biorouter-1.93.4-arm64.dmg</code></a></td>
+             <td class="c-size num" role="cell"></td>
+             <td class="c-how" role="cell">Open it and drag Biorouter to Applications.</td>
+           </tr>
+           <tr data-row="mac-intel" role="row">
+             <td class="c-os" role="cell">macOS <span>Intel</span></td>
+-            <td class="c-file" role="cell"><a class="dl-link" href="https://github.com/BaranziniLab/biorouter/releases/download/v1.93.2/Biorouter-1.93.2-x64.dmg"><code class="file-name">Biorouter-1.93.2-x64.dmg</code></a></td>
++            <td class="c-file" role="cell"><a class="dl-link" href="https://github.com/BaranziniLab/biorouter/releases/download/v1.93.4/Biorouter-1.93.4-x64.dmg"><code class="file-name">Biorouter-1.93.4-x64.dmg</code></a></td>
+             <td class="c-size num" role="cell"></td>
+             <td class="c-how" role="cell">Open it and drag Biorouter to Applications.</td>
+           </tr>
+           <tr data-row="windows-setup" data-optional="1" role="row">
+             <td class="c-os" role="cell">Windows <span>Installer</span></td>
+-            <td class="c-file" role="cell"><a class="dl-link" href="https://github.com/BaranziniLab/biorouter/releases/download/v1.93.2/Biorouter-Setup-1.93.2.exe"><code class="file-name">Biorouter-Setup-1.93.2.exe</code></a></td>
++            <td class="c-file" role="cell"><a class="dl-link" href="https://github.com/BaranziniLab/biorouter/releases/download/v1.93.4/Biorouter-Setup-1.93.4.exe"><code class="file-name">Biorouter-Setup-1.93.4.exe</code></a></td>
+             <td class="c-size num" role="cell"></td>
+             <td class="c-how" role="cell">Run the installer.</td>
+           </tr>
+           <tr data-row="windows" role="row">
+             <td class="c-os" role="cell">Windows <span>Archive</span></td>
+-            <td class="c-file" role="cell"><a class="dl-link" href="https://github.com/BaranziniLab/biorouter/releases/download/v1.93.2/Biorouter-win32-x64-1.93.2.zip"><code class="file-name">Biorouter-win32-x64-1.93.2.zip</code></a></td>
++            <td class="c-file" role="cell"><a class="dl-link" href="https://github.com/BaranziniLab/biorouter/releases/download/v1.93.4/Biorouter-win32-x64-1.93.4.zip"><code class="file-name">Biorouter-win32-x64-1.93.4.zip</code></a></td>
+             <td class="c-size num" role="cell"></td>
+             <td class="c-how" role="cell">Unzip it and run Biorouter.exe.</td>
+           </tr>
+           <tr data-row="linux-deb" role="row">
+             <td class="c-os" role="cell">Linux <span>Debian, Ubuntu</span></td>
+-            <td class="c-file" role="cell"><a class="dl-link" href="https://github.com/BaranziniLab/biorouter/releases/download/v1.93.2/biorouter_1.93.2_amd64.deb"><code class="file-name">biorouter_1.93.2_amd64.deb</code></a></td>
++            <td class="c-file" role="cell"><a class="dl-link" href="https://github.com/BaranziniLab/biorouter/releases/download/v1.93.4/biorouter_1.93.4_amd64.deb"><code class="file-name">biorouter_1.93.4_amd64.deb</code></a></td>
+             <td class="c-size num" role="cell"></td>
+-            <td class="c-how" role="cell"><span class="cmd"><code id="cmd-linux-deb">sudo apt install <span class="nw" data-file>./biorouter_1.93.2_amd64.deb</span></code><button class="copy-btn" type="button" data-copy="#cmd-linux-deb" aria-label="Copy the install command for biorouter_1.93.2_amd64.deb">Copy</button></span></td>
++            <td class="c-how" role="cell"><span class="cmd"><code id="cmd-linux-deb">sudo apt install <span class="nw" data-file>./biorouter_1.93.4_amd64.deb</span></code><button class="copy-btn" type="button" data-copy="#cmd-linux-deb" aria-label="Copy the install command for biorouter_1.93.4_amd64.deb">Copy</button></span></td>
+           </tr>
+           <tr data-row="linux-rpm" role="row">
+             <td class="c-os" role="cell">Linux <span>Fedora, RHEL</span></td>
+-            <td class="c-file" role="cell"><a class="dl-link" href="https://github.com/BaranziniLab/biorouter/releases/download/v1.93.2/Biorouter-1.93.2-1.x86_64.rpm"><code class="file-name">Biorouter-1.93.2-1.x86_64.rpm</code></a></td>
++            <td class="c-file" role="cell"><a class="dl-link" href="https://github.com/BaranziniLab/biorouter/releases/download/v1.93.4/Biorouter-1.93.4-1.x86_64.rpm"><code class="file-name">Biorouter-1.93.4-1.x86_64.rpm</code></a></td>
+             <td class="c-size num" role="cell"></td>
+-            <td class="c-how" role="cell"><span class="cmd"><code id="cmd-linux-rpm">sudo dnf install <span class="nw" data-file>./Biorouter-1.93.2-1.x86_64.rpm</span></code><button class="copy-btn" type="button" data-copy="#cmd-linux-rpm" aria-label="Copy the install command for Biorouter-1.93.2-1.x86_64.rpm">Copy</button></span></td>
++            <td class="c-how" role="cell"><span class="cmd"><code id="cmd-linux-rpm">sudo dnf install <span class="nw" data-file>./Biorouter-1.93.4-1.x86_64.rpm</span></code><button class="copy-btn" type="button" data-copy="#cmd-linux-rpm" aria-label="Copy the install command for Biorouter-1.93.4-1.x86_64.rpm">Copy</button></span></td>
+           </tr>
+         </tbody>
+         <tbody role="rowgroup">
+           <tr class="group" role="row"><th colspan="4" scope="rowgroup" role="rowheader">Command line only <span>for Linux servers, HPC and containers</span></th></tr>
+           <tr data-row="linux-cli-deb" role="row">
+             <td class="c-os" role="cell">Linux <span>Debian, Ubuntu</span></td>
+-            <td class="c-file" role="cell"><a class="dl-link" href="https://github.com/BaranziniLab/biorouter/releases/download/v1.93.2/biorouter-cli_1.93.2_amd64.deb"><code class="file-name">biorouter-cli_1.93.2_amd64.deb</code></a></td>
++            <td class="c-file" role="cell"><a class="dl-link" href="https://github.com/BaranziniLab/biorouter/releases/download/v1.93.4/biorouter-cli_1.93.4_amd64.deb"><code class="file-name">biorouter-cli_1.93.4_amd64.deb</code></a></td>
+             <td class="c-size num" role="cell"></td>
+-            <td class="c-how" role="cell"><span class="cmd"><code id="cmd-linux-cli-deb">sudo apt install <span class="nw" data-file>./biorouter-cli_1.93.2_amd64.deb</span></code><button class="copy-btn" type="button" data-copy="#cmd-linux-cli-deb" aria-label="Copy the install command for biorouter-cli_1.93.2_amd64.deb">Copy</button></span></td>
++            <td class="c-how" role="cell"><span class="cmd"><code id="cmd-linux-cli-deb">sudo apt install <span class="nw" data-file>./biorouter-cli_1.93.4_amd64.deb</span></code><button class="copy-btn" type="button" data-copy="#cmd-linux-cli-deb" aria-label="Copy the install command for biorouter-cli_1.93.4_amd64.deb">Copy</button></span></td>
+           </tr>
+           <tr data-row="linux-cli-rpm" role="row">
+             <td class="c-os" role="cell">Linux <span>Fedora, RHEL</span></td>
+-            <td class="c-file" role="cell"><a class="dl-link" href="https://github.com/BaranziniLab/biorouter/releases/download/v1.93.2/biorouter-cli-1.93.2-1.x86_64.rpm"><code class="file-name">biorouter-cli-1.93.2-1.x86_64.rpm</code></a></td>
++            <td class="c-file" role="cell"><a class="dl-link" href="https://github.com/BaranziniLab/biorouter/releases/download/v1.93.4/biorouter-cli-1.93.4-1.x86_64.rpm"><code class="file-name">biorouter-cli-1.93.4-1.x86_64.rpm</code></a></td>
+             <td class="c-size num" role="cell"></td>
+-            <td class="c-how" role="cell"><span class="cmd"><code id="cmd-linux-cli-rpm">sudo dnf install <span class="nw" data-file>./biorouter-cli-1.93.2-1.x86_64.rpm</span></code><button class="copy-btn" type="button" data-copy="#cmd-linux-cli-rpm" aria-label="Copy the install command for biorouter-cli-1.93.2-1.x86_64.rpm">Copy</button></span></td>
++            <td class="c-how" role="cell"><span class="cmd"><code id="cmd-linux-cli-rpm">sudo dnf install <span class="nw" data-file>./biorouter-cli-1.93.4-1.x86_64.rpm</span></code><button class="copy-btn" type="button" data-copy="#cmd-linux-cli-rpm" aria-label="Copy the install command for biorouter-cli-1.93.4-1.x86_64.rpm">Copy</button></span></td>
+           </tr>
+         </tbody>
+       </table>
+diff --git a/landing/index.html b/landing/index.html
+index 4406bbf03..8e4c8283f 100644
+--- a/landing/index.html
++++ b/landing/index.html
+@@ -55,7 +55,7 @@
+         <a class="btn btn-dark" id="hero-download" href="download.html"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 2.5v8M4.5 7 8 10.5 11.5 7M3 13.5h10"/></svg><span>Download</span></a>
+         <a class="text-link" href="docs.html">Read the docs <span aria-hidden="true">→</span></a>
+       </div>
+-      <p class="hero-meta"><span class="meta-lead">Free and open source</span><span class="meta-sep"> · </span>macOS, Windows, Linux · <a href="https://github.com/BaranziniLab/biorouter/releases/latest" data-version="v">v1.93.2</a></p>
++      <p class="hero-meta"><span class="meta-lead">Free and open source</span><span class="meta-sep"> · </span>macOS, Windows, Linux · <a href="https://github.com/BaranziniLab/biorouter/releases/latest" data-version="v">v1.93.4</a></p>
+       <!-- Names the newest entry in the About page's Updates list and links to that list.
+            home.js reads the entry from about.html; the words here are only the fallback. -->
+       <p class="hero-news"><a href="about.html#updates"><span class="k">New</span><span aria-hidden="true"> · </span><span data-latest-update>Biorouter at Jupyter Day 2026</span> <span class="arrow" aria-hidden="true">→</span></a></p>
+diff --git a/scripts/agent-drafter/check-windows-runtime-digest.mjs b/scripts/agent-drafter/check-windows-runtime-digest.mjs
+index 984fbed14..6fcda6133 100644
+--- a/scripts/agent-drafter/check-windows-runtime-digest.mjs
++++ b/scripts/agent-drafter/check-windows-runtime-digest.mjs
+@@ -70,6 +70,14 @@ const probes = [
+ const sha = (bytes) => createHash("sha256").update(bytes).digest("hex");
+ const root = mkdtempSync(join(tmpdir(), "biorouter-ps-digest-"));
+ const command = process.env.BIOROUTER_TEST_POWERSHELL || "powershell.exe";
++// A PowerShell start that times out says nothing about the digest. On
++// 2026-10-21 the job's first powershell.exe start missed a 15 s bound on main
++// (8f2dad53f, a docs-only commit) while the three after it finished with the
++// expected digests. So a run that times out is retried, each attempt bounded at
++// 60 s; any other failure, a wrong digest included, still fails at once.
++const timeoutMs =
++  Number(process.env.BIOROUTER_TEST_POWERSHELL_TIMEOUT_MS) || 60000;
++const attempts = 3;
+ let failed = false;
+ try {
+   for (const withMain of [true, false]) {
+@@ -116,24 +124,34 @@ foreach ($path in @((Join-Path $Dir 'pages/index.html'), (Join-Path $Dir 'assets
+ @{ powershell = $PSVersionTable.PSVersion.ToString(); digest = $actual } | ConvertTo-Json -Compress\n`,
+         "utf8",
+       );
+-      const output = spawnSync(
+-        command,
+-        [
+-          "-NoLogo",
+-          "-NoProfile",
+-          "-NonInteractive",
+-          "-ExecutionPolicy",
+-          "Bypass",
+-          "-File",
+-          probe,
+-        ],
+-        {
+-          env: { ...process.env, BIOROUTER_PATH_ROOT: join(root, "recipient") },
+-          encoding: "utf8",
+-          timeout: 15000,
+-          maxBuffer: 1024 * 1024,
+-        },
+-      );
++      let output;
++      for (let attempt = 1; attempt <= attempts; attempt += 1) {
++        output = spawnSync(
++          command,
++          [
++            "-NoLogo",
++            "-NoProfile",
++            "-NonInteractive",
++            "-ExecutionPolicy",
++            "Bypass",
++            "-File",
++            probe,
++          ],
++          {
++            env: {
++              ...process.env,
++              BIOROUTER_PATH_ROOT: join(root, "recipient"),
++            },
++            encoding: "utf8",
++            timeout: timeoutMs,
++            maxBuffer: 1024 * 1024,
++          },
++        );
++        if (output.error?.code !== "ETIMEDOUT") break;
++        console.error(
++          `${variant}: PowerShell did not finish within ${timeoutMs} ms (attempt ${attempt} of ${attempts})`,
++        );
++      }
+       let result;
+       try {
+         result = JSON.parse(output.stdout);

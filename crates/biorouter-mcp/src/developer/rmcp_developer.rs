@@ -37,15 +37,21 @@ use crate::secret_guard::SecretGuard;
 
 use super::analyze::{types::AnalyzeParams, CodeAnalyzer};
 use super::editor_models::{create_editor_model, EditorModel};
+#[cfg(test)]
+use super::shell::is_absolute_path;
 use super::shell::{
-    configure_shell_command, expand_path, first_line, foreground_timeout_message, is_absolute_path,
+    configure_shell_command, expand_path, first_line, foreground_timeout_message,
     kill_process_group,
 };
 use super::text_editor::{
-    save_file_history, text_editor_insert, text_editor_replace, text_editor_undo, text_editor_view,
-    text_editor_write,
+    text_editor_insert_bounded as text_editor_insert,
+    text_editor_replace_bounded as text_editor_replace,
+    text_editor_undo_bounded as text_editor_undo, text_editor_view_bounded as text_editor_view,
+    text_editor_write_bounded as text_editor_write,
 };
 use super::undo_history::{self, FileHistory};
+use crate::file_access::{absolute_file_path, file_error, EditorAccess, EditorPath};
+use biorouter_sandbox::bounded_fs::{AccessMode, BoundedFs};
 use std::time::Duration;
 
 /// The `_meta` key Biorouter's MCP client writes the dispatching chat's id
@@ -80,6 +86,45 @@ fn redirect_target_within_base(base: &Path, target: &str) -> Option<PathBuf> {
     // which let an out-of-tree target bypass this snapshot-only containment.
     let resolved = base.join(target);
     resolved.starts_with(base).then_some(resolved)
+}
+
+fn captured_directory_alias(filesystem: Arc<BoundedFs>, alias: &Path) -> Arc<BoundedFs> {
+    // Retain the opened alias only when it is the already-authorized object.
+    // Later pathname changes cannot redirect I/O through the captured spelling.
+    match BoundedFs::open(alias) {
+        Ok(candidate)
+            if candidate.identity() == filesystem.identity()
+                && candidate.root() == filesystem.root() =>
+        {
+            Arc::new(candidate)
+        }
+        _ => filesystem,
+    }
+}
+
+fn capture_workspace_filesystem(base: &Path) -> Option<Arc<BoundedFs>> {
+    let filesystem = Arc::new(BoundedFs::open(base).ok()?);
+    if let Some(pwd) = std::env::var_os("PWD").map(PathBuf::from) {
+        if pwd.is_absolute() && pwd != base {
+            let captured = captured_directory_alias(filesystem.clone(), &pwd);
+            if !Arc::ptr_eq(&captured, &filesystem) {
+                return Some(captured);
+            }
+        }
+    }
+    #[cfg(target_os = "macos")]
+    let filesystem = if ["/private/var", "/private/tmp", "/private/etc"]
+        .iter()
+        .any(|prefix| base.starts_with(prefix))
+    {
+        match base.strip_prefix("/private") {
+            Ok(suffix) => captured_directory_alias(filesystem, &Path::new("/").join(suffix)),
+            Err(_) => filesystem,
+        }
+    } else {
+        filesystem
+    };
+    Some(filesystem)
 }
 
 /// The text a live `shell_output` notification carries for one line of
@@ -392,8 +437,10 @@ pub struct DeveloperServer {
     /// bind time (it did not exist yet), in which case there is nothing to
     /// compare against and the path alone remains the boundary.
     canonical_working_dir: Option<PathBuf>,
-    // Skills installed by Biorouter may be inspected from any project. This
-    // canonical root grants reads only, without widening the editor's write jail.
+    workspace_filesystem: Option<Arc<BoundedFs>>,
+    skill_filesystem: Option<Arc<BoundedFs>>,
+    skill_anchor: Option<(Arc<BoundedFs>, PathBuf)>,
+    #[cfg(test)]
     skill_read_root: Option<PathBuf>,
     /// Wall-clock budget for a **foreground** shell command (issue #72), read
     /// once from `BIOROUTER_SHELL_FOREGROUND_TIMEOUT_SECS` at construction so
@@ -829,7 +876,13 @@ impl DeveloperServer {
             bash_env_file: None,
             working_dir: None,
             canonical_working_dir: None,
+            workspace_filesystem: capture_workspace_filesystem(&base),
+            skill_filesystem: BoundedFs::open(crate::paths::in_config_dir("skills"))
+                .ok()
+                .map(Arc::new),
+            #[cfg(test)]
             skill_read_root: Self::bind_skill_read_root(&crate::paths::in_config_dir("skills")),
+            skill_anchor: Self::bind_skill_anchor(&crate::paths::in_config_dir("skills")),
             foreground_timeout: super::shell::foreground_timeout_from_env(),
         }
     }
@@ -877,7 +930,11 @@ impl DeveloperServer {
     /// resolved to when it was sanctioned lets [`Self::effective_cwd`] notice
     /// that it no longer denotes the same directory.
     pub fn with_working_dir(mut self, dir: PathBuf) -> Self {
-        self.file_history = Arc::new(FileHistory::persistent(&dir));
+        self.workspace_filesystem = BoundedFs::open(&dir).ok().map(Arc::new);
+        self.file_history = Arc::new(match self.workspace_filesystem.as_ref() {
+            Some(filesystem) => FileHistory::persistent_for_filesystem(&dir, filesystem),
+            None => FileHistory::in_memory(),
+        });
         self.secret_guard = SecretGuard::for_dir(&dir);
         self.canonical_working_dir = std::fs::canonicalize(&dir).ok();
         self.working_dir = Some(dir);
@@ -1013,7 +1070,11 @@ impl DeveloperServer {
             if self.is_ignored(&resolved) {
                 continue;
             }
-            let _ = self.file_history.snapshot(&resolved);
+            if let Ok(access) = self.editor_access(rmcp::model::Meta::default()) {
+                if let Ok(path) = access.bind(&resolved, AccessMode::Read) {
+                    let _ = self.file_history.snapshot_bounded(&path.bound);
+                }
+            }
         }
     }
 
@@ -1027,38 +1088,100 @@ impl DeveloperServer {
     /// - `undo_edit`: Undo the last edit made to a file.
     #[tool(
         name = "text_editor",
-        description = "Perform text editing operations on files in the working directory. View also supports Biorouter's installed skills outside the working directory. Commands: view (show file content), write (create/overwrite file), str_replace (edit file), insert (insert at line), undo_edit (undo last change)."
+        description = "Perform text editing operations in the workspace, or ask for explicit folder approval to work on external files in place. View also supports Biorouter's installed skills. Commands: view (show file content), write (create/overwrite file), str_replace (edit file), insert (insert at line), undo_edit (undo last change)."
     )]
-    pub async fn text_editor(
+    pub async fn text_editor_with_context(
         &self,
         params: Parameters<TextEditorParams>,
+        context: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, ErrorData> {
+        self.text_editor_authorized(params, context.meta).await
+    }
+
+    pub(crate) async fn text_editor_authorized(
+        &self,
+        params: Parameters<TextEditorParams>,
+        meta: rmcp::model::Meta,
     ) -> Result<CallToolResult, ErrorData> {
         let params = params.0;
-        let path = self.resolve_path_scoped(&params.path, params.command == "view")?;
+        let access = self.editor_access(meta)?;
+        let requested =
+            absolute_file_path(&params.path, access.workspace.root()).map_err(file_error)?;
+        let is_diff = params.command == "str_replace" && params.diff.is_some();
+        let path = access.bind(
+            &requested,
+            if params.command == "view" || is_diff {
+                AccessMode::Read
+            } else {
+                AccessMode::Write
+            },
+        )?;
 
-        // Check if file is ignored before proceeding with any text editor operation
-        if self.is_ignored(&path) {
-            return Err(ErrorData::new(
-                ErrorCode::INTERNAL_ERROR,
-                format!(
-                    "Access to '{}' is restricted by .biorouterignore",
-                    path.display()
-                ),
-                None,
-            ));
+        let is_mutation = params.command != "view";
+        let diagnostics_requested = access
+            .meta
+            .0
+            .get("biorouter-post-edit-diagnostics")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false);
+        let diagnostic_targets = if !diagnostics_requested {
+            Vec::new()
+        } else if is_diff {
+            super::text_editor::diff_target_paths_bounded(&path, params.diff.as_deref().unwrap())?
+        } else {
+            vec![path.to_path_buf()]
+        };
+        let mut result = CallToolResult::success(self.execute_editor_command(&path, params).await?);
+        if is_mutation && diagnostics_requested {
+            let mut diagnostics = Vec::new();
+            for target in diagnostic_targets {
+                let Ok(file) = access.bind(&target, AccessMode::Read) else {
+                    continue;
+                };
+                let Ok(content) = file
+                    .bound
+                    .read_to_string_limited(super::analyze::diagnostics::MAX_DIAGNOSE_BYTES as u64)
+                else {
+                    continue;
+                };
+                let lines: Vec<_> = self
+                    .code_analyzer
+                    .diagnose_source(&target, &content)
+                    .iter()
+                    .map(|diagnostic| diagnostic.render())
+                    .collect();
+                if !lines.is_empty() {
+                    diagnostics.push(serde_json::json!({"path":target, "lines":lines}));
+                }
+            }
+            result.meta.get_or_insert_with(Default::default).0.insert(
+                "biorouter-bounded-edit-diagnostics".into(),
+                serde_json::Value::Array(diagnostics),
+            );
         }
+        if is_mutation {
+            if let Some(notice) = self.file_history.take_persistence_notice() {
+                result.content.push(Content::text(notice));
+            }
+        }
+        Ok(result)
+    }
 
+    async fn execute_editor_command(
+        &self,
+        path: &EditorPath,
+        params: TextEditorParams,
+    ) -> Result<Vec<Content>, ErrorData> {
         match params.command.as_str() {
             "view" => {
-                let view_range = params.view_range.as_ref().and_then(|vr| {
-                    if vr.len() == 2 {
-                        Some((vr[0] as usize, vr[1]))
+                let view_range = params.view_range.as_ref().and_then(|range| {
+                    if range.len() == 2 {
+                        Some((range[0] as usize, range[1]))
                     } else {
                         None
                     }
                 });
-                let content = text_editor_view(&path, view_range).await?;
-                Ok(CallToolResult::success(content))
+                text_editor_view(path, view_range).await
             }
             "write" => {
                 let file_text = params.file_text.ok_or_else(|| {
@@ -1068,54 +1191,18 @@ impl DeveloperServer {
                         None,
                     )
                 })?;
-                // Snapshot the pre-write content so a whole-file overwrite is
-                // undoable too, not just str_replace/insert/diff edits (BR-44).
-                save_file_history(&path, &self.file_history)?;
-                let content = text_editor_write(&path, &file_text).await?;
-                Ok(CallToolResult::success(content))
+                // Whole-file overwrites retain their previous contents for undo too.
+                let previous = match path.read_to_string() {
+                    Ok(content) => content,
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
+                    Err(error) => return Err(file_error(error)),
+                };
+                let content = text_editor_write(path, &file_text).await?;
+                self.file_history
+                    .record(&path.bound.try_history_key().map_err(file_error)?, previous);
+                Ok(content)
             }
-            "str_replace" => {
-                // Check if diff parameter is provided
-                if let Some(ref diff) = params.diff {
-                    // When diff is provided, old_str and new_str are not required
-                    let content = text_editor_replace(
-                        &path,
-                        "", // old_str not used with diff
-                        "", // new_str not used with diff
-                        Some(diff),
-                        &self.editor_model,
-                        &self.file_history,
-                    )
-                    .await?;
-                    Ok(CallToolResult::success(content))
-                } else {
-                    // Traditional str_replace with old_str and new_str
-                    let old_str = params.old_str.ok_or_else(|| {
-                        ErrorData::new(
-                            ErrorCode::INVALID_PARAMS,
-                            "Missing 'old_str' parameter for str_replace command".to_string(),
-                            None,
-                        )
-                    })?;
-                    let new_str = params.new_str.ok_or_else(|| {
-                        ErrorData::new(
-                            ErrorCode::INVALID_PARAMS,
-                            "Missing 'new_str' parameter for str_replace command".to_string(),
-                            None,
-                        )
-                    })?;
-                    let content = text_editor_replace(
-                        &path,
-                        &old_str,
-                        &new_str,
-                        None,
-                        &self.editor_model,
-                        &self.file_history,
-                    )
-                    .await?;
-                    Ok(CallToolResult::success(content))
-                }
-            }
+            "str_replace" => self.replace_editor_command(path, &params).await,
             "insert" => {
                 let insert_line = params.insert_line.ok_or_else(|| {
                     ErrorData::new(
@@ -1131,21 +1218,87 @@ impl DeveloperServer {
                         None,
                     )
                 })?;
-                let content =
-                    text_editor_insert(&path, insert_line as i64, &new_str, &self.file_history)
-                        .await?;
-                Ok(CallToolResult::success(content))
+                text_editor_insert(path, insert_line as i64, &new_str, &self.file_history).await
             }
-            "undo_edit" => {
-                let content = text_editor_undo(&path, &self.file_history).await?;
-                Ok(CallToolResult::success(content))
-            }
+            "undo_edit" => text_editor_undo(path, &self.file_history).await,
             _ => Err(ErrorData::new(
                 ErrorCode::INVALID_PARAMS,
                 format!("Unknown command '{}'", params.command),
                 None,
             )),
         }
+    }
+
+    async fn replace_editor_command(
+        &self,
+        path: &EditorPath,
+        params: &TextEditorParams,
+    ) -> Result<Vec<Content>, ErrorData> {
+        if let Some(diff) = params.diff.as_deref() {
+            return text_editor_replace(
+                path,
+                "",
+                "",
+                Some(diff),
+                &self.editor_model,
+                &self.file_history,
+            )
+            .await;
+        }
+        let old_str = params.old_str.as_deref().ok_or_else(|| {
+            ErrorData::new(
+                ErrorCode::INVALID_PARAMS,
+                "Missing 'old_str' parameter for str_replace command".to_string(),
+                None,
+            )
+        })?;
+        let new_str = params.new_str.as_deref().ok_or_else(|| {
+            ErrorData::new(
+                ErrorCode::INVALID_PARAMS,
+                "Missing 'new_str' parameter for str_replace command".to_string(),
+                None,
+            )
+        })?;
+        text_editor_replace(
+            path,
+            old_str,
+            new_str,
+            None,
+            &self.editor_model,
+            &self.file_history,
+        )
+        .await
+    }
+
+    fn editor_access(&self, meta: rmcp::model::Meta) -> Result<EditorAccess, ErrorData> {
+        let workspace = self.workspace_filesystem.clone().ok_or_else(|| {
+            file_error(
+                "The session workspace could not be opened; choose an existing folder and retry",
+            )
+        })?;
+        Ok(EditorAccess {
+            workspace,
+            skills: self.skill_filesystem.clone().or_else(|| {
+                let (anchor, relative) = self.skill_anchor.as_ref()?;
+                let path = anchor.bind(relative, AccessMode::Read).ok()?;
+                if path.relative_path() != relative {
+                    return None;
+                }
+                path.open_dir().ok().map(Arc::new)
+            }),
+            guard: self.secret_guard.clone(),
+            meta,
+        })
+    }
+
+    /// Direct library calls retain workspace-only authority; broker grants
+    /// enter exclusively through the MCP request metadata handler.
+    pub async fn text_editor(
+        &self,
+        params: Parameters<TextEditorParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        self.text_editor_authorized(params, rmcp::model::Meta::default())
+            .await
     }
 
     /// Execute a command in the shell.
@@ -1782,14 +1935,34 @@ impl DeveloperServer {
         name = "analyze",
         description = "Analyze code structure in 3 modes: 1) Directory overview - file tree with LOC/function/class counts to max_depth. 2) File details - functions, classes, imports. 3) Symbol focus - call graphs across directory to max_depth (requires directory path, case-sensitive). Typical flow: directory → files → symbols. Functions called >3x show •N."
     )]
+    pub async fn analyze_with_context(
+        &self,
+        params: Parameters<AnalyzeParams>,
+        context: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, ErrorData> {
+        self.analyze_authorized(params, context.meta)
+    }
+
     pub async fn analyze(
         &self,
         params: Parameters<AnalyzeParams>,
     ) -> Result<CallToolResult, ErrorData> {
+        self.analyze_authorized(params, Default::default())
+    }
+
+    fn analyze_authorized(
+        &self,
+        params: Parameters<AnalyzeParams>,
+        meta: rmcp::model::Meta,
+    ) -> Result<CallToolResult, ErrorData> {
         let params = params.0;
-        let path = self.resolve_path(&params.path)?;
+        let mut access = self.editor_access(meta)?;
+        access.refresh_workspace_guard()?;
+        let requested =
+            absolute_file_path(&params.path, access.workspace.root()).map_err(file_error)?;
+        let path = access.bind(&requested, AccessMode::Read)?;
         self.code_analyzer
-            .analyze(params, path, self.secret_guard.gitignore())
+            .analyze_bounded(params, &path, access.guard.gitignore())
     }
 
     /// Process an image file from disk.
@@ -1804,46 +1977,41 @@ impl DeveloperServer {
         name = "image_processor",
         description = "Process an image file from disk. Resizes if needed, converts to PNG, and returns as base64 data."
     )]
+    pub async fn image_processor_with_context(
+        &self,
+        params: Parameters<ImageProcessorParams>,
+        context: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, ErrorData> {
+        self.image_processor_authorized(params, context.meta).await
+    }
+
     pub async fn image_processor(
         &self,
         params: Parameters<ImageProcessorParams>,
     ) -> Result<CallToolResult, ErrorData> {
+        self.image_processor_authorized(params, Default::default())
+            .await
+    }
+
+    async fn image_processor_authorized(
+        &self,
+        params: Parameters<ImageProcessorParams>,
+        meta: rmcp::model::Meta,
+    ) -> Result<CallToolResult, ErrorData> {
         let params = params.0;
-        let path_str = &params.path;
-
-        let path = {
-            let p = self.resolve_path(path_str)?;
-            if cfg!(target_os = "macos") {
-                self.normalize_mac_screenshot_path(&p)
-            } else {
-                p
-            }
-        };
-
-        // Check if file is ignored before proceeding
-        if self.is_ignored(&path) {
-            return Err(ErrorData::new(
-                ErrorCode::INTERNAL_ERROR,
-                format!(
-                    "Access to '{}' is restricted by .biorouterignore",
-                    path.display()
-                ),
-                None,
-            ));
+        let access = self.editor_access(meta)?;
+        let mut requested =
+            absolute_file_path(&params.path, access.workspace.root()).map_err(file_error)?;
+        if cfg!(target_os = "macos") {
+            requested = self.normalize_mac_screenshot_path(&requested);
         }
-
-        // Check if file exists
-        if !path.exists() {
-            return Err(ErrorData::new(
-                ErrorCode::INTERNAL_ERROR,
-                format!("File '{}' does not exist", path.display()),
-                None,
-            ));
-        }
+        let path = access.bind(&requested, AccessMode::Read)?;
 
         // Check file size (10MB limit for image files)
         const MAX_FILE_SIZE: u64 = 10 * 1024 * 1024; // 10MB in bytes
-        let file_size = std::fs::metadata(&path)
+        let file_size = path
+            .bound
+            .metadata()
             .map_err(|e| {
                 ErrorData::new(
                     ErrorCode::INTERNAL_ERROR,
@@ -1866,7 +2034,12 @@ impl DeveloperServer {
         }
 
         // Open and decode the image
-        let image = image::open(&path).map_err(|e| {
+        let bytes = path.bound.read_limited(MAX_FILE_SIZE).map_err(file_error)?;
+        let decoded = match image::ImageFormat::from_path(&*path) {
+            Ok(format) => image::load_from_memory_with_format(&bytes, format),
+            Err(_) => image::load_from_memory(&bytes),
+        };
+        let image = decoded.map_err(|e| {
             ErrorData::new(
                 ErrorCode::INTERNAL_ERROR,
                 format!("Failed to open image file: {}", e),
@@ -2076,8 +2249,20 @@ impl DeveloperServer {
         Ok(())
     }
 
+    #[cfg(test)]
     fn resolve_path(&self, path_str: &str) -> Result<PathBuf, ErrorData> {
         self.resolve_path_jailed(path_str)
+    }
+
+    fn bind_skill_anchor(configured: &Path) -> Option<(Arc<BoundedFs>, PathBuf)> {
+        let root = Self::bind_skill_read_root(configured)?;
+        let mut existing = root.as_path();
+        while !existing.is_dir() {
+            existing = existing.parent()?;
+        }
+        let filesystem = Arc::new(BoundedFs::open(existing).ok()?);
+        let relative = root.strip_prefix(filesystem.root()).ok()?.to_path_buf();
+        Some((filesystem, relative))
     }
 
     fn bind_skill_read_root(configured: &Path) -> Option<PathBuf> {
@@ -2088,10 +2273,12 @@ impl DeveloperServer {
 
     /// Resolve `path_str` against the effective working directory and enforce
     /// the session's containment jail.
+    #[cfg(test)]
     fn resolve_path_jailed(&self, path_str: &str) -> Result<PathBuf, ErrorData> {
         self.resolve_path_scoped(path_str, false)
     }
 
+    #[cfg(test)]
     fn resolve_path_scoped(
         &self,
         path_str: &str,
@@ -2162,6 +2349,15 @@ impl DeveloperServer {
             // Path doesn't exist yet — check its nearest existing ancestor
             let mut ancestor = resolved.as_path();
             loop {
+                if std::fs::symlink_metadata(ancestor)
+                    .is_ok_and(|metadata| metadata.file_type().is_symlink())
+                {
+                    return Err(ErrorData::new(
+                        rmcp::model::ErrorCode::INVALID_PARAMS,
+                        format!("Path '{}' contains a dangling symlink", path_str),
+                        None,
+                    ));
+                }
                 if let Some(parent) = ancestor.parent() {
                     if parent.exists() {
                         let canonical_parent = std::fs::canonicalize(parent).map_err(|e| {
@@ -2235,45 +2431,7 @@ impl DeveloperServer {
 
     // Helper function to handle Mac screenshot filenames that contain U+202F (narrow no-break space)
     fn normalize_mac_screenshot_path(&self, path: &Path) -> PathBuf {
-        // Compiled once rather than on every call.
-        static SCREENSHOT_RE: once_cell::sync::Lazy<regex::Regex> = once_cell::sync::Lazy::new(
-            || {
-                regex::Regex::new(
-                    r"^Screenshot \d{4}-\d{2}-\d{2} at \d{1,2}\.\d{2}\.\d{2} (AM|PM|am|pm)(?: \(\d+\))?\.png$",
-                )
-                .expect("valid regex")
-            },
-        );
-        // Only process if the path has a filename
-        if let Some(filename) = path.file_name().and_then(|f| f.to_str()) {
-            // Check if this matches Mac screenshot pattern:
-            // "Screenshot YYYY-MM-DD at H.MM.SS AM/PM.png"
-            if let Some(captures) = SCREENSHOT_RE.captures(filename) {
-                // Get the AM/PM part
-                let meridian = captures.get(1).unwrap().as_str();
-
-                // Find the last space before AM/PM and replace it with U+202F
-                let space_pos = filename
-                    .rfind(meridian)
-                    .and_then(|pos| filename.get(..pos).map(|s| s.trim_end().len()))
-                    .unwrap_or(0);
-
-                if space_pos > 0 {
-                    let parent = path.parent().unwrap_or(Path::new(""));
-                    if let (Some(before), Some(after)) =
-                        (filename.get(..space_pos), filename.get(space_pos + 1..))
-                    {
-                        let new_filename = format!("{}{}{}", before, '\u{202F}', after);
-                        let new_path = parent.join(new_filename);
-
-                        return new_path;
-                    }
-                }
-            }
-        }
-
-        // Return the original path if it doesn't match or couldn't be processed
-        path.to_path_buf()
+        crate::file_access::normalize_image_path(path)
     }
 
     // shell output can be large, this will help manage that
@@ -2374,6 +2532,92 @@ mod tests {
 
     fn create_test_server() -> DeveloperServer {
         DeveloperServer::new()
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_idle_workspace_can_move_without_reauthorizing_its_replacement() {
+        let fixture = tempfile::tempdir().unwrap();
+        let workspace = fixture.path().join("workspace");
+        let moved = fixture.path().join("moved-workspace");
+        let outside = fixture.path().join("outside.txt");
+        fs::create_dir(&workspace).unwrap();
+        fs::write(workspace.join("inside.txt"), "approved").unwrap();
+        fs::write(&outside, "outside canary").unwrap();
+        let server = DeveloperServer::new().with_working_dir(workspace.clone());
+        fs::rename(&workspace, &moved).unwrap();
+        fs::create_dir(&workspace).unwrap();
+        fs::write(workspace.join("inside.txt"), "replacement canary").unwrap();
+        {
+            let access = server.editor_access(Default::default()).unwrap();
+            assert!(access.bind(&outside, AccessMode::Read).is_err());
+            assert_eq!(
+                access
+                    .bind(&workspace.join("inside.txt"), AccessMode::Read)
+                    .unwrap()
+                    .read_to_string()
+                    .unwrap(),
+                "approved"
+            );
+            access
+                .bind(&workspace.join("inside.txt"), AccessMode::Write)
+                .unwrap()
+                .write("approved update")
+                .unwrap();
+        }
+        assert_eq!(
+            fs::read_to_string(moved.join("inside.txt")).unwrap(),
+            "approved update"
+        );
+        assert_eq!(
+            fs::read_to_string(workspace.join("inside.txt")).unwrap(),
+            "replacement canary"
+        );
+        assert_eq!(fs::read_to_string(&outside).unwrap(), "outside canary");
+        drop(server);
+        fs::remove_dir_all(&moved).unwrap();
+        fs::remove_dir_all(&workspace).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn captured_workspace_alias_retains_the_authorized_object_after_retargeting() {
+        let directory = tempfile::tempdir().unwrap();
+        let original = directory.path().join("original");
+        let outside = directory.path().join("outside");
+        let alias = directory.path().join("selected-alias");
+        fs::create_dir(&original).unwrap();
+        fs::create_dir(&outside).unwrap();
+        fs::write(original.join("file.txt"), "authorized").unwrap();
+        fs::write(outside.join("file.txt"), "outside canary").unwrap();
+        std::os::unix::fs::symlink(&original, &alias).unwrap();
+        let retained = Arc::new(BoundedFs::open(&original).unwrap());
+        let captured = captured_directory_alias(retained.clone(), &alias);
+        assert_eq!(captured.identity(), retained.identity());
+        fs::remove_file(&alias).unwrap();
+        std::os::unix::fs::symlink(&outside, &alias).unwrap();
+        let bound = captured
+            .bind(alias.join("file.txt"), AccessMode::Read)
+            .unwrap();
+        assert_eq!(bound.read_to_string().unwrap(), "authorized");
+        assert!(captured
+            .bind(outside.join("file.txt"), AccessMode::Read)
+            .is_err());
+        assert_eq!(
+            fs::read_to_string(outside.join("file.txt")).unwrap(),
+            "outside canary"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_different_directory_is_never_captured_as_a_workspace_alias() {
+        let directory = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let retained = Arc::new(BoundedFs::open(directory.path()).unwrap());
+        let captured = captured_directory_alias(retained.clone(), outside.path());
+        assert!(Arc::ptr_eq(&captured, &retained));
+        assert!(captured.bind(outside.path(), AccessMode::Read).is_err());
     }
 
     /// Enters a directory for the duration of a `#[serial]` test and puts the
@@ -2483,14 +2727,17 @@ mod tests {
 
         let tmp = tempfile::tempdir().unwrap();
         let dir = tmp.path().to_path_buf();
-        let server = DeveloperServer::new().with_working_dir(dir.clone());
+        // This fixture tests shell fallback, without acquiring file authority
+        // that deliberately prevents deleting a live workspace on Windows.
+        let mut server = DeveloperServer::new();
+        server.working_dir = Some(dir.clone());
         // While it exists, it is honored.
         assert_eq!(
             server.resolve_shell_cwd_checked(None).unwrap(),
             Some(dir.clone())
         );
         // Once deleted, resolution falls back rather than returning the dead dir.
-        drop(tmp);
+        tmp.close().unwrap();
         let resolved = server.resolve_shell_cwd_checked(None).unwrap();
         assert_ne!(
             resolved,
@@ -2684,6 +2931,7 @@ mod tests {
         std::fs::write(&script, "echo installed\n").unwrap();
         let mut server = DeveloperServer::new().with_working_dir(project.path().to_path_buf());
         server.skill_read_root = Some(skills.path().canonicalize().unwrap());
+        server.skill_filesystem = Some(Arc::new(BoundedFs::open(skills.path()).unwrap()));
 
         let params = |command: &str| {
             Parameters(TextEditorParams {
@@ -2716,6 +2964,7 @@ mod tests {
         std::fs::write(skills.path().join(".biorouterignore"), "private.txt\n").unwrap();
         let mut server = DeveloperServer::new().with_working_dir(project.path().to_path_buf());
         server.skill_read_root = Some(skills.path().canonicalize().unwrap());
+        server.skill_filesystem = Some(Arc::new(BoundedFs::open(skills.path()).unwrap()));
         for name in [".env", "private.txt"] {
             let path = skills.path().join(name);
             std::fs::write(&path, "confidential").unwrap();
@@ -2737,6 +2986,7 @@ mod tests {
         std::os::unix::fs::symlink(target, &link).unwrap();
         let mut server = DeveloperServer::new().with_working_dir(project.path().to_path_buf());
         server.skill_read_root = Some(skills.path().canonicalize().unwrap());
+        server.skill_filesystem = Some(Arc::new(BoundedFs::open(skills.path()).unwrap()));
         assert!(server
             .resolve_path_scoped(link.to_str().unwrap(), true)
             .is_err());
@@ -2749,6 +2999,8 @@ mod tests {
         let skills = config.path().join("new-config/skills");
         let mut server = DeveloperServer::new().with_working_dir(project.path().to_path_buf());
         server.skill_read_root = DeveloperServer::bind_skill_read_root(&skills);
+        server.skill_filesystem = None;
+        server.skill_anchor = DeveloperServer::bind_skill_anchor(&skills);
         std::fs::create_dir_all(&skills).unwrap();
         let script = skills.join("SKILL.md");
         std::fs::write(&script, "Installed after the server started.").unwrap();
@@ -2767,6 +3019,8 @@ mod tests {
         let skills = config.path().join("skills");
         let mut server = DeveloperServer::new().with_working_dir(project.path().to_path_buf());
         server.skill_read_root = DeveloperServer::bind_skill_read_root(&skills);
+        server.skill_filesystem = None;
+        server.skill_anchor = DeveloperServer::bind_skill_anchor(&skills);
         std::fs::write(outside.path().join("notes.txt"), "outside").unwrap();
         std::os::unix::fs::symlink(outside.path(), &skills).unwrap();
         assert!(server
@@ -2818,6 +3072,116 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
+    #[tokio::test]
+    #[serial]
+    async fn text_editor_write_rejects_dangling_symlinks_without_widening_the_jail() {
+        use std::os::unix::fs::symlink;
+
+        let fixture = tempfile::tempdir().unwrap();
+        let workspace = fixture.path().join("workspace");
+        let outside = fixture.path().join("outside");
+        std::fs::create_dir(&workspace).unwrap();
+        std::fs::create_dir(&outside).unwrap();
+        let outside_file = outside.join("new.txt");
+        let outside_dir = outside.join("missing-dir");
+        symlink(&outside_file, workspace.join("file-link")).unwrap();
+        symlink(&outside_dir, workspace.join("dir-link")).unwrap();
+        let mut server = DeveloperServer::new().with_working_dir(workspace.clone());
+        server.file_history = Arc::new(FileHistory::in_memory());
+        let write = |path: &str| {
+            Parameters(TextEditorParams {
+                path: path.to_string(),
+                command: "write".to_string(),
+                view_range: None,
+                file_text: Some("SYNTHETIC_AUDIT_CONTENT".to_string()),
+                old_str: None,
+                new_str: None,
+                insert_line: None,
+                diff: None,
+            })
+        };
+
+        for path in ["file-link", "dir-link/new.txt"] {
+            let err = server.text_editor(write(path)).await.unwrap_err();
+            assert_eq!(err.code, ErrorCode::INVALID_PARAMS);
+            assert!(err.message.contains("symbolic link"));
+        }
+        assert!(!outside_file.exists());
+        assert!(!outside_dir.exists());
+
+        server.text_editor(write("normal.txt")).await.unwrap();
+        symlink(workspace.join("normal.txt"), workspace.join("valid-link")).unwrap();
+        server.text_editor(write("valid-link")).await.unwrap();
+        assert_eq!(
+            std::fs::read_to_string(workspace.join("normal.txt")).unwrap(),
+            "SYNTHETIC_AUDIT_CONTENT\n"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    #[serial]
+    async fn text_editor_diff_rejects_symlink_escapes_before_creating_directories() {
+        use std::os::unix::fs::symlink;
+
+        let fixture = tempfile::tempdir().unwrap();
+        let workspace = fixture.path().join("workspace");
+        let outside = fixture.path().join("outside");
+        std::fs::create_dir(&workspace).unwrap();
+        std::fs::create_dir(&outside).unwrap();
+        let outside_file = outside.join("new.txt");
+        let outside_dir = outside.join("missing-dir");
+        symlink(&outside_file, workspace.join("file-link")).unwrap();
+        symlink(&outside_dir, workspace.join("dir-link")).unwrap();
+        symlink(&outside, workspace.join("outside-link")).unwrap();
+        let mut server = DeveloperServer::new().with_working_dir(workspace.clone());
+        server.file_history = Arc::new(FileHistory::in_memory());
+        let create_patch = |path: &str| {
+            Parameters(TextEditorParams {
+                path: ".".to_string(),
+                command: "str_replace".to_string(),
+                view_range: None,
+                file_text: None,
+                old_str: None,
+                new_str: None,
+                insert_line: None,
+                diff: Some(format!(
+                    "--- /dev/null\n+++ b/{path}\n@@ -0,0 +1 @@\n+SYNTHETIC_AUDIT_CONTENT\n"
+                )),
+            })
+        };
+
+        for path in ["file-link", "dir-link/new.txt"] {
+            let err = server.text_editor(create_patch(path)).await.unwrap_err();
+            assert_eq!(err.code, ErrorCode::INVALID_PARAMS);
+            assert!(err.message.contains("symbolic link"));
+        }
+        assert!(!outside_file.exists());
+        assert!(!outside_dir.exists());
+
+        for path in [
+            "outside-link/missing/new.txt",
+            "workspace/outside-link/missing/new.txt",
+        ] {
+            let err = server.text_editor(create_patch(path)).await.unwrap_err();
+            assert_eq!(err.code, ErrorCode::INVALID_PARAMS);
+            assert!(err.message.contains("authorized directory"));
+            assert!(!outside.join("missing").exists());
+        }
+
+        for (path, actual) in [
+            ("normal/nested/new.txt", "normal/nested/new.txt"),
+            ("workspace/overlap/nested/new.txt", "overlap/nested/new.txt"),
+        ] {
+            server.text_editor(create_patch(path)).await.unwrap();
+            assert_eq!(
+                std::fs::read_to_string(workspace.join(actual)).unwrap(),
+                "SYNTHETIC_AUDIT_CONTENT\n"
+            );
+        }
+    }
+
     /// #64: the jail base is not re-rooted when the session working directory
     /// disappears. Every path the developer tools may touch is resolved relative
     /// to this base, so quietly substituting the process cwd — a *different*,
@@ -2826,6 +3190,7 @@ mod tests {
     /// ("don't panic") that has nothing to do with the boundary it moves.
     #[test]
     #[serial]
+    #[cfg(not(windows))]
     fn editor_jail_is_not_widened_when_session_dir_disappears() {
         let saved_env = std::env::var("BIOROUTER_WORKING_DIR").ok();
         std::env::remove_var("BIOROUTER_WORKING_DIR");
@@ -3046,6 +3411,7 @@ mod tests {
     /// directory it was actually given, and refuses instead of moving.
     #[test]
     #[serial]
+    #[cfg(not(windows))]
     fn editor_jail_is_not_widened_to_the_env_base_when_session_dir_disappears() {
         let saved_env = std::env::var("BIOROUTER_WORKING_DIR").ok();
 
@@ -3510,7 +3876,9 @@ mod tests {
         // Simulate the append the shell command would perform.
         std::fs::write(&out, "before\nmore\n").unwrap();
 
-        text_editor_undo(&out, &server.file_history).await.unwrap();
+        super::super::text_editor::text_editor_undo(&out, &server.file_history)
+            .await
+            .unwrap();
         assert_eq!(std::fs::read_to_string(&out).unwrap(), "before\n");
     }
 
@@ -5249,8 +5617,12 @@ mod tests {
             }
 
             // Force cleanup before runtime shutdown
-            cleanup_test_service(running_service, peer);
-
+            drop(peer);
+            timeout(Duration::from_secs(5), running_service.cancel())
+                .await
+                .expect("MCP service must stop before removing its workspace")
+                .unwrap();
+            drop(server);
             temp_dir.close().unwrap();
         });
     }

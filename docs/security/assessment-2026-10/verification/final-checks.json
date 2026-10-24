@@ -1,0 +1,82 @@
+{
+  "schema_version": 1,
+  "recorded_at_utc": "2026-10-24T00:05:44.088196+00:00",
+  "recording_note": "This timestamp records preparation of the outcome summary, not execution time. Exit codes are recorded from the audit runner and linked logs; historical setup failures and broader nonpassing attempts remain separate. Not-yet-recorded checks are not claimed as passed.",
+  "checks": [
+    {
+      "check_id": "production_and_focused_tests_clippy",
+      "status": "passed",
+      "exit_code": 0,
+      "log": "production-and-focused-tests-clippy.log",
+      "log_sha256": "6ebe30e0faca1b2798a2051f62984536992536e8ad6bea81aaeacdc50e529c15",
+      "evidence_strings": [
+        "Checking biorouter v1.93.4",
+        "Checking biorouter-sandbox v1.93.4",
+        "Finished `release` profile [optimized] target(s) in 2.37s"
+      ],
+      "scope": "Production code and the focused integration-test targets; excludes the incompatible in-module release unit-test target.",
+      "command": null,
+      "command_capture_note": "The exact invocation was not retained in this stdout/stderr log; no exact command is reconstructed.",
+      "exit_code_source": "Recorded by the audit runner; successful completion is supported by the retained log."
+    },
+    {
+      "check_id": "non_inheritable_sockets_final",
+      "status": "passed",
+      "exit_code": 0,
+      "log": "non-inheritable-sockets-final.log",
+      "log_sha256": "8006bc5d8fabeeca6ea0e1e04631dbef78b3ece04a91e659baf13bcb9d6c79f9",
+      "evidence_strings": [
+        "OK: clippy linted 17 production targets",
+        "no production socket is inheritable by a child process."
+      ],
+      "command": "scripts/check-non-inheritable-sockets.sh",
+      "production_targets": 17,
+      "scope": "The script reports seventeen production targets; the missing-cargo-PATH setup attempt remains separately retained in static-checks.json and check-non-inheritable-sockets.log.",
+      "exit_code_source": "Recorded by the audit runner; successful completion is supported by the retained log."
+    },
+    {
+      "check_id": "all_target_release_clippy_attempt",
+      "status": "not_passed",
+      "exit_code": 101,
+      "log": "changed-crates-clippy.log",
+      "log_sha256": "98a1ffe2604f5775f62412f5e0853902d75117819680689fbfe592bc9bedd761",
+      "evidence_strings": [
+        "cannot find function `record_minted_id` in this scope",
+        "error: could not compile `biorouter` (lib test) due to 4 previous errors"
+      ],
+      "command": null,
+      "scope": "The broader all-target release-profile Clippy attempt failed to compile existing unit tests. The cfg(debug_assertions) mismatch also exists at the frozen source base; this attempt is not counted as a passing check.",
+      "explanation": "release-all-targets-limit.md",
+      "exit_code_source": "Recorded in release-all-targets-limit.md and by the audit runner."
+    },
+    {
+      "check_id": "cargo_fmt",
+      "status": "passed",
+      "exit_code": 0,
+      "command": "cargo fmt --all -- --check",
+      "scope": "All workspace Rust files checked by cargo fmt.",
+      "log": "cargo-fmt-final.log",
+      "log_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "evidence_strings": [],
+      "exit_code_source": "Captured final invocation returned exit 0; command produces no output on success."
+    },
+    {
+      "check_id": "git_diff_check",
+      "status": "passed",
+      "exit_code": 0,
+      "command": "git diff --check",
+      "scope": "Tracked source diff whitespace checked. Historical raw logs are retained verbatim.",
+      "log": "git-diff-check-final.log",
+      "log_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "evidence_strings": [],
+      "exit_code_source": "Captured final invocation returned exit 0; command produces no output on success."
+    },
+    {
+      "check_id": "just_check_everything",
+      "status": "not_run",
+      "exit_code": null,
+      "command": "just check-everything",
+      "scope": "The complete repository check-everything/CI and release integration remain future gates. Individual passing script invocations do not complete this suite."
+    }
+  ]
+}

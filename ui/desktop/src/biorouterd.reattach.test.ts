@@ -60,6 +60,7 @@ vi.mock('./nativeSecretPrompt', () => ({
 vi.mock('./biorouterdSingleton', () => ({ isSharedDaemonEnabled: () => true }));
 vi.mock('./daemonRuntime', () => ({
   createDaemonProxy: mocks.createProxy,
+  closeNativeClientLifetimes: vi.fn(),
   daemonLossOf: (error: { code?: string; syscall?: string } | null) =>
     error?.syscall === 'connect' && ['ENOENT', 'ECONNREFUSED'].includes(error.code ?? '')
       ? 'gone'
@@ -195,12 +196,13 @@ describe('reconnecting a shared attachment (R-1)', () => {
     expect(mocks.stop).not.toHaveBeenCalled();
   });
 
-  it('reads nothing when the instance it verified still answers as itself', async () => {
+  it('reauthenticates the same live daemon so a lost native approval connection can be reminted', async () => {
     const { result, proxy } = await attachToA();
     await result.sharedDaemon!.reconnect();
-    expect(proxy.probe).toHaveBeenCalledTimes(1);
-    expect(proxy.retarget).not.toHaveBeenCalled();
-    expect(mocks.readKey).toHaveBeenCalledTimes(1);
+    expect(proxy.retarget).toHaveBeenCalledWith(runtimeA, KEY_A);
+    expect(mocks.readKey).toHaveBeenCalledTimes(2);
+    expect(mocks.spawn).not.toHaveBeenCalled();
+    expect(mocks.stop).not.toHaveBeenCalled();
   });
 
   it('replaces a new instance it cannot use and points the proxy at the one it starts', async () => {

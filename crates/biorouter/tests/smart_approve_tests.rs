@@ -318,22 +318,44 @@ async fn auto_and_chat_modes_are_unchanged() {
     );
 }
 
-/// A judge verdict cached as a `smart_approve` permission is honoured on later
-/// turns without re-consulting the model.
+/// Legacy automatic tool-wide grants cannot authorize a different invocation.
 #[tokio::test]
-async fn cached_smart_approve_permission_is_honoured() {
+async fn legacy_smart_approve_allow_requires_a_fresh_decision() {
     let (manager, pm, _tmp) = build_manager(SmartApproveConfig::default(), &realistic_tools());
     pm.update_smart_approve_permission(UNANNOTATED_TOOL, PermissionLevel::AlwaysAllow);
 
     let requests = vec![tool_request("r1", UNANNOTATED_TOOL)];
     let result = decide(&manager, &requests, BioRouterMode::SmartApprove).await;
-    assert_eq!(
-        names(&result.approved),
-        HashSet::from([UNANNOTATED_TOOL.to_string()])
-    );
+    assert!(result.approved.is_empty());
+    assert_eq!(result.needs_approval.len(), 1);
 
     // ...but only in the smart tier. Plain Approve ignores the cache.
     let approve = decide(&manager, &requests, BioRouterMode::Approve).await;
     assert!(approve.approved.is_empty());
     assert_eq!(approve.needs_approval.len(), 1);
+}
+
+#[tokio::test]
+async fn explicit_user_allow_still_authorizes_unannotated_tools() {
+    let (manager, pm, _tmp) = build_manager(SmartApproveConfig::default(), &realistic_tools());
+    pm.update_user_permission(UNANNOTATED_TOOL, PermissionLevel::AlwaysAllow);
+
+    let requests = vec![tool_request("r1", UNANNOTATED_TOOL)];
+    let result = decide(&manager, &requests, BioRouterMode::SmartApprove).await;
+    assert_eq!(result.approved.len(), 1);
+    assert!(result.needs_approval.is_empty());
+}
+
+#[tokio::test]
+async fn legacy_smart_approve_restrictions_still_apply() {
+    let (manager, pm, _tmp) = build_manager(SmartApproveConfig::default(), &realistic_tools());
+    pm.update_smart_approve_permission(READ_TOOL, PermissionLevel::NeverAllow);
+    pm.update_smart_approve_permission(WRITE_TOOL, PermissionLevel::AskBefore);
+
+    let result = decide(&manager, &all_requests(), BioRouterMode::SmartApprove).await;
+    assert_eq!(
+        names(&result.denied),
+        HashSet::from([READ_TOOL.to_string()])
+    );
+    assert!(names(&result.needs_approval).contains(WRITE_TOOL));
 }

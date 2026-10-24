@@ -15,7 +15,7 @@ use crate::session::chat_fts;
 use crate::session::extension_data::ExtensionData;
 use crate::session::message_blobs;
 use crate::workflow::Workflow;
-use anyhow::Result;
+use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use rmcp::model::Role;
 use serde::{Deserialize, Serialize};
@@ -1809,6 +1809,12 @@ impl SessionManager {
         Self {
             storage: Arc::new(SessionStorage::new(data_dir)),
         }
+    }
+
+    /// Check storage before starting a host; ordinary operations also enforce
+    /// this boundary before the first database connection.
+    pub fn validate_storage(&self) -> Result<()> {
+        SessionStorage::prepare_session_directory(&self.storage.session_dir)
     }
 
     /// A store for chats that outlive nothing — `biorouter run --no-session`'s private,
@@ -4063,10 +4069,6 @@ impl SessionStorage {
     }
 
     fn create_pool(path: &Path) -> Pool<Sqlite> {
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent).expect("Failed to create session database directory");
-        }
-
         let options = SqliteConnectOptions::new()
             .filename(path)
             .create_if_missing(true)
@@ -4085,6 +4087,62 @@ impl SessionStorage {
         SqlitePoolOptions::new()
             .max_connections(4)
             .connect_lazy_with(options)
+    }
+
+    fn prepare_session_directory(path: &Path) -> Result<()> {
+        let prepare = || -> std::io::Result<()> {
+            fs::create_dir_all(path)?;
+            Self::protect_session_directory(path)
+        };
+        prepare().with_context(|| {
+            format!(
+                "Cannot open private session history at '{}'. Close other Biorouter processes and use a real folder owned by your account. For relocated storage, set BIOROUTER_PATH_ROOT to the real app root containing data/sessions instead of linking the sessions folder; see docs/security/session-storage.md",
+                path.display()
+            )
+        })
+    }
+
+    #[cfg(unix)]
+    fn protect_session_directory(path: &Path) -> std::io::Result<()> {
+        use std::os::unix::fs::OpenOptionsExt;
+
+        let directory = fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NOFOLLOW | libc::O_DIRECTORY)
+            .open(path)?;
+        biorouter_sandbox::protect_owner_private_handle(&directory)?;
+        for name in [DB_NAME, "sessions.db-wal", "sessions.db-shm"] {
+            let file = match fs::OpenOptions::new()
+                .read(true)
+                .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+                .open(path.join(name))
+            {
+                Ok(file) => file,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(error) => return Err(error),
+            };
+            if !file.metadata()?.is_file() {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::PermissionDenied,
+                    "session database and sidecars must be regular files",
+                ));
+            }
+            biorouter_sandbox::protect_owner_private_handle(&file)?;
+        }
+        Ok(())
+    }
+
+    #[cfg(windows)]
+    fn protect_session_directory(path: &Path) -> std::io::Result<()> {
+        super::storage_permissions::protect(path)
+    }
+
+    #[cfg(not(any(unix, windows)))]
+    fn protect_session_directory(_path: &Path) -> std::io::Result<()> {
+        Err(std::io::Error::new(
+            std::io::ErrorKind::Unsupported,
+            "private session storage is unsupported on this platform",
+        ))
     }
 
     pub fn new(data_dir: PathBuf) -> Self {
@@ -4136,6 +4194,7 @@ impl SessionStorage {
     pub(crate) async fn pool(&self) -> Result<&Pool<Sqlite>> {
         self.initialized
             .get_or_try_init(|| async {
+                Self::prepare_session_directory(&self.session_dir)?;
                 let schema_exists = sqlx::query_scalar::<_, bool>(
                     r#"SELECT EXISTS (SELECT name FROM sqlite_master WHERE type='table' AND name='schema_version')"#,
                 )
@@ -4186,6 +4245,7 @@ impl SessionStorage {
                         Self::retreat_to_privacy_repair(&self.pool).await;
                     }
                 }
+                Self::prepare_session_directory(&self.session_dir)?;
                 Ok::<(), anyhow::Error>(())
             })
             .await?;
@@ -4194,7 +4254,9 @@ impl SessionStorage {
 
     pub async fn create(session_dir: &Path) -> Result<Self> {
         let storage = Self::new(session_dir.to_path_buf());
+        Self::prepare_session_directory(&storage.session_dir)?;
         Self::create_schema(&storage.pool).await?;
+        Self::prepare_session_directory(&storage.session_dir)?;
         Ok(storage)
     }
 

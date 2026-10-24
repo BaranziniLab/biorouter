@@ -1,0 +1,42 @@
+[
+  {
+    "command": "scripts/check-non-inheritable-sockets.sh",
+    "exit_code": 1,
+    "seconds": 0.16
+  },
+  {
+    "command": "scripts/check-openapi-schema.sh",
+    "exit_code": 0,
+    "seconds": 0.09
+  },
+  {
+    "command": "scripts/check-version-consistency.sh",
+    "exit_code": 0,
+    "seconds": 0.37
+  },
+  {
+    "command": "scripts/check-brand-consistency.sh",
+    "exit_code": 0,
+    "seconds": 0.26
+  },
+  {
+    "command": "scripts/check-no-goose-block.sh",
+    "exit_code": 0,
+    "seconds": 4.89
+  },
+  {
+    "command": "scripts/check-computer-use-naming.sh",
+    "exit_code": 0,
+    "seconds": 42.81
+  },
+  {
+    "command": "scripts/check-vendored-computer-use.sh",
+    "exit_code": 0,
+    "seconds": 0.32
+  },
+  {
+    "command": "scripts/check-no-cross-drift.sh",
+    "exit_code": 0,
+    "seconds": 0.15
+  }
+]

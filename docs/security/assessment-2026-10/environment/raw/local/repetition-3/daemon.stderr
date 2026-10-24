@@ -1,0 +1,57 @@
+  2026-10-23T02:00:55.627881Z  INFO biorouter::config::base: Config file doesn't exist, attempting recovery from backup
+    at crates/biorouter/src/config/base.rs:1144
+
+  2026-10-23T02:00:55.628702Z  INFO biorouter::config::base: No backup found, creating default configuration
+    at crates/biorouter/src/config/base.rs:1154
+
+  2026-10-23T02:00:55.632968Z  INFO biorouter::config::base: Created fresh empty config file
+    at crates/biorouter/src/config/base.rs:1273
+
+  2026-10-23T02:00:55.642782Z  WARN biorouterd::commands::agent: no user-action key: stdin closed without one, which is how `biorouter serve` starts its daemon. This daemon cannot verify that a request came from the person at the keyboard, so it will refuse every request that raises a session's privacy capability, including one made by that person; and Stop, Stop-and-Send and the continuation routes answer to the reach gate instead of to the proof (serve decision SD-11), which admits any caller holding the daemon secret to the chats that gate admits. Mid-turn steering stays refused. A new chat still starts on the provider this daemon was LAUNCHED with, and is refused if that configuration has changed since (SD-12).
+    at crates/biorouter-server/src/commands/agent.rs:300
+
+  2026-10-23T02:00:55.747360Z  INFO biorouter::knowledge::soul: Soul: created built-in OKF knowledge base 'soul'
+    at crates/biorouter/src/knowledge/soul.rs:437
+
+  2026-10-23T02:00:55.830734Z  INFO biorouter::knowledge::soul: Soul: installed skill at /home/br/state/config/skills/knowledge-bases/update-soul/SKILL.md
+    at crates/biorouter/src/knowledge/soul.rs:827
+
+  2026-10-23T02:00:55.831150Z  INFO biorouter::knowledge::soul: Soul: installed or upgraded Meditation workflow at /home/br/state/config/workflows/meditation.yaml
+    at crates/biorouter/src/knowledge/soul.rs:690
+
+  2026-10-23T02:00:55.927260Z  INFO biorouter::knowledge::soul: Soul: registered Daily Meditation 03:00 schedule 'daily-meditation'
+    at crates/biorouter/src/knowledge/soul.rs:871
+
+  2026-10-23T02:00:55.953570Z  INFO biorouterd::commands::agent: the served interface is given the configured provider's tier on listings and knowledge bases, capability: Public
+    at crates/biorouter-server/src/commands/agent.rs:527
+
+  2026-10-23T02:00:55.954820Z  INFO biorouterd::commands::agent: serving the web interface from /opt/release/usr/share/biorouter/web
+    at crates/biorouter-server/src/commands/agent.rs:546
+
+  2026-10-23T02:00:55.958095Z  INFO biorouterd::commands::agent: listening on 127.0.0.1:3000
+    at crates/biorouter-server/src/commands/agent.rs:561
+
+  2026-10-23T02:00:55.961844Z  WARN biorouter::config::extensions: Failed to load extensions: Configuration value not found: extensions. Falling back to empty object.
+    at crates/biorouter/src/config/extensions.rs:66
+
+  2026-10-23T02:00:56.017449Z DEBUG biorouter::config::base: Created config backup: "/home/br/state/config/config.yaml.bak"
+    at crates/biorouter/src/config/base.rs:1717
+
+  2026-10-23T02:00:56.022406Z DEBUG biorouter::config::base: Created config backup: "/home/br/state/config/config.yaml.bak"
+    at crates/biorouter/src/config/base.rs:1717
+
+  2026-10-23T02:00:58.006957Z  INFO biorouter::session::session_manager: issue #56: privacy backfill from each session's bound provider and turn ledger, backfilled_private: 0, backfilled_private_from_turn_history: 0, backfilled_declassified_skipped: 0, backfilled_public_named: 0, backfilled_unknown_provider: 0, backfilled_empty: 0, notice_private_visible: 0, notice_public_named_visible: 0, notice_unknown_provider_visible: 0, notice_total_visible: 0
+    at crates/biorouter/src/session/session_manager.rs:5816
+
+  2026-10-23T02:00:58.106622Z DEBUG biorouter_mcp::developer::analyze: Initializing CodeAnalyzer
+    at crates/biorouter-mcp/src/developer/analyze/mod.rs:58
+
+  2026-10-23T02:00:58.106675Z DEBUG biorouter_mcp::developer::analyze::parser: Initializing ParserManager
+    at crates/biorouter-mcp/src/developer/analyze/parser.rs:71
+
+  2026-10-23T02:00:58.106802Z  INFO biorouter_mcp::developer::analyze::cache: Initializing analysis cache with size 100
+    at crates/biorouter-mcp/src/developer/analyze/cache.rs:26
+
+  2026-10-23T02:00:58.227183Z DEBUG biorouterd::routes::agent: Background extension loading completed for session 20261023_1
+    at crates/biorouter-server/src/routes/agent.rs:1236
+

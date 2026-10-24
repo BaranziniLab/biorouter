@@ -1,0 +1,66 @@
+{
+  "evidence_type": "same-runtime-network-none-verification",
+  "interfaces": [
+    {
+      "name": "erspan0",
+      "up": false,
+      "flags": "0x1002",
+      "ipv4": null
+    },
+    {
+      "name": "gre0",
+      "up": false,
+      "flags": "0x80",
+      "ipv4": null
+    },
+    {
+      "name": "gretap0",
+      "up": false,
+      "flags": "0x1002",
+      "ipv4": null
+    },
+    {
+      "name": "ip6_vti0",
+      "up": false,
+      "flags": "0x80",
+      "ipv4": null
+    },
+    {
+      "name": "ip6gre0",
+      "up": false,
+      "flags": "0x80",
+      "ipv4": null
+    },
+    {
+      "name": "ip6tnl0",
+      "up": false,
+      "flags": "0x80",
+      "ipv4": null
+    },
+    {
+      "name": "ip_vti0",
+      "up": false,
+      "flags": "0x80",
+      "ipv4": null
+    },
+    {
+      "name": "lo",
+      "up": true,
+      "flags": "0x49",
+      "ipv4": "127.0.0.1"
+    },
+    {
+      "name": "sit0",
+      "up": false,
+      "flags": "0x80",
+      "ipv4": null
+    },
+    {
+      "name": "tunl0",
+      "up": false,
+      "flags": "0x80",
+      "ipv4": null
+    }
+  ],
+  "proc_net_route": "Iface\tDestination\tGateway \tFlags\tRefCnt\tUse\tMetric\tMask\t\tMTU\tWindow\tIRTT                                                       \n"
+}

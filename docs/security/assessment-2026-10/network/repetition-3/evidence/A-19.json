@@ -1,0 +1,83 @@
+{
+  "case": {
+    "case_id": "A-19",
+    "family": "A",
+    "case_type": "attack",
+    "operation": "oversized",
+    "expected_protected_effect": "Unauthenticated oversized configuration POST changes no state",
+    "parameters": {
+      "payload_bytes": 2098176
+    }
+  },
+  "calls": [
+    {
+      "request": {
+        "method": "POST",
+        "path": "/config/upsert",
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body_bytes": 2098176,
+        "body_sha256": "5aa0c83e04d3e0f4d623568c07e7eeddbb1248990709714f55ce6138ce0eeff3"
+      },
+      "status": 401,
+      "headers": [
+        [
+          "vary",
+          "origin, access-control-request-method, access-control-request-headers"
+        ],
+        [
+          "transfer-encoding",
+          "chunked"
+        ],
+        [
+          "date",
+          "Fri, 23 Oct 2026 01:59:31 GMT"
+        ]
+      ],
+      "body": "",
+      "response_truncated": false,
+      "duration_ms": 4.665
+    },
+    {
+      "request": {
+        "method": "GET",
+        "path": "/config",
+        "headers": {
+          "X-Secret-Key": "<SYNTHETIC_API_SECRET>"
+        },
+        "body_bytes": 0,
+        "body_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "status": 200,
+      "headers": [
+        [
+          "content-type",
+          "application/json"
+        ],
+        [
+          "vary",
+          "origin, access-control-request-method, access-control-request-headers"
+        ],
+        [
+          "vary",
+          "accept-encoding"
+        ],
+        [
+          "transfer-encoding",
+          "chunked"
+        ],
+        [
+          "date",
+          "Fri, 23 Oct 2026 01:59:31 GMT"
+        ]
+      ],
+      "body": "{\"config\":{\"BIOROUTER_PRIVACY_TIERS\":\"on\",\"BIOROUTER_PRIVACY_TIERS_RECORD\":{\"enabled\":true,\"origin\":\"migration\",\"path\":\"/home/br/state/config/privacy-tiers.json\",\"last_change\":{\"via\":\"migration\",\"set_to\":true,\"at\":\"2026-10-23T01:59:15.161536555+00:00\",\"system_authenticated\":false,\"user_action\":false}},\"extensions\":{},\"computer_use_capabilities_version\":2,\"BIOROUTER_PRIVACY_MIXING_POLICY\":\"standard\",\"BRSEC_SYNTHETIC_CONFIG_CANARY\":\"BRSEC_BASELINE_ONLY_SYNTHETIC\"}}",
+      "response_truncated": false,
+      "duration_ms": 0.285
+    }
+  ],
+  "observed": {
+    "stored_value": "BRSEC_BASELINE_ONLY_SYNTHETIC"
+  }
+}

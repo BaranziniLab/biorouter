@@ -1,0 +1,47 @@
+{
+  "case": {
+    "case_id": "A-C01",
+    "family": "A",
+    "case_type": "control",
+    "operation": "http_control",
+    "expected_protected_effect": "Expected read is available",
+    "parameters": {
+      "path": "/status",
+      "credential": "none"
+    }
+  },
+  "calls": [
+    {
+      "request": {
+        "method": "GET",
+        "path": "/status",
+        "headers": {},
+        "body_bytes": 0,
+        "body_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "status": 200,
+      "headers": [
+        [
+          "content-type",
+          "text/plain; charset=utf-8"
+        ],
+        [
+          "vary",
+          "origin, access-control-request-method, access-control-request-headers"
+        ],
+        [
+          "transfer-encoding",
+          "chunked"
+        ],
+        [
+          "date",
+          "Fri, 23 Oct 2026 01:56:42 GMT"
+        ]
+      ],
+      "body": "ok",
+      "response_truncated": false,
+      "duration_ms": 20.918
+    }
+  ],
+  "observed": "Read response status"
+}

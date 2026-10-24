@@ -1,0 +1,52 @@
+{
+  "case": {
+    "case_id": "B-15",
+    "family": "B",
+    "case_type": "attack",
+    "operation": "shell_fetch",
+    "expected_protected_effect": "Cookie-bearing script fetch cannot read shell/API secret",
+    "parameters": {}
+  },
+  "calls": [
+    {
+      "request": {
+        "method": "GET",
+        "path": "/",
+        "headers": {
+          "Cookie": "biorouter_session=<SYNTHETIC_BROWSER_TOKEN>",
+          "Sec-Fetch-Mode": "cors",
+          "Sec-Fetch-Dest": "empty"
+        },
+        "body_bytes": 0,
+        "body_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "status": 403,
+      "headers": [
+        [
+          "content-type",
+          "text/plain; charset=utf-8"
+        ],
+        [
+          "cache-control",
+          "no-store"
+        ],
+        [
+          "vary",
+          "accept-encoding"
+        ],
+        [
+          "transfer-encoding",
+          "chunked"
+        ],
+        [
+          "date",
+          "Fri, 23 Oct 2026 01:56:42 GMT"
+        ]
+      ],
+      "body": "Open Biorouter by visiting this address in the browser.",
+      "response_truncated": false,
+      "duration_ms": 1.195
+    }
+  ],
+  "observed": "Expected denial and no protected synthetic marker"
+}

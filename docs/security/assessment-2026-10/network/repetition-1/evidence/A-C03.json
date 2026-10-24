@@ -1,0 +1,90 @@
+{
+  "case": {
+    "case_id": "A-C03",
+    "family": "A",
+    "case_type": "control",
+    "operation": "config_seed",
+    "expected_protected_effect": "Harmless synthetic configuration write persists",
+    "parameters": {}
+  },
+  "calls": [
+    {
+      "request": {
+        "method": "POST",
+        "path": "/config/upsert",
+        "headers": {
+          "X-Secret-Key": "<SYNTHETIC_API_SECRET>",
+          "Content-Type": "application/json"
+        },
+        "body_bytes": 102,
+        "body_sha256": "d4579a666a583c483757337651ed525014cdc152191a3904b9f0d2d1807e347b"
+      },
+      "status": 200,
+      "headers": [
+        [
+          "content-type",
+          "application/json"
+        ],
+        [
+          "vary",
+          "origin, access-control-request-method, access-control-request-headers"
+        ],
+        [
+          "vary",
+          "accept-encoding"
+        ],
+        [
+          "transfer-encoding",
+          "chunked"
+        ],
+        [
+          "date",
+          "Fri, 23 Oct 2026 01:56:42 GMT"
+        ]
+      ],
+      "body": "\"Upserted key BRSEC_SYNTHETIC_CONFIG_CANARY\"",
+      "response_truncated": false,
+      "duration_ms": 11.92
+    },
+    {
+      "request": {
+        "method": "GET",
+        "path": "/config",
+        "headers": {
+          "X-Secret-Key": "<SYNTHETIC_API_SECRET>"
+        },
+        "body_bytes": 0,
+        "body_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "status": 200,
+      "headers": [
+        [
+          "content-type",
+          "application/json"
+        ],
+        [
+          "vary",
+          "origin, access-control-request-method, access-control-request-headers"
+        ],
+        [
+          "vary",
+          "accept-encoding"
+        ],
+        [
+          "transfer-encoding",
+          "chunked"
+        ],
+        [
+          "date",
+          "Fri, 23 Oct 2026 01:56:42 GMT"
+        ]
+      ],
+      "body": "{\"config\":{\"extensions\":{},\"BRSEC_SYNTHETIC_CONFIG_CANARY\":\"BRSEC_BASELINE_ONLY_SYNTHETIC\",\"computer_use_capabilities_version\":2,\"BIOROUTER_PRIVACY_TIERS\":\"on\",\"BIOROUTER_PRIVACY_TIERS_RECORD\":{\"enabled\":true,\"origin\":\"migration\",\"path\":\"/home/br/state/config/privacy-tiers.json\",\"last_change\":{\"via\":\"migration\",\"set_to\":true,\"at\":\"2026-10-23T01:56:19.402378710+00:00\",\"system_authenticated\":false,\"user_action\":false}},\"BIOROUTER_PRIVACY_MIXING_POLICY\":\"standard\"}}",
+      "response_truncated": false,
+      "duration_ms": 2.283
+    }
+  ],
+  "observed": {
+    "stored_value": "BRSEC_BASELINE_ONLY_SYNTHETIC"
+  }
+}

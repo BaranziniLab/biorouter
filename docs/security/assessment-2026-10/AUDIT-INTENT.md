@@ -1,0 +1,11 @@
+# Defensive security audit intent and scope
+
+**Purpose.** This work is a defensive audit of BioRouter to identify, verify, remediate, and document software security weaknesses in response to the reviewers' request for a transparent security evaluation. The intended outcomes are stronger product boundaries, reproducible evidence, and accurate manuscript language. It is not intended to develop or distribute a system for malicious use.
+
+**Authorized setting.** The target is the BioRouter v1.93.4 release and its source-based remediation branch. Test data are synthetic. Network and filesystem observations were confined to a disposable local container or temporary local fixtures. The local-account scenario represents an ordinary separate non-root account on a shared host. It does not assume a root attacker or a malicious authorized user. Research users are assumed to be trained in HIPAA and PHI handling and to follow their signed institutional consents; no PHI or real credentials were used.
+
+**Methods and reporting.** Source review and bounded component tests are used to check whether existing controls hold for the recorded fixtures, identify defects, and confirm regression behavior after changes. Each result is tied to a specific build, configuration, fixture, and observed effect. Repeated deterministic runs describe repeatability of those cases; they are not independent samples from a real-world attack population and do not estimate general security performance. Scripted provider results describe code behavior only; they do not measure the resilience of a live language model to adversarial content.
+
+**Remediation principle.** Fixes should tighten data and capability boundaries while preserving ordinary research workflows. The current changes are local source changes on `codex/security-reviewer-assessment`; they are not part of the released v1.93.4 binary. Any claim of release remediation requires a later released build and verification on that build.
+
+**Scope update.** This statement supersedes the original prospective testing language in `PLAN.md` for ongoing work and manuscript reporting. Previously collected observations remain as bounded internal audit evidence with their original provenance; no further adversarial test campaign is planned under this scope.

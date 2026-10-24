@@ -506,8 +506,8 @@ describe('a chat whose Crew connection is offline', () => {
     expect(screen.getByTestId('state')).toHaveTextContent('offline');
     expect(screen.getByTestId('blocked')).toHaveTextContent('false');
     expect(screen.getByTestId('hold')).toHaveTextContent('none');
-    // The grant still stands, so the extension menu keeps Crew switched on.
-    expect(screen.getByTestId('published')).toHaveTextContent('active');
+    // Publishing the standing grant settles after the offline bar renders.
+    await waitFor(() => expect(screen.getByTestId('published')).toHaveTextContent('active'));
     // Not the connected chip. Revoke stays, beside Connect: it needs no connection (final polish,
     // observation (a)).
     expect(screen.queryByRole('button', { name: /^Crew · / })).toBeNull();

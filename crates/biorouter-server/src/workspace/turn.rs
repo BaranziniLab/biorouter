@@ -222,7 +222,12 @@ pub async fn start_turn(
     // Before the spawn, never after it.
     let events = session_events::subscribe(&request.session_id);
 
-    tokio::spawn(run_turn(state, request, turn_guard, cancel_token));
+    tokio::spawn(biorouter::native_client::carry(run_turn(
+        state,
+        request,
+        turn_guard,
+        cancel_token,
+    )));
     Ok(StartedTurn { turn_id, events })
 }
 

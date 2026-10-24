@@ -1,5 +1,6 @@
 // @vitest-environment node
 import fs from 'node:fs';
+import { randomUUID } from 'node:crypto';
 import http, { type Server } from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
@@ -7,6 +8,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import WebSocket, { WebSocketServer } from 'ws';
 import {
   createDaemonProxy,
+  closeNativeClientLifetimes,
   DaemonKeyRefusedError,
   daemonRuntimePath,
   daemonVersion,
@@ -37,7 +39,8 @@ type Fixture = {
   identity: Record<string, unknown>;
   server: Server;
   upgrades: string[];
-  upstreamRequests: { path: string; secret: string | undefined }[];
+  upstreamRequests: { path: string; secret: string | undefined; nativeClient?: string }[];
+  nativeClients: Set<WebSocket>;
   close: () => Promise<void>;
 };
 
@@ -71,18 +74,26 @@ async function unixFixture(): Promise<Fixture> {
     user_action_installed: true,
   };
   const upgrades: string[] = [];
-  const upstreamRequests: { path: string; secret: string | undefined }[] = [];
+  const verifiedSockets = new WeakSet<object>();
+  const upstreamRequests: { path: string; secret: string | undefined; nativeClient?: string }[] =
+    [];
+  const nativeClients = new Set<WebSocket>();
   const websocketServer = new WebSocketServer({ noServer: true });
   const server = http.createServer((request, response) => {
     const parsed = new URL(request.url ?? '/', 'http://localhost');
     upstreamRequests.push({
       path: parsed.pathname + parsed.search,
+      nativeClient:
+        typeof request.headers['x-biorouter-native-client'] === 'string'
+          ? request.headers['x-biorouter-native-client']
+          : undefined,
       secret:
         typeof request.headers['x-secret-key'] === 'string'
           ? request.headers['x-secret-key']
           : undefined,
     });
     if (parsed.pathname === '/daemon/identity') {
+      verifiedSockets.add(request.socket);
       response.writeHead(200, { 'content-type': 'application/json' });
       response.end(JSON.stringify(identity));
       return;
@@ -102,6 +113,23 @@ async function unixFixture(): Promise<Fixture> {
     response.end('upstream-ok');
   });
   server.on('upgrade', (request, socket, head) => {
+    if (request.url === '/daemon/native-client') {
+      if (
+        !verifiedSockets.has(request.socket) ||
+        !request.headers['x-user-action'] ||
+        request.headers['x-secret-key'] !== DAEMON_SECRET ||
+        request.headers['x-daemon-instance'] !== identity.instance_id
+      ) {
+        socket.destroy();
+        return;
+      }
+      websocketServer.handleUpgrade(request, socket, head, (client) => {
+        nativeClients.add(client);
+        client.once('close', () => nativeClients.delete(client));
+        client.send(randomUUID());
+      });
+      return;
+    }
     upgrades.push(request.url ?? '');
     websocketServer.handleUpgrade(request, socket, head, (client) => {
       setTimeout(() => client.send('upstream-connected'), 20);
@@ -134,6 +162,7 @@ async function unixFixture(): Promise<Fixture> {
     server,
     upgrades,
     upstreamRequests,
+    nativeClients,
     close: async () => {
       websocketServer.clients.forEach((client) => client.terminate());
       websocketServer.close();
@@ -223,10 +252,73 @@ describe.sequential('shared daemon runtime and pinned Unix proxy', () => {
     previousRoot = process.env.BIOROUTER_PATH_ROOT;
   });
   afterEach(async () => {
+    closeNativeClientLifetimes();
     if (fixture) await fixture.close();
     fixture = undefined;
     if (previousRoot === undefined) delete process.env.BIOROUTER_PATH_ROOT;
     else process.env.BIOROUTER_PATH_ROOT = previousRoot;
+  });
+
+  it('binds only proven renderer requests, shares app lifetime across proxies, and remints after disconnect', async () => {
+    const current = (fixture = await unixFixture());
+    const proxy = await createDaemonProxy(
+      current.runtime,
+      DESKTOP_SECRET,
+      'desktop-proof',
+      'daemon-proof',
+      RENDERER_ORIGIN
+    );
+    const second = await createDaemonProxy(
+      current.runtime,
+      DESKTOP_SECRET,
+      'desktop-proof',
+      'daemon-proof',
+      RENDERER_ORIGIN
+    );
+    const request = (target: typeof proxy, proof?: string) =>
+      responseText(target.baseUrl + '/crew/echo', {
+        headers: {
+          'X-Secret-Key': DESKTOP_SECRET,
+          Origin: RENDERER_ORIGIN,
+          'X-Biorouter-Native-Client': 'forged-owner',
+          ...(proof ? { 'X-User-Action': proof } : {}),
+        },
+      });
+    const lastNativeClient = () =>
+      current.upstreamRequests[current.upstreamRequests.length - 1]?.nativeClient;
+    try {
+      expect(current.nativeClients.size).toBe(1);
+      await request(proxy);
+      expect(lastNativeClient()).toBe('unavailable');
+      await request(proxy, 'wrong-proof');
+      expect(lastNativeClient()).toBe('unavailable');
+      await request(proxy, 'desktop-proof');
+      const first = lastNativeClient();
+      expect(first).toMatch(/^[0-9a-f-]{36}$/i);
+      await request(second, 'desktop-proof');
+      expect(lastNativeClient()).toBe(first);
+      proxy.close();
+      await request(second, 'desktop-proof');
+      expect(lastNativeClient()).toBe(first);
+      current.nativeClients.forEach((client) => client.terminate());
+      await vi.waitFor(() => expect(current.nativeClients.size).toBe(0));
+      await vi.waitFor(async () => expect(await second.probe()).toMatchObject({ reason: 'gone' }));
+      await second.retarget(current.runtime, 'daemon-proof');
+      await request(second, 'desktop-proof');
+      expect(lastNativeClient()).not.toBe(first);
+      expect(current.nativeClients.size).toBe(1);
+      const registration = await responseText(second.baseUrl + '/daemon/native-client', {
+        headers: {
+          'X-Secret-Key': DESKTOP_SECRET,
+          'X-User-Action': 'desktop-proof',
+          Origin: RENDERER_ORIGIN,
+        },
+      });
+      expect(registration.response.status).toBe(403);
+    } finally {
+      proxy.close();
+      second.close();
+    }
   });
 
   it('discovers a private manifest and rejects a runtime symlink', async () => {
@@ -444,6 +536,8 @@ async function instanceOn(
   approval: string
 ) {
   const seen: { path: string; secret?: string; userAction?: string }[] = [];
+  const nativeClients = new WebSocketServer({ noServer: true });
+  const verifiedSockets = new WeakSet<object>();
   const server = http.createServer((request, response) => {
     const headers = request.headers;
     seen.push({
@@ -457,6 +551,7 @@ async function instanceOn(
       return;
     }
     if (request.url === '/daemon/identity') {
+      verifiedSockets.add(request.socket);
       response.writeHead(200, { 'content-type': 'application/json' }).end(
         JSON.stringify({
           version: 1,
@@ -475,6 +570,19 @@ async function instanceOn(
       .writeHead(200, { 'content-type': 'text/plain' })
       .end(`ok from ${identity.instance_id}`);
   });
+  server.on('upgrade', (request, socket, head) => {
+    if (
+      request.url !== '/daemon/native-client' ||
+      !verifiedSockets.has(request.socket) ||
+      request.headers['x-secret-key'] !== secret ||
+      request.headers['x-user-action'] !== approval ||
+      request.headers['x-daemon-instance'] !== identity.instance_id
+    ) {
+      socket.destroy();
+      return;
+    }
+    nativeClients.handleUpgrade(request, socket, head, (client) => client.send(randomUUID()));
+  });
   await new Promise<void>((resolve, reject) => {
     server.once('error', reject);
     server.listen(socketPath, () => resolve());
@@ -483,6 +591,8 @@ async function instanceOn(
   return {
     seen,
     stop: async () => {
+      nativeClients.clients.forEach((client) => client.terminate());
+      nativeClients.close();
       await new Promise<void>((resolve) => server.close(() => resolve()));
       fs.rmSync(socketPath, { force: true });
     },
@@ -498,6 +608,7 @@ describe.sequential('a shared daemon that restarts under the app (R-1)', () => {
     previousRoot = process.env.BIOROUTER_PATH_ROOT;
   });
   afterEach(async () => {
+    closeNativeClientLifetimes();
     for (const cleanup of cleanups.splice(0).reverse()) await cleanup();
     if (fixture) await fixture.close();
     fixture = undefined;
@@ -528,7 +639,8 @@ describe.sequential('a shared daemon that restarts under the app (R-1)', () => {
     proxy.onConnection((event) => events.push(event));
     expect((await get(proxy)).response.status).toBe(200);
 
-    // A stops (`biorouter crew daemon stop`): nothing answers on the socket.
+    // A stops (`biorouter crew daemon stop`): native leases close with the daemon.
+    current.nativeClients.forEach((client) => client.terminate());
     await new Promise<void>((resolve) => current.server.close(() => resolve()));
     fs.rmSync(current.socketPath, { force: true });
     const gone = await get(proxy);
@@ -654,6 +766,7 @@ describe.sequential('the user-action key file', () => {
     previousRoot = process.env.BIOROUTER_PATH_ROOT;
   });
   afterEach(async () => {
+    closeNativeClientLifetimes();
     if (fixture) await fixture.close();
     fixture = undefined;
     if (previousRoot === undefined) delete process.env.BIOROUTER_PATH_ROOT;

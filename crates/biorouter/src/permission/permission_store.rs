@@ -243,6 +243,74 @@ impl ToolPermissionStore {
         allow.cloned()
     }
 
+    /// Apply configured directory denials to every target in a complete file plan.
+    /// A patch touching several directories is denied when any child is denied;
+    /// remembered allows never provide filesystem authority through this check.
+    /// `scoped_enabled` must be the same `PERMISSION_SCOPED_GRANTS` setting used
+    /// by the permission inspector. Callers also check their discovered alias targets.
+    pub fn denies_file_access(
+        &self,
+        tool_name: &str,
+        paths: &[PathBuf],
+        working_dir: &std::path::Path,
+        scoped_enabled: bool,
+    ) -> bool {
+        if !scoped_enabled {
+            return false;
+        }
+        let facts: Vec<_> = paths
+            .iter()
+            .map(|path| CallFacts::for_file_path(path, working_dir))
+            .collect();
+        let now = Utc::now().timestamp();
+        self.scoped.iter().any(|grant| {
+            grant.tool_name == tool_name
+                && !grant.allowed
+                && grant.is_live(now)
+                && matches!(&grant.scope, PermissionScope::Directory { .. })
+                && facts.iter().any(|facts| grant.scope.matches(facts))
+        })
+    }
+
+    /// Recursive reads cannot include a remembered denied directory, including
+    /// one created after admission. Check captured labels as well as aliases
+    /// resolved at admission; later pathname changes must not erase a denial.
+    pub fn denies_recursive_file_access(
+        &self,
+        tool_name: &str,
+        paths: &[PathBuf],
+        working_dir: &std::path::Path,
+        scoped_enabled: bool,
+    ) -> bool {
+        if !scoped_enabled {
+            return false;
+        }
+        let paths: Vec<_> = paths
+            .iter()
+            .flat_map(|path| {
+                let absolute = if path.is_absolute() {
+                    path.clone()
+                } else {
+                    working_dir.join(path)
+                };
+                std::iter::once(absolute).chain(CallFacts::for_file_path(path, working_dir).paths)
+            })
+            .collect();
+        let now = Utc::now().timestamp();
+        self.scoped.iter().any(|grant| {
+            let PermissionScope::Directory { dir } = &grant.scope else {
+                return false;
+            };
+            grant.tool_name == tool_name
+                && !grant.allowed
+                && grant.is_live(now)
+                && grant.scope.validate().is_ok()
+                && paths.iter().any(|path| {
+                    path.is_absolute() && (path.starts_with(dir) || dir.starts_with(path))
+                })
+        })
+    }
+
     /// Every live scoped grant, for the settings UI.
     pub fn scoped_grants(&self) -> Vec<ScopedPermissionGrant> {
         let now = Utc::now().timestamp();
@@ -416,6 +484,195 @@ mod tests {
         store
             .matching_scoped_grant(tool, facts)
             .map(|grant| grant.allowed)
+    }
+
+    #[test]
+    fn file_access_denial_checks_every_patch_child_despite_overlapping_allows() {
+        let temp = TempDir::new().unwrap();
+        let workspace = temp.path().canonicalize().unwrap();
+        let private = workspace.join("restricted");
+        std::fs::create_dir(&private).unwrap();
+        let mut store = store_in(&temp);
+        store
+            .record_scoped_grant(
+                EDITOR,
+                PermissionScope::directory(&private).unwrap(),
+                false,
+                None,
+            )
+            .unwrap();
+        store
+            .record_scoped_grant(
+                EDITOR,
+                PermissionScope::directory(&workspace).unwrap(),
+                true,
+                None,
+            )
+            .unwrap();
+        let targets = vec![
+            workspace.clone(),
+            workspace.join("ordinary.txt"),
+            private.join("new-parent/patch-child.txt"),
+        ];
+        assert!(store.denies_file_access(EDITOR, &targets, &workspace, true));
+        assert!(!store.denies_file_access(EDITOR, &targets[..2], &workspace, true));
+        assert!(!store.denies_file_access(EDITOR, &targets, &workspace, false));
+        assert!(!store.denies_file_access("other__text_editor", &targets, &workspace, true));
+        assert!(!store.denies_file_access(EDITOR, &[], &workspace, true));
+        let persisted: ToolPermissionStore = serde_json::from_reader(
+            File::open(store.permissions_dir.join("tool_permissions.json")).unwrap(),
+        )
+        .unwrap();
+        assert!(persisted.denies_file_access(EDITOR, &targets, &workspace, true));
+    }
+
+    #[test]
+    fn file_access_denials_ignore_expired_invalid_and_command_prefix_scopes() {
+        let temp = TempDir::new().unwrap();
+        let workspace = temp.path().canonicalize().unwrap();
+        let target = workspace.join("ordinary.txt");
+        let mut store = store_in(&temp);
+        store
+            .record_scoped_grant(
+                EDITOR,
+                PermissionScope::directory(&workspace).unwrap(),
+                false,
+                Some(Duration::ZERO),
+            )
+            .unwrap();
+        store
+            .record_scoped_grant(
+                EDITOR,
+                PermissionScope::command_prefix("write").unwrap(),
+                false,
+                None,
+            )
+            .unwrap();
+        store.scoped.push(ScopedPermissionGrant {
+            tool_name: EDITOR.into(),
+            scope: PermissionScope::Directory {
+                dir: PathBuf::from("relative-invalid-scope"),
+            },
+            allowed: false,
+            timestamp: Utc::now().timestamp(),
+            expiry: None,
+        });
+        assert!(!store.denies_file_access(EDITOR, &[target], &workspace, true));
+    }
+
+    #[test]
+    fn recursive_file_denials_include_absent_descendants_without_matching_siblings() {
+        let temp = TempDir::new().unwrap();
+        let workspace = temp.path().canonicalize().unwrap();
+        let private = workspace.join("restricted");
+        let sibling = workspace.join("restricted-sibling");
+        std::fs::create_dir(&private).unwrap();
+        std::fs::create_dir(&sibling).unwrap();
+        let mut store = store_in(&temp);
+        store
+            .record_scoped_grant(
+                EDITOR,
+                PermissionScope::directory(&workspace).unwrap(),
+                true,
+                None,
+            )
+            .unwrap();
+        store
+            .record_scoped_grant(
+                EDITOR,
+                PermissionScope::directory(&private).unwrap(),
+                false,
+                None,
+            )
+            .unwrap();
+        std::fs::remove_dir(&private).unwrap();
+        assert!(store.denies_recursive_file_access(
+            EDITOR,
+            std::slice::from_ref(&workspace),
+            &workspace,
+            true,
+        ));
+        assert!(store.denies_recursive_file_access(
+            EDITOR,
+            &[private.join("future/source.rs")],
+            &workspace,
+            true,
+        ));
+        assert!(!store.denies_recursive_file_access(EDITOR, &[sibling], &workspace, true));
+        assert!(!store.denies_recursive_file_access(
+            EDITOR,
+            std::slice::from_ref(&workspace),
+            &workspace,
+            false,
+        ));
+        assert!(!store.denies_recursive_file_access(
+            "other__text_editor",
+            std::slice::from_ref(&workspace),
+            &workspace,
+            true,
+        ));
+    }
+
+    #[test]
+    fn file_access_denials_resolve_relative_targets_without_prefix_sibling_matches() {
+        let temp = TempDir::new().unwrap();
+        let workspace = temp.path().canonicalize().unwrap();
+        let private = workspace.join("restricted");
+        std::fs::create_dir(&private).unwrap();
+        std::fs::create_dir(workspace.join("restricted-sibling")).unwrap();
+        let mut store = store_in(&temp);
+        store
+            .record_scoped_grant(
+                EDITOR,
+                PermissionScope::directory(&private).unwrap(),
+                false,
+                None,
+            )
+            .unwrap();
+        assert!(store.denies_file_access(
+            EDITOR,
+            &[PathBuf::from("restricted/new-child.txt")],
+            &workspace,
+            true,
+        ));
+        assert!(!store.denies_file_access(
+            EDITOR,
+            &[PathBuf::from("restricted-sibling/new-child.txt")],
+            &workspace,
+            true,
+        ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn file_access_denials_cover_canonical_aliases_and_discovered_dangling_targets() {
+        use std::os::unix::fs::symlink;
+
+        let temp = TempDir::new().unwrap();
+        let workspace = temp.path().canonicalize().unwrap();
+        let private = workspace.join("restricted");
+        std::fs::create_dir(&private).unwrap();
+        std::fs::write(private.join("existing.txt"), "SYNTHETIC").unwrap();
+        let alias = workspace.join("ordinary-alias");
+        symlink(private.join("existing.txt"), &alias).unwrap();
+        let dangling = workspace.join("dangling-alias");
+        let discovered = private.join("new-parent/new-child.txt");
+        symlink(&discovered, &dangling).unwrap();
+        let mut store = store_in(&temp);
+        store
+            .record_scoped_grant(
+                EDITOR,
+                PermissionScope::directory(&private).unwrap(),
+                false,
+                None,
+            )
+            .unwrap();
+        assert!(store.denies_file_access(EDITOR, &[alias], &workspace, true));
+        assert!(store.denies_file_access(EDITOR, &[dangling, discovered], &workspace, true,));
+        assert_eq!(
+            std::fs::read(private.join("existing.txt")).unwrap(),
+            b"SYNTHETIC"
+        );
     }
 
     #[test]

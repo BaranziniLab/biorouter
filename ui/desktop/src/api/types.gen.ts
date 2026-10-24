@@ -1857,6 +1857,17 @@ export type FileRequest = {
     transfer_id?: string | null;
 };
 
+export type FolderAccessSessionQuery = {
+    session_id: string;
+};
+
+export type FolderGrantView = {
+    access: string;
+    descendants: boolean;
+    folder: string;
+    id: string;
+};
+
 /**
  * `POST /crew/connections/from-invitation`: the pasted invitation and the person's choices on
  * the Join screen. Every choice is optional; an absent one takes the invitation's.
@@ -4537,6 +4548,11 @@ export type RetryConfig = {
  */
 export type Revocation = 'unconfirmed' | 'confirmed' | 'ended_by_workspace';
 
+export type RevokeFolderAccessRequest = {
+    grantId: string;
+    sessionId: string;
+};
+
 export type Role = string;
 
 export type RunNowResponse = {
@@ -5899,6 +5915,14 @@ export type ToolPermission = {
  * What a pending tool call will do, in a shape the confirmation card can render.
  */
 export type ToolPreview = {
+    access: string;
+    actionId: string;
+    descendants: boolean;
+    files: Array<string>;
+    folder: string;
+    kind: 'folderAccess';
+    onceDescendants: boolean;
+} | {
     command: string;
     kind: 'shell';
     /**
@@ -6288,6 +6312,46 @@ export type RespondToElicitationResponses = {
     /**
      * Delivered to the live ordinary elicitation
      */
+    200: unknown;
+};
+
+export type ListFolderAccessData = {
+    body?: never;
+    path?: never;
+    query: {
+        session_id: string;
+    };
+    url: '/action-required/folder-access';
+};
+
+export type ListFolderAccessErrors = {
+    /**
+     * Session is not reachable
+     */
+    403: unknown;
+};
+
+export type ListFolderAccessResponses = {
+    200: Array<FolderGrantView>;
+};
+
+export type ListFolderAccessResponse = ListFolderAccessResponses[keyof ListFolderAccessResponses];
+
+export type RevokeFolderAccessData = {
+    body: RevokeFolderAccessRequest;
+    path?: never;
+    query?: never;
+    url: '/action-required/folder-access/revoke';
+};
+
+export type RevokeFolderAccessErrors = {
+    /**
+     * Human approval proof required
+     */
+    403: unknown;
+};
+
+export type RevokeFolderAccessResponses = {
     200: unknown;
 };
 

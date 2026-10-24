@@ -1,0 +1,260 @@
+[
+    {
+        "Id": "59da0649eb8c77eafc397f59fa325bdf930cc47c448c67d8ca704ea00c9ba382",
+        "Created": "2026-10-23T02:00:42.846949138Z",
+        "Path": "sleep",
+        "Args": [
+            "infinity"
+        ],
+        "State": {
+            "Status": "running",
+            "Running": true,
+            "Paused": false,
+            "Restarting": false,
+            "OOMKilled": false,
+            "Dead": false,
+            "Pid": 2186,
+            "ExitCode": 0,
+            "Error": "",
+            "StartedAt": "2026-10-23T02:00:42.902164429Z",
+            "FinishedAt": "0001-01-01T00:00:00Z"
+        },
+        "Image": "sha256:f125838c354f301e7acb44f56b1c741d87c04ac35b2c542911d390f9a3c9139d",
+        "ResolvConfPath": "/var/lib/docker/containers/59da0649eb8c77eafc397f59fa325bdf930cc47c448c67d8ca704ea00c9ba382/resolv.conf",
+        "HostnamePath": "/var/lib/docker/containers/59da0649eb8c77eafc397f59fa325bdf930cc47c448c67d8ca704ea00c9ba382/hostname",
+        "HostsPath": "/var/lib/docker/containers/59da0649eb8c77eafc397f59fa325bdf930cc47c448c67d8ca704ea00c9ba382/hosts",
+        "LogPath": "/var/lib/docker/containers/59da0649eb8c77eafc397f59fa325bdf930cc47c448c67d8ca704ea00c9ba382/59da0649eb8c77eafc397f59fa325bdf930cc47c448c67d8ca704ea00c9ba382-json.log",
+        "Name": "/brsec-target",
+        "RestartCount": 0,
+        "Driver": "overlayfs",
+        "Platform": "linux",
+        "MountLabel": "",
+        "ProcessLabel": "",
+        "AppArmorProfile": "",
+        "ExecIDs": null,
+        "HostConfig": {
+            "Binds": null,
+            "ContainerIDFile": "",
+            "LogConfig": {
+                "Type": "json-file",
+                "Config": {}
+            },
+            "NetworkMode": "none",
+            "PortBindings": {},
+            "RestartPolicy": {
+                "Name": "no",
+                "MaximumRetryCount": 0
+            },
+            "AutoRemove": false,
+            "VolumeDriver": "",
+            "VolumesFrom": null,
+            "ConsoleSize": [
+                0,
+                0
+            ],
+            "CapAdd": null,
+            "CapDrop": [
+                "ALL"
+            ],
+            "CgroupnsMode": "private",
+            "Dns": null,
+            "DnsOptions": [],
+            "DnsSearch": [],
+            "ExtraHosts": null,
+            "GroupAdd": null,
+            "IpcMode": "private",
+            "Cgroup": "",
+            "Links": null,
+            "OomScoreAdj": 0,
+            "PidMode": "",
+            "Privileged": false,
+            "PublishAllPorts": false,
+            "ReadonlyRootfs": true,
+            "SecurityOpt": [
+                "no-new-privileges"
+            ],
+            "Tmpfs": {
+                "/home/attacker": "rw,nosuid,nodev,size=16m,mode=700,uid=10002,gid=10002",
+                "/home/br": "rw,nosuid,nodev,size=256m,mode=755,uid=10001,gid=10001",
+                "/tmp": "rw,nosuid,nodev,size=128m,mode=1777"
+            },
+            "UTSMode": "",
+            "UsernsMode": "",
+            "ShmSize": 67108864,
+            "Runtime": "runc",
+            "Isolation": "",
+            "CpuShares": 0,
+            "Memory": 2147483648,
+            "NanoCpus": 1000000000,
+            "CgroupParent": "",
+            "BlkioWeight": 0,
+            "BlkioWeightDevice": [],
+            "BlkioDeviceReadBps": [],
+            "BlkioDeviceWriteBps": [],
+            "BlkioDeviceReadIOps": [],
+            "BlkioDeviceWriteIOps": [],
+            "CpuPeriod": 0,
+            "CpuQuota": 0,
+            "CpuRealtimePeriod": 0,
+            "CpuRealtimeRuntime": 0,
+            "CpusetCpus": "",
+            "CpusetMems": "",
+            "Devices": [],
+            "DeviceCgroupRules": null,
+            "DeviceRequests": null,
+            "MemoryReservation": 0,
+            "MemorySwap": 2147483648,
+            "MemorySwappiness": null,
+            "OomKillDisable": null,
+            "PidsLimit": 128,
+            "Ulimits": [],
+            "CpuCount": 0,
+            "CpuPercent": 0,
+            "IOMaximumIOps": 0,
+            "IOMaximumBandwidth": 0,
+            "Mounts": [
+                {
+                    "Type": "bind",
+                    "Source": "/Users/wgu/biorouter-runs/security-assessment-2026-10/fixtures",
+                    "Target": "/assessment/fixtures",
+                    "ReadOnly": true
+                },
+                {
+                    "Type": "bind",
+                    "Source": "/Users/wgu/.codex/worktrees/security-reviewer-assessment/BioRouter/scripts/security-assessment",
+                    "Target": "/assessment/harness",
+                    "ReadOnly": true
+                },
+                {
+                    "Type": "bind",
+                    "Source": "/Users/wgu/biorouter-runs/security-assessment-2026-10/evidence",
+                    "Target": "/evidence"
+                }
+            ],
+            "MaskedPaths": [
+                "/proc/acpi",
+                "/proc/asound",
+                "/proc/interrupts",
+                "/proc/kcore",
+                "/proc/keys",
+                "/proc/latency_stats",
+                "/proc/sched_debug",
+                "/proc/scsi",
+                "/proc/timer_list",
+                "/proc/timer_stats",
+                "/sys/devices/virtual/powercap",
+                "/sys/firmware"
+            ],
+            "ReadonlyPaths": [
+                "/proc/bus",
+                "/proc/fs",
+                "/proc/irq",
+                "/proc/sys",
+                "/proc/sysrq-trigger"
+            ]
+        },
+        "Storage": {
+            "RootFS": {
+                "Snapshot": {
+                    "Name": "overlayfs"
+                }
+            }
+        },
+        "Mounts": [
+            {
+                "Type": "bind",
+                "Source": "/Users/wgu/biorouter-runs/security-assessment-2026-10/fixtures",
+                "Destination": "/assessment/fixtures",
+                "Mode": "",
+                "RW": false,
+                "Propagation": "rprivate"
+            },
+            {
+                "Type": "bind",
+                "Source": "/Users/wgu/.codex/worktrees/security-reviewer-assessment/BioRouter/scripts/security-assessment",
+                "Destination": "/assessment/harness",
+                "Mode": "",
+                "RW": false,
+                "Propagation": "rprivate"
+            },
+            {
+                "Type": "bind",
+                "Source": "/Users/wgu/biorouter-runs/security-assessment-2026-10/evidence",
+                "Destination": "/evidence",
+                "Mode": "",
+                "RW": true,
+                "Propagation": "rprivate"
+            }
+        ],
+        "Config": {
+            "Hostname": "59da0649eb8c",
+            "Domainname": "",
+            "User": "10001:10001",
+            "AttachStdin": false,
+            "AttachStdout": false,
+            "AttachStderr": false,
+            "Tty": false,
+            "OpenStdin": false,
+            "StdinOnce": false,
+            "Env": [
+                "BIOROUTER_HOST=127.0.0.1",
+                "BIOROUTER_PORT=3000",
+                "BIOROUTER_DISABLE_KEYRING=true",
+                "BIOROUTER_SERVE_UI=/opt/release/usr/share/biorouter/web",
+                "HOME=/home/br",
+                "XDG_CONFIG_HOME=/home/br/.config",
+                "BIOROUTER_PATH_ROOT=/home/br/state",
+                "PATH=/opt/biorouter:/usr/local/bin:/usr/bin:/bin",
+                "LANG=C.UTF-8",
+                "GPG_KEY=7169605F62C751356D054A26A821E680E5FA6305",
+                "PYTHON_VERSION=3.12.15",
+                "PYTHON_SHA256=c2c4321961fab0fb999d66e0cecf521c2ab3994c7992873ea99e306c1094fd5a"
+            ],
+            "Cmd": [
+                "sleep",
+                "infinity"
+            ],
+            "Image": "brsec-runtime:1.93.4-amd64",
+            "Volumes": null,
+            "WorkingDir": "/home/br",
+            "Entrypoint": null,
+            "Labels": {
+                "org.biorouter.assessment": "security-2026-10"
+            },
+            "StopTimeout": 1
+        },
+        "NetworkSettings": {
+            "SandboxID": "ba59444f06184886f54a1a6cf061476395e1b2c7e292ccf86eb57d3cc98de9a1",
+            "SandboxKey": "/var/run/docker/netns/ba59444f0618",
+            "Ports": {},
+            "Networks": {
+                "none": {
+                    "IPAMConfig": null,
+                    "Links": null,
+                    "Aliases": null,
+                    "DriverOpts": null,
+                    "GwPriority": 0,
+                    "NetworkID": "0434fe917a1d6ab49467e3ad677b9e2a9f50d06fc1cdf20114758e8664641052",
+                    "EndpointID": "4e83bdfaa5eaa96e34a61664d1ff54abf51e288c2c34783958fb334794588582",
+                    "Gateway": "",
+                    "IPAddress": "",
+                    "MacAddress": "",
+                    "IPPrefixLen": 0,
+                    "IPv6Gateway": "",
+                    "GlobalIPv6Address": "",
+                    "GlobalIPv6PrefixLen": 0,
+                    "DNSNames": null
+                }
+            }
+        },
+        "ImageManifestDescriptor": {
+            "mediaType": "application/vnd.oci.image.manifest.v1+json",
+            "digest": "sha256:2bce03b300211a31a75ed93345186f201f878701c63d5bc7cfa8eaf9871fab0e",
+            "size": 1821,
+            "platform": {
+                "architecture": "amd64",
+                "os": "linux"
+            }
+        }
+    }
+]

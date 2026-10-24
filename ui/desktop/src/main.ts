@@ -1877,7 +1877,7 @@ const createChat = async (
         JSON.stringify({
           ...appConfig,
           BIOROUTER_API_HOST: baseUrl,
-          BIOROUTER_LOCAL_BACKEND: !settings.externalBiorouterd?.enabled,
+          BIOROUTER_LOCAL_BACKEND: biorouterdResult.managed,
           BIOROUTER_WORKING_DIR: workingDir,
           REQUEST_DIR: dir,
           BIOROUTER_BASE_URL_SHARE: baseUrlShare,

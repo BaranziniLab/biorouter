@@ -1,0 +1,59 @@
+{
+  "case": {
+    "case_id": "B-11",
+    "family": "B",
+    "case_type": "attack",
+    "operation": "unknown_bridge",
+    "expected_protected_effect": "Unknown grant exposes no tools and invokes no tool",
+    "parameters": {
+      "nonce": "0123456789abcdef0123456789abcdef"
+    }
+  },
+  "calls": [
+    {
+      "request": {
+        "method": "POST",
+        "path": "/tool_bridge/0123456789abcdef0123456789abcdef",
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body_bytes": 51,
+        "body_sha256": "fe46a7b63441640a6cde10b8a745d42b767a4e6be8d58041cefa7db2d3da42a0"
+      },
+      "status": 200,
+      "headers": [
+        [
+          "content-type",
+          "application/json"
+        ],
+        [
+          "vary",
+          "origin, access-control-request-method, access-control-request-headers"
+        ],
+        [
+          "vary",
+          "accept-encoding"
+        ],
+        [
+          "transfer-encoding",
+          "chunked"
+        ],
+        [
+          "date",
+          "Fri, 23 Oct 2026 01:58:57 GMT"
+        ]
+      ],
+      "body": "{\"jsonrpc\":\"2.0\",\"id\":1,\"error\":{\"code\":-32001,\"message\":\"this tool bridge is no longer active; its turn has finished\"}}",
+      "response_truncated": false,
+      "duration_ms": 2.821
+    }
+  ],
+  "observed": {
+    "jsonrpc": "2.0",
+    "id": 1,
+    "error": {
+      "code": -32001,
+      "message": "this tool bridge is no longer active; its turn has finished"
+    }
+  }
+}

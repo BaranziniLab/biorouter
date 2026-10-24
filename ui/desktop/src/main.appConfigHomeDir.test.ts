@@ -33,3 +33,10 @@ describe('BIOROUTER_HOME_DIR', () => {
     expect(source).toContain("get('BIOROUTER_HOME_DIR')");
   });
 });
+
+describe('backend ownership notice', () => {
+  it('takes the per-window flag from the actual backend result, including environment-selected external servers', () => {
+    expect(MAIN).toContain('BIOROUTER_LOCAL_BACKEND: biorouterdResult.managed,');
+    expect(MAIN).not.toContain('BIOROUTER_LOCAL_BACKEND: !settings.externalBiorouterd?.enabled,');
+  });
+});

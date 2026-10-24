@@ -1,0 +1,83 @@
+{
+  "case": {
+    "case_id": "A-09",
+    "family": "A",
+    "case_type": "attack",
+    "operation": "config_attack",
+    "expected_protected_effect": "Synthetic baseline remains unchanged",
+    "parameters": {
+      "credential": "none"
+    }
+  },
+  "calls": [
+    {
+      "request": {
+        "method": "POST",
+        "path": "/config/upsert",
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body_bytes": 108,
+        "body_sha256": "c5b495c404fcbb72813b1c4eb77ba8752669280dbaf6e8f0ab39b7e73085a201"
+      },
+      "status": 401,
+      "headers": [
+        [
+          "vary",
+          "origin, access-control-request-method, access-control-request-headers"
+        ],
+        [
+          "transfer-encoding",
+          "chunked"
+        ],
+        [
+          "date",
+          "Fri, 23 Oct 2026 01:56:42 GMT"
+        ]
+      ],
+      "body": "",
+      "response_truncated": false,
+      "duration_ms": 1.411
+    },
+    {
+      "request": {
+        "method": "GET",
+        "path": "/config",
+        "headers": {
+          "X-Secret-Key": "<SYNTHETIC_API_SECRET>"
+        },
+        "body_bytes": 0,
+        "body_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "status": 200,
+      "headers": [
+        [
+          "content-type",
+          "application/json"
+        ],
+        [
+          "vary",
+          "origin, access-control-request-method, access-control-request-headers"
+        ],
+        [
+          "vary",
+          "accept-encoding"
+        ],
+        [
+          "transfer-encoding",
+          "chunked"
+        ],
+        [
+          "date",
+          "Fri, 23 Oct 2026 01:56:42 GMT"
+        ]
+      ],
+      "body": "{\"config\":{\"BIOROUTER_PRIVACY_MIXING_POLICY\":\"standard\",\"extensions\":{},\"computer_use_capabilities_version\":2,\"BIOROUTER_PRIVACY_TIERS_RECORD\":{\"enabled\":true,\"origin\":\"migration\",\"path\":\"/home/br/state/config/privacy-tiers.json\",\"last_change\":{\"via\":\"migration\",\"set_to\":true,\"at\":\"2026-10-23T01:56:19.402378710+00:00\",\"system_authenticated\":false,\"user_action\":false}},\"BRSEC_SYNTHETIC_CONFIG_CANARY\":\"BRSEC_BASELINE_ONLY_SYNTHETIC\",\"BIOROUTER_PRIVACY_TIERS\":\"on\"}}",
+      "response_truncated": false,
+      "duration_ms": 0.808
+    }
+  ],
+  "observed": {
+    "stored_value": "BRSEC_BASELINE_ONLY_SYNTHETIC"
+  }
+}

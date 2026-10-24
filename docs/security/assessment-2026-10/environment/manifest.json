@@ -1,0 +1,31 @@
+{
+  "assessment_main_commit": "f73ebf74c578717a7af64b221e57358a63dda8e3",
+  "release_tag": "v1.93.4",
+  "release_commit": "b824e2c3e802e243804a150aa7c349fa6ce6a8b6",
+  "package": "biorouter-cli_1.93.4_amd64.deb",
+  "package_sha256": "8b689a2006f1b99f44dec9a48a03b8bb67759dd7f11cdc288042a8a985abff65",
+  "base_image": "python:3.12-slim@sha256:a0f57064cbdcd6285fa45f51237ab0b35ea8ebaed06a1f5973e89e19dfb86704",
+  "runtime_image_id": "sha256:f125838c354f301e7acb44f56b1c741d87c04ac35b2c542911d390f9a3c9139d",
+  "architecture": "linux/amd64 under Docker Desktop x86 emulation on Apple Silicon",
+  "default_home_mode": "0755",
+  "daemon_umask": "0022",
+  "owner_uid": 10001,
+  "attacker_uid": 10002,
+  "network": "Docker none; no default route or published ports; only loopback UP; inactive unaddressed kernel tunnel devices listed",
+  "capabilities": "ALL dropped; no-new-privileges; seccomp default",
+  "resources": {
+    "cpu_limit": 1,
+    "memory_limit": "2 GiB",
+    "memory_swap_limit": "2 GiB",
+    "pids_limit": 128
+  },
+  "state": "tmpfs synthetic home256MiB; no production credentials or data",
+  "mounts": "read-only selected harness directory and synthetic fixture directory; writable assessment evidence directory; no host home/source tree/Docker socket",
+  "source_hashes": {
+    "scripts/security-assessment/environment.Dockerfile": "93eb5979bef7698a70b8d1b268d533137bd03342cb2814d6520b184e7851fbd8",
+    "scripts/security-assessment/environment.sh": "e3adcc19eb98900d986cf8fc437abcc4b6bfa7edb4566d03fcce445fc7aed71d",
+    "scripts/security-assessment/environment_local_cases.json": "7ce67f3363795d5250c5a83dcfff94c90479ed856cd9a5be2c5d271da92a3118",
+    "scripts/security-assessment/environment_local_probe.py": "b35b96731f5033e4b8310d6bd121cc8047480cebbf04a3e8eba3172e932dfb37",
+    "scripts/security-assessment/environment_run_local.py": "13570bce555378258962993c64c6e830146da0e6ac76e20373f40793916fa2df"
+  }
+}

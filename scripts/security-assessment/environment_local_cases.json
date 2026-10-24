@@ -1,0 +1,20 @@
+{
+  "schema_version": 1,
+  "family": "C",
+  "configuration": "Official Linux v1.93.4, two UIDs, synthetic home mode 0755, umask 022, headless plaintext secret fallback",
+  "cases": [
+    {"case_id":"C-local-owner-secret","case_type":"control","actor":"owner_uid10001","operation":"secret_read","expected":"allowed_control"},
+    {"case_id":"C-local-owner-session","case_type":"control","actor":"owner_uid10001","operation":"session_read","expected":"allowed_control"},
+    {"case_id":"C-local-outsider-secret","case_type":"attack","actor":"outsider_uid10002","operation":"secret_read","expected":"blocked"},
+    {"case_id":"C-local-outsider-session","case_type":"attack","actor":"outsider_uid10002","operation":"session_read","expected":"blocked"},
+    {"case_id":"C-local-outsider-config-write","case_type":"attack","actor":"outsider_uid10002","operation":"config_write","expected":"blocked"},
+    {"case_id":"C-local-outsider-daemon-environ","case_type":"attack","actor":"outsider_uid10002","operation":"daemon_environ","expected":"blocked"},
+    {"case_id":"E-environment-owner-workspace","case_type":"control","actor":"owner_uid10001","operation":"workspace_write","expected":"allowed_control"},
+    {"case_id":"E-environment-outsider-release-write","case_type":"attack","actor":"outsider_uid10002","operation":"release_write","expected":"blocked"}
+  ],
+  "limitations": [
+    "The environment family verifies the assessment containment, not BioRouter's optional product sandbox backend.",
+    "Local separate-account results depend on home-directory traversal and the account's umask; a 0700 parent home is a separate mitigation.",
+    "Owner fixture preparation uses authenticated APIs without a model; the canary is a synthetic session title."
+  ]
+}

@@ -1454,7 +1454,10 @@ pub fn display_session_info(
         row("session", id.clone());
     }
 
-    row("privacy", super::privacy::tier_row(privacy));
+    row(
+        "privacy",
+        format!("{} (at start)", super::privacy::tier_row(privacy)),
+    );
 
     row(
         "workdir",

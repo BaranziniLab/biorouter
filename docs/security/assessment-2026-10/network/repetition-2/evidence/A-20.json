@@ -1,0 +1,821 @@
+{
+  "case": {
+    "case_id": "A-20",
+    "family": "A",
+    "case_type": "attack",
+    "operation": "failed_auth_window",
+    "expected_protected_effect": "Forwarding-header spoofing does not reset failure accounting",
+    "parameters": {
+      "source_address": "127.0.0.77",
+      "requests": 25
+    }
+  },
+  "calls": [
+    {
+      "request": {
+        "method": "GET",
+        "path": "/config",
+        "headers": {
+          "X-Secret-Key": "0000000000000000000000000000000000000000000000000000000000000000",
+          "X-Forwarded-For": "192.0.2.1"
+        },
+        "body_bytes": 0,
+        "body_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "status": 401,
+      "headers": [
+        [
+          "vary",
+          "origin, access-control-request-method, access-control-request-headers"
+        ],
+        [
+          "transfer-encoding",
+          "chunked"
+        ],
+        [
+          "date",
+          "Fri, 23 Oct 2026 01:58:57 GMT"
+        ]
+      ],
+      "body": "",
+      "response_truncated": false,
+      "duration_ms": 0.604
+    },
+    {
+      "request": {
+        "method": "GET",
+        "path": "/config",
+        "headers": {
+          "X-Secret-Key": "0000000000000000000000000000000000000000000000000000000000000000",
+          "X-Forwarded-For": "192.0.2.2"
+        },
+        "body_bytes": 0,
+        "body_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "status": 401,
+      "headers": [
+        [
+          "vary",
+          "origin, access-control-request-method, access-control-request-headers"
+        ],
+        [
+          "transfer-encoding",
+          "chunked"
+        ],
+        [
+          "date",
+          "Fri, 23 Oct 2026 01:58:57 GMT"
+        ]
+      ],
+      "body": "",
+      "response_truncated": false,
+      "duration_ms": 0.513
+    },
+    {
+      "request": {
+        "method": "GET",
+        "path": "/config",
+        "headers": {
+          "X-Secret-Key": "0000000000000000000000000000000000000000000000000000000000000000",
+          "X-Forwarded-For": "192.0.2.3"
+        },
+        "body_bytes": 0,
+        "body_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "status": 401,
+      "headers": [
+        [
+          "vary",
+          "origin, access-control-request-method, access-control-request-headers"
+        ],
+        [
+          "transfer-encoding",
+          "chunked"
+        ],
+        [
+          "date",
+          "Fri, 23 Oct 2026 01:58:57 GMT"
+        ]
+      ],
+      "body": "",
+      "response_truncated": false,
+      "duration_ms": 0.353
+    },
+    {
+      "request": {
+        "method": "GET",
+        "path": "/config",
+        "headers": {
+          "X-Secret-Key": "0000000000000000000000000000000000000000000000000000000000000000",
+          "X-Forwarded-For": "192.0.2.4"
+        },
+        "body_bytes": 0,
+        "body_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "status": 401,
+      "headers": [
+        [
+          "vary",
+          "origin, access-control-request-method, access-control-request-headers"
+        ],
+        [
+          "transfer-encoding",
+          "chunked"
+        ],
+        [
+          "date",
+          "Fri, 23 Oct 2026 01:58:57 GMT"
+        ]
+      ],
+      "body": "",
+      "response_truncated": false,
+      "duration_ms": 0.399
+    },
+    {
+      "request": {
+        "method": "GET",
+        "path": "/config",
+        "headers": {
+          "X-Secret-Key": "0000000000000000000000000000000000000000000000000000000000000000",
+          "X-Forwarded-For": "192.0.2.5"
+        },
+        "body_bytes": 0,
+        "body_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "status": 401,
+      "headers": [
+        [
+          "vary",
+          "origin, access-control-request-method, access-control-request-headers"
+        ],
+        [
+          "transfer-encoding",
+          "chunked"
+        ],
+        [
+          "date",
+          "Fri, 23 Oct 2026 01:58:57 GMT"
+        ]
+      ],
+      "body": "",
+      "response_truncated": false,
+      "duration_ms": 0.225
+    },
+    {
+      "request": {
+        "method": "GET",
+        "path": "/config",
+        "headers": {
+          "X-Secret-Key": "0000000000000000000000000000000000000000000000000000000000000000",
+          "X-Forwarded-For": "192.0.2.6"
+        },
+        "body_bytes": 0,
+        "body_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "status": 401,
+      "headers": [
+        [
+          "vary",
+          "origin, access-control-request-method, access-control-request-headers"
+        ],
+        [
+          "transfer-encoding",
+          "chunked"
+        ],
+        [
+          "date",
+          "Fri, 23 Oct 2026 01:58:57 GMT"
+        ]
+      ],
+      "body": "",
+      "response_truncated": false,
+      "duration_ms": 0.347
+    },
+    {
+      "request": {
+        "method": "GET",
+        "path": "/config",
+        "headers": {
+          "X-Secret-Key": "0000000000000000000000000000000000000000000000000000000000000000",
+          "X-Forwarded-For": "192.0.2.7"
+        },
+        "body_bytes": 0,
+        "body_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "status": 401,
+      "headers": [
+        [
+          "vary",
+          "origin, access-control-request-method, access-control-request-headers"
+        ],
+        [
+          "transfer-encoding",
+          "chunked"
+        ],
+        [
+          "date",
+          "Fri, 23 Oct 2026 01:58:57 GMT"
+        ]
+      ],
+      "body": "",
+      "response_truncated": false,
+      "duration_ms": 0.3
+    },
+    {
+      "request": {
+        "method": "GET",
+        "path": "/config",
+        "headers": {
+          "X-Secret-Key": "0000000000000000000000000000000000000000000000000000000000000000",
+          "X-Forwarded-For": "192.0.2.8"
+        },
+        "body_bytes": 0,
+        "body_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "status": 401,
+      "headers": [
+        [
+          "vary",
+          "origin, access-control-request-method, access-control-request-headers"
+        ],
+        [
+          "transfer-encoding",
+          "chunked"
+        ],
+        [
+          "date",
+          "Fri, 23 Oct 2026 01:58:57 GMT"
+        ]
+      ],
+      "body": "",
+      "response_truncated": false,
+      "duration_ms": 0.27
+    },
+    {
+      "request": {
+        "method": "GET",
+        "path": "/config",
+        "headers": {
+          "X-Secret-Key": "0000000000000000000000000000000000000000000000000000000000000000",
+          "X-Forwarded-For": "192.0.2.9"
+        },
+        "body_bytes": 0,
+        "body_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "status": 401,
+      "headers": [
+        [
+          "vary",
+          "origin, access-control-request-method, access-control-request-headers"
+        ],
+        [
+          "transfer-encoding",
+          "chunked"
+        ],
+        [
+          "date",
+          "Fri, 23 Oct 2026 01:58:57 GMT"
+        ]
+      ],
+      "body": "",
+      "response_truncated": false,
+      "duration_ms": 0.266
+    },
+    {
+      "request": {
+        "method": "GET",
+        "path": "/config",
+        "headers": {
+          "X-Secret-Key": "0000000000000000000000000000000000000000000000000000000000000000",
+          "X-Forwarded-For": "192.0.2.10"
+        },
+        "body_bytes": 0,
+        "body_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "status": 401,
+      "headers": [
+        [
+          "vary",
+          "origin, access-control-request-method, access-control-request-headers"
+        ],
+        [
+          "transfer-encoding",
+          "chunked"
+        ],
+        [
+          "date",
+          "Fri, 23 Oct 2026 01:58:57 GMT"
+        ]
+      ],
+      "body": "",
+      "response_truncated": false,
+      "duration_ms": 0.426
+    },
+    {
+      "request": {
+        "method": "GET",
+        "path": "/config",
+        "headers": {
+          "X-Secret-Key": "0000000000000000000000000000000000000000000000000000000000000000",
+          "X-Forwarded-For": "192.0.2.11"
+        },
+        "body_bytes": 0,
+        "body_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "status": 401,
+      "headers": [
+        [
+          "vary",
+          "origin, access-control-request-method, access-control-request-headers"
+        ],
+        [
+          "transfer-encoding",
+          "chunked"
+        ],
+        [
+          "date",
+          "Fri, 23 Oct 2026 01:58:57 GMT"
+        ]
+      ],
+      "body": "",
+      "response_truncated": false,
+      "duration_ms": 0.305
+    },
+    {
+      "request": {
+        "method": "GET",
+        "path": "/config",
+        "headers": {
+          "X-Secret-Key": "0000000000000000000000000000000000000000000000000000000000000000",
+          "X-Forwarded-For": "192.0.2.12"
+        },
+        "body_bytes": 0,
+        "body_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "status": 401,
+      "headers": [
+        [
+          "vary",
+          "origin, access-control-request-method, access-control-request-headers"
+        ],
+        [
+          "transfer-encoding",
+          "chunked"
+        ],
+        [
+          "date",
+          "Fri, 23 Oct 2026 01:58:57 GMT"
+        ]
+      ],
+      "body": "",
+      "response_truncated": false,
+      "duration_ms": 0.3
+    },
+    {
+      "request": {
+        "method": "GET",
+        "path": "/config",
+        "headers": {
+          "X-Secret-Key": "0000000000000000000000000000000000000000000000000000000000000000",
+          "X-Forwarded-For": "192.0.2.13"
+        },
+        "body_bytes": 0,
+        "body_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "status": 401,
+      "headers": [
+        [
+          "vary",
+          "origin, access-control-request-method, access-control-request-headers"
+        ],
+        [
+          "transfer-encoding",
+          "chunked"
+        ],
+        [
+          "date",
+          "Fri, 23 Oct 2026 01:58:57 GMT"
+        ]
+      ],
+      "body": "",
+      "response_truncated": false,
+      "duration_ms": 0.359
+    },
+    {
+      "request": {
+        "method": "GET",
+        "path": "/config",
+        "headers": {
+          "X-Secret-Key": "0000000000000000000000000000000000000000000000000000000000000000",
+          "X-Forwarded-For": "192.0.2.14"
+        },
+        "body_bytes": 0,
+        "body_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "status": 401,
+      "headers": [
+        [
+          "vary",
+          "origin, access-control-request-method, access-control-request-headers"
+        ],
+        [
+          "transfer-encoding",
+          "chunked"
+        ],
+        [
+          "date",
+          "Fri, 23 Oct 2026 01:58:57 GMT"
+        ]
+      ],
+      "body": "",
+      "response_truncated": false,
+      "duration_ms": 0.291
+    },
+    {
+      "request": {
+        "method": "GET",
+        "path": "/config",
+        "headers": {
+          "X-Secret-Key": "0000000000000000000000000000000000000000000000000000000000000000",
+          "X-Forwarded-For": "192.0.2.15"
+        },
+        "body_bytes": 0,
+        "body_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "status": 401,
+      "headers": [
+        [
+          "vary",
+          "origin, access-control-request-method, access-control-request-headers"
+        ],
+        [
+          "transfer-encoding",
+          "chunked"
+        ],
+        [
+          "date",
+          "Fri, 23 Oct 2026 01:58:57 GMT"
+        ]
+      ],
+      "body": "",
+      "response_truncated": false,
+      "duration_ms": 0.206
+    },
+    {
+      "request": {
+        "method": "GET",
+        "path": "/config",
+        "headers": {
+          "X-Secret-Key": "0000000000000000000000000000000000000000000000000000000000000000",
+          "X-Forwarded-For": "192.0.2.16"
+        },
+        "body_bytes": 0,
+        "body_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "status": 401,
+      "headers": [
+        [
+          "vary",
+          "origin, access-control-request-method, access-control-request-headers"
+        ],
+        [
+          "transfer-encoding",
+          "chunked"
+        ],
+        [
+          "date",
+          "Fri, 23 Oct 2026 01:58:57 GMT"
+        ]
+      ],
+      "body": "",
+      "response_truncated": false,
+      "duration_ms": 0.233
+    },
+    {
+      "request": {
+        "method": "GET",
+        "path": "/config",
+        "headers": {
+          "X-Secret-Key": "0000000000000000000000000000000000000000000000000000000000000000",
+          "X-Forwarded-For": "192.0.2.17"
+        },
+        "body_bytes": 0,
+        "body_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "status": 401,
+      "headers": [
+        [
+          "vary",
+          "origin, access-control-request-method, access-control-request-headers"
+        ],
+        [
+          "transfer-encoding",
+          "chunked"
+        ],
+        [
+          "date",
+          "Fri, 23 Oct 2026 01:58:57 GMT"
+        ]
+      ],
+      "body": "",
+      "response_truncated": false,
+      "duration_ms": 0.273
+    },
+    {
+      "request": {
+        "method": "GET",
+        "path": "/config",
+        "headers": {
+          "X-Secret-Key": "0000000000000000000000000000000000000000000000000000000000000000",
+          "X-Forwarded-For": "192.0.2.18"
+        },
+        "body_bytes": 0,
+        "body_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "status": 401,
+      "headers": [
+        [
+          "vary",
+          "origin, access-control-request-method, access-control-request-headers"
+        ],
+        [
+          "transfer-encoding",
+          "chunked"
+        ],
+        [
+          "date",
+          "Fri, 23 Oct 2026 01:58:57 GMT"
+        ]
+      ],
+      "body": "",
+      "response_truncated": false,
+      "duration_ms": 0.259
+    },
+    {
+      "request": {
+        "method": "GET",
+        "path": "/config",
+        "headers": {
+          "X-Secret-Key": "0000000000000000000000000000000000000000000000000000000000000000",
+          "X-Forwarded-For": "192.0.2.19"
+        },
+        "body_bytes": 0,
+        "body_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "status": 401,
+      "headers": [
+        [
+          "vary",
+          "origin, access-control-request-method, access-control-request-headers"
+        ],
+        [
+          "transfer-encoding",
+          "chunked"
+        ],
+        [
+          "date",
+          "Fri, 23 Oct 2026 01:58:57 GMT"
+        ]
+      ],
+      "body": "",
+      "response_truncated": false,
+      "duration_ms": 0.423
+    },
+    {
+      "request": {
+        "method": "GET",
+        "path": "/config",
+        "headers": {
+          "X-Secret-Key": "0000000000000000000000000000000000000000000000000000000000000000",
+          "X-Forwarded-For": "192.0.2.20"
+        },
+        "body_bytes": 0,
+        "body_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "status": 401,
+      "headers": [
+        [
+          "vary",
+          "origin, access-control-request-method, access-control-request-headers"
+        ],
+        [
+          "transfer-encoding",
+          "chunked"
+        ],
+        [
+          "date",
+          "Fri, 23 Oct 2026 01:58:57 GMT"
+        ]
+      ],
+      "body": "",
+      "response_truncated": false,
+      "duration_ms": 0.223
+    },
+    {
+      "request": {
+        "method": "GET",
+        "path": "/config",
+        "headers": {
+          "X-Secret-Key": "0000000000000000000000000000000000000000000000000000000000000000",
+          "X-Forwarded-For": "192.0.2.21"
+        },
+        "body_bytes": 0,
+        "body_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "status": 429,
+      "headers": [
+        [
+          "vary",
+          "origin, access-control-request-method, access-control-request-headers"
+        ],
+        [
+          "transfer-encoding",
+          "chunked"
+        ],
+        [
+          "date",
+          "Fri, 23 Oct 2026 01:58:57 GMT"
+        ]
+      ],
+      "body": "",
+      "response_truncated": false,
+      "duration_ms": 0.409
+    },
+    {
+      "request": {
+        "method": "GET",
+        "path": "/config",
+        "headers": {
+          "X-Secret-Key": "0000000000000000000000000000000000000000000000000000000000000000",
+          "X-Forwarded-For": "192.0.2.22"
+        },
+        "body_bytes": 0,
+        "body_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "status": 429,
+      "headers": [
+        [
+          "vary",
+          "origin, access-control-request-method, access-control-request-headers"
+        ],
+        [
+          "transfer-encoding",
+          "chunked"
+        ],
+        [
+          "date",
+          "Fri, 23 Oct 2026 01:58:57 GMT"
+        ]
+      ],
+      "body": "",
+      "response_truncated": false,
+      "duration_ms": 0.432
+    },
+    {
+      "request": {
+        "method": "GET",
+        "path": "/config",
+        "headers": {
+          "X-Secret-Key": "0000000000000000000000000000000000000000000000000000000000000000",
+          "X-Forwarded-For": "192.0.2.23"
+        },
+        "body_bytes": 0,
+        "body_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "status": 429,
+      "headers": [
+        [
+          "vary",
+          "origin, access-control-request-method, access-control-request-headers"
+        ],
+        [
+          "transfer-encoding",
+          "chunked"
+        ],
+        [
+          "date",
+          "Fri, 23 Oct 2026 01:58:57 GMT"
+        ]
+      ],
+      "body": "",
+      "response_truncated": false,
+      "duration_ms": 0.273
+    },
+    {
+      "request": {
+        "method": "GET",
+        "path": "/config",
+        "headers": {
+          "X-Secret-Key": "0000000000000000000000000000000000000000000000000000000000000000",
+          "X-Forwarded-For": "192.0.2.24"
+        },
+        "body_bytes": 0,
+        "body_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "status": 429,
+      "headers": [
+        [
+          "vary",
+          "origin, access-control-request-method, access-control-request-headers"
+        ],
+        [
+          "transfer-encoding",
+          "chunked"
+        ],
+        [
+          "date",
+          "Fri, 23 Oct 2026 01:58:57 GMT"
+        ]
+      ],
+      "body": "",
+      "response_truncated": false,
+      "duration_ms": 0.259
+    },
+    {
+      "request": {
+        "method": "GET",
+        "path": "/config",
+        "headers": {
+          "X-Secret-Key": "0000000000000000000000000000000000000000000000000000000000000000",
+          "X-Forwarded-For": "192.0.2.25"
+        },
+        "body_bytes": 0,
+        "body_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "status": 429,
+      "headers": [
+        [
+          "vary",
+          "origin, access-control-request-method, access-control-request-headers"
+        ],
+        [
+          "transfer-encoding",
+          "chunked"
+        ],
+        [
+          "date",
+          "Fri, 23 Oct 2026 01:58:57 GMT"
+        ]
+      ],
+      "body": "",
+      "response_truncated": false,
+      "duration_ms": 0.186
+    }
+  ],
+  "observed": {
+    "statuses": [
+      401,
+      401,
+      401,
+      401,
+      401,
+      401,
+      401,
+      401,
+      401,
+      401,
+      401,
+      401,
+      401,
+      401,
+      401,
+      401,
+      401,
+      401,
+      401,
+      401,
+      429,
+      429,
+      429,
+      429,
+      429
+    ],
+    "expected": [
+      401,
+      401,
+      401,
+      401,
+      401,
+      401,
+      401,
+      401,
+      401,
+      401,
+      401,
+      401,
+      401,
+      401,
+      401,
+      401,
+      401,
+      401,
+      401,
+      401,
+      429,
+      429,
+      429,
+      429,
+      429
+    ]
+  }
+}

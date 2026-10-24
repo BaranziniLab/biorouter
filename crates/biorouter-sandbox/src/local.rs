@@ -1,11 +1,14 @@
 //! In-process sandbox backend.
 
-use std::path::Path;
+use std::{io, path::Path, sync::Arc};
 
 use async_trait::async_trait;
 use tokio::io::AsyncWriteExt;
 
-use crate::{resolve_in_workspace, ExecOutput, Result, SandboxClient, SandboxError, SandboxSpec};
+use crate::{
+    bounded_fs::sandbox_path_error, AccessMode, BoundedFs, ExecOutput, Result, SandboxClient,
+    SandboxError, SandboxSpec,
+};
 
 /// Runs commands directly on the host as the current user.
 ///
@@ -18,6 +21,7 @@ use crate::{resolve_in_workspace, ExecOutput, Result, SandboxClient, SandboxErro
 /// target for [`crate::DockerSandbox`].
 pub struct LocalProcessSandbox {
     spec: SandboxSpec,
+    filesystem: std::result::Result<BoundedFs, Arc<io::Error>>,
 }
 
 impl LocalProcessSandbox {
@@ -26,7 +30,8 @@ impl LocalProcessSandbox {
             workspace = %spec.workspace.display(),
             "LocalProcessSandbox active: tool commands run UNSANDBOXED on the host as the current user"
         );
-        Self { spec }
+        let filesystem = BoundedFs::open(&spec.workspace).map_err(Arc::new);
+        Self { spec, filesystem }
     }
 
     pub fn workspace(&self) -> &Path {
@@ -35,6 +40,12 @@ impl LocalProcessSandbox {
 
     pub fn spec(&self) -> &SandboxSpec {
         &self.spec
+    }
+
+    fn filesystem(&self) -> Result<&BoundedFs> {
+        self.filesystem
+            .as_ref()
+            .map_err(|error| SandboxError::Io(io::Error::new(error.kind(), error.to_string())))
     }
 }
 
@@ -98,27 +109,30 @@ impl SandboxClient for LocalProcessSandbox {
     }
 
     async fn read(&self, guest_path: &str) -> Result<Vec<u8>> {
-        let p = resolve_in_workspace(&self.spec.workspace, guest_path, false)?;
-        Ok(tokio::fs::read(p).await?)
+        self.filesystem()?
+            .bind(guest_path, AccessMode::Read)
+            .and_then(|path| path.read())
+            .map_err(|error| sandbox_path_error(error, guest_path))
     }
 
     async fn write(&self, guest_path: &str, bytes: &[u8]) -> Result<()> {
-        let p = resolve_in_workspace(&self.spec.workspace, guest_path, true)?;
-        if let Some(parent) = p.parent() {
-            tokio::fs::create_dir_all(parent).await?;
-        }
-        tokio::fs::write(p, bytes).await?;
-        Ok(())
+        self.filesystem()?
+            .bind(guest_path, AccessMode::Write)
+            .and_then(|path| path.atomic_write(bytes))
+            .map_err(|error| sandbox_path_error(error, guest_path))
     }
 
     async fn list(&self, guest_dir: &str) -> Result<Vec<String>> {
-        let p = resolve_in_workspace(&self.spec.workspace, guest_dir, false)?;
-        let mut rd = tokio::fs::read_dir(p).await?;
-        let mut names = Vec::new();
-        while let Some(entry) = rd.next_entry().await? {
-            names.push(entry.file_name().to_string_lossy().into_owned());
-        }
-        Ok(names)
+        self.filesystem()?
+            .bind(guest_dir, AccessMode::Read)
+            .and_then(|path| path.list())
+            .map(|entries| {
+                entries
+                    .into_iter()
+                    .map(|entry| entry.name.to_string_lossy().into_owned())
+                    .collect()
+            })
+            .map_err(|error| sandbox_path_error(error, guest_dir))
     }
 
     async fn snapshot(&self) -> Result<String> {

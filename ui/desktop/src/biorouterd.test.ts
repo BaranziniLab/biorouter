@@ -1,6 +1,7 @@
 // @vitest-environment node
 
 import type { App } from 'electron';
+import { EventEmitter } from 'node:events';
 import type { PathLike, Stats } from 'node:fs';
 import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -156,6 +157,27 @@ describe('startBiorouterd logging', () => {
     expect(stdinEnded).toBe(true);
   });
 
+  it('keeps the owned-daemon quit cleanup when shared mode is disabled', async () => {
+    const app = Object.assign(new EventEmitter(), { isPackaged: false });
+    const result = await startBiorouterd({
+      app: app as unknown as App,
+      serverSecret,
+      userActionKey: userActionKeyForTest,
+      dir: process.cwd(),
+    });
+    expect(result.managed).toBe(true);
+    expect(result.sharedDaemon).toBeUndefined();
+    app.emit('will-quit');
+    if (os.platform() === 'win32') {
+      expect(mocks.spawn).toHaveBeenLastCalledWith('taskkill', ['/pid', '0', '/T', '/F'], {
+        shell: false,
+        windowsHide: true,
+      });
+    } else {
+      expect(result.process.kill).toHaveBeenCalledOnce();
+    }
+  });
+
   // Finding 3 of the 2026-09-12 review: the declaration is what separates "no key
   // was ever meant to arrive" from "one was and did not", so it must survive the
   // case where the launcher has no key to send — the only case where the daemon
@@ -245,6 +267,26 @@ describe('startBiorouterd logging', () => {
  * down.
  */
 describe('externalBackendUrlFromEnv', () => {
+  it('marks the environment-selected external backend as service-owned without spawning', async () => {
+    vi.stubEnv('BIOROUTER_EXTERNAL_BACKEND', '1');
+    vi.stubEnv('BIOROUTER_EXTERNAL_PORT', '3456');
+    vi.stubEnv('BIOROUTER_DEV_PROFILE_ROOT', '');
+    mocks.spawn.mockClear();
+    try {
+      const result = await startBiorouterd({
+        app: { isPackaged: false, on: vi.fn() } as unknown as App,
+        serverSecret: 'synthetic-secret',
+        dir: process.cwd(),
+      });
+      expect(result.managed).toBe(false);
+      expect(result.baseUrl).toBe('http://127.0.0.1:3456');
+      expect(result.sharedDaemon).toBeUndefined();
+      expect(mocks.spawn).not.toHaveBeenCalled();
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
   it('honours BIOROUTER_EXTERNAL_PORT', () => {
     expect(externalBackendUrlFromEnv({ BIOROUTER_EXTERNAL_PORT: '3456' })).toBe(
       'http://127.0.0.1:3456'

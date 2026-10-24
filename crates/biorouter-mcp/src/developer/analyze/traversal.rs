@@ -1,20 +1,60 @@
+use crate::file_access::{file_error, EditorAccess, EditorPath};
+use crate::secret_guard::SecretGuard;
+use biorouter_sandbox::bounded_fs::{AccessMode, BoundedFs};
 use ignore::gitignore::Gitignore;
 use rayon::prelude::*;
 use rmcp::model::{ErrorCode, ErrorData};
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 
 use crate::developer::analyze::types::{AnalysisResult, EntryType};
 use crate::developer::lang;
 
+pub const MAX_ANALYSIS_ENTRIES: usize = 50_000;
+pub const MAX_ANALYSIS_DIRECTORY_DEPTH: u32 = 256;
+
 /// Handles file system traversal with ignore patterns
 pub struct FileTraverser<'a> {
     ignore_patterns: &'a Gitignore,
+    access: Mutex<Option<EditorAccess>>,
 }
 
 impl<'a> FileTraverser<'a> {
     /// Create a new file traverser with the given ignore patterns
     pub fn new(ignore_patterns: &'a Gitignore) -> Self {
-        Self { ignore_patterns }
+        Self {
+            ignore_patterns,
+            access: Mutex::new(None),
+        }
+    }
+
+    pub(crate) fn with_access(ignore_patterns: &'a Gitignore, access: EditorAccess) -> Self {
+        Self {
+            ignore_patterns,
+            access: Mutex::new(Some(access)),
+        }
+    }
+
+    pub(crate) fn bound(&self, path: &Path) -> Result<EditorPath, ErrorData> {
+        let mut access = self.access.lock().map_err(file_error)?;
+        if access.is_none() {
+            // Direct Rust API callers select an explicit analysis root. MCP
+            // calls supply the dispatch's already-retained root instead.
+            let root = if path.is_dir() {
+                path
+            } else {
+                path.parent().unwrap_or(Path::new("."))
+            };
+            let workspace = Arc::new(BoundedFs::open(root).map_err(file_error)?);
+            *access = Some(EditorAccess {
+                workspace,
+                skills: None,
+                guard: SecretGuard::for_dir(root),
+                meta: Default::default(),
+            });
+        }
+        access.as_ref().unwrap().bind(path, AccessMode::Read)
     }
 
     /// Check if a path should be ignored
@@ -41,7 +81,7 @@ impl<'a> FileTraverser<'a> {
         }
 
         // Check if path exists
-        if !path.exists() {
+        if !self.bound(path)?.exists() {
             return Err(ErrorData::new(
                 ErrorCode::INVALID_PARAMS,
                 format!("Path '{}' does not exist", path.display()),
@@ -68,7 +108,9 @@ impl<'a> FileTraverser<'a> {
             tracing::warn!("Unlimited depth traversal requested for {:?}", path);
         }
 
-        let files = self.collect_files_recursive(path, 0, max_depth)?;
+        let mut remaining = MAX_ANALYSIS_ENTRIES;
+        let files =
+            self.collect_files_recursive(path, 0, max_depth, &mut HashSet::new(), &mut remaining)?;
 
         tracing::info!("Collected {} files from {:?}", files.len(), path);
         Ok(files)
@@ -80,11 +122,14 @@ impl<'a> FileTraverser<'a> {
         path: &Path,
         current_depth: u32,
         max_depth: u32,
+        visited: &mut HashSet<String>,
+        remaining: &mut usize,
     ) -> Result<Vec<PathBuf>, ErrorData> {
         let mut files = Vec::new();
 
         // Check if we're at a file (base case)
-        if path.is_file() {
+        let bound = self.bound(path)?;
+        if bound.is_file() {
             let lang = lang::get_language_identifier(path);
             if !lang.is_empty() {
                 tracing::trace!("Including file {:?} (language: {})", path, lang);
@@ -99,44 +144,43 @@ impl<'a> FileTraverser<'a> {
             tracing::trace!("Reached max depth {} at {:?}", max_depth, path);
             return Ok(files);
         }
+        if current_depth >= MAX_ANALYSIS_DIRECTORY_DEPTH {
+            return Err(file_error(
+                "Analysis is too deeply nested; choose a narrower folder or depth",
+            ));
+        }
 
-        let entries = std::fs::read_dir(path).map_err(|e| {
-            tracing::error!("Failed to read directory {:?}: {}", path, e);
-            ErrorData::new(
-                ErrorCode::INTERNAL_ERROR,
-                format!("Failed to read directory: {}", e),
-                None,
-            )
-        })?;
-
+        let directory = bound.bound.open_dir().map_err(file_error)?;
+        if !visited.insert(format!("{:?}", directory.identity())) {
+            return Ok(files);
+        }
+        let mut entries = directory
+            .bind(".", AccessMode::Read)
+            .and_then(|path| path.list_limited(*remaining))
+            .map_err(file_error)?;
+        *remaining -= entries.len();
+        entries.sort_by(|left, right| left.name.cmp(&right.name));
+        let directory_guard = SecretGuard::for_bounded_path(&bound.bound).map_err(file_error)?;
         for entry in entries {
-            let entry = entry.map_err(|e| {
-                ErrorData::new(
-                    ErrorCode::INTERNAL_ERROR,
-                    format!("Failed to read directory entry: {}", e),
-                    None,
-                )
-            })?;
-
-            let entry_path = entry.path();
-
-            // Skip ignored paths
-            if self.is_ignored(&entry_path) {
+            let entry_path = path.join(&entry.name);
+            let actual_path = directory.root().join(entry.name);
+            if self.is_ignored(&entry_path) || directory_guard.is_denied(&actual_path) {
                 continue;
             }
-
-            if entry_path.is_file() {
-                // Only include supported file types
-                let lang = lang::get_language_identifier(&entry_path);
-                if !lang.is_empty() {
-                    tracing::trace!("Including file {:?} (language: {})", entry_path, lang);
+            let entry = self.bound(&entry_path)?;
+            if entry.is_file() {
+                if !lang::get_language_identifier(&entry_path).is_empty() {
                     files.push(entry_path);
                 }
-            } else if entry_path.is_dir() {
-                // Recurse into subdirectory
-                let mut sub_files =
-                    self.collect_files_recursive(&entry_path, current_depth + 1, max_depth)?;
-                files.append(&mut sub_files);
+            } else if entry.is_dir() {
+                let mut children = self.collect_files_recursive(
+                    &entry_path,
+                    current_depth + 1,
+                    max_depth,
+                    visited,
+                    remaining,
+                )?;
+                files.append(&mut children);
             }
         }
 
@@ -156,7 +200,9 @@ impl<'a> FileTraverser<'a> {
         tracing::debug!("Collecting directory results from {:?}", path);
 
         // First collect all files to analyze
-        let files_to_analyze = self.collect_files_recursive(path, 0, max_depth)?;
+        let mut remaining = MAX_ANALYSIS_ENTRIES;
+        let files_to_analyze =
+            self.collect_files_recursive(path, 0, max_depth, &mut HashSet::new(), &mut remaining)?;
 
         // Then analyze them in parallel using Rayon
         let results: Result<Vec<_>, ErrorData> = files_to_analyze

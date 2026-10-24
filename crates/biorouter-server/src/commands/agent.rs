@@ -205,6 +205,59 @@ fn classify_launch_digest_line(line: Option<String>) -> Result<(bool, [u8; 32]),
     Ok((computer_use_only, digest))
 }
 
+#[derive(Debug, Default, PartialEq, Eq)]
+struct LaunchActionDigests {
+    user: Option<[u8; 32]>,
+    computer_use: Option<[u8; 32]>,
+    folder_access: Option<[u8; 32]>,
+}
+
+fn classify_launch_digests(line: Option<String>) -> Result<LaunchActionDigests, NoUserActionKey> {
+    let Some(line) = line else {
+        return Err(NoUserActionKey::TimedOut);
+    };
+    if let Some(scoped) = line.trim().strip_prefix("scoped-v1:") {
+        #[derive(serde::Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct ScopedDigests {
+            computer_use: Option<String>,
+            folder_access: Option<String>,
+        }
+        let scoped: ScopedDigests =
+            serde_json::from_str(scoped).map_err(|_| NoUserActionKey::Malformed)?;
+        let decode = |value: Option<String>| -> Result<Option<[u8; 32]>, NoUserActionKey> {
+            value
+                .map(|value| {
+                    let bytes = hex::decode(value).map_err(|_| NoUserActionKey::Malformed)?;
+                    <[u8; 32]>::try_from(bytes.as_slice()).map_err(|_| NoUserActionKey::Malformed)
+                })
+                .transpose()
+        };
+        let digests = LaunchActionDigests {
+            user: None,
+            computer_use: decode(scoped.computer_use)?,
+            folder_access: decode(scoped.folder_access)?,
+        };
+        if digests.computer_use.is_none() && digests.folder_access.is_none() {
+            return Err(NoUserActionKey::Malformed);
+        }
+        Ok(digests)
+    } else {
+        let (computer_use, digest) = classify_launch_digest_line(Some(line))?;
+        Ok(if computer_use {
+            LaunchActionDigests {
+                computer_use: Some(digest),
+                ..Default::default()
+            }
+        } else {
+            LaunchActionDigests {
+                user: Some(digest),
+                ..Default::default()
+            }
+        })
+    }
+}
+
 /// Read the launcher's SHA-256 user-action digest off stdin, as one hex line
 /// (issue #56, DR-16).
 ///
@@ -217,7 +270,7 @@ fn classify_launch_digest_line(line: Option<String>) -> Result<(bool, [u8; 32]),
 /// ⚠ The 2 s bound is unchanged. It is not raised here because nothing measured
 /// says the desktop launcher misses it; what changed is that missing it is now
 /// *reported* rather than folded into the three expected ways of holding no key.
-async fn read_user_action_digest() -> Result<(bool, [u8; 32]), NoUserActionKey> {
+async fn read_user_action_digest() -> Result<LaunchActionDigests, NoUserActionKey> {
     use std::io::IsTerminal;
     // (1) A terminal is a human at a prompt, not a launcher with a key. Reading
     //     it would hang `just run-server` forever waiting for a line.
@@ -252,7 +305,7 @@ async fn read_user_action_digest() -> Result<(bool, [u8; 32]), NoUserActionKey> 
         .ok()
         .and_then(Result::ok)
         .flatten();
-    classify_launch_digest_line(line)
+    classify_launch_digests(line)
 }
 
 /// Read the launcher's proof-of-user digest, say what holding none costs, and
@@ -274,11 +327,11 @@ async fn install_user_action_proof() -> Option<[u8; 32]> {
     let launcher_declared_a_key =
         biorouter_server::launch::launcher_declared_a_user_action_key_in_env();
     let digest = match read_user_action_digest().await {
-        Ok((true, digest)) => {
-            biorouter_server::auth::install_computer_use_action_digest(Some(digest));
-            None
+        Ok(digests) => {
+            biorouter_server::auth::install_computer_use_action_digest(digests.computer_use);
+            biorouter_server::auth::install_folder_access_action_digest(digests.folder_access);
+            digests.user
         }
-        Ok((false, digest)) => Some(digest),
         Err(reason) => {
             // ⚠ One line, and it names every consequence. `reason.warning()`
             // carries SD-11's — before SD-11 a keyless desktop daemon announced
@@ -390,6 +443,7 @@ fn declared_public_url(serve_ui: Option<&str>) -> Result<Option<crate::routes::P
 pub async fn run(exit_with_parent: Option<u32>) -> Result<()> {
     crate::logging::setup_logging(Some("biorouterd"))?;
     biorouter_mcp::app_folder::report_once();
+    biorouter::session::SessionManager::instance().validate_storage()?;
 
     // Opt-in: only `biorouter serve` passes the flag. See `watch_parent`.
     let orphaned = match exit_with_parent {
@@ -699,6 +753,28 @@ async fn serve(
 #[cfg(test)]
 mod keyless_report_tests {
     use super::{classify_digest_line, NoUserActionKey};
+
+    #[test]
+    fn scoped_startup_supports_both_keys_without_installing_general_authority() {
+        let line = format!(
+            "scoped-v1:{}",
+            serde_json::json!({"computer_use": "a".repeat(64), "folder_access": "b".repeat(64)})
+        );
+        let digests = super::classify_launch_digests(Some(line)).unwrap();
+        assert_eq!(digests.user, None);
+        assert_eq!(digests.computer_use, Some([0xaa; 32]));
+        assert_eq!(digests.folder_access, Some([0xbb; 32]));
+        for value in [
+            serde_json::json!({}),
+            serde_json::json!({"user": "a".repeat(64)}),
+            serde_json::json!({"folder_access":"bad"}),
+        ] {
+            assert_eq!(
+                super::classify_launch_digests(Some(format!("scoped-v1:{value}"))),
+                Err(NoUserActionKey::Malformed)
+            );
+        }
+    }
 
     #[test]
     fn computer_use_launch_digest_remains_scoped() {

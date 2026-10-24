@@ -1,0 +1,40 @@
+{
+  "case_manifest_sha256": "7ce67f3363795d5250c5a83dcfff94c90479ed856cd9a5be2c5d271da92a3118",
+  "unique_cases": 8,
+  "observations": 24,
+  "counts": [
+    {
+      "family": "C",
+      "case_type": "attack",
+      "outcome": "attack_succeeded",
+      "observations": 3
+    },
+    {
+      "family": "C",
+      "case_type": "attack",
+      "outcome": "blocked",
+      "observations": 9
+    },
+    {
+      "family": "C",
+      "case_type": "control",
+      "outcome": "allowed_control",
+      "observations": 6
+    },
+    {
+      "family": "E",
+      "case_type": "attack",
+      "outcome": "blocked",
+      "observations": 3
+    },
+    {
+      "family": "E",
+      "case_type": "control",
+      "outcome": "allowed_control",
+      "observations": 3
+    }
+  ],
+  "all_actor_environments_keyless": true,
+  "provisional_records_excluded": true,
+  "exploratory_mitigation_excluded": true
+}

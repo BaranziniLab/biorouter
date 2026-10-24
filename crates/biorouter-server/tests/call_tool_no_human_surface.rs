@@ -152,47 +152,64 @@ async fn the_same_tool_outside_that_scope_still_parks_normally() {
 fn the_route_awaits_the_tool_inside_the_no_human_surface_scope() {
     let source = include_str!("../src/routes/agent.rs");
 
-    // `split`, never byte indexing: `clippy::string_slice` is denied repo-wide,
-    // and slicing a string can land inside a UTF-8 character.
-    let after_open = source
+    let helper = source
+        .split("async fn dispatch_direct_tool(")
+        .nth(1)
+        .and_then(|tail| tail.split("\n}\n").next())
+        .expect("the direct-tool helper must have an explicit function boundary");
+    let handler = source
+        .split("async fn call_tool(")
+        .nth(1)
+        .and_then(|tail| tail.split("\n}\n").next())
+        .expect("the route must have an explicit function boundary");
+    assert!(
+        handler.contains(
+            "dispatch_direct_tool(&agent, &payload.session_id, tool_call, native_client).await"
+        ),
+        "the route must await the scoped helper with its exact request and native owner"
+    );
+    let owner = handler
+        .find("from_headers(&headers)?")
+        .expect("native owner proof");
+    let delegated = handler
+        .find("dispatch_direct_tool(")
+        .expect("scoped execution");
+    assert!(owner < delegated);
+
+    let native_scope = helper
+        .find("biorouter::native_client::scope(")
+        .expect("native owner scope");
+    let no_human_scope = helper
+        .find("without_human_surface(async {")
+        .expect("no-human scope");
+    assert!(native_scope < no_human_scope);
+    let after_open = helper
         .split("without_human_surface(async {")
         .nth(1)
-        .expect("call_tool must open a no-human-surface scope around an async block");
-    let scoped = after_open
-        .split("\n    .await;")
-        .next()
-        .expect("the scope's await must terminate the block");
-
+        .unwrap();
+    let scoped = after_open.split("\n    .await").next().unwrap();
     assert!(
         scoped.contains("dispatch_tool_call"),
         "the dispatch must happen inside the scope: {scoped}"
     );
     assert!(
         scoped.contains("tool_result.result.await"),
-        "the tool must be RUN inside the scope — awaiting `.result` outside it is \
-         the defect this pins, because that is where the tool body (and every \
-         `park()` in it) actually executes: {scoped}"
+        "the returned execution future must be awaited inside both native-owner and no-human scopes: {scoped}"
     );
-
-    // …and nothing awaits the result a second time outside the scope, which is
-    // what the previous shape did.
-    //
-    // Two filters before the search, each for a real false positive: the handler
-    // stops at this file's own tests, one of which QUOTES the expression as a
-    // string literal to anchor its #152 assertion; and comment lines are dropped
-    // because the note below the scope quotes it again while explaining it.
+    assert_eq!(helper.matches("tool_result.result.await").count(), 1);
     let after_scope = after_open
-        .split("\n    .await;")
+        .split("\n    .await")
         .nth(1)
-        .expect("there must be code after the scope");
-    let handler_only = after_scope.split("#[cfg(test)]").next().unwrap_or("");
-    let after_code = handler_only
+        .expect("the scopes must be awaited");
+    assert!(!after_scope.contains("tool_result.result.await"));
+    let handler_code = handler
         .lines()
         .filter(|line| !line.trim_start().starts_with("//"))
         .collect::<Vec<_>>()
         .join("\n");
     assert!(
-        !after_code.contains("tool_result.result.await"),
-        "`.result` must be awaited once, inside the scope"
+        !handler_code.contains("tool_result.result.await")
+            && !handler_code.contains(".dispatch_tool_call("),
+        "the handler must delegate dispatch and execution together rather than escape either scope"
     );
 }

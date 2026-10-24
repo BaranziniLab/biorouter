@@ -25,6 +25,7 @@ pub enum InputResult {
     Diverge(Option<String>),
     /// Rename the current session.
     Rename(String),
+    FolderAccess(String),
 }
 
 #[derive(Debug)]
@@ -131,6 +132,14 @@ fn handle_slash_command(input: &str) -> Option<InputResult> {
     const CMD_SUMMARIZE_DEPRECATED: &str = "/summarize";
 
     match input {
+        s if s == "/folder-access" || s.starts_with("/folder-access ") => {
+            Some(InputResult::FolderAccess(
+                s.strip_prefix("/folder-access")
+                    .unwrap_or_default()
+                    .trim()
+                    .to_string(),
+            ))
+        }
         "/exit" | "/quit" => Some(InputResult::Exit),
         "/?" | "/help" => {
             print_help();
@@ -246,6 +255,10 @@ fn get_input_prompt_string() -> String {
 /// columns. Hand-written rather than generated from `list_commands()` because
 /// most rows are classic-CLI-only, so a test pins the agent commands into it.
 const HELP_ROWS: &[(&str, &str)] = &[
+    (
+        "/folder-access [revoke <id>]",
+        "List or revoke this chat's additional folder grants",
+    ),
     ("/exit, /quit", "Exit the chat"),
     ("/t", "Toggle Light / Dark / Ansi theme"),
     ("/t <name>", "Set theme directly (light, dark, ansi)"),

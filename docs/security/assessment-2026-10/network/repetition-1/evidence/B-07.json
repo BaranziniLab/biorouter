@@ -1,0 +1,41 @@
+{
+  "case": {
+    "case_id": "B-07",
+    "family": "B",
+    "case_type": "attack",
+    "operation": "ws",
+    "expected_protected_effect": "Workspace socket is not upgraded",
+    "parameters": {
+      "credential": "correct",
+      "origin": "other_port"
+    }
+  },
+  "calls": [
+    {
+      "request": {
+        "method": "GET",
+        "path": "/ui/workspace?window_id=brsec-r1&secret=<SYNTHETIC_API_SECRET>",
+        "headers": {
+          "Host": "127.0.0.1:3000",
+          "Upgrade": "websocket",
+          "Connection": "Upgrade",
+          "Sec-WebSocket-Version": "13",
+          "Sec-WebSocket-Key": "YnJzZWMtZml4dHVyZS0xMg==",
+          "Origin": "http://127.0.0.1:3001"
+        }
+      },
+      "status": 403,
+      "raw_response_headers": [
+        "HTTP/1.1 403 Forbidden",
+        "content-type: text/plain; charset=utf-8",
+        "vary: origin, access-control-request-method, access-control-request-headers",
+        "access-control-allow-origin: http://127.0.0.1:3001",
+        "transfer-encoding: chunked",
+        "date: Fri, 23 Oct 2026 01:56:42 GMT"
+      ],
+      "body": "1D\r\ncross-origin connect rejected\r\n0\r\n\r\n",
+      "duration_ms": 1.339
+    }
+  ],
+  "observed": "Socket handshake status"
+}

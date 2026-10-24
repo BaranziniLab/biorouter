@@ -1493,6 +1493,13 @@ struct ServeOptions {
     )]
     computer_use_approval: bool,
 
+    /// Configure a separate key for external-folder decisions in the browser
+    #[arg(
+        long,
+        help = "Interactively set a folder-access approval key; requires a terminal"
+    )]
+    folder_access_approval: bool,
+
     /// Open a browser once it is ready
     #[arg(long, help = "Open a browser once the server is ready")]
     open: bool,
@@ -1509,6 +1516,7 @@ impl ServeOptions {
             self.public_url,
             self.open,
             self.computer_use_approval,
+            self.folder_access_approval,
         )
         .await
     }
@@ -3742,7 +3750,20 @@ mod cli_tests {
         assert!(options.web_dir.is_none());
         assert!(!options.no_token);
         assert!(!options.computer_use_approval);
+        assert!(!options.folder_access_approval);
         assert!(!options.open);
+
+        let parsed = Cli::try_parse_from([
+            "biorouter",
+            "serve",
+            "--folder-access-approval",
+            "--computer-use-approval",
+        ])
+        .unwrap();
+        let Some(Command::Serve(options)) = parsed.command else {
+            panic!("serve command expected")
+        };
+        assert!(options.folder_access_approval && options.computer_use_approval);
 
         let parsed = Cli::try_parse_from([
             "biorouter",
