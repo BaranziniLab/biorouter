@@ -715,7 +715,7 @@ impl FolderAccessManager {
                     .or_default()
                     .denied
                     .insert(folder.to_path_buf());
-                let reason = if matches!(outcome, UserActionOutcome::Denied) {
+                let reason = if matches!(outcome, UserActionOutcome::Denied { .. }) {
                     "Access was not approved."
                 } else {
                     outcome.refusal_detail()

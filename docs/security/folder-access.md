@@ -45,7 +45,7 @@ A managed shared desktop connection holds a private, main-process lifetime conne
 local daemon. Native grants belong to that client, even when two clients use the same chat.
 Disconnecting the client revokes its session and pending once grants, releases its pending
 folder requests, and leaves other active clients' grants and the shared daemon running.
-A reconnect obtains a new lifetime and requires fresh approval. An API secret or a renderer-
+After a lifetime disconnect, reconnecting obtains a new lifetime and requires fresh approval. An API secret or a renderer-
 supplied lifetime identifier cannot claim another desktop client's grants. A shared daemon
 that lacks this protocol must be updated or restarted explicitly before the desktop attaches;
 the app does not silently fall back to grants without an owner.
