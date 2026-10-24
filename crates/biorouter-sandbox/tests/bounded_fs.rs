@@ -300,6 +300,86 @@ mod windows {
     use std::os::windows::ffi::{OsStrExt, OsStringExt};
     use windows_sys::Win32::Storage::FileSystem::GetShortPathNameW;
 
+    fn assert_owner_private(path: &Path) {
+        use std::os::windows::fs::OpenOptionsExt;
+        use std::os::windows::io::AsRawHandle;
+        use windows_sys::Win32::Foundation::LocalFree;
+        use windows_sys::Win32::Security::Authorization::{GetSecurityInfo, SE_FILE_OBJECT};
+        use windows_sys::Win32::Security::{
+            EqualSid, GetAce, ACCESS_ALLOWED_ACE, ACL, DACL_SECURITY_INFORMATION,
+            OWNER_SECURITY_INFORMATION,
+        };
+        let file = fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(0x0200_0000)
+            .open(path)
+            .unwrap();
+        let mut acl: *mut ACL = std::ptr::null_mut();
+        let mut owner = std::ptr::null_mut();
+        let mut descriptor = std::ptr::null_mut();
+        assert_eq!(
+            unsafe {
+                GetSecurityInfo(
+                    file.as_raw_handle(),
+                    SE_FILE_OBJECT,
+                    DACL_SECURITY_INFORMATION | OWNER_SECURITY_INFORMATION,
+                    &mut owner,
+                    std::ptr::null_mut(),
+                    &mut acl,
+                    std::ptr::null_mut(),
+                    &mut descriptor,
+                )
+            },
+            0
+        );
+        assert!(!acl.is_null());
+        assert_eq!(unsafe { (*acl).AceCount }, 1);
+        let mut entry = std::ptr::null_mut();
+        assert_ne!(unsafe { GetAce(acl, 0, &mut entry) }, 0);
+        let entry = unsafe { &*entry.cast::<ACCESS_ALLOWED_ACE>() };
+        assert_ne!(
+            unsafe { EqualSid((&entry.SidStart as *const u32).cast_mut().cast(), owner) },
+            0
+        );
+        unsafe {
+            LocalFree(descriptor);
+        }
+    }
+
+    #[test]
+    fn private_windows_history_can_create_read_list_and_repair_owned_storage() {
+        let fixture = root();
+        fs::create_dir(fixture.path().join("history")).unwrap();
+        fs::write(fixture.path().join("history/old.json"), "synthetic-old").unwrap();
+        let fs = BoundedFs::open(fixture.path()).unwrap();
+        let history = fs.create_private_subdirectory("history").unwrap();
+        history.protect_owner_private().unwrap();
+        history
+            .bind("old.json", AccessMode::Write)
+            .unwrap()
+            .protect_owner_private()
+            .unwrap();
+        history
+            .bind("new.json", AccessMode::Write)
+            .unwrap()
+            .atomic_write_private(b"synthetic-new")
+            .unwrap();
+        assert_eq!(read(&history, "old.json"), b"synthetic-old");
+        assert_eq!(read(&history, "new.json"), b"synthetic-new");
+        assert_eq!(
+            history
+                .bind(".", AccessMode::Read)
+                .unwrap()
+                .list()
+                .unwrap()
+                .len(),
+            2
+        );
+        assert_owner_private(&fixture.path().join("history"));
+        assert_owner_private(&fixture.path().join("history/old.json"));
+        assert_owner_private(&fixture.path().join("history/new.json"));
+    }
+
     #[test]
     fn ambiguous_windows_names_are_rejected() {
         let fixture = root();
