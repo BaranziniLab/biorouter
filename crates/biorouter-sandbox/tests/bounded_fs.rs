@@ -632,7 +632,7 @@ mod windows {
     }
 
     #[test]
-    fn captured_windows_parents_and_created_parent_cache_survive_idle_moves() {
+    fn captured_windows_parents_and_created_parent_cache_survive_direct_idle_moves() {
         let fixture = root();
         fs::create_dir(fixture.path().join("parent")).unwrap();
         fs::write(fixture.path().join("parent/existing.txt"), "approved").unwrap();
@@ -646,8 +646,6 @@ mod windows {
         let destination = filesystem
             .bind("parent/renamed.txt", AccessMode::Write)
             .unwrap();
-        created.atomic_write(b"first").unwrap();
-        let history_key = created.try_history_key().unwrap();
         fs::rename(
             fixture.path().join("parent"),
             fixture.path().join("original-parent"),
@@ -664,12 +662,31 @@ mod windows {
             "outside-cache-label",
         )
         .unwrap();
+        created.atomic_write(b"first").unwrap();
+        let history_key = created.try_history_key().unwrap();
+        let cached_parent = fixture.path().join("original-parent/new/nested");
+        let moved_cached_parent = fixture.path().join("original-parent/new/original-nested");
+        fs::rename(&cached_parent, &moved_cached_parent).unwrap();
+        fs::create_dir(&cached_parent).unwrap();
+        fs::write(
+            cached_parent.join("file.txt"),
+            "outside-cached-parent-label",
+        )
+        .unwrap();
         existing.atomic_write(b"approved-edit").unwrap();
         created.atomic_write(b"second").unwrap();
         existing.rename_to(&destination).unwrap();
         assert_eq!(destination.read().unwrap(), b"approved-edit");
         assert_eq!(created.read().unwrap(), b"second");
         assert_eq!(created.try_history_key().unwrap(), history_key);
+        assert_eq!(
+            fs::read(moved_cached_parent.join("file.txt")).unwrap(),
+            b"second"
+        );
+        assert_eq!(
+            fs::read(cached_parent.join("file.txt")).unwrap(),
+            b"outside-cached-parent-label"
+        );
         destination.remove_file().unwrap();
         assert_eq!(
             fs::read(fixture.path().join("parent/existing.txt")).unwrap(),

@@ -353,6 +353,37 @@ mod tests {
     }
 
     #[test]
+    fn captured_descendant_prevents_ancestor_move_until_released() {
+        let fixture = tempfile::tempdir().unwrap();
+        let selected = fixture.path().join("parent");
+        let moved = fixture.path().join("original-parent");
+        fs::create_dir_all(selected.join("new/nested")).unwrap();
+        fs::write(selected.join("new/nested/file.txt"), "synthetic-approved").unwrap();
+        let original = Dir::open_ambient_dir(&selected, cap_std::ambient_authority()).unwrap();
+        let parent = PinnedDir::capture(original.into_std_file()).unwrap();
+        let parent_identity = parent.identity();
+        let descendant = parent.open_directory(Path::new("new/nested")).unwrap();
+        let blocked = fs::rename(&selected, &moved).unwrap_err();
+        assert_eq!(blocked.raw_os_error(), Some(5));
+        assert_eq!(
+            fs::read(selected.join("new/nested/file.txt")).unwrap(),
+            b"synthetic-approved"
+        );
+        drop(descendant);
+        fs::rename(&selected, &moved).unwrap();
+        let lease = parent.lease().unwrap();
+        assert_eq!(
+            identity(&lease.directory.into_std_file()).unwrap(),
+            parent_identity
+        );
+        assert_eq!(
+            fs::read(moved.join("new/nested/file.txt")).unwrap(),
+            b"synthetic-approved"
+        );
+        assert!(!selected.exists());
+    }
+
+    #[test]
     fn an_existing_delete_handle_refuses_a_lease_without_pathname_fallback() {
         let fixture = tempfile::tempdir().unwrap();
         let selected = fixture.path().join("workspace");

@@ -131,16 +131,16 @@ def main():
                                         kernel.CloseHandle(leased)
                                 finally:
                                     kernel.CloseHandle(captured)
-                    # Exact production sequence drops the original protective handle after capture.
+                    # Legacy ReOpenFile comparison drops the original protective handle after capture.
                     captured = reopened(original, access["file_generic_read"], 7,
-                                        flags["backup_nofollow"], "production_capture", target, original_name)
+                                        flags["backup_nofollow"], "legacy_reopen_capture_comparison", target, original_name)
                     native_capture = native_reopened(original, 7, "native_capture", target, original_name)
                 finally:
                     kernel.CloseHandle(original)
                 if captured is not None:
                     try:
                         leased = reopened(captured, access["file_generic_read"], 3,
-                                          flags["backup_nofollow"], "production_lease_original_dropped",
+                                          flags["backup_nofollow"], "legacy_reopen_lease_original_dropped_comparison",
                                           target, original_name)
                         if leased is not None:
                             kernel.CloseHandle(leased)

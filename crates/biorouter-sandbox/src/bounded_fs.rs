@@ -3,8 +3,10 @@
 //! Pathnames returned by this module are labels only. Actual I/O stays relative
 //! to captured directory handles, including after their original names change.
 //! An authorized directory remains that object after a rename, including its
-//! captured child directories. This is not isolation from arbitrary host
-//! commands or from another process that already has access to those objects.
+//! captured child directories. Windows can refuse an ancestor move while a
+//! captured descendant remains open; active operations also prevent moves.
+//! This is not isolation from arbitrary host commands or from another process
+//! that already has access to those objects.
 //! Hard links are readable when present inside an authorized root; writes replace
 //! the authorized directory entry and do not edit another hard-link alias.
 
@@ -124,8 +126,8 @@ fn nofollow_options(directory: bool) -> OpenOptions {
     #[cfg(windows)]
     {
         use cap_std::fs::OpenOptionsExt;
-        // cap-std uses paths for some Windows directory operations. Prevent
-        // directory renames while its retained handle protects those lookups.
+        // Keep capture lookups stable until PinnedDir holds the selected identity;
+        // later operations acquire their own short delete-denying lease.
         options
             .custom_flags(0x0020_0000 | 0x0200_0000)
             .share_mode(if directory { 3 } else { 7 });

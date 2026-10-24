@@ -549,6 +549,49 @@ async fn recursive_analysis_once_discloses_descendants_and_stays_read_only() {
     assert!(fixture.manager.list_session(&fixture.session).is_empty());
 }
 
+async fn approve_for_native_client(
+    fixture: &Fixture,
+    target: &Path,
+    owner: biorouter::native_client::NativeClient,
+    other: biorouter::native_client::NativeClient,
+) {
+    let job = biorouter::native_client::scope(Some(owner.clone()), async {
+        fixture.start(
+            vec![(target.to_path_buf(), AccessMode::Read)],
+            CancellationToken::new(),
+        )
+    })
+    .await;
+    let id = fixture.pending().await;
+    assert_eq!(
+        fixture.answer(&id, Permission::AlwaysAllow),
+        ResolveOutcome::Unproven
+    );
+    assert_eq!(
+        PendingUserActions::global().resolve_in_session(
+            &fixture.session,
+            &id,
+            UserActionOutcome::Approved {
+                permission: Permission::AlwaysAllow
+            },
+            DecisionAuthority::from_native_folder_access_proof(&other),
+        ),
+        ResolveOutcome::Unproven
+    );
+    assert_eq!(
+        PendingUserActions::global().resolve_in_session(
+            &fixture.session,
+            &id,
+            UserActionOutcome::Approved {
+                permission: Permission::AlwaysAllow
+            },
+            DecisionAuthority::from_native_folder_access_proof(&owner),
+        ),
+        ResolveOutcome::Delivered
+    );
+    job.await.unwrap().unwrap();
+}
+
 #[tokio::test]
 async fn native_grants_coexist_but_cannot_cross_client_lifetimes() {
     use biorouter::native_client::{scope, NativeClientLease};
@@ -556,47 +599,11 @@ async fn native_grants_coexist_but_cannot_cross_client_lifetimes() {
     let first = NativeClientLease::register().unwrap();
     let second = NativeClientLease::register().unwrap();
     let target = fixture.external.join("completed.csv");
-    for owner in [first.client(), second.client()] {
-        let job = scope(Some(owner.clone()), async {
-            fixture.start(
-                vec![(target.clone(), AccessMode::Read)],
-                CancellationToken::new(),
-            )
-        })
-        .await;
-        let id = fixture.pending().await;
-        assert_eq!(
-            fixture.answer(&id, Permission::AlwaysAllow),
-            ResolveOutcome::Unproven
-        );
-        let other = if owner.id() == first.client().id() {
-            second.client()
-        } else {
-            first.client()
-        };
-        assert_eq!(
-            PendingUserActions::global().resolve_in_session(
-                &fixture.session,
-                &id,
-                UserActionOutcome::Approved {
-                    permission: Permission::AlwaysAllow
-                },
-                DecisionAuthority::from_native_folder_access_proof(&other),
-            ),
-            ResolveOutcome::Unproven
-        );
-        assert_eq!(
-            PendingUserActions::global().resolve_in_session(
-                &fixture.session,
-                &id,
-                UserActionOutcome::Approved {
-                    permission: Permission::AlwaysAllow
-                },
-                DecisionAuthority::from_native_folder_access_proof(&owner),
-            ),
-            ResolveOutcome::Delivered
-        );
-        job.await.unwrap().unwrap();
+    for (owner, other) in [
+        (first.client(), second.client()),
+        (second.client(), first.client()),
+    ] {
+        approve_for_native_client(&fixture, &target, owner, other).await;
     }
     assert!(fixture.manager.list_session(&fixture.session).is_empty());
     let first_views = scope(Some(first.client()), async {

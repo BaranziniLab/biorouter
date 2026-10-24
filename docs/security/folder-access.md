@@ -61,6 +61,16 @@ Its grants are owned by that backend, not isolated by the new desktop lifetime p
 shows this backend lifetime, including for the environment-selected external development backend.
 The primary workspace and ordinary in-workspace edits do not need additional folder approval.
 
+On Windows, an idle captured directory can move while its own identity handle remains open.
+Windows can still refuse moving an ancestor while a captured child directory is open, even
+when the child permits delete sharing. Active file operations also hold a short move-preventing
+lease. Finish or stop active work, revoke affected external-folder grants, and retry after the
+holders release their child handles. Other grants, clients, the primary workspace, or long-lived
+Developer roots may still retain handles; changing the workspace or stopping its owning backend
+may be necessary. Closing only a browser or external-backend interface does not stop that backend.
+No single action guarantees that every holder is gone. BioRouter does not drop authority or
+reopen an unchecked pathname to force a move through this operating-system restriction.
+
 Revocation prevents subsequent operations through retained file capabilities. It cannot cancel
 an operating-system I/O operation that is already underway or undo a completed change.
 

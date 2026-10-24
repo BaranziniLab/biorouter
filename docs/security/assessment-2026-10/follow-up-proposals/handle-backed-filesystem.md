@@ -52,3 +52,24 @@ Expected user-visible impact is mostly transparent file access; compatibility wo
 Related: #446 (audit finding and current local remediation), #424 (explicit external-folder approval and resume), #437 (trusted tool-result handoff).
 
 Proposal only. No implementation, new PR, live race-test result, or completed platform-parity claim is included here.
+
+
+### Windows directory-move compatibility in the current candidate
+
+The historical proposal above predates the implementation candidate now being integrated through
+[PR #454](https://github.com/BaranziniLab/biorouter/pull/454). Final acceptance remains pending;
+this note describes its intended Windows semantics and the checks needed to establish them.
+
+The Windows backend retains directory identity with delete sharing while idle and takes a
+short move-preventing lease for operations that require stable cap-std lookup paths. This
+supports an idle move of the exact captured directory; it does not promise arbitrary ancestor
+moves while descendant directory capabilities remain open. Windows can refuse those ancestor
+moves even if each child handle permits delete sharing. Finish or stop active work, revoke the
+affected external grants, and retry after their holders release the handles. Other clients,
+primary workspaces, or Developer roots can still hold descendants, so changing the workspace
+or stopping the owning backend may be necessary. Do not promise immediate handle closure from
+revocation or from closing a browser/manual external-backend interface. Preserve this OS
+restriction rather than dropping authority or falling back to a fresh pathname open.
+The synthetic native Windows diagnostic must distinguish exact-directory moves, retained-child
+ancestor refusal, and successful retry after child close. These are acceptance criteria and
+platform semantics, not a claim that a new CI run passed.

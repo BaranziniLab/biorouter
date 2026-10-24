@@ -187,11 +187,14 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
-      - name: Probe Windows directory handle reopen compatibility
+      - name: Probe Windows directory reopen and nested-handle move semantics
         if: runner.os == 'Windows'
         timeout-minutes: 1
         shell: pwsh
-        run: python scripts/security/windows-directory-lease-probe.py
+        run: |
+          python scripts/security/windows-directory-lease-probe.py
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python scripts/security/windows-nested-handle-probe.py
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: "1.92"

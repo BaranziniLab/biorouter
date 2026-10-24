@@ -236,14 +236,17 @@ async fn assert_registration_refusals(endpoint: &Endpoint) {
         };
         assert_eq!(response.status().as_u16(), expected);
     }
-    for instance in [None, Some("77777777-7777-4777-8777-777777777777")] {
+    for (instance, expected) in [
+        (None, 403),
+        (Some("77777777-7777-4777-8777-777777777777"), 409),
+    ] {
         let error = connect_instance(endpoint, Some(PROOF), SECRET, None, instance)
             .await
             .unwrap_err();
         let WsError::Http(response) = error else {
             panic!("expected exact daemon-instance refusal")
         };
-        assert_eq!(response.status().as_u16(), 403);
+        assert_eq!(response.status().as_u16(), expected);
     }
 }
 
