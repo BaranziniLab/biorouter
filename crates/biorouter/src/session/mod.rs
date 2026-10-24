@@ -6,6 +6,8 @@ pub mod extension_data;
 mod legacy;
 pub mod message_blobs;
 pub mod session_manager;
+#[cfg(windows)]
+mod storage_permissions;
 
 pub use chat_history_search::SearchReach;
 /// For `providers::utils`'s test that a request log lands where a bundle reads.

@@ -32,7 +32,7 @@ def main():
     OUT.mkdir(parents=True, exist_ok=True)
     source = (ROOT / "crates/biorouter/src/session/session_manager.rs").read_text()
     start = source.index("    fn protect_session_directory(path:")
-    end = source.index("    #[cfg(not(unix))]", start)
+    end = source.index("    #[cfg(windows)]", start)
     guard = source[start:end].strip()
     image = json.loads(command(["docker", "image", "inspect", IMAGE]).stdout)[0]
     pinned = image["Id"]

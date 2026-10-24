@@ -1088,6 +1088,7 @@ dependencies = [
  "which 8.0.0",
  "winapi",
  "windows 0.61.3",
+ "windows-sys 0.61.2",
  "wiremock",
  "zeroize",
  "zip 0.6.6",

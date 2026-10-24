@@ -15,7 +15,7 @@ use crate::session::chat_fts;
 use crate::session::extension_data::ExtensionData;
 use crate::session::message_blobs;
 use crate::workflow::Workflow;
-use anyhow::Result;
+use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use rmcp::model::Role;
 use serde::{Deserialize, Serialize};
@@ -1809,6 +1809,12 @@ impl SessionManager {
         Self {
             storage: Arc::new(SessionStorage::new(data_dir)),
         }
+    }
+
+    /// Check storage before starting a host; ordinary operations also enforce
+    /// this boundary before the first database connection.
+    pub fn validate_storage(&self) -> Result<()> {
+        SessionStorage::prepare_session_directory(&self.storage.session_dir)
     }
 
     /// A store for chats that outlive nothing — `biorouter run --no-session`'s private,
@@ -4063,12 +4069,6 @@ impl SessionStorage {
     }
 
     fn create_pool(path: &Path) -> Pool<Sqlite> {
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent).expect("Failed to create session database directory");
-            Self::protect_session_directory(parent)
-                .expect("Failed to protect session database directory");
-        }
-
         let options = SqliteConnectOptions::new()
             .filename(path)
             .create_if_missing(true)
@@ -4089,6 +4089,19 @@ impl SessionStorage {
             .connect_lazy_with(options)
     }
 
+    fn prepare_session_directory(path: &Path) -> Result<()> {
+        let prepare = || -> std::io::Result<()> {
+            fs::create_dir_all(path)?;
+            Self::protect_session_directory(path)
+        };
+        prepare().with_context(|| {
+            format!(
+                "Cannot open private session history at '{}'. Close other Biorouter processes and use a real folder owned by your account. For relocated storage, set BIOROUTER_PATH_ROOT to the real app root containing data/sessions instead of linking the sessions folder; see docs/security/session-storage.md",
+                path.display()
+            )
+        })
+    }
+
     #[cfg(unix)]
     fn protect_session_directory(path: &Path) -> std::io::Result<()> {
         use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
@@ -4104,18 +4117,47 @@ impl SessionStorage {
                 "session directory must be a directory owned by the current user",
             ));
         }
-        directory.set_permissions(fs::Permissions::from_mode(0o700))
-    }
-
-    #[cfg(not(unix))]
-    fn protect_session_directory(path: &Path) -> std::io::Result<()> {
-        if !fs::symlink_metadata(path)?.is_dir() {
+        directory.set_permissions(fs::Permissions::from_mode(0o700))?;
+        #[cfg(target_os = "macos")]
+        {
+            use std::os::fd::AsRawFd;
+            unsafe extern "C" {
+                fn acl_init(count: libc::c_int) -> *mut libc::c_void;
+                fn acl_set_fd(fd: libc::c_int, acl: *mut libc::c_void) -> libc::c_int;
+                fn acl_free(acl: *mut libc::c_void) -> libc::c_int;
+            }
+            // macOS extended ACLs can grant access independently of mode bits.
+            let acl = unsafe { acl_init(0) };
+            if acl.is_null() {
+                return Err(std::io::Error::last_os_error());
+            }
+            let result = unsafe { acl_set_fd(directory.as_raw_fd(), acl) };
+            let error = (result != 0).then(std::io::Error::last_os_error);
+            unsafe { acl_free(acl) };
+            if let Some(error) = error {
+                return Err(error);
+            }
+        }
+        if directory.metadata()?.permissions().mode() & 0o777 != 0o700 {
             return Err(std::io::Error::new(
-                std::io::ErrorKind::PermissionDenied,
-                "session path must be a directory",
+                std::io::ErrorKind::Unsupported,
+                "session filesystem does not enforce owner-only directory permissions",
             ));
         }
         Ok(())
+    }
+
+    #[cfg(windows)]
+    fn protect_session_directory(path: &Path) -> std::io::Result<()> {
+        super::storage_permissions::protect(path)
+    }
+
+    #[cfg(not(any(unix, windows)))]
+    fn protect_session_directory(_path: &Path) -> std::io::Result<()> {
+        Err(std::io::Error::new(
+            std::io::ErrorKind::Unsupported,
+            "private session storage is unsupported on this platform",
+        ))
     }
 
     pub fn new(data_dir: PathBuf) -> Self {
@@ -4167,6 +4209,7 @@ impl SessionStorage {
     pub(crate) async fn pool(&self) -> Result<&Pool<Sqlite>> {
         self.initialized
             .get_or_try_init(|| async {
+                Self::prepare_session_directory(&self.session_dir)?;
                 let schema_exists = sqlx::query_scalar::<_, bool>(
                     r#"SELECT EXISTS (SELECT name FROM sqlite_master WHERE type='table' AND name='schema_version')"#,
                 )

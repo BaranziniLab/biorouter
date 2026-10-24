@@ -390,6 +390,7 @@ fn declared_public_url(serve_ui: Option<&str>) -> Result<Option<crate::routes::P
 pub async fn run(exit_with_parent: Option<u32>) -> Result<()> {
     crate::logging::setup_logging(Some("biorouterd"))?;
     biorouter_mcp::app_folder::report_once();
+    biorouter::session::SessionManager::instance().validate_storage()?;
 
     // Opt-in: only `biorouter serve` passes the flag. See `watch_parent`.
     let orphaned = match exit_with_parent {

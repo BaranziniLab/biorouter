@@ -395,6 +395,7 @@ async fn session_directories_are_private_and_owner_access_remains_functional() {
             std::fs::set_permissions(&sessions, std::fs::Permissions::from_mode(0o755)).unwrap();
         }
         let manager = SessionManager::new(fixture.path().to_path_buf());
+        manager.validate_storage().unwrap();
         assert_eq!(
             std::fs::metadata(&sessions).unwrap().permissions().mode() & 0o777,
             0o700
@@ -432,8 +433,18 @@ async fn session_storage_refuses_a_symlinked_directory() {
     std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o755)).unwrap();
     symlink(&target, fixture.path().join("sessions")).unwrap();
 
-    let result = std::panic::catch_unwind(|| SessionManager::new(fixture.path().to_path_buf()));
-    assert!(result.is_err());
+    let manager = SessionManager::new(fixture.path().to_path_buf());
+    let error = manager
+        .create_session(
+            fixture.path().to_path_buf(),
+            "SYNTHETIC_REFUSED_SESSION".into(),
+            SessionType::User,
+        )
+        .await
+        .unwrap_err();
+    let message = error.to_string();
+    assert!(message.contains("Cannot open private session history"));
+    assert!(message.contains("BIOROUTER_PATH_ROOT"));
     assert_eq!(
         std::fs::metadata(&target).unwrap().permissions().mode() & 0o777,
         0o755
