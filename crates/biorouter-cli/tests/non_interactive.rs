@@ -180,16 +180,54 @@ fn output_fixture_router(fixture: Arc<OutputFixture>) -> axum::Router {
         .with_state(fixture)
 }
 
-async fn run_output_format(sandbox: &Sandbox, endpoint: &str, format: &str) -> Output {
+#[derive(Clone, Copy, Debug)]
+enum OutputInput {
+    Text,
+    ParameterizedWorkflow,
+}
+
+async fn run_output_format(
+    sandbox: &Sandbox,
+    endpoint: &str,
+    format: &str,
+    input: OutputInput,
+) -> Output {
     let mut command = tokio::process::Command::new(env!("CARGO_BIN_EXE_biorouter"));
+    command.args(["run", "--output-format", format]);
+    match input {
+        OutputInput::Text => {
+            command.args(["--text", "Output fixture control"]);
+        }
+        OutputInput::ParameterizedWorkflow => {
+            let workflow = sandbox.home.join("output-control.yaml");
+            std::fs::write(
+                &workflow,
+                r#"version: 1.0.0
+title: CLI parameter output control
+description: Synthetic workflow output and folder authorization control
+parameters:
+  - key: control
+    input_type: string
+    requirement: required
+    description: Synthetic parameter value
+extensions:
+  - type: builtin
+    name: developer
+    display_name: Developer
+    timeout: 60
+    bundled: true
+    description: Synthetic file authorization control
+prompt: "Output fixture {{ control }}"
+"#,
+            )
+            .unwrap();
+            command
+                .arg("--workflow")
+                .arg(workflow)
+                .args(["--params", "control=PARAMETER_OUTPUT_CONTROL"]);
+        }
+    }
     command
-        .args([
-            "run",
-            "--output-format",
-            format,
-            "--text",
-            "Output fixture control",
-        ])
         .env_clear()
         .env("HOME", &sandbox.home)
         .env("USERPROFILE", &sandbox.home)
@@ -308,20 +346,27 @@ async fn run_output_formats_keep_machine_stdout_parseable() {
             .unwrap();
     });
 
-    for format in ["json", "stream-json", "text"] {
-        let sandbox = Sandbox::new();
-        std::fs::write(
-            sandbox.config_yaml(),
-            "BIOROUTER_PROVIDER: ollama\nBIOROUTER_MODEL: cli-output-fixture:local\ncomputer_use_capabilities_version: 2\nextensions:\n  code_execution:\n    enabled: false\n    type: platform\n    name: code_execution\n    description: Disabled for direct file-access fixture\n    bundled: true\n    available_tools: []\n",
-        )
-        .unwrap();
-        let before = fixture.calls.load(Ordering::SeqCst);
-        let output = run_output_format(&sandbox, &endpoint, format).await;
-        assert!(
-            fixture.calls.load(Ordering::SeqCst) > before,
-            "no actual fixture completion for {format}"
-        );
-        assert_output_format(&output, format);
+    for input in [OutputInput::Text, OutputInput::ParameterizedWorkflow] {
+        for format in ["json", "stream-json", "text"] {
+            let sandbox = Sandbox::new();
+            std::fs::write(
+                sandbox.config_yaml(),
+                "BIOROUTER_PROVIDER: ollama\nBIOROUTER_MODEL: cli-output-fixture:local\ncomputer_use_capabilities_version: 2\nextensions:\n  code_execution:\n    enabled: false\n    type: platform\n    name: code_execution\n    description: Disabled for direct file-access fixture\n    bundled: true\n    available_tools: []\n",
+            )
+            .unwrap();
+            let before = fixture.calls.load(Ordering::SeqCst);
+            let output = run_output_format(&sandbox, &endpoint, format, input).await;
+            assert!(
+                fixture.calls.load(Ordering::SeqCst) > before,
+                "no actual fixture completion for {input:?} {format}"
+            );
+            assert_output_format(&output, format);
+            if matches!(input, OutputInput::ParameterizedWorkflow) {
+                let stderr = text(&output.stderr);
+                assert!(stderr.contains("Parameters used to load this workflow:"));
+                assert!(stderr.contains("control: PARAMETER_OUTPUT_CONTROL"));
+            }
+        }
     }
     assert_eq!(
         std::fs::read_to_string(&fixture.external_file).unwrap(),

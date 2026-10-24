@@ -276,6 +276,7 @@ instructions: |
      using `--output-format json`. Parse the entire stdout as one JSON object; verify the actual
      tool result contains `authorization_required`, the requested scope, and interactive recovery
      guidance without file content. Repeat with `stream-json` and parse every output line as JSON.
+     Repeat with a parameterized workflow; its human parameter summary must remain on stderr.
      Run `cargo test -p biorouter-cli --test non_interactive run_output_formats_keep_machine_stdout_parseable`
      for the real-binary format controls; ordinary text output must retain the session banner.
 

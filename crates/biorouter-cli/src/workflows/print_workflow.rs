@@ -36,13 +36,17 @@ pub fn print_workflow_explanation(workflow: &Workflow) {
 
 pub fn print_parameters_with_values(params: HashMap<String, String>) {
     for (key, value) in params {
-        let label = if key == BUILT_IN_WORKFLOW_DIR_PARAM {
-            " (built-in)"
-        } else {
-            ""
-        };
-        println!("   {}{}: {}", key, label, value);
+        println!("{}", parameter_with_value(&key, &value));
     }
+}
+
+fn parameter_with_value(key: &str, value: &str) -> String {
+    let label = if key == BUILT_IN_WORKFLOW_DIR_PARAM {
+        " (built-in)"
+    } else {
+        ""
+    };
+    format!("   {}{}: {}", key, label, value)
 }
 
 pub fn print_required_parameters_for_template(
@@ -91,7 +95,9 @@ pub fn print_workflow_info(workflow: &Workflow, params: Vec<(String, String)>) {
 
     if !params.is_empty() {
         eprintln!("{}", style("Parameters used to load this workflow:").bold());
-        print_parameters_with_values(params.into_iter().collect());
+        for (key, value) in params {
+            eprintln!("{}", parameter_with_value(&key, &value));
+        }
     }
     eprintln!();
 }
