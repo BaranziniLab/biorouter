@@ -200,6 +200,13 @@ pub(crate) fn diff_target_paths(base_path: &Path, diff: &str) -> Result<Vec<Path
     diff_target_paths_for_kind(base_path, diff, base_path.is_file())
 }
 
+pub(crate) fn diff_target_paths_bounded(
+    base_path: &EditorPath,
+    diff: &str,
+) -> Result<Vec<PathBuf>, ErrorData> {
+    diff_target_paths_for_kind(base_path, diff, base_path.is_file())
+}
+
 fn diff_target_paths_for_kind(
     base_path: &Path,
     diff: &str,
@@ -245,7 +252,7 @@ pub(crate) async fn apply_diff_bounded(
     diff_content: &str,
     file_history: &FileHistory,
 ) -> Result<Vec<Content>, ErrorData> {
-    let targets = diff_target_paths_for_kind(base_path, diff_content, base_path.is_file())?;
+    let targets = diff_target_paths_bounded(base_path, diff_content)?;
     let patches = parse_diff_content(diff_content)?;
     // Bind and policy-check every child, and prepare all content, before any
     // filesystem mutation. The third-party patch engine never receives a path.

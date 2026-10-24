@@ -13,6 +13,7 @@ use crate::secret_guard::SecretGuard;
 pub struct FileAccessRequest {
     pub path: PathBuf,
     pub access: AccessMode,
+    pub recursive: bool,
 }
 #[derive(Clone, Debug, Default)]
 pub struct FileAccessPlan {
@@ -47,7 +48,26 @@ pub fn file_access_plan(
     args: &serde_json::Value,
     cwd: &Path,
 ) -> Result<Option<FileAccessPlan>> {
-    if tool_name.rsplit("__").next() != Some("text_editor") {
+    let name = tool_name.rsplit("__").next().unwrap_or(tool_name);
+    if matches!(name, "analyze" | "image_processor") {
+        let raw = args
+            .get("path")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| anyhow!("Missing file path"))?;
+        let mut path = absolute_file_path(raw, cwd)?;
+        if name == "image_processor" && cfg!(target_os = "macos") {
+            path = normalize_image_path(&path);
+        }
+        let recursive = name == "analyze" && path.is_dir();
+        return Ok(Some(FileAccessPlan {
+            requests: vec![FileAccessRequest {
+                path,
+                access: AccessMode::Read,
+                recursive,
+            }],
+        }));
+    }
+    if name != "text_editor" {
         return Ok(None);
     }
     let command = args
@@ -78,16 +98,22 @@ pub fn file_access_plan(
             let mut requests = vec![FileAccessRequest {
                 path,
                 access: AccessMode::Read,
+                recursive: false,
             }];
             requests.extend(targets.into_iter().map(|path| FileAccessRequest {
                 path,
                 access: AccessMode::Write,
+                recursive: false,
             }));
             return Ok(Some(FileAccessPlan { requests }));
         }
     }
     Ok(Some(FileAccessPlan {
-        requests: vec![FileAccessRequest { path, access }],
+        requests: vec![FileAccessRequest {
+            path,
+            access,
+            recursive: false,
+        }],
     }))
 }
 
@@ -291,6 +317,107 @@ mod tests {
         assert_eq!(plan.requests[0].access, AccessMode::Read);
         assert_eq!(plan.requests[1].path, root.path().join("one.txt"));
         assert_eq!(plan.requests[2].path, root.path().join("two.txt"));
+    }
+
+    #[test]
+    fn planner_marks_only_directory_analysis_recursive() {
+        let root = tempfile::tempdir().unwrap();
+        let file = root.path().join("file.rs");
+        std::fs::write(&file, "fn main() {}\n").unwrap();
+        for (tool, path, recursive) in [
+            ("developer__analyze", root.path(), true),
+            ("analyze", file.as_path(), false),
+            ("image_processor", file.as_path(), false),
+        ] {
+            let plan = file_access_plan(tool, &serde_json::json!({"path":path}), root.path())
+                .unwrap()
+                .unwrap();
+            assert_eq!(plan.requests[0].recursive, recursive);
+            assert_eq!(plan.requests[0].access, AccessMode::Read);
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn structured_image_and_analysis_keep_the_original_workspace_after_name_swap() {
+        use crate::developer::analyze::types::AnalyzeParams;
+        use crate::developer::rmcp_developer::ImageProcessorParams;
+        use crate::DeveloperServer;
+        use rmcp::handler::server::wrapper::Parameters;
+        let fixture = tempfile::tempdir().unwrap();
+        let root = fixture.path().join("workspace");
+        let retained = fixture.path().join("retained");
+        std::fs::create_dir(&root).unwrap();
+        std::fs::write(root.join("approved.rs"), "fn approved_function() {}\n").unwrap();
+        let pixel = image::DynamicImage::new_rgb8(3, 2);
+        pixel.save(root.join("approved.png")).unwrap();
+        pixel.save(root.join("approved.tga")).unwrap();
+        let server = DeveloperServer::new().with_working_dir(root.clone());
+        std::fs::rename(&root, &retained).unwrap();
+        std::fs::create_dir(&root).unwrap();
+        std::fs::write(root.join("approved.rs"), "fn replacement_canary() {}\n").unwrap();
+        std::fs::write(root.join("approved.png"), "INVALID OUTSIDE CANARY").unwrap();
+        let result = server
+            .analyze(Parameters(AnalyzeParams {
+                path: root.to_string_lossy().into_owned(),
+                focus: None,
+                follow_depth: 2,
+                max_depth: 3,
+                ast_recursion_limit: None,
+                force: false,
+            }))
+            .await
+            .unwrap();
+        let text = serde_json::to_string(&result).unwrap();
+        assert!(text.contains("approved.rs"));
+        assert!(!text.contains("replacement_canary"));
+        for name in ["approved.png", "approved.tga"] {
+            let result = server
+                .image_processor(Parameters(ImageProcessorParams {
+                    path: root.join(name).to_string_lossy().into_owned(),
+                }))
+                .await
+                .unwrap();
+            assert!(serde_json::to_string(&result)
+                .unwrap()
+                .contains("image/png"));
+        }
+    }
+
+    #[tokio::test]
+    async fn successful_edits_carry_bounded_diagnostics_even_when_empty() {
+        use crate::developer::rmcp_developer::TextEditorParams;
+        use crate::DeveloperServer;
+        use rmcp::handler::server::wrapper::Parameters;
+        let root = tempfile::tempdir().unwrap();
+        let server = DeveloperServer::new().with_working_dir(root.path().to_path_buf());
+        for source in ["fn main( {", "fn main() {}"] {
+            let result = server
+                .text_editor(Parameters(TextEditorParams {
+                    path: "source.rs".into(),
+                    command: "write".into(),
+                    file_text: Some(source.into()),
+                    diff: None,
+                    view_range: None,
+                    old_str: None,
+                    new_str: None,
+                    insert_line: None,
+                }))
+                .await
+                .unwrap();
+            let diagnostics = result
+                .meta
+                .unwrap()
+                .0
+                .remove("biorouter-bounded-edit-diagnostics")
+                .unwrap();
+            assert!(diagnostics.is_array());
+            if source == "fn main() {}" {
+                assert!(diagnostics.as_array().unwrap().is_empty());
+            } else {
+                assert!(!diagnostics.as_array().unwrap().is_empty());
+            }
+        }
     }
 
     #[tokio::test]
@@ -563,4 +690,44 @@ mod tests {
             .file_type()
             .is_symlink());
     }
+}
+
+pub(crate) fn normalize_image_path(path: &Path) -> PathBuf {
+    // Compiled once rather than on every call.
+    static SCREENSHOT_RE: once_cell::sync::Lazy<regex::Regex> = once_cell::sync::Lazy::new(|| {
+        regex::Regex::new(
+                    r"^Screenshot \d{4}-\d{2}-\d{2} at \d{1,2}\.\d{2}\.\d{2} (AM|PM|am|pm)(?: \(\d+\))?\.png$",
+                )
+                .expect("valid regex")
+    });
+    // Only process if the path has a filename
+    if let Some(filename) = path.file_name().and_then(|f| f.to_str()) {
+        // Check if this matches Mac screenshot pattern:
+        // "Screenshot YYYY-MM-DD at H.MM.SS AM/PM.png"
+        if let Some(captures) = SCREENSHOT_RE.captures(filename) {
+            // Get the AM/PM part
+            let meridian = captures.get(1).unwrap().as_str();
+
+            // Find the last space before AM/PM and replace it with U+202F
+            let space_pos = filename
+                .rfind(meridian)
+                .and_then(|pos| filename.get(..pos).map(|s| s.trim_end().len()))
+                .unwrap_or(0);
+
+            if space_pos > 0 {
+                let parent = path.parent().unwrap_or(Path::new(""));
+                if let (Some(before), Some(after)) =
+                    (filename.get(..space_pos), filename.get(space_pos + 1..))
+                {
+                    let new_filename = format!("{}{}{}", before, '\u{202F}', after);
+                    let new_path = parent.join(new_filename);
+
+                    return new_path;
+                }
+            }
+        }
+    }
+
+    // Return the original path if it doesn't match or couldn't be processed
+    path.to_path_buf()
 }

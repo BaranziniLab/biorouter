@@ -1066,9 +1066,10 @@ impl DeveloperServer {
         let access = self.editor_access(meta)?;
         let requested =
             absolute_file_path(&params.path, access.workspace.root()).map_err(file_error)?;
+        let is_diff = params.command == "str_replace" && params.diff.is_some();
         let path = access.bind(
             &requested,
-            if params.command == "view" || params.diff.is_some() {
+            if params.command == "view" || is_diff {
                 AccessMode::Read
             } else {
                 AccessMode::Write
@@ -1076,6 +1077,11 @@ impl DeveloperServer {
         )?;
 
         let is_mutation = params.command != "view";
+        let diagnostic_targets = if is_diff {
+            super::text_editor::diff_target_paths_bounded(&path, params.diff.as_deref().unwrap())?
+        } else {
+            vec![path.to_path_buf()]
+        };
         let mut result = match params.command.as_str() {
             "view" => {
                 let view_range = params.view_range.as_ref().and_then(|vr| {
@@ -1181,6 +1187,31 @@ impl DeveloperServer {
             )),
         }?;
         if is_mutation {
+            let mut diagnostics = Vec::new();
+            for target in diagnostic_targets {
+                let Ok(file) = access.bind(&target, AccessMode::Read) else {
+                    continue;
+                };
+                let Ok(content) = file
+                    .bound
+                    .read_to_string_limited(super::analyze::diagnostics::MAX_DIAGNOSE_BYTES as u64)
+                else {
+                    continue;
+                };
+                let lines: Vec<_> = self
+                    .code_analyzer
+                    .diagnose_source(&target, &content)
+                    .iter()
+                    .map(|diagnostic| diagnostic.render())
+                    .collect();
+                if !lines.is_empty() {
+                    diagnostics.push(serde_json::json!({"path":target, "lines":lines}));
+                }
+            }
+            result.meta.get_or_insert_with(Default::default).0.insert(
+                "biorouter-bounded-edit-diagnostics".into(),
+                serde_json::Value::Array(diagnostics),
+            );
             if let Some(notice) = self.file_history.take_persistence_notice() {
                 result.content.push(Content::text(notice));
             }
@@ -1853,14 +1884,33 @@ impl DeveloperServer {
         name = "analyze",
         description = "Analyze code structure in 3 modes: 1) Directory overview - file tree with LOC/function/class counts to max_depth. 2) File details - functions, classes, imports. 3) Symbol focus - call graphs across directory to max_depth (requires directory path, case-sensitive). Typical flow: directory → files → symbols. Functions called >3x show •N."
     )]
+    pub async fn analyze_with_context(
+        &self,
+        params: Parameters<AnalyzeParams>,
+        context: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, ErrorData> {
+        self.analyze_authorized(params, context.meta)
+    }
+
     pub async fn analyze(
         &self,
         params: Parameters<AnalyzeParams>,
     ) -> Result<CallToolResult, ErrorData> {
+        self.analyze_authorized(params, Default::default())
+    }
+
+    fn analyze_authorized(
+        &self,
+        params: Parameters<AnalyzeParams>,
+        meta: rmcp::model::Meta,
+    ) -> Result<CallToolResult, ErrorData> {
         let params = params.0;
-        let path = self.resolve_path(&params.path)?;
+        let access = self.editor_access(meta)?;
+        let requested =
+            absolute_file_path(&params.path, access.workspace.root()).map_err(file_error)?;
+        let path = access.bind(&requested, AccessMode::Read)?;
         self.code_analyzer
-            .analyze(params, path, self.secret_guard.gitignore())
+            .analyze_bounded(params, &path, self.secret_guard.gitignore())
     }
 
     /// Process an image file from disk.
@@ -1875,46 +1925,41 @@ impl DeveloperServer {
         name = "image_processor",
         description = "Process an image file from disk. Resizes if needed, converts to PNG, and returns as base64 data."
     )]
+    pub async fn image_processor_with_context(
+        &self,
+        params: Parameters<ImageProcessorParams>,
+        context: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, ErrorData> {
+        self.image_processor_authorized(params, context.meta).await
+    }
+
     pub async fn image_processor(
         &self,
         params: Parameters<ImageProcessorParams>,
     ) -> Result<CallToolResult, ErrorData> {
+        self.image_processor_authorized(params, Default::default())
+            .await
+    }
+
+    async fn image_processor_authorized(
+        &self,
+        params: Parameters<ImageProcessorParams>,
+        meta: rmcp::model::Meta,
+    ) -> Result<CallToolResult, ErrorData> {
         let params = params.0;
-        let path_str = &params.path;
-
-        let path = {
-            let p = self.resolve_path(path_str)?;
-            if cfg!(target_os = "macos") {
-                self.normalize_mac_screenshot_path(&p)
-            } else {
-                p
-            }
-        };
-
-        // Check if file is ignored before proceeding
-        if self.is_ignored(&path) {
-            return Err(ErrorData::new(
-                ErrorCode::INTERNAL_ERROR,
-                format!(
-                    "Access to '{}' is restricted by .biorouterignore",
-                    path.display()
-                ),
-                None,
-            ));
+        let access = self.editor_access(meta)?;
+        let mut requested =
+            absolute_file_path(&params.path, access.workspace.root()).map_err(file_error)?;
+        if cfg!(target_os = "macos") {
+            requested = self.normalize_mac_screenshot_path(&requested);
         }
-
-        // Check if file exists
-        if !path.exists() {
-            return Err(ErrorData::new(
-                ErrorCode::INTERNAL_ERROR,
-                format!("File '{}' does not exist", path.display()),
-                None,
-            ));
-        }
+        let path = access.bind(&requested, AccessMode::Read)?;
 
         // Check file size (10MB limit for image files)
         const MAX_FILE_SIZE: u64 = 10 * 1024 * 1024; // 10MB in bytes
-        let file_size = std::fs::metadata(&path)
+        let file_size = path
+            .bound
+            .metadata()
             .map_err(|e| {
                 ErrorData::new(
                     ErrorCode::INTERNAL_ERROR,
@@ -1937,7 +1982,12 @@ impl DeveloperServer {
         }
 
         // Open and decode the image
-        let image = image::open(&path).map_err(|e| {
+        let bytes = path.bound.read_limited(MAX_FILE_SIZE).map_err(file_error)?;
+        let decoded = match image::ImageFormat::from_path(&**path) {
+            Ok(format) => image::load_from_memory_with_format(&bytes, format),
+            Err(_) => image::load_from_memory(&bytes),
+        };
+        let image = decoded.map_err(|e| {
             ErrorData::new(
                 ErrorCode::INTERNAL_ERROR,
                 format!("Failed to open image file: {}", e),
@@ -2326,45 +2376,7 @@ impl DeveloperServer {
 
     // Helper function to handle Mac screenshot filenames that contain U+202F (narrow no-break space)
     fn normalize_mac_screenshot_path(&self, path: &Path) -> PathBuf {
-        // Compiled once rather than on every call.
-        static SCREENSHOT_RE: once_cell::sync::Lazy<regex::Regex> = once_cell::sync::Lazy::new(
-            || {
-                regex::Regex::new(
-                    r"^Screenshot \d{4}-\d{2}-\d{2} at \d{1,2}\.\d{2}\.\d{2} (AM|PM|am|pm)(?: \(\d+\))?\.png$",
-                )
-                .expect("valid regex")
-            },
-        );
-        // Only process if the path has a filename
-        if let Some(filename) = path.file_name().and_then(|f| f.to_str()) {
-            // Check if this matches Mac screenshot pattern:
-            // "Screenshot YYYY-MM-DD at H.MM.SS AM/PM.png"
-            if let Some(captures) = SCREENSHOT_RE.captures(filename) {
-                // Get the AM/PM part
-                let meridian = captures.get(1).unwrap().as_str();
-
-                // Find the last space before AM/PM and replace it with U+202F
-                let space_pos = filename
-                    .rfind(meridian)
-                    .and_then(|pos| filename.get(..pos).map(|s| s.trim_end().len()))
-                    .unwrap_or(0);
-
-                if space_pos > 0 {
-                    let parent = path.parent().unwrap_or(Path::new(""));
-                    if let (Some(before), Some(after)) =
-                        (filename.get(..space_pos), filename.get(space_pos + 1..))
-                    {
-                        let new_filename = format!("{}{}{}", before, '\u{202F}', after);
-                        let new_path = parent.join(new_filename);
-
-                        return new_path;
-                    }
-                }
-            }
-        }
-
-        // Return the original path if it doesn't match or couldn't be processed
-        path.to_path_buf()
+        crate::file_access::normalize_image_path(path)
     }
 
     // shell output can be large, this will help manage that

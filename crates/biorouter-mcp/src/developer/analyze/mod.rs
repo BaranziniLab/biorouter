@@ -15,6 +15,7 @@ use rmcp::model::{CallToolResult, ErrorCode, ErrorData};
 use std::path::{Path, PathBuf};
 
 use crate::developer::lang;
+use crate::file_access::{file_error, EditorPath};
 
 use self::cache::AnalysisCache;
 use self::formatter::Formatter;
@@ -68,32 +69,50 @@ impl CodeAnalyzer {
         path: PathBuf,
         ignore_patterns: &Gitignore,
     ) -> Result<CallToolResult, ErrorData> {
-        tracing::info!("Starting analysis of {:?} with params {:?}", path, params);
-
         let traverser = FileTraverser::new(ignore_patterns);
+        self.analyze_with_traverser(params, path, &traverser)
+    }
+
+    pub(crate) fn analyze_bounded(
+        &self,
+        params: AnalyzeParams,
+        path: &EditorPath,
+        ignore_patterns: &Gitignore,
+    ) -> Result<CallToolResult, ErrorData> {
+        let traverser = FileTraverser::with_access(ignore_patterns, path.access.clone());
+        self.analyze_with_traverser(params, path.to_path_buf(), &traverser)
+    }
+
+    fn analyze_with_traverser(
+        &self,
+        params: AnalyzeParams,
+        path: PathBuf,
+        traverser: &FileTraverser<'_>,
+    ) -> Result<CallToolResult, ErrorData> {
+        tracing::info!("Starting analysis of {:?} with params {:?}", path, params);
 
         traverser.validate_path(&path)?;
 
-        let mode = self.determine_mode(&params, &path);
+        let mode = self.determine_mode(&params, traverser.bound(&path)?.is_file());
 
         tracing::debug!("Using analysis mode: {:?}", mode);
 
         let mut output = match mode {
-            AnalysisMode::Focused => self.analyze_focused(&path, &params, &traverser)?,
+            AnalysisMode::Focused => self.analyze_focused(&path, &params, traverser)?,
             AnalysisMode::Semantic => {
-                if path.is_file() {
-                    let result = self.analyze_file(&path, &mode, &params)?;
+                if traverser.bound(&path)?.is_file() {
+                    let result = self.analyze_file(&path, &mode, &params, traverser)?;
                     Formatter::format_analysis_result(&path, &result, &mode)
                 } else {
-                    self.analyze_directory(&path, &params, &traverser, &mode)?
+                    self.analyze_directory(&path, &params, traverser, &mode)?
                 }
             }
             AnalysisMode::Structure => {
-                if path.is_file() {
-                    let result = self.analyze_file(&path, &mode, &params)?;
+                if traverser.bound(&path)?.is_file() {
+                    let result = self.analyze_file(&path, &mode, &params, traverser)?;
                     Formatter::format_analysis_result(&path, &result, &mode)
                 } else {
-                    self.analyze_directory(&path, &params, &traverser, &mode)?
+                    self.analyze_directory(&path, &params, traverser, &mode)?
                 }
             }
         };
@@ -150,30 +169,39 @@ impl CodeAnalyzer {
     /// the edit that triggered them, so every failure path degrades to "no
     /// diagnostics".
     pub fn diagnose_file(&self, path: &Path) -> Vec<diagnostics::Diagnostic> {
+        let ignore = Gitignore::empty();
+        let traverser = FileTraverser::new(&ignore);
+        let content = traverser.bound(path).ok().and_then(|bound| {
+            bound
+                .bound
+                .read_to_string_limited(diagnostics::MAX_DIAGNOSE_BYTES as u64)
+                .ok()
+        });
+        content
+            .map(|content| self.diagnose_source(path, &content))
+            .unwrap_or_default()
+    }
+
+    pub fn diagnose_source(&self, path: &Path, content: &str) -> Vec<diagnostics::Diagnostic> {
         let language = lang::get_language_identifier(path);
-        if !diagnostics::is_diagnosable_language(language) {
+        if !diagnostics::is_diagnosable_language(language)
+            || content.len() > diagnostics::MAX_DIAGNOSE_BYTES
+        {
             return Vec::new();
         }
-        let content = match std::fs::read_to_string(path) {
-            Ok(content) => content,
-            Err(_) => return Vec::new(),
-        };
-        if content.len() > diagnostics::MAX_DIAGNOSE_BYTES {
-            return Vec::new();
-        }
-        let tree = match self.parser_manager.parse(&content, language) {
+        let tree = match self.parser_manager.parse(content, language) {
             Ok(tree) => tree,
             Err(_) => return Vec::new(),
         };
-        diagnostics::collect_syntax_errors(&tree, &content, diagnostics::MAX_DIAGNOSTICS_PER_FILE)
+        diagnostics::collect_syntax_errors(&tree, content, diagnostics::MAX_DIAGNOSTICS_PER_FILE)
     }
 
-    fn determine_mode(&self, params: &AnalyzeParams, path: &Path) -> AnalysisMode {
+    fn determine_mode(&self, params: &AnalyzeParams, is_file: bool) -> AnalysisMode {
         if params.focus.is_some() {
             return AnalysisMode::Focused;
         }
 
-        if path.is_file() {
+        if is_file {
             AnalysisMode::Semantic
         } else {
             AnalysisMode::Structure
@@ -185,10 +213,13 @@ impl CodeAnalyzer {
         path: &Path,
         mode: &AnalysisMode,
         params: &AnalyzeParams,
+        traverser: &FileTraverser<'_>,
     ) -> Result<AnalysisResult, ErrorData> {
         tracing::debug!("Analyzing file {:?} in {:?} mode", path, mode);
 
-        let metadata = std::fs::metadata(path).map_err(|e| {
+        let bound = traverser.bound(path)?;
+        let cache_key = bound.bound.try_history_key().map_err(file_error)?;
+        let metadata = bound.bound.metadata().map_err(|e| {
             tracing::error!("Failed to get file metadata for {:?}: {}", path, e);
             ErrorData::new(
                 ErrorCode::INTERNAL_ERROR,
@@ -209,13 +240,14 @@ impl CodeAnalyzer {
             )
         })?;
 
-        if let Some(cached) = self.cache.get(&path.to_path_buf(), modified, mode) {
+        if let Some(cached) = self.cache.get(&cache_key, modified, mode) {
             tracing::trace!("Using cached result for {:?}", path);
             return Ok(cached);
         }
 
-        let content = match std::fs::read_to_string(path) {
+        let content = match bound.read_to_string() {
             Ok(content) => content,
+            Err(e) if e.kind() != std::io::ErrorKind::InvalidData => return Err(file_error(e)),
             Err(e) => {
                 tracing::trace!("Skipping binary/non-UTF-8 file {:?}: {}", path, e);
                 return Ok(AnalysisResult::empty(0));
@@ -254,8 +286,7 @@ impl CodeAnalyzer {
 
         result.line_count = line_count;
 
-        self.cache
-            .put(path.to_path_buf(), modified, mode, result.clone());
+        self.cache.put(cache_key, modified, mode, result.clone());
 
         Ok(result)
     }
@@ -272,7 +303,7 @@ impl CodeAnalyzer {
         let mode = *mode;
 
         let results = traverser.collect_directory_results(path, params.max_depth, |file_path| {
-            self.analyze_file(file_path, &mode, params)
+            self.analyze_file(file_path, &mode, params, traverser)
         })?;
 
         Ok(Formatter::format_directory_structure(
@@ -299,7 +330,7 @@ impl CodeAnalyzer {
 
         tracing::info!("Running focused analysis for symbol '{}'", focus_symbol);
 
-        let files_to_analyze = if path.is_file() {
+        let files_to_analyze = if traverser.bound(&path)?.is_file() {
             vec![path.to_path_buf()]
         } else {
             traverser.collect_files_for_focused(path, params.max_depth)?
@@ -314,7 +345,7 @@ impl CodeAnalyzer {
         let all_results: Result<Vec<_>, _> = files_to_analyze
             .par_iter()
             .map(|file_path| {
-                self.analyze_file(file_path, &AnalysisMode::Semantic, params)
+                self.analyze_file(file_path, &AnalysisMode::Semantic, params, traverser)
                     .map(|result| (file_path.clone(), result))
             })
             .collect();
@@ -351,7 +382,7 @@ impl CodeAnalyzer {
 
         let mut output = Formatter::format_focused_output(&focus_data);
 
-        if path.is_file() {
+        if traverser.bound(&path)?.is_file() {
             let hint = "NOTE: Focus mode works best with directory paths. \
                         Use a parent directory in the path for cross-file analysis.\n\n";
             output = format!("{}{}", hint, output);
