@@ -5,6 +5,12 @@ use std::io;
 pub(crate) fn protect(file: &File, directory: bool) -> io::Result<()> {
     use std::os::unix::fs::{MetadataExt, PermissionsExt};
     let metadata = file.metadata()?;
+    if !directory && metadata.nlink() != 1 {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "Private storage must not share a hard-linked file inode",
+        ));
+    }
     if metadata.uid() != unsafe { libc::geteuid() } {
         return Err(io::Error::new(
             io::ErrorKind::PermissionDenied,
@@ -78,7 +84,9 @@ pub(crate) fn protect(file: &File, directory: bool) -> io::Result<()> {
         OWNER_SECURITY_INFORMATION, PROTECTED_DACL_SECURITY_INFORMATION,
         SUB_CONTAINERS_AND_OBJECTS_INHERIT, TOKEN_QUERY, TOKEN_USER,
     };
-    use windows_sys::Win32::Storage::FileSystem::FILE_ALL_ACCESS;
+    use windows_sys::Win32::Storage::FileSystem::{
+        GetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION, FILE_ALL_ACCESS,
+    };
     use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
     struct Allocation(*mut std::ffi::c_void);
     impl Drop for Allocation {
@@ -93,6 +101,20 @@ pub(crate) fn protect(file: &File, directory: bool) -> io::Result<()> {
             Ok(())
         } else {
             Err(io::Error::from_raw_os_error(code as i32))
+        }
+    }
+    if !directory {
+        let mut information = std::mem::MaybeUninit::<BY_HANDLE_FILE_INFORMATION>::uninit();
+        if unsafe { GetFileInformationByHandle(file.as_raw_handle(), information.as_mut_ptr()) }
+            == 0
+        {
+            return Err(io::Error::last_os_error());
+        }
+        if unsafe { information.assume_init() }.nNumberOfLinks != 1 {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "Private storage must not share a hard-linked file inode",
+            ));
         }
     }
     let mut token = null_mut();

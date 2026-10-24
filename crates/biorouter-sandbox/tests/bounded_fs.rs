@@ -463,6 +463,25 @@ mod unix {
         assert_eq!(fs::read(outside.path().join("canary")).unwrap(), b"outside");
     }
 
+    #[test]
+    fn private_storage_refuses_metadata_changes_to_hardlinked_outside_alias() {
+        let fixture = root();
+        let outside = root();
+        let canary = outside.path().join("canary");
+        fs::write(&canary, "outside").unwrap();
+        fs::set_permissions(&canary, fs::Permissions::from_mode(0o644)).unwrap();
+        fs::hard_link(&canary, fixture.path().join("history.json")).unwrap();
+        let fs = BoundedFs::open(fixture.path()).unwrap();
+        let bound = fs.bind("history.json", AccessMode::Write).unwrap();
+        denied(bound.protect_owner_private());
+        denied(bound.atomic_write_private(b"denied"));
+        assert_eq!(
+            fs::metadata(&canary).unwrap().permissions().mode() & 0o777,
+            0o644
+        );
+        assert_eq!(fs::read(canary).unwrap(), b"outside");
+    }
+
     #[cfg(target_os = "macos")]
     #[test]
     fn normal_replacement_preserves_acl_and_private_replacement_removes_it() {
