@@ -416,6 +416,10 @@ impl FolderAccessManager {
             .into());
         }
         let filesystem = Arc::new(BoundedFs::open(folder)?);
+        anyhow::ensure!(
+            filesystem.root() == folder,
+            authorization_required(folder, access, "The folder changed while access was being prepared. Retry the original file operation so its current target can be shown for approval.")
+        );
         let once_grants = exact_grants(&filesystem, requests)?;
         let request = FolderAccessRequest {
             action_id: action_id.to_string(),
@@ -717,5 +721,46 @@ mod skill_authority_tests {
                 .err()
                 .expect("replacing the skills name must not replace its pinned authority"),
         );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_folder_retargeted_after_discovery_cannot_supply_a_mislabelled_session_grant() {
+        let fixture = tempfile::tempdir().unwrap();
+        let directory = fixture.path().canonicalize().unwrap();
+        let workspace = directory.join("workspace");
+        let disclosed = directory.join("disclosed-results");
+        let outside = directory.join("outside");
+        for path in [&workspace, &disclosed, &outside] {
+            std::fs::create_dir(path).unwrap();
+        }
+        std::fs::write(outside.join("result.txt"), "synthetic outside result").unwrap();
+        let session = Uuid::new_v4().to_string();
+        let manager = FolderAccessManager::default();
+        manager.pin_workspace(&session, &workspace).unwrap();
+        std::fs::rename(&disclosed, directory.join("original-results")).unwrap();
+        std::os::unix::fs::symlink(&outside, &disclosed).unwrap();
+        let result = tokio::time::timeout(
+            Duration::from_secs(3),
+            manager.approve_folder(
+                &session,
+                &Uuid::new_v4().to_string(),
+                "developer__text_editor",
+                &workspace,
+                &disclosed,
+                &[biorouter_mcp::FileAccessRequest {
+                    path: disclosed.join("result.txt"),
+                    access: AccessMode::Read,
+                    recursive: false,
+                }],
+                &[],
+                &CancellationToken::new(),
+            ),
+        )
+        .await
+        .expect("a retargeted folder must be refused before an approval card is parked");
+        assert_authorization_required(result.err().unwrap());
+        assert!(manager.list_session(&session).is_empty());
+        assert!(!PendingUserActions::global().has_pending_in_session(&session));
     }
 }
