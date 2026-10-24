@@ -1,7 +1,9 @@
 //! Observational boundary probes for the frozen 2026-10 assessment.
 use std::time::Instant;
 
-use biorouter_sandbox::{DockerSandbox, LocalProcessSandbox, SandboxClient, SandboxSpec};
+#[cfg(unix)]
+use biorouter_sandbox::DockerSandbox;
+use biorouter_sandbox::{LocalProcessSandbox, SandboxClient, SandboxSpec};
 use serde_json::json;
 
 fn record(id: &str, kind: &str, observed: serde_json::Value, protected: bool, elapsed: Instant) {
@@ -144,6 +146,7 @@ async fn synthetic_file_boundary_observations() {
     }
 }
 
+#[cfg(unix)]
 #[tokio::test]
 #[ignore = "explicit opt-in: requires local Docker image; synthetic mounts only"]
 async fn docker_runtime_boundary_observations() {
@@ -315,6 +318,7 @@ async fn docker_runtime_boundary_observations() {
     );
 }
 
+#[cfg(unix)]
 fn docker_record(
     id: &str,
     kind: &str,
