@@ -76,6 +76,73 @@
         }
       }
     },
+    "/action-required/folder-access": {
+      "get": {
+        "tags": [
+          "super::routes::folder_access"
+        ],
+        "operationId": "list_folder_access",
+        "parameters": [
+          {
+            "name": "session_id",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/FolderGrantView"
+                  }
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Session is not reachable"
+          }
+        }
+      }
+    },
+    "/action-required/folder-access/revoke": {
+      "post": {
+        "tags": [
+          "super::routes::folder_access"
+        ],
+        "operationId": "revoke_folder_access",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RevokeFolderAccessRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "403": {
+            "description": "Human approval proof required"
+          }
+        }
+      }
+    },
     "/action-required/secrets": {
       "post": {
         "tags": [
@@ -13412,6 +13479,40 @@
         },
         "additionalProperties": false
       },
+      "FolderAccessSessionQuery": {
+        "type": "object",
+        "required": [
+          "session_id"
+        ],
+        "properties": {
+          "session_id": {
+            "type": "string"
+          }
+        }
+      },
+      "FolderGrantView": {
+        "type": "object",
+        "required": [
+          "id",
+          "folder",
+          "access",
+          "descendants"
+        ],
+        "properties": {
+          "access": {
+            "type": "string"
+          },
+          "descendants": {
+            "type": "boolean"
+          },
+          "folder": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          }
+        }
+      },
       "FromInvitationRequest": {
         "type": "object",
         "description": "`POST /crew/connections/from-invitation`: the pasted invitation and the person's choices on\nthe Join screen. Every choice is optional; an absent one takes the invitation's.",
@@ -18566,6 +18667,21 @@
           "ended_by_workspace"
         ]
       },
+      "RevokeFolderAccessRequest": {
+        "type": "object",
+        "required": [
+          "sessionId",
+          "grantId"
+        ],
+        "properties": {
+          "grantId": {
+            "type": "string"
+          },
+          "sessionId": {
+            "type": "string"
+          }
+        }
+      },
       "Role": {
         "oneOf": [
           {
@@ -21109,6 +21225,47 @@
       },
       "ToolPreview": {
         "oneOf": [
+          {
+            "type": "object",
+            "required": [
+              "folder",
+              "access",
+              "files",
+              "descendants",
+              "onceDescendants",
+              "actionId",
+              "kind"
+            ],
+            "properties": {
+              "access": {
+                "type": "string"
+              },
+              "actionId": {
+                "type": "string"
+              },
+              "descendants": {
+                "type": "boolean"
+              },
+              "files": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "folder": {
+                "type": "string"
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "folderAccess"
+                ]
+              },
+              "onceDescendants": {
+                "type": "boolean"
+              }
+            }
+          },
           {
             "type": "object",
             "description": "A command that will be handed to a shell verbatim.",
