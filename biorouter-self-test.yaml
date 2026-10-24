@@ -280,6 +280,18 @@ instructions: |
      Run `cargo test -p biorouter-cli --test non_interactive run_output_formats_keep_machine_stdout_parseable`
      for the real-binary format controls; ordinary text output must retain the session banner.
 
+  7. Manual headed-desktop lifecycle gate (#455): in an isolated managed profile, approve a
+     synthetic external folder for this chat, quit the actual app normally, reopen the same chat,
+     and request that file again. Require a new folder card before any read. Also exercise abrupt
+     native disconnection, reconnect, and two active clients using the same chat: ending one client
+     must revoke its retained once/session access and pending request without stopping the shared
+     daemon or revoking the other client's grants. Do not treat this CLI workflow, a unit test,
+     or a screenshot as proof that OS app quit/restart passed; record unrun actions as NOT EXERCISED.
+  8. Confirm lifetime notices match deployment: managed desktop says app quit/restart; browser
+     and manual external backends say backend restart and explicitly retain grants across interface
+     restart. Include the environment-selected external backend. Nonshared/native Windows retains
+     its owned-daemon normal-quit cleanup; do not claim it uses the Unix shared-client protocol.
+
   Log exact commands, model/provider, human decisions, and observed results to:
   {{ workspace_dir }}/phase4_folder_access.md
   {% endif %}

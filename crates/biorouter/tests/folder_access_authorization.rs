@@ -2,6 +2,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
+use biorouter::agents::tool_errors::{classify_error_data, ToolErrorKind};
 use biorouter::conversation::message::{ActionRequiredData, MessageContent};
 use biorouter::folder_access::{FileAdmission, FolderAccessManager};
 use biorouter::pending_user_action::{
@@ -323,7 +324,13 @@ async fn denied_folder_is_not_reprompted_until_the_next_user_turn() {
     );
     let id = fixture.pending().await;
     fixture.answer(&id, Permission::DenyOnce);
-    assert!(job.await.unwrap().is_err());
+    let denied = job.await.unwrap().err().unwrap();
+    let denied = denied.downcast_ref::<rmcp::model::ErrorData>().unwrap();
+    assert!(denied.message.contains("Access was not approved."));
+    let classified = classify_error_data(denied);
+    assert_eq!(classified.kind, ToolErrorKind::PermissionDenied);
+    assert!(!classified.retryable);
+    assert!(fixture.manager.list_session(&fixture.session).is_empty());
     let refused = tokio::time::timeout(
         Duration::from_secs(1),
         fixture.start(
@@ -334,7 +341,15 @@ async fn denied_folder_is_not_reprompted_until_the_next_user_turn() {
     .await
     .unwrap()
     .unwrap();
-    assert!(refused.is_err());
+    let refused = refused.err().unwrap();
+    let refused = refused.downcast_ref::<rmcp::model::ErrorData>().unwrap();
+    assert!(refused
+        .message
+        .contains("Access was not approved for this folder during the current turn."));
+    assert_eq!(
+        classify_error_data(refused).kind,
+        ToolErrorKind::PermissionDenied
+    );
     assert!(!PendingUserActions::global().has_pending_in_session(&fixture.session));
     fixture.manager.begin_turn(&fixture.session);
     let job = fixture.start(vec![(target, AccessMode::Read)], CancellationToken::new());
@@ -405,6 +420,13 @@ async fn unattended_external_access_returns_bounded_recovery_without_parking() {
         error.data.as_ref().unwrap()["code"],
         "authorization_required"
     );
+    assert_eq!(
+        classify_error_data(error).kind,
+        ToolErrorKind::PermissionDenied
+    );
+    assert!(!classify_error_data(error).retryable);
+    assert!(!error.message.contains("refused by the user"));
+    assert!(error.data.as_ref().unwrap()["recovery"].is_string());
     assert!(!PendingUserActions::global().has_pending_in_session(&fixture.session));
 }
 

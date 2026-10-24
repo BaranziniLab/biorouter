@@ -2,6 +2,7 @@ import { useId, useState } from 'react';
 import { listFolderAccess, revokeFolderAccess, type FolderGrantView } from '../../api';
 import { userActionHeaders } from '../../utils/userAction';
 import { isBrowserSurface } from '../../utils/surface';
+import { folderAccessLifetime } from '../../utils/folderAccessLifetime';
 import { ModalShell } from '../ModalShell';
 import { Button } from '../ui/button';
 
@@ -78,9 +79,9 @@ export function FolderAccess({ sessionId }: { sessionId: string }) {
         title="Folder access for this chat"
         subtitle={
           <>
-            Additional folders approved for this chat include their descendants. Grants expire when
-            revoked, the chat is deleted, or the app restarts. Allow once grants are used only for
-            their pending operation and are not listed here.
+            Additional folders approved for this chat include their descendants.{' '}
+            {folderAccessLifetime()} Allow once grants are used only for their pending operation and
+            are not listed here.
           </>
         }
         scrollBody

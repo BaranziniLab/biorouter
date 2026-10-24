@@ -267,6 +267,11 @@ fn assert_output_format(output: &Output, format: &str) {
         text(&output.stderr)
     );
     assert!(stdout.contains("CLI_OUTPUT_CONTROL"), "{format}: {stdout}");
+    assert!(stdout.contains("permission_denied"), "{format}: {stdout}");
+    assert!(
+        !stdout.contains("refused by the user") && !stdout.contains("The user declined"),
+        "unattended refusal must not invent a human decision: {format}: {stdout}"
+    );
     assert!(
         stdout.contains("authorization_required"),
         "missing actual refusal for {format}: {stdout}"

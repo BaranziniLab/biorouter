@@ -15,7 +15,7 @@ use biorouter::{
 };
 use biorouter_mcp::{FileAccessPlan, FileAccessRequest};
 use biorouter_sandbox::{bounded_fs::authorized_path, AccessMode};
-use futures::{SinkExt, StreamExt};
+use futures::StreamExt;
 use sha2::Digest;
 use tokio_tungstenite::{
     tungstenite::{client::IntoClientRequest, Error as WsError},
@@ -45,15 +45,27 @@ async fn connect(
     secret: &str,
     owner: Option<&str>,
 ) -> Result<WebSocketStream<Transport>, WsError> {
+    connect_instance(endpoint, proof, secret, owner, Some(INSTANCE)).await
+}
+
+async fn connect_instance(
+    endpoint: &Endpoint,
+    proof: Option<&str>,
+    secret: &str,
+    owner: Option<&str>,
+    instance: Option<&str>,
+) -> Result<WebSocketStream<Transport>, WsError> {
     let mut request = "ws://localhost/daemon/native-client"
         .into_client_request()
         .unwrap();
     request
         .headers_mut()
         .insert("x-secret-key", secret.parse().unwrap());
-    request
-        .headers_mut()
-        .insert("x-daemon-instance", INSTANCE.parse().unwrap());
+    if let Some(instance) = instance {
+        request
+            .headers_mut()
+            .insert("x-daemon-instance", instance.parse().unwrap());
+    }
     if let Some(owner) = owner {
         request
             .headers_mut()
@@ -212,6 +224,29 @@ async fn repeat_retired_owners(
     }
 }
 
+async fn assert_registration_refusals(endpoint: &Endpoint) {
+    for (proof, secret, expected) in [
+        (None, SECRET, 403),
+        (Some("forged-proof"), SECRET, 403),
+        (Some(PROOF), "wrong-api-secret", 401),
+    ] {
+        let error = connect(endpoint, proof, secret, None).await.unwrap_err();
+        let WsError::Http(response) = error else {
+            panic!("expected authentication refusal")
+        };
+        assert_eq!(response.status().as_u16(), expected);
+    }
+    for instance in [None, Some("77777777-7777-4777-8777-777777777777")] {
+        let error = connect_instance(endpoint, Some(PROOF), SECRET, None, instance)
+            .await
+            .unwrap_err();
+        let WsError::Http(response) = error else {
+            panic!("expected exact daemon-instance refusal")
+        };
+        assert_eq!(response.status().as_u16(), 403);
+    }
+}
+
 #[tokio::test]
 async fn mounted_native_socket_auth_disconnect_isolation_and_global_grant_pruning() {
     let fixture = tempfile::tempdir().unwrap();
@@ -223,17 +258,7 @@ async fn mounted_native_socket_auth_disconnect_isolation_and_global_grant_prunin
     let sentinel = external.join("sentinel.txt");
     std::fs::write(&sentinel, "SYNTHETIC_CANARY").unwrap();
     let (endpoint, server) = mounted_server(&root).await;
-    for (proof, secret, expected) in [
-        (None, SECRET, 403),
-        (Some("forged-proof"), SECRET, 403),
-        (Some(PROOF), "wrong-api-secret", 401),
-    ] {
-        let error = connect(&endpoint, proof, secret, None).await.unwrap_err();
-        let WsError::Http(response) = error else {
-            panic!("expected authentication refusal")
-        };
-        assert_eq!(response.status().as_u16(), expected);
-    }
+    assert_registration_refusals(&endpoint).await;
     let session = uuid::Uuid::new_v4().to_string();
     let manager = FolderAccessManager::global();
     manager.pin_workspace(&session, &workspace).unwrap();

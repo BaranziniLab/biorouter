@@ -10,7 +10,10 @@ An absolute file path or a connector's returned result path does not itself gran
   Directory analysis explicitly discloses read-only access to the chosen directory and descendants
   for that operation; it does not create a remembered folder grant or write access.
 - **Allow for this session** includes the displayed folder and descendants in this chat, with
-  the displayed access. It expires on revocation, deletion of the chat, or process restart.
+  the displayed access. It expires on revocation or deletion of the chat. In a managed desktop
+  connection it also expires when the app quits or restarts. Browser and manually configured
+  external-backend connections use the backend's lifetime; closing or restarting the interface
+  does not revoke those service-owned grants.
 - **Deny** leaves the files untouched. The agent cannot repeat or broaden that folder request
   during the same user turn. A new user turn may ask again.
 - **Cancel operation** releases the pending operation without creating a grant. Stopping the
@@ -35,6 +38,31 @@ Secret-file rules, managed denials, user never-allow settings, and exact-call de
 in force. Folder approval does not grant shell execution, desktop control, or a general
 ability to bypass another tool's permissions. An unattended route returns a structured
 `authorization_required` response instead of waiting for a decision it cannot display.
+
+## Desktop and backend lifetimes
+
+A managed shared desktop connection holds a private, main-process lifetime connection to its
+local daemon. Native grants belong to that client, even when two clients use the same chat.
+Disconnecting the client revokes its session and pending once grants, releases its pending
+folder requests, and leaves other active clients' grants and the shared daemon running.
+A reconnect obtains a new lifetime and requires fresh approval. An API secret or a renderer-
+supplied lifetime identifier cannot claim another desktop client's grants. A shared daemon
+that lacks this protocol must be updated or restarted explicitly before the desktop attaches;
+the app does not silently fall back to grants without an owner.
+
+The protocol applies to managed shared connections on supported Unix platforms. The existing
+nonshared desktop mode, including the native Windows owned-daemon path, still starts a private
+daemon for the application and stops that owned daemon on normal quit. It does not use the new
+per-client shared-daemon protocol. A fresh owned launch does not reuse the prior process's grants.
+
+A browser or a manually selected external backend remains a trusted service-session deployment.
+Its grants are owned by that backend, not isolated by the new desktop lifetime protocol. Use
+**Folder access** to revoke a service grant, delete its chat, or restart the backend. The interface
+shows this backend lifetime, including for the environment-selected external development backend.
+The primary workspace and ordinary in-workspace edits do not need additional folder approval.
+
+Revocation prevents subsequent operations through retained file capabilities. It cannot cancel
+an operating-system I/O operation that is already underway or undo a completed change.
 
 ## Browser setup
 
@@ -71,3 +99,9 @@ protected action. Server tests exercise scope separation and the startup digest 
 UI tests verify a refused key remains retryable, duplicate clicks produce one decision, and a
 failed revocation remains visible. Actual model-driven app verification is a separate release
 gate; unit-test results alone do not establish that it passed.
+
+The desktop-lifetime correction is tracked by [#455](https://github.com/BaranziniLab/biorouter/issues/455),
+following a real native quit/restart reproduction. Focused automated checks cover owner separation,
+retained capabilities, pending cancellation, and scoped grant pruning. Actual headed app quit,
+restart, abrupt disconnect, and reconnect checks against the final built artifact remain separate
+acceptance gates; preparing the correction does not establish that they passed.

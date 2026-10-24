@@ -16,6 +16,7 @@ import type { ActionRequired, ToolPreview, ToolPreviewLine, ToolRisk } from '../
 import { Badge, type BadgeTone } from './ui/badge';
 import { InfoTip } from './ui/info-tip';
 import { PREVIEW_COPY, TOOL_ROW_COPY } from './toolCallCopy';
+import { folderAccessLifetime } from '../utils/folderAccessLifetime';
 
 type ToolConfirmationData = Extract<ActionRequired['data'], { actionType: 'toolConfirmation' }>;
 export type ToolConfirmationPreview = NonNullable<ToolConfirmationData['preview']>;
@@ -267,8 +268,7 @@ export function ToolCallPreview({ preview }: { preview: ToolPreview }) {
         <div data-testid="folder-access-preview" className="space-y-2 text-body">
           <p className="break-all font-mono">{preview.folder}</p>
           <p>
-            {preview.access} access. A session grant includes subfolders and is not remembered after
-            app restart.
+            {preview.access} access. A session grant includes subfolders. {folderAccessLifetime()}
           </p>
           <p>
             {preview.onceDescendants

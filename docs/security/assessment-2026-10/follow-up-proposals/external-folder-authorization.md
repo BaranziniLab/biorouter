@@ -41,3 +41,22 @@ Use consistent authorization meanings across structured file tools and explicit 
 This requirement consolidates the original outside-cwd usability report below. It complements #437 (trusted result-file handoff), #446 (path-boundary hardening), #447 (invocation-scoped automatic judgments), #117 (resumable user-input setup), and #444 (approval visibility).
 
 This is an enhancement proposal requested by the user. It has not been implemented or validated by the completed defensive audit. Preserve the audit's local safety fixes while adding an intentional authorization path.
+
+
+### Desktop lifetime follow-up (#455)
+
+Actual native validation found that a shared daemon could retain a session folder grant after
+normal desktop quit and restart. [#455](https://github.com/BaranziniLab/biorouter/issues/455) tracks
+the corrective implementation and its independent acceptance gates. Managed shared desktop grants
+must be tied to the authenticated main client's lifetime; a disconnect must revoke retained once
+and session capabilities and cancel that client's pending folder request, while preserving other
+active clients and the shared daemon. A fresh client cannot list, use, or revoke the old client's
+grants even while disconnect cleanup is queued. Reconnect requires fresh folder approval.
+
+This native-client isolation is separate from browser/manual external-backend service policy.
+Those connections retain backend-owned grants until revocation, chat deletion, or backend restart;
+restarting only their interface does not revoke them. The UI must state the applicable lifetime.
+Owned nonshared desktop daemons keep their existing private-process/normal-quit cleanup path.
+The feature documentation at [External folder access](../../folder-access.md) describes these
+mode boundaries. Final source/CI/native acceptance evidence is recorded separately; no new runtime
+pass is asserted by this proposal note.

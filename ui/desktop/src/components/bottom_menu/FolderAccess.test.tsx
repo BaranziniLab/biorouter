@@ -53,6 +53,8 @@ describe('chat folder access management', () => {
     render(<FolderAccess sessionId="chat-a" />);
     fireEvent.click(screen.getByRole('button', { name: 'Folder access' }));
     await screen.findByText('/synthetic/results');
+    expect(screen.getByRole('dialog')).toHaveTextContent('backend restarts');
+    expect(screen.getByRole('dialog')).not.toHaveTextContent('desktop app quits');
     const key = screen.getByLabelText('Folder approval key');
     expect(key).toHaveAccessibleName('Folder approval key');
     expect(key).toHaveAccessibleDescription(/Use the separate key configured with/);

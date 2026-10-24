@@ -74,6 +74,7 @@ async function unixFixture(): Promise<Fixture> {
     user_action_installed: true,
   };
   const upgrades: string[] = [];
+  const verifiedSockets = new WeakSet<object>();
   const upstreamRequests: { path: string; secret: string | undefined; nativeClient?: string }[] =
     [];
   const nativeClients = new Set<WebSocket>();
@@ -92,6 +93,7 @@ async function unixFixture(): Promise<Fixture> {
           : undefined,
     });
     if (parsed.pathname === '/daemon/identity') {
+      verifiedSockets.add(request.socket);
       response.writeHead(200, { 'content-type': 'application/json' });
       response.end(JSON.stringify(identity));
       return;
@@ -113,6 +115,7 @@ async function unixFixture(): Promise<Fixture> {
   server.on('upgrade', (request, socket, head) => {
     if (request.url === '/daemon/native-client') {
       if (
+        !verifiedSockets.has(request.socket) ||
         !request.headers['x-user-action'] ||
         request.headers['x-secret-key'] !== DAEMON_SECRET ||
         request.headers['x-daemon-instance'] !== identity.instance_id
@@ -532,6 +535,7 @@ async function instanceOn(
 ) {
   const seen: { path: string; secret?: string; userAction?: string }[] = [];
   const nativeClients = new WebSocketServer({ noServer: true });
+  const verifiedSockets = new WeakSet<object>();
   const server = http.createServer((request, response) => {
     const headers = request.headers;
     seen.push({
@@ -545,6 +549,7 @@ async function instanceOn(
       return;
     }
     if (request.url === '/daemon/identity') {
+      verifiedSockets.add(request.socket);
       response.writeHead(200, { 'content-type': 'application/json' }).end(
         JSON.stringify({
           version: 1,
@@ -566,6 +571,7 @@ async function instanceOn(
   server.on('upgrade', (request, socket, head) => {
     if (
       request.url !== '/daemon/native-client' ||
+      !verifiedSockets.has(request.socket) ||
       request.headers['x-secret-key'] !== secret ||
       request.headers['x-user-action'] !== approval ||
       request.headers['x-daemon-instance'] !== identity.instance_id

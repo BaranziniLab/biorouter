@@ -172,6 +172,8 @@ pub(crate) fn authorization_required(folder: &Path, access: AccessMode, reason: 
         ),
         Some(serde_json::json!({
             "code": "authorization_required",
+            "kind": "permission_denied",
+            "retryable": false,
             "folder": folder,
             "access": access_name(access),
             "recovery": "Open this chat in an interactive desktop or terminal and approve the specific folder. Do not bypass this decision with shell or computer tools.",
@@ -591,6 +593,39 @@ impl FolderAccessManager {
         }
     }
 
+    fn remember_session_grant(
+        &self,
+        session_id: &str,
+        filesystem: Arc<BoundedFs>,
+        access: AccessMode,
+        owner: Option<crate::native_client::NativeClient>,
+    ) -> anyhow::Result<RootGrant> {
+        let root = RootGrant::new(filesystem, access);
+        if let Some(owner) = &owner {
+            owner.track(&root)?;
+        }
+        let mut sessions = self.sessions.lock().unwrap_or_else(PoisonError::into_inner);
+        let session = sessions.entry(session_id.to_string()).or_default();
+        session
+            .grants
+            .retain(|grant| grant.owner.as_ref().is_none_or(|owner| owner.is_live()));
+        anyhow::ensure!(
+            session.grants.len() < 128,
+            "Revoke an unused folder before authorizing another"
+        );
+        session.grants.push(SessionGrant {
+            view: FolderGrantView {
+                id: Uuid::new_v4().to_string(),
+                folder: root.filesystem().root().display().to_string(),
+                access: access_name(access).to_string(),
+                descendants: true,
+            },
+            root: root.clone(),
+            owner,
+        });
+        Ok(root)
+    }
+
     #[allow(clippy::too_many_arguments)]
     async fn approve_folder(
         &self,
@@ -625,7 +660,7 @@ impl FolderAccessManager {
             return Ok(vec![root]);
         }
         if self.folder_declined_this_turn(session_id, folder) {
-            return Err(authorization_required(folder, access, "The user declined this folder during the current turn. Do not ask again or broaden the request.").into());
+            return Err(authorization_required(folder, access, "Access was not approved for this folder during the current turn. Do not ask again or broaden the request.").into());
         }
         if crate::user_surface::no_human_surface() {
             return Err(authorization_required(
@@ -669,32 +704,9 @@ impl FolderAccessManager {
             }
             UserActionOutcome::Approved {
                 permission: Permission::AlwaysAllow,
-            } => {
-                let root = RootGrant::new(filesystem, access);
-                if let Some(owner) = &owner {
-                    owner.track(&root)?;
-                }
-                let mut sessions = self.sessions.lock().unwrap_or_else(PoisonError::into_inner);
-                let session = sessions.entry(session_id.to_string()).or_default();
-                session
-                    .grants
-                    .retain(|grant| grant.owner.as_ref().is_none_or(|owner| owner.is_live()));
-                anyhow::ensure!(
-                    session.grants.len() < 128,
-                    "Revoke an unused folder before authorizing another"
-                );
-                session.grants.push(SessionGrant {
-                    view: FolderGrantView {
-                        id: Uuid::new_v4().to_string(),
-                        folder: folder.display().to_string(),
-                        access: access_name(access).to_string(),
-                        descendants: true,
-                    },
-                    root: root.clone(),
-                    owner,
-                });
-                Ok(vec![root])
-            }
+            } => Ok(vec![self.remember_session_grant(
+                session_id, filesystem, access, owner,
+            )?]),
             outcome => {
                 self.sessions
                     .lock()
@@ -703,7 +715,12 @@ impl FolderAccessManager {
                     .or_default()
                     .denied
                     .insert(folder.to_path_buf());
-                Err(authorization_required(folder, access, outcome.refusal_detail()).into())
+                let reason = if matches!(outcome, UserActionOutcome::Denied) {
+                    "Access was not approved."
+                } else {
+                    outcome.refusal_detail()
+                };
+                Err(authorization_required(folder, access, reason).into())
             }
         }
     }

@@ -115,7 +115,7 @@ pub struct FolderAccessRequest {
 impl FolderAccessRequest {
     pub fn prompt(&self) -> String {
         format!(
-            "External folder access\nAllow {} access to {} for {}? {} A session grant includes descendants and lasts until revoked, this chat is deleted, or the app restarts.\nFiles:\n{}",
+            "External folder access\nAllow {} access to {} for {}? {} A session grant includes descendants. Revoking the grant or deleting this chat ends it.\nFiles:\n{}",
             self.access, self.folder, self.tool_name,
             if self.once_descendants { "Allow once includes read-only analysis of this folder and its descendants for this operation." } else { "Allow once covers only the listed files in this operation." },
             self.files.join("\n")

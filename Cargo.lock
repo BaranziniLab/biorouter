@@ -1369,6 +1369,7 @@ dependencies = [
  "biorouter",
  "biorouter-crew",
  "biorouter-mcp",
+ "biorouter-sandbox",
  "bytes",
  "cap-std",
  "chrono",
