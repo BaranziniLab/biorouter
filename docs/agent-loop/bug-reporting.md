@@ -225,6 +225,14 @@ heading, so a report written by hand from the template still validates without i
 
 ## The redaction harness
 
+Automatic public evidence contains only typed error kinds, retryability and
+failure counts. Raw tool arguments, output and tool names stay in local analysis:
+they can contain names, birth dates, filenames or other personal content that a
+credential scrubber cannot recognize. The agent must write reproduction steps
+with synthetic examples and review all authored fields for personal details.
+The exact-body disclosure and approval controls still apply. A diagnostics bundle
+contains conversation content and must be reviewed before sharing.
+
 Two shapes, deliberately different:
 
 - **`scrub`** rewrites what it recognises — home paths (to `~`), other accounts' usernames,
@@ -448,7 +456,9 @@ read-only and unauthenticated; the single `gh` shell-out lives in a CLI workflow
 helper launches an **interactive** `gh auth login`, unusable from a tool call. So there are
 two filers:
 
-1. **The user's own `gh`**, when `gh auth status` succeeds *non-interactively* — stdin is
+1. **The user's own `gh`**, resolved first from the daemon PATH and then from the
+   developer shell's bounded login-shell PATH discovery. Both authentication and
+   issue creation use the resolved executable. When `gh auth status` succeeds *non-interactively* — stdin is
    `null` and prompting is disabled, because the failure mode being guarded against is not
    "gh is missing" but "gh would open a login and hang the turn". This genuinely creates the
    issue, under the user's own account, with no credential passing through Biorouter. It is

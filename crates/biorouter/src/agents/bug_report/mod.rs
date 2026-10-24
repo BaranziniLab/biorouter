@@ -534,10 +534,11 @@ async fn analyze(
          Keep observation and diagnosis apart. Always give `suspected_cause`: if nothing \
          grounds a diagnosis, say so there (what you checked, what you could not check, \
          for example no web-fetch or shell tool, confidence low) rather than guess.\n\n\
-         The environment, the version and the failure list above are added automatically; \
-         do not repeat them. Home paths, usernames and anything credential-shaped are \
-         removed before posting, and the user must approve the exact text before it goes \
-         anywhere."
+         The environment, the version, failure counts and error kinds are added automatically; \
+         do not repeat them. Raw tool arguments and output stay in this chat. Use synthetic \
+         examples in reproduction steps and omit names, dates of birth and other personal \
+         details from every report field. Credential and home-path scrubbing does not detect \
+         arbitrary personal data. The user must approve the exact text before it goes anywhere."
     ))
 }
 
