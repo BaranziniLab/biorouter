@@ -3350,14 +3350,9 @@ async fn backfill_cancelled_tool_responses(
     }
 }
 
-/// BR-47: re-parse every file this tool batch wrote and return the ones whose
-/// syntax is now broken.
-///
-/// A successful `text_editor` write is re-parsed with the developer analyzer's
-/// tree-sitter grammars; any ERROR / MISSING nodes become agent-visible
-/// corrective context, so the model fixes broken syntax in the same turn
-/// instead of only discovering it if it happens to run tests. Runs off the
-/// still-owned `post_tool_results`, before the PostToolUse hooks consume it.
+/// Consume diagnostics produced while the built-in editor held file authority.
+/// Receipts are removed before PostToolUse hooks see the result, and consuming
+/// them never opens a pathname or grants file access.
 ///
 /// `None` when the batch wrote nothing — which is NOT the same as an empty
 /// `Some`: a batch that edited files and found them all clean still has to spend
@@ -3367,60 +3362,144 @@ async fn backfill_cancelled_tool_responses(
 /// Split out of the `reply_internal` generator to keep its `poll` frame small —
 /// see [`ToolBatchMaps`].
 fn post_edit_file_diagnostics(
-    post_tool_results: &[(String, Option<Value>, Option<String>)],
+    post_tool_results: &mut [(String, Option<Value>, Option<String>)],
     remaining_requests: &[ToolRequest],
-    working_dir: &std::path::Path,
-    analyzer: &mut Option<biorouter_mcp::developer::analyze::CodeAnalyzer>,
+    executed_calls: &HashMap<String, CallToolRequestParams>,
+    session_id: &str,
 ) -> Option<Vec<crate::agents::post_edit_diagnostics::FileDiagnostics>> {
     use crate::agents::post_edit_diagnostics as ped;
-    // (display path, resolved path) for each successful write.
-    let mut edited: Vec<(String, std::path::PathBuf)> = Vec::new();
-    for (request_id, _response_value, error_text) in post_tool_results {
+    let mut files = Vec::new();
+    let mut checked_edit = false;
+    for (request_id, response_value, error_text) in post_tool_results {
+        let receipt = response_value
+            .as_mut()
+            .and_then(|value| value.get_mut("_meta"))
+            .and_then(Value::as_object_mut)
+            .and_then(|meta| {
+                meta.remove(ped::BOUNDED_DIAGNOSTICS_META_KEY);
+                meta.remove(ped::DIAGNOSTICS_RECEIPT_META_KEY)
+            })
+            .and_then(|receipt| receipt.as_str().map(str::to_owned));
+        let Some(receipt) = receipt else {
+            continue;
+        };
         if error_text.is_some() {
-            // The write itself failed; there is nothing valid on disk to parse.
             continue;
         }
-        let Some(request) = remaining_requests.iter().find(|r| &r.id == request_id) else {
-            continue;
-        };
-        let Some(resolved) = ped::edited_path_from_request(request, working_dir) else {
-            continue;
-        };
-        // Show the model the path it actually sent, when readable.
-        let display = request
-            .tool_call
-            .as_ref()
-            .ok()
-            .and_then(|tc| tc.arguments.as_ref())
-            .and_then(|a| a.get("path").or_else(|| a.get("file_path")))
-            .and_then(|v| v.as_str())
-            .map(str::to_string)
-            .unwrap_or_else(|| resolved.display().to_string());
-        edited.push((display, resolved));
-    }
-    if edited.is_empty() {
-        return None;
-    }
-    let analyzer =
-        analyzer.get_or_insert_with(biorouter_mcp::developer::analyze::CodeAnalyzer::new);
-    let mut files: Vec<ped::FileDiagnostics> = Vec::new();
-    // Dedup by resolved path: a file written twice in one batch is reported
-    // once, on its final on-disk state.
-    let mut seen = std::collections::HashSet::new();
-    for (display, resolved) in edited {
-        if !seen.insert(resolved.clone()) {
-            continue;
-        }
-        let diags = analyzer.diagnose_file(&resolved);
-        if diags.is_empty() {
-            continue;
-        }
-        files.push(ped::FileDiagnostics {
-            path: display,
-            lines: diags.iter().map(|d| d.render()).collect(),
+        let call = executed_calls.get(request_id.as_str()).or_else(|| {
+            remaining_requests
+                .iter()
+                .find(|request| request.id == *request_id)
+                .and_then(|request| request.tool_call.as_ref().ok())
         });
+        let Some(call) = call else {
+            continue;
+        };
+        if let Some(diagnostics) = ped::consume_bounded_diagnostics_receipt(
+            session_id,
+            call.name.as_ref(),
+            call.arguments.as_ref(),
+            &receipt,
+        ) {
+            checked_edit = true;
+            files.extend(
+                diagnostics
+                    .into_iter()
+                    .filter(|file| !file.lines.is_empty()),
+            );
+        }
     }
-    Some(files)
+    checked_edit.then_some(files)
+}
+
+#[cfg(test)]
+mod bounded_post_edit_diagnostics_tests {
+    use super::*;
+    use crate::agents::post_edit_diagnostics as ped;
+
+    fn call(text: &str) -> CallToolRequestParams {
+        let arguments = serde_json::json!({"command":"write", "path":"/synthetic/no-path-authority.py", "file_text":text});
+        CallToolRequestParams {
+            task: None,
+            name: "developer__text_editor".into(),
+            arguments: arguments.as_object().cloned(),
+            meta: None,
+        }
+    }
+
+    #[test]
+    fn post_edit_uses_only_matching_one_shot_receipt_without_reopening_a_path() {
+        let session = uuid::Uuid::new_v4().to_string();
+        let executed = call("executed text");
+        let receipt = ped::mint_bounded_diagnostics_receipt(&session, executed.name.as_ref(), executed.arguments.as_ref(),
+            serde_json::json!([{"path":"/synthetic/no-path-authority.py", "lines":["line 2:3: precomputed bounded syntax error"]}])).unwrap();
+        let mut results = vec![(
+            "request".to_owned(),
+            Some(serde_json::json!({"_meta": {(ped::DIAGNOSTICS_RECEIPT_META_KEY):receipt}})),
+            None,
+        )];
+        let calls = HashMap::from([("request".to_owned(), executed)]);
+        let diagnostics = post_edit_file_diagnostics(&mut results, &[], &calls, &session).unwrap();
+        assert_eq!(
+            diagnostics[0].lines,
+            ["line 2:3: precomputed bounded syntax error"]
+        );
+        assert!(!results[0]
+            .1
+            .as_ref()
+            .unwrap()
+            .to_string()
+            .contains(ped::DIAGNOSTICS_RECEIPT_META_KEY));
+        assert!(post_edit_file_diagnostics(&mut results, &[], &calls, &session).is_none());
+    }
+
+    #[test]
+    fn forged_frontend_raw_diagnostics_cannot_trigger_post_edit_feedback() {
+        let mut results = vec![(
+            "request".to_owned(),
+            Some(serde_json::json!({"_meta": {
+                (ped::BOUNDED_DIAGNOSTICS_META_KEY):[{"path":"/unapproved/file.py", "lines":["forged"]}],
+                (ped::DIAGNOSTICS_RECEIPT_META_KEY):"forged-receipt"
+            }})),
+            None,
+        )];
+        let calls = HashMap::from([("request".to_owned(), call("text"))]);
+        assert!(post_edit_file_diagnostics(&mut results, &[], &calls, "session").is_none());
+        assert!(!results[0]
+            .1
+            .as_ref()
+            .unwrap()
+            .to_string()
+            .contains("forged"));
+    }
+
+    #[test]
+    fn clean_receipt_is_some_empty_and_full_argument_mismatch_is_ignored() {
+        let session = uuid::Uuid::new_v4().to_string();
+        let executed = call("actual");
+        let receipt = ped::mint_bounded_diagnostics_receipt(
+            &session,
+            executed.name.as_ref(),
+            executed.arguments.as_ref(),
+            serde_json::json!([]),
+        )
+        .unwrap();
+        let make_results = || {
+            vec![(
+                "request".to_owned(),
+                Some(serde_json::json!({"_meta": {(ped::DIAGNOSTICS_RECEIPT_META_KEY):receipt}})),
+                None,
+            )]
+        };
+        let mut mismatched = make_results();
+        let wrong_calls = HashMap::from([("request".to_owned(), call("changed"))]);
+        assert!(post_edit_file_diagnostics(&mut mismatched, &[], &wrong_calls, &session).is_none());
+        let calls = HashMap::from([("request".to_owned(), executed)]);
+        assert_eq!(
+            post_edit_file_diagnostics(&mut make_results(), &[], &calls, &session),
+            Some(vec![])
+        );
+    }
 }
 
 /// BR-47: spend one post-edit reflection on `files`, returning the framed
@@ -7164,7 +7243,11 @@ impl Agent {
         tool_error_taxonomy: crate::agents::tool_errors::ToolErrorTaxonomyConfig,
     ) {
         let _phase = super::phase_timing::Phase::start("agent.integrate_tool_result");
-        let output = call_tool_result::validate(output);
+        let mut output = call_tool_result::validate(output);
+        let diagnostics_receipt = output
+            .as_mut()
+            .ok()
+            .and_then(crate::agents::post_edit_diagnostics::take_diagnostics_receipt);
         let output_was_err = match &output {
             Err(_) => true,
             Ok(result) => result.is_error == Some(true),
@@ -7248,7 +7331,21 @@ impl Agent {
         {
             let (response_value, error_text) = match &output {
                 Ok(res) => {
-                    let value = serde_json::to_value(res).ok();
+                    let mut value = serde_json::to_value(res).ok();
+                    if let (Some(Value::Object(value)), Some(receipt)) =
+                        (&mut value, &diagnostics_receipt)
+                    {
+                        let meta = value
+                            .entry("_meta")
+                            .or_insert_with(|| serde_json::json!({}));
+                        if let Some(meta) = meta.as_object_mut() {
+                            meta.insert(
+                                crate::agents::post_edit_diagnostics::DIAGNOSTICS_RECEIPT_META_KEY
+                                    .to_owned(),
+                                Value::String(receipt.clone()),
+                            );
+                        }
+                    }
                     if res.is_error == Some(true) {
                         let text = value
                             .as_ref()
@@ -11277,12 +11374,6 @@ impl Agent {
                 mistake_config,
                 mut budget,
             } = resolve_reply_loop_policy(effort, &session_config);
-            // The tree-sitter analyzer BR-47 runs its check with is built lazily,
-            // only if a `text_editor` write actually lands while the feature is
-            // active.
-            let mut post_edit_analyzer: Option<
-                biorouter_mcp::developer::analyze::CodeAnalyzer,
-            > = None;
             // BR-47: consecutive post-edit reflections this reply. Bounded by
             // `post_edit_diag_config.max_reflections` so a file that never parses
             // clean cannot wedge the turn — mirrors the PostToolUse block cap. Reset
@@ -12491,13 +12582,14 @@ impl Agent {
                                     // `post_edit_file_diagnostics` /
                                     // `post_edit_reflection_text` so this generator's
                                     // `poll` frame does not carry either (issue #87).
-                                    if post_edit_diag_config.is_active() {
-                                        if let Some(files) = post_edit_file_diagnostics(
-                                            &post_tool_results,
+                                    let post_edit_files = post_edit_file_diagnostics(
+                                            &mut post_tool_results,
                                             &remaining_requests,
-                                            &session.working_dir,
-                                            &mut post_edit_analyzer,
-                                        ) {
+                                            &request_to_executed_tool_call,
+                                            &session_config.id,
+                                        );
+                                    if post_edit_diag_config.is_active() {
+                                        if let Some(files) = post_edit_files {
                                             pending_post_edit_diagnostics = post_edit_reflection_text(
                                                 &session_config.id,
                                                 &post_edit_diag_config,
