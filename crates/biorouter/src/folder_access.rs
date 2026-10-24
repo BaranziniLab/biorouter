@@ -36,10 +36,17 @@ struct SessionAuthority {
     denied: HashSet<PathBuf>,
 }
 
-#[derive(Default)]
 pub struct FolderAccessManager {
     sessions: Mutex<HashMap<String, SessionAuthority>>,
     requests: Mutex<HashMap<String, Weak<tokio::sync::Mutex<()>>>>,
+    skill_anchor: Option<(Arc<BoundedFs>, PathBuf)>,
+    skill_filesystem: Mutex<Option<Arc<BoundedFs>>>,
+}
+
+impl Default for FolderAccessManager {
+    fn default() -> Self {
+        Self::with_skills_dir(&crate::config::paths::Paths::config_dir().join("skills"))
+    }
 }
 
 pub struct FileAdmission {
@@ -177,6 +184,52 @@ fn exact_grants(
 }
 
 impl FolderAccessManager {
+    fn with_skills_dir(configured: &Path) -> Self {
+        let skill_anchor = (|| {
+            let configured = if configured.is_absolute() {
+                configured.to_path_buf()
+            } else {
+                std::env::current_dir().ok()?.join(configured)
+            };
+            let existing = configured
+                .parent()?
+                .ancestors()
+                .find(|path| path.is_dir())?;
+            let filesystem = Arc::new(BoundedFs::open(existing).ok()?);
+            let relative = configured.strip_prefix(existing).ok()?.to_path_buf();
+            Some((filesystem, relative))
+        })();
+        let manager = Self {
+            sessions: Mutex::default(),
+            requests: Mutex::default(),
+            skill_anchor,
+            skill_filesystem: Mutex::default(),
+        };
+        let _ = manager.skill_read_root();
+        manager
+    }
+
+    fn skill_read_root(&self) -> Option<Arc<BoundedFs>> {
+        let mut pinned = self
+            .skill_filesystem
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        if pinned.is_none() {
+            let (anchor, relative) = self.skill_anchor.as_ref()?;
+            let filesystem = anchor
+                .bind(relative, AccessMode::Read)
+                .ok()?
+                .open_dir()
+                .ok()?;
+            // A skills alias must not silently authorize a different config directory.
+            if filesystem.root() != anchor.root().join(relative) {
+                return None;
+            }
+            *pinned = Some(Arc::new(filesystem));
+        }
+        pinned.clone()
+    }
+
     pub fn global() -> &'static Self {
         static MANAGER: LazyLock<FolderAccessManager> = LazyLock::new(FolderAccessManager::default);
         &MANAGER
@@ -440,9 +493,8 @@ impl FolderAccessManager {
         }
         biorouter_mcp::preflight_file_access(&actual_plan, cwd)?;
         let mut roots = self.roots(session_id, cwd)?;
-        let skills = crate::config::paths::Paths::config_dir().join("skills");
-        if let Ok(filesystem) = BoundedFs::open(skills) {
-            roots.push(RootGrant::new(Arc::new(filesystem), AccessMode::Read));
+        if let Some(filesystem) = self.skill_read_root() {
+            roots.push(RootGrant::new(filesystem, AccessMode::Read));
         }
         let mut missing: BTreeMap<PathBuf, Vec<biorouter_mcp::FileAccessRequest>> = BTreeMap::new();
         for request in &actual_plan.requests {
@@ -484,5 +536,146 @@ impl FolderAccessManager {
             authority,
             action_id,
         })
+    }
+}
+
+#[cfg(test)]
+mod skill_authority_tests {
+    use super::*;
+    use biorouter_sandbox::bounded_fs::authorized_path;
+
+    async fn read(
+        manager: &FolderAccessManager,
+        workspace: &Path,
+        requested: &Path,
+    ) -> anyhow::Result<(FileAdmission, String)> {
+        let session = Uuid::new_v4().to_string();
+        let admission = manager
+            .admit(
+                &session,
+                "developer__text_editor",
+                workspace,
+                &biorouter_mcp::FileAccessPlan {
+                    requests: vec![biorouter_mcp::FileAccessRequest {
+                        path: requested.to_path_buf(),
+                        access: AccessMode::Read,
+                        recursive: false,
+                    }],
+                },
+                &CancellationToken::new(),
+            )
+            .await?;
+        Ok((admission, session))
+    }
+
+    fn assert_authorization_required(error: anyhow::Error) {
+        let data = error.downcast_ref::<ErrorData>().unwrap();
+        assert_eq!(
+            data.data.as_ref().unwrap()["code"],
+            "authorization_required"
+        );
+    }
+
+    #[tokio::test]
+    async fn installed_skills_remain_implicitly_readable_but_not_writable() {
+        let config = tempfile::tempdir().unwrap();
+        let workspace = tempfile::tempdir().unwrap();
+        let skills = config.path().join("skills");
+        std::fs::create_dir(&skills).unwrap();
+        let script = skills.join("SKILL.md");
+        std::fs::write(&script, "synthetic installed skill").unwrap();
+        let manager = FolderAccessManager::with_skills_dir(&skills);
+        let (admission, session) = read(&manager, workspace.path(), &script).await.unwrap();
+        assert_eq!(
+            authorized_path(
+                admission.authority.token(),
+                &session,
+                &admission.action_id,
+                &script,
+                AccessMode::Read,
+            )
+            .unwrap()
+            .read_to_string()
+            .unwrap(),
+            "synthetic installed skill"
+        );
+        assert!(authorized_path(
+            admission.authority.token(),
+            &session,
+            &admission.action_id,
+            &script,
+            AccessMode::Write,
+        )
+        .is_err());
+    }
+
+    #[tokio::test]
+    async fn skills_installed_after_manager_start_use_the_pinned_ancestor() {
+        let config = tempfile::tempdir().unwrap();
+        let workspace = tempfile::tempdir().unwrap();
+        let skills = config.path().join("new-config/skills");
+        let manager = FolderAccessManager::with_skills_dir(&skills);
+        std::fs::create_dir_all(&skills).unwrap();
+        let script = skills.join("SKILL.md");
+        std::fs::write(&script, "synthetic late install").unwrap();
+        assert!(read(&manager, workspace.path(), &script).await.is_ok());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_late_skills_symlink_requires_explicit_external_authorization() {
+        let config = tempfile::tempdir().unwrap();
+        let workspace = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let skills = config.path().join("skills");
+        let manager = FolderAccessManager::with_skills_dir(&skills);
+        std::fs::write(outside.path().join("SKILL.md"), "synthetic outside file").unwrap();
+        std::os::unix::fs::symlink(outside.path(), &skills).unwrap();
+        assert_authorization_required(
+            read(&manager, workspace.path(), &skills.join("SKILL.md"))
+                .await
+                .err()
+                .expect("a new skills link must not supply implicit outside authority"),
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_preexisting_skills_alias_does_not_supply_implicit_authority() {
+        let config = tempfile::tempdir().unwrap();
+        let workspace = tempfile::tempdir().unwrap();
+        let other = config.path().join("other-config-content");
+        std::fs::create_dir(&other).unwrap();
+        std::fs::write(other.join("SKILL.md"), "synthetic unrelated config file").unwrap();
+        let skills = config.path().join("skills");
+        std::os::unix::fs::symlink(&other, &skills).unwrap();
+        let manager = FolderAccessManager::with_skills_dir(&skills);
+        assert_authorization_required(
+            read(&manager, workspace.path(), &skills.join("SKILL.md"))
+                .await
+                .err()
+                .expect("an existing alias must not silently authorize unrelated config content"),
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn replacing_a_pinned_skills_directory_cannot_widen_implicit_authority() {
+        let config = tempfile::tempdir().unwrap();
+        let workspace = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let skills = config.path().join("skills");
+        std::fs::create_dir(&skills).unwrap();
+        std::fs::write(skills.join("SKILL.md"), "synthetic installed skill").unwrap();
+        let manager = FolderAccessManager::with_skills_dir(&skills);
+        std::fs::rename(&skills, config.path().join("original-skills")).unwrap();
+        std::fs::write(outside.path().join("SKILL.md"), "synthetic outside file").unwrap();
+        std::os::unix::fs::symlink(outside.path(), &skills).unwrap();
+        assert_authorization_required(
+            read(&manager, workspace.path(), &skills.join("SKILL.md"))
+                .await
+                .err()
+                .expect("replacing the skills name must not replace its pinned authority"),
+        );
     }
 }
