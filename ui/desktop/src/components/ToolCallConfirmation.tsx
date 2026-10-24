@@ -363,7 +363,7 @@ export default function ToolConfirmation({
         {preview && <ToolCallPreview preview={preview} />}
 
         {browserFolderAccess && (
-          <div className="flex flex-col gap-1 text-sm">
+          <div className="flex flex-col gap-1 text-body">
             <label htmlFor={`${toolConfirmationId}-folder-key`}>Folder approval key</label>
             <input
               id={`${toolConfirmationId}-folder-key`}
