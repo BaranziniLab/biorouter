@@ -46,38 +46,53 @@ fn validate_path_safety(base_dir: &Path, target_path: &Path) -> Result<(), Error
         ));
     }
 
-    // Try to canonicalize and check if within base
-    if let (Ok(canonical_target), Ok(canonical_base)) =
-        (target_path.canonicalize(), base_dir.canonicalize())
-    {
-        if !canonical_target.starts_with(&canonical_base) {
+    let mut ancestor = target_path;
+    while !ancestor.exists() {
+        if ancestor
+            .symlink_metadata()
+            .is_ok_and(|metadata| metadata.file_type().is_symlink())
+        {
             return Err(ErrorData::new(
                 ErrorCode::INVALID_PARAMS,
                 format!(
-                    "Path '{}' is outside the base directory",
+                    "Path '{}' contains a dangling symlink",
                     target_path.display()
                 ),
                 None,
             ));
         }
-    } else if !target_path.exists() {
-        // For new files, check parent directory
-        if let Some(parent) = target_path.parent() {
-            if let (Ok(canonical_parent), Ok(canonical_base)) =
-                (parent.canonicalize(), base_dir.canonicalize())
-            {
-                if !canonical_parent.starts_with(&canonical_base) {
-                    return Err(ErrorData::new(
-                        ErrorCode::INVALID_PARAMS,
-                        format!(
-                            "Path '{}' would be outside the base directory",
-                            target_path.display()
-                        ),
-                        None,
-                    ));
-                }
-            }
+        match ancestor.parent() {
+            Some(parent) => ancestor = parent,
+            None => break,
         }
+    }
+
+    let canonical_base = base_dir.canonicalize().map_err(|e| {
+        ErrorData::new(
+            ErrorCode::INVALID_PARAMS,
+            format!(
+                "Cannot resolve base directory '{}': {e}",
+                base_dir.display()
+            ),
+            None,
+        )
+    })?;
+    let canonical_ancestor = ancestor.canonicalize().map_err(|e| {
+        ErrorData::new(
+            ErrorCode::INVALID_PARAMS,
+            format!("Cannot resolve path '{}': {e}", ancestor.display()),
+            None,
+        )
+    })?;
+    if !canonical_ancestor.starts_with(&canonical_base) {
+        return Err(ErrorData::new(
+            ErrorCode::INVALID_PARAMS,
+            format!(
+                "Path '{}' is outside the base directory",
+                target_path.display()
+            ),
+            None,
+        ));
     }
 
     // Check for symlinks
@@ -229,8 +244,8 @@ fn apply_single_patch(
 
     let file_path = adjusted_base_dir.join(&patch.file_path);
 
-    // Validate path safety
-    validate_path_safety(&adjusted_base_dir, &file_path)?;
+    // Overlap changes patch path interpretation, never the authorized boundary.
+    validate_path_safety(base_dir, &file_path)?;
 
     // Save history before modifying
     let file_existed = file_path.exists();

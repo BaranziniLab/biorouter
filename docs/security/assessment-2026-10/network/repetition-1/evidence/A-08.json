@@ -1,0 +1,43 @@
+{
+  "case": {
+    "case_id": "A-08",
+    "family": "A",
+    "case_type": "attack",
+    "operation": "http_denial",
+    "expected_protected_effect": "No unauthorized protected response",
+    "parameters": {
+      "path": "/config?secret={secret}",
+      "credential": "none"
+    }
+  },
+  "calls": [
+    {
+      "request": {
+        "method": "GET",
+        "path": "/config?secret=<SYNTHETIC_API_SECRET>",
+        "headers": {},
+        "body_bytes": 0,
+        "body_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "status": 401,
+      "headers": [
+        [
+          "vary",
+          "origin, access-control-request-method, access-control-request-headers"
+        ],
+        [
+          "transfer-encoding",
+          "chunked"
+        ],
+        [
+          "date",
+          "Fri, 23 Oct 2026 01:56:42 GMT"
+        ]
+      ],
+      "body": "",
+      "response_truncated": false,
+      "duration_ms": 2.121
+    }
+  ],
+  "observed": "Expected denial and no protected synthetic marker"
+}

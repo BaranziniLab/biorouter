@@ -1,0 +1,38 @@
+The gate forbids 9 function(s):
+  tokio::net::TcpListener::bind
+  mio::net::TcpListener::bind
+  tokio::net::UdpSocket::bind
+  mio::net::UdpSocket::bind
+  tokio::net::TcpStream::connect
+  mio::net::TcpStream::connect
+  tokio_tungstenite::connect_async
+  tokio_tungstenite::connect_async_with_config
+  tokio_tungstenite::connect_async_tls_with_config
+Traceback (most recent call last):
+  File "/Users/wgu/.codex/worktrees/security-reviewer-assessment/BioRouter/scripts/clippy-non-inheritable/gate.py", line 576, in <module>
+    sys.exit(main(sys.argv[1:]))
+             ~~~~^^^^^^^^^^^^^^
+  File "/Users/wgu/.codex/worktrees/security-reviewer-assessment/BioRouter/scripts/clippy-non-inheritable/gate.py", line 484, in main
+    meta = cargo_metadata()
+  File "/Users/wgu/.codex/worktrees/security-reviewer-assessment/BioRouter/scripts/clippy-non-inheritable/gate.py", line 156, in cargo_metadata
+    out = subprocess.run(
+        ["cargo", "metadata", "--format-version", "1", "--locked"],
+    ...<2 lines>...
+        text=True,
+    )
+  File "/opt/homebrew/Cellar/python@3.15/3.15.0_1/Frameworks/Python.framework/Versions/3.15/lib/python3.15/subprocess.py", line 669, in run
+    with Popen(*popenargs, **kwargs) as process:
+         ~~~~~^^^^^^^^^^^^^^^^^^^^^^
+  File "/opt/homebrew/Cellar/python@3.15/3.15.0_1/Frameworks/Python.framework/Versions/3.15/lib/python3.15/subprocess.py", line 1213, in __init__
+    self._execute_child(args, executable, preexec_fn, close_fds,
+    ~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+                        pass_fds, cwd, env,
+                        ^^^^^^^^^^^^^^^^^^^
+    ...<5 lines>...
+                        gid, gids, uid, umask,
+                        ^^^^^^^^^^^^^^^^^^^^^^
+                        start_new_session, process_group)
+                        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/opt/homebrew/Cellar/python@3.15/3.15.0_1/Frameworks/Python.framework/Versions/3.15/lib/python3.15/subprocess.py", line 2156, in _execute_child
+    raise child_exception_type(errno_num, err_msg, err_filename)
+FileNotFoundError: [Errno 2] No such file or directory: 'cargo'

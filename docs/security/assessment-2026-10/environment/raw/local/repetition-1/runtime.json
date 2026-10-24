@@ -1,0 +1,39 @@
+{
+  "uid": 10001,
+  "gid": 10001,
+  "uname": {
+    "system": "Linux",
+    "node": "59da0649eb8c",
+    "release": "6.12.76-linuxkit",
+    "version": "#1 SMP Thu May 28 18:54:18 UTC 2026",
+    "machine": "x86_64",
+    "processor": ""
+  },
+  "python": "3.12.15",
+  "status": {
+    "CapInh": "0000000000000000",
+    "CapPrm": "0000000000000000",
+    "CapEff": "0000000000000000",
+    "CapBnd": "0000000000000000",
+    "CapAmb": "0000000000000000",
+    "NoNewPrivs": "1",
+    "Seccomp": "2",
+    "Seccomp_filters": "1"
+  },
+  "mountinfo": "140 89 0:63 / / ro,relatime - overlay overlay rw,lowerdir=/var/lib/desktop-containerd/daemon/io.containerd.snapshotter.v1.overlayfs/snapshots/5365/fs:/var/lib/desktop-containerd/daemon/io.containerd.snapshotter.v1.overlayfs/snapshots/5358/fs:/var/lib/desktop-containerd/daemon/io.containerd.snapshotter.v1.overlayfs/snapshots/5357/fs:/var/lib/desktop-containerd/daemon/io.containerd.snapshotter.v1.overlayfs/snapshots/5356/fs:/var/lib/desktop-containerd/daemon/io.containerd.snapshotter.v1.overlayfs/snapshots/5355/fs:/var/lib/desktop-containerd/daemon/io.containerd.snapshotter.v1.overlayfs/snapshots/5338/fs:/var/lib/desktop-containerd/daemon/io.containerd.snapshotter.v1.overlayfs/snapshots/5337/fs:/var/lib/desktop-containerd/daemon/io.containerd.snapshotter.v1.overlayfs/snapshots/5336/fs:/var/lib/desktop-containerd/daemon/io.containerd.snapshotter.v1.overlayfs/snapshots/5335/fs,upperdir=/var/lib/desktop-containerd/daemon/io.containerd.snapshotter.v1.overlayfs/snapshots/5366/fs,workdir=/var/lib/desktop-containerd/daemon/io.containerd.snapshotter.v1.overlayfs/snapshots/5366/work\n142 140 0:72 / /proc rw,nosuid,nodev,noexec,relatime - proc proc rw\n143 140 0:73 / /dev rw,nosuid - tmpfs tmpfs rw,size=65536k,mode=755\n144 143 0:74 / /dev/pts rw,nosuid,noexec,relatime - devpts devpts rw,gid=5,mode=620,ptmxmode=666\n145 140 0:75 / /sys ro,nosuid,nodev,noexec,relatime - sysfs sysfs ro\n146 145 0:40 / /sys/fs/cgroup ro,nosuid,nodev,noexec,relatime - cgroup2 cgroup rw\n147 143 0:70 / /dev/mqueue rw,nosuid,nodev,noexec,relatime - mqueue mqueue rw\n148 143 0:76 / /dev/shm rw,nosuid,nodev,noexec,relatime - tmpfs shm rw,size=65536k\n149 140 0:77 / /tmp rw,nosuid,nodev,noexec,relatime - tmpfs tmpfs rw,size=131072k\n150 140 0:44 /wgu/biorouter-runs/security-assessment-2026-10/evidence /evidence rw,nosuid,nodev,relatime - fakeowner /run/host_mark/Users rw,fakeowner\n151 140 0:78 / /home/attacker rw,nosuid,nodev,noexec,relatime - tmpfs tmpfs rw,size=16384k,mode=700,uid=10002,gid=10002\n152 140 0:79 / /home/br rw,nosuid,nodev,noexec,relatime - tmpfs tmpfs rw,size=262144k,mode=755,uid=10001,gid=10001\n153 140 0:44 /wgu/.codex/worktrees/security-reviewer-assessment/BioRouter/scripts/security-assessment /assessment/harness ro,nosuid,nodev,relatime - fakeowner /run/host_mark/Users rw,fakeowner\n154 140 0:44 /wgu/biorouter-runs/security-assessment-2026-10/fixtures /assessment/fixtures ro,nosuid,nodev,relatime - fakeowner /run/host_mark/Users rw,fakeowner\n155 140 254:1 /docker/containers/59da0649eb8c77eafc397f59fa325bdf930cc47c448c67d8ca704ea00c9ba382/resolv.conf /etc/resolv.conf ro,relatime - ext4 /dev/vda1 rw,discard\n156 140 254:1 /docker/containers/59da0649eb8c77eafc397f59fa325bdf930cc47c448c67d8ca704ea00c9ba382/hostname /etc/hostname ro,relatime - ext4 /dev/vda1 rw,discard\n157 140 254:1 /docker/containers/59da0649eb8c77eafc397f59fa325bdf930cc47c448c67d8ca704ea00c9ba382/hosts /etc/hosts ro,relatime - ext4 /dev/vda1 rw,discard\n90 142 0:72 /bus /proc/bus ro,nosuid,nodev,noexec,relatime - proc proc rw\n91 142 0:72 /fs /proc/fs ro,nosuid,nodev,noexec,relatime - proc proc rw\n92 142 0:72 /irq /proc/irq ro,nosuid,nodev,noexec,relatime - proc proc rw\n93 142 0:72 /sys /proc/sys ro,nosuid,nodev,noexec,relatime - proc proc rw\n94 142 0:72 /sysrq-trigger /proc/sysrq-trigger ro,nosuid,nodev,noexec,relatime - proc proc rw\n95 142 0:73 /null /proc/interrupts rw,nosuid - tmpfs tmpfs rw,size=65536k,mode=755\n96 142 0:73 /null /proc/kcore rw,nosuid - tmpfs tmpfs rw,size=65536k,mode=755\n97 142 0:73 /null /proc/keys rw,nosuid - tmpfs tmpfs rw,size=65536k,mode=755\n98 142 0:80 / /proc/scsi ro,relatime - tmpfs tmpfs ro\n99 142 0:73 /null /proc/timer_list rw,nosuid - tmpfs tmpfs rw,size=65536k,mode=755\n100 145 0:81 / /sys/firmware ro,relatime - tmpfs tmpfs ro\n",
+  "binary_sha256": "b8b7cd280f8a3e6f414bb7c6aa2e73f0abfee30321c9cdfcf06bc649c097bdac  /opt/biorouter/biorouter\n6ed8ef6e34a418d09e1857d3e8a1999bfcb54c3d79d12e4c24ed9e07d056e120  /opt/biorouter/biorouterd\n",
+  "version": "biorouterd 1.93.4\n",
+  "network_interfaces": [
+    "bonding_masters",
+    "erspan0",
+    "gre0",
+    "gretap0",
+    "ip6_vti0",
+    "ip6gre0",
+    "ip6tnl0",
+    "ip_vti0",
+    "lo",
+    "sit0",
+    "tunl0"
+  ]
+}

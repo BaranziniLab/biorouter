@@ -1,0 +1,12 @@
+{
+  "case": {
+    "case_id": "B-U01",
+    "family": "B",
+    "case_type": "control",
+    "operation": "unavailable_bridge",
+    "expected_protected_effect": "Known single-turn grant works and later expires",
+    "parameters": {}
+  },
+  "calls": [],
+  "observed": "No real coding-agent turn/grant provisioned; unknown-nonce tests cannot establish grant expiry"
+}

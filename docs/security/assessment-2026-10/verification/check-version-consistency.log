@@ -1,0 +1,9 @@
+Source of truth (Cargo [workspace.package].version): 1.93.4
+  ✓ ui/desktop/package.json .version = 1.93.4
+  ✓ ui/desktop/package-lock.json .version = 1.93.4
+  ✓ ui/desktop/package-lock.json .packages[''].version = 1.93.4
+  ✓ ui/desktop/openapi.json .info.version = 1.93.4
+  ✓ README.md badge URL = 1.93.4
+  ✓ README.md badge alt text = 1.93.4
+
+✅ All CLI / daemon / GUI version strings agree on 1.93.4

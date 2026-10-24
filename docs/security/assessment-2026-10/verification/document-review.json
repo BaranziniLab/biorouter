@@ -1,0 +1,72 @@
+{
+  "reviewed_at_utc": "2026-10-24T00:04:36.835861+00:00",
+  "documents": [
+    {
+      "document": "Security Audit Section Draft.docx",
+      "output": "/Users/wgu/biorouter-runs/security-assessment-2026-10/document-qa/section",
+      "pages": 2,
+      "docx_sha256": "0e7c267267d97b720d2ed0bf4f8e6b1a014b8ee3162e07c930650705e4e034ad",
+      "zip_xml_integrity": "passed",
+      "visual_review": "passed"
+    },
+    {
+      "document": "Response to Reviewer 2 Major Comment 7.docx",
+      "output": "/Users/wgu/biorouter-runs/security-assessment-2026-10/document-qa/response",
+      "pages": 2,
+      "docx_sha256": "74e4fcd6433fc02f411865393576127e364703beecbb4d07a0d31d7f4dff0298",
+      "zip_xml_integrity": "passed",
+      "visual_review": "passed"
+    },
+    {
+      "document": "Supplementary Data S1 Security Audit.docx",
+      "output": "/Users/wgu/biorouter-runs/security-assessment-2026-10/document-qa/supplement",
+      "pages": 3,
+      "docx_sha256": "562dd611fd8b956187694fafb9b2d54030e3ec81d189d17a379bdd70ac6f7db1",
+      "zip_xml_integrity": "passed",
+      "visual_review": "passed"
+    },
+    {
+      "document": "Biorouter Manuscript v1.1 draft.docx",
+      "output": "/Users/wgu/biorouter-runs/security-assessment-2026-10/document-qa/manuscript",
+      "pages": 24,
+      "docx_sha256": "d2bbd9bf63e3be03753a3732c5cd69104f2c5588a620991129872d33c9899a97",
+      "zip_xml_integrity": "passed",
+      "visual_review": "passed"
+    }
+  ],
+  "coverage": "All pages individually viewed in first render. Final main manuscript rechecked at pages6\u20137 and19\u201324 after heading and figure repairs. Other page text unchanged. All7 short-document pages viewed by primary agent.",
+  "manuscript_pages": 24,
+  "layout_repairs": {
+    "main_docx": "/Users/wgu/Desktop/biorouter-manuscript/manuscript/v1.1/Biorouter Manuscript v1.1 draft.docx",
+    "source_unchanged_sha256": "29d731b840231b19798914cf3cee3f01d9633d004037666ecabe25f14b4ebb9c",
+    "changes": [
+      {
+        "figure": 1,
+        "source_pdf": "/Users/wgu/Desktop/biorouter-manuscript/manuscript/v0.4/Figure1.pdf",
+        "source_sha256": "432facabe9893c304a346a4431128045ee77815a10ceb866f40bb88f10b084c5",
+        "embedded_png_sha256": "c19cb70593ca22298e79293c5346cc4df272e9685766ae64b1c5a9024d3bdc68",
+        "width_inches": 6.5,
+        "height_inches": 4.245781933508312
+      },
+      {
+        "figure": 2,
+        "source_pdf": "/Users/wgu/Desktop/biorouter-manuscript/manuscript/v0.4/Figure2.pdf",
+        "source_sha256": "b358c24617b7b57cfa20940db622622502a2b78abbc7d60e71fe99a3e75cc420",
+        "embedded_png_sha256": "801b106a02911cfb977643785a23b684e95bc755224c4fe763081a3ac82a7185",
+        "width_inches": 5.0,
+        "height_inches": 5.5
+      },
+      {
+        "figure": 3,
+        "source_pdf": "/Users/wgu/Desktop/biorouter-manuscript/manuscript/v0.4/Figure3.pdf",
+        "source_sha256": "add841766a7b8c692f46c4bf4a62c6a52fcdab391bc55bf2acd9ceff8f896424",
+        "embedded_png_sha256": "d0505117310120cc715b4dbef1679e8f0ca3079965e0aa7698d0c6a196bfa2a5",
+        "width_inches": 6.1,
+        "height_inches": 6.076154855643044
+      }
+    ],
+    "subsection_fix": "Moved security heading and paragraph after existing BAAM paragraph; matched neighboring heading run format",
+    "figure_note": "Original EMF artwork remains in package; displayed relationships now use high-resolution conversions of the supplied figure PDFs. No figure data were edited. Figure 3 caption set to 10.5 pt to keep its full text with the figure."
+  },
+  "remaining_editorial_note": "Inherited sparse pages before forced section starts remain. Supplement numbering and release status must be reconciled before journal submission."
+}

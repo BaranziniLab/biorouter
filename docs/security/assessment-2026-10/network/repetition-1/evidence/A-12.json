@@ -1,0 +1,47 @@
+{
+  "case": {
+    "case_id": "A-12",
+    "family": "A",
+    "case_type": "attack",
+    "operation": "http_denial",
+    "expected_protected_effect": "Unauthenticated tool-call route is rejected",
+    "parameters": {
+      "path": "/agent/call_tool",
+      "credential": "none",
+      "method": "POST",
+      "body": {}
+    }
+  },
+  "calls": [
+    {
+      "request": {
+        "method": "POST",
+        "path": "/agent/call_tool",
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body_bytes": 2,
+        "body_sha256": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
+      },
+      "status": 401,
+      "headers": [
+        [
+          "vary",
+          "origin, access-control-request-method, access-control-request-headers"
+        ],
+        [
+          "transfer-encoding",
+          "chunked"
+        ],
+        [
+          "date",
+          "Fri, 23 Oct 2026 01:56:42 GMT"
+        ]
+      ],
+      "body": "",
+      "response_truncated": false,
+      "duration_ms": 1.504
+    }
+  ],
+  "observed": "Expected denial and no protected synthetic marker"
+}

@@ -1,0 +1,1 @@
+{"case_id": "exploratory-session-dir0700", "case_type": "exploratory_mitigation", "uid": 10002, "daemon_credential_used": false, "protected_path": "/home/br/state/data/sessions/sessions.db", "outcome": "blocked", "errno": 13, "error": "Permission denied"}

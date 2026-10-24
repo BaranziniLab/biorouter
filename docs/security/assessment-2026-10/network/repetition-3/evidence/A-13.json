@@ -1,0 +1,46 @@
+{
+  "case": {
+    "case_id": "A-13",
+    "family": "A",
+    "case_type": "attack",
+    "operation": "route_shape",
+    "expected_protected_effect": "No protected contents via alternate route shape",
+    "parameters": {
+      "path": "/config/"
+    }
+  },
+  "calls": [
+    {
+      "request": {
+        "method": "GET",
+        "path": "/config/",
+        "headers": {},
+        "body_bytes": 0,
+        "body_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "status": 401,
+      "headers": [
+        [
+          "content-type",
+          "text/html; charset=utf-8"
+        ],
+        [
+          "content-length",
+          "324"
+        ],
+        [
+          "vary",
+          "accept-encoding"
+        ],
+        [
+          "date",
+          "Fri, 23 Oct 2026 01:59:31 GMT"
+        ]
+      ],
+      "body": "<!doctype html><meta charset=utf-8><title>Biorouter</title><body style=\"font:15px system-ui;margin:3rem auto;max-width:32rem\"><h1 style=\"font-size:1.2rem\">This link needs its access token</h1><p>Open the full address <code>biorouter serve</code> printed, including the <code>?t=</code> part. It is shown once per launch.</p>",
+      "response_truncated": false,
+      "duration_ms": 5.189
+    }
+  ],
+  "observed": "Expected denial and no protected synthetic marker"
+}

@@ -1,0 +1,9 @@
+   Compiling biorouter-mcp v1.93.4 (/Users/wgu/.codex/worktrees/security-reviewer-assessment/BioRouter/crates/biorouter-mcp)
+   Compiling biorouter v1.93.4 (/Users/wgu/.codex/worktrees/security-reviewer-assessment/BioRouter/crates/biorouter)
+   Compiling sysinfo v0.32.1
+    Finished `release` profile [optimized] target(s) in 9m 57s
+  Executable tests/security_assessment.rs (/Users/wgu/Desktop/BioRouter/target/release/deps/security_assessment-848114ab0410a0a0)
+  Executable tests/security_scope_regression.rs (/Users/wgu/Desktop/BioRouter/target/release/deps/security_scope_regression-cb40ba99d07c45ee)
+  Executable tests/smart_approve_judge_tests.rs (/Users/wgu/Desktop/BioRouter/target/release/deps/smart_approve_judge_tests-915ee2220ad413a8)
+  Executable tests/smart_approve_tests.rs (/Users/wgu/Desktop/BioRouter/target/release/deps/smart_approve_tests-7965e72e13699695)
+  Executable tests/security_editor_boundaries.rs (/Users/wgu/Desktop/BioRouter/target/release/deps/security_editor_boundaries-8540ad98e9ab3c4d)

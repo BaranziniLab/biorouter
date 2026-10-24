@@ -1,0 +1,61 @@
+[
+    {
+        "Id": "sha256:f125838c354f301e7acb44f56b1c741d87c04ac35b2c542911d390f9a3c9139d",
+        "RepoTags": [
+            "brsec-runtime:1.93.4-amd64"
+        ],
+        "RepoDigests": [
+            "brsec-runtime@sha256:f125838c354f301e7acb44f56b1c741d87c04ac35b2c542911d390f9a3c9139d"
+        ],
+        "Comment": "buildkit.dockerfile.v0",
+        "Created": "2026-10-23T01:55:45.810414833Z",
+        "Config": {
+            "User": "10001:10001",
+            "Env": [
+                "PATH=/opt/biorouter:/usr/local/bin:/usr/bin:/bin",
+                "LANG=C.UTF-8",
+                "GPG_KEY=7169605F62C751356D054A26A821E680E5FA6305",
+                "PYTHON_VERSION=3.12.15",
+                "PYTHON_SHA256=c2c4321961fab0fb999d66e0cecf521c2ab3994c7992873ea99e306c1094fd5a"
+            ],
+            "Cmd": [
+                "sleep",
+                "infinity"
+            ],
+            "WorkingDir": "/home/br",
+            "ArgsEscaped": true
+        },
+        "Architecture": "amd64",
+        "Os": "linux",
+        "Size": 456197079,
+        "RootFS": {
+            "Type": "layers",
+            "Layers": [
+                "sha256:a70f6272827f64e1427d048ced77491aab5d64ab95725e56920802ff391197d7",
+                "sha256:33d3a946838548b1885b1068b960a88e41537b6996342c8fc2c767a6879e62f4",
+                "sha256:500ecb68a701ad0437ae759f35178f2ddbc48e10a0bc6dc345548054f737df6a",
+                "sha256:93881a54803b57e0039f40fd78de98b41b69b55d025c431544788fd84f0904cd",
+                "sha256:299fa73fea0ac4166ae1c42eebb2ce4749668b60dc6b5f5055daf29889a681b0",
+                "sha256:33cd7de020379904565cab572865447447a0f9b3b14ec2c813bb6e8174e6b6f6",
+                "sha256:adc882ccdb736f528f2efd46c746790c857ef676dd95d1ade283b0e5c4e78086",
+                "sha256:5f70bf18a086007016e948b04aed3b82103a36bea41755b6cddfaf10ace3c6ef"
+            ]
+        },
+        "Metadata": {
+            "LastTagTime": "2026-10-23T01:56:03.885273008Z"
+        },
+        "Descriptor": {
+            "mediaType": "application/vnd.oci.image.index.v1+json",
+            "digest": "sha256:f125838c354f301e7acb44f56b1c741d87c04ac35b2c542911d390f9a3c9139d",
+            "size": 856
+        },
+        "Identity": {
+            "Build": [
+                {
+                    "Ref": "ig49rcg6hycrgwitkiay93xcd",
+                    "CreatedAt": "2026-10-23T01:56:03.888859592Z"
+                }
+            ]
+        }
+    }
+]

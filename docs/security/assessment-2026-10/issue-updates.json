@@ -1,0 +1,23 @@
+[
+  {
+    "issue": 445,
+    "url": "https://github.com/BaranziniLab/biorouter/issues/445",
+    "verified_regression_update": "https://github.com/BaranziniLab/biorouter/issues/445#issuecomment-6377091075",
+    "body_sha256": "7242fa8fc7c3c7bd8ac8d767ab21db0fe1261d1f4730e6c8bc9259b9625c6181",
+    "status": "open; tested local source changes, unmerged and unreleased"
+  },
+  {
+    "issue": 446,
+    "url": "https://github.com/BaranziniLab/biorouter/issues/446",
+    "verified_regression_update": "https://github.com/BaranziniLab/biorouter/issues/446#issuecomment-6377091332",
+    "body_sha256": "f6ec9ec61e93b0991528ac95748d853eaf507a7d4931a5f3d8dba556237ef7c0",
+    "status": "open; tested local source changes, unmerged and unreleased"
+  },
+  {
+    "issue": 447,
+    "url": "https://github.com/BaranziniLab/biorouter/issues/447",
+    "verified_regression_update": "https://github.com/BaranziniLab/biorouter/issues/447#issuecomment-6377091615",
+    "body_sha256": "bbe1b6e9da79859f3ee7e2980fdf4888c37bd138ffbc63ff8ccbbb7ddde7a755",
+    "status": "open; tested local source changes, unmerged and unreleased"
+  }
+]

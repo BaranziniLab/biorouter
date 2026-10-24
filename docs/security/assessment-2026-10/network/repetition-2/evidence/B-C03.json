@@ -1,0 +1,66 @@
+{
+  "case": {
+    "case_id": "B-C03",
+    "family": "B",
+    "case_type": "control",
+    "operation": "browser_exchange",
+    "expected_protected_effect": "Valid navigation exchanges token for protected cookie",
+    "parameters": {}
+  },
+  "calls": [
+    {
+      "request": {
+        "method": "GET",
+        "path": "/?t=<SYNTHETIC_BROWSER_TOKEN>",
+        "headers": {
+          "Sec-Fetch-Mode": "navigate",
+          "Sec-Fetch-Dest": "document"
+        },
+        "body_bytes": 0,
+        "body_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "status": 200,
+      "headers": [
+        [
+          "content-type",
+          "text/html; charset=utf-8"
+        ],
+        [
+          "cache-control",
+          "no-store"
+        ],
+        [
+          "referrer-policy",
+          "no-referrer"
+        ],
+        [
+          "content-security-policy",
+          "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
+        ],
+        [
+          "set-cookie",
+          "biorouter_session=<SYNTHETIC_BROWSER_TOKEN>; Path=/; HttpOnly; SameSite=Strict"
+        ],
+        [
+          "vary",
+          "accept-encoding"
+        ],
+        [
+          "transfer-encoding",
+          "chunked"
+        ],
+        [
+          "date",
+          "Fri, 23 Oct 2026 01:58:57 GMT"
+        ]
+      ],
+      "body": "<!doctype html><meta charset=utf-8><meta http-equiv=\"refresh\" content=\"0;url=./\"><title>Opening Biorouter</title><body style=\"font:15px system-ui;margin:3rem auto;max-width:32rem\"><p>Opening Biorouter. If nothing happens, <a href=\"./\">continue here</a>.</p>",
+      "response_truncated": false,
+      "duration_ms": 0.967
+    }
+  ],
+  "observed": {
+    "cookie_count": 1,
+    "protected_flags": true
+  }
+}

@@ -1,0 +1,81 @@
+{
+  "case": {
+    "case_id": "A-C08",
+    "family": "A",
+    "case_type": "control",
+    "operation": "post_oversized",
+    "expected_protected_effect": "Health and authenticated configuration reads remain available",
+    "parameters": {}
+  },
+  "calls": [
+    {
+      "request": {
+        "method": "GET",
+        "path": "/status",
+        "headers": {},
+        "body_bytes": 0,
+        "body_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "status": 200,
+      "headers": [
+        [
+          "content-type",
+          "text/plain; charset=utf-8"
+        ],
+        [
+          "vary",
+          "origin, access-control-request-method, access-control-request-headers"
+        ],
+        [
+          "transfer-encoding",
+          "chunked"
+        ],
+        [
+          "date",
+          "Fri, 23 Oct 2026 01:56:42 GMT"
+        ]
+      ],
+      "body": "ok",
+      "response_truncated": false,
+      "duration_ms": 1.632
+    },
+    {
+      "request": {
+        "method": "GET",
+        "path": "/config",
+        "headers": {
+          "X-Secret-Key": "<SYNTHETIC_API_SECRET>"
+        },
+        "body_bytes": 0,
+        "body_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "status": 200,
+      "headers": [
+        [
+          "content-type",
+          "application/json"
+        ],
+        [
+          "vary",
+          "origin, access-control-request-method, access-control-request-headers"
+        ],
+        [
+          "vary",
+          "accept-encoding"
+        ],
+        [
+          "transfer-encoding",
+          "chunked"
+        ],
+        [
+          "date",
+          "Fri, 23 Oct 2026 01:56:42 GMT"
+        ]
+      ],
+      "body": "{\"config\":{\"computer_use_capabilities_version\":2,\"BIOROUTER_PRIVACY_TIERS\":\"on\",\"BIOROUTER_PRIVACY_TIERS_RECORD\":{\"enabled\":true,\"origin\":\"migration\",\"path\":\"/home/br/state/config/privacy-tiers.json\",\"last_change\":{\"via\":\"migration\",\"set_to\":true,\"at\":\"2026-10-23T01:56:19.402378710+00:00\",\"system_authenticated\":false,\"user_action\":false}},\"BIOROUTER_PRIVACY_MIXING_POLICY\":\"standard\",\"BRSEC_SYNTHETIC_CONFIG_CANARY\":\"BRSEC_BASELINE_ONLY_SYNTHETIC\",\"extensions\":{}}}",
+      "response_truncated": false,
+      "duration_ms": 0.939
+    }
+  ],
+  "observed": "Post-request availability"
+}

@@ -1,0 +1,53 @@
+{
+  "case": {
+    "case_id": "B-17",
+    "family": "B",
+    "case_type": "attack",
+    "operation": "shell_insecure",
+    "expected_protected_effect": "Plain-HTTP nonloopback address does not receive shell",
+    "parameters": {
+      "host": "192.0.2.123:3000"
+    }
+  },
+  "calls": [
+    {
+      "request": {
+        "method": "GET",
+        "path": "/",
+        "headers": {
+          "Cookie": "biorouter_session=<SYNTHETIC_BROWSER_TOKEN>",
+          "Host": "192.0.2.123:3000"
+        },
+        "body_bytes": 0,
+        "body_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "status": 403,
+      "headers": [
+        [
+          "content-type",
+          "text/plain; charset=utf-8"
+        ],
+        [
+          "cache-control",
+          "no-store"
+        ],
+        [
+          "vary",
+          "accept-encoding"
+        ],
+        [
+          "transfer-encoding",
+          "chunked"
+        ],
+        [
+          "date",
+          "Fri, 23 Oct 2026 01:56:42 GMT"
+        ]
+      ],
+      "body": "Open Biorouter through localhost or HTTPS. Use an SSH tunnel, or an HTTPS reverse proxy that passes the browser's Sec-Fetch-* headers through, and a current browser that sends them.",
+      "response_truncated": false,
+      "duration_ms": 4.215
+    }
+  ],
+  "observed": "Expected denial and no protected synthetic marker"
+}

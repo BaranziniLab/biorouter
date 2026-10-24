@@ -1,0 +1,36 @@
+{
+  "unique_cases": 55,
+  "unique_attack_cases": 40,
+  "unique_exercised_controls": 14,
+  "unique_unexercised_controls": 1,
+  "repetitions": 3,
+  "total_observations": 165,
+  "protocol_request_observations": 255,
+  "outcomes": {
+    "allowed_control": 42,
+    "blocked": 120,
+    "not_exercised": 3
+  },
+  "families": {
+    "A": {
+      "unique_cases": 29,
+      "observations": 87,
+      "outcomes": {
+        "allowed_control": 27,
+        "blocked": 60
+      }
+    },
+    "B": {
+      "unique_cases": 26,
+      "observations": 78,
+      "outcomes": {
+        "blocked": 60,
+        "allowed_control": 15,
+        "not_exercised": 3
+      }
+    }
+  },
+  "manifest_sha256": "3f702f10ace78d8e101764896dcf8c7cb9cf84de22736fadd9ffa8931df1b237",
+  "harness_sha256": "7ab8daac0e05f94badd2dd4efb43b760ecc1bbb0ffa6253057cc9e9f1204a055",
+  "limitation": "Protocol-level finite purposive corpus; no browser engine, actual-grant expiry, existing-app enumeration pair, or stochastic model trial."
+}

@@ -1,0 +1,29 @@
+{
+  "runs": [
+    {
+      "run": 1,
+      "unique_cases": 8,
+      "negative_cases_denied": 7,
+      "controls_allowed": 1,
+      "outside_writes": 0
+    },
+    {
+      "run": 2,
+      "unique_cases": 8,
+      "negative_cases_denied": 7,
+      "controls_allowed": 1,
+      "outside_writes": 0
+    },
+    {
+      "run": 3,
+      "unique_cases": 8,
+      "negative_cases_denied": 7,
+      "controls_allowed": 1,
+      "outside_writes": 0
+    }
+  ],
+  "total_case_observations": 24,
+  "negative_cases_denied": 21,
+  "controls_allowed": 3,
+  "outside_writes": 0
+}

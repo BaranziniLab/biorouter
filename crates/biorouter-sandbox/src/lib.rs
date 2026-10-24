@@ -254,6 +254,9 @@ fn canonicalize_existing_ancestor(p: &Path) -> Result<PathBuf> {
                 .map_err(|_| SandboxError::PathEscape(p.display().to_string()))?;
             return Ok(real.join(tail));
         }
+        if std::fs::symlink_metadata(cur).is_ok_and(|metadata| metadata.file_type().is_symlink()) {
+            return Err(SandboxError::PathEscape(p.display().to_string()));
+        }
         match cur.parent() {
             Some(parent) => cur = parent,
             None => return Err(SandboxError::PathEscape(p.display().to_string())),

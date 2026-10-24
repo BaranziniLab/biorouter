@@ -1,0 +1,53 @@
+{
+  "case": {
+    "case_id": "A-C06",
+    "family": "A",
+    "case_type": "control",
+    "operation": "http_control",
+    "expected_protected_effect": "Expected read is available",
+    "parameters": {
+      "path": "/system_info",
+      "credential": "correct"
+    }
+  },
+  "calls": [
+    {
+      "request": {
+        "method": "GET",
+        "path": "/system_info",
+        "headers": {
+          "X-Secret-Key": "<SYNTHETIC_API_SECRET>"
+        },
+        "body_bytes": 0,
+        "body_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "status": 200,
+      "headers": [
+        [
+          "content-type",
+          "application/json"
+        ],
+        [
+          "vary",
+          "origin, access-control-request-method, access-control-request-headers"
+        ],
+        [
+          "vary",
+          "accept-encoding"
+        ],
+        [
+          "transfer-encoding",
+          "chunked"
+        ],
+        [
+          "date",
+          "Fri, 23 Oct 2026 01:58:57 GMT"
+        ]
+      ],
+      "body": "{\"app_version\":\"1.93.4\",\"os\":\"linux\",\"os_version\":\"6.12.76-linuxkit\",\"architecture\":\"x86_64\",\"provider\":null,\"model\":null,\"enabled_extensions\":[\"developer\",\"computercontroller\",\"webdocuments\",\"autovisualiser\",\"memory\",\"knowledge\",\"agent_drafter\",\"crew\",\"skills\",\"Workspace\",\"todo\",\"Extension Manager\",\"code_execution\"]}",
+      "response_truncated": false,
+      "duration_ms": 1.845
+    }
+  ],
+  "observed": "Read response status"
+}

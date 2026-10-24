@@ -4065,6 +4065,8 @@ impl SessionStorage {
     fn create_pool(path: &Path) -> Pool<Sqlite> {
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent).expect("Failed to create session database directory");
+            Self::protect_session_directory(parent)
+                .expect("Failed to protect session database directory");
         }
 
         let options = SqliteConnectOptions::new()
@@ -4085,6 +4087,35 @@ impl SessionStorage {
         SqlitePoolOptions::new()
             .max_connections(4)
             .connect_lazy_with(options)
+    }
+
+    #[cfg(unix)]
+    fn protect_session_directory(path: &Path) -> std::io::Result<()> {
+        use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
+
+        let directory = fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NOFOLLOW | libc::O_DIRECTORY)
+            .open(path)?;
+        let metadata = directory.metadata()?;
+        if !metadata.is_dir() || metadata.uid() != unsafe { libc::geteuid() } {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "session directory must be a directory owned by the current user",
+            ));
+        }
+        directory.set_permissions(fs::Permissions::from_mode(0o700))
+    }
+
+    #[cfg(not(unix))]
+    fn protect_session_directory(path: &Path) -> std::io::Result<()> {
+        if !fs::symlink_metadata(path)?.is_dir() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "session path must be a directory",
+            ));
+        }
+        Ok(())
     }
 
     pub fn new(data_dir: PathBuf) -> Self {

@@ -1,0 +1,29 @@
+   Compiling biorouter-mcp v1.93.4 (/Users/wgu/.codex/worktrees/security-reviewer-assessment/BioRouter/crates/biorouter-mcp)
+   Compiling biorouter-crew v1.93.4 (/Users/wgu/.codex/worktrees/security-reviewer-assessment/BioRouter/crates/biorouter-crew)
+   Compiling sys-info v0.9.1
+   Compiling block2 v0.6.2
+   Compiling nanoid v0.4.0
+   Compiling aws-sdk-bedrockruntime v1.120.0
+   Compiling aws-sdk-sagemakerruntime v1.93.0
+   Compiling unbinder v0.1.7
+   Compiling strum_macros v0.27.2
+   Compiling keyring v3.6.3
+   Compiling webbrowser v1.0.6
+   Compiling test-case-core v3.3.1
+   Compiling itertools v0.10.5
+   Compiling num_cpus v1.17.0
+   Compiling biorouter v1.93.4 (/Users/wgu/.codex/worktrees/security-reviewer-assessment/BioRouter/crates/biorouter)
+error[E0425]: cannot find function `protect_session_directory` in this scope
+    --> crates/biorouter/src/session/session_manager.rs:4068:13
+     |
+4068 |             protect_session_directory(parent)
+     |             ^^^^^^^^^^^^^^^^^^^^^^^^^ not found in this scope
+     |
+help: consider using the associated function on `Self`
+     |
+4068 |             Self::protect_session_directory(parent)
+     |             ++++++
+
+For more information about this error, try `rustc --explain E0425`.
+error: could not compile `biorouter` (lib) due to 1 previous error
+warning: build failed, waiting for other jobs to finish...

@@ -1,0 +1,44 @@
+{
+  "case": {
+    "case_id": "B-18",
+    "family": "B",
+    "case_type": "attack",
+    "operation": "shell_api_cookie",
+    "expected_protected_effect": "Browser cookie alone does not authorize REST API",
+    "parameters": {}
+  },
+  "calls": [
+    {
+      "request": {
+        "method": "GET",
+        "path": "/config",
+        "headers": {
+          "Cookie": "biorouter_session=<SYNTHETIC_BROWSER_TOKEN>",
+          "Sec-Fetch-Mode": "navigate",
+          "Sec-Fetch-Dest": "document"
+        },
+        "body_bytes": 0,
+        "body_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "status": 401,
+      "headers": [
+        [
+          "vary",
+          "origin, access-control-request-method, access-control-request-headers"
+        ],
+        [
+          "transfer-encoding",
+          "chunked"
+        ],
+        [
+          "date",
+          "Fri, 23 Oct 2026 01:56:42 GMT"
+        ]
+      ],
+      "body": "",
+      "response_truncated": false,
+      "duration_ms": 0.799
+    }
+  ],
+  "observed": "Expected denial and no protected synthetic marker"
+}

@@ -1,0 +1,56 @@
+[
+  {
+    "path": "/home/br",
+    "mode": "0o755",
+    "uid": 10001,
+    "gid": 10001
+  },
+  {
+    "path": "/home/br/state",
+    "mode": "0o755",
+    "uid": 10001,
+    "gid": 10001
+  },
+  {
+    "path": "/home/br/state/data",
+    "mode": "0o755",
+    "uid": 10001,
+    "gid": 10001
+  },
+  {
+    "path": "/home/br/state/data/sessions",
+    "mode": "0o755",
+    "uid": 10001,
+    "gid": 10001
+  },
+  {
+    "path": "/home/br/state/data/sessions/sessions.db",
+    "mode": "0o644",
+    "uid": 10001,
+    "gid": 10001
+  },
+  {
+    "path": "/home/br/state/data/sessions/sessions.db-wal",
+    "mode": "0o644",
+    "uid": 10001,
+    "gid": 10001
+  },
+  {
+    "path": "/home/br/state/data/sessions/sessions.db-shm",
+    "mode": "0o644",
+    "uid": 10001,
+    "gid": 10001
+  },
+  {
+    "path": "/home/br/state/config",
+    "mode": "0o755",
+    "uid": 10001,
+    "gid": 10001
+  },
+  {
+    "path": "/home/br/state/config/secrets.yaml",
+    "mode": "0o600",
+    "uid": 10001,
+    "gid": 10001
+  }
+]

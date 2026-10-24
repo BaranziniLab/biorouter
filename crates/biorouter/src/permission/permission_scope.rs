@@ -399,6 +399,11 @@ fn canonicalize_existing_ancestor(path: &Path) -> Option<PathBuf> {
             }
             return Some(resolved);
         }
+        if std::fs::symlink_metadata(&current)
+            .is_ok_and(|metadata| metadata.file_type().is_symlink())
+        {
+            return None;
+        }
         // `file_name` is `None` exactly when the final component is not a plain
         // name — i.e. it is `..` or a root. Bail instead of guessing.
         let name = current.file_name()?.to_os_string();
@@ -557,6 +562,26 @@ mod tests {
             !scope.matches(&facts),
             "a symlink out of the scope must not be in scope"
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn directory_scope_must_not_allow_dangling_symlinks() {
+        let temp = TempDir::new().unwrap();
+        let work = temp.path().join("work");
+        let outside = temp.path().join("outside");
+        fs::create_dir(&work).unwrap();
+        fs::create_dir(&outside).unwrap();
+        std::os::unix::fs::symlink(outside.join("new.txt"), work.join("file-link")).unwrap();
+        std::os::unix::fs::symlink(outside.join("missing-dir"), work.join("dir-link")).unwrap();
+
+        let scope = dir_scope(&work);
+        for path in ["file-link", "dir-link/new.txt"] {
+            let facts = editor_facts(path, &work);
+            assert!(facts.unresolved, "{path} must require a fresh decision");
+            assert!(!scope.matches(&facts), "{path} must not inherit the grant");
+        }
+        assert!(scope.matches(&editor_facts("new.txt", &work)));
     }
 
     #[test]

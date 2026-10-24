@@ -1,0 +1,42 @@
+{
+  "case": {
+    "case_id": "B-C01",
+    "family": "B",
+    "case_type": "control",
+    "operation": "ws",
+    "expected_protected_effect": "Same-origin authenticated socket upgrades",
+    "parameters": {
+      "credential": "correct",
+      "origin": "same"
+    }
+  },
+  "calls": [
+    {
+      "request": {
+        "method": "GET",
+        "path": "/ui/workspace?window_id=brsec-r3&secret=<SYNTHETIC_API_SECRET>",
+        "headers": {
+          "Host": "127.0.0.1:3000",
+          "Upgrade": "websocket",
+          "Connection": "Upgrade",
+          "Sec-WebSocket-Version": "13",
+          "Sec-WebSocket-Key": "YnJzZWMtZml4dHVyZS0xMg==",
+          "Origin": "http://127.0.0.1:3000"
+        }
+      },
+      "status": 101,
+      "raw_response_headers": [
+        "HTTP/1.1 101 Switching Protocols",
+        "connection: upgrade",
+        "upgrade: websocket",
+        "sec-websocket-accept: SZI3LLUXTbT1nyxFBwAoNcAW3Sg=",
+        "vary: origin, access-control-request-method, access-control-request-headers",
+        "access-control-allow-origin: http://127.0.0.1:3000",
+        "date: Fri, 23 Oct 2026 01:59:31 GMT"
+      ],
+      "body": "",
+      "duration_ms": 1.61
+    }
+  ],
+  "observed": "Socket handshake status"
+}

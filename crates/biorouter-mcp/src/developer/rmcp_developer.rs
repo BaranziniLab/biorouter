@@ -2136,6 +2136,15 @@ impl DeveloperServer {
             // Path doesn't exist yet — check its nearest existing ancestor
             let mut ancestor = resolved.as_path();
             loop {
+                if std::fs::symlink_metadata(ancestor)
+                    .is_ok_and(|metadata| metadata.file_type().is_symlink())
+                {
+                    return Err(ErrorData::new(
+                        rmcp::model::ErrorCode::INVALID_PARAMS,
+                        format!("Path '{}' contains a dangling symlink", path_str),
+                        None,
+                    ));
+                }
                 if let Some(parent) = ancestor.parent() {
                     if parent.exists() {
                         let canonical_parent = std::fs::canonicalize(parent).map_err(|e| {
@@ -2691,6 +2700,116 @@ mod tests {
             "and must not surface as the opaque canonicalize failure #2 fixed, got: {}",
             err.message
         );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    #[serial]
+    async fn text_editor_write_rejects_dangling_symlinks_without_widening_the_jail() {
+        use std::os::unix::fs::symlink;
+
+        let fixture = tempfile::tempdir().unwrap();
+        let workspace = fixture.path().join("workspace");
+        let outside = fixture.path().join("outside");
+        std::fs::create_dir(&workspace).unwrap();
+        std::fs::create_dir(&outside).unwrap();
+        let outside_file = outside.join("new.txt");
+        let outside_dir = outside.join("missing-dir");
+        symlink(&outside_file, workspace.join("file-link")).unwrap();
+        symlink(&outside_dir, workspace.join("dir-link")).unwrap();
+        let mut server = DeveloperServer::new().with_working_dir(workspace.clone());
+        server.file_history = Arc::new(FileHistory::in_memory());
+        let write = |path: &str| {
+            Parameters(TextEditorParams {
+                path: path.to_string(),
+                command: "write".to_string(),
+                view_range: None,
+                file_text: Some("SYNTHETIC_AUDIT_CONTENT".to_string()),
+                old_str: None,
+                new_str: None,
+                insert_line: None,
+                diff: None,
+            })
+        };
+
+        for path in ["file-link", "dir-link/new.txt"] {
+            let err = server.text_editor(write(path)).await.unwrap_err();
+            assert_eq!(err.code, ErrorCode::INVALID_PARAMS);
+            assert!(err.message.contains("dangling symlink"));
+        }
+        assert!(!outside_file.exists());
+        assert!(!outside_dir.exists());
+
+        server.text_editor(write("normal.txt")).await.unwrap();
+        symlink(workspace.join("normal.txt"), workspace.join("valid-link")).unwrap();
+        server.text_editor(write("valid-link")).await.unwrap();
+        assert_eq!(
+            std::fs::read_to_string(workspace.join("normal.txt")).unwrap(),
+            "SYNTHETIC_AUDIT_CONTENT\n"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    #[serial]
+    async fn text_editor_diff_rejects_symlink_escapes_before_creating_directories() {
+        use std::os::unix::fs::symlink;
+
+        let fixture = tempfile::tempdir().unwrap();
+        let workspace = fixture.path().join("workspace");
+        let outside = fixture.path().join("outside");
+        std::fs::create_dir(&workspace).unwrap();
+        std::fs::create_dir(&outside).unwrap();
+        let outside_file = outside.join("new.txt");
+        let outside_dir = outside.join("missing-dir");
+        symlink(&outside_file, workspace.join("file-link")).unwrap();
+        symlink(&outside_dir, workspace.join("dir-link")).unwrap();
+        symlink(&outside, workspace.join("outside-link")).unwrap();
+        let mut server = DeveloperServer::new().with_working_dir(workspace.clone());
+        server.file_history = Arc::new(FileHistory::in_memory());
+        let create_patch = |path: &str| {
+            Parameters(TextEditorParams {
+                path: ".".to_string(),
+                command: "str_replace".to_string(),
+                view_range: None,
+                file_text: None,
+                old_str: None,
+                new_str: None,
+                insert_line: None,
+                diff: Some(format!(
+                    "--- /dev/null\n+++ b/{path}\n@@ -0,0 +1 @@\n+SYNTHETIC_AUDIT_CONTENT\n"
+                )),
+            })
+        };
+
+        for path in ["file-link", "dir-link/new.txt"] {
+            let err = server.text_editor(create_patch(path)).await.unwrap_err();
+            assert_eq!(err.code, ErrorCode::INVALID_PARAMS);
+            assert!(err.message.contains("dangling symlink"));
+        }
+        assert!(!outside_file.exists());
+        assert!(!outside_dir.exists());
+
+        for path in [
+            "outside-link/missing/new.txt",
+            "workspace/outside-link/missing/new.txt",
+        ] {
+            let err = server.text_editor(create_patch(path)).await.unwrap_err();
+            assert_eq!(err.code, ErrorCode::INVALID_PARAMS);
+            assert!(err.message.contains("outside the base directory"));
+            assert!(!outside.join("missing").exists());
+        }
+
+        for (path, actual) in [
+            ("normal/nested/new.txt", "normal/nested/new.txt"),
+            ("workspace/overlap/nested/new.txt", "overlap/nested/new.txt"),
+        ] {
+            server.text_editor(create_patch(path)).await.unwrap();
+            assert_eq!(
+                std::fs::read_to_string(workspace.join(actual)).unwrap(),
+                "SYNTHETIC_AUDIT_CONTENT\n"
+            );
+        }
     }
 
     /// #64: the jail base is not re-rooted when the session working directory
