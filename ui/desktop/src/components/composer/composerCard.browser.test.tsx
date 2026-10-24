@@ -22,14 +22,51 @@ import { mkdirSync, readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { build } from 'esbuild';
+import { build, type Plugin } from 'esbuild';
 import { chromium, type Browser, type Page } from 'playwright';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { CHAT_COLUMN_CHROME, CHAT_MIN_WIDTH } from '../Layout/yieldLadder';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const STYLES = resolve(here, '../../styles');
 const requireFromDesktop = createRequire(resolve(here, '../../../package.json'));
 const SHOTS = process.env.COMPOSER_SHOTS_DIR;
+
+/** Keep the real Tools chip; only its daemon-backed lists are replaced. */
+const toolLists: Plugin = {
+  name: 'composer-tool-lists',
+  setup(builder) {
+    const lists: Record<string, { hook: string; panel: string; count: number }> = {
+      './BottomMenuExtensionSelection': {
+        hook: 'useExtensionPicker',
+        panel: 'ExtensionsPanel',
+        count: 12,
+      },
+      './BottomMenuSkillSelection': { hook: 'useSkillPicker', panel: 'SkillsPanel', count: 123 },
+      './BottomMenuKnowledgeSelection': {
+        hook: 'useKnowledgePicker',
+        panel: 'KnowledgePanel',
+        count: 45,
+      },
+    };
+    builder.onResolve(
+      { filter: /^\.\/BottomMenu(Extension|Skill|Knowledge)Selection$/ },
+      (args) => ({ path: args.path, namespace: 'composer-tool-list' })
+    );
+    builder.onLoad({ filter: /.*/, namespace: 'composer-tool-list' }, ({ path }) => {
+      const { hook, panel, count } = lists[path];
+      return {
+        contents: `
+          export function ${hook}() {
+            return { activeCount: ${count}, visibleCount: ${count}, answered: true, setQuery() {} };
+          }
+          export function ${panel}() { return null; }
+        `,
+        loader: 'tsx',
+      };
+    });
+  },
+};
 
 const ENTRY = `
 import * as React from 'react';
@@ -38,12 +75,14 @@ import { composerCardClassName } from './composerCard';
 import { ComposerChips } from './ComposerChips';
 import { ComposerPlusMenu } from './ComposerPlusMenu';
 import { MessageQueue } from '../MessageQueue';
+import { ToolsChip } from '../bottom_menu/ToolsChip';
 import {
   NO_MODEL_CHIP_LABEL,
   NO_MODEL_COMPOSER_ACTION,
   NO_MODEL_COMPOSER_HINT,
 } from '../composerNoProvider';
 import { Button } from '../ui/button';
+import { PrivacyBadge } from '../ui/PrivacyBadge';
 import { ArrowUp, ChevronDown, Folder } from '../icons/app-icons';
 
 const IMAGE =
@@ -52,12 +91,19 @@ const IMAGE =
     '<svg xmlns="http://www.w3.org/2000/svg" width="96" height="96"><rect width="96" height="96" fill="#7aa6c2"/><circle cx="64" cy="34" r="14" fill="#f2d16b"/><path d="M0 96 L36 50 L60 80 L74 64 L96 96Z" fill="#3f6f52"/></svg>'
   );
 
-function Chip({ children }: { children: React.ReactNode }) {
+function ModelChip() {
   return (
-    <button type="button" className="br-picker-chip">
-      {children}
-      <ChevronDown className="br-picker-chip__chevron" aria-hidden />
-    </button>
+    <div className="flex min-w-0 items-center">
+      <div className="relative flex min-w-0 items-center">
+        <button type="button" className="br-picker-chip" data-kind="model">
+          <span className="br-picker-chip__name">gpt-5.6-sol-with-a-long-model-name · Deep</span>
+          <span className="br-picker-chip__badge">
+            <PrivacyBadge tier="private" dense />
+          </span>
+          <ChevronDown className="br-picker-chip__chevron" aria-hidden />
+        </button>
+      </div>
+    </div>
   );
 }
 
@@ -97,17 +143,10 @@ function Card({
         />
         <div className="br-composer-controls">
           <ComposerPlusMenu onAttachFiles={() => {}} onInsertTrigger={() => {}} />
-          <Chip>
-            <span>Tools</span>
-            <span className="br-picker-chip__count">15</span>
-          </Chip>
+          <ToolsChip sessionId={id} />
           <span className="br-composer-controls__spacer" />
           <div className="br-composer-controls__model">
-            {modelChip ?? (
-              <Chip>
-                <span className="br-picker-chip__name">gpt-5.6-sol</span>
-              </Chip>
-            )}
+            {modelChip ?? <ModelChip />}
           </div>
           <span className="flex-shrink-0">
             <Button
@@ -148,7 +187,7 @@ function App() {
   return (
     <div style={{ display: 'grid', gap: 0 }}>
       <div id="chat-ground" className="bg-background-default" style={{ padding: 24, width: 760 }}>
-        <div style={{ display: 'grid', gap: 24 }}>
+        <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr)', gap: 24 }}>
           <span>
             <Button
               id="bare-send"
@@ -284,6 +323,7 @@ describe('the chat composer card under the whole stylesheet (R-32)', () => {
       format: 'iife',
       jsx: 'automatic',
       platform: 'browser',
+      plugins: [toolLists],
       define: { 'process.env.NODE_ENV': '"production"' },
       loader: { '.css': 'empty', '.svg': 'dataurl', '.png': 'dataurl' },
       logLevel: 'silent',
@@ -559,6 +599,101 @@ describe('the chat composer card under the whole stylesheet (R-32)', () => {
       }
     }
   });
+
+  it.for([760, 440, CHAT_MIN_WIDTH])(
+    'keeps the Tools-only chip, private model and Send on one row in a %ipx pane',
+    async (width, ctx) => {
+      if (!browser) return ctx.skip();
+      const tab = await open('light');
+      try {
+        await tab.evaluate(
+          ({ width, chrome }) => {
+            const pane = document.getElementById('chat-ground')!;
+            pane.style.width = `${width}px`;
+            pane.style.paddingInline = `${chrome / 2}px`;
+          },
+          { width, chrome: CHAT_COLUMN_CHROME }
+        );
+        const chip = tab.locator('#rest [data-testid="composer-tools-chip"]');
+        expect(await chip.getAttribute('aria-label')).toBe(
+          'Tools: 12 extensions, 123 skills, 45 knowledge bases'
+        );
+        expect(await chip.textContent()).toBe('Tools');
+        const geometry = await tab.evaluate(() => {
+          const card = document.getElementById('rest')!;
+          const box = (selector: string) => {
+            const el = card.querySelector<HTMLElement>(selector)!;
+            const rect = el.getBoundingClientRect();
+            return {
+              left: rect.left,
+              right: rect.right,
+              top: rect.top,
+              bottom: rect.bottom,
+              width: rect.width,
+              height: rect.height,
+              scrollWidth: el.scrollWidth,
+              clientWidth: el.clientWidth,
+              borderWidth: getComputedStyle(el).borderTopWidth,
+            };
+          };
+          return {
+            card: card.getBoundingClientRect().toJSON(),
+            layout: getComputedStyle(card.querySelector('.br-composer-controls')!).display,
+            plus: box('[data-testid="composer-plus"]'),
+            tools: box('[data-testid="composer-tools-chip"]'),
+            model: box('[data-kind="model"]'),
+            name: box('[data-kind="model"] .br-picker-chip__name'),
+            lock: box('[data-kind="model"] [data-testid="privacy-badge"]'),
+            chevron: box('[data-kind="model"] .br-picker-chip__chevron'),
+            send: box('#rest-send'),
+          };
+        });
+        const tolerance = 0.5;
+        const ordered = [geometry.plus, geometry.tools, geometry.model, geometry.send];
+        expect(geometry.card.width).toBe(width - CHAT_COLUMN_CHROME);
+        for (const control of ordered) {
+          expect(control.left).toBeGreaterThanOrEqual(geometry.card.left);
+          expect(control.right).toBeLessThanOrEqual(geometry.card.right);
+        }
+        expect(geometry.layout).toBe('flex');
+        expect(geometry.tools.borderWidth).toBe('0px');
+        for (let index = 1; index < ordered.length; index++) {
+          expect(ordered[index - 1].right).toBeLessThanOrEqual(ordered[index].left + tolerance);
+          expect(ordered[index - 1].top).toBeLessThanOrEqual(ordered[index].bottom);
+          expect(ordered[index - 1].bottom).toBeGreaterThanOrEqual(ordered[index].top);
+        }
+        expect(geometry.name.right).toBeLessThanOrEqual(geometry.lock.left + tolerance);
+        expect(geometry.lock.width).toBe(12);
+        expect(geometry.lock.height).toBe(12);
+        expect(geometry.lock.right).toBeLessThanOrEqual(geometry.chevron.left + tolerance);
+        expect(geometry.chevron.width).toBe(14);
+        expect(
+          geometry.chevron.right,
+          `the model contents stay inside their trigger: ${JSON.stringify({
+            model: geometry.model,
+            name: geometry.name,
+            lock: geometry.lock,
+            chevron: geometry.chevron,
+            send: geometry.send,
+          })}`
+        ).toBeLessThanOrEqual(geometry.model.right + tolerance);
+        expect(geometry.name.width, 'the model name keeps room for its ellipsis').toBeGreaterThan(
+          12
+        );
+        expect(geometry.name.scrollWidth).toBeGreaterThan(geometry.name.clientWidth);
+        expect(geometry.send.width).toBe(32);
+        expect(geometry.send.height).toBe(32);
+        if (SHOTS) {
+          mkdirSync(SHOTS, { recursive: true });
+          await tab.locator('#rest').screenshot({
+            path: resolve(SHOTS, `composer-card-light-pane-${width}.png`),
+          });
+        }
+      } finally {
+        await tab.close();
+      }
+    }
+  );
 
   it('saves screenshots when asked', async (ctx) => {
     if (!browser || !SHOTS) return ctx.skip();

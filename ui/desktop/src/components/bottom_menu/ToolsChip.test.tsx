@@ -7,7 +7,7 @@ import { TOOLS_COPY } from './copy';
 import { TOOLTIP_DELAY_MS } from '../ui/Tooltip';
 
 /**
- * Spec 3.7: ONE Tools chip ("Tools" and a sum) opening ONE popover, with a
+ * ONE Tools chip with its counts on hover opening ONE popover, with a
  * segmented control over the three lists. The lists themselves are tested in
  * their own files (`BottomMenu*Selection*.test.tsx`); here they are stand-ins
  * that record what the chip asks of them.
@@ -105,20 +105,27 @@ beforeEach(() => {
 });
 
 const last = (values: boolean[]) => values[values.length - 1];
+const toolCounts = (chip: HTMLElement) => chip.getAttribute('aria-label')?.match(/\d+/g) ?? [];
 
 describe('ToolsChip', () => {
-  it('is one chip labelled Tools with the sum, and says the parts in its name', async () => {
+  it('shows only Tools, and gives the enabled total and category counts on hover', async () => {
     const user = userEvent.setup();
     render(<ToolsChip sessionId="chat-1" />);
 
     const chip = screen.getByTestId('composer-tools-chip');
-    expect(chip).toHaveTextContent('Tools15');
+    expect(chip).toHaveTextContent(/^Tools$/);
+    expect(toolCounts(chip)).toEqual(['4', '9', '2']);
     expect(chip).toHaveAccessibleName('Tools: 4 extensions, 9 skills, 2 knowledge bases');
     expect(chip).toHaveClass('br-picker-chip');
     expect(chip).not.toHaveAttribute('title');
+    expect(chip.querySelectorAll('svg')).toHaveLength(1);
 
     await user.hover(chip);
-    expect(await screen.findByRole('tooltip')).toHaveTextContent(TOOLS_COPY.chipTooltip(4, 9, 2));
+    const tooltip = await screen.findByRole('tooltip');
+    expect(tooltip).toHaveTextContent(/15 (?:enabled tools|tools enabled)/);
+    expect(tooltip).toHaveTextContent('4 extensions');
+    expect(tooltip).toHaveTextContent('9 skills');
+    expect(tooltip).toHaveTextContent('2 knowledge bases');
   });
 
   it('opens one popover with a segmented control over one list at a time', async () => {
@@ -266,28 +273,27 @@ describe('ToolsChip', () => {
     expect(await screen.findByTestId('knowledge-panel')).toHaveAttribute('data-in-chat', 'false');
   });
 
-  describe('the number states this chat’s tools, or nothing (V2-R7-3)', () => {
+  describe('the counts state this chat’s tools, or remain unknown (V2-R7-3)', () => {
     /**
-     * Every number the chip has shown, in order, from the first commit on. The
+     * Every count tuple the chip has named, in order, from the first commit on. The
      * observer reports in a microtask, so each step is flushed before the next.
      */
     function recordNumbers(chip: HTMLElement): string[] {
       const seen: string[] = [];
       const note = () => {
-        const shown = chip.querySelector('.br-picker-chip__count')?.textContent ?? '';
+        const shown = toolCounts(chip).join('|');
         if (seen[seen.length - 1] !== shown) seen.push(shown);
       };
       note();
       new MutationObserver(note).observe(chip, {
-        childList: true,
-        subtree: true,
-        characterData: true,
+        attributes: true,
+        attributeFilter: ['aria-label'],
       });
       return seen;
     }
     const flush = () => act(async () => {});
 
-    it('shows no number until all three lists have answered, then the total once', async () => {
+    it('keeps counts unknown until all three lists have answered, then names them once', async () => {
       const user = userEvent.setup();
       hooks.extensions = { count: 2, answered: false };
       hooks.skills = { count: 0, answered: false };
@@ -296,6 +302,7 @@ describe('ToolsChip', () => {
       const chip = screen.getByTestId('composer-tools-chip');
       const numbers = recordNumbers(chip);
 
+      expect(toolCounts(chip)).toEqual([]);
       expect(chip).toHaveTextContent(/^Tools$/);
       expect(chip).toHaveAccessibleName(TOOLS_COPY.chip);
       // Nothing to say on hover either: the parts are not known. (Held past the
@@ -313,21 +320,22 @@ describe('ToolsChip', () => {
       hooks.skills = { count: 3, answered: true };
       rerender(<ToolsChip sessionId="chat-1" />);
       await flush();
+      expect(toolCounts(chip)).toEqual([]);
       expect(chip).toHaveTextContent(/^Tools$/);
       hooks.extensions = { count: 1, answered: true };
       rerender(<ToolsChip sessionId="chat-1" />);
       await flush();
 
-      expect(chip).toHaveTextContent('Tools4');
+      expect(toolCounts(chip)).toEqual(['1', '3', '0']);
       expect(chip).toHaveAccessibleName('Tools: 1 extension, 3 skills, 0 knowledge bases');
-      // Never 2, 5 or 3 on the way: nothing, then the total.
-      expect(numbers).toEqual(['', '4']);
+      // No partial figures on the way: unknown, then the settled tuple.
+      expect(numbers).toEqual(['', '1|3|0']);
     });
 
-    it('never shows the previous chat’s number under the next one', async () => {
+    it('never shows the previous chat’s counts under the next one', async () => {
       const { rerender } = render(<ToolsChip sessionId="chat-a" />);
       const chip = screen.getByTestId('composer-tools-chip');
-      expect(chip).toHaveTextContent('Tools15');
+      expect(toolCounts(chip)).toEqual(['4', '9', '2']);
       const numbers = recordNumbers(chip);
 
       // The tab keeps its mount and binds another chat: the lists still hold
@@ -336,17 +344,17 @@ describe('ToolsChip', () => {
       hooks.skills = { count: 9, answered: false };
       rerender(<ToolsChip sessionId="chat-b" />);
       await flush();
-      expect(chip).toHaveTextContent(/^Tools$/);
+      expect(toolCounts(chip)).toEqual([]);
 
       hooks.extensions = { count: 1, answered: true };
       hooks.skills = { count: 2, answered: true };
       rerender(<ToolsChip sessionId="chat-b" />);
       await flush();
-      expect(chip).toHaveTextContent('Tools5');
-      expect(numbers).toEqual(['15', '', '5']);
+      expect(toolCounts(chip)).toEqual(['1', '2', '2']);
+      expect(numbers).toEqual(['4|9|2', '', '1|2|2']);
     });
 
-    it('keeps the number while one list re-asks for the same chat, and moves it once', async () => {
+    it('keeps the counts while one list re-asks for the same chat, and moves them once', async () => {
       const { rerender } = render(<ToolsChip sessionId="chat-1" />);
       const chip = screen.getByTestId('composer-tools-chip');
       const numbers = recordNumbers(chip);
@@ -356,16 +364,16 @@ describe('ToolsChip', () => {
       hooks.knowledge = { count: 5, answered: false };
       rerender(<ToolsChip sessionId="chat-1" />);
       await flush();
-      expect(chip).toHaveTextContent('Tools15');
+      expect(toolCounts(chip)).toEqual(['4', '9', '2']);
 
       hooks.knowledge = { count: 3, answered: true };
       rerender(<ToolsChip sessionId="chat-1" />);
       await flush();
-      expect(chip).toHaveTextContent('Tools16');
-      expect(numbers).toEqual(['15', '16']);
+      expect(toolCounts(chip)).toEqual(['4', '9', '3']);
+      expect(numbers).toEqual(['4|9|2', '4|9|3']);
     });
 
-    it('carries the count into a chat this composer has just started', async () => {
+    it('carries the counts into a chat this composer has just started', async () => {
       // A new tab's composer: no chat yet, counting what the next chat gets.
       const { rerender } = render(<ToolsChip sessionId={null} />);
       const chip = screen.getByTestId('composer-tools-chip');
@@ -376,27 +384,27 @@ describe('ToolsChip', () => {
       hooks.skills = { count: 9, answered: false };
       rerender(<ToolsChip sessionId="chat-new" />);
       await flush();
-      expect(chip).toHaveTextContent('Tools15');
+      expect(toolCounts(chip)).toEqual(['4', '9', '2']);
 
       hooks.extensions = { count: 4, answered: true };
       hooks.skills = { count: 9, answered: true };
       rerender(<ToolsChip sessionId="chat-new" />);
       await flush();
-      expect(numbers).toEqual(['15']);
+      expect(numbers).toEqual(['4|9|2']);
     });
 
-    it('names a carried number by its parts, as it names an answered one', async () => {
+    it('names carried counts as it names answered ones', async () => {
       const { rerender } = render(<ToolsChip sessionId="chat-1" />);
       const chip = screen.getByTestId('composer-tools-chip');
       hooks.knowledge = { count: 5, answered: false };
       rerender(<ToolsChip sessionId="chat-1" />);
       await flush();
-      // The number on screen is the settled one, and so is the name (V2-R8-3).
-      expect(chip).toHaveTextContent('Tools15');
+      // The accessible counts remain settled while the list refreshes (V2-R8-3).
+      expect(toolCounts(chip)).toEqual(['4', '9', '2']);
       expect(chip).toHaveAccessibleName('Tools: 4 extensions, 9 skills, 2 knowledge bases');
     });
 
-    it('hands its number to the chip that replaces it when the composer remounts (V2-R8-3)', async () => {
+    it('hands its counts to the chip that replaces it when the composer remounts (V2-R8-3)', async () => {
       // A new chat's first send moves the composer from the centre of the empty
       // chat to the bar under the transcript: a second mount, in one commit.
       function Seat({ centre, sessionId }: { centre: boolean; sessionId: string | null }) {
@@ -410,7 +418,7 @@ describe('ToolsChip', () => {
       }
       const { rerender } = render(<Seat centre sessionId={null} />);
       const first = screen.getByTestId('composer-tools-chip');
-      expect(first).toHaveTextContent('Tools15');
+      expect(toolCounts(first)).toEqual(['4', '9', '2']);
 
       // The new mount's lists have not answered yet, for "no chat" or the chat.
       hooks.extensions = { count: 4, answered: false };
@@ -427,12 +435,12 @@ describe('ToolsChip', () => {
       hooks.skills = { count: 9, answered: true };
       rerender(<Seat centre={false} sessionId="chat-new" />);
       await flush();
-      expect(numbers).toEqual(['15']);
+      expect(numbers).toEqual(['4|9|2']);
 
       // Not for another chat: a remount onto a different chat starts from nothing.
       hooks.extensions = { count: 4, answered: false };
       rerender(<Seat centre sessionId="chat-other" />);
-      expect(screen.getByTestId('composer-tools-chip')).toHaveTextContent(/^Tools$/);
+      expect(toolCounts(screen.getByTestId('composer-tools-chip'))).toEqual([]);
     });
   });
 });
