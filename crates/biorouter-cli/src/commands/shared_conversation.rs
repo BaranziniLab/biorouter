@@ -681,8 +681,8 @@ impl Conversation {
             else {
                 return Ok(Interaction::Stop);
             };
-            if !matches!(answer.trim(), "allow_once" | "deny")
-                && !(folder_access && answer.trim() == "allow_session")
+            if !(matches!(answer.trim(), "allow_once" | "deny")
+                || folder_access && answer.trim() == "allow_session")
             {
                 continue;
             }
