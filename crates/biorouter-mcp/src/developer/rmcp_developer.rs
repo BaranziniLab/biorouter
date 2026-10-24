@@ -2534,6 +2534,40 @@ mod tests {
         DeveloperServer::new()
     }
 
+    #[cfg(windows)]
+    #[test]
+    fn windows_workspace_identity_is_protected_until_the_server_releases_it() {
+        let fixture = tempfile::tempdir().unwrap();
+        let workspace = fixture.path().join("workspace");
+        let moved = fixture.path().join("moved-workspace");
+        let outside = fixture.path().join("outside.txt");
+        fs::create_dir(&workspace).unwrap();
+        fs::write(workspace.join("inside.txt"), "approved").unwrap();
+        fs::write(&outside, "outside canary").unwrap();
+        let server = DeveloperServer::new().with_working_dir(workspace.clone());
+        {
+            let access = server.editor_access(Default::default()).unwrap();
+            assert!(access.bind(&outside, AccessMode::Read).is_err());
+            assert_eq!(
+                access
+                    .bind(&workspace.join("inside.txt"), AccessMode::Read)
+                    .unwrap()
+                    .read_to_string()
+                    .unwrap(),
+                "approved"
+            );
+        }
+        assert!(fs::rename(&workspace, &moved).is_err());
+        assert!(workspace.is_dir());
+        fs::remove_file(workspace.join("inside.txt")).unwrap();
+        assert!(fs::remove_dir(&workspace).is_err());
+        assert!(workspace.is_dir());
+        assert_eq!(fs::read_to_string(&outside).unwrap(), "outside canary");
+        drop(server);
+        fs::rename(&workspace, &moved).unwrap();
+        fs::remove_dir(&moved).unwrap();
+    }
+
     #[cfg(unix)]
     #[test]
     fn captured_workspace_alias_retains_the_authorized_object_after_retargeting() {
@@ -2682,14 +2716,17 @@ mod tests {
 
         let tmp = tempfile::tempdir().unwrap();
         let dir = tmp.path().to_path_buf();
-        let server = DeveloperServer::new().with_working_dir(dir.clone());
+        // This fixture tests shell fallback, without acquiring file authority
+        // that deliberately prevents deleting a live workspace on Windows.
+        let mut server = DeveloperServer::new();
+        server.working_dir = Some(dir.clone());
         // While it exists, it is honored.
         assert_eq!(
             server.resolve_shell_cwd_checked(None).unwrap(),
             Some(dir.clone())
         );
         // Once deleted, resolution falls back rather than returning the dead dir.
-        drop(tmp);
+        tmp.close().unwrap();
         let resolved = server.resolve_shell_cwd_checked(None).unwrap();
         assert_ne!(
             resolved,
@@ -3142,6 +3179,7 @@ mod tests {
     /// ("don't panic") that has nothing to do with the boundary it moves.
     #[test]
     #[serial]
+    #[cfg(not(windows))]
     fn editor_jail_is_not_widened_when_session_dir_disappears() {
         let saved_env = std::env::var("BIOROUTER_WORKING_DIR").ok();
         std::env::remove_var("BIOROUTER_WORKING_DIR");
@@ -3362,6 +3400,7 @@ mod tests {
     /// directory it was actually given, and refuses instead of moving.
     #[test]
     #[serial]
+    #[cfg(not(windows))]
     fn editor_jail_is_not_widened_to_the_env_base_when_session_dir_disappears() {
         let saved_env = std::env::var("BIOROUTER_WORKING_DIR").ok();
 
@@ -5567,8 +5606,12 @@ mod tests {
             }
 
             // Force cleanup before runtime shutdown
-            cleanup_test_service(running_service, peer);
-
+            drop(peer);
+            timeout(Duration::from_secs(5), running_service.cancel())
+                .await
+                .expect("MCP service must stop before removing its workspace")
+                .unwrap();
+            drop(server);
             temp_dir.close().unwrap();
         });
     }

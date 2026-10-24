@@ -261,6 +261,23 @@ new file mode 100644
     }
 
     #[tokio::test]
+    async fn diff_final_newline_preserves_the_existing_file_style() {
+        for ending in ["\n", "\r\n"] {
+            let temp_dir = TempDir::new().unwrap();
+            let file_path = temp_dir.path().join("style.txt");
+            std::fs::write(&file_path, format!("context{ending}old")).unwrap();
+            let diff = "--- a/style.txt\n+++ b/style.txt\n@@ -1,2 +1,2 @@\n context\n-old\n+new";
+            apply_diff(&file_path, diff, &FileHistory::in_memory())
+                .await
+                .unwrap();
+            assert_eq!(
+                std::fs::read_to_string(&file_path).unwrap(),
+                format!("context{ending}new{ending}")
+            );
+        }
+    }
+
+    #[tokio::test]
     async fn test_empty_file_handling() {
         let temp_dir = TempDir::new().unwrap();
         let file_path = temp_dir.path().join("empty.txt");
@@ -278,8 +295,7 @@ new file mode 100644
 
         assert!(result.is_ok());
         let content = std::fs::read_to_string(&file_path).unwrap();
-        // mpatch may add a trailing newline
-        assert!(content == "new content" || content == "new content\n");
+        assert_eq!(content, normalize_line_endings("new content\n"));
     }
 
     #[tokio::test]
@@ -344,9 +360,8 @@ diff --git a/file2.txt b/file2.txt
         assert!(result.is_ok());
         let content1 = std::fs::read_to_string(base_path.join("file1.txt")).unwrap();
         let content2 = std::fs::read_to_string(base_path.join("file2.txt")).unwrap();
-        // mpatch may add trailing newlines
-        assert!(content1 == "modified1" || content1 == "modified1\n");
-        assert!(content2 == "modified2" || content2 == "modified2\n");
+        assert_eq!(content1, normalize_line_endings("modified1\n"));
+        assert_eq!(content2, normalize_line_endings("modified2\n"));
     }
 
     // Tests for fuzzy matching with wrong line numbers

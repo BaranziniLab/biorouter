@@ -117,6 +117,8 @@ fn nofollow_options(directory: bool) -> OpenOptions {
     #[cfg(windows)]
     {
         use cap_std::fs::OpenOptionsExt;
+        // cap-std uses paths for some Windows directory operations. Prevent
+        // directory renames while its retained handle protects those lookups.
         options
             .custom_flags(0x0020_0000 | 0x0200_0000)
             .share_mode(if directory { 3 } else { 7 });

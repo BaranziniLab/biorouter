@@ -14,16 +14,12 @@ use super::lang;
 use super::shell::normalize_line_endings_like;
 use super::undo_history::FileHistory;
 
-fn ensure_trailing_newline(content: &mut String) {
+fn ensure_trailing_newline(content: &mut String, existing: Option<&str>) {
     if content.ends_with('\n') {
         return;
     }
 
-    if cfg!(windows) {
-        content.push_str("\r\n");
-    } else {
-        content.push('\n');
-    }
+    content.push_str(&normalize_line_endings_like(existing, "\n"));
 }
 
 // Constants
@@ -282,7 +278,7 @@ pub(crate) async fn apply_diff_bounded(
             ))
         })?;
         let mut updated = normalize_line_endings_like(original.as_deref(), &updated);
-        ensure_trailing_newline(&mut updated);
+        ensure_trailing_newline(&mut updated, original.as_deref());
         if !complete {
             failed_hunks.push(format!(
                 "Failed to apply some hunks to '{}' ({} hunks total)",
@@ -610,7 +606,7 @@ pub(crate) async fn text_editor_write_bounded(
     // `old_str` the model sent back.
     let existing = path.read_to_string().ok();
     let mut normalized_text = normalize_line_endings_like(existing.as_deref(), file_text);
-    ensure_trailing_newline(&mut normalized_text);
+    ensure_trailing_newline(&mut normalized_text, existing.as_deref());
 
     // Write to the file
     path.write(&normalized_text) // Write the potentially modified text
@@ -697,7 +693,7 @@ pub(crate) async fn text_editor_replace_bounded(
                 let mut normalized_content =
                     normalize_line_endings_like(Some(&content), &updated_content);
 
-                ensure_trailing_newline(&mut normalized_content);
+                ensure_trailing_newline(&mut normalized_content, Some(&content));
 
                 path.write(&normalized_content).map_err(|e| {
                     ErrorData::new(
@@ -749,7 +745,7 @@ pub(crate) async fn text_editor_replace_bounded(
     // `normalize_line_endings_like`.
     let mut normalized_content = normalize_line_endings_like(Some(&content), &new_content);
 
-    ensure_trailing_newline(&mut normalized_content);
+    ensure_trailing_newline(&mut normalized_content, Some(&content));
 
     path.write(&normalized_content).map_err(|e| {
         ErrorData::new(
@@ -882,7 +878,7 @@ pub(crate) async fn text_editor_insert_bounded(
 
     let new_content = new_lines.join("\n");
     let mut final_content = normalize_line_endings_like(Some(&content), &new_content);
-    ensure_trailing_newline(&mut final_content);
+    ensure_trailing_newline(&mut final_content, Some(&content));
 
     path.write(&final_content).map_err(|e| {
         ErrorData::new(
