@@ -137,7 +137,9 @@ fn discover_target(path: &Path) -> std::io::Result<PathBuf> {
                     } else {
                         parent.join(target)
                     };
-                    next.push(components.as_path());
+                    if !components.as_path().as_os_str().is_empty() {
+                        next.push(components.as_path());
+                    }
                     remaining = next;
                     followed = true;
                     break;
@@ -181,9 +183,12 @@ fn canonical_discovered_path(path: &Path) -> std::io::Result<PathBuf> {
     loop {
         match std::fs::symlink_metadata(existing) {
             Ok(_) => {
-                return Ok(existing
-                    .canonicalize()?
-                    .join(path.strip_prefix(existing).unwrap()))
+                let mut canonical = existing.canonicalize()?;
+                let missing = path.strip_prefix(existing).unwrap();
+                if !missing.as_os_str().is_empty() {
+                    canonical.push(missing);
+                }
+                return Ok(canonical);
             }
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
                 existing = existing.parent().ok_or(error)?;
@@ -667,6 +672,21 @@ mod skill_authority_tests {
                 .unwrap()
                 .join("missing/subfolder/result.txt")
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn discovery_keeps_existing_files_and_final_file_links_as_file_paths() {
+        let fixture = tempfile::tempdir().unwrap();
+        let file = fixture.path().join("result.csv");
+        let link = fixture.path().join("result-link.csv");
+        std::fs::write(&file, "synthetic result").unwrap();
+        std::os::unix::fs::symlink(&file, &link).unwrap();
+        for requested in [&file, &link] {
+            let actual = discover_target(requested).unwrap();
+            assert_eq!(actual.as_os_str(), file.canonicalize().unwrap().as_os_str());
+            assert_eq!(std::fs::read_to_string(actual).unwrap(), "synthetic result");
+        }
     }
 
     #[cfg(target_os = "macos")]
