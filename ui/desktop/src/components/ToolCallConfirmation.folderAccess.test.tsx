@@ -53,6 +53,8 @@ describe('folder-scoped browser approval', () => {
   it('uses a transient scoped key and sends a session decision once', async () => {
     show();
     const key = screen.getByLabelText('Folder approval key');
+    expect(key).toHaveAccessibleName('Folder approval key');
+    expect(key).toHaveAccessibleDescription(/Use the separate key set with/);
     const allow = screen.getByRole('button', { name: 'Allow for this session' });
     expect(allow).toBeDisabled();
     fireEvent.change(key, { target: { value: 'human-held-folder-key' } });

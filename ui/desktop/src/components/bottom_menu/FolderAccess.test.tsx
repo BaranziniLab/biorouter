@@ -11,11 +11,9 @@ vi.mock('../../utils/surface', () => ({ isBrowserSurface: () => mocks.browser })
 
 beforeEach(() => {
   mocks.browser = false;
-  mocks.list
-    .mockReset()
-    .mockResolvedValue({
-      data: [{ id: 'grant', folder: '/synthetic/results', access: 'read-only', descendants: true }],
-    });
+  mocks.list.mockReset().mockResolvedValue({
+    data: [{ id: 'grant', folder: '/synthetic/results', access: 'read-only', descendants: true }],
+  });
   mocks.revoke.mockReset().mockResolvedValue({ data: { revoked: true } });
 });
 
@@ -48,5 +46,24 @@ describe('chat folder access management', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Revoke' }));
     expect(await screen.findByRole('alert')).toHaveTextContent('Access could not be revoked');
     expect(screen.getByText('/synthetic/results')).toBeInTheDocument();
+  });
+
+  it('labels the browser key separately from its help and clears it after revocation', async () => {
+    mocks.browser = true;
+    render(<FolderAccess sessionId="chat-a" />);
+    fireEvent.click(screen.getByRole('button', { name: 'Folder access' }));
+    await screen.findByText('/synthetic/results');
+    const key = screen.getByLabelText('Folder approval key');
+    expect(key).toHaveAccessibleName('Folder approval key');
+    expect(key).toHaveAccessibleDescription(/Use the separate key configured with/);
+    expect(screen.getByRole('button', { name: 'Revoke' })).toBeDisabled();
+    fireEvent.change(key, { target: { value: 'synthetic-folder-key' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Revoke' }));
+    await waitFor(() => expect(mocks.revoke).toHaveBeenCalledTimes(1));
+    expect(mocks.revoke.mock.calls[0][0].headers).toHaveProperty(
+      'X-Folder-Access-Key',
+      'synthetic-folder-key'
+    );
+    await waitFor(() => expect(key).toHaveValue(''));
   });
 });

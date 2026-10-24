@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useId, useState } from 'react';
 import { listFolderAccess, revokeFolderAccess, type FolderGrantView } from '../../api';
 import { userActionHeaders } from '../../utils/userAction';
 import { isBrowserSurface } from '../../utils/surface';
@@ -13,6 +13,7 @@ import {
 } from '../ui/dialog';
 
 export function FolderAccess({ sessionId }: { sessionId: string }) {
+  const approvalKeyId = useId();
   const [open, setOpen] = useState(false);
   const [grants, setGrants] = useState<FolderGrantView[]>([]);
   const [busy, setBusy] = useState(false);
@@ -104,19 +105,21 @@ export function FolderAccess({ sessionId }: { sessionId: string }) {
           ))}
         </ul>
         {isBrowserSurface() && (
-          <label className="flex flex-col gap-1 text-sm">
-            Folder approval key
+          <div className="flex flex-col gap-1 text-sm">
+            <label htmlFor={approvalKeyId}>Folder approval key</label>
             <input
+              id={approvalKeyId}
               type="password"
               autoComplete="off"
               value={approvalKey}
               onChange={(event) => setApprovalKey(event.target.value)}
+              aria-describedby={`${approvalKeyId}-help`}
             />
-            <span className="text-text-muted">
+            <span id={`${approvalKeyId}-help`} className="text-text-muted">
               Use the separate key configured with biorouter serve --folder-access-approval. It is
               cleared after each revocation.
             </span>
-          </label>
+          </div>
         )}
       </DialogContent>
     </Dialog>

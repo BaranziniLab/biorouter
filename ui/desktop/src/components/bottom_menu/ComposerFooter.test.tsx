@@ -84,13 +84,13 @@ describe('ComposerFooter (spec 3.7)', () => {
   // rather than the app's default it does not use. The rest of the line is the
   // chat's own and stays, and the folder's arrival changes nothing beside it.
   describe('a chat whose folder is not known yet (workingDir null)', () => {
-    it('leaves the folder out and keeps both sides of the line', async () => {
+    it('leaves the folder name out and keeps chat folder access and both sides of the line', async () => {
       render(<ComposerFooter {...BASE} workingDir={null} />);
       await settle();
       const footer = screen.getByTestId('composer-footer');
       const sides = footer.querySelectorAll('.br-footline__side');
       expect(sides).toHaveLength(2);
-      expect(sides[0]).toBeEmptyDOMElement();
+      expect(sides[0]).toContainElement(screen.getByRole('button', { name: 'Folder access' }));
       expect(screen.queryByText('Desktop')).toBeNull();
       // The ring and the cost are about the chat, not its folder.
       expect(screen.getByTestId('context-window-indicator')).toBeInTheDocument();

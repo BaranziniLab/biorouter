@@ -363,9 +363,10 @@ export default function ToolConfirmation({
         {preview && <ToolCallPreview preview={preview} />}
 
         {browserFolderAccess && (
-          <label className="flex flex-col gap-1 text-sm">
-            Folder approval key
+          <div className="flex flex-col gap-1 text-sm">
+            <label htmlFor={`${toolConfirmationId}-folder-key`}>Folder approval key</label>
             <input
+              id={`${toolConfirmationId}-folder-key`}
               type="password"
               autoComplete="off"
               value={folderApprovalKey}
@@ -378,7 +379,7 @@ export default function ToolConfirmation({
               after each decision and grants no other protected permission. If setup was omitted,
               restart the server with that flag, then retry the file operation.
             </span>
-          </label>
+          </div>
         )}
         {cannotApprove ? (
           // A refusal, so it stays visible (principle 2).
