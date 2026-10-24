@@ -11,6 +11,8 @@ on:
       - 'crates/biorouter/src/session/**'
       - 'crates/biorouter/src/config/paths.rs'
       - 'crates/biorouter-sandbox/**'
+      - 'crates/biorouter-mcp/src/developer/**'
+      - 'crates/biorouter-mcp/src/lib.rs'
       - 'crates/biorouter-server/**'
       - 'scripts/security-assessment/session_storage_rebuilt.py'
       - 'scripts/security-assessment/test_session_storage_rebuilt.py'
@@ -25,6 +27,8 @@ on:
       - 'crates/biorouter/src/session/**'
       - 'crates/biorouter/src/config/paths.rs'
       - 'crates/biorouter-sandbox/**'
+      - 'crates/biorouter-mcp/src/developer/**'
+      - 'crates/biorouter-mcp/src/lib.rs'
       - 'crates/biorouter-server/**'
       - 'scripts/security-assessment/session_storage_rebuilt.py'
       - 'scripts/security-assessment/test_session_storage_rebuilt.py'
@@ -109,7 +113,7 @@ jobs:
             --file scripts/security-assessment/session-storage-runtime.Dockerfile \
             scripts/security-assessment 2>&1 | tee "$SECURITY_STORAGE_EVIDENCE/runtime-build.log"
           docker image inspect biorouter-security-storage-runtime:ci > "$SECURITY_STORAGE_EVIDENCE/runtime-image.json"
-      - name: Exercise real SQLite history with two separate non-root accounts
+      - name: Exercise real SQLite and Developer undo with two separate non-root accounts
         env:
           SOURCE_SHA: ${{ github.sha }}
         run: |
