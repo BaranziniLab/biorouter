@@ -92,7 +92,10 @@ async fn output_fixture_completion(
     axum::Json(request): axum::Json<serde_json::Value>,
 ) -> axum::response::Response {
     use axum::response::IntoResponse;
-    fixture.calls.fetch_add(1, Ordering::SeqCst);
+    let completion_id = format!(
+        "cli-output-fixture-{}",
+        fixture.calls.fetch_add(1, Ordering::SeqCst)
+    );
     let editor_advertised = request["tools"].as_array().is_some_and(|tools| {
         tools
             .iter()
@@ -122,12 +125,12 @@ async fn output_fixture_completion(
             calls[0]["index"] = serde_json::json!(0);
         }
         let chunk = serde_json::json!({
-            "id":"cli-output-fixture", "object":"chat.completion.chunk",
+            "id":completion_id, "object":"chat.completion.chunk",
             "created":1, "model":"cli-output-fixture:local",
             "choices":[{"index":0,"delta":delta,"finish_reason":null}]
         });
         let end = serde_json::json!({
-            "id":"cli-output-fixture", "object":"chat.completion.chunk",
+            "id":completion_id, "object":"chat.completion.chunk",
             "created":1, "model":"cli-output-fixture:local",
             "choices":[{"index":0,"delta":{},"finish_reason":reason}]
         });
@@ -138,7 +141,7 @@ async fn output_fixture_completion(
             .into_response()
     } else {
         axum::Json(serde_json::json!({
-            "id":"cli-output-fixture", "object":"chat.completion",
+            "id":completion_id, "object":"chat.completion",
             "created":1, "model":"cli-output-fixture:local",
             "choices":[{"index":0,"message":message,"finish_reason":reason}]
         }))
