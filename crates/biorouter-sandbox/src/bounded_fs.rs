@@ -972,6 +972,12 @@ impl BoundedPath {
             Err(error) => return Err(error),
         };
         let temporary = OsString::from(format!(".biorouter-write-{}", Uuid::new_v4()));
+        #[cfg(target_os = "macos")]
+        let staging = private_directory_at(&parent, Path::new(&temporary))?;
+        #[cfg(target_os = "macos")]
+        let (temporary_parent, temporary_file) = (&staging, OsString::from("content"));
+        #[cfg(not(target_os = "macos"))]
+        let (temporary_parent, temporary_file) = (&parent, temporary.clone());
         let mut options = nofollow_options(false);
         options.read(false).write(true).create_new(true);
         #[cfg(unix)]
@@ -993,7 +999,9 @@ impl BoundedPath {
                 .access_mode(FILE_GENERIC_WRITE | READ_CONTROL | WRITE_DAC)
                 .share_mode(4);
         }
-        let mut file = parent.open_with(&temporary, &options)?.into_std();
+        let mut file = temporary_parent
+            .open_with(&temporary_file, &options)?
+            .into_std();
         let result = (|| {
             if private {
                 crate::owner_private::protect(&file, false)?;
@@ -1005,11 +1013,16 @@ impl BoundedPath {
             file.write_all(bytes)?;
             file.sync_all()?;
             self.check(AccessMode::Write)?;
-            parent.rename(&temporary, &parent, &self.name)?;
+            temporary_parent.rename(&temporary_file, &parent, &self.name)?;
             Ok(())
         })();
         if result.is_err() {
-            let _ = parent.remove_file(&temporary);
+            let _ = temporary_parent.remove_file(&temporary_file);
+        }
+        #[cfg(target_os = "macos")]
+        {
+            drop(staging);
+            let _ = parent.remove_dir(&temporary);
         }
         result
     }
