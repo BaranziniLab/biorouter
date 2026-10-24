@@ -114,6 +114,8 @@ fn existing_containing_folder(path: &Path) -> std::io::Result<PathBuf> {
 fn discover_target(path: &Path) -> std::io::Result<PathBuf> {
     let mut remaining = path.to_path_buf();
     for _ in 0..40 {
+        #[cfg(windows)]
+        validate_windows_discovery_path(&remaining)?;
         let mut resolved = PathBuf::new();
         let mut components = remaining.components();
         let mut followed = false;
@@ -143,19 +145,52 @@ fn discover_target(path: &Path) -> std::io::Result<PathBuf> {
                 Ok(_) => {}
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
                     resolved.extend(components);
-                    return Ok(resolved);
+                    return canonical_discovered_path(&resolved);
                 }
                 Err(error) => return Err(error),
             }
         }
         if !followed {
-            return Ok(resolved);
+            return canonical_discovered_path(&resolved);
         }
     }
     Err(std::io::Error::new(
         std::io::ErrorKind::InvalidInput,
         "Too many symbolic links in the requested file path",
     ))
+}
+
+#[cfg(windows)]
+fn validate_windows_discovery_path(path: &Path) -> std::io::Result<()> {
+    for component in path.components() {
+        if let Component::Normal(name) = component {
+            let name = name.to_string_lossy();
+            if name.contains(':') || name.ends_with(['.', ' ']) {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::PermissionDenied,
+                    "Alternate streams and normalized path aliases are not authorized file paths",
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn canonical_discovered_path(path: &Path) -> std::io::Result<PathBuf> {
+    let mut existing = path;
+    loop {
+        match std::fs::symlink_metadata(existing) {
+            Ok(_) => {
+                return Ok(existing
+                    .canonicalize()?
+                    .join(path.strip_prefix(existing).unwrap()))
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                existing = existing.parent().ok_or(error)?;
+            }
+            Err(error) => return Err(error),
+        }
+    }
 }
 
 fn exact_grants(
@@ -618,6 +653,109 @@ mod skill_authority_tests {
             data.data.as_ref().unwrap()["code"],
             "authorization_required"
         );
+    }
+
+    #[test]
+    fn discovery_canonicalizes_existing_ancestors_and_retains_missing_suffixes() {
+        let fixture = tempfile::tempdir().unwrap();
+        let requested = fixture.path().join("missing/subfolder/result.txt");
+        assert_eq!(
+            discover_target(&requested).unwrap(),
+            fixture
+                .path()
+                .canonicalize()
+                .unwrap()
+                .join("missing/subfolder/result.txt")
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn macos_tmp_alias_is_admitted_in_the_captured_root_namespace() {
+        let fixture = tempfile::Builder::new()
+            .prefix("biorouter-folder-authority-")
+            .tempdir_in("/tmp")
+            .unwrap();
+        let requested = fixture.path().join("result.txt");
+        std::fs::write(&requested, "synthetic tmp alias").unwrap();
+        assert_eq!(
+            discover_target(&requested).unwrap(),
+            requested.canonicalize().unwrap()
+        );
+        let manager = FolderAccessManager::with_skills_dir(&fixture.path().join("unused-skills"));
+        let (admission, session) = read(&manager, fixture.path(), &requested).await.unwrap();
+        assert_eq!(
+            authorized_path(
+                admission.authority.token(),
+                &session,
+                &admission.action_id,
+                &requested,
+                AccessMode::Read
+            )
+            .unwrap()
+            .read_to_string()
+            .unwrap(),
+            "synthetic tmp alias"
+        );
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn windows_plain_and_verbatim_paths_share_the_captured_root_namespace() {
+        let fixture = tempfile::tempdir().unwrap();
+        let canonical = fixture.path().canonicalize().unwrap();
+        let canonical_label = canonical.to_string_lossy();
+        let plain = PathBuf::from(
+            canonical_label
+                .strip_prefix(r"\\?\")
+                .unwrap_or(&canonical_label),
+        );
+        let requested = plain.join("result.txt");
+        std::fs::write(&requested, "synthetic windows alias").unwrap();
+        assert_eq!(
+            discover_target(&requested).unwrap(),
+            requested.canonicalize().unwrap()
+        );
+        assert_eq!(
+            discover_target(&plain.join("missing/result.txt")).unwrap(),
+            canonical.join("missing/result.txt")
+        );
+        let manager = FolderAccessManager::with_skills_dir(&plain.join("unused-skills"));
+        let (admission, session) = read(&manager, &plain, &requested).await.unwrap();
+        assert_eq!(
+            authorized_path(
+                admission.authority.token(),
+                &session,
+                &admission.action_id,
+                &requested,
+                AccessMode::Read
+            )
+            .unwrap()
+            .read_to_string()
+            .unwrap(),
+            "synthetic windows alias"
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_alias_refusals_precede_metadata_normalization() {
+        let fixture = tempfile::tempdir().unwrap();
+        std::fs::write(fixture.path().join("result.txt"), "synthetic existing file").unwrap();
+        for name in [
+            "result.txt.",
+            "result.txt ",
+            "result.txt:hidden",
+            "missing-dir./result.txt",
+        ] {
+            assert_eq!(
+                discover_target(&fixture.path().join(name))
+                    .unwrap_err()
+                    .kind(),
+                std::io::ErrorKind::PermissionDenied,
+                "{name} must not be normalized into an authorized path"
+            );
+        }
     }
 
     #[tokio::test]
