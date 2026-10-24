@@ -1011,6 +1011,7 @@ dependencies = [
  "base64 0.21.7",
  "biorouter-crew",
  "biorouter-mcp",
+ "biorouter-sandbox",
  "blake3",
  "block2",
  "boa_engine",
