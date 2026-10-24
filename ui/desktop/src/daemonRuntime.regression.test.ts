@@ -284,26 +284,28 @@ describe.sequential('shared daemon runtime and pinned Unix proxy', () => {
           ...(proof ? { 'X-User-Action': proof } : {}),
         },
       });
+    const lastNativeClient = () =>
+      current.upstreamRequests[current.upstreamRequests.length - 1]?.nativeClient;
     try {
       expect(current.nativeClients.size).toBe(1);
       await request(proxy);
-      expect(current.upstreamRequests.at(-1)?.nativeClient).toBe('unavailable');
+      expect(lastNativeClient()).toBe('unavailable');
       await request(proxy, 'wrong-proof');
-      expect(current.upstreamRequests.at(-1)?.nativeClient).toBe('unavailable');
+      expect(lastNativeClient()).toBe('unavailable');
       await request(proxy, 'desktop-proof');
-      const first = current.upstreamRequests.at(-1)?.nativeClient;
+      const first = lastNativeClient();
       expect(first).toMatch(/^[0-9a-f-]{36}$/i);
       await request(second, 'desktop-proof');
-      expect(current.upstreamRequests.at(-1)?.nativeClient).toBe(first);
+      expect(lastNativeClient()).toBe(first);
       proxy.close();
       await request(second, 'desktop-proof');
-      expect(current.upstreamRequests.at(-1)?.nativeClient).toBe(first);
+      expect(lastNativeClient()).toBe(first);
       current.nativeClients.forEach((client) => client.terminate());
       await vi.waitFor(() => expect(current.nativeClients.size).toBe(0));
       await vi.waitFor(async () => expect(await second.probe()).toMatchObject({ reason: 'gone' }));
       await second.retarget(current.runtime, 'daemon-proof');
       await request(second, 'desktop-proof');
-      expect(current.upstreamRequests.at(-1)?.nativeClient).not.toBe(first);
+      expect(lastNativeClient()).not.toBe(first);
       expect(current.nativeClients.size).toBe(1);
       const registration = await responseText(second.baseUrl + '/daemon/native-client', {
         headers: {
