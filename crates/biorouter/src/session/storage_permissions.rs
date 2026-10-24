@@ -11,7 +11,8 @@ use windows_sys::Win32::Security::Authorization::{
     SET_ACCESS, SE_FILE_OBJECT, TRUSTEE_IS_SID, TRUSTEE_IS_USER, TRUSTEE_W,
 };
 use windows_sys::Win32::Security::{
-    EqualSid, GetTokenInformation, IsValidSid, TokenOwner, TokenUser, DACL_SECURITY_INFORMATION,
+    EqualSid, GetTokenInformation, IsValidSid, IsWellKnownSid, TokenOwner, TokenUser,
+    WinBuiltinAdministratorsSid, WinLocalSystemSid, DACL_SECURITY_INFORMATION,
     OWNER_SECURITY_INFORMATION, PROTECTED_DACL_SECURITY_INFORMATION, PSID,
     SUB_CONTAINERS_AND_OBJECTS_INHERIT, TOKEN_INFORMATION_CLASS, TOKEN_OWNER, TOKEN_QUERY,
     TOKEN_USER,
@@ -92,6 +93,8 @@ fn owner_is_current(owner: PSID, user: PSID, default_owner: PSID) -> bool {
         && (unsafe { EqualSid(owner, user) } != 0
             || (!default_owner.is_null()
                 && unsafe { IsValidSid(default_owner) } != 0
+                && (unsafe { IsWellKnownSid(default_owner, WinLocalSystemSid) } != 0
+                    || unsafe { IsWellKnownSid(default_owner, WinBuiltinAdministratorsSid) } != 0)
                 && unsafe { EqualSid(owner, default_owner) } != 0))
 }
 
@@ -150,6 +153,9 @@ fn open_owned(path: &Path, user: PSID, default_owner: PSID) -> io::Result<File> 
             io::ErrorKind::PermissionDenied,
             "session storage must be owned by the current Windows account",
         ));
+    }
+    if metadata.is_dir() {
+        biorouter_sandbox::validate_owner_private_directory_acl_handle(&file)?;
     }
     Ok(file)
 }
@@ -240,6 +246,81 @@ mod tests {
     use super::*;
     use windows_sys::Win32::Security::{GetAce, ACCESS_ALLOWED_ACE, ACL};
 
+    fn acl_bytes(path: &Path) -> Vec<u8> {
+        let file = OpenOptions::new()
+            .read(true)
+            .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
+            .open(path)
+            .unwrap();
+        let mut acl: *mut ACL = null_mut();
+        let mut descriptor = null_mut();
+        status(unsafe {
+            GetSecurityInfo(
+                file.as_raw_handle().cast(),
+                SE_FILE_OBJECT,
+                DACL_SECURITY_INFORMATION,
+                null_mut(),
+                null_mut(),
+                &mut acl,
+                null_mut(),
+                &mut descriptor,
+            )
+        })
+        .unwrap();
+        let _descriptor = LocalAllocation(descriptor);
+        assert!(!acl.is_null());
+        unsafe {
+            std::slice::from_raw_parts(acl.cast::<u8>(), usize::from((*acl).AclSize)).to_vec()
+        }
+    }
+
+    fn allow_everyone_to_write(path: &Path) {
+        use windows_sys::Win32::Security::Authorization::ConvertStringSidToSidW;
+        use windows_sys::Win32::Storage::FileSystem::FILE_GENERIC_WRITE;
+        let token = current_user().unwrap();
+        let user = unsafe { (*(token.as_ptr().cast::<TOKEN_USER>())).User.Sid };
+        let default_token = current_default_owner().unwrap();
+        let default_owner = unsafe { (*(default_token.as_ptr().cast::<TOKEN_OWNER>())).Owner };
+        let file = open_owned(path, user, default_owner).unwrap();
+        let wide: Vec<u16> = "S-1-1-0\0".encode_utf16().collect();
+        let mut everyone = null_mut();
+        assert_ne!(
+            unsafe { ConvertStringSidToSidW(wide.as_ptr(), &mut everyone) },
+            0
+        );
+        let _everyone = LocalAllocation(everyone);
+        let entries =
+            [(user, FILE_ALL_ACCESS), (everyone, FILE_GENERIC_WRITE)].map(|(sid, mask)| {
+                EXPLICIT_ACCESS_W {
+                    grfAccessPermissions: mask,
+                    grfAccessMode: SET_ACCESS,
+                    grfInheritance: 0,
+                    Trustee: TRUSTEE_W {
+                        pMultipleTrustee: null_mut(),
+                        MultipleTrusteeOperation: NO_MULTIPLE_TRUSTEE,
+                        TrusteeForm: TRUSTEE_IS_SID,
+                        TrusteeType: TRUSTEE_IS_USER,
+                        ptstrName: sid.cast(),
+                    },
+                }
+            });
+        let mut acl = null_mut();
+        status(unsafe { SetEntriesInAclW(2, entries.as_ptr(), null(), &mut acl) }).unwrap();
+        let _acl = LocalAllocation(acl.cast());
+        status(unsafe {
+            SetSecurityInfo(
+                file.as_raw_handle().cast(),
+                SE_FILE_OBJECT,
+                DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
+                null_mut(),
+                null_mut(),
+                acl,
+                null(),
+            )
+        })
+        .unwrap();
+    }
+
     fn assert_current_user_only(path: &Path) {
         let token = current_user().unwrap();
         let user = unsafe { (*(token.as_ptr().cast::<TOKEN_USER>())).User.Sid };
@@ -300,7 +381,7 @@ mod tests {
     }
 
     #[test]
-    fn ownership_accepts_only_the_process_user_or_its_exact_default_owner() {
+    fn ownership_accepts_only_user_or_privileged_exact_default_owner() {
         use windows_sys::Win32::Security::Authorization::ConvertStringSidToSidW;
         let token = current_user().unwrap();
         let user = unsafe { (*(token.as_ptr().cast::<TOKEN_USER>())).User.Sid };
@@ -318,9 +399,40 @@ mod tests {
         assert_eq!(unsafe { EqualSid(foreign, user) }, 0);
         assert_eq!(unsafe { EqualSid(foreign, default_owner) }, 0);
         assert!(!owner_is_current(foreign, user, default_owner));
+        assert!(!owner_is_current(foreign, user, foreign));
         assert!(!owner_is_current(null_mut(), user, default_owner));
         assert!(owner_is_current(user, user, default_owner));
-        assert!(owner_is_current(default_owner, user, default_owner));
+        assert_eq!(
+            owner_is_current(default_owner, user, default_owner),
+            unsafe { EqualSid(default_owner, user) } != 0
+                || unsafe { IsWellKnownSid(default_owner, WinLocalSystemSid) } != 0
+                || unsafe { IsWellKnownSid(default_owner, WinBuiltinAdministratorsSid) } != 0
+        );
+    }
+
+    #[test]
+    fn nested_foreign_writable_directory_refuses_repair_before_any_acl_change() {
+        let fixture = tempfile::tempdir().unwrap();
+        let sessions = fixture.path().join("sessions");
+        let nested = sessions.join("legacy");
+        fs::create_dir(&sessions).unwrap();
+        protect(&sessions).unwrap();
+        fs::create_dir(&nested).unwrap();
+        let database = sessions.join("sessions.db");
+        fs::write(&database, b"SYNTHETIC_HISTORY").unwrap();
+        let outside = fixture.path().join("outside-canary");
+        fs::write(&outside, b"SYNTHETIC_OUTSIDE").unwrap();
+        allow_everyone_to_write(&nested);
+        let before = [&sessions, &nested, &database, &outside].map(|path| acl_bytes(path));
+        let error = protect(&sessions).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
+        assert!(error.to_string().contains("restrict that directory"));
+        assert_eq!(
+            before,
+            [&sessions, &nested, &database, &outside].map(|path| acl_bytes(path))
+        );
+        assert_eq!(fs::read(&database).unwrap(), b"SYNTHETIC_HISTORY");
+        assert_eq!(fs::read(&outside).unwrap(), b"SYNTHETIC_OUTSIDE");
     }
 
     #[tokio::test]

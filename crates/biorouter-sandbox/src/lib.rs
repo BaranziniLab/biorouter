@@ -44,6 +44,12 @@ pub fn protect_owner_private_handle(file: &std::fs::File) -> std::io::Result<()>
     owner_private::protect(file, file.metadata()?.is_dir())
 }
 
+/// Refuse Windows ACL migration while another unprivileged account can mutate a directory.
+#[cfg(windows)]
+pub fn validate_owner_private_directory_acl_handle(file: &std::fs::File) -> std::io::Result<()> {
+    owner_private::validate_directory_acl(file)
+}
+
 /// A single host→guest bind mount.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Mount {
