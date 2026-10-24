@@ -30,17 +30,19 @@ OWNER_PROBE = """
 import json, os, sqlite3, urllib.request
 from pathlib import Path
 key = os.environ['BIOROUTER_SERVER__SECRET_KEY']
-def api(method, path, body=None):
+def api(method, path, body=None, *, expect_json=True):
     req = urllib.request.Request('http://127.0.0.1:3000'+path,
         data=None if body is None else json.dumps(body).encode(), method=method,
         headers={'x-secret-key':key,'Content-Type':'application/json'})
     with urllib.request.urlopen(req,timeout=10) as response:
-        return json.loads(response.read())
+        data = response.read()
+        if expect_json:
+            return json.loads(data)
 fixture = Path('/home/br/fixture.json')
 if not fixture.exists():
     session = api('POST','/agent/start',{'working_dir':'/home/br'})
     marker = 'SYNTHETIC_REBUILT_HISTORY'
-    api('PUT','/sessions/'+session['id']+'/name',{'name':marker})
+    api('PUT','/sessions/'+session['id']+'/name',{'name':marker},expect_json=False)
     fixture.write_text(json.dumps({'id':session['id'],'marker':marker}))
 saved = json.loads(fixture.read_text())
 database = Path('/home/br/app-root/data/sessions/sessions.db')
