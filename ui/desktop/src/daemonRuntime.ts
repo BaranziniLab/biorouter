@@ -694,6 +694,9 @@ async function nativeClientLifetime(
   }
   const pending = (async () => {
     const agent = await authenticatedAgent(runtime);
+    // ws derives a TCP pool key; retain the identity-verified Unix socket instead.
+    const getName = agent.getName.bind(agent);
+    agent.getName = (options) => getName({ ...options, socketPath: runtime.endpoint.path });
     return new Promise<NativeClientLifetime>((resolve, reject) => {
       const socket = new WebSocket('ws://localhost/daemon/native-client', {
         agent,
