@@ -971,9 +971,16 @@ impl BoundedPath {
         };
         let temporary = OsString::from(format!(".biorouter-write-{}", Uuid::new_v4()));
         #[cfg(target_os = "macos")]
-        let staging = private_directory_at(&parent, Path::new(&temporary))?;
+        let staging = if private || previous.is_some() {
+            Some(private_directory_at(&parent, Path::new(&temporary))?)
+        } else {
+            None
+        };
         #[cfg(target_os = "macos")]
-        let (temporary_parent, temporary_file) = (&staging, OsString::from("content"));
+        let (temporary_parent, temporary_file) = match &staging {
+            Some(staging) => (staging, OsString::from("content")),
+            None => (&parent, temporary.clone()),
+        };
         #[cfg(not(target_os = "macos"))]
         let (temporary_parent, temporary_file) = (&parent, temporary.clone());
         let mut options = nofollow_options(false);
@@ -1019,8 +1026,10 @@ impl BoundedPath {
         }
         #[cfg(target_os = "macos")]
         {
-            drop(staging);
-            let _ = parent.remove_dir(&temporary);
+            if let Some(staging) = staging {
+                drop(staging);
+                let _ = parent.remove_dir(&temporary);
+            }
         }
         result
     }
