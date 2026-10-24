@@ -607,16 +607,152 @@ mod windows {
     }
 
     #[test]
-    fn retained_windows_directory_handles_block_root_name_substitution() {
+    fn idle_windows_root_moves_preserve_authority_without_granting_the_replacement() {
         let fixture = root();
         let selected = fixture.path().join("workspace");
+        let moved = fixture.path().join("moved");
         fs::create_dir(&selected).unwrap();
         fs::write(selected.join("file"), "approved").unwrap();
         let fs = BoundedFs::open(&selected).unwrap();
-        assert!(fs::rename(&selected, fixture.path().join("moved")).is_err());
+        fs::rename(&selected, &moved).unwrap();
+        fs::create_dir(&selected).unwrap();
+        fs::write(selected.join("file"), "outside-substitute").unwrap();
+        fs::write(selected.join("replacement-only"), "outside-marker").unwrap();
         assert_eq!(read(&fs, "file"), b"approved");
+        let listing = fs.bind(".", AccessMode::Read).unwrap().list().unwrap();
+        assert_eq!(listing.len(), 1);
+        assert_eq!(listing[0].name, "file");
         write(&fs, "file", b"edited");
         assert_eq!(read(&fs, "file"), b"edited");
+        assert_eq!(std::fs::read(moved.join("file")).unwrap(), b"edited");
+        assert_eq!(
+            std::fs::read(selected.join("file")).unwrap(),
+            b"outside-substitute"
+        );
+    }
+
+    #[test]
+    fn captured_windows_parents_and_created_parent_cache_survive_idle_moves() {
+        let fixture = root();
+        fs::create_dir(fixture.path().join("parent")).unwrap();
+        fs::write(fixture.path().join("parent/existing.txt"), "approved").unwrap();
+        let filesystem = BoundedFs::open(fixture.path()).unwrap();
+        let existing = filesystem
+            .bind("parent/existing.txt", AccessMode::Write)
+            .unwrap();
+        let created = filesystem
+            .bind("parent/new/nested/file.txt", AccessMode::Write)
+            .unwrap();
+        let destination = filesystem
+            .bind("parent/renamed.txt", AccessMode::Write)
+            .unwrap();
+        created.atomic_write(b"first").unwrap();
+        let history_key = created.try_history_key().unwrap();
+        fs::rename(
+            fixture.path().join("parent"),
+            fixture.path().join("original-parent"),
+        )
+        .unwrap();
+        fs::create_dir_all(fixture.path().join("parent/new/nested")).unwrap();
+        fs::write(
+            fixture.path().join("parent/existing.txt"),
+            "outside-original-label",
+        )
+        .unwrap();
+        fs::write(
+            fixture.path().join("parent/new/nested/file.txt"),
+            "outside-cache-label",
+        )
+        .unwrap();
+        existing.atomic_write(b"approved-edit").unwrap();
+        created.atomic_write(b"second").unwrap();
+        existing.rename_to(&destination).unwrap();
+        assert_eq!(destination.read().unwrap(), b"approved-edit");
+        assert_eq!(created.read().unwrap(), b"second");
+        assert_eq!(created.try_history_key().unwrap(), history_key);
+        destination.remove_file().unwrap();
+        assert_eq!(
+            fs::read(fixture.path().join("parent/existing.txt")).unwrap(),
+            b"outside-original-label"
+        );
+        assert_eq!(
+            fs::read(fixture.path().join("parent/new/nested/file.txt")).unwrap(),
+            b"outside-cache-label"
+        );
+        assert!(!fixture.path().join("parent/renamed.txt").exists());
+    }
+
+    #[test]
+    fn exact_windows_dispatch_alias_keeps_its_original_folder_after_idle_move() {
+        let fixture = root();
+        let selected = fixture.path().join("workspace");
+        let moved = fixture.path().join("original");
+        let alias = fixture.path().join("requested-file.txt");
+        fs::create_dir(&selected).unwrap();
+        fs::write(selected.join("file.txt"), "approved").unwrap();
+        let filesystem = Arc::new(BoundedFs::open(&selected).unwrap());
+        let grant = RootGrant::new(filesystem.clone(), AccessMode::Write)
+            .with_targets(vec![selected.join("file.txt")])
+            .unwrap();
+        let authority = DispatchAuthority::register_aliases(
+            "chat",
+            "edit",
+            vec![grant],
+            vec![(alias.clone(), selected.join("file.txt"))],
+        )
+        .unwrap();
+        fs::rename(&selected, &moved).unwrap();
+        fs::create_dir(&selected).unwrap();
+        fs::write(selected.join("file.txt"), "outside-substitute").unwrap();
+        let file =
+            authorized_path(authority.token(), "chat", "edit", &alias, AccessMode::Write).unwrap();
+        file.atomic_write(b"approved-edit").unwrap();
+        assert_eq!(fs::read(moved.join("file.txt")).unwrap(), b"approved-edit");
+        assert_eq!(
+            fs::read(selected.join("file.txt")).unwrap(),
+            b"outside-substitute"
+        );
+        denied(authorized_path(
+            authority.token(),
+            "chat",
+            "edit",
+            selected.join("other.txt"),
+            AccessMode::Write,
+        ));
+        drop(authority);
+        denied(file.read());
+    }
+
+    #[test]
+    fn deleted_windows_root_does_not_reopen_a_reused_pathname() {
+        let fixture = root();
+        let selected = fixture.path().join("workspace");
+        fs::create_dir(&selected).unwrap();
+        let filesystem = BoundedFs::open(&selected).unwrap();
+        let listing = filesystem.bind(".", AccessMode::Read).unwrap();
+        let file = filesystem.bind("result.txt", AccessMode::Write).unwrap();
+        fs::remove_dir(&selected).unwrap();
+        let reused = match fs::create_dir(&selected) {
+            Ok(()) => {
+                fs::write(selected.join("result.txt"), "outside-substitute").unwrap();
+                true
+            }
+            Err(error) => {
+                eprintln!(
+                    "Windows retained the deleted directory name until handle release: {error}"
+                );
+                false
+            }
+        };
+        assert!(listing.list().is_err());
+        assert!(file.read().is_err());
+        assert!(file.atomic_write(b"must-not-publish").is_err());
+        if reused {
+            assert_eq!(
+                fs::read(selected.join("result.txt")).unwrap(),
+                b"outside-substitute"
+            );
+        }
     }
 }
 

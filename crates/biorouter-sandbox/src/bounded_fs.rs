@@ -21,6 +21,13 @@ use cap_std::fs::{Dir, OpenOptions};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+#[cfg(windows)]
+mod windows_directory;
+#[cfg(windows)]
+use windows_directory::PinnedDir;
+#[cfg(not(windows))]
+type PinnedDir = Dir;
+
 const MAX_SYMLINKS: usize = 40;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -43,7 +50,7 @@ pub struct BoundedFs {
 
 #[derive(Debug)]
 struct Root {
-    directory: Dir,
+    directory: PinnedDir,
     canonical: PathBuf,
     selected: PathBuf,
     identity: RootIdentity,
@@ -61,8 +68,8 @@ pub struct RootIdentity {
 #[derive(Clone, Debug)]
 pub struct BoundedPath {
     filesystem: BoundedFs,
-    parent: Arc<Dir>,
-    resolved_parent: Arc<OnceLock<Arc<Dir>>>,
+    parent: Arc<PinnedDir>,
+    resolved_parent: Arc<OnceLock<Arc<PinnedDir>>>,
     missing_parents: Vec<OsString>,
     name: OsString,
     relative: PathBuf,
@@ -138,7 +145,13 @@ fn private_options(directory: bool) -> OpenOptions {
     options
 }
 
-fn private_directory_at(directory: &Dir, name: &Path) -> io::Result<Dir> {
+#[cfg(windows)]
+fn private_directory_at(directory: &PinnedDir, name: &Path) -> io::Result<PinnedDir> {
+    directory.private_directory(name)
+}
+
+#[cfg(not(windows))]
+fn private_directory_at(directory: &PinnedDir, name: &Path) -> io::Result<PinnedDir> {
     #[allow(unused_mut)]
     let mut builder = cap_std::fs::DirBuilder::new();
     #[cfg(unix)]
@@ -180,7 +193,13 @@ fn reject_reparse(metadata: &Metadata) -> io::Result<()> {
     Ok(())
 }
 
-fn open_directory_at(directory: &Dir, name: &Path) -> io::Result<Dir> {
+#[cfg(windows)]
+fn open_directory_at(directory: &PinnedDir, name: &Path) -> io::Result<PinnedDir> {
+    directory.open_directory(name)
+}
+
+#[cfg(not(windows))]
+fn open_directory_at(directory: &PinnedDir, name: &Path) -> io::Result<PinnedDir> {
     let file = directory
         .open_with(name, &nofollow_options(true))?
         .into_std();
@@ -195,7 +214,7 @@ fn open_directory_at(directory: &Dir, name: &Path) -> io::Result<Dir> {
     Ok(Dir::from_std_file(file))
 }
 
-fn open_root(path: &Path) -> io::Result<Dir> {
+fn open_root(path: &Path) -> io::Result<PinnedDir> {
     #[cfg(not(any(unix, windows)))]
     return Err(io::Error::new(
         io::ErrorKind::Unsupported,
@@ -213,7 +232,10 @@ fn open_root(path: &Path) -> io::Result<Dir> {
                 _ => return Err(refused("An absolute normalized root is required")),
             }
         }
-        let mut directory = Dir::open_ambient_dir(prefix, cap_std::ambient_authority())?;
+        let directory = Dir::open_ambient_dir(prefix, cap_std::ambient_authority())?;
+        #[cfg(windows)]
+        let directory = PinnedDir::capture(directory.into_std_file())?;
+        let mut directory = directory;
         for name in names {
             directory = open_directory_at(&directory, Path::new(name))?;
         }
@@ -221,7 +243,7 @@ fn open_root(path: &Path) -> io::Result<Dir> {
     }
 }
 
-fn directory_identity(directory: &Dir) -> io::Result<RootIdentity> {
+fn directory_identity(directory: &PinnedDir) -> io::Result<RootIdentity> {
     #[cfg(unix)]
     {
         use cap_std::fs::MetadataExt;
@@ -242,35 +264,23 @@ fn directory_identity(directory: &Dir) -> io::Result<RootIdentity> {
     }
     #[cfg(windows)]
     {
-        use std::os::windows::io::AsRawHandle;
-        use windows_sys::Win32::Storage::FileSystem::{
-            GetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION,
-        };
-        let file = directory.try_clone()?.into_std_file();
-        let mut information = std::mem::MaybeUninit::<BY_HANDLE_FILE_INFORMATION>::uninit();
-        if unsafe { GetFileInformationByHandle(file.as_raw_handle(), information.as_mut_ptr()) }
-            == 0
-        {
-            return Err(io::Error::last_os_error());
-        }
-        let information = unsafe { information.assume_init() };
-        Ok(RootIdentity {
-            device: u64::from(information.dwVolumeSerialNumber),
-            file: (u64::from(information.nFileIndexHigh) << 32)
-                | u64::from(information.nFileIndexLow),
-            created_nanos: Some(
-                u128::from(
-                    (u64::from(information.ftCreationTime.dwHighDateTime) << 32)
-                        | u64::from(information.ftCreationTime.dwLowDateTime),
-                ) * 100,
-            ),
-        })
+        Ok(directory.identity())
     }
     #[cfg(not(any(unix, windows)))]
     Err(io::Error::new(
         io::ErrorKind::Unsupported,
         "Directory identity is unavailable",
     ))
+}
+
+fn protect_directory(directory: &PinnedDir) -> io::Result<()> {
+    #[cfg(windows)]
+    return directory.protect_owner_private();
+    #[cfg(not(windows))]
+    {
+        let file = directory.open_with(".", &private_options(true))?.into_std();
+        crate::owner_private::protect(&file, true)
+    }
 }
 
 #[cfg(unix)]
@@ -358,7 +368,7 @@ fn copy_ownership(_source: &File, _destination: &File) -> io::Result<()> {
 }
 
 #[cfg(windows)]
-fn normalized_component(directory: &Dir, name: OsString) -> io::Result<OsString> {
+fn normalized_component(directory: &PinnedDir, name: OsString) -> io::Result<OsString> {
     use std::os::windows::ffi::OsStringExt;
     use std::os::windows::io::AsRawHandle;
     use windows_sys::Win32::Storage::FileSystem::GetFinalPathNameByHandleW;
@@ -390,7 +400,7 @@ fn normalized_component(directory: &Dir, name: OsString) -> io::Result<OsString>
 }
 
 #[cfg(not(windows))]
-fn normalized_component(_directory: &Dir, name: OsString) -> io::Result<OsString> {
+fn normalized_component(_directory: &PinnedDir, name: OsString) -> io::Result<OsString> {
     Ok(name)
 }
 
@@ -585,12 +595,7 @@ impl BoundedFs {
     pub fn protect_owner_private(&self) -> io::Result<()> {
         self.bind(".", AccessMode::Write)?
             .check(AccessMode::Write)?;
-        let file = self
-            .inner
-            .directory
-            .open_with(".", &private_options(true))?
-            .into_std();
-        crate::owner_private::protect(&file, true)
+        protect_directory(&self.inner.directory)
     }
 
     pub fn create_private_subdirectory(&self, relative: impl AsRef<Path>) -> io::Result<Self> {
@@ -832,11 +837,11 @@ impl BoundedPath {
         Ok(())
     }
 
-    fn parent(&self, create: bool) -> io::Result<Dir> {
+    fn parent(&self, create: bool) -> io::Result<PinnedDir> {
         self.resolve_parent(create, false)
     }
 
-    fn resolve_parent(&self, create: bool, private: bool) -> io::Result<Dir> {
+    fn resolve_parent(&self, create: bool, private: bool) -> io::Result<PinnedDir> {
         self.check(if create {
             AccessMode::Write
         } else {
@@ -847,8 +852,7 @@ impl BoundedPath {
         }
         if let Some(directory) = self.resolved_parent.get() {
             if private {
-                let file = directory.open_with(".", &private_options(true))?.into_std();
-                crate::owner_private::protect(&file, true)?;
+                protect_directory(directory)?;
             }
             return directory.try_clone();
         }
@@ -877,8 +881,7 @@ impl BoundedPath {
             .get()
             .expect("a resolved parent was captured");
         if private {
-            let file = directory.open_with(".", &private_options(true))?.into_std();
-            crate::owner_private::protect(&file, true)?;
+            protect_directory(directory)?;
         }
         directory.try_clone()
     }
@@ -965,6 +968,9 @@ impl BoundedPath {
     pub fn list_limited(&self, max_entries: usize) -> io::Result<Vec<BoundedDirEntry>> {
         self.check(AccessMode::Read)?;
         let directory = open_directory_at(&self.parent(false)?, Path::new(&self.name))?;
+        #[cfg(windows)]
+        return directory.list_limited(max_entries);
+        #[cfg(not(windows))]
         directory
             .entries()?
             .enumerate()
@@ -1001,6 +1007,10 @@ impl BoundedPath {
             return Err(refused("The authorized root is a directory"));
         }
         let parent = self.resolve_parent(true, private)?;
+        #[cfg(windows)]
+        let parent_lease = parent.lease()?;
+        #[cfg(windows)]
+        let parent = parent_lease;
         let previous_options = if private {
             private_options(false)
         } else {
