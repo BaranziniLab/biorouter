@@ -809,76 +809,6 @@ fn seal_file_diagnostics(
     }
 }
 
-#[cfg(test)]
-mod diagnostic_receipt_tests {
-    use super::*;
-    use crate::agents::post_edit_diagnostics as diagnostics;
-
-    fn result_with_diagnostics() -> rmcp::model::CallToolResult {
-        let mut result = rmcp::model::CallToolResult::success(Vec::new());
-        let mut meta = rmcp::model::Meta::new();
-        meta.0.insert(
-            diagnostics::BOUNDED_DIAGNOSTICS_META_KEY.into(),
-            serde_json::json!([]),
-        );
-        meta.0.insert(
-            diagnostics::DIAGNOSTICS_RECEIPT_META_KEY.into(),
-            Value::String("untrusted-existing-receipt".into()),
-        );
-        result.meta = Some(meta);
-        result
-    }
-
-    #[test]
-    fn untrusted_or_disabled_file_diagnostics_are_removed_without_a_receipt() {
-        let mut result = result_with_diagnostics();
-        seal_file_diagnostics(&mut result, false, "chat", "developer__text_editor", None);
-        let meta = result.meta.unwrap();
-        assert!(!meta
-            .0
-            .contains_key(diagnostics::BOUNDED_DIAGNOSTICS_META_KEY));
-        assert!(!meta
-            .0
-            .contains_key(diagnostics::DIAGNOSTICS_RECEIPT_META_KEY));
-    }
-
-    #[test]
-    fn trusted_clean_diagnostics_get_an_opaque_once_only_receipt() {
-        let arguments = serde_json::json!({"command":"write","path":"/synthetic/source.rs","file_text":"fn synthetic() {}"});
-        let mut result = result_with_diagnostics();
-        seal_file_diagnostics(
-            &mut result,
-            true,
-            "chat",
-            "developer__text_editor",
-            arguments.as_object(),
-        );
-        let meta = result.meta.unwrap();
-        assert!(!meta
-            .0
-            .contains_key(diagnostics::BOUNDED_DIAGNOSTICS_META_KEY));
-        let receipt = meta.0[diagnostics::DIAGNOSTICS_RECEIPT_META_KEY]
-            .as_str()
-            .unwrap();
-        assert_ne!(receipt, "untrusted-existing-receipt");
-        let files = diagnostics::consume_bounded_diagnostics_receipt(
-            "chat",
-            "developer__text_editor",
-            arguments.as_object(),
-            receipt,
-        )
-        .unwrap();
-        assert!(files.is_empty());
-        assert!(diagnostics::consume_bounded_diagnostics_receipt(
-            "chat",
-            "developer__text_editor",
-            arguments.as_object(),
-            receipt
-        )
-        .is_none());
-    }
-}
-
 fn configured_tool_name(
     prefixed_name: &str,
     supplied_name: &str,
@@ -10317,5 +10247,75 @@ mod platform_dispatch_error_tests {
             !arm.contains("not found"),
             "a tool that exists must not be reported as missing: {arm}"
         );
+    }
+}
+
+#[cfg(test)]
+mod diagnostic_receipt_tests {
+    use super::*;
+    use crate::agents::post_edit_diagnostics as diagnostics;
+
+    fn result_with_diagnostics() -> rmcp::model::CallToolResult {
+        let mut result = rmcp::model::CallToolResult::success(Vec::new());
+        let mut meta = rmcp::model::Meta::new();
+        meta.0.insert(
+            diagnostics::BOUNDED_DIAGNOSTICS_META_KEY.into(),
+            serde_json::json!([]),
+        );
+        meta.0.insert(
+            diagnostics::DIAGNOSTICS_RECEIPT_META_KEY.into(),
+            Value::String("untrusted-existing-receipt".into()),
+        );
+        result.meta = Some(meta);
+        result
+    }
+
+    #[test]
+    fn untrusted_or_disabled_file_diagnostics_are_removed_without_a_receipt() {
+        let mut result = result_with_diagnostics();
+        seal_file_diagnostics(&mut result, false, "chat", "developer__text_editor", None);
+        let meta = result.meta.unwrap();
+        assert!(!meta
+            .0
+            .contains_key(diagnostics::BOUNDED_DIAGNOSTICS_META_KEY));
+        assert!(!meta
+            .0
+            .contains_key(diagnostics::DIAGNOSTICS_RECEIPT_META_KEY));
+    }
+
+    #[test]
+    fn trusted_clean_diagnostics_get_an_opaque_once_only_receipt() {
+        let arguments = serde_json::json!({"command":"write","path":"/synthetic/source.rs","file_text":"fn synthetic() {}"});
+        let mut result = result_with_diagnostics();
+        seal_file_diagnostics(
+            &mut result,
+            true,
+            "chat",
+            "developer__text_editor",
+            arguments.as_object(),
+        );
+        let meta = result.meta.unwrap();
+        assert!(!meta
+            .0
+            .contains_key(diagnostics::BOUNDED_DIAGNOSTICS_META_KEY));
+        let receipt = meta.0[diagnostics::DIAGNOSTICS_RECEIPT_META_KEY]
+            .as_str()
+            .unwrap();
+        assert_ne!(receipt, "untrusted-existing-receipt");
+        let files = diagnostics::consume_bounded_diagnostics_receipt(
+            "chat",
+            "developer__text_editor",
+            arguments.as_object(),
+            receipt,
+        )
+        .unwrap();
+        assert!(files.is_empty());
+        assert!(diagnostics::consume_bounded_diagnostics_receipt(
+            "chat",
+            "developer__text_editor",
+            arguments.as_object(),
+            receipt
+        )
+        .is_none());
     }
 }
