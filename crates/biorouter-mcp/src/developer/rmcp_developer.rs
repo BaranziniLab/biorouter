@@ -1057,7 +1057,7 @@ impl DeveloperServer {
         self.text_editor_authorized(params, context.meta).await
     }
 
-    async fn text_editor_authorized(
+    pub(crate) async fn text_editor_authorized(
         &self,
         params: Parameters<TextEditorParams>,
         meta: rmcp::model::Meta,
@@ -1077,7 +1077,15 @@ impl DeveloperServer {
         )?;
 
         let is_mutation = params.command != "view";
-        let diagnostic_targets = if is_diff {
+        let diagnostics_requested = access
+            .meta
+            .0
+            .get("biorouter-post-edit-diagnostics")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false);
+        let diagnostic_targets = if !diagnostics_requested {
+            Vec::new()
+        } else if is_diff {
             super::text_editor::diff_target_paths_bounded(&path, params.diff.as_deref().unwrap())?
         } else {
             vec![path.to_path_buf()]
@@ -1186,7 +1194,7 @@ impl DeveloperServer {
                 None,
             )),
         }?;
-        if is_mutation {
+        if is_mutation && diagnostics_requested {
             let mut diagnostics = Vec::new();
             for target in diagnostic_targets {
                 let Ok(file) = access.bind(&target, AccessMode::Read) else {
@@ -1212,6 +1220,8 @@ impl DeveloperServer {
                 "biorouter-bounded-edit-diagnostics".into(),
                 serde_json::Value::Array(diagnostics),
             );
+        }
+        if is_mutation {
             if let Some(notice) = self.file_history.take_persistence_notice() {
                 result.content.push(Content::text(notice));
             }

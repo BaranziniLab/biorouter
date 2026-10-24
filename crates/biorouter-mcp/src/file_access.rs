@@ -392,17 +392,23 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let server = DeveloperServer::new().with_working_dir(root.path().to_path_buf());
         for source in ["fn main( {", "fn main() {}"] {
+            let mut meta = Meta::default();
+            meta.0
+                .insert("biorouter-post-edit-diagnostics".into(), true.into());
             let result = server
-                .text_editor(Parameters(TextEditorParams {
-                    path: "source.rs".into(),
-                    command: "write".into(),
-                    file_text: Some(source.into()),
-                    diff: None,
-                    view_range: None,
-                    old_str: None,
-                    new_str: None,
-                    insert_line: None,
-                }))
+                .text_editor_authorized(
+                    Parameters(TextEditorParams {
+                        path: "source.rs".into(),
+                        command: "write".into(),
+                        file_text: Some(source.into()),
+                        diff: None,
+                        view_range: None,
+                        old_str: None,
+                        new_str: None,
+                        insert_line: None,
+                    }),
+                    meta,
+                )
                 .await
                 .unwrap();
             let diagnostics = result
