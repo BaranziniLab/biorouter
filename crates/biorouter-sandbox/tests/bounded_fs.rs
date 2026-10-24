@@ -231,7 +231,7 @@ fn dispatch_aliases_preserve_approved_actual_target_scope_and_lifetime() {
     )
     .unwrap();
     assert_eq!(bound.read().unwrap(), b"approved");
-    assert_eq!(bound.absolute_path(), actual);
+    assert_eq!(bound.absolute_path(), actual.canonicalize().unwrap());
     denied(authorized_path(
         authority.token(),
         "session",
