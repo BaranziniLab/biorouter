@@ -129,10 +129,8 @@ fn private_options(directory: bool) -> OpenOptions {
     #[cfg(windows)]
     {
         use cap_std::fs::OpenOptionsExt;
-        use windows_sys::Win32::Storage::FileSystem::{
-            FILE_READ_ATTRIBUTES, READ_CONTROL, WRITE_DAC,
-        };
-        options.access_mode(FILE_READ_ATTRIBUTES | READ_CONTROL | WRITE_DAC);
+        use windows_sys::Win32::Storage::FileSystem::{FILE_GENERIC_READ, WRITE_DAC};
+        options.access_mode(FILE_GENERIC_READ | WRITE_DAC);
     }
     options
 }
