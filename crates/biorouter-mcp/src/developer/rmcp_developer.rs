@@ -2536,7 +2536,7 @@ mod tests {
 
     #[cfg(windows)]
     #[test]
-    fn windows_workspace_identity_is_protected_until_the_server_releases_it() {
+    fn windows_idle_workspace_can_move_without_reauthorizing_its_replacement() {
         let fixture = tempfile::tempdir().unwrap();
         let workspace = fixture.path().join("workspace");
         let moved = fixture.path().join("moved-workspace");
@@ -2545,6 +2545,9 @@ mod tests {
         fs::write(workspace.join("inside.txt"), "approved").unwrap();
         fs::write(&outside, "outside canary").unwrap();
         let server = DeveloperServer::new().with_working_dir(workspace.clone());
+        fs::rename(&workspace, &moved).unwrap();
+        fs::create_dir(&workspace).unwrap();
+        fs::write(workspace.join("inside.txt"), "replacement canary").unwrap();
         {
             let access = server.editor_access(Default::default()).unwrap();
             assert!(access.bind(&outside, AccessMode::Read).is_err());
@@ -2556,16 +2559,24 @@ mod tests {
                     .unwrap(),
                 "approved"
             );
+            access
+                .bind(&workspace.join("inside.txt"), AccessMode::Write)
+                .unwrap()
+                .write("approved update")
+                .unwrap();
         }
-        assert!(fs::rename(&workspace, &moved).is_err());
-        assert!(workspace.is_dir());
-        fs::remove_file(workspace.join("inside.txt")).unwrap();
-        assert!(fs::remove_dir(&workspace).is_err());
-        assert!(workspace.is_dir());
+        assert_eq!(
+            fs::read_to_string(moved.join("inside.txt")).unwrap(),
+            "approved update"
+        );
+        assert_eq!(
+            fs::read_to_string(workspace.join("inside.txt")).unwrap(),
+            "replacement canary"
+        );
         assert_eq!(fs::read_to_string(&outside).unwrap(), "outside canary");
         drop(server);
-        fs::rename(&workspace, &moved).unwrap();
-        fs::remove_dir(&moved).unwrap();
+        fs::remove_dir_all(&moved).unwrap();
+        fs::remove_dir_all(&workspace).unwrap();
     }
 
     #[cfg(unix)]
