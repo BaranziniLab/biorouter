@@ -5,6 +5,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
+use anyhow::Context;
 use biorouter::conversation::message::{ActionRequiredData, MessageContent};
 use biorouter::folder_access::{FileAdmission, FolderAccessManager};
 use biorouter::pending_user_action::{
@@ -12,7 +13,9 @@ use biorouter::pending_user_action::{
 };
 use biorouter::permission::{Permission, PermissionScope, ToolPermissionStore};
 use biorouter_mcp::{file_access_plan, DeveloperServer};
-use rmcp::model::{CallToolRequestParams, CallToolResult, Meta};
+use rmcp::model::{
+    CallToolRequest, CallToolRequestParams, CallToolResult, ClientRequest, Meta, ServerResult,
+};
 use rmcp::ServiceExt;
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
@@ -21,6 +24,10 @@ static PATH_ROOT: std::sync::OnceLock<tempfile::TempDir> = std::sync::OnceLock::
 
 #[ctor::ctor]
 fn isolate_test_paths() {
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+        .with_test_writer()
+        .try_init();
     if biorouter_mcp::paths::path_root_override().is_none() {
         let root = tempfile::tempdir().unwrap_or_else(|error| {
             eprintln!("Cannot isolate folder-analysis test paths: {error}");
@@ -166,9 +173,16 @@ async fn execute_analysis(
     arguments: serde_json::Value,
 ) -> anyhow::Result<CallToolResult> {
     let (client_io, server_io) = tokio::io::duplex(65536);
-    let serving =
-        tokio::spawn(async move { server.serve(server_io).await.unwrap().waiting().await });
-    let client = ().serve(client_io).await?;
+    let serving = tokio::spawn(async move {
+        server
+            .serve(server_io)
+            .await
+            .context("initialize Developer MCP server")?
+            .waiting()
+            .await
+            .context("wait for Developer MCP server")
+    });
+    let client = ().serve(client_io).await.context("initialize MCP client")?;
     let mut meta = Meta::default();
     for (key, value) in [
         ("biorouter-session-id", session),
@@ -177,17 +191,31 @@ async fn execute_analysis(
     ] {
         meta.0.insert(key.into(), value.into());
     }
+    let mut request = CallToolRequest::new(CallToolRequestParams {
+        name: "analyze".into(),
+        arguments: arguments.as_object().cloned(),
+        meta: None,
+        task: None,
+    });
+    // Match McpClient's envelope: RMCP adds progress metadata to extensions;
+    // populating params.meta too would serialize duplicate `_meta` keys.
+    request.extensions.insert(meta);
     let result = client
-        .call_tool(CallToolRequestParams {
-            name: "analyze".into(),
-            arguments: arguments.as_object().cloned(),
-            meta: Some(meta),
-            task: None,
-        })
+        .send_request(ClientRequest::CallToolRequest(request))
         .await;
-    let _ = client.cancel().await;
-    let _ = serving.await;
-    Ok(result?)
+    let shutdown = client.cancel().await;
+    let server_exit = serving.await;
+    let response = result.with_context(|| {
+        format!(
+            "call analyze over MCP; client shutdown: {shutdown:?}; server exit: {server_exit:?}"
+        )
+    })?;
+    shutdown.context("shut down MCP client")?;
+    server_exit.context("join Developer MCP server")??;
+    match response {
+        ServerResult::CallToolResult(result) => Ok(result),
+        other => anyhow::bail!("unexpected analyze response: {other:?}"),
+    }
 }
 
 #[tokio::test]
