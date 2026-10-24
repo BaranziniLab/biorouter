@@ -14,7 +14,7 @@ use std::fs::{File, Metadata};
 use std::io::{self, Read, Write};
 use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, LazyLock, Mutex};
+use std::sync::{Arc, LazyLock, Mutex, OnceLock};
 
 use cap_fs_ext::{FollowSymlinks, OpenOptionsFollowExt};
 use cap_std::fs::{Dir, OpenOptions};
@@ -62,6 +62,7 @@ pub struct RootIdentity {
 pub struct BoundedPath {
     filesystem: BoundedFs,
     parent: Arc<Dir>,
+    resolved_parent: Arc<OnceLock<Arc<Dir>>>,
     missing_parents: Vec<OsString>,
     name: OsString,
     relative: PathBuf,
@@ -666,6 +667,7 @@ impl BoundedFs {
                     return Ok(BoundedPath {
                         filesystem: self.clone(),
                         parent: Arc::new(directory),
+                        resolved_parent: Arc::new(OnceLock::new()),
                         missing_parents: tail[..tail.len() - 1].to_vec(),
                         name: tail[tail.len() - 1].clone(),
                         relative: resolved,
@@ -697,6 +699,7 @@ impl BoundedFs {
                 return Ok(BoundedPath {
                     filesystem: self.clone(),
                     parent: Arc::new(directory),
+                    resolved_parent: Arc::new(OnceLock::new()),
                     missing_parents: Vec::new(),
                     name,
                     relative: resolved,
@@ -712,6 +715,7 @@ impl BoundedFs {
         Ok(BoundedPath {
             filesystem: self.clone(),
             parent: Arc::new(directory),
+            resolved_parent: Arc::new(OnceLock::new()),
             missing_parents: Vec::new(),
             name: OsString::from("."),
             relative: resolved,
@@ -813,6 +817,25 @@ impl BoundedPath {
     }
 
     fn parent(&self, create: bool) -> io::Result<Dir> {
+        self.resolve_parent(create, false)
+    }
+
+    fn resolve_parent(&self, create: bool, private: bool) -> io::Result<Dir> {
+        self.check(if create {
+            AccessMode::Write
+        } else {
+            AccessMode::Read
+        })?;
+        if self.missing_parents.is_empty() {
+            return self.parent.try_clone();
+        }
+        if let Some(directory) = self.resolved_parent.get() {
+            if private {
+                let file = directory.open_with(".", &private_options(true))?.into_std();
+                crate::owner_private::protect(&file, true)?;
+            }
+            return directory.try_clone();
+        }
         let mut directory = self.parent.try_clone()?;
         for name in &self.missing_parents {
             self.check(if create {
@@ -820,7 +843,10 @@ impl BoundedPath {
             } else {
                 AccessMode::Read
             })?;
-            if create {
+            if create && private {
+                directory = private_directory_at(&directory, Path::new(name))?;
+                continue;
+            } else if create {
                 match directory.create_dir(name) {
                     Ok(()) => {}
                     Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
@@ -829,7 +855,16 @@ impl BoundedPath {
             }
             directory = open_directory_at(&directory, Path::new(name))?;
         }
-        Ok(directory)
+        let _ = self.resolved_parent.set(Arc::new(directory));
+        let directory = self
+            .resolved_parent
+            .get()
+            .expect("a resolved parent was captured");
+        if private {
+            let file = directory.open_with(".", &private_options(true))?.into_std();
+            crate::owner_private::protect(&file, true)?;
+        }
+        directory.try_clone()
     }
 
     fn open(&self) -> io::Result<File> {
@@ -938,16 +973,7 @@ impl BoundedPath {
         if self.relative.as_os_str().is_empty() {
             return Err(refused("The authorized root is a directory"));
         }
-        let parent = if private {
-            let mut directory = self.parent.try_clone()?;
-            for name in &self.missing_parents {
-                self.check(AccessMode::Write)?;
-                directory = private_directory_at(&directory, Path::new(name))?;
-            }
-            directory
-        } else {
-            self.parent(true)?
-        };
+        let parent = self.resolve_parent(true, private)?;
         let previous_options = if private {
             private_options(false)
         } else {

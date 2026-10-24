@@ -700,6 +700,41 @@ mod unix {
     }
 
     #[test]
+    fn newly_created_parent_stays_bound_for_history_and_later_io_after_replacement() {
+        for private in [false, true] {
+            let fixture = root();
+            let fs = BoundedFs::open(fixture.path()).unwrap();
+            let bound = fs.bind("new-parent/file", AccessMode::Write).unwrap();
+            if private {
+                bound.atomic_write_private(b"approved").unwrap();
+            } else {
+                bound.atomic_write(b"approved").unwrap();
+            }
+            fs::rename(
+                fixture.path().join("new-parent"),
+                fixture.path().join("original-parent"),
+            )
+            .unwrap();
+            fs::create_dir(fixture.path().join("new-parent")).unwrap();
+            fs::write(fixture.path().join("new-parent/file"), "replacement-canary").unwrap();
+            let original = fs.bind("original-parent/file", AccessMode::Read).unwrap();
+            let replacement = fs.bind("new-parent/file", AccessMode::Read).unwrap();
+            assert_eq!(
+                bound.try_history_key().unwrap(),
+                original.try_history_key().unwrap()
+            );
+            assert_ne!(
+                bound.try_history_key().unwrap(),
+                replacement.try_history_key().unwrap()
+            );
+            assert_eq!(bound.read().unwrap(), b"approved");
+            bound.atomic_write(b"approved-update").unwrap();
+            assert_eq!(replacement.read().unwrap(), b"replacement-canary");
+            assert_eq!(original.read().unwrap(), b"approved-update");
+        }
+    }
+
+    #[test]
     fn root_identity_and_policy_remain_bound_after_root_name_replacement() {
         let container = root();
         let selected = container.path().join("workspace");
