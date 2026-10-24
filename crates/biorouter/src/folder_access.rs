@@ -153,15 +153,22 @@ fn discover_target(path: &Path) -> std::io::Result<PathBuf> {
 
 fn exact_grants(
     filesystem: &Arc<BoundedFs>,
-    requests: &[(PathBuf, AccessMode)],
+    requests: &[biorouter_mcp::FileAccessRequest],
 ) -> std::io::Result<Vec<RootGrant>> {
     [AccessMode::Read, AccessMode::Write]
         .into_iter()
         .filter_map(|mode| {
+            if mode == AccessMode::Read
+                && requests.iter().any(|request| {
+                    request.recursive && request.access == mode && request.path == filesystem.root()
+                })
+            {
+                return Some(Ok(RootGrant::new(filesystem.clone(), mode)));
+            }
             let targets: Vec<_> = requests
                 .iter()
-                .filter(|(_, access)| *access == mode)
-                .map(|(path, _)| path.clone())
+                .filter(|request| request.access == mode)
+                .map(|request| request.path.clone())
                 .collect();
             (!targets.is_empty())
                 .then(|| RootGrant::new(filesystem.clone(), mode).with_targets(targets))
@@ -266,11 +273,14 @@ impl FolderAccessManager {
         tool_name: &str,
         cwd: &Path,
         folder: &Path,
-        requests: &[(PathBuf, AccessMode)],
+        requests: &[biorouter_mcp::FileAccessRequest],
         aliases: &[(PathBuf, PathBuf)],
         cancel: &CancellationToken,
     ) -> anyhow::Result<Vec<RootGrant>> {
-        let access = if requests.iter().any(|(_, mode)| *mode == AccessMode::Write) {
+        let access = if requests
+            .iter()
+            .any(|request| request.access == AccessMode::Write)
+        {
             AccessMode::Write
         } else {
             AccessMode::Read
@@ -299,9 +309,9 @@ impl FolderAccessManager {
         };
         let roots = self.roots(session_id, cwd)?;
         if let Some(root) = roots.into_iter().find(|root| {
-            requests
-                .iter()
-                .all(|(path, mode)| Self::covered(std::slice::from_ref(root), path, *mode))
+            requests.iter().all(|request| {
+                Self::covered(std::slice::from_ref(root), &request.path, request.access)
+            })
         }) {
             return Ok(vec![root]);
         }
@@ -334,9 +344,11 @@ impl FolderAccessManager {
             tool_name: tool_name.to_string(),
             folder: folder.display().to_string(),
             access: access_name(access).to_string(),
+            once_descendants: requests.iter().any(|request| request.recursive),
             files: requests
                 .iter()
-                .map(|(path, _)| {
+                .map(|request| {
+                    let path = &request.path;
                     let original = aliases
                         .iter()
                         .filter(|(_, actual)| actual == path)
@@ -423,6 +435,7 @@ impl FolderAccessManager {
             actual_plan.requests.push(biorouter_mcp::FileAccessRequest {
                 path: actual,
                 access: request.access,
+                recursive: request.recursive,
             });
         }
         biorouter_mcp::preflight_file_access(&actual_plan, cwd)?;
@@ -431,14 +444,11 @@ impl FolderAccessManager {
         if let Ok(filesystem) = BoundedFs::open(skills) {
             roots.push(RootGrant::new(Arc::new(filesystem), AccessMode::Read));
         }
-        let mut missing: BTreeMap<PathBuf, Vec<(PathBuf, AccessMode)>> = BTreeMap::new();
+        let mut missing: BTreeMap<PathBuf, Vec<biorouter_mcp::FileAccessRequest>> = BTreeMap::new();
         for request in &actual_plan.requests {
             if !Self::covered(&roots, &request.path, request.access) {
                 let folder = existing_containing_folder(&request.path)?;
-                missing
-                    .entry(folder)
-                    .or_default()
-                    .push((request.path.clone(), request.access));
+                missing.entry(folder).or_default().push(request.clone());
             }
         }
         for (folder, requests) in missing {

@@ -270,7 +270,11 @@ export function ToolCallPreview({ preview }: { preview: ToolPreview }) {
             {preview.access} access. A session grant includes subfolders and is not remembered after
             app restart.
           </p>
-          <p>Allow once applies only to these files in this operation:</p>
+          <p>
+            {preview.onceDescendants
+              ? 'Allow once includes read-only analysis of this folder and its descendants for this operation:'
+              : 'Allow once applies only to these files in this operation:'}
+          </p>
           <ul className="list-disc pl-5">
             {preview.files.map((file) => (
               <li className="break-all font-mono" key={file}>

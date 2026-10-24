@@ -4634,6 +4634,7 @@ mod folder_approval_wake_tests {
             requests: vec![biorouter_mcp::FileAccessRequest {
                 path: external.join("result.txt"),
                 access: biorouter_sandbox::AccessMode::Write,
+                recursive: false,
             }],
         };
         let cancel = CancellationToken::new();

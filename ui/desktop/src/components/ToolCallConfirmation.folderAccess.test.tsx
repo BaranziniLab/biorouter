@@ -28,6 +28,7 @@ function show(folder = true) {
             access: 'read-only',
             files: ['/synthetic/results/completed.csv'],
             descendants: true,
+            onceDescendants: false,
             actionId: 'action',
           }
         : undefined,

@@ -265,6 +265,9 @@ instructions: |
      request is shown during the same turn. Retry on a fresh user turn and cancel the request.
   4. Grant a specific synthetic folder for this session, create and undo a file there, then open
      Folder access beneath the composer and revoke it. The next external write must ask again.
+     Repeat grant inspection and revocation in the local CLI using `/folder-access` and
+     `/folder-access revoke <id>`. For directory analysis, verify the once-only read of descendants
+     is disclosed and grants no writes or remembered session access.
   5. Record browser proof limitations explicitly if the tested browser surface cannot approve.
      A disabled control, screenshot, or synthetic provider fixture is not a live model-driven pass.
 

@@ -7,6 +7,8 @@ An absolute file path or a connector's returned result path does not itself gran
 
 - **Allow once** covers the listed files and the required access for that operation. A patch's
   base-directory metadata can remain read-only while its named child files are writable.
+  Directory analysis explicitly discloses read-only access to the chosen directory and descendants
+  for that operation; it does not create a remembered folder grant or write access.
 - **Allow for this session** includes the displayed folder and descendants in this chat, with
   the displayed access. It expires on revocation, deletion of the chat, or process restart.
 - **Deny** leaves the files untouched. The agent cannot repeat or broaden that folder request
@@ -18,6 +20,10 @@ Open **Folder access** beneath the chat composer to inspect and revoke additiona
 grants. Revocation is checked by operations that already hold a file capability as well as
 future operations. It does not undo a completed edit. Read-only permission never silently
 upgrades to write permission. Grants are not inherited by another chat.
+
+In the local CLI or TUI, `/folder-access` lists the same session grants and
+`/folder-access revoke <id>` revokes a selected grant. These commands act locally; they do not
+send a permission request through the model.
 
 A symbolic link that leaves the workspace follows the same approval flow. The card discloses
 both the requested path and its discovered actual target. The pending operation uses a

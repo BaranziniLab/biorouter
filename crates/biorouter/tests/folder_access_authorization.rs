@@ -47,16 +47,30 @@ impl Fixture {
         requests: Vec<(PathBuf, AccessMode)>,
         cancel: CancellationToken,
     ) -> tokio::task::JoinHandle<anyhow::Result<FileAdmission>> {
+        self.start_plan(
+            FileAccessPlan {
+                requests: requests
+                    .into_iter()
+                    .map(|(path, access)| FileAccessRequest {
+                        path,
+                        access,
+                        recursive: false,
+                    })
+                    .collect(),
+            },
+            cancel,
+        )
+    }
+
+    fn start_plan(
+        &self,
+        plan: FileAccessPlan,
+        cancel: CancellationToken,
+    ) -> tokio::task::JoinHandle<anyhow::Result<FileAdmission>> {
         let manager = self.manager.clone();
         let session = self.session.clone();
         let cwd = self.cwd.clone();
         tokio::spawn(async move {
-            let plan = FileAccessPlan {
-                requests: requests
-                    .into_iter()
-                    .map(|(path, access)| FileAccessRequest { path, access })
-                    .collect(),
-            };
             manager
                 .admit(&session, "developer__text_editor", &cwd, &plan, &cancel)
                 .await
@@ -370,6 +384,7 @@ async fn unattended_external_access_returns_bounded_recovery_without_parking() {
         requests: vec![FileAccessRequest {
             path: fixture.external.join("completed.csv"),
             access: AccessMode::Read,
+            recursive: false,
         }],
     };
     let cancel = CancellationToken::new();
@@ -471,4 +486,40 @@ async fn dangling_link_target_can_be_created_after_folder_approval() {
         .atomic_write(b"synthetic new file")
         .unwrap();
     assert_eq!(std::fs::read(actual).unwrap(), b"synthetic new file");
+}
+
+#[tokio::test]
+async fn recursive_analysis_once_discloses_descendants_and_stays_read_only() {
+    let fixture = Fixture::new();
+    let child = fixture.external.join("subfolder/source.rs");
+    std::fs::create_dir(child.parent().unwrap()).unwrap();
+    std::fs::write(&child, "fn synthetic() {}\n").unwrap();
+    let job = fixture.start_plan(
+        FileAccessPlan {
+            requests: vec![FileAccessRequest {
+                path: fixture.external.clone(),
+                access: AccessMode::Read,
+                recursive: true,
+            }],
+        },
+        CancellationToken::new(),
+    );
+    let id = fixture.pending().await;
+    let Some(UserActionRequest::FolderAccess(request)) = PendingUserActions::global().peek(&id)
+    else {
+        panic!()
+    };
+    assert!(request.once_descendants);
+    assert!(request.prompt().contains("read-only analysis"));
+    fixture.answer(&id, Permission::AllowOnce);
+    let admission = job.await.unwrap().unwrap();
+    assert_eq!(
+        path(&admission, &fixture.session, &child, AccessMode::Read)
+            .unwrap()
+            .read_to_string()
+            .unwrap(),
+        "fn synthetic() {}\n"
+    );
+    assert!(path(&admission, &fixture.session, &child, AccessMode::Write).is_err());
+    assert!(fixture.manager.list_session(&fixture.session).is_empty());
 }

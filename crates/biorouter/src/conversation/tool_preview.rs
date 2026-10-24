@@ -83,6 +83,7 @@ pub enum ToolPreview {
         access: String,
         files: Vec<String>,
         descendants: bool,
+        once_descendants: bool,
         action_id: String,
     },
     /// A command that will be handed to a shell verbatim.

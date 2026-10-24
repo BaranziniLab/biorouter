@@ -108,14 +108,17 @@ pub struct FolderAccessRequest {
     pub tool_name: String,
     pub folder: String,
     pub access: String,
+    pub once_descendants: bool,
     pub files: Vec<String>,
 }
 
 impl FolderAccessRequest {
     pub fn prompt(&self) -> String {
         format!(
-            "External folder access\nAllow {} access to {} for {}? Allow once covers only the listed files in this operation; a session grant includes descendants and lasts until revoked, this chat is deleted, or the app restarts.\nFiles:\n{}",
-            self.access, self.folder, self.tool_name, self.files.join("\n")
+            "External folder access\nAllow {} access to {} for {}? {} A session grant includes descendants and lasts until revoked, this chat is deleted, or the app restarts.\nFiles:\n{}",
+            self.access, self.folder, self.tool_name,
+            if self.once_descendants { "Allow once includes read-only analysis of this folder and its descendants for this operation." } else { "Allow once covers only the listed files in this operation." },
+            self.files.join("\n")
         )
     }
 }
@@ -923,6 +926,7 @@ fn request_message(id: &str, request: &UserActionRequest) -> Message {
                 access: r.access.clone(),
                 files: r.files.clone(),
                 descendants: true,
+                once_descendants: r.once_descendants,
                 action_id: r.action_id.clone(),
             }),
         ),
@@ -1551,6 +1555,7 @@ mod decision_authority_tests {
                 tool_name: "developer__text_editor".into(),
                 folder: "/synthetic/results".into(),
                 access: "read-only".into(),
+                once_descendants: false,
                 files: vec!["/synthetic/results/completed.csv".into()],
             }),
         );
