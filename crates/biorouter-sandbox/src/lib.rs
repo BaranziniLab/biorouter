@@ -39,6 +39,11 @@ pub use bounded_fs::{AccessMode, BoundedFs, BoundedPath, DispatchAuthority, Root
 pub use docker::DockerSandbox;
 pub use local::LocalProcessSandbox;
 
+/// Restrict an already-open, account-owned storage object without reopening its path.
+pub fn protect_owner_private_handle(file: &std::fs::File) -> std::io::Result<()> {
+    owner_private::protect(file, file.metadata()?.is_dir())
+}
+
 /// A single host→guest bind mount.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Mount {

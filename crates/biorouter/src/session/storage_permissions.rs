@@ -16,9 +16,9 @@ use windows_sys::Win32::Security::{
     SUB_CONTAINERS_AND_OBJECTS_INHERIT, TOKEN_QUERY, TOKEN_USER,
 };
 use windows_sys::Win32::Storage::FileSystem::{
-    FILE_ALL_ACCESS, FILE_ATTRIBUTE_REPARSE_POINT, FILE_FLAG_BACKUP_SEMANTICS,
-    FILE_FLAG_OPEN_REPARSE_POINT, FILE_READ_ATTRIBUTES, FILE_SHARE_READ, FILE_SHARE_WRITE,
-    READ_CONTROL, WRITE_DAC,
+    GetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION, FILE_ALL_ACCESS,
+    FILE_ATTRIBUTE_REPARSE_POINT, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT,
+    FILE_READ_ATTRIBUTES, FILE_SHARE_READ, FILE_SHARE_WRITE, READ_CONTROL, WRITE_DAC,
 };
 use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
 
@@ -80,11 +80,33 @@ fn open_owned(path: &Path, user: PSID) -> io::Result<File> {
         .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE)
         .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT)
         .open(path)?;
-    if file.metadata()?.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+    let metadata = file.metadata()?;
+    if metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
         return Err(io::Error::new(
             io::ErrorKind::PermissionDenied,
             "session storage must not contain junctions, symlinks, or other reparse points",
         ));
+    }
+    if !metadata.is_dir() {
+        if !metadata.is_file() {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "session storage must contain only regular files and directories",
+            ));
+        }
+        let mut information = std::mem::MaybeUninit::<BY_HANDLE_FILE_INFORMATION>::uninit();
+        if unsafe {
+            GetFileInformationByHandle(file.as_raw_handle().cast(), information.as_mut_ptr())
+        } == 0
+        {
+            return Err(io::Error::last_os_error());
+        }
+        if unsafe { information.assume_init() }.nNumberOfLinks != 1 {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "session storage files must not have hard-link aliases",
+            ));
+        }
     }
     let mut owner = null_mut();
     let mut descriptor = null_mut();
@@ -161,6 +183,19 @@ fn owned_tree(path: &Path, user: PSID, directory: bool, files: &mut Vec<File>) -
 pub(super) fn protect(path: &Path) -> io::Result<()> {
     let token = current_user()?;
     let user = unsafe { (*(token.as_ptr().cast::<TOKEN_USER>())).User.Sid };
+    for name in ["sessions.db", "sessions.db-wal", "sessions.db-shm"] {
+        let file = match open_owned(&path.join(name), user) {
+            Ok(file) => file,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
+            Err(error) => return Err(error),
+        };
+        if !file.metadata()?.is_file() {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "session database and sidecars must be regular files",
+            ));
+        }
+    }
     // Windows normally permits bypassing directory traversal checks. Repair
     // existing child ACLs as well; a private parent alone does not protect them.
     let mut files = Vec::new();

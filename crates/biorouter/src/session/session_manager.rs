@@ -4104,45 +4104,30 @@ impl SessionStorage {
 
     #[cfg(unix)]
     fn protect_session_directory(path: &Path) -> std::io::Result<()> {
-        use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
+        use std::os::unix::fs::OpenOptionsExt;
 
         let directory = fs::OpenOptions::new()
             .read(true)
             .custom_flags(libc::O_NOFOLLOW | libc::O_DIRECTORY)
             .open(path)?;
-        let metadata = directory.metadata()?;
-        if !metadata.is_dir() || metadata.uid() != unsafe { libc::geteuid() } {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::PermissionDenied,
-                "session directory must be a directory owned by the current user",
-            ));
-        }
-        directory.set_permissions(fs::Permissions::from_mode(0o700))?;
-        #[cfg(target_os = "macos")]
-        {
-            use std::os::fd::AsRawFd;
-            unsafe extern "C" {
-                fn acl_init(count: libc::c_int) -> *mut libc::c_void;
-                fn acl_set_fd(fd: libc::c_int, acl: *mut libc::c_void) -> libc::c_int;
-                fn acl_free(acl: *mut libc::c_void) -> libc::c_int;
+        biorouter_sandbox::protect_owner_private_handle(&directory)?;
+        for name in [DB_NAME, "sessions.db-wal", "sessions.db-shm"] {
+            let file = match fs::OpenOptions::new()
+                .read(true)
+                .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+                .open(path.join(name))
+            {
+                Ok(file) => file,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(error) => return Err(error),
+            };
+            if !file.metadata()?.is_file() {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::PermissionDenied,
+                    "session database and sidecars must be regular files",
+                ));
             }
-            // macOS extended ACLs can grant access independently of mode bits.
-            let acl = unsafe { acl_init(0) };
-            if acl.is_null() {
-                return Err(std::io::Error::last_os_error());
-            }
-            let result = unsafe { acl_set_fd(directory.as_raw_fd(), acl) };
-            let error = (result != 0).then(std::io::Error::last_os_error);
-            unsafe { acl_free(acl) };
-            if let Some(error) = error {
-                return Err(error);
-            }
-        }
-        if directory.metadata()?.permissions().mode() & 0o777 != 0o700 {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::Unsupported,
-                "session filesystem does not enforce owner-only directory permissions",
-            ));
+            biorouter_sandbox::protect_owner_private_handle(&file)?;
         }
         Ok(())
     }
@@ -4260,6 +4245,7 @@ impl SessionStorage {
                         Self::retreat_to_privacy_repair(&self.pool).await;
                     }
                 }
+                Self::prepare_session_directory(&self.session_dir)?;
                 Ok::<(), anyhow::Error>(())
             })
             .await?;
@@ -4268,7 +4254,9 @@ impl SessionStorage {
 
     pub async fn create(session_dir: &Path) -> Result<Self> {
         let storage = Self::new(session_dir.to_path_buf());
+        Self::prepare_session_directory(&storage.session_dir)?;
         Self::create_schema(&storage.pool).await?;
+        Self::prepare_session_directory(&storage.session_dir)?;
         Ok(storage)
     }
 

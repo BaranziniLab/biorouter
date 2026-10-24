@@ -42,7 +42,8 @@ database = Path('/home/br/app-root/data/sessions/sessions.db')
 with sqlite3.connect('file:'+str(database)+'?mode=ro',uri=True) as connection:
     row = connection.execute('SELECT name FROM sessions WHERE id=?',(saved['id'],)).fetchone()
 assert row is not None and row[0] == saved['marker']
-print(json.dumps({'owner_sqlite_read':True,'session_mode':oct(database.parent.stat().st_mode & 511)}))
+print(json.dumps({'owner_sqlite_read':True,'session_mode':oct(database.parent.stat().st_mode & 511),
+    'database_mode':oct(database.stat().st_mode & 511)}))
 """
 OBSERVER_PROBE = """
 import json, os, sqlite3
@@ -125,15 +126,18 @@ def main(args):
             inside(container, OWNER, ["chmod", "755", ROOT, ROOT + "/data"])
             outsider_fresh = json.loads(inside(container, OBSERVER, ["python3", "-c", OBSERVER_PROBE]).stdout)
             assert owner_fresh["owner_sqlite_read"] and owner_fresh["session_mode"] == "0o700"
+            assert owner_fresh["database_mode"] == "0o600"
             assert outsider_fresh["observer_denied"] and not outsider_fresh["has_daemon_secret"]
             stop_daemon(container)
             inside(container, OWNER, ["chmod", "755", ROOT + "/data/sessions"])
+            inside(container, OWNER, ["chmod", "644", DATABASE])
             outsider_legacy = json.loads(inside(container, OBSERVER, ["python3", "-c", OBSERVER_PROBE]).stdout)
             assert outsider_legacy.get("synthetic_marker_read"), "legacy fixture must demonstrate readability before repair"
             start_daemon(container, secret)
             owner_reopened = json.loads(inside(container, OWNER, ["python3", "-c", OWNER_PROBE], secret=secret).stdout)
             outsider_repaired = json.loads(inside(container, OBSERVER, ["python3", "-c", OBSERVER_PROBE]).stdout)
             assert owner_reopened["owner_sqlite_read"] and owner_reopened["session_mode"] == "0o700"
+            assert owner_reopened["database_mode"] == "0o600"
             assert outsider_repaired["observer_denied"] and not outsider_repaired["has_daemon_secret"]
             result = {"repetition": repetition, "owner_fresh": owner_fresh, "outsider_fresh": outsider_fresh,
                       "outsider_legacy_before_restart": outsider_legacy,
