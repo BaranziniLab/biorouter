@@ -77,6 +77,15 @@ impl ToolPreviewLine {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum ToolPreview {
+    #[serde(rename_all = "camelCase")]
+    FolderAccess {
+        folder: String,
+        access: String,
+        files: Vec<String>,
+        descendants: bool,
+        once_descendants: bool,
+        action_id: String,
+    },
     /// A command that will be handed to a shell verbatim.
     #[serde(rename_all = "camelCase")]
     Shell {

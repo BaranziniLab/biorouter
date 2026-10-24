@@ -364,6 +364,23 @@ const REGISTRY: &[Guard] = &[
                        neither route calls it directly, which is what refs-only records here",
             },
             Site {
+                file: "crates/biorouter-server/src/routes/action_required.rs",
+                counts: c(1, 1, 0),
+                kind: SiteKind::Guard,
+                what: "the typed folder-decision branch of `POST /action-required/tool-confirmation`, \
+                       before resolving the named chat's pending request. The extra ref is \
+                       the module qualifier in `session_reach::session_reach`, not a second gate",
+            },
+            Site {
+                file: "crates/biorouter-server/src/routes/folder_access.rs",
+                counts: c(2, 2, 0),
+                kind: SiteKind::Guard,
+                what: "`GET /action-required/folder-access` before listing the named chat's \
+                       grants, and `POST /action-required/folder-access/revoke` before changing \
+                       one. Each call also names the module once. Native lifetime scoping adds \
+                       owner isolation after these existing reach decisions; it does not replace them",
+            },
+            Site {
                 file: "crates/biorouter-server/src/routes/agent.rs",
                 counts: c(7, 7, 0),
                 kind: SiteKind::Guard,

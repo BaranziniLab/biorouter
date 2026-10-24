@@ -1,0 +1,66 @@
+{
+  "case": {
+    "case_id": "B-C05",
+    "family": "B",
+    "case_type": "control",
+    "operation": "cors_control",
+    "expected_protected_effect": "Supported local-development origin receives CORS permission",
+    "parameters": {}
+  },
+  "calls": [
+    {
+      "request": {
+        "method": "OPTIONS",
+        "path": "/config",
+        "headers": {
+          "Origin": "http://localhost:5173",
+          "Access-Control-Request-Method": "GET",
+          "Access-Control-Request-Headers": "x-secret-key"
+        },
+        "body_bytes": 0,
+        "body_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "status": 200,
+      "headers": [
+        [
+          "access-control-allow-origin",
+          "http://localhost:5173"
+        ],
+        [
+          "vary",
+          "origin, access-control-request-method, access-control-request-headers"
+        ],
+        [
+          "access-control-allow-methods",
+          "*"
+        ],
+        [
+          "access-control-allow-headers",
+          "*"
+        ],
+        [
+          "access-control-max-age",
+          "600"
+        ],
+        [
+          "allow",
+          "GET,HEAD"
+        ],
+        [
+          "transfer-encoding",
+          "chunked"
+        ],
+        [
+          "date",
+          "Fri, 23 Oct 2026 01:56:42 GMT"
+        ]
+      ],
+      "body": "",
+      "response_truncated": false,
+      "duration_ms": 0.858
+    }
+  ],
+  "observed": {
+    "allow_origin": "http://localhost:5173"
+  }
+}

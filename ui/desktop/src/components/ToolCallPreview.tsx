@@ -16,6 +16,7 @@ import type { ActionRequired, ToolPreview, ToolPreviewLine, ToolRisk } from '../
 import { Badge, type BadgeTone } from './ui/badge';
 import { InfoTip } from './ui/info-tip';
 import { PREVIEW_COPY, TOOL_ROW_COPY } from './toolCallCopy';
+import { folderAccessLifetime } from '../utils/folderAccessLifetime';
 
 type ToolConfirmationData = Extract<ActionRequired['data'], { actionType: 'toolConfirmation' }>;
 export type ToolConfirmationPreview = NonNullable<ToolConfirmationData['preview']>;
@@ -262,6 +263,27 @@ function ArgumentsPreview({ json, truncated }: { json: string; truncated: boolea
 /** Render whatever the backend resolved this call into. */
 export function ToolCallPreview({ preview }: { preview: ToolPreview }) {
   switch (preview.kind) {
+    case 'folderAccess':
+      return (
+        <div data-testid="folder-access-preview" className="space-y-2 text-body">
+          <p className="break-all font-mono">{preview.folder}</p>
+          <p>
+            {preview.access} access. A session grant includes subfolders. {folderAccessLifetime()}
+          </p>
+          <p>
+            {preview.onceDescendants
+              ? 'Allow once includes read-only analysis of this folder and its descendants for this operation:'
+              : 'Allow once applies only to these files in this operation:'}
+          </p>
+          <ul className="list-disc pl-5">
+            {preview.files.map((file) => (
+              <li className="break-all font-mono" key={file}>
+                {file}
+              </li>
+            ))}
+          </ul>
+        </div>
+      );
     case 'shell':
       return (
         <PreviewFrame

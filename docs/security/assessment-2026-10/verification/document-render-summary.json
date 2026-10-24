@@ -1,0 +1,22 @@
+[
+  {
+    "document": "Security Audit Section Draft.docx",
+    "output": "/Users/wgu/biorouter-runs/security-assessment-2026-10/document-qa/section",
+    "pages": 2
+  },
+  {
+    "document": "Response to Reviewer 2 Major Comment 7.docx",
+    "output": "/Users/wgu/biorouter-runs/security-assessment-2026-10/document-qa/response",
+    "pages": 2
+  },
+  {
+    "document": "Supplementary Data S1 Security Audit.docx",
+    "output": "/Users/wgu/biorouter-runs/security-assessment-2026-10/document-qa/supplement",
+    "pages": 3
+  },
+  {
+    "document": "Biorouter Manuscript v1.1 draft.docx",
+    "output": "/Users/wgu/biorouter-runs/security-assessment-2026-10/document-qa/manuscript",
+    "pages": 24
+  }
+]

@@ -133,6 +133,7 @@ argon2 = { version = "0.5", features = ["zeroize"] }
 chacha20poly1305 = "0.10"
 zeroize = "1"
 biorouter-crew = { version = "1.91.1", path = "../biorouter-crew" }
+biorouter-sandbox = { version = "1.93.4", path = "../biorouter-sandbox" }
 
 [features]
 default = ["aws-providers"]
@@ -163,6 +164,7 @@ winapi = { version = "0.3", features = ["wincred"] }
 # (privacy/system_auth_windows.rs). WinRT async (`IAsyncOperation::get`) comes
 # from `windows-future`, a non-optional dependency of this crate.
 windows = { version = "0.61", features = ["Security_Credentials_UI"] }
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Authorization", "Win32_Storage_FileSystem", "Win32_System_Threading"] }
 
 # DR-24's macOS prompter: `LAContext.evaluatePolicy(.deviceOwnerAuthentication)`
 # (privacy/system_auth_macos.rs). Raw runtime access rather than

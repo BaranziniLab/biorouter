@@ -119,3 +119,4 @@ sqlx = { version = "0.8", features = ["runtime-tokio-rustls", "sqlite"] }
 # `privacy::system_auth::tests::the_test_seam_cannot_be_compiled_into_a_shipped_profile`
 # is what turns that into a red build rather than a silent one.
 biorouter = { path = "../biorouter", features = ["privacy-test-auth"] }
+biorouter-sandbox = { path = "../biorouter-sandbox" }

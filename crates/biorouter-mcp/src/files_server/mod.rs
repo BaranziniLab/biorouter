@@ -99,18 +99,17 @@ impl FilesServer {
         let dir = params.0.dir.unwrap_or_else(|| ".".to_string());
         let path = self
             .jail
-            .resolve(&dir, false)
+            .bind(&dir, false)
             .map_err(|e| invalid(e.to_string()))?;
         let mut entries: Vec<serde_json::Value> = Vec::new();
-        let mut rd = tokio::fs::read_dir(&path)
-            .await
-            .map_err(|e| invalid(format!("cannot list '{dir}': {e}")))?;
-        while let Some(entry) = rd.next_entry().await.map_err(|e| invalid(e.to_string()))? {
-            let meta = entry.metadata().await.ok();
+        for entry in path
+            .list()
+            .map_err(|error| invalid(format!("cannot list '{dir}': {error}")))?
+        {
             entries.push(serde_json::json!({
-                "name": entry.file_name().to_string_lossy(),
-                "dir": meta.as_ref().map(|m| m.is_dir()).unwrap_or(false),
-                "size": meta.as_ref().map(|m| m.len()).unwrap_or(0),
+                "name": entry.name.to_string_lossy(),
+                "dir": entry.is_dir,
+                "size": entry.len,
             }));
         }
         let json = serde_json::to_string(&entries).unwrap_or_else(|_| "[]".to_string());
@@ -128,10 +127,10 @@ impl FilesServer {
         let p = params.0.path;
         let path = self
             .jail
-            .resolve(&p, false)
+            .bind(&p, false)
             .map_err(|e| invalid(e.to_string()))?;
-        let meta = tokio::fs::metadata(&path)
-            .await
+        let meta = path
+            .metadata()
             .map_err(|e| invalid(format!("cannot stat '{p}': {e}")))?;
         if meta.len() > MAX_READ_BYTES {
             return Err(invalid(format!(
@@ -139,8 +138,8 @@ impl FilesServer {
                 meta.len()
             )));
         }
-        let content = tokio::fs::read_to_string(&path)
-            .await
+        let content = path
+            .read_to_string_limited(MAX_READ_BYTES)
             .map_err(|e| invalid(format!("cannot read '{p}': {e}")))?;
         Ok(CallToolResult::success(vec![Content::text(content)]))
     }
@@ -157,16 +156,10 @@ impl FilesServer {
         // need_write=true → the jail rejects this if the workspace is read-only.
         let path = self
             .jail
-            .resolve(&p, true)
+            .bind(&p, true)
             .map_err(|e| invalid(e.to_string()))?;
-        if let Some(parent) = path.parent() {
-            tokio::fs::create_dir_all(parent)
-                .await
-                .map_err(|e| invalid(format!("cannot create dirs for '{p}': {e}")))?;
-        }
-        tokio::fs::write(&path, content.as_bytes())
-            .await
-            .map_err(|e| invalid(format!("cannot write '{p}': {e}")))?;
+        path.atomic_write(content.as_bytes())
+            .map_err(|error| invalid(format!("cannot write '{p}': {error}")))?;
         Ok(CallToolResult::success(vec![Content::text(format!(
             "wrote {p}"
         ))]))

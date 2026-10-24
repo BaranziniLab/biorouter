@@ -644,6 +644,9 @@ impl CliSession {
         editor: &mut rustyline::Editor<BioRouterCompleter, rustyline::history::DefaultHistory>,
     ) -> Result<()> {
         match input {
+            InputResult::FolderAccess(args) => {
+                eprintln!("{}", self.folder_access_command(&args));
+            }
             InputResult::Message(content) => {
                 self.handle_message_input(&content, history, editor).await?;
             }
@@ -709,6 +712,36 @@ impl CliSession {
             }
         }
         Ok(())
+    }
+
+    pub(crate) fn folder_access_command(&self, args: &str) -> String {
+        let manager = biorouter::folder_access::FolderAccessManager::global();
+        match args.split_whitespace().collect::<Vec<_>>().as_slice() {
+            [] => {
+                let grants = manager.list_session(&self.session_id);
+                if grants.is_empty() {
+                    return "No additional folders are authorized for this chat.".to_string();
+                }
+                grants
+                    .into_iter()
+                    .map(|grant| {
+                        format!(
+                            "{}  {:?}  {} (includes descendants)",
+                            grant.id, grant.folder, grant.access
+                        )
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            }
+            ["revoke", id] => {
+                if manager.revoke(&self.session_id, id) {
+                    "Folder access revoked for this chat.".to_string()
+                } else {
+                    "That grant is no longer present in this chat. Use /folder-access to list current grants.".to_string()
+                }
+            }
+            _ => "Usage: /folder-access [revoke <id>]".to_string(),
+        }
     }
 
     /// Rename the current session from the classic REPL (`/rename <name>`).
@@ -2191,7 +2224,33 @@ fn prompt_tool_confirmation(
         eprintln!("\n{artefact}\n");
     }
 
-    let permission_result = if security_prompt.is_none() {
+    let permission_result = if security_prompt
+        .as_deref()
+        .is_some_and(|prompt| prompt.starts_with("External folder access\n"))
+    {
+        cliclack::select(prompt)
+            .item(
+                Permission::DenyOnce,
+                "Deny",
+                "Keep this folder unavailable for this turn",
+            )
+            .item(
+                Permission::AllowOnce,
+                "Allow once",
+                "Allow only the listed files for this operation",
+            )
+            .item(
+                Permission::AlwaysAllow,
+                "Allow for this session",
+                "Include this folder's descendants until revoked or the app exits",
+            )
+            .item(
+                Permission::Cancel,
+                "Cancel",
+                "Cancel the response and file operation",
+            )
+            .interact()
+    } else if security_prompt.is_none() {
         cliclack::select(prompt)
             .item(Permission::AllowOnce, "Allow", "Allow the tool call once")
             .item(

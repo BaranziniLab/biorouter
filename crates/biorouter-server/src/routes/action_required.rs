@@ -51,6 +51,83 @@ fn status_only(status: StatusCode) -> (StatusCode, Json<Value>) {
     (status, Json(serde_json::json!({})))
 }
 
+async fn confirmation_authority(
+    state: &AppState,
+    headers: &HeaderMap,
+    request: &ConfirmToolActionRequest,
+) -> Result<(bool, biorouter::pending_user_action::DecisionAuthority), (StatusCode, Json<Value>)> {
+    // ⚠ The two refusals say different things, and returning a bare 403 for
+    // both is what made this card unanswerable-and-unexplained in browser mode.
+    // A caller who presented no proof is being told "the user decides this"; a
+    // caller on a daemon that holds no key is being told "this control is
+    // unavailable here" — and sending the second person hunting for a
+    // permission they can never obtain is the failure `UserActionProof` draws
+    // three variants for.
+    // ⚠ Sampled ONCE, unconditionally, before the check below. Two reads of
+    // the header would leave a window between `requires_user_proof_in_session`
+    // (one lock acquisition) and `resolve_in_session` (a later one) — and a
+    // gate whose two halves can observe different instants is the race the
+    // sample-once rule exists to close.
+    let folder_request = biorouter::pending_user_action::PendingUserActions::global()
+        .requires_user_proof_in_session(&request.session_id, &request.id)
+        && matches!(
+            biorouter::pending_user_action::PendingUserActions::global().peek(&request.id),
+            Some(biorouter::pending_user_action::UserActionRequest::FolderAccess(_))
+        );
+    if folder_request {
+        super::session_reach::session_reach(state.session_manager(), &request.session_id, headers)
+            .await
+            .map_err(|error| status_only(error.status))?;
+    }
+    let folder_decline = folder_request && matches!(request.action.as_str(), "deny" | "cancel");
+    let proof = if folder_decline {
+        UserActionProof::Unproven
+    } else if folder_request {
+        biorouter_server::auth::folder_access_action_proof(headers)
+    } else {
+        user_action_proof(headers)
+    };
+    if folder_request
+        && !folder_decline
+        && proof != UserActionProof::Proven
+        && biorouter_server::auth::folder_access_action_locked_out()
+    {
+        return Err(status_only(StatusCode::TOO_MANY_REQUESTS));
+    }
+    let authority = match proof {
+        UserActionProof::Proven if folder_request => {
+            match biorouter_server::native_client::from_headers(headers).map_err(status_only)? {
+                Some(client) => biorouter::pending_user_action::DecisionAuthority::from_native_folder_access_proof(&client),
+                None => biorouter::pending_user_action::DecisionAuthority::from_folder_access_proof(),
+            }
+        }
+        UserActionProof::Proven => {
+            biorouter::pending_user_action::DecisionAuthority::from_user_action_proof()
+        }
+        _ => biorouter::pending_user_action::DecisionAuthority::unproven(),
+    };
+    if biorouter::pending_user_action::PendingUserActions::global()
+        .requires_user_proof_in_session(&request.session_id, &request.id)
+        && proof != UserActionProof::Proven
+        && !folder_decline
+    {
+        let no_key = proof == UserActionProof::NoKeyInstalled;
+        return Err((
+            StatusCode::FORBIDDEN,
+            Json(serde_json::json!({
+                "status": "refused",
+                "reason": if no_key { "noKeyInstalled" } else { "unproven" },
+                "error": if folder_request && no_key {
+                    "Folder approval is not configured. Start the browser server with biorouter serve --folder-access-approval, then retry this file operation and enter the separate approval key."
+                } else if folder_request {
+                    "Enter the separate folder approval key configured at server startup. The pending operation has not been approved."
+                } else if no_key { NO_KEY_APPROVAL_REFUSAL } else { UNPROVEN_APPROVAL_REFUSAL }
+            })),
+        ));
+    }
+    Ok((folder_request, authority))
+}
+
 #[utoipa::path(
     post,
     path = "/action-required/tool-confirmation",
@@ -67,53 +144,18 @@ pub async fn confirm_tool_action(
     headers: HeaderMap,
     Json(request): Json<ConfirmToolActionRequest>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
-    // ⚠ The two refusals say different things, and returning a bare 403 for
-    // both is what made this card unanswerable-and-unexplained in browser mode.
-    // A caller who presented no proof is being told "the user decides this"; a
-    // caller on a daemon that holds no key is being told "this control is
-    // unavailable here" — and sending the second person hunting for a
-    // permission they can never obtain is the failure `UserActionProof` draws
-    // three variants for.
-    // ⚠ Sampled ONCE, unconditionally, before the check below. Two reads of
-    // the header would leave a window between `requires_user_proof_in_session`
-    // (one lock acquisition) and `resolve_in_session` (a later one) — and a
-    // gate whose two halves can observe different instants is the race the
-    // sample-once rule exists to close.
-    let authority = match user_action_proof(&headers) {
-        UserActionProof::Proven => {
-            biorouter::pending_user_action::DecisionAuthority::from_user_action_proof()
-        }
-        _ => biorouter::pending_user_action::DecisionAuthority::unproven(),
-    };
-
-    if biorouter::pending_user_action::PendingUserActions::global()
-        .requires_user_proof_in_session(&request.session_id, &request.id)
-    {
-        match user_action_proof(&headers) {
-            UserActionProof::Proven => {}
-            UserActionProof::Unproven => {
-                return Err((
-                    StatusCode::FORBIDDEN,
-                    Json(serde_json::json!({
-                        "status": "refused",
-                        "reason": "unproven",
-                        "error": UNPROVEN_APPROVAL_REFUSAL,
-                    })),
-                ))
-            }
-            UserActionProof::NoKeyInstalled => {
-                return Err((
-                    StatusCode::FORBIDDEN,
-                    Json(serde_json::json!({
-                        "status": "refused",
-                        "reason": "noKeyInstalled",
-                        "error": NO_KEY_APPROVAL_REFUSAL,
-                    })),
-                ))
-            }
-        }
-    }
+    let (folder_request, authority) =
+        confirmation_authority(state.as_ref(), &headers, &request).await?;
     let permission = match request.action.as_str() {
+        "allow_session"
+            if matches!(
+                biorouter::pending_user_action::PendingUserActions::global().peek(&request.id),
+                Some(biorouter::pending_user_action::UserActionRequest::FolderAccess(_))
+            ) =>
+        {
+            Permission::AlwaysAllow
+        }
+        "cancel" if folder_request => Permission::Cancel,
         "always_allow" => Permission::AlwaysAllow,
         "allow_once" => Permission::AllowOnce,
         "deny" => Permission::DenyOnce,
@@ -526,6 +568,116 @@ pub fn routes(state: Arc<AppState>) -> Router {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn a_folder_approval_key_cannot_reach_a_private_or_unknown_session() {
+        if !crate::test_sandbox::in_a_process_of_its_own() {
+            return;
+        }
+        use crate::routes::session::diverge_tests::{
+            install_test_user_action_key, TEST_USER_ACTION_KEY,
+        };
+        use biorouter::pending_user_action::{
+            FolderAccessRequest, PendingUserActions, UserActionOutcome, UserActionRequest,
+        };
+        use biorouter::privacy::SessionClassification;
+        use sha2::Digest;
+
+        install_test_user_action_key();
+        let folder_key = "synthetic-folder-only-approval-key";
+        biorouter_server::auth::install_folder_access_action_digest(Some(
+            sha2::Sha256::digest(folder_key.as_bytes()).into(),
+        ));
+        let mut browser_headers = HeaderMap::new();
+        browser_headers.insert("X-Folder-Access-Key", folder_key.parse().unwrap());
+        assert_eq!(
+            biorouter_server::auth::folder_access_action_proof(&browser_headers),
+            UserActionProof::Proven
+        );
+        let state = AppState::new().await.unwrap();
+        let workspace = tempfile::tempdir().unwrap();
+        let session = state
+            .session_manager()
+            .create_session(
+                workspace.path().to_path_buf(),
+                "Synthetic private folder approval".to_string(),
+                biorouter::session::SessionType::User,
+            )
+            .await
+            .unwrap();
+        state
+            .session_manager()
+            .update(&session.id)
+            .raise_privacy(SessionClassification::Private, "synthetic-folder-approval")
+            .apply()
+            .await
+            .unwrap();
+        let park = |session: &str| {
+            PendingUserActions::global().park(
+                Some(session),
+                None,
+                UserActionRequest::FolderAccess(FolderAccessRequest {
+                    action_id: uuid::Uuid::new_v4().to_string(),
+                    tool_name: "developer__text_editor".to_string(),
+                    folder: workspace.path().display().to_string(),
+                    access: "read-only".to_string(),
+                    once_descendants: false,
+                    files: vec!["synthetic-result.txt".to_string()],
+                }),
+            )
+        };
+        let private = park(&session.id);
+        let unknown_session = uuid::Uuid::new_v4().to_string();
+        let unknown = park(&unknown_session);
+        for (session_id, id) in [
+            (&session.id, private.id()),
+            (&unknown_session, unknown.id()),
+        ] {
+            let result = confirm_tool_action(
+                State(state.clone()),
+                browser_headers.clone(),
+                Json(ConfirmToolActionRequest {
+                    id: id.to_string(),
+                    principal_type: PrincipalType::Tool,
+                    action: "allow_once".to_string(),
+                    session_id: session_id.clone(),
+                }),
+            )
+            .await;
+            assert_eq!(result.err().unwrap().0, StatusCode::FORBIDDEN);
+            assert!(PendingUserActions::global().is_pending(id));
+            assert!(biorouter::folder_access::FolderAccessManager::global()
+                .list_session(session_id)
+                .is_empty());
+        }
+        let mut native_headers = HeaderMap::new();
+        native_headers.insert("X-User-Action", TEST_USER_ACTION_KEY.parse().unwrap());
+        let response = confirm_tool_action(
+            State(state.clone()),
+            native_headers,
+            Json(ConfirmToolActionRequest {
+                id: private.id().to_string(),
+                principal_type: PrincipalType::Tool,
+                action: "allow_once".to_string(),
+                session_id: session.id.clone(),
+            }),
+        )
+        .await
+        .unwrap();
+        assert_eq!(response.0["status"], "delivered");
+        assert!(matches!(
+            private.wait(std::time::Duration::from_secs(1), None).await,
+            UserActionOutcome::Approved {
+                permission: Permission::AllowOnce
+            }
+        ));
+        state
+            .session_manager()
+            .delete_session(&session.id)
+            .await
+            .unwrap();
+    }
 
     /// The hand-written `Debug` impl on [`SubmitSecretsRequest`] is the only
     /// thing keeping a passcode out of a `tracing` line, a panic message, or a

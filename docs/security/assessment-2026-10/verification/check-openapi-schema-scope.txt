@@ -1,0 +1,1 @@
+This was a comparison of currently saved generated files against Git only. The just check-openapi-schema prerequisite that rebuilds the schema generator was not run in this static-check pass. No API types or generated files were changed by this audit. Do not treat this standalone script result as completion of just check-everything.

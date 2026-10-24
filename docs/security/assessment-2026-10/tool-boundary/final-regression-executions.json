@@ -1,0 +1,100 @@
+[
+  {
+    "run_id": "core",
+    "binary": "/Users/wgu/Desktop/BioRouter/target/release/deps/security_assessment-848114ab0410a0a0",
+    "sha256": "84150064c331cd47c683aaf8c3fe3ce84d0e7f1f8436baeb72ab8303034595b0",
+    "command": [
+      "/Users/wgu/Desktop/BioRouter/target/release/deps/security_assessment-848114ab0410a0a0",
+      "--test-threads=1",
+      "--nocapture"
+    ],
+    "exit_code": 0,
+    "started_unix": 1792799493.99233,
+    "seconds": 0.572,
+    "log": "/Users/wgu/.codex/worktrees/security-reviewer-assessment/BioRouter/docs/security/assessment-2026-10/tool-boundary/raw/post-change-core-regressions.log"
+  },
+  {
+    "run_id": "core",
+    "binary": "/Users/wgu/Desktop/BioRouter/target/release/deps/smart_approve_tests-7965e72e13699695",
+    "sha256": "3c64fc6a0133962f092a407f263b57f3b849cae13aaef15ffb835d1335cba2e3",
+    "command": [
+      "/Users/wgu/Desktop/BioRouter/target/release/deps/smart_approve_tests-7965e72e13699695",
+      "--test-threads=1",
+      "--nocapture"
+    ],
+    "exit_code": 0,
+    "started_unix": 1792799494.5645812,
+    "seconds": 0.517,
+    "log": "/Users/wgu/.codex/worktrees/security-reviewer-assessment/BioRouter/docs/security/assessment-2026-10/tool-boundary/raw/post-change-core-regressions.log"
+  },
+  {
+    "run_id": "core",
+    "binary": "/Users/wgu/Desktop/BioRouter/target/release/deps/smart_approve_judge_tests-915ee2220ad413a8",
+    "sha256": "9fa7d9d99eea1bb1ca54be8ae180e0b8fb76dae7d701815a53c0e50b1c63e349",
+    "command": [
+      "/Users/wgu/Desktop/BioRouter/target/release/deps/smart_approve_judge_tests-915ee2220ad413a8",
+      "--test-threads=1",
+      "--nocapture"
+    ],
+    "exit_code": 0,
+    "started_unix": 1792799495.081811,
+    "seconds": 0.482,
+    "log": "/Users/wgu/.codex/worktrees/security-reviewer-assessment/BioRouter/docs/security/assessment-2026-10/tool-boundary/raw/post-change-core-regressions.log"
+  },
+  {
+    "run_id": "scope",
+    "binary": "/Users/wgu/Desktop/BioRouter/target/release/deps/security_scope_regression-cb40ba99d07c45ee",
+    "sha256": "7e96a9641a2e65a0e14edc7f1538683043a56db7e4e6ff108b2ed3255abe6bb1",
+    "command": [
+      "/Users/wgu/Desktop/BioRouter/target/release/deps/security_scope_regression-cb40ba99d07c45ee",
+      "--test-threads=1",
+      "--nocapture"
+    ],
+    "exit_code": 0,
+    "started_unix": 1792799495.564717,
+    "seconds": 0.324,
+    "log": "/Users/wgu/.codex/worktrees/security-reviewer-assessment/BioRouter/docs/security/assessment-2026-10/tool-boundary/raw/post-change-scope-regressions.log"
+  },
+  {
+    "run_id": "editor-1",
+    "binary": "/Users/wgu/Desktop/BioRouter/target/release/deps/security_editor_boundaries-8540ad98e9ab3c4d",
+    "sha256": "586d2fbfe13e546a126a2c19213aa0996aa1ffe6729f4e53bef55edb6bc829f4",
+    "command": [
+      "/Users/wgu/Desktop/BioRouter/target/release/deps/security_editor_boundaries-8540ad98e9ab3c4d",
+      "--test-threads=1",
+      "--nocapture"
+    ],
+    "exit_code": 0,
+    "started_unix": 1792799495.8889441,
+    "seconds": 0.666,
+    "log": "/Users/wgu/.codex/worktrees/security-reviewer-assessment/BioRouter/docs/security/assessment-2026-10/tool-boundary/raw/post-change-editor-repeat-1.log"
+  },
+  {
+    "run_id": "editor-2",
+    "binary": "/Users/wgu/Desktop/BioRouter/target/release/deps/security_editor_boundaries-8540ad98e9ab3c4d",
+    "sha256": "586d2fbfe13e546a126a2c19213aa0996aa1ffe6729f4e53bef55edb6bc829f4",
+    "command": [
+      "/Users/wgu/Desktop/BioRouter/target/release/deps/security_editor_boundaries-8540ad98e9ab3c4d",
+      "--test-threads=1",
+      "--nocapture"
+    ],
+    "exit_code": 0,
+    "started_unix": 1792799496.555736,
+    "seconds": 0.037,
+    "log": "/Users/wgu/.codex/worktrees/security-reviewer-assessment/BioRouter/docs/security/assessment-2026-10/tool-boundary/raw/post-change-editor-repeat-2.log"
+  },
+  {
+    "run_id": "editor-3",
+    "binary": "/Users/wgu/Desktop/BioRouter/target/release/deps/security_editor_boundaries-8540ad98e9ab3c4d",
+    "sha256": "586d2fbfe13e546a126a2c19213aa0996aa1ffe6729f4e53bef55edb6bc829f4",
+    "command": [
+      "/Users/wgu/Desktop/BioRouter/target/release/deps/security_editor_boundaries-8540ad98e9ab3c4d",
+      "--test-threads=1",
+      "--nocapture"
+    ],
+    "exit_code": 0,
+    "started_unix": 1792799496.592712,
+    "seconds": 0.03,
+    "log": "/Users/wgu/.codex/worktrees/security-reviewer-assessment/BioRouter/docs/security/assessment-2026-10/tool-boundary/raw/post-change-editor-repeat-3.log"
+  }
+]

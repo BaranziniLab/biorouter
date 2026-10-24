@@ -18,6 +18,9 @@ tokio = { workspace = true }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = { workspace = true }
 tracing = { workspace = true }
+cap-std = "3"
+uuid = { version = "1", features = ["v4"] }
+cap-fs-ext = "3"
 
 # BR-69 Linux shell sandbox. Both are pure-Rust syscall wrappers (no C
 # `libseccomp`/`libseccomp-dev` build dep, no runtime `.so`), so they cross-
@@ -27,6 +30,12 @@ tracing = { workspace = true }
 landlock = "0.4"
 seccompiler = "0.5"
 libc = "0.2"
+
+[target."cfg(unix)".dependencies]
+libc = "0.2"
+
+[target."cfg(windows)".dependencies]
+windows-sys = { version = "0.61", features = ["Wdk_Foundation", "Wdk_Storage_FileSystem", "Win32_Foundation", "Win32_Security_Authorization", "Win32_Storage_FileSystem", "Win32_System_IO", "Win32_System_Threading"] }
 
 [dev-dependencies]
 tempfile = "3"

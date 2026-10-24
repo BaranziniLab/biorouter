@@ -1488,6 +1488,11 @@ pub async fn reply(
     headers: axum::http::HeaderMap,
     Json(mut request): Json<ChatRequest>,
 ) -> axum::response::Response {
+    let native_client = match biorouter_server::native_client::from_headers(&headers) {
+        Ok(client) => client,
+        Err(status) => return status.into_response(),
+    };
+
     // Issue #56 Task 58 / #47. FIRST — before the turn lock, before the
     // telemetry, before anything at all reads or writes this session.
     //
@@ -1725,11 +1730,9 @@ pub async fn reply(
 
     let runner_state = state.clone();
     let runner_cancel = cancel_token.clone();
-    let handle = tokio::spawn(crate::workspace::turn::run_turn(
-        runner_state,
-        turn_request,
-        turn_guard,
-        runner_cancel,
+    let handle = tokio::spawn(biorouter::native_client::scope(
+        native_client,
+        crate::workspace::turn::run_turn(runner_state, turn_request, turn_guard, runner_cancel),
     ));
 
     // The pump — see `pump_bus_into_stream`, which is a named function precisely

@@ -22,6 +22,7 @@ activities:
   - Exercise isolated OKF, BioOKF, and built-in Soul migration round trips
   - Generate and execute test workflows
   - Test error boundaries and security controls
+  - Verify protected external-folder approval, in-place result reads, cancellation, and revocation using synthetic files
   - Verify asynchronous operation failures remain visible without turning successful status lookups into tool errors
   - Validate the Settings reset contract and its active-work safety gate
   - Verify provider error handling, conversation-scoped reasoning, and saved-credential deletion safeguards
@@ -39,7 +40,7 @@ parameters:
     input_type: string
     requirement: optional
     default: "all"
-    description: "Which test phases to run: all, basic, extensions, computer_use, crew, apps, previews, subagents, knowledge, workflows, reset, providers, local_inference, agent_loop, operation_outcome, office, advanced"
+    description: "Which test phases to run: all, basic, extensions, computer_use, crew, apps, previews, subagents, knowledge, workflows, reset, providers, local_inference, agent_loop, operation_outcome, office, advanced, folder_access"
   
   - key: test_depth
     input_type: string
@@ -249,6 +250,50 @@ instructions: |
   - Exercise startup purge of registered and unregistered legacy residue
   - Verify the recreated built-in is named `soul` and has an OKF profile
   
+  {% endif %}
+
+  {% if test_depth != "fixture_only" and (test_phases == "all" or "folder_access" in test_phases) %}
+  ## PHASE 4A-F: External-folder authorization
+
+  Use only disposable synthetic files and a fresh isolated profile; never authorize a real home,
+  credential, or patient-data directory. Do not use shell or computer tools to bypass a denial.
+  1. Run `cargo test -p biorouter --test folder_access_authorization` for exact-file once scope,
+     session grants, read-to-write escalation, denial, cancellation, wrong-session decisions,
+     unproven decisions, connector-result reads in place, revocation, and unattended recovery.
+  2. In an interactive desktop chat, request Developer view on a synthetic completed connector
+     result outside its workspace. Confirm the displayed folder, read-only access, file list,
+     and session lifetime. Choose Allow once and verify the original result is read in place.
+  3. Request an external synthetic write; choose Deny and verify no file changed and no repeated
+     request is shown during the same turn. Retry on a fresh user turn and cancel the request.
+  4. Grant a specific synthetic folder for this session, create and undo a file there, then open
+     Folder access beneath the composer and revoke it. The next external write must ask again.
+     Repeat grant inspection and revocation in the local CLI using `/folder-access` and
+     `/folder-access revoke <id>`. For directory analysis, verify the once-only read of descendants
+     is disclosed and grants no writes or remembered session access.
+  5. Record browser proof limitations explicitly if the tested browser surface cannot approve.
+     A disabled control, screenshot, or synthetic provider fixture is not a live model-driven pass.
+  6. With closed standard input and no `--quiet` workaround, request an unapproved external read
+     using `--output-format json`. Parse the entire stdout as one JSON object; verify the actual
+     tool result contains `authorization_required`, the requested scope, and interactive recovery
+     guidance without file content. Repeat with `stream-json` and parse every output line as JSON.
+     Repeat with a parameterized workflow; its human parameter summary must remain on stderr.
+     Run `cargo test -p biorouter-cli --test non_interactive run_output_formats_keep_machine_stdout_parseable`
+     for the real-binary format controls; ordinary text output must retain the session banner.
+
+  7. Manual headed-desktop lifecycle gate (#455): in an isolated managed profile, approve a
+     synthetic external folder for this chat, quit the actual app normally, reopen the same chat,
+     and request that file again. Require a new folder card before any read. Also exercise abrupt
+     native disconnection, reconnect, and two active clients using the same chat: ending one client
+     must revoke its retained once/session access and pending request without stopping the shared
+     daemon or revoking the other client's grants. Do not treat this CLI workflow, a unit test,
+     or a screenshot as proof that OS app quit/restart passed; record unrun actions as NOT EXERCISED.
+  8. Confirm lifetime notices match deployment: managed desktop says app quit/restart; browser
+     and manual external backends say backend restart and explicitly retain grants across interface
+     restart. Include the environment-selected external backend. Nonshared/native Windows retains
+     its owned-daemon normal-quit cleanup; do not claim it uses the Unix shared-client protocol.
+
+  Log exact commands, model/provider, human decisions, and observed results to:
+  {{ workspace_dir }}/phase4_folder_access.md
   {% endif %}
 
   {% if test_depth != "fixture_only" and (test_phases == "all" or "advanced" in test_phases) %}

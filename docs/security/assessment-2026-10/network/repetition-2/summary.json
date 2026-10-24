@@ -1,0 +1,8 @@
+{
+  "observations": 55,
+  "outcomes": {
+    "allowed_control": 14,
+    "blocked": 40,
+    "not_exercised": 1
+  }
+}

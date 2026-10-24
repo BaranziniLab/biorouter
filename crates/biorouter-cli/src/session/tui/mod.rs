@@ -752,6 +752,19 @@ async fn run_permission_modal(
             ("Deny", "keep desktop control off"),
             ("Cancel", "cancel response"),
         ]
+    } else if prompt
+        .as_deref()
+        .is_some_and(|text| text.starts_with("External folder access\n"))
+    {
+        vec![
+            ("Deny", "keep this folder unavailable for this turn"),
+            ("Allow", "only the listed files for this operation"),
+            (
+                "Allow for this session",
+                "folder and descendants until revoked or app exit",
+            ),
+            ("Cancel", "cancel response"),
+        ]
     } else if prompt.is_some() {
         vec![
             ("Allow", "allow once"),
@@ -810,7 +823,7 @@ async fn run_permission_modal(
 fn label_to_permission(label: &str) -> Permission {
     match label {
         "Allow" | "Allow task" => Permission::AllowOnce,
-        "Always allow" => Permission::AlwaysAllow,
+        "Always allow" | "Allow for this session" => Permission::AlwaysAllow,
         "Deny" => Permission::DenyOnce,
         _ => Permission::Cancel,
     }
@@ -835,6 +848,12 @@ fn backend_slash_command(text: &str) -> bool {
 /// (`/compact` is handled in `submit` since it drives a turn.)
 async fn handle_slash(session: &mut CliSession, app: &mut App, text: &str) -> bool {
     match text.trim() {
+        s if s == "/folder-access" || s.starts_with("/folder-access ") => {
+            app.push_note(&session.folder_access_command(
+                s.strip_prefix("/folder-access").unwrap_or_default().trim(),
+            ));
+            true
+        }
         "/exit" | "/quit" => {
             app.should_quit = true;
             true
@@ -1702,6 +1721,10 @@ async fn build_catalog(session: &CliSession) -> Vec<app::CompletionItem> {
         kind: CompletionKind::Command,
     };
     items.push(cmd("/help", "Show commands and shortcuts"));
+    items.push(cmd(
+        "/folder-access",
+        "List or revoke this chat's folder grants",
+    ));
     for def in biorouter::agents::execute_commands::list_commands() {
         items.push(cmd(&format!("/{}", def.name), def.description));
     }
@@ -1814,6 +1837,10 @@ fn help_into(app: &mut App) {
     );
     let mut commands = vec![
         ("/help, /?".to_string(), "show this help".to_string()),
+        (
+            "/folder-access [revoke <id>]".to_string(),
+            "list or revoke folder grants".to_string(),
+        ),
         (
             "/diverge [name]".to_string(),
             "diverge this chat into a new window".to_string(),

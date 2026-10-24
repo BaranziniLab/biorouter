@@ -26,15 +26,29 @@ use std::time::Duration;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
+pub mod bounded_fs;
 pub mod console;
 pub mod docker;
 pub mod environment;
 pub mod local;
+mod owner_private;
 pub mod seatbelt;
 pub mod shell_sandbox;
 
+pub use bounded_fs::{AccessMode, BoundedFs, BoundedPath, DispatchAuthority, RootGrant};
 pub use docker::DockerSandbox;
 pub use local::LocalProcessSandbox;
+
+/// Restrict an already-open, account-owned storage object without reopening its path.
+pub fn protect_owner_private_handle(file: &std::fs::File) -> std::io::Result<()> {
+    owner_private::protect(file, file.metadata()?.is_dir())
+}
+
+/// Refuse Windows ACL migration while another unprivileged account can mutate a directory.
+#[cfg(windows)]
+pub fn validate_owner_private_directory_acl_handle(file: &std::fs::File) -> std::io::Result<()> {
+    owner_private::validate_directory_acl(file)
+}
 
 /// A single host→guest bind mount.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -253,6 +267,9 @@ fn canonicalize_existing_ancestor(p: &Path) -> Result<PathBuf> {
                 .strip_prefix(cur)
                 .map_err(|_| SandboxError::PathEscape(p.display().to_string()))?;
             return Ok(real.join(tail));
+        }
+        if std::fs::symlink_metadata(cur).is_ok_and(|metadata| metadata.file_type().is_symlink()) {
+            return Err(SandboxError::PathEscape(p.display().to_string()));
         }
         match cur.parent() {
             Some(parent) => cur = parent,

@@ -80,9 +80,11 @@ impl PermissionManager {
         self.get_permission(USER_PERMISSION, principal_name)
     }
 
-    /// Retrieves the smart approve permission level for a specific tool.
+    /// Retrieves restrictive legacy smart-approve preferences. Automatic
+    /// tool-wide approvals cannot authorize a new invocation.
     pub fn get_smart_approve_permission(&self, principal_name: &str) -> Option<PermissionLevel> {
         self.get_permission(SMART_APPROVE_PERMISSION, principal_name)
+            .filter(|level| *level != PermissionLevel::AlwaysAllow)
     }
 
     /// Retrieves the config file path.
@@ -226,6 +228,40 @@ mod tests {
 
         let permission = manager.get_smart_approve_permission("tool2");
         assert_eq!(permission, Some(PermissionLevel::AskBefore));
+    }
+
+    #[test]
+    fn legacy_smart_allow_is_ignored_after_loading_permissions() {
+        let temp = TempDir::new().unwrap();
+        fs::write(
+            temp.path().join(PERMISSION_FILE),
+            r#"
+smart_approve:
+  always_allow: [legacy_tool]
+  ask_before: [ask_tool]
+  never_allow: [deny_tool]
+user:
+  always_allow: [explicit_tool]
+  ask_before: []
+  never_allow: []
+"#,
+        )
+        .unwrap();
+        let manager = PermissionManager::new(temp.path().to_owned());
+
+        assert_eq!(manager.get_smart_approve_permission("legacy_tool"), None);
+        assert_eq!(
+            manager.get_smart_approve_permission("ask_tool"),
+            Some(PermissionLevel::AskBefore)
+        );
+        assert_eq!(
+            manager.get_smart_approve_permission("deny_tool"),
+            Some(PermissionLevel::NeverAllow)
+        );
+        assert_eq!(
+            manager.get_user_permission("explicit_tool"),
+            Some(PermissionLevel::AlwaysAllow)
+        );
     }
 
     #[test]

@@ -22,6 +22,7 @@ use biorouter::config::paths::Paths;
 /// sits before `/builtin` to make `/b` ghost to the command people mean.
 pub(crate) const SLASH_COMMANDS: &[&str] = &[
     "/help",
+    "/folder-access",
     "/clear",
     "/compact",
     "/diverge",

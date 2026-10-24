@@ -9,7 +9,7 @@ pub mod tool_risk;
 pub use managed_inspector::ManagedPolicyInspector;
 pub use permission_confirmation::{Permission, PermissionConfirmation};
 pub use permission_inspector::PermissionInspector;
-pub use permission_judge::detect_read_only_tools;
+pub use permission_judge::{detect_read_only_requests, detect_read_only_tools};
 pub use permission_scope::{CallFacts, PermissionScope};
 pub use permission_store::{ScopedPermissionGrant, ToolPermissionStore};
 pub use tool_risk::{

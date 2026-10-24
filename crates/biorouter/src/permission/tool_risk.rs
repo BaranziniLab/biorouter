@@ -131,7 +131,7 @@ pub struct SmartApproveConfig {
     /// `SMART_APPROVE_CONFIRM_UNKNOWN`, default `true` (fail closed).
     pub confirm_unknown: bool,
     /// Consult the LLM permission judge for tools the annotations cannot grade,
-    /// caching its verdict as a `smart_approve` permission level.
+    /// applying its verdict only to the inspected invocation.
     /// `SMART_APPROVE_JUDGE`, default `false` — it costs a provider round-trip
     /// on the critical path, so it is opt-in.
     pub judge_unknown: bool,

@@ -17,6 +17,7 @@ import { isSharedDaemonEnabled } from './biorouterdSingleton';
 import { biorouterVersion } from './utils/biorouterVersion';
 import {
   createDaemonProxy,
+  closeNativeClientLifetimes,
   daemonLossOf,
   daemonVersion,
   DaemonKeyRefusedError,
@@ -354,6 +355,8 @@ interface Reattach {
   proxy: DaemonProxy;
 }
 
+const nativeLifetimeApps = new WeakSet<App>();
+
 async function attachSharedDaemon(
   options: StartBiorouterdOptions,
   runtime: DaemonRuntime,
@@ -363,6 +366,10 @@ async function attachSharedDaemon(
   ownedProcess?: ChildProcess,
   errorLog: string[] = []
 ): Promise<BiorouterdResult> {
+  if (!nativeLifetimeApps.has(options.app)) {
+    nativeLifetimeApps.add(options.app);
+    options.app.once('will-quit', closeNativeClientLifetimes);
+  }
   if (reattach) {
     // The same local address, now checked against the new instance. `retarget` verifies it and
     // that it accepts this user-action key before anything changes.
@@ -471,6 +478,19 @@ async function stopFailedSharedStartup(child: ChildProcess): Promise<boolean> {
 export const startBiorouterd = (options: StartBiorouterdOptions): Promise<BiorouterdResult> =>
   startOrAttachBiorouterd(options);
 
+const sharedDaemonStartupError = (stderrLines: readonly string[], message: string): Error => {
+  const refusedPrivateHistory = stderrLines.some((line) =>
+    /^Error:\s+Cannot open private session history at '/.test(
+      line.replace(ANSI_ESCAPE_PATTERN, '').trim()
+    )
+  );
+  if (!refusedPrivateHistory) return new Error(message);
+  // Startup stderr can include private paths or library output. Show only fixed recovery text.
+  return new Error(
+    `${message}\n\nBiorouter could not open private session history safely. Your history has not been reset. Close all Biorouter processes. Check that the sessions folder and its nested folders are real folders owned by your account, without links or write access for other accounts. Use your operating system's folder security settings to correct permissions, then restart. For deliberate relocation, set BIOROUTER_PATH_ROOT to the real app root containing data/sessions. Recovery instructions: docs/security/session-storage.md.`
+  );
+};
+
 /** What this app can do with the profile's running daemon. */
 type ExistingDaemon =
   | { kind: 'usable'; key: string }
@@ -564,12 +584,14 @@ async function startOrAttachBiorouterd(
         gone = true;
       }
       if (!gone) {
-        // The instance this app verified still answers as itself: nothing to follow. The check
-        // reports it answering, which settles a `gone` loss.
-        const loss = await reattach.proxy.probe();
-        if (loss)
-          throw new Error('The background service stopped answering. Try again in a moment.');
-        return reattachedResult(options, reattach, dir, []);
+        // The daemon can survive loss of this app's approval connection. Reauthenticate and
+        // retarget even for the same instance so that connection can obtain a fresh lifetime.
+        const found = await inspectExistingDaemon(app, existing);
+        if (found.kind === 'usable')
+          return attachSharedDaemon(options, existing, dir, found.key, reattach);
+        throw new Error(
+          'The background service cannot restore this app’s folder approvals. Update or restart that service, then reconnect.'
+        );
       }
       staleInstance = existing.instance_id;
     } else if (existing) {
@@ -818,13 +840,15 @@ async function startOrAttachBiorouterd(
               return await attachSharedDaemon(options, winner, dir, found.key, reattach);
           }
           if (biorouterdProcess.pid === undefined)
-            throw new Error(
+            throw sharedDaemonStartupError(
+              stderrLines,
               'Shared profile daemon failed to start. Inspect its startup diagnostics.'
             );
         }
         await new Promise((resolve) => setTimeout(resolve, 100));
       }
-      throw new Error(
+      throw sharedDaemonStartupError(
+        stderrLines,
         biorouterdProcess.exitCode !== null
           ? 'Shared profile daemon failed to start. Inspect its startup diagnostics.'
           : 'Shared profile daemon did not publish its private runtime descriptor. Inspect the daemon before retrying.'
@@ -840,7 +864,8 @@ async function startOrAttachBiorouterd(
       const stopped = await stopFailedSharedStartup(biorouterdProcess);
       if (!stopped)
         throw Object.assign(
-          new Error(
+          sharedDaemonStartupError(
+            stderrLines,
             'Shared daemon startup failed, and its owned child did not exit within the cleanup deadline. Inspect that daemon before retrying.'
           ),
           { cause: error }

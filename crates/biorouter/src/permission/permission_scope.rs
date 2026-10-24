@@ -318,6 +318,19 @@ impl CallFacts {
     pub fn is_scopable(&self) -> bool {
         self.command.is_some() || !self.paths.is_empty()
     }
+
+    pub(crate) fn for_file_path(path: &Path, working_dir: &Path) -> Self {
+        match resolve_file_path(path, working_dir) {
+            Some(path) => Self {
+                paths: vec![path],
+                ..Self::default()
+            },
+            None => Self {
+                unresolved: true,
+                ..Self::default()
+            },
+        }
+    }
 }
 
 /// Tool names arrive namespaced (`developer__shell`); the argument shape depends
@@ -365,7 +378,10 @@ fn resolve_path(raw: &str, working_dir: &Path) -> Option<PathBuf> {
     if raw.is_empty() {
         return None;
     }
-    let path = Path::new(raw);
+    resolve_file_path(Path::new(raw), working_dir)
+}
+
+fn resolve_file_path(path: &Path, working_dir: &Path) -> Option<PathBuf> {
     let absolute = if path.is_absolute() {
         path.to_path_buf()
     } else if working_dir.is_absolute() {
@@ -398,6 +414,11 @@ fn canonicalize_existing_ancestor(path: &Path) -> Option<PathBuf> {
                 resolved.push(name);
             }
             return Some(resolved);
+        }
+        if std::fs::symlink_metadata(&current)
+            .is_ok_and(|metadata| metadata.file_type().is_symlink())
+        {
+            return None;
         }
         // `file_name` is `None` exactly when the final component is not a plain
         // name — i.e. it is `..` or a root. Bail instead of guessing.
@@ -557,6 +578,26 @@ mod tests {
             !scope.matches(&facts),
             "a symlink out of the scope must not be in scope"
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn directory_scope_must_not_allow_dangling_symlinks() {
+        let temp = TempDir::new().unwrap();
+        let work = temp.path().join("work");
+        let outside = temp.path().join("outside");
+        fs::create_dir(&work).unwrap();
+        fs::create_dir(&outside).unwrap();
+        std::os::unix::fs::symlink(outside.join("new.txt"), work.join("file-link")).unwrap();
+        std::os::unix::fs::symlink(outside.join("missing-dir"), work.join("dir-link")).unwrap();
+
+        let scope = dir_scope(&work);
+        for path in ["file-link", "dir-link/new.txt"] {
+            let facts = editor_facts(path, &work);
+            assert!(facts.unresolved, "{path} must require a fresh decision");
+            assert!(!scope.matches(&facts), "{path} must not inherit the grant");
+        }
+        assert!(scope.matches(&editor_facts("new.txt", &work)));
     }
 
     #[test]

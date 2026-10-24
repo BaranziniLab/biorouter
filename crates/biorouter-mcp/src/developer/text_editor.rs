@@ -1,11 +1,10 @@
+use super::patch_content::apply_content;
+use crate::file_access::{file_error, EditorPath};
 use anyhow::Result;
+use biorouter_sandbox::bounded_fs::AccessMode;
 use indoc::formatdoc;
-use mpatch::{apply_patch, parse_diffs, PatchError};
-use std::{
-    fs::File,
-    io::Read,
-    path::{Path, PathBuf},
-};
+use mpatch::{parse_diffs, PatchError};
+use std::path::{Path, PathBuf};
 use url::Url;
 
 use rmcp::model::{Content, ErrorCode, ErrorData, Role};
@@ -15,95 +14,18 @@ use super::lang;
 use super::shell::normalize_line_endings_like;
 use super::undo_history::FileHistory;
 
-fn ensure_trailing_newline(content: &mut String) {
+fn ensure_trailing_newline(content: &mut String, existing: Option<&str>) {
     if content.ends_with('\n') {
         return;
     }
 
-    if cfg!(windows) {
-        content.push_str("\r\n");
-    } else {
-        content.push('\n');
-    }
+    content.push_str(&normalize_line_endings_like(existing, "\n"));
 }
 
 // Constants
 pub const LINE_READ_LIMIT: usize = 2000;
 pub const MAX_DIFF_SIZE: usize = 1024 * 1024; // 1MB max diff size
 pub const MAX_FILES_IN_DIFF: usize = 100; // Maximum files in a multi-file diff
-
-/// Validates paths to prevent directory traversal attacks
-fn validate_path_safety(base_dir: &Path, target_path: &Path) -> Result<(), ErrorData> {
-    // Check for .. components
-    if target_path
-        .components()
-        .any(|c| matches!(c, std::path::Component::ParentDir))
-    {
-        return Err(ErrorData::new(
-            ErrorCode::INVALID_PARAMS,
-            "Path traversal detected: paths cannot contain '..'".to_string(),
-            None,
-        ));
-    }
-
-    // Try to canonicalize and check if within base
-    if let (Ok(canonical_target), Ok(canonical_base)) =
-        (target_path.canonicalize(), base_dir.canonicalize())
-    {
-        if !canonical_target.starts_with(&canonical_base) {
-            return Err(ErrorData::new(
-                ErrorCode::INVALID_PARAMS,
-                format!(
-                    "Path '{}' is outside the base directory",
-                    target_path.display()
-                ),
-                None,
-            ));
-        }
-    } else if !target_path.exists() {
-        // For new files, check parent directory
-        if let Some(parent) = target_path.parent() {
-            if let (Ok(canonical_parent), Ok(canonical_base)) =
-                (parent.canonicalize(), base_dir.canonicalize())
-            {
-                if !canonical_parent.starts_with(&canonical_base) {
-                    return Err(ErrorData::new(
-                        ErrorCode::INVALID_PARAMS,
-                        format!(
-                            "Path '{}' would be outside the base directory",
-                            target_path.display()
-                        ),
-                        None,
-                    ));
-                }
-            }
-        }
-    }
-
-    // Check for symlinks
-    if target_path.exists() {
-        let metadata = target_path.symlink_metadata().map_err(|e| {
-            ErrorData::new(
-                ErrorCode::INTERNAL_ERROR,
-                format!("Failed to check symlink status: {}", e),
-                None,
-            )
-        })?;
-
-        if metadata.is_symlink() {
-            return Err(ErrorData::new(
-                ErrorCode::INVALID_PARAMS,
-                format!(
-                    "Cannot modify symlink '{}'. Please operate on the actual file.",
-                    target_path.display()
-                ),
-                None,
-            ));
-        }
-    }
-
-    Ok(())
-}
 
 /// Results from applying a diff
 #[derive(Debug, Default)]
@@ -217,87 +139,6 @@ fn adjust_base_dir_for_overlap(base_dir: &Path, file_path: &Path) -> PathBuf {
     }
 }
 
-/// Applies a single patch and updates results
-fn apply_single_patch(
-    patch: &mpatch::Patch,
-    base_dir: &Path,
-    file_history: &FileHistory,
-    results: &mut DiffResults,
-    failed_hunks: &mut Vec<String>,
-) -> Result<(), ErrorData> {
-    let adjusted_base_dir = adjust_base_dir_for_overlap(base_dir, &patch.file_path);
-
-    let file_path = adjusted_base_dir.join(&patch.file_path);
-
-    // Validate path safety
-    validate_path_safety(&adjusted_base_dir, &file_path)?;
-
-    // Save history before modifying
-    let file_existed = file_path.exists();
-    if file_existed {
-        save_file_history(&file_path, file_history)?;
-    }
-
-    // Apply patch with fuzzy matching (70% similarity threshold)
-    let success = apply_patch(patch, &adjusted_base_dir, false, 0.7).map_err(|e| match e {
-        PatchError::Io { path, source } => ErrorData::new(
-            ErrorCode::INTERNAL_ERROR,
-            format!("Failed to process '{}': {}", path.display(), source),
-            None,
-        ),
-        PatchError::PathTraversal(path) => ErrorData::new(
-            ErrorCode::INVALID_PARAMS,
-            format!(
-                "Security: Path '{}' would escape the base directory",
-                path.display()
-            ),
-            None,
-        ),
-        PatchError::TargetNotFound(path) => ErrorData::new(
-            ErrorCode::INTERNAL_ERROR,
-            format!(
-                "File '{}' not found and patch doesn't create it",
-                path.display()
-            ),
-            None,
-        ),
-        PatchError::MissingFileHeader => ErrorData::new(
-            ErrorCode::INVALID_PARAMS,
-            "Invalid patch format".to_string(),
-            None,
-        ),
-    })?;
-
-    if !success {
-        // Collect information about failed hunks for better error reporting
-        let hunk_count = patch.hunks.len();
-        let context_preview = patch
-            .hunks
-            .first()
-            .and_then(|h| {
-                let match_block = h.get_match_block();
-                match_block.first().map(|s| s.to_string())
-            })
-            .unwrap_or_else(|| "(empty context)".to_string());
-
-        failed_hunks.push(format!(
-            "Failed to apply some hunks to '{}' ({} hunks total). First expected line: '{}'",
-            patch.file_path.display(),
-            hunk_count,
-            context_preview
-        ));
-    }
-
-    // Update statistics
-    if file_existed {
-        results.files_modified += 1;
-    } else {
-        results.files_created += 1;
-    }
-
-    Ok(())
-}
-
 /// Parses diff content into patches with proper error handling
 fn parse_diff_content(diff_content: &str) -> Result<Vec<mpatch::Patch>, ErrorData> {
     let wrapped_diff = if diff_content.contains("```diff") || diff_content.contains("```patch") {
@@ -333,36 +174,6 @@ fn parse_diff_content(diff_content: &str) -> Result<Vec<mpatch::Patch>, ErrorDat
     })
 }
 
-/// Ensures all patched files end with a newline
-fn ensure_trailing_newlines(patches: &[mpatch::Patch], base_dir: &Path) -> Result<(), ErrorData> {
-    for patch in patches {
-        let adjusted_base_dir = adjust_base_dir_for_overlap(base_dir, &patch.file_path);
-        let file_path = adjusted_base_dir.join(&patch.file_path);
-
-        if file_path.exists() {
-            let content = std::fs::read_to_string(&file_path).map_err(|e| {
-                ErrorData::new(
-                    ErrorCode::INTERNAL_ERROR,
-                    format!("Failed to read file for post-processing: {}", e),
-                    None,
-                )
-            })?;
-
-            if !content.ends_with('\n') {
-                let content_with_newline = format!("{}\n", content);
-                std::fs::write(&file_path, content_with_newline).map_err(|e| {
-                    ErrorData::new(
-                        ErrorCode::INTERNAL_ERROR,
-                        format!("Failed to add trailing newline: {}", e),
-                        None,
-                    )
-                })?;
-            }
-        }
-    }
-    Ok(())
-}
-
 /// Reports partial failures from patch application
 fn report_partial_failures(failed_hunks: &[String]) {
     if !failed_hunks.is_empty() {
@@ -381,55 +192,122 @@ fn report_partial_failures(failed_hunks: &[String]) {
     }
 }
 
-/// Applies any diff (single or multi-file) using mpatch for fuzzy matching
-pub async fn apply_diff(
+pub(crate) fn diff_target_paths(base_path: &Path, diff: &str) -> Result<Vec<PathBuf>, ErrorData> {
+    diff_target_paths_for_kind(base_path, diff, base_path.is_file())
+}
+
+pub(crate) fn diff_target_paths_bounded(
+    base_path: &EditorPath,
+    diff: &str,
+) -> Result<Vec<PathBuf>, ErrorData> {
+    diff_target_paths_for_kind(base_path, diff, base_path.is_file())
+}
+
+fn diff_target_paths_for_kind(
     base_path: &Path,
+    diff: &str,
+    is_file: bool,
+) -> Result<Vec<PathBuf>, ErrorData> {
+    validate_diff_size(diff)?;
+    let patches = parse_diff_content(diff)?;
+    if patches.len() > MAX_FILES_IN_DIFF {
+        return Err(file_error("Too many files in diff"));
+    }
+    let base_dir = if is_file {
+        base_path.parent().unwrap_or(Path::new("."))
+    } else {
+        base_path
+    };
+    patches
+        .iter()
+        .map(|patch| {
+            if patch.file_path.components().any(|part| {
+                matches!(
+                    part,
+                    std::path::Component::ParentDir
+                        | std::path::Component::RootDir
+                        | std::path::Component::Prefix(_)
+                )
+            }) {
+                return Err(file_error(
+                    "Patch paths must be relative without '..' components",
+                ));
+            }
+            let target =
+                adjust_base_dir_for_overlap(base_dir, &patch.file_path).join(&patch.file_path);
+            if !target.starts_with(base_dir) {
+                return Err(file_error("Patch target is outside the selected directory"));
+            }
+            Ok(target)
+        })
+        .collect()
+}
+
+pub(crate) async fn apply_diff_bounded(
+    base_path: &EditorPath,
     diff_content: &str,
     file_history: &FileHistory,
 ) -> Result<Vec<Content>, ErrorData> {
-    validate_diff_size(diff_content)?;
+    let targets = diff_target_paths_bounded(base_path, diff_content)?;
     let patches = parse_diff_content(diff_content)?;
-
-    if patches.len() > MAX_FILES_IN_DIFF {
-        return Err(ErrorData::new(
-            ErrorCode::INVALID_PARAMS,
-            format!(
-                "Too many files in diff ({}). Maximum is {} files.",
-                patches.len(),
-                MAX_FILES_IN_DIFF
-            ),
-            None,
-        ));
-    }
-
-    let base_dir = if base_path.is_file() {
-        base_path.parent().unwrap_or(Path::new(".")).to_path_buf()
-    } else {
-        base_path.to_path_buf()
-    };
-
+    // Bind and policy-check every child, and prepare all content, before any
+    // filesystem mutation. The third-party patch engine never receives a path.
+    let bound: Vec<_> = targets
+        .iter()
+        .map(|target| base_path.access.bind(target, AccessMode::Write))
+        .collect::<Result<_, _>>()?;
+    let mut prepared = Vec::new();
+    let mut staged = std::collections::HashMap::new();
     let mut results = DiffResults::default();
     let mut failed_hunks = Vec::new();
-
-    for patch in &patches {
-        apply_single_patch(
-            patch,
-            &base_dir,
-            file_history,
-            &mut results,
-            &mut failed_hunks,
-        )?;
+    for (patch, target) in patches.iter().zip(&bound) {
+        let key = target.bound.absolute_path();
+        let original = if let Some(content) = staged.get(&key) {
+            Some(String::clone(content))
+        } else {
+            match target.read_to_string() {
+                Ok(content) => Some(content),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+                Err(error) => return Err(file_error(error)),
+            }
+        };
+        let (updated, complete) = apply_content(patch, original.as_deref()).ok_or_else(|| {
+            file_error(format!(
+                "File '{}' not found and patch doesn't create it",
+                target.display()
+            ))
+        })?;
+        let mut updated = normalize_line_endings_like(original.as_deref(), &updated);
+        ensure_trailing_newline(&mut updated, original.as_deref());
+        if !complete {
+            failed_hunks.push(format!(
+                "Failed to apply some hunks to '{}' ({} hunks total)",
+                target.display(),
+                patch.hunks.len()
+            ));
+        }
+        if original.is_some() {
+            results.files_modified += 1;
+        } else {
+            results.files_created += 1;
+        }
+        staged.insert(key, updated.clone());
+        prepared.push((target, original, updated));
     }
-
-    ensure_trailing_newlines(&patches, &base_dir)?;
+    for (target, original, updated) in prepared {
+        target.write(&updated).map_err(file_error)?;
+        if let Some(original) = original {
+            file_history.record(
+                &target.bound.try_history_key().map_err(file_error)?,
+                original,
+            );
+        }
+    }
     report_partial_failures(&failed_hunks);
-
-    let (lines_added, lines_removed) = count_line_changes(diff_content);
-    results.lines_added = lines_added;
-    results.lines_removed = lines_removed;
-
-    let is_single_file = patches.len() == 1;
-    Ok(generate_summary(&results, is_single_file, base_path))
+    let (added, removed) = count_line_changes(diff_content);
+    results.lines_added = added;
+    results.lines_removed = removed;
+    Ok(generate_summary(&results, patches.len() == 1, base_path))
 }
 
 // Helper method to validate and calculate view range indices
@@ -575,46 +453,23 @@ pub fn recommend_read_range(path: &Path, total_lines: usize) -> Result<Vec<Conte
 }
 
 /// Lists the contents of a directory with a maximum number of items
-fn list_directory_contents(path: &Path) -> Result<Vec<Content>, ErrorData> {
+fn list_directory_contents(path: &EditorPath) -> Result<Vec<Content>, ErrorData> {
     const MAX_ITEMS: usize = 50; // Maximum number of items to display
 
     // List files in the directory (similar to ls output)
-    let entries = std::fs::read_dir(path).map_err(|e| {
-        ErrorData::new(
-            ErrorCode::INTERNAL_ERROR,
-            format!("Failed to read directory: {}", e),
-            None,
-        )
-    })?;
+    let entries = path.bound.list().map_err(file_error)?;
 
     let mut files = Vec::new();
     let mut dirs = Vec::new();
     let mut total_count = 0;
 
     for entry in entries {
-        let entry = entry.map_err(|e| {
-            ErrorData::new(
-                ErrorCode::INTERNAL_ERROR,
-                format!("Failed to read directory entry: {}", e),
-                None,
-            )
-        })?;
-
         total_count += 1;
 
         // Only process up to MAX_ITEMS entries
         if dirs.len() + files.len() < MAX_ITEMS {
-            let metadata = entry.metadata().map_err(|e| {
-                ErrorData::new(
-                    ErrorCode::INTERNAL_ERROR,
-                    format!("Failed to read metadata: {}", e),
-                    None,
-                )
-            })?;
-
-            let name = entry.file_name().to_string_lossy().to_string();
-
-            if metadata.is_dir() {
+            let name = entry.name.to_string_lossy().to_string();
+            if entry.is_dir {
                 dirs.push(format!("{}/", name));
             } else {
                 files.push(name);
@@ -659,8 +514,8 @@ fn list_directory_contents(path: &Path) -> Result<Vec<Content>, ErrorData> {
     Ok(vec![Content::text(output)])
 }
 
-pub async fn text_editor_view(
-    path: &PathBuf,
+pub(crate) async fn text_editor_view_bounded(
+    path: &EditorPath,
     view_range: Option<(usize, i64)>,
 ) -> Result<Vec<Content>, ErrorData> {
     // Check if path is a directory
@@ -681,24 +536,7 @@ pub async fn text_editor_view(
 
     const MAX_FILE_SIZE: u64 = 400 * 1024; // 400KB
 
-    let f = File::open(path).map_err(|e| {
-        ErrorData::new(
-            ErrorCode::INTERNAL_ERROR,
-            format!("Failed to open file: {}", e),
-            None,
-        )
-    })?;
-
-    let file_size = f
-        .metadata()
-        .map_err(|e| {
-            ErrorData::new(
-                ErrorCode::INTERNAL_ERROR,
-                format!("Failed to get file metadata: {}", e),
-                None,
-            )
-        })?
-        .len();
+    let file_size = path.bound.metadata().map_err(file_error)?.len();
 
     if file_size > MAX_FILE_SIZE {
         return Err(ErrorData::new(
@@ -713,9 +551,8 @@ pub async fn text_editor_view(
     }
 
     // Ensure we never read over that limit even if the file is being concurrently mutated
-    let mut f = f.take(MAX_FILE_SIZE);
 
-    let uri = Url::from_file_path(path)
+    let uri = Url::from_file_path(&**path)
         .map_err(|_| {
             ErrorData::new(
                 ErrorCode::INTERNAL_ERROR,
@@ -725,14 +562,10 @@ pub async fn text_editor_view(
         })?
         .to_string();
 
-    let mut content = String::new();
-    f.read_to_string(&mut content).map_err(|e| {
-        ErrorData::new(
-            ErrorCode::INTERNAL_ERROR,
-            format!("Failed to read file: {}", e),
-            None,
-        )
-    })?;
+    let content = path
+        .bound
+        .read_to_string_limited(MAX_FILE_SIZE)
+        .map_err(file_error)?;
 
     let lines: Vec<&str> = content.lines().collect();
     let total_lines = lines.len();
@@ -762,18 +595,21 @@ pub async fn text_editor_view(
     ])
 }
 
-pub async fn text_editor_write(path: &PathBuf, file_text: &str) -> Result<Vec<Content>, ErrorData> {
+pub(crate) async fn text_editor_write_bounded(
+    path: &EditorPath,
+    file_text: &str,
+) -> Result<Vec<Content>, ErrorData> {
     // Overwriting an existing file keeps that file's line endings; only a file
     // being created takes the host convention. Without this, every write from
     // Windows rewrote an LF file to CRLF end to end -- a whole-file diff for a
     // one-line change, and a `view` whose output no longer matched the next
     // `old_str` the model sent back.
-    let existing = std::fs::read_to_string(path).ok();
+    let existing = path.read_to_string().ok();
     let mut normalized_text = normalize_line_endings_like(existing.as_deref(), file_text);
-    ensure_trailing_newline(&mut normalized_text);
+    ensure_trailing_newline(&mut normalized_text, existing.as_deref());
 
     // Write to the file
-    std::fs::write(path, &normalized_text) // Write the potentially modified text
+    path.write(&normalized_text) // Write the potentially modified text
         .map_err(|e| {
             ErrorData::new(
                 ErrorCode::INTERNAL_ERROR,
@@ -807,8 +643,8 @@ pub async fn text_editor_write(path: &PathBuf, file_text: &str) -> Result<Vec<Co
 }
 
 #[allow(clippy::too_many_lines)]
-pub async fn text_editor_replace(
-    path: &PathBuf,
+pub(crate) async fn text_editor_replace_bounded(
+    path: &EditorPath,
     old_str: &str,
     new_str: &str,
     diff: Option<&str>,
@@ -826,7 +662,7 @@ pub async fn text_editor_replace(
             ));
         }
 
-        return apply_diff(path, diff_content, file_history).await;
+        return apply_diff_bounded(path, diff_content, file_history).await;
     }
     // Check if file exists and is active
     if !path.exists() {
@@ -841,7 +677,7 @@ pub async fn text_editor_replace(
     }
 
     // Read content
-    let content = std::fs::read_to_string(path).map_err(|e| {
+    let content = path.read_to_string().map_err(|e| {
         ErrorData::new(
             ErrorCode::INTERNAL_ERROR,
             format!("Failed to read file: {}", e),
@@ -851,18 +687,15 @@ pub async fn text_editor_replace(
 
     // Check if Editor API is configured and use it as the primary path
     if let Some(ref editor) = editor_model {
-        // Editor API path - save history then call API directly
-        save_file_history(path, file_history)?;
-
         match editor.edit_code(&content, old_str, new_str).await {
             Ok(updated_content) => {
                 // Write the updated content directly
                 let mut normalized_content =
                     normalize_line_endings_like(Some(&content), &updated_content);
 
-                ensure_trailing_newline(&mut normalized_content);
+                ensure_trailing_newline(&mut normalized_content, Some(&content));
 
-                std::fs::write(path, &normalized_content).map_err(|e| {
+                path.write(&normalized_content).map_err(|e| {
                     ErrorData::new(
                         ErrorCode::INTERNAL_ERROR,
                         format!("Failed to write file: {}", e),
@@ -870,6 +703,10 @@ pub async fn text_editor_replace(
                     )
                 })?;
 
+                file_history.record(
+                    &path.bound.try_history_key().map_err(file_error)?,
+                    content.clone(),
+                );
                 // Simple success message for Editor API
                 return Ok(vec![
                     Content::text(format!("Successfully edited {}", path.display()))
@@ -903,17 +740,14 @@ pub async fn text_editor_replace(
         return Err(ErrorData::new(ErrorCode::INVALID_PARAMS, "'old_str' must appear exactly once in the file, but it does not appear in the file. Make sure the string exactly matches existing file content, including whitespace!".to_string(), None));
     }
 
-    // Save history for undo (original behavior - after validation)
-    save_file_history(path, file_history)?;
-
     let new_content = content.replace(old_str, new_str);
     // The file's own line endings win over the host's -- see
     // `normalize_line_endings_like`.
     let mut normalized_content = normalize_line_endings_like(Some(&content), &new_content);
 
-    ensure_trailing_newline(&mut normalized_content);
+    ensure_trailing_newline(&mut normalized_content, Some(&content));
 
-    std::fs::write(path, &normalized_content).map_err(|e| {
+    path.write(&normalized_content).map_err(|e| {
         ErrorData::new(
             ErrorCode::INTERNAL_ERROR,
             format!("Failed to write file: {}", e),
@@ -921,6 +755,10 @@ pub async fn text_editor_replace(
         )
     })?;
 
+    file_history.record(
+        &path.bound.try_history_key().map_err(file_error)?,
+        content.clone(),
+    );
     // Try to detect the language from the file extension
     let language = lang::get_language_identifier(path);
 
@@ -975,8 +813,8 @@ pub async fn text_editor_replace(
     ])
 }
 
-pub async fn text_editor_insert(
-    path: &PathBuf,
+pub(crate) async fn text_editor_insert_bounded(
+    path: &EditorPath,
     insert_line_spec: i64,
     new_str: &str,
     file_history: &FileHistory,
@@ -994,16 +832,13 @@ pub async fn text_editor_insert(
     }
 
     // Read content
-    let content = std::fs::read_to_string(path).map_err(|e| {
+    let content = path.read_to_string().map_err(|e| {
         ErrorData::new(
             ErrorCode::INTERNAL_ERROR,
             format!("Failed to read file: {}", e),
             None,
         )
     })?;
-
-    // Save history for undo
-    save_file_history(path, file_history)?;
 
     let lines: Vec<&str> = content.lines().collect();
     let total_lines = lines.len();
@@ -1043,9 +878,9 @@ pub async fn text_editor_insert(
 
     let new_content = new_lines.join("\n");
     let mut final_content = normalize_line_endings_like(Some(&content), &new_content);
-    ensure_trailing_newline(&mut final_content);
+    ensure_trailing_newline(&mut final_content, Some(&content));
 
-    std::fs::write(path, &final_content).map_err(|e| {
+    path.write(&final_content).map_err(|e| {
         ErrorData::new(
             ErrorCode::INTERNAL_ERROR,
             format!("Failed to write file: {}", e),
@@ -1053,6 +888,10 @@ pub async fn text_editor_insert(
         )
     })?;
 
+    file_history.record(
+        &path.bound.try_history_key().map_err(file_error)?,
+        content.clone(),
+    );
     // Try to detect the language from the file extension
     let language = lang::get_language_identifier(path);
 
@@ -1100,19 +939,18 @@ pub async fn text_editor_insert(
     ])
 }
 
-pub async fn text_editor_undo(
-    path: &PathBuf,
+pub(crate) async fn text_editor_undo_bounded(
+    path: &EditorPath,
     file_history: &FileHistory,
 ) -> Result<Vec<Content>, ErrorData> {
-    if let Some(previous_content) = file_history.pop(path) {
-        // Write previous content back to file
-        std::fs::write(path, previous_content).map_err(|e| {
-            ErrorData::new(
-                ErrorCode::INTERNAL_ERROR,
-                format!("Failed to write file: {}", e),
-                None,
-            )
-        })?;
+    if file_history
+        .restore_with(
+            &path.bound.try_history_key().map_err(file_error)?,
+            || path.read_to_string(),
+            |previous_content| path.write(previous_content),
+        )
+        .map_err(file_error)?
+    {
         Ok(vec![Content::text("Undid the last edit")])
     } else {
         Err(ErrorData::new(
@@ -1123,14 +961,57 @@ pub async fn text_editor_undo(
     }
 }
 
-pub fn save_file_history(path: &Path, file_history: &FileHistory) -> Result<(), ErrorData> {
-    file_history.snapshot(path).map_err(|e| {
+#[cfg(test)]
+pub(crate) fn save_file_history(
+    path: &EditorPath,
+    file_history: &FileHistory,
+) -> Result<(), ErrorData> {
+    file_history.snapshot_bounded(&path.bound).map_err(|e| {
         ErrorData::new(
             ErrorCode::INTERNAL_ERROR,
             format!("Failed to read file: {}", e),
             None,
         )
     })
+}
+
+#[cfg(test)]
+pub async fn apply_diff(
+    path: &Path,
+    diff: &str,
+    history: &FileHistory,
+) -> Result<Vec<Content>, ErrorData> {
+    apply_diff_bounded(&crate::file_access::test_editor_path(path), diff, history).await
+}
+#[cfg(test)]
+pub async fn text_editor_write(path: &Path, text: &str) -> Result<Vec<Content>, ErrorData> {
+    text_editor_write_bounded(&crate::file_access::test_editor_path(path), text).await
+}
+#[cfg(test)]
+pub async fn text_editor_replace(
+    path: &Path,
+    old: &str,
+    new: &str,
+    diff: Option<&str>,
+    editor: &Option<EditorModel>,
+    history: &FileHistory,
+) -> Result<Vec<Content>, ErrorData> {
+    text_editor_replace_bounded(
+        &crate::file_access::test_editor_path(path),
+        old,
+        new,
+        diff,
+        editor,
+        history,
+    )
+    .await
+}
+#[cfg(test)]
+pub async fn text_editor_undo(
+    path: &Path,
+    history: &FileHistory,
+) -> Result<Vec<Content>, ErrorData> {
+    text_editor_undo_bounded(&crate::file_access::test_editor_path(path), history).await
 }
 
 #[cfg(test)]

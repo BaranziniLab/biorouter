@@ -1,0 +1,49 @@
+{
+  "case": {
+    "case_id": "A-C07",
+    "family": "A",
+    "case_type": "control",
+    "operation": "http_control",
+    "expected_protected_effect": "Expected read is available",
+    "parameters": {
+      "path": "/apps",
+      "credential": "correct"
+    }
+  },
+  "calls": [
+    {
+      "request": {
+        "method": "GET",
+        "path": "/apps",
+        "headers": {
+          "X-Secret-Key": "<SYNTHETIC_API_SECRET>"
+        },
+        "body_bytes": 0,
+        "body_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "status": 200,
+      "headers": [
+        [
+          "content-type",
+          "application/json"
+        ],
+        [
+          "vary",
+          "origin, access-control-request-method, access-control-request-headers"
+        ],
+        [
+          "transfer-encoding",
+          "chunked"
+        ],
+        [
+          "date",
+          "Fri, 23 Oct 2026 01:56:42 GMT"
+        ]
+      ],
+      "body": "[]",
+      "response_truncated": false,
+      "duration_ms": 3.769
+    }
+  ],
+  "observed": "Read response status"
+}

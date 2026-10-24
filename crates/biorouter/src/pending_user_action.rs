@@ -102,6 +102,27 @@ pub struct ToolApprovalRequest {
     pub requires_user_proof: bool,
 }
 
+#[derive(Debug, Clone)]
+pub struct FolderAccessRequest {
+    pub action_id: String,
+    pub tool_name: String,
+    pub folder: String,
+    pub access: String,
+    pub once_descendants: bool,
+    pub files: Vec<String>,
+}
+
+impl FolderAccessRequest {
+    pub fn prompt(&self) -> String {
+        format!(
+            "External folder access\nAllow {} access to {} for {}? {} A session grant includes descendants. Revoking the grant or deleting this chat ends it.\nFiles:\n{}",
+            self.access, self.folder, self.tool_name,
+            if self.once_descendants { "Allow once includes read-only analysis of this folder and its descendants for this operation." } else { "Allow once covers only the listed files in this operation." },
+            self.files.join("\n")
+        )
+    }
+}
+
 /// An ordinary MCP elicitation: free-form data described by a JSON schema.
 #[derive(Debug, Clone)]
 pub struct ElicitationRequest {
@@ -128,16 +149,26 @@ pub struct SecretsRequest {
 #[derive(Debug, Clone)]
 pub enum UserActionRequest {
     ToolApproval(ToolApprovalRequest),
+    FolderAccess(FolderAccessRequest),
     Elicitation(ElicitationRequest),
     Secrets(SecretsRequest),
 }
 
 impl UserActionRequest {
+    fn requires_user_proof(&self) -> bool {
+        match self {
+            Self::FolderAccess(_) => true,
+            Self::ToolApproval(request) => request.requires_user_proof,
+            Self::Elicitation(_) | Self::Secrets(_) => false,
+        }
+    }
+
     /// A short label for logs and refusal text. Never includes arguments, a
     /// schema, or anything from a secrets request beyond its key names.
     pub fn describe(&self) -> String {
         match self {
             Self::ToolApproval(r) => format!("approval for `{}`", r.tool_name),
+            Self::FolderAccess(_) => "external folder access".to_string(),
             Self::Elicitation(_) => "input".to_string(),
             Self::Secrets(r) => format!("{} credential(s)", r.keys.len()),
         }
@@ -162,7 +193,7 @@ impl UserActionRequest {
                     | UserActionOutcome::TimedOut
                     | UserActionOutcome::Failed { .. }
             ) | (
-                Self::ToolApproval(_),
+                Self::ToolApproval(_) | Self::FolderAccess(_),
                 UserActionOutcome::Approved { .. } | UserActionOutcome::Denied { .. }
             ) | (Self::Elicitation(_), UserActionOutcome::Provided { .. })
                 | (
@@ -257,7 +288,7 @@ pub enum ResolveOutcome {
 /// write, which would make that property unenforceable. A foreign crate must go
 /// through a named constructor here, the same shape `UserKbTierChange` uses.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct DecisionAuthority(Authority);
+pub struct DecisionAuthority(Authority, Option<Uuid>);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Authority {
@@ -266,6 +297,7 @@ enum Authority {
     /// A person answered at a surface this process owns and a model cannot
     /// author — the terminal prompt, the TUI modal.
     LocalHuman,
+    FolderAccess,
     /// Everything else, and the default reading of an unknown door: page
     /// JavaScript an agent wrote, an agent deciding for an agent, a transport
     /// with no proof channel at all.
@@ -273,21 +305,30 @@ enum Authority {
 }
 
 impl DecisionAuthority {
+    /// Mint only after the folder-scoped browser approval key was verified.
+    /// This authority cannot approve any other protected request kind.
+    pub fn from_folder_access_proof() -> Self {
+        Self(Authority::FolderAccess, None)
+    }
+    pub fn from_native_folder_access_proof(client: &crate::native_client::NativeClient) -> Self {
+        Self(Authority::FolderAccess, Some(client.id()))
+    }
+
     /// Mint ONLY after `auth::user_action_proof` returned `Proven` for the
     /// request being answered.
     pub fn from_user_action_proof() -> Self {
-        Self(Authority::Proven)
+        Self(Authority::Proven, None)
     }
 
     /// A person acted at a surface this process owns.
     pub fn from_local_human_surface() -> Self {
-        Self(Authority::LocalHuman)
+        Self(Authority::LocalHuman, None)
     }
 
     /// No preconditions. The honest answer for every door that cannot tell a
     /// person from a model.
     pub fn unproven() -> Self {
-        Self(Authority::Unproven)
+        Self(Authority::Unproven, None)
     }
 
     /// Stand in for a proven surface, in a test that is exercising something
@@ -300,11 +341,13 @@ impl DecisionAuthority {
     /// constructors instead, and the tests in this module do.
     #[cfg(test)]
     pub(crate) fn for_test_proven() -> Self {
-        Self(Authority::Proven)
+        Self(Authority::Proven, None)
     }
 
-    fn may_grant_proof_backed(self) -> bool {
+    fn may_grant_proof_backed(self, request: &UserActionRequest) -> bool {
         matches!(self.0, Authority::Proven | Authority::LocalHuman)
+            || (self.0 == Authority::FolderAccess
+                && matches!(request, UserActionRequest::FolderAccess(_)))
     }
 }
 
@@ -313,6 +356,7 @@ struct Entry {
     owner: Option<String>,
     request: UserActionRequest,
     tx: Option<oneshot::Sender<UserActionOutcome>>,
+    native_client: Option<crate::native_client::NativeClient>,
     /// Other sessions this same card was published into, and from which a
     /// decision is therefore accepted (D10).
     ///
@@ -465,6 +509,11 @@ impl PendingUserActions {
                 owner: owner.map(str::to_string),
                 request: request.clone(),
                 tx: Some(tx),
+                native_client: if matches!(request, UserActionRequest::FolderAccess(_)) {
+                    crate::native_client::current()
+                } else {
+                    None
+                },
                 escalated_to: Vec::new(),
             },
         );
@@ -580,13 +629,24 @@ impl PendingUserActions {
         // the desktop, and one that also caught denials would strand every
         // Reject and every socket close for the full time-to-live.
         if outcome.is_allowed()
-            && !authority.may_grant_proof_backed()
-            && matches!(
-                &entry.request,
-                UserActionRequest::ToolApproval(r) if r.requires_user_proof
-            )
+            && !authority.may_grant_proof_backed(&entry.request)
+            && entry.request.requires_user_proof()
         {
             return ResolveOutcome::Unproven;
+        }
+        if outcome.is_allowed() && matches!(entry.request, UserActionRequest::FolderAccess(_)) {
+            let expected = entry
+                .native_client
+                .as_ref()
+                .map(crate::native_client::NativeClient::id);
+            if expected != authority.1
+                || entry
+                    .native_client
+                    .as_ref()
+                    .is_some_and(|client| !client.is_live())
+            {
+                return ResolveOutcome::Unproven;
+            }
         }
         let Some(tx) = entry.tx.take() else {
             return ResolveOutcome::Unknown;
@@ -660,11 +720,7 @@ impl PendingUserActions {
     /// action. A foreign session learns nothing and cannot satisfy the check.
     pub fn requires_user_proof_in_session(&self, session_id: &str, id: &str) -> bool {
         self.lock().get(id).is_some_and(|entry| {
-            entry.answerable_in(session_id)
-                && matches!(
-                    &entry.request,
-                    UserActionRequest::ToolApproval(request) if request.requires_user_proof
-                )
+            entry.answerable_in(session_id) && entry.request.requires_user_proof()
         })
     }
 
@@ -868,9 +924,8 @@ impl PendingUserAction {
 
 impl Drop for PendingUserAction {
     fn drop(&mut self) {
-        if self.rx.is_some() {
-            self.registry.forget(&self.id);
-        }
+        // wait() moves the receiver before polling; cancellation must still remove its entry.
+        self.registry.forget(&self.id);
     }
 }
 
@@ -882,6 +937,22 @@ impl Drop for PendingUserAction {
 /// one.
 fn request_message(id: &str, request: &UserActionRequest) -> Message {
     let content = match request {
+        UserActionRequest::FolderAccess(r) => MessageContent::action_required_with_context(
+            id,
+            "filesystem__folder_access".to_string(),
+            serde_json::json!({"folder": r.folder, "access": r.access, "files": r.files, "actionId": r.action_id})
+                .as_object().cloned().unwrap_or_default(),
+            Some(r.prompt()),
+            None,
+            Some(ToolPreview::FolderAccess {
+                folder: r.folder.clone(),
+                access: r.access.clone(),
+                files: r.files.clone(),
+                descendants: true,
+                once_descendants: r.once_descendants,
+                action_id: r.action_id.clone(),
+            }),
+        ),
         UserActionRequest::ToolApproval(r) => MessageContent::action_required_with_context(
             id,
             r.tool_name.clone(),
@@ -1486,6 +1557,42 @@ mod no_human_surface_tests {
 mod decision_authority_tests {
     use super::*;
 
+    #[tokio::test]
+    async fn folder_scoped_authority_cannot_approve_other_protected_actions() {
+        let registry = Arc::new(PendingUserActions::default());
+        let protected = registry.park(Some("chat"), None, a_proof_backed_approval());
+        assert_eq!(
+            registry.resolve_in_session(
+                "chat",
+                protected.id(),
+                allow(),
+                DecisionAuthority::from_folder_access_proof()
+            ),
+            ResolveOutcome::Unproven
+        );
+        let folder = registry.park(
+            Some("chat"),
+            None,
+            UserActionRequest::FolderAccess(FolderAccessRequest {
+                action_id: "operation".into(),
+                tool_name: "developer__text_editor".into(),
+                folder: "/synthetic/results".into(),
+                access: "read-only".into(),
+                once_descendants: false,
+                files: vec!["/synthetic/results/completed.csv".into()],
+            }),
+        );
+        assert_eq!(
+            registry.resolve_in_session(
+                "chat",
+                folder.id(),
+                allow(),
+                DecisionAuthority::from_folder_access_proof()
+            ),
+            ResolveOutcome::Delivered
+        );
+    }
+
     fn a_proof_backed_approval() -> UserActionRequest {
         UserActionRequest::ToolApproval(ToolApprovalRequest {
             tool_name: "skills__removeSkillPackage".to_string(),
@@ -1743,9 +1850,11 @@ mod decision_authority_tests {
         let proven = concat!("from_user_", "action_proof(");
         let local = concat!("from_local_", "human_surface(");
         let unproven = concat!("Decision", "Authority::unproven(");
+        let folder = concat!("from_folder_", "access_proof(");
 
         let mut proven_files: std::collections::BTreeMap<String, usize> = Default::default();
         let mut local_files: std::collections::BTreeMap<String, usize> = Default::default();
+        let mut folder_files: std::collections::BTreeMap<String, usize> = Default::default();
         let mut app_socket = None;
         let mut scanned = 0usize;
         for entry in walkdir::WalkDir::new(&crates) {
@@ -1759,19 +1868,27 @@ mod decision_authority_tests {
                 .unwrap()
                 .to_string_lossy()
                 .replace('\\', "/");
-            // This file defines all three constructors and exercises them.
-            if rel == "crates/biorouter/src/pending_user_action.rs" {
+            // Integration fixtures supply synthetic human answers; production
+            // constructor locations remain exhaustively checked below.
+            if rel == "crates/biorouter/src/pending_user_action.rs"
+                || rel == "crates/biorouter/tests/folder_access_authorization.rs"
+                || rel == "crates/biorouter/tests/folder_analysis_authorization.rs"
+            {
                 continue;
             }
             let body = std::fs::read_to_string(p).unwrap();
             scanned += 1;
             let p_count = body.matches(proven).count();
             let l_count = body.matches(local).count();
+            let folder_count = body.matches(folder).count();
             if p_count > 0 {
                 proven_files.insert(rel.clone(), p_count);
             }
             if l_count > 0 {
                 local_files.insert(rel.clone(), l_count);
+            }
+            if folder_count > 0 {
+                folder_files.insert(rel.clone(), folder_count);
             }
             if rel == "crates/biorouter-server/src/routes/apps.rs" {
                 app_socket = Some((body.matches(unproven).count(), p_count, l_count));
@@ -1783,6 +1900,11 @@ mod decision_authority_tests {
             proven_files.keys().cloned().collect::<Vec<_>>(),
             vec!["crates/biorouter-server/src/routes/action_required.rs".to_string()],
             "a new door is claiming a user's own proof: {proven_files:?}"
+        );
+        assert_eq!(
+            folder_files.keys().cloned().collect::<Vec<_>>(),
+            vec!["crates/biorouter-server/src/routes/action_required.rs".to_string()],
+            "folder authority must only be minted in the typed approval route"
         );
         assert_eq!(
             local_files.keys().cloned().collect::<Vec<_>>(),

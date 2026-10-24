@@ -16,6 +16,7 @@ pub mod error;
 // SD-12: what this daemon was LAUNCHED with. Lib-only for the same reason
 // `auth` is — it holds a process global, and `routes::agent` is compiled twice.
 pub mod launch;
+pub mod native_client;
 pub mod openapi;
 pub mod routes;
 pub mod state;

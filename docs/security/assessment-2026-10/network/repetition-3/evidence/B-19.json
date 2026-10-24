@@ -1,0 +1,97 @@
+{
+  "case": {
+    "case_id": "B-19",
+    "family": "B",
+    "case_type": "attack",
+    "operation": "app_guess",
+    "expected_protected_effect": "Unknown app IDs disclose no browser content or app existence",
+    "parameters": {}
+  },
+  "calls": [
+    {
+      "request": {
+        "method": "GET",
+        "path": "/apps/brsec-does-not-exist-a/",
+        "headers": {},
+        "body_bytes": 0,
+        "body_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "status": 401,
+      "headers": [
+        [
+          "content-type",
+          "text/html; charset=utf-8"
+        ],
+        [
+          "cache-control",
+          "no-store"
+        ],
+        [
+          "vary",
+          "origin, access-control-request-method, access-control-request-headers"
+        ],
+        [
+          "vary",
+          "accept-encoding"
+        ],
+        [
+          "transfer-encoding",
+          "chunked"
+        ],
+        [
+          "date",
+          "Fri, 23 Oct 2026 01:59:31 GMT"
+        ]
+      ],
+      "body": "<!doctype html><meta charset=utf-8><title>Biorouter app</title><body style=\"font:15px system-ui;margin:3rem auto;max-width:32rem\"><h1 style=\"font-size:1.2rem\">Open this app from Biorouter</h1><p>An app's address works only in the browser Biorouter opened it in, and only until Biorouter restarts. Open the app again from its preview in the chat, from Applications, or with <code>biorouter apps open</code> and the app's name.</p>",
+      "response_truncated": false,
+      "duration_ms": 1.419
+    },
+    {
+      "request": {
+        "method": "GET",
+        "path": "/apps/brsec-does-not-exist-b/",
+        "headers": {},
+        "body_bytes": 0,
+        "body_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "status": 401,
+      "headers": [
+        [
+          "content-type",
+          "text/html; charset=utf-8"
+        ],
+        [
+          "cache-control",
+          "no-store"
+        ],
+        [
+          "vary",
+          "origin, access-control-request-method, access-control-request-headers"
+        ],
+        [
+          "vary",
+          "accept-encoding"
+        ],
+        [
+          "transfer-encoding",
+          "chunked"
+        ],
+        [
+          "date",
+          "Fri, 23 Oct 2026 01:59:31 GMT"
+        ]
+      ],
+      "body": "<!doctype html><meta charset=utf-8><title>Biorouter app</title><body style=\"font:15px system-ui;margin:3rem auto;max-width:32rem\"><h1 style=\"font-size:1.2rem\">Open this app from Biorouter</h1><p>An app's address works only in the browser Biorouter opened it in, and only until Biorouter restarts. Open the app again from its preview in the chat, from Applications, or with <code>biorouter apps open</code> and the app's name.</p>",
+      "response_truncated": false,
+      "duration_ms": 0.298
+    }
+  ],
+  "observed": {
+    "statuses": [
+      401,
+      401
+    ],
+    "limitation": "No existing app fixture; existing-versus-absent enumeration remains unassessed"
+  }
+}

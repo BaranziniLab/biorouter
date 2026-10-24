@@ -3,6 +3,7 @@ import path from 'node:path';
 import os from 'node:os';
 import http from 'node:http';
 import net from 'node:net';
+import WebSocket from 'ws';
 import { execFile } from 'node:child_process';
 import { randomBytes, timingSafeEqual } from 'node:crypto';
 import { biorouterConfigDir } from './utils/biorouterPaths';
@@ -652,6 +653,119 @@ function matches(value: string | string[] | undefined, expected: string): boolea
  * by itself. {@link DaemonProxy.retarget} is how the app reconnects to a new instance, at the
  * same local address, so every window's `BIOROUTER_API_HOST` stays valid (R-1).
  */
+const NATIVE_CLIENT_HEADER = 'x-biorouter-native-client';
+interface NativeClientLifetime {
+  id: string;
+  live: boolean;
+  close(): void;
+  onClose(listener: () => void): () => void;
+}
+const nativeClientLifetimes = new Map<string, Promise<NativeClientLifetime>>();
+
+export function closeNativeClientLifetimes(): void {
+  for (const lifetime of nativeClientLifetimes.values())
+    void lifetime.then(
+      (client) => client.close(),
+      () => {}
+    );
+  nativeClientLifetimes.clear();
+}
+
+async function nativeClientLifetime(
+  runtime: DaemonRuntime,
+  proof: string
+): Promise<NativeClientLifetime> {
+  const key = `${runtime.profile_id}:${runtime.instance_id}`;
+  for (const [previous, lifetime] of nativeClientLifetimes) {
+    if (previous.startsWith(`${runtime.profile_id}:`) && previous !== key) {
+      nativeClientLifetimes.delete(previous);
+      void lifetime.then(
+        (client) => client.close(),
+        () => {}
+      );
+    }
+  }
+  const existing = nativeClientLifetimes.get(key);
+  if (existing) {
+    const client = await existing;
+    if (client.live) return client;
+    if (nativeClientLifetimes.get(key) === existing) nativeClientLifetimes.delete(key);
+    return nativeClientLifetime(runtime, proof);
+  }
+  const pending = (async () => {
+    const agent = await authenticatedAgent(runtime);
+    // ws derives a TCP pool key; retain the identity-verified Unix socket instead.
+    const getName = agent.getName.bind(agent);
+    agent.getName = (options) => getName({ ...options, socketPath: runtime.endpoint.path });
+    return new Promise<NativeClientLifetime>((resolve, reject) => {
+      const socket = new WebSocket('ws://localhost/daemon/native-client', {
+        agent,
+        headers: {
+          'X-Secret-Key': runtime.api_secret,
+          'X-User-Action': proof,
+          'X-Daemon-Instance': runtime.instance_id,
+        },
+        handshakeTimeout: 10000,
+        maxPayload: 256,
+      });
+      const timer = setTimeout(() => fail(), 10000);
+      const fail = () => {
+        clearTimeout(timer);
+        socket.terminate();
+        agent.destroy();
+        reject(
+          new Error(
+            'This background service cannot bind folder approvals to this app. Update and restart the background service, then reconnect. Other clients can keep running.'
+          )
+        );
+      };
+      socket.once('error', fail);
+      socket.once('message', (data) => {
+        const id = data.toString();
+        if (!/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(id)) {
+          fail();
+          return;
+        }
+        clearTimeout(timer);
+        const closedListeners = new Set<() => void>();
+        const client: NativeClientLifetime = {
+          id,
+          live: true,
+          close: () => {
+            client.live = false;
+            socket.terminate();
+            agent.destroy();
+          },
+          onClose: (listener) => {
+            closedListeners.add(listener);
+            if (!client.live) queueMicrotask(listener);
+            return () => closedListeners.delete(listener);
+          },
+        };
+        socket.removeListener('error', fail);
+        socket.once('close', () => {
+          client.live = false;
+          agent.destroy();
+          if (nativeClientLifetimes.get(key) === pending) nativeClientLifetimes.delete(key);
+          for (const listener of closedListeners) listener();
+          closedListeners.clear();
+        });
+        socket.on('error', () => {
+          client.live = false;
+        });
+        resolve(client);
+      });
+    });
+  })();
+  nativeClientLifetimes.set(key, pending);
+  try {
+    return await pending;
+  } catch (error) {
+    if (nativeClientLifetimes.get(key) === pending) nativeClientLifetimes.delete(key);
+    throw error;
+  }
+}
+
 export async function createDaemonProxy(
   runtime: DaemonRuntime,
   desktopSecret: string,
@@ -662,20 +776,31 @@ export async function createDaemonProxy(
   interface Target {
     runtime: DaemonRuntime;
     daemonProof: string | undefined;
+    nativeClient: NativeClientLifetime | undefined;
+    stopNativeWatch?: () => void;
     /** Answered as another instance: it cannot come back, so nothing is asked of it again. */
     replaced: boolean;
     /** Nothing answered on the socket last time; the next answer is reported. */
     gone: boolean;
     agents: Set<http.Agent>;
   }
-  const targetFor = (next: DaemonRuntime, proof: string | undefined): Target => ({
+  const targetFor = (
+    next: DaemonRuntime,
+    proof: string | undefined,
+    nativeClient: NativeClientLifetime | undefined
+  ): Target => ({
     runtime: next,
     daemonProof: proof,
+    nativeClient,
     replaced: false,
     gone: false,
     agents: new Set(),
   });
-  let target = targetFor(runtime, daemonProof);
+  let target = targetFor(
+    runtime,
+    daemonProof,
+    daemonProof ? await nativeClientLifetime(runtime, daemonProof) : undefined
+  );
   let closed = false;
   const listeners = new Set<(event: DaemonConnectionEvent) => void>();
   const emit = (event: DaemonConnectionEvent) => {
@@ -687,6 +812,14 @@ export async function createDaemonProxy(
       }
     }
   };
+  const watchNative = (current: Target) => {
+    current.stopNativeWatch = current.nativeClient?.onClose(() => {
+      if (current !== target || closed || current.replaced || current.gone) return;
+      current.gone = true;
+      emit({ kind: 'lost', reason: 'gone', instanceId: current.runtime.instance_id });
+    });
+  };
+  watchNative(target);
   const sockets = new Set<net.Socket>();
   const workspaceUrl = (request: http.IncomingMessage) => {
     try {
@@ -697,6 +830,7 @@ export async function createDaemonProxy(
     }
   };
   const authorized = (request: http.IncomingMessage, upgrade = false) => {
+    if ((request.url || '').split('?')[0] === '/daemon/native-client') return false;
     if (
       request.socket.remoteAddress !== '127.0.0.1' ||
       (request.headers.origin !== undefined && request.headers.origin !== rendererOrigin)
@@ -723,12 +857,18 @@ export async function createDaemonProxy(
     };
     delete headers.origin;
     delete headers['x-user-action'];
+    delete headers[NATIVE_CLIENT_HEADER];
+    headers[NATIVE_CLIENT_HEADER] = 'unavailable';
     if (
       desktopProof &&
       current.daemonProof &&
       matches(request.headers['x-user-action'], desktopProof)
-    )
+    ) {
       headers['x-user-action'] = current.daemonProof;
+      headers[NATIVE_CLIENT_HEADER] = current.nativeClient?.live
+        ? current.nativeClient.id
+        : 'unavailable';
+    }
     return headers;
   };
   /**
@@ -761,7 +901,7 @@ export async function createDaemonProxy(
       throw new DaemonIdentityChangedError();
     }
     current.agents.add(agent);
-    if (current.gone) {
+    if (current.gone && current.nativeClient?.live !== false) {
       current.gone = false;
       emit({ kind: 'answered', instanceId: current.runtime.instance_id });
     }
@@ -932,6 +1072,8 @@ export async function createDaemonProxy(
     },
     probe: async () => {
       const current = target;
+      if (current.nativeClient && !current.nativeClient.live)
+        return { reason: 'gone', instanceId: current.runtime.instance_id };
       try {
         release(await connect(current), current);
         return undefined;
@@ -949,7 +1091,15 @@ export async function createDaemonProxy(
       await verifyHumanAuthorizedAccess(next, proof);
       if (closed) throw new Error('The daemon proxy is closed.');
       const previous = target;
-      target = targetFor(next, proof);
+      const nativeClient = proof ? await nativeClientLifetime(next, proof) : undefined;
+      if (closed) throw new Error('The daemon proxy is closed.');
+      if (nativeClient && !nativeClient.live)
+        throw new Error(
+          'The app approval connection ended while reconnecting. Try reconnecting again.'
+        );
+      previous.stopNativeWatch?.();
+      target = targetFor(next, proof, nativeClient);
+      watchNative(target);
       previous.daemonProof = undefined;
       for (const agent of previous.agents) agent.destroy();
       previous.agents.clear();
@@ -958,6 +1108,7 @@ export async function createDaemonProxy(
     close: () => {
       if (closed) return;
       closed = true;
+      target.stopNativeWatch?.();
       target.daemonProof = undefined;
       desktopProof = undefined;
       listeners.clear();

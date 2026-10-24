@@ -421,12 +421,150 @@ pub struct ExtensionManager {
     provider: SharedProvider,
     tools_cache: Mutex<Option<Arc<ToolsSnapshot>>>,
     tools_cache_version: AtomicU64,
-    /// The session's working directory, when known. Extensions loaded from a
-    /// session (`Agent::load_extensions_from_session`) set this so the shell
-    /// tool and child-process extensions run in the directory the user selected
-    /// (e.g. via the GUI folder picker) rather than the daemon's process cwd.
-    /// `None` on non-session paths (CLI), which fall back to the process cwd.
-    working_dir: Mutex<Option<PathBuf>>,
+    working_dir: Mutex<WorkspaceBinding>,
+}
+
+struct WorkspaceBinding {
+    directory: PathBuf,
+    filesystem: Option<Arc<biorouter_sandbox::BoundedFs>>,
+}
+
+impl WorkspaceBinding {
+    fn new(directory: PathBuf) -> Self {
+        Self {
+            filesystem: biorouter_sandbox::BoundedFs::open(&directory)
+                .ok()
+                .map(Arc::new),
+            directory,
+        }
+    }
+}
+
+#[cfg(all(test, unix))]
+mod workspace_file_authority_tests {
+    use super::*;
+    use biorouter_sandbox::{bounded_fs::authorized_path, AccessMode};
+
+    async fn admit(
+        manager: &ExtensionManager,
+        session: &str,
+        path: &Path,
+    ) -> Result<Option<crate::folder_access::FileAdmission>> {
+        let config = ExtensionConfig::Builtin {
+            name: "developer".to_string(),
+            description: String::new(),
+            display_name: None,
+            timeout: None,
+            bundled: None,
+            available_tools: vec![],
+        };
+        let call = CallToolRequestParams {
+            name: "text_editor".into(),
+            arguments: Some(
+                serde_json::json!({"command":"write", "path":path, "file_text":"synthetic update"})
+                    .as_object()
+                    .unwrap()
+                    .clone(),
+            ),
+            meta: None,
+            task: None,
+        };
+        crate::user_surface::without_human_surface(manager.admit_file_access(
+            session,
+            "developer__text_editor",
+            "text_editor",
+            &config,
+            &call,
+            &CancellationToken::new(),
+        ))
+        .await
+    }
+
+    #[tokio::test]
+    async fn workspace_replacement_before_first_file_call_requires_external_approval() {
+        let fixture = tempfile::tempdir().unwrap();
+        let directory = fixture.path().canonicalize().unwrap();
+        let workspace = directory.join("workspace");
+        let outside = directory.join("outside");
+        std::fs::create_dir(&workspace).unwrap();
+        std::fs::create_dir(&outside).unwrap();
+        std::fs::write(outside.join("notes.txt"), "synthetic outside content").unwrap();
+        let manager = ExtensionManager::new_without_provider(directory.join("state"));
+        manager.set_working_dir(workspace.clone()).await;
+        std::fs::rename(&workspace, directory.join("original-workspace")).unwrap();
+        std::os::unix::fs::symlink(&outside, &workspace).unwrap();
+        manager.set_working_dir(workspace.clone()).await;
+        let session = uuid::Uuid::new_v4().to_string();
+        let error = admit(&manager, &session, &workspace.join("notes.txt"))
+            .await
+            .err()
+            .expect("a replaced workspace must not confer new implicit file authority");
+        assert_eq!(
+            error
+                .downcast_ref::<ErrorData>()
+                .unwrap()
+                .data
+                .as_ref()
+                .unwrap()["code"],
+            "authorization_required"
+        );
+        assert_eq!(
+            std::fs::read_to_string(outside.join("notes.txt")).unwrap(),
+            "synthetic outside content"
+        );
+        assert!(!crate::pending_user_action::PendingUserActions::global()
+            .has_pending_in_session(&session));
+        crate::folder_access::FolderAccessManager::global().end_session(&session);
+    }
+
+    #[tokio::test]
+    async fn trusted_workspace_change_revokes_the_old_primary_dispatch() {
+        let fixture = tempfile::tempdir().unwrap();
+        let directory = fixture.path().canonicalize().unwrap();
+        let first = directory.join("first");
+        let second = directory.join("second");
+        std::fs::create_dir(&first).unwrap();
+        std::fs::create_dir(&second).unwrap();
+        let manager = ExtensionManager::new_without_provider(directory.join("state"));
+        let session = uuid::Uuid::new_v4().to_string();
+        manager.set_working_dir(first.clone()).await;
+        let first_path = first.join("notes.txt");
+        let first_admission = admit(&manager, &session, &first_path)
+            .await
+            .unwrap()
+            .unwrap();
+        let captured = authorized_path(
+            first_admission.authority.token(),
+            &session,
+            &first_admission.action_id,
+            &first_path,
+            AccessMode::Write,
+        )
+        .unwrap();
+        manager.set_working_dir(second.clone()).await;
+        let second_path = second.join("notes.txt");
+        let second_admission = admit(&manager, &session, &second_path)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(captured.atomic_write(b"must not be written").is_err());
+        authorized_path(
+            second_admission.authority.token(),
+            &session,
+            &second_admission.action_id,
+            &second_path,
+            AccessMode::Write,
+        )
+        .unwrap()
+        .atomic_write(b"synthetic authorized update")
+        .unwrap();
+        assert!(!first_path.exists());
+        assert_eq!(
+            std::fs::read(second_path).unwrap(),
+            b"synthetic authorized update"
+        );
+        crate::folder_access::FolderAccessManager::global().end_session(&session);
+    }
 }
 
 /// A flattened representation of a resource used by the agent to prepare inference
@@ -501,6 +639,37 @@ fn dispatch_meta(
         );
     }
     meta
+}
+
+fn apply_dispatch_admissions(
+    meta: &mut McpMeta,
+    client_config: &ExtensionConfig,
+    computer_permit: Option<&crate::security::computer_use::ComputerUsePermit>,
+    file_admission: Option<&crate::folder_access::FileAdmission>,
+) -> bool {
+    if let Some(permit) = computer_permit {
+        meta.computer_use_generation = Some(permit.generation.clone());
+    }
+    if let Some(admission) = file_admission {
+        meta.file_access_token = Some(admission.authority.token().to_string());
+        meta.file_access_action = Some(admission.action_id.clone());
+    }
+
+    let trusted_file_owner = matches!(client_config, ExtensionConfig::Builtin { name, .. } if name == "developer" || name == "files");
+    meta.post_edit_diagnostics = trusted_file_owner
+        && crate::agents::post_edit_diagnostics::PostEditDiagnosticsConfig::from_config()
+            .is_active();
+    meta.post_edit_diagnostics
+}
+
+async fn register_dispatch_notifications(
+    client: &McpClientBox,
+) -> (
+    Option<String>,
+    tokio::sync::mpsc::Receiver<rmcp::model::ServerNotification>,
+) {
+    let _phase = crate::agents::phase_timing::Phase::start("mcp.register_dispatch");
+    client.register_dispatch().await
 }
 
 /// Run one tool call, and withhold any credential material in what it returns
@@ -611,6 +780,32 @@ async fn call_admitted_tool(
         .await
     } else {
         call_tool_withholding_secrets(client, tool_name, arguments, meta, cancellation_token).await
+    }
+}
+
+fn seal_file_diagnostics(
+    result: &mut rmcp::model::CallToolResult,
+    trusted_owner: bool,
+    session_id: &str,
+    tool_name: &str,
+    arguments: Option<&rmcp::model::JsonObject>,
+) {
+    use crate::agents::post_edit_diagnostics as diagnostics;
+    let Some(meta) = result.meta.as_mut() else {
+        return;
+    };
+    let raw = meta.0.remove(diagnostics::BOUNDED_DIAGNOSTICS_META_KEY);
+    meta.0.remove(diagnostics::DIAGNOSTICS_RECEIPT_META_KEY);
+    if !trusted_owner || result.is_error == Some(true) {
+        return;
+    }
+    if let Some(receipt) = raw.and_then(|raw| {
+        diagnostics::mint_bounded_diagnostics_receipt(session_id, tool_name, arguments, raw)
+    }) {
+        meta.0.insert(
+            diagnostics::DIAGNOSTICS_RECEIPT_META_KEY.into(),
+            Value::String(receipt),
+        );
     }
 }
 
@@ -1198,7 +1393,9 @@ impl ExtensionManager {
             provider,
             tools_cache: Mutex::new(None),
             tools_cache_version: AtomicU64::new(0),
-            working_dir: Mutex::new(None),
+            working_dir: Mutex::new(WorkspaceBinding::new(
+                std::env::current_dir().unwrap_or_default(),
+            )),
             computer_use: Arc::default(),
         }
     }
@@ -1278,22 +1475,22 @@ impl ExtensionManager {
     /// the GUI folder picker — which restarts the agent and reloads extensions —
     /// takes effect for the shell tool and child-process extensions.
     pub async fn set_working_dir(&self, dir: PathBuf) {
-        *self.working_dir.lock().await = Some(dir);
+        let mut binding = self.working_dir.lock().await;
+        if binding.directory != dir {
+            *binding = WorkspaceBinding::new(dir);
+        }
     }
 
     /// Resolve the working directory for an extension.
-    /// Prefers the session working directory (set via `set_working_dir`), and
-    /// falls back to the process cwd when it is not available (e.g. the CLI).
+    /// Uses the session's trusted binding, initially the process directory and
+    /// updated by `set_working_dir` before loading the session's extensions.
     ///
     /// Deliberately **not** existence-checked: a session directory that has been
     /// deleted is still this session's base, and dropping it here would send the
     /// child no base at all — issue #68's jail widening. Existence is decided
     /// once, at the spawn, by [`prepare_child_environment`].
     async fn resolve_working_dir(&self) -> PathBuf {
-        if let Some(dir) = self.working_dir.lock().await.clone() {
-            return dir;
-        }
-        std::env::current_dir().unwrap_or_default()
+        self.working_dir.lock().await.directory.clone()
     }
 
     pub async fn supports_resources(&self) -> bool {
@@ -3246,6 +3443,117 @@ impl ExtensionManager {
             )
             .await?;
 
+        self.authorize_dispatch_boundaries(session_id, &client_name, &ext_class, cap, &tool_call)
+            .await?;
+
+        let file_admission = self
+            .admit_file_access(
+                session_id,
+                &prefixed_name,
+                &tool_name,
+                &client_config,
+                &tool_call,
+                &cancellation_token,
+            )
+            .await?;
+
+        // Issue #56, O5's second trigger. See [`Self::ratchet_for_private_extension`],
+        // where the whole rationale lives; it is a separate function for
+        // `cross_affiliation_denial`'s reason verbatim — the repo's
+        // `clippy::too_many_lines` baseline caps this one — and it is still called
+        // from ABOVE `let fut = async move`, so it fires at admission.
+        if cap.enforced() && ext_class.tier.is_private() {
+            self.ratchet_for_private_extension(session_id, &client_name, &ext_class)
+                .await?;
+        }
+
+        let arguments = tool_call.arguments.clone();
+        // BR-54: on a shared (pooled) client this mints a per-dispatch progress
+        // token and returns a receiver that gets ONLY this dispatch's
+        // notifications; on an unpooled client it is the legacy broadcast
+        // subscription with no token.
+        // H6: there is no client-wide lock to wait on any more, so the former
+        // `mcp.register_dispatch_wait` span is gone. `register_dispatch()` is
+        // still real work (it mints a progress token and installs a routing
+        // entry) and keeps its own span.
+        let (progress_token, notifications_receiver) =
+            register_dispatch_notifications(&client).await;
+        let session_id = session_id.to_string();
+
+        // Issue #56: built HERE, not inside the future below. `register_dispatch()`
+        // already runs on this side of the boundary, so it costs nothing — and it
+        // is what keeps the capability a value that was decided at admission
+        // rather than something re-derived on the far side of the dispatch
+        // semaphore, minutes later, against whatever provider is bound by then.
+        let workspace_child_scope_only =
+            client_name == "workspace" && extension_origin == ExtensionOrigin::AutoInjected;
+        let mut meta = dispatch_meta(
+            &session_id,
+            cap,
+            &client_name,
+            progress_token,
+            workspace_child_scope_only,
+        );
+        let diagnostics_enabled = apply_dispatch_admissions(
+            &mut meta,
+            &client_config,
+            computer_permit.as_ref(),
+            file_admission.as_ref(),
+        );
+
+        let fut = async move {
+            let _file_authority = file_admission;
+            tracing::debug!(
+                "dispatch_tool_call fut: calling client.call_tool tool={} session_id={}",
+                tool_name,
+                session_id
+            );
+            // H6 (fixed): this used to take a client-wide mutex and hold it
+            // across the whole `call_tool` await, so two tool calls on the SAME
+            // extension ran back-to-back — `sum(durations)` instead of
+            // `max(durations)`. `call_tool` takes `&self` and implementations
+            // are internally synchronized, so the guard (and its
+            // `mcp.client_lock_wait` span) is gone and calls now overlap.
+            let _call_phase = crate::agents::phase_timing::Phase::start("mcp.call_tool");
+            // H1: credential material is withheld from what comes back, here,
+            // where every path to a model converges.
+            let mut result = call_admitted_tool(
+                &client,
+                &tool_name,
+                arguments.clone(),
+                meta,
+                cancellation_token,
+                computer_permit,
+            )
+            .await?;
+            seal_file_diagnostics(
+                &mut result,
+                diagnostics_enabled,
+                &session_id,
+                &prefixed_name,
+                arguments.as_ref(),
+            );
+            Ok(result)
+        };
+
+        Ok(ToolCallResult {
+            result: Box::new(fut.boxed()),
+            notification_stream: if computer_use {
+                None
+            } else {
+                Some(Box::new(ReceiverStream::new(notifications_receiver)))
+            },
+        })
+    }
+
+    async fn authorize_dispatch_boundaries(
+        &self,
+        session_id: &str,
+        client_name: &str,
+        ext_class: &crate::privacy::ExtensionClassification,
+        cap: crate::privacy::CallCapability,
+        tool_call: &CallToolRequestParams,
+    ) -> Result<()> {
         // Issue #56 Gate C, beside BR-23's SecretGuard block below for the
         // reason that block's own comment states: this is the single choke
         // point every tool call flows through. FOUR production paths converge
@@ -3280,7 +3588,7 @@ impl ExtensionManager {
         // do not introduce a second, narrower flag for this one.
         if cap.enforced() {
             if let Some(err) =
-                crate::privacy::refusal::privacy_refusal(&client_name, ext_class.tier, cap.tier())
+                crate::privacy::refusal::privacy_refusal(client_name, ext_class.tier, cap.tier())
             {
                 return Err(err.into());
             }
@@ -3292,7 +3600,7 @@ impl ExtensionManager {
         // `clippy::too_many_lines` baseline caps this one, and it is still called
         // from ABOVE `let fut = async move`, so it decides at admission.
         if let Some(err) = self
-            .cross_affiliation_denial(session_id, &client_name, &ext_class, cap)
+            .cross_affiliation_denial(session_id, client_name, ext_class, cap)
             .await
         {
             return Err(err.into());
@@ -3301,87 +3609,111 @@ impl ExtensionManager {
         // BR-23: the central secret-redaction boundary — see
         // [`Self::secret_guard_denial`], which is where the whole rationale
         // lives.
-        if let Some(err) = self.secret_guard_denial(&tool_call).await {
+        if let Some(err) = self.secret_guard_denial(tool_call).await {
             return Err(err.into());
         }
 
-        // Issue #56, O5's second trigger. See [`Self::ratchet_for_private_extension`],
-        // where the whole rationale lives; it is a separate function for
-        // `cross_affiliation_denial`'s reason verbatim — the repo's
-        // `clippy::too_many_lines` baseline caps this one — and it is still called
-        // from ABOVE `let fut = async move`, so it fires at admission.
-        if cap.enforced() && ext_class.tier.is_private() {
-            self.ratchet_for_private_extension(session_id, &client_name, &ext_class)
-                .await?;
+        Ok(())
+    }
+
+    async fn admit_file_access(
+        &self,
+        session_id: &str,
+        prefixed_name: &str,
+        tool_name: &str,
+        config: &ExtensionConfig,
+        call: &CallToolRequestParams,
+        cancel: &CancellationToken,
+    ) -> Result<Option<crate::folder_access::FileAdmission>> {
+        if !matches!(config, ExtensionConfig::Builtin { name, .. } if name == "developer" || name == "files")
+        {
+            return Ok(None);
         }
-
-        let arguments = tool_call.arguments.clone();
-        let client = client.clone();
-        // BR-54: on a shared (pooled) client this mints a per-dispatch progress
-        // token and returns a receiver that gets ONLY this dispatch's
-        // notifications; on an unpooled client it is the legacy broadcast
-        // subscription with no token.
-        // H6: there is no client-wide lock to wait on any more, so the former
-        // `mcp.register_dispatch_wait` span is gone. `register_dispatch()` is
-        // still real work (it mints a progress token and installs a routing
-        // entry) and keeps its own span.
-        let register_call = crate::agents::phase_timing::Phase::start("mcp.register_dispatch");
-        let (progress_token, notifications_receiver) = client.register_dispatch().await;
-        drop(register_call);
-        let session_id = session_id.to_string();
-
-        // Issue #56: built HERE, not inside the future below. `register_dispatch()`
-        // already runs on this side of the boundary, so it costs nothing — and it
-        // is what keeps the capability a value that was decided at admission
-        // rather than something re-derived on the far side of the dispatch
-        // semaphore, minutes later, against whatever provider is bound by then.
-        let workspace_child_scope_only =
-            client_name == "workspace" && extension_origin == ExtensionOrigin::AutoInjected;
-        let mut meta = dispatch_meta(
-            &session_id,
-            cap,
-            &client_name,
-            progress_token,
-            workspace_child_scope_only,
-        );
-        if let Some(permit) = &computer_permit {
-            meta.computer_use_generation = Some(permit.generation.clone());
-        }
-
-        let fut = async move {
-            tracing::debug!(
-                "dispatch_tool_call fut: calling client.call_tool tool={} session_id={}",
-                tool_name,
-                session_id
-            );
-            // H6 (fixed): this used to take a client-wide mutex and hold it
-            // across the whole `call_tool` await, so two tool calls on the SAME
-            // extension ran back-to-back — `sum(durations)` instead of
-            // `max(durations)`. `call_tool` takes `&self` and implementations
-            // are internally synchronized, so the guard (and its
-            // `mcp.client_lock_wait` span) is gone and calls now overlap.
-            let _call_phase = crate::agents::phase_timing::Phase::start("mcp.call_tool");
-            // H1: credential material is withheld from what comes back, here,
-            // where every path to a model converges.
-            call_admitted_tool(
-                &client,
-                &tool_name,
-                arguments,
-                meta,
-                cancellation_token,
-                computer_permit,
-            )
-            .await
+        let (cwd, filesystem) = {
+            let binding = self.working_dir.lock().await;
+            (binding.directory.clone(), binding.filesystem.clone())
         };
-
-        Ok(ToolCallResult {
-            result: Box::new(fut.boxed()),
-            notification_stream: if computer_use {
-                None
-            } else {
-                Some(Box::new(ReceiverStream::new(notifications_receiver)))
-            },
-        })
+        let arguments = serde_json::Value::Object(call.arguments.clone().unwrap_or_default());
+        let Some(plan) = biorouter_mcp::file_access_plan(tool_name, &arguments, &cwd)? else {
+            return Ok(None);
+        };
+        let permissions = crate::config::permission::PermissionManager::instance();
+        for principal in [
+            prefixed_name,
+            tool_name,
+            prefixed_name.split("__").next().unwrap_or(prefixed_name),
+        ] {
+            anyhow::ensure!(
+                permissions.get_user_permission(principal)
+                    != Some(crate::config::permission::PermissionLevel::NeverAllow)
+                    && permissions.get_smart_approve_permission(principal)
+                        != Some(crate::config::permission::PermissionLevel::NeverAllow),
+                "This file operation is forbidden by the user's never-allow preference"
+            );
+        }
+        anyhow::ensure!(
+            crate::managed::ManagedPolicy::load().permission_for(prefixed_name)
+                != Some(crate::managed::ManagedVerdict::Deny),
+            "Blocked by your organization's managed policy."
+        );
+        let mut permission_call = call.clone();
+        permission_call.name = prefixed_name.to_owned().into();
+        let request = crate::conversation::message::ToolRequest {
+            id: String::new(),
+            tool_call: Ok(permission_call),
+            metadata: None,
+            tool_meta: None,
+        };
+        anyhow::ensure!(
+            crate::permission::ToolPermissionStore::load()?.check_permission(&request)
+                != Some(false),
+            "This file operation was explicitly denied"
+        );
+        anyhow::ensure!(
+            !crate::permission::ToolPermissionStore::load()?.denies_file_access(
+                prefixed_name,
+                &plan
+                    .requests
+                    .iter()
+                    .map(|request| request.path.clone())
+                    .collect::<Vec<_>>(),
+                &cwd,
+                Config::global()
+                    .get_param::<bool>("PERMISSION_SCOPED_GRANTS")
+                    .unwrap_or(true),
+            ),
+            "This file operation was denied for a requested directory"
+        );
+        biorouter_mcp::preflight_file_access(&plan, &cwd)?;
+        let filesystem = filesystem.ok_or_else(|| {
+            crate::folder_access::authorization_required(
+                &cwd,
+                biorouter_sandbox::AccessMode::Write,
+                "The workspace was unavailable when this chat was bound. Select an available folder before retrying.",
+            )
+        })?;
+        let manager = crate::folder_access::FolderAccessManager::global();
+        manager.pin_workspace_handle(session_id, &cwd, filesystem);
+        if tool_name == "analyze" {
+            let params: biorouter_mcp::developer::analyze::types::AnalyzeParams =
+                serde_json::from_value(arguments)?;
+            return manager
+                .admit_analysis(
+                    session_id,
+                    prefixed_name,
+                    &cwd,
+                    &plan,
+                    cancel,
+                    params.max_depth,
+                )
+                .await
+                .map(Some);
+        }
+        Ok(Some(
+            manager
+                .admit(session_id, prefixed_name, &cwd, &plan, cancel)
+                .await?,
+        ))
     }
 
     /// Gate C's ratchet: a permitted dispatch into a PRIVATE extension classifies
@@ -9930,5 +10262,75 @@ mod platform_dispatch_error_tests {
             !arm.contains("not found"),
             "a tool that exists must not be reported as missing: {arm}"
         );
+    }
+}
+
+#[cfg(test)]
+mod diagnostic_receipt_tests {
+    use super::*;
+    use crate::agents::post_edit_diagnostics as diagnostics;
+
+    fn result_with_diagnostics() -> rmcp::model::CallToolResult {
+        let mut result = rmcp::model::CallToolResult::success(Vec::new());
+        let mut meta = rmcp::model::Meta::new();
+        meta.0.insert(
+            diagnostics::BOUNDED_DIAGNOSTICS_META_KEY.into(),
+            serde_json::json!([]),
+        );
+        meta.0.insert(
+            diagnostics::DIAGNOSTICS_RECEIPT_META_KEY.into(),
+            Value::String("untrusted-existing-receipt".into()),
+        );
+        result.meta = Some(meta);
+        result
+    }
+
+    #[test]
+    fn untrusted_or_disabled_file_diagnostics_are_removed_without_a_receipt() {
+        let mut result = result_with_diagnostics();
+        seal_file_diagnostics(&mut result, false, "chat", "developer__text_editor", None);
+        let meta = result.meta.unwrap();
+        assert!(!meta
+            .0
+            .contains_key(diagnostics::BOUNDED_DIAGNOSTICS_META_KEY));
+        assert!(!meta
+            .0
+            .contains_key(diagnostics::DIAGNOSTICS_RECEIPT_META_KEY));
+    }
+
+    #[test]
+    fn trusted_clean_diagnostics_get_an_opaque_once_only_receipt() {
+        let arguments = serde_json::json!({"command":"write","path":"/synthetic/source.rs","file_text":"fn synthetic() {}"});
+        let mut result = result_with_diagnostics();
+        seal_file_diagnostics(
+            &mut result,
+            true,
+            "chat",
+            "developer__text_editor",
+            arguments.as_object(),
+        );
+        let meta = result.meta.unwrap();
+        assert!(!meta
+            .0
+            .contains_key(diagnostics::BOUNDED_DIAGNOSTICS_META_KEY));
+        let receipt = meta.0[diagnostics::DIAGNOSTICS_RECEIPT_META_KEY]
+            .as_str()
+            .unwrap();
+        assert_ne!(receipt, "untrusted-existing-receipt");
+        let files = diagnostics::consume_bounded_diagnostics_receipt(
+            "chat",
+            "developer__text_editor",
+            arguments.as_object(),
+            receipt,
+        )
+        .unwrap();
+        assert!(files.is_empty());
+        assert!(diagnostics::consume_bounded_diagnostics_receipt(
+            "chat",
+            "developer__text_editor",
+            arguments.as_object(),
+            receipt
+        )
+        .is_none());
     }
 }

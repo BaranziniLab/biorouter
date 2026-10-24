@@ -1,0 +1,566 @@
+{
+  "schema_version": 1,
+  "prespecified": true,
+  "version": "1.93.4",
+  "source_commit": "f73ebf74c578717a7af64b221e57358a63dda8e3",
+  "release_commit": "b824e2c3e802e243804a150aa7c349fa6ce6a8b6",
+  "limitation": "Protocol-level probes; no browser engine or model. An unknown app is not an existing-app enumeration pair.",
+  "cases": [
+    {
+      "case_id": "A-C01",
+      "family": "A",
+      "case_type": "control",
+      "operation": "http_control",
+      "expected_protected_effect": "Expected read is available",
+      "parameters": {
+        "path": "/status",
+        "credential": "none"
+      }
+    },
+    {
+      "case_id": "A-C02",
+      "family": "A",
+      "case_type": "control",
+      "operation": "http_control",
+      "expected_protected_effect": "Expected read is available",
+      "parameters": {
+        "path": "/config",
+        "credential": "correct"
+      }
+    },
+    {
+      "case_id": "A-C05",
+      "family": "A",
+      "case_type": "control",
+      "operation": "http_control",
+      "expected_protected_effect": "Expected read is available",
+      "parameters": {
+        "path": "/sessions",
+        "credential": "correct"
+      }
+    },
+    {
+      "case_id": "A-C06",
+      "family": "A",
+      "case_type": "control",
+      "operation": "http_control",
+      "expected_protected_effect": "Expected read is available",
+      "parameters": {
+        "path": "/system_info",
+        "credential": "correct"
+      }
+    },
+    {
+      "case_id": "A-C07",
+      "family": "A",
+      "case_type": "control",
+      "operation": "http_control",
+      "expected_protected_effect": "Expected read is available",
+      "parameters": {
+        "path": "/apps",
+        "credential": "correct"
+      }
+    },
+    {
+      "case_id": "A-C03",
+      "family": "A",
+      "case_type": "control",
+      "operation": "config_seed",
+      "expected_protected_effect": "Harmless synthetic configuration write persists",
+      "parameters": {}
+    },
+    {
+      "case_id": "A-C04",
+      "family": "A",
+      "case_type": "control",
+      "operation": "config_verify",
+      "expected_protected_effect": "Authenticated reader observes synthetic baseline",
+      "parameters": {}
+    },
+    {
+      "case_id": "A-01",
+      "family": "A",
+      "case_type": "attack",
+      "operation": "http_denial",
+      "expected_protected_effect": "No unauthorized protected response",
+      "parameters": {
+        "path": "/config",
+        "credential": "none"
+      }
+    },
+    {
+      "case_id": "A-02",
+      "family": "A",
+      "case_type": "attack",
+      "operation": "http_denial",
+      "expected_protected_effect": "No unauthorized protected response",
+      "parameters": {
+        "path": "/config",
+        "credential": "wrong"
+      }
+    },
+    {
+      "case_id": "A-03",
+      "family": "A",
+      "case_type": "attack",
+      "operation": "http_denial",
+      "expected_protected_effect": "No unauthorized protected response",
+      "parameters": {
+        "path": "/config",
+        "credential": "empty"
+      }
+    },
+    {
+      "case_id": "A-04",
+      "family": "A",
+      "case_type": "attack",
+      "operation": "http_denial",
+      "expected_protected_effect": "No unauthorized protected response",
+      "parameters": {
+        "path": "/sessions",
+        "credential": "none"
+      }
+    },
+    {
+      "case_id": "A-05",
+      "family": "A",
+      "case_type": "attack",
+      "operation": "http_denial",
+      "expected_protected_effect": "No unauthorized protected response",
+      "parameters": {
+        "path": "/system_info",
+        "credential": "wrong"
+      }
+    },
+    {
+      "case_id": "A-06",
+      "family": "A",
+      "case_type": "attack",
+      "operation": "http_denial",
+      "expected_protected_effect": "No unauthorized protected response",
+      "parameters": {
+        "path": "/apps",
+        "credential": "none"
+      }
+    },
+    {
+      "case_id": "A-07",
+      "family": "A",
+      "case_type": "attack",
+      "operation": "http_denial",
+      "expected_protected_effect": "No unauthorized protected response",
+      "parameters": {
+        "path": "/config",
+        "credential": "bearer"
+      }
+    },
+    {
+      "case_id": "A-08",
+      "family": "A",
+      "case_type": "attack",
+      "operation": "http_denial",
+      "expected_protected_effect": "No unauthorized protected response",
+      "parameters": {
+        "path": "/config?secret={secret}",
+        "credential": "none"
+      }
+    },
+    {
+      "case_id": "A-09",
+      "family": "A",
+      "case_type": "attack",
+      "operation": "config_attack",
+      "expected_protected_effect": "Synthetic baseline remains unchanged",
+      "parameters": {
+        "credential": "none"
+      }
+    },
+    {
+      "case_id": "A-10",
+      "family": "A",
+      "case_type": "attack",
+      "operation": "config_attack",
+      "expected_protected_effect": "Synthetic baseline remains unchanged",
+      "parameters": {
+        "credential": "wrong"
+      }
+    },
+    {
+      "case_id": "A-11",
+      "family": "A",
+      "case_type": "attack",
+      "operation": "config_attack",
+      "expected_protected_effect": "Synthetic baseline remains unchanged",
+      "parameters": {
+        "credential": "empty"
+      }
+    },
+    {
+      "case_id": "A-12",
+      "family": "A",
+      "case_type": "attack",
+      "operation": "http_denial",
+      "expected_protected_effect": "Unauthenticated tool-call route is rejected",
+      "parameters": {
+        "path": "/agent/call_tool",
+        "credential": "none",
+        "method": "POST",
+        "body": {}
+      }
+    },
+    {
+      "case_id": "A-13",
+      "family": "A",
+      "case_type": "attack",
+      "operation": "route_shape",
+      "expected_protected_effect": "No protected contents via alternate route shape",
+      "parameters": {
+        "path": "/config/"
+      }
+    },
+    {
+      "case_id": "A-14",
+      "family": "A",
+      "case_type": "attack",
+      "operation": "route_shape",
+      "expected_protected_effect": "No protected contents via alternate route shape",
+      "parameters": {
+        "path": "//config"
+      }
+    },
+    {
+      "case_id": "A-15",
+      "family": "A",
+      "case_type": "attack",
+      "operation": "route_shape",
+      "expected_protected_effect": "No protected contents via alternate route shape",
+      "parameters": {
+        "path": "/%63onfig"
+      }
+    },
+    {
+      "case_id": "A-16",
+      "family": "A",
+      "case_type": "attack",
+      "operation": "route_shape",
+      "expected_protected_effect": "No protected contents via alternate route shape",
+      "parameters": {
+        "path": "/ui/workspaceX"
+      }
+    },
+    {
+      "case_id": "A-17",
+      "family": "A",
+      "case_type": "attack",
+      "operation": "route_shape",
+      "expected_protected_effect": "No protected contents via alternate route shape",
+      "parameters": {
+        "path": "/status/config"
+      }
+    },
+    {
+      "case_id": "A-18",
+      "family": "A",
+      "case_type": "attack",
+      "operation": "route_shape",
+      "expected_protected_effect": "No protected contents via alternate route shape",
+      "parameters": {
+        "path": "/tool_bridge/0123456789abcdef0123456789abcdef/extra"
+      }
+    },
+    {
+      "case_id": "A-19",
+      "family": "A",
+      "case_type": "attack",
+      "operation": "oversized",
+      "expected_protected_effect": "Unauthenticated oversized configuration POST changes no state",
+      "parameters": {
+        "payload_bytes": 2098176
+      }
+    },
+    {
+      "case_id": "A-C08",
+      "family": "A",
+      "case_type": "control",
+      "operation": "post_oversized",
+      "expected_protected_effect": "Health and authenticated configuration reads remain available",
+      "parameters": {}
+    },
+    {
+      "case_id": "A-20",
+      "family": "A",
+      "case_type": "attack",
+      "operation": "failed_auth_window",
+      "expected_protected_effect": "Forwarding-header spoofing does not reset failure accounting",
+      "parameters": {
+        "source_address": "127.0.0.77",
+        "requests": 25
+      }
+    },
+    {
+      "case_id": "A-C09",
+      "family": "A",
+      "case_type": "control",
+      "operation": "after_failed_auth",
+      "expected_protected_effect": "Correct credentials remain usable from the same peer",
+      "parameters": {
+        "source_address": "127.0.0.77"
+      }
+    },
+    {
+      "case_id": "B-01",
+      "family": "B",
+      "case_type": "attack",
+      "operation": "ws",
+      "expected_protected_effect": "Workspace socket is not upgraded",
+      "parameters": {
+        "credential": "none",
+        "origin": "none"
+      }
+    },
+    {
+      "case_id": "B-02",
+      "family": "B",
+      "case_type": "attack",
+      "operation": "ws",
+      "expected_protected_effect": "Workspace socket is not upgraded",
+      "parameters": {
+        "credential": "wrong",
+        "origin": "none"
+      }
+    },
+    {
+      "case_id": "B-03",
+      "family": "B",
+      "case_type": "attack",
+      "operation": "ws",
+      "expected_protected_effect": "Workspace socket is not upgraded",
+      "parameters": {
+        "credential": "empty",
+        "origin": "none"
+      }
+    },
+    {
+      "case_id": "B-04",
+      "family": "B",
+      "case_type": "attack",
+      "operation": "ws",
+      "expected_protected_effect": "Workspace socket is not upgraded",
+      "parameters": {
+        "credential": "correct",
+        "origin": "http://evil.test"
+      }
+    },
+    {
+      "case_id": "B-05",
+      "family": "B",
+      "case_type": "attack",
+      "operation": "ws",
+      "expected_protected_effect": "Workspace socket is not upgraded",
+      "parameters": {
+        "credential": "correct",
+        "origin": "null"
+      }
+    },
+    {
+      "case_id": "B-06",
+      "family": "B",
+      "case_type": "attack",
+      "operation": "ws",
+      "expected_protected_effect": "Workspace socket is not upgraded",
+      "parameters": {
+        "credential": "correct",
+        "origin": "file://"
+      }
+    },
+    {
+      "case_id": "B-07",
+      "family": "B",
+      "case_type": "attack",
+      "operation": "ws",
+      "expected_protected_effect": "Workspace socket is not upgraded",
+      "parameters": {
+        "credential": "correct",
+        "origin": "other_port"
+      }
+    },
+    {
+      "case_id": "B-08",
+      "family": "B",
+      "case_type": "attack",
+      "operation": "ws",
+      "expected_protected_effect": "Workspace socket is not upgraded",
+      "parameters": {
+        "credential": "correct",
+        "origin": "http://127.0.0.1.evil.test"
+      }
+    },
+    {
+      "case_id": "B-09",
+      "family": "B",
+      "case_type": "attack",
+      "operation": "ws",
+      "expected_protected_effect": "Workspace socket is not upgraded",
+      "parameters": {
+        "credential": "correct",
+        "origin": "other_host"
+      }
+    },
+    {
+      "case_id": "B-10",
+      "family": "B",
+      "case_type": "attack",
+      "operation": "ws",
+      "expected_protected_effect": "Forwarded-proto spoofing cannot compensate for a hostile origin",
+      "parameters": {
+        "credential": "correct",
+        "origin": "http://evil.test",
+        "forwarded_proto": "https"
+      }
+    },
+    {
+      "case_id": "B-C01",
+      "family": "B",
+      "case_type": "control",
+      "operation": "ws",
+      "expected_protected_effect": "Same-origin authenticated socket upgrades",
+      "parameters": {
+        "credential": "correct",
+        "origin": "same"
+      }
+    },
+    {
+      "case_id": "B-C02",
+      "family": "B",
+      "case_type": "control",
+      "operation": "ws",
+      "expected_protected_effect": "Authenticated non-browser socket upgrades",
+      "parameters": {
+        "credential": "correct",
+        "origin": "none"
+      }
+    },
+    {
+      "case_id": "B-11",
+      "family": "B",
+      "case_type": "attack",
+      "operation": "unknown_bridge",
+      "expected_protected_effect": "Unknown grant exposes no tools and invokes no tool",
+      "parameters": {
+        "nonce": "0123456789abcdef0123456789abcdef"
+      }
+    },
+    {
+      "case_id": "B-12",
+      "family": "B",
+      "case_type": "attack",
+      "operation": "unknown_bridge",
+      "expected_protected_effect": "Unknown grant exposes no tools and invokes no tool",
+      "parameters": {
+        "nonce": "not-a-nonce"
+      }
+    },
+    {
+      "case_id": "B-U01",
+      "family": "B",
+      "case_type": "control",
+      "operation": "unavailable_bridge",
+      "expected_protected_effect": "Known single-turn grant works and later expires",
+      "parameters": {}
+    },
+    {
+      "case_id": "B-13",
+      "family": "B",
+      "case_type": "attack",
+      "operation": "shell_denial",
+      "expected_protected_effect": "No shell/API secret without a valid browser credential",
+      "parameters": {
+        "token": "none"
+      }
+    },
+    {
+      "case_id": "B-14",
+      "family": "B",
+      "case_type": "attack",
+      "operation": "shell_denial",
+      "expected_protected_effect": "No shell/API secret without a valid browser credential",
+      "parameters": {
+        "token": "wrong"
+      }
+    },
+    {
+      "case_id": "B-C03",
+      "family": "B",
+      "case_type": "control",
+      "operation": "browser_exchange",
+      "expected_protected_effect": "Valid navigation exchanges token for protected cookie",
+      "parameters": {}
+    },
+    {
+      "case_id": "B-C04",
+      "family": "B",
+      "case_type": "control",
+      "operation": "browser_shell",
+      "expected_protected_effect": "Cookie navigation receives usable protected shell",
+      "parameters": {}
+    },
+    {
+      "case_id": "B-15",
+      "family": "B",
+      "case_type": "attack",
+      "operation": "shell_fetch",
+      "expected_protected_effect": "Cookie-bearing script fetch cannot read shell/API secret",
+      "parameters": {}
+    },
+    {
+      "case_id": "B-16",
+      "family": "B",
+      "case_type": "attack",
+      "operation": "shell_frame",
+      "expected_protected_effect": "Cookie-bearing iframe request cannot read shell/API secret",
+      "parameters": {}
+    },
+    {
+      "case_id": "B-17",
+      "family": "B",
+      "case_type": "attack",
+      "operation": "shell_insecure",
+      "expected_protected_effect": "Plain-HTTP nonloopback address does not receive shell",
+      "parameters": {
+        "host": "192.0.2.123:3000"
+      }
+    },
+    {
+      "case_id": "B-18",
+      "family": "B",
+      "case_type": "attack",
+      "operation": "shell_api_cookie",
+      "expected_protected_effect": "Browser cookie alone does not authorize REST API",
+      "parameters": {}
+    },
+    {
+      "case_id": "B-19",
+      "family": "B",
+      "case_type": "attack",
+      "operation": "app_guess",
+      "expected_protected_effect": "Unknown app IDs disclose no browser content or app existence",
+      "parameters": {}
+    },
+    {
+      "case_id": "B-20",
+      "family": "B",
+      "case_type": "attack",
+      "operation": "cors",
+      "expected_protected_effect": "Hostile-origin preflight receives no CORS permission",
+      "parameters": {}
+    },
+    {
+      "case_id": "B-C05",
+      "family": "B",
+      "case_type": "control",
+      "operation": "cors_control",
+      "expected_protected_effect": "Supported local-development origin receives CORS permission",
+      "parameters": {}
+    }
+  ]
+}

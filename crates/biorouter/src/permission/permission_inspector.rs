@@ -5,7 +5,7 @@ use crate::config::{BioRouterMode, Config, PermissionManager};
 use crate::conversation::message::{Message, ToolRequest};
 use crate::managed::{ManagedPolicy, ManagedVerdict};
 use crate::permission::managed_inspector::{MANAGED_ASK_REASON, MANAGED_DENY_REASON};
-use crate::permission::permission_judge::{detect_read_only_tools, PermissionCheckResult};
+use crate::permission::permission_judge::{detect_read_only_requests, PermissionCheckResult};
 use crate::permission::permission_scope::CallFacts;
 use crate::permission::permission_store::ToolPermissionStore;
 use crate::permission::tool_risk::{SmartApproveConfig, ToolRisk, ToolRiskRegistry};
@@ -241,8 +241,8 @@ impl PermissionInspector {
     /// `Approve`. Auto-approves what the tool's own MCP annotations grade as
     /// read-only; confirms everything at or above the configured risk threshold.
     /// A tool the annotations cannot grade fails closed, unless the opt-in LLM
-    /// judge is enabled, in which case it is batched for one classification whose
-    /// verdict is cached as a `smart_approve` permission level.
+    /// judge is enabled, in which case it is batched for one classification that
+    /// applies only to the supplied invocation.
     ///
     /// `risks` is where the grade is read from: the agent's own registry for a
     /// direct call, a Code Execution script's catalogue for a call the script
@@ -256,25 +256,26 @@ impl PermissionInspector {
             );
         }
 
-        // A judge verdict cached on an earlier turn (or in an earlier session).
-        if let Some(level) = self
+        // Legacy judge approvals had tool-wide scope and cannot authorize a new
+        // invocation. Retain restrictive entries; explicit human grants live in
+        // the separate user permission tier above.
+        match self
             .permission_manager
             .get_smart_approve_permission(tool_name)
         {
-            return match level {
-                PermissionLevel::AlwaysAllow => Verdict::Decided(
-                    InspectionAction::Allow,
-                    "Smart approve: previously classified as read-only".to_string(),
-                ),
-                PermissionLevel::NeverAllow => Verdict::Decided(
+            Some(PermissionLevel::NeverAllow) => {
+                return Verdict::Decided(
                     InspectionAction::Deny,
                     "Smart approve denies this tool".to_string(),
-                ),
-                PermissionLevel::AskBefore => Verdict::Decided(
+                );
+            }
+            Some(PermissionLevel::AskBefore) => {
+                return Verdict::Decided(
                     InspectionAction::RequireApproval(None),
                     "Tool requires user approval".to_string(),
-                ),
-            };
+                );
+            }
+            Some(PermissionLevel::AlwaysAllow) | None => {}
         }
 
         let risk = risks.risk_for(tool_name);
@@ -426,11 +427,8 @@ impl PermissionInspector {
         }
     }
 
-    /// Ask the LLM judge which of the un-gradeable tools are read-only, caching
-    /// each positive verdict as a `smart_approve` permission level so a tool is
-    /// judged at most once. Fails closed: `detect_read_only_tools` returns an
-    /// empty list on any provider error, so every candidate then needs approval,
-    /// and nothing is cached (a transient failure must not pin a tool forever).
+    /// Ask which un-gradeable invocations are read-only. Results apply only to
+    /// this inspection and never create remembered tool-wide permissions.
     async fn judge_read_only(&self, candidates: &[&ToolRequest]) -> Vec<String> {
         if candidates.is_empty() {
             return vec![];
@@ -447,12 +445,7 @@ impl PermissionInspector {
             return vec![];
         };
 
-        let read_only = detect_read_only_tools(provider, candidates.to_vec()).await;
-        for tool_name in &read_only {
-            self.permission_manager
-                .update_smart_approve_permission(tool_name, PermissionLevel::AlwaysAllow);
-        }
-        read_only
+        detect_read_only_requests(provider, candidates.to_vec()).await
     }
 
     /// The whole permission decision, with each tool's BR-18 risk grade read out
@@ -521,13 +514,10 @@ impl PermissionInspector {
         if !judge_candidates.is_empty() {
             let read_only = self.judge_read_only(&judge_candidates).await;
             for request in judge_candidates {
-                let Ok(tool_call) = &request.tool_call else {
-                    continue;
-                };
-                let (action, reason) = if read_only.iter().any(|n| n == tool_call.name.as_ref()) {
+                let (action, reason) = if read_only.contains(&request.id) {
                     (
                         InspectionAction::Allow,
-                        "Smart approve: judged read-only".to_string(),
+                        "Smart approve: this invocation was judged read-only".to_string(),
                     )
                 } else {
                     (

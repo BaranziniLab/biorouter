@@ -147,6 +147,7 @@ pub struct BridgeGrant {
     /// privacy capability is fixed before the call runs rather than re-read while
     /// it runs, and a bridged call is a call.
     capability: CallCapability,
+    native_client: Option<crate::native_client::NativeClient>,
     /// The tool set as the model would have seen it — already tier-filtered and
     /// reach-filtered by `filter_tools`, so Gate E is inherited rather than
     /// reimplemented.
@@ -386,6 +387,7 @@ impl BridgeGrant {
             dispatcher,
             inspections,
             capability,
+            native_client: crate::native_client::current(),
             tools,
             conversation,
             cancel,
@@ -456,12 +458,14 @@ impl BridgeGrant {
         // #110: publish the transport's budget for the duration of the call, so
         // a tool that waits can clamp to it instead of running past the child's
         // deadline and losing its partial answer to an abandoned request.
-        let outcome = BRIDGED_CALL_BUDGET
-            .scope(
+        let outcome = crate::native_client::scope(
+            self.native_client.clone(),
+            BRIDGED_CALL_BUDGET.scope(
                 child_tool_call_budget(),
                 self.dispatch_one(request_id.clone(), call),
-            )
-            .await;
+            ),
+        )
+        .await;
         self.discard_staged_hook_context(&request_id);
         outcome
     }

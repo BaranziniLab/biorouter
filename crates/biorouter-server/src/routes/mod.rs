@@ -1023,6 +1023,7 @@ pub mod crew_profile;
 pub mod crew_setup;
 pub mod crew_transfers;
 pub mod errors;
+pub mod folder_access;
 pub mod knowledge;
 pub mod llamacpp;
 pub mod memory;
@@ -1059,6 +1060,7 @@ pub fn configure(state: Arc<crate::state::AppState>, secret_key: String) -> Rout
         .merge(reply::routes(state.clone()))
         .merge(reset::routes(state.clone()))
         .merge(action_required::routes(state.clone()))
+        .merge(folder_access::routes(state.clone()))
         .merge(catalog::routes(state.clone()))
         .merge(session_meta::routes(state.clone()))
         .merge(agent::routes(state.clone()))
@@ -1079,6 +1081,7 @@ pub fn configure(state: Arc<crate::state::AppState>, secret_key: String) -> Rout
         .merge(crew_profile::routes(state.clone()))
         .merge(crew_setup::routes())
         .merge(biorouter_server::daemon_service::routes())
+        .merge(biorouter_server::native_client::routes())
         .merge(llamacpp::routes(state.clone()))
         .merge(ollama::routes(state.clone()))
         .merge(memory::routes(state.clone()))
@@ -1112,4 +1115,7 @@ pub fn configure(state: Arc<crate::state::AppState>, secret_key: String) -> Rout
                 ),
             ),
         )
+        .layer(axum::middleware::from_fn(
+            biorouter_server::native_client::scope_request,
+        ))
 }

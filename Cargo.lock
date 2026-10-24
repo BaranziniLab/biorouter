@@ -1011,6 +1011,7 @@ dependencies = [
  "base64 0.21.7",
  "biorouter-crew",
  "biorouter-mcp",
+ "biorouter-sandbox",
  "blake3",
  "block2",
  "boa_engine",
@@ -1088,6 +1089,7 @@ dependencies = [
  "which 8.0.0",
  "winapi",
  "windows 0.61.3",
+ "windows-sys 0.61.2",
  "wiremock",
  "zeroize",
  "zip 0.6.6",
@@ -1295,6 +1297,7 @@ dependencies = [
  "serial_test",
  "sha2 0.10.9",
  "shellexpand",
+ "similar",
  "sqlx",
  "streaming-iterator",
  "sysinfo 0.32.1",
@@ -1340,6 +1343,8 @@ version = "1.93.4"
 dependencies = [
  "anyhow",
  "async-trait",
+ "cap-fs-ext",
+ "cap-std",
  "landlock",
  "libc",
  "seccompiler",
@@ -1349,6 +1354,8 @@ dependencies = [
  "thiserror 1.0.69",
  "tokio",
  "tracing",
+ "uuid",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -1362,6 +1369,7 @@ dependencies = [
  "biorouter",
  "biorouter-crew",
  "biorouter-mcp",
+ "biorouter-sandbox",
  "bytes",
  "cap-std",
  "chrono",
@@ -1890,6 +1898,18 @@ dependencies = [
  "quick-xml 0.39.4",
  "serde",
  "zip 7.2.0",
+]
+
+[[package]]
+name = "cap-fs-ext"
+version = "3.4.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "476f0d0003a760918ed4b1e039a59e11769030416f79c8222551d22785f7f70d"
+dependencies = [
+ "cap-primitives",
+ "cap-std",
+ "io-lifetimes",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]

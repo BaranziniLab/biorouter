@@ -7513,6 +7513,8 @@ mod system_account_tests {
 #[cfg(test)]
 mod runtime_tests {
     use super::*;
+    use std::os::fd::{FromRawFd, OwnedFd};
+    use std::os::unix::ffi::OsStrExt;
 
     fn short_root() -> PathBuf {
         let suffix: String = Uuid::new_v4()
@@ -7717,6 +7719,42 @@ mod runtime_tests {
         (basename, directory)
     }
 
+    fn refused_stream_socket(path: &Path) -> OwnedFd {
+        let fd = unsafe { libc::socket(libc::AF_UNIX, libc::SOCK_STREAM, 0) };
+        assert!(fd >= 0, "{}", std::io::Error::last_os_error());
+        let socket = unsafe { OwnedFd::from_raw_fd(fd) };
+        let mut address: libc::sockaddr_un = unsafe { std::mem::zeroed() };
+        address.sun_family = libc::AF_UNIX as libc::sa_family_t;
+        let bytes = path.as_os_str().as_bytes();
+        assert!(bytes.len() < address.sun_path.len());
+        for (target, byte) in address.sun_path.iter_mut().zip(bytes) {
+            *target = *byte as libc::c_char;
+        }
+        let length = std::mem::offset_of!(libc::sockaddr_un, sun_path) + bytes.len() + 1;
+        #[cfg(target_vendor = "apple")]
+        {
+            address.sun_len = length as u8;
+        }
+        // Never listen, so duplicated descriptors cannot turn this fixture into a live broker.
+        assert_eq!(
+            unsafe {
+                libc::bind(
+                    socket.as_raw_fd(),
+                    (&address as *const libc::sockaddr_un).cast(),
+                    length as libc::socklen_t,
+                )
+            },
+            0,
+            "{}",
+            std::io::Error::last_os_error()
+        );
+        assert_eq!(
+            UnixStream::connect(path).unwrap_err().kind(),
+            std::io::ErrorKind::ConnectionRefused
+        );
+        socket
+    }
+
     /// L7: the tombstone a deleted workspace's broker leaves is written whole, readable by
     /// every account, never written over, and read only from its host's own runtime directory
     /// as a regular file the host owns with one link, naming exactly that workspace.
@@ -7824,7 +7862,7 @@ mod runtime_tests {
         let workspace = Uuid::new_v4().to_string();
 
         let (basename, directory) = runtime_directory(&root, 'a', 0o711);
-        drop(UnixListener::bind(directory.join("broker.sock")).unwrap());
+        let _stale = refused_stream_socket(&directory.join("broker.sock"));
         retire_runtime(&root, uid, &basename, &workspace);
         assert!(fs::symlink_metadata(directory.join("broker.sock")).is_err());
         assert!(runtime_tombstone_names(&directory, uid, &workspace));
@@ -7832,7 +7870,7 @@ mod runtime_tests {
         assert!(runtime_tombstone_names(&directory, uid, &workspace));
 
         let (basename, directory) = runtime_directory(&root, 'b', 0o711);
-        drop(UnixListener::bind(directory.join("broker.sock")).unwrap());
+        let _stale = refused_stream_socket(&directory.join("broker.sock"));
         retire_runtime(&root, uid, &basename, "");
         assert!(!directory.exists());
 

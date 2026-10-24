@@ -1655,7 +1655,7 @@ async fn spawn_background_subagent(
     let completion_session_manager = config.session_manager.clone();
     let completion_child_session_id = child_session_id.clone();
     let task_handle = handle.clone();
-    tokio::spawn(async move {
+    tokio::spawn(crate::native_client::carry(async move {
         let completion_handle = task_handle.clone();
         let outcome = std::panic::AssertUnwindSafe(async move {
             // Held for the child's whole life, exactly as on the blocking path.
@@ -1711,7 +1711,7 @@ async fn spawn_background_subagent(
             }
         }
         completion_handle.complete(result);
-    });
+    }));
 
     let mut text = background_started_message(
         &handle.id,

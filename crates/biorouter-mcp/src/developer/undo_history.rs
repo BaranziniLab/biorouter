@@ -17,10 +17,14 @@
 //! This is the incremental, `text_editor`-native counterpart to the richer
 //! shadow-git checkpointing in BR-43.
 
+use biorouter_sandbox::bounded_fs::{AccessMode, BoundedFs, BoundedPath};
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Mutex,
+};
 
 use serde::{Deserialize, Serialize};
 
@@ -33,15 +37,38 @@ const MAX_SNAPSHOTS_PER_FILE: usize = 50;
 /// round-trips for UTF-8 paths (every practical case).
 #[derive(Default, Serialize, Deserialize)]
 struct PersistedHistory {
-    files: HashMap<String, Vec<String>>,
+    files: HashMap<String, Vec<Snapshot>>,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+enum Snapshot {
+    Legacy(String),
+    Bound {
+        content: String,
+        #[serde(default)]
+        legacy: bool,
+    },
+}
+impl Snapshot {
+    fn content(&self) -> &str {
+        match self {
+            Self::Legacy(content) | Self::Bound { content, .. } => content,
+        }
+    }
+    fn is_legacy(&self) -> bool {
+        matches!(self, Self::Legacy(_) | Self::Bound { legacy: true, .. })
+    }
 }
 
 /// Per-path LIFO of whole-file snapshots backing `undo_edit`.
 #[derive(Default)]
 pub struct FileHistory {
-    inner: Mutex<HashMap<PathBuf, Vec<String>>>,
+    inner: Mutex<HashMap<PathBuf, Vec<Snapshot>>>,
     /// When set, every mutation is mirrored to this JSON file (best-effort).
-    persist_path: Option<PathBuf>,
+    persist_path: Option<BoundedPath>,
+    persistence_notice: Option<String>,
+    notice_sent: AtomicBool,
 }
 
 impl FileHistory {
@@ -56,34 +83,48 @@ impl FileHistory {
     /// Falls back to in-memory when persistence is disabled or no config
     /// directory can be resolved.
     pub fn persistent(working_dir: &Path) -> Self {
-        match persist_path_for(working_dir) {
-            Some(path) => {
+        let Some(path) = persist_path_for(working_dir) else {
+            return Self::in_memory();
+        };
+        match private_history_path(&path) {
+            Ok(path) => {
                 let inner = load(&path).unwrap_or_default();
-                Self {
-                    inner: Mutex::new(inner),
-                    persist_path: Some(path),
-                }
-            }
-            None => Self::in_memory(),
+                Self { inner: Mutex::new(inner), persist_path: Some(path), persistence_notice: None, notice_sent: AtomicBool::new(false) }
+            },
+            Err(error) => Self {
+                persistence_notice: Some(format!("Undo remains available for this session. Persistent undo is disabled because its storage could not be made private: {error}. Use a user-owned local configuration folder with private access controls to retain undo across restarts.")),
+                ..Self::in_memory()
+            },
         }
+    }
+
+    pub(crate) fn take_persistence_notice(&self) -> Option<String> {
+        self.persistence_notice
+            .as_ref()
+            .filter(|_| !self.notice_sent.swap(true, Ordering::AcqRel))
+            .cloned()
     }
 
     /// Snapshot the current on-disk content of `path` (empty string if it does
     /// not yet exist) onto its undo stack.
+    #[cfg(test)]
     pub fn snapshot(&self, path: &Path) -> std::io::Result<()> {
         let content = if path.exists() {
             std::fs::read_to_string(path)?
         } else {
             String::new()
         };
-        self.push(path, content);
+        self.record(path, content);
         Ok(())
     }
 
-    fn push(&self, path: &Path, content: String) {
+    pub(crate) fn record(&self, path: &Path, content: String) {
         let mut guard = self.inner.lock().unwrap();
         let stack = guard.entry(path.to_path_buf()).or_default();
-        stack.push(content);
+        stack.push(Snapshot::Bound {
+            content,
+            legacy: false,
+        });
         let overflow = stack.len().saturating_sub(MAX_SNAPSHOTS_PER_FILE);
         if overflow > 0 {
             stack.drain(0..overflow);
@@ -92,32 +133,144 @@ impl FileHistory {
     }
 
     /// Pop the most recent snapshot for `path`, if any.
+    #[cfg(test)]
     pub fn pop(&self, path: &Path) -> Option<String> {
         let mut guard = self.inner.lock().unwrap();
         let popped = guard.get_mut(path).and_then(Vec::pop);
         if popped.is_some() {
             self.persist(&guard);
         }
-        popped
+        popped.map(|snapshot| snapshot.content().to_owned())
     }
 
-    fn persist(&self, map: &HashMap<PathBuf, Vec<String>>) {
-        let Some(path) = &self.persist_path else {
-            return;
+    pub(crate) fn snapshot_bounded(
+        &self,
+        path: &biorouter_sandbox::bounded_fs::BoundedPath,
+    ) -> std::io::Result<()> {
+        let content = match path.read_to_string() {
+            Ok(content) => content,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
+            Err(error) => return Err(error),
         };
-        // Best-effort: a failed persist must never break an edit or an undo.
-        if let Some(parent) = path.parent() {
-            let _ = std::fs::create_dir_all(parent);
+        self.record(&path.try_history_key()?, content);
+        Ok(())
+    }
+
+    pub(crate) fn restore_with(
+        &self,
+        path: &Path,
+        read_current: impl FnOnce() -> std::io::Result<String>,
+        restore: impl FnOnce(&str) -> std::io::Result<()>,
+    ) -> std::io::Result<bool> {
+        let mut guard = self.inner.lock().unwrap();
+        let Some(snapshot) = guard.get(path).and_then(|stack| stack.last()).cloned() else {
+            return Ok(false);
+        };
+        let content = snapshot.content();
+        let legacy = snapshot.is_legacy();
+        // Persist the recovery copy before enrolling a legacy restore. Earlier
+        // versions recorded only path names, so original object identity cannot
+        // be recovered from that data.
+        if legacy {
+            let current = read_current()?;
+            guard.get_mut(path).unwrap().push(Snapshot::Bound {
+                content: current,
+                legacy: false,
+            });
+            if let Err(error) = self.persist_result(&guard) {
+                guard.get_mut(path).unwrap().pop();
+                return Err(error);
+            }
         }
+        if let Err(error) = restore(content) {
+            if legacy {
+                guard.get_mut(path).unwrap().pop();
+            }
+            self.persist(&guard);
+            return Err(error);
+        }
+        let stack = guard.get_mut(path).unwrap();
+        if legacy {
+            stack.remove(stack.len() - 2);
+        } else {
+            stack.pop();
+        }
+        self.persist(&guard);
+        Ok(true)
+    }
+
+    pub(crate) fn persistent_for_filesystem(working_dir: &Path, filesystem: &BoundedFs) -> Self {
+        let mut history = Self::persistent(working_dir);
+        let mut enrolled = 0;
+        let mut retained = 0;
+        {
+            let mut guard = history.inner.lock().unwrap();
+            let names: Vec<_> = guard
+                .keys()
+                .filter(|path| path.is_absolute())
+                .cloned()
+                .collect();
+            for name in names {
+                let key = filesystem.bind(&name, AccessMode::Read).and_then(|bound| {
+                    if !bound.is_file()? {
+                        return Err(std::io::Error::other(
+                            "Legacy undo target is not an existing regular file",
+                        ));
+                    }
+                    let policy = crate::secret_guard::SecretGuard::for_bounded_path(&bound)?;
+                    if policy.is_denied(&name) || policy.is_denied(&bound.absolute_path()) {
+                        return Err(std::io::Error::other(
+                            "Legacy undo target is restricted by file policy",
+                        ));
+                    }
+                    bound.try_history_key()
+                });
+                let Ok(key) = key else {
+                    retained += 1;
+                    continue;
+                };
+                let snapshots = guard.remove(&name).unwrap_or_default();
+                let mut legacy: Vec<_> = snapshots
+                    .into_iter()
+                    .map(|snapshot| Snapshot::Bound {
+                        content: snapshot.content().to_owned(),
+                        legacy: true,
+                    })
+                    .collect();
+                if let Some(current) = guard.remove(&key) {
+                    legacy.extend(current);
+                }
+                guard.insert(key, legacy);
+                enrolled += 1;
+            }
+            if enrolled > 0 {
+                history.persist(&guard);
+            }
+        }
+        if enrolled > 0 || retained > 0 {
+            history.persistence_notice = Some(format!("Legacy undo history used path names without object identities. {enrolled} existing workspace file(s) were enrolled to this selected folder; their current contents will be preserved before any legacy restore. {retained} outside, restricted, or unresolved entry/entries remain private and were not enrolled. To recover them, explicitly authorize their actual folder and preview the file and snapshot before enrollment."));
+        }
+        history
+    }
+
+    fn persist(&self, map: &HashMap<PathBuf, Vec<Snapshot>>) {
+        if let Err(error) = self.persist_result(map) {
+            tracing::warn!("Persistent undo snapshot was not saved because private storage could not be written: {error}");
+        }
+    }
+
+    fn persist_result(&self, map: &HashMap<PathBuf, Vec<Snapshot>>) -> std::io::Result<()> {
+        let Some(path) = &self.persist_path else {
+            return Ok(());
+        };
         let persisted = PersistedHistory {
             files: map
                 .iter()
-                .map(|(k, v)| (k.to_string_lossy().into_owned(), v.clone()))
+                .map(|(key, value)| (key.to_string_lossy().into_owned(), value.clone()))
                 .collect(),
         };
-        if let Ok(json) = serde_json::to_string(&persisted) {
-            let _ = std::fs::write(path, json);
-        }
+        let json = serde_json::to_vec(&persisted).map_err(std::io::Error::other)?;
+        path.atomic_write_private(&json)
     }
 
     #[cfg(test)]
@@ -126,8 +279,8 @@ impl FileHistory {
     }
 }
 
-fn load(path: &Path) -> Option<HashMap<PathBuf, Vec<String>>> {
-    let json = std::fs::read_to_string(path).ok()?;
+fn load(path: &BoundedPath) -> Option<HashMap<PathBuf, Vec<Snapshot>>> {
+    let json = path.read_to_string().ok()?;
     let persisted: PersistedHistory = serde_json::from_str(&json).ok()?;
     Some(
         persisted
@@ -136,6 +289,51 @@ fn load(path: &Path) -> Option<HashMap<PathBuf, Vec<String>>> {
             .map(|(k, v)| (PathBuf::from(k), v))
             .collect(),
     )
+}
+
+fn private_history_path(path: &Path) -> std::io::Result<BoundedPath> {
+    let parent = path.parent().ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "Undo storage has no parent directory",
+        )
+    })?;
+    if std::fs::symlink_metadata(parent).is_ok_and(|metadata| metadata.file_type().is_symlink()) {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "Undo storage must be an actual user-owned directory, not a symbolic link",
+        ));
+    }
+    let mut ancestor = parent;
+    while !ancestor.exists() {
+        ancestor = ancestor.parent().ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                "Undo storage has no existing ancestor",
+            )
+        })?;
+    }
+    let anchor = BoundedFs::open(ancestor)?;
+    let relative = parent
+        .strip_prefix(ancestor)
+        .map_err(std::io::Error::other)?;
+    let filesystem = if relative.as_os_str().is_empty() {
+        anchor.protect_owner_private()?;
+        anchor
+    } else {
+        anchor.create_private_subdirectory(relative)?
+    };
+    let filename = path.file_name().ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "Undo storage has no filename",
+        )
+    })?;
+    let bound = filesystem.bind(Path::new(filename), AccessMode::Write)?;
+    if bound.exists()? {
+        bound.protect_owner_private()?;
+    }
+    Ok(bound)
 }
 
 /// `<config>/developer_undo/<hash-of-working-dir>.json`, honoring the
@@ -300,6 +498,170 @@ mod tests {
             ),
             ("BIOROUTER_PERSIST_UNDO", persist.map(str::to_owned)),
         ])
+    }
+
+    #[cfg(unix)]
+    #[test]
+    #[serial]
+    fn persistent_history_is_private_from_first_publication_and_repairs_legacy_storage() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = TempDir::new().unwrap();
+        let _env = scoped_undo_env(root.path(), None);
+        let work = TempDir::new().unwrap();
+        let target = work.path().join("file.txt");
+        std::fs::write(&target, "CURRENT SYNTHETIC CONTENT").unwrap();
+        let store = persist_path_for(work.path()).unwrap();
+        std::fs::create_dir_all(store.parent().unwrap()).unwrap();
+        std::fs::set_permissions(
+            store.parent().unwrap(),
+            std::fs::Permissions::from_mode(0o755),
+        )
+        .unwrap();
+        let old = serde_json::json!({"files": {(target.to_string_lossy().to_string()): ["LEGACY SYNTHETIC SNAPSHOT"]}});
+        std::fs::write(&store, serde_json::to_vec(&old).unwrap()).unwrap();
+        std::fs::set_permissions(&store, std::fs::Permissions::from_mode(0o644)).unwrap();
+        let history = FileHistory::persistent(work.path());
+        assert!(history.persist_path.is_some());
+        assert_eq!(
+            std::fs::metadata(store.parent().unwrap())
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o700
+        );
+        assert_eq!(
+            std::fs::metadata(&store).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        assert_eq!(
+            history.pop(&target).as_deref(),
+            Some("LEGACY SYNTHETIC SNAPSHOT")
+        );
+        std::fs::remove_file(&store).unwrap();
+        let fresh = FileHistory::persistent(work.path());
+        fresh.record(&target, "NEW SYNTHETIC SNAPSHOT".to_string());
+        assert_eq!(
+            std::fs::metadata(&store).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn legacy_workspace_enrollment_keeps_quarantine_and_makes_restore_undoable() {
+        let root = TempDir::new().unwrap();
+        let _env = scoped_undo_env(root.path(), None);
+        let work = TempDir::new().unwrap();
+        let outside = TempDir::new().unwrap();
+        let target = work.path().join("file.txt");
+        let ungranted = outside.path().join("outside.txt");
+        std::fs::write(&target, "CURRENT SYNTHETIC CONTENT").unwrap();
+        std::fs::write(&ungranted, "OUTSIDE CANARY").unwrap();
+        let store = persist_path_for(work.path()).unwrap();
+        std::fs::create_dir_all(store.parent().unwrap()).unwrap();
+        let old = serde_json::json!({"files": {
+            (target.to_string_lossy().to_string()): ["LEGACY SYNTHETIC SNAPSHOT"],
+            (ungranted.to_string_lossy().to_string()): ["QUARANTINED SYNTHETIC SNAPSHOT"]
+        }});
+        std::fs::write(&store, serde_json::to_vec(&old).unwrap()).unwrap();
+        let filesystem = BoundedFs::open(work.path()).unwrap();
+        let history = FileHistory::persistent_for_filesystem(work.path(), &filesystem);
+        let bound = filesystem.bind(&target, AccessMode::Write).unwrap();
+        let key = bound.try_history_key().unwrap();
+        assert_eq!(history.depth(&key), 1);
+        assert_eq!(history.depth(&ungranted), 1);
+        assert!(history
+            .take_persistence_notice()
+            .unwrap()
+            .contains("without object identities"));
+        assert!(history
+            .restore_with(
+                &key,
+                || bound.read_to_string(),
+                |content| bound.atomic_write(content.as_bytes())
+            )
+            .unwrap());
+        assert_eq!(bound.read_to_string().unwrap(), "LEGACY SYNTHETIC SNAPSHOT");
+        assert!(history
+            .restore_with(
+                &key,
+                || bound.read_to_string(),
+                |content| bound.atomic_write(content.as_bytes())
+            )
+            .unwrap());
+        assert_eq!(bound.read_to_string().unwrap(), "CURRENT SYNTHETIC CONTENT");
+        assert_eq!(
+            std::fs::read_to_string(&ungranted).unwrap(),
+            "OUTSIDE CANARY"
+        );
+        assert!(std::fs::read_to_string(&store)
+            .unwrap()
+            .contains("QUARANTINED SYNTHETIC SNAPSHOT"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    #[serial]
+    fn persistent_history_keeps_bound_directory_when_its_name_is_substituted() {
+        let root = TempDir::new().unwrap();
+        let _env = scoped_undo_env(root.path(), None);
+        let work = TempDir::new().unwrap();
+        let outside = TempDir::new().unwrap();
+        let history = FileHistory::persistent(work.path());
+        let store = persist_path_for(work.path()).unwrap();
+        let retained = root.path().join("retained-history");
+        std::fs::rename(store.parent().unwrap(), &retained).unwrap();
+        std::fs::write(
+            outside.path().join(store.file_name().unwrap()),
+            "OUTSIDE CANARY",
+        )
+        .unwrap();
+        std::os::unix::fs::symlink(outside.path(), store.parent().unwrap()).unwrap();
+        history.record(
+            Path::new("synthetic-key"),
+            "SYNTHETIC PRIVATE CONTENT".to_string(),
+        );
+        assert!(
+            std::fs::read_to_string(retained.join(store.file_name().unwrap()))
+                .unwrap()
+                .contains("SYNTHETIC PRIVATE CONTENT")
+        );
+        assert_eq!(
+            std::fs::read_to_string(outside.path().join(store.file_name().unwrap())).unwrap(),
+            "OUTSIDE CANARY"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    #[serial]
+    fn symlinked_history_storage_falls_back_to_private_memory_without_chmod_outside() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = TempDir::new().unwrap();
+        let _env = scoped_undo_env(root.path(), None);
+        let work = TempDir::new().unwrap();
+        let outside = TempDir::new().unwrap();
+        std::fs::set_permissions(outside.path(), std::fs::Permissions::from_mode(0o755)).unwrap();
+        let directory = undo_base_dir().unwrap();
+        std::fs::create_dir_all(directory.parent().unwrap()).unwrap();
+        std::os::unix::fs::symlink(outside.path(), &directory).unwrap();
+        let history = FileHistory::persistent(work.path());
+        assert!(history.persist_path.is_none());
+        assert!(history
+            .take_persistence_notice()
+            .unwrap()
+            .contains("Undo remains available"));
+        assert!(history.take_persistence_notice().is_none());
+        assert_eq!(
+            std::fs::metadata(outside.path())
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o755
+        );
+        assert_eq!(std::fs::read_dir(outside.path()).unwrap().count(), 0);
     }
 
     #[test]

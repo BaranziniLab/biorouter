@@ -2977,13 +2977,13 @@ impl CodeExecutionClient {
             Arc::clone(&collected_artifacts),
             cancellation_token.clone(),
         );
-        let tool_handler = tokio::spawn(async move {
+        let tool_handler = tokio::spawn(crate::native_client::carry(async move {
             if no_human_surface {
                 crate::user_surface::without_human_surface(handler).await;
             } else {
                 handler.await;
             }
-        });
+        }));
 
         let js_task = tokio::task::spawn_blocking(move || run_js_script(&code, &tools, call_tx));
         let js_result = tokio::select! {
