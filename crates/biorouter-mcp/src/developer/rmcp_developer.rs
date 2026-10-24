@@ -37,8 +37,10 @@ use crate::secret_guard::SecretGuard;
 
 use super::analyze::{types::AnalyzeParams, CodeAnalyzer};
 use super::editor_models::{create_editor_model, EditorModel};
+#[cfg(test)]
+use super::shell::is_absolute_path;
 use super::shell::{
-    configure_shell_command, expand_path, first_line, foreground_timeout_message, is_absolute_path,
+    configure_shell_command, expand_path, first_line, foreground_timeout_message,
     kill_process_group,
 };
 use super::text_editor::{
@@ -438,8 +440,7 @@ pub struct DeveloperServer {
     workspace_filesystem: Option<Arc<BoundedFs>>,
     skill_filesystem: Option<Arc<BoundedFs>>,
     skill_anchor: Option<(Arc<BoundedFs>, PathBuf)>,
-    // Skills installed by Biorouter may be inspected from any project. This
-    // canonical root grants reads only, without widening the editor's write jail.
+    #[cfg(test)]
     skill_read_root: Option<PathBuf>,
     /// Wall-clock budget for a **foreground** shell command (issue #72), read
     /// once from `BIOROUTER_SHELL_FOREGROUND_TIMEOUT_SECS` at construction so
@@ -879,6 +880,7 @@ impl DeveloperServer {
             skill_filesystem: BoundedFs::open(crate::paths::in_config_dir("skills"))
                 .ok()
                 .map(Arc::new),
+            #[cfg(test)]
             skill_read_root: Self::bind_skill_read_root(&crate::paths::in_config_dir("skills")),
             skill_anchor: Self::bind_skill_anchor(&crate::paths::in_config_dir("skills")),
             foreground_timeout: super::shell::foreground_timeout_from_env(),
@@ -2246,6 +2248,7 @@ impl DeveloperServer {
         Ok(())
     }
 
+    #[cfg(test)]
     fn resolve_path(&self, path_str: &str) -> Result<PathBuf, ErrorData> {
         self.resolve_path_jailed(path_str)
     }
@@ -2269,10 +2272,12 @@ impl DeveloperServer {
 
     /// Resolve `path_str` against the effective working directory and enforce
     /// the session's containment jail.
+    #[cfg(test)]
     fn resolve_path_jailed(&self, path_str: &str) -> Result<PathBuf, ErrorData> {
         self.resolve_path_scoped(path_str, false)
     }
 
+    #[cfg(test)]
     fn resolve_path_scoped(
         &self,
         path_str: &str,
