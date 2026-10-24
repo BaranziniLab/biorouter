@@ -42,7 +42,7 @@ use super::shell::{
     kill_process_group,
 };
 use super::text_editor::{
-    save_file_history, text_editor_insert_bounded as text_editor_insert,
+    text_editor_insert_bounded as text_editor_insert,
     text_editor_replace_bounded as text_editor_replace,
     text_editor_undo_bounded as text_editor_undo, text_editor_view_bounded as text_editor_view,
     text_editor_write_bounded as text_editor_write,
@@ -1072,7 +1072,8 @@ impl DeveloperServer {
             },
         )?;
 
-        match params.command.as_str() {
+        let is_mutation = params.command != "view";
+        let mut result = match params.command.as_str() {
             "view" => {
                 let view_range = params.view_range.as_ref().and_then(|vr| {
                     if vr.len() == 2 {
@@ -1094,8 +1095,14 @@ impl DeveloperServer {
                 })?;
                 // Snapshot the pre-write content so a whole-file overwrite is
                 // undoable too, not just str_replace/insert/diff edits (BR-44).
-                save_file_history(&path, &self.file_history)?;
+                let previous = match path.read_to_string() {
+                    Ok(content) => content,
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
+                    Err(error) => return Err(file_error(error)),
+                };
                 let content = text_editor_write(&path, &file_text).await?;
+                self.file_history
+                    .record(&path.bound.try_history_key().map_err(file_error)?, previous);
                 Ok(CallToolResult::success(content))
             }
             "str_replace" => {
@@ -1169,7 +1176,13 @@ impl DeveloperServer {
                 format!("Unknown command '{}'", params.command),
                 None,
             )),
+        }?;
+        if is_mutation {
+            if let Some(notice) = self.file_history.take_persistence_notice() {
+                result.content.push(Content::text(notice));
+            }
         }
+        Ok(result)
     }
 
     fn editor_access(&self, meta: rmcp::model::Meta) -> Result<EditorAccess, ErrorData> {

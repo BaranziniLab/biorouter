@@ -123,32 +123,38 @@ pub(crate) struct EditorAccess {
 
 impl EditorAccess {
     pub fn bind(&self, requested: &Path, access: AccessMode) -> Result<EditorPath, ErrorData> {
-        let workspace_path = self.workspace.bind(requested, access);
-        let bound = if let Ok(bound) = workspace_path {
-            bound
-        } else if requested.starts_with(self.workspace.root()) {
-            return Err(file_error(format!("Cannot resolve '{}' inside the authorized directory: {}. If another folder was intended, provide its actual path so access can be approved.", requested.display(), workspace_path.unwrap_err())));
-        } else if access == AccessMode::Read
-            && self
-                .skills
-                .as_ref()
-                .is_some_and(|root| requested.starts_with(root.root()))
-        {
-            self.skills
-                .as_ref()
-                .unwrap()
-                .bind(requested, access)
-                .map_err(file_error)?
-        } else {
-            let string = |key: &str| self.meta.0.get(key).and_then(serde_json::Value::as_str);
-            let token = string("biorouter-file-access-token")
-                .ok_or_else(|| authorization_required(requested))?;
+        let string = |key: &str| self.meta.0.get(key).and_then(serde_json::Value::as_str);
+        // A brokered dispatch must use the broker's retained objects even for
+        // the primary workspace. Independently reopening the same label could
+        // otherwise substitute a different directory after admission.
+        let bound = if let Some(token) = string("biorouter-file-access-token") {
             let session =
                 string("biorouter-session-id").ok_or_else(|| authorization_required(requested))?;
             let action = string("biorouter-file-access-action")
                 .ok_or_else(|| authorization_required(requested))?;
             authorized_path(token, session, action, requested, access)
                 .map_err(|_| authorization_required(requested))?
+        } else {
+            match self.workspace.bind(requested, access) {
+                Ok(bound) => bound,
+                Err(error) if requested.starts_with(self.workspace.root()) => {
+                    return Err(file_error(format!("Cannot resolve '{}' inside the authorized directory: {error}. If another folder was intended, provide its actual path so access can be approved.", requested.display())));
+                }
+                Err(_)
+                    if access == AccessMode::Read
+                        && self
+                            .skills
+                            .as_ref()
+                            .is_some_and(|root| requested.starts_with(root.root())) =>
+                {
+                    self.skills
+                        .as_ref()
+                        .unwrap()
+                        .bind(requested, access)
+                        .map_err(file_error)?
+                }
+                Err(_) => return Err(authorization_required(requested)),
+            }
         };
         let actual = bound.absolute_path();
         // Match the spelling and the already-resolved capability identity. Do not
@@ -383,7 +389,7 @@ mod tests {
         let file = editor.bind(&filename, AccessMode::Write).unwrap();
         let history = FileHistory::in_memory();
         save_file_history(&file, &history).unwrap();
-        let key = file.bound.history_key();
+        let key = file.bound.try_history_key().unwrap();
         std::fs::write(outside.path().join("canary"), "OUTSIDE CANARY").unwrap();
         std::fs::remove_file(&filename).unwrap();
         std::os::unix::fs::symlink(outside.path().join("canary"), &filename).unwrap();

@@ -17,10 +17,14 @@
 //! This is the incremental, `text_editor`-native counterpart to the richer
 //! shadow-git checkpointing in BR-43.
 
+use biorouter_sandbox::bounded_fs::{AccessMode, BoundedFs, BoundedPath};
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Mutex,
+};
 
 use serde::{Deserialize, Serialize};
 
@@ -41,7 +45,9 @@ struct PersistedHistory {
 pub struct FileHistory {
     inner: Mutex<HashMap<PathBuf, Vec<String>>>,
     /// When set, every mutation is mirrored to this JSON file (best-effort).
-    persist_path: Option<PathBuf>,
+    persist_path: Option<BoundedPath>,
+    persistence_notice: Option<String>,
+    notice_sent: AtomicBool,
 }
 
 impl FileHistory {
@@ -56,16 +62,26 @@ impl FileHistory {
     /// Falls back to in-memory when persistence is disabled or no config
     /// directory can be resolved.
     pub fn persistent(working_dir: &Path) -> Self {
-        match persist_path_for(working_dir) {
-            Some(path) => {
+        let Some(path) = persist_path_for(working_dir) else {
+            return Self::in_memory();
+        };
+        match private_history_path(&path) {
+            Ok(path) => {
                 let inner = load(&path).unwrap_or_default();
-                Self {
-                    inner: Mutex::new(inner),
-                    persist_path: Some(path),
-                }
-            }
-            None => Self::in_memory(),
+                Self { inner: Mutex::new(inner), persist_path: Some(path), persistence_notice: None, notice_sent: AtomicBool::new(false) }
+            },
+            Err(error) => Self {
+                persistence_notice: Some(format!("Undo remains available for this session. Persistent undo is disabled because its storage could not be made private: {error}. Use a user-owned local configuration folder with private access controls to retain undo across restarts.")),
+                ..Self::in_memory()
+            },
         }
+    }
+
+    pub(crate) fn take_persistence_notice(&self) -> Option<String> {
+        self.persistence_notice
+            .as_ref()
+            .filter(|_| !self.notice_sent.swap(true, Ordering::AcqRel))
+            .cloned()
     }
 
     /// Snapshot the current on-disk content of `path` (empty string if it does
@@ -112,7 +128,7 @@ impl FileHistory {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
             Err(error) => return Err(error),
         };
-        self.record(&path.history_key(), content);
+        self.record(&path.try_history_key()?, content);
         Ok(())
     }
 
@@ -138,10 +154,6 @@ impl FileHistory {
         let Some(path) = &self.persist_path else {
             return;
         };
-        // Best-effort: a failed persist must never break an edit or an undo.
-        if let Some(parent) = path.parent() {
-            let _ = std::fs::create_dir_all(parent);
-        }
         let persisted = PersistedHistory {
             files: map
                 .iter()
@@ -149,7 +161,9 @@ impl FileHistory {
                 .collect(),
         };
         if let Ok(json) = serde_json::to_string(&persisted) {
-            let _ = std::fs::write(path, json);
+            if let Err(error) = path.atomic_write_private(json.as_bytes()) {
+                tracing::warn!("Persistent undo snapshot was not saved because private storage could not be written: {error}");
+            }
         }
     }
 
@@ -159,8 +173,8 @@ impl FileHistory {
     }
 }
 
-fn load(path: &Path) -> Option<HashMap<PathBuf, Vec<String>>> {
-    let json = std::fs::read_to_string(path).ok()?;
+fn load(path: &BoundedPath) -> Option<HashMap<PathBuf, Vec<String>>> {
+    let json = path.read_to_string().ok()?;
     let persisted: PersistedHistory = serde_json::from_str(&json).ok()?;
     Some(
         persisted
@@ -169,6 +183,51 @@ fn load(path: &Path) -> Option<HashMap<PathBuf, Vec<String>>> {
             .map(|(k, v)| (PathBuf::from(k), v))
             .collect(),
     )
+}
+
+fn private_history_path(path: &Path) -> std::io::Result<BoundedPath> {
+    let parent = path.parent().ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "Undo storage has no parent directory",
+        )
+    })?;
+    if std::fs::symlink_metadata(parent).is_ok_and(|metadata| metadata.file_type().is_symlink()) {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "Undo storage must be an actual user-owned directory, not a symbolic link",
+        ));
+    }
+    let mut ancestor = parent;
+    while !ancestor.exists() {
+        ancestor = ancestor.parent().ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                "Undo storage has no existing ancestor",
+            )
+        })?;
+    }
+    let anchor = BoundedFs::open(ancestor)?;
+    let relative = parent
+        .strip_prefix(ancestor)
+        .map_err(std::io::Error::other)?;
+    let filesystem = if relative.as_os_str().is_empty() {
+        anchor.protect_owner_private()?;
+        anchor
+    } else {
+        anchor.create_private_subdirectory(relative)?
+    };
+    let filename = path.file_name().ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "Undo storage has no filename",
+        )
+    })?;
+    let bound = filesystem.bind(Path::new(filename), AccessMode::Write)?;
+    if bound.exists()? {
+        bound.protect_owner_private()?;
+    }
+    Ok(bound)
 }
 
 /// `<config>/developer_undo/<hash-of-working-dir>.json`, honoring the

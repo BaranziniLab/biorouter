@@ -267,7 +267,7 @@ pub(crate) async fn apply_diff_bounded(
     let mut results = DiffResults::default();
     let mut failed_hunks = Vec::new();
     for (patch, target) in patches.iter().zip(&bound) {
-        let key = target.bound.history_key();
+        let key = target.bound.absolute_path();
         let original = if let Some(content) = staged.get(&key) {
             Some(String::clone(content))
         } else {
@@ -303,7 +303,10 @@ pub(crate) async fn apply_diff_bounded(
     for (target, original, updated) in prepared {
         target.write(&updated).map_err(file_error)?;
         if let Some(original) = original {
-            file_history.record(&target.bound.history_key(), original);
+            file_history.record(
+                &target.bound.try_history_key().map_err(file_error)?,
+                original,
+            );
         }
     }
     report_partial_failures(&failed_hunks);
@@ -690,9 +693,6 @@ pub(crate) async fn text_editor_replace_bounded(
 
     // Check if Editor API is configured and use it as the primary path
     if let Some(ref editor) = editor_model {
-        // Editor API path - save history then call API directly
-        save_file_history(path, file_history)?;
-
         match editor.edit_code(&content, old_str, new_str).await {
             Ok(updated_content) => {
                 // Write the updated content directly
@@ -709,6 +709,10 @@ pub(crate) async fn text_editor_replace_bounded(
                     )
                 })?;
 
+                file_history.record(
+                    &path.bound.try_history_key().map_err(file_error)?,
+                    content.clone(),
+                );
                 // Simple success message for Editor API
                 return Ok(vec![
                     Content::text(format!("Successfully edited {}", path.display()))
@@ -742,9 +746,6 @@ pub(crate) async fn text_editor_replace_bounded(
         return Err(ErrorData::new(ErrorCode::INVALID_PARAMS, "'old_str' must appear exactly once in the file, but it does not appear in the file. Make sure the string exactly matches existing file content, including whitespace!".to_string(), None));
     }
 
-    // Save history for undo (original behavior - after validation)
-    save_file_history(path, file_history)?;
-
     let new_content = content.replace(old_str, new_str);
     // The file's own line endings win over the host's -- see
     // `normalize_line_endings_like`.
@@ -760,6 +761,10 @@ pub(crate) async fn text_editor_replace_bounded(
         )
     })?;
 
+    file_history.record(
+        &path.bound.try_history_key().map_err(file_error)?,
+        content.clone(),
+    );
     // Try to detect the language from the file extension
     let language = lang::get_language_identifier(path);
 
@@ -841,9 +846,6 @@ pub(crate) async fn text_editor_insert_bounded(
         )
     })?;
 
-    // Save history for undo
-    save_file_history(path, file_history)?;
-
     let lines: Vec<&str> = content.lines().collect();
     let total_lines = lines.len();
 
@@ -892,6 +894,10 @@ pub(crate) async fn text_editor_insert_bounded(
         )
     })?;
 
+    file_history.record(
+        &path.bound.try_history_key().map_err(file_error)?,
+        content.clone(),
+    );
     // Try to detect the language from the file extension
     let language = lang::get_language_identifier(path);
 
