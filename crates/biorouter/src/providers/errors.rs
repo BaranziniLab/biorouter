@@ -19,6 +19,14 @@ pub enum ProviderError {
     #[error("Server error: {0}")]
     ServerError(String),
 
+    /// Malformed JSON in an established response stream. Created at the parser
+    /// boundary so arbitrary provider error text cannot opt into a retry.
+    #[error("Stream decode error: {0}")]
+    StreamDecode(String),
+
+    #[error("Incomplete response stream: {0}")]
+    StreamIncomplete(String),
+
     #[error("Request failed: {0}")]
     RequestFailed(String),
 
@@ -242,6 +250,7 @@ fn classify_provider_details(details: &str) -> ProviderErrorKind {
         || details.contains("network")
         || details.contains("failed to fetch")
         || details.contains("error sending request")
+        || details.contains("error decoding response body")
     {
         ProviderErrorKind::Network
     } else {
@@ -257,6 +266,9 @@ impl ProviderError {
             ProviderError::Authentication(_) => ProviderErrorKind::Auth,
             ProviderError::RateLimitExceeded { .. } => ProviderErrorKind::RateLimit,
             ProviderError::ServerError(_) => ProviderErrorKind::Server,
+            ProviderError::StreamDecode(_) | ProviderError::StreamIncomplete(_) => {
+                ProviderErrorKind::Network
+            }
             ProviderError::ContextLengthExceeded(_) => ProviderErrorKind::ContextLength,
             // `RequestFailed` is what `From<anyhow::Error>` produces for a
             // reqwest failure, so it covers timeouts/connection errors — but it
@@ -277,6 +289,8 @@ impl ProviderError {
             ProviderError::ContextLengthExceeded(_) => "context_length",
             ProviderError::RateLimitExceeded { .. } => "rate_limit",
             ProviderError::ServerError(_) => "server",
+            ProviderError::StreamDecode(_) => "stream_decode",
+            ProviderError::StreamIncomplete(_) => "stream_incomplete",
             ProviderError::RequestFailed(_) => "request",
             ProviderError::ExecutionError(_) => "execution",
             ProviderError::UsageError(_) => "usage",
@@ -370,6 +384,57 @@ impl GoogleErrorCode {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn response_body_transport_failures_are_retryable() {
+        for details in [
+            "Stream decode error: error decoding response body",
+            "error decoding response body",
+            "Stream decode error: error decoding response body: unexpected EOF",
+            "STREAM DECODE ERROR: ERROR DECODING RESPONSE BODY",
+        ] {
+            let error = ProviderError::RequestFailed(details.into());
+            assert_eq!(error.kind(), ProviderErrorKind::Network, "{details}");
+            assert!(error.kind().is_transient(), "{details}");
+        }
+    }
+
+    #[test]
+    fn typed_stream_decode_failures_are_retryable() {
+        let error = ProviderError::StreamDecode(
+            "Failed to parse streaming chunk: invalid JSON at line 1 column 2".into(),
+        );
+        assert_eq!(error.kind(), ProviderErrorKind::Network);
+        assert!(error.kind().is_transient());
+        assert!(crate::agents::mistakes::is_recoverable(&error));
+        assert!(!crate::providers::retry::is_timeout(&error));
+    }
+
+    #[test]
+    fn typed_incomplete_streams_are_retryable() {
+        let error = ProviderError::StreamIncomplete("No terminal marker arrived.".into());
+        assert_eq!(error.kind(), ProviderErrorKind::Network);
+        assert!(error.kind().is_transient());
+        assert!(crate::agents::mistakes::is_recoverable(&error));
+        assert!(!crate::providers::retry::is_timeout(&error));
+    }
+
+    #[test]
+    fn untyped_parse_messages_are_not_transport_failures() {
+        for details in [
+            "Stream decode error: Failed to parse streaming chunk: missing field delta",
+            "Stream decode error: expected value at line 1 column 1",
+        ] {
+            let error = ProviderError::RequestFailed(details.into());
+            assert_eq!(error.kind(), ProviderErrorKind::Other, "{details}");
+            assert!(!error.kind().is_transient(), "{details}");
+        }
+        let error = ProviderError::RequestFailed(
+            "HTTP 401 Unauthorized: error decoding response body".into(),
+        );
+        assert_eq!(error.kind(), ProviderErrorKind::Auth);
+        assert!(!error.kind().is_transient());
+    }
 
     #[test]
     fn classifies_common_provider_rejections_without_treating_them_as_network_errors() {

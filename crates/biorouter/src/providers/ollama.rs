@@ -2779,7 +2779,7 @@ fn stream_openai_compat_checked(
             yield item;
         }
         if !ended.load(Ordering::Relaxed) {
-            let error = ProviderError::RequestFailed(
+            let error = ProviderError::StreamIncomplete(
                 "The server's response ended before the turn was complete (no finish reason and \
                  no end-of-stream marker); no tool call from it was run. Retry the message."
                     .to_string(),
