@@ -201,6 +201,63 @@ fn exact_directory_target_cannot_become_a_descendant_grant() {
     ));
 }
 
+#[test]
+fn dispatch_aliases_preserve_approved_actual_target_scope_and_lifetime() {
+    let workspace = root();
+    let external = root();
+    fs::write(external.path().join("approved"), "approved").unwrap();
+    fs::write(external.path().join("other"), "other").unwrap();
+    let actual = external.path().join("approved");
+    let alias = workspace.path().join("external-link/approved");
+    let grant = RootGrant::new(
+        Arc::new(BoundedFs::open(external.path()).unwrap()),
+        AccessMode::Read,
+    )
+    .with_targets(vec![actual.clone()])
+    .unwrap();
+    let authority = DispatchAuthority::register_aliases(
+        "session",
+        "action",
+        vec![grant],
+        vec![(alias.clone(), actual.clone())],
+    )
+    .unwrap();
+    let bound = authorized_path(
+        authority.token(),
+        "session",
+        "action",
+        &alias,
+        AccessMode::Read,
+    )
+    .unwrap();
+    assert_eq!(bound.read().unwrap(), b"approved");
+    assert_eq!(bound.absolute_path(), actual);
+    denied(authorized_path(
+        authority.token(),
+        "session",
+        "action",
+        &alias,
+        AccessMode::Write,
+    ));
+    denied(authorized_path(
+        authority.token(),
+        "session",
+        "action",
+        workspace.path().join("external-link/other"),
+        AccessMode::Read,
+    ));
+    let token = authority.token().to_owned();
+    drop(authority);
+    denied(bound.read());
+    denied(authorized_path(
+        &token,
+        "session",
+        "action",
+        &alias,
+        AccessMode::Read,
+    ));
+}
+
 #[cfg(windows)]
 mod windows {
     use super::*;

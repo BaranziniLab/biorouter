@@ -958,6 +958,7 @@ struct DispatchEntry {
     session: String,
     action: String,
     grants: Vec<RootGrant>,
+    aliases: HashMap<PathBuf, PathBuf>,
     live: Arc<AtomicBool>,
 }
 
@@ -972,10 +973,28 @@ pub struct DispatchAuthority {
 
 impl DispatchAuthority {
     pub fn register(session: &str, action: &str, grants: Vec<RootGrant>) -> io::Result<Self> {
+        Self::register_aliases(session, action, grants, Vec::new())
+    }
+
+    pub fn register_aliases(
+        session: &str,
+        action: &str,
+        grants: Vec<RootGrant>,
+        aliases: Vec<(PathBuf, PathBuf)>,
+    ) -> io::Result<Self> {
         if session.is_empty() || action.is_empty() || grants.is_empty() {
             return Err(refused(
                 "File authority requires a session, action, and roots",
             ));
+        }
+        let mut mappings = HashMap::new();
+        for (alias, target) in aliases {
+            if !alias.is_absolute()
+                || !target.is_absolute()
+                || mappings.insert(alias, target).is_some()
+            {
+                return Err(refused("File aliases must map distinct absolute requested paths to approved absolute targets"));
+            }
         }
         let token = Uuid::new_v4().to_string();
         let live = Arc::new(AtomicBool::new(true));
@@ -988,6 +1007,7 @@ impl DispatchAuthority {
                     session: session.to_owned(),
                     action: action.to_owned(),
                     grants,
+                    aliases: mappings,
                     live: live.clone(),
                 }),
             );
@@ -1028,11 +1048,16 @@ pub fn authorized_path(
         ));
     }
     let mut errors = VecDeque::new();
+    let requested = entry
+        .aliases
+        .get(requested.as_ref())
+        .map(PathBuf::as_path)
+        .unwrap_or(requested.as_ref());
     for grant in &entry.grants {
         if !grant.access.permits(access) || !grant.live.load(Ordering::Acquire) {
             continue;
         }
-        let mut bound = match grant.filesystem.bind(requested.as_ref(), access) {
+        let mut bound = match grant.filesystem.bind(requested, access) {
             Ok(bound) => bound,
             Err(error) => {
                 errors.push_back(error);
