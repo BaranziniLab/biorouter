@@ -375,6 +375,8 @@ fn claude_family_pricing(model: &str) -> Option<ProviderModelPricing> {
         // Sonnet 5's $2/$10 launch price is now its standard price: the
         // increase to $3/$15 scheduled for 2026-09-01 was cancelled.
         ("sonnet", 5, None) => cached(2.0, 10.0, 1_000_000),
+        // Sonnet 5.5 keeps Sonnet 5's $2/$10; cache hits are 0.05x ($0.10).
+        ("sonnet", 5, Some(5)) => with_cache(2.0, 10.0, 1_000_000, 0.05, 1.25),
         ("sonnet", 4, Some(6)) => cached(3.0, 15.0, 1_000_000),
         ("sonnet", 4, None | Some(0 | 5)) | ("sonnet", 3, None | Some(5 | 7)) => {
             cached(3.0, 15.0, 200_000)
@@ -1247,6 +1249,7 @@ mod tests {
             ("claude-opus-4-20250514", (15.0, 75.0, 200_000, 1.50, 18.75)),
             ("claude-opus-4-0", (15.0, 75.0, 200_000, 1.50, 18.75)),
             ("claude-3-opus-20240229", (15.0, 75.0, 200_000, 1.50, 18.75)),
+            ("claude-sonnet-5-5", (2.0, 10.0, 1_000_000, 0.10, 2.50)),
             ("claude-sonnet-5", (2.0, 10.0, 1_000_000, 0.20, 2.50)),
             ("claude-sonnet-4-6", (3.0, 15.0, 1_000_000, 0.30, 3.75)),
             (
@@ -1313,6 +1316,10 @@ mod tests {
             (
                 "anthropic.claude-opus-4-20250514-v1:0",
                 (15.0, 75.0, 200_000, 1.50, 18.75),
+            ),
+            (
+                "us.anthropic.claude-sonnet-5-5",
+                (2.0, 10.0, 1_000_000, 0.10, 2.50),
             ),
             (
                 "us.anthropic.claude-sonnet-5",
