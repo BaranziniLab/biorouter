@@ -4676,6 +4676,37 @@ mod folder_approval_wake_tests {
     use super::*;
     use crate::permission::Permission;
 
+    fn assert_gate_has_folder_card(
+        wake: GateWake<anyhow::Result<crate::folder_access::FileAdmission>>,
+    ) {
+        match wake {
+            GateWake::ElicitationReady => {}
+            GateWake::Ready(Err(error)) => {
+                panic!("Folder admission failed before showing its approval card: {error:#}")
+            }
+            GateWake::Ready(Ok(_)) => panic!("External folder access skipped its approval card"),
+            GateWake::SteerWaiting => panic!("A folder-only test unexpectedly received a steer"),
+        }
+    }
+
+    fn assert_approval_has_folder_card(
+        wake: ApprovalWake<anyhow::Result<crate::folder_access::FileAdmission>>,
+    ) {
+        match wake {
+            ApprovalWake::ElicitationReady => {}
+            ApprovalWake::Item(Some(Err(error))) => {
+                panic!("Folder admission failed before showing its approval card: {error:#}")
+            }
+            ApprovalWake::Item(Some(Ok(_))) => {
+                panic!("External folder access skipped its approval card")
+            }
+            ApprovalWake::Item(None) => panic!("Folder admission ended before showing its card"),
+            ApprovalWake::SteerWaiting => {
+                panic!("A folder-only test unexpectedly received a steer")
+            }
+        }
+    }
+
     async fn assert_folder_admission_resumes(preapproved: bool) {
         let fixture = tempfile::tempdir().unwrap();
         let cwd = fixture.path().join("workspace");
@@ -4704,7 +4735,7 @@ mod folder_approval_wake_tests {
             )
             .await
             .unwrap();
-            assert!(matches!(wake, GateWake::ElicitationReady));
+            assert_gate_has_folder_card(wake);
             futures::stream::once(gate).boxed()
         } else {
             let mut stream = futures::stream::once(gate).boxed();
@@ -4714,7 +4745,7 @@ mod folder_approval_wake_tests {
             )
             .await
             .unwrap();
-            assert!(matches!(wake, ApprovalWake::ElicitationReady));
+            assert_approval_has_folder_card(wake);
             stream
         };
         let cards = ActionRequiredManager::global().drain_requests(&session);

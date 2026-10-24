@@ -201,6 +201,11 @@ fn discover_target(path: &Path) -> std::io::Result<PathBuf> {
         let mut followed = false;
         while let Some(component) = components.next() {
             match component {
+                Component::Prefix(_) => {
+                    // The volume prefix alone is not the complete directory root.
+                    resolved.push(component.as_os_str());
+                    continue;
+                }
                 Component::CurDir => continue,
                 Component::ParentDir => {
                     resolved.pop();
@@ -961,6 +966,25 @@ mod skill_authority_tests {
             .unwrap(),
             "synthetic windows alias"
         );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_verbatim_discovery_waits_for_the_complete_volume_root() {
+        let fixture = tempfile::tempdir().unwrap();
+        let canonical = fixture.path().canonicalize().unwrap();
+        assert!(canonical.to_string_lossy().starts_with(r"\\?\"));
+        let existing = canonical.join("result.txt");
+        let missing = canonical.join("new/subfolder/result.txt");
+        std::fs::write(&existing, "synthetic verbatim result").unwrap();
+        for requested in [&existing, &missing] {
+            assert_eq!(
+                discover_target(requested).unwrap_or_else(|error| {
+                    panic!("Cannot discover {}: {error}", requested.display())
+                }),
+                *requested
+            );
+        }
     }
 
     #[cfg(windows)]
