@@ -50,7 +50,7 @@ use super::text_editor::{
     text_editor_write_bounded as text_editor_write,
 };
 use super::undo_history::{self, FileHistory};
-use crate::file_access::{absolute_file_path, file_error, EditorAccess};
+use crate::file_access::{absolute_file_path, file_error, EditorAccess, EditorPath};
 use biorouter_sandbox::bounded_fs::{AccessMode, BoundedFs};
 use std::time::Duration;
 
@@ -1131,110 +1131,7 @@ impl DeveloperServer {
         } else {
             vec![path.to_path_buf()]
         };
-        let mut result = match params.command.as_str() {
-            "view" => {
-                let view_range = params.view_range.as_ref().and_then(|vr| {
-                    if vr.len() == 2 {
-                        Some((vr[0] as usize, vr[1]))
-                    } else {
-                        None
-                    }
-                });
-                let content = text_editor_view(&path, view_range).await?;
-                Ok(CallToolResult::success(content))
-            }
-            "write" => {
-                let file_text = params.file_text.ok_or_else(|| {
-                    ErrorData::new(
-                        ErrorCode::INVALID_PARAMS,
-                        "Missing 'file_text' parameter for write command".to_string(),
-                        None,
-                    )
-                })?;
-                // Snapshot the pre-write content so a whole-file overwrite is
-                // undoable too, not just str_replace/insert/diff edits (BR-44).
-                let previous = match path.read_to_string() {
-                    Ok(content) => content,
-                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
-                    Err(error) => return Err(file_error(error)),
-                };
-                let content = text_editor_write(&path, &file_text).await?;
-                self.file_history
-                    .record(&path.bound.try_history_key().map_err(file_error)?, previous);
-                Ok(CallToolResult::success(content))
-            }
-            "str_replace" => {
-                // Check if diff parameter is provided
-                if let Some(ref diff) = params.diff {
-                    // When diff is provided, old_str and new_str are not required
-                    let content = text_editor_replace(
-                        &path,
-                        "", // old_str not used with diff
-                        "", // new_str not used with diff
-                        Some(diff),
-                        &self.editor_model,
-                        &self.file_history,
-                    )
-                    .await?;
-                    Ok(CallToolResult::success(content))
-                } else {
-                    // Traditional str_replace with old_str and new_str
-                    let old_str = params.old_str.ok_or_else(|| {
-                        ErrorData::new(
-                            ErrorCode::INVALID_PARAMS,
-                            "Missing 'old_str' parameter for str_replace command".to_string(),
-                            None,
-                        )
-                    })?;
-                    let new_str = params.new_str.ok_or_else(|| {
-                        ErrorData::new(
-                            ErrorCode::INVALID_PARAMS,
-                            "Missing 'new_str' parameter for str_replace command".to_string(),
-                            None,
-                        )
-                    })?;
-                    let content = text_editor_replace(
-                        &path,
-                        &old_str,
-                        &new_str,
-                        None,
-                        &self.editor_model,
-                        &self.file_history,
-                    )
-                    .await?;
-                    Ok(CallToolResult::success(content))
-                }
-            }
-            "insert" => {
-                let insert_line = params.insert_line.ok_or_else(|| {
-                    ErrorData::new(
-                        ErrorCode::INVALID_PARAMS,
-                        "Missing 'insert_line' parameter for insert command".to_string(),
-                        None,
-                    )
-                })? as usize;
-                let new_str = params.new_str.ok_or_else(|| {
-                    ErrorData::new(
-                        ErrorCode::INVALID_PARAMS,
-                        "Missing 'new_str' parameter for insert command".to_string(),
-                        None,
-                    )
-                })?;
-                let content =
-                    text_editor_insert(&path, insert_line as i64, &new_str, &self.file_history)
-                        .await?;
-                Ok(CallToolResult::success(content))
-            }
-            "undo_edit" => {
-                let content = text_editor_undo(&path, &self.file_history).await?;
-                Ok(CallToolResult::success(content))
-            }
-            _ => Err(ErrorData::new(
-                ErrorCode::INVALID_PARAMS,
-                format!("Unknown command '{}'", params.command),
-                None,
-            )),
-        }?;
+        let mut result = CallToolResult::success(self.execute_editor_command(&path, params).await?);
         if is_mutation && diagnostics_requested {
             let mut diagnostics = Vec::new();
             for target in diagnostic_targets {
@@ -1268,6 +1165,109 @@ impl DeveloperServer {
             }
         }
         Ok(result)
+    }
+
+    async fn execute_editor_command(
+        &self,
+        path: &EditorPath,
+        params: TextEditorParams,
+    ) -> Result<Vec<Content>, ErrorData> {
+        match params.command.as_str() {
+            "view" => {
+                let view_range = params.view_range.as_ref().and_then(|range| {
+                    if range.len() == 2 {
+                        Some((range[0] as usize, range[1]))
+                    } else {
+                        None
+                    }
+                });
+                text_editor_view(path, view_range).await
+            }
+            "write" => {
+                let file_text = params.file_text.ok_or_else(|| {
+                    ErrorData::new(
+                        ErrorCode::INVALID_PARAMS,
+                        "Missing 'file_text' parameter for write command".to_string(),
+                        None,
+                    )
+                })?;
+                // Whole-file overwrites retain their previous contents for undo too.
+                let previous = match path.read_to_string() {
+                    Ok(content) => content,
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
+                    Err(error) => return Err(file_error(error)),
+                };
+                let content = text_editor_write(path, &file_text).await?;
+                self.file_history
+                    .record(&path.bound.try_history_key().map_err(file_error)?, previous);
+                Ok(content)
+            }
+            "str_replace" => self.replace_editor_command(path, &params).await,
+            "insert" => {
+                let insert_line = params.insert_line.ok_or_else(|| {
+                    ErrorData::new(
+                        ErrorCode::INVALID_PARAMS,
+                        "Missing 'insert_line' parameter for insert command".to_string(),
+                        None,
+                    )
+                })? as usize;
+                let new_str = params.new_str.ok_or_else(|| {
+                    ErrorData::new(
+                        ErrorCode::INVALID_PARAMS,
+                        "Missing 'new_str' parameter for insert command".to_string(),
+                        None,
+                    )
+                })?;
+                text_editor_insert(path, insert_line as i64, &new_str, &self.file_history).await
+            }
+            "undo_edit" => text_editor_undo(path, &self.file_history).await,
+            _ => Err(ErrorData::new(
+                ErrorCode::INVALID_PARAMS,
+                format!("Unknown command '{}'", params.command),
+                None,
+            )),
+        }
+    }
+
+    async fn replace_editor_command(
+        &self,
+        path: &EditorPath,
+        params: &TextEditorParams,
+    ) -> Result<Vec<Content>, ErrorData> {
+        if let Some(diff) = params.diff.as_deref() {
+            return text_editor_replace(
+                path,
+                "",
+                "",
+                Some(diff),
+                &self.editor_model,
+                &self.file_history,
+            )
+            .await;
+        }
+        let old_str = params.old_str.as_deref().ok_or_else(|| {
+            ErrorData::new(
+                ErrorCode::INVALID_PARAMS,
+                "Missing 'old_str' parameter for str_replace command".to_string(),
+                None,
+            )
+        })?;
+        let new_str = params.new_str.as_deref().ok_or_else(|| {
+            ErrorData::new(
+                ErrorCode::INVALID_PARAMS,
+                "Missing 'new_str' parameter for str_replace command".to_string(),
+                None,
+            )
+        })?;
+        text_editor_replace(
+            path,
+            old_str,
+            new_str,
+            None,
+            &self.editor_model,
+            &self.file_history,
+        )
+        .await
     }
 
     fn editor_access(&self, meta: rmcp::model::Meta) -> Result<EditorAccess, ErrorData> {
