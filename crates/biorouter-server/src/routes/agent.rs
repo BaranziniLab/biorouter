@@ -3356,6 +3356,58 @@ fn direct_crew_tool_refusal(tool_name: &str) -> Option<CallToolResponse> {
     })
 }
 
+async fn dispatch_direct_tool(
+    agent: &biorouter::agents::Agent,
+    session_id: &str,
+    tool_call: CallToolRequestParams,
+    native_client: Option<biorouter::native_client::NativeClient>,
+) -> anyhow::Result<biorouter::mcp_utils::ToolResult<rmcp::model::CallToolResult>> {
+    // Issue #56: this entry has NO caller identity. It arrives outside the agent
+    // loop, so there is no admitted turn whose capability it could inherit, and
+    // the session's currently-bound provider is not this caller's — reading it
+    // would hand an HTTP client whatever reach the user's chat happens to have.
+    // Public + enforced is the most restrictive pair, and it is a constant, so
+    // there is nothing here to race with `update_provider`.
+    // F-15: and there is nobody here to ask, either. This entry has no admitted
+    // turn and no stream to draw a card on, so a decision raised beneath it
+    // would be inserted into a queue only the agent loop drains — waiting out
+    // its whole time-to-live unanswerable, and then surfacing in the NEXT chat
+    // turn as a question about something that happened minutes ago. Refusing
+    // to park is the same reasoning as the capability above, one layer down.
+    //
+    // ⚠ The scope has to cover RUNNING the tool, not just dispatching it, and
+    // that is the same one-of-two-steps split the #152 note below describes.
+    // `dispatch_tool_call` hands back a `ToolCallResult` whose `.result` is a
+    // future; the tool body — and therefore every `park()` in it — executes when
+    // that future is awaited. Scoping only the dispatch left the run outside,
+    // where `no_human_surface()` is false, so the refusal above never fired.
+    //
+    // Measured cost: `skills__installMarketplaceSkill` and
+    // `skills__importSkillPackage` — both `requires_user_proof: true` — parked a
+    // card nobody could answer and never returned. Not a slow download: 180 s
+    // with no reply, while their `dryRun` siblings answered in 0.5 s and 9.8 s,
+    // and the daemon log showed `calling client.call_tool` with no completion.
+    biorouter::native_client::scope(
+        native_client,
+        biorouter::user_surface::without_human_surface(async {
+            let dispatch = agent
+                .extension_manager
+                .dispatch_tool_call(
+                    session_id,
+                    tool_call,
+                    biorouter::privacy::CallCapability::public_enforced(),
+                    CancellationToken::default(),
+                )
+                .await;
+            match dispatch {
+                Ok(tool_result) => Ok(tool_result.result.await),
+                Err(error) => Err(error),
+            }
+        }),
+    )
+    .await
+}
+
 #[utoipa::path(
     post,
     path = "/agent/call_tool",
@@ -3421,52 +3473,9 @@ async fn call_tool(
         meta: None,
     };
 
-    // Issue #56: this entry has NO caller identity. It arrives outside the agent
-    // loop, so there is no admitted turn whose capability it could inherit, and
-    // the session's currently-bound provider is not this caller's — reading it
-    // would hand an HTTP client whatever reach the user's chat happens to have.
-    // Public + enforced is the most restrictive pair, and it is a constant, so
-    // there is nothing here to race with `update_provider`.
-    // F-15: and there is nobody here to ask, either. This entry has no admitted
-    // turn and no stream to draw a card on, so a decision raised beneath it
-    // would be inserted into a queue only the agent loop drains — waiting out
-    // its whole time-to-live unanswerable, and then surfacing in the NEXT chat
-    // turn as a question about something that happened minutes ago. Refusing
-    // to park is the same reasoning as the capability above, one layer down.
-    //
-    // ⚠ The scope has to cover RUNNING the tool, not just dispatching it, and
-    // that is the same one-of-two-steps split the #152 note below describes.
-    // `dispatch_tool_call` hands back a `ToolCallResult` whose `.result` is a
-    // future; the tool body — and therefore every `park()` in it — executes when
-    // that future is awaited. Scoping only the dispatch left the run outside,
-    // where `no_human_surface()` is false, so the refusal above never fired.
-    //
-    // Measured cost: `skills__installMarketplaceSkill` and
-    // `skills__importSkillPackage` — both `requires_user_proof: true` — parked a
-    // card nobody could answer and never returned. Not a slow download: 180 s
-    // with no reply, while their `dryRun` siblings answered in 0.5 s and 9.8 s,
-    // and the daemon log showed `calling client.call_tool` with no completion.
     let native_client = biorouter_server::native_client::from_headers(&headers)?;
-    let dispatched = biorouter::native_client::scope(
-        native_client,
-        biorouter::user_surface::without_human_surface(async {
-            let dispatch = agent
-                .extension_manager
-                .dispatch_tool_call(
-                    &payload.session_id,
-                    tool_call,
-                    biorouter::privacy::CallCapability::public_enforced(),
-                    CancellationToken::default(),
-                )
-                .await;
-            match dispatch {
-                // Awaited HERE, inside the scope, so the tool body sees the flag.
-                Ok(tool_result) => Ok(tool_result.result.await),
-                Err(error) => Err(error),
-            }
-        }),
-    )
-    .await;
+    let dispatched =
+        dispatch_direct_tool(&agent, &payload.session_id, tool_call, native_client).await;
 
     let awaited = match dispatched {
         Ok(result) => result,
@@ -6744,7 +6753,8 @@ mod gate_c_call_tool_tests {
 
         // The refusal runs inside the Crew-scoped branch, after the chat's reach and the
         // tool allowlist, and before anything is dispatched.
-        let handler = crate::routes::body_of(include_str!("agent.rs"), "async fn call_tool");
+        let source = include_str!("agent.rs");
+        let handler = crate::routes::body_of(source, "async fn call_tool");
         let scoped = handler
             .split("if crew.is_scoped_session(&payload.session_id).await {")
             .nth(1)
@@ -6756,7 +6766,9 @@ mod gate_c_call_tool_tests {
         );
         let reach = handler.find("session_reach(").expect("reach");
         let refusal = handler.find("direct_crew_tool_refusal(").expect("refusal");
-        let dispatch = handler.find(".dispatch_tool_call(").expect("dispatch");
+        let dispatch = handler.find("dispatch_direct_tool(").expect("dispatch");
+        let helper = crate::routes::body_of(source, "async fn dispatch_direct_tool");
+        assert!(helper.contains(".dispatch_tool_call("));
         assert!(reach < refusal && refusal < dispatch);
     }
 }
