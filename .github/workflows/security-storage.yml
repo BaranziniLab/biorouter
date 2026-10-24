@@ -1,0 +1,126 @@
+name: Rebuilt session storage acceptance
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - '.github/workflows/security-storage.yml'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'rust-toolchain.toml'
+      - 'crates/biorouter/src/session/**'
+      - 'crates/biorouter/src/config/paths.rs'
+      - 'crates/biorouter-sandbox/**'
+      - 'crates/biorouter-server/**'
+      - 'scripts/security-assessment/session_storage_rebuilt.py'
+      - 'scripts/security-assessment/session-storage-runtime.Dockerfile'
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/security-storage.yml'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'rust-toolchain.toml'
+      - 'crates/biorouter/src/session/**'
+      - 'crates/biorouter/src/config/paths.rs'
+      - 'crates/biorouter-sandbox/**'
+      - 'crates/biorouter-server/**'
+      - 'scripts/security-assessment/session_storage_rebuilt.py'
+      - 'scripts/security-assessment/session-storage-runtime.Dockerfile'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: security-storage-${{ github.event_name }}-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  rebuilt-linux-sqlite:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      CARGO_BUILD_JOBS: 2
+      CARGO_PROFILE_DEV_DEBUG: 0
+      CARGO_TERM_COLOR: always
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Record exact source before building
+        env:
+          SOURCE_SHA: ${{ github.sha }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          export SECURITY_STORAGE_EVIDENCE="$RUNNER_TEMP/security-storage-evidence"
+          echo "SECURITY_STORAGE_EVIDENCE=$SECURITY_STORAGE_EVIDENCE" >> "$GITHUB_ENV"
+          mkdir -p "$SECURITY_STORAGE_EVIDENCE"
+          python3 - <<'PY'
+          import json, os, subprocess
+          from pathlib import Path
+          actual = subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip()
+          assert actual == os.environ['SOURCE_SHA']
+          proof = {'source_sha': actual, 'pull_request_head_sha': os.environ['PR_HEAD_SHA'] or None,
+                   'runner_os': 'ubuntu-24.04', 'build_profile': 'dev', 'status': 'source_recorded'}
+          (Path(os.environ['SECURITY_STORAGE_EVIDENCE']) / 'source.json').write_text(json.dumps(proof, indent=2) + '\n')
+          PY
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: '1.92'
+      - name: Keep the cache keyed to the pinned toolchain
+        run: |
+          set -euo pipefail
+          pinned=$(rustup show active-toolchain | cut -d' ' -f1)
+          test -n "$pinned"
+          for toolchain in $(rustup toolchain list | cut -d' ' -f1); do
+            if [ "$toolchain" != "$pinned" ]; then rustup toolchain uninstall "$toolchain"; fi
+          done
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: serve
+          save-if: false
+      - uses: arduino/setup-protoc@v3
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Install normal Linux build dependencies
+        run: |
+          set -euo pipefail
+          sudo rm -f /etc/apt/sources.list.d/microsoft-prod.list \
+            /etc/apt/sources.list.d/azure-cli.list /etc/apt/sources.list.d/microsoft-prod.sources \
+            /etc/apt/sources.list.d/azure-cli.sources
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends libdbus-1-dev libxcb1-dev libxdo-dev pkg-config
+      - name: Rebuild the actual daemon from the checked-out source
+        run: |
+          set -euo pipefail
+          cargo build --locked -p biorouter-server --bin biorouterd 2>&1 | tee "$SECURITY_STORAGE_EVIDENCE/build.log"
+          git diff --exit-code HEAD
+          rustc -vV > "$SECURITY_STORAGE_EVIDENCE/rustc.txt"
+          sha256sum target/debug/biorouterd > "$SECURITY_STORAGE_EVIDENCE/daemon.sha256"
+      - name: Build a matching Ubuntu runtime
+        run: |
+          set -euo pipefail
+          docker build --pull --tag biorouter-security-storage-runtime:ci \
+            --file scripts/security-assessment/session-storage-runtime.Dockerfile \
+            scripts/security-assessment 2>&1 | tee "$SECURITY_STORAGE_EVIDENCE/runtime-build.log"
+          docker image inspect biorouter-security-storage-runtime:ci > "$SECURITY_STORAGE_EVIDENCE/runtime-image.json"
+      - name: Exercise real SQLite history with two separate non-root accounts
+        env:
+          SOURCE_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          python3 scripts/security-assessment/session_storage_rebuilt.py \
+            --daemon target/debug/biorouterd \
+            --image biorouter-security-storage-runtime:ci \
+            --source-commit "$SOURCE_SHA" \
+            --repetitions 3 \
+            --output "$SECURITY_STORAGE_EVIDENCE/rebuilt-runtime" \
+            2>&1 | tee "$SECURITY_STORAGE_EVIDENCE/acceptance.log"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: rebuilt-session-storage-${{ github.sha }}
+          path: ${{ runner.temp }}/security-storage-evidence/
+          if-no-files-found: error
+          retention-days: 30
