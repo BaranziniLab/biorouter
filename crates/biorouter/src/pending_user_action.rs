@@ -1845,9 +1845,11 @@ mod decision_authority_tests {
                 .unwrap()
                 .to_string_lossy()
                 .replace('\\', "/");
-            // This file defines all three constructors and exercises them.
+            // Integration fixtures supply synthetic human answers; production
+            // constructor locations remain exhaustively checked below.
             if rel == "crates/biorouter/src/pending_user_action.rs"
                 || rel == "crates/biorouter/tests/folder_access_authorization.rs"
+                || rel == "crates/biorouter/tests/folder_analysis_authorization.rs"
             {
                 continue;
             }
