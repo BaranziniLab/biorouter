@@ -471,6 +471,19 @@ async function stopFailedSharedStartup(child: ChildProcess): Promise<boolean> {
 export const startBiorouterd = (options: StartBiorouterdOptions): Promise<BiorouterdResult> =>
   startOrAttachBiorouterd(options);
 
+const sharedDaemonStartupError = (stderrLines: readonly string[], message: string): Error => {
+  const refusedPrivateHistory = stderrLines.some((line) =>
+    /^Error:\s+Cannot open private session history at '/.test(
+      line.replace(ANSI_ESCAPE_PATTERN, '').trim()
+    )
+  );
+  if (!refusedPrivateHistory) return new Error(message);
+  // Startup stderr can include private paths or library output. Show only fixed recovery text.
+  return new Error(
+    `${message}\n\nBiorouter could not open private session history safely. Your history has not been reset. Close all Biorouter processes. Check that the sessions folder and its nested folders are real folders owned by your account, without links or write access for other accounts. Use your operating system's folder security settings to correct permissions, then restart. For deliberate relocation, set BIOROUTER_PATH_ROOT to the real app root containing data/sessions. Recovery instructions: docs/security/session-storage.md.`
+  );
+};
+
 /** What this app can do with the profile's running daemon. */
 type ExistingDaemon =
   | { kind: 'usable'; key: string }
@@ -818,13 +831,15 @@ async function startOrAttachBiorouterd(
               return await attachSharedDaemon(options, winner, dir, found.key, reattach);
           }
           if (biorouterdProcess.pid === undefined)
-            throw new Error(
+            throw sharedDaemonStartupError(
+              stderrLines,
               'Shared profile daemon failed to start. Inspect its startup diagnostics.'
             );
         }
         await new Promise((resolve) => setTimeout(resolve, 100));
       }
-      throw new Error(
+      throw sharedDaemonStartupError(
+        stderrLines,
         biorouterdProcess.exitCode !== null
           ? 'Shared profile daemon failed to start. Inspect its startup diagnostics.'
           : 'Shared profile daemon did not publish its private runtime descriptor. Inspect the daemon before retrying.'
@@ -840,7 +855,8 @@ async function startOrAttachBiorouterd(
       const stopped = await stopFailedSharedStartup(biorouterdProcess);
       if (!stopped)
         throw Object.assign(
-          new Error(
+          sharedDaemonStartupError(
+            stderrLines,
             'Shared daemon startup failed, and its owned child did not exit within the cleanup deadline. Inspect that daemon before retrying.'
           ),
           { cause: error }

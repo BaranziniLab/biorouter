@@ -89,6 +89,7 @@ vi.mock('./daemonRuntime', () => ({
 }));
 
 import { startBiorouterd } from './biorouterd';
+import { reportFatalStartupError } from './utils/fatalStartupError';
 
 const APP_VERSION = '1.92.1';
 const MINTED = 'k'.repeat(64);
@@ -406,6 +407,71 @@ describe('shared daemon attachment without an approval secret', () => {
     await expect(start()).rejects.toThrow(/failed to start/i);
     expect(child?.pid).toBeUndefined();
     expect(child?.kill).not.toHaveBeenCalled();
+  });
+
+  it('surfaces fixed private-history recovery guidance without echoing daemon stderr', async () => {
+    const child = makeChild(fresh.pid);
+    mocks.spawn.mockReturnValue(child);
+    mocks.discover.mockReturnValue(undefined);
+    vi.useFakeTimers();
+    try {
+      const failed = start().catch((error: Error) => error);
+      await vi.advanceTimersByTimeAsync(100);
+      child.stderr.emit(
+        'data',
+        Buffer.from(
+          "Error: Cannot open private session history at '/SYNTHETIC_PRIVATE_PATH'. Close other Biorouter processes.\nCaused by: SYNTHETIC_SECRET_SENTINEL\n"
+        )
+      );
+      child.exitCode = 1;
+      await vi.advanceTimersByTimeAsync(10000);
+      const error = await failed;
+      expect(error).toBeInstanceOf(Error);
+      expect(String(error)).toContain('Your history has not been reset');
+      expect(String(error)).toContain('folder security settings');
+      expect(String(error)).toContain('BIOROUTER_PATH_ROOT');
+      expect(String(error)).not.toContain('SYNTHETIC_PRIVATE_PATH');
+      expect(String(error)).not.toContain('SYNTHETIC_SECRET_SENTINEL');
+      const showErrorBox = vi.fn();
+      await reportFatalStartupError(error, {
+        platform: 'darwin',
+        logStartupFailure: vi.fn(),
+        showErrorBox,
+        showMessageBox: vi.fn(),
+        quit: vi.fn(),
+        isQuitting: () => false,
+      });
+      expect(showErrorBox).toHaveBeenCalledWith(
+        'Biorouter Error',
+        expect.stringContaining('folder security settings')
+      );
+      expect(showErrorBox.mock.calls[0]?.[1]).not.toContain('SYNTHETIC_SECRET_SENTINEL');
+      expect(child.kill).not.toHaveBeenCalled();
+      expect(mocks.writeKey).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('keeps unrelated daemon errors generic without echoing their contents', async () => {
+    const child = makeChild(fresh.pid);
+    mocks.spawn.mockReturnValue(child);
+    mocks.discover.mockReturnValue(undefined);
+    vi.useFakeTimers();
+    try {
+      const failed = start().catch((error: Error) => error);
+      await vi.advanceTimersByTimeAsync(100);
+      child.stderr.emit('data', Buffer.from('Error: SYNTHETIC_SECRET_SENTINEL\n'));
+      child.exitCode = 1;
+      await vi.advanceTimersByTimeAsync(10000);
+      const error = await failed;
+      expect(error).toBeInstanceOf(Error);
+      expect(String(error)).toContain('Shared profile daemon failed to start');
+      expect(String(error)).not.toContain('Your history has not been reset');
+      expect(String(error)).not.toContain('SYNTHETIC_SECRET_SENTINEL');
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('removes the saved key and stops its own child when the new daemon refuses the connection', async () => {
