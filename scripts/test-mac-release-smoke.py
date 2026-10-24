@@ -77,6 +77,9 @@ function /usr/bin/env() {
   for arg in "$@"; do
     [[ "$arg" != --user-data-dir=* ]] || userdata="${arg#--user-data-dir=}"
   done
+  [ -d "$userdata" ] && [ ! -L "$userdata" ] || return 38
+  "$REAL_PYTHON" -c 'import os, stat, sys; metadata = os.stat(sys.argv[1]); assert metadata.st_uid == os.getuid() and stat.S_IMODE(metadata.st_mode) == 0o700' "$userdata" || return 38
+  trace 'private userData exists before launch'
   mkdir -p "$userdata/logs" "$XDG_STATE_HOME/biorouter/daemon"
   case "$MODE" in
     not-ready) printf 'startup pending\n' >"$userdata/logs/main.log" ;;
@@ -198,6 +201,7 @@ class MacReleaseSmoke(unittest.TestCase):
                 for check in ('helper ', 'codesign ', 'spctl ', 'xcrun ', 'file ', 'version '):
                     self.assertTrue(any(line.startswith(check) for line in trace), trace)
                 self.assertIn('validate private runtime key', trace)
+                self.assertIn('private userData exists before launch', trace)
                 self.assertEqual(sum(line.startswith('hdiutil detach') for line in trace), 1)
                 self.assertIn('kill -KILL 425001', trace)
                 self.assertIn('kill -TERM 425002', trace)

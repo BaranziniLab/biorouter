@@ -87,6 +87,7 @@ smoke_mac() (
   require_file "$dmg"
   mount="$(mktemp -d "/tmp/biorouter-${arch}-mount.XXXXXX")"
   tmp="$(mktemp -d "/tmp/biorouter-${arch}-smoke.XXXXXX")"
+  mkdir -m 700 "$tmp/userData"
   hdiutil attach -nobrowse -readonly -mountpoint "$mount" "$dmg" >/dev/null
   mounted=true
   local app="$mount/Biorouter.app"
