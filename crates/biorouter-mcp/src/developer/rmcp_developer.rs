@@ -1993,7 +1993,7 @@ impl DeveloperServer {
 
         // Open and decode the image
         let bytes = path.bound.read_limited(MAX_FILE_SIZE).map_err(file_error)?;
-        let decoded = match image::ImageFormat::from_path(&**path) {
+        let decoded = match image::ImageFormat::from_path(&*path) {
             Ok(format) => image::load_from_memory_with_format(&bytes, format),
             Err(_) => image::load_from_memory(&bytes),
         };

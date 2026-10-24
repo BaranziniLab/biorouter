@@ -243,7 +243,9 @@ impl FileHistory {
                 guard.insert(key, legacy);
                 enrolled += 1;
             }
-            history.persist(&guard);
+            if enrolled > 0 {
+                history.persist(&guard);
+            }
         }
         if enrolled > 0 || retained > 0 {
             history.persistence_notice = Some(format!("Legacy undo history used path names without object identities. {enrolled} existing workspace file(s) were enrolled to this selected folder; their current contents will be preserved before any legacy restore. {retained} outside, restricted, or unresolved entry/entries remain private and were not enrolled. To recover them, explicitly authorize their actual folder and preview the file and snapshot before enrollment."));
