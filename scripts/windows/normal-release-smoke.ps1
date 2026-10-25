@@ -210,6 +210,18 @@ $expression = @'
 '@
 
 try {
+    # A real profile folder is private to its account. RUNNER_TEMP inherits the
+    # drive root's "Users may create folders" entry, which private storage refuses.
+    New-Item -ItemType Directory -Path $root -Force | Out-Null
+    $rootAcl = [Security.AccessControl.DirectorySecurity]::new()
+    $rootAcl.SetAccessRuleProtection($true, $false)
+    foreach ($sid in @([Security.Principal.WindowsIdentity]::GetCurrent().User,
+            [Security.Principal.SecurityIdentifier]::new('S-1-5-18'),
+            [Security.Principal.SecurityIdentifier]::new('S-1-5-32-544'))) {
+        $rootAcl.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new($sid, 'FullControl',
+            'ContainerInherit,ObjectInherit', 'None', 'Allow'))
+    }
+    Set-Acl -LiteralPath $root -AclObject $rootAcl
     New-Item -ItemType Directory -Force -Path $normalUserDataDirectory, (Join-Path $root 'local'), (Join-Path $root 'roaming'),
         (Join-Path $root 'home'), (Split-Path -Parent $Report) | Out-Null
     $result.assets = @(Get-Content -LiteralPath $AssetEvidence -Raw | ConvertFrom-Json)
