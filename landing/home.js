@@ -15,18 +15,27 @@
 /* The hero's "New" line names the newest entry in the About page's Updates
    list (its first .news-list, newest first) and links to that list. The HTML
    carries a current fallback; this only refreshes it, so a new row in
-   about.html reaches the hero with no edit here. */
+   about.html reaches the hero with no edit here. A row's data-hero-note (say,
+   "Recording available") follows the headline, and a row without one hides it. */
 (function () {
   var slot = document.querySelector('[data-latest-update]');
+  var noteSlot = document.querySelector('[data-latest-update-note]');
   if (!slot || !window.fetch || !window.DOMParser) return;
   fetch('about.html')
     .then(function (r) { return r.ok ? r.text() : null; })
     .then(function (html) {
       if (!html) return;
       var doc = new DOMParser().parseFromString(html, 'text/html');
-      var h = doc.querySelector('.news-list:not(.news-list-earlier) .news-row h3');
+      var row = doc.querySelector('.news-list:not(.news-list-earlier) .news-row');
+      var h = row && row.querySelector('h3');
       var t = h && h.textContent.replace(/\s+/g, ' ').trim();
-      if (t) slot.textContent = t;
+      if (!t) return;
+      slot.textContent = t;
+      if (!noteSlot) return;
+      var note = (row.getAttribute('data-hero-note') || '').replace(/\s+/g, ' ').trim();
+      var text = noteSlot.querySelector('.note');
+      if (note && text) text.textContent = note;
+      noteSlot.hidden = !note;
     })
     .catch(function () {});
 })();

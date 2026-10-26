@@ -118,18 +118,23 @@
        for the release (UTC), the day the Download page shows. The newest five rows stay
        in that list, so adding a sixth moves the oldest into the "Earlier updates" list
        below it; nothing is removed. check-consistency.mjs counts the five. The
-       Introduction page's hero names the first row's headline (home.js). -->
+       Introduction page's hero names the first row's headline (home.js), plus the
+       row's data-hero-note when it has one. A row with more than one destination is a
+       div.news-row whose links sit together in .news-links, instead of one a.news-row. -->
   <section class="about-section wrap" id="updates" aria-labelledby="updates-h">
     <div class="rule-line reveal"><h2 id="updates-h">Updates</h2></div>
     <div class="news-list">
-      <a href="https://sessionize.com/s/wanjun-gu/notebooks-behind-the-firewall-ai-agents-and-real-p/192251" class="news-row" rel="noopener">
+      <div class="news-row" data-hero-note="Recording available">
         <div class="news-date"><span class="day">19</span><span class="mon">Oct</span></div>
         <div class="news-body">
           <h3>Biorouter at Jupyter Day 2026</h3>
-          <p>Notebooks Behind the Firewall: AI Agents and Real Patient Data in Jupyter, a talk presented on October 19, 2026, at the San Jose Convention Center. The talk shows how Biorouter connects to Jupyter as an ACP agent. Researchers keep their existing notebooks, work with institutionally hosted models, and keep protected health data inside institutional boundaries.</p>
-          <span class="news-link">Session details&nbsp;<span aria-hidden="true">→</span></span>
+          <p>Notebooks Behind the Firewall: AI Agents and Real Patient Data in Jupyter, a talk presented on October 19, 2026, at the San Jose Convention Center. The talk shows how Biorouter connects to Jupyter as an ACP agent. Researchers keep their existing notebooks, work with institutionally hosted models, and keep protected health data inside institutional boundaries. The recording is on Project Jupyter's YouTube channel.</p>
+          <span class="news-links">
+            <a class="news-link" href="https://www.youtube.com/watch?v=A_wzcWgSqTA" rel="noopener">View video&nbsp;<span aria-hidden="true">→</span></a>
+            <a class="news-link" href="https://sessionize.com/s/wanjun-gu/notebooks-behind-the-firewall-ai-agents-and-real-p/192251" rel="noopener">Session details&nbsp;<span aria-hidden="true">→</span></a>
+          </span>
         </div>
-      </a>
+      </div>
       <a href="https://github.com/BaranziniLab/biorouter/releases/tag/v1.94.0" class="news-row">
         <div class="news-date"><span class="day">25</span><span class="mon">Oct</span></div>
         <div class="news-body">

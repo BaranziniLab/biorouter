@@ -100,7 +100,9 @@ a.inline:hover { color: var(--coral); text-decoration-color: var(--coral); }
    a.news-row > .news-date (.day .mon) + .news-body (h3, p, .news-link).
    On wide screens .news-body steps out of the way (display: contents) so the
    row can use the page grid: the date and the link in the first column, the
-   headline and the sentence in the other two. */
+   headline and the sentence in the other two. A row with several destinations
+   is a div.news-row whose a.news-link elements sit together in .news-links,
+   in the cell a single link would use. */
 .news-list { display: flex; flex-direction: column; }
 .news-row {
   display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 0 28px;
@@ -131,17 +133,27 @@ a.inline:hover { color: var(--coral); text-decoration-color: var(--coral); }
   font-size: var(--fs-sm); line-height: 1.6; color: var(--subtle);
   transition: color var(--dur-fast) var(--ease);
 }
+.news-links {
+  grid-column: 1; grid-row: 1 / 3; align-self: start; margin-top: 30px;
+  display: flex; flex-direction: column; align-items: flex-start;
+}
+.news-links .news-link { margin-top: 0; }
 /* Arrows stay quiet at rest; only the newest row keeps a coral one. */
 .news-list:not(.news-list-earlier) .news-row:first-child .news-link span[aria-hidden] { color: var(--coral); }
-.news-row:hover h3, .news-row:focus-visible h3 { text-decoration-color: var(--coral-bar); }
-.news-row:hover .news-link, .news-row:focus-visible .news-link { color: var(--coral); }
-/* Phones: the date and the link share the first line, the text runs full width. */
+/* A row that is itself a link lights up as a whole; a row with several links
+   lights up one link at a time, so the headline never promises one destination. */
+a.news-row:hover h3, a.news-row:focus-visible h3 { text-decoration-color: var(--coral-bar); }
+a.news-row:hover .news-link, a.news-row:focus-visible .news-link,
+.news-links .news-link:hover, .news-links .news-link:focus-visible { color: var(--coral); }
+/* Phones: the date and the link share the first line, the text runs full width.
+   Several links fit on one line of their own under the text. */
 @media (max-width: 640px) {
   .news-row { grid-template-columns: minmax(0, 1fr) auto; gap: 0 16px; padding: 18px 0; }
   .news-date { grid-column: 1; grid-row: 1; margin-bottom: 6px; }
   .news-link { grid-column: 2; grid-row: 1; margin-top: 0; }
   .news-body h3 { grid-column: 1 / -1; grid-row: 2; }
   .news-body p { grid-column: 1 / -1; grid-row: 3; }
+  .news-links { grid-column: 1 / -1; grid-row: 4; flex-direction: row; flex-wrap: wrap; gap: 4px 20px; margin-top: 10px; }
 }
 
 /* Earlier updates: the rest of the list, closed until asked for. Every row is

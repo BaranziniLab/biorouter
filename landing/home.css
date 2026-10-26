@@ -11,6 +11,8 @@
 .hero-news { margin: 8px 0 0; font-size: var(--fs-sm); line-height: var(--lh-sm); color: var(--ink); }
 .hero-news .k { color: var(--coral-ink); }
 .hero-news .arrow { color: var(--coral); }
+/* An optional second phrase from the update's data-hero-note, one step quieter. */
+.hero-news .sep, .hero-news .note { color: var(--muted); }
 .hero-art { margin: 48px 0 0; }
 .art-hub { width: 100%; height: clamp(360px, 46vw, 470px); }
 @media (max-width: 760px) {
