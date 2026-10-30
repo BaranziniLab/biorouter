@@ -1,3 +1,4 @@
+import { adoptDraftExitCriteria, getDraftExitCriteria } from '../store/loopExitCriteria';
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useLocation, useNavigate, useSearchParams } from 'react-router-dom';
 import { SearchView } from './conversation/SearchView';
@@ -1958,6 +1959,12 @@ function BaseChatContent({
     if (!session && !sessionId && (textValue.trim() || hasAttachments) && !isCreatingSession) {
       const effortScope = draftReasoningScope(reasoningDraftKey);
       const submittedEffort = getReasoningEffort(effortScope);
+      let submittedCriteria: ReturnType<typeof getDraftExitCriteria>;
+      try {
+        submittedCriteria = getDraftExitCriteria(effortScope);
+      } catch (error) {
+        return handleCreateSessionError(error);
+      }
       // W2-PRV-6 — a model picked for this chat before it was sent. The chip
       // names it, so it (not the app-wide selection) is what this chat runs on.
       const chosenModel = pendingChatModel;
@@ -1995,6 +2002,7 @@ function BaseChatContent({
           firstSend.end();
           return false;
         }
+        await adoptDraftExitCriteria(effortScope, newSession.id, submittedCriteria);
         adoptDraftReasoningEffort(effortScope, newSession.id, submittedEffort);
         navigateToRoute(
           navigate,

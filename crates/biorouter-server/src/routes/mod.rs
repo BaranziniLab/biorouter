@@ -1023,6 +1023,7 @@ pub mod crew_profile;
 pub mod crew_setup;
 pub mod crew_transfers;
 pub mod errors;
+pub mod exit_criteria;
 pub mod folder_access;
 pub mod knowledge;
 pub mod llamacpp;
@@ -1091,6 +1092,7 @@ pub fn configure(state: Arc<crate::state::AppState>, secret_key: String) -> Rout
         // like everything else. See `routes::shell`.
         .merge(shell::routes(state.clone()))
         .merge(skills::routes(state.clone()))
+        .merge(exit_criteria::routes(state.clone()))
         // No secret-key gate: the path carries a single-turn capability nonce, and
         // Codex sends no Authorization header at all, so a header scheme would
         // authenticate one client and not the other. See the module header.

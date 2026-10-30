@@ -297,6 +297,11 @@ export type AuthorRequest = {
     metadata?: string | null;
 };
 
+export type BasetenDecisionModel = {
+    name: string;
+    slug: string;
+};
+
 export type CallToolRequest = {
     arguments: unknown;
     name: string;
@@ -1392,6 +1397,25 @@ export type DailyActivity = {
     tokensComplete: boolean;
 };
 
+export type DecisionType = {
+    interrupt_when: boolean;
+    threshold: number;
+    type: 'noul';
+} | {
+    interrupt_when: boolean;
+    type: 'boolean';
+} | {
+    choices: Array<string>;
+    interrupt_when: string;
+    type: 'choice';
+} | {
+    interrupt_below: number;
+    levels?: Array<string>;
+    max: number;
+    min: number;
+    type: 'ranking';
+};
+
 export type DeclarativeProviderConfig = {
     api_key_env: string;
     base_url: string;
@@ -1660,12 +1684,22 @@ export type ErrorResponse = {
     message: string;
 };
 
+export type EvaluationTiming = 'pre_send' | 'post_response';
+
 /**
  * Which rung of the detection ladder decided the shape. Reported so a preview
  * can explain itself, and so a test can assert that the *manifest* decided
  * rather than the structure happening to agree with it.
  */
 export type Evidence = 'biorouterManifest' | 'codexPlugin' | 'claudePlugin' | 'skillsManifest' | 'skillsDirectory' | 'structuralInference' | 'singleSkill';
+
+export type ExitCriteria = {
+    decision: DecisionType;
+    model: string;
+    prompt: string;
+    provider: string;
+    timing?: EvaluationTiming;
+};
 
 /**
  * Represents the different types of MCP extensions that can be added to the manager
@@ -2922,6 +2956,10 @@ export type LoginMismatch = {
      * The account the invitation names.
      */
     invitee: string;
+};
+
+export type LoopExitCriteriaSettings = {
+    criteria?: ExitCriteria | null;
 };
 
 export type Manifest = {
@@ -6797,6 +6835,89 @@ export type AgentCrossAffiliationGrantResponses = {
 };
 
 export type AgentCrossAffiliationGrantResponse = AgentCrossAffiliationGrantResponses[keyof AgentCrossAffiliationGrantResponses];
+
+export type GetBasetenDecisionModelsData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/agent/exit-criteria/models/baseten';
+};
+
+export type GetBasetenDecisionModelsResponses = {
+    200: Array<BasetenDecisionModel>;
+};
+
+export type GetBasetenDecisionModelsResponse = GetBasetenDecisionModelsResponses[keyof GetBasetenDecisionModelsResponses];
+
+export type GetLoopExitCriteriaData = {
+    body?: never;
+    path: {
+        /**
+         * Conversation ID
+         */
+        session_id: string;
+    };
+    query?: never;
+    url: '/agent/exit-criteria/{session_id}';
+};
+
+export type GetLoopExitCriteriaErrors = {
+    /**
+     * Conversation is not reachable
+     */
+    403: unknown;
+    /**
+     * Conversation not found
+     */
+    404: unknown;
+    /**
+     * Stored criteria could not be read
+     */
+    500: unknown;
+};
+
+export type GetLoopExitCriteriaResponses = {
+    200: LoopExitCriteriaSettings;
+};
+
+export type GetLoopExitCriteriaResponse = GetLoopExitCriteriaResponses[keyof GetLoopExitCriteriaResponses];
+
+export type SetLoopExitCriteriaData = {
+    body: LoopExitCriteriaSettings;
+    path: {
+        /**
+         * Conversation ID
+         */
+        session_id: string;
+    };
+    query?: never;
+    url: '/agent/exit-criteria/{session_id}';
+};
+
+export type SetLoopExitCriteriaErrors = {
+    /**
+     * Invalid criteria or unavailable decision model
+     */
+    400: unknown;
+    /**
+     * Conversation or decision model is not permitted
+     */
+    403: unknown;
+    /**
+     * Conversation not found
+     */
+    404: unknown;
+    /**
+     * Criteria could not be saved
+     */
+    500: unknown;
+};
+
+export type SetLoopExitCriteriaResponses = {
+    200: LoopExitCriteriaSettings;
+};
+
+export type SetLoopExitCriteriaResponse = SetLoopExitCriteriaResponses[keyof SetLoopExitCriteriaResponses];
 
 export type ReadResourceData = {
     body: ReadResourceRequest;

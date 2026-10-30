@@ -11394,6 +11394,7 @@ impl Agent {
             // bounded by `self_critique_config.max_passes` so a stubborn answer
             // cannot spin. Reply-scoped, like `post_edit_reflections`.
             let mut self_critique_passes: u32 = 0;
+            let mut loop_decision = crate::agents::exit_criteria::LoopDecisionEvaluator::default();
             // BR-48: the per-reply corrective-attempt counter — it does NOT reset
             // on tool calls (mirroring the /goal iteration budget), so a check that
             // never goes green cannot loop past the cap.
@@ -11814,6 +11815,30 @@ impl Agent {
                         .await
                     }
                 };
+
+                if !is_token_cancelled(&cancel_token) {
+                    match self.check_loop_exit_criteria(
+                        &mut loop_decision, &session_config, &conversation_with_moim,
+                        crate::agents::exit_criteria::EvaluationBoundary {
+                            timing: crate::agents::exit_criteria::EvaluationTiming::PreSend,
+                            iteration: turns_taken,
+                        },
+                        &mut budget, cancel_token.as_ref(),
+                    ).await? {
+                        crate::agents::exit_criteria::LoopExitCheck::Continue(tokens) => {
+                            if let Some(tokens) = tokens { yield AgentEvent::TokenUsage(tokens); }
+                        }
+                        crate::agents::exit_criteria::LoopExitCheck::Pause { notice, tokens } => {
+                            if let Some(tokens) = tokens { yield AgentEvent::TokenUsage(tokens); }
+                            self.record_turn_exit(TurnExit::ResumableForUserInput);
+                            crate::agents::subagent_handle::begin_parent_closing(&session_config.id);
+                            native_supervision_required = true;
+                            yield AgentEvent::Message(assistant_text(notice));
+                            break;
+                        }
+                        crate::agents::exit_criteria::LoopExitCheck::Cancelled => break,
+                    }
+                }
 
                 let iteration_provider = Arc::clone(&reply_provider);
                 crate::crew::manager()?.check_provider_dispatch(
@@ -13426,6 +13451,30 @@ impl Agent {
                     native_supervision_required = true;
                     deferred_turn_abort = Some((code, message));
                     break;
+                }
+
+                if !is_token_cancelled(&cancel_token) {
+                    match self.check_loop_exit_criteria(
+                        &mut loop_decision, &session_config, &conversation,
+                        crate::agents::exit_criteria::EvaluationBoundary {
+                            timing: crate::agents::exit_criteria::EvaluationTiming::PostResponse,
+                            iteration: turns_taken,
+                        },
+                        &mut budget, cancel_token.as_ref(),
+                    ).await? {
+                        crate::agents::exit_criteria::LoopExitCheck::Continue(tokens) => {
+                            if let Some(tokens) = tokens { yield AgentEvent::TokenUsage(tokens); }
+                        }
+                        crate::agents::exit_criteria::LoopExitCheck::Pause { notice, tokens } => {
+                            if let Some(tokens) = tokens { yield AgentEvent::TokenUsage(tokens); }
+                            self.record_turn_exit(TurnExit::ResumableForUserInput);
+                            crate::agents::subagent_handle::begin_parent_closing(&session_config.id);
+                            native_supervision_required = true;
+                            yield AgentEvent::Message(assistant_text(notice));
+                            break;
+                        }
+                        crate::agents::exit_criteria::LoopExitCheck::Cancelled => break,
+                    }
                 }
 
                 // BR-61 + #69 + D12b: the take-and-close happens at the COMMIT

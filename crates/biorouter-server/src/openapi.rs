@@ -568,12 +568,20 @@ impl utoipa::Modify for ApiKeySecurity {
         super::routes::knowledge::set_active,
         super::routes::skills::skill_catalog_handler,
         super::routes::skills::set_session_skills,
+        super::routes::exit_criteria::get_loop_exit_criteria,
+        super::routes::exit_criteria::get_baseten_decision_models,
+        super::routes::exit_criteria::set_loop_exit_criteria,
         super::routes::skills::refresh_skill_catalog,
         super::routes::skills::preview_skill_package,
         super::routes::skills::install_skill_package,
         super::routes::skills::remove_skill_package,
     ),
     components(schemas(
+        super::routes::exit_criteria::LoopExitCriteriaSettings,
+        biorouter::agents::exit_criteria::ExitCriteria,
+        biorouter::agents::baseten_decisions::BasetenDecisionModel,
+        biorouter::agents::exit_criteria::DecisionType,
+        biorouter::agents::exit_criteria::EvaluationTiming,
         // Every `/crew` answer and refusal is a named schema (CROSSCUT-6); the contract test
         // in `routes/crew/openapi_contract_tests.rs` fails on an untyped one or a dangling
         // `$ref`, so a schema a route names but this list omits is caught there.

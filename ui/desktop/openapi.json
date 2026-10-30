@@ -724,6 +724,135 @@
         }
       }
     },
+    "/agent/exit-criteria/models/baseten": {
+      "get": {
+        "tags": [
+          "agent"
+        ],
+        "operationId": "get_baseten_decision_models",
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/BasetenDecisionModel"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "api_key": []
+          }
+        ]
+      }
+    },
+    "/agent/exit-criteria/{session_id}": {
+      "get": {
+        "tags": [
+          "agent"
+        ],
+        "operationId": "get_loop_exit_criteria",
+        "parameters": [
+          {
+            "name": "session_id",
+            "in": "path",
+            "description": "Conversation ID",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LoopExitCriteriaSettings"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Conversation is not reachable"
+          },
+          "404": {
+            "description": "Conversation not found"
+          },
+          "500": {
+            "description": "Stored criteria could not be read"
+          }
+        },
+        "security": [
+          {
+            "api_key": []
+          }
+        ]
+      },
+      "post": {
+        "tags": [
+          "agent"
+        ],
+        "operationId": "set_loop_exit_criteria",
+        "parameters": [
+          {
+            "name": "session_id",
+            "in": "path",
+            "description": "Conversation ID",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LoopExitCriteriaSettings"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LoopExitCriteriaSettings"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid criteria or unavailable decision model"
+          },
+          "403": {
+            "description": "Conversation or decision model is not permitted"
+          },
+          "404": {
+            "description": "Conversation not found"
+          },
+          "500": {
+            "description": "Criteria could not be saved"
+          }
+        },
+        "security": [
+          {
+            "api_key": []
+          }
+        ]
+      }
+    },
     "/agent/read_resource": {
       "post": {
         "tags": [
@@ -10495,6 +10624,21 @@
           }
         }
       },
+      "BasetenDecisionModel": {
+        "type": "object",
+        "required": [
+          "name",
+          "slug"
+        ],
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "slug": {
+            "type": "string"
+          }
+        }
+      },
       "CallToolRequest": {
         "type": "object",
         "required": [
@@ -12482,6 +12626,114 @@
           }
         }
       },
+      "DecisionType": {
+        "oneOf": [
+          {
+            "type": "object",
+            "required": [
+              "threshold",
+              "interrupt_when",
+              "type"
+            ],
+            "properties": {
+              "interrupt_when": {
+                "type": "boolean"
+              },
+              "threshold": {
+                "type": "number",
+                "format": "double"
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "noul"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "interrupt_when",
+              "type"
+            ],
+            "properties": {
+              "interrupt_when": {
+                "type": "boolean"
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "boolean"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "choices",
+              "interrupt_when",
+              "type"
+            ],
+            "properties": {
+              "choices": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "interrupt_when": {
+                "type": "string"
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "choice"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "min",
+              "max",
+              "interrupt_below",
+              "type"
+            ],
+            "properties": {
+              "interrupt_below": {
+                "type": "number",
+                "format": "double"
+              },
+              "levels": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "max": {
+                "type": "number",
+                "format": "double"
+              },
+              "min": {
+                "type": "number",
+                "format": "double"
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "ranking"
+                ]
+              }
+            }
+          }
+        ],
+        "discriminator": {
+          "propertyName": "type"
+        }
+      },
       "DeclarativeProviderConfig": {
         "type": "object",
         "required": [
@@ -12932,6 +13184,13 @@
           }
         }
       },
+      "EvaluationTiming": {
+        "type": "string",
+        "enum": [
+          "pre_send",
+          "post_response"
+        ]
+      },
       "Evidence": {
         "type": "string",
         "description": "Which rung of the detection ladder decided the shape. Reported so a preview\ncan explain itself, and so a test can assert that the *manifest* decided\nrather than the structure happening to agree with it.",
@@ -12944,6 +13203,33 @@
           "structuralInference",
           "singleSkill"
         ]
+      },
+      "ExitCriteria": {
+        "type": "object",
+        "required": [
+          "prompt",
+          "provider",
+          "model",
+          "decision"
+        ],
+        "properties": {
+          "decision": {
+            "$ref": "#/components/schemas/DecisionType"
+          },
+          "model": {
+            "type": "string"
+          },
+          "prompt": {
+            "type": "string"
+          },
+          "provider": {
+            "type": "string"
+          },
+          "timing": {
+            "$ref": "#/components/schemas/EvaluationTiming"
+          }
+        },
+        "additionalProperties": false
       },
       "ExtensionConfig": {
         "oneOf": [
@@ -15318,6 +15604,20 @@
             "description": "The account the invitation names."
           }
         }
+      },
+      "LoopExitCriteriaSettings": {
+        "type": "object",
+        "properties": {
+          "criteria": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/ExitCriteria"
+              }
+            ],
+            "nullable": true
+          }
+        },
+        "additionalProperties": false
       },
       "Manifest": {
         "type": "object",

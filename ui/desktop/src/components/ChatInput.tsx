@@ -1,3 +1,4 @@
+import { LoopExitCriteria } from './bottom_menu/LoopExitCriteria';
 import { onQuotedText, quoteReference } from '../utils/quotedText';
 import React, { useRef, useState, useEffect, useLayoutEffect, useMemo, useCallback } from 'react';
 import { annotationContextText, onArtifactAnnotation } from '../utils/annotationChannel';
@@ -3055,6 +3056,13 @@ export default function ChatInput({
             sessionId={sessionId}
             privacyTier={sessionPrivacyTier}
             handOffKey={handOffKey}
+          />
+          <LoopExitCriteria
+            sessionId={sessionId}
+            draftScope={draftReasoningScope(
+              reasoningDraftKey ?? draftKey ?? anonymousReasoningDraftKey
+            )}
+            privacyTier={sessionPrivacyTier}
           />
           <span className="br-composer-controls__spacer" />
           <div ref={modelSlotRef} className="br-composer-controls__model">

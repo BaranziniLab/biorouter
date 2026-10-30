@@ -1,3 +1,4 @@
+import { adoptDraftExitCriteria, getDraftExitCriteria } from '../store/loopExitCriteria';
 /**
  * Hub Component
  *
@@ -67,6 +68,13 @@ export default function Hub({
     if ((combinedTextFromInput.trim() || hasAttachments) && !isCreatingSession) {
       const effortScope = draftReasoningScope(HOME_COMPOSER_DRAFT_KEY);
       const submittedEffort = getReasoningEffort(effortScope);
+      let submittedCriteria: ReturnType<typeof getDraftExitCriteria>;
+      try {
+        submittedCriteria = getDraftExitCriteria(effortScope);
+      } catch (error) {
+        toastError(startChatFailureNotice(error, { kept: true }));
+        return false;
+      }
       // F3. Before anything is consumed — the extension overrides below are
       // cleared as they are read — so a refused send leaves nothing behind but
       // the text, which `ChatInput` puts back when this resolves `false`.
@@ -83,6 +91,7 @@ export default function Hub({
           allExtensions: extensionConfigs.length > 0 ? undefined : extensionsList,
         });
 
+        await adoptDraftExitCriteria(effortScope, session.id, submittedCriteria);
         adoptDraftReasoningEffort(effortScope, session.id, submittedEffort);
         setView('pair', {
           resumeSessionId: session.id,

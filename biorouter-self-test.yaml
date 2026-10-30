@@ -19,6 +19,7 @@ activities:
   - Create and orchestrate subagents for meta-testing
   - Validate live steering, detached supervision, close-tab survival, and provider restoration
   - Verify productive tasks can exceed the old turn/tool limits while explicit limits and Stop still work
+  - Validate per-chat loop exit criteria, decision thresholds, evaluator errors, and private evaluator boundaries
   - Exercise isolated OKF, BioOKF, and built-in Soul migration round trips
   - Generate and execute test workflows
   - Test error boundaries and security controls
@@ -979,6 +980,21 @@ prompt: |
   model requests. Preserve the user's saved settings, provider, credentials and active chats.
 
   1. From the repository root, run `cargo test -p biorouter --test long_horizon_agent_loop`.
+     Also run `cargo test -p biorouter --test loop_exit_criteria --test baseten_decisions` and, from ui/desktop,
+     `npm run test:run -- src/components/bottom_menu/LoopExitCriteria.test.tsx src/store/loopExitCriteria.test.ts`.
+     With synthetic data only, configure Loop exit criteria before a new chat's first send;
+     verify Public/Private labels, noul/boolean/choice/ranking settings, and persistence after reopening.
+     Verify the Evaluation timing menu persists Pre-send and Post-response, with old criteria
+     defaulting to Post-response. A failing Pre-send check must prevent the first main agent-model
+     call, and a later failure must prevent the next one without also evaluating post-response.
+     A Post-response failure must preserve completed output and tool effects before stopping.
+     Pre-send evidence still reaches the evaluator; helper and preparation calls are outside this gate.
+     For Baseten, verify the dedicated elephant/mammoth/joey catalog, P(yes) thresholds,
+     ordered score rubrics, and the public-evaluator warning. Use local HTTP mocks for inference.
+     Trigger a failing value and confirm no next iteration runs, completed work remains visible,
+     and the pause asks for adjustments. Send revised instructions only after reviewing the
+     criteria. Check evaluator errors pause rather than silently continuing, and that a private
+     chat cannot send its transcript to a public evaluator. Do not use real institutional data.
      The tracked tests must prove that productive work passes both the former 100-turn and
      200-tool-call limits, explicitly chosen limits still stop, and cancellation stops an
      unlimited reply. Record the actual test names, exit code and result. A missing test
