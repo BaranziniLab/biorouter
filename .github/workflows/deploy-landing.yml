@@ -47,7 +47,7 @@ jobs:
   # `just check-everything` runs, so the published catalog and the app that
   # enforces it can never be shipped out of agreement.
   check:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - name: Checkout
         uses: actions/checkout@v4
