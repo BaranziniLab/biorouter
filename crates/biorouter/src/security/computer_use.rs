@@ -117,6 +117,57 @@ fn action_lock() -> Arc<tokio::sync::Mutex<()>> {
         .clone()
 }
 
+fn backend_target() -> &'static str {
+    static TARGET: OnceLock<String> = OnceLock::new();
+    TARGET.get_or_init(|| {
+        format!(
+            "{} ({})",
+            native_hostname().unwrap_or_else(|| "BioRouter backend host".into()),
+            std::env::consts::OS
+        )
+    })
+}
+
+#[cfg(windows)]
+fn native_hostname() -> Option<String> {
+    use windows_sys::Win32::System::SystemInformation::{
+        ComputerNameDnsHostname, GetComputerNameExW,
+    };
+
+    let mut buffer = [0u16; 256];
+    let mut length = buffer.len() as u32;
+    // sys-info's Windows hostname lookup launches HOSTNAME.EXE (#461). Read
+    // the same DNS host identity from Windows, independent of process env.
+    // SAFETY: the buffer holds `length` UTF-16 code units and length is writable.
+    if unsafe { GetComputerNameExW(ComputerNameDnsHostname, buffer.as_mut_ptr(), &mut length) } == 0
+    {
+        return None;
+    }
+    String::from_utf16(&buffer[..length as usize])
+        .ok()
+        .filter(|name| !name.is_empty())
+}
+
+#[cfg(unix)]
+fn native_hostname() -> Option<String> {
+    let mut buffer = [0u8; 256];
+    // SAFETY: the buffer is valid for its length; gethostname writes at most that many bytes.
+    if unsafe { libc::gethostname(buffer.as_mut_ptr().cast(), buffer.len()) } != 0 {
+        return None;
+    }
+    std::ffi::CStr::from_bytes_until_nul(&buffer)
+        .ok()?
+        .to_str()
+        .ok()
+        .filter(|name| !name.is_empty())
+        .map(str::to_owned)
+}
+
+#[cfg(not(any(unix, windows)))]
+fn native_hostname() -> Option<String> {
+    None
+}
+
 pub struct ComputerUseConsent {
     identity: String,
     state: Mutex<State>,
@@ -204,11 +255,7 @@ impl ComputerUseConsent {
                 provider.computer_use_destination_identity()
             ),
             public_model: !provider.tier().is_private(),
-            target: format!(
-                "{} ({})",
-                sys_info::hostname().unwrap_or_else(|_| "BioRouter backend host".into()),
-                std::env::consts::OS
-            ),
+            target: backend_target().to_owned(),
         })
     }
 

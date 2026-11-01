@@ -1,0 +1,5 @@
+# This dependency API spawns HOSTNAME.EXE without CREATE_NO_WINDOW on Windows
+# (#461). Compiler resolution also catches aliases and imported function names.
+disallowed-methods = [
+    { path = "sys_info::hostname", reason = "spawns a visible Windows console; use a process-free native hostname lookup" },
+]
