@@ -296,13 +296,16 @@ const PROBE = `
   };
   const sample = () => {
     const mode = document.querySelector('[data-testid="approval-mode-trigger"]');
-    const turns = document.querySelector('input[type="number"]');
+    const turns = document.querySelector('.br-max-turns-controls');
+    const turnsInput = turns?.querySelector('input[type="number"]');
+    const selectedTurns = turns?.querySelector('[role="radio"][aria-checked="true"]');
     return {
       at: performance.now(),
       chat: Boolean(mode),
       mode: mode ? { text: mode.textContent.replace(/\\u00a0/g, '').trim(), disabled: mode.disabled,
         busy: mode.getAttribute('aria-busy') } : null,
-      turns: turns ? { value: turns.value, disabled: turns.disabled } : null,
+      turns: turns ? { value: turnsInput?.value ?? null, mode: selectedTurns?.textContent.trim() ?? null,
+        disabled: [...turns.querySelectorAll('[role="radio"]')].every((radio) => radio.disabled) } : null,
       switches: [...document.querySelectorAll('[data-slot="switch"]')].map((el) => ({
         name: label(el), pending: el.hasAttribute('data-pending'),
         hidden: getComputedStyle(el).visibility === 'hidden', checked: el.getAttribute('aria-checked'),
@@ -327,7 +330,7 @@ type Sample = {
   at: number;
   chat: boolean;
   mode: { text: string; disabled: boolean; busy: string | null } | null;
-  turns: { value: string; disabled: boolean } | null;
+  turns: { value: string | null; mode: string | null; disabled: boolean } | null;
   switches: Switch[];
 };
 type Recording = { commits: Sample[]; frames: Sample[] };
@@ -411,7 +414,7 @@ describe('the first frames of a Settings tab switch, in a real browser (V4-R7-2)
     expect(sample.mode!.text).toBe('Manual');
     expect(sample.mode!.disabled).toBe(false);
     expect(sample.mode!.busy).toBeNull();
-    expect(sample.turns).toEqual({ value: '25', disabled: false });
+    expect(sample.turns).toEqual({ value: '25', mode: 'Set a limit', disabled: false });
     const spellcheck = sample.switches.find((control) => control.name === 'Spellcheck');
     expect(spellcheck, 'the Spellcheck switch').toBeDefined();
     expect(atRest(spellcheck!)).toBe(true);
@@ -514,7 +517,7 @@ describe('the first frames of a Settings tab switch, in a real browser (V4-R7-2)
       expect(chat.commits[0].mode!.busy).toBe('true');
       expect(chat.commits[0].mode!.disabled).toBe(true);
       expect(chat.commits[0].mode!.text).toBe('');
-      expect(chat.commits[0].turns).toEqual({ value: '', disabled: true });
+      expect(chat.commits[0].turns).toEqual({ value: null, mode: null, disabled: true });
     } finally {
       await tab.close();
     }

@@ -1,239 +1,323 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { DEFAULT_MAX_TURNS, MaxTurnsRow, parseMaxTurns } from './ConversationLimitsDropdown';
 import { ModeSection } from './ModeSection';
 import { approvalsCopy } from '../chat/copy';
 
-const config = vi.hoisted(() => ({
-  read: vi.fn(),
-  upsert: vi.fn(),
-}));
-
+const config = vi.hoisted(() => ({ read: vi.fn(), upsert: vi.fn() }));
 vi.mock('../../ConfigContext', () => ({
   useConfig: () => ({ read: config.read, upsert: config.upsert }),
 }));
 
-// The field used to hide behind a "Chat limits" disclosure that held only it; it is always
-// shown now (spec §3.13), named by its row label.
-function openLimits() {
-  return screen.getByRole('spinbutton', { name: approvalsCopy.maxTurns });
+const field = () => screen.getByRole('spinbutton', { name: 'Turns' });
+const unlimited = () => screen.getByRole('radio', { name: 'Unlimited' });
+const limited = () => screen.getByRole('radio', { name: 'Set a limit' });
+const pause = () =>
+  act(async () => {
+    await new Promise((resolve) => setTimeout(resolve, 500));
+  });
+
+function stored(value: number) {
+  config.read.mockImplementation(async (key: string) =>
+    key === 'BIOROUTER_MAX_TURNS' ? value : 'auto'
+  );
 }
 
 describe('Max turns', () => {
   beforeEach(() => {
     config.read.mockReset();
     config.upsert.mockReset();
+    config.upsert.mockResolvedValue(undefined);
   });
 
-  it('shows the agent default, read from the Rust constant it mirrors', () => {
+  it('mirrors the agent default without exposing the zero storage sentinel', () => {
     const agent = readFileSync(
       join(__dirname, '../../../../../../crates/biorouter/src/agents/agent.rs'),
       'utf8'
     );
-    const match = agent.match(/pub const DEFAULT_MAX_TURNS: u32 = (\d+);/);
-    expect(match).not.toBeNull();
-    expect(DEFAULT_MAX_TURNS).toBe(Number(match![1]));
-
-    render(<MaxTurnsRow maxTurns={null} onMaxTurnsChange={vi.fn()} />);
-    expect(openLimits()).toHaveValue(DEFAULT_MAX_TURNS);
-    expect(screen.getByRole('button', { name: 'Unlimited' })).toHaveAttribute(
-      'aria-pressed',
-      'true'
+    expect(DEFAULT_MAX_TURNS).toBe(
+      Number(agent.match(/pub const DEFAULT_MAX_TURNS: u32 = (\d+);/)![1])
     );
+    render(<MaxTurnsRow maxTurns={null} onMaxTurnsChange={vi.fn()} />);
+    expect(
+      screen.getByRole('radiogroup', { name: approvalsCopy.maxTurns })
+    ).toHaveAccessibleDescription(approvalsCopy.maxTurnsHelp);
+    expect(unlimited()).toBeChecked();
+    expect(screen.queryByRole('spinbutton')).not.toBeInTheDocument();
   });
 
-  it('accepts explicit zero for Unlimited and positive limits; empty is not zero', () => {
+  it('keeps the storage parser compatible with zero and the full u32 range', () => {
     for (const refused of ['', ' ', '-5', '2.5', '1e3', 'abc', '4294967296']) {
       expect(parseMaxTurns(refused), JSON.stringify(refused)).toBeNull();
     }
     expect(parseMaxTurns('0')).toBe(0);
     expect(parseMaxTurns(' 0 ')).toBe(0);
     expect(parseMaxTurns('1')).toBe(1);
-    expect(parseMaxTurns(' 250 ')).toBe(250);
+    expect(parseMaxTurns(' 4294967295 ')).toBe(4294967295);
   });
 
-  it('never saves an empty or negative entry, and says why', async () => {
+  it.each([null, 0])('shows saved %s as Unlimited without rewriting it', (value) => {
+    const onChange = vi.fn();
+    render(<MaxTurnsRow maxTurns={value} onMaxTurnsChange={onChange} />);
+    expect(unlimited()).toBeChecked();
+    expect(screen.queryByRole('spinbutton')).not.toBeInTheDocument();
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+    expect(onChange).not.toHaveBeenCalled();
+  });
+
+  it('holds both modes unselected and disabled until the saved setting is known', () => {
+    const { rerender } = render(
+      <MaxTurnsRow maxTurns={null} loaded={false} onMaxTurnsChange={vi.fn()} />
+    );
+    expect(unlimited()).toBeDisabled();
+    expect(limited()).toBeDisabled();
+    expect(unlimited()).not.toBeChecked();
+    expect(limited()).not.toBeChecked();
+    expect(screen.queryByRole('spinbutton')).not.toBeInTheDocument();
+    rerender(<MaxTurnsRow maxTurns={25} loaded onMaxTurnsChange={vi.fn()} />);
+    expect(limited()).toBeChecked();
+    expect(field()).toHaveValue(25);
+  });
+
+  it('requires a chosen positive limit rather than inventing one', async () => {
+    const onChange = vi.fn();
+    render(<MaxTurnsRow maxTurns={null} onMaxTurnsChange={onChange} />);
+    fireEvent.click(limited());
+    expect(limited()).toBeChecked();
+    expect(field()).toHaveValue(null);
+    expect(field()).toHaveAttribute('aria-invalid', 'true');
+    expect(field()).toHaveAccessibleDescription(
+      `${approvalsCopy.maxTurnsHelp} Enter a whole number from 1 to 4,294,967,295.`
+    );
+    fireEvent.blur(field());
+    await pause();
+    expect(onChange).not.toHaveBeenCalled();
+  });
+
+  it.each(['', '0', '-5', '2.5', '1e3', '4294967296'])(
+    'keeps invalid finite draft %j from changing the stored limit',
+    async (value) => {
+      const onChange = vi.fn();
+      render(<MaxTurnsRow maxTurns={40} onMaxTurnsChange={onChange} />);
+      fireEvent.change(field(), { target: { value } });
+      fireEvent.blur(field());
+      expect(screen.getByRole('alert')).toHaveTextContent(
+        'Enter a whole number from 1 to 4,294,967,295.'
+      );
+      expect(limited()).toBeChecked();
+      await pause();
+      expect(onChange).not.toHaveBeenCalled();
+    }
+  );
+
+  it.each([1, 4294967295])('saves valid finite boundary %s on blur', (value) => {
     const onChange = vi.fn();
     render(<MaxTurnsRow maxTurns={40} onMaxTurnsChange={onChange} />);
-    const field = openLimits();
-
-    fireEvent.change(field, { target: { value: '' } });
-    expect(onChange).not.toHaveBeenCalled();
-    expect(screen.getByRole('alert')).toHaveTextContent('Enter a whole number of at least 0.');
-    expect(field).toHaveAttribute('aria-invalid', 'true');
-    // The problem is part of what the field announces, beside its help.
-    expect(field).toHaveAccessibleDescription(
-      `${approvalsCopy.maxTurnsHelp} Enter a whole number of at least 0.`
-    );
-
-    fireEvent.change(field, { target: { value: '-5' } });
-    expect(onChange).not.toHaveBeenCalled();
-
-    fireEvent.change(field, { target: { value: '25' } });
-    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
-    // Saved once the typing settles, not on every keystroke (T3-SH-8).
-    await waitFor(() => expect(onChange).toHaveBeenCalledWith(25));
-    expect(onChange).toHaveBeenCalledTimes(1);
-  });
-
-  it('shows a saved zero as Unlimited without an error or a rewrite', async () => {
-    config.read.mockImplementation(async (key: string) =>
-      key === 'BIOROUTER_MAX_TURNS' ? 0 : 'auto'
-    );
-    render(<ModeSection />);
-    await waitFor(() => expect(openLimits()).toHaveValue(0));
-    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Unlimited' })).toHaveAttribute(
-      'aria-pressed',
-      'true'
-    );
-    expect(config.upsert).not.toHaveBeenCalled();
-  });
-
-  it('preserves an existing positive limit until Unlimited is selected', async () => {
-    config.read.mockImplementation(async (key: string) =>
-      key === 'BIOROUTER_MAX_TURNS' ? 100 : 'auto'
-    );
-    config.upsert.mockResolvedValue(undefined);
-    render(<ModeSection />);
-    await waitFor(() => expect(openLimits()).toHaveValue(100));
-    const unlimited = screen.getByRole('button', { name: 'Unlimited' });
-    expect(unlimited).toHaveAttribute('aria-pressed', 'false');
-    expect(config.upsert).not.toHaveBeenCalled();
-
-    fireEvent.change(openLimits(), { target: { value: '125' } });
-    fireEvent.click(unlimited);
-    await waitFor(() =>
-      expect(config.upsert).toHaveBeenCalledWith('BIOROUTER_MAX_TURNS', 0, false)
-    );
-    await act(async () => {
-      await new Promise((resolve) => setTimeout(resolve, 600));
-    });
-    expect(config.upsert).toHaveBeenCalledTimes(1);
-    expect(openLimits()).toHaveValue(0);
-    expect(unlimited).toHaveAttribute('aria-pressed', 'true');
-  });
-
-  it('saves an explicitly typed zero as Unlimited', async () => {
-    const onChange = vi.fn();
-    render(<MaxTurnsRow maxTurns={25} onMaxTurnsChange={onChange} />);
-    fireEvent.change(openLimits(), { target: { value: '0' } });
-    fireEvent.blur(openLimits());
-    expect(onChange).toHaveBeenCalledExactlyOnceWith(0);
+    fireEvent.change(field(), { target: { value: String(value) } });
+    fireEvent.blur(field());
+    expect(onChange).toHaveBeenCalledExactlyOnceWith(value);
     expect(screen.queryByRole('alert')).not.toBeInTheDocument();
   });
 
-  it('keeps invalid saved values visible for correction', () => {
+  it('keeps invalid saved numbers visible for correction', () => {
     render(<MaxTurnsRow maxTurns={-5} onMaxTurnsChange={vi.fn()} />);
-    expect(openLimits()).toHaveValue(-5);
+    expect(limited()).toBeChecked();
+    expect(field()).toHaveValue(-5);
     expect(screen.getByRole('alert')).toHaveTextContent(
-      'The saved value, -5, is not a whole number of at least 0. Enter a new value.'
+      'The saved value, -5, is not a positive whole number. Enter a new value.'
     );
   });
 
-  // T3-SH-8: clearing the field by deleting one digit at a time saved each
-  // digit left on the way ("10", then "1"), and each save's answer, arriving
-  // after the field was already empty, wrote its number back into the field:
-  // no message, and a value the person had just deleted.
-  it('clearing the field leaves it empty, says why, and saves nothing on the way', async () => {
-    config.read.mockImplementation(async (key: string) =>
-      key === 'BIOROUTER_MAX_TURNS' ? 100 : 'auto'
-    );
-    let settle: () => void = () => {};
-    config.upsert.mockImplementation(
-      () =>
-        new Promise<void>((resolve) => {
-          settle = resolve;
-        })
-    );
-    render(<ModeSection />);
-    const field = openLimits();
-    await waitFor(() => expect(field).toHaveValue(100));
-
-    fireEvent.change(field, { target: { value: '10' } });
-    fireEvent.change(field, { target: { value: '1' } });
-    fireEvent.change(field, { target: { value: '' } });
-    await act(async () => {
-      await new Promise((resolve) => setTimeout(resolve, 600));
-      settle();
-    });
-
-    expect(field).toHaveValue(null);
-    expect(screen.getByRole('alert')).toHaveTextContent('Enter a whole number of at least 0.');
-    expect(config.upsert).not.toHaveBeenCalled();
+  it('does not save intermediate digits while a limit is cleared', async () => {
+    const onChange = vi.fn();
+    render(<MaxTurnsRow maxTurns={100} onMaxTurnsChange={onChange} />);
+    for (const value of ['10', '1', '']) fireEvent.change(field(), { target: { value } });
+    await pause();
+    expect(field()).toHaveValue(null);
+    expect(onChange).not.toHaveBeenCalled();
   });
 
-  it("does not let a save's answer overwrite what was typed after it", async () => {
-    config.read.mockImplementation(async (key: string) =>
-      key === 'BIOROUTER_MAX_TURNS' ? 100 : 'auto'
-    );
-    const settles: Array<() => void> = [];
-    config.upsert.mockImplementation(
-      () =>
-        new Promise<void>((resolve) => {
-          settles.push(resolve);
-        })
-    );
-    render(<ModeSection />);
-    const field = openLimits();
-    await waitFor(() => expect(field).toHaveValue(100));
-
-    fireEvent.change(field, { target: { value: '40' } });
-    await waitFor(() =>
-      expect(config.upsert).toHaveBeenCalledWith('BIOROUTER_MAX_TURNS', 40, false)
-    );
-    fireEvent.change(field, { target: { value: '' } });
-    await act(async () => {
-      settles.forEach((resolve) => resolve());
-    });
-
-    expect(field).toHaveValue(null);
-    expect(screen.getByRole('alert')).toHaveTextContent('Enter a whole number of at least 0.');
+  it('cancels a pending finite save before a pointer selects Unlimited', async () => {
+    const user = userEvent.setup();
+    const onChange = vi.fn();
+    render(<MaxTurnsRow maxTurns={100} onMaxTurnsChange={onChange} />);
+    await user.click(field());
+    fireEvent.change(field(), { target: { value: '125' } });
+    await user.click(unlimited());
+    await pause();
+    expect(onChange).toHaveBeenCalledExactlyOnceWith(0);
+    expect(screen.queryByRole('spinbutton')).not.toBeInTheDocument();
+    expect(unlimited()).toHaveFocus();
   });
 
-  it('a save of the value already shown does not hide a later change from elsewhere', async () => {
+  it('recovers the last positive draft when a limit is enabled again', () => {
+    const onChange = vi.fn();
+    render(<MaxTurnsRow maxTurns={40} onMaxTurnsChange={onChange} />);
+    fireEvent.change(field(), { target: { value: '55' } });
+    fireEvent.change(field(), { target: { value: '' } });
+    fireEvent.click(unlimited());
+    fireEvent.click(limited());
+    expect(field()).toHaveValue(55);
+    fireEvent.blur(field());
+    expect(onChange.mock.calls).toEqual([[0], [55]]);
+  });
+
+  it('does not restore finite mode when save acknowledgements arrive out of order', async () => {
+    const onChange = vi.fn();
+    const { rerender } = render(<MaxTurnsRow maxTurns={100} onMaxTurnsChange={onChange} />);
+    fireEvent.change(field(), { target: { value: '40' } });
+    fireEvent.blur(field());
+    fireEvent.click(unlimited());
+    expect(onChange.mock.calls).toEqual([[40], [0]]);
+    rerender(<MaxTurnsRow maxTurns={0} onMaxTurnsChange={onChange} />);
+    rerender(<MaxTurnsRow maxTurns={40} onMaxTurnsChange={onChange} />);
+    expect(unlimited()).toBeChecked();
+    expect(screen.queryByRole('spinbutton')).not.toBeInTheDocument();
+    await pause();
+    expect(onChange).toHaveBeenCalledTimes(2);
+  });
+
+  it('keeps newer typing when its own finite save returns', () => {
+    const onChange = vi.fn();
+    const { rerender } = render(<MaxTurnsRow maxTurns={100} onMaxTurnsChange={onChange} />);
+    fireEvent.change(field(), { target: { value: '40' } });
+    fireEvent.blur(field());
+    fireEvent.change(field(), { target: { value: '' } });
+    rerender(<MaxTurnsRow maxTurns={40} onMaxTurnsChange={onChange} />);
+    expect(field()).toHaveValue(null);
+    expect(screen.getByRole('alert')).toBeInTheDocument();
+  });
+
+  it('applies external updates and cancels an older unsaved draft', async () => {
     const onChange = vi.fn();
     const { rerender } = render(<MaxTurnsRow maxTurns={40} onMaxTurnsChange={onChange} />);
-    const field = openLimits();
-    // Typed away and back inside one pause: one save, of the value shown.
-    fireEvent.change(field, { target: { value: '4' } });
-    fireEvent.change(field, { target: { value: '40' } });
-    await waitFor(() => expect(onChange).toHaveBeenCalledWith(40));
-    expect(onChange).toHaveBeenCalledTimes(1);
+    fireEvent.change(field(), { target: { value: '55' } });
+    rerender(<MaxTurnsRow maxTurns={70} onMaxTurnsChange={onChange} />);
+    expect(field()).toHaveValue(70);
+    await pause();
+    expect(onChange).not.toHaveBeenCalled();
+    rerender(<MaxTurnsRow maxTurns={0} onMaxTurnsChange={onChange} />);
+    expect(unlimited()).toBeChecked();
+    expect(screen.queryByRole('spinbutton')).not.toBeInTheDocument();
+  });
 
-    // Another window moves it to 100 and back to 40: both are shown.
+  it('flushes a valid pending draft when the settings tab unmounts', () => {
+    const onChange = vi.fn();
+    const visit = render(<MaxTurnsRow maxTurns={40} onMaxTurnsChange={onChange} />);
+    fireEvent.change(field(), { target: { value: '75' } });
+    visit.unmount();
+    expect(onChange).toHaveBeenCalledExactlyOnceWith(75);
+  });
+
+  it('keeps a same-value save from swallowing later external changes', () => {
+    const onChange = vi.fn();
+    const { rerender } = render(<MaxTurnsRow maxTurns={40} onMaxTurnsChange={onChange} />);
+    fireEvent.change(field(), { target: { value: '4' } });
+    fireEvent.change(field(), { target: { value: '40' } });
+    fireEvent.blur(field());
     rerender(<MaxTurnsRow maxTurns={100} onMaxTurnsChange={onChange} />);
-    expect(field).toHaveValue(100);
+    expect(field()).toHaveValue(100);
     rerender(<MaxTurnsRow maxTurns={40} onMaxTurnsChange={onChange} />);
-    expect(field).toHaveValue(40);
+    expect(field()).toHaveValue(40);
   });
 
-  // Vision V4-24. Every other control in the Approvals rows is on the 28px rung (the Approval mode
-  // trigger, the Tool permissions button), and the Input's own 32px made this row's field the one
-  // taller box in the list. jsdom computes no layout, so the class decides: the `sm` rung has to
-  // win over the Input's default `md` after tailwind-merge, with no second height left beside it.
-  it('is on the 28px control rung, like the other controls in its list', () => {
-    render(<MaxTurnsRow maxTurns={null} onMaxTurnsChange={vi.fn()} />);
-    const field = openLimits();
-    expect(field).toHaveClass('h-control-sm');
-    expect(field).not.toHaveClass('h-control-md');
+  it('supports one named keyboard choice followed by its conditional input', async () => {
+    const user = userEvent.setup();
+    render(<MaxTurnsRow maxTurns={0} onMaxTurnsChange={vi.fn()} />);
+    act(() => unlimited().focus());
+    await user.keyboard('{ArrowRight}');
+    await waitFor(() => expect(limited()).toBeChecked());
+    expect(limited()).toHaveFocus();
+    await user.tab();
+    expect(field()).toHaveFocus();
+    await user.tab({ shift: true });
+    await user.keyboard('{ArrowLeft}');
+    await waitFor(() => expect(unlimited()).toBeChecked());
+    expect(unlimited()).toHaveFocus();
+    expect(screen.queryByRole('spinbutton')).not.toBeInTheDocument();
   });
 
-  it('saves a valid entry through the config', async () => {
-    config.read.mockImplementation(async (key: string) =>
-      key === 'BIOROUTER_MAX_TURNS' ? 30 : 'auto'
-    );
-    config.upsert.mockResolvedValue(undefined);
+  it('persists a finite value through the config after typing settles', async () => {
+    stored(30);
     render(<ModeSection />);
-    const field = openLimits();
-    await waitFor(() => expect(field).toHaveValue(30));
-    fireEvent.change(field, { target: { value: '45' } });
+    await waitFor(() => expect(field()).toHaveValue(30));
+    expect(config.upsert).not.toHaveBeenCalled();
+    fireEvent.change(field(), { target: { value: '45' } });
     await waitFor(() =>
-      expect(config.upsert).toHaveBeenCalledWith('BIOROUTER_MAX_TURNS', 45, false)
+      expect(config.upsert).toHaveBeenCalledExactlyOnceWith('BIOROUTER_MAX_TURNS', 45, false)
     );
-    fireEvent.change(field, { target: { value: '' } });
+  });
+
+  it('orders actual config writes across a tab change so Unlimited remains saved', async () => {
+    let saved = 100;
+    config.read.mockImplementation(async (key: string) =>
+      key === 'BIOROUTER_MAX_TURNS' ? saved : 'auto'
+    );
+    const settles: Array<() => void> = [];
+    config.upsert.mockImplementation(async (_key: string, value: number) => {
+      await new Promise<void>((resolve) => {
+        settles.push(resolve);
+      });
+      saved = value;
+    });
+    const visit = render(<ModeSection />);
+    await waitFor(() => expect(field()).toHaveValue(100));
+    fireEvent.change(field(), { target: { value: '40' } });
+    fireEvent.blur(field());
+    await waitFor(() => expect(config.upsert).toHaveBeenCalledTimes(1));
+    fireEvent.click(unlimited());
     expect(config.upsert).toHaveBeenCalledTimes(1);
+    visit.unmount();
+    render(<ModeSection />);
+    await act(async () => {
+      settles[0]();
+    });
+    await waitFor(() => expect(config.upsert).toHaveBeenCalledTimes(2));
+    expect(saved).toBe(40);
+    expect(config.upsert.mock.calls).toEqual([
+      ['BIOROUTER_MAX_TURNS', 40, false],
+      ['BIOROUTER_MAX_TURNS', 0, false],
+    ]);
+    await act(async () => {
+      settles[1]();
+    });
+    await waitFor(() => expect(unlimited()).toBeChecked());
+    expect(saved).toBe(0);
+    expect(screen.queryByRole('spinbutton')).not.toBeInTheDocument();
+  });
+
+  it('discards a read that began before Unlimited was saved', async () => {
+    stored(100);
+    const first = render(<ModeSection />);
+    await waitFor(() => expect(field()).toHaveValue(100));
+    first.unmount();
+    let saved = 100;
+    let releaseRead: () => void = () => {};
+    let reads = 0;
+    config.read.mockImplementation(async (key: string) => {
+      if (key !== 'BIOROUTER_MAX_TURNS') return 'auto';
+      const snapshot = saved;
+      if (reads++ === 0)
+        await new Promise<void>((resolve) => {
+          releaseRead = resolve;
+        });
+      return snapshot;
+    });
+    config.upsert.mockImplementation(async (_key: string, value: number) => {
+      saved = value;
+    });
+    render(<ModeSection />);
+    await act(async () => {});
+    fireEvent.click(unlimited());
+    await waitFor(() => expect(saved).toBe(0));
+    await act(async () => {
+      releaseRead();
+    });
+    await waitFor(() => expect(reads).toBe(2));
+    expect(unlimited()).toBeChecked();
+    expect(screen.queryByRole('spinbutton')).not.toBeInTheDocument();
   });
 });

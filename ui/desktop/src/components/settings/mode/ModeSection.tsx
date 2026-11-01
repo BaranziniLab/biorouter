@@ -19,13 +19,16 @@ import {
 /** The modes whose approvals the per-tool permissions shape. */
 const MODES_WITH_TOOL_PERMISSIONS = new Set(['approve', 'smart_approve']);
 
+// Settings tabs unmount. Keep writes ordered across visits so a late finite write cannot
+// replace Unlimited, and a new visit reads only after the previous visit's saves have landed.
+let pendingMaxTurnsSave = Promise.resolve();
+
 /**
  * Settings > Chat > Approvals (renamed from "Mode", which collided with the light and dark
  * theme). Three rows, one control each (spec §3.13):
  * - Approval mode: a select menu, each mode's one-line description inside its item;
  * - Tool permissions: `Edit…`, enabled in Manual and Smart, the two modes it shapes;
- * - Max turns: a number field, always shown (it used to hide behind a "Chat limits"
- *   disclosure that held exactly one field).
+ * - Max turns: Unlimited or an explicitly chosen positive limit.
  */
 export const ModeSection = () => {
   // `undefined` until the daemon has answered, and only the first time this window asks: each
@@ -63,7 +66,15 @@ export const ModeSection = () => {
 
   const fetchMaxTurns = useCallback(async () => {
     try {
-      setMaxTurns(maxTurnsFromConfig(await read(MAX_TURNS_KEY, false)));
+      while (true) {
+        const pending = pendingMaxTurnsSave;
+        await pending;
+        const stored = maxTurnsFromConfig(await read(MAX_TURNS_KEY, false));
+        if (pending === pendingMaxTurnsSave) {
+          setMaxTurns(stored);
+          break;
+        }
+      }
     } catch (error) {
       console.error('Error fetching max turns:', error);
       // As above: the default shows, and the field is usable, only when nothing was ever read.
@@ -71,13 +82,15 @@ export const ModeSection = () => {
     }
   }, [read, setMaxTurns]);
 
-  const handleMaxTurnsChange = async (value: number) => {
-    try {
-      await upsert(MAX_TURNS_KEY, value, false);
-      setMaxTurns(value);
-    } catch (error) {
-      console.error('Error updating max turns:', error);
-    }
+  const handleMaxTurnsChange = (value: number) => {
+    pendingMaxTurnsSave = pendingMaxTurnsSave
+      .then(async () => {
+        await upsert(MAX_TURNS_KEY, value, false);
+        setMaxTurns(value);
+      })
+      .catch((error) => {
+        console.error('Error updating max turns:', error);
+      });
   };
 
   useEffect(() => {

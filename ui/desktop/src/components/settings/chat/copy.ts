@@ -41,7 +41,7 @@ export const approvalsCopy = {
   editToolPermissions: 'Edit tool permissions',
   maxTurns: 'Max turns',
   maxTurnsHelp:
-    'Agent turns before Biorouter asks you to continue. Unlimited (0) lets useful work continue; you can Stop at any time.',
+    'Agent turns before Biorouter asks you to continue. Choose Unlimited to keep working until the task finishes or you stop it.',
 } as const;
 
 export type ApprovalModeKey = (typeof approvalsCopy.modes)[number]['key'];

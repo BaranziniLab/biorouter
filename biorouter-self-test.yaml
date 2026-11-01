@@ -989,9 +989,13 @@ prompt: |
      Changing successful results and active-job waits must remain allowed. Do not create
      a live infinite loop or claim the model itself proved the deterministic assertions.
   3. When a disposable desktop fixture is available, confirm an unset Max turns setting
-     shows Unlimited, a saved positive limit remains unchanged, and selecting Unlimited
-     saves zero. Clearing the field must not remove the saved limit. Without an isolated
-     fixture, report these desktop assertions NOT OBSERVABLE instead of changing real settings.
+     selects Unlimited with no numeric field. A saved positive limit selects Set a limit
+     without rewriting it. Selecting Set a limit reveals a labelled Turns input; blank,
+     zero, negative, fractional or overflowing entries must not change the saved setting.
+     Selecting Unlimited cancels pending finite saves and persists zero exactly once,
+     including after delayed save acknowledgements. Verify keyboard navigation and aligned
+     controls at narrow widths and 100%/200% zoom. Without an isolated fixture, report these
+     desktop assertions NOT OBSERVABLE instead of changing real settings.
   4. Write phase4e_agent_loop.md below {{ workspace_dir }} with PASS, FAIL, BLOCKED or
      NOT OBSERVABLE for each check and identify any unverified behavior separately.
   {% endif %}

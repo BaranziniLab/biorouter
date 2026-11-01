@@ -41,8 +41,8 @@ describe('Settings > Chat > Approvals', () => {
     expect(
       await screen.findByRole('button', { name: `${approvalsCopy.mode} Smart` })
     ).toBeInTheDocument();
-    expect(screen.queryByRole('radio')).toBeNull();
-    expect(screen.queryByRole('radiogroup')).toBeNull();
+    expect(screen.getAllByRole('radio')).toHaveLength(2);
+    expect(screen.getByRole('radiogroup', { name: approvalsCopy.maxTurns })).toBeInTheDocument();
   });
 
   /**
@@ -70,18 +70,16 @@ describe('Settings > Chat > Approvals', () => {
     expect(select).toHaveAttribute('aria-busy', 'true');
     expect(select).not.toHaveTextContent(/Autonomous|Manual|Smart|Chat only/);
     expect(screen.getByRole('button', { name: approvalsCopy.editToolPermissions })).toBeDisabled();
-    const turns = screen.getByRole('spinbutton', { name: approvalsCopy.maxTurns });
-    expect(turns).toBeDisabled();
-    expect(turns).toHaveValue(null);
+    expect(screen.queryByRole('spinbutton')).not.toBeInTheDocument();
+    expect(screen.getByRole('radio', { name: 'Unlimited' })).toBeDisabled();
+    expect(screen.getByRole('radio', { name: 'Set a limit' })).toBeDisabled();
 
     release();
     expect(
       await screen.findByRole('button', { name: `${approvalsCopy.mode} Manual` })
     ).toBeEnabled();
-    await waitFor(() =>
-      expect(screen.getByRole('spinbutton', { name: approvalsCopy.maxTurns })).toHaveValue(25)
-    );
-    expect(screen.getByRole('spinbutton', { name: approvalsCopy.maxTurns })).toBeEnabled();
+    await waitFor(() => expect(screen.getByRole('spinbutton', { name: 'Turns' })).toHaveValue(25));
+    expect(screen.getByRole('radio', { name: 'Unlimited' })).toBeEnabled();
   });
 
   it('treats a mode that was never saved as Autonomous, the daemon’s default', async () => {
@@ -142,7 +140,9 @@ describe('Settings > Chat > Approvals', () => {
   it('shows Max turns without a disclosure', async () => {
     storedMode('auto');
     render(<ModeSection />);
-    expect(await screen.findByRole('spinbutton', { name: approvalsCopy.maxTurns })).toBeVisible();
+    expect(await screen.findByRole('radiogroup', { name: approvalsCopy.maxTurns })).toBeVisible();
+    await waitFor(() => expect(screen.getByRole('radio', { name: 'Unlimited' })).toBeChecked());
+    expect(screen.queryByRole('spinbutton')).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /chat limits/i })).toBeNull();
   });
 
@@ -162,7 +162,7 @@ describe('Settings > Chat > Approvals', () => {
       const visit = render(<ModeSection />);
       await screen.findByRole('button', { name: `${approvalsCopy.mode} Manual` });
       await waitFor(() =>
-        expect(screen.getByRole('spinbutton', { name: approvalsCopy.maxTurns })).toHaveValue(25)
+        expect(screen.getByRole('spinbutton', { name: 'Turns' })).toHaveValue(25)
       );
       visit.unmount();
     }
@@ -182,7 +182,7 @@ describe('Settings > Chat > Approvals', () => {
       expect(select).not.toHaveAttribute('aria-busy');
       // Manual is a mode the tool permissions shape, so that row is live too.
       expect(screen.getByRole('button', { name: approvalsCopy.editToolPermissions })).toBeEnabled();
-      const turns = screen.getByRole('spinbutton', { name: approvalsCopy.maxTurns });
+      const turns = screen.getByRole('spinbutton', { name: 'Turns' });
       expect(turns).toBeEnabled();
       expect(turns).not.toHaveAttribute('aria-busy');
       expect(turns).toHaveValue(25);
@@ -199,7 +199,7 @@ describe('Settings > Chat > Approvals', () => {
         await screen.findByRole('button', { name: `${approvalsCopy.mode} Smart` })
       ).toBeEnabled();
       await waitFor(() =>
-        expect(screen.getByRole('spinbutton', { name: approvalsCopy.maxTurns })).toHaveValue(40)
+        expect(screen.getByRole('spinbutton', { name: 'Turns' })).toHaveValue(40)
       );
     });
 
@@ -225,16 +225,14 @@ describe('Settings > Chat > Approvals', () => {
       config.read.mockImplementation(async () => undefined);
       const visit = render(<ModeSection />);
       await screen.findByRole('button', { name: `${approvalsCopy.mode} Autonomous` });
-      await waitFor(() =>
-        expect(screen.getByRole('spinbutton', { name: approvalsCopy.maxTurns })).toBeEnabled()
-      );
+      await waitFor(() => expect(screen.getByRole('radio', { name: 'Unlimited' })).toBeEnabled());
       visit.unmount();
 
       daemonHangs();
       render(<ModeSection />);
-      const turns = screen.getByRole('spinbutton', { name: approvalsCopy.maxTurns });
-      expect(turns).toBeEnabled();
-      expect(turns).toHaveValue(0);
+      expect(screen.getByRole('radio', { name: 'Unlimited' })).toBeEnabled();
+      expect(screen.getByRole('radio', { name: 'Unlimited' })).toBeChecked();
+      expect(screen.queryByRole('spinbutton')).not.toBeInTheDocument();
     });
 
     it('keeps the last answer when a later read fails, rather than the default', async () => {
@@ -246,7 +244,7 @@ describe('Settings > Chat > Approvals', () => {
       render(<ModeSection />);
       await waitFor(() => expect(logged).toHaveBeenCalledTimes(2));
       expect(screen.getByRole('button', { name: `${approvalsCopy.mode} Manual` })).toBeEnabled();
-      expect(screen.getByRole('spinbutton', { name: approvalsCopy.maxTurns })).toHaveValue(25);
+      expect(screen.getByRole('spinbutton', { name: 'Turns' })).toHaveValue(25);
       logged.mockRestore();
     });
 
@@ -259,9 +257,7 @@ describe('Settings > Chat > Approvals', () => {
       expect(
         await screen.findByRole('button', { name: `${approvalsCopy.mode} Autonomous` })
       ).toBeEnabled();
-      await waitFor(() =>
-        expect(screen.getByRole('spinbutton', { name: approvalsCopy.maxTurns })).toHaveValue(0)
-      );
+      await waitFor(() => expect(screen.getByRole('radio', { name: 'Unlimited' })).toBeChecked());
       logged.mockRestore();
     });
   });

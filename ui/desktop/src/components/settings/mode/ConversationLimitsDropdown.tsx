@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Button } from '../../ui/button';
 import { Input } from '../../ui/input';
+import { SegmentedControl } from '../../ui/segmented-control';
 import { SettingRow } from '../../ui/setting-row';
 import { approvalsCopy } from '../chat/copy';
 
@@ -45,11 +45,79 @@ interface MaxTurnsRowProps {
   maxTurns: number | null;
   onMaxTurnsChange: (value: number) => void;
   /**
-   * False until the saved value has been read. The field is then blank and disabled, because the
-   * default it would show may not be what is saved, and a number typed into it would be
-   * replaced by the answer. Defaults to true for a caller that already holds the value.
+   * False until the saved value has been read. Both modes stay unselected and disabled rather
+   * than presenting a guessed default. Defaults to true when the caller already holds the value.
    */
   loaded?: boolean;
+}
+
+interface MaxTurnsControlsProps {
+  id?: string;
+  'aria-labelledby'?: string;
+  'aria-describedby'?: string;
+  disabled?: boolean;
+  limited: boolean;
+  draft: string;
+  invalid: boolean;
+  onModeChange: (mode: string) => void;
+  onDraftChange: (text: string) => void;
+  onBlur: () => void;
+}
+
+function MaxTurnsControls({
+  id,
+  'aria-labelledby': labelledBy,
+  'aria-describedby': describedBy,
+  disabled,
+  limited,
+  draft,
+  invalid,
+  onModeChange,
+  onDraftChange,
+  onBlur,
+}: MaxTurnsControlsProps) {
+  return (
+    <div
+      className="br-max-turns-controls"
+      aria-busy={disabled || undefined}
+      onBlur={(event) => {
+        // Moving to Unlimited must cancel the finite draft before anything saves it.
+        if (!event.currentTarget.contains(event.relatedTarget)) onBlur();
+      }}
+    >
+      <SegmentedControl
+        id={id}
+        aria-labelledby={labelledBy}
+        aria-describedby={describedBy}
+        options={[
+          { value: 'unlimited', label: 'Unlimited' },
+          { value: 'limited', label: 'Set a limit' },
+        ]}
+        value={disabled ? '' : limited ? 'limited' : 'unlimited'}
+        disabled={disabled}
+        onValueChange={onModeChange}
+      />
+      {limited && !disabled ? (
+        <div className="br-max-turns-input">
+          <label htmlFor={`${id}-turns`} className="text-secondary text-text-default">
+            Turns
+          </label>
+          <Input
+            id={`${id}-turns`}
+            type="number"
+            min="1"
+            max={MAX_TURNS_CEILING}
+            step="1"
+            value={draft}
+            aria-describedby={describedBy}
+            aria-invalid={invalid || undefined}
+            onChange={(event) => onDraftChange(event.target.value)}
+            className="h-control-sm w-28"
+          />
+        </div>
+      ) : null}
+    </div>
+  );
 }
 
 /**
@@ -58,7 +126,11 @@ interface MaxTurnsRowProps {
  */
 export const MaxTurnsRow = ({ maxTurns, onMaxTurnsChange, loaded = true }: MaxTurnsRowProps) => {
   const shown = maxTurns ?? DEFAULT_MAX_TURNS;
-  const [draft, setDraft] = useState(String(shown));
+  const [limited, setLimited] = useState(shown !== 0);
+  const [draft, setDraft] = useState(shown === 0 ? '' : String(shown));
+  const lastPositiveDraft = useRef(
+    shown > 0 && parseMaxTurns(String(shown)) !== null ? String(shown) : ''
+  );
 
   /**
    * T3-SH-8. Saves wait for the typing to settle, and a save's own answer never
@@ -102,11 +174,21 @@ export const MaxTurnsRow = ({ maxTurns, onMaxTurnsChange, loaded = true }: MaxTu
   useEffect(() => {
     const own = ownSaves.current.indexOf(shown);
     if (own !== -1) {
-      ownSaves.current.splice(0, own + 1);
+      // Responses can arrive out of order; earlier saves must still be recognised later.
+      ownSaves.current.splice(own, 1);
       return;
     }
-    setDraft((current) => (parseMaxTurns(current) === shown ? current : String(shown)));
-  }, [shown]);
+    if (saveTimer.current !== null) clearTimeout(saveTimer.current);
+    saveTimer.current = null;
+    pendingSave.current = null;
+    setLimited(shown !== 0);
+    if (shown !== 0) {
+      setDraft((current) => (parseMaxTurns(current) === shown ? current : String(shown)));
+      if (shown > 0 && parseMaxTurns(String(shown)) !== null) {
+        lastPositiveDraft.current = String(shown);
+      }
+    }
+  }, [shown, loaded]);
 
   const draftValue = parseMaxTurns(draft);
   const storedIsInvalid = maxTurns !== null && parseMaxTurns(String(maxTurns)) === null;
@@ -114,11 +196,11 @@ export const MaxTurnsRow = ({ maxTurns, onMaxTurnsChange, loaded = true }: MaxTu
   // limit is named as the saved value, so the person knows it came from
   // before and was not their typing.
   const message =
-    !loaded || draftValue !== null
+    !loaded || !limited || (draftValue !== null && draftValue > 0)
       ? null
       : storedIsInvalid && draft === String(maxTurns)
-        ? `The saved value, ${maxTurns}, is not a whole number of at least 0. Enter a new value.`
-        : 'Enter a whole number of at least 0.';
+        ? `The saved value, ${maxTurns}, is not a positive whole number. Enter a new value.`
+        : 'Enter a whole number from 1 to 4,294,967,295.';
 
   const handleChange = (text: string) => {
     setDraft(text);
@@ -126,9 +208,23 @@ export const MaxTurnsRow = ({ maxTurns, onMaxTurnsChange, loaded = true }: MaxTu
     // thing typed is the one that counts.
     if (saveTimer.current !== null) clearTimeout(saveTimer.current);
     saveTimer.current = null;
-    pendingSave.current = parseMaxTurns(text);
+    const value = parseMaxTurns(text);
+    pendingSave.current = value !== null && value > 0 ? value : null;
     if (pendingSave.current !== null) {
+      lastPositiveDraft.current = text;
       saveTimer.current = setTimeout(flushSave, MAX_TURNS_SAVE_DELAY_MS);
+    }
+  };
+
+  const handleModeChange = (mode: string) => {
+    setLimited(mode === 'limited');
+    if (mode === 'limited') {
+      handleChange(lastPositiveDraft.current);
+    } else {
+      if (saveTimer.current !== null) clearTimeout(saveTimer.current);
+      saveTimer.current = null;
+      pendingSave.current = 0;
+      flushSave();
     }
   };
 
@@ -139,21 +235,8 @@ export const MaxTurnsRow = ({ maxTurns, onMaxTurnsChange, loaded = true }: MaxTu
     <SettingRow
       label={approvalsCopy.maxTurns}
       help={approvalsCopy.maxTurnsHelp}
-      value={
-        <Button
-          type="button"
-          variant={loaded && draftValue === 0 ? 'secondary' : 'ghost'}
-          size="sm"
-          disabled={!loaded}
-          aria-pressed={loaded && draftValue === 0}
-          onClick={() => {
-            handleChange('0');
-            flushSave();
-          }}
-        >
-          Unlimited
-        </Button>
-      }
+      className="br-max-turns-row"
+      disabled={!loaded}
       status={
         message ? (
           <span className="text-text-danger" id="max-turns-problem" role="alert">
@@ -162,20 +245,13 @@ export const MaxTurnsRow = ({ maxTurns, onMaxTurnsChange, loaded = true }: MaxTu
         ) : undefined
       }
     >
-      <Input
-        type="number"
-        min="0"
-        step="1"
-        value={loaded ? draft : ''}
-        disabled={!loaded}
-        aria-busy={!loaded || undefined}
-        aria-invalid={message ? true : undefined}
-        onChange={(e) => handleChange(e.target.value)}
+      <MaxTurnsControls
+        limited={limited}
+        draft={draft}
+        invalid={message !== null}
+        onModeChange={handleModeChange}
+        onDraftChange={handleChange}
         onBlur={flushSave}
-        // The 28px rung, like the Approval mode trigger and the Tool permissions button in the
-        // rows above it: the Input's own 32px made this row's control the one taller box in the
-        // list (vision V4-24).
-        className="h-control-sm w-20"
       />
     </SettingRow>
   );

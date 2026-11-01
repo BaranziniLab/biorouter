@@ -5781,6 +5781,36 @@ body:has(.biorouter-modal-surface [data-slot='select-content'][data-state='open'
   );
 }
 
+.br-max-turns-row {
+  flex-wrap: wrap;
+}
+
+.br-max-turns-row > .br-setting-row-text {
+  flex-basis: 6rem;
+}
+
+.br-max-turns-row > .br-setting-row-control {
+  min-inline-size: 0;
+  max-inline-size: 100%;
+  margin-inline-start: auto;
+}
+
+.br-max-turns-controls,
+.br-max-turns-input {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.br-max-turns-controls {
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.br-max-turns-input {
+  flex: none;
+}
+
 .br-setting-section-header {
   display: flex;
   min-block-size: 24px;
