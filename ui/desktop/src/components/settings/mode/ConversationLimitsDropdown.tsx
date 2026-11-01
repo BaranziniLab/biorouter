@@ -43,7 +43,7 @@ interface MaxTurnsRowProps {
    * it is, so the person can see it and fix it.
    */
   maxTurns: number | null;
-  onMaxTurnsChange: (value: number) => void;
+  onMaxTurnsChange: (value: number) => void | Promise<void>;
   /**
    * False until the saved value has been read. Both modes stay unselected and disabled rather
    * than presenting a guessed default. Defaults to true when the caller already holds the value.
@@ -146,7 +146,7 @@ export const MaxTurnsRow = ({ maxTurns, onMaxTurnsChange, loaded = true }: MaxTu
    */
   const pendingSave = useRef<number | null>(null);
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const ownSaves = useRef<number[]>([]);
+  const ownSaves = useRef<Array<{ value: number; completed: boolean }>>([]);
   const onMaxTurnsChangeRef = useRef(onMaxTurnsChange);
   onMaxTurnsChangeRef.current = onMaxTurnsChange;
   const shownRef = useRef(shown);
@@ -160,10 +160,28 @@ export const MaxTurnsRow = ({ maxTurns, onMaxTurnsChange, loaded = true }: MaxTu
     const value = pendingSave.current;
     pendingSave.current = null;
     if (value !== null) {
-      // A save of the value already shown changes nothing, so it never comes
-      // back as a change; recorded, it would swallow a later real one.
-      if (value !== shownRef.current) ownSaves.current.push(value);
-      onMaxTurnsChangeRef.current(value);
+      const ownSave = { value, completed: false };
+      const alreadyShown = value === shownRef.current;
+      const retire = () => {
+        ownSaves.current = ownSaves.current.filter((save) => save !== ownSave);
+      };
+      // An earlier queued write can change the prop before even a same-value save completes.
+      ownSaves.current.push(ownSave);
+      const saved = onMaxTurnsChangeRef.current(value);
+      if (saved) {
+        saved.then(() => {
+          ownSave.completed = true;
+          // A successful same-value write has no prop-change echo to consume its token.
+          if (value === shownRef.current) {
+            const own = ownSaves.current.indexOf(ownSave);
+            if (own !== -1) ownSaves.current.splice(0, own + 1);
+          }
+        }, retire);
+      } else {
+        ownSave.completed = true;
+        // Synchronous callers have no completion to await and no changed value to echo.
+        if (alreadyShown) retire();
+      }
     }
   }, []);
   useEffect(() => flushSave, [flushSave]);
@@ -172,10 +190,16 @@ export const MaxTurnsRow = ({ maxTurns, onMaxTurnsChange, loaded = true }: MaxTu
   // elsewhere, but never overwrite an entry that already means that value, and
   // never overwrite anything with the echo of this field's own save.
   useEffect(() => {
-    const own = ownSaves.current.indexOf(shown);
+    // React may coalesce completed writes, while a later duplicate is still pending.
+    let own = ownSaves.current.reduce(
+      (last, save, index) => (save.value === shown && save.completed ? index : last),
+      -1
+    );
+    if (own === -1) own = ownSaves.current.findIndex((save) => save.value === shown);
     if (own !== -1) {
-      // Responses can arrive out of order; earlier saves must still be recognised later.
-      ownSaves.current.splice(own, 1);
+      // Writes are ordered by ModeSection. A later acknowledgement supersedes older failed
+      // or coalesced saves, which must not mask a future change from another window.
+      ownSaves.current.splice(0, own + 1);
       return;
     }
     if (saveTimer.current !== null) clearTimeout(saveTimer.current);

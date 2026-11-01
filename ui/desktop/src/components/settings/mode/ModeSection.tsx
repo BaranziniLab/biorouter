@@ -83,14 +83,14 @@ export const ModeSection = () => {
   }, [read, setMaxTurns]);
 
   const handleMaxTurnsChange = (value: number) => {
-    pendingMaxTurnsSave = pendingMaxTurnsSave
-      .then(async () => {
-        await upsert(MAX_TURNS_KEY, value, false);
-        setMaxTurns(value);
-      })
-      .catch((error) => {
-        console.error('Error updating max turns:', error);
-      });
+    const saved = pendingMaxTurnsSave.then(async () => {
+      await upsert(MAX_TURNS_KEY, value, false);
+      setMaxTurns(value);
+    });
+    pendingMaxTurnsSave = saved.catch((error) => {
+      console.error('Error updating max turns:', error);
+    });
+    return saved;
   };
 
   useEffect(() => {

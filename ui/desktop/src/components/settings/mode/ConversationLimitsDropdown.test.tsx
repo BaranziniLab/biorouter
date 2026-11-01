@@ -165,19 +165,120 @@ describe('Max turns', () => {
     expect(onChange.mock.calls).toEqual([[0], [55]]);
   });
 
-  it('does not restore finite mode when save acknowledgements arrive out of order', async () => {
+  it('keeps Unlimited selected while an earlier ordered finite save is acknowledged', async () => {
     const onChange = vi.fn();
     const { rerender } = render(<MaxTurnsRow maxTurns={100} onMaxTurnsChange={onChange} />);
     fireEvent.change(field(), { target: { value: '40' } });
     fireEvent.blur(field());
     fireEvent.click(unlimited());
     expect(onChange.mock.calls).toEqual([[40], [0]]);
-    rerender(<MaxTurnsRow maxTurns={0} onMaxTurnsChange={onChange} />);
     rerender(<MaxTurnsRow maxTurns={40} onMaxTurnsChange={onChange} />);
     expect(unlimited()).toBeChecked();
     expect(screen.queryByRole('spinbutton')).not.toBeInTheDocument();
+    rerender(<MaxTurnsRow maxTurns={0} onMaxTurnsChange={onChange} />);
     await pause();
     expect(onChange).toHaveBeenCalledTimes(2);
+  });
+
+  it('retires skipped save echoes so a later external finite value remains visible', () => {
+    const onChange = vi.fn();
+    const { rerender } = render(<MaxTurnsRow maxTurns={100} onMaxTurnsChange={onChange} />);
+    for (const value of ['40', '60']) {
+      fireEvent.change(field(), { target: { value } });
+      fireEvent.blur(field());
+    }
+    fireEvent.click(unlimited());
+    expect(onChange.mock.calls).toEqual([[40], [60], [0]]);
+    rerender(<MaxTurnsRow maxTurns={0} onMaxTurnsChange={onChange} />);
+    expect(unlimited()).toBeChecked();
+    rerender(<MaxTurnsRow maxTurns={40} onMaxTurnsChange={onChange} />);
+    expect(limited()).toBeChecked();
+    expect(field()).toHaveValue(40);
+    expect(onChange).toHaveBeenCalledTimes(3);
+  });
+
+  it('retires a repeated successful save whose value is already reflected', async () => {
+    const settles: Array<() => void> = [];
+    const onChange = vi.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          settles.push(resolve);
+        })
+    );
+    const { rerender } = render(<MaxTurnsRow maxTurns={100} onMaxTurnsChange={onChange} />);
+    fireEvent.change(field(), { target: { value: '40' } });
+    fireEvent.blur(field());
+    fireEvent.change(field(), { target: { value: '4' } });
+    fireEvent.change(field(), { target: { value: '40' } });
+    fireEvent.blur(field());
+    await act(async () => {
+      settles[0]();
+    });
+    rerender(<MaxTurnsRow maxTurns={40} onMaxTurnsChange={onChange} />);
+    fireEvent.change(field(), { target: { value: '' } });
+    await act(async () => {
+      settles[1]();
+    });
+    expect(field()).toHaveValue(null);
+    rerender(<MaxTurnsRow maxTurns={100} onMaxTurnsChange={onChange} />);
+    expect(field()).toHaveValue(100);
+    rerender(<MaxTurnsRow maxTurns={40} onMaxTurnsChange={onChange} />);
+    expect(field()).toHaveValue(40);
+  });
+
+  it('retires coalesced successful echoes when the final value was already shown', async () => {
+    const onChange = vi.fn(async () => {});
+    const { rerender } = render(<MaxTurnsRow maxTurns={0} onMaxTurnsChange={onChange} />);
+    fireEvent.click(limited());
+    fireEvent.change(field(), { target: { value: '40' } });
+    fireEvent.blur(field());
+    fireEvent.click(unlimited());
+    await act(async () => {});
+    expect(onChange.mock.calls).toHaveLength(2);
+    expect(unlimited()).toBeChecked();
+    rerender(<MaxTurnsRow maxTurns={40} onMaxTurnsChange={onChange} />);
+    expect(limited()).toBeChecked();
+    expect(field()).toHaveValue(40);
+  });
+
+  it('retires through the latest completed duplicate when React coalesces acknowledgements', async () => {
+    const onChange = vi.fn(async () => {});
+    const { rerender } = render(<MaxTurnsRow maxTurns={100} onMaxTurnsChange={onChange} />);
+    for (const value of ['40', '50', '40']) {
+      fireEvent.change(field(), { target: { value } });
+      fireEvent.blur(field());
+    }
+    fireEvent.change(field(), { target: { value: '' } });
+    await act(async () => {});
+    rerender(<MaxTurnsRow maxTurns={40} onMaxTurnsChange={onChange} />);
+    expect(field()).toHaveValue(null);
+    rerender(<MaxTurnsRow maxTurns={50} onMaxTurnsChange={onChange} />);
+    expect(field()).toHaveValue(50);
+  });
+
+  it('keeps a later duplicate save pending when an earlier matching save is acknowledged', async () => {
+    const settles: Array<() => void> = [];
+    const onChange = vi.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          settles.push(resolve);
+        })
+    );
+    const { rerender } = render(<MaxTurnsRow maxTurns={100} onMaxTurnsChange={onChange} />);
+    for (const value of ['40', '50', '40']) {
+      fireEvent.change(field(), { target: { value } });
+      fireEvent.blur(field());
+    }
+    fireEvent.change(field(), { target: { value: '' } });
+    for (const [index, value] of [40, 50, 40].entries()) {
+      await act(async () => {
+        settles[index]();
+      });
+      rerender(<MaxTurnsRow maxTurns={value} onMaxTurnsChange={onChange} />);
+      expect(field()).toHaveValue(null);
+    }
+    rerender(<MaxTurnsRow maxTurns={50} onMaxTurnsChange={onChange} />);
+    expect(field()).toHaveValue(50);
   });
 
   it('keeps newer typing when its own finite save returns', () => {
@@ -289,6 +390,42 @@ describe('Max turns', () => {
     expect(screen.queryByRole('spinbutton')).not.toBeInTheDocument();
   });
 
+  it('keeps a newer blank finite draft while a queued same-value Unlimited save completes', async () => {
+    stored(0);
+    const settles: Array<() => void> = [];
+    config.upsert.mockImplementation(
+      () =>
+        new Promise<void>((resolve) => {
+          settles.push(resolve);
+        })
+    );
+    render(<ModeSection />);
+    await waitFor(() => expect(unlimited()).toBeChecked());
+    fireEvent.click(limited());
+    fireEvent.change(field(), { target: { value: '40' } });
+    fireEvent.blur(field());
+    await waitFor(() => expect(config.upsert).toHaveBeenCalledTimes(1));
+    fireEvent.click(unlimited());
+    fireEvent.click(limited());
+    fireEvent.change(field(), { target: { value: '' } });
+    await act(async () => {
+      settles[0]();
+    });
+    await waitFor(() => expect(config.upsert).toHaveBeenCalledTimes(2));
+    expect(limited()).toBeChecked();
+    expect(field()).toHaveValue(null);
+    await act(async () => {
+      settles[1]();
+    });
+    expect(limited()).toBeChecked();
+    expect(field()).toHaveValue(null);
+    expect(screen.getByRole('alert')).toBeInTheDocument();
+    expect(config.upsert.mock.calls).toEqual([
+      ['BIOROUTER_MAX_TURNS', 40, false],
+      ['BIOROUTER_MAX_TURNS', 0, false],
+    ]);
+  });
+
   it('discards a read that began before Unlimited was saved', async () => {
     stored(100);
     const first = render(<ModeSection />);
@@ -320,4 +457,60 @@ describe('Max turns', () => {
     expect(unlimited()).toBeChecked();
     expect(screen.queryByRole('spinbutton')).not.toBeInTheDocument();
   });
+
+  it.each([0, 100])(
+    'accepts an external finite limit after a failed save and an Unlimited save, starting at %s',
+    async (initial) => {
+      stored(initial);
+      const first = render(<ModeSection />);
+      if (initial === 0) await waitFor(() => expect(unlimited()).toBeChecked());
+      else await waitFor(() => expect(field()).toHaveValue(initial));
+      first.unmount();
+
+      let saved = initial;
+      let releaseRead: () => void = () => {};
+      let reads = 0;
+      config.read.mockImplementation(async (key: string) => {
+        if (key !== 'BIOROUTER_MAX_TURNS') return 'auto';
+        const snapshot = saved;
+        if (reads++ === 0)
+          await new Promise<void>((resolve) => {
+            releaseRead = resolve;
+          });
+        return snapshot;
+      });
+      const logged = vi.spyOn(console, 'error').mockImplementation(() => {});
+      config.upsert.mockImplementation(async (_key: string, value: number) => {
+        if (value === 40) throw new Error('write refused');
+        saved = value;
+      });
+      try {
+        render(<ModeSection />);
+        await act(async () => {});
+        if (initial === 0) fireEvent.click(limited());
+        fireEvent.change(field(), { target: { value: '40' } });
+        fireEvent.blur(field());
+        await waitFor(() => expect(logged).toHaveBeenCalledTimes(1));
+        fireEvent.click(unlimited());
+        await waitFor(() => expect(config.upsert).toHaveBeenCalledTimes(2));
+        await waitFor(() => expect(saved).toBe(0));
+        expect(unlimited()).toBeChecked();
+
+        saved = 40;
+        await act(async () => {
+          releaseRead();
+        });
+        await waitFor(() => expect(reads).toBe(2));
+        expect(limited()).toBeChecked();
+        expect(field()).toHaveValue(40);
+        expect(config.upsert.mock.calls).toEqual([
+          ['BIOROUTER_MAX_TURNS', 40, false],
+          ['BIOROUTER_MAX_TURNS', 0, false],
+        ]);
+      } finally {
+        releaseRead();
+        logged.mockRestore();
+      }
+    }
+  );
 });
