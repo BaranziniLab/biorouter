@@ -1,16 +1,12 @@
 # Release notes
 
-This folder holds user-facing release notes, running from v1.75.2 (May 2026) to
-v1.89.2 (August 2026). Not every point release in that range has a note here — v1.85.1
-shipped without one. Every note opens the same way: a one-paragraph summary of what
-the release is for, then a **Downloads** table naming the exact artifact filename for
-macOS Apple Silicon, macOS Intel, Windows, and Linux. The body varies by era — most
-notes use **What's new** / **What's fixed** sections, v1.87.0, v1.88.0, and v1.88.1
-group changes under **Highlights**, and v1.88.2 and v1.88.3 use release-specific topic
-headings. Most close with an upgrade note, and the v1.88.x entries add a **Release
-verification** section. Every note is a frozen record of a release as it shipped — the
-older entries describe the product as it was at that version, not as it behaves today.
-Read the newest entry for current behaviour.
+This folder holds user-facing release notes for Biorouter. Not every point release has a
+note, and the selected index below is not a complete inventory. Headings and download
+information vary by release; not every note includes a Downloads table.
+
+Each note is a frozen record of a release as it shipped. Older entries describe the
+product at that version, not its current behaviour. Read the newest published release
+note for recent changes, and the user guides for current instructions.
 
 Come here when you want to know **what changed in a particular version** — which
 release introduced a feature, whether a bug you remember was fixed and when, or which
@@ -26,7 +22,9 @@ paper trail behind a feature (design specs, implementation plans, review records
 
 | Document | What it covers |
 | -------- | -------------- |
-| [v1.89.2](v1.89.2.md) | August 20, 2026. A patch by version number and a substantial one by content: more than 120 commits finishing four areas that were visibly incomplete in v1.89.1. Adds **Claude Code** and **Codex** as providers that run on the subscription you already pay for, with no API key, handing the child agent Biorouter's own tools over a private MCP bridge that Biorouter serves and polices; moves knowledge bases onto the **Open Knowledge Format** with **BioOKF** as a strict biomedical profile, typed edges and a merge; stops the desktop app freezing at launch; and lets you generate diagnostics from a private chat, with a warning about what the file holds. The newest release in this folder. |
+| [v1.94.1](v1.94.1.md) | Improves Ollama setup checks and recovery, clarifies Unlimited and Set a limit controls, and stops Biorouter Copilot status checks on Windows from launching hostname processes. |
+| [v1.94.0](v1.94.0.md) | Adds explicit approval for folder access outside the project, removes the old default limits from ordinary chats, improves interrupted-reply recovery, and updates Versa API Bedrock models. |
+| [v1.89.2](v1.89.2.md) | August 20, 2026. A patch by version number and a substantial one by content: more than 120 commits finishing four areas that were visibly incomplete in v1.89.1. Adds **Claude Code** and **Codex** as providers that run on the subscription you already pay for, with no API key, handing the child agent Biorouter's own tools over a private MCP bridge that Biorouter serves and polices; moves knowledge bases onto the **Open Knowledge Format** with **BioOKF** as a strict biomedical profile, typed edges and a merge; stops the desktop app freezing at launch; and lets you generate diagnostics from a private chat, with a warning about what the file holds. |
 | [v1.89.1](v1.89.1.md) | August 19, 2026. A patch release. Fixes the AWS Bedrock failure that could burn half an hour of a session producing nothing, sizes short chat messages to their own content instead of stretching them across the window, and finishes the terminology pass so the app calls a chat a chat. |
 | [v1.89.0](v1.89.0.md) | August 7, 2026. A turn now belongs to the session rather than the HTTP request, so a reload no longer kills work in flight and reopening a conversation attaches to the turn in progress; tabs can be torn off into their own window and merged back; the desktop interface is rebuilt on one design system with Figtree as the interface face; and `session attach` lets the terminal join and steer a running session. |
 | [v1.88.6](v1.88.6.md) | July 27, 2026. A reliability and fit-and-finish release closing every open issue on the tracker — twenty-four reports spanning headless concurrency, the agent's tool surface, provider coverage, local models, and the desktop interface. The headline fixes are the ones that made parallel work unsafe: concurrent headless runs aborting with a database error, and unattended runs stalling on a permission prompt nobody could answer. |
@@ -54,5 +52,6 @@ paper trail behind a feature (design specs, implementation plans, review records
 
 - [Auto-update test checklist](../auto-update-test-checklist.md) — the pre-release QA script for the one-click "Restart & Update" flow these notes announce, plus a frozen evidence log of tests already run.
 - [Cross-compiling locally with `cross`](../local-cross-compilation.md) — how to build and smoke-test release binaries for other architectures on your own machine, for ad-hoc packaging QA.
-- [Installation and setup](../../getting-started/installation.md) — the install and upgrade path behind every Downloads table in this folder, including provider setup and file locations.
+- [Installation and setup](../../getting-started/installation.md) — current installation and
+  upgrade instructions, including provider setup and file locations.
 - [Deployment](../../deployment/README.md) — running BioRouter as a shared server instead of a desktop app, the mode served by the headless Linux package introduced in v1.85.0.

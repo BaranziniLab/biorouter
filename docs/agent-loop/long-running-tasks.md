@@ -4,7 +4,10 @@ Ordinary chats continue until the task finishes, you press Stop, or a real limit
 
 ## Choosing a limit
 
-In **Settings > Chat > Approvals > Max turns**, choose **Unlimited** or enter a positive number. Zero means Unlimited. Clearing the field does not change the saved setting. A positive limit already saved in an earlier version remains in effect; it is never silently removed.
+In **Settings > Chat > Approvals > Max turns**, choose **Unlimited**, or choose **Set a
+limit** and enter a positive whole number. Clearing the field or entering an invalid
+value does not change the saved setting. A positive limit already saved in an earlier
+version remains in effect; it is never silently removed.
 
 From the command line, `--max-turns 0` selects Unlimited for that run. `biorouter configure` accepts the same value. The global settings are:
 

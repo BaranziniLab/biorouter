@@ -244,28 +244,33 @@ listed, but many do not perform reliably as an agent. See
 
 ## The desktop app
 
-Two daemon routes give the desktop app the provider's own answers, so it never keeps a second
-copy of them. Both sit behind the daemon's secret key.
+The desktop app uses these daemon routes, so it reads the provider's own answers. All
+require the daemon's secret key.
 
 | Route | Answer |
 | --- | --- |
 | `GET /ollama/recommended` | The two recommended models (default first, with download sizes), this machine's memory as the provider sizes the window by it, a suitability rating for the recommended models (`suitable`, `below_minimum`, `cpu_only` for an Intel Mac, or `unknown_resources`), the resolved `OLLAMA_HOST`, whether `OLLAMA_HOST` is set, and the privacy `tier` a chat on the default model gets from that server. |
 | `GET /ollama/context_window?model=<tag>` | The `num_ctx` a chat on that model sends to the configured server, built exactly as a chat builds it. `null` when the server cannot describe the model (unreachable, not Ollama, or not pulled). |
+| `GET /ollama/status?model=<tag>` | Checks the configured Ollama service and whether the selected model is installed. Reports the server version, installed models, tool support and context information when available, with a reason when the check fails. Omit `model` for a service-only check. |
 
-The onboarding card (`OllamaInlineCard`) reads the first route:
+The onboarding card (`OllamaInlineCard`) reads the recommendations and checks readiness
+through the daemon:
 
 - It uses the configured `OLLAMA_HOST`, and never overwrites one you set. It writes the default
   only when none is set.
 - Whether the server is "this computer", and private, comes from the route's `tier`, the
   provider's own answer. The card does not decide it from its own list of host names.
 - A failed pull is reported with Ollama's own error.
-- The app can probe only `http://127.0.0.1` (its content security policy allows no other
-  address), so a server on another machine is not probed and no download is offered, since that
-  would land on this machine's Ollama. The card asks you to run `ollama pull <tag>` on that
-  server, and lets you connect to it. A host of `0.0.0.0` or `[::]` (Ollama listening on every
-  interface) is probed as `127.0.0.1`.
+- Readiness checks run in the daemon and can check its configured Ollama server on this
+  computer or another machine. The renderer's content security policy still limits direct
+  browser requests. In-app model downloads require both the Biorouter daemon and its Ollama
+  server to be local; for another server, run `ollama pull <tag>` there. Local renderer
+  requests map `0.0.0.0` and `[::]` to `127.0.0.1`.
 
-The context gauge reads the second route (`utils/liveContextWindow.ts`), in place of the guess
+A readiness check sends no inference prompt. A successful check does not guarantee that
+a model will produce valid tool calls or complete a task.
+
+The context gauge reads the context-window route (`utils/liveContextWindow.ts`), in place of the guess
 from the model's name ("qwen" read as 128k) that hid the original bug, and ignores an answer for
 a model the chat has since switched away from.
 

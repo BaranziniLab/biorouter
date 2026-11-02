@@ -72,6 +72,10 @@ Supported models:
 
 To use: install Ollama 0.32.12 or later (the oldest that runs `qwen3.8:27b`; `gemma4:31b` needs 0.31.0 on Apple Silicon and 0.30.9 elsewhere), pull a model (`ollama pull qwen3.8:27b`), then configure Biorouter to use the Ollama provider. The endpoint defaults to `http://localhost:11434`. The model list shows the models you have pulled that can call tools. Other models may work, but many write their tool calls as text or return empty replies; see [which local models to use](../providers/ollama/tool-call-protocols.md#which-models-to-use). Biorouter sets the context window itself (`OLLAMA_NUM_CTX` overrides it); see [context window and settings](../providers/ollama/context-window-and-settings.md).
 
+Biorouter checks the configured server and selected model before inference; if the check
+fails, follow its guidance and choose **Check again** after correcting the service,
+address or model.
+
 ### Institutional models (UCSF)
 
 #### Versa API Azure
