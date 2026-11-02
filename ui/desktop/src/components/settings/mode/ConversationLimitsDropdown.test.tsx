@@ -390,6 +390,87 @@ describe('Max turns', () => {
     expect(screen.queryByRole('spinbutton')).not.toBeInTheDocument();
   });
 
+  it.each(['succeeds', 'fails'])(
+    'waits for earlier-visit saves and revalidation before accepting a new draft when the read %s',
+    async (readOutcome) => {
+      let saved = 100;
+      let revalidating = false;
+      let releaseRead: () => void = () => {};
+      const readGate = new Promise<void>((resolve) => {
+        releaseRead = resolve;
+      });
+      const readStarted = vi.fn();
+      config.read.mockImplementation(async (key: string) => {
+        if (key !== 'BIOROUTER_MAX_TURNS') return 'auto';
+        if (revalidating) {
+          readStarted();
+          await readGate;
+          if (readOutcome === 'fails') throw new Error('refresh refused');
+        }
+        return saved;
+      });
+      const settles: Array<() => void> = [];
+      config.upsert.mockImplementation(async (_key: string, value: number) => {
+        if (value !== 50)
+          await new Promise<void>((resolve) => {
+            settles.push(resolve);
+          });
+        saved = value;
+      });
+      const logged = vi.spyOn(console, 'error').mockImplementation(() => {});
+      try {
+        const first = render(<ModeSection />);
+        await waitFor(() => expect(field()).toHaveValue(100));
+        fireEvent.change(field(), { target: { value: '40' } });
+        fireEvent.blur(field());
+        await waitFor(() => expect(config.upsert).toHaveBeenCalledTimes(1));
+        fireEvent.click(unlimited());
+        first.unmount();
+
+        revalidating = true;
+        render(<ModeSection />);
+        expect(unlimited()).toBeDisabled();
+        expect(limited()).toBeDisabled();
+        expect(unlimited()).not.toBeChecked();
+        expect(limited()).not.toBeChecked();
+        expect(screen.getByRole('radiogroup').parentElement).toHaveAttribute('aria-busy', 'true');
+        fireEvent.click(limited());
+        expect(screen.queryByRole('spinbutton')).not.toBeInTheDocument();
+
+        await act(async () => settles[0]());
+        await waitFor(() => expect(config.upsert).toHaveBeenCalledTimes(2));
+        expect(limited()).toBeDisabled();
+        await act(async () => settles[1]());
+        await waitFor(() => expect(readStarted).toHaveBeenCalledOnce());
+        expect(saved).toBe(0);
+        expect(unlimited()).toBeDisabled();
+        expect(screen.queryByRole('spinbutton')).not.toBeInTheDocument();
+
+        await act(async () => releaseRead());
+        await waitFor(() => expect(unlimited()).toBeEnabled());
+        expect(unlimited()).toBeChecked();
+        expect(screen.getByRole('radiogroup').parentElement).not.toHaveAttribute('aria-busy');
+        fireEvent.click(limited());
+        fireEvent.change(field(), { target: { value: '50' } });
+        fireEvent.blur(field());
+        await waitFor(() => expect(saved).toBe(50));
+        expect(limited()).toBeChecked();
+        expect(field()).toHaveValue(50);
+        expect(config.upsert.mock.calls).toEqual([
+          ['BIOROUTER_MAX_TURNS', 40, false],
+          ['BIOROUTER_MAX_TURNS', 0, false],
+          ['BIOROUTER_MAX_TURNS', 50, false],
+        ]);
+        expect(logged).toHaveBeenCalledTimes(readOutcome === 'fails' ? 1 : 0);
+      } finally {
+        await act(async () => settles[0]?.());
+        await act(async () => settles[1]?.());
+        await act(async () => releaseRead());
+        logged.mockRestore();
+      }
+    }
+  );
+
   it('keeps a newer blank finite draft while a queued same-value Unlimited save completes', async () => {
     stored(0);
     const settles: Array<() => void> = [];

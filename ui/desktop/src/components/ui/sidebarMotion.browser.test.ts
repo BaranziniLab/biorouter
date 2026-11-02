@@ -128,28 +128,65 @@ describe('the sidebar opens and closes in a real engine', () => {
   }
 
   /** Flip the state the way the provider does, and report what started on each box. */
-  async function setState(tab: Page, state: 'expanded' | 'collapsed') {
-    return tab.evaluate((next) => {
-      const root = document.querySelector<HTMLElement>('[data-slot="sidebar"]')!;
-      root.dataset.state = next;
-      root.dataset.collapsible = next === 'collapsed' ? 'offcanvas' : '';
-      const running = (slot: string): Running[] =>
-        document
-          .querySelector(`[data-slot="${slot}"]`)!
-          .getAnimations()
-          .map((animation) => ({
-            property:
-              (animation as Animation & { transitionProperty?: string }).transitionProperty ?? '',
-            duration: Number(animation.effect?.getTiming().duration ?? 0),
-          }));
-      return { panel: running('sidebar-container'), gap: running('sidebar-gap') };
-    }, state);
+  async function setState(tab: Page, state: 'expanded' | 'collapsed', pause = false) {
+    return tab.evaluate(
+      ({ next, pause }) => {
+        const root = document.querySelector<HTMLElement>('[data-slot="sidebar"]')!;
+        root.dataset.state = next;
+        root.dataset.collapsible = next === 'collapsed' ? 'offcanvas' : '';
+        const running = (slot: string): Running[] =>
+          document
+            .querySelector(`[data-slot="${slot}"]`)!
+            .getAnimations()
+            .map((animation) => ({
+              property:
+                (animation as Animation & { transitionProperty?: string }).transitionProperty ?? '',
+              duration: Number(animation.effect?.getTiming().duration ?? 0),
+            }));
+        const started = { panel: running('sidebar-container'), gap: running('sidebar-gap') };
+        if (pause) {
+          for (const animation of document.getAnimations()) animation.pause();
+        }
+        return started;
+      },
+      { next: state, pause }
+    );
   }
 
   const panelX = (tab: Page) =>
     tab.evaluate(
       () => document.querySelector('[data-slot="sidebar-container"]')!.getBoundingClientRect().x
     );
+
+  async function halfwayThroughSlide(tab: Page) {
+    return tab.evaluate(async () => {
+      const panel = document.querySelector('[data-slot="sidebar-container"]')!;
+      const animations = document.getAnimations();
+      const slide = panel
+        .getAnimations()
+        .find(
+          (animation) =>
+            (animation as Animation & { transitionProperty?: string }).transitionProperty ===
+            'translate'
+        );
+      if (!slide) throw new Error('The sidebar has no translate transition to sample.');
+      // Wall-clock timers can fire before Chromium renders its next frame under load.
+      // Sample the actual CSS transition at its midpoint, then let it finish normally.
+      for (const animation of animations) animation.pause();
+      await Promise.all(animations.map((animation) => animation.ready));
+      const midpoint = Number(slide.effect!.getTiming().duration) / 2;
+      for (const animation of animations) animation.currentTime = midpoint;
+      return panel.getBoundingClientRect().x;
+    });
+  }
+
+  async function finishMotion(tab: Page) {
+    await tab.evaluate(async () => {
+      const animations = document.getAnimations();
+      for (const animation of animations) animation.play();
+      await Promise.all(animations.map((animation) => animation.finished));
+    });
+  }
 
   it('still moves the panel with the utility this test models', () => {
     expect(SIDEBAR_TSX).toContain('group-data-[collapsible=offcanvas]:translate-x-[-100%]');
@@ -163,15 +200,14 @@ describe('the sidebar opens and closes in a real engine', () => {
     if (!browser) return;
     const tab = await open();
     try {
-      const closing = await setState(tab, 'collapsed');
+      const closing = await setState(tab, 'collapsed', true);
       expect(closing.panel).toEqual([{ property: 'translate', duration: 175 }]);
       expect(closing.gap).toEqual([{ property: 'width', duration: 175 }]);
       // Mid-flight the panel is on its way, not already gone (the V1-H3 jump).
-      await tab.waitForTimeout(40);
-      const midway = await panelX(tab);
+      const midway = await halfwayThroughSlide(tab);
       expect(midway).toBeLessThan(0);
       expect(midway).toBeGreaterThan(-288);
-      await tab.waitForTimeout(300);
+      await finishMotion(tab);
       expect(await panelX(tab)).toBe(-288);
 
       const opening = await setState(tab, 'expanded');
@@ -209,7 +245,7 @@ describe('the sidebar opens and closes in a real engine', () => {
       expect(await shadow()).not.toBe('none');
 
       await setState(tab, 'collapsed');
-      await tab.waitForTimeout(250);
+      await finishMotion(tab);
       // Translated to x=-288 and painted above the page: any shadow here is a grey
       // band down the window's left edge.
       expect(await shadow()).toBe('none');
@@ -243,15 +279,18 @@ describe('the sidebar opens and closes in a real engine', () => {
         await compact(tab);
         // Open and drawn, lifted off the page (this also settles the style a close starts from).
         expect(await shadow(tab)).not.toBe('none');
-        await setState(tab, 'collapsed');
+        const closing = await setState(tab, 'collapsed', true);
+        expect(closing.panel.filter(({ property }) => property === 'translate')).toEqual([
+          { property: 'translate', duration: 175 },
+        ]);
+        expect(closing.panel.every(({ duration }) => duration === 175)).toBe(true);
         // The first collapsed frame: the panel has barely moved, and its edge is still lifted.
         expect(await shadow(tab)).not.toBe('none');
-        await tab.waitForTimeout(80);
-        const midway = await panelX(tab);
+        const midway = await halfwayThroughSlide(tab);
         expect(midway).toBeLessThan(0);
         expect(midway).toBeGreaterThan(-288);
         expect(await shadow(tab)).not.toBe('none');
-        await tab.waitForTimeout(250);
+        await finishMotion(tab);
         expect(await panelX(tab)).toBe(-288);
         expect(await shadow(tab)).toBe('none');
 
@@ -274,9 +313,13 @@ describe('the sidebar opens and closes in a real engine', () => {
           } else {
             await tab.emulateMedia({ reducedMotion: 'reduce' });
           }
-          await setState(tab, 'collapsed');
-          await tab.waitForTimeout(40);
-          // Well inside the 175ms a slide would take: the panel is gone, and so is its shadow.
+          const closing = await setState(tab, 'collapsed');
+          expect(
+            closing.panel.every(({ duration }) => duration <= 0.01),
+            setup
+          ).toBe(true);
+          await finishMotion(tab);
+          // The reset clamps the slide and shadow together, instead of waiting for 175ms.
           expect(await panelX(tab), setup).toBe(-288);
           expect(await shadow(tab), setup).toBe('none');
         } finally {
