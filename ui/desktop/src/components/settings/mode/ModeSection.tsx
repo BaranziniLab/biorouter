@@ -19,13 +19,17 @@ import {
 /** The modes whose approvals the per-tool permissions shape. */
 const MODES_WITH_TOOL_PERMISSIONS = new Set(['approve', 'smart_approve']);
 
+// Settings tabs unmount. Keep writes ordered across visits so a late finite write cannot
+// replace Unlimited, and a new visit reads only after the previous visit's saves have landed.
+let pendingMaxTurnsSave = Promise.resolve();
+let pendingMaxTurnsSaveCount = 0;
+
 /**
  * Settings > Chat > Approvals (renamed from "Mode", which collided with the light and dark
  * theme). Three rows, one control each (spec §3.13):
  * - Approval mode: a select menu, each mode's one-line description inside its item;
  * - Tool permissions: `Edit…`, enabled in Manual and Smart, the two modes it shapes;
- * - Max turns: a number field, always shown (it used to hide behind a "Chat limits"
- *   disclosure that held exactly one field).
+ * - Max turns: Unlimited or an explicitly chosen positive limit.
  */
 export const ModeSection = () => {
   // `undefined` until the daemon has answered, and only the first time this window asks: each
@@ -39,6 +43,9 @@ export const ModeSection = () => {
   // disabled until it is known, not typed into (or read) as the default for the moment before
   // the answer.
   const [maxTurns, setMaxTurns] = useLastKnown<number | null>('maxTurns');
+  // An earlier visit can still be changing the cached answer. Let those saves and the fresh
+  // read finish before accepting a draft that their answers would otherwise replace.
+  const [maxTurnsReady, setMaxTurnsReady] = useState(() => pendingMaxTurnsSaveCount === 0);
   const [permissionsOpen, setPermissionsOpen] = useState(false);
   const { read, upsert } = useConfig();
 
@@ -63,21 +70,38 @@ export const ModeSection = () => {
 
   const fetchMaxTurns = useCallback(async () => {
     try {
-      setMaxTurns(maxTurnsFromConfig(await read(MAX_TURNS_KEY, false)));
+      while (true) {
+        const pending = pendingMaxTurnsSave;
+        await pending;
+        const stored = maxTurnsFromConfig(await read(MAX_TURNS_KEY, false));
+        if (pending === pendingMaxTurnsSave) {
+          setMaxTurns(stored);
+          break;
+        }
+      }
     } catch (error) {
       console.error('Error fetching max turns:', error);
-      // As above: the default shows, and the field is usable, only when nothing was ever read.
-      if (recall('maxTurns') === undefined) setMaxTurns(null);
+      // Queued writes may have refreshed the cache since this visit mounted.
+      setMaxTurns(recall<number | null>('maxTurns') ?? null);
+    } finally {
+      setMaxTurnsReady(true);
     }
   }, [read, setMaxTurns]);
 
-  const handleMaxTurnsChange = async (value: number) => {
-    try {
+  const handleMaxTurnsChange = (value: number) => {
+    pendingMaxTurnsSaveCount += 1;
+    const saved = pendingMaxTurnsSave.then(async () => {
       await upsert(MAX_TURNS_KEY, value, false);
       setMaxTurns(value);
-    } catch (error) {
-      console.error('Error updating max turns:', error);
-    }
+    });
+    pendingMaxTurnsSave = saved
+      .catch((error) => {
+        console.error('Error updating max turns:', error);
+      })
+      .finally(() => {
+        pendingMaxTurnsSaveCount -= 1;
+      });
+    return saved;
   };
 
   useEffect(() => {
@@ -110,7 +134,7 @@ export const ModeSection = () => {
       <MaxTurnsRow
         maxTurns={maxTurns ?? null}
         onMaxTurnsChange={handleMaxTurnsChange}
-        loaded={maxTurns !== undefined}
+        loaded={maxTurnsReady && maxTurns !== undefined}
       />
 
       <PermissionRulesModal isOpen={permissionsOpen} onClose={() => setPermissionsOpen(false)} />
