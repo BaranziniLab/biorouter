@@ -67,8 +67,8 @@ jobs:
     # These budgets are deliberately well ABOVE the measured maxima (warm
     # cache, 2026-08-27: guards 0.1m, cross-check 8.2m, test 15.0m, serve
     # 9.5m) so a merely slow run is never failed -- they exist to make a HANG
-    # cheap and legible, not to police duration. A deadlock now costs at most
-    # an hour of runner time instead of six, on every branch that pushes.
+    # cheap and legible, not to police duration. The native test job has its
+    # own cold-cache budget below, rather than GitHub's six-hour default.
     # (The `test` job's budget was 40 until 2026-10-18, when its cold runs
     # reached it; that job's comment has the numbers.)
     timeout-minutes: 10
@@ -176,9 +176,10 @@ jobs:
     #   windows warm 15.5-29.7m (n=54)   cold 21.3-31.6m (n=8), and one cold
     #           run still in `cargo test` when 40 hit (39057096529, main)
     #
-    # 60 keeps the margin this file promises above those maxima (see `guards`)
-    # and still makes a hang cost an hour rather than six.
-    timeout-minutes: 60
+    # Main run 41393586499 reached 60 minutes during host Clippy after all
+    # tests and the socket gate passed. 90 leaves room for that cold build
+    # and cache upload while keeping a hung job bounded.
+    timeout-minutes: 90
     if: github.event_name != 'schedule'
     strategy:
       fail-fast: false
