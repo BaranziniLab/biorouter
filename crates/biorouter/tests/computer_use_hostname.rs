@@ -96,10 +96,43 @@ fn windows_visible_console_fixture() {
 async fn windows_hostname_fixture() {
     use std::path::PathBuf;
     use std::time::{Duration, Instant};
+    use windows_sys::Win32::System::Console::{
+        FreeConsole, GetConsoleProcessList, GetConsoleWindow,
+    };
+    use windows_sys::Win32::UI::WindowsAndMessaging::IsWindowVisible;
 
     let directory = PathBuf::from(std::env::var_os("BIOROUTER_HOSTNAME_FIXTURE").unwrap());
     let role = std::env::var("BIOROUTER_HOSTNAME_FIXTURE_ROLE").unwrap();
     assert!(matches!(role.as_str(), "baseline" | "fixed"));
+    let mut console_process = [0u32; 1];
+    let initial_window = unsafe { GetConsoleWindow() };
+    let initial_process_count = unsafe { GetConsoleProcessList(console_process.as_mut_ptr(), 1) };
+    let initial_window_visible =
+        !initial_window.is_null() && unsafe { IsWindowVisible(initial_window) != 0 };
+    // CREATE_NO_WINDOW still yielded an attachable console on a hosted runner.
+    // Detach explicitly so console inheritance cannot hide the dependency spawn.
+    assert_ne!(
+        unsafe { FreeConsole() },
+        0,
+        "cannot detach fixture console: {}",
+        std::io::Error::last_os_error()
+    );
+    assert!(unsafe { GetConsoleWindow() }.is_null());
+    assert_eq!(
+        unsafe { GetConsoleProcessList(console_process.as_mut_ptr(), 1) },
+        0
+    );
+    let console = serde_json::json!({
+        "initial_window_present": !initial_window.is_null(),
+        "initial_window_visible": initial_window_visible,
+        "initial_process_count": initial_process_count,
+        "console_detached": true,
+    });
+    std::fs::write(
+        directory.join("console-state.json"),
+        serde_json::to_vec_pretty(&console).unwrap(),
+    )
+    .unwrap();
     std::fs::write(directory.join("ready"), std::process::id().to_string()).unwrap();
     let deadline = Instant::now() + Duration::from_secs(20);
     while !directory.join("go").exists() {
@@ -134,6 +167,7 @@ async fn windows_hostname_fixture() {
             "target": first.target,
             "polls": 6,
             "interval_ms": 2000,
+            "console": console,
         }))
         .unwrap(),
     )

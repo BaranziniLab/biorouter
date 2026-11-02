@@ -38,13 +38,17 @@ public static class CopilotConsoleProbe {
     [DllImport("kernel32.dll")]
     private static extern bool CloseHandle(IntPtr handle);
     [DllImport("kernel32.dll", SetLastError=true)]
-    public static extern bool AttachConsole(uint processId);
+    private static extern bool AttachConsole(uint processId);
     [DllImport("kernel32.dll", SetLastError=true)]
     public static extern bool FreeConsole();
     [DllImport("kernel32.dll")]
     public static extern IntPtr GetConsoleWindow();
     [DllImport("user32.dll")]
     public static extern bool IsWindowVisible(IntPtr window);
+
+    public static int AttachConsoleError(uint processId) {
+        return AttachConsole(processId) ? 0 : Marshal.GetLastWin32Error();
+    }
 
     public static uint StartVisibleControl(string executable) {
         var startup = new StartupInfo {
@@ -98,8 +102,9 @@ function Measure-VisibleControl {
             if ([DateTime]::UtcNow -gt $deadline) { throw 'Visible-console control did not become ready' }
             Start-Sleep -Milliseconds 25
         }
-        if (![CopilotConsoleProbe]::AttachConsole([uint32]$childId)) {
-            throw "Cannot attach to explicit CREATE_NEW_CONSOLE control (error $([Runtime.InteropServices.Marshal]::GetLastWin32Error()))"
+        $attachError = [CopilotConsoleProbe]::AttachConsoleError([uint32]$childId)
+        if ($attachError -ne 0) {
+            throw "Cannot attach to explicit CREATE_NEW_CONSOLE control (error $attachError)"
         }
         $attached = $true
         $window = [CopilotConsoleProbe]::GetConsoleWindow()
@@ -160,15 +165,14 @@ function Measure-Polling([string]$Role) {
             Start-Sleep -Milliseconds 25
         }
 
-        # A console-owning parent would hide the original defect by inheritance.
-        # The observer temporarily detaches its own console, then requires the
-        # fixture to have none, matching the desktop daemon's launch context.
+        # The fixture explicitly detaches before its handshake. Verify that
+        # console inheritance cannot mask the dependency spawn under test.
         [CopilotConsoleProbe]::FreeConsole() | Out-Null
-        if ([CopilotConsoleProbe]::AttachConsole([uint32]$process.Id)) {
+        $attachError = [CopilotConsoleProbe]::AttachConsoleError([uint32]$process.Id)
+        if ($attachError -eq 0) {
             [CopilotConsoleProbe]::FreeConsole() | Out-Null
             throw 'Fixture unexpectedly owns a console; the baseline would be meaningless'
         }
-        $attachError = [Runtime.InteropServices.Marshal]::GetLastWin32Error()
         if ($attachError -ne 6) { throw "Cannot establish consoleless fixture (AttachConsole error $attachError)" }
 
         $query = 'SELECT * FROM Win32_ProcessStartTrace WHERE ParentProcessID = ' + $process.Id
