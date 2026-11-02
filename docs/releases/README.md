@@ -27,12 +27,10 @@ that path.
 
 ## Subdirectories
 
-- [`notes/`](notes/README.md) — the published per-version release notes, running from
-  `v1.75.2` (May 2026) through `v1.89.2` (August 20, 2026); not every point release in
-  that range has a note. Each states its release date, links the repository,
-  summarizes the headline changes, and lists the per-platform download artifacts and
-  install steps. These are frozen records of what shipped, indexed by version in the
-  folder's own README.
+- [`notes/`](notes/README.md) — user-facing notes for published releases. Each
+  summarizes the changes in that version; headings and download details vary by
+  release. These are frozen records of what shipped. The folder's README indexes
+  selected releases.
 
 ## Related documentation
 
