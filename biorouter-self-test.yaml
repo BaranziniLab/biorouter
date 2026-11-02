@@ -27,6 +27,7 @@ activities:
   - Validate the Settings reset contract and its active-work safety gate
   - Verify provider error handling, conversation-scoped reasoning, and saved-credential deletion safeguards
   - Verify local inference executes tools and preserves results across turns
+  - Verify daemon-side Ollama readiness, bounded recovery, safe connection diagnostics, and failed Meditation cursors
   - Validate Crew empty-state onboarding, isolated Alice/Bob/Carol development profiles, and private-by-default workspace presentation
   - Exercise Crew first-host preparation and SSH trust validation with synthetic invitation metadata only
   - Verify Crew request idempotency, human-only session access, and scoped normal-chat tool denial paths
@@ -958,6 +959,15 @@ prompt: |
   model. Otherwise report BLOCKED. Keep the selected provider, model and settings unchanged.
   Work only in {{ workspace_dir }}/local-inference/. Do not build the repository, download
   models, inspect credentials, or change the user's Ollama daemon settings.
+
+  Before inference, ask the harness for the configured daemon's `/ollama/status`
+  result for the selected model. Record reachable service, installed-model and
+  tool-support status separately from successful inference. If unavailable, report
+  the service-specific recovery message and stop this phase without changing the
+  host, starting another service, or switching providers. A later check against the
+  same host must be able to recover. The harness separately verifies unavailable
+  loopback endpoints, proxy isolation, aggregate retry counts, and failed scheduled
+  runs retaining their last successful Meditation cursor and failed-run linkage.
 
   1. Use a real tool to create factorial.py in that directory. It must print math.factorial(10).
      Execute the saved file, require exit 0 and stdout exactly 3628800, then read it back.

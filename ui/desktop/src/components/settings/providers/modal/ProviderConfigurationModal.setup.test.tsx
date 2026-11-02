@@ -97,6 +97,150 @@ beforeEach(() => {
   mocks.submit.mockRejectedValueOnce(new Error('raw error with private-token-DO-NOT-DISPLAY'));
 });
 
+it('keeps an unavailable Ollama setup open and checks the same host again on request', async () => {
+  const ollama: ProviderDetails = {
+    ...provider('codex'),
+    name: 'ollama',
+    is_configured: true,
+    metadata: {
+      ...provider('codex').metadata,
+      name: 'ollama',
+      display_name: 'Ollama',
+      config_keys: [
+        {
+          name: 'OLLAMA_HOST',
+          required: true,
+          secret: false,
+          oauth_flow: false,
+          default: 'http://localhost:11434',
+        },
+      ],
+    },
+  };
+  mocks.submit
+    .mockReset()
+    .mockRejectedValueOnce(
+      new Error('Cannot reach Ollama at http://localhost:11434: connection refused.')
+    )
+    .mockResolvedValueOnce(undefined);
+  const onConfigured = vi.fn();
+  render(
+    <ProviderConfigurationModal provider={ollama} onClose={vi.fn()} onConfigured={onConfigured} />
+  );
+  await screen.findByDisplayValue('http://localhost:11434');
+  fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+  expect(await screen.findByText(/Cannot reach Ollama/)).toBeInTheDocument();
+  expect(screen.getByText(/does not start Ollama/)).toBeInTheDocument();
+  expect(onConfigured).not.toHaveBeenCalled();
+  fireEvent.click(screen.getByRole('button', { name: 'Check again' }));
+  await waitFor(() => expect(onConfigured).toHaveBeenCalledWith(ollama));
+  expect(mocks.submit).toHaveBeenCalledTimes(2);
+  expect(mocks.submit).toHaveBeenLastCalledWith(
+    mocks.upsert,
+    ollama,
+    { OLLAMA_HOST: 'http://localhost:11434' },
+    expect.any(Function)
+  );
+});
+
+it.each(['Escape', 'Close'] as const)(
+  'keeps the Ollama draft locked against %s while a readiness retry is pending',
+  async (dismiss) => {
+    const ollama: ProviderDetails = {
+      ...provider('codex'),
+      name: 'ollama',
+      metadata: {
+        ...provider('codex').metadata,
+        name: 'ollama',
+        display_name: 'Ollama',
+        config_keys: [
+          {
+            name: 'OLLAMA_HOST',
+            required: true,
+            secret: false,
+            oauth_flow: false,
+            default: 'http://localhost:11434',
+          },
+        ],
+      },
+    };
+    let fail!: (error: Error) => void;
+    mocks.submit
+      .mockReset()
+      .mockRejectedValueOnce(new Error('Cannot reach Ollama.'))
+      .mockImplementationOnce(
+        () =>
+          new Promise<void>((_resolve, reject) => {
+            fail = reject;
+          })
+      );
+    const onConfigured = vi.fn();
+    const onClose = vi.fn();
+    render(
+      <ProviderConfigurationModal provider={ollama} onClose={onClose} onConfigured={onConfigured} />
+    );
+    await screen.findByDisplayValue('http://localhost:11434');
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Check again' }));
+    expect(screen.getByRole('button', { name: providerSetupCopy.goBack })).toBeDisabled();
+    expect(screen.getByRole('button', { name: providerSetupCopy.checking })).toBeDisabled();
+    expect(screen.queryByRole('button', { name: 'Close' })).not.toBeInTheDocument();
+    fireEvent.keyDown(screen.getByRole('dialog'), { key: 'Escape', code: 'Escape' });
+    expect(
+      screen.getByRole('dialog', { name: providerSetupCopy.needsAttention })
+    ).toBeInTheDocument();
+    expect(screen.queryByDisplayValue('http://localhost:11434')).not.toBeInTheDocument();
+    expect(onClose).not.toHaveBeenCalled();
+    expect(onConfigured).not.toHaveBeenCalled();
+
+    fail(new Error('Ollama is still unavailable.'));
+    expect(await screen.findByRole('button', { name: 'Check again' })).toBeEnabled();
+    if (dismiss === 'Escape') {
+      fireEvent.keyDown(screen.getByRole('dialog'), { key: 'Escape', code: 'Escape' });
+    } else {
+      fireEvent.click(screen.getByRole('button', { name: 'Close' }));
+    }
+    expect(await screen.findByDisplayValue('http://localhost:11434')).toBeInTheDocument();
+    expect(onConfigured).not.toHaveBeenCalled();
+  }
+);
+
+it('cancels the captured candidate when Cancel closes an initial readiness check', async () => {
+  mocks.submit.mockReset();
+  let finish!: () => void;
+  let isCurrent!: () => boolean;
+  mocks.submit.mockImplementationOnce(
+    async (_upsert, _provider, _candidate, active: () => boolean) => {
+      isCurrent = active;
+      await new Promise<void>((resolve) => {
+        finish = resolve;
+      });
+      if (active()) await mocks.upsert('OLLAMA_HOST', 'localhost', false);
+    }
+  );
+  const onClose = vi.fn();
+  const onConfigured = vi.fn();
+  render(
+    <ProviderConfigurationModal
+      provider={provider('codex')}
+      onClose={onClose}
+      onConfigured={onConfigured}
+    />
+  );
+  await screen.findByDisplayValue('/custom/codex');
+  fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+  await waitFor(() => expect(mocks.submit).toHaveBeenCalledTimes(1));
+  expect(isCurrent()).toBe(true);
+  fireEvent.click(screen.getByRole('button', { name: providerSetupCopy.cancel }));
+  expect(onClose).toHaveBeenCalledTimes(1);
+  expect(isCurrent()).toBe(false);
+  finish();
+  await waitFor(() => expect(screen.getByRole('button', { name: 'Save' })).toBeEnabled());
+  expect(mocks.upsert).not.toHaveBeenCalled();
+  expect(mocks.status).not.toHaveBeenCalled();
+  expect(onConfigured).not.toHaveBeenCalled();
+});
+
 describe.each(['codex', 'claude_code'] as const)('%s configuration recovery', (kind) => {
   it.each(['not_installed', 'signed_out'] as const)(
     'offers appropriate steps for %s without executing commands',
@@ -136,9 +280,12 @@ describe.each(['codex', 'claude_code'] as const)('%s configuration recovery', (k
     expect(mocks.submit).toHaveBeenCalledTimes(1);
     fireEvent.click(retry);
     await waitFor(() => expect(onConfigured).toHaveBeenCalledWith(provider(kind)));
-    expect(mocks.submit).toHaveBeenLastCalledWith(mocks.upsert, provider(kind), {
-      [kind === 'codex' ? 'CODEX_COMMAND' : 'CLAUDE_CODE_COMMAND']: `/custom/${kind}`,
-    });
+    expect(mocks.submit).toHaveBeenLastCalledWith(
+      mocks.upsert,
+      provider(kind),
+      { [kind === 'codex' ? 'CODEX_COMMAND' : 'CLAUDE_CODE_COMMAND']: `/custom/${kind}` },
+      expect.any(Function)
+    );
     expect(mocks.upsert).not.toHaveBeenCalled();
   });
 

@@ -594,6 +594,28 @@ describe('DefaultProviderSetupForm in a browser', () => {
     expect(await screen.findByDisplayValue('https://api.openai.com')).toBeEnabled();
     expect(screen.queryByTestId('host-managed-destination-note')).toBeNull();
   });
+
+  it('keeps the Ollama capability host read-only while allowing timeout edits', async () => {
+    document.documentElement.dataset.biorouterSurface = BROWSER_SURFACE_MARKER;
+    const ollama = {
+      ...openai,
+      name: 'ollama',
+      metadata: {
+        ...openai.metadata,
+        name: 'ollama',
+        display_name: 'Ollama',
+        config_keys: [
+          { name: 'OLLAMA_HOST', required: true, secret: false, default: 'http://localhost:11434' },
+          { name: 'OLLAMA_TIMEOUT', required: true, secret: false, default: '600' },
+        ],
+      },
+    } as unknown as ProviderDetails;
+    render(<Harness provider={ollama} />);
+    const host = await screen.findByDisplayValue('http://localhost:11434');
+    expect(host).toBeDisabled();
+    expect(host.getAttribute('aria-describedby')).toContain('provider-config-host-owned-note');
+    expect(screen.getByDisplayValue('600')).toBeEnabled();
+  });
 });
 
 describe('CustomProviderForm in a browser', () => {

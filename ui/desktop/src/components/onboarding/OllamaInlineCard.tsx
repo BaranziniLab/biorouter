@@ -12,14 +12,14 @@ import { Spinner } from '../ui/spinner';
 import type { OllamaRecommendedModel } from '../../api';
 import {
   DEFAULT_OLLAMA_HOST,
-  checkOllamaStatus,
   getOllamaDownloadUrl,
-  getOllamaModels,
+  getOllamaReadiness,
   getOllamaSetup,
   pollForOllama,
   pullOllamaModel,
   sameOllamaTag,
   type OllamaSetup,
+  type ConfiguredOllamaReadiness,
   type PullProgress,
 } from '../../utils/ollamaDetection';
 import { localModelsCopy } from '../settings/models/copy';
@@ -99,6 +99,8 @@ export default function OllamaInlineCard({ onSuccess }: OllamaInlineCardProps) {
   const [isChecking, setIsChecking] = useState(true);
   const [setup, setSetup] = useState<OllamaSetup | null>(null);
   const [setupError, setSetupError] = useState<string | null>(null);
+  const [readiness, setReadiness] = useState<ConfiguredOllamaReadiness | null>(null);
+  const [readinessError, setReadinessError] = useState<string | null>(null);
   const [ollamaDetected, setOllamaDetected] = useState(false);
   const [isPolling, setIsPolling] = useState(false);
   const [isConnecting, setIsConnecting] = useState(false);
@@ -115,14 +117,28 @@ export default function OllamaInlineCard({ onSuccess }: OllamaInlineCardProps) {
   // write into a component nobody can see. Every state write after an await
   // checks this first.
   const mountedRef = useRef(true);
+  const probeGenerationRef = useRef(0);
   const userChoseModelRef = useRef(false);
   const connectingRef = useRef(false);
 
-  const refreshInstalled = useCallback(async (current: OllamaSetup) => {
-    const pulled = await getOllamaModels(current.host);
-    if (!mountedRef.current) return;
+  const refreshInstalled = useCallback(async (current: OllamaSetup, generation: number) => {
+    let checked: ConfiguredOllamaReadiness;
+    try {
+      checked = await getOllamaReadiness();
+    } catch (error) {
+      if (!mountedRef.current || generation !== probeGenerationRef.current) return;
+      setOllamaDetected(false);
+      setReadiness(null);
+      setInstalled(null);
+      setReadinessError(errorMessage(error));
+      return;
+    }
+    if (!mountedRef.current || generation !== probeGenerationRef.current) return;
+    setReadiness(checked);
+    setReadinessError(checked.error ?? null);
+    setOllamaDetected(checked.reachable);
     const tags = current.recommendations.models
-      .filter((model) => pulled.some((p) => sameOllamaTag(p.name, model.tag)))
+      .filter((model) => checked.models.some((p) => sameOllamaTag(p.name, model.tag)))
       .map((model) => model.tag);
     setInstalled(tags);
     if (!userChoseModelRef.current) {
@@ -132,35 +148,32 @@ export default function OllamaInlineCard({ onSuccess }: OllamaInlineCardProps) {
       const fallback = current.recommendations.default_model;
       setSelectedTag(tags.includes(fallback) || tags.length === 0 ? fallback : tags[0]);
     }
+    return checked.reachable;
   }, []);
 
   const load = useCallback(async () => {
+    const generation = ++probeGenerationRef.current;
     setIsChecking(true);
     setSetupError(null);
+    setReadinessError(null);
+    stopPollingRef.current?.();
+    setIsPolling(false);
+    connectingRef.current = false;
+    setIsConnecting(false);
     let current: OllamaSetup;
     try {
       current = await getOllamaSetup();
     } catch (error) {
-      if (!mountedRef.current) return;
+      if (!mountedRef.current || generation !== probeGenerationRef.current) return;
       setSetupError(errorMessage(error));
       setIsChecking(false);
       return;
     }
-    if (!mountedRef.current) return;
+    if (!mountedRef.current || generation !== probeGenerationRef.current) return;
     setSetup(current);
     if (!userChoseModelRef.current) setSelectedTag(current.recommendations.default_model);
-    if (!current.reachable) {
-      // Not probed: the CSP refuses the request, and the refusal is
-      // indistinguishable from a server that is down.
-      setIsChecking(false);
-      return;
-    }
-
-    const status = await checkOllamaStatus(current.host);
-    if (!mountedRef.current) return;
-    setOllamaDetected(status.isRunning);
-    if (status.isRunning) await refreshInstalled(current);
-    if (!mountedRef.current) return;
+    await refreshInstalled(current, generation);
+    if (!mountedRef.current || generation !== probeGenerationRef.current) return;
     setIsChecking(false);
   }, [refreshInstalled]);
 
@@ -169,6 +182,7 @@ export default function OllamaInlineCard({ onSuccess }: OllamaInlineCardProps) {
     void load();
     return () => {
       mountedRef.current = false;
+      probeGenerationRef.current += 1;
       if (stopPollingRef.current) stopPollingRef.current();
     };
   }, [load]);
@@ -185,36 +199,48 @@ export default function OllamaInlineCard({ onSuccess }: OllamaInlineCardProps) {
   const selectedInstalled = !!selectedModel && !!installed?.includes(selectedModel.tag);
 
   const handleInstallClick = () => {
-    if (!setup) return;
+    if (!setup?.reachable) return;
     const current = setup;
+    const generation = ++probeGenerationRef.current;
+    stopPollingRef.current?.();
     setIsPolling(true);
     stopPollingRef.current = pollForOllama(
       async (status) => {
-        if (!mountedRef.current) return;
+        if (!mountedRef.current || generation !== probeGenerationRef.current) return;
         setOllamaDetected(status.isRunning);
         setIsPolling(false);
-        await refreshInstalled(current);
-        if (!mountedRef.current) return;
+        const available = await refreshInstalled(current, generation);
+        if (!mountedRef.current || generation !== probeGenerationRef.current || !available) return;
         toastService.success({
           title: ollamaCopy.detectedToast,
           msg: ollamaCopy.detectedToastDetail,
         });
       },
       3000,
-      current.host
+      current.host,
+      async () => {
+        try {
+          const checked = await getOllamaReadiness();
+          return { isRunning: checked.reachable, host: checked.base_url };
+        } catch {
+          return { isRunning: false, host: current.host };
+        }
+      }
     );
   };
 
   const handleDownloadModel = async () => {
-    if (!setup || !selectedModel) return;
+    if (!setup?.reachable || !selectedModel) return;
     const current = setup;
+    const generation = probeGenerationRef.current;
     const model = selectedModel;
     setDownloadingTag(model.tag);
     setDownloadProgress({ status: ollamaCopy.startingDownload });
     const result = await pullOllamaModel(
       model.tag,
       (progress) => {
-        if (mountedRef.current) setDownloadProgress(progress);
+        if (mountedRef.current && generation === probeGenerationRef.current)
+          setDownloadProgress(progress);
       },
       current.host
     );
@@ -235,24 +261,43 @@ export default function OllamaInlineCard({ onSuccess }: OllamaInlineCardProps) {
     if (!mountedRef.current) return;
     setDownloadingTag(null);
     setDownloadProgress(null);
-    await refreshInstalled(current);
+    if (generation !== probeGenerationRef.current) return;
+    await refreshInstalled(current, generation);
   };
 
   const handleConnectOllama = async () => {
     if (!setup || !selectedModel || !mountedRef.current || connectingRef.current) return;
     connectingRef.current = true;
+    const generation = ++probeGenerationRef.current;
     setIsConnecting(true);
+    setReadinessError(null);
     try {
+      const checked = await getOllamaReadiness(selectedModel.tag);
+      if (!mountedRef.current || generation !== probeGenerationRef.current) return;
+      setReadiness(checked);
+      setOllamaDetected(checked.reachable);
+      setInstalled(
+        setup.recommendations.models
+          .filter((model) => checked.models.some((pulled) => sameOllamaTag(pulled.name, model.tag)))
+          .map((model) => model.tag)
+      );
+      if (
+        !checked.reachable ||
+        checked.model_available !== true ||
+        checked.supports_tools === false
+      ) {
+        throw new Error(checked.error || `Ollama is not ready to use ${selectedModel.tag}.`);
+      }
       await upsert('BIOROUTER_PROVIDER', 'ollama', false);
-      if (!mountedRef.current) return;
+      if (!mountedRef.current || generation !== probeGenerationRef.current) return;
       await upsert('BIOROUTER_MODEL', selectedModel.tag, false);
-      if (!mountedRef.current) return;
+      if (!mountedRef.current || generation !== probeGenerationRef.current) return;
       // Only when unset. This wrote `localhost` unconditionally, so finishing
       // onboarding pointed a user who had configured a remote Ollama back at
       // this machine — and the model just checked was checked on THEIR host.
       if (!setup.recommendations.host_configured) {
         await upsert('OLLAMA_HOST', 'localhost', false);
-        if (!mountedRef.current) return;
+        if (!mountedRef.current || generation !== probeGenerationRef.current) return;
       }
       toastService.success({
         title: ollamaCopy.connectedToast,
@@ -260,8 +305,9 @@ export default function OllamaInlineCard({ onSuccess }: OllamaInlineCardProps) {
       });
       onSuccess();
     } catch (error) {
+      if (!mountedRef.current || generation !== probeGenerationRef.current) return;
       connectingRef.current = false;
-      if (!mountedRef.current) return;
+      setReadinessError(errorMessage(error));
       console.error('Failed to connect to Ollama:', error);
       toastService.error({
         title: ollamaCopy.connectFailed,
@@ -327,13 +373,9 @@ export default function OllamaInlineCard({ onSuccess }: OllamaInlineCardProps) {
 
   const isDownloading = downloadingTag !== null;
 
-  // A server this screen cannot ask has no state word on any option; one it can ask lists them
-  // once Ollama has said what it has pulled.
-  const askable = setup?.reachable ?? false;
   const modelOptions = useMemo(
-    () =>
-      recommendations ? modelOptionsFor(recommendations.models, askable ? installed : null) : [],
-    [askable, installed, recommendations]
+    () => (recommendations ? modelOptionsFor(recommendations.models, installed) : []),
+    [installed, recommendations]
   );
 
   // The app's one select (`ui/Select`), as Llama Server's panel draws it: react-select names its
@@ -351,6 +393,8 @@ export default function OllamaInlineCard({ onSuccess }: OllamaInlineCardProps) {
             if (!chosen) return;
             userChoseModelRef.current = true;
             setSelectedTag(chosen.value);
+            setReadiness(null);
+            setReadinessError(null);
           }}
           isDisabled={isDownloading || isConnecting}
           isSearchable={false}
@@ -390,34 +434,30 @@ export default function OllamaInlineCard({ onSuccess }: OllamaInlineCardProps) {
             </Button>
           </div>
         </div>
-      ) : setup && !setup.reachable ? (
-        // A server the renderer cannot ask anything: another machine's
-        // Ollama, or this machine's at `::1` (the CSP admits only 127.0.0.1).
-        // So this branch neither lists what is pulled there nor offers a
-        // download (which would land on 127.0.0.1's Ollama, if there is one).
-        // The memory note is shown only for this computer: on another one the
-        // figure describes the wrong machine. A chat reaches the server from
-        // the daemon, so connecting is still the whole job. The pull command
-        // follows the picker, because it names the model picked there.
+      ) : setup && !setup.reachable && ollamaDetected ? (
+        // The daemon can check this server; downloads still require a direct
+        // renderer connection, so offer its pull command instead.
         <div className="space-y-3">
-          {status(
-            'info',
-            setup.private ? ollamaCopy.atHost(shownHost) : ollamaCopy.onAnotherComputer(shownHost)
-          )}
+          {status('success', ollamaCopy.running(shownHost))}
           {publicNote}
           {modelSelect}
           {setup.private && suitabilityNote}
-          <div className="space-y-2" data-testid="ollama-remote-note">
-            <p className="flex min-w-0 flex-wrap items-center text-supporting text-text-muted">
-              <span className="min-w-0">{ollamaCopy.remoteInstruction}</span>
-              <InfoTip label={ollamaCopy.remoteTipLabel} help={ollamaCopy.remoteTip} />
-            </p>
-            <CopyField
-              value={ollamaCopy.pullCommand(selectedModel?.tag ?? recommendations.default_model)}
-              label={ollamaCopy.pullCommand(selectedModel?.tag ?? recommendations.default_model)}
-            />
-          </div>
-          {selectedModel && (
+          {!selectedInstalled && (
+            <div className="space-y-2" data-testid="ollama-remote-note">
+              <p className="flex min-w-0 flex-wrap items-center text-supporting text-text-muted">
+                <span className="min-w-0">{ollamaCopy.remoteInstruction}</span>
+                <InfoTip label={ollamaCopy.remoteTipLabel} help={ollamaCopy.remoteTip} />
+              </p>
+              <CopyField
+                value={ollamaCopy.pullCommand(selectedModel?.tag ?? recommendations.default_model)}
+                label={ollamaCopy.pullCommand(selectedModel?.tag ?? recommendations.default_model)}
+              />
+              <Button variant="secondary" onClick={() => void load()}>
+                Check again
+              </Button>
+            </div>
+          )}
+          {selectedModel && selectedInstalled && (
             <div className="flex flex-wrap items-center gap-2">{connectButton}</div>
           )}
         </div>
@@ -435,7 +475,7 @@ export default function OllamaInlineCard({ onSuccess }: OllamaInlineCardProps) {
 
           {installed !== null && modelSelect}
 
-          {suitabilityNote}
+          {setup?.private && suitabilityNote}
 
           {downloadingTag !== null && downloadProgress && (
             <div className="br-first-run-box br-fill-surface p-3">
@@ -495,14 +535,14 @@ export default function OllamaInlineCard({ onSuccess }: OllamaInlineCardProps) {
         <div className="space-y-3">
           {status('warning', ollamaCopy.notDetected(namedHost))}
           {publicNote}
-          {suitabilityNote}
+          {setup?.private && suitabilityNote}
           <div className="flex flex-wrap items-center gap-2">
             {isPolling ? (
               <div className="flex items-center gap-2 text-supporting text-text-muted">
                 <Spinner size={14} />
                 <span>{ollamaCopy.waiting}</span>
               </div>
-            ) : (
+            ) : setup?.reachable ? (
               <Button asChild variant="secondary">
                 <a
                   href={getOllamaDownloadUrl()}
@@ -513,9 +553,36 @@ export default function OllamaInlineCard({ onSuccess }: OllamaInlineCardProps) {
                   {ollamaCopy.install}
                 </a>
               </Button>
-            )}
+            ) : null}
+            <Button variant="secondary" onClick={() => void load()}>
+              Check again
+            </Button>
           </div>
         </div>
+      )}
+      {readinessError && !isChecking && (
+        <div className="space-y-2">
+          <p className="break-words text-supporting text-text-muted" role="alert">
+            {readinessError}
+          </p>
+          <p className="text-supporting text-text-muted">
+            The host address tells Biorouter where to connect; it does not start Ollama.
+            {readiness?.reachable
+              ? ' Check the selected model on that server, then choose Check again.'
+              : ' Open Ollama on the computer at that address, then choose Check again.'}
+          </p>
+          {ollamaDetected && (
+            <Button variant="secondary" onClick={() => void load()}>
+              Check again
+            </Button>
+          )}
+        </div>
+      )}
+      {readiness?.selected_model === selectedModel?.tag && readiness?.context_window != null && (
+        <p className="text-supporting text-text-muted">
+          Biorouter will request a context window of {readiness.context_window.toLocaleString()}{' '}
+          tokens. A larger window uses more memory and takes longer to process.
+        </p>
       )}
     </div>
   );

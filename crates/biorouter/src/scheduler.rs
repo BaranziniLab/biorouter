@@ -29,6 +29,34 @@ use crate::workflow::Workflow;
 type RunningTasksMap = HashMap<String, CancellationToken>;
 type JobsMap = HashMap<String, (JobId, ScheduledJob)>;
 
+fn begin_attempt(job: &mut ScheduledJob, now: DateTime<Utc>) {
+    let last_failed_session_id = job
+        .last_attempt
+        .as_ref()
+        .and_then(|attempt| attempt.last_failed_session_id.clone());
+    job.last_attempt = Some(ScheduledRunDiagnostics {
+        attempted_at: now,
+        provider: None,
+        model: None,
+        session_id: None,
+        last_failed_session_id,
+        phase: "setup".to_string(),
+        failure_kind: None,
+    });
+}
+
+async fn update_attempt(
+    jobs: &Arc<Mutex<JobsMap>>,
+    job_id: &str,
+    edit: impl FnOnce(&mut ScheduledRunDiagnostics),
+) {
+    if let Some((_, job)) = jobs.lock().await.get_mut(job_id) {
+        if let Some(attempt) = job.last_attempt.as_mut() {
+            edit(attempt);
+        }
+    }
+}
+
 /// The substring that marks a scheduler error as *"the run was stopped, it did
 /// not fail"*.
 ///
@@ -260,6 +288,17 @@ impl From<anyhow::Error> for SchedulerError {
 }
 
 #[derive(Clone, Serialize, Deserialize, Debug, utoipa::ToSchema)]
+pub struct ScheduledRunDiagnostics {
+    pub attempted_at: DateTime<Utc>,
+    pub provider: Option<String>,
+    pub model: Option<String>,
+    pub session_id: Option<String>,
+    pub last_failed_session_id: Option<String>,
+    pub phase: String,
+    pub failure_kind: Option<String>,
+}
+
+#[derive(Clone, Serialize, Deserialize, Debug, utoipa::ToSchema)]
 pub struct ScheduledJob {
     pub id: String,
     pub source: String,
@@ -302,6 +341,8 @@ pub struct ScheduledJob {
     /// it was created. Cleared by the next successful run.
     #[serde(default)]
     pub last_error: Option<String>,
+    #[serde(default)]
+    pub last_attempt: Option<ScheduledRunDiagnostics>,
     /// Did the scheduler write [`Self::source`] itself, and may it therefore
     /// delete that file when the job goes?
     ///
@@ -577,6 +618,7 @@ async fn claim_run_slot(
         Some((_, job)) => {
             job.currently_running = true;
             job.process_start_time = Some(now);
+            begin_attempt(job, now);
             job.run_count = job.run_count.saturating_add(1);
             let claimed = job.clone();
             register_running_task(running_tasks, job_id, token.clone());
@@ -818,11 +860,13 @@ async fn persist_run_start(
 ) -> Result<Option<u32>, SchedulerError> {
     let id = job.id.clone();
     let started = job.process_start_time;
+    let attempt = job.last_attempt.clone();
     persist_change(storage_path, move |list| {
         let mut count = None;
         let found = edit_job(list, &id, |stored| {
             stored.currently_running = true;
             stored.process_start_time = started;
+            stored.last_attempt.clone_from(&attempt);
             // Read-modify-write against the FILE, not `max` against this
             // process's copy. `run_count` is a monotonic counter of firings and
             // this process's copy is loaded once, so two processes running the
@@ -862,6 +906,7 @@ async fn persist_auto_pause(storage_path: &Path, job_id: &str) -> Result<bool, S
 struct RunCompletion {
     finished_at: DateTime<Utc>,
     error: Option<String>,
+    failure_kind: Option<String>,
     /// Did the run end in a privacy refusal ([`ScheduledRunRefused`]) — refused
     /// before it built anything?
     refused: bool,
@@ -875,6 +920,17 @@ impl RunCompletion {
         Self {
             finished_at,
             error: result.as_ref().err().map(|e| format!("{e:#}")),
+            failure_kind: result.as_ref().err().map(|error| {
+                if let Some(abort) = error.downcast_ref::<ScheduledTurnFailure>() {
+                    abort.kind.clone()
+                } else if let Some(provider) =
+                    error.downcast_ref::<crate::providers::errors::ProviderError>()
+                {
+                    provider.kind().wire_code().to_string()
+                } else {
+                    "unknown".to_string()
+                }
+            }),
             refused: result
                 .as_ref()
                 .err()
@@ -910,6 +966,19 @@ impl RunCompletion {
         // scheduled run mints a new session each time, so the failure has no
         // other durable home. Cleared by the next run that succeeds.
         job.last_error.clone_from(&self.error);
+        if let Some(attempt) = job.last_attempt.as_mut() {
+            if self.error.is_some() {
+                if attempt.session_id.is_some() {
+                    attempt
+                        .last_failed_session_id
+                        .clone_from(&attempt.session_id);
+                }
+                attempt.failure_kind.clone_from(&self.failure_kind);
+            } else {
+                attempt.phase = "completed".to_string();
+                attempt.failure_kind = None;
+            }
+        }
         if self.error.is_none() {
             job.last_run = Some(self.finished_at);
         }
@@ -949,8 +1018,16 @@ async fn record_run_completion(
     let completion = RunCompletion::from_result(result, Utc::now()).for_a_counted_run(counted);
     let id = job_id.to_string();
     let for_disk = completion.clone();
+    let attempt = jobs
+        .lock()
+        .await
+        .get(job_id)
+        .and_then(|(_, job)| job.last_attempt.clone());
     let still_on_disk = match persist_change(storage_path, move |list| {
-        Ok(edit_job(list, &id, |stored| for_disk.apply(stored)))
+        Ok(edit_job(list, &id, |stored| {
+            stored.last_attempt = attempt;
+            for_disk.apply(stored);
+        }))
     })
     .await
     {
@@ -1758,6 +1835,7 @@ impl Scheduler {
                         // A workflow scheduled by path has no creating chat.
                         creator_session_id: None,
                         last_error: None,
+                        last_attempt: None,
                         owns_source: None,
                         armed_with_private_reach,
                     };
@@ -1999,6 +2077,7 @@ impl Scheduler {
                     }
                     job.currently_running = true;
                     job.process_start_time = Some(Utc::now());
+                    begin_attempt(job, Utc::now());
                     // Under the SAME lock that published `currently_running`.
                     // See `claim_run_slot`: the flag and the token are two halves
                     // of one fact, and registering after releasing `jobs` left a
@@ -2724,6 +2803,12 @@ async fn execute_job(
     // default only as a fallback — see [`resolve_scheduled_provider`].
     let (provider_name, model_config, model_source) =
         resolve_scheduled_provider(&job, agent.config.session_manager.as_ref()).await?;
+    update_attempt(&jobs, &job_id, |attempt| {
+        attempt.provider = Some(provider_name.clone());
+        attempt.model = Some(model_config.model_name.clone());
+        attempt.phase = "provider_setup".to_string();
+    })
+    .await;
 
     // Issue #56. The schedule routes admitted whoever armed this job on the
     // model its runs resolved THEN; this is the model they resolve NOW. A job
@@ -2772,6 +2857,16 @@ async fn execute_job(
         return Err(ScheduledRunRefused(refusal).into());
     }
 
+    update_attempt(&jobs, &job_id, |attempt| {
+        attempt.phase = "provider_readiness".to_string();
+    })
+    .await;
+    agent_provider.validate_readiness().await?;
+    update_attempt(&jobs, &job_id, |attempt| {
+        attempt.phase = "setup".to_string();
+    })
+    .await;
+
     let mut extensions = resolve_extensions_for_new_session(workflow.extensions.as_deref(), None);
     crate::workflow::runtime::ensure_required_extensions(&workflow, &mut extensions);
     for ext in extensions {
@@ -2787,6 +2882,10 @@ async fn execute_job(
             SessionType::Scheduled,
         )
         .await?;
+    update_attempt(&jobs, &job_id, |attempt| {
+        attempt.session_id = Some(session.id.clone());
+    })
+    .await;
 
     // Everything from here to the first message can still refuse the run: the
     // bind, a required skill that is missing or switched off, the workflow's
@@ -2830,6 +2929,7 @@ async fn execute_job(
     }
     .await;
     if let Err(error) = setup {
+        update_attempt(&jobs, &job_id, |attempt| attempt.session_id = None).await;
         discard_unstarted_run_session(agent.config.session_manager.as_ref(), &session.id).await;
         return Err(error);
     }
@@ -2839,6 +2939,10 @@ async fn execute_job(
         job_def.current_session_id = Some(session.id.clone());
     }
     drop(jobs_guard);
+    update_attempt(&jobs, &job_id, |attempt| {
+        attempt.phase = "turn".to_string();
+    })
+    .await;
 
     let prompt_text = scheduled_prompt(&job, &workflow);
 
@@ -3081,6 +3185,14 @@ fn finish_scheduled_run(
 /// was skipped and the schedule reported success. Found re-running the Daily
 /// Meditation of diagnostics 20261006_2 once its skill check passed, against a
 /// local model that was not running.
+#[derive(Debug, thiserror::Error)]
+#[error("the run stopped before it did its work ({code}), and the schedule's last-run cursor was not advanced: {message}")]
+struct ScheduledTurnFailure {
+    code: &'static str,
+    kind: String,
+    message: String,
+}
+
 fn apply_scheduled_stream_item(
     conversation: &mut Conversation,
     item: Result<AgentEvent>,
@@ -3089,11 +3201,18 @@ fn apply_scheduled_stream_item(
         AgentEvent::Message(message) => conversation.push(message),
         AgentEvent::HistoryReplaced(updated) => *conversation = updated,
         AgentEvent::TurnAborted { code, message } => {
-            return Err(anyhow!(
-                "the run stopped before it did its work ({}), and the schedule's last-run \
-                 cursor was not advanced: {message}",
-                code.wire_code()
-            ));
+            let kind = match &code {
+                crate::agents::turn_abort::TurnAbortCode::ProviderFailure { kind } => {
+                    kind.wire_code()
+                }
+                _ => code.wire_code(),
+            };
+            return Err(ScheduledTurnFailure {
+                code: code.wire_code(),
+                kind: kind.to_string(),
+                message,
+            }
+            .into());
         }
         _ => {}
     }
@@ -3288,6 +3407,7 @@ mod tests {
             max_runs: None,
             creator_session_id: None,
             last_error: None,
+            last_attempt: None,
             owns_source: None,
             armed_with_private_reach: None,
         }
@@ -3805,6 +3925,7 @@ mod tests {
             max_runs: None,
             creator_session_id: None,
             last_error: None,
+            last_attempt: None,
             owns_source: None,
             armed_with_private_reach: None,
         };
@@ -3849,6 +3970,7 @@ mod tests {
             max_runs: None,
             creator_session_id: None,
             last_error: None,
+            last_attempt: None,
             owns_source: None,
             armed_with_private_reach: None,
         };
@@ -3884,6 +4006,7 @@ mod tests {
             max_runs: None,
             creator_session_id: None,
             last_error: None,
+            last_attempt: None,
             owns_source: None,
             armed_with_private_reach: None,
         }];
@@ -4046,12 +4169,36 @@ mod tests {
     /// each failure left an empty "Scheduled job: daily-meditation" row in the
     /// store. A run that fails before its first message now leaves no chat.
     ///
-    /// Driven through `execute_job` itself, on a loopback Ollama that is not
-    /// listening: the model is never asked anything, because the skill check
-    /// comes first. The rows live in `SessionManager::instance()`, which
+    /// Driven through `execute_job` itself, with a healthy loopback Ollama:
+    /// the model is never asked anything, because the skill check comes first.
+    /// The rows live in `SessionManager::instance()`, which
     /// `Agent::new()` reads, so the run's chat is found by its job id.
     #[tokio::test(flavor = "current_thread")]
     async fn a_run_that_fails_before_its_first_message_leaves_no_chat() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+        let ollama = MockServer::start().await;
+        for (route, body) in [
+            ("/api/version", serde_json::json!({"version":"0.40.13"})),
+            (
+                "/api/tags",
+                serde_json::json!({"models":[{"name":"llama3.1:8b"}]}),
+            ),
+        ] {
+            Mock::given(method("GET"))
+                .and(path(route))
+                .respond_with(ResponseTemplate::new(200).set_body_json(body))
+                .mount(&ollama)
+                .await;
+        }
+        Mock::given(method("POST"))
+            .and(path("/api/show"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "capabilities":["completion", "tools"],
+                "model_info":{"general.architecture":"llama", "llama.context_length":131072}
+            })))
+            .mount(&ollama)
+            .await;
         let dir = tempdir().unwrap();
         let workflow = dir.path().join("needs_a_missing_skill.yaml");
         fs::write(
@@ -4064,7 +4211,7 @@ mod tests {
         let overrides = HashMap::from([
             ("BIOROUTER_PROVIDER".to_string(), "ollama".to_string()),
             ("BIOROUTER_MODEL".to_string(), "llama3.1:8b".to_string()),
-            ("OLLAMA_HOST".to_string(), "http://127.0.0.1:9".to_string()),
+            ("OLLAMA_HOST".to_string(), ollama.uri()),
         ]);
         let error = crate::config::with_config_overrides(
             overrides,
@@ -4096,6 +4243,12 @@ mod tests {
             left.is_empty(),
             "a run that never started left its empty chat behind: {left:?}"
         );
+        assert!(ollama
+            .received_requests()
+            .await
+            .unwrap()
+            .iter()
+            .all(|request| request.url.path() != "/api/chat"));
     }
 
     /// Issue #148B, the half that loses data. Cancellation `break`s the reply
@@ -5138,6 +5291,58 @@ mod tests {
     }
 
     #[test]
+    fn failed_meditation_attempt_keeps_cursor_and_correlated_failure_then_recovers() {
+        let temp_dir = tempdir().unwrap();
+        let mut job = dormant_job("daily-meditation", &temp_dir.path().join("workflow.yaml"));
+        let cursor = Utc::now() - chrono::Duration::days(1);
+        job.last_run = Some(cursor);
+        begin_attempt(&mut job, Utc::now());
+        let attempt = job.last_attempt.as_mut().unwrap();
+        attempt.provider = Some("ollama".to_string());
+        attempt.model = Some("llama3.1:8b".to_string());
+        attempt.session_id = Some("synthetic-failed-meditation".to_string());
+        attempt.phase = "turn".to_string();
+        let mut conversation = Conversation::default();
+        let failure = apply_scheduled_stream_item(
+            &mut conversation,
+            Ok(AgentEvent::TurnAborted {
+                code: crate::agents::turn_abort::TurnAbortCode::ToolLoop {
+                    tool: "knowledge__kb_list_bases".to_string(),
+                },
+                message: "identical tool call stopped by repetition guard".to_string(),
+            }),
+        )
+        .unwrap_err();
+        RunCompletion::from_result(&Err(failure), Utc::now()).apply(&mut job);
+        assert_eq!(job.last_run, Some(cursor));
+        assert!(job.last_error.as_deref().unwrap().contains("tool_loop"));
+        let restored: ScheduledJob =
+            serde_json::from_value(serde_json::to_value(&job).unwrap()).unwrap();
+        let attempt = restored.last_attempt.unwrap();
+        assert_eq!(attempt.provider.as_deref(), Some("ollama"));
+        assert_eq!(attempt.model.as_deref(), Some("llama3.1:8b"));
+        assert_eq!(
+            attempt.last_failed_session_id.as_deref(),
+            Some("synthetic-failed-meditation")
+        );
+        assert_eq!(attempt.phase, "turn");
+        assert_eq!(attempt.failure_kind.as_deref(), Some("tool_loop"));
+
+        begin_attempt(&mut job, Utc::now());
+        let completed = Utc::now();
+        RunCompletion::from_result(&Ok("synthetic-recovered".to_string()), completed)
+            .apply(&mut job);
+        assert_eq!(job.last_run, Some(completed));
+        assert!(job.last_error.is_none());
+        let attempt = job.last_attempt.unwrap();
+        assert_eq!(attempt.phase, "completed");
+        assert_eq!(
+            attempt.last_failed_session_id.as_deref(),
+            Some("synthetic-failed-meditation")
+        );
+    }
+
+    #[test]
     fn meditation_prompt_uses_the_last_successful_run_as_its_recall_cursor() {
         let cursor = chrono::DateTime::parse_from_rfc3339("2026-08-28T10:11:12Z")
             .unwrap()
@@ -5161,6 +5366,7 @@ mod tests {
             max_runs: None,
             creator_session_id: None,
             last_error: None,
+            last_attempt: None,
             owns_source: None,
             armed_with_private_reach: None,
         };
@@ -5421,6 +5627,7 @@ mod privacy_c2_tests {
             max_runs: None,
             creator_session_id: None,
             last_error: None,
+            last_attempt: None,
             owns_source: None,
             armed_with_private_reach: None,
         }
@@ -5628,6 +5835,7 @@ mod file_watch_tests {
             max_runs: Some(0),
             creator_session_id: None,
             last_error: None,
+            last_attempt: None,
             owns_source: Some(false),
             armed_with_private_reach: None,
         };
@@ -5701,6 +5909,7 @@ mod armed_standing_tests {
             max_runs: None,
             creator_session_id: None,
             last_error: None,
+            last_attempt: None,
             owns_source: None,
             armed_with_private_reach: None,
         }

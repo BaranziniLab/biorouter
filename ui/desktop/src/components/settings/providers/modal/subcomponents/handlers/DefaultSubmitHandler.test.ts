@@ -48,6 +48,119 @@ function written(upsert: UpsertMock): Record<string, unknown> {
   return Object.fromEntries(upsert.mock.calls.map((call) => [call[0], call[1]]));
 }
 
+describe('Ollama readiness before saving', () => {
+  const ollama = {
+    name: 'ollama',
+    metadata: {
+      config_keys: [
+        { name: 'OLLAMA_HOST', required: true, secret: false, default: 'localhost' },
+        { name: 'OLLAMA_TIMEOUT', required: false, secret: false, default: '600' },
+      ],
+    },
+  };
+  let upsert: UpsertMock;
+  let check: Mock;
+  beforeEach(async () => {
+    upsert = vi.fn<UpsertFn>(async () => undefined);
+    check = (await import('../../../../../../api')).checkProvider as unknown as Mock;
+    check.mockReset().mockResolvedValue({ data: {} });
+  });
+  afterEach(() => {
+    delete document.documentElement.dataset.biorouterSurface;
+  });
+
+  it('checks a no-secret candidate host live before writing any settings', async () => {
+    await providerConfigSubmitHandler(upsert, ollama, {
+      OLLAMA_HOST: 'http://localhost:11434',
+      OLLAMA_TIMEOUT: '90',
+    });
+    expect(check.mock.calls[0][0]).toMatchObject({
+      body: {
+        provider: 'ollama',
+        live: true,
+        candidate: { OLLAMA_HOST: 'http://localhost:11434', OLLAMA_TIMEOUT: '90' },
+      },
+      throwOnError: true,
+    });
+    expect(check.mock.invocationCallOrder[0]).toBeLessThan(upsert.mock.invocationCallOrder[0]);
+    expect(written(upsert)).toEqual({ OLLAMA_HOST: 'http://localhost:11434', OLLAMA_TIMEOUT: 90 });
+  });
+
+  it('keeps all settings unchanged when the configured service is unavailable', async () => {
+    check.mockRejectedValueOnce(
+      'Cannot reach Ollama at http://localhost:11434: connection refused.'
+    );
+    await expect(
+      providerConfigSubmitHandler(upsert, ollama, { OLLAMA_HOST: 'http://localhost:11434' })
+    ).rejects.toMatch(/Cannot reach Ollama/);
+    expect(upsert).not.toHaveBeenCalled();
+  });
+
+  it('does not save a candidate cancelled while its readiness check was pending', async () => {
+    let finish!: () => void;
+    check.mockImplementationOnce(
+      () =>
+        new Promise<void>((resolve) => {
+          finish = resolve;
+        })
+    );
+    let current = true;
+    const pending = providerConfigSubmitHandler(
+      upsert,
+      ollama,
+      { OLLAMA_HOST: 'http://localhost:11434' },
+      () => current
+    );
+    await vi.waitFor(() => expect(check).toHaveBeenCalledTimes(1));
+    current = false;
+    finish();
+    await pending;
+    expect(upsert).not.toHaveBeenCalled();
+    expect(check).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not bypass readiness when every setting has an optional default', async () => {
+    const optional = {
+      ...ollama,
+      metadata: {
+        config_keys: ollama.metadata.config_keys.map((key) => ({ ...key, required: false })),
+      },
+    };
+    check.mockRejectedValueOnce('Cannot reach Ollama at http://localhost:11434.');
+    await expect(providerConfigSubmitHandler(upsert, optional, {})).rejects.toMatch(
+      /Cannot reach Ollama/
+    );
+    expect(check.mock.calls[0][0].body.candidate).toEqual({
+      OLLAMA_HOST: 'localhost',
+      OLLAMA_TIMEOUT: '600',
+    });
+    expect(upsert).not.toHaveBeenCalled();
+  });
+
+  it('can check again and save the same correct host after service recovery', async () => {
+    check.mockRejectedValueOnce('Cannot reach Ollama.');
+    await expect(
+      providerConfigSubmitHandler(upsert, ollama, { OLLAMA_HOST: 'http://localhost:11434' })
+    ).rejects.toMatch(/Cannot reach Ollama/);
+    await providerConfigSubmitHandler(upsert, ollama, { OLLAMA_HOST: 'http://localhost:11434' });
+    expect(written(upsert)).toEqual({ OLLAMA_HOST: 'http://localhost:11434' });
+  });
+
+  it('checks the daemon host without sending a browser-owned replacement', async () => {
+    document.documentElement.dataset.biorouterSurface = BROWSER_SURFACE_MARKER;
+    await providerConfigSubmitHandler(upsert, ollama, {
+      OLLAMA_HOST: 'http://other.example:11434',
+      OLLAMA_TIMEOUT: '90',
+    });
+    expect(check.mock.calls[0][0].body).toEqual({
+      provider: 'ollama',
+      live: true,
+      candidate: { OLLAMA_TIMEOUT: '90' },
+    });
+    expect(upsert).not.toHaveBeenCalledWith('OLLAMA_HOST', expect.anything(), false);
+  });
+});
+
 describe('providerConfigSubmitHandler value types', () => {
   let upsert: UpsertMock;
 

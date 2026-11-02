@@ -81,7 +81,14 @@ vi.mock('../../../utils/ollamaDetection', async (importOriginal) => ({
     reachable: true,
     private: true,
   })),
-  checkOllamaStatus: vi.fn(async () => ({ isRunning: true, host: 'http://127.0.0.1:11434' })),
+  getOllamaReadiness: vi.fn(async () => ({
+    base_url: 'http://localhost:11434/',
+    reachable: true,
+    model_available: true,
+    models: [{ name: 'qwen3.8:27b' }],
+    error: null,
+    context_window: null,
+  })),
   getOllamaModels: vi.fn(async () => [
     { name: 'qwen3.8:27b', model: 'qwen3.8:27b', size: 1, digest: 'd', modified_at: '' },
   ]),

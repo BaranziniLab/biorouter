@@ -11,6 +11,7 @@ import {
   pollForOllama,
   getOllamaDownloadUrl,
   getOllamaSetup,
+  getOllamaReadiness,
   rendererOllamaUrl,
   isRendererReachable,
   sameOllamaTag,
@@ -18,8 +19,10 @@ import {
 } from './ollamaDetection';
 
 const mockOllamaRecommended = vi.fn();
+const mockOllamaStatus = vi.fn();
 vi.mock('../api', () => ({
   ollamaRecommended: (...args: unknown[]) => mockOllamaRecommended(...args),
+  ollamaStatus: (...args: unknown[]) => mockOllamaStatus(...args),
 }));
 
 // Mock fetch globally
@@ -78,10 +81,43 @@ describe('ollamaDetection', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.useFakeTimers();
+    vi.stubGlobal('appConfig', {
+      get: () => 'http://127.0.0.1:3000',
+      getAll: () => ({}),
+    });
   });
 
   afterEach(() => {
     vi.useRealTimers();
+    vi.unstubAllGlobals();
+  });
+
+  describe('getOllamaReadiness', () => {
+    it('uses the daemon network context without rewriting localhost or IPv6', async () => {
+      const status = { base_url: 'http://[::1]:11434/', reachable: true, models: [] };
+      mockOllamaStatus.mockResolvedValueOnce({ data: status });
+      expect(await getOllamaReadiness('llama3.1:8b')).toEqual(status);
+      expect(mockOllamaStatus).toHaveBeenCalledWith({ query: { model: 'llama3.1:8b' } });
+      expect(globalThis.fetch).not.toHaveBeenCalled();
+    });
+
+    it('keeps an unavailable service response distinct from a saved configuration', async () => {
+      const status = {
+        base_url: 'http://localhost:11434/',
+        reachable: false,
+        error: 'Cannot reach Ollama: connection refused.',
+        phase: 'service',
+        models: [],
+      };
+      mockOllamaStatus.mockResolvedValueOnce({ data: status });
+      expect(await getOllamaReadiness()).toEqual(status);
+      expect(mockOllamaStatus).toHaveBeenCalledWith({ query: undefined });
+    });
+
+    it('preserves daemon check failures instead of reporting a healthy service', async () => {
+      mockOllamaStatus.mockResolvedValueOnce({ error: 'The configured Ollama host is invalid.' });
+      await expect(getOllamaReadiness()).rejects.toThrow('The configured Ollama host is invalid.');
+    });
   });
 
   describe('checkOllamaStatus', () => {
@@ -419,6 +455,40 @@ describe('ollamaDetection', () => {
   });
 
   describe('pollForOllama', () => {
+    it('keeps a slow daemon readiness check to one request in flight', async () => {
+      let answer!: (value: { isRunning: boolean; host: string }) => void;
+      const check = vi
+        .fn()
+        .mockImplementationOnce(
+          () =>
+            new Promise((resolve) => {
+              answer = resolve;
+            })
+        )
+        .mockResolvedValue({ isRunning: false, host: 'http://localhost:11434' });
+      const onDetected = vi.fn();
+      const stop = pollForOllama(onDetected, 100, 'http://localhost:11434', check);
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(check).toHaveBeenCalledTimes(1);
+      answer({ isRunning: false, host: 'http://localhost:11434' });
+      await vi.advanceTimersByTimeAsync(100);
+      expect(check).toHaveBeenCalledTimes(2);
+      stop();
+      expect(onDetected).not.toHaveBeenCalled();
+    });
+
+    it('can recover after a daemon status request rejects', async () => {
+      const check = vi
+        .fn()
+        .mockRejectedValueOnce(new Error('Daemon unavailable'))
+        .mockResolvedValueOnce({ isRunning: true, host: 'http://localhost:11434' });
+      const onDetected = vi.fn();
+      const stop = pollForOllama(onDetected, 100, 'http://localhost:11434', check);
+      await vi.advanceTimersByTimeAsync(100);
+      expect(onDetected).toHaveBeenCalledTimes(1);
+      stop();
+    });
+
     it('should poll until Ollama is detected', async () => {
       const onDetected = vi.fn();
 
@@ -590,6 +660,22 @@ describe('ollamaDetection', () => {
       expect(setup.host).toBe('http://gpu-box.lab.example:11434');
       expect(setup.reachable).toBe(false);
       expect(setup.private).toBe(false);
+    });
+
+    it('does not manage a remote daemon’s loopback Ollama from this renderer', async () => {
+      vi.stubGlobal('appConfig', {
+        get: () => 'https://biorouter.lab.example/api',
+        getAll: () => ({}),
+      });
+      mockOllamaRecommended.mockResolvedValueOnce({
+        data: { base_url: 'http://localhost:11434/', tier: 'private' },
+      });
+
+      const setup = await getOllamaSetup();
+
+      expect(setup.host).toBe('http://127.0.0.1:11434');
+      expect(setup.reachable).toBe(false);
+      expect(fetch).not.toHaveBeenCalled();
     });
 
     /**

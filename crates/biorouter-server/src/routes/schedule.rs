@@ -136,6 +136,7 @@ async fn create_schedule(
         // `POST /schedule/create` schedules a workflow file, not a chat.
         creator_session_id: None,
         last_error: None,
+        last_attempt: None,
         owns_source: None,
         armed_with_private_reach: None,
     };

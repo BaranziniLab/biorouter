@@ -312,6 +312,7 @@ impl Agent {
             // running on that chat's model instead of the user's commercial one.
             creator_session_id: Some(session_id.to_string()),
             last_error: None,
+            last_attempt: None,
             owns_source: None,
             // Issue #56. The standing of the chat the schedule acts for. Its runs
             // take this chat's model while the chat gives one; once it does not,
@@ -767,6 +768,7 @@ mod tests {
             max_runs: Some(100),
             creator_session_id: None,
             last_error: None,
+            last_attempt: None,
             owns_source: None,
             armed_with_private_reach: None,
         };
@@ -1043,6 +1045,7 @@ mod standing_tests {
             max_runs: None,
             creator_session_id: Some(creator.to_string()),
             last_error: None,
+            last_attempt: None,
             owns_source: None,
             armed_with_private_reach: None,
         };

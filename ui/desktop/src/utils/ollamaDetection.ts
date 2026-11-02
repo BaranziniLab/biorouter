@@ -1,4 +1,5 @@
-import { ollamaRecommended, type OllamaRecommendationsResponse } from '../api';
+import { ollamaRecommended, ollamaStatus, type OllamaRecommendationsResponse } from '../api';
+import { getApiUrl } from '../config';
 
 /**
  * Where Ollama listens when nothing says otherwise, written the one way the
@@ -35,6 +36,20 @@ export interface PullProgress {
 
 /** The outcome of a pull, with Ollama's own words when it failed. */
 export type PullResult = { ok: true } | { ok: false; error: string };
+
+export type ConfiguredOllamaReadiness = NonNullable<
+  Awaited<ReturnType<typeof ollamaStatus>>['data']
+>;
+
+/** Probe the configured server from the same daemon that sends chat requests. */
+export async function getOllamaReadiness(model?: string): Promise<ConfiguredOllamaReadiness> {
+  const response = await ollamaStatus({ query: model ? { model } : undefined });
+  if (!response.data) {
+    const detail = typeof response.error === 'string' ? response.error : '';
+    throw new Error(detail || 'Biorouter could not check its configured Ollama server.');
+  }
+  return response.data;
+}
 
 /**
  * Host names the renderer may probe as `127.0.0.1`. `0.0.0.0` and `::` are what
@@ -85,15 +100,27 @@ export function isRendererReachable(host: string): boolean {
   }
 }
 
+function isLocalDaemon(): boolean {
+  try {
+    const url = new URL(getApiUrl('/'), window.location.href);
+    return (
+      (url.protocol === 'http:' || url.protocol === 'https:') &&
+      ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname)
+    );
+  } catch {
+    return false;
+  }
+}
+
 /** What the Ollama onboarding needs from the daemon, in one place. */
 export interface OllamaSetup {
   recommendations: OllamaRecommendationsResponse;
   /** The configured Ollama server, in the form the renderer fetches. */
   host: string;
   /**
-   * Whether the renderer can probe that server (see `isRendererReachable`).
-   * False for another machine's Ollama, and for one at `::1`: a chat, which
-   * reaches the server from the daemon, can use either.
+   * Whether the renderer can manage the daemon's Ollama on this computer.
+   * Both the daemon and its configured Ollama must be local: a remote daemon's
+   * loopback server is on that server, not this renderer's computer.
    */
   reachable: boolean;
   /**
@@ -125,7 +152,7 @@ export async function getOllamaSetup(): Promise<OllamaSetup> {
   return {
     recommendations: response.data,
     host,
-    reachable: isRendererReachable(host),
+    reachable: isLocalDaemon() && isRendererReachable(host),
     // Fail-safe: anything but an explicit `private` is treated as Public.
     private: response.data.tier === 'private',
   };
@@ -458,15 +485,24 @@ export async function deleteOllamaModel(
 export function pollForOllama(
   onDetected: (status: OllamaStatus) => void,
   intervalMs: number = 5000,
-  host: string = DEFAULT_OLLAMA_HOST
+  host: string = DEFAULT_OLLAMA_HOST,
+  check: () => Promise<OllamaStatus> = () => checkOllamaStatus(host)
 ): () => void {
   let intervalId: number | null = null;
   let isPolling = true;
+  let inFlight = false;
 
   const poll = async () => {
-    if (!isPolling) return;
-
-    const status = await checkOllamaStatus(host);
+    if (!isPolling || inFlight) return;
+    inFlight = true;
+    let status: OllamaStatus;
+    try {
+      status = await check();
+    } catch {
+      return;
+    } finally {
+      inFlight = false;
+    }
     // Checked again AFTER the probe: a probe in flight when polling stopped
     // (the card unmounted) used to report detection anyway, and the card's
     // callback then set state on an unmounted component.

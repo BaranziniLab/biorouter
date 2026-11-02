@@ -6,7 +6,7 @@ import { ProviderDetails, ConfigKey } from '../../../../../../api';
 import { Disclosure } from '../../../../../ui/disclosure';
 import { Field } from '../../../../../ui/field';
 import { configLabels } from '../../../../../../utils/configUtils';
-import { isBrowserSurface } from '../../../../../../utils/surface';
+import { isBrowserSurface, isHostManagedConfigKey } from '../../../../../../utils/surface';
 import { HostManagedModelNote } from '../../../../../privacy/HostManagedModelNote';
 import { isDestinationConfigKey } from '../../../../destinationConfigKeys';
 import { sentenceCase } from '../../../../config/configLabels';
@@ -142,7 +142,11 @@ function titleCaseFieldName(providerName: string, parameterName: string): string
  * and is not editable, and the submit handler leaves it out.
  */
 export function isHostOwnedProviderField(parameter: { name: string; secret?: boolean }): boolean {
-  return !parameter.secret && isBrowserSurface() && isDestinationConfigKey(parameter.name);
+  return (
+    !parameter.secret &&
+    isBrowserSurface() &&
+    (isDestinationConfigKey(parameter.name) || isHostManagedConfigKey(parameter.name))
+  );
 }
 
 export default function DefaultProviderSetupForm({

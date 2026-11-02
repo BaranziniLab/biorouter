@@ -401,6 +401,11 @@ jobs:
       # behaviour — the store is incidental to these tests, which are about
       # routes. `serve` below and `release-artifact-smoke.yml` already set it
       # for the same reason; this is the one job that was missing it.
+      - name: cargo test (Ollama readiness and recovery)
+        env:
+          BIOROUTER_DISABLE_KEYRING: "true"
+        run: cargo test -p biorouter --test ollama_readiness --test ollama_diagnostics_20261006_2 --test ollama_protocols --locked --no-fail-fast -- --test-threads=2
+
       - name: cargo test (workspace, lib + bins)
         env:
           BIOROUTER_DISABLE_KEYRING: "true"
@@ -511,6 +516,9 @@ jobs:
           # target          why it does not run in this step
           excluded='
           sandbox           "cargo test (sandbox integration)" above runs it, on every OS
+          ollama_readiness   "cargo test (Ollama readiness and recovery)" above runs it, on every OS
+          ollama_diagnostics_20261006_2 "cargo test (Ollama readiness and recovery)" above runs it, on every OS
+          ollama_protocols   "cargo test (Ollama readiness and recovery)" above runs it, on every OS
           ui_example_apps   needs the npm registry (`npx --yes esbuild`); apps-smoke.yml runs it after `npm ci`
           '
           all=$(cargo metadata --format-version 1 --no-deps --locked \

@@ -45,6 +45,7 @@ export default function ProviderConfigurationModal({
   const [error, setError] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const submittingRef = useRef(false);
+  const submissionGenerationRef = useRef(0);
   const [checkAttempt, setCheckAttempt] = useState(0);
   const [checkedAgents, setCheckedAgents] = useState<CodingAgentAvailability[] | undefined>();
   const mountedRef = useRef(true);
@@ -52,6 +53,7 @@ export default function ProviderConfigurationModal({
     mountedRef.current = true;
     return () => {
       mountedRef.current = false;
+      submissionGenerationRef.current += 1;
     };
   }, []);
   const codingAgentKind = CODING_AGENT_ORDER.includes(provider.name as CodingAgentKind)
@@ -152,15 +154,17 @@ export default function ProviderConfigurationModal({
     );
 
     submittingRef.current = true;
+    const generation = ++submissionGenerationRef.current;
+    const isCurrent = () => mountedRef.current && generation === submissionGenerationRef.current;
     setIsSubmitting(true);
     try {
-      await providerConfigSubmitHandler(upsert, provider, toSubmit);
-      if (!mountedRef.current) return;
+      await providerConfigSubmitHandler(upsert, provider, toSubmit, isCurrent);
+      if (!isCurrent()) return;
       // The provider check can succeed by listing static models without ever
       // authenticating the CLI. Model selection requires a separate live probe.
       if (codingAgentKind) {
         const status = await fetchCodingAgentStatus();
-        if (!mountedRef.current) return;
+        if (!isCurrent()) return;
         const agent = status.agents.find((item) => item.kind === codingAgentKind);
         if (!agent?.path || agent.auth.state !== 'signed_in_subscription') {
           setCheckedAgents(status.agents);
@@ -175,17 +179,22 @@ export default function ProviderConfigurationModal({
         onClose();
       }
     } catch (error) {
-      if (!mountedRef.current) return;
+      if (!isCurrent()) return;
       setCheckedAgents(undefined);
       setError(`${error}`);
       setCheckAttempt((attempt) => attempt + 1);
     } finally {
-      submittingRef.current = false;
-      if (mountedRef.current) setIsSubmitting(false);
+      if (isCurrent()) {
+        submittingRef.current = false;
+        setIsSubmitting(false);
+      }
     }
   };
 
   const handleCancel = () => {
+    submissionGenerationRef.current += 1;
+    submittingRef.current = false;
+    setIsSubmitting(false);
     onClose();
   };
 
@@ -237,8 +246,9 @@ export default function ProviderConfigurationModal({
     <>
       <ModalShell
         open={!!error}
-        onOpenChange={(open) => !open && setError(null)}
+        onOpenChange={(open) => !open && !submittingRef.current && setError(null)}
         size="md"
+        purpose={isSubmitting ? 'required' : 'info'}
         scrollBody
         title={
           codingAgentKind
@@ -249,9 +259,24 @@ export default function ProviderConfigurationModal({
           codingAgentKind ? providerSetupCopy.agentCheckFailed : providerSetupCopy.checkFailed
         }
         footer={
-          <Button variant="secondary" onClick={() => setError(null)}>
-            {codingAgentKind ? providerSetupCopy.editCommandPath : providerSetupCopy.goBack}
-          </Button>
+          <div className="flex flex-wrap items-center gap-2">
+            <Button
+              variant="secondary"
+              onClick={() => !submittingRef.current && setError(null)}
+              disabled={isSubmitting}
+            >
+              {codingAgentKind ? providerSetupCopy.editCommandPath : providerSetupCopy.goBack}
+            </Button>
+            {provider.name === 'ollama' && (
+              <Button
+                variant="secondary"
+                onClick={() => void handleSubmitForm()}
+                disabled={isSubmitting}
+              >
+                {isSubmitting ? providerSetupCopy.checking : 'Check again'}
+              </Button>
+            )}
+          </div>
         }
       >
         <div className="py-3">
@@ -267,13 +292,19 @@ export default function ProviderConfigurationModal({
             <>
               <p className="whitespace-pre-wrap break-words text-body">{error}</p>
               <p className="mt-3 text-secondary text-text-muted">{providerSetupCopy.tryAgain}</p>
+              {provider.name === 'ollama' && (
+                <p className="mt-3 text-secondary text-text-muted">
+                  The host address tells Biorouter where to connect; it does not start Ollama. Open
+                  Ollama on the computer at that address, then choose Check again.
+                </p>
+              )}
             </>
           )}
         </div>
       </ModalShell>
       <ModalShell
         open={!error}
-        onOpenChange={(open) => !open && onClose()}
+        onOpenChange={(open) => !open && handleCancel()}
         onOpenAutoFocus={restOnDialog}
         size="md"
         purpose="form"

@@ -676,6 +676,31 @@ async fn a_body_timeout_after_headers_names_the_bound_and_is_sent_once() {
     assert_eq!(requests.load(Ordering::SeqCst), 1, "sent once");
 }
 
+#[tokio::test]
+async fn a_blocking_v1_fallback_stall_is_not_recoverable_or_resent() {
+    let (server, provider) = serve(
+        "llama3.1:8b",
+        show(131_072, None),
+        &[(404, String::new())],
+        std::time::Duration::ZERO,
+        1,
+    )
+    .await;
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions"))
+        .respond_with(ResponseTemplate::new(200).set_delay(std::time::Duration::from_secs(3)))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let error = provider
+        .complete("system", &[Message::user().with_text("hello")], &[])
+        .await
+        .unwrap_err();
+    assert!(matches!(error, ProviderError::IdleTimeout(_)), "{error:?}");
+    assert!(!biorouter::agents::mistakes::is_recoverable(&error));
+    assert!(error.to_string().contains("Raise timeout_seconds"));
+}
+
 // ---------------------------------------------------------------------------
 // Through the agent: what the person reads, and what the model is sent next.
 // ---------------------------------------------------------------------------

@@ -920,11 +920,15 @@ impl RequestLog {
 
     pub fn provider_error(&mut self, error: &ProviderError) -> Result<()> {
         if self.policy.is_metadata_only() {
-            return self.write_json(&json!({
+            let mut metadata = json!({
                 "error": "[redacted]",
                 "error_redacted": true,
                 "error_type": error.telemetry_type(),
-            }));
+            });
+            if let Some(transport) = error.technical_metadata() {
+                metadata["transport"] = transport;
+            }
+            return self.write_json(&metadata);
         }
         self.error(error)
     }
@@ -2013,6 +2017,40 @@ mod tests {
         let mut log = test_log(dir.path(), PayloadPolicy::MetadataOnly, json!({}));
         log.error(NeverFormat).unwrap();
         log.finish().unwrap();
+    }
+
+    #[test]
+    fn private_transport_metadata_preserves_cause_without_url_secrets_or_custom_paths() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        drop(listener);
+        let error = tokio::runtime::Runtime::new().unwrap().block_on(async {
+            reqwest::Client::builder()
+                .no_proxy()
+                .build()
+                .unwrap()
+                .get(format!(
+                    "http://user:SYNTHETIC_PASSWORD@{address}/SYNTHETIC_PATH?prompt=SYNTHETIC_PROMPT"
+                ))
+                .send()
+                .await
+                .unwrap_err()
+        });
+        let error = ProviderError::RetryExhausted {
+            source: Box::new(ProviderError::from(error)),
+            attempts: 4,
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let mut log = test_log(dir.path(), PayloadPolicy::MetadataOnly, json!({}));
+        log.provider_error(&error).unwrap();
+        log.finish().unwrap();
+        let contents = std::fs::read_to_string(dir.path().join("llm_request.0.jsonl")).unwrap();
+        for secret in ["SYNTHETIC_PASSWORD", "SYNTHETIC_PATH", "SYNTHETIC_PROMPT"] {
+            assert!(!contents.contains(secret), "{contents}");
+        }
+        assert!(contents.contains("connection refused"), "{contents}");
+        assert!(contents.contains("\"attempts\":4"), "{contents}");
+        assert!(contents.contains("\"error_redacted\":true"), "{contents}");
     }
 
     #[test]
