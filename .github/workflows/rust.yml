@@ -406,6 +406,32 @@ jobs:
           BIOROUTER_DISABLE_KEYRING: "true"
         run: cargo test --workspace --lib --bins --locked --no-fail-fast --timings
 
+      - name: Copilot hostname lookup never creates a Windows child console
+        if: runner.os == 'Windows'
+        timeout-minutes: 10
+        shell: pwsh
+        run: |
+          $messages = cargo test -p biorouter --test computer_use_hostname --locked --no-run --message-format=json
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $artifact = $messages | ForEach-Object { $_ | ConvertFrom-Json } | Where-Object {
+            $_.reason -eq 'compiler-artifact' -and $_.target.name -eq 'computer_use_hostname' -and $_.executable
+          } | Select-Object -Last 1
+          if (!$artifact) { throw 'Cargo did not produce the hostname regression executable' }
+          ./scripts/test-copilot-hostname-windows.ps1 -TestBinary $artifact.executable -OutputDirectory target/copilot-hostname-evidence
+
+      - name: Upload Windows Copilot hostname process trace and screenshots
+        if: runner.os == 'Windows' && always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-copilot-hostname-evidence
+          path: target/copilot-hostname-evidence/
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: No Windows-unsafe dependency hostname calls
+        if: runner.os == 'Windows' && !cancelled()
+        run: cargo clippy --workspace --lib --bins --locked -- -D clippy::disallowed_methods
+
       - name: Upload Windows Cargo timings
         if: matrix.os == 'windows-latest' && always()
         uses: actions/upload-artifact@v4
