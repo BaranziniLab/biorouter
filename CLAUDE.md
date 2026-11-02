@@ -1110,12 +1110,17 @@ was removed to make it true:
   staged `ui/desktop/src/bin/` binaries are usually fine — check with `file`
   before suspecting them.
 
-### Theme families (Parchment / Alma Mater / Roche Limit)
+### Theme families (Baseten / Parchment / Alma Mater / Roche Limit)
 
 Two orthogonal axes: light/dark mode (a `.dark` class on `<html>`) and **theme
-family** (a `data-theme` attribute). Three families ship — Parchment (default;
-warm ink + coral, not a warm ground — see "one neutral set" below), Alma Mater
-(UCSF navy + teal), Roche Limit (JupyterLab-inspired). Themes are **baked into
+family** (a `data-theme` attribute). Four families ship — Baseten (default for
+a user with no stored choice; Baseten brand green on the shared neutrals, plus
+authored type and 2px corners under `:root[data-theme='baseten']` in `main.css`,
+see `docs/design/theming/baseten-theme.md`), Parchment (the base family whose
+values fill the bare `:root`/`.dark`; warm ink + coral, not a warm ground — see
+"one neutral set" below), Alma Mater (UCSF navy + teal), Roche Limit
+(JupyterLab-inspired). The "three families" wording in the bullets below
+predates Baseten; the rules apply to all four. Themes are **baked into
 the app by decision**; they are not user-installable.
 
 **A theme is ONE file.** `ui/desktop/themes/<id>.theme.mjs` is the source of

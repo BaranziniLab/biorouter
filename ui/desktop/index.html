@@ -47,14 +47,14 @@
           // on purpose — this script runs ahead of the bundle and cannot import
           // TypeScript. Keep the two in lockstep when adding a family.
           /* THEMES:GENERATED:FAMILYLIST:START */
-          const FAMILIES = ['parchment', 'alma-mater', 'roche-limit'];
+          const FAMILIES = ['parchment', 'alma-mater', 'baseten', 'roche-limit'];
 /* THEMES:GENERATED:FAMILYLIST:END */
           try {
             const stored = window.localStorage && localStorage.getItem('theme_family');
-            const fam = FAMILIES.indexOf(stored) !== -1 ? stored : 'parchment';
+            const fam = FAMILIES.indexOf(stored) !== -1 ? stored : 'baseten';
             document.documentElement.setAttribute('data-theme', fam);
           } catch (error) {
-            document.documentElement.setAttribute('data-theme', 'parchment');
+            document.documentElement.setAttribute('data-theme', 'baseten');
           }
         }
 
@@ -205,6 +205,18 @@
         --br-track: #e4e4e0;
       }
       html.dark[data-theme='alma-mater'] #br-boot {
+        --br-bg: #131312;
+        --br-navy: #18a3ac;
+        --br-coral: #b85a32;
+        --br-track: #302f2c;
+      }
+      html[data-theme='baseten'] #br-boot {
+        --br-bg: #ffffff;
+        --br-navy: #052049;
+        --br-coral: #b85a32;
+        --br-track: #e4e4e0;
+      }
+      html.dark[data-theme='baseten'] #br-boot {
         --br-bg: #131312;
         --br-navy: #18a3ac;
         --br-coral: #b85a32;

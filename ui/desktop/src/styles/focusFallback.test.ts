@@ -27,7 +27,7 @@ import * as themeTokens from '../../scripts/lib/theme-tokens.mjs';
  * tab and the app nav's active item changed by nothing at all, and the sidebar
  * resize handle's focus was indistinguishable from rest. Each now draws a
  * neutral `--border-focus` mark that `check-contrast.mjs` holds to 3:1 against
- * every ground in all six scopes.
+ * every ground in all eight scopes.
  */
 const HERE = __dirname;
 const CSS = readFileSync(join(HERE, 'main.css'), 'utf8');
@@ -593,7 +593,7 @@ describe('a radio’s ring and a link-style button hold their edges (Q3-58, Q3-5
     expect(forcedRule(checked).index).toBeGreaterThan(top(checked).index);
   });
 
-  it('measures at least 3:1 against every ground, in all six scopes', () => {
+  it('measures at least 3:1 against every ground, in all eight scopes', () => {
     const grounds = [
       '--background-app',
       '--background-canvas',
@@ -604,7 +604,7 @@ describe('a radio’s ring and a link-style button hold their edges (Q3-58, Q3-5
       '--background-well',
       '--sidebar',
     ];
-    expect(Object.keys(SCOPES)).toHaveLength(6);
+    expect(Object.keys(SCOPES)).toHaveLength(8);
     const shortfalls: string[] = [];
     for (const [name, scope] of Object.entries(SCOPES)) {
       // The checkbox's own edge (spec 2.6). 3:1 is what WCAG 1.4.11 asks of a control boundary.
@@ -677,7 +677,7 @@ describe('the dark avatar hues are equally calm (Q3-61)', () => {
 
   it('keeps orange and amber within the chroma of the other six, in every dark scope', () => {
     const dark = Object.entries(SCOPES).filter(([name]) => name.endsWith(':dark'));
-    expect(dark).toHaveLength(3);
+    expect(dark).toHaveLength(4);
     for (const [name, scope] of dark) {
       const fill = (n: number) => tokens.resolveHex(`--avatar-hue-${n}-bg`, scope)!;
       const others = [1, 4, 5, 6, 7, 8].map((n) => chroma(fill(n)));

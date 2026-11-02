@@ -11,7 +11,7 @@ import * as themeTokens from '../../../scripts/lib/theme-tokens.mjs';
  * it rests one ground deeper (a fill never sits on a fill); the Settings report's two tables take
  * the same filled panel the chat's tables take. jsdom applies no stylesheet, so each claim is read
  * from the authored CSS at its source, and the one that is a measurement (the heatmap's empty day
- * on the new fill) is read from the stylesheet's own tokens in all six scopes, the way
+ * on the new fill) is read from the stylesheet's own tokens in all eight scopes, the way
  * `check-contrast.mjs` reads them. `usageCardGeometry.browser.test.tsx` measures the same card in
  * Chromium.
  */
@@ -112,8 +112,8 @@ describe('an empty day reads on the card’s fill', () => {
   });
 
   const cases = Object.entries(scopes);
-  it('is measured in all six scopes', () => {
-    expect(cases).toHaveLength(6);
+  it('is measured in all eight scopes', () => {
+    expect(cases).toHaveLength(8);
   });
 
   it.each(cases)(

@@ -25,8 +25,9 @@ type ResolvedTheme = 'light' | 'dark';
 export const THEME_FAMILIES = THEME_FAMILY_IDS;
 
 /**
- * The theme *family* — orthogonal to light/dark. `parchment` is the warm
- * default; `alma-mater` is the UCSF brand palette; `roche-limit` is the
+ * The theme *family* — orthogonal to light/dark. `baseten` is the default
+ * (Baseten brand: green on neutrals); `parchment` is the warm
+ * original; `alma-mater` is the UCSF brand palette; `roche-limit` is the
  * JupyterLab-inspired white/grey/orange palette. Written to `data-theme` on
  * <html>; main.css re-colours the same semantic tokens per family.
  */
@@ -115,7 +116,7 @@ function applyThemeToDocument(theme: ResolvedTheme): void {
 
 function loadThemeFamily(): ThemeFamily {
   const stored = localStorage.getItem('theme_family');
-  return isThemeFamily(stored) ? stored : 'parchment';
+  return isThemeFamily(stored) ? stored : 'baseten';
 }
 
 function saveThemeFamily(family: ThemeFamily): void {
@@ -274,11 +275,11 @@ export function useResolvedTheme(): 'light' | 'dark' {
   return useContext(ThemeContext)?.resolvedTheme ?? 'light';
 }
 
-/// The active theme family, or `parchment` when rendered outside a `ThemeProvider`.
+/// The active theme family, or `baseten` when rendered outside a `ThemeProvider`.
 ///
 /// Non-throwing (like `useResolvedTheme`) so leaf components — the code block, the
 /// artifact preview, and the standalone harness — can match the family without
 /// forcing every caller into a provider.
 export function useThemeFamily(): ThemeFamily {
-  return useContext(ThemeContext)?.themeFamily ?? 'parchment';
+  return useContext(ThemeContext)?.themeFamily ?? 'baseten';
 }

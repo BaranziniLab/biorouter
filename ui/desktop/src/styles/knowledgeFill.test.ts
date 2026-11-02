@@ -12,7 +12,7 @@ import * as themeTokens from '../../scripts/lib/theme-tokens.mjs';
  * outline; a recessed ground (a pane header, the graph canvas) rests a filled control on the strong
  * step and hovers one fill deeper. jsdom applies no stylesheet, so each claim is read from the
  * authored CSS at its source, and the ones that are measurements are read from the stylesheet's own
- * tokens in all six scopes, the way `check-contrast.mjs` reads them. `knowledgeFill.browser.test.tsx`
+ * tokens in all eight scopes, the way `check-contrast.mjs` reads them. `knowledgeFill.browser.test.tsx`
  * measures the same surfaces in Chromium.
  */
 
@@ -113,8 +113,8 @@ describe('a recessed ground rests a filled control on the strong step', () => {
   });
 
   const cases = Object.entries(scopes);
-  it('is measured in all six scopes', () => {
-    expect(cases).toHaveLength(6);
+  it('is measured in all eight scopes', () => {
+    expect(cases).toHaveLength(8);
   });
 
   it.each(cases)('%s: rest and hover are each a step off the ground they sit on', (name, scope) => {

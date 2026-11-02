@@ -212,8 +212,8 @@ describe('SegmentedControl thumb ground (dark reads raised, not sunken)', () => 
     return ground![1];
   };
 
-  it('is lighter than the track in all six scopes', () => {
-    expect(Object.keys(scopes)).toHaveLength(6);
+  it('is lighter than the track in all eight scopes', () => {
+    expect(Object.keys(scopes)).toHaveLength(8);
     for (const [name, scope] of Object.entries(scopes)) {
       const token = thumbToken(name.endsWith(':dark'));
       const thumb = tokens.resolveHex(token, scope);

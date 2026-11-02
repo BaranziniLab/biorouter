@@ -70,7 +70,7 @@ describe('StatusDot', () => {
       contrast(a: string, b: string): number;
     };
     const scopes = Object.entries(tokens.buildScopes(MAIN_CSS));
-    expect(scopes).toHaveLength(6);
+    expect(scopes).toHaveLength(8);
     for (const [name, scope] of scopes) {
       const fill = tokens.resolveHex('--border-control', scope)!;
       for (const ground of ['--background-default', '--background-card', '--sidebar']) {

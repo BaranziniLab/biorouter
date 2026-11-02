@@ -1327,6 +1327,196 @@
   --shadow-modal: 0px 22px 64px -16px rgba(0, 0, 0, 0.62), 0px 8px 26px -18px rgba(0, 0, 0, 0.5), 0px 0px 0px 1px rgba(255, 255, 255, 0.055);
 }
 
+:root[data-theme='baseten'] {
+  /* Raw palette remap (mode-independent): recolours the stray direct
+     utility usages so nothing is left with the base family's bias. The
+     semantic tokens below are authoritative; these only catch components
+     that reach past the semantic layer. */
+  --color-coral-400: #5cf096;
+  --color-coral-500: #19e76e;
+  --color-coral-600: #009735;
+  --color-coral-700: #007a2b;
+  --color-neutral-50: #fafaf9;
+  --color-neutral-100: #f4f4f2;
+  --color-neutral-200: #e4e4e0;
+  --color-neutral-300: #d2d2cd;
+  --color-neutral-400: #a9a7a1;
+  --color-neutral-500: #84827c;
+  --color-neutral-600: #5c5a55;
+  --color-neutral-700: #3e3d39;
+  --color-neutral-800: #2c2c29;
+  --color-neutral-900: #1b1b19;
+  --color-neutral-950: #131312;
+  --color-red-100: #ff9592;
+  --color-red-200: #e85e62;
+  --color-red-600: #c4232b;
+  --color-blue-100: #70b8ff;
+  --color-blue-200: #4a97ee;
+  --color-blue-700: #0a69bc;
+  --color-green-100: #3dd68c;
+  --color-green-200: #22b071;
+  --color-green-600: #0f7150;
+  --color-yellow-100: #f2e06b;
+  --color-yellow-200: #d8c23a;
+  --color-yellow-700: #6e6300;
+
+  /* Semantic tokens — Baseten LIGHT */
+  --background-accent: #19e76e;
+  --background-accent-hover: #14d062;
+  --border-accent: #009735;
+  --text-accent: #007a2b;
+  --text-on-accent: #000000;
+  --accent-bar: #009735;
+  --background-app: #ffffff;
+  --background-canvas: #ffffff;
+  --background-default: #ffffff;
+  --background-card: #ffffff;
+  --background-muted: #f4f4f2;
+  --background-code: #f5f5f3;
+  --background-well: #f5f5f3;
+  --background-medium: #ecece9;
+  --background-strong: #dcdcd8;
+  --background-inverse: #1f1e1c;
+  --background-danger: #c4232b;
+  --background-success: #007a2b;
+  --background-info: #0065ad;
+  --background-warning: #6e6300;
+  --text-on-status: #ffffff;
+  --border-subtle: #e4e4e0;
+  --border-strong: #d2d2cd;
+  --border-input: #c9c9c3;
+  --border-default: #e4e4e0;
+  --border-danger: #c4232b;
+  --border-success: #007a2b;
+  --border-warning: #6e6300;
+  --border-info: #0065ad;
+  --text-default: #1c1c1b;
+  --text-muted: #575d56;
+  --text-subtle: #666b65;
+  --text-inverse: #ffffff;
+  --text-danger: #a8061c;
+  --text-success: #005c20;
+  --text-warning: #625800;
+  --text-info: #00589a;
+  --ring: #5c5a55;
+  --background-focus: #e0e0dc;
+  --border-focus: #6b6963;
+  --heat-0: #eeeeea;
+  --heat-1: #a6efbb;
+  --heat-2: #19e76e;
+  --heat-3: #00b844;
+  --heat-4: #007a2b;
+  --sidebar: #f7f7f5;
+  --sidebar-foreground: #1c1c1b;
+  --sidebar-icon: #575d56;
+  --sidebar-hover: #efefec;
+  --sidebar-active: #eaeae6;
+  --sidebar-accent: #efefec;
+  --sidebar-accent-foreground: #1c1c1b;
+  --sidebar-border: #e7e7e3;
+  --sidebar-ring: #5c5a55;
+  --avatar-hue-1-bg: #ffcbc5;
+  --avatar-hue-1-fg: #752725;
+  --avatar-hue-2-bg: #fccfab;
+  --avatar-hue-2-fg: #673702;
+  --avatar-hue-3-bg: #e7d9a5;
+  --avatar-hue-3-fg: #534400;
+  --avatar-hue-4-bg: #bde6bd;
+  --avatar-hue-4-fg: #11531a;
+  --avatar-hue-5-bg: #a3e9e3;
+  --avatar-hue-5-fg: #04504d;
+  --avatar-hue-6-bg: #b5dfff;
+  --avatar-hue-6-fg: #034a6f;
+  --avatar-hue-7-bg: #d4d5ff;
+  --avatar-hue-7-fg: #41397d;
+  --avatar-hue-8-bg: #f4c9ef;
+  --avatar-hue-8-fg: #642b61;
+  --scrim: rgba(31, 30, 28, 0.18);
+  --shadow-default: 0px 1px 3px 0px rgba(31, 30, 28, 0.07), 0px 0px 1px 0px rgba(31, 30, 28, 0.13);
+  --shadow-composer: 0px 2px 6px -1px rgba(31, 30, 28, 0.09), 0px 1px 2px 0px rgba(31, 30, 28, 0.05);
+  --shadow-popover: 0px 8px 24px 0px rgba(31, 30, 28, 0.11), 0px 0px 1px 0px rgba(31, 30, 28, 0.16);
+  --shadow-modal: 0px 22px 60px -18px rgba(31, 30, 28, 0.22), 0px 8px 24px -18px rgba(31, 30, 28, 0.16), 0px 0px 0px 1px rgba(31, 30, 28, 0.05);
+}
+
+.dark[data-theme='baseten'] {
+  /* Semantic tokens — Baseten DARK */
+  --background-accent: #19e76e;
+  --background-accent-hover: #4bf08e;
+  --border-accent: #19e76e;
+  --text-accent: #7df2ad;
+  --text-on-accent: #000000;
+  --accent-bar: #19e76e;
+  --background-app: #131312;
+  --background-canvas: #131312;
+  --background-default: #1b1b19;
+  --background-card: #1b1b19;
+  --background-muted: #232320;
+  --background-code: #1b1b19;
+  --background-well: #232320;
+  --background-medium: #2c2c29;
+  --background-strong: #3a3a36;
+  --background-inverse: #ededea;
+  --background-danger: #ff9592;
+  --background-success: #5cf096;
+  --background-info: #6dbbff;
+  --background-warning: #f2e06b;
+  --text-on-status: #131312;
+  --border-subtle: #302f2c;
+  --border-strong: #3e3d39;
+  --border-input: #4a4945;
+  --border-default: #302f2c;
+  --border-danger: #ff9592;
+  --border-success: #5cf096;
+  --border-warning: #f2e06b;
+  --border-info: #6dbbff;
+  --text-default: #f3f6f2;
+  --text-muted: #b4bcb2;
+  --text-subtle: #a3aba1;
+  --text-inverse: #131312;
+  --text-danger: #ff9592;
+  --text-success: #5cf096;
+  --text-warning: #f2e06b;
+  --text-info: #6dbbff;
+  --ring: #a5a39d;
+  --background-focus: #35342f;
+  --border-focus: #9c9a93;
+  --heat-0: #32312e;
+  --heat-1: #1d5f33;
+  --heat-2: #0f9a45;
+  --heat-3: #13c45c;
+  --heat-4: #19e76e;
+  --sidebar: #171716;
+  --sidebar-foreground: #f3f6f2;
+  --sidebar-icon: #b4bcb2;
+  --sidebar-hover: #232320;
+  --sidebar-active: #2e2e2a;
+  --sidebar-accent: #232320;
+  --sidebar-accent-foreground: #f3f6f2;
+  --sidebar-border: #2a2a27;
+  --sidebar-ring: #a5a39d;
+  --avatar-hue-1-bg: #6b302d;
+  --avatar-hue-1-fg: #feddda;
+  --avatar-hue-2-bg: #623a19;
+  --avatar-hue-2-fg: #fbe2cc;
+  --avatar-hue-3-bg: #564520;
+  --avatar-hue-3-fg: #f1e6c9;
+  --avatar-hue-4-bg: #245127;
+  --avatar-hue-4-fg: #d4efd4;
+  --avatar-hue-5-bg: #01504d;
+  --avatar-hue-5-fg: #c5f0ed;
+  --avatar-hue-6-bg: #084a6e;
+  --avatar-hue-6-fg: #d0eafe;
+  --avatar-hue-7-bg: #413d70;
+  --avatar-hue-7-fg: #e3e3ff;
+  --avatar-hue-8-bg: #5e335a;
+  --avatar-hue-8-fg: #f8dcf5;
+  --scrim: rgba(0, 0, 0, 0.48);
+  --shadow-default: 0px 1px 3px 0px rgba(0, 0, 0, 0.25), 0px 0px 1px 0px rgba(0, 0, 0, 0.35);
+  --shadow-composer: 0px 2px 10px -1px rgba(0, 0, 0, 0.45), 0px 1px 3px 0px rgba(0, 0, 0, 0.3);
+  --shadow-popover: 0px 8px 24px 0px rgba(0, 0, 0, 0.4), 0px 0px 1px 0px rgba(0, 0, 0, 0.5);
+  --shadow-modal: 0px 22px 64px -16px rgba(0, 0, 0, 0.62), 0px 8px 26px -18px rgba(0, 0, 0, 0.5), 0px 0px 0px 1px rgba(255, 255, 255, 0.055);
+}
+
 :root[data-theme='roche-limit'] {
   /* Raw palette remap (mode-independent): recolours the stray direct
      utility usages so nothing is left with the base family's bias. The
@@ -1517,6 +1707,64 @@
   --shadow-modal: 0px 22px 64px -16px rgba(0, 0, 0, 0.62), 0px 8px 26px -18px rgba(0, 0, 0, 0.5), 0px 0px 0px 1px rgba(255, 255, 255, 0.055);
 }
 /* THEMES:GENERATED:FAMILIES:END */
+
+/* ── Baseten: type and shape (authored, not generated) ─────────────────────
+   The colour tokens above come from themes/baseten.theme.mjs. The brand also
+   sets a typeface, tracking and corner radius, which the theme contract does
+   not carry, so they are re-pointed here through the late-bound roles in the
+   plain `@theme` block (`--font-body`, `--radius-*`, `--text-*--letter-spacing`).
+
+   Beausite Classic is proprietary and not bundled: it is named first so a
+   machine that has it installed uses it, and Hanken Grotesk (SIL OFL, bundled
+   below) stands in everywhere else. Geist Mono (SIL OFL) is the brand's face
+   for buttons, tags, eyebrows and numbers, always uppercase at +6% tracking.
+   Code and the terminal keep `--font-mono`, which xterm must match byte for
+   byte (InAppTerminalDock.tsx). Licences: src/assets/fonts/OFL-*.txt. */
+@font-face {
+  font-family: 'Hanken Grotesk';
+  font-style: normal;
+  font-weight: 100 900;
+  font-display: swap;
+  src: url('../assets/fonts/hanken-grotesk-latin-wght-normal.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'Geist Mono';
+  font-style: normal;
+  font-weight: 100 900;
+  font-display: swap;
+  src: url('../assets/fonts/geist-mono-latin-wght-normal.woff2') format('woff2');
+}
+:root[data-theme='baseten'] {
+  --font-body:
+    'Beausite Classic', 'Hanken Grotesk', Arial, 'Helvetica Neue', Helvetica, ui-sans-serif,
+    -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  --font-brand-mono: 'Geist Mono', ui-monospace, 'Roboto Mono', 'JetBrains Mono', monospace;
+  /* -2% tracking on the body face everywhere; roles that set their own
+     tracking are re-pointed to the same value, and the caps eyebrow takes the
+     mono +6% below. */
+  letter-spacing: -0.02em;
+  --text-title--letter-spacing: -0.02em;
+  --text-caps--letter-spacing: 0.06em;
+  /* 2px is the one corner radius: containers, controls, chips, tooltips.
+     `--radius-full` stays for status dots, the switch and avatars. */
+  --radius-inner: 2px;
+  --radius-element: 2px;
+  --radius-container: 2px;
+  --radius-surface: 2px;
+}
+:root[data-theme='baseten'] .text-caps,
+:root[data-theme='baseten'] .text-chip,
+:root[data-theme='baseten'] [data-slot='button'] {
+  font-family: var(--font-brand-mono);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+/* Numbers (stat values, counts, costs) are Geist Mono at +6%, not uppercased. */
+:root[data-theme='baseten'] .br-stat-value,
+:root[data-theme='baseten'] .tabular-nums {
+  font-family: var(--font-brand-mono);
+  letter-spacing: 0.06em;
+}
 
 
 @theme inline {

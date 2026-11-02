@@ -3,6 +3,7 @@ import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 import almaMater from '../../themes/alma-mater.theme.mjs';
+import baseten from '../../themes/baseten.theme.mjs';
 import parchment from '../../themes/parchment.theme.mjs';
 import rocheLimit from '../../themes/roche-limit.theme.mjs';
 
@@ -76,7 +77,12 @@ const PER_FAMILY = new Set([
   'heat-4',
 ]);
 
-const FAMILIES = { parchment, 'alma-mater': almaMater, 'roche-limit': rocheLimit } as const;
+const FAMILIES = {
+  parchment,
+  'alma-mater': almaMater,
+  baseten,
+  'roche-limit': rocheLimit,
+} as const;
 const REFERENCE = 'roche-limit' as const;
 
 describe.each(['light', 'dark'] as const)('%s: the neutral scaffolding is shared', (mode) => {

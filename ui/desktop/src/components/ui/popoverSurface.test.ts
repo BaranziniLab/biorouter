@@ -64,8 +64,8 @@ describe('the floating surface in dark (V1-M5)', () => {
     expect(at).toBeGreaterThan(css.indexOf('\n.biorouter-popover-surface {'));
   });
 
-  it('measures in all three families', () => {
-    expect(darkScopes).toHaveLength(3);
+  it('measures in all four families', () => {
+    expect(darkScopes).toHaveLength(4);
   });
 
   it.each(darkScopes)(
