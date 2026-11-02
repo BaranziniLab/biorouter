@@ -115,7 +115,10 @@ impl RetryConfig {
 }
 
 pub fn should_retry(error: &ProviderError) -> bool {
-    error.kind().is_transient()
+    !matches!(
+        error,
+        ProviderError::IdleTimeout(_) | ProviderError::RetryExhausted { .. }
+    ) && error.kind().is_transient()
 }
 
 /// What a retry loop does with a request that TIMED OUT, as opposed to one that
@@ -143,11 +146,12 @@ pub enum TimeoutRetry {
     GiveUp,
 }
 
-/// Whether `error` is a request that timed out. `From<anyhow::Error>` tags a
-/// reqwest timeout `(timeout)`; a body read that stalls says "timed out".
+/// Whether `error` is a request that timed out. Transport errors retain the
+/// reqwest timeout bit; legacy provider strings name a timeout explicitly.
 pub fn is_timeout(error: &ProviderError) -> bool {
     match error {
         ProviderError::IdleTimeout(_) => true,
+        ProviderError::Transport(diagnostic) => diagnostic.is_timeout(),
         ProviderError::RequestFailed(details) | ProviderError::ExecutionError(details) => {
             let details = details.to_ascii_lowercase();
             error.kind() == super::errors::ProviderErrorKind::Network

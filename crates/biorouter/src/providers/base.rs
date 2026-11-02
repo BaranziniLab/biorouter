@@ -973,6 +973,11 @@ pub trait Provider: Send + Sync {
         RetryConfig::default()
     }
 
+    /// Prompt-free dependency validation before unattended work starts.
+    async fn validate_readiness(&self) -> Result<(), ProviderError> {
+        Ok(())
+    }
+
     async fn fetch_supported_models(&self) -> Result<Option<Vec<String>>, ProviderError> {
         Ok(None)
     }

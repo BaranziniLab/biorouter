@@ -30,6 +30,9 @@ pub enum ProviderError {
     #[error("Request failed: {0}")]
     RequestFailed(String),
 
+    #[error("Request failed: {0}")]
+    Transport(Box<TransportDiagnostic>),
+
     #[error("Execution error: {0}")]
     ExecutionError(String),
 
@@ -53,6 +56,112 @@ pub enum ProviderError {
     /// person waited twenty minutes for "error sending request ... (timeout)".
     #[error("{0}")]
     IdleTimeout(String),
+
+    /// The provider already spent its transport recovery budget. An agent
+    /// resend would multiply that budget and misreport the number of attempts.
+    #[error("{source} (after {attempts} request attempts; automatic retries exhausted)")]
+    RetryExhausted {
+        source: Box<ProviderError>,
+        attempts: usize,
+    },
+}
+
+/// Only allowlisted transport facts, never upstream error text or bodies.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TransportDiagnostic {
+    cause: &'static str,
+    os_error: Option<i32>,
+    status: Option<u16>,
+    timeout: bool,
+    configuration_error: bool,
+    endpoint: Option<String>,
+    host_family: Option<&'static str>,
+    proxy_policy: Option<&'static str>,
+    service: Option<&'static str>,
+    recovery: Option<&'static str>,
+}
+
+impl TransportDiagnostic {
+    pub(crate) fn for_service(
+        mut self,
+        service: &'static str,
+        recovery: &'static str,
+        loopback: bool,
+    ) -> Self {
+        self.service = Some(service);
+        self.recovery = Some(recovery);
+        self.proxy_policy = Some(if loopback {
+            "bypass loopback"
+        } else {
+            "automatic"
+        });
+        self
+    }
+
+    pub(crate) fn is_timeout(&self) -> bool {
+        self.timeout
+    }
+
+    fn metadata(&self) -> serde_json::Value {
+        let endpoint = self
+            .endpoint
+            .as_deref()
+            .and_then(|endpoint| url::Url::parse(endpoint).ok());
+        let path = endpoint.as_ref().map(|endpoint| match endpoint.path() {
+            "/api/chat"
+            | "/api/version"
+            | "/api/tags"
+            | "/api/show"
+            | "/api/ps"
+            | "/v1/chat/completions" => endpoint.path(),
+            _ => "custom API path",
+        });
+        serde_json::json!({
+            "cause": self.cause,
+            "os_error": self.os_error,
+            "status": self.status,
+            "timeout": self.timeout,
+            "configuration_error": self.configuration_error,
+            "endpoint_origin": endpoint.as_ref().map(|endpoint| endpoint.origin().ascii_serialization()),
+            "endpoint_path": path,
+            "host_family": self.host_family,
+            "proxy_policy": self.proxy_policy,
+            "service": self.service,
+        })
+    }
+}
+
+impl std::fmt::Display for TransportDiagnostic {
+    fn fmt(&self, out: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if let Some(service) = self.service {
+            write!(
+                out,
+                "Cannot reach {service} at {}. {} ",
+                self.endpoint
+                    .as_deref()
+                    .unwrap_or("the configured endpoint"),
+                self.recovery
+                    .unwrap_or("Check the service, then check again.")
+            )?;
+        }
+        write!(out, "{}", self.cause)?;
+        if let Some(code) = self.os_error {
+            write!(out, "; OS error {code}")?;
+        }
+        if let Some(status) = self.status {
+            write!(out, "; HTTP status {status}")?;
+        }
+        if let Some(endpoint) = self.endpoint.as_deref() {
+            write!(out, "; endpoint={endpoint}")?;
+        }
+        if let Some(family) = self.host_family {
+            write!(out, "; host_family={family}")?;
+        }
+        if let Some(policy) = self.proxy_policy {
+            write!(out, "; proxy_policy={policy}")?;
+        }
+        Ok(())
+    }
 }
 
 /// The coarse class of a provider failure — enough for a caller to decide
@@ -227,6 +336,7 @@ fn classify_provider_details(details: &str) -> ProviderErrorKind {
         || details.contains("model not found")
         || details.contains("resource not found")
         || details.contains("deployment not found")
+        || (details.contains("model") && details.contains("not installed"))
     {
         ProviderErrorKind::ModelUnavailable
     } else if status("400")
@@ -237,6 +347,7 @@ fn classify_provider_details(details: &str) -> ProviderErrorKind {
         || details.contains("invalid_argument")
         || details.contains("unsupported parameter")
         || details.contains("not supported")
+        || details.contains("does not support")
     {
         ProviderErrorKind::InvalidRequest
     } else if status("500") || status("502") || status("503") || status("504") {
@@ -259,6 +370,18 @@ fn classify_provider_details(details: &str) -> ProviderErrorKind {
 }
 
 impl ProviderError {
+    pub fn technical_metadata(&self) -> Option<serde_json::Value> {
+        match self {
+            Self::Transport(diagnostic) => Some(diagnostic.metadata()),
+            Self::RetryExhausted { source, attempts } => {
+                let mut metadata = source.technical_metadata()?;
+                metadata["attempts"] = serde_json::json!(attempts);
+                Some(metadata)
+            }
+            _ => None,
+        }
+    }
+
     /// Classify this error. Used to decide the CLI exit code and the wire frame
     /// for [`crate::agents::turn_abort::TurnAbortCode::ProviderFailure`].
     pub fn kind(&self) -> ProviderErrorKind {
@@ -270,16 +393,26 @@ impl ProviderError {
                 ProviderErrorKind::Network
             }
             ProviderError::ContextLengthExceeded(_) => ProviderErrorKind::ContextLength,
-            // `RequestFailed` is what `From<anyhow::Error>` produces for a
-            // reqwest failure, so it covers timeouts/connection errors — but it
-            // also carries HTTP status text for some providers. Sniff the status
-            // so a 401/403 surfaced this way is still classified as auth rather
-            // than as a retryable network blip.
+            // Providers that format their own failures still carry HTTP status
+            // text here. A 401/403 must stay fatal instead of becoming a
+            // retryable network blip.
             ProviderError::RequestFailed(details)
             | ProviderError::ExecutionError(details)
             | ProviderError::UsageError(details) => classify_provider_details(details),
             ProviderError::NotImplemented(_) => ProviderErrorKind::InvalidRequest,
             ProviderError::IdleTimeout(_) => ProviderErrorKind::Network,
+            ProviderError::Transport(diagnostic) => {
+                if diagnostic.configuration_error {
+                    ProviderErrorKind::InvalidRequest
+                } else {
+                    diagnostic
+                        .status
+                        .map_or(ProviderErrorKind::Network, |status| {
+                            classify_provider_details(&format!("HTTP {status}"))
+                        })
+                }
+            }
+            ProviderError::RetryExhausted { source, .. } => source.kind(),
         }
     }
 
@@ -291,47 +424,97 @@ impl ProviderError {
             ProviderError::ServerError(_) => "server",
             ProviderError::StreamDecode(_) => "stream_decode",
             ProviderError::StreamIncomplete(_) => "stream_incomplete",
-            ProviderError::RequestFailed(_) => "request",
+            ProviderError::RequestFailed(_) | ProviderError::Transport(_) => "request",
             ProviderError::ExecutionError(_) => "execution",
             ProviderError::UsageError(_) => "usage",
             ProviderError::NotImplemented(_) => "not_implemented",
             ProviderError::IdleTimeout(_) => "timeout",
+            ProviderError::RetryExhausted { source, .. } => source.telemetry_type(),
         }
+    }
+}
+
+pub(crate) fn sanitized_endpoint(url: &url::Url) -> String {
+    let mut endpoint = url.clone();
+    let _ = endpoint.set_username("");
+    let _ = endpoint.set_password(None);
+    endpoint.set_query(None);
+    endpoint.set_fragment(None);
+    endpoint.to_string()
+}
+
+fn transport_details(error: &reqwest::Error) -> TransportDiagnostic {
+    let mut cause = "network request failed";
+    let mut os_error = None;
+    let mut source: Option<&(dyn std::error::Error + 'static)> = Some(error);
+    while let Some(current) = source {
+        if let Some(io) = current.downcast_ref::<std::io::Error>() {
+            os_error = io.raw_os_error();
+            cause = match io.kind() {
+                std::io::ErrorKind::ConnectionRefused => "connection refused",
+                std::io::ErrorKind::ConnectionReset => "connection reset",
+                std::io::ErrorKind::ConnectionAborted => "connection aborted",
+                std::io::ErrorKind::AddrNotAvailable => {
+                    "address family or bind address unavailable"
+                }
+                std::io::ErrorKind::PermissionDenied => "network permission denied",
+                std::io::ErrorKind::TimedOut => "connection timed out",
+                _ => cause,
+            };
+        }
+        // Classify provider/library text, but never echo it: it may contain a
+        // proxy password, a credential-bearing URL, or a response body.
+        let text = current.to_string().to_ascii_lowercase();
+        if text.contains("dns")
+            || text.contains("resolve")
+            || text.contains("name or service")
+            || text.contains("lookup address")
+            || text.contains("nodename")
+        {
+            cause = "DNS resolution failed";
+        } else if text.contains("certificate")
+            || text.contains("tls")
+            || text.contains("handshake")
+            || text.contains("invalidcontenttype")
+            || text.contains("received corrupt")
+        {
+            cause = "TLS certificate or handshake failed";
+        } else if text.contains("proxy") {
+            cause = "proxy connection failed";
+        }
+        source = current.source();
+    }
+    if error.is_timeout() {
+        cause = "request timed out";
+    } else if error.is_builder() {
+        cause = "invalid request configuration";
+    } else if error.is_redirect() {
+        cause = "request redirect policy rejected the response";
+    }
+    let endpoint = error.url().map(sanitized_endpoint);
+    let host_family = error.url().map(|url| match url.host() {
+        Some(url::Host::Ipv4(_)) => "IPv4",
+        Some(url::Host::Ipv6(_)) => "IPv6",
+        _ => "hostname (IPv4/IPv6 resolver fallback)",
+    });
+    TransportDiagnostic {
+        cause,
+        os_error,
+        status: error.status().map(|status| status.as_u16()),
+        timeout: error.is_timeout(),
+        configuration_error: error.is_builder() || error.is_redirect(),
+        endpoint,
+        host_family,
+        proxy_policy: None,
+        service: None,
+        recovery: None,
     }
 }
 
 impl From<anyhow::Error> for ProviderError {
     fn from(error: anyhow::Error) -> Self {
-        if let Some(reqwest_err) = error.downcast_ref::<reqwest::Error>() {
-            let mut details = vec![];
-
-            if let Some(status) = reqwest_err.status() {
-                details.push(format!("status: {}", status));
-            }
-            if reqwest_err.is_timeout() {
-                details.push("timeout".to_string());
-            }
-            if reqwest_err.is_connect() {
-                if let Some(url) = reqwest_err.url() {
-                    if let Some(host) = url.host_str() {
-                        let port_info = url.port().map(|p| format!(":{}", p)).unwrap_or_default();
-
-                        details.push(format!("failed to connect to {}{}", host, port_info));
-
-                        if url.port().is_some() {
-                            details.push("check that the port is correct".to_string());
-                        }
-                    }
-                } else {
-                    details.push("connection failed".to_string());
-                }
-            }
-            let msg = if details.is_empty() {
-                reqwest_err.to_string()
-            } else {
-                format!("{} ({})", reqwest_err, details.join(", "))
-            };
-            return ProviderError::RequestFailed(msg);
+        if let Some(error) = error.downcast_ref::<reqwest::Error>() {
+            return ProviderError::Transport(Box::new(transport_details(error)));
         }
         ProviderError::ExecutionError(error.to_string())
     }
@@ -339,7 +522,7 @@ impl From<anyhow::Error> for ProviderError {
 
 impl From<reqwest::Error> for ProviderError {
     fn from(error: reqwest::Error) -> Self {
-        ProviderError::RequestFailed(error.to_string())
+        ProviderError::Transport(Box::new(transport_details(&error)))
     }
 }
 

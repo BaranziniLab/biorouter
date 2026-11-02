@@ -4602,6 +4602,7 @@ mod bypass_tests {
             max_runs: None,
             creator_session_id: chat.map(str::to_owned),
             last_error: None,
+            last_attempt: None,
             owns_source: None,
             armed_with_private_reach: None,
         };

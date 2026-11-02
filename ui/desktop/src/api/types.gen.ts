@@ -3573,6 +3573,27 @@ export type OllamaContextWindowResponse = {
     model: string;
 };
 
+export type OllamaInstalledModel = {
+    digest?: string | null;
+    model?: string | null;
+    modified_at?: string | null;
+    name: string;
+    size?: number | null;
+};
+
+export type OllamaReadiness = {
+    base_url: string;
+    context_window?: number | null;
+    error?: string | null;
+    model_available?: boolean | null;
+    models: Array<OllamaInstalledModel>;
+    phase: string;
+    reachable: boolean;
+    selected_model?: string | null;
+    supports_tools?: boolean | null;
+    version?: string | null;
+};
+
 export type OllamaRecommendationsResponse = {
     /**
      * The Ollama server the provider talks to: `OLLAMA_HOST` resolved exactly
@@ -4734,6 +4755,7 @@ export type ScheduledJob = {
     current_session_id?: string | null;
     currently_running?: boolean;
     id: string;
+    last_attempt?: ScheduledRunDiagnostics | null;
     /**
      * The last run's failure, kept ON THE JOB so the schedules UI can show it.
      *
@@ -4776,6 +4798,16 @@ export type ScheduledJob = {
      */
     run_count?: number;
     source: string;
+};
+
+export type ScheduledRunDiagnostics = {
+    attempted_at: string;
+    failure_kind?: string | null;
+    last_failed_session_id?: string | null;
+    model?: string | null;
+    phase: string;
+    provider?: string | null;
+    session_id?: string | null;
 };
 
 /**
@@ -11144,6 +11176,31 @@ export type OllamaRecommendedResponses = {
 };
 
 export type OllamaRecommendedResponse = OllamaRecommendedResponses[keyof OllamaRecommendedResponses];
+
+export type OllamaStatusData = {
+    body?: never;
+    path?: never;
+    query?: {
+        model?: string | null;
+    };
+    url: '/ollama/status';
+};
+
+export type OllamaStatusErrors = {
+    /**
+     * Invalid model or Ollama host configuration
+     */
+    400: unknown;
+};
+
+export type OllamaStatusResponses = {
+    /**
+     * Prompt-free Ollama service and selected-model readiness from the daemon
+     */
+    200: OllamaReadiness;
+};
+
+export type OllamaStatusResponse = OllamaStatusResponses[keyof OllamaStatusResponses];
 
 export type GetPrivacyDisclosureData = {
     body?: never;

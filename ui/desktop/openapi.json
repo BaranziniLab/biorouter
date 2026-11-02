@@ -7352,6 +7352,40 @@
         }
       }
     },
+    "/ollama/status": {
+      "get": {
+        "tags": [
+          "super::routes::ollama"
+        ],
+        "operationId": "ollama_status",
+        "parameters": [
+          {
+            "name": "model",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "nullable": true
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Prompt-free Ollama service and selected-model readiness from the daemon",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OllamaReadiness"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid model or Ollama host configuration"
+          }
+        }
+      }
+    },
     "/privacy/disclosure": {
       "get": {
         "tags": [
@@ -16777,6 +16811,86 @@
           }
         }
       },
+      "OllamaInstalledModel": {
+        "type": "object",
+        "required": [
+          "name"
+        ],
+        "properties": {
+          "digest": {
+            "type": "string",
+            "nullable": true
+          },
+          "model": {
+            "type": "string",
+            "nullable": true
+          },
+          "modified_at": {
+            "type": "string",
+            "nullable": true
+          },
+          "name": {
+            "type": "string"
+          },
+          "size": {
+            "type": "integer",
+            "format": "int64",
+            "nullable": true,
+            "minimum": 0
+          }
+        }
+      },
+      "OllamaReadiness": {
+        "type": "object",
+        "required": [
+          "base_url",
+          "reachable",
+          "models",
+          "phase"
+        ],
+        "properties": {
+          "base_url": {
+            "type": "string"
+          },
+          "context_window": {
+            "type": "integer",
+            "nullable": true,
+            "minimum": 0
+          },
+          "error": {
+            "type": "string",
+            "nullable": true
+          },
+          "model_available": {
+            "type": "boolean",
+            "nullable": true
+          },
+          "models": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/OllamaInstalledModel"
+            }
+          },
+          "phase": {
+            "type": "string"
+          },
+          "reachable": {
+            "type": "boolean"
+          },
+          "selected_model": {
+            "type": "string",
+            "nullable": true
+          },
+          "supports_tools": {
+            "type": "boolean",
+            "nullable": true
+          },
+          "version": {
+            "type": "string",
+            "nullable": true
+          }
+        }
+      },
       "OllamaRecommendationsResponse": {
         "type": "object",
         "required": [
@@ -18960,6 +19074,14 @@
           "id": {
             "type": "string"
           },
+          "last_attempt": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/ScheduledRunDiagnostics"
+              }
+            ],
+            "nullable": true
+          },
           "last_error": {
             "type": "string",
             "description": "The last run's failure, kept ON THE JOB so the schedules UI can show it.\n\nA cron tick that returns `Err` used to leave nothing behind but a log\nline, and a scheduled run mints a fresh session each time, so there was\nno surface anywhere that a repeating job had been failing since the day\nit was created. Cleared by the next successful run.",
@@ -18998,6 +19120,42 @@
           },
           "source": {
             "type": "string"
+          }
+        }
+      },
+      "ScheduledRunDiagnostics": {
+        "type": "object",
+        "required": [
+          "attempted_at",
+          "phase"
+        ],
+        "properties": {
+          "attempted_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "failure_kind": {
+            "type": "string",
+            "nullable": true
+          },
+          "last_failed_session_id": {
+            "type": "string",
+            "nullable": true
+          },
+          "model": {
+            "type": "string",
+            "nullable": true
+          },
+          "phase": {
+            "type": "string"
+          },
+          "provider": {
+            "type": "string",
+            "nullable": true
+          },
+          "session_id": {
+            "type": "string",
+            "nullable": true
           }
         }
       },

@@ -30,6 +30,40 @@ use utoipa::{IntoParams, ToSchema};
 
 use crate::state::AppState;
 
+pub use biorouter::providers::ollama::OllamaReadiness;
+
+#[derive(Debug, Deserialize, IntoParams)]
+pub struct OllamaStatusQuery {
+    pub model: Option<String>,
+}
+
+#[utoipa::path(
+    get,
+    path = "/ollama/status",
+    params(OllamaStatusQuery),
+    responses(
+        (status = 200, description = "Prompt-free Ollama service and selected-model readiness from the daemon", body = OllamaReadiness),
+        (status = 400, description = "Invalid model or Ollama host configuration"),
+    ),
+)]
+pub async fn ollama_status(
+    Query(query): Query<OllamaStatusQuery>,
+) -> Result<Json<OllamaReadiness>, (StatusCode, String)> {
+    let selected = query.model.as_deref().map(str::trim);
+    if selected == Some("") {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "model must not be empty".to_string(),
+        ));
+    }
+    let model = ModelConfig::new(selected.unwrap_or(OLLAMA_DEFAULT_MODEL))
+        .map_err(|error| (StatusCode::BAD_REQUEST, error.to_string()))?;
+    let provider = OllamaProvider::from_env(model)
+        .await
+        .map_err(|error| (StatusCode::BAD_REQUEST, error.to_string()))?;
+    Ok(Json(provider.readiness(selected).await))
+}
+
 /// One model Biorouter recommends pulling into Ollama.
 #[derive(Serialize, Deserialize, ToSchema)]
 pub struct OllamaRecommendedModel {
@@ -298,6 +332,7 @@ async fn ollama_context_window(
 pub fn router() -> Router {
     Router::new()
         .route("/ollama/recommended", get(ollama_recommended))
+        .route("/ollama/status", get(ollama_status))
         .route("/ollama/context_window", get(ollama_context_window))
 }
 

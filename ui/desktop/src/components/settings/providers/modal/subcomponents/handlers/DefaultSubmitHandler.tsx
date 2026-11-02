@@ -1,6 +1,6 @@
 import { checkProvider, type CheckProviderRequest } from '../../../../../../api';
 import { userActionHeaders } from '../../../../../../utils/userAction';
-import { isBrowserSurface } from '../../../../../../utils/surface';
+import { isBrowserSurface, isHostManagedConfigKey } from '../../../../../../utils/surface';
 import { coerceConfigKeyValue } from '../../../configKeyValue';
 import { isDestinationConfigKey } from '../../../../destinationConfigKeys';
 
@@ -11,7 +11,7 @@ import { isDestinationConfigKey } from '../../../../destinationConfigKeys';
  * with them as task-local overrides and, with `live`, makes one authenticated
  * call (listing models). Nothing is written by the check, so a key the provider
  * rejects never replaces the working one: the save below happens only after it
- * passes. A provider with no secret or no live listing passes as before.
+ * passes. Ollama checks service readiness without needing a credential.
  *
  * Typed here until the generated client carries the two fields.
  */
@@ -62,7 +62,8 @@ export const providerConfigSubmitHandler = async (
       }>;
     };
   },
-  configValues: Record<string, string>
+  configValues: Record<string, string>,
+  isCurrent: () => boolean = () => true
 ) => {
   const declared = provider.metadata.config_keys || [];
   // W2-PRV-2, round 4. In a browser served by `biorouter serve`, a setting that
@@ -72,10 +73,24 @@ export const providerConfigSubmitHandler = async (
   // field and does not let it be edited, so writing it here could only re-save
   // what is there or meet that refusal. It is left out; the provider keeps what
   // the host set, or its built-in default.
-  const hostOwned = (name: string) => isBrowserSurface() && isDestinationConfigKey(name);
+  const hostOwned = (name: string) =>
+    isBrowserSurface() && (isDestinationConfigKey(name) || isHostManagedConfigKey(name));
   const parameters = declared.filter(
     (parameter) => parameter.secret === true || !hostOwned(parameter.name)
   );
+
+  if (provider.name === 'ollama') {
+    const candidate = Object.fromEntries(
+      parameters.flatMap((parameter) => {
+        const value = configValues[parameter.name] ?? parameter.default;
+        return value === undefined || value === null || value === ''
+          ? []
+          : [[parameter.name, String(value)]];
+      })
+    );
+    await checkCandidateCredentials(provider.name, candidate);
+    if (!isCurrent()) return;
+  }
 
   const requiredParams = parameters.filter((param) => param.required);
   if (requiredParams.length === 0 && parameters.length > 0) {
@@ -119,7 +134,7 @@ export const providerConfigSubmitHandler = async (
   // host or endpoint the saved key will be sent to. A browser served by
   // `biorouter serve` cannot prove a person, so there the daemon checks only
   // with a key typed into the form, and only a save carrying the key is
-  // checked. A provider with no credential is saved and built as before.
+  // checked. Ollama's service was checked above, independently of credentials.
   const carriesKey = writes.some(({ parameter }) => parameter.secret === true);
   const holdsKey = parameters.some((parameter) => parameter.secret === true);
   if (writes.length > 0 && (carriesKey || (holdsKey && !isBrowserSurface()))) {
@@ -128,6 +143,7 @@ export const providerConfigSubmitHandler = async (
       Object.fromEntries(writes.map(({ parameter, value }) => [parameter.name, String(value)]))
     );
   }
+  if (!isCurrent()) return;
 
   // Settings before credentials. Where no person can be proven (`biorouter
   // serve`), the daemon refuses to move a host or endpoint, since the saved key
@@ -141,7 +157,9 @@ export const providerConfigSubmitHandler = async (
       )
     );
   await save(writes.filter(({ parameter }) => parameter.secret !== true));
+  if (!isCurrent()) return;
   await save(writes.filter(({ parameter }) => parameter.secret === true));
+  if (!isCurrent()) return;
   await checkProvider({
     body: { provider: provider.name },
     throwOnError: true,

@@ -1,15 +1,16 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { StrictMode } from 'react';
 import OllamaInlineCard from './OllamaInlineCard';
 import { ollamaCopy } from './copy';
 import { localModelsCopy } from '../settings/models/copy';
 import type { OllamaRecommendationsResponse } from '../../api';
+import type { ConfiguredOllamaReadiness } from '../../utils/ollamaDetection';
 import type * as Detection from '../../utils/ollamaDetection';
 
 const mocks = vi.hoisted(() => ({
   getOllamaSetup: vi.fn(),
-  checkOllamaStatus: vi.fn(),
-  getOllamaModels: vi.fn(),
+  getOllamaReadiness: vi.fn(),
   pullOllamaModel: vi.fn(),
   pollForOllama: vi.fn(),
   upsert: vi.fn(),
@@ -23,8 +24,7 @@ const mocks = vi.hoisted(() => ({
 vi.mock('../../utils/ollamaDetection', async (importOriginal) => ({
   ...(await importOriginal<typeof Detection>()),
   getOllamaSetup: mocks.getOllamaSetup,
-  checkOllamaStatus: mocks.checkOllamaStatus,
-  getOllamaModels: mocks.getOllamaModels,
+  getOllamaReadiness: mocks.getOllamaReadiness,
   pullOllamaModel: mocks.pullOllamaModel,
   pollForOllama: mocks.pollForOllama,
 }));
@@ -73,6 +73,22 @@ const setup = (overrides: Partial<OllamaRecommendationsResponse> = {}, host?: st
 const tags = (...names: string[]) =>
   names.map((name) => ({ name, model: name, size: 1, digest: 'd', modified_at: '' }));
 
+const readiness = (
+  overrides: Partial<ConfiguredOllamaReadiness> = {}
+): ConfiguredOllamaReadiness => ({
+  base_url: 'http://localhost:11434/',
+  reachable: true,
+  version: '0.40.13',
+  models: [],
+  selected_model: null,
+  model_available: true,
+  context_window: null,
+  supports_tools: true,
+  error: null,
+  phase: 'ready',
+  ...overrides,
+});
+
 /**
  * The Model picker is the app's one select (`ui/Select`), as on Llama Server's panel: open it from
  * the keyboard and read its options, as the other shared-select tests do.
@@ -97,8 +113,7 @@ function chooseModel(label: RegExp) {
 beforeEach(() => {
   vi.clearAllMocks();
   mocks.getOllamaSetup.mockResolvedValue(setup());
-  mocks.checkOllamaStatus.mockImplementation(async (host: string) => ({ isRunning: true, host }));
-  mocks.getOllamaModels.mockResolvedValue([]);
+  mocks.getOllamaReadiness.mockReset().mockResolvedValue(readiness());
   mocks.pollForOllama.mockReturnValue(() => {});
   mocks.upsert.mockResolvedValue(undefined);
 });
@@ -126,7 +141,9 @@ describe('OllamaInlineCard', () => {
   });
 
   it('preselects a recommended model the user already has', async () => {
-    mocks.getOllamaModels.mockResolvedValue(tags('gemma4:31b', 'llama3.1:8b'));
+    mocks.getOllamaReadiness.mockResolvedValue(
+      readiness({ models: tags('gemma4:31b', 'llama3.1:8b') })
+    );
     render(<OllamaInlineCard onSuccess={vi.fn()} />);
 
     expect(await screen.findByTestId('ollama-model-select')).toHaveTextContent(
@@ -188,16 +205,13 @@ describe('OllamaInlineCard', () => {
         'http://127.0.0.1:11500'
       )
     );
-    mocks.checkOllamaStatus.mockImplementation(async (host: string) => ({
-      isRunning: false,
-      host,
-    }));
+    mocks.getOllamaReadiness.mockResolvedValue(readiness({ reachable: false, phase: 'service' }));
     render(<OllamaInlineCard onSuccess={vi.fn()} />);
 
     expect(
       await screen.findByText(ollamaCopy.notDetected('http://127.0.0.1:11500'))
     ).toBeInTheDocument();
-    expect(mocks.checkOllamaStatus).toHaveBeenCalledWith('http://127.0.0.1:11500');
+    expect(mocks.getOllamaReadiness).toHaveBeenCalledWith();
   });
 
   /**
@@ -205,7 +219,7 @@ describe('OllamaInlineCard', () => {
    * Ollama is refused and used to read as "Ollama not detected" beside an
    * Install Ollama link, for a user whose server was working.
    */
-  it('does not probe an Ollama on another computer, and lets the user connect to it', async () => {
+  it('checks a remote server through the daemon and explains missing models', async () => {
     mocks.getOllamaSetup.mockResolvedValue(
       setup(
         {
@@ -229,28 +243,26 @@ describe('OllamaInlineCard', () => {
       within(note).getByRole('button', { name: `About ${ollamaCopy.remoteTipLabel}` })
     ).toHaveAccessibleDescription(ollamaCopy.remoteTip);
     expect(
-      screen.getByText(ollamaCopy.onAnotherComputer('http://gpu-box.lab.example:11434'))
+      screen.getByText(ollamaCopy.running('http://gpu-box.lab.example:11434'))
     ).toBeInTheDocument();
     expect(note).toHaveTextContent('ollama pull qwen3.8:27b');
-    expect(mocks.checkOllamaStatus).not.toHaveBeenCalled();
-    expect(mocks.getOllamaModels).not.toHaveBeenCalled();
+    expect(mocks.getOllamaReadiness).toHaveBeenCalledTimes(1);
     expect(screen.queryByText(/not detected/)).toBeNull();
     expect(screen.queryByText(ollamaCopy.install)).toBeNull();
     // A download would go to THIS machine's Ollama, and the memory figure is
     // this machine's, not the server's.
     expect(screen.queryByTestId('ollama-download')).toBeNull();
     expect(screen.queryByTestId('ollama-suitability')).toBeNull();
-    expect(optionLabels()).toEqual(['Qwen3.8 27B (recommended) · ~18 GB', 'Gemma 4 31B · ~19 GB']);
+    expect(optionLabels()).toEqual([
+      'Qwen3.8 27B (recommended) · ~18 GB · Needs download',
+      'Gemma 4 31B · ~19 GB · Needs download',
+    ]);
 
     fireEvent.click(screen.getByRole('option', { name: /Gemma 4 31B/ }));
     expect(note).toHaveTextContent('ollama pull gemma4:31b');
-    fireEvent.click(screen.getByTestId('ollama-connect'));
-
-    await waitFor(() => expect(onSuccess).toHaveBeenCalled());
-    expect(mocks.upsert.mock.calls).toEqual([
-      ['BIOROUTER_PROVIDER', 'ollama', false],
-      ['BIOROUTER_MODEL', 'gemma4:31b', false],
-    ]);
+    expect(screen.queryByTestId('ollama-connect')).toBeNull();
+    expect(mocks.upsert).not.toHaveBeenCalled();
+    expect(onSuccess).not.toHaveBeenCalled();
   });
 
   /** The reported bug: a failed pull toasted "Model Downloaded!". */
@@ -278,7 +290,7 @@ describe('OllamaInlineCard', () => {
     render(<OllamaInlineCard onSuccess={vi.fn()} />);
 
     const download = await screen.findByTestId('ollama-download');
-    mocks.getOllamaModels.mockResolvedValue(tags('qwen3.8:27b'));
+    mocks.getOllamaReadiness.mockResolvedValue(readiness({ models: tags('qwen3.8:27b') }));
     fireEvent.click(download);
 
     expect(await screen.findByTestId('ollama-connect')).toBeInTheDocument();
@@ -291,7 +303,7 @@ describe('OllamaInlineCard', () => {
   });
 
   it('writes OLLAMA_HOST on connect only when it is unset', async () => {
-    mocks.getOllamaModels.mockResolvedValue(tags('qwen3.8:27b'));
+    mocks.getOllamaReadiness.mockResolvedValue(readiness({ models: tags('qwen3.8:27b') }));
     const onSuccess = vi.fn();
     render(<OllamaInlineCard onSuccess={onSuccess} />);
 
@@ -305,10 +317,136 @@ describe('OllamaInlineCard', () => {
     ]);
   });
 
+  it('checks a remote daemon’s loopback Ollama without offering renderer-local actions', async () => {
+    mocks.getOllamaSetup.mockResolvedValue({ ...setup(), reachable: false });
+    render(<OllamaInlineCard onSuccess={vi.fn()} />);
+
+    expect(await screen.findByTestId('ollama-remote-note')).toBeInTheDocument();
+    expect(screen.getByText(ollamaCopy.running('http://localhost:11434'))).toBeInTheDocument();
+    expect(screen.queryByTestId('ollama-download')).toBeNull();
+    expect(screen.queryByText(ollamaCopy.install)).toBeNull();
+    expect(mocks.getOllamaReadiness).toHaveBeenCalledTimes(1);
+    expect(mocks.pullOllamaModel).not.toHaveBeenCalled();
+    expect(mocks.pollForOllama).not.toHaveBeenCalled();
+
+    mocks.getOllamaReadiness.mockResolvedValueOnce(readiness({ reachable: false }));
+    fireEvent.click(screen.getByRole('button', { name: 'Check again' }));
+    await waitFor(() => expect(screen.getByText(/not detected/)).toBeInTheDocument());
+    expect(screen.queryByText(ollamaCopy.install)).toBeNull();
+  });
+
+  it.each([
+    {
+      reachable: false,
+      model_available: null,
+      phase: 'service',
+      error: 'Cannot reach Ollama at http://localhost:11434: connection refused.',
+    },
+    {
+      reachable: true,
+      model_available: false,
+      phase: 'model',
+      error: 'Ollama is running, but qwen3.8:27b is not installed.',
+    },
+    {
+      reachable: true,
+      model_available: true,
+      supports_tools: false,
+      phase: 'model',
+      error: 'This model does not support tools.',
+    },
+  ])('does not save a connection that fails the selected-model check: $phase', async (failure) => {
+    mocks.getOllamaReadiness.mockResolvedValue(readiness({ models: tags('qwen3.8:27b') }));
+    const onSuccess = vi.fn();
+    render(<OllamaInlineCard onSuccess={onSuccess} />);
+    const connect = await screen.findByTestId('ollama-connect');
+    mocks.getOllamaReadiness.mockResolvedValueOnce(readiness(failure));
+
+    fireEvent.click(connect);
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(failure.error);
+    expect(mocks.getOllamaReadiness).toHaveBeenLastCalledWith('qwen3.8:27b');
+    expect(mocks.upsert).not.toHaveBeenCalled();
+    expect(onSuccess).not.toHaveBeenCalled();
+    expect(screen.getByRole('button', { name: 'Check again' })).toBeEnabled();
+    if (!failure.reachable) {
+      expect(screen.queryByText(ollamaCopy.running())).toBeNull();
+      expect(screen.queryByTestId('ollama-connect')).toBeNull();
+    }
+  });
+
+  it('rechecks an unavailable service without rewriting its correct host', async () => {
+    mocks.getOllamaSetup.mockResolvedValue(setup({ host_configured: true }));
+    mocks.getOllamaReadiness
+      .mockResolvedValueOnce(
+        readiness({
+          reachable: false,
+          error: 'Cannot reach Ollama at http://localhost:11434: connection refused.',
+          phase: 'service',
+        })
+      )
+      .mockResolvedValue(readiness({ models: tags('qwen3.8:27b') }));
+    const onSuccess = vi.fn();
+    render(<OllamaInlineCard onSuccess={onSuccess} />);
+    expect(await screen.findByRole('alert')).toHaveTextContent('connection refused');
+    expect(screen.getByText(/does not start Ollama/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Check again' }));
+    fireEvent.click(await screen.findByTestId('ollama-connect'));
+    await waitFor(() => expect(onSuccess).toHaveBeenCalled());
+    expect(mocks.upsert.mock.calls.map(([key]) => key)).toEqual([
+      'BIOROUTER_PROVIDER',
+      'BIOROUTER_MODEL',
+    ]);
+  });
+
+  it('does not save when a selected-model readiness check settles after unmount', async () => {
+    mocks.getOllamaReadiness.mockResolvedValue(readiness({ models: tags('qwen3.8:27b') }));
+    const onSuccess = vi.fn();
+    const view = render(<OllamaInlineCard onSuccess={onSuccess} />);
+    const connect = await screen.findByTestId('ollama-connect');
+    let answer!: (value: ConfiguredOllamaReadiness) => void;
+    mocks.getOllamaReadiness.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          answer = resolve;
+        })
+    );
+    fireEvent.click(connect);
+    expect(mocks.getOllamaReadiness).toHaveBeenLastCalledWith('qwen3.8:27b');
+    view.unmount();
+    await act(async () => {
+      answer(readiness({ models: tags('qwen3.8:27b') }));
+    });
+    expect(mocks.upsert).not.toHaveBeenCalled();
+    expect(onSuccess).not.toHaveBeenCalled();
+  });
+
+  it('connects to a healthy remote server only after daemon model verification', async () => {
+    mocks.getOllamaSetup.mockResolvedValue(
+      setup(
+        { base_url: 'http://gpu-box.lab.example:11434/', host_configured: true, tier: 'public' },
+        'http://gpu-box.lab.example:11434'
+      )
+    );
+    mocks.getOllamaReadiness.mockResolvedValue(
+      readiness({ base_url: 'http://gpu-box.lab.example:11434/', models: tags('gemma4:31b') })
+    );
+    const onSuccess = vi.fn();
+    render(<OllamaInlineCard onSuccess={onSuccess} />);
+    fireEvent.click(await screen.findByTestId('ollama-connect'));
+    await waitFor(() => expect(onSuccess).toHaveBeenCalled());
+    expect(mocks.getOllamaReadiness).toHaveBeenLastCalledWith('gemma4:31b');
+    expect(mocks.upsert.mock.calls).toEqual([
+      ['BIOROUTER_PROVIDER', 'ollama', false],
+      ['BIOROUTER_MODEL', 'gemma4:31b', false],
+    ]);
+    expect(screen.queryByTestId('ollama-download')).toBeNull();
+  });
+
   it.each(['BIOROUTER_PROVIDER', 'BIOROUTER_MODEL', 'OLLAMA_HOST'])(
     'stops connecting when the card unmounts during the %s write',
     async (pendingKey) => {
-      mocks.getOllamaModels.mockResolvedValue(tags('qwen3.8:27b'));
+      mocks.getOllamaReadiness.mockResolvedValue(readiness({ models: tags('qwen3.8:27b') }));
       let finishWrite!: () => void;
       mocks.upsert.mockImplementation((key: string) =>
         key === pendingKey
@@ -337,7 +475,7 @@ describe('OllamaInlineCard', () => {
   );
 
   it('does not report a connection failure after the card unmounts', async () => {
-    mocks.getOllamaModels.mockResolvedValue(tags('qwen3.8:27b'));
+    mocks.getOllamaReadiness.mockResolvedValue(readiness({ models: tags('qwen3.8:27b') }));
     let refuseWrite!: (error: Error) => void;
     mocks.upsert.mockImplementation(
       () =>
@@ -367,7 +505,7 @@ describe('OllamaInlineCard', () => {
         'http://127.0.0.1:11500'
       )
     );
-    mocks.getOllamaModels.mockResolvedValue(tags('qwen3.8:27b'));
+    mocks.getOllamaReadiness.mockResolvedValue(readiness({ models: tags('qwen3.8:27b') }));
     const onSuccess = vi.fn();
     render(<OllamaInlineCard onSuccess={onSuccess} />);
 
@@ -391,6 +529,58 @@ describe('OllamaInlineCard', () => {
     expect(await screen.findByTestId('ollama-model-select')).toBeInTheDocument();
   });
 
+  it('ignores the older StrictMode setup response after the current probe recovers', async () => {
+    let failOld!: (error: Error) => void;
+    mocks.getOllamaSetup.mockImplementationOnce(
+      () =>
+        new Promise((_resolve, reject) => {
+          failOld = reject;
+        })
+    );
+    mocks.getOllamaReadiness.mockResolvedValue(readiness({ models: tags('qwen3.8:27b') }));
+    render(
+      <StrictMode>
+        <OllamaInlineCard onSuccess={vi.fn()} />
+      </StrictMode>
+    );
+    expect(await screen.findByTestId('ollama-connect')).toBeInTheDocument();
+    await act(async () => {
+      failOld(new Error('Older setup failure'));
+    });
+    expect(screen.getByTestId('ollama-connect')).toBeInTheDocument();
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+  });
+
+  it('keeps a newer recovery when an old install-poll model refresh fails later', async () => {
+    let failOld!: (error: Error) => void;
+    mocks.getOllamaReadiness
+      .mockResolvedValueOnce(readiness({ reachable: false, error: 'Service unavailable.' }))
+      .mockImplementationOnce(
+        () =>
+          new Promise((_resolve, reject) => {
+            failOld = reject;
+          })
+      )
+      .mockResolvedValueOnce(readiness({ models: tags('qwen3.8:27b') }));
+    render(<OllamaInlineCard onSuccess={vi.fn()} />);
+    fireEvent.click(await screen.findByRole('link', { name: ollamaCopy.install }));
+    const onDetected = mocks.pollForOllama.mock.calls[0][0];
+    let oldRefresh!: Promise<void>;
+    act(() => {
+      oldRefresh = onDetected({ isRunning: true, host: 'http://localhost:11434' });
+    });
+    fireEvent.click(await screen.findByRole('button', { name: 'Check again' }));
+    expect(await screen.findByTestId('ollama-connect')).toBeInTheDocument();
+
+    await act(async () => {
+      failOld(new Error('Older readiness failure'));
+      await oldRefresh;
+    });
+    expect(screen.getByTestId('ollama-connect')).toBeInTheDocument();
+    expect(screen.getByText(ollamaCopy.running())).toBeInTheDocument();
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+  });
+
   /**
    * The known vitest flake: the mount effect's probes settled after the test
    * file's jsdom was torn down and set state, which threw `window is not
@@ -398,21 +588,21 @@ describe('OllamaInlineCard', () => {
    */
   it('stops at the first probe that settles after unmount', async () => {
     let answer!: (value: unknown) => void;
-    mocks.checkOllamaStatus.mockImplementation(
+    mocks.getOllamaReadiness.mockImplementation(
       () =>
         new Promise((resolve) => {
           answer = resolve;
         })
     );
     const view = render(<OllamaInlineCard onSuccess={vi.fn()} />);
-    await waitFor(() => expect(mocks.checkOllamaStatus).toHaveBeenCalled());
+    await waitFor(() => expect(mocks.getOllamaReadiness).toHaveBeenCalled());
 
     view.unmount();
     await act(async () => {
-      answer({ isRunning: true, host: 'http://127.0.0.1:11434' });
+      answer(readiness());
     });
 
-    expect(mocks.getOllamaModels).not.toHaveBeenCalled();
+    expect(mocks.getOllamaReadiness).toHaveBeenCalledTimes(1);
   });
 
   /**
@@ -441,7 +631,7 @@ describe('OllamaInlineCard', () => {
     const tier = screen.getByTestId('ollama-tier-label');
     expect(tier).toHaveTextContent(ollamaCopy.publicTier);
     expect(tier.closest('.br-status-pill')).toHaveTextContent(
-      `${ollamaCopy.publicTier} · ${ollamaCopy.onAnotherComputer('http://gpu-box.lab.example:11434')}`
+      `${ollamaCopy.publicTier} · ${ollamaCopy.running('http://gpu-box.lab.example:11434')}`
     );
   });
 
@@ -460,7 +650,7 @@ describe('OllamaInlineCard', () => {
     render(<OllamaInlineCard onSuccess={vi.fn()} />);
 
     expect(await screen.findByTestId('ollama-model-select')).toBeInTheDocument();
-    expect(mocks.checkOllamaStatus).toHaveBeenCalledWith('http://127.0.0.1:11434');
+    expect(mocks.getOllamaReadiness).toHaveBeenCalledWith();
     expect(screen.getByTestId('ollama-public-note')).toBeInTheDocument();
     expect(document.body.textContent).not.toMatch(/Free, private, offline/);
   });
@@ -483,7 +673,7 @@ describe('OllamaInlineCard', () => {
           'http://127.0.0.1:11434'
         )
       );
-      mocks.checkOllamaStatus.mockImplementation(async (host: string) => ({ isRunning, host }));
+      mocks.getOllamaReadiness.mockResolvedValue(readiness({ reachable: isRunning }));
       render(<OllamaInlineCard onSuccess={vi.fn()} />);
 
       const note = await screen.findByTestId('ollama-public-note');
@@ -524,8 +714,8 @@ describe('OllamaInlineCard', () => {
     render(<OllamaInlineCard onSuccess={vi.fn()} />);
 
     expect(await screen.findByTestId('ollama-remote-note')).toBeInTheDocument();
-    expect(mocks.checkOllamaStatus).not.toHaveBeenCalled();
-    expect(screen.getByText(ollamaCopy.atHost('http://[::1]:11434'))).toBeInTheDocument();
+    expect(mocks.getOllamaReadiness).toHaveBeenCalledTimes(1);
+    expect(screen.getByText(ollamaCopy.running('http://[::1]:11434'))).toBeInTheDocument();
     expect(document.body.textContent).not.toMatch(/another computer/);
     expect(screen.queryByTestId('ollama-public-note')).toBeNull();
     expect(screen.queryByTestId('ollama-tier-label')).toBeNull();
@@ -549,7 +739,7 @@ describe('OllamaInlineCard', () => {
 
     chooseModel(/Gemma 4 31B/);
     fireEvent.click(screen.getByTestId('ollama-download'));
-    await waitFor(() => expect(mocks.getOllamaModels).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(mocks.getOllamaReadiness).toHaveBeenCalledTimes(2));
 
     expect(mocks.pullOllamaModel).toHaveBeenCalledWith(
       'gemma4:31b',
@@ -567,10 +757,7 @@ describe('OllamaInlineCard', () => {
  */
 describe('OllamaInlineCard on the first-run standard', () => {
   it('offers to install Ollama when it is not running, as an ordinary button', async () => {
-    mocks.checkOllamaStatus.mockImplementation(async (host: string) => ({
-      isRunning: false,
-      host,
-    }));
+    mocks.getOllamaReadiness.mockResolvedValue(readiness({ reachable: false, phase: 'service' }));
     render(<OllamaInlineCard onSuccess={vi.fn()} />);
     const install = await screen.findByRole('link', { name: ollamaCopy.install });
     expect(install.className).not.toContain('w-full');
@@ -590,7 +777,7 @@ describe('OllamaInlineCard on the first-run standard', () => {
   });
 
   it('connects with a plain, sentence-case toast', async () => {
-    mocks.getOllamaModels.mockResolvedValue(tags('qwen3.8:27b'));
+    mocks.getOllamaReadiness.mockResolvedValue(readiness({ models: tags('qwen3.8:27b') }));
     const onSuccess = vi.fn();
     render(<OllamaInlineCard onSuccess={onSuccess} />);
     expect(await screen.findByText(ollamaCopy.running())).toBeInTheDocument();

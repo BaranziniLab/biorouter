@@ -22,6 +22,27 @@ pub struct ApiClient {
     tls_config: Option<TlsConfig>,
 }
 
+pub(crate) fn is_loopback_host(host: &str) -> bool {
+    url::Url::parse(host)
+        .ok()
+        .is_some_and(|url| match url.host() {
+            Some(url::Host::Domain(name)) => name.eq_ignore_ascii_case("localhost"),
+            Some(url::Host::Ipv4(address)) => address.is_loopback(),
+            Some(url::Host::Ipv6(address)) => address.is_loopback(),
+            None => false,
+        })
+}
+
+fn route_client(builder: reqwest::ClientBuilder, host: &str) -> reqwest::ClientBuilder {
+    if is_loopback_host(host) {
+        // An automatic proxy must never intercept a request to this computer.
+        // Keep the hostname so reqwest retains its normal IPv4/IPv6 fallback.
+        builder.no_proxy()
+    } else {
+        builder
+    }
+}
+
 /// How an [`ApiClient`] applies its `timeout`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum TimeoutMode {
@@ -330,7 +351,10 @@ impl ApiClient {
         timeout: Duration,
         timeout_mode: TimeoutMode,
     ) -> Result<Self> {
-        let mut client_builder = tune_client_builder(Client::builder(), timeout, timeout_mode);
+        let mut client_builder = route_client(
+            tune_client_builder(Client::builder(), timeout, timeout_mode),
+            &host,
+        );
 
         // Configure TLS if needed
         let tls_config = TlsConfig::from_config()?;
@@ -352,9 +376,11 @@ impl ApiClient {
     }
 
     fn rebuild_client(&mut self) -> Result<()> {
-        let mut client_builder =
-            tune_client_builder(Client::builder(), self.timeout, self.timeout_mode)
-                .default_headers(self.default_headers.clone());
+        let mut client_builder = route_client(
+            tune_client_builder(Client::builder(), self.timeout, self.timeout_mode),
+            &self.host,
+        )
+        .default_headers(self.default_headers.clone());
 
         // Configure TLS if needed
         if let Some(ref tls_config) = self.tls_config {

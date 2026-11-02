@@ -76,6 +76,9 @@ use tokio_util::codec::{FramedRead, LinesCodec, LinesCodecError};
 use tokio_util::io::StreamReader;
 use url::Url;
 
+mod readiness;
+pub use readiness::{OllamaInstalledModel, OllamaReadiness};
+
 pub const OLLAMA_HOST: &str = "localhost";
 pub const OLLAMA_TIMEOUT: u64 = 600;
 pub const OLLAMA_DEFAULT_PORT: u16 = 11434;
@@ -504,16 +507,15 @@ fn resolve_host(host: &str, portless_http: u16) -> Result<Url> {
     } else {
         format!("http://{host}")
     };
-    let mut url =
-        Url::parse(&text).map_err(|e| anyhow::anyhow!("Invalid Ollama host '{text}': {e}"))?;
+    let mut url = Url::parse(&text).map_err(|e| anyhow::anyhow!("Invalid Ollama host: {e}"))?;
     if !matches!(url.scheme(), "http" | "https") {
         anyhow::bail!(
-            "Invalid Ollama host '{text}': scheme '{}' is not http or https",
+            "Invalid Ollama host: scheme '{}' is not http or https",
             url.scheme()
         );
     }
     if url.host_str().is_none_or(str::is_empty) {
-        anyhow::bail!("Invalid Ollama host '{text}': no host name");
+        anyhow::bail!("Invalid Ollama host: no host name");
     }
     if url.scheme() == "http" && !has_explicit_port(&text) {
         let port = if has_scheme {
@@ -522,7 +524,7 @@ fn resolve_host(host: &str, portless_http: u16) -> Result<Url> {
             OLLAMA_DEFAULT_PORT
         };
         url.set_port(Some(port))
-            .map_err(|_| anyhow::anyhow!("Invalid Ollama host '{text}': cannot set a port"))?;
+            .map_err(|_| anyhow::anyhow!("Invalid Ollama host: cannot set a port"))?;
     }
     Ok(url)
 }
@@ -2103,6 +2105,13 @@ impl OllamaProvider {
         if let Some(facts) = MODEL_FACTS.lock().ok()?.get(&key) {
             return Some(facts.clone());
         }
+        self.refresh_model_facts(model).await
+    }
+
+    async fn refresh_model_facts(&self, model: &str) -> Option<ModelFacts> {
+        if self.openai_compat.load(Ordering::Relaxed) {
+            return None;
+        }
         let probe = async {
             let response = self
                 .api_client
@@ -2121,7 +2130,13 @@ impl OllamaProvider {
         let show = tokio::time::timeout(PROBE_TIMEOUT, probe).await.ok()??;
         let facts = ModelFacts::from_show(&show);
         if let Ok(mut cache) = MODEL_FACTS.lock() {
-            cache.insert(key, facts.clone());
+            cache.insert(
+                (self.resolved_base_url.clone(), model.to_string()),
+                facts.clone(),
+            );
+        }
+        if let Ok(mut windows) = self.windows.lock() {
+            windows.remove(model);
         }
         Some(facts)
     }
@@ -2141,7 +2156,7 @@ impl OllamaProvider {
         let num_ctx = match known {
             Some(num_ctx) => num_ctx,
             None => {
-                let num_ctx = choose_num_ctx(
+                let mut num_ctx = choose_num_ctx(
                     self.settings.num_ctx,
                     user_limit,
                     facts.as_ref().and_then(|f| f.trained_context),
@@ -2151,15 +2166,16 @@ impl OllamaProvider {
                     if let Ok(mut windows) = self.windows.lock() {
                         // A racing first request may have stored one already;
                         // keep it, so two requests never send two windows.
-                        let stored = *windows.entry(name.to_string()).or_insert(num_ctx);
-                        if stored != num_ctx {
-                            return (self.memory_adjusted_window(model_config, stored), facts);
-                        }
+                        num_ctx = *windows.entry(name.to_string()).or_insert(num_ctx);
                     }
                 }
                 num_ctx
             }
         };
+        let num_ctx = facts
+            .as_ref()
+            .and_then(|facts| facts.trained_context)
+            .map_or(num_ctx, |trained| num_ctx.min(trained));
         let num_ctx = self.memory_adjusted_window(model_config, num_ctx);
         if name == self.model.model_name {
             self.live_context_limit.store(num_ctx, Ordering::Relaxed);
@@ -2424,8 +2440,24 @@ impl OllamaProvider {
         Fut: std::future::Future<Output = Result<T, ProviderError>> + Send,
         T: Send,
     {
-        self.with_retry_policy(TimeoutRetry::GiveUp, operation)
-            .await
+        let attempts = AtomicUsize::new(0);
+        let count = &attempts;
+        self.with_retry_policy(TimeoutRetry::GiveUp, move || {
+            count.fetch_add(1, Ordering::Relaxed);
+            operation()
+        })
+        .await
+        .map_err(|error| {
+            if super::retry::should_retry_with(&error, TimeoutRetry::GiveUp) {
+                let error = self.service_error(error);
+                ProviderError::RetryExhausted {
+                    source: Box::new(error),
+                    attempts: attempts.load(Ordering::Relaxed),
+                }
+            } else {
+                error
+            }
+        })
     }
 
     fn switch_to_openai_compat(&self) {
@@ -2595,6 +2627,7 @@ impl OllamaProvider {
                 handle_response_openai_compat(response).await
             })
             .await
+            .map_err(|e| waited_too_long(e, self.idle, self.timeout_setting, check.text_bytes))
             .map_err(|e| v1_capability_error(e, &model_config.model_name))
             .inspect_err(|e| {
                 let _ = log.provider_error(e);
@@ -3126,12 +3159,24 @@ impl Provider for OllamaProvider {
     /// tools on every turn, so those fail with an Ollama 400 on the first one.
     /// A model whose capabilities could not be read stays listed, and so does
     /// the configured model, so a selection never silently disappears.
+    async fn validate_readiness(&self) -> Result<(), ProviderError> {
+        // A declarative Ollama-engine provider may expose only OpenAI routes.
+        if self.window_setting != BUILTIN_WINDOW_SETTING {
+            return Ok(());
+        }
+        let status = self.readiness(Some(&self.model.model_name)).await;
+        match status.error {
+            Some(error) => Err(ProviderError::RequestFailed(error)),
+            None => Ok(()),
+        }
+    }
+
     async fn fetch_supported_models(&self) -> Result<Option<Vec<String>>, ProviderError> {
         let response = self
             .api_client
             .response_get("api/tags")
             .await
-            .map_err(|e| ProviderError::RequestFailed(format!("Failed to fetch models: {}", e)))?;
+            .map_err(|error| self.service_error(error.into()))?;
 
         if !response.status().is_success() {
             return Err(ProviderError::RequestFailed(format!(
@@ -5541,6 +5586,7 @@ mod tests {
         );
         assert!(!crate::agents::mistakes::is_recoverable(&error));
         assert!(super::super::retry::is_timeout(&error));
+        assert!(!super::super::retry::should_retry(&error));
 
         let others = || {
             [
@@ -5574,5 +5620,39 @@ mod tests {
             error.to_string(),
             "Request failed: Stream decode error: invalid JSON in a reply about a timeout"
         );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn transport_recovery_has_one_measured_budget_and_no_agent_resend() {
+        let provider = OllamaProvider::from_custom_config(
+            ModelConfig::new("model").unwrap(),
+            config("http://127.0.0.1:9"),
+        )
+        .unwrap();
+        let calls = AtomicUsize::new(0);
+        let start = tokio::time::Instant::now();
+        let error = provider
+            .with_ollama_retry(|| {
+                calls.fetch_add(1, Ordering::Relaxed);
+                async {
+                    Err::<(), _>(ProviderError::RequestFailed(
+                        "connection refused".to_string(),
+                    ))
+                }
+            })
+            .await
+            .unwrap_err();
+        assert_eq!(calls.load(Ordering::Relaxed), 4);
+        assert!(matches!(
+            error,
+            ProviderError::RetryExhausted { attempts: 4, .. }
+        ));
+        assert!(!crate::agents::mistakes::is_recoverable(&error));
+        assert!(error.to_string().contains("after 4 request attempts"));
+        assert!(!super::super::retry::should_retry(&error));
+        if std::env::var("BIOROUTER_PROVIDER_SKIP_BACKOFF").as_deref() != Ok("true") {
+            assert!(start.elapsed() >= Duration::from_millis(5600));
+            assert!(start.elapsed() <= Duration::from_millis(8400));
+        }
     }
 }

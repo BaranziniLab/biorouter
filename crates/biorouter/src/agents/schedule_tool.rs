@@ -622,6 +622,7 @@ impl Agent {
             // `dispatch_tool_call` holds the real `Session`; it is passed down.
             creator_session_id: Some(creator_session_id.to_string()),
             last_error: None,
+            last_attempt: None,
             owns_source: None,
             // Issue #56. The standing of the CHAT, not of the person who allowed
             // the card: the card promises "on this chat's model", so a person who
@@ -1161,6 +1162,7 @@ mod tests {
             max_runs: None,
             creator_session_id: None,
             last_error: None,
+            last_attempt: None,
             owns_source: None,
             armed_with_private_reach: None,
         }

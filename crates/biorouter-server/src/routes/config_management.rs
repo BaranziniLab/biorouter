@@ -2290,6 +2290,17 @@ pub async fn check_provider(
     );
 
     biorouter::config::with_config_overrides(overrides, async {
+        if live && provider == "ollama" {
+            let model = ModelConfig::new(biorouter::providers::ollama::OLLAMA_DEFAULT_MODEL)
+                .map_err(|error| (StatusCode::BAD_REQUEST, error.to_string()))?;
+            let ollama = biorouter::providers::ollama::OllamaProvider::from_env(model)
+                .await
+                .map_err(|error| (StatusCode::BAD_REQUEST, error.to_string()))?;
+            if let Some(error) = ollama.readiness(None).await.error {
+                return Err((StatusCode::UNPROCESSABLE_ENTITY, error));
+            }
+            return Ok(());
+        }
         let built = create_with_default_model(&provider)
             .await
             .map_err(|err| (StatusCode::BAD_REQUEST, err.to_string()))?;
@@ -2383,6 +2394,24 @@ fn unproven_check_scope(
         .iter()
         .filter(|key| key.secret)
         .collect();
+    if metadata.name == "ollama" && secrets.is_empty() {
+        if !overrides.contains_key("OLLAMA_HOST") {
+            let host = Config::global()
+                .get_param::<String>("OLLAMA_HOST")
+                .unwrap_or_else(|_| biorouter::providers::ollama::OLLAMA_HOST.to_string());
+            let has_credentials = biorouter::providers::ollama::resolve_ollama_base_url(&host)
+                .ok()
+                .is_some_and(|url| !url.username().is_empty() || url.password().is_some());
+            if has_credentials {
+                return Err((
+                    StatusCode::FORBIDDEN,
+                    "Checking Ollama would send credentials from its saved host URL. Type the host again to check it, or use the desktop app's settings.".to_string(),
+                ));
+            }
+        }
+        // NoAuth has no saved token; URL credentials are fenced above.
+        return Ok(Vec::new());
+    }
     let names_a_setting = metadata
         .config_keys
         .iter()
@@ -2824,6 +2853,37 @@ mod tests {
             assert!(credential_check_refusal(live, candidate, &NoKeyInstalled).is_none());
         }
         assert!(credential_check_refusal(false, false, &Unproven).is_none());
+    }
+
+    #[test]
+    fn no_secret_ollama_candidate_can_probe_without_typing_a_nonexistent_key() {
+        use biorouter::providers::base::Provider;
+        let metadata = biorouter::providers::ollama::OllamaProvider::metadata();
+        let overrides = check_overrides(
+            Some(&metadata),
+            "ollama",
+            Some(HashMap::from([(
+                "OLLAMA_HOST".to_string(),
+                "http://127.0.0.1:9".to_string(),
+            )])),
+            true,
+            &biorouter_server::auth::UserActionProof::NoKeyInstalled,
+            |_| panic!("Ollama has no saved credentials to resolve"),
+        )
+        .unwrap();
+        assert_eq!(overrides["OLLAMA_HOST"], "http://127.0.0.1:9");
+        assert!(check_overrides(
+            Some(&metadata),
+            "ollama",
+            Some(HashMap::from([(
+                "OPENAI_API_KEY".to_string(),
+                "not-allowed".to_string()
+            )])),
+            true,
+            &biorouter_server::auth::UserActionProof::NoKeyInstalled,
+            |_| false,
+        )
+        .is_err());
     }
 
     /// W2-PRV-2. A candidate may only name settings the provider declares, and

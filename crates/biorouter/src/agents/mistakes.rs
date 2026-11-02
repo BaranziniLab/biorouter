@@ -248,7 +248,7 @@ pub fn is_recoverable(error: &ProviderError) -> bool {
         ProviderError::ServerError(_)
         | ProviderError::StreamDecode(_)
         | ProviderError::StreamIncomplete(_) => true,
-        ProviderError::RequestFailed(_) => matches!(
+        ProviderError::Transport(_) | ProviderError::RequestFailed(_) => matches!(
             error.kind(),
             crate::providers::errors::ProviderErrorKind::Server
                 | crate::providers::errors::ProviderErrorKind::Network
@@ -261,7 +261,7 @@ pub fn is_recoverable(error: &ProviderError) -> bool {
         ),
         // Already given up on by the provider, for a reason a re-send cannot
         // change: the local server is still reading the first copy.
-        ProviderError::IdleTimeout(_) => false,
+        ProviderError::IdleTimeout(_) | ProviderError::RetryExhausted { .. } => false,
         ProviderError::Authentication(_)
         | ProviderError::RateLimitExceeded { .. }
         | ProviderError::NotImplemented(_)
@@ -574,6 +574,10 @@ fn stop_notice(error: &ProviderError, retried: u32) -> String {
             "Please retry if you think this is a transient or recoverable \
              error.{retried_clause}"
         )
+    } else if matches!(error, ProviderError::RetryExhausted { .. }) {
+        "Biorouter used its automatic recovery budget. Check the service and connection, \
+         then send your message again."
+            .to_string()
     } else if matches!(error, ProviderError::Authentication(_)) {
         // T3-SH-4: the one fatal error a person can clear, and the chat used to
         // go on refusing after they had: a provider read its key when the chat

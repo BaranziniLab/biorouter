@@ -207,10 +207,10 @@ export const ollamaCopy = {
    * A server this screen cannot ask: one instruction, with its reason in an InfoTip (vision
    * FR-S-3). It was a three-sentence paragraph that named the host a third time.
    */
-  remoteInstruction: 'Pull the model on that server first, then connect.',
+  remoteInstruction: 'Pull the model on that server first, then check again.',
   remoteTipLabel: 'pulling on that server',
   remoteTip:
-    'This screen can only check an Ollama at 127.0.0.1, so it cannot see which models that server has.',
+    'Biorouter checks this server from its daemon. Download the model on that server, then check again; this screen cannot download it there.',
   pullCommand: (tag: string) => `ollama pull ${tag}`,
   /** The daemon answered with nothing usable; a refusal is shown in its own words instead. */
   noRecommendations: 'Biorouter could not read its recommended Ollama models.',
