@@ -530,10 +530,25 @@ jobs:
           args=()
           for t in $(comm -23 <(echo "$all") <(echo "$skip")); do args+=(--test "$t"); done
           echo "running $(( ${#args[@]} / 2 )) integration binaries"
-          sudo -E unshare --net -- sh -c \
+          # sudo-rs ignores -E. Pass the offline build profile after dropping
+          # privileges, or Cargo rebuilds with debuginfo and fills the runner.
+          sudo unshare --net -- sh -c \
             'ip link set lo up && exec setpriv --reuid="$SUDO_UID" --regid="$SUDO_GID" --init-groups -- "$@"' sh \
             env HOME="$HOME" PATH="$PATH" \
-            cargo test --workspace --locked --no-fail-fast "${args[@]}"
+            CARGO_HOME="${CARGO_HOME:-$HOME/.cargo}" RUSTUP_HOME="${RUSTUP_HOME:-$HOME/.rustup}" \
+            CARGO_INCREMENTAL=0 CARGO_PROFILE_TEST_DEBUG=0 CARGO_NET_OFFLINE=true \
+            BIOROUTER_DISABLE_KEYRING=true BIOROUTER_ESBUILD_BIN="$BIOROUTER_ESBUILD_BIN" \
+            sh -c '
+              set -eu
+              printf "offline Cargo: debug=%s incremental=%s offline=%s keyring_disabled=%s\n" \
+                "$CARGO_PROFILE_TEST_DEBUG" "$CARGO_INCREMENTAL" "$CARGO_NET_OFFLINE" "$BIOROUTER_DISABLE_KEYRING"
+              test "$CARGO_PROFILE_TEST_DEBUG" = 0
+              test "$CARGO_INCREMENTAL" = 0
+              test "$CARGO_NET_OFFLINE" = true
+              test "$BIOROUTER_DISABLE_KEYRING" = true
+              test -x "$BIOROUTER_ESBUILD_BIN"
+              exec cargo test --workspace --locked --no-fail-fast "$@"
+            ' sh "${args[@]}"
 
       # ⚠ BLOCKING, unlike the clippy step below it. No production code may open
       # a socket a Windows child process inherits (tokio's `TcpListener::bind`
