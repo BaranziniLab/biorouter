@@ -2257,7 +2257,7 @@ fn parse_max_turns(input: &str) -> Result<u32, &'static str> {
     input.trim().parse::<u32>().map_err(|_| MAX_TURNS_REFUSAL)
 }
 
-/// Settings' own sentence (`ConversationLimitsDropdown.tsx`), asserted there too.
+/// The CLI accepts zero for Unlimited; Settings offers that as a separate choice.
 const MAX_TURNS_REFUSAL: &str = "Enter a whole number of at least 0.";
 
 /// Handle OpenRouter authentication
@@ -2807,29 +2807,27 @@ mod mode_name_tests {
 mod max_turns_tests {
     use super::parse_max_turns;
 
-    /// W2-PRV-10: `configure` refuses what Settings and `/config/upsert` refuse,
-    /// and (T3-SH-8) in the one sentence Settings uses, whatever was typed.
+    /// The CLI and stored setting accept zero for Unlimited. Settings expresses
+    /// Unlimited as a radio choice, so its finite input requires a positive value.
+    /// That interaction is covered by `ConversationLimitsDropdown.test.tsx`.
     #[test]
     fn configure_accepts_unlimited_or_a_positive_limit() {
-        let settings =
-            std::fs::read_to_string(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(
-                "../../ui/desktop/src/components/settings/mode/ConversationLimitsDropdown.tsx",
-            ))
-            .expect("the Settings field's source");
-        for refused in ["", "-5", "2.5", "many", "4294967296"] {
+        for refused in ["", " ", "-5", "2.5", "1e3", "many", "4294967296"] {
             let refusal = parse_max_turns(refused).expect_err(refused);
             assert_eq!(
                 refusal, "Enter a whole number of at least 0.",
                 "{refused:?}"
             );
-            assert!(
-                settings.contains(&format!("'{refusal}'")),
-                "Settings says it differently"
-            );
         }
-        assert_eq!(parse_max_turns("0"), Ok(0));
-        assert_eq!(parse_max_turns("1"), Ok(1));
-        assert_eq!(parse_max_turns(" 250 "), Ok(250));
+        for (input, expected) in [
+            ("0", 0),
+            (" 0 ", 0),
+            ("1", 1),
+            (" 250 ", 250),
+            ("4294967295", u32::MAX),
+        ] {
+            assert_eq!(parse_max_turns(input), Ok(expected), "{input:?}");
+        }
     }
 }
 
