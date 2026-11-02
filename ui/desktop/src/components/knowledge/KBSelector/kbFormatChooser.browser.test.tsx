@@ -421,10 +421,16 @@ describe.each(['light', 'dark'] as const)('the Create knowledge base dialog (%s)
       const restEdge = (await look(page, INPUT)).edge;
       await page.click('[data-testid="knowledge-kb-submit"]');
       await page.waitForSelector('[role="alert"]');
-      await page.waitForTimeout(100);
+      const edge = await look(page, '#probe-edge');
+      // Even reduced motion needs a rendering frame to leave the focus edge.
+      await expect
+        .poll(async () => (await look(page, INPUT)).edge, {
+          timeout: 5_000,
+          message: 'the focused invalid rename field settles on the danger edge',
+        })
+        .toBe(edge.edge);
 
       const probe = await look(page, '#probe-ink');
-      const edge = await look(page, '#probe-edge');
       const message = await look(page, '[data-slot="field-error"]');
       const input = await look(page, INPUT);
       expect(message.fontSize, 'the field’s 12px line, not a 14px body paragraph').toBe('12px');
