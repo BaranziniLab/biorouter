@@ -121,6 +121,7 @@
 <h2 id="knowledge-soul">Soul</h2>
 <p><strong>Soul</strong> (id <code>soul</code>) ships with Biorouter and starts empty. It collects lasting facts about you: how you approach research questions, the tools and commands you use, and the name, role and preferences you mention.</p>
 <p>A schedule named <strong>Daily Meditation</strong> keeps it current. Every day at 3:00 AM, while Biorouter's background service is running, it runs the Meditation workflow, which uses the <code style="white-space: nowrap">update-soul</code> skill to read up to three recent chats and add what matters. It skips scheduled runs and small talk, and makes no change when there is nothing new. You can see and pause it in Scheduler.</p>
+<p>When using Ollama, Meditation checks the server before creating its chat. A failed run records the error and keeps the last successful run's discovery date. After you fix the problem, choose <strong>Run now</strong> or wait for the next scheduled run. That new run starts a new chat and searches from the last successful date.</p>
 <p>The agent cannot delete Soul, and if you delete it Biorouter creates it again. <strong>Settings → App → Danger zone → Reset data → Knowledge &amp; memory</strong> deletes every base, creates an empty Soul and clears saved memory.</p>
 
 <h2 id="knowledge-privacy">Private and public bases</h2>

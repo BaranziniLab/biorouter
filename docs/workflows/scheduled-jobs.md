@@ -149,9 +149,12 @@ Scheduled jobs run in the same environment as the Biorouter server process. Make
 
 ## Output and logging
 
-- Scheduled job output is logged and visible in the session history.
-- You can review past runs in the Desktop's session list or via `biorouter sessions`.
-- Errors during a scheduled run are captured and stored — the job will attempt to run again at the next scheduled time unless deleted.
+- Runs that create a chat save their output in session history. Review them in the desktop
+  session list or with `biorouter sessions`.
+- The schedule records a failed attempt even if readiness fails before a chat is created.
+  Correct the problem, then choose **Run now** or wait for the next scheduled time.
+- A failed Meditation run keeps its last successful discovery date. The next run searches
+  from that date; it starts a new chat rather than resuming the failed one.
 
 ## Example workflows worth scheduling
 

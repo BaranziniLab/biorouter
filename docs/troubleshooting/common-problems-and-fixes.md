@@ -66,13 +66,19 @@ This error occurs when the input provided to biorouter exceeds the maximum token
 
 ### Using the Ollama provider
 
-Ollama provides local LLMs, which means you must first [install Ollama and pull a model](../getting-started/choosing-a-model-provider.md#ollama-local) before attempting to use this provider with biorouter. Two errors mean that step is missing (both measured with Ollama 0.40.2):
+First [install Ollama and pull a model](../getting-started/choosing-a-model-provider.md#ollama-local)
+on the computer at the configured address. Biorouter 1.94.1 checks that server and the
+selected installed model before inference. Read the reason shown, correct the service,
+address or model, then choose **Check again**. Setting `OLLAMA_HOST` does not start the
+service. Earlier versions may show the request errors below, measured with Ollama 0.40.2.
 
 ```text
 Request failed: error sending request for url (http://127.0.0.1:11434/api/chat) (failed to connect to 127.0.0.1:11434, check that the port is correct).
 ```
 
-means no Ollama server answered: start Ollama, or check `OLLAMA_HOST`. Versions of biorouter before October 2026 named `/v1/chat/completions` in this message instead of `/api/chat`.
+This means Biorouter could not reach the configured endpoint. Start Ollama on that
+computer and check `OLLAMA_HOST` and network access. Versions of Biorouter before
+October 2026 named `/v1/chat/completions` in this message instead of `/api/chat`.
 
 ```text
 Request failed: Ollama model not found: qwen3.8:27b is not downloaded on this Ollama server. Run: ollama pull qwen3.8:27b  (Ollama said: model 'qwen3.8:27b' not found).
