@@ -14,6 +14,8 @@ Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
 Add-Type -TypeDefinition @'
 using System;
+using System.Collections.Generic;
+using System.IO;
 using System.Runtime.InteropServices;
 public static class CopilotConsoleProbe {
     [StructLayout(LayoutKind.Sequential, CharSet=CharSet.Unicode)]
@@ -38,6 +40,8 @@ public static class CopilotConsoleProbe {
     [DllImport("kernel32.dll")]
     private static extern bool CloseHandle(IntPtr handle);
     [DllImport("kernel32.dll", SetLastError=true)]
+    private static extern bool SetHandleInformation(IntPtr handle, uint mask, uint flags);
+    [DllImport("kernel32.dll", SetLastError=true)]
     private static extern bool AttachConsole(uint processId);
     [DllImport("kernel32.dll", SetLastError=true)]
     public static extern bool FreeConsole();
@@ -50,7 +54,63 @@ public static class CopilotConsoleProbe {
         return AttachConsole(processId) ? 0 : Marshal.GetLastWin32Error();
     }
 
-    public static uint StartVisibleControl(string executable) {
+    private static System.Diagnostics.Process PinProcess(ProcessInformation native) {
+        try {
+            var child = System.Diagnostics.Process.GetProcessById((int)native.dwProcessId);
+            try {
+                // Keep the PID reserved until the managed observer owns a handle.
+                _ = child.Handle;
+                return child;
+            } catch {
+                child.Dispose();
+                throw;
+            }
+        } finally {
+            CloseHandle(native.hThread);
+            CloseHandle(native.hProcess);
+        }
+    }
+
+    public static System.Diagnostics.Process StartDetachedFixture(
+        string executable, string directory, IDictionary<string, string> environment) {
+        using (var input = new FileStream(Path.Combine(directory, "stdin.txt"), FileMode.Create, FileAccess.ReadWrite, FileShare.ReadWrite))
+        using (var output = new FileStream(Path.Combine(directory, "stdout.txt"), FileMode.Create, FileAccess.Write, FileShare.ReadWrite))
+        using (var error = new FileStream(Path.Combine(directory, "stderr.txt"), FileMode.Create, FileAccess.Write, FileShare.ReadWrite)) {
+            var startup = new StartupInfo {
+                cb = (uint)Marshal.SizeOf(typeof(StartupInfo)),
+                dwFlags = 0x00000100,
+                hStdInput = input.SafeFileHandle.DangerousGetHandle(),
+                hStdOutput = output.SafeFileHandle.DangerousGetHandle(),
+                hStdError = error.SafeFileHandle.DangerousGetHandle(),
+            };
+            foreach (var handle in new[] { startup.hStdInput, startup.hStdOutput, startup.hStdError }) {
+                if (!SetHandleInformation(handle, 1, 1)) {
+                    throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error());
+                }
+            }
+            var entries = new List<string>();
+            foreach (var pair in new SortedDictionary<string, string>(environment, StringComparer.OrdinalIgnoreCase)) {
+                entries.Add(pair.Key + "=" + pair.Value);
+            }
+            var block = Marshal.StringToHGlobalUni(string.Join("\0", entries) + "\0\0");
+            try {
+                var arguments = new System.Text.StringBuilder(
+                    "\"" + executable + "\" --exact windows_hostname_fixture --ignored --nocapture --test-threads=1");
+                ProcessInformation process;
+                // DETACHED_PROCESS avoids the hidden console that CREATE_NO_WINDOW
+                // still allocated on the runner; stdio is inherited from files.
+                if (!CreateProcessW(executable, arguments, IntPtr.Zero, IntPtr.Zero, true,
+                                    0x00000008 | 0x00000400, block, null, ref startup, out process)) {
+                    throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error());
+                }
+                return PinProcess(process);
+            } finally {
+                Marshal.FreeHGlobal(block);
+            }
+        }
+    }
+
+    public static System.Diagnostics.Process StartVisibleControl(string executable) {
         var startup = new StartupInfo {
             cb = (uint)Marshal.SizeOf(typeof(StartupInfo)),
             lpTitle = "Biorouter hostname console regression positive control",
@@ -64,9 +124,7 @@ public static class CopilotConsoleProbe {
                             0x00000010, IntPtr.Zero, null, ref startup, out process)) {
             throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error());
         }
-        CloseHandle(process.hThread);
-        CloseHandle(process.hProcess);
-        return process.dwProcessId;
+        return PinProcess(process);
     }
 }
 '@
@@ -93,9 +151,8 @@ function Measure-VisibleControl {
     try {
         [CopilotConsoleProbe]::FreeConsole() | Out-Null
         [Environment]::SetEnvironmentVariable('BIOROUTER_HOSTNAME_VISIBLE_CONTROL', $directory)
-        $childId = [CopilotConsoleProbe]::StartVisibleControl($TestBinary)
-        $process = [Diagnostics.Process]::GetProcessById($childId)
-        $null = $process.Handle
+        $process = [CopilotConsoleProbe]::StartVisibleControl($TestBinary)
+        $childId = $process.Id
         $deadline = [DateTime]::UtcNow.AddSeconds(15)
         while (!(Test-Path -LiteralPath (Join-Path $directory 'ready'))) {
             if ($process.HasExited) { throw 'Visible-console control exited before its handshake' }
@@ -140,30 +197,26 @@ function Measure-Polling([string]$Role) {
     $directory = Join-Path $RunDirectory $Role
     [IO.Directory]::CreateDirectory($directory) | Out-Null
     $start = [Diagnostics.ProcessStartInfo]::new($TestBinary)
-    $start.UseShellExecute = $false
-    $start.CreateNoWindow = $true
-    $start.RedirectStandardOutput = $true
-    $start.RedirectStandardError = $true
-    foreach ($argument in @('--exact', 'windows_hostname_fixture', '--ignored', '--nocapture', '--test-threads=1')) {
-        $start.ArgumentList.Add($argument)
-    }
     $start.Environment['BIOROUTER_HOSTNAME_FIXTURE'] = $directory
     $start.Environment['BIOROUTER_HOSTNAME_FIXTURE_ROLE'] = $Role
     $start.Environment['BIOROUTER_PATH_ROOT'] = Join-Path $directory 'profile'
     $start.Environment['BIOROUTER_DISABLE_KEYRING'] = 'true'
     $start.Environment['COMPUTERNAME'] = 'NOT-THE-BACKEND-HOST'
-    $process = [Diagnostics.Process]::Start($start)
-    $stdout = $process.StandardOutput.ReadToEndAsync()
-    $stderr = $process.StandardError.ReadToEndAsync()
+    $timeline = [ordered]@{ launch_requested_at = [DateTime]::UtcNow.ToString('o') }
+    $process = [CopilotConsoleProbe]::StartDetachedFixture($TestBinary, $directory, $start.Environment)
+    $childId = $process.Id
     $source = 'biorouter-hostname-' + [Guid]::NewGuid().ToString('N')
     $registered = $false
     try {
         $deadline = [DateTime]::UtcNow.AddSeconds(15)
         while (!(Test-Path -LiteralPath (Join-Path $directory 'ready'))) {
-            if ($process.HasExited) { throw "Fixture exited before ready: $($stderr.GetAwaiter().GetResult())" }
+            if ($process.HasExited) { throw "Fixture exited before ready: $(Get-Content -Raw -LiteralPath (Join-Path $directory 'stderr.txt'))" }
             if ([DateTime]::UtcNow -gt $deadline) { throw 'Fixture did not become ready' }
             Start-Sleep -Milliseconds 25
         }
+        $timeline.fixture_ready_at = [DateTime]::UtcNow.ToString('o')
+        $console = Get-Content -Raw -LiteralPath (Join-Path $directory 'console-state.json') | ConvertFrom-Json
+        if ($console.initial_process_count -ne 0) { throw 'DETACHED_PROCESS fixture unexpectedly started with a console' }
 
         # The fixture explicitly detaches before its handshake. Verify that
         # console inheritance cannot mask the dependency spawn under test.
@@ -179,12 +232,14 @@ function Measure-Polling([string]$Role) {
         Register-CimIndicationEvent -Namespace root/cimv2 -Query $query -SourceIdentifier $source | Out-Null
         $registered = $true
         Start-Sleep -Milliseconds 500
+        $timeline.observation_started_at = [DateTime]::UtcNow.ToString('o')
         [IO.File]::WriteAllText((Join-Path $directory 'go'), 'observe')
         Start-Sleep -Milliseconds 500
         # HOSTNAME.EXE can exit between screenshots. The process trace is the
         # spawn evidence; the held calibration above proves console visibility.
         Save-Screenshot (Join-Path $directory 'desktop-during-polling.png')
         if (!$process.WaitForExit(30000)) { throw 'Fixture exceeded the bounded polling window' }
+        $timeline.process_exited_at = [DateTime]::UtcNow.ToString('o')
         Start-Sleep -Milliseconds 500
         $events = @(Get-Event -SourceIdentifier $source -ErrorAction SilentlyContinue | ForEach-Object {
             $created = $_.SourceEventArgs.NewEvent
@@ -193,12 +248,19 @@ function Measure-Polling([string]$Role) {
                 pid = [uint32]$created.ProcessID
                 parent_pid = [uint32]$created.ParentProcessID
                 observed_at = $_.TimeGenerated.ToUniversalTime().ToString('o')
+                event_created_at = [DateTime]::FromFileTimeUtc([int64]$created.TIME_CREATED).ToString('o')
             }
         })
-        [IO.File]::WriteAllText((Join-Path $directory 'stdout.txt'), $stdout.GetAwaiter().GetResult())
-        [IO.File]::WriteAllText((Join-Path $directory 'stderr.txt'), $stderr.GetAwaiter().GetResult())
+        $timeline.events_collected_at = [DateTime]::UtcNow.ToString('o')
+        $resultPath = Join-Path $directory 'result.json'
+        if (Test-Path -LiteralPath $resultPath) {
+            $timeline.fixture_result_written_at = (Get-Item -LiteralPath $resultPath).LastWriteTimeUtc.ToString('o')
+        }
+        [ordered]@{ role = $Role; pid = $childId; console = $console; timeline = $timeline; process_trace = $events } |
+            ConvertTo-Json -Depth 8 |
+            Set-Content -LiteralPath (Join-Path $directory 'observation.json') -Encoding utf8
         if ($process.ExitCode -ne 0) { throw "Fixture failed with exit $($process.ExitCode); see $directory" }
-        $result = Get-Content -Raw -LiteralPath (Join-Path $directory 'result.json') | ConvertFrom-Json
+        $result = Get-Content -Raw -LiteralPath $resultPath | ConvertFrom-Json
         $expected = [Net.Dns]::GetHostName() + ' (windows)'
         if (![string]::Equals($result.target, $expected, [StringComparison]::OrdinalIgnoreCase)) {
             throw "Production scope target '$($result.target)' did not match native host '$expected'"
@@ -215,6 +277,8 @@ function Measure-Polling([string]$Role) {
             role = $Role
             consoleless_parent = $true
             fixture = $result
+            creation_flags = 'DETACHED_PROCESS | CREATE_UNICODE_ENVIRONMENT'
+            timeline = $timeline
             hostname_processes = $hostnameEvents.Count
             process_trace = $events
         }

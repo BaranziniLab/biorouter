@@ -109,14 +109,16 @@ async fn windows_hostname_fixture() {
     let initial_process_count = unsafe { GetConsoleProcessList(console_process.as_mut_ptr(), 1) };
     let initial_window_visible =
         !initial_window.is_null() && unsafe { IsWindowVisible(initial_window) != 0 };
-    // CREATE_NO_WINDOW still yielded an attachable console on a hosted runner.
-    // Detach explicitly so console inheritance cannot hide the dependency spawn.
-    assert_ne!(
-        unsafe { FreeConsole() },
-        0,
-        "cannot detach fixture console: {}",
-        std::io::Error::last_os_error()
-    );
+    // A fallback detachment records a launcher problem without letting console
+    // inheritance hide the dependency spawn. The observer requires initial zero.
+    if initial_process_count > 0 {
+        assert_ne!(
+            unsafe { FreeConsole() },
+            0,
+            "cannot detach fixture console: {}",
+            std::io::Error::last_os_error()
+        );
+    }
     assert!(unsafe { GetConsoleWindow() }.is_null());
     assert_eq!(
         unsafe { GetConsoleProcessList(console_process.as_mut_ptr(), 1) },
@@ -127,6 +129,7 @@ async fn windows_hostname_fixture() {
         "initial_window_visible": initial_window_visible,
         "initial_process_count": initial_process_count,
         "console_detached": true,
+        "detach_action": if initial_process_count > 0 { "FreeConsole" } else { "already_detached" },
     });
     std::fs::write(
         directory.join("console-state.json"),
