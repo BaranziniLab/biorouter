@@ -2105,10 +2105,18 @@ impl OllamaProvider {
         if let Some(facts) = MODEL_FACTS.lock().ok()?.get(&key) {
             return Some(facts.clone());
         }
-        self.refresh_model_facts(model).await
+        self.fetch_model_facts(model).await
     }
 
     async fn refresh_model_facts(&self, model: &str) -> Option<ModelFacts> {
+        let facts = self.fetch_model_facts(model).await?;
+        if let Ok(mut windows) = self.windows.lock() {
+            windows.remove(model);
+        }
+        Some(facts)
+    }
+
+    async fn fetch_model_facts(&self, model: &str) -> Option<ModelFacts> {
         if self.openai_compat.load(Ordering::Relaxed) {
             return None;
         }
@@ -2134,9 +2142,6 @@ impl OllamaProvider {
                 (self.resolved_base_url.clone(), model.to_string()),
                 facts.clone(),
             );
-        }
-        if let Ok(mut windows) = self.windows.lock() {
-            windows.remove(model);
         }
         Some(facts)
     }
@@ -3547,6 +3552,42 @@ mod tests {
             .iter()
             .filter(|request| request.url.path() == "/api/ps")
             .count()
+    }
+
+    #[tokio::test]
+    async fn ordinary_facts_and_failed_refresh_preserve_the_chosen_automatic_window() {
+        let (server, provider) = memory_test_provider(false, 81_920).await;
+        provider
+            .complete("system", &[Message::user().with_text("hi")], &[])
+            .await
+            .unwrap();
+        assert_eq!(
+            chat_requests(&server).await[0]["options"]["num_ctx"],
+            81_920
+        );
+        assert_eq!(
+            provider
+                .context_window_for(&provider.model.model_name)
+                .await,
+            Some(81_920)
+        );
+
+        server.reset().await;
+        Mock::given(method("POST"))
+            .and(path("/api/show"))
+            .respond_with(ResponseTemplate::new(503))
+            .mount(&server)
+            .await;
+        assert!(provider
+            .refresh_model_facts(&provider.model.model_name)
+            .await
+            .is_none());
+        assert_eq!(
+            provider
+                .context_window_for(&provider.model.model_name)
+                .await,
+            Some(81_920)
+        );
     }
 
     #[tokio::test]
