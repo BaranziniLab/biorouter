@@ -2813,6 +2813,12 @@ export default function ChatInput({
   };
 
   /**
+   * The composer card. The footer's folder card hangs above it, so a card a
+   * hover opened never covers the draft, `+` or Tools.
+   */
+  const composerCardRef = useRef<HTMLDivElement>(null);
+
+  /**
    * "Switch model" in the vision notice opens the model chip's own menu, so the
    * fix is one choice away and nothing navigates.
    */
@@ -2927,6 +2933,7 @@ export default function ChatInput({
       onDragLeave={handleLocalDragLeave}
     >
       <div
+        ref={composerCardRef}
         // The page ground with a resting hairline (R-32); the focus and working
         // edges turn that 1px border the accent. `composer/composerCard.ts`.
         className={composerCardClassName({ isDraggingOver })}
@@ -3080,6 +3087,7 @@ export default function ChatInput({
           the cost show only inside a chat. */}
       <ComposerFooter
         className="br-composer-footer"
+        composerRef={composerCardRef}
         sessionId={sessionId}
         workingDir={composerWorkingDir}
         workingDirLocked={workingDirIsLocked}

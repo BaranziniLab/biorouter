@@ -53,11 +53,14 @@ vi.mock('../api', () => ({
   })),
   llamacppStatus: vi.fn(async () => ({ data: {} })),
   updateWorkingDir: vi.fn(async () => ({ data: {} })),
+  // The folder chip's card reads the chat's other folders when it opens.
+  listFolderAccess: vi.fn(async () => ({ data: [] })),
+  revokeFolderAccess: vi.fn(async () => ({ data: { revoked: true } })),
 }));
 
 import ChatInput from './ChatInput';
 import { ChatState } from '../types/chatState';
-import { getSession, updateWorkingDir, type Session } from '../api';
+import { getSession, listFolderAccess, updateWorkingDir, type Session } from '../api';
 import { clearSessionListCache, updateCachedSessionList } from '../utils/sessionListCache';
 
 const DEFAULT_DIR = '/default/workdir';
@@ -181,20 +184,36 @@ describe('ChatInput pre-session working-directory wiring (#39)', () => {
 });
 
 // #44 — once the chat has messages, ChatInput must render the folder chip
-// locked: a read-only basename label (full path on hover) with no chooser.
+// locked: the basename on a button that holds the folder card open (the full
+// path and folder access are in the card), with no chooser.
 describe('ChatInput working-directory lock once the chat has messages (#44)', () => {
-  it('renders the chip as a read-only basename label when messagesLength > 0', async () => {
+  it('renders the chip as a locked basename whose click opens the card, not the chooser', async () => {
     renderChatInput(vi.fn(), { sessionId: 'session-1', messagesLength: 2 });
 
     // Basename of the chat's own folder ('/Users/wgu/Projects/kdps' -> 'kdps'),
     // never the interactive full-path chooser button.
     const label = await screen.findByTestId('dir-switcher-locked');
     expect(label).toHaveTextContent('kdps');
+    expect(screen.queryByTestId('dir-switcher')).not.toBeInTheDocument();
     expect(screen.queryByText(SESSION_DIR)).not.toBeInTheDocument();
+
+    // The card hangs above the composer card, so it is placed against it.
+    const composerCard = document.querySelector<HTMLElement>('.biorouter-composer-card')!;
+    const measured = vi.spyOn(composerCard, 'getBoundingClientRect');
 
     fireEvent.click(label);
     expect(window.electron.directoryChooser).not.toHaveBeenCalled();
     expect(updateWorkingDir).not.toHaveBeenCalled();
+    // The path reaches the screen only inside the card, set in mono.
+    const card = await screen.findByRole('dialog', { name: 'Folder access' });
+    await waitFor(() => expect(measured).toHaveBeenCalled());
+    expect(screen.getByText(SESSION_DIR)).toHaveClass('font-mono');
+    expect(card).toContainElement(screen.getByText(SESSION_DIR));
+    await waitFor(() =>
+      expect(listFolderAccess).toHaveBeenCalledWith(
+        expect.objectContaining({ query: { session_id: 'session-1' } })
+      )
+    );
   });
 
   it('keeps the chip interactive for a session with zero messages', async () => {
@@ -253,6 +272,8 @@ describe('ChatInput folder for a chat that exists (V2-R7-3)', () => {
     expect(screen.queryByTestId('dir-switcher-locked')).not.toBeInTheDocument();
     expect(screen.queryByTestId('dir-switcher')).not.toBeInTheDocument();
     expect(screen.getByTestId('composer-footer')).not.toHaveTextContent('workdir');
+    // Nameless, but there: the chat's other folders and their Revoke do not wait on its row.
+    expect(screen.getByTestId('dir-switcher-unknown')).toBeInTheDocument();
 
     await answerRow(SESSION_DIR);
     expect(await screen.findByTestId('dir-switcher-locked')).toHaveTextContent('kdps');

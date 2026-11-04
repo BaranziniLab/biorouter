@@ -5,11 +5,15 @@ import userEvent from '@testing-library/user-event';
 // #44 — the empty-chat-only working-directory rule at the chip level. While
 // the chat is completely empty the chip is the chooser (both the pre-session
 // #39 path and a fresh zero-message session); once the chat has messages it
-// is a read-only label — basename only, full path on hover — that can never
-// reach updateWorkingDir.
+// only names the folder and holds its card open (full path and folder access
+// in the card), and it can never reach updateWorkingDir. The card's own
+// behaviour is pinned in FolderAccessCard.test.tsx.
 
 vi.mock('../../api', () => ({
   updateWorkingDir: vi.fn(async () => ({ data: {} })),
+  // The card reads the chat's folder grants when it opens.
+  listFolderAccess: vi.fn(async () => ({ data: [] })),
+  revokeFolderAccess: vi.fn(async () => ({ data: { revoked: true } })),
 }));
 vi.mock('../../toasts', () => ({
   toastError: vi.fn(),
@@ -31,7 +35,7 @@ const WORKING_DIR = '/Users/wgu/Desktop';
 const CHOSEN_DIR = '/Users/wgu/Desktop/data';
 
 beforeAll(() => {
-  // Radix tooltip measures its trigger.
+  // Radix's popover measures its anchor.
   vi.stubGlobal(
     'ResizeObserver',
     class {
@@ -82,7 +86,7 @@ describe('workingDirLabel', () => {
 
 /**
  * Spec 3.7: the footer names the FOLDER, never the path, in both states (names,
- * not IDs or paths, principle 10). The path is one hover away, in the tooltip.
+ * not IDs or paths, principle 10). The path is one hover away, in the card.
  * The name sits in a `<bdi>` so a right-to-left folder name cannot reorder the
  * line around it.
  */
@@ -264,21 +268,25 @@ describe('DirSwitcher while the chat is empty', () => {
 });
 
 describe('DirSwitcher once the chat has messages (locked, #44)', () => {
-  it('renders a read-only basename label with the full path on hover', async () => {
+  it('names the folder on a button that opens its card, never the chooser', async () => {
     const user = userEvent.setup();
     render(<DirSwitcher sessionId="session-1" workingDir={WORKING_DIR} locked={true} />);
 
-    // Basename only, and no interactive affordance at all.
+    // Basename only, on the one button there is: the card's, not the chooser's.
     const label = screen.getByTestId('dir-switcher-locked');
     expect(label).toHaveTextContent('Desktop');
     expect(label).not.toHaveTextContent(WORKING_DIR);
-    expect(screen.queryByRole('button')).not.toBeInTheDocument();
-    // A screen reader gets the path the pointer gets from the tooltip.
+    expect(screen.getAllByRole('button')).toEqual([label]);
+    expect(screen.queryByTestId('dir-switcher')).not.toBeInTheDocument();
+    expect(label).toHaveAttribute('aria-haspopup', 'dialog');
+    // A screen reader gets the path without opening the card.
     expect(label).toHaveAccessibleName(`Working folder: ${WORKING_DIR}`);
 
-    // The full path is still discoverable on hover.
+    // The full path is one hover away, in the card.
     await user.hover(label);
-    expect(await screen.findByRole('tooltip')).toHaveTextContent(WORKING_DIR);
+    expect(await screen.findByRole('dialog', { name: 'Folder access' })).toHaveTextContent(
+      WORKING_DIR
+    );
   });
 
   it('never opens the chooser or calls updateWorkingDir', async () => {
@@ -301,17 +309,17 @@ describe('DirSwitcher once the chat has messages (locked, #44)', () => {
   });
 });
 
-// #50 — the chip's Tooltip must keep ONE control mode for its whole life.
-// Both branches render `<TooltipProvider><Tooltip>` in the same position, so
-// React reconciles them into a single Tooltip instance; when the working
-// directory locks after the first message the instance would flip from
-// controlled (`open`/`onOpenChange`) to uncontrolled. Radix warns about it,
-// and the state it warns about is the one that later yields a stuck-open or
-// unresponsive tooltip.
-describe('DirSwitcher tooltip control mode (#50)', () => {
+// #50 — the chip's card must keep ONE control mode for its whole life. Both
+// branches render the same Popover root in the same position, so React
+// reconciles them into a single instance; when the working directory locks
+// after the first message that instance must not flip from controlled
+// (`open`/`onOpenChange`) to uncontrolled. Radix warns about it, and the
+// state it warns about is the one that once yielded a stuck-open or
+// unresponsive tooltip on this chip.
+describe('DirSwitcher card control mode (#50)', () => {
   const CONTROL_MODE_WARNING = /changing from (controlled|uncontrolled) to/;
 
-  it('does not flip the tooltip between controlled and uncontrolled when the dir locks', async () => {
+  it('does not flip the card between controlled and uncontrolled when the dir locks', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
 
     const { rerender } = render(
@@ -340,14 +348,16 @@ describe('DirSwitcher tooltip control mode (#50)', () => {
     rerender(<DirSwitcher sessionId="session-1" workingDir={WORKING_DIR} locked={true} />);
 
     await user.hover(screen.getByTestId('dir-switcher-locked'));
-    expect(await screen.findByRole('tooltip')).toHaveTextContent(WORKING_DIR);
+    expect(await screen.findByRole('dialog', { name: 'Folder access' })).toHaveTextContent(
+      WORKING_DIR
+    );
   });
 });
 
 /// The footer is sans (principle 3: mono is for machine strings). The PATH is a
-/// machine string, so the tooltip that shows it is mono, as it is in the
-/// sidebar and in History. jsdom never runs Tailwind, so these assert classes.
-describe('DirSwitcher — the folder name is sans, the path in its tooltip is mono', () => {
+/// machine string, so the card that shows it sets it in mono, as the sidebar
+/// and History do. jsdom never runs Tailwind, so these assert classes.
+describe('DirSwitcher: the folder name is sans, the path in its card is mono', () => {
   it('sets neither chip in monospace', () => {
     const { rerender } = render(
       <DirSwitcher sessionId="session-1" workingDir={WORKING_DIR} locked={false} />
@@ -357,20 +367,18 @@ describe('DirSwitcher — the folder name is sans, the path in its tooltip is mo
     expect(screen.getByText('Desktop').closest('.font-mono')).toBeNull();
   });
 
-  it('sets the hover tooltip in monospace, overriding the tooltip font-sans', async () => {
+  it('sets the path in the card in monospace, on the path itself', async () => {
     const user = userEvent.setup();
     render(<DirSwitcher sessionId="session-1" workingDir={WORKING_DIR} locked={true} />);
 
     await user.hover(screen.getByTestId('dir-switcher-locked'));
-    const tooltip = await screen.findByRole('tooltip');
+    const card = await screen.findByRole('dialog', { name: 'Folder access' });
 
-    // `ui/Tooltip.tsx` puts `font-sans` on the content box itself, so the
-    // override must be on a descendant — asserting on the box would pass while
-    // the path still rendered in the body font.
-    const path = [...tooltip.querySelectorAll('*')].find(
-      (node) => node.textContent === WORKING_DIR
-    );
+    // On the node that holds the path, not on the surface: mono on the box
+    // would set the card's sentences in mono too.
+    const path = [...card.querySelectorAll('*')].find((node) => node.textContent === WORKING_DIR);
     expect(path).toBeDefined();
     expect(path!.className).toMatch(/font-mono/);
+    expect(card.className).not.toMatch(/font-mono/);
   });
 });

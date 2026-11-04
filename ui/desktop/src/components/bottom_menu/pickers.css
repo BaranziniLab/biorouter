@@ -326,7 +326,7 @@ button.br-footline__item:disabled {
   transition-duration: 0ms;
 }
 
-/* A folder name, never a path: the path is in the tooltip. */
+/* A folder name, never a path: the path is in the chip's card. */
 .br-footline__name {
   min-width: 0;
   max-width: 240px;
@@ -349,6 +349,71 @@ button.br-footline__item:focus-visible {
   background: var(--background-focus);
   color: var(--text-default);
   box-shadow: inset 0 0 0 2px var(--border-focus);
+}
+
+/*
+ * The folder chip's card (`FolderAccessCard`): the working folder, then the
+ * other folders this chat may use, each with Revoke. A popover surface, since
+ * it holds buttons and a field. Sections are parted by air, not lines (R-27);
+ * the surface keeps the floating hairline and shadow `PopoverContent` gives
+ * it. These rules beat the primitive's `w-60` and `p-1` utilities because this
+ * file is unlayered.
+ */
+.br-folder-card {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  width: 320px;
+  max-width: calc(100vw - 16px);
+  max-height: min(480px, var(--radix-popover-content-available-height, 70vh));
+  overflow-y: auto;
+  padding: 12px;
+}
+
+.br-folder-card__section,
+.br-folder-card__key {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.br-folder-card__grants {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.br-folder-card__grant {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  min-width: 0;
+}
+
+.br-folder-card__grant-text {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+/* A long path wraps anywhere instead of widening the card or being cut. */
+.br-folder-card__path {
+  overflow-wrap: anywhere;
+  word-break: break-all;
+}
+
+/*
+ * A keyboard pin moves focus onto the card itself (the dialog). D-15 firms an
+ * edge rather than drawing a ring, so the surface's own hairline takes the
+ * focus ink; the shadow stays. The contrast and forced-colours ring in
+ * main.css still applies on top.
+ */
+.biorouter-popover-surface.br-folder-card:focus-visible {
+  outline: none;
+  border-color: var(--border-focus);
 }
 
 @media (prefers-reduced-motion: reduce) {

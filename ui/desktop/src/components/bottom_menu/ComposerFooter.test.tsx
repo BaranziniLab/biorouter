@@ -1,10 +1,18 @@
-import { act, render, screen } from '@testing-library/react';
-import { beforeAll, afterAll, describe, expect, it, vi } from 'vitest';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { beforeAll, beforeEach, afterAll, describe, expect, it, vi } from 'vitest';
 import { ComposerFooter, type ComposerFooterProps } from './ComposerFooter';
-import { FOOTER_COPY } from './copy';
+import { FOLDER_ACCESS_COPY, FOOTER_COPY } from './copy';
+import { listFolderAccess, revokeFolderAccess } from '../../api';
 
 vi.mock('../ModelAndProviderContext', () => ({
   useModelAndProvider: () => ({ currentModel: 'gpt-5.6-sol', currentProvider: 'versa_azure' }),
+}));
+// The folder chip's card reads a chat's grants only when it opens; only the
+// unknown-folder test below opens it, and the guard below says so.
+vi.mock('../../api', () => ({
+  listFolderAccess: vi.fn(async () => ({ data: [] })),
+  revokeFolderAccess: vi.fn(async () => ({ data: { revoked: true } })),
+  updateWorkingDir: vi.fn(async () => ({ data: {} })),
 }));
 vi.mock('../../utils/pricing', () => ({
   fetchModelPricing: vi.fn(async () => ({
@@ -25,6 +33,8 @@ beforeAll(() => {
   );
 });
 afterAll(() => vi.unstubAllGlobals());
+// Calls only, not the mocks' answers: "nothing is read" below means in that test.
+beforeEach(() => vi.clearAllMocks());
 
 const BASE: ComposerFooterProps = {
   sessionId: 'chat-1',
@@ -70,6 +80,32 @@ describe('ComposerFooter (spec 3.7)', () => {
     expect(screen.getByTestId('chat-cost')).toHaveTextContent('$0.42');
   });
 
+  // Folder access moved into the folder chip's card: the line has no button of
+  // its own for it, and nothing is read until the card opens.
+  it('has no separate folder access button; the folder chip carries it', async () => {
+    render(<ComposerFooter {...BASE} />);
+    await settle();
+    expect(screen.queryByRole('button', { name: 'Folder access' })).toBeNull();
+    expect(screen.queryByText('Folder access')).toBeNull();
+    const chip = screen.getByTestId('dir-switcher-locked');
+    expect(chip).toHaveAccessibleName(FOOTER_COPY.folderLabel('/Users/wgu/Desktop'));
+    expect(chip).toHaveAttribute('aria-haspopup', 'dialog');
+    expect(listFolderAccess).not.toHaveBeenCalled();
+  });
+
+  it('hands the composer card to the folder chip, whose card hangs above it', async () => {
+    // jsdom places nothing, so the geometry is the browser test's
+    // (`folderAccessCard.browser.test.tsx`); this pins only that the footer
+    // passes the composer through rather than dropping it.
+    const composer = { current: document.createElement('div') };
+    const spy = vi.spyOn(composer.current, 'getBoundingClientRect');
+    render(<ComposerFooter {...BASE} composerRef={composer} />);
+    await settle();
+    fireEvent.click(screen.getByTestId('dir-switcher-locked'), { detail: 1 });
+    await screen.findByRole('dialog', { name: FOLDER_ACCESS_COPY.cardLabel });
+    await waitFor(() => expect(spy).toHaveBeenCalled());
+  });
+
   it('shows only the folder on Home: no ring, no "100%", no "$0.00"', async () => {
     render(<ComposerFooter {...BASE} sessionId={null} workingDirLocked={false} />);
     await settle();
@@ -83,18 +119,51 @@ describe('ComposerFooter (spec 3.7)', () => {
   // V2-R7-3: an existing chat whose folder is not known yet names no folder,
   // rather than the app's default it does not use. The rest of the line is the
   // chat's own and stays, and the folder's arrival changes nothing beside it.
+  //
+  // ⚠ The chip itself stays, nameless: its card is the only place the chat's
+  // other folders can be revoked, and that must not wait on the folder's row
+  // (which a failed read leaves unknown for the life of the chat).
   describe('a chat whose folder is not known yet (workingDir null)', () => {
-    it('leaves the folder name out and keeps chat folder access and both sides of the line', async () => {
+    it('names no folder but keeps the folder chip and both sides of the line', async () => {
       render(<ComposerFooter {...BASE} workingDir={null} />);
       await settle();
       const footer = screen.getByTestId('composer-footer');
       const sides = footer.querySelectorAll('.br-footline__side');
       expect(sides).toHaveLength(2);
-      expect(sides[0]).toContainElement(screen.getByRole('button', { name: 'Folder access' }));
+      // The chip on the left names nothing: the glyph alone, no folder named
+      // by a default the chat does not use.
+      const chip = within(sides[0] as HTMLElement).getByTestId('dir-switcher-unknown');
+      expect(chip).toHaveAccessibleName(FOOTER_COPY.folderUnknownLabel);
+      expect(chip).toHaveAttribute('aria-haspopup', 'dialog');
+      expect(chip).toHaveTextContent('');
+      expect(footer.querySelector('.br-footline__name')).toBeNull();
+      expect(screen.queryByTestId('dir-switcher-locked')).toBeNull();
       expect(screen.queryByText('Desktop')).toBeNull();
       // The ring and the cost are about the chat, not its folder.
       expect(screen.getByTestId('context-window-indicator')).toBeInTheDocument();
       expect(screen.getByTestId('chat-cost')).toHaveTextContent('$0.42');
+    });
+
+    it('still lists and revokes the chat’s other folders from that chip', async () => {
+      const grant = { id: 'grant-9', folder: '/synthetic/shared', access: 'read-only' };
+      vi.mocked(listFolderAccess)
+        .mockResolvedValueOnce({ data: [{ ...grant, descendants: true }] } as never)
+        .mockResolvedValueOnce({ data: [] } as never);
+      render(<ComposerFooter {...BASE} workingDir={null} />);
+      await settle();
+      fireEvent.click(screen.getByTestId('dir-switcher-unknown'), { detail: 1 });
+      const card = await screen.findByRole('dialog', { name: FOLDER_ACCESS_COPY.cardLabel });
+      expect(card).toHaveTextContent(FOLDER_ACCESS_COPY.workingFolderUnknown);
+      await within(card).findByText(grant.folder);
+      fireEvent.click(
+        within(card).getByRole('button', { name: FOLDER_ACCESS_COPY.revokeLabel(grant.folder) })
+      );
+      await waitFor(() =>
+        expect(revokeFolderAccess).toHaveBeenCalledWith(
+          expect.objectContaining({ body: { sessionId: 'chat-1', grantId: 'grant-9' } })
+        )
+      );
+      expect(await within(card).findByText(FOLDER_ACCESS_COPY.none)).toBeInTheDocument();
     });
 
     it('draws the folder when it arrives and leaves the ring and cost nodes alone', async () => {

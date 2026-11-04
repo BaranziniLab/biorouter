@@ -1,6 +1,7 @@
 /**
  * The composer pickers' strings: the Tools chip and its three lists, the model
- * and effort chip, and the footer line (folder, context, cost).
+ * and effort chip, the footer line (folder, context, cost) and the folder
+ * chip's card (folder access).
  *
  * One place, so the tests import what the interface says instead of restating
  * it (Crew's `copy.ts` pattern). Sentence case, the noun is "chat", the
@@ -106,9 +107,68 @@ export const MODEL_COPY = {
   noModelTooltip: 'Opens the provider catalog',
 } as const;
 
+/** What the backend calls a grant's access (`access_name` in `folder_access.rs`), in words. */
+function grantAccess(access: string): string {
+  if (access === 'read-only') return 'Read only';
+  if (access === 'read/write') return 'Read and write';
+  // A value this build does not know is shown as the backend wrote it, never guessed at.
+  return access;
+}
+
+/** Whether a grant reaches the folder's subfolders, or only the files it was given for. */
+function grantScope(descendants: boolean): string {
+  return descendants ? 'includes subfolders' : 'listed files only';
+}
+
+/**
+ * The working folder's card (`FolderAccessCard`): it opens from the footer's folder chip and
+ * names the folder the chat works in and every other folder the chat may use, each with Revoke.
+ * It replaced the footer's "Folder access" button and its dialog.
+ */
+export const FOLDER_ACCESS_COPY = {
+  /** The card's accessible name (it is a `dialog`). */
+  cardLabel: 'Folder access',
+  workingFolder: 'Working folder',
+  /** An existing chat whose folder has not been read yet, or whose row names none. */
+  workingFolderUnknown: 'Not known yet.',
+  /**
+   * What folder approval covers, said exactly: Biorouter's built-in file tools (the editor, file
+   * analysis and images, `file_access_plan` in biorouter-mcp) ask for it, shell commands never do. A
+   * tool can still ask first as the person's permission mode says, so nothing here claims that
+   * nothing asks.
+   */
+  workingFolderNote:
+    'Built-in file tools need no folder approval in this folder. Shell commands never ask for it.',
+  otherFolders: 'Other folders this chat can use',
+  loading: 'Checking folder access…',
+  loadFailed: 'Folder access could not be loaded.',
+  /** Scoped to the tools that ask: a shell command reads another folder without asking. */
+  none: 'None. Built-in file tools ask before they use any other folder.',
+  /** Home has no chat yet, so there is nothing to list. */
+  noChatYet: 'Built-in file tools ask before they use any other folder.',
+  grantAccess,
+  grantScope,
+  /** The muted line under a granted folder's path. */
+  grantDetail: (access: string, descendants: boolean) =>
+    `${grantAccess(access)} · ${grantScope(descendants)}`,
+  revoke: 'Revoke',
+  /** The button's name says which folder, so a list of them is not a list of "Revoke". */
+  revokeLabel: (folder: string) => `Revoke access to ${folder}`,
+  revokeFailed: 'Access could not be revoked. The grant is still listed; try again.',
+  /** Follows `folderAccessLifetime()`, the sentence about when a session grant ends. */
+  onceNotListed: 'Folders allowed once are not listed.',
+  approvalKey: 'Folder approval key',
+  approvalKeyHelp:
+    'Use the separate key configured with biorouter serve --folder-access-approval. It is cleared after each revocation.',
+  chooseHint: 'Click to choose a different folder.',
+  lockedHint: 'The working folder stays fixed once a chat has messages.',
+} as const;
+
 export const FOOTER_COPY = {
   /** The folder item's name: the full path, which the line itself does not show. */
   folderLabel: (dir: string) => `Working folder: ${dir}`,
+  /** The folder item's name while an existing chat's folder is not known yet. */
+  folderUnknownLabel: 'Working folder: not known yet',
   folderUpdateFailedTitle: 'Working folder update failed',
   folderUpdateFailed: 'The working folder could not be changed.',
   /** Shown only below half: a full window says nothing worth reading. */

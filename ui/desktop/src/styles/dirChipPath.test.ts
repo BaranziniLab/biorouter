@@ -4,7 +4,8 @@ import { describe, expect, it } from 'vitest';
 
 /**
  * The composer footer's folder chip (spec 3.7): the folder's NAME in the
- * footer's sans, the full path in a mono tooltip.
+ * footer's sans, the full path in mono inside the chip's card
+ * (`FolderAccessCard`, which replaced the plain path tooltip).
  *
  * ⚠ **Asserted at the SOURCE, and it has to be.** jsdom has no layout engine,
  * never runs Tailwind and does not implement the bidi algorithm, so a component
@@ -21,24 +22,41 @@ const DIR_SWITCHER = readFileSync(
   join(__dirname, '../components/bottom_menu/DirSwitcher.tsx'),
   'utf8'
 );
+const FOLDER_CARD = readFileSync(
+  join(__dirname, '../components/bottom_menu/FolderAccessCard.tsx'),
+  'utf8'
+);
 const PICKERS_CSS = readFileSync(join(__dirname, '../components/bottom_menu/pickers.css'), 'utf8');
 
 /** Code only, so a comment that names a class cannot satisfy or trip a rule. */
-const code = DIR_SWITCHER.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+const codeOnly = (source: string) =>
+  source.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+const code = codeOnly(DIR_SWITCHER);
+const cardCode = codeOnly(FOLDER_CARD);
 
 const NAME_RULE = /\.br-footline__name\s*\{([^}]*)\}/;
 
 describe('the folder chip in the composer footer', () => {
   it('prints the folder name, not the path, in both states', () => {
     expect(code).toContain('workingDirLabel(workingDir)');
-    // The path itself reaches the screen only inside the tooltip.
-    expect(code.match(/>\{workingDir\}</g)).toHaveLength(1);
-    expect(code).toMatch(/<span className="font-mono">\{workingDir\}<\/span>/);
+    // The chip never prints the path as text; it hands it to the card.
+    expect(code).not.toMatch(/>\{workingDir\}</);
+    expect(code).toMatch(/<FolderAccessCard[\s\S]*?workingDir=\{workingDir\}/);
+    // The path itself reaches the screen only inside the card, through the
+    // one mono component that prints a path.
+    expect(cardCode).toMatch(/<FolderPath path=\{workingDir\} \/>/);
+    expect(cardCode).not.toMatch(/>\{workingDir\}</);
   });
 
-  it('is sans: mono appears only on the tooltip path', () => {
-    expect(code.match(/font-mono/g)).toHaveLength(1);
+  it('is sans: mono appears only on a path in the card', () => {
+    expect(code).not.toContain('font-mono');
     expect(code).not.toContain('biorouter-dir-chip-path');
+    // One mono class in the card, on the path component, which wraps a long
+    // path rather than widening the card or cutting it.
+    expect(cardCode.match(/font-mono/g)).toHaveLength(1);
+    const pathComponent = cardCode.match(/function FolderPath[\s\S]*?\n\}/)?.[0] ?? '';
+    expect(pathComponent).toContain('font-mono');
+    expect(pathComponent).toContain('break-all');
   });
 
   it('isolates the name so a right-to-left name cannot reorder the line', () => {
@@ -55,7 +73,17 @@ describe('the folder chip in the composer footer', () => {
   });
 
   it('uses the footer item recipe in both states', () => {
-    expect(code.match(/br-footline__item/g)?.length).toBeGreaterThanOrEqual(2);
-    expect(code).toContain('data-testid="dir-switcher-locked"');
+    // One set of chip props, `shared`, carries the recipe and both buttons
+    // spread it, so the two states cannot drift apart.
+    expect(code).toMatch(
+      /const shared = \{[\s\S]*?className: cn\('br-footline__item', className\)/
+    );
+    expect(code.match(/\{\.\.\.shared\}/g)).toHaveLength(2);
+    // The card-only button is the locked chip, or the chip of a chat whose
+    // folder is not known yet (no name to print, the card still opens).
+    expect(code).toMatch(
+      /data-testid=\{workingDir === null \? 'dir-switcher-unknown' : 'dir-switcher-locked'\}/
+    );
+    expect(code).toContain('data-testid="dir-switcher"');
   });
 });

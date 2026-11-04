@@ -1,16 +1,24 @@
 import './pickers.css';
+import type { RefObject } from 'react';
 import type { ModelCostRow, SessionCosts } from '../../hooks/useCostTracking';
 import { COST_TRACKING_ENABLED } from '../../updates';
 import { cn } from '../../utils';
 import { ContextWindowIndicator } from '../ContextWindowIndicator';
 import { CostTracker } from './CostTracker';
 import { DirSwitcher } from './DirSwitcher';
-import { FolderAccess } from './FolderAccess';
 
 /**
  * The composer's footer line (spec 3.7): the working folder on the left, the
  * context ring and the chat's cost on the right, in 12px muted ink under the
  * card. On Home (`sessionId === null`) only the folder shows.
+ *
+ * Folder access has no control of its own on the line: hovering or focusing
+ * the folder chip opens its card (`FolderAccessCard`), which shows the full
+ * path, every other folder the chat may use and Revoke for each. It replaced
+ * a "Folder access" button beside the chip and the dialog that button opened.
+ * The card hangs above the composer card (`composerRef`), never over the
+ * draft. In a chat the chip is always there, even before the chat's folder is
+ * known, because it is the only way to the chat's grants and their Revoke.
  *
  * ⚠ The props are the wave-0 contract (WS-PICKERS). `ChatInput` places this
  * under the composer card and owns nothing inside it.
@@ -20,9 +28,10 @@ export interface ComposerFooterProps {
   sessionId: string | null;
   /**
    * The folder the agent works in (full path; the footer shows its basename),
-   * or `null` while an existing chat's folder is not known yet. The folder is
-   * then left out rather than named by a default the chat does not use
-   * (V2-R7-3); the line keeps its height.
+   * or `null` while an existing chat's folder is not known yet. The folder's
+   * NAME is then left out rather than named by a default the chat does not use
+   * (V2-R7-3): the chip shows the folder glyph alone and still opens the card,
+   * so the chat's other folders and their Revoke never wait on the folder.
    */
   workingDir: string | null;
   /** #44: the folder is choosable only until the chat's first message. */
@@ -54,6 +63,11 @@ export interface ComposerFooterProps {
   modelCostRows?: ModelCostRow[];
   /** Layout only (the inset that lines the folder up with the card's text). */
   className?: string;
+  /**
+   * The composer card above the line. The folder chip's card hangs above it,
+   * so a hover never covers the draft or its controls.
+   */
+  composerRef?: RefObject<HTMLElement | null>;
 }
 
 export function ComposerFooter({
@@ -74,12 +88,13 @@ export function ComposerFooter({
   sessionCosts,
   modelCostRows,
   className,
+  composerRef,
 }: ComposerFooterProps) {
   const inChat = sessionId !== null;
   return (
     <div data-testid="composer-footer" className={cn('br-footline', className)}>
       <div className="br-footline__side">
-        {workingDir !== null && (
+        {(workingDir !== null || inChat) && (
           <DirSwitcher
             sessionId={sessionId ?? undefined}
             locked={workingDirLocked}
@@ -87,9 +102,9 @@ export function ComposerFooter({
             onWorkingDirChange={onWorkingDirChange}
             onRestartStart={onRestartStart}
             onRestartEnd={onRestartEnd}
+            composerRef={composerRef}
           />
         )}
-        {sessionId !== null && <FolderAccess key={sessionId} sessionId={sessionId} />}
       </div>
       {inChat && (
         <div className="br-footline__side" data-side="end">
