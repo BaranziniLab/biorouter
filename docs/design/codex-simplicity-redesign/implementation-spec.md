@@ -1576,6 +1576,12 @@ footer line.
     glyph. The folder is the chat's own (its row, else the session listing's row); an existing
     chat never shows the app default, and the folder is left out until it is known (V2-R7-3).
     Home and a new tab name the default or the picked folder.
+    **Superseded (2026-11):** the tooltip is now a hover card on a popover surface. It shows the
+    full path (mono) and, in a chat, every other folder the chat may use, each with Revoke. It
+    replaces the separate "Folder access" button and dialog that 1.94.0 added beside the folder.
+    Once a chat has messages the folder name is a button that keeps the card open; it still never
+    changes the folder (#44). See `docs/security/folder-access.md`, "Seeing and revoking a chat's
+    folders".
   - On the right, a 14px context ring. Its text "N% left" appears **only below 50%**, and its
     tooltip is one line, "72% context left · 92k of 128k".
   - Cost appears **only when it is above $0 and inside a chat**, in sans `tabular-nums`.

@@ -1,5 +1,11 @@
 # External folder access
 
+> **What this is.** How a chat gets access to folders outside its working folder, and how you
+> list and revoke that access in the desktop app, in a browser served by `biorouter serve`, and
+> in the CLI.
+> **Status:** Current.
+> **Audience:** end users, and developers working on file access.
+
 Built-in Developer file operations work inside the chat's workspace. When a file operation
 needs another folder, BioRouter presents the specific folder, read-only or read/write access,
 and the files needed by that pending operation. The same operation resumes after approval.
@@ -19,17 +25,8 @@ An absolute file path or a connector's returned result path does not itself gran
 - **Cancel operation** releases the pending operation without creating a grant. Stopping the
   turn also cancels its pending request.
 
-Open **Folder access** beneath the chat composer to inspect and revoke additional folder
-grants. Revocation is checked by operations that already hold a file capability as well as
-future operations. It does not undo a completed edit. Read-only permission never silently
-upgrades to write permission. Grants are not inherited by another chat.
-
-In the local CLI or TUI, `/folder-access` lists the same session grants and
-`/folder-access revoke <id>` revokes a selected grant. These commands act locally; they do not
-send a permission request through the model.
-
-A symbolic link that leaves the workspace follows the same approval flow. The card discloses
-both the requested path and its discovered actual target. The pending operation uses a
+A symbolic link that leaves the workspace follows the same approval flow. The approval card
+discloses both the requested path and its discovered actual target. The pending operation uses a
 dispatch-scoped alias and retained directory capability; changing the link while the card is
 waiting does not redirect that operation to a newly selected folder. Later operations resolve
 the link again and need approval if its target is outside their existing grants.
@@ -38,6 +35,38 @@ Secret-file rules, managed denials, user never-allow settings, and exact-call de
 in force. Folder approval does not grant shell execution, desktop control, or a general
 ability to bypass another tool's permissions. An unattended route returns a structured
 `authorization_required` response instead of waiting for a decision it cannot display.
+
+## Seeing and revoking a chat's folders
+
+In the desktop app, and in a browser served by `biorouter serve`, the name of the chat's
+working folder (its workspace) sits beneath the chat composer. Point at the name, or move focus
+to it with Tab, and a card opens above the composer with the working folder's full path and
+every other folder allowed for this session:
+
+- Each additional folder shows its access (read only, or read and write), whether it includes
+  subfolders, and a **Revoke** button. Folders allowed once are not listed, because that
+  approval covers only its pending operation.
+- The card says what folder approval covers: built-in file tools ask before they use another
+  folder, and shell commands never ask for it.
+- While an existing chat's working folder has not loaded, a folder icon without a name stands
+  in for it and opens the same card, so the chat's grants stay listed and revocable.
+- Once the chat has messages, click the folder name, or press Enter or Space while it has
+  focus, to keep the card open. Opening it from the keyboard also moves focus into the card, so
+  Tab reaches each **Revoke** button. Before the first message, clicking the name chooses a
+  different working folder instead.
+- A card that was not kept open closes when the pointer leaves both the name and the card.
+  Escape, or a click outside the card, closes it either way. Escape, and Shift+Tab from the
+  card itself, return focus to the folder name; a click outside leaves focus where you clicked.
+- In a browser, the card also holds the **Folder approval key** field once the chat has a
+  grant to revoke. See [Browser setup](#browser-setup).
+
+Revocation is checked by operations that already hold a file capability as well as
+future operations. It does not undo a completed edit. Read-only permission never silently
+upgrades to write permission. Grants are not inherited by another chat.
+
+In the local CLI or TUI, `/folder-access` lists the same session grants and
+`/folder-access revoke <id>` revokes a selected grant. These commands act locally; they do not
+send a permission request through the model.
 
 ## Desktop and backend lifetimes
 
@@ -56,9 +85,10 @@ daemon for the application and stops that owned daemon on normal quit. It does n
 per-client shared-daemon protocol. A fresh owned launch does not reuse the prior process's grants.
 
 A browser or a manually selected external backend remains a trusted service-session deployment.
-Its grants are owned by that backend, not isolated by the new desktop lifetime protocol. Use
-**Folder access** to revoke a service grant, delete its chat, or restart the backend. The interface
-shows this backend lifetime, including for the environment-selected external development backend.
+Its grants are owned by that backend, not isolated by the new desktop lifetime protocol. To end
+a service grant, revoke it from the working folder's card beneath the composer, delete its chat,
+or restart the backend. The folder approval card and the working folder's card both state this
+backend lifetime, including for the environment-selected external development backend.
 The primary workspace and ordinary in-workspace edits do not need additional folder approval.
 
 On Windows, an idle captured directory can move while its own identity handle remains open.
@@ -84,10 +114,14 @@ biorouter serve --folder-access-approval
 
 Choose a separate approval key of at least 16 characters in the hidden terminal prompt.
 Enter that key only in the browser's **Folder approval key** field when allowing access or
-revoking a grant. The browser clears the field after each decision, does not save it to
-local storage or a chat, and sends it only to the folder decision route. The launcher sends
-only its SHA-256 digest over the daemon's startup stdin pipe. Neither the raw key nor its
-digest is supplied through an environment variable or a command-line argument.
+revoking a grant. When allowing access, the field is on the folder approval card in the chat.
+When revoking, it is in the working folder's card below the grants, and **Revoke** stays
+unavailable until a key is typed.
+
+The browser clears the field after each decision or revocation attempt, does not save it to
+local storage or a chat, and sends it only with a folder decision or a revocation request. The
+launcher sends only its SHA-256 digest over the daemon's startup stdin pipe. Neither the raw key
+nor its digest is supplied through an environment variable or a command-line argument.
 
 This key authorizes only typed folder decisions and folder revocation. It cannot authorize
 privacy, provider, extension, or Biorouter Copilot decisions. An API secret or browser access
@@ -115,3 +149,10 @@ following a real native quit/restart reproduction. Focused automated checks cove
 retained capabilities, pending cancellation, and scoped grant pruning. Actual headed app quit,
 restart, abrupt disconnect, and reconnect checks against the final built artifact remain separate
 acceptance gates; preparing the correction does not establish that they passed.
+
+## Related documentation
+
+- [Permission modes](permission-modes.md): the tool approvals that still apply inside the working folder.
+- [Secret guard](secret-guard.md): the credential file rules that a folder grant never overrides.
+- [Reaching Biorouter from a browser](../deployment/browser-access.md): starting `biorouter serve` and what a browser session can and cannot do.
+- [External folder authorization requirements](assessment-2026-10/follow-up-proposals/external-folder-authorization.md): the requirements (#424) this behaviour was built to.
