@@ -141,7 +141,7 @@ describe('a decide batch summary', () => {
           decided: 598,
           passed: 41,
           yes: 41,
-          uncertain: 6,
+          review: 6,
           maxP: 0.98,
           answerCounts: [],
         },
@@ -152,18 +152,18 @@ describe('a decide batch summary', () => {
           decided: 598,
           passed: 17,
           yes: 19,
-          uncertain: 0,
+          review: 0,
           maxP: 0.91,
           answerCounts: [],
         },
         {
           name: 'course',
           kind: 'choice',
-          threshold: null,
+          threshold: 0.6,
           decided: 598,
-          passed: null,
+          passed: 280,
           yes: null,
-          uncertain: null,
+          review: 12,
           maxP: 0.71,
           answerCounts: [
             { answer: 'rrms', count: 300 },
@@ -186,6 +186,24 @@ describe('a decide batch summary', () => {
       expect(parsed?.batchId).toBe('batch-42');
       expect(parsed?.questions).toHaveLength(3);
     }
+  });
+
+  it('reads the review count under its own name, never the retired uncertain field', () => {
+    const summary = wireDecideSummary();
+    const retired = {
+      ...summary,
+      questions: summary.questions.map(({ review, reviewIds, moreReview, ...rest }) => ({
+        ...rest,
+        uncertain: review,
+        uncertainIds: reviewIds,
+        moreUncertain: moreReview,
+      })),
+    };
+    const parsed = parseDecideBatchSummary({
+      status: 'success',
+      value: { content: [], structuredContent: retired },
+    });
+    expect(parsed?.questions.map((question) => question.review)).toEqual([null, null, null]);
   });
 
   it('is null for an error result, prose with no summary, or a summary with no batch id', () => {

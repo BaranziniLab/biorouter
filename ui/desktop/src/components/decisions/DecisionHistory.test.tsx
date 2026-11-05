@@ -193,7 +193,13 @@ describe('DecisionHistory', () => {
     expect(options[1].querySelector('.br-pbar__mark')).toBeNull();
     expect(question).toHaveTextContent('not validated on your data');
     expect(detail).toHaveTextContent('tev1:0.8b (ollama_decision)');
-    expect(detail).toHaveTextContent('Private');
+    // The fact is the decision MODEL's tier: a public chat that used a local
+    // model reads "Model tier: Private", never a bare "Tier: Private" a reader
+    // could take for the chat's.
+    const tier = within(detail).getByText('Model tier');
+    expect(tier.tagName).toBe('DT');
+    expect(tier.nextElementSibling).toHaveTextContent('Private');
+    expect(within(detail).queryByText('Tier')).toBeNull();
     expect(detail).toHaveTextContent('22 ms');
     expect(detail).toHaveTextContent('400 in · 1 out');
   });

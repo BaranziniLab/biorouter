@@ -24,6 +24,8 @@ export const DECIDE_TOOL_COPY = {
   uncalibrated: 'uncalibrated',
   kind: (kind: string) => (kind === 'choice' ? 'choice' : kind === 'score' ? 'score' : 'yes or no'),
   threshold: (p: number) => `threshold ${formatProbability(p)}`,
+  /** Chunks the agent has to read before it reports them (not a clear no or pass). */
+  review: (count: number) => `${count.toLocaleString('en-US')} to review`,
 };
 
 /** "Checking 600 chunks against 3 questions": the row's verb and what it counts. */
@@ -44,15 +46,14 @@ export function decideCallMeta(toolResult: unknown): string | null {
 const n = (value: number) => value.toLocaleString('en-US');
 
 /**
- * One question's line: "yes 41, 6 uncertain, max p 0.98" for a yes or no
- * question, "rrms 300, spms 200, none 100, 12 passed, max p 0.91" for a choice.
- * Counts only.
+ * One question's line: "yes 41, 6 to review, max p 0.98" for a yes or no
+ * question, "rrms 300, spms 200, none 100, 12 passed, 9 to review, max p 0.91"
+ * for a choice with a threshold. Counts only.
  */
 function questionLine(question: DecideQuestionSummary): string {
   const parts: string[] = [];
   if (question.kind === 'yes_no') {
     if (question.yes !== null) parts.push(`yes ${n(question.yes)}`);
-    if (question.uncertain) parts.push(`${n(question.uncertain)} uncertain`);
   } else {
     parts.push(...question.answerCounts.map(({ answer, count }) => `${answer} ${n(count)}`));
   }
@@ -60,6 +61,8 @@ function questionLine(question: DecideQuestionSummary): string {
   if (question.passed !== null && question.passed !== question.yes) {
     parts.push(`${n(question.passed)} passed`);
   }
+  // Any type: a choice or score with a threshold has a review list too.
+  if (question.review) parts.push(DECIDE_TOOL_COPY.review(question.review));
   if (question.maxP !== null) parts.push(`max p ${formatProbability(question.maxP)}`);
   return parts.join(', ');
 }

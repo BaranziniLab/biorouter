@@ -43,18 +43,29 @@ const count = (value: unknown): number => {
 // ---------------------------------------------------------------------------
 
 /**
- * The providers whose models are decision models (`providers/decision/` in the
- * core crate). A chat bound to one has no LLM loop: each message is the state,
- * the chat's question is asked of it, and the reply is one decision card.
+ * The providers whose models are decision models: exactly
+ * `DECISION_CHAT_PROVIDERS` in the core crate's `providers/decision/chat.rs`,
+ * which a Rust test reads this list against. A chat bound to one has no LLM
+ * loop: each message is the state, the chat's question is asked of it, and
+ * the reply is one decision card.
  */
 export const DECISION_PROVIDER_IDS: ReadonlySet<string> = new Set([
   'baseten_decision',
   'ollama_decision',
-  'llamacpp_decision',
 ]);
 
 export function isDecisionProvider(provider: string | null | undefined): boolean {
   return !!provider && DECISION_PROVIDER_IDS.has(provider);
+}
+
+/**
+ * The decision provider with no meter: Ollama bills nothing per token, so an
+ * unpriced request there costs nothing. An unpriced Baseten request was billed
+ * at a rate Biorouter does not know. `is_unmetered_decision_provider` in
+ * `providers/decision/chat.rs` makes the same call for the usage report.
+ */
+export function isUnmeteredDecisionProvider(provider: string | null | undefined): boolean {
+  return provider === 'ollama_decision';
 }
 
 // ---------------------------------------------------------------------------
@@ -156,8 +167,13 @@ export interface DecideQuestionSummary {
   passed: number | null;
   /** yes_no only: chunks with P(yes) of at least one half. */
   yes: number | null;
-  /** yes_no only: chunks with P(yes) in the uncertain band (0.4 to 0.6). */
-  uncertain: number | null;
+  /**
+   * Chunks to read before their answer is reported: P of the pass answer from
+   * 0.2 up to the larger of the threshold and 0.8, so not a clear no and not a
+   * clear pass. Counted for yes_no, and for a choice or score with a threshold;
+   * `null` when the rule does not apply.
+   */
+  review: number | null;
   /** The highest pass probability. */
   maxP: number | null;
   /** choice and score: how many chunks gave each answer, in option order. */
@@ -204,7 +220,7 @@ function questionSummaryOf(value: unknown): DecideQuestionSummary | null {
     decided: optionalCount(question.decided),
     passed: optionalCount(question.passed),
     yes: optionalCount(question.yes),
-    uncertain: optionalCount(question.uncertain),
+    review: optionalCount(question.review),
     maxP: probability(question.maxP),
     answerCounts: counts
       ? Object.entries(counts).flatMap(([answer, n]) => {

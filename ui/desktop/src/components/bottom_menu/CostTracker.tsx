@@ -6,12 +6,20 @@ import './pickers.css';
 import { fetchModelPricing } from '../../utils/pricing';
 import { PricingData } from '../../api';
 import type { ModelCostRow, SessionCostRow, SessionCosts } from '../../hooks/useCostTracking';
+import { isUnmeteredDecisionProvider } from '../decisions/decisionWire';
 
 interface CostTrackerProps {
   inputTokens?: number;
   outputTokens?: number;
   sessionCosts?: SessionCosts;
   modelCostRows?: ModelCostRow[];
+  /**
+   * Price only the usage ledger, never the bare counters. A decision chat's
+   * tokens belong to its decision model, and the fallback prices counters at
+   * the app's current model, which is not the chat's: a local decision chat
+   * showed "<$0.01" at GPT-5.5's rate for a request that costs nothing.
+   */
+  ledgerOnly?: boolean;
 }
 
 export interface CostEstimate {
@@ -19,12 +27,23 @@ export interface CostEstimate {
   partial: boolean;
 }
 
+/**
+ * A row of requests to a local decision model, which has no price because it
+ * has no meter. It costs nothing, so it counts as $0 and leaves the chat's
+ * total exact, as the usage report does.
+ */
+export function isUnmeteredDecisionRow(row: Pick<ModelCostRow, 'provider' | 'totalCost'>): boolean {
+  return row.totalCost === null && isUnmeteredDecisionProvider(row.provider);
+}
+
 export function aggregateModelRowsCost(rows: ModelCostRow[]): CostEstimate {
   let amount = 0;
   let hasKnownCost = false;
   let partial = false;
   for (const row of rows) {
-    if (row.totalCost === null) {
+    if (isUnmeteredDecisionRow(row)) {
+      hasKnownCost = true;
+    } else if (row.totalCost === null) {
       partial = true;
     } else {
       amount += row.totalCost;
@@ -111,6 +130,7 @@ export function CostTracker({
   outputTokens = 0,
   sessionCosts,
   modelCostRows,
+  ledgerOnly = false,
 }: CostTrackerProps) {
   const { currentModel, currentProvider } = useModelAndProvider();
   const [costInfo, setCostInfo] = useState<PricingData | null>(null);
@@ -187,7 +207,7 @@ export function CostTracker({
     );
   }
 
-  if (!currentModel || !currentProvider) return null;
+  if (ledgerOnly || !currentModel || !currentProvider) return null;
 
   // Loading, or no price for this model: nothing to show on the line.
   if (isLoading || !costInfo) return null;

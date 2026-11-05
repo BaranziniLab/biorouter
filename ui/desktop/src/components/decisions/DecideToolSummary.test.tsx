@@ -27,6 +27,8 @@ const ARGS = {
       instructions: 'Which MS course is described?',
       type: 'choice',
       options: { rrms: 'Relapsing-remitting', none: 'Not stated' },
+      threshold: 0.6,
+      pass_option: 'rrms',
     },
   },
   chunks: CHUNKS,
@@ -91,9 +93,14 @@ describe('the decide tool row', () => {
       '600 chunks · tev1:0.8b · 2 errors · 13 s'
     );
     const lines = screen.getByTestId('decide-tool-questions');
-    expect(lines).toHaveTextContent('has_msyes 41, 6 uncertain, max p 0.98');
+    expect(lines).toHaveTextContent('has_msyes 41, 6 to review, max p 0.98');
+    // A review count of 0 says nothing.
     expect(lines).toHaveTextContent('edss_statedyes 19, 17 passed, max p 0.91');
-    expect(lines).toHaveTextContent('courserrms 300, spms 200, none 98, max p 0.71');
+    // A choice with a threshold has a review list too, not only a yes or no question.
+    expect(lines).toHaveTextContent(
+      'courserrms 300, spms 200, none 98, 280 passed, 12 to review, max p 0.71'
+    );
+    expect(lines).not.toHaveTextContent('uncertain');
     // The distinct errors, with how many chunks each hit, not which ones.
     expect(screen.getByTestId('decide-tool-errors')).toHaveTextContent(
       '2 chunksThe decision model did not answer in 10 s'

@@ -1447,10 +1447,11 @@ export type DecideRequest = {
         [key: string]: Question;
     };
     /**
-     * The chat the text came from. When given, the chat is gated for this
-     * caller first, the decision is checked against the chat's privacy tier
-     * before anything is sent, and the call is logged in the chat's decision
-     * history as an ad hoc decision.
+     * The chat to check the decision against and log it in. When given, the
+     * chat is gated for this caller first, the decision is checked against
+     * the chat's privacy tier before anything is sent, and the call, with the
+     * text sent, is logged in the chat's decision history as an ad hoc
+     * decision, at the chat's tier.
      */
     sessionId?: string | null;
 };
@@ -1466,8 +1467,10 @@ export type DecideResponse = {
      */
     decisions?: Array<Decision> | null;
     /**
-     * Said when no chat was named, and when the model that answered is
-     * public, so the text sent left this computer.
+     * Said when no chat was named, when the chat named is public (with
+     * privacy tiers on), so the text sent is kept where public chats can read
+     * it, and when the model that answered is public, so the text sent left
+     * this computer.
      */
     note?: string | null;
     /**
@@ -6925,6 +6928,13 @@ export type UsageReportResponse = {
  * unpriced (an unknown model) — a `null` cost never means "$0". `hasUnpriced`
  * flags a bucket that mixes priced, unpriced, or incomplete turns, so a day
  * cost can be read as "at least this much" rather than exact.
+ *
+ * Decision-model requests count in the tokens and the priced cost, never in
+ * `turns`; they are counted in `decisionRequests` and broken out in
+ * `decisions`. An unpriced request to a local Ollama decision model counts as
+ * $0 and does not set `hasUnpriced`: an automatic local decision model would
+ * otherwise mark almost every month as "at least". An unpriced Baseten
+ * decision request was billed, so it does set it.
  */
 export type UsageReportRow = {
     cacheCreationTokens?: number | null;
@@ -6940,6 +6950,38 @@ export type UsageReportRow = {
      */
     costExcludesCache: boolean;
     date?: string | null;
+    /**
+     * Decision-model requests in the bucket, which `turns` leaves out.
+     */
+    decisionRequests?: number;
+    /**
+     * The decision-model share of a usage bucket: the requests whose provider is a
+     * decision provider (`providers::decision::chat::is_decision_chat_provider`),
+     * shown as their own line.
+     *
+     * Its tokens and priced dollars are already inside the bucket's own totals,
+     * so the totals still match the provider's meter. Its requests are not: a
+     * decision request is not a model turn, and the bucket's `turns` leaves it
+     * out.
+     */
+    decisions?: {
+        /**
+         * Dollar cost of the priced decision requests, or `None` when none is
+         * priced (an Ollama decision model has no meter). Never "$0" for unknown.
+         */
+        cost?: number | null;
+        /**
+         * `true` when at least one decision request has no price. Unlike the
+         * bucket's own `hasUnpriced`, it says nothing about the chat totals.
+         */
+        hasUnpriced: boolean;
+        inputTokens: number;
+        outputTokens: number;
+        /**
+         * Billed tokens, or `None` when a request behind it reported neither count.
+         */
+        totalTokens?: number | null;
+    } | null;
     hasUnpriced: boolean;
     inputTokens: number;
     modelId?: string | null;
@@ -7006,6 +7048,40 @@ export type UsageTotals = {
      * incomplete — the figure is then a lower bound.
      */
     costExcludesCache: boolean;
+    /**
+     * Decision-model requests in the span, which `turns` leaves out. Their
+     * tokens and priced dollars are in the totals above, as on
+     * [`UsageReportRow`].
+     */
+    decisionRequests?: number;
+    /**
+     * The decision-model share of a usage bucket: the requests whose provider is a
+     * decision provider (`providers::decision::chat::is_decision_chat_provider`),
+     * shown as their own line.
+     *
+     * Its tokens and priced dollars are already inside the bucket's own totals,
+     * so the totals still match the provider's meter. Its requests are not: a
+     * decision request is not a model turn, and the bucket's `turns` leaves it
+     * out.
+     */
+    decisions?: {
+        /**
+         * Dollar cost of the priced decision requests, or `None` when none is
+         * priced (an Ollama decision model has no meter). Never "$0" for unknown.
+         */
+        cost?: number | null;
+        /**
+         * `true` when at least one decision request has no price. Unlike the
+         * bucket's own `hasUnpriced`, it says nothing about the chat totals.
+         */
+        hasUnpriced: boolean;
+        inputTokens: number;
+        outputTokens: number;
+        /**
+         * Billed tokens, or `None` when a request behind it reported neither count.
+         */
+        totalTokens?: number | null;
+    } | null;
     hasUnpriced: boolean;
     inputTokens: number;
     outputTokens: number;
@@ -12957,7 +13033,7 @@ export type PutDecisionChatErrors = {
      */
     401: unknown;
     /**
-     * Refused: the named chat is out of this caller's reach (the same refusal, word for word, that `GET /sessions/{session_id}` gives), or, on a daemon that holds a user-action key, the request carried no proof it came from the person at the keyboard (body = plain text)
+     * Refused: the named chat is out of this caller's reach (the same refusal, word for word, that `GET /sessions/{session_id}` gives), or, on a daemon that holds a user-action key, the request carried no proof it came from the person at the keyboard, or, on a daemon that holds none, the chat is a subagent's (body = plain text)
      */
     403: unknown;
     /**
@@ -13045,7 +13121,7 @@ export type PutDecisionSettingsErrors = {
      */
     401: unknown;
     /**
-     * Refused: the named chat is out of this caller's reach (the same refusal, word for word, that `GET /sessions/{session_id}` gives), or, on a daemon that holds a user-action key, the request carried no proof it came from the person at the keyboard (body = plain text)
+     * Refused: the named chat is out of this caller's reach (the same refusal, word for word, that `GET /sessions/{session_id}` gives), or, on a daemon that holds a user-action key, the request carried no proof it came from the person at the keyboard, or, on a daemon that holds none, the chat is a subagent's (body = plain text)
      */
     403: unknown;
     /**

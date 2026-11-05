@@ -8627,7 +8627,7 @@
             "description": "Unauthorized - Invalid or missing API key"
           },
           "403": {
-            "description": "Refused: the named chat is out of this caller's reach (the same refusal, word for word, that `GET /sessions/{session_id}` gives), or, on a daemon that holds a user-action key, the request carried no proof it came from the person at the keyboard (body = plain text)"
+            "description": "Refused: the named chat is out of this caller's reach (the same refusal, word for word, that `GET /sessions/{session_id}` gives), or, on a daemon that holds a user-action key, the request carried no proof it came from the person at the keyboard, or, on a daemon that holds none, the chat is a subagent's (body = plain text)"
           },
           "404": {
             "description": "Session not found (body = plain text)"
@@ -8737,7 +8737,7 @@
             "description": "Unauthorized - Invalid or missing API key"
           },
           "403": {
-            "description": "Refused: the named chat is out of this caller's reach (the same refusal, word for word, that `GET /sessions/{session_id}` gives), or, on a daemon that holds a user-action key, the request carried no proof it came from the person at the keyboard (body = plain text)"
+            "description": "Refused: the named chat is out of this caller's reach (the same refusal, word for word, that `GET /sessions/{session_id}` gives), or, on a daemon that holds a user-action key, the request carried no proof it came from the person at the keyboard, or, on a daemon that holds none, the chat is a subagent's (body = plain text)"
           },
           "404": {
             "description": "Session not found (body = plain text)"
@@ -13340,7 +13340,7 @@
           },
           "sessionId": {
             "type": "string",
-            "description": "The chat the text came from. When given, the chat is gated for this\ncaller first, the decision is checked against the chat's privacy tier\nbefore anything is sent, and the call is logged in the chat's decision\nhistory as an ad hoc decision.",
+            "description": "The chat to check the decision against and log it in. When given, the\nchat is gated for this caller first, the decision is checked against\nthe chat's privacy tier before anything is sent, and the call, with the\ntext sent, is logged in the chat's decision history as an ad hoc\ndecision, at the chat's tier.",
             "nullable": true
           }
         },
@@ -13367,7 +13367,7 @@
           },
           "note": {
             "type": "string",
-            "description": "Said when no chat was named, and when the model that answered is\npublic, so the text sent left this computer.",
+            "description": "Said when no chat was named, when the chat named is public (with\nprivacy tiers on), so the text sent is kept where public chats can read\nit, and when the model that answered is public, so the text sent left\nthis computer.",
             "nullable": true
           },
           "sessionId": {
@@ -24309,7 +24309,7 @@
       },
       "UsageReportRow": {
         "type": "object",
-        "description": "One bucket of the usage report.\n\n`date` is present unless grouping by [`UsageGroup::Model`]; `modelId` is\npresent unless grouping by [`UsageGroup::Day`]. `cost` is the dollar cost of\nthe priced turns in the bucket, or `None` when *every* contributing turn was\nunpriced (an unknown model) — a `null` cost never means \"$0\". `hasUnpriced`\nflags a bucket that mixes priced, unpriced, or incomplete turns, so a day\ncost can be read as \"at least this much\" rather than exact.",
+        "description": "One bucket of the usage report.\n\n`date` is present unless grouping by [`UsageGroup::Model`]; `modelId` is\npresent unless grouping by [`UsageGroup::Day`]. `cost` is the dollar cost of\nthe priced turns in the bucket, or `None` when *every* contributing turn was\nunpriced (an unknown model) — a `null` cost never means \"$0\". `hasUnpriced`\nflags a bucket that mixes priced, unpriced, or incomplete turns, so a day\ncost can be read as \"at least this much\" rather than exact.\n\nDecision-model requests count in the tokens and the priced cost, never in\n`turns`; they are counted in `decisionRequests` and broken out in\n`decisions`. An unpriced request to a local Ollama decision model counts as\n$0 and does not set `hasUnpriced`: an automatic local decision model would\notherwise mark almost every month as \"at least\". An unpriced Baseten\ndecision request was billed, so it does set it.",
         "required": [
           "inputTokens",
           "outputTokens",
@@ -24340,6 +24340,51 @@
           },
           "date": {
             "type": "string",
+            "nullable": true
+          },
+          "decisionRequests": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Decision-model requests in the bucket, which `turns` leaves out."
+          },
+          "decisions": {
+            "allOf": [
+              {
+                "type": "object",
+                "description": "The decision-model share of a usage bucket: the requests whose provider is a\ndecision provider (`providers::decision::chat::is_decision_chat_provider`),\nshown as their own line.\n\nIts tokens and priced dollars are already inside the bucket's own totals,\nso the totals still match the provider's meter. Its requests are not: a\ndecision request is not a model turn, and the bucket's `turns` leaves it\nout.",
+                "required": [
+                  "inputTokens",
+                  "outputTokens",
+                  "hasUnpriced"
+                ],
+                "properties": {
+                  "cost": {
+                    "type": "number",
+                    "format": "double",
+                    "description": "Dollar cost of the priced decision requests, or `None` when none is\npriced (an Ollama decision model has no meter). Never \"$0\" for unknown.",
+                    "nullable": true
+                  },
+                  "hasUnpriced": {
+                    "type": "boolean",
+                    "description": "`true` when at least one decision request has no price. Unlike the\nbucket's own `hasUnpriced`, it says nothing about the chat totals."
+                  },
+                  "inputTokens": {
+                    "type": "integer",
+                    "format": "int64"
+                  },
+                  "outputTokens": {
+                    "type": "integer",
+                    "format": "int64"
+                  },
+                  "totalTokens": {
+                    "type": "integer",
+                    "format": "int64",
+                    "description": "Billed tokens, or `None` when a request behind it reported neither count.",
+                    "nullable": true
+                  }
+                }
+              }
+            ],
             "nullable": true
           },
           "hasUnpriced": {
@@ -24461,6 +24506,51 @@
           "costExcludesCache": {
             "type": "boolean",
             "description": "`true` when cache cost is omitted because pricing or cache accounting is\nincomplete — the figure is then a lower bound."
+          },
+          "decisionRequests": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Decision-model requests in the span, which `turns` leaves out. Their\ntokens and priced dollars are in the totals above, as on\n[`UsageReportRow`]."
+          },
+          "decisions": {
+            "allOf": [
+              {
+                "type": "object",
+                "description": "The decision-model share of a usage bucket: the requests whose provider is a\ndecision provider (`providers::decision::chat::is_decision_chat_provider`),\nshown as their own line.\n\nIts tokens and priced dollars are already inside the bucket's own totals,\nso the totals still match the provider's meter. Its requests are not: a\ndecision request is not a model turn, and the bucket's `turns` leaves it\nout.",
+                "required": [
+                  "inputTokens",
+                  "outputTokens",
+                  "hasUnpriced"
+                ],
+                "properties": {
+                  "cost": {
+                    "type": "number",
+                    "format": "double",
+                    "description": "Dollar cost of the priced decision requests, or `None` when none is\npriced (an Ollama decision model has no meter). Never \"$0\" for unknown.",
+                    "nullable": true
+                  },
+                  "hasUnpriced": {
+                    "type": "boolean",
+                    "description": "`true` when at least one decision request has no price. Unlike the\nbucket's own `hasUnpriced`, it says nothing about the chat totals."
+                  },
+                  "inputTokens": {
+                    "type": "integer",
+                    "format": "int64"
+                  },
+                  "outputTokens": {
+                    "type": "integer",
+                    "format": "int64"
+                  },
+                  "totalTokens": {
+                    "type": "integer",
+                    "format": "int64",
+                    "description": "Billed tokens, or `None` when a request behind it reported neither count.",
+                    "nullable": true
+                  }
+                }
+              }
+            ],
+            "nullable": true
           },
           "hasUnpriced": {
             "type": "boolean"

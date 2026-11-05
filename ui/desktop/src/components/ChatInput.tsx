@@ -1445,6 +1445,12 @@ export default function ChatInput({
         settle(0, false);
         return;
       }
+      // A decision chat draws no context ring (each message is asked on its
+      // own), so there is no window to look up.
+      if (isDecisionProvider(provider)) {
+        settle(0, false);
+        return;
+      }
 
       // Local models (Llama Server, Ollama): the real context window is a
       // property of the running server, not of the model's name. Prefer it over
@@ -3102,7 +3108,7 @@ export default function ChatInput({
 
       {/* THE FOOTER LINE: the folder on the left, the context ring and the cost
           on the right, 12px muted, on the canvas under the card. The ring and
-          the cost show only inside a chat. */}
+          the cost show only inside a chat, and a decision chat has no ring. */}
       <ComposerFooter
         className="br-composer-footer"
         sessionId={sessionId}
@@ -3114,6 +3120,8 @@ export default function ChatInput({
         }}
         onRestartStart={() => setChatState?.(ChatState.RestartingAgent)}
         onRestartEnd={() => setChatState?.(ChatState.Idle)}
+        showContext={!decisionChat}
+        costFromLedgerOnly={decisionChat}
         totalTokens={totalTokens}
         tokenLimit={tokenLimit}
         isTokenLimitLoaded={isTokenLimitLoaded}

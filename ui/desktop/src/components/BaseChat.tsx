@@ -2041,7 +2041,10 @@ function BaseChatContent({
     return submitAndReturnToBottom({ sessionId, submit: heldSubmit }, textValue, attachments);
   };
 
-  const { sessionCosts, modelRows, ledgerSettled } = useCostTracking({ session });
+  const { sessionCosts, modelRows, ledgerSettled } = useCostTracking({
+    session,
+    liveTokens: tokenState,
+  });
   // The footer prices this chat's ledger, or its counters when the ledger has no
   // rows; never the counters while the ledger is still to answer, or the cost
   // it shows is withdrawn a moment later (vision V2-R5-5).

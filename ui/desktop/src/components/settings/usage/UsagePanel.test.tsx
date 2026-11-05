@@ -9,6 +9,7 @@ import {
   formatCompactTokens,
   formatCost,
   formatCostEstimate,
+  formatDecisionUsage,
   formatTokens,
   formatUsageDate,
   formatUsageMonth,
@@ -644,6 +645,143 @@ describe('UsageReport', () => {
     // The specific notes stay in the document for a screen reader, not the eye.
     expect(screen.getByTestId('usage-unpriced-note').closest('ul')).toHaveClass('sr-only');
     expect(screen.queryByText('About these totals')).toBeNull();
+  });
+});
+
+describe('UsageReport decision models', () => {
+  const mammoth: UsageReportRow = {
+    date: null,
+    modelId: 'decision-models/baseten-mammoth-27b-latest',
+    provider: 'baseten_decision',
+    inputTokens: 1_200_000,
+    outputTokens: 600,
+    totalTokens: 1_200_600,
+    cacheReadTokens: 0,
+    cacheCreationTokens: 0,
+    turns: 0,
+    cost: 0.12,
+    hasUnpriced: false,
+    costExcludesCache: false,
+    decisionRequests: 600,
+    decisions: {
+      inputTokens: 1_200_000,
+      outputTokens: 600,
+      totalTokens: 1_200_600,
+      cost: 0.12,
+      hasUnpriced: false,
+    },
+  };
+  const localMonitor: UsageReportRow = {
+    ...mammoth,
+    modelId: 'tev1:0.8b',
+    provider: 'ollama_decision',
+    inputTokens: 40_000,
+    outputTokens: 20,
+    totalTokens: 40_020,
+    // The server counts a local model's requests as $0: it has no meter.
+    cost: 0,
+    hasUnpriced: false,
+    decisionRequests: 20,
+    decisions: {
+      inputTokens: 40_000,
+      outputTokens: 20,
+      totalTokens: 40_020,
+      cost: null,
+      hasUnpriced: true,
+    },
+  };
+  const withDecisions = () => {
+    const base = summary();
+    return summary({
+      monthToDate: {
+        ...base.monthToDate,
+        decisionRequests: 620,
+        decisions: {
+          inputTokens: 1_240_000,
+          outputTokens: 620,
+          totalTokens: 1_240_620,
+          cost: 0.12,
+          hasUnpriced: true,
+        },
+      },
+    });
+  };
+
+  it('puts decision requests on their own line under the month totals', () => {
+    render(
+      <UsageReport
+        summary={withDecisions()}
+        dayRows={dayRows}
+        modelRows={[...modelRows, mammoth, localMonitor]}
+      />
+    );
+    const line = screen.getByTestId('usage-decision-line');
+    expect(line).toHaveTextContent('Decision models');
+    expect(line).toHaveTextContent('620 requests, 1.2M tokens, $0.12, some not metered');
+    // The turns stat is the month's turns alone.
+    expect(within(screen.getByTestId('usage-summary-stats')).getByText('42')).toBeInTheDocument();
+  });
+
+  it('names a decision model, says requests, and reads a local one as not metered', () => {
+    render(
+      <UsageReport
+        summary={withDecisions()}
+        dayRows={dayRows}
+        modelRows={[...modelRows, mammoth, localMonitor]}
+      />
+    );
+    const table = screen.getByTestId('usage-model-table');
+    const mammothRow = within(table).getByText('mammoth-1').closest('tr')!;
+    expect(mammothRow).toHaveTextContent('Decision model · 600 requests');
+    expect(within(mammothRow).getByText('Decision requests are not turns.')).toBeInTheDocument();
+    expect(mammothRow).toHaveTextContent('$0.12');
+    const localRow = within(table).getByText('tev1:0.8b').closest('tr')!;
+    expect(localRow).toHaveTextContent('Decision model · 20 requests');
+    expect(localRow).toHaveTextContent('Not metered');
+    expect(localRow).not.toHaveTextContent('Unavailable');
+    expect(localRow).not.toHaveTextContent('$0.00');
+  });
+
+  it('reads an unpriced hosted decision model as unavailable, not as not metered', () => {
+    const unlisted: UsageReportRow = {
+      ...mammoth,
+      modelId: 'decision-models/baseten-unlisted-99b-latest',
+      cost: null,
+      hasUnpriced: true,
+      decisions: { ...mammoth.decisions!, cost: null, hasUnpriced: true },
+    };
+    // Beside a priced row, so the table has its Cost column.
+    render(
+      <UsageReport summary={withDecisions()} dayRows={dayRows} modelRows={[mammoth, unlisted]} />
+    );
+    const row = within(screen.getByTestId('usage-model-table'))
+      .getByText('baseten-unlisted-99b-latest')
+      .closest('tr')!;
+    expect(row).toHaveTextContent('Unavailable');
+    expect(row).not.toHaveTextContent('Not metered');
+  });
+
+  it('draws no decision line in a month without decision requests', () => {
+    render(<UsageReport summary={summary()} dayRows={dayRows} modelRows={modelRows} />);
+    expect(screen.queryByTestId('usage-decision-line')).not.toBeInTheDocument();
+  });
+
+  it('drops the dollars with costs hidden', () => {
+    render(
+      <UsageReport
+        summary={withDecisions()}
+        dayRows={dayRows}
+        modelRows={modelRows}
+        showCosts={false}
+      />
+    );
+    expect(screen.getByTestId('usage-decision-line')).toHaveTextContent(
+      '620 requests, 1.2M tokens'
+    );
+    expect(screen.getByTestId('usage-decision-line')).not.toHaveTextContent('$');
+    expect(
+      formatDecisionUsage(1, { ...mammoth.decisions!, cost: null, hasUnpriced: true }, true)
+    ).toBe('1 request, 1.2M tokens, Not metered');
   });
 });
 

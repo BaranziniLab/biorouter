@@ -64,11 +64,47 @@ describe('CostTracker', () => {
     await waitFor(() => expect(screen.getByTestId('chat-cost')).toHaveTextContent('$11.00'));
   });
 
+  it("never prices bare counters in a decision chat, whose tokens are not the current model's", async () => {
+    // Live, a local decision chat's footer priced its 144 tokens at the app's
+    // current model and read "<$0.01" for a request that costs nothing.
+    render(
+      <CostTracker inputTokens={2_000_000} outputTokens={200_000} modelCostRows={[]} ledgerOnly />
+    );
+    await settlePricing();
+    expect(screen.queryByTestId('chat-cost')).not.toBeInTheDocument();
+  });
+
+  it('still reads the ledger in a decision chat', async () => {
+    render(
+      <CostTracker
+        inputTokens={2_000_000}
+        outputTokens={200_000}
+        modelCostRows={[ledgerRow]}
+        ledgerOnly
+      />
+    );
+    await waitFor(() => expect(screen.getByTestId('chat-cost')).toHaveTextContent('$3.50'));
+  });
+
   it('reads the ledger rows in preference to the counters', async () => {
     render(
       <CostTracker inputTokens={2_000_000} outputTokens={200_000} modelCostRows={[ledgerRow]} />
     );
     await waitFor(() => expect(screen.getByTestId('chat-cost')).toHaveTextContent('$3.50'));
+  });
+
+  it('names the cost exact beside a local decision model', async () => {
+    const local: ModelCostRow = {
+      ...ledgerRow,
+      provider: 'ollama_decision',
+      model: 'tev1:0.8b',
+      turns: 20,
+      totalCost: null,
+    };
+    render(<CostTracker modelCostRows={[ledgerRow, local]} />);
+    const cost = await screen.findByTestId('chat-cost');
+    expect(cost).toHaveTextContent('$3.50');
+    expect(cost).toHaveAttribute('aria-label', 'Chat cost $3.50');
   });
 
   it('draws nothing when the person has switched pricing off', async () => {

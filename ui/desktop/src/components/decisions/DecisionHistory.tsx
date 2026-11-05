@@ -100,7 +100,8 @@ export const DECISION_HISTORY_COPY = {
   confidence: 'Concentration',
   confidenceHelp: 'How concentrated the distribution is (0 even, 1 certain). Not P(answer).',
   model: 'Model',
-  tier: 'Tier',
+  /** The decision MODEL's tier, not the chat's: a public chat may use a local model. */
+  tier: 'Model tier',
   latency: 'Latency',
   tokens: 'Tokens',
   chunk: 'Chunk',
