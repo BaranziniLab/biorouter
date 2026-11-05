@@ -288,13 +288,18 @@ under the session that spawned it:
 
 ```
 20260731_1 - Migration review - 2026-07-31 15:04:11 UTC
-  └─ Subagent: audit the migration for data loss [● live]  20260731_2  14 msgs  2026-07-31 15:09
-  └─ Subagent: benchmark the covering index [○ done]  20260731_3  8 msgs  2026-07-31 15:07
+  └─ audit the migration for data loss [◐ running]  20260731_2  gpt-5.5  14 msgs  2026-07-31 15:09
+  └─ benchmark the covering index [● completed]  20260731_3  gpt-5.5  8 msgs  2026-07-31 15:07
 ```
 
-Each child line carries its own label, its session id and its message count —
+Each child line carries its own label, its session id, the model it ran on and its message count —
 enough to tell two siblings of one fan-out apart, and enough to hand the id to
-`biorouter session --resume` or `biorouter session watch`.
+`biorouter session --resume` or `biorouter session watch`. The state is the one
+[`session subagents`](#session-subagents-options) draws: `◐ running` while the
+daemon reports a turn in flight, otherwise the outcome the run recorded when it
+ended (`● completed`, `⏸ blocked`, `✗ failed`, `✗ incomplete`). A run that is not
+running and recorded no outcome reads `· ended`. In `--format json` each row
+carries the same `outcome` (or `null`) and `model` fields.
 
 Two behaviours differ from a plain listing:
 
@@ -304,9 +309,10 @@ Two behaviours differ from a plain listing:
 - **Live/finished state is read from a running daemon**, which is the only
   authority on it (`biorouterd` tracks in-flight turns in memory). When no daemon
   can be reached — none running, or `BIOROUTER_SERVER__SECRET_KEY` not set or not
-  matching — every run reads `· state unknown` and the reason is printed once on
-  stderr. It never reads `done`, because "finished" and "not knowable from here"
-  are different answers and only one of them is safe to guess.
+  matching — a run with no recorded outcome reads `· state unknown` and the reason
+  is printed once on stderr. It never reads `ended`, because "finished" and "not
+  knowable from here" are different answers and only one of them is safe to guess.
+  A recorded outcome is shown either way, because it was written when the run ended.
 
 `--name` resolves subagent runs too, so a run found this way can be addressed by
 its label as well as by its id.
@@ -536,6 +542,57 @@ Cancelling is idempotent: a session with no turn in flight is not an error, it r
 ```bash
 # Stop the turn a session is running
 biorouter session cancel 20251108_2
+```
+
+### session subagents [options]
+
+List the subagents a session started, oldest first, with what each one is doing and how it is set up. This is the terminal counterpart of the list in the chat's side panel in biorouter Desktop.
+
+**Arguments:**
+
+- **`<SESSION_ID>`** (required): The parent chat whose subagents to list
+
+**Options:**
+
+- **`-f, --format <FORMAT>`**: Output format: `text` (default) or `json`. The JSON is exactly what the daemon's `GET /sessions/{session_id}/subagents` route answers, with camelCase fields and snake_case status values
+- **`--watch`**: Redraw every 2 seconds until you press `Ctrl+C`. On a terminal the text redraws in place; piped, or with `--format json`, one frame is printed per refresh
+- **`--user-action-key-stdin`**: Read the raw user-action key from the first line of stdin, so a daemon that holds a key lists a private chat's subagents. See [the user-action key](#live-session-commands-and-the-daemon)
+
+**What it prints.** When the chat's agent declared a phase plan, the plan comes first: its title, then one line per phase with the phase's status, title and progress (`done/total`, plus how many are running, blocked, failed or quiet). Then one numbered entry per subagent:
+
+```
+Plan: Migrate the auth layer
+  ● Research        3/3 done
+  ◐ Implementation  1/4 done · 2 running · 1 quiet
+  ○ Verification    0/0 done
+
+Subagents of session 20261104_1 (2):
+  1. ● survey the auth code (researcher)  completed · phase Research
+       20261104_2  gpt-5.5  3 ext · 1 skill · 0 kb  12 tool calls  1m42s
+       Found three call sites that bypass the session check.
+  2. ◐ port the login handler  running · quiet 4m00s · phase Implementation
+       20261104_5  gpt-5.5  2 ext · 0 skills · 1 kb  7 tool calls  6m10s
+
+Follow a running one: biorouter session attach <session id>. Read a finished one: biorouter session export --session-id <session id>.
+```
+
+The status glyphs are `○` queued, `◐` running (or stopping), `●` completed, `⏸` blocked (it stopped to ask its parent a question), `✗` failed or incomplete, `⊘` interrupted (its process went away mid-run) and `·` unknown. "Quiet" means a running subagent has recorded no activity for 3 minutes or more, the same threshold the phase line counts with and the desktop panel and the TUI pane use. It is a hint, not a verdict that the run is stuck. The last line of an entry is the first line of the subagent's result, its error, or the question it is blocked on.
+
+**With and without a daemon.** When a daemon is reachable (see [Live-session commands and the daemon](#live-session-commands-and-the-daemon)), the list comes from it, so a subagent's live state is known. Without one, the list is read from the local session store and a note on stderr says so: a subagent that was running then reads as interrupted or unknown, because nothing in your terminal is running it. A daemon that answers and refuses is never worked around this way.
+
+**Privacy.** A private chat's subagents are listed only to a caller that may open the chat, exactly as `GET /sessions/{session_id}` decides. A terminal configured for a public model is refused a private chat on either path, and a subagent more private than its parent is left out of the list and out of every phase's counts.
+
+**Usage:**
+
+```bash
+# List a chat's subagents
+biorouter session subagents 20261104_1
+
+# Keep the list on screen while the work runs
+biorouter session subagents 20261104_1 --watch
+
+# The same data for a script
+biorouter session subagents 20261104_1 --format json
 ```
 
 ### session diagnostics [options]

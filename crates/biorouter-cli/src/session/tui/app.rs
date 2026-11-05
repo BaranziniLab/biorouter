@@ -12,6 +12,12 @@ use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::session::completion::SLASH_COMMANDS;
 
+/// Slash commands only the TUI handles (its subagent pane). Kept out of
+/// [`SLASH_COMMANDS`], which the classic CLI shares and which would then offer
+/// commands it cannot run. [`App::ghost`] tries these after the shared list, so
+/// a prefix both could complete still ghosts to the shared command.
+pub(crate) const TUI_ONLY_SLASH_COMMANDS: &[&str] = &["/subagents", "/attach"];
+
 /// Brand warm tan-brown accent (xterm-256 137 ≈ #af875f), Biorouter's light cream palette
 pub const ACCENT: Color = Color::Indexed(137);
 const DIM: Style = Style::new().add_modifier(Modifier::DIM);
@@ -142,6 +148,10 @@ pub struct App {
     /// current tool result stays expanded. `None` when there's no collapsible block
     /// (or in debug mode, where full output is kept).
     pub last_tool_result: Option<(usize, usize)>,
+    /// This chat's subagents: the pane's model, visibility, focus, selection.
+    pub subagents: super::subagents::SubagentPane,
+    /// A subagent's chat shown read-only in place of the history, if open.
+    pub child: Option<Box<super::subagents::ChildView>>,
 }
 
 impl App {
@@ -174,6 +184,8 @@ impl App {
             stream_start: None,
             stream_dirty: false,
             last_tool_result: None,
+            subagents: super::subagents::SubagentPane::default(),
+            child: None,
         }
     }
 
@@ -805,6 +817,7 @@ impl App {
         }
         SLASH_COMMANDS
             .iter()
+            .chain(TUI_ONLY_SLASH_COMMANDS)
             .find(|c| c.starts_with(line.as_str()) && **c != line.as_str())
             .and_then(|c| c.get(line.len()..))
     }
@@ -1143,6 +1156,44 @@ fn truncate_lines(s: &str, max_lines: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::tool_output_preview;
+
+    /// `/subagents` and `/attach` ghost like any other command, after the
+    /// shared list: `/s` still means `/schedule`, and the shared list itself
+    /// stays free of commands the classic CLI cannot run.
+    #[test]
+    fn the_ghost_offers_the_tui_only_subagent_commands() {
+        use super::{App, StatusInfo, SLASH_COMMANDS, TUI_ONLY_SLASH_COMMANDS};
+
+        let ghost_of = |typed: &str| {
+            let mut app = App::new(StatusInfo::default());
+            for c in typed.chars() {
+                app.insert_char(c);
+            }
+            app.ghost()
+        };
+        assert_eq!(ghost_of("/su"), Some("bagents"));
+        assert_eq!(ghost_of("/a"), Some("ttach"));
+        assert_eq!(ghost_of("/attach"), None, "a complete command has no ghost");
+        assert_eq!(
+            ghost_of("/s"),
+            Some("chedule"),
+            "the shared list goes first"
+        );
+
+        let mut app = App::new(StatusInfo::default());
+        for c in "/sub".chars() {
+            app.insert_char(c);
+        }
+        app.accept_ghost();
+        assert_eq!(app.input, "/subagents ");
+
+        for command in TUI_ONLY_SLASH_COMMANDS {
+            assert!(
+                !SLASH_COMMANDS.contains(command),
+                "{command} belongs to the TUI only"
+            );
+        }
+    }
 
     /// The transcript pane shows what the tool said, not the envelope the
     /// guardrail wrapped it in for the model.

@@ -125,7 +125,10 @@ pub(crate) async fn daemon_auth() -> Result<DaemonAuth> {
 /// Read up front, unlike the terminal prompt, which waits for a daemon to ask:
 /// on `attach` every later line of stdin is a message, so the key's line must
 /// be taken before the reader that treats lines as messages starts.
-async fn with_supplied_key(auth: DaemonAuth, key_from_stdin: bool) -> Result<DaemonAuth> {
+pub(crate) async fn with_supplied_key(
+    auth: DaemonAuth,
+    key_from_stdin: bool,
+) -> Result<DaemonAuth> {
     if !key_from_stdin {
         return Ok(auth);
     }
@@ -271,7 +274,7 @@ fn key_verdict(code: u16, body: &str) -> KeyVerdict {
 /// `ErrorResponse` answers `{"message": …}` and the reach gate answers plain
 /// text where a route hands its refusal back directly. Both are the daemon's
 /// own words and are shown as they are.
-fn refusal_sentence(body: &str) -> Option<String> {
+pub(crate) fn refusal_sentence(body: &str) -> Option<String> {
     let text = json_object(body)
         .and_then(|value| value.get("message")?.as_str().map(str::to_string))
         .unwrap_or_else(|| body.to_string());
@@ -1239,6 +1242,38 @@ pub(crate) async fn daemon_json_request(
     parse_http_response(&raw, &format!("{method} {path}"))
 }
 
+/// A GET of a JSON route that names a session, carrying the user-action proof
+/// exactly when `auth` holds the key (see [`push_proof`]) — `GET
+/// /sessions/{id}/subagents`, where the proof lets the person reach a private
+/// chat on a daemon that holds a key. The status and the body.
+///
+/// Composed through `auth.headers()` like both request builders above, so this
+/// request cannot authenticate without also stating its capability.
+pub(crate) async fn daemon_get_json(
+    path: &str,
+    auth: &DaemonAuth,
+    port: u16,
+    deadline: std::time::Duration,
+) -> Result<(u16, String)> {
+    let mut request = Zeroizing::new(format!(
+        "GET {path} HTTP/1.1\r\nHost: {DAEMON_HOST}\r\n{}",
+        auth.headers()
+    ));
+    push_proof(&mut request, auth);
+    request.push_str("Accept: application/json\r\nConnection: close\r\n\r\n");
+    let raw = tokio::time::timeout(deadline, async {
+        let mut stream =
+            biorouter::net::connect_non_inheritable(format!("{DAEMON_HOST}:{port}")).await?;
+        stream.write_all(request.as_bytes()).await?;
+        let mut raw = Vec::new();
+        stream.read_to_end(&mut raw).await?;
+        Ok::<Vec<u8>, std::io::Error>(raw)
+    })
+    .await
+    .map_err(|_| anyhow!("the daemon did not answer GET {path} within {deadline:?}"))??;
+    parse_http_response(&raw, &format!("GET {path}"))
+}
+
 /// An HTTP/1.1 chunked body, joined. Malformed framing ends the body where it
 /// breaks rather than inventing bytes.
 fn dechunk(mut rest: &[u8]) -> Vec<u8> {
@@ -2107,17 +2142,7 @@ async fn resolve_attach_target(
     let sessions = session_manager
         .list_sessions_by_types_including_empty(listed_session_types(true))
         .await?;
-    let rows: Vec<SessionRow> = sessions
-        .iter()
-        .map(|s| SessionRow {
-            id: s.id.clone(),
-            name: s.name.clone(),
-            session_type: s.session_type,
-            parent_session_id: s.parent_session_id.clone(),
-            updated_at: s.updated_at,
-            message_count: s.message_count,
-        })
-        .collect();
+    let rows: Vec<SessionRow> = sessions.iter().map(SessionRow::from_session).collect();
     if let Some(name) = name {
         return pick_named(&rows, &name);
     }
@@ -4252,6 +4277,8 @@ mod tests {
             parent_session_id: parent.map(str::to_string),
             updated_at: chrono::Utc::now(),
             message_count: 3,
+            model: None,
+            outcome: None,
         }
     }
 

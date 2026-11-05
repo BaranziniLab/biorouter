@@ -786,6 +786,35 @@ enum SessionCommand {
         )]
         user_action_key_stdin: bool,
     },
+    #[command(
+        about = "List the subagents a session started, with their status, model and setup",
+        long_about = "Lists the subagents a session started, oldest first: each one's status, \
+                      model, extensions, skills and knowledge bases, tool calls and run time, and \
+                      the first line of its result. When the session's agent declared a phase \
+                      plan, the plan comes first, with each phase's progress. With a running \
+                      daemon the status is live; without one the list is read from the local \
+                      session store, and a subagent that was running reads as interrupted or \
+                      unknown. Follow a running subagent with `biorouter session attach <id>`."
+    )]
+    Subagents {
+        /// Session id of the parent chat.
+        session_id: String,
+        #[arg(
+            short,
+            long,
+            value_enum,
+            default_value_t = crate::commands::session_subagents::SubagentsFormat::Text,
+            help = "Output format (text, json)"
+        )]
+        format: crate::commands::session_subagents::SubagentsFormat,
+        #[arg(long, help = "Redraw every 2 seconds until Ctrl-C")]
+        watch: bool,
+        #[arg(
+            long,
+            help = "For a daemon started with a user-action key: read the raw key from the first line of stdin, so a private chat's subagents can be listed"
+        )]
+        user_action_key_stdin: bool,
+    },
     #[command(about = "Stop the turn a session is running (idempotent)")]
     Cancel {
         /// Session id whose running turn should be stopped.
@@ -2072,6 +2101,20 @@ async fn handle_session_subcommand(command: SessionCommand) -> Result<()> {
             )
             .await?;
         }
+        SessionCommand::Subagents {
+            session_id,
+            format,
+            watch,
+            user_action_key_stdin,
+        } => {
+            crate::commands::session_subagents::handle_session_subagents(
+                &session_id,
+                format,
+                watch,
+                user_action_key_stdin,
+            )
+            .await?;
+        }
         SessionCommand::Cancel {
             session_id,
             user_action_key_stdin,
@@ -3182,6 +3225,74 @@ mod cli_tests {
         root.build();
         walk(&mut root, "biorouter", &mut leaks);
         assert!(leaks.is_empty(), "internal notes in --help: {leaks:#?}");
+    }
+
+    #[test]
+    fn session_subagents_parses_its_id_format_and_watch() {
+        use crate::commands::session_subagents::SubagentsFormat;
+        let parse = |argv: &[&str]| -> Option<SessionCommand> {
+            match Cli::try_parse_from(argv).ok()?.command {
+                Some(Command::Session { command, .. }) => command,
+                _ => None,
+            }
+        };
+
+        let Some(SessionCommand::Subagents {
+            session_id,
+            format,
+            watch,
+            user_action_key_stdin,
+        }) = parse(&["biorouter", "session", "subagents", "20261104_1"])
+        else {
+            panic!("`session subagents <id>` did not parse as the subagents command");
+        };
+        assert_eq!(session_id, "20261104_1");
+        assert_eq!(format, SubagentsFormat::Text, "text is the default");
+        assert!(!watch && !user_action_key_stdin);
+
+        let Some(SessionCommand::Subagents { format, watch, .. }) = parse(&[
+            "biorouter",
+            "session",
+            "subagents",
+            "20261104_1",
+            "--format",
+            "json",
+            "--watch",
+        ]) else {
+            panic!("`--format json --watch` did not parse");
+        };
+        assert_eq!(format, SubagentsFormat::Json);
+        assert!(watch);
+
+        let Some(SessionCommand::Subagents {
+            user_action_key_stdin,
+            ..
+        }) = parse(&[
+            "biorouter",
+            "session",
+            "subagents",
+            "20261104_1",
+            "-f",
+            "text",
+            "--user-action-key-stdin",
+        ])
+        else {
+            panic!("`-f text --user-action-key-stdin` did not parse");
+        };
+        assert!(user_action_key_stdin);
+
+        // The id is required, and a format it does not know is refused rather
+        // than read as text.
+        assert!(Cli::try_parse_from(["biorouter", "session", "subagents"]).is_err());
+        assert!(Cli::try_parse_from([
+            "biorouter",
+            "session",
+            "subagents",
+            "20261104_1",
+            "--format",
+            "yaml"
+        ])
+        .is_err());
     }
 
     #[test]

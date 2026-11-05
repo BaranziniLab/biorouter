@@ -432,17 +432,7 @@ async fn print_grouped_sessions(
             }
         };
 
-    let rows: Vec<SessionRow> = sessions
-        .iter()
-        .map(|s| SessionRow {
-            id: s.id.clone(),
-            name: s.name.clone(),
-            session_type: s.session_type,
-            parent_session_id: s.parent_session_id.clone(),
-            updated_at: s.updated_at,
-            message_count: s.message_count,
-        })
-        .collect();
+    let rows: Vec<SessionRow> = sessions.iter().map(SessionRow::from_session).collect();
     let mut groups = group_by_parent(rows);
     // ⚠ `limit` caps the TOP-LEVEL rows, after grouping. Truncating the flat row
     // list first would let one parent's six children consume a `--limit 5`.
@@ -475,6 +465,11 @@ async fn print_grouped_sessions(
             "updated_at": row.updated_at,
             "message_count": row.message_count,
             "live": liveness_label(liveness_of(&row.id)),
+            "model": row.model,
+            // A subagent's recorded outcome (`completed`, `failed`, ...), or
+            // null when none was recorded. Separate from `live`: a run that was
+            // steered into a new turn is live and carries its previous outcome.
+            "outcome": row.outcome,
         })
     };
 

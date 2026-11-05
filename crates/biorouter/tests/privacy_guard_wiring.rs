@@ -169,6 +169,16 @@ const REGISTRY: &[Guard] = &[
         status: Status::Wired,
         sites: &[
             Site {
+                file: "crates/biorouter-cli/src/commands/session_subagents.rs",
+                counts: c(1, 0, 1),
+                kind: SiteKind::Guard,
+                what: "`biorouter session subagents` read from the LOCAL store (no daemon \
+                       answered): the parent chat must be readable at this terminal's \
+                       capability, as `GET /sessions/{id}/subagents` requires over HTTP, so \
+                       unsetting the daemon secret is not a way around the route's gate. Plus \
+                       its import",
+            },
+            Site {
                 file: "crates/biorouter-cli/src/commands/web.rs",
                 counts: c(1, 0, 1),
                 kind: SiteKind::Guard,
@@ -201,6 +211,15 @@ const REGISTRY: &[Guard] = &[
                   because an LLM-generated title is content",
         status: Status::Wired,
         sites: &[
+            Site {
+                file: "crates/biorouter-cli/src/commands/session_subagents.rs",
+                counts: c(1, 0, 1),
+                kind: SiteKind::Guard,
+                what: "`biorouter session subagents` on the local store: each child is listed \
+                       at this terminal's capability before the phase plan is rebuilt from the \
+                       children that remain, the CLI counterpart of the route's `lists_session` \
+                       filter. Plus its import",
+            },
             Site {
                 file: "crates/biorouter/src/agents/schedule_tool.rs",
                 counts: c(1, 0, 0),
@@ -498,6 +517,16 @@ const REGISTRY: &[Guard] = &[
                        named chat's next turn (QA 2026-09-10, F0's sweep)",
             },
             Site {
+                file: "crates/biorouter-server/src/routes/session_subagents.rs",
+                counts: c(1, 2, 0),
+                kind: SiteKind::Guard,
+                what: "`GET /sessions/{id}/subagents`, which names the PARENT chat and answers \
+                       with its children's names, models and result lines, so the parent is \
+                       gated before its row is read. The second ref is the module qualifier on \
+                       `http_caller`, which then filters each child as a listing does: a child \
+                       can be more private than its parent",
+            },
+            Site {
                 file: "crates/biorouter-server/src/routes/workflow.rs",
                 counts: c(1, 3, 0),
                 kind: SiteKind::Guard,
@@ -578,6 +607,12 @@ const REGISTRY: &[Guard] = &[
                 counts: c(3, 0, 0),
                 kind: SiteKind::Guard,
                 what: "`keyset_listing_scope`, which `GET /sessions/sidebar` and the paged `GET /sessions?limit=` (History's first paint) both ask, plus `GET /sessions/insights` and `GET /sessions/activity`, each omitting Crew-owned rows before serialization",
+            },
+            Site {
+                file: "crates/biorouter-server/src/routes/session_subagents.rs",
+                counts: c(1, 0, 0),
+                kind: SiteKind::Guard,
+                what: "`GET /sessions/{id}/subagents`, omitting Crew-owned children from the roster before the plan's counts are derived from it",
             },
             Site {
                 file: "crates/biorouter-server/src/routes/session_meta.rs",
@@ -698,6 +733,13 @@ const REGISTRY: &[Guard] = &[
                        filtering the rows they expose",
             },
             Site {
+                file: "crates/biorouter-server/src/routes/session_subagents.rs",
+                counts: c(1, 0, 0),
+                kind: SiteKind::Guard,
+                what: "`GET /sessions/{id}/subagents`, resolved ONCE for the whole roster after \
+                       the parent's own gate, then asked of every child row",
+            },
+            Site {
                 file: SESSION_REACH,
                 counts: c(1, 0, 0),
                 kind: SiteKind::Guard,
@@ -755,6 +797,15 @@ const REGISTRY: &[Guard] = &[
                        unfiltered ordering and resume from the position it reached, which made \
                        the continuation value a count of the rows it hid (adversarial review \
                        2026-09-12)",
+            },
+            Site {
+                file: "crates/biorouter-server/src/routes/session_subagents.rs",
+                counts: c(1, 0, 0),
+                kind: SiteKind::Guard,
+                what: "`GET /sessions/{id}/subagents`, asked of each child's OWN classification \
+                       (a child can be more private than its parent), BEFORE the plan is \
+                       recomputed from the rows that survive, so a phase neither counts nor \
+                       names a child the caller was not listed",
             },
         ],
     },
