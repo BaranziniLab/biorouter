@@ -21,7 +21,16 @@
 //! scheduled digest. That is deliberate — they end in the same knowledge-base
 //! ratchet, so a third knowledge path cannot be added without passing the gate.
 //!
-//! A fourth site, the HTTP knowledge macros (`routes/knowledge.rs`'s
+//! **Decision models** (`crate::decision::service`, added 2026-11) are a
+//! further site of the same kind: a monitor's rolling window, a `decide`
+//! tool's chunks or a phase gate's hand-off text goes to a decision model the
+//! session row never records. A decision adapter is not a [`Provider`], so it
+//! is gated through [`assert_alt_tier_allowed`], the tier-keyed form of the
+//! downward half below, with the master switch the caller sampled. It sits
+//! with sites 1 and 2 rather than site 3: the answer lands back in the same
+//! chat and ratchets nothing. `DecisionService::decide` is its one call site.
+//!
+//! A further exemption, the HTTP knowledge macros (`routes/knowledge.rs`'s
 //! `build_completer`), is deliberately **not** here, and neither is its CLI twin
 //! (`biorouter-cli/src/commands/knowledge.rs`'s `build_completer`, whose
 //! provider comes from `--provider`): both have a knowledge-base id and no
@@ -99,7 +108,7 @@
 
 use anyhow::{anyhow, Result};
 
-use super::{bind_allowed, tool_bind_allowed, SessionClassification};
+use super::{bind_allowed, tool_bind_allowed, ProviderTier, SessionClassification};
 use crate::providers::base::Provider;
 
 /// Refuse to hand a session's content to a provider that is not the one bound to
@@ -214,6 +223,45 @@ pub fn assert_alt_provider_matches_session(
     ))
 }
 
+/// [`assert_alt_provider_allowed`] for an alternate model that is not a
+/// [`Provider`]: a decision model (`crate::decision`), whose adapters declare a
+/// tier of their own rather than implementing the chat trait. Same rule, same
+/// sentence, one predicate.
+///
+/// Two differences from the sibling, both forced by its callers:
+///
+/// * The model is named by `model_name` and its tier passed in, because there
+///   is no `Provider` to ask. The caller passes the tier the adapter
+///   *declares* (`DecisionModel::tier`), read after the adapter was built, the
+///   same "the instance's tier, not the name's" rule the other sites follow.
+/// * `enforced` is the master switch **as the caller sampled it**, not a read
+///   made here. A decision runs on a tool-call path (the `decide` tool), where
+///   the house rule is one `cap.enforced()` per call, and in a monitor or gate,
+///   where the service samples `privacy_tiers_enabled()` once per decision call
+///   and threads it. A second read here would be the two-reads race
+///   `CallCapability` exists to close.
+///
+/// It is the DOWNWARD half only, like the sibling: a decision's output is an
+/// answer and a probability that lands back in the same chat (a tool result, a
+/// monitor notice, a gate verdict), never a ratchet input, so the upward choice
+/// leaves the residual recorded at the top of this module rather than a
+/// permanent loss. Whether a public chat may use a private decision model is
+/// therefore the same open question as plan mode and prompt hooks, not a new
+/// policy.
+pub fn assert_alt_tier_allowed(
+    what: &str,
+    model_name: &str,
+    tier: ProviderTier,
+    session: SessionClassification,
+    enforced: bool,
+    env_key_to_name: &str,
+) -> Result<()> {
+    if !enforced {
+        return Ok(());
+    }
+    refuse_downward_tier(what, model_name, tier, session, env_key_to_name)
+}
+
 /// Gate A's rule, and the one sentence that states it. Shared so both public
 /// entry points above refuse the downward choice in the same words — and so
 /// [`bind_allowed`] keeps exactly one caller in this file, which the guard
@@ -224,13 +272,31 @@ fn refuse_downward(
     session: SessionClassification,
     env_key_to_name: &str,
 ) -> Result<()> {
-    if bind_allowed(provider.tier(), session) {
+    refuse_downward_tier(
+        what,
+        provider.get_name(),
+        provider.tier(),
+        session,
+        env_key_to_name,
+    )
+}
+
+/// [`refuse_downward`]'s body, keyed on a tier so [`assert_alt_tier_allowed`]
+/// asks the same predicate in the same words. The one [`bind_allowed`] call in
+/// this file.
+fn refuse_downward_tier(
+    what: &str,
+    name: &str,
+    tier: ProviderTier,
+    session: SessionClassification,
+    env_key_to_name: &str,
+) -> Result<()> {
+    if bind_allowed(tier, session) {
         return Ok(());
     }
     Err(anyhow!(
-        "This chat is private, so {what} cannot run on `{}`, which is a public model. \
-         Set {env_key_to_name} to a private model, or start this work in a public chat.",
-        provider.get_name()
+        "This chat is private, so {what} cannot run on `{name}`, which is a public model. \
+         Set {env_key_to_name} to a private model, or start this work in a public chat."
     ))
 }
 
@@ -395,6 +461,33 @@ mod tests {
                     .is_ok(),
                 tool_bind_allowed(tier, session),
                 "{session:?} + {tier:?}"
+            );
+        }
+    }
+
+    /// The tier-keyed form answers every cell as the provider-keyed sibling
+    /// does, in the same words, and an unenforced call (the switch OFF, as the
+    /// caller sampled it) refuses nothing.
+    #[test]
+    fn the_tier_keyed_form_is_the_downward_half_in_the_same_words() {
+        use SessionClassification::{Private, Public};
+
+        for (session, tier) in [
+            (Public, ProviderTier::Public),
+            (Public, ProviderTier::Private),
+            (Private, ProviderTier::Public),
+            (Private, ProviderTier::Private),
+        ] {
+            let by_provider =
+                assert_alt_provider_allowed("this monitor", &provider_at(tier), session, "KEY")
+                    .map_err(|e| e.to_string());
+            let by_tier =
+                assert_alt_tier_allowed("this monitor", "planner", tier, session, true, "KEY")
+                    .map_err(|e| e.to_string());
+            assert_eq!(by_tier, by_provider, "{session:?} + {tier:?}");
+            assert!(
+                assert_alt_tier_allowed("x", "planner", tier, session, false, "KEY").is_ok(),
+                "with the switch OFF nothing is refused: {session:?} + {tier:?}"
             );
         }
     }
