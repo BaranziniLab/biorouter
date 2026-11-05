@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { Session } from '../../api';
 import type { DateGroup } from '../../utils/dateUtils';
+import { splitNestedRuns } from './sessionGrouping';
 import {
   applyHeldHistory,
   holdHistory,
@@ -114,6 +115,52 @@ describe('subagent runs nested under a held parent', () => {
     );
     expect(ids(groups)).toEqual(['today: parent other late']);
     expect(children.get(late.id)?.map((s) => s.id)).toEqual(['run2']);
+  });
+});
+
+/**
+ * A parent with more than three runs folds the rest behind "Show N more runs", and the fold is
+ * taken over the arrangement History draws, the held one while the pointer is here. So the count
+ * cannot jump under the pointer, and unfolding shows the runs that were held, not the ones that
+ * started meanwhile (they wait, like any other arrival).
+ */
+describe('the "Show N more runs" fold over a held parent', () => {
+  const parent = chat('parent');
+  const runs = ['r5', 'r4', 'r3', 'r2', 'r1'].map((id) => chat(id));
+  const held = holdHistory([group('today', parent)], new Map([[parent.id, runs]]));
+  const ids = (list: readonly Session[]) => list.map((s) => s.id);
+
+  it('keeps the held newest three and the held count while a newer run waits', () => {
+    const live = new Map([[parent.id, [chat('r6'), ...runs]]]);
+    const { children } = applyHeldHistory(held, [group('today', parent)], live);
+    const { shown, hidden } = splitNestedRuns(children.get(parent.id)!);
+    expect(ids(shown)).toEqual(['r5', 'r4', 'r3']);
+    expect(hidden).toBe(2);
+  });
+
+  it('unfolds to the held runs, still without the one that started meanwhile', () => {
+    const live = new Map([[parent.id, [chat('r6'), ...runs]]]);
+    const { children } = applyHeldHistory(held, [group('today', parent)], live);
+    const { shown } = splitNestedRuns(children.get(parent.id)!, { expanded: true });
+    expect(ids(shown)).toEqual(['r5', 'r4', 'r3', 'r2', 'r1']);
+  });
+
+  it('lets a removed run out, and the next held run into view', () => {
+    const live = new Map([[parent.id, runs.filter((run) => run.id !== 'r4')]]);
+    const { children } = applyHeldHistory(held, [group('today', parent)], live);
+    const { shown, hidden } = splitNestedRuns(children.get(parent.id)!);
+    expect(ids(shown)).toEqual(['r5', 'r3', 'r2']);
+    expect(hidden).toBe(1);
+  });
+
+  it("brings a person's own renamed run into view from the fold", () => {
+    const lifted = liftHeldRow(held, { id: 'r1', key: 'today', label: 'Today' });
+    const { children } = applyHeldHistory(
+      lifted,
+      [group('today', parent)],
+      new Map([[parent.id, runs]])
+    );
+    expect(ids(splitNestedRuns(children.get(parent.id)!).shown)).toEqual(['r1', 'r5', 'r4']);
   });
 });
 

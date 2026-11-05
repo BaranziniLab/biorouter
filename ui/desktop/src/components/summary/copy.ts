@@ -44,6 +44,86 @@ export const summaryCopy = {
   workflow: 'Workflow',
   diagnostics: 'Diagnostics',
 
+  /**
+   * The header button's name gains this while subagents run and the rail is
+   * hidden: "Chat summary, 3 subagents running".
+   */
+  buttonWithSubagents: (base: string, running: number) =>
+    `${base}, ${running} ${running === 1 ? 'subagent' : 'subagents'} running`,
+
+  /** The subagents and phases sections (`summary/SummarySubagents.tsx`). */
+  agents: {
+    phases: 'Phases',
+    /** Read after the phase count by assistive technology only: "1 of 4 phases complete". */
+    phasesCountSuffix: ' phases complete',
+    phaseListLabel: 'Phases of the plan',
+    phaseProgressLabel: (title: string) => `${title} progress`,
+    /** Visible per phase: "2 of 5". Read: "2 of 5 subagents done". */
+    phaseAgentsSuffix: ' subagents done',
+    subagents: 'Subagents',
+    otherSubagents: 'Other subagents',
+    subagentListLabel: 'Subagents of this chat',
+    /** Read after a list's count: "4 of 10 done". */
+    doneSuffix: ' done',
+    running: (count: number) => `${count} running`,
+    quiet: (count: number) => `${count} quiet`,
+    failed: (count: number) => `${count} failed`,
+    blocked: (count: number) => `${count} blocked`,
+    groups: { running: 'Running', attention: 'Needs attention', done: 'Done' },
+    showAll: (count: number) => `Show all ${count}`,
+    showFewer: 'Show fewer',
+    refreshFailed: 'Subagents could not refresh.',
+    noneInPhase: 'No subagents yet',
+    status: {
+      queued: 'Queued',
+      running: 'Running',
+      cancelling: 'Stopping',
+      completed: 'Completed',
+      blocked: 'Blocked',
+      incomplete: 'Incomplete',
+      failed: 'Failed',
+      interrupted: 'Interrupted',
+      unknown: 'Status unknown',
+    },
+    quietFor: (elapsed: string) => `quiet for ${elapsed}`,
+    phaseStatus: {
+      pending: 'Pending',
+      in_progress: 'In progress',
+      completed: 'Complete',
+      blocked: 'Blocked',
+      skipped: 'Skipped',
+    },
+    phaseKind: {
+      plan: 'Plan',
+      research: 'Research',
+      execution: 'Execution',
+      implementation: 'Implementation',
+      verification: 'Verification',
+      testing: 'Testing',
+      auditing: 'Auditing',
+      review: 'Review',
+      meeting: 'Meeting',
+      synthesis: 'Synthesis',
+      other: 'Other',
+    },
+    /** The hover card's labels. */
+    card: {
+      role: 'Role',
+      phase: 'Phase',
+      model: 'Model',
+      extensions: 'Extensions',
+      skills: 'Skills',
+      knowledgeBases: 'Knowledge bases',
+      tokens: 'Tokens',
+      toolCalls: 'Tool calls',
+      messages: 'Messages',
+      runTime: 'Run time',
+      none: 'None',
+      private: 'Private',
+      openHint: 'Click to open in a tab',
+    },
+  },
+
   /** The Stop & send banner above the composer, one line per state. */
   stopAndSend: {
     owned: 'Stop & send is waiting',

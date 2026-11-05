@@ -12,6 +12,11 @@ import {
   MessageSquareText,
   Target,
   AlertCircle,
+  AlertTriangle,
+  CheckCircle2,
+  ChevronDown,
+  CircleDotDashed,
+  CircleHelp,
   Pencil,
   Upload,
   Puzzle,
@@ -38,7 +43,12 @@ import {
   groupSessionsByDate,
   type DateGroup,
 } from '../../utils/dateUtils';
-import { groupSessionsByParent, sortByActivity, withoutSubagents } from './sessionGrouping';
+import {
+  groupSessionsByParent,
+  sortByActivity,
+  splitNestedRuns,
+  withoutSubagents,
+} from './sessionGrouping';
 import {
   ChatRowContextMenuContent,
   ChatRowDropdownMenuContent,
@@ -50,6 +60,7 @@ import { Skeleton } from '../ui/skeleton';
 import { ConfirmationModal } from '../ui/ConfirmationModal';
 import { ImportSessionModal } from './ImportSessionModal';
 import { Tooltip, TooltipContent, TooltipTrigger } from '../ui/Tooltip';
+import { Badge } from '../ui/badge';
 import { importSession, Session, ExtensionConfig, ExtensionData } from '../../api';
 import { extensionDisplayName } from '../settings/extensions/extensionDisplayName';
 import { ReadableContent } from '../Layout/ReadableContent';
@@ -75,7 +86,14 @@ import {
 import { chatDateBucket } from '../../utils/chatDateBuckets';
 import { exportConversation } from '../../utils/exportConversation';
 import { useDiverge } from '../../hooks/useDiverge';
-import { folderName, historyRowTitle } from './historyRow';
+import {
+  folderName,
+  historyRowTitle,
+  runModelName,
+  subagentOutcomeOf,
+  type SubagentOutcome,
+  type SubagentOutcomeStatus,
+} from './historyRow';
 import {
   applyHeldHistory,
   holdHistory,
@@ -84,7 +102,12 @@ import {
   type HeldHistory,
   type PendingOwnMove,
 } from './historyHold';
-import { findHistoryRow, refocusHistoryRow, scrollHistoryRowIntoView } from './historyReveal';
+import {
+  findHistoryRow,
+  focusedNestedRunId,
+  refocusHistoryRow,
+  scrollHistoryRowIntoView,
+} from './historyReveal';
 import {
   BILLED_TOKENS_EXACT,
   BILLED_TOKENS_LOWER_BOUND,
@@ -110,6 +133,9 @@ import {
   RENAME,
   RENAME_PLACEHOLDER,
   RENAME_TITLE,
+  RUN_STATUS_DETAILS,
+  RUN_STATUS_STAT,
+  RUN_STATUS_WORDS,
   SAVE,
   SHOW_SUBAGENT_RUNS,
   START_A_CHAT,
@@ -119,6 +145,9 @@ import {
   moreActionsLabel,
   openChatLabel,
   renameLabel,
+  runModelTooltip,
+  runsFromLabel,
+  showMoreRuns,
 } from './copy';
 import './history.css';
 
@@ -328,6 +357,58 @@ function HistoryStat({
   );
 }
 
+/**
+ * Each end a run can record, drawn by SHAPE (a check, a question, a warning triangle, a dashed
+ * ring), so the four read apart in the row's one muted ink and in forced colours, and none of them
+ * needs a tint to be told from the others.
+ */
+const RUN_STATUS_GLYPHS: Record<
+  SubagentOutcomeStatus,
+  React.ComponentType<{ className?: string; 'aria-hidden'?: boolean | 'true' }>
+> = {
+  completed: CheckCircle2,
+  blocked: CircleHelp,
+  failed: AlertTriangle,
+  incomplete: CircleDotDashed,
+};
+
+/** A run's own line can be a paragraph; the tooltip and the spoken text keep its start. */
+const RUN_RESULT_LINE_MAX = 160;
+
+/**
+ * A nested run's third stat cell: how it ended, from its outcome record (`subagentOutcomeOf`).
+ * It sits in the extensions column of a top-level row, so the three tracks stay three and the
+ * runs' figures line up with each other. The glyph sits on the column's right edge, where every
+ * other stat glyph sits; the word is spoken ("Run status: Completed") and is the tooltip's first
+ * word, followed by the run's own line (its summary, error or question) when it left one.
+ */
+function RunStatus({ outcome }: { outcome: SubagentOutcome }) {
+  const Icon = RUN_STATUS_GLYPHS[outcome.status];
+  const word = RUN_STATUS_WORDS[outcome.status];
+  const line = outcome.resultLine;
+  const detail = line
+    ? line.length > RUN_RESULT_LINE_MAX
+      ? `${line.slice(0, RUN_RESULT_LINE_MAX - 1).trimEnd()}…`
+      : line
+    : RUN_STATUS_DETAILS[outcome.status];
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <span className="br-history-stat br-history-run-status" data-run-status={outcome.status}>
+          <span className="sr-only">
+            {RUN_STATUS_STAT}: {word}
+          </span>
+          {line ? <span className="sr-only"> ({detail})</span> : null}
+          <Icon className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+        </span>
+      </TooltipTrigger>
+      <TooltipContent side="top" className="max-w-xs">
+        {word}. {detail}
+      </TooltipContent>
+    </Tooltip>
+  );
+}
+
 interface HistoryRowProps {
   session: Session;
   onSelectSession: (sessionId: string) => void;
@@ -339,11 +420,20 @@ interface HistoryRowProps {
   onExport: (session: Session) => void;
   onDiverge: (session: Session) => void;
   onDeclassify: (session: Session) => void;
+  /**
+   * A subagent run drawn inside its parent's block (`.br-history-children`), never an orphan,
+   * which keeps the top-level shape. The row reads as subordinate: one line at the 40px floor
+   * (a 13px title, then the time and the model it ran on), no folder (it is the parent's), the
+   * run's status in place of the extensions cell, and 28px actions. `data-depth="1"` is what
+   * `history.css` keys on.
+   */
+  nested?: boolean;
 }
 
 /**
  * One History row: the kind glyph and title, one muted line under it, the stats
- * as fixed columns, then Rename and `⋯` revealed on hover or focus.
+ * as fixed columns, then Rename and `⋯` revealed on hover or focus. A nested run
+ * (`nested`) folds the muted line onto the title's line.
  *
  * ⚠ **Module scope, and it has to stay there.** Declared inside the list's body
  * it was a new component type on every render, so every refetch, cross-fade or
@@ -360,6 +450,7 @@ const HistoryRow = React.memo(function HistoryRow({
   onExport,
   onDiverge,
   onDeclassify,
+  nested = false,
 }: HistoryRowProps) {
   /**
    * Is this page served to a browser, where declassification cannot work (SD-8)?
@@ -445,9 +536,15 @@ const HistoryRow = React.memo(function HistoryRow({
   };
 
   const extensionNames = useMemo(
-    () => getSessionExtensionNames(session.extension_data),
-    [session.extension_data]
+    () => (nested ? [] : getSessionExtensionNames(session.extension_data)),
+    [nested, session.extension_data]
   );
+  const outcome = useMemo(
+    () => (nested ? subagentOutcomeOf(session.extension_data) : null),
+    [nested, session.extension_data]
+  );
+  const modelName = nested ? runModelName(session) : null;
+  const actionSize = nested ? 'sm' : 'default';
   const billedTokenEstimate = billedSessionTokenEstimate(session);
   const folder = folderName(session.working_dir);
   const title = historyRowTitle(session);
@@ -466,6 +563,7 @@ const HistoryRow = React.memo(function HistoryRow({
           // being acted on is unmarked. The right-click menu says so through the row's
           // own `data-state` (Radix puts it on the trigger); the `⋯` menu through this.
           data-menu-open={menuOpen || undefined}
+          data-depth={nested ? 1 : undefined}
           onKeyDown={handleKeyDown}
         >
           {/* The glyph says what the chat is and whether it is private; the
@@ -482,15 +580,21 @@ const HistoryRow = React.memo(function HistoryRow({
                 "Subagent" badge and no "Subagent:" in its title, and an app chat reads as
                 the app's name, not `app:<id>`. The glyph carries the kind in its
                 accessible name. */}
-            <span className="flex min-w-0 items-center gap-2">
-              <span className="text-label truncate">{title}</span>
-            </span>
+            {nested ? (
+              <span className="br-history-row-title truncate">{title}</span>
+            ) : (
+              <span className="flex min-w-0 items-center gap-2">
+                <span className="text-label truncate">{title}</span>
+              </span>
+            )}
             {/* One muted line: when, then where (by name; the path is in the
                 tooltip and in the filter, never on the row). A diverged chat
                 says what it branched from instead of where it ran, in words
                 only: the row's kind glyph already draws the branch, and a
                 second, different branch glyph on the same row read as two
-                things (vision V1-L6). */}
+                things (vision V1-L6). A nested run says when, then the model
+                it ran on, on the title's own line: where it ran is its
+                parent's folder, and the model is what tells two runs apart. */}
             <span className="br-history-row-meta text-supporting text-text-muted">
               {/* "3:39 PM" today, "Sep 5" this year, "Sep 5, 2025" before;
                   the bucket heading names the period and the tooltip holds the
@@ -508,7 +612,20 @@ const HistoryRow = React.memo(function HistoryRow({
                   {formatChatTimestamp(session.updated_at)}
                 </TooltipContent>
               </Tooltip>
-              {parentName ? (
+              {nested ? (
+                modelName ? (
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <Badge className="br-history-run-model" data-run-model="">
+                        <span className="truncate">{modelName}</span>
+                      </Badge>
+                    </TooltipTrigger>
+                    <TooltipContent side="bottom" align="start">
+                      {runModelTooltip(modelName, session.provider_name)}
+                    </TooltipContent>
+                  </Tooltip>
+                ) : null
+              ) : parentName ? (
                 <span className="flex min-w-0 items-center gap-1">
                   <span aria-hidden="true">·</span>
                   <span className="truncate">{branchedFrom(parentName)}</span>
@@ -556,7 +673,15 @@ const HistoryRow = React.memo(function HistoryRow({
             ) : (
               <span aria-hidden="true" />
             )}
-            {extensionNames.length > 0 ? (
+            {/* A nested run's third cell is how it ended, not its extensions: the
+                three tracks stay, so the runs' columns line up with each other. */}
+            {nested ? (
+              outcome ? (
+                <RunStatus outcome={outcome} />
+              ) : (
+                <span aria-hidden="true" />
+              )
+            ) : extensionNames.length > 0 ? (
               <HistoryStat
                 icon={Puzzle}
                 label={EXTENSIONS_STAT}
@@ -584,6 +709,7 @@ const HistoryRow = React.memo(function HistoryRow({
                 icon={Pencil}
                 label={renameLabel(title)}
                 tooltip={RENAME}
+                size={actionSize}
                 onSelect={() => onRename(session)}
               />
               <DropdownMenu open={menuOpen} onOpenChange={setMenuOpen}>
@@ -594,6 +720,7 @@ const HistoryRow = React.memo(function HistoryRow({
                         type="button"
                         variant="ghost"
                         shape="round"
+                        size={actionSize}
                         aria-label={moreActionsLabel(title)}
                         data-row-action=""
                         onClick={(event) => event.stopPropagation()}
@@ -845,6 +972,32 @@ const SessionListView: React.FC<SessionListViewProps> = React.memo(({ onSelectSe
     if (viewport) viewport.scrollTop = 0;
   }, [debouncedFilter]);
 
+  // The parents whose runs the person unfolded past the newest few ("Show N more runs"). Their
+  // own choice, so it stands for as long as the pane does, and a hold never withholds it: what
+  // unfolds is the runs the list is showing right now, the held ones while the pointer is here
+  // (`historyHold.ts`), so a run that started meanwhile still waits.
+  const [expandedParents, setExpandedParents] = useState<ReadonlySet<string>>(() => new Set());
+  // The first run an unfold revealed. The "Show N more runs" row the person pressed is gone once
+  // it lands, which drops focus to the page; it goes to that run instead, where the row was.
+  const revealedRun = useRef<string | null>(null);
+  const expandRuns = useCallback((parentId: string, firstHiddenRunId: string | undefined) => {
+    revealedRun.current = firstHiddenRunId ?? null;
+    setExpandedParents((current) => {
+      if (current.has(parentId)) return current;
+      const next = new Set(current);
+      next.add(parentId);
+      return next;
+    });
+  }, []);
+  useLayoutEffect(() => {
+    const id = revealedRun.current;
+    if (!id) return;
+    revealedRun.current = null;
+    const content = contentRef.current;
+    const row = content ? findHistoryRow(content, id) : null;
+    if (row) refocusHistoryRow(row);
+  }, [expandedParents]);
+
   // A person's own rename, once the live list has caught up with it: the chat is at the top, so
   // bring it into view and give back the focus the move took (V1-R6-1, ruling 16). The entry
   // leaves `ownMoves` here, which ends its lift in any hold taken from now on, because the live
@@ -1013,9 +1166,10 @@ const SessionListView: React.FC<SessionListViewProps> = React.memo(({ onSelectSe
     setDeclassifyTarget(null);
   }, []);
 
-  const renderRow = (session: Session) => (
+  const renderRow = (session: Session, nested = false) => (
     <HistoryRow
       key={session.id}
+      nested={nested}
       session={session}
       onSelectSession={onSelectSession}
       sessionNameById={sessionNameById}
@@ -1026,6 +1180,39 @@ const SessionListView: React.FC<SessionListViewProps> = React.memo(({ onSelectSe
       onDeclassify={handleDeclassify}
     />
   );
+
+  /**
+   * A parent's runs: the newest few, then "Show N more runs" for the rest, which unfolds them in
+   * place. A filter shows every matching run at once, as it does every matching chat.
+   */
+  const renderRuns = (parent: Session, runs: Session[], focusedRunId: string | null) => {
+    // The run holding focus stays drawn when the live order pushes it past the newest few.
+    const { shown, hidden } = splitNestedRuns(runs, {
+      expanded: Boolean(debouncedFilter) || expandedParents.has(parent.id),
+      keep: (run) => run.id === focusedRunId,
+    });
+    const firstHidden = hidden > 0 ? runs.find((run) => !shown.includes(run)) : undefined;
+    return (
+      <div
+        className="br-history-children br-fill-surface"
+        role="group"
+        aria-label={runsFromLabel(historyRowTitle(parent))}
+        data-parent-session-id={parent.id}
+      >
+        {shown.map((run) => renderRow(run, true))}
+        {hidden > 0 && (
+          <button
+            type="button"
+            className="br-history-more"
+            onClick={() => expandRuns(parent.id, firstHidden?.id)}
+          >
+            <ChevronDown className="h-4 w-4 shrink-0" aria-hidden="true" />
+            <span className="truncate">{showMoreRuns(hidden)}</span>
+          </button>
+        )}
+      </div>
+    );
+  };
 
   const renderActualContent = () => {
     if (error) {
@@ -1069,6 +1256,8 @@ const SessionListView: React.FC<SessionListViewProps> = React.memo(({ onSelectSe
       );
     }
 
+    // Read once per render: the run that holds focus, which a fold must keep drawn.
+    const focusedRunId = focusedNestedRunId();
     return (
       <div className="flex flex-col">
         {visibleDateGroups.map((group) => (
@@ -1082,14 +1271,14 @@ const SessionListView: React.FC<SessionListViewProps> = React.memo(({ onSelectSe
                 return (
                   <React.Fragment key={session.id}>
                     {renderRow(session)}
-                    {/* One indented block for all of a parent's children, not
+                    {/* One inset block for all of a parent's children, not
                         one wrapper each: a lone row inside its own wrapper is
                         `:last-child` and would otherwise lose its separator.
-                        Its tie to the parent is a 2px fill rail, not a line
-                        (`history.css`). */}
-                    {children && (
-                      <div className="br-history-children">{children.map(renderRow)}</div>
-                    )}
+                        Its tie to the parent is a 2px fill rail with an elbow
+                        to each run, not a line (`history.css`), and it is a
+                        filled box, so the controls in it step back a ground
+                        (`.br-fill-surface`). */}
+                    {children && renderRuns(session, children, focusedRunId)}
                   </React.Fragment>
                 );
               })}

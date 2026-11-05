@@ -10,6 +10,24 @@
  * Plain DOM, no React: `viewport` is the scroll area's scrolling element.
  */
 
+/**
+ * The nested run (a `data-depth="1"` row in its parent's block) that holds keyboard focus, or
+ * whose `⋯` menu does, by session id. Read while History renders, from what the last commit
+ * drew, so a fold can keep that run drawn (`splitNestedRuns`'s `keep`). Unlike a focus listener
+ * it needs no clearing: focus the person moved anywhere else is simply not on a run.
+ */
+export function focusedNestedRunId(doc: Document = document): string | null {
+  let element: Element | null = doc.activeElement;
+  // A Radix menu renders in a portal and names its trigger, which sits in the row.
+  const menu = element?.closest('[data-radix-menu-content]');
+  if (menu) {
+    const trigger = menu.getAttribute('aria-labelledby');
+    element = trigger ? doc.getElementById(trigger) : null;
+  }
+  const row = element?.closest('[data-session-id][data-depth="1"]');
+  return row?.getAttribute('data-session-id') ?? null;
+}
+
 /** The History row for a chat, by the id its root carries, among the rows under `root`. */
 export function findHistoryRow(root: HTMLElement, sessionId: string): HTMLElement | null {
   for (const row of root.querySelectorAll<HTMLElement>('[data-session-id]')) {

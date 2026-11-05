@@ -34,6 +34,12 @@ export interface SummaryHeaderButtonProps {
    * carries a 6px accent dot and its name gains the count.
    */
   progress: { done: number; total: number } | null;
+  /**
+   * How many of the chat's subagents are queued or running, when the rail is
+   * folded away. Above zero, the button carries the same dot and its name says
+   * how many run, so background work is never out of mind either.
+   */
+  runningSubagents?: number;
   summary: ChatSummaryProps;
 }
 
@@ -71,6 +77,7 @@ export function SummaryHeaderButton({
   popoverOpen,
   onPopoverOpenChange,
   progress,
+  runningSubagents = 0,
   summary,
 }: SummaryHeaderButtonProps) {
   const popoverId = useId();
@@ -173,9 +180,16 @@ export function SummaryHeaderButton({
               expanded && 'bg-background-fill-strong text-text-default'
             )}
             aria-label={
-              progress
-                ? summaryCopy.buttonWithProgress(progress.done, progress.total)
-                : summaryCopy.title
+              runningSubagents > 0
+                ? summaryCopy.buttonWithSubagents(
+                    progress
+                      ? summaryCopy.buttonWithProgress(progress.done, progress.total)
+                      : summaryCopy.title,
+                    runningSubagents
+                  )
+                : progress
+                  ? summaryCopy.buttonWithProgress(progress.done, progress.total)
+                  : summaryCopy.title
             }
             aria-expanded={expanded}
             aria-controls={controls}
@@ -189,7 +203,9 @@ export function SummaryHeaderButton({
             }}
           >
             <PanelRight />
-            {progress && <span aria-hidden="true" className="br-summary-dot" />}
+            {(progress || runningSubagents > 0) && (
+              <span aria-hidden="true" className="br-summary-dot" />
+            )}
           </Button>
         </TooltipTrigger>
         <TooltipContent>{tooltip}</TooltipContent>

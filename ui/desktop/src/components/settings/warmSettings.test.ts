@@ -35,6 +35,7 @@ const configValues: Record<string, unknown> = {
   BIOROUTER_MODE: 'approve',
   BIOROUTER_MAX_TURNS: '25',
   WORKSPACE_ANNOUNCE_ONLY: true,
+  BIOROUTER_WORKSPACE_OPEN_SUBAGENT_TABS: true,
 };
 
 describe('warmSettings', () => {
@@ -74,30 +75,33 @@ describe('warmSettings', () => {
     expect(recall('approvalMode')).toBe('approve');
     expect(recall('maxTurns')).toBe(25);
     expect(recall('announceOnly')).toBe(true);
+    expect(recall('openSubagentTabs')).toBe(true);
     expect(recall('menuBarIcon')).toBe(false);
     expect(recall('dockIcon')).toBe(true);
     expect(recall('wakelock')).toBe(true);
     expect(recall('spellcheck')).toBe(false);
   });
 
-  it('reads only the three config keys, none of them secret', async () => {
+  it('reads only the four config keys, none of them secret', async () => {
     warmSettings(read);
     await flush();
     expect(read.mock.calls.map(([key]) => key).sort()).toEqual([
       'BIOROUTER_MAX_TURNS',
       'BIOROUTER_MODE',
+      'BIOROUTER_WORKSPACE_OPEN_SUBAGENT_TABS',
       'WORKSPACE_ANNOUNCE_ONLY',
     ]);
     expect(read.mock.calls.every(([, isSecret]) => isSecret === false)).toBe(true);
   });
 
-  it('keeps "nothing saved" the way the tab does: Autonomous, and no Max turns', async () => {
+  it('keeps "nothing saved" the way the tab does: Autonomous, no Max turns, both tab switches off', async () => {
     read.mockImplementation(async () => undefined);
     warmSettings(read);
     await flush();
     expect(recall('approvalMode')).toBe('auto');
     expect(recall('maxTurns')).toBeNull();
     expect(recall('announceOnly')).toBe(false);
+    expect(recall('openSubagentTabs')).toBe(false);
   });
 
   it('does not read a Dock state off macOS, where the App tab has no Dock row', async () => {

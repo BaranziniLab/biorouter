@@ -48,6 +48,18 @@ function baseFocusRule(): string {
   return `@layer base {\n${match[0]}\n}`;
 }
 
+/**
+ * History's own list containment (`.session-grid`'s paint containment, which clips anything a row
+ * or the runs' block draws outside the shell). Pulled from `main.css`; throws if it moves.
+ */
+function historyContainment(): string {
+  const match = MAIN_CSS.match(
+    /\/\* @ws WS-HISTORY begin: history list containment \*\/([\s\S]*?)\/\* @ws WS-HISTORY end: history list containment \*\//
+  );
+  if (!match) throw new Error('main.css has no WS-HISTORY list containment block');
+  return match[1];
+}
+
 const TOKENS = `:root {
   --radius-inner: 4px;
   --radius-md: 8px;
@@ -60,6 +72,13 @@ const TOKENS = `:root {
   --overlay-hover: rgb(240, 240, 240);
   --background-focus: rgb(235, 235, 235);
   --text-default: rgb(20, 20, 20);
+  --text-muted: rgb(99, 92, 84);
+  --background-default: rgb(255, 255, 255);
+  --background-fill: rgb(244, 244, 242);
+  --background-fill-strong: rgb(234, 234, 230);
+  --text-secondary: 13px;
+  --text-secondary--line-height: 18px;
+  --text-secondary--font-weight: 400;
   --dur-fast-min: ${DUR.fastMin}ms;
   --dur-fast: ${DUR.fast}ms;
   --dur-fast-max: ${DUR.fastMax}ms;
@@ -124,12 +143,60 @@ const DEFAULT_ROWS = [
   ),
 ].join('');
 
-function page(css: string, rows = DEFAULT_ROWS) {
-  return `<!doctype html><html><head><style>${TOKENS}\n${baseFocusRule()}\n${primitiveBlocks()}\n${css}</style></head><body>
+/**
+ * A subagent run nested under its parent, in the component's DOM (`HistoryRow` with `nested`):
+ * `data-depth="1"`, the 13px title and the muted line on ONE line (the time, then the model
+ * chip, a neutral Badge), two stat cells and the run's status in the third track, and 28px
+ * actions. `SessionListView.nested.test.tsx` pins that shape on the real component.
+ */
+const nestedRow = (id: string, title: string, model = 'gpt-5.5') => `
+  <div class="biorouter-list-row br-history-row" data-depth="1" id="${id}">
+    <svg id="${id}-glyph" width="16" height="16" style="flex:none"></svg>
+    <button type="button" class="br-history-row-open" id="${id}-open">
+      <span class="br-history-row-title truncate" id="${id}-title">${title}</span>
+      <span class="br-history-row-meta text-supporting"><span>3:18 PM</span><span class="br-badge-neutral br-history-run-model" style="display:inline-flex;align-items:center;height:20px;padding:0 6px;font-size:12px;line-height:16px" id="${id}-model"><span class="truncate">${model}</span></span></span>
+    </button>
+    <div class="br-history-row-stats text-supporting" id="${id}-stats">
+      ${stat(`${id}-messages`, '9')}
+      ${stat(`${id}-tokens`, '412,330')}
+      <span class="br-history-stat br-history-run-status" id="${id}-status"><span class="sr-only">Run status: Completed</span><svg width="14" height="14" style="flex:none"></svg></span>
+    </div>
+    <div class="br-row-actions-slot">
+      <div class="br-row-actions" data-state="closed" id="${id}-actions">
+        <button type="button" style="width:28px;height:28px" id="${id}-rename">R</button>
+        <button type="button" style="width:28px;height:28px" id="${id}-more">M</button>
+      </div>
+    </div>
+  </div>`;
+
+/** A parent, its runs' block (the newest three, then "Show 2 more runs"), then the next chat. */
+const NESTED_ROWS = [
+  row('p', 'A chat that delegated'),
+  `<div class="br-history-children br-fill-surface" role="group" id="p-runs">
+    ${nestedRow('k1', 'Search the cohort for matching variants')}
+    ${nestedRow('k2', 'Summarise the three trials', 'claude-sonnet-4-5-20250929-with-a-long-suffix')}
+    ${nestedRow('k3', 'A run whose name is long enough that it can never fit beside its model, its stats and its actions')}
+    <button type="button" class="br-history-more" id="runs-more"><svg width="16" height="16" style="flex:none"></svg><span class="truncate" id="runs-more-label">Show 2 more runs</span></button>
+  </div>`,
+  row('q', 'The next chat'),
+].join('');
+
+/** The same parent with its runs all shown: the block ends on a run, not on "Show more". */
+const NESTED_ROWS_EXPANDED = [
+  row('p', 'A chat that delegated'),
+  `<div class="br-history-children br-fill-surface" role="group" id="p-runs">
+    ${nestedRow('k1', 'Search the cohort')}
+    ${nestedRow('k2', 'Summarise the trials')}
+  </div>`,
+  row('q', 'The next chat'),
+].join('');
+
+function page(css: string, rows = DEFAULT_ROWS, shellClass = 'biorouter-list-shell') {
+  return `<!doctype html><html><head><style>${TOKENS}\n${baseFocusRule()}\n${primitiveBlocks()}\n${historyContainment()}\n${css}</style></head><body>
     <main style="width:760px;padding:0 24px">
       <section>
         <h2 class="br-history-bucket text-supporting" id="bucket">Today</h2>
-        <div class="biorouter-list-shell">
+        <div class="${shellClass}" id="shell">
           ${rows}
         </div>
       </section>
@@ -562,5 +629,237 @@ describe('Chat history rows in a real layout engine', () => {
     } finally {
       await tab.close();
     }
+  });
+  /**
+   * The person's ask: in History a subagent run looked as wide and as heavy as the chat that
+   * started it. A run now sits in an inset block under its parent, narrower on BOTH sides, on
+   * one line at the 40px floor, with a 13px title, tied to the parent by the rail and an elbow
+   * per run, all of it inside the list shell (whose paint containment would clip anything
+   * outside it) and none of it widening the page.
+   */
+  describe('subagent runs nested under their parent', () => {
+    const SHELL = 'session-grid biorouter-list-shell br-rows-flat';
+    async function openNested(rows = NESTED_ROWS): Promise<Page> {
+      const tab = await browser!.newPage({
+        viewport: { width: 1000, height: 700 },
+        reducedMotion: 'reduce',
+      });
+      await tab.setContent(page(css, rows, SHELL));
+      return tab;
+    }
+    /** A pseudo-element's box in page coordinates, from its computed offsets and its host's box. */
+    const pseudo = (tab: Page, id: string) =>
+      tab.evaluate((el) => {
+        const host = document.getElementById(el)!;
+        const hostBox = host.getBoundingClientRect();
+        const hostStyle = getComputedStyle(host);
+        // Absolute offsets are from the host's PADDING box, inside its border.
+        const originLeft = hostBox.left + parseFloat(hostStyle.borderLeftWidth);
+        const originTop = hostBox.top + parseFloat(hostStyle.borderTopWidth);
+        const cs = getComputedStyle(host, '::before');
+        const left = originLeft + parseFloat(cs.left);
+        const top = originTop + parseFloat(cs.top);
+        return {
+          content: cs.content,
+          left,
+          right: left + parseFloat(cs.width),
+          top,
+          bottom: top + parseFloat(cs.height),
+        };
+      }, id);
+
+    it('draws the runs as a block narrower than the parent on both sides', async (ctx) => {
+      if (!browser) return ctx.skip();
+      const tab = await openNested();
+      try {
+        const parent = await box(tab, 'p');
+        const block = await box(tab, 'p-runs');
+        const shell = await box(tab, 'shell');
+        expect(parent.left).toBe(shell.left);
+        expect(parent.right).toBe(shell.right);
+        // Inset on the left to the parent's title column, and about 16px on the right.
+        expect(block.left - parent.left).toBe(27);
+        expect(parent.right - block.right).toBe(16);
+        // Each run is the block's width, so every run is narrower than its parent too.
+        for (const id of ['k1', 'k2', 'k3']) {
+          const run = await box(tab, id);
+          expect(run.left, id).toBeGreaterThan(parent.left);
+          expect(run.right, id).toBeLessThan(parent.right);
+        }
+        // The block is a fill on the container radius, and its controls step back a ground.
+        const ground = await tab.evaluate(() => {
+          const cs = getComputedStyle(document.getElementById('p-runs')!);
+          const run = getComputedStyle(document.getElementById('k1')!);
+          return {
+            fill: cs.backgroundColor,
+            radius: cs.borderTopLeftRadius,
+            control: run.getPropertyValue('--br-control-ground').trim(),
+          };
+        });
+        expect(ground.fill).toBe('rgb(244, 244, 242)');
+        expect(ground.radius).toBe('8px');
+        expect(ground.control).toBe('rgb(255, 255, 255)');
+      } finally {
+        await tab.close();
+      }
+    });
+
+    it("puts each run's glyph under the parent's title, and its stats in their own columns", async (ctx) => {
+      if (!browser) return ctx.skip();
+      const tab = await openNested();
+      try {
+        const parentTitle = await box(tab, 'p-title');
+        for (const id of ['k1', 'k2', 'k3']) {
+          expect((await box(tab, `${id}-glyph`)).left, id).toBe(parentTitle.left);
+        }
+        // The runs' three tracks line up with each other, whatever their titles hold, and end
+        // where the parent's do: the figures read straight down from a chat into its runs.
+        for (const [stat, parentStat] of [
+          ['messages', 'messages'],
+          ['tokens', 'tokens'],
+          ['status', 'ext'],
+        ] as const) {
+          const rights = new Set<number>();
+          for (const id of ['k1', 'k2', 'k3']) rights.add((await box(tab, `${id}-${stat}`)).right);
+          expect(rights, stat).toEqual(new Set([(await box(tab, `p-${parentStat}`)).right]));
+        }
+      } finally {
+        await tab.close();
+      }
+    });
+
+    it('draws a run as one 13px line at the 40px row floor, shorter than its parent', async (ctx) => {
+      if (!browser) return ctx.skip();
+      const tab = await openNested();
+      try {
+        const parent = await box(tab, 'p');
+        const font = (id: string) =>
+          tab.evaluate((el) => {
+            const cs = getComputedStyle(document.getElementById(el)!);
+            return { size: cs.fontSize, weight: cs.fontWeight };
+          }, id);
+        for (const id of ['k1', 'k2', 'k3']) {
+          const run = await box(tab, id);
+          expect(run.height, id).toBe(40);
+          expect(run.height, id).toBeLessThan(parent.height);
+          expect(await font(`${id}-title`), id).toEqual({ size: '13px', weight: '400' });
+          // One line: the title and the model chip share a row.
+          const title = await box(tab, `${id}-title`);
+          const model = await box(tab, `${id}-model`);
+          expect(
+            Math.abs(title.top + title.height / 2 - (model.top + model.height / 2))
+          ).toBeLessThan(2);
+          expect(model.left).toBeGreaterThan(title.left);
+        }
+        // The parent's title keeps the label size (its weight is a utility this page does not load).
+        expect((await font('p-title')).size).toBe('14px');
+        // A long title truncates; the chip keeps its cap and the stats keep their place.
+        const truncated = await tab.evaluate(() => {
+          const title = document.getElementById('k3-title')!;
+          return title.scrollWidth > title.clientWidth;
+        });
+        expect(truncated).toBe(true);
+        expect((await box(tab, 'k2-model')).width).toBeLessThanOrEqual(160);
+        expect((await box(tab, 'k3-stats')).left).toBe((await box(tab, 'k1-stats')).left);
+      } finally {
+        await tab.close();
+      }
+    });
+
+    it('ties the runs to the parent with a rail and an elbow per run, inside the shell', async (ctx) => {
+      if (!browser) return ctx.skip();
+      const tab = await openNested();
+      try {
+        const shell = await box(tab, 'shell');
+        const block = await box(tab, 'p-runs');
+        const parentGlyph = await box(tab, 'p-glyph');
+        const rail = await pseudo(tab, 'p-runs');
+        expect(rail.content).not.toBe('none');
+        // Centred under the parent's glyph, and inside the shell (which clips its paint).
+        expect((rail.left + rail.right) / 2).toBe((parentGlyph.left + parentGlyph.right) / 2);
+        expect(rail.left).toBeGreaterThanOrEqual(shell.left);
+        expect(rail.top).toBeGreaterThanOrEqual(block.top);
+        for (const id of ['k1', 'k2', 'k3', 'runs-more']) {
+          const host = await box(tab, id);
+          const elbow = await pseudo(tab, id);
+          expect(elbow.content, id).not.toBe('none');
+          // From the rail to the block's edge, at the run's middle.
+          expect(elbow.left, id).toBe(rail.left);
+          expect(elbow.right, id).toBe(block.left);
+          expect(elbow.left, id).toBeGreaterThanOrEqual(shell.left);
+          expect((elbow.top + elbow.bottom) / 2, id).toBe(host.top + host.height / 2);
+        }
+        // The rail stops at the last elbow ("Show 2 more runs" here), so the two read as one
+        // bracket and the rail never runs on past what it ties.
+        const lastElbow = await pseudo(tab, 'runs-more');
+        expect(rail.bottom).toBe(lastElbow.bottom);
+      } finally {
+        await tab.close();
+      }
+    });
+
+    it('ends the rail at the last run when every run is shown', async (ctx) => {
+      if (!browser) return ctx.skip();
+      const tab = await openNested(NESTED_ROWS_EXPANDED);
+      try {
+        const rail = await pseudo(tab, 'p-runs');
+        const lastElbow = await pseudo(tab, 'k2');
+        expect(rail.bottom).toBe(lastElbow.bottom);
+      } finally {
+        await tab.close();
+      }
+    });
+
+    it('scrolls nothing sideways: the shell and the page hold every run', async (ctx) => {
+      if (!browser) return ctx.skip();
+      const tab = await openNested();
+      try {
+        const overflow = await tab.evaluate(() => {
+          const shell = document.getElementById('shell')!;
+          const block = document.getElementById('p-runs')!;
+          return {
+            shell: shell.scrollWidth - shell.clientWidth,
+            block: block.scrollWidth - block.clientWidth,
+            page: document.documentElement.scrollWidth - document.documentElement.clientWidth,
+          };
+        });
+        expect(overflow).toEqual({ shell: 0, block: 0, page: 0 });
+        const block = await box(tab, 'p-runs');
+        for (const id of ['k1', 'k2', 'k3']) {
+          expect((await box(tab, `${id}-actions`)).right, id).toBeLessThanOrEqual(block.right);
+        }
+      } finally {
+        await tab.close();
+      }
+    });
+
+    it('puts "Show 2 more runs" on the runs\' title column, in the tab order', async (ctx) => {
+      if (!browser) return ctx.skip();
+      const tab = await openNested();
+      try {
+        const more = await box(tab, 'runs-more');
+        const label = await tab.evaluate(() => {
+          const range = document.createRange();
+          range.selectNodeContents(document.getElementById('runs-more-label')!);
+          return range.getBoundingClientRect().left;
+        });
+        expect(label).toBe((await box(tab, 'k1-title')).left);
+        expect(more.height).toBe(32);
+        await tab.focus('#k3-more');
+        await tab.keyboard.press('Tab');
+        expect(await tab.evaluate(() => document.activeElement?.id)).toBe('runs-more');
+        // The app's focus treatment, on the row and not as an outline around it.
+        const focus = await tab.evaluate(() => {
+          const cs = getComputedStyle(document.getElementById('runs-more')!);
+          return { ground: cs.backgroundColor, shadow: cs.boxShadow };
+        });
+        expect(focus).toEqual({
+          ground: 'rgb(235, 235, 235)',
+          shadow: 'rgb(90, 90, 90) 0px 0px 0px 2px inset',
+        });
+      } finally {
+        await tab.close();
+      }
+    });
   });
 });

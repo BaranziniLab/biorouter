@@ -57,6 +57,8 @@ import { SummaryHeaderButton } from './summary/SummaryHeaderButton';
 import { summaryCopy } from './summary/copy';
 import { collectCodeDelta } from './summary/codeDelta';
 import { useSessionTodos } from '../hooks/useSessionTodos';
+import { useSessionSubagents } from '../hooks/useSessionSubagents';
+import { isActiveStatus, openSubagentTab } from '../utils/sessionSubagents';
 import { summaryRailChat, useSummaryRail } from '../hooks/useSummaryRail';
 import { useLoadingChat } from './summary/useLoadingChat';
 import { composerFollowsUp, useFirstSend } from './summary/useFirstSend';
@@ -2459,6 +2461,28 @@ function BaseChatContent({
       (reviewOpen || summaryRail.shown || (summaryActive && isRunningState(chatState)))
   );
 
+  // The chat's subagents and its phase plan, on the to-do list's gate (shown,
+  // or a turn running), plus one of their own: the roster keeps polling while a
+  // background child runs, so it stays current after the turn that started it
+  // ended. A row opens its child as a tab and makes it the active one.
+  const sessionSubagents = useSessionSubagents(sessionId, messages, {
+    visible: !chatLoading && (reviewOpen || summaryRail.shown),
+    turnRunning: !chatLoading && summaryActive && isRunningState(chatState),
+  });
+  const chatGroupsDispatch = chatGroups?.dispatch;
+  const openSubagent = useCallback(
+    (childSessionId: string, title?: string) => {
+      // The popover belongs to this tab; it is not left open behind the child's.
+      setReviewOpen(false);
+      openSubagentTab(
+        { dispatch: chatGroupsDispatch, pathname: location.pathname, navigate },
+        childSessionId,
+        title
+      );
+    },
+    [chatGroupsDispatch, location.pathname, navigate]
+  );
+
   // The window widened under an open popover: the button is the rail's now, in
   // rail mode it never opens a popover, so a stale one closes.
   useEffect(() => {
@@ -2495,6 +2519,7 @@ function BaseChatContent({
       codeDelta,
     }),
     todos: chatLoading ? { ...sessionTodos, loading: true } : sessionTodos,
+    subagents: { ...sessionSubagents, onOpen: openSubagent },
     hasWorkflow: !!(workflow ?? loadingChatRow?.workflow),
     onWorkflow: handleWorkflowReviewAction,
     onDiagnostics: handleDiagnosticsReviewAction,
@@ -2511,6 +2536,11 @@ function BaseChatContent({
           total: sessionTodos.items.length,
         }
       : null;
+  // The same dot, and a count in the button's name, while subagents run with
+  // the rail folded away.
+  const summaryRunningSubagents = summaryRail.shown
+    ? 0
+    : (sessionSubagents.data?.subagents.filter((row) => isActiveStatus(row.status)).length ?? 0);
 
   const renderSessionHeaderActions = () => (
     <div
@@ -2551,6 +2581,7 @@ function BaseChatContent({
         popoverOpen={reviewOpen}
         onPopoverOpenChange={setReviewOpen}
         progress={summaryProgress}
+        runningSubagents={summaryRunningSubagents}
         summary={summaryProps}
       />
     </div>

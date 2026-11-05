@@ -77,3 +77,54 @@ export function historyRowTitle(session: ChatKindSource): string {
   }
   return name;
 }
+
+/**
+ * The `extension_data` key of a finished subagent run's outcome record, `{ status, ended_at,
+ * result_line? }` (`SUBAGENT_OUTCOME_STATE` . `SUBAGENT_OUTCOME_VERSION` in
+ * `crates/biorouter/src/agents/subagent_roster.rs`). Written once, when the run ends.
+ */
+export const SUBAGENT_OUTCOME_KEY = 'subagent_outcome.v1';
+
+/** The ends a run's outcome record can name, and the only ones a History row draws. */
+export type SubagentOutcomeStatus = 'completed' | 'blocked' | 'failed' | 'incomplete';
+
+const OUTCOME_STATUSES: ReadonlySet<string> = new Set<SubagentOutcomeStatus>([
+  'completed',
+  'blocked',
+  'failed',
+  'incomplete',
+]);
+
+export interface SubagentOutcome {
+  status: SubagentOutcomeStatus;
+  /** First line of the run's summary, its error, or the question it stopped to ask. */
+  resultLine: string | null;
+}
+
+/**
+ * How a subagent run ended, read from its outcome record, or `null` when there is nothing to
+ * say: no record (a run that is still going, one whose process went away, or one that predates
+ * the record), a malformed one, or a status that is not an end (`running`, `interrupted`, ...).
+ * History says nothing rather than guess; the chat's side panel is where a live run shows.
+ */
+export function subagentOutcomeOf(
+  extensionData: Record<string, unknown> | null | undefined
+): SubagentOutcome | null {
+  const record = extensionData?.[SUBAGENT_OUTCOME_KEY];
+  if (!record || typeof record !== 'object') return null;
+  const { status, result_line: resultLine } = record as { status?: unknown; result_line?: unknown };
+  if (typeof status !== 'string' || !OUTCOME_STATUSES.has(status)) return null;
+  const line = typeof resultLine === 'string' ? resultLine.trim() : '';
+  return { status: status as SubagentOutcomeStatus, resultLine: line || null };
+}
+
+/**
+ * The model a run used, for the small chip on its History row: the model's own name, which is
+ * what tells two runs of one parent apart. `null` when the row records none.
+ */
+export function runModelName(session: {
+  model_config?: { model_name?: string | null } | null;
+}): string | null {
+  const name = session.model_config?.model_name?.trim();
+  return name ? name : null;
+}

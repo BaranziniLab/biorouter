@@ -49,6 +49,7 @@ describe('General switches', () => {
     [generalCopy.dock],
     [generalCopy.preventSleep],
     [generalCopy.announceOnly],
+    [generalCopy.openSubagentTabs],
     [generalCopy.showCosts],
   ])('names the "%s" switch by its label', async (name) => {
     render(<AppSettingsSection />);
@@ -72,6 +73,25 @@ describe('General switches', () => {
     expect(sleep).toHaveAccessibleDescription(generalCopy.preventSleepHelp);
     // No description paragraph under any row label.
     expect(container.querySelectorAll('.biorouter-settings-row p')).toHaveLength(0);
+  });
+
+  /**
+   * The two tab switches sit together, "Never open tabs automatically" first because it wins on
+   * the daemon over the one under it, and Show costs after both.
+   */
+  it('puts "Open subagent tabs automatically" right after "Never open tabs automatically"', async () => {
+    render(<AppSettingsSection />);
+    await screen.findByRole('switch', { name: generalCopy.openSubagentTabs });
+    const labels = Array.from(document.querySelectorAll('[data-slot="setting-row"]')).map(
+      (row) => row.querySelector('label')?.textContent ?? ''
+    );
+    const never = labels.indexOf(generalCopy.announceOnly);
+    expect(never).toBeGreaterThanOrEqual(0);
+    expect(labels.slice(never, never + 3)).toEqual([
+      generalCopy.announceOnly,
+      generalCopy.openSubagentTabs,
+      generalCopy.showCosts,
+    ]);
   });
 });
 
@@ -139,13 +159,16 @@ describe('switches read from the main process', () => {
     expect(await screen.findByRole('switch', { name: generalCopy.preventSleep })).toBeChecked();
   });
 
-  it('holds all four, Dock and Never open tabs included, until each has been read', async () => {
+  it('holds all five, Dock and both tab switches included, until each has been read', async () => {
     render(<AppSettingsSection />);
-    expect(document.querySelectorAll('[data-pending]')).toHaveLength(4);
+    expect(document.querySelectorAll('[data-pending]')).toHaveLength(5);
     for (const name of [generalCopy.menuBar, generalCopy.dock, generalCopy.preventSleep]) {
       expect(await screen.findByRole('switch', { name })).toBeChecked();
     }
     expect(await screen.findByRole('switch', { name: generalCopy.announceOnly })).not.toBeChecked();
+    expect(
+      await screen.findByRole('switch', { name: generalCopy.openSubagentTabs })
+    ).not.toBeChecked();
     expect(document.querySelectorAll('[data-pending]')).toHaveLength(0);
   });
 });

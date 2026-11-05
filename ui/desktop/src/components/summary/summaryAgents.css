@@ -1,0 +1,402 @@
+/* @ws WS-SUMMARY-AGENTS begin: the chat summary's subagents and phases */
+/*
+ * THE SUBAGENTS AND PHASES OF THE CHAT SUMMARY (components/summary/
+ * SummarySubagents.tsx), drawn inside the content the docked rail and the header
+ * popover share (chatSummary.css).
+ *
+ * Authored CSS, not new Tailwind strings, for the reason chatSummary.css gives:
+ * under BIOROUTER_NO_HMR a newly written utility can silently fail to generate.
+ *
+ * The content's rules hold here too, and styles/summaryRail.test.ts reads this
+ * file to keep them: two type sizes only (13/18 `--text-secondary` for rows,
+ * 12/16 `--text-supporting` for labels, counts and second lines), 28px rows, and
+ * no hairline anywhere. Sections are parted by 12px of space; a row answers the
+ * pointer with the card's fill step, never with an outline.
+ *
+ * Unlayered, so these beat the layered D-15 focus fill on the same buttons; every
+ * rule that paints a row therefore restates the focus fill and its 2px edge.
+ */
+
+.br-agents {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+}
+
+/* 12px from whatever sits above (the to-do list, or its refresh error) and to
+   the statistics below, the gap the content's other parts keep. */
+.br-summary__body > * + .br-agents {
+  margin-top: 12px;
+}
+
+.br-agents + .br-summary__stats {
+  margin-top: 12px;
+}
+
+.br-agents__section + .br-agents__section {
+  margin-top: 12px;
+}
+
+.br-agents__plan-title {
+  margin: 0 0 4px;
+  overflow: hidden;
+  font-size: var(--text-secondary);
+  line-height: var(--text-secondary--line-height);
+  color: var(--text-default);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.br-agents__phases,
+.br-agents__list {
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.br-agents__phase + .br-agents__phase {
+  margin-top: 4px;
+}
+
+/* ROWS. Every control here is a full-width button that bleeds 8px into the
+   body's 12px gutter, so its text keeps the to-do list's left edge and its
+   hover wash has room. */
+.br-agents__row,
+.br-agents__phase-toggle,
+.br-agents__group-toggle,
+.br-agents__more {
+  display: flex;
+  width: calc(100% + 16px);
+  min-width: 0;
+  min-height: 28px;
+  margin: 0 -8px;
+  padding: 5px 8px;
+  gap: 8px;
+  align-items: flex-start;
+  border: 0;
+  border-radius: var(--radius-element);
+  background-color: transparent;
+  color: var(--text-default);
+  font: inherit;
+  font-size: var(--text-secondary);
+  line-height: var(--text-secondary--line-height);
+  font-weight: 400;
+  text-align: start;
+  cursor: pointer;
+  transition:
+    background-color var(--dur-fast-min) var(--ease-out),
+    color var(--dur-fast-min) var(--ease-out);
+}
+
+.br-agents__phase-toggle[data-static] {
+  cursor: default;
+}
+
+.br-agents__row:hover,
+.br-agents__phase-toggle:not([data-static]):hover,
+.br-agents__group-toggle:hover,
+.br-agents__more:hover {
+  background-color: var(--br-control-hover, var(--background-fill-strong));
+}
+
+.br-agents__row:focus-visible,
+.br-agents__phase-toggle:focus-visible,
+.br-agents__group-toggle:focus-visible,
+.br-agents__more:focus-visible,
+.br-agents__retry:focus-visible {
+  outline: none;
+  background-color: var(--background-focus);
+  color: var(--text-default);
+  box-shadow: inset 0 0 0 2px var(--border-focus);
+}
+
+.br-agents__text {
+  display: flex;
+  min-width: 0;
+  flex: 1 1 auto;
+  flex-direction: column;
+}
+
+.br-agents__name,
+.br-agents__phase-title,
+.br-agents__meta,
+.br-agents__trailing {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.br-agents__phase-title {
+  flex: 1 1 auto;
+}
+
+.br-agents__meta,
+.br-agents__trailing,
+.br-agents__phase-counts {
+  font-size: var(--text-supporting);
+  line-height: var(--text-supporting--line-height);
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+/* A dense row is one line: the trailing figure sits on the 18px line's
+   baseline band, and a long name gives way to it. */
+.br-agents__row[data-layout='dense'] {
+  align-items: center;
+}
+
+.br-agents__trailing {
+  flex: none;
+  max-width: 45%;
+}
+
+.br-agents__row[data-quiet] .br-agents__trailing {
+  color: var(--text-warning);
+}
+
+.br-agents__row[data-status='completed'] .br-agents__name,
+.br-agents__row[data-status='unknown'] .br-agents__name {
+  color: var(--text-muted);
+}
+
+/* The lock: a shape, in the family accent, as the chat glyph's badge is. */
+.br-agents__lock {
+  display: inline-flex;
+  height: 18px;
+  flex: none;
+  align-items: center;
+  color: var(--text-accent);
+}
+
+.br-agents__lock > svg {
+  width: 12px;
+  height: 12px;
+}
+
+/* STATUS INK, on top of the shape. Running wears the accent, a question or a
+   short ending the warning ink, a failure the danger ink; the rest stay muted. */
+.br-agents__row[data-status='running'] .br-agents__glyph,
+.br-agents__row[data-status='queued'] .br-agents__glyph {
+  color: var(--text-accent);
+}
+
+.br-agents__row[data-status='blocked'] .br-agents__glyph,
+.br-agents__row[data-status='incomplete'] .br-agents__glyph,
+.br-agents__row[data-status='interrupted'] .br-agents__glyph {
+  color: var(--text-warning);
+}
+
+.br-agents__row[data-status='failed'] .br-agents__glyph {
+  color: var(--text-danger);
+}
+
+/* A running child's dashed circle turns slowly, so a live row reads as live
+   without a second mark. Never under reduced motion. */
+.br-agents__row[data-status='running'] .br-agents__glyph > svg {
+  animation: br-agents-turn 3s linear infinite;
+}
+
+@keyframes br-agents-turn {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* PHASES. The toggle carries the kind glyph, the title, "2 of 5" and the
+   disclosure chevron; the thin bar and the counts sit under it. */
+.br-agents__phase-toggle {
+  align-items: center;
+}
+
+.br-agents__phase[data-status='completed'] .br-agents__phase-title,
+.br-agents__phase[data-status='skipped'] .br-agents__phase-title {
+  color: var(--text-muted);
+}
+
+.br-agents__phase[data-status='in_progress'] .br-agents__phase-toggle .br-summary__glyph {
+  color: var(--text-accent);
+}
+
+.br-agents__phase[data-status='blocked'] .br-agents__phase-toggle .br-summary__glyph {
+  color: var(--text-warning);
+}
+
+.br-agents .br-agents__phase-progress {
+  margin: 2px 0 4px;
+}
+
+.br-agents__phase-counts {
+  margin: 0 0 2px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.br-agents__phase .br-agents__list {
+  margin-bottom: 4px;
+}
+
+/* DENSE GROUPS. A group's header is a label-sized disclosure: 12px muted words,
+   its count, and the chevron. */
+.br-agents__group-toggle {
+  align-items: center;
+  color: var(--text-muted);
+}
+
+.br-agents__group-label {
+  min-width: 0;
+  flex: 1 1 auto;
+  font-size: var(--text-supporting);
+  line-height: var(--text-supporting--line-height);
+}
+
+.br-agents__chevron {
+  display: inline-flex;
+  width: 12px;
+  height: 18px;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-muted);
+  transition: transform var(--dur-fast) var(--ease-out);
+}
+
+.br-agents__chevron > svg {
+  width: 12px;
+  height: 12px;
+}
+
+.br-agents__chevron[data-open] {
+  transform: rotate(90deg);
+}
+
+.br-agents__more {
+  align-items: center;
+  color: var(--text-muted);
+  font-size: var(--text-supporting);
+  line-height: var(--text-supporting--line-height);
+}
+
+/* The refresh error's Retry, at the error line's 12. A plain button, so it
+   needs no override of the Button primitive's 14/500. */
+.br-agents__error {
+  margin-top: 4px;
+}
+
+.br-agents__retry {
+  margin-right: -8px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: var(--radius-element);
+  background-color: transparent;
+  color: var(--text-default);
+  font: inherit;
+  font-size: var(--text-supporting);
+  line-height: 24px;
+  cursor: pointer;
+}
+
+.br-agents__retry:hover {
+  background-color: var(--br-control-hover, var(--background-fill-strong));
+}
+
+/* THE HOVER CARD, on the tooltip's inverse surface (12/16). Labels step back by
+   opacity, since the inverse surface has one ink. */
+.br-agents-card-surface {
+  max-width: min(18rem, calc(100vw - 16px));
+}
+
+.br-agents-card {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: var(--text-supporting);
+  line-height: var(--text-supporting--line-height);
+}
+
+.br-agents-card p {
+  margin: 0;
+}
+
+.br-agents-card__title {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  font-weight: 500;
+  overflow-wrap: anywhere;
+}
+
+.br-agents-card .br-chat-kind-icon {
+  width: 14px;
+  height: 14px;
+  margin-top: 1px;
+  color: inherit;
+}
+
+.br-agents-card__line {
+  font-weight: 400;
+  overflow-wrap: anywhere;
+}
+
+.br-agents-card__status {
+  display: -webkit-box;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+}
+
+.br-agents-card__facts {
+  display: grid;
+  margin: 4px 0;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 2px 8px;
+  font-weight: 400;
+}
+
+.br-agents-card__facts dt {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  opacity: 0.72;
+}
+
+.br-agents-card__facts dt > svg,
+.br-agents-card__private > svg {
+  width: 12px;
+  height: 12px;
+  flex: none;
+}
+
+.br-agents-card__facts dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.br-agents-card__private {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.br-agents-card__hint {
+  margin-top: 2px;
+  font-weight: 400;
+  opacity: 0.72;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .br-agents__row[data-status='running'] .br-agents__glyph > svg {
+    animation: none;
+  }
+
+  .br-agents__row,
+  .br-agents__phase-toggle,
+  .br-agents__group-toggle,
+  .br-agents__more,
+  .br-agents__chevron {
+    transition: none;
+  }
+}
+/* @ws WS-SUMMARY-AGENTS end */
