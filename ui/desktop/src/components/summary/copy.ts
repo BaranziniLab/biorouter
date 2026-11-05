@@ -86,6 +86,17 @@ export const summaryCopy = {
       unknown: 'Status unknown',
     },
     quietFor: (elapsed: string) => `quiet for ${elapsed}`,
+    /**
+     * A comfortable row's setup counts, drawn as a glyph and a number and read
+     * as these words: "2 extensions", "1 skill", "1 knowledge base". Never
+     * abbreviated: "1 KB" read as one kilobyte.
+     */
+    setupCount: {
+      extension: (count: number) => `${count} ${count === 1 ? 'extension' : 'extensions'}`,
+      skill: (count: number) => `${count} ${count === 1 ? 'skill' : 'skills'}`,
+      knowledge: (count: number) =>
+        `${count} ${count === 1 ? 'knowledge base' : 'knowledge bases'}`,
+    },
     phaseStatus: {
       pending: 'Pending',
       in_progress: 'In progress',

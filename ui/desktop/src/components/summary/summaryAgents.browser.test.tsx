@@ -51,7 +51,7 @@ const rows = Array.from({ length: params.agents }, (_, i) => ({
   endedAt: null,
   elapsedSeconds: 3900 + i,
   providerName: 'anthropic',
-  modelName: 'claude-sonnet-4-5-20250929-with-a-long-suffix',
+  modelName: params.model ?? 'claude-sonnet-4-5-20250929-with-a-long-suffix',
   extensions: ['developer', 'webdocuments', 'memory'],
   skills: ['scientific-research'],
   knowledgeBases: ['soul'],
@@ -175,6 +175,24 @@ interface Measured {
   viewport: number;
   /** Names whose text is longer than their box: the instrument, proof the names could overflow. */
   cutNames: number;
+  /** Every setup count (glyph and number) on a second line, against that line's box. */
+  counts: {
+    kind: string | null;
+    top: number;
+    height: number;
+    left: number;
+    right: number;
+    glyph: { width: number; height: number; top: number; bottom: number };
+    line: { top: number; height: number; left: number; right: number };
+  }[];
+  /** Each second line's parts in order: whether it may give way, its edges, whether it is cut. */
+  lines: {
+    left: number;
+    right: number;
+    /** The line's last part: the run time, or the quiet note in its place. */
+    time: string | null;
+    parts: { fit: boolean; left: number; right: number; width: number; cut: boolean }[];
+  }[];
 }
 
 describe('the subagents in the summary card, in a real layout engine', () => {
@@ -227,7 +245,7 @@ describe('the subagents in the summary card, in a real layout engine', () => {
     await settledWithin(launched.close(), TEARDOWN_STEP_MS);
   }, 30_000);
 
-  async function mount(params: { agents: number; plan?: boolean }): Promise<{
+  async function mount(params: { agents: number; plan?: boolean; model?: string }): Promise<{
     tab: Page;
     measured: Measured;
   }> {
@@ -283,6 +301,47 @@ describe('the subagents in the summary card, in a real layout engine', () => {
         cutNames: Array.from(document.querySelectorAll<HTMLElement>('.br-agents__name')).filter(
           (name) => name.scrollWidth > name.clientWidth
         ).length,
+        counts: Array.from(document.querySelectorAll('.br-agents__meta .br-agents__count')).map(
+          (count) => {
+            const box = count.getBoundingClientRect();
+            const glyph = count.querySelector('svg')!.getBoundingClientRect();
+            const line = count.closest('.br-agents__meta')!.getBoundingClientRect();
+            return {
+              kind: count.getAttribute('data-count'),
+              top: box.top,
+              height: box.height,
+              left: box.left,
+              right: box.right,
+              glyph: {
+                width: glyph.width,
+                height: glyph.height,
+                top: glyph.top,
+                bottom: glyph.bottom,
+              },
+              line: { top: line.top, height: line.height, left: line.left, right: line.right },
+            };
+          }
+        ),
+        lines: Array.from(document.querySelectorAll<HTMLElement>('.br-agents__meta')).map(
+          (line) => {
+            const box = line.getBoundingClientRect();
+            return {
+              left: box.left,
+              right: box.right,
+              time: line.lastElementChild?.textContent ?? null,
+              parts: Array.from(line.querySelectorAll<HTMLElement>(':scope > *')).map((part) => {
+                const edge = part.getBoundingClientRect();
+                return {
+                  fit: part.classList.contains('br-agents__fit'),
+                  left: edge.left,
+                  right: edge.right,
+                  width: edge.width,
+                  cut: part.scrollWidth > part.clientWidth,
+                };
+              }),
+            };
+          }
+        ),
       };
     });
     return { tab, measured };
@@ -325,6 +384,65 @@ describe('the subagents in the summary card, in a real layout engine', () => {
       expect(measured.rightmost).toBeLessThanOrEqual(measured.card.right);
     } finally {
       await tab.close();
+    }
+  });
+
+  it('draws the setup counts as 12px glyphs on the 16px second line, and in full', async (ctx) => {
+    if (!browser) return ctx.skip();
+    // The fixture's model name is long enough to fill the line on its own (the instrument),
+    // and a usual one is not.
+    for (const model of [undefined, 'gpt-5.5']) {
+      const { tab, measured } = await mount({ agents: 3, model });
+      try {
+        for (const height of measured.comfortable) expect(height).toBe(44);
+        // Extensions, skills and knowledge bases on each of the three rows.
+        expect(measured.counts.map((count) => count.kind)).toEqual(
+          Array.from({ length: 3 }, () => ['extension', 'skill', 'knowledge']).flat()
+        );
+        for (const count of measured.counts) {
+          // Held to the 16px line, so the row does not grow.
+          expect(count.line.height).toBe(16);
+          expect(count.height).toBe(16);
+          expect(count.top).toBe(count.line.top);
+          expect(count.glyph.width).toBe(12);
+          expect(count.glyph.height).toBe(12);
+          expect(count.glyph.top - count.top).toBe(2);
+          // Drawn in full: the line's ellipsis never takes a count.
+          expect(count.left).toBeGreaterThanOrEqual(count.line.left);
+          expect(count.right).toBeLessThanOrEqual(count.line.right);
+        }
+        expect(measured.lines).toHaveLength(3);
+        for (const line of measured.lines) {
+          // Model, dot, counts, dot, and the run time or (on the fixture's first row, quiet
+          // for 10 minutes) the quiet note in its place.
+          expect(line.parts.map((part) => part.fit)).toEqual([true, false, false, false, false]);
+          const [modelPart, ...rest] = line.parts;
+          const time = rest[rest.length - 1];
+          for (const part of line.parts) expect(part.right).toBeLessThanOrEqual(line.right);
+          // The dots and the counts never give way; the time only once the model is gone.
+          for (const part of rest.slice(0, -1)) expect(part.cut).toBe(false);
+          if (time.cut) expect(modelPart.width).toBe(0);
+        }
+        expect(measured.lines.map((line) => line.time)).toEqual([
+          'quiet for 10m',
+          '1h 5m',
+          '1h 5m',
+        ]);
+        // Beside a run time the counts leave room: the long model name is cut and a usual one
+        // is not, and the time is whole.
+        for (const line of measured.lines.slice(1)) {
+          expect(line.parts[0].cut).toBe(!model);
+          expect(line.parts[0].width).toBeGreaterThan(0);
+          expect(line.parts[4].cut).toBe(false);
+        }
+        // The narrowest case, a private row (its lock takes 20px of the line) that is also quiet:
+        // the model gives all its room before the note's tail goes.
+        expect(measured.lines[0].parts[0].width).toBe(0);
+        expect(measured.body.scrollWidth).toBeLessThanOrEqual(measured.body.clientWidth);
+        expect(measured.rightmost).toBeLessThanOrEqual(measured.card.right);
+      } finally {
+        await tab.close();
+      }
     }
   });
 

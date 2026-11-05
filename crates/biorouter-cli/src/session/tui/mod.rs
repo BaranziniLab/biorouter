@@ -1431,12 +1431,20 @@ fn draw_completion(f: &mut Frame, app: &App, input_area: Rect) {
     );
 }
 
+/// Draw the history anchored to its newest row, `app.scroll` rows up from it.
+///
+/// ⚠ The rows are wrapped HERE ([`wrap_line`]) and handed to ratatui one row
+/// per `Line`, never handed whole with `Wrap`. The view is anchored by counting
+/// rows, and the count used to be cells ÷ width while ratatui wrapped at word
+/// boundaries: every long prose line took a row or so more than counted, so a
+/// transcript of long lines (a subagent's 143-line spawn context) opened that
+/// many rows above its newest message. One function both counts and draws, so
+/// the two cannot disagree.
 fn draw_history(f: &mut Frame, app: &mut App, area: Rect) {
-    let para = Paragraph::new(app.scrollback.clone()).wrap(Wrap { trim: false });
-    // The wrapped-line total is an O(content) unicode re-measure. Cache it by a
-    // cheap content signature so spinner-tick redraws (where nothing changed)
-    // don't recompute it; recompute only when scrollback grows, the viewport
-    // resizes, or a streamed token extends the in-progress text.
+    // The wrapped-row total is an O(content) re-measure. Cache it by a cheap
+    // content signature so spinner-tick redraws (where nothing changed) don't
+    // recompute it; recompute only when scrollback grows, the viewport resizes,
+    // or a streamed token extends the in-progress text.
     let sig = (app.scrollback.len(), area.width, app.stream_text.len());
     let total = match app.wrap_cache {
         Some((sb, w, st, cached)) if (sb, w, st) == sig => cached,
@@ -1448,28 +1456,148 @@ fn draw_history(f: &mut Frame, app: &mut App, area: Rect) {
     };
     app.last_total_lines = total as usize;
     app.last_viewport_h = area.height;
-    let base = total.saturating_sub(area.height);
-    let offset = base.saturating_sub(app.scroll);
-    f.render_widget(para.scroll((offset, 0)), area);
+    let height = area.height as usize;
+    let scroll = (app.scroll as usize).min((total as usize).saturating_sub(height));
+    // Only the rows from the bottom up to the top of the viewport are wrapped
+    // to be drawn, so a long history costs a redraw nothing it does not show.
+    let wanted = scroll + height;
+    let mut rows: Vec<Line<'static>> = Vec::with_capacity(wanted);
+    for line in app.scrollback.iter().rev() {
+        if rows.len() >= wanted {
+            break;
+        }
+        rows.extend(wrap_line(line, area.width).into_iter().rev());
+    }
+    rows.reverse();
+    let end = rows.len().saturating_sub(scroll);
+    let start = end.saturating_sub(height);
+    rows.truncate(end);
+    f.render_widget(Paragraph::new(rows.split_off(start)), area);
 }
 
-/// Estimate how many terminal rows the lines occupy once wrapped to `width`.
-/// (`Paragraph::line_count` is private in ratatui, so we approximate; chat
-/// content is mostly short lines where this is exact.)
-fn wrapped_count(lines: &[Line], width: u16) -> u16 {
-    let w = (width.max(1)) as usize;
-    let mut total: usize = 0;
-    for line in lines {
-        // Use unicode *display* width so wide glyphs (CJK = 2 cells) count
-        // correctly and the latest output isn't clipped.
-        let cells: usize = line
-            .spans
-            .iter()
-            .map(|s| UnicodeWidthStr::width(s.content.as_ref()))
-            .sum();
-        total += cells.div_ceil(w).max(1);
-    }
+/// How many terminal rows `lines` take in a `width`-cell viewport: exactly the
+/// rows [`wrap_line`] makes of them.
+fn wrapped_count(lines: &[Line<'static>], width: u16) -> u16 {
+    let total: usize = lines
+        .iter()
+        .map(|line| {
+            if fits_one_row(line, width) {
+                1
+            } else {
+                wrap_line(line, width).len()
+            }
+        })
+        .sum();
     total.min(u16::MAX as usize) as u16
+}
+
+/// A space a row may break at. A no-break space is not one.
+fn is_break_space(ch: char) -> bool {
+    ch.is_whitespace() && ch != '\u{a0}' && ch != '\u{202f}'
+}
+
+/// Whether `line` is drawn as it is, on one row: it fits, in display cells, and
+/// holds no control character (which [`wrap_line`] drops).
+fn fits_one_row(line: &Line, width: u16) -> bool {
+    let mut cells = 0usize;
+    for span in &line.spans {
+        for ch in span.content.chars() {
+            if ch.is_control() {
+                return false;
+            }
+            cells += UnicodeWidthChar::width(ch).unwrap_or(0);
+        }
+    }
+    cells <= usize::from(width.max(1))
+}
+
+/// The rows `line` takes in a `width`-cell viewport, word-wrapped: a row breaks
+/// after its last space when the next word does not fit, a space at the edge is
+/// not carried onto the next row, and a word wider than the row is cut. Styles,
+/// the line's own style and its alignment ride along; control characters (a
+/// stray `\n` or `\t` inside a span) are dropped, since a row cannot hold them.
+pub(super) fn wrap_line(line: &Line<'static>, width: u16) -> Vec<Line<'static>> {
+    if fits_one_row(line, width) {
+        return vec![line.clone()];
+    }
+    let width = usize::from(width.max(1));
+    let mut rows: Vec<Vec<(char, Style)>> = Vec::new();
+    let mut row: Vec<(char, Style)> = Vec::new();
+    let mut row_w = 0usize;
+    // Where the row may break (just after a space that follows a word), and
+    // the row's width up to there.
+    let mut brk: Option<(usize, usize)> = None;
+    let mut has_word = false;
+    for span in &line.spans {
+        for ch in span.content.chars() {
+            if ch.is_control() {
+                continue;
+            }
+            let cw = UnicodeWidthChar::width(ch).unwrap_or(0);
+            let space = is_break_space(ch);
+            if row_w + cw > width && !row.is_empty() {
+                if space {
+                    rows.push(std::mem::take(&mut row));
+                    row_w = 0;
+                    brk = None;
+                    has_word = false;
+                    continue;
+                }
+                match brk.take() {
+                    Some((at, w_at)) => {
+                        // The word being written moves down whole.
+                        let word = row.split_off(at);
+                        rows.push(std::mem::replace(&mut row, word));
+                        row_w -= w_at;
+                        has_word = !row.is_empty();
+                        if row_w + cw > width {
+                            rows.push(std::mem::take(&mut row));
+                            row_w = 0;
+                            has_word = false;
+                        }
+                    }
+                    None => {
+                        rows.push(std::mem::take(&mut row));
+                        row_w = 0;
+                        has_word = false;
+                    }
+                }
+            }
+            row.push((ch, span.style));
+            row_w += cw;
+            if !space {
+                has_word = true;
+            } else if has_word {
+                brk = Some((row.len(), row_w));
+            }
+        }
+    }
+    if !row.is_empty() || rows.is_empty() {
+        rows.push(row);
+    }
+    rows.into_iter()
+        .map(|cells| {
+            let mut spans: Vec<Span<'static>> = Vec::new();
+            let mut text = String::new();
+            let mut current: Option<Style> = None;
+            for (ch, style) in cells {
+                if current != Some(style) {
+                    if let Some(prev) = current {
+                        spans.push(Span::styled(std::mem::take(&mut text), prev));
+                    }
+                    current = Some(style);
+                }
+                text.push(ch);
+            }
+            if let Some(prev) = current {
+                spans.push(Span::styled(text, prev));
+            }
+            let mut out = Line::from(spans);
+            out.style = line.style;
+            out.alignment = line.alignment;
+            out
+        })
+        .collect()
 }
 
 fn draw_status(f: &mut Frame, app: &App, area: Rect) {
@@ -3009,16 +3137,24 @@ mod tests {
         let all = lines.join("\n");
         let (header, _) = line_with(&lines, "Subagents").expect("a header");
         assert!(lines[header].contains("running 1 · done 1/2"), "{all}");
-        let (name_at, name_line) = line_with(&lines, "research-api").expect("the row");
-        assert!(name_line.contains("researcher"), "{all}");
-        assert!(name_line.contains('◐'), "{all}");
+        let (name_at, name_line) = line_with(&lines, "◐ researcher").expect("the row");
         assert!(
-            lines[name_at + 1].contains("gpt-5.5 · 3 ext · 2 skills · 1 kb · 1m42s"),
+            name_line.contains("◐ researcher  research-api"),
+            "the role leads and the name follows:\n{all}"
+        );
+        // The pane is 48 cells inside, too narrow for the words, so the
+        // knowledge base takes its short form and the time, which no longer
+        // fits whole, is left off rather than cut in half.
+        assert!(
+            lines[name_at + 1].contains("gpt-5.5 · 3 ext · 2 skills · 1 kb base …"),
             "the setup sits on the row's second line:\n{all}"
         );
-        let (writer_at, writer) = line_with(&lines, "writer").expect("the second row");
+        let (writer_at, writer) = line_with(&lines, "● writer").expect("the second row");
         assert!(writer.contains('●'), "{all}");
-        assert!(lines[writer_at + 1].contains("gpt-5.5 · 0 ext · 0 skills · 0 kb · 30s"));
+        assert!(
+            lines[writer_at + 1].contains("    gpt-5.5 · 30s  "),
+            "a count that is zero is left out:\n{all}"
+        );
         // Beside the history, not over it: the pane's edge is right of the text.
         let (_, hello) = line_with(&lines, "hello parent").expect("history");
         let text_at = hello.find("hello parent").unwrap();
@@ -3264,7 +3400,7 @@ mod tests {
         let lines = buffer_lines(&mut app, 160, 30);
         let all = lines.join("\n");
         let (head, _) = line_with(&lines, "◂ Subagent").expect("a header");
-        for needle in ["research-api", "running", "gpt-5.5", "esc returns"] {
+        for needle in ["researcher", "running", "gpt-5.5", "esc returns"] {
             assert!(lines[head].contains(needle), "{needle}:\n{all}");
         }
         assert!(all.contains("Survey the GWAS catalog"), "{all}");
@@ -3313,14 +3449,428 @@ mod tests {
     fn subagents_list_numbers_rows_for_attach() {
         let mut app = app_with(two_subagents());
         subagents::list_into(&mut app);
-        let text = buffer_text(&mut app, 160, 40);
-        assert!(text.contains("1. ◐ research-api"), "{text}");
+        let lines = buffer_lines(&mut app, 160, 40);
+        let text = lines.join("\n");
+        let (first, _) = line_with(&lines, "1. ◐ researcher").expect("the role leads");
+        assert!(
+            lines[first + 1].trim_start().starts_with("research-api"),
+            "the name follows on its own line:\n{text}"
+        );
         assert!(text.contains("2. ● writer"), "{text}");
         assert!(text.contains("/attach <number>"), "{text}");
         assert_eq!(
             app.subagents.model.resolve("2").as_deref(),
             Ok("child-writer")
         );
+    }
+
+    /// The live finding: a child spawned with a role showed its
+    /// instruction-derived name ("Convert 37 degrees Celsius to Fahrenheit…")
+    /// and buried the role. The role leads every row; the name follows,
+    /// dimmed, where it fits; the details keep both.
+    fn celsius_child() -> PaneRow {
+        let mut row = sub(
+            "child-celsius",
+            "Convert 37 degrees Celsius to Fahrenheit and report the number",
+            SubagentRunStatus::Completed,
+        );
+        row.role = Some("celsius".into());
+        row.model = Some("gpt-5.5-2026-04-24".into());
+        row
+    }
+
+    fn cell_is_dim(app: &mut App, w: u16, h: u16, needle: &str) -> bool {
+        let backend = TestBackend::new(w, h);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|f| draw(f, app)).unwrap();
+        let buffer = terminal.backend().buffer();
+        let cells = needle.chars().count() as u16;
+        for y in 0..h {
+            for x in 0..w.saturating_sub(cells) {
+                let here: String = (x..x + cells).map(|c| buffer[(c, y)].symbol()).collect();
+                if here == needle {
+                    return buffer[(x, y)].modifier.contains(Modifier::DIM);
+                }
+            }
+        }
+        panic!("{needle:?} is not on screen");
+    }
+
+    #[test]
+    fn a_role_is_the_rows_label_and_the_name_follows_dimmed() {
+        let mut app = app_with(PaneModel {
+            rows: vec![celsius_child()],
+            plan: None,
+        });
+        // Wide: the side pane's two-line row.
+        let lines = buffer_lines(&mut app, 160, 30);
+        let all = lines.join("\n");
+        let (at, row) = line_with(&lines, "● celsius").expect("the role leads the row");
+        assert!(
+            row.contains("● celsius  Convert 37 degrees"),
+            "the name follows the role:\n{all}"
+        );
+        assert!(row.contains('…'), "and is cut to the pane:\n{all}");
+        assert!(cell_is_dim(&mut app, 160, 30, "Convert 37"), "{all}");
+        assert!(
+            !cell_is_dim(&mut app, 160, 30, "celsius"),
+            "the label is not dimmed:\n{all}"
+        );
+        assert!(lines[at + 1].contains("gpt-5.5 · 30s"), "{all}");
+
+        // Narrow: the strip leads with the role too.
+        let narrow = buffer_lines(&mut app, 90, 30);
+        let narrow_all = narrow.join("\n");
+        let (_, strip_row) = line_with(&narrow, "● celsius").expect("{narrow_all}");
+        assert!(strip_row.contains("Convert 37"), "{narrow_all}");
+
+        // The details keep both.
+        on_key(&mut app, ctrl('o'));
+        let text = buffer_text(&mut app, 160, 40);
+        assert!(text.contains("role       celsius"), "{text}");
+        assert!(
+            text.contains("name       Convert 37 degrees Celsius"),
+            "{text}"
+        );
+
+        // Many rows (one line each) lead with the role as well.
+        let mut rows: Vec<PaneRow> = (0..5)
+            .map(|i| {
+                let mut row = celsius_child();
+                row.session_id = format!("c{i}");
+                row.role = Some(format!("reader-{i}"));
+                row
+            })
+            .collect();
+        rows[0].status = SubagentRunStatus::Running;
+        let mut dense = app_with(PaneModel { rows, plan: None });
+        let text = buffer_text(&mut dense, 160, 30);
+        for i in 0..5 {
+            assert!(text.contains(&format!("reader-{i}")), "{text}");
+        }
+
+        // `/subagents list` and `/attach` speak the role.
+        subagents::list_into(&mut app);
+        let lines = buffer_lines(&mut app, 160, 40);
+        let all = lines.join("\n");
+        let (n, _) = line_with(&lines, "1. ● celsius  done · gpt-5.5 · 30s").expect("{all}");
+        assert!(
+            lines[n + 1].trim_start().starts_with("Convert 37 degrees"),
+            "{all}"
+        );
+        assert_eq!(
+            app.subagents.model.resolve("celsius").as_deref(),
+            Ok("child-celsius")
+        );
+        assert_eq!(
+            app.subagents.model.resolve("cels").as_deref(),
+            Ok("child-celsius")
+        );
+    }
+
+    /// The live finding: "gpt-5.5-2026-04-24 · 0 ext · 0 skills · 0 k…". The
+    /// second line now names the model as the desktop does, leaves out every
+    /// count that is zero and spells knowledge bases out.
+    #[test]
+    fn the_setup_line_is_short_and_counts_only_what_a_child_has() {
+        let mut child = celsius_child();
+        child.knowledge_bases = vec!["soul".into()];
+        let mut app = app_with(PaneModel {
+            rows: vec![child],
+            plan: None,
+        });
+        let lines = buffer_lines(&mut app, 160, 30);
+        let all = lines.join("\n");
+        let (at, _) = line_with(&lines, "● celsius").expect("{all}");
+        assert!(
+            lines[at + 1].contains("    gpt-5.5 · 1 knowledge base · 30s"),
+            "{all}"
+        );
+        let row = format!("{}\n{}", lines[at], lines[at + 1]);
+        for absent in ["2026-04-24", "0 ext", "0 skills", "0 kb", " KB", " k…"] {
+            assert!(!row.contains(absent), "{absent:?} in the row:\n{all}");
+        }
+        assert!(!all.contains("2026-04-24"), "{all}");
+        // The strip and the child's header name the model the same way.
+        let narrow = buffer_text(&mut app, 90, 30);
+        assert!(narrow.contains(" · gpt-5.5"), "{narrow}");
+        assert!(!narrow.contains("2026-04-24"), "{narrow}");
+        let mut view = ChildView::new("child-celsius", true, false);
+        view.model = Some("gpt-5.5-2026-04-24".into());
+        view.load(&[Message::assistant().with_text("98.6")]);
+        app.child = Some(Box::new(view));
+        let lines = buffer_lines(&mut app, 160, 30);
+        let (head, header) = line_with(&lines, "◂ Subagent").expect("a header");
+        assert!(header.contains("celsius"), "{header}");
+        assert!(header.contains("· gpt-5.5"), "{header}");
+        assert!(!lines[head].contains("2026-04-24"), "{header}");
+    }
+
+    /// A prose paragraph the way a rendered system prompt writes one: a long
+    /// line of short words, a different length each time.
+    fn prose_line(i: usize) -> String {
+        let words = [
+            "you",
+            "are",
+            "a",
+            "careful",
+            "subagent",
+            "working",
+            "for",
+            "the",
+            "parent",
+            "and",
+            "report",
+            "back",
+            "concisely",
+            "with",
+            "answer",
+            "extraordinarily",
+            "tool",
+        ];
+        let mut text = format!("Paragraph {i}:");
+        let mut k = i;
+        while text.len() < 500 + (i * 37) % 400 {
+            k = (k * 7 + 3) % words.len();
+            text.push(' ');
+            text.push_str(words[k]);
+        }
+        text
+    }
+
+    /// The live finding: a child's chat opened in the middle of its transcript.
+    /// The history counted a line's rows as cells ÷ width while it was drawn
+    /// word-wrapped, so each long prose line took more rows than counted, and
+    /// the bottom-anchored view stopped that many rows short of the newest
+    /// message.
+    #[test]
+    fn a_child_view_opens_on_its_newest_message() {
+        let mut app = app_with(two_subagents());
+        let mut view = ChildView::new("child-research", true, false);
+        let prompt: String = (0..60).map(|i| format!("{}\n", prose_line(i))).collect();
+        view.load(&[
+            Message::user().with_text(prompt),
+            Message::user().with_text("Convert 37 degrees Celsius to Fahrenheit"),
+            Message::assistant().with_text("FINAL ANSWER 98.6"),
+        ]);
+        app.child = Some(Box::new(view));
+        for (w, h) in [(160, 30), (120, 24), (90, 40)] {
+            let lines = buffer_lines(&mut app, w, h);
+            let all = lines.join("\n");
+            assert!(
+                all.contains("FINAL ANSWER 98.6"),
+                "{w}x{h} opens on the newest message:\n{all}"
+            );
+        }
+
+        // The count is exact, so scrolling all the way up reaches the top, and
+        // no further.
+        let child = app.child.as_mut().unwrap();
+        child.transcript.scroll_up(u16::MAX);
+        let lines = buffer_lines(&mut app, 160, 30);
+        let all = lines.join("\n");
+        assert!(all.contains("Paragraph 0:"), "{all}");
+        assert!(!all.contains("FINAL ANSWER"), "{all}");
+    }
+
+    /// The parent's own history draws through the same code and is anchored
+    /// the same way.
+    #[test]
+    fn the_main_history_stays_on_its_newest_message_through_long_lines() {
+        let mut app = App::new(StatusInfo::default());
+        for i in 0..40 {
+            app.push_message(&Message::assistant().with_text(prose_line(i)), false);
+        }
+        app.push_message(&Message::assistant().with_text("NEWEST LINE"), false);
+        let text = buffer_text(&mut app, 100, 30);
+        assert!(text.contains("NEWEST LINE"), "{text}");
+    }
+
+    #[test]
+    fn wrapping_breaks_at_spaces_and_counts_what_it_draws() {
+        let text = prose_line(3);
+        let line = Line::from(vec![
+            Span::raw("▌ "),
+            Span::styled(text.clone(), Style::new().fg(Color::Yellow)),
+        ]);
+        for width in [7u16, 40, 61, 97, 120] {
+            let rows = wrap_line(&line, width);
+            assert_eq!(
+                wrapped_count(std::slice::from_ref(&line), width) as usize,
+                rows.len()
+            );
+            let mut words: Vec<String> = Vec::new();
+            for row in &rows {
+                let row_text: String = row.spans.iter().map(|s| s.content.as_ref()).collect();
+                assert!(
+                    UnicodeWidthStr::width(row_text.as_str()) <= width as usize,
+                    "{width}: {row_text:?}"
+                );
+                words.extend(row_text.split_whitespace().map(str::to_string));
+            }
+            // No word is split across rows when it fits on one (the longest
+            // word is 15 cells).
+            if width >= 16 {
+                let expected: Vec<String> = format!("▌ {text}")
+                    .split_whitespace()
+                    .map(str::to_string)
+                    .collect();
+                assert_eq!(words, expected, "{width}");
+            }
+            // Styles ride along.
+            assert!(rows
+                .iter()
+                .flat_map(|r| r.spans.iter())
+                .any(|s| s.style.fg == Some(Color::Yellow)));
+        }
+        // A word wider than the row is cut, never lost.
+        let long = Line::from("x".repeat(25));
+        let rows = wrap_line(&long, 10);
+        assert_eq!(rows.len(), 3);
+        assert_eq!(
+            rows.iter()
+                .flat_map(|r| r.spans.iter())
+                .map(|s| s.content.len())
+                .sum::<usize>(),
+            25
+        );
+        // An empty line is one empty row; a line that fits is itself.
+        assert_eq!(wrap_line(&Line::default(), 10).len(), 1);
+        assert_eq!(
+            wrap_line(&Line::from("short"), 10),
+            vec![Line::from("short")]
+        );
+    }
+
+    fn spawn_context(task: &str, prompt_lines: usize) -> String {
+        let prompt: Vec<String> = (0..prompt_lines)
+            .map(|i| format!("Rule {i}: answer the parent concisely."))
+            .collect();
+        format!(
+            "## Subagent spawn context\n\nSpawned by session: 20261104_parent\n\n\
+             ### Task instructions\n{task}\n\n\
+             ### Granted extensions\n(parent defaults)\n\n\
+             ### Granted skills\n(none)\n\n\
+             ### Knowledge bases\n(none)\n\n\
+             ### Rendered system prompt\n{}",
+            prompt.join("\n")
+        )
+    }
+
+    fn stamped(text: String) -> Message {
+        use biorouter::conversation::message::{MessageProvenance, ProvenanceKind};
+        let mut message = Message::user().with_text(text).user_only();
+        message.metadata.provenance = Some(MessageProvenance {
+            kind: ProvenanceKind::SpawnContext,
+            from_session_id: Some("20261104_parent".into()),
+            from_session_name: None,
+        });
+        message
+    }
+
+    fn scrollback_text(app: &App) -> String {
+        app.scrollback
+            .iter()
+            .map(|l| {
+                l.spans
+                    .iter()
+                    .map(|s| s.content.as_ref())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    /// The live finding: the child view printed the 143-line spawn-context
+    /// record in full. It folds to its task, the way the desktop clamps it
+    /// under its "Spawn context" chip, and is found by its provenance stamp.
+    #[test]
+    fn the_spawn_context_folds_to_its_task_instructions() {
+        let record = spawn_context("Convert 37 degrees Celsius to Fahrenheit.", 120);
+        let total = record.lines().count();
+        let mut view = ChildView::new("child-celsius", true, false);
+        view.load(&[
+            stamped(record.clone()),
+            Message::user().with_text("Convert 37 degrees Celsius to Fahrenheit."),
+            Message::assistant().with_text("98.6"),
+        ]);
+        let text = scrollback_text(&view.transcript);
+        assert!(text.contains("▌ Spawn context"), "{text}");
+        assert!(text.contains("### Task instructions"), "{text}");
+        assert!(
+            text.contains("▌ Convert 37 degrees Celsius to Fahrenheit."),
+            "the task stays visible:\n{text}"
+        );
+        // Shown: the session line, a blank, the heading and the task.
+        let hidden = total - 6;
+        assert!(
+            text.contains(&format!("⋯ {hidden} more lines")),
+            "{total} lines, {hidden} folded:\n{text}"
+        );
+        for folded in ["Granted extensions", "Rendered system prompt", "Rule 7:"] {
+            assert!(!text.contains(folded), "{folded:?} is folded:\n{text}");
+        }
+        assert!(
+            !text.contains("## Subagent spawn context"),
+            "the label replaces the record's heading:\n{text}"
+        );
+        assert!(
+            view.transcript.scrollback.len() < 20,
+            "{} rows",
+            view.transcript.scrollback.len()
+        );
+
+        // Drawn, it opens on the reply, with the folded record above it.
+        let mut app = app_with(two_subagents());
+        app.child = Some(Box::new(view));
+        let screen = buffer_text(&mut app, 160, 40);
+        assert!(screen.contains("Spawn context"), "{screen}");
+        assert!(screen.contains("98.6"), "{screen}");
+
+        // The stamp decides, not the text: the same words typed as a message
+        // are drawn as they are.
+        let mut plain = ChildView::new("c", true, false);
+        plain.load(&[Message::user().with_text(record.clone())]);
+        let text = scrollback_text(&plain.transcript);
+        assert!(text.contains("Rendered system prompt"), "{text}");
+        assert!(!text.contains("more lines"), "{text}");
+
+        // A record that arrives live folds too, and debug shows all of it.
+        let mut live = ChildView::new("c", true, false);
+        live.load(&[]);
+        live.apply(biorouter::session_events::SessionBusEvent::Agent(
+            AgentEvent::Message(stamped(record.clone())),
+        ));
+        assert!(scrollback_text(&live.transcript).contains("more lines"));
+        let mut debug = ChildView::new("c", true, true);
+        debug.load(&[stamped(record)]);
+        let text = scrollback_text(&debug.transcript);
+        assert!(text.contains("Rule 119:"), "{text}");
+        assert!(!text.contains("more lines"), "{text}");
+    }
+
+    #[test]
+    fn a_long_task_is_capped_and_a_record_without_one_shows_its_head() {
+        let task: String = (1..=20)
+            .map(|i| format!("step {i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let record = spawn_context(&task, 3);
+        let (shown, hidden) = subagents::spawn_context_preview(&record);
+        assert_eq!(shown[0], "Spawned by session: 20261104_parent");
+        assert!(shown.contains(&"step 12"), "{shown:?}");
+        assert!(!shown.contains(&"step 13"), "{shown:?}");
+        assert_eq!(shown.len() + hidden, record.lines().count() - 2);
+
+        let odd = "first\nsecond\nthird\nfourth\nfifth\nsixth\nseventh\neighth";
+        let (shown, hidden) = subagents::spawn_context_preview(odd);
+        assert_eq!(
+            shown,
+            ["first", "second", "third", "fourth", "fifth", "sixth"]
+        );
+        assert_eq!(hidden, 2);
+        let (shown, hidden) = subagents::spawn_context_preview("one line");
+        assert_eq!((shown, hidden), (vec!["one line"], 0));
     }
 
     #[test]

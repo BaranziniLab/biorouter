@@ -8,8 +8,10 @@ import {
   PHASE_STATUSES,
   QUIET_AFTER_SECONDS,
   SUBAGENT_RUN_STATUSES,
+  SETUP_COUNT_KINDS,
   formatElapsed,
   hasActiveSubagent,
+  inSpawnOrder,
   isQuiet,
   openSubagentTab,
   parseSessionSubagents,
@@ -21,7 +23,7 @@ import {
   subagentGroup,
   subagentListLayout,
   subagentRosterRevision,
-  subagentSetupLine,
+  subagentSetup,
   subagentTitle,
   type PhaseSnapshot,
   type SubagentRow,
@@ -310,13 +312,75 @@ describe('labels', () => {
     expect(formatElapsed(86400 * 2 + 5)).toBe('2d');
   });
 
-  it('writes the second line from the model, the setup and the run time', () => {
-    expect(subagentSetupLine(row())).toBe('claude-sonnet-4-5 · 2 ext · 1 skill · 1 KB · 1m');
+  it('gives the second line the model, the setup as counts and the run time', () => {
+    expect(subagentSetup(row())).toEqual({
+      model: 'claude-sonnet-4-5',
+      counts: [
+        { kind: 'extension', count: 2 },
+        { kind: 'skill', count: 1 },
+        { kind: 'knowledge', count: 1 },
+      ],
+      elapsed: '1m',
+    });
+    // A kind the child has none of is left out, not counted as zero.
     expect(
-      subagentSetupLine(
+      subagentSetup(
         row({ extensions: [], skills: ['a', 'b'], knowledgeBases: [], elapsedSeconds: null })
       )
-    ).toBe('claude-sonnet-4-5 · 2 skills');
+    ).toEqual({ model: 'claude-sonnet-4-5', counts: [{ kind: 'skill', count: 2 }], elapsed: null });
+    expect(
+      subagentSetup(row({ modelName: 'gpt-5.5', extensions: [], skills: [], elapsedSeconds: 5 }))
+    ).toEqual({ model: 'gpt-5.5', counts: [{ kind: 'knowledge', count: 1 }], elapsed: '5s' });
+    expect(SETUP_COUNT_KINDS).toEqual(['extension', 'skill', 'knowledge']);
+  });
+});
+
+describe('spawn order', () => {
+  const at = (second: number) => `2026-11-04T10:00:${String(second).padStart(2, '0')}Z`;
+  const ids = (rows: SubagentRow[]) => inSpawnOrder(rows).map((r) => r.sessionId);
+
+  it('puts the oldest first, whatever order the rows arrive in', () => {
+    const rows = [
+      row({ sessionId: 'c', createdAt: at(2), status: 'completed' }),
+      row({ sessionId: 'a', createdAt: at(0), status: 'completed' }),
+      row({ sessionId: 'b', createdAt: at(1), status: 'running' }),
+    ];
+    expect(ids(rows)).toEqual(['a', 'b', 'c']);
+    // A copy: the roster the caller holds is not reordered.
+    expect(rows.map((r) => r.sessionId)).toEqual(['c', 'a', 'b']);
+  });
+
+  it('orders a fan-out spawned in one second by label, in natural order, then by name', () => {
+    const rows = [
+      row({ sessionId: 'r10', createdAt: at(0), name: 'ribosome 10' }),
+      row({ sessionId: 'r2', createdAt: at(0), name: 'ribosome 2' }),
+      row({ sessionId: 'r1', createdAt: at(0), name: 'Ribosome 1' }),
+      row({ sessionId: 'early', createdAt: '2026-11-04T09:59:59Z', name: 'zeta' }),
+    ];
+    expect(ids(rows)).toEqual(['early', 'r1', 'r2', 'r10']);
+    // The role is the label a row leads with, so it decides before the name.
+    const roles = [
+      row({ sessionId: 'x', createdAt: at(0), role: 'Reviewer', name: 'a' }),
+      row({ sessionId: 'y', createdAt: at(0), role: 'Analyst', name: 'z' }),
+      row({ sessionId: 'z', createdAt: at(0), role: 'Analyst', name: 'b' }),
+    ];
+    expect(ids(roles)).toEqual(['z', 'y', 'x']);
+  });
+
+  it('never moves a row for its state, and keeps the roster’s order on a full tie', () => {
+    const rows = [
+      row({ sessionId: 'first', createdAt: at(0), name: 'same', status: 'completed' }),
+      row({ sessionId: 'second', createdAt: at(0), name: 'same', status: 'running' }),
+    ];
+    expect(ids(rows)).toEqual(['first', 'second']);
+    expect(ids(rows.map((r) => ({ ...r, status: 'failed' as const })))).toEqual([
+      'first',
+      'second',
+    ]);
+    // A row with no spawn time sorts after the ones that have one.
+    expect(
+      ids([row({ sessionId: 'unknown', createdAt: '' }), row({ sessionId: 'known' })])
+    ).toEqual(['known', 'unknown']);
   });
 });
 

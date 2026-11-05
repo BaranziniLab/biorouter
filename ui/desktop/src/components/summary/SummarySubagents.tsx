@@ -1,10 +1,12 @@
 import {
+  Fragment,
   useId,
   useLayoutEffect,
   useRef,
   useState,
   type FocusEvent,
   type KeyboardEvent,
+  type ReactNode,
 } from 'react';
 import {
   AlertTriangle,
@@ -42,6 +44,7 @@ import {
   SUBAGENT_GROUPS,
   completedPhaseCount,
   formatElapsed,
+  inSpawnOrder,
   isQuiet,
   phaseOpenByDefault,
   rowsByPhase,
@@ -50,11 +53,12 @@ import {
   subagentCounts,
   subagentGroup,
   subagentListLayout,
-  subagentSetupLine,
+  subagentSetup,
   subagentTitle,
   type PhaseKind,
   type PhaseSnapshot,
   type SessionSubagents,
+  type SubagentSetup,
   type SubagentGroup,
   type SubagentListLayout,
   type SubagentRow,
@@ -236,7 +240,7 @@ function buildView(
   showAll: Record<string, boolean>
 ): View {
   const keys: string[] = [];
-  const rows = data?.subagents ?? [];
+  const rows = inSpawnOrder(data?.subagents ?? []);
   const layout = subagentListLayout(rows.length);
   if (!data || (rows.length === 0 && !data.plan)) {
     return { layout, phases: null, list: null, keys, preferredKey: null };
@@ -369,6 +373,60 @@ function SubagentCard({ row, phaseTitle }: { row: SubagentRow; phaseTitle: strin
 // Rows
 // ---------------------------------------------------------------------------
 
+/**
+ * A comfortable row's second line: `opus-4-5 · [puzzle]2 [skill]1 [graph]1 · 4m`.
+ *
+ * Each setup count is its entity's one glyph (`ENTITY_ICONS`, the marks the
+ * sidebar's Extensions, Skills and Knowledge rows wear) and a number, named in
+ * words ("1 knowledge base") for whatever reads the pair on its own. The row
+ * itself is read by its `aria-label`, which says the same words. A count of zero
+ * is not drawn.
+ *
+ * The model name is the part that gives way (`br-agents__fit`, cut with an
+ * ellipsis), and the hover card has it in full. The time gives way only once the
+ * model is gone, which takes the rail's narrowest 240px, a lock and a quiet note.
+ * The counts never do. The time is the run time, or on a quiet child the quiet
+ * note in its place, as on a dense row: both did not fit beside the counts.
+ */
+function setupLine(setup: SubagentSetup, time: string | null): ReactNode {
+  const segments: { key: string; node: ReactNode }[] = [];
+  if (setup.model) {
+    segments.push({ key: 'model', node: <span className="br-agents__fit">{setup.model}</span> });
+  }
+  if (setup.counts.length > 0) {
+    segments.push({
+      key: 'counts',
+      node: (
+        <span className="br-agents__counts">
+          {setup.counts.map(({ kind, count }) => {
+            const Icon = ENTITY_ICONS[kind];
+            return (
+              <span
+                key={kind}
+                className="br-agents__count"
+                data-count={kind}
+                role="img"
+                aria-label={copy.setupCount[kind](count)}
+              >
+                <Icon aria-hidden="true" />
+                {count}
+              </span>
+            );
+          })}
+        </span>
+      ),
+    });
+  }
+  if (time) segments.push({ key: 'time', node: <span className="br-agents__time">{time}</span> });
+  if (segments.length === 0) return null;
+  return segments.map(({ key, node }, index) => (
+    <Fragment key={key}>
+      {index > 0 ? <span className="br-agents__sep"> · </span> : null}
+      {node}
+    </Fragment>
+  ));
+}
+
 interface RowControls {
   tabIndexFor: (key: string) => 0 | -1;
   onRowFocus: (key: string) => void;
@@ -406,16 +464,23 @@ function SubagentRowItem({
         ? quietText
         : (formatElapsed(row.elapsedSeconds) ?? shortModelLabel(row.modelName, row.providerName))
       : null;
-  const meta =
-    layout === 'comfortable'
-      ? [subagentSetupLine(row), quietText].filter(Boolean).join(' · ')
-      : null;
+  const setup = layout === 'comfortable' ? subagentSetup(row) : null;
+  // A quiet child's note takes the run time's place, on both layouts.
+  const setupTime = setup ? (quietText ?? setup.elapsed) : null;
+  const meta = setup ? setupLine(setup, setupTime) : null;
   // Named explicitly: the visible spans are laid out as lines, and an accessible
   // name computed from them runs the words together. Commas, not the visible
-  // middle dots, which a screen reader may read out as "dot".
+  // middle dots, which a screen reader may read out as "dot", and the setup
+  // counts as words, not as their glyphs and numbers.
   const label = [
     `${copy.status[row.status]}, ${title}`,
-    (layout === 'comfortable' ? meta : trailing)?.split(' · ').join(', '),
+    ...(setup
+      ? [
+          setup.model,
+          ...setup.counts.map(({ kind, count }) => copy.setupCount[kind](count)),
+          setupTime,
+        ]
+      : [trailing]),
     isPrivate ? copy.card.private : null,
   ]
     .filter(Boolean)

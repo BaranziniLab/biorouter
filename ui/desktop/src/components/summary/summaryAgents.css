@@ -141,6 +141,63 @@
   font-variant-numeric: tabular-nums;
 }
 
+/* A COMFORTABLE ROW'S SECOND LINE: the model, a 12px glyph and its number for
+   each of extensions, skills and knowledge bases, then the run time (or the
+   quiet note), in the line's muted ink. A flex line, so what gives way is
+   chosen, in order: the model name first, then the time, each cut with an
+   ellipsis; the counts never. Every part is held to the line's 16px, so the row
+   keeps its 44px. */
+.br-agents__meta {
+  display: flex;
+  align-items: center;
+}
+
+.br-agents__meta > * {
+  flex: none;
+}
+
+/* The model takes only the room the other parts leave, up to its full name: a
+   zero basis that grows. With no basis it takes no share of a shrink either, so
+   the time gives way only once the model is gone. */
+.br-agents__meta > .br-agents__fit {
+  min-width: 0;
+  max-width: max-content;
+  flex: 1 1 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.br-agents__meta > .br-agents__time {
+  min-width: 0;
+  flex: 0 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* The middle dot keeps the spaces either side of it, which a flex item's line
+   would otherwise trim. */
+.br-agents__sep {
+  white-space: pre;
+}
+
+.br-agents__counts {
+  display: flex;
+  gap: 6px;
+}
+
+.br-agents__count {
+  display: inline-flex;
+  height: var(--text-supporting--line-height);
+  gap: 2px;
+  align-items: center;
+}
+
+.br-agents__count > svg {
+  width: 12px;
+  height: 12px;
+  flex: none;
+}
+
 /* A dense row is one line: the trailing figure sits on the 18px line's
    baseline band, and a long name gives way to it. */
 .br-agents__row[data-layout='dense'] {

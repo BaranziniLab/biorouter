@@ -116,14 +116,125 @@ fn plural(count: usize, one: &str, many: &str) -> String {
     format!("{count} {}", if count == 1 { one } else { many })
 }
 
-/// `3 ext · 1 skill · 0 kb`.
+/// Longest model label a row prints, in characters (the desktop's
+/// `MODEL_LABEL_MAX`).
+const MODEL_LABEL_MAX: usize = 24;
+
+/// A Bedrock-style id (`us.anthropic.claude-sonnet-4-5-20250929-v1:0`): an
+/// optional region, the vendor, then the model.
+static BEDROCK_ID: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+    regex::Regex::new(r"^(?:[a-z]{2}\.)?(?:anthropic|meta|amazon|cohere|mistral|ai21)\.(.+)$")
+        .expect("a valid pattern")
+});
+
+/// Suffixes a model id carries that say nothing a row needs, removed in this
+/// order: `:latest`, a Bedrock version (`-v1:0`), a release date
+/// (`-20251101`, `@20250514`) and a dashed one (`-2026-04-24`).
+static MODEL_SUFFIXES: std::sync::LazyLock<[regex::Regex; 4]> = std::sync::LazyLock::new(|| {
+    [
+        r":latest$",
+        r"-v\d+:\d+$",
+        r"[-@]20\d{6}$",
+        r"-\d{4}-\d{2}-\d{2}$",
+    ]
+    .map(|pattern| regex::Regex::new(pattern).expect("a valid pattern"))
+});
+
+/// A model name short enough for a row: no provider path
+/// (`accounts/fireworks/models/`, `us.anthropic.`), no release date and no
+/// `:latest`, at most [`MODEL_LABEL_MAX`] characters. The provider's name when
+/// the row has no model, and `None` when it has neither.
+///
+/// ⚠ The desktop's `shortModelLabel` (`ui/desktop/src/utils/sessionSubagents.ts`)
+/// is the same rule, step for step, so a child reads as the same model on every
+/// surface: `gpt-5.5-2026-04-24` is `gpt-5.5` in the side panel, the TUI pane and
+/// this command alike.
+pub fn short_model_label(model: Option<&str>, provider: Option<&str>) -> Option<String> {
+    let raw = model.map(str::trim).unwrap_or_default();
+    if raw.is_empty() {
+        return provider
+            .map(str::trim)
+            .filter(|name| !name.is_empty())
+            .map(str::to_string);
+    }
+    let mut label = raw.rsplit('/').next().unwrap_or(raw).to_string();
+    if let Some(rest) = BEDROCK_ID.captures(&label).and_then(|c| c.get(1)) {
+        label = rest.as_str().to_string();
+    }
+    for suffix in MODEL_SUFFIXES.iter() {
+        label = suffix.replace(&label, "").into_owned();
+    }
+    if label.is_empty() {
+        label = raw.to_string();
+    }
+    if label.chars().count() > MODEL_LABEL_MAX {
+        let mut cut: String = label.chars().take(MODEL_LABEL_MAX - 1).collect();
+        cut.push('…');
+        return Some(cut);
+    }
+    Some(label)
+}
+
+/// The counts of a child's setup that are not zero: `3 ext · 1 skill ·
+/// 2 knowledge bases`, in that order (the desktop's). Knowledge bases are
+/// written out, because "2 KB" reads as two kilobytes; `compact` writes them
+/// `2 kb bases`, for a row too narrow for the words.
+pub fn setup_counts(
+    extensions: usize,
+    skills: usize,
+    knowledge_bases: usize,
+    compact: bool,
+) -> Vec<String> {
+    let mut parts = Vec::new();
+    if extensions > 0 {
+        parts.push(format!("{extensions} ext"));
+    }
+    if skills > 0 {
+        parts.push(plural(skills, "skill", "skills"));
+    }
+    if knowledge_bases > 0 {
+        parts.push(if compact {
+            plural(knowledge_bases, "kb base", "kb bases")
+        } else {
+            plural(knowledge_bases, "knowledge base", "knowledge bases")
+        });
+    }
+    parts
+}
+
+/// `3 ext · 1 skill · 1 knowledge base`, or nothing for a child with none.
 pub fn setup_summary(row: &SubagentRow) -> String {
-    format!(
-        "{} ext · {} · {} kb",
+    setup_counts(
         row.extensions.len(),
-        plural(row.skills.len(), "skill", "skills"),
-        row.knowledge_bases.len()
+        row.skills.len(),
+        row.knowledge_bases.len(),
+        false,
     )
+    .join(" · ")
+}
+
+/// Widest a subagent's session name is printed under its role, in columns.
+const NAME_LINE_MAX: usize = 72;
+
+/// `text` cut to `max` display columns, ending in `…` when it was cut.
+pub fn clip_columns(text: &str, max: usize) -> String {
+    use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
+    if UnicodeWidthStr::width(text) <= max {
+        return text.to_string();
+    }
+    let budget = max.saturating_sub(1);
+    let mut out = String::new();
+    let mut used = 0;
+    for ch in text.chars() {
+        let width = UnicodeWidthChar::width(ch).unwrap_or(0);
+        if used + width > budget {
+            break;
+        }
+        out.push(ch);
+        used += width;
+    }
+    out.push('…');
+    out
 }
 
 /// Model-written text made safe to print: every control character (an escape
@@ -137,23 +248,42 @@ pub fn printable(text: &str) -> String {
         .to_string()
 }
 
-fn display_name(row: &SubagentRow) -> String {
-    let name = printable(
+/// The session name without its prefix, safe to print.
+fn session_name(row: &SubagentRow) -> String {
+    printable(
         row.name
             .strip_prefix(SUBAGENT_NAME_PREFIX)
             .unwrap_or(&row.name),
-    );
-    let role = row
-        .role
+    )
+}
+
+fn role(row: &SubagentRow) -> Option<String> {
+    row.role
         .as_deref()
         .map(printable)
-        .filter(|role| !role.is_empty());
-    match (name.is_empty(), role) {
-        (true, Some(role)) => role,
-        (true, None) => row.session_id.clone(),
-        (false, Some(role)) if role != name => format!("{name} ({role})"),
-        (false, _) => name,
-    }
+        .filter(|role| !role.is_empty())
+}
+
+/// What a row leads with: the role the parent gave the child (`celsius`), else
+/// its session name, which is derived from the instructions and so reads like a
+/// sentence. The desktop's `subagentTitle`.
+fn row_label(row: &SubagentRow) -> String {
+    role(row).unwrap_or_else(|| {
+        let name = session_name(row);
+        if name.is_empty() {
+            row.session_id.clone()
+        } else {
+            name
+        }
+    })
+}
+
+/// The session name, printed second, when the row leads with a role that says
+/// something else.
+fn secondary_name(row: &SubagentRow) -> Option<String> {
+    let role = role(row)?;
+    let name = session_name(row);
+    (!name.is_empty() && !name.eq_ignore_ascii_case(&role)).then_some(name)
 }
 
 fn dim(text: &str, color: bool) -> String {
@@ -211,8 +341,8 @@ fn render_plan(plan: &OrchestrationSnapshot, out: &mut Vec<String>) {
 /// The text `biorouter session subagents` prints: the plan first when there is
 /// one, then one numbered entry per child, then how to open one.
 ///
-/// Pure, so it is tested with hand-built rosters; `color` only dims the result
-/// lines.
+/// Pure, so it is tested with hand-built rosters; `color` only dims the session
+/// name printed under a role and the result lines.
 pub fn render_text(roster: &SessionSubagents, color: bool) -> String {
     let mut out = Vec::new();
     if let Some(plan) = &roster.plan {
@@ -242,7 +372,7 @@ pub fn render_text(roster: &SessionSubagents, color: bool) -> String {
             "  {}. {} {}  {}",
             index + 1,
             status_glyph(row.status),
-            display_name(row),
+            row_label(row),
             status_label(row.status)
         );
         if row.status.is_active() {
@@ -255,28 +385,33 @@ pub fn render_text(roster: &SessionSubagents, color: bool) -> String {
             head.push_str(&format!(" · phase {}", printable(title)));
         }
         out.push(head);
-
-        let model = row
-            .model_name
-            .as_deref()
-            .or(row.provider_name.as_deref())
-            .map(printable)
-            .unwrap_or_else(|| "no model recorded".to_string());
-        let mut detail = format!(
-            "       {}  {}  {}  {}",
-            row.session_id,
-            model,
-            setup_summary(row),
-            plural(
-                row.tool_call_count.max(0) as usize,
-                "tool call",
-                "tool calls"
-            ),
-        );
-        if let Some(elapsed) = row.elapsed_seconds {
-            detail.push_str(&format!("  {}", format_elapsed(elapsed)));
+        if let Some(name) = secondary_name(row) {
+            out.push(format!(
+                "       {}",
+                dim(&clip_columns(&name, NAME_LINE_MAX), color)
+            ));
         }
-        out.push(detail);
+
+        let model = short_model_label(row.model_name.as_deref(), row.provider_name.as_deref())
+            .map(|label| printable(&label))
+            .filter(|label| !label.is_empty())
+            .unwrap_or_else(|| "no model recorded".to_string());
+        let mut detail = vec![row.session_id.clone(), model];
+        let setup = setup_summary(row);
+        if !setup.is_empty() {
+            detail.push(setup);
+        }
+        if row.tool_call_count > 0 {
+            detail.push(plural(
+                row.tool_call_count as usize,
+                "tool call",
+                "tool calls",
+            ));
+        }
+        if let Some(elapsed) = row.elapsed_seconds {
+            detail.push(format_elapsed(elapsed));
+        }
+        out.push(format!("       {}", detail.join("  ")));
         if let Some(result) = row
             .result_line
             .as_deref()
@@ -637,24 +772,150 @@ mod tests {
         let mut child = row("c1", SubagentRunStatus::Running);
         child.role = Some("reviewer".to_string());
         child.quiet_seconds = Some(240);
+        child.knowledge_bases = vec!["soul".into()];
         let text = render_text(&roster(vec![child], None), false);
-        assert!(
-            text.contains("1. ◐ audit the c1 module (reviewer)  running"),
-            "{text}"
+        let lines: Vec<&str> = text.lines().collect();
+        let head = lines
+            .iter()
+            .position(|line| line.contains("1. ◐ reviewer  running"))
+            .unwrap_or_else(|| panic!("the role leads the row: {text}"));
+        assert_eq!(
+            lines[head + 1],
+            "       audit the c1 module",
+            "the session name follows it: {text}"
         );
-        assert!(text.contains("quiet 4m00s"), "{text}");
+        assert!(lines[head].contains("quiet 4m00s"), "{text}");
         assert!(
             !text.contains(SUBAGENT_NAME_PREFIX),
             "the prefix is dropped: {text}"
         );
         assert!(
-            text.contains("c1  gpt-5.5  3 ext · 1 skill · 0 kb  12 tool calls  1m42s"),
+            text.contains("c1  gpt-5.5  3 ext · 1 skill · 1 knowledge base  12 tool calls  1m42s"),
             "{text}"
         );
         assert!(
             text.contains("biorouter session attach <session id>"),
             "{text}"
         );
+    }
+
+    /// The instruction-derived name reads like a sentence; the role the parent
+    /// gave is what tells siblings apart, so it leads, and the name is printed
+    /// under it (dimmed, and cut short) rather than lost.
+    #[test]
+    fn a_role_leads_and_the_long_name_follows_dimmed_and_clipped() {
+        let mut child = row("c1", SubagentRunStatus::Completed);
+        child.name = format!(
+            "{SUBAGENT_NAME_PREFIX}Convert 37 degrees Celsius to Fahrenheit and report only the \
+             number, rounded to one decimal place, with no explanation at all"
+        );
+        child.role = Some("celsius".to_string());
+        let plain = render_text(&roster(vec![child.clone()], None), false);
+        let lines: Vec<&str> = plain.lines().collect();
+        let head = lines
+            .iter()
+            .position(|line| line.starts_with("  1. "))
+            .unwrap();
+        assert_eq!(lines[head], "  1. ● celsius  completed", "{plain}");
+        let name = lines[head + 1].trim_start();
+        assert!(name.starts_with("Convert 37 degrees Celsius"), "{plain}");
+        assert!(name.ends_with('…'), "a long name is cut: {plain}");
+        assert!(
+            unicode_width::UnicodeWidthStr::width(name) <= NAME_LINE_MAX,
+            "{plain}"
+        );
+        let colored = render_text(&roster(vec![child.clone()], None), true);
+        assert!(
+            colored.contains("\u{1b}[2mConvert 37"),
+            "the name is dimmed: {colored:?}"
+        );
+
+        // A role equal to the name, or none at all, prints no second line.
+        child.role = Some(session_name(&child));
+        let same = render_text(&roster(vec![child.clone()], None), false);
+        assert_eq!(same.lines().filter(|l| l.contains("Convert 37")).count(), 1);
+        child.role = None;
+        let unnamed = render_text(&roster(vec![child], None), false);
+        assert!(unnamed.contains("1. ● Convert 37 degrees"), "{unnamed}");
+        assert_eq!(
+            unnamed.lines().filter(|l| l.contains("Convert 37")).count(),
+            1
+        );
+    }
+
+    /// The row prints the desktop's short model label, and only the counts that
+    /// are not zero: "0 ext · 0 skills · 0 kb" said nothing, and "kb" alone was
+    /// ambiguous.
+    #[test]
+    fn the_detail_line_has_a_short_model_and_no_zero_counts() {
+        let mut child = row("c1", SubagentRunStatus::Completed);
+        child.model_name = Some("gpt-5.5-2026-04-24".to_string());
+        child.extensions.clear();
+        child.skills.clear();
+        child.tool_call_count = 0;
+        let text = render_text(&roster(vec![child.clone()], None), false);
+        assert!(text.contains("       c1  gpt-5.5  1m42s"), "{text}");
+        for zero in ["0 ext", "0 skills", "0 kb", "0 tool calls", "2026-04-24"] {
+            assert!(!text.contains(zero), "{zero:?} in {text}");
+        }
+        child.knowledge_bases = vec!["soul".into(), "lab".into()];
+        child.skills = vec!["ggplot".into()];
+        let text = render_text(&roster(vec![child], None), false);
+        assert!(
+            text.contains("c1  gpt-5.5  1 skill · 2 knowledge bases  1m42s"),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn short_model_label_matches_the_desktop_rule() {
+        let label = |model: &str| short_model_label(Some(model), None).unwrap();
+        // The cases `shortModelLabel` is tested with in `sessionSubagents.test.ts`.
+        assert_eq!(label("claude-sonnet-4-5-20250929"), "claude-sonnet-4-5");
+        assert_eq!(label("accounts/fireworks/models/qwen3-235b"), "qwen3-235b");
+        assert_eq!(
+            label("us.anthropic.claude-opus-4-1-20250805-v1:0"),
+            "claude-opus-4-1"
+        );
+        assert_eq!(label("qwen3.8:latest"), "qwen3.8");
+        assert_eq!(label("gpt-5.5-2026-01-15"), "gpt-5.5");
+        assert_eq!(
+            label("a-really-long-model-name-that-goes-on-and-on"),
+            "a-really-long-model-nam…"
+        );
+        assert_eq!(
+            short_model_label(None, Some("ollama")).as_deref(),
+            Some("ollama")
+        );
+        assert_eq!(
+            short_model_label(Some("  "), Some("ollama")).as_deref(),
+            Some("ollama")
+        );
+        assert_eq!(short_model_label(None, None), None);
+        // The live finding.
+        assert_eq!(label("gpt-5.5-2026-04-24"), "gpt-5.5");
+        assert_eq!(label("claude-opus-4-5@20250514"), "claude-opus-4-5");
+        // Nothing left after the path: the raw id rather than an empty label.
+        assert_eq!(label("models/"), "models/");
+    }
+
+    #[test]
+    fn setup_counts_skip_zeros_and_spell_out_knowledge_bases() {
+        assert!(setup_counts(0, 0, 0, false).is_empty());
+        assert_eq!(
+            setup_counts(3, 1, 1, false),
+            ["3 ext", "1 skill", "1 knowledge base"]
+        );
+        assert_eq!(
+            setup_counts(0, 2, 2, false),
+            ["2 skills", "2 knowledge bases"]
+        );
+        assert_eq!(setup_counts(0, 0, 1, true), ["1 kb base"]);
+        assert_eq!(setup_counts(0, 0, 3, true), ["3 kb bases"]);
+        for compact in [false, true] {
+            let text = setup_counts(1, 1, 2, compact).join(" · ");
+            assert!(!text.contains("KB") && !text.ends_with(" kb"), "{text}");
+        }
     }
 
     #[test]

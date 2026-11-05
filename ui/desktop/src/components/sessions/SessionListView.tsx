@@ -794,6 +794,10 @@ const SessionListView: React.FC<SessionListViewProps> = React.memo(({ onSelectSe
   // not chats the person started. Turning this on refetches with
   // `include_subagents` and nests each run under the chat that spawned it.
   const [showSubagents, setShowSubagents] = useState(false);
+  // Which read the rows in `sessions` answer: `include_subagents` true or false, `null` before the
+  // first lands. The toggle changes at the press; the rows it asked for land a read later, and the
+  // pointer hold must be taken from those rows, not from the ones before them (see `holdScope`).
+  const [rowsReadWithSubagents, setRowsReadWithSubagents] = useState<boolean | null>(null);
 
   const [filter, setFilter] = useState('');
   const debouncedFilter = useDebounce(filter.trim().toLowerCase(), FILTER_DEBOUNCE_MS);
@@ -845,7 +849,17 @@ const SessionListView: React.FC<SessionListViewProps> = React.memo(({ onSelectSe
   // keep the order they had when it came in (`historyHold.ts`). A new filter or
   // the subagent toggle is the person's own change, not a live one, so it
   // starts a new hold rather than being withheld.
-  const holdScope = `${debouncedFilter}\u0000${showSubagents}`;
+  //
+  // ⚠ The toggle's change arrives in two steps, and the scope names both. A
+  // filter's result is in the same render as the filter, but the toggle's rows
+  // come a read later: a hold taken at the press held every parent with no runs,
+  // so the runs the press asked for arrived as new runs under held parents, which
+  // a hold keeps waiting, and none was drawn while the pointer rested on the list
+  // (measured in the running app: 225 runs in the rows, none on screen).
+  // `rowsReadWithSubagents` changes when those rows land, which takes the hold
+  // again from them. Turning the toggle off needs no read to hide the runs
+  // (`visibleSessions`), so `showSubagents` stays in the scope as well.
+  const holdScope = `${debouncedFilter}\u0000${showSubagents}\u0000${rowsReadWithSubagents}`;
   const [pointerInside, setPointerInside] = useState(false);
   const [held, setHeld] = useState<{ scope: string; order: HeldHistory } | null>(null);
   // A person's own saved rename is the one move the hold lets through (R-30, ruling 16): they
@@ -1022,7 +1036,11 @@ const SessionListView: React.FC<SessionListViewProps> = React.memo(({ onSelectSe
     if (viewport) scrollHistoryRowIntoView(viewport, row);
   }, [sessions, dateGroups]);
 
+  // The newest `loadSessions` call. Only its answer is applied: see the check after the read.
+  const latestLoad = useRef(0);
   const loadSessions = useCallback(async () => {
+    const load = ++latestLoad.current;
+    const includeSubagents = showSubagents;
     const hasCachedSessions = getCachedSessionList() !== null;
     if (!hasCachedSessions) {
       setIsLoading(true);
@@ -1034,16 +1052,25 @@ const SessionListView: React.FC<SessionListViewProps> = React.memo(({ onSelectSe
       // `partial`: the cache was cold, so this is only the newest page and the full
       // read that fills the cache is on its way; `subscribeSessionList` below
       // swaps the rest in when it lands, under the same hold as any live change.
-      const { sessions: refreshedSessions } = await refreshSessionListHead(showSubagents);
+      const { sessions: refreshedSessions } = await refreshSessionListHead(includeSubagents);
+      // A later call owns the list now (the toggle pressed again, a delete, an
+      // import). The cache hands a superseded read its own answer back, and reads
+      // land in any order: the "off" read of an on-off-on burst, landing last,
+      // put the list without runs under a toggle that was on, until the next
+      // emit. The cache already publishes only the latest read's answer.
+      if (load !== latestLoad.current) return;
       // The fresh rows and the end of loading commit TOGETHER: an urgent
       // `setIsLoading(false)` beside a transition would reveal the stale rows
-      // for the frames before the transition lands.
+      // for the frames before the transition lands. `rowsReadWithSubagents`
+      // with them, so a hold is taken again in the render that brings the rows.
       startTransition(() => {
         setSessions(refreshedSessions);
+        setRowsReadWithSubagents(includeSubagents);
         setError(null);
         setIsLoading(false);
       });
     } catch (err) {
+      if (load !== latestLoad.current) return;
       console.error('Failed to load sessions:', err);
       if (!hasCachedSessions) {
         setError(HISTORY_LOAD_ERROR);

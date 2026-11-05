@@ -26,7 +26,7 @@ use std::time::Duration;
 use biorouter::agents::orchestration_plan::{PhaseCounts, PhaseKind, PhaseStatus};
 use biorouter::agents::subagent_roster::{SessionSubagents, SubagentRow, SubagentRunStatus};
 use biorouter::agents::AgentEvent;
-use biorouter::conversation::message::{Message, MessageContent};
+use biorouter::conversation::message::{Message, MessageContent, ProvenanceKind};
 use biorouter::privacy::SessionClassification;
 use biorouter::session_events::{SessionBusEvent, Subscription};
 use ratatui::layout::{Constraint, Layout, Rect};
@@ -39,6 +39,7 @@ use tokio::sync::broadcast::error::{RecvError, TryRecvError};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use super::app::{App, StatusInfo, ACCENT};
+use crate::commands::session_subagents::{setup_counts, short_model_label};
 
 /// How often the idle loop re-reads the roster while a child is active, and
 /// the streaming loop's throttle for the same read.
@@ -53,7 +54,8 @@ pub const PANE_MIN_WIDTH: u16 = 34;
 pub const PANE_MAX_WIDTH: u16 = 50;
 /// Tallest the narrow strip may grow.
 pub const STRIP_MAX_ROWS: u16 = 6;
-/// Up to this many subagents, each row takes two lines (name, then setup).
+/// Up to this many subagents, each row takes two lines: the label (the role,
+/// else the name), then the setup, which is left out when it says nothing.
 pub const TWO_LINE_MAX_ROWS: usize = 3;
 /// An active child with no recorded activity for this long reads as "quiet".
 /// A heuristic, so it is labelled "quiet", never "stalled". The plan's own
@@ -63,6 +65,16 @@ pub const QUIET_AFTER_SECS: u64 = biorouter::agents::orchestration_plan::QUIET_A
 const DIM: Style = Style::new().add_modifier(Modifier::DIM);
 const LABEL_W: usize = 11;
 const LOCK: &str = "🔒";
+/// A row that leads with its role shows the session name after it only when at
+/// least this many cells of the name fit; a stub of two letters says nothing.
+const SECONDARY_NAME_MIN: usize = 8;
+/// Widest the session name is printed under its role in `/subagents list`.
+const LIST_NAME_MAX: usize = 72;
+/// A spawn-context record's task instructions show this many lines, folded
+/// after that like the rest of the record.
+const SPAWN_CONTEXT_TASK_MAX_LINES: usize = 12;
+/// A record with no task section to anchor on shows its first lines.
+const SPAWN_CONTEXT_HEAD_LINES: usize = 6;
 
 // ── view model ──────────────────────────────────────────────────────────────
 
@@ -152,6 +164,23 @@ impl PaneRow {
         } else {
             &self.name
         }
+    }
+
+    /// What the row leads with: the role the parent gave the child
+    /// (`celsius`), else its session name. The name is derived from the task's
+    /// instructions, so it reads like a sentence ("Convert 37 degrees Celsius
+    /// to…") and siblings of one fan-out start alike; the role is what tells
+    /// them apart. The desktop's `subagentTitle`.
+    pub fn label(&self) -> &str {
+        self.role.as_deref().unwrap_or_else(|| self.display_name())
+    }
+
+    /// The session name, shown second and dimmed, when the row leads with a
+    /// role that says something else.
+    pub fn secondary_name(&self) -> Option<&str> {
+        let role = self.role.as_deref()?;
+        let name = self.name.trim();
+        (!name.is_empty() && !name.eq_ignore_ascii_case(role)).then_some(name)
     }
 }
 
@@ -312,8 +341,9 @@ impl PaneModel {
     }
 
     /// Resolve an `/attach` argument: a 1-based number in spawn order, a
-    /// session id or a unique prefix of one, or a name (exact, then a unique
-    /// prefix, ignoring case). `Err` carries the sentence the person reads.
+    /// session id or a unique prefix of one, or a role or name (exact, then a
+    /// unique prefix, ignoring case). `Err` carries the sentence the person
+    /// reads. Roles count because they are what the rows lead with.
     pub fn resolve(&self, arg: &str) -> Result<String, String> {
         let arg = arg.trim();
         if self.rows.is_empty() {
@@ -332,14 +362,31 @@ impl PaneModel {
             return Ok(row.session_id.clone());
         }
         let lower = arg.to_lowercase();
-        if let Some(row) = self.rows.iter().find(|r| r.name.to_lowercase() == lower) {
-            return Ok(row.session_id.clone());
-        }
-        let matches: Vec<&PaneRow> = self
+        let names = |r: &PaneRow| {
+            [Some(r.name.as_str()), r.role.as_deref()]
+                .into_iter()
+                .flatten()
+                .map(str::to_lowercase)
+                .collect::<Vec<_>>()
+        };
+        let exact: Vec<&PaneRow> = self
             .rows
             .iter()
-            .filter(|r| r.session_id.starts_with(arg) || r.name.to_lowercase().starts_with(&lower))
+            .filter(|r| names(r).contains(&lower))
             .collect();
+        if let [one] = exact.as_slice() {
+            return Ok(one.session_id.clone());
+        }
+        let matches: Vec<&PaneRow> = if exact.is_empty() {
+            self.rows
+                .iter()
+                .filter(|r| {
+                    r.session_id.starts_with(arg) || names(r).iter().any(|n| n.starts_with(&lower))
+                })
+                .collect()
+        } else {
+            exact
+        };
         match matches.as_slice() {
             [one] => Ok(one.session_id.clone()),
             [] => Err(format!("No subagent of this chat matches \"{arg}\".")),
@@ -718,15 +765,20 @@ fn plural(n: usize, one: &str, many: &str) -> String {
     }
 }
 
-/// `gpt-5.5 · 3 ext · 2 skills · 1 kb · 1m42s` (plus `· quiet 4m`).
-pub fn setup_summary(row: &PaneRow) -> String {
-    let mut parts = Vec::new();
-    if let Some(model) = row.model.as_deref().filter(|m| !m.is_empty()) {
-        parts.push(model.to_string());
-    }
-    parts.push(format!("{} ext", row.extensions.len()));
-    parts.push(plural(row.skills.len(), "skill", "skills"));
-    parts.push(format!("{} kb", row.knowledge_bases.len()));
+/// The row's model as every surface names it (`gpt-5.5`, not
+/// `gpt-5.5-2026-04-24`), else its provider.
+fn model_label(row: &PaneRow) -> Option<String> {
+    short_model_label(row.model.as_deref(), row.provider.as_deref())
+}
+
+fn setup_parts(row: &PaneRow, compact: bool) -> Vec<String> {
+    let mut parts: Vec<String> = model_label(row).into_iter().collect();
+    parts.extend(setup_counts(
+        row.extensions.len(),
+        row.skills.len(),
+        row.knowledge_bases.len(),
+        compact,
+    ));
     if let Some(secs) = row.elapsed_seconds {
         parts.push(format_elapsed(secs));
     }
@@ -736,15 +788,52 @@ pub fn setup_summary(row: &PaneRow) -> String {
             format_age(row.quiet_seconds.unwrap_or(0))
         ));
     }
-    parts.join(" · ")
+    parts
+}
+
+/// `gpt-5.5 · 3 ext · 2 skills · 1 knowledge base · 1m42s` (plus
+/// `· quiet 4m`): the desktop's second line, and like it, a count that is zero
+/// is left out.
+pub fn setup_summary(row: &PaneRow) -> String {
+    setup_parts(row, false).join(" · ")
+}
+
+/// [`setup_summary`] for a line of `width` cells. Knowledge bases are written
+/// `1 kb base` only when the words do not fit; when even that does not fit,
+/// the line keeps the parts that do and ends in `…`, so a count or a time is
+/// never cut in half (`1m…`).
+pub fn setup_summary_fit(row: &PaneRow, width: usize) -> String {
+    let full = setup_summary(row);
+    if UnicodeWidthStr::width(full.as_str()) <= width {
+        return full;
+    }
+    let parts = setup_parts(row, true);
+    let compact = parts.join(" · ");
+    if UnicodeWidthStr::width(compact.as_str()) <= width {
+        return compact;
+    }
+    let mut out = String::new();
+    for part in &parts {
+        let next = if out.is_empty() {
+            part.clone()
+        } else {
+            format!("{out} · {part}")
+        };
+        if UnicodeWidthStr::width(next.as_str()) + 2 > width {
+            break;
+        }
+        out = next;
+    }
+    if out.is_empty() {
+        return super::clip_cells(&compact, width);
+    }
+    out.push_str(" …");
+    out
 }
 
 /// The dim tail of a one-line row: what it is doing, or how it ended.
 fn dense_tail(row: &PaneRow) -> String {
     let mut parts = Vec::new();
-    if let Some(role) = &row.role {
-        parts.push(role.clone());
-    }
     match row.status {
         SubagentRunStatus::Running | SubagentRunStatus::Completed => {}
         other => parts.push(status_word(other).to_string()),
@@ -891,8 +980,28 @@ fn name_spans(pane: &SubagentPane, row: &PaneRow, open_child: Option<&str>) -> V
     if row.private {
         spans.push(Span::raw(format!("{LOCK} ")));
     }
-    spans.push(Span::styled(row.display_name().to_string(), name_style));
+    spans.push(Span::styled(row.label().to_string(), name_style));
     spans
+}
+
+fn spans_width(spans: &[Span<'_>]) -> usize {
+    spans
+        .iter()
+        .map(|s| UnicodeWidthStr::width(s.content.as_ref()))
+        .sum()
+}
+
+/// Append the session name, dimmed, to a row that leads with its role, when at
+/// least [`SECONDARY_NAME_MIN`] cells of it fit in `width`; the line's clip
+/// then ends it in `…`.
+fn push_secondary_name(spans: &mut Vec<Span<'static>>, row: &PaneRow, width: usize) {
+    let Some(name) = row.secondary_name() else {
+        return;
+    };
+    if spans_width(spans) + 2 + SECONDARY_NAME_MIN > width {
+        return;
+    }
+    spans.push(Span::styled(format!("  {name}"), DIM));
 }
 
 /// What a list line shows, so the scroller knows where the selection sits.
@@ -918,14 +1027,16 @@ fn list_lines(
             let row = &model.rows[ri];
             let mut first = name_spans(pane, row, open_child);
             if two_line {
-                if let Some(role) = &row.role {
-                    first.push(Span::styled(format!("  {role}"), DIM));
-                }
+                push_secondary_name(&mut first, row, width);
                 out.push((LineKind::Row(ri), Line::from(clip_spans(first, width))));
-                let second = vec![Span::raw("    "), Span::styled(setup_summary(row), DIM)];
-                out.push((LineKind::Row(ri), Line::from(clip_spans(second, width))));
+                let setup = setup_summary_fit(row, width.saturating_sub(4));
+                if !setup.is_empty() {
+                    let second = vec![Span::raw("    "), Span::styled(setup, DIM)];
+                    out.push((LineKind::Row(ri), Line::from(clip_spans(second, width))));
+                }
             } else {
                 first.push(Span::styled(dense_tail(row), DIM));
+                push_secondary_name(&mut first, row, width);
                 out.push((LineKind::Row(ri), Line::from(clip_spans(first, width))));
             }
         }
@@ -963,7 +1074,7 @@ pub fn details_lines(model: &PaneModel, row: &PaneRow) -> Vec<Line<'static>> {
         Span::styled(status_glyph(row.status), status_style(row.status)),
         Span::raw(" "),
         Span::styled(
-            row.display_name().to_string(),
+            row.label().to_string(),
             Style::new().add_modifier(Modifier::BOLD),
         ),
         Span::styled(format!("  {}", status_word(row.status)), DIM),
@@ -975,6 +1086,9 @@ pub fn details_lines(model: &PaneModel, row: &PaneRow) -> Vec<Line<'static>> {
     ])];
     if let Some(role) = &row.role {
         lines.push(labelled("role", role.clone()));
+    }
+    if let Some(name) = row.secondary_name() {
+        lines.push(labelled("name", name.to_string()));
     }
     if let Some(phase) = &row.phase_id {
         lines.push(labelled("phase", phase_title(model, phase)));
@@ -1032,16 +1146,21 @@ fn details_one_line(row: &PaneRow) -> String {
         parts.push(format!("skills: {}", row.skills.join(", ")));
     }
     if !row.knowledge_bases.is_empty() {
-        parts.push(format!("kb: {}", row.knowledge_bases.join(", ")));
+        parts.push(format!("knowledge: {}", row.knowledge_bases.join(", ")));
     }
     if let Some(t) = row.total_tokens {
         parts.push(format!("{} tokens", format_tokens(t)));
     }
-    parts.push(plural(
-        row.tool_call_count.max(0) as usize,
-        "tool call",
-        "tool calls",
-    ));
+    if row.tool_call_count > 0 {
+        parts.push(plural(
+            row.tool_call_count as usize,
+            "tool call",
+            "tool calls",
+        ));
+    }
+    if let Some(name) = row.secondary_name() {
+        parts.push(name.to_string());
+    }
     format!("    {} · ↵ open", parts.join(" · "))
 }
 
@@ -1139,11 +1258,16 @@ pub fn draw_side(f: &mut Frame, pane: &mut SubagentPane, area: Rect, open_child:
     } else {
         Vec::new()
     };
+    // Wrapped here, one row per line, so the height below is the height drawn.
+    let details: Vec<Line<'static>> = details
+        .iter()
+        .flat_map(|line| super::wrap_line(line, inner.width))
+        .collect();
     let details_h = if details.is_empty() {
         0
     } else {
         // One rule line above the block, and never more than half the pane.
-        (super::wrapped_count(&details, inner.width) + 1).min(inner.height / 2)
+        (details.len().min(u16::MAX as usize - 1) as u16 + 1).min(inner.height / 2)
     };
     let regions = Layout::vertical([
         Constraint::Length(head.len() as u16),
@@ -1165,7 +1289,7 @@ pub fn draw_side(f: &mut Frame, pane: &mut SubagentPane, area: Rect, open_child:
     if details_h > 0 {
         let mut lines = vec![Line::from(Span::styled("─".repeat(width), DIM))];
         lines.extend(details);
-        f.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), regions[2]);
+        f.render_widget(Paragraph::new(lines), regions[2]);
     }
 }
 
@@ -1405,9 +1529,10 @@ pub fn draw_strip(f: &mut Frame, pane: &mut SubagentPane, area: Rect, open_child
         let row = &pane.model.rows[ri];
         let mut spans = name_spans(pane, row, open_child);
         spans.push(Span::styled(dense_tail(row), DIM));
-        if let Some(model) = row.model.as_deref() {
+        if let Some(model) = model_label(row) {
             spans.push(Span::styled(format!(" · {model}"), DIM));
         }
+        push_secondary_name(&mut spans, row, width);
         out.push(Line::from(clip_spans(spans, width)));
     }
     if more > 0 {
@@ -1449,19 +1574,25 @@ pub fn list_into(app: &mut App) {
             spans.push(Span::raw(format!("{LOCK} ")));
         }
         spans.push(Span::styled(
-            row.display_name().to_string(),
+            row.label().to_string(),
             Style::new().add_modifier(Modifier::BOLD),
         ));
         let mut tail = vec![status_word(row.status).to_string()];
-        if let Some(role) = &row.role {
-            tail.insert(0, role.clone());
-        }
         if let Some(phase) = &row.phase_id {
             tail.push(format!("phase {}", phase_title(&model, phase)));
         }
-        tail.push(setup_summary(row));
+        let setup = setup_summary(row);
+        if !setup.is_empty() {
+            tail.push(setup);
+        }
         spans.push(Span::styled(format!("  {}", tail.join(" · ")), DIM));
         app.push_line(Line::from(spans));
+        if let Some(name) = row.secondary_name() {
+            app.push_line(Line::from(Span::styled(
+                format!("        {}", super::clip_cells(name, LIST_NAME_MAX)),
+                DIM,
+            )));
+        }
     }
     app.push_raw(
         "Read one with /attach <number>, or press ^O, pick a row and press ↵.",
@@ -1610,10 +1741,110 @@ impl ChildView {
     }
 }
 
-/// Render one stored or live message of a child's chat: the parent's
-/// instructions as a user turn, everything else through `App::push_message`.
+/// Whether `message` is a subagent's spawn-context record. Identified the way
+/// the desktop identifies it (`spawnContextOf` in `useSubagentSession.ts`, and
+/// the "Spawn context" chip in `ProvenanceChip.tsx`): by its provenance stamp,
+/// never by its text, which the parent's instructions can imitate.
+pub fn is_spawn_context(message: &Message) -> bool {
+    message
+        .metadata
+        .provenance
+        .as_ref()
+        .is_some_and(|p| p.kind == ProvenanceKind::SpawnContext)
+}
+
+/// The lines of a spawn-context record the child view shows, and how many lines
+/// follow them unshown.
+///
+/// The record (`persist_spawn_context` in `subagent_handler.rs`) is the spawning
+/// session, the task's instructions, the grants and then the whole rendered
+/// system prompt: 143 lines for a one-line task. What a reader opens a child to
+/// see is the task, so the preview runs to the end of the `### Task
+/// instructions` section (at most [`SPAWN_CONTEXT_TASK_MAX_LINES`] of it) and
+/// folds the rest, as the desktop's clamp does. The record's own `## ` heading
+/// is dropped, because the "Spawn context" label says it. A record with no task
+/// section shows its first [`SPAWN_CONTEXT_HEAD_LINES`] lines.
+pub fn spawn_context_preview(text: &str) -> (Vec<&str>, usize) {
+    let lines: Vec<&str> = text.lines().collect();
+    let mut start = 0;
+    if lines
+        .first()
+        .is_some_and(|l| l.starts_with("## ") && l.to_lowercase().contains("spawn context"))
+    {
+        start = 1;
+    }
+    while start < lines.len() && lines[start].trim().is_empty() {
+        start += 1;
+    }
+    let task = lines
+        .iter()
+        .enumerate()
+        .skip(start)
+        .find(|(_, l)| l.trim_end() == "### Task instructions")
+        .map(|(i, _)| i);
+    let mut end = match task {
+        Some(heading) => {
+            // The section runs to the next line-start `### ` heading, the
+            // boundary the record's own writer and the desktop's reader use.
+            let section_end = lines[heading + 1..]
+                .iter()
+                .position(|l| l.starts_with("### "))
+                .map_or(lines.len(), |i| heading + 1 + i);
+            section_end.min(heading + 1 + SPAWN_CONTEXT_TASK_MAX_LINES)
+        }
+        None => (start + SPAWN_CONTEXT_HEAD_LINES).min(lines.len()),
+    };
+    while end > start && lines[end - 1].trim().is_empty() {
+        end -= 1;
+    }
+    (lines[start..end].to_vec(), lines.len() - end)
+}
+
+/// Draw a spawn-context record: a "Spawn context" label, the preview, and a
+/// `⋯ N more lines` marker for the rest. `debug` draws all of it.
+fn push_spawn_context(t: &mut App, text: &str, debug: bool) {
+    let bar = Style::new().fg(ACCENT).add_modifier(Modifier::DIM);
+    let row = |body: Span<'static>| Line::from(vec![Span::styled("▌ ", bar), body]);
+    t.push_blank();
+    t.push_line(row(Span::styled(
+        "Spawn context",
+        Style::new().add_modifier(Modifier::BOLD),
+    )));
+    let (shown, hidden) = if debug {
+        (text.lines().collect(), 0)
+    } else {
+        spawn_context_preview(text)
+    };
+    for line in shown {
+        t.push_line(row(Span::raw(line.to_string())));
+    }
+    if hidden > 0 {
+        let noun = if hidden == 1 { "line" } else { "lines" };
+        t.push_line(row(Span::styled(
+            format!("⋯ {hidden} more {noun}"),
+            DIM.add_modifier(Modifier::ITALIC),
+        )));
+    }
+    t.push_blank();
+}
+
+/// Render one stored or live message of a child's chat: the spawn-context
+/// record folded, the parent's instructions as a user turn, everything else
+/// through `App::push_message`.
 fn render_message(t: &mut App, message: &Message, debug: bool) {
     if !message.is_user_visible() {
+        return;
+    }
+    if is_spawn_context(message) {
+        let text = message
+            .content
+            .iter()
+            .filter_map(MessageContent::as_text)
+            .collect::<Vec<_>>()
+            .join("\n");
+        if !text.trim().is_empty() {
+            push_spawn_context(t, &text, debug);
+        }
         return;
     }
     if message.role == Role::User
@@ -1649,15 +1880,13 @@ pub async fn next_child_event(child: Option<&mut ChildView>) -> Result<SessionBu
 pub fn draw_child(f: &mut Frame, child: &mut ChildView, row: Option<&PaneRow>, area: Rect) {
     let regions = Layout::vertical([Constraint::Length(2), Constraint::Min(1)]).split(area);
     let width = regions[0].width as usize;
-    let name = row
-        .map(|r| r.display_name().to_string())
-        .unwrap_or_else(|| {
-            if child.name.is_empty() {
-                child.session_id.clone()
-            } else {
-                child.name.clone()
-            }
-        });
+    let name = row.map(|r| r.label().to_string()).unwrap_or_else(|| {
+        if child.name.is_empty() {
+            child.session_id.clone()
+        } else {
+            child.name.clone()
+        }
+    });
     let mut spans = vec![
         Span::styled(
             "◂ Subagent ",
@@ -1689,7 +1918,11 @@ pub fn draw_child(f: &mut Frame, child: &mut ChildView, row: Option<&PaneRow>, a
             tail.push(format_elapsed(secs));
         }
     }
-    if let Some(model) = row.and_then(|r| r.model.clone()).or(child.model.clone()) {
+    let model = match row {
+        Some(row) => model_label(row),
+        None => short_model_label(child.model.as_deref(), None),
+    };
+    if let Some(model) = model {
         tail.push(model);
     }
     if !tail.is_empty() {
@@ -1738,7 +1971,7 @@ mod tests {
             ended_at: None,
             elapsed_seconds: Some(61),
             provider_name: Some("versa_azure".into()),
-            model_name: Some("gpt-5.5".into()),
+            model_name: Some("gpt-5.5-2026-04-24".into()),
             extensions: vec!["developer".into()],
             skills: vec![],
             knowledge_bases: vec!["soul".into()],
@@ -1756,11 +1989,18 @@ mod tests {
         let r = &model.rows[0];
         assert!(r.private);
         assert!(r.is_quiet());
-        assert_eq!(r.model.as_deref(), Some("gpt-5.5"));
+        assert_eq!(
+            r.model.as_deref(),
+            Some("gpt-5.5-2026-04-24"),
+            "the row keeps the full id for its details"
+        );
         assert_eq!(
             setup_summary(r),
-            "gpt-5.5 · 1 ext · 0 skills · 1 kb · 1m01s · quiet 5m"
+            "gpt-5.5 · 1 ext · 1 knowledge base · 1m01s · quiet 5m",
+            "the short model, and no count that is zero"
         );
+        assert_eq!(r.label(), "researcher", "the role leads");
+        assert_eq!(r.secondary_name(), Some("gene survey"));
         assert_eq!(model.tally().running, 1);
         assert_eq!(model.tally().quiet, 1);
     }

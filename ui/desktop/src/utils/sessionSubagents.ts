@@ -347,7 +347,7 @@ export function hasActiveSubagent(data: SessionSubagents | null | undefined): bo
   return !!data?.subagents.some((row) => isActiveStatus(row.status));
 }
 
-/** The rows of `rows` in `group`, keeping spawn order. */
+/** The rows of `rows` in `group`, keeping their order (`inSpawnOrder` decides it). */
 export function rowsInGroup(rows: readonly SubagentRow[], group: SubagentGroup): SubagentRow[] {
   return rows.filter((row) => subagentGroup(row.status) === group);
 }
@@ -461,18 +461,90 @@ export function formatElapsed(seconds: number | null | undefined): string | null
   return `${Math.floor(hours / 24)}d`;
 }
 
-/** `opus-4-5 · 3 ext · 1 skill · 2 KB · 4m`: the second line of a comfortable row. */
-export function subagentSetupLine(row: SubagentRow): string {
-  const parts = [
-    shortModelLabel(row.modelName, row.providerName),
-    row.extensions.length > 0 ? `${row.extensions.length} ext` : null,
-    row.skills.length > 0
-      ? `${row.skills.length} ${row.skills.length === 1 ? 'skill' : 'skills'}`
-      : null,
-    row.knowledgeBases.length > 0 ? `${row.knowledgeBases.length} KB` : null,
-    formatElapsed(row.elapsedSeconds),
-  ];
-  return parts.filter((part): part is string => !!part).join(' · ');
+/**
+ * What a comfortable row's second line counts, in the order it draws them. The
+ * names are the `ENTITY_ICONS` keys whose glyphs draw them.
+ */
+export const SETUP_COUNT_KINDS = ['extension', 'skill', 'knowledge'] as const;
+
+export type SetupCountKind = (typeof SETUP_COUNT_KINDS)[number];
+
+export interface SetupCount {
+  kind: SetupCountKind;
+  count: number;
+}
+
+/** The second line of a comfortable row, in parts. */
+export interface SubagentSetup {
+  /** `shortModelLabel`: `opus-4-5`, the provider's name, or `null`. */
+  model: string | null;
+  /** Extensions, skills, then knowledge bases. A kind the child has none of is left out. */
+  counts: SetupCount[];
+  /** `formatElapsed` of the run time: `4m`, or `null`. */
+  elapsed: string | null;
+}
+
+/**
+ * The model, the setup counts and the run time a comfortable row's second line
+ * shows: `opus-4-5`, then a glyph and a number for each of extensions, skills
+ * and knowledge bases, then `4m`.
+ *
+ * The counts are parts, not text, because they are drawn as glyphs and read as
+ * words (`agents.setupCount` in `summary/copy.ts`: "1 knowledge base"). They
+ * used to be written `3 ext · 2 KB`, and "KB" read as kilobytes.
+ */
+export function subagentSetup(row: SubagentRow): SubagentSetup {
+  const sizes: Record<SetupCountKind, number> = {
+    extension: row.extensions.length,
+    skill: row.skills.length,
+    knowledge: row.knowledgeBases.length,
+  };
+  return {
+    model: shortModelLabel(row.modelName, row.providerName),
+    counts: SETUP_COUNT_KINDS.filter((kind) => sizes[kind] > 0).map((kind) => ({
+      kind,
+      count: sizes[kind],
+    })),
+    elapsed: formatElapsed(row.elapsedSeconds),
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Order
+// ---------------------------------------------------------------------------
+
+const NATURAL = new Intl.Collator(undefined, { numeric: true, sensitivity: 'base' });
+
+/** The spawn time in milliseconds; a row without one sorts after every row with one. */
+function spawnTime(row: SubagentRow): number {
+  const time = Date.parse(row.createdAt);
+  return Number.isFinite(time) ? time : Number.POSITIVE_INFINITY;
+}
+
+/**
+ * `rows` in spawn order, the one order every list, group and phase draws.
+ *
+ * Oldest first, as the roster sends them (`ORDER BY created_at, rowid` in
+ * `list_subagent_children`). `created_at` has whole-second precision, so the
+ * siblings of a fan-out tie on it, and the roster's `rowid` tie-break is then
+ * whichever spawn reached the database first: a race, not the order the parent
+ * asked for them in. Among siblings spawned in the same second the row's label
+ * decides, in natural order (`Reader 2` before `Reader 10`), then its name, then
+ * the roster's order. Nothing about a run's state takes part, so a child that
+ * finishes takes its sibling place in Done instead of the place its finish
+ * happened to fall in.
+ */
+export function inSpawnOrder(rows: readonly SubagentRow[]): SubagentRow[] {
+  return rows
+    .map((row, index) => ({ row, index }))
+    .sort(
+      (a, b) =>
+        spawnTime(a.row) - spawnTime(b.row) ||
+        NATURAL.compare(subagentTitle(a.row), subagentTitle(b.row)) ||
+        NATURAL.compare(a.row.name, b.row.name) ||
+        a.index - b.index
+    )
+    .map(({ row }) => row);
 }
 
 // ---------------------------------------------------------------------------

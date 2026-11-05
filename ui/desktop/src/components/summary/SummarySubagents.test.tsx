@@ -2,6 +2,7 @@ import { act, fireEvent, render, screen, within } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 import { parseSessionSubagents, type SessionSubagents } from '../../utils/sessionSubagents';
 import { wirePhase, wireRow, wireSubagents } from '../../utils/sessionSubagents.fixture';
+import { ENTITY_ICONS } from '../icons/entity-icons';
 import { SummarySubagents, type SummarySubagentsData } from './SummarySubagents';
 import { summaryCopy } from './copy';
 
@@ -33,6 +34,14 @@ function focusWithTab(element: HTMLElement) {
   fireEvent.focus(element);
   fireEvent.keyUp(document.body, { key: 'Tab' });
 }
+
+/** A row's setup counts as drawn: the kind, the visible number and the words it is named by. */
+const setupPairs = (row: HTMLElement) =>
+  Array.from(row.querySelectorAll('[data-count]')).map((pair) => [
+    pair.getAttribute('data-count'),
+    pair.textContent,
+    pair.getAttribute('aria-label'),
+  ]);
 
 const many = (count: number, status: string, prefix: string) =>
   Array.from({ length: count }, (_, i) =>
@@ -77,14 +86,65 @@ describe('up to four subagents: comfortable two-line rows', () => {
     expect(first).toHaveAttribute('data-layout', 'comfortable');
     expect(first).toHaveAttribute('data-status', 'running');
     expect(first).toHaveAccessibleName(
-      'Running, Reviewer, claude-sonnet-4-5, 2 ext, 1 skill, 1 KB, 1m'
+      'Running, Reviewer, claude-sonnet-4-5, 2 extensions, 1 skill, 1 knowledge base, 1m'
     );
-    expect(first).toHaveTextContent('claude-sonnet-4-5 · 2 ext · 1 skill · 1 KB · 1m');
+    // The setup is drawn as glyph and number pairs, never as abbreviations.
+    expect(first).toHaveTextContent(/^Reviewerclaude-sonnet-4-5 · 211 · 1m$/);
+    expect(first).not.toHaveTextContent(/KB|ext|skill/);
+    expect(setupPairs(first)).toEqual([
+      ['extension', '2', '2 extensions'],
+      ['skill', '1', '1 skill'],
+      ['knowledge', '1', '1 knowledge base'],
+    ]);
     const second = screen.getByTestId('subagent-row-b');
     expect(second).toHaveAccessibleName(/^Completed, Search PubMed for trials, /);
     expect(second).toHaveTextContent('1h 5m');
     // No state groups in a short list.
     expect(screen.queryByRole('button', { name: /Needs attention/ })).toBeNull();
+  });
+
+  it('draws each count with its entity’s one glyph from the icon registry', () => {
+    draw(data([wireRow({ sessionId: 'a' })]));
+    const pairs = screen.getByTestId('subagent-row-a').querySelectorAll('[data-count]');
+    expect(pairs).toHaveLength(3);
+    for (const pair of pairs) {
+      const kind = pair.getAttribute('data-count') as keyof typeof ENTITY_ICONS;
+      const Icon = ENTITY_ICONS[kind];
+      const { container } = render(<Icon aria-hidden="true" />);
+      expect(pair.querySelector('svg')?.outerHTML, kind).toBe(container.innerHTML);
+    }
+  });
+
+  it('reads one knowledge base as words, and leaves out the kinds a child has none of', () => {
+    // The row the live finding read as "gpt-5.5, 1 KB, 5s": a kilobyte, to a listener.
+    draw(
+      data([
+        wireRow({
+          sessionId: 'ribosome',
+          name: 'ribosome',
+          status: 'completed',
+          quietSeconds: null,
+          modelName: 'gpt-5.5',
+          providerName: 'openai',
+          extensions: [],
+          skills: [],
+          knowledgeBases: ['soul'],
+          elapsedSeconds: 5,
+          privacyTier: 'private',
+        }),
+        wireRow({ sessionId: 'many', extensions: ['a', 'b', 'c'], skills: ['x', 'y'] }),
+      ])
+    );
+    const row = screen.getByTestId('subagent-row-ribosome');
+    expect(row).toHaveAccessibleName('Completed, ribosome, gpt-5.5, 1 knowledge base, 5s, Private');
+    expect(row).not.toHaveTextContent('KB');
+    expect(setupPairs(row)).toEqual([['knowledge', '1', '1 knowledge base']]);
+    // Plurals, and the order: extensions, skills, knowledge bases.
+    expect(setupPairs(screen.getByTestId('subagent-row-many'))).toEqual([
+      ['extension', '3', '3 extensions'],
+      ['skill', '2', '2 skills'],
+      ['knowledge', '1', '1 knowledge base'],
+    ]);
   });
 
   it('says a long-silent active child is quiet, never stalled', () => {
@@ -93,6 +153,10 @@ describe('up to four subagents: comfortable two-line rows', () => {
     expect(row).toHaveAttribute('data-quiet', '');
     expect(row).toHaveTextContent(copy.quietFor('4m'));
     expect(row).not.toHaveTextContent(/stall|dead|stuck/i);
+    // In the run time's place, as on a dense row, so the counts and the note both fit.
+    expect(row).toHaveAccessibleName(
+      'Running, Search PubMed for trials, claude-sonnet-4-5, 2 extensions, 1 skill, 1 knowledge base, quiet for 4m'
+    );
   });
 
   it('opens the subagent as a tab on click, with its name', () => {
@@ -129,10 +193,62 @@ describe('five or more: dense rows grouped by state', () => {
     ]);
     expect(screen.getByTestId('subagent-row-run-0')).toHaveAttribute('data-layout', 'dense');
     // A dense row is one line: the run time trails, the setup line is gone.
-    expect(screen.getByTestId('subagent-row-run-0')).not.toHaveTextContent('ext');
+    expect(screen.getByTestId('subagent-row-run-0').querySelector('[data-count]')).toBeNull();
+    expect(screen.getByTestId('subagent-row-run-0')).toHaveAccessibleName(
+      'Running, run task 1, 1m'
+    );
     expect(
       within(screen.getByRole('list', { name: copy.groups.attention })).getAllByRole('button')
     ).toHaveLength(2);
+  });
+
+  it('orders each group by spawn, never by when its children finished', () => {
+    const fanOut = (n: number, status: string, second: number) =>
+      wireRow({
+        sessionId: `r${n}`,
+        name: `ribosome ${n}`,
+        status,
+        quietSeconds: null,
+        createdAt: `2026-11-04T10:00:0${second}Z`,
+      });
+    // One fan-out, all but the first spawned in the same second, so the roster's tie-break is
+    // a race; the finished ones arrive here in the order they finished.
+    const finished = [
+      fanOut(10, 'completed', 1),
+      fanOut(1, 'completed', 0),
+      fanOut(3, 'completed', 1),
+    ];
+    const { rerender } = draw(
+      data([
+        fanOut(5, 'running', 1),
+        fanOut(4, 'running', 1),
+        ...finished,
+        fanOut(2, 'completed', 1),
+      ])
+    );
+    const order = (group: string) =>
+      within(screen.getByRole('list', { name: group }))
+        .getAllByTestId(/^subagent-row-/)
+        .map((row) => row.getAttribute('data-testid')!.replace('subagent-row-', ''));
+    expect(order(copy.groups.done)).toEqual(['r1', 'r2', 'r3', 'r10']);
+    expect(order(copy.groups.running)).toEqual(['r4', 'r5']);
+
+    // r4 finishes last, and takes its sibling place in Done rather than the end.
+    rerender(
+      <SummarySubagents
+        data={data([
+          fanOut(5, 'running', 1),
+          ...finished,
+          fanOut(2, 'completed', 1),
+          fanOut(4, 'completed', 1),
+        ])}
+        loading={false}
+        error={false}
+        refresh={() => {}}
+        onOpen={() => {}}
+      />
+    );
+    expect(order(copy.groups.done)).toEqual(['r1', 'r2', 'r3', 'r4', 'r10']);
   });
 
   it('shows at most 12 rows of a group, then Show all N, and folds a group', () => {
