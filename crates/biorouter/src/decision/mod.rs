@@ -9,6 +9,8 @@
 //! - [`service`]: model resolution, privacy, size, concurrency, deadlines,
 //!   and the [`DecisionSink`] seam for the decision log.
 //! - [`window`]: the rolling conversation window a monitor asks about.
+//! - [`monitor`]: monitors (decision models watching a chat while its agent
+//!   works) and the per-turn tally the transcript marker is drawn from.
 //!
 //! The adapters themselves are in `providers::decision`.
 //!
@@ -22,6 +24,7 @@
 pub mod error;
 pub mod log;
 pub mod model;
+pub mod monitor;
 pub mod service;
 pub mod settings;
 pub mod turns;

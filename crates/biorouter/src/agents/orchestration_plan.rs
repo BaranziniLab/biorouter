@@ -39,6 +39,20 @@
 //! `withheld` (its result line and its session name are dropped), so the
 //! automatic hand-off, the barrier's refusal and everything rendered from the
 //! stored hand-off carry only what the parent's own tier may hold.
+//!
+//! # Decision gates
+//!
+//! A phase may carry a [`PhaseGate`]: 1 to 8 yes/no questions a decision model
+//! answers before `complete` (status completed) is allowed to close the phase.
+//! The model reads one state built from the phase's goal, its hand-off and its
+//! children's result lines ([`gate_state_text`]), the same screened lines the
+//! automatic hand-off uses, so a withheld child's text never reaches it. Every
+//! question must reach P(yes) at or above the gate's threshold. A failed gate
+//! keeps the phase in progress and hands the failing questions back to the
+//! model ([`apply_gate_verdict`]); after `max_attempts` failures the phase is
+//! blocked. An error never passes and does not use an attempt, and two errors
+//! in a row block the phase. Each evaluation is one row of the decision log
+//! (origin `gate`, origin id the phase id), never a transcript row.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -46,10 +60,16 @@ use std::sync::{LazyLock, Mutex};
 use std::time::{Duration, Instant};
 
 use chrono::{DateTime, Utc};
+use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
 use crate::agents::subagent_roster::{SubagentRow, SubagentRunStatus};
+use crate::decision::types::validate_questions;
+use crate::decision::{
+    DecisionContext, DecisionKind, DecisionModelRef, DecisionRequest, DecisionService,
+    DecisionSession, Question, Threshold,
+};
 use crate::privacy::SessionClassification;
 use crate::session::SessionManager;
 
@@ -77,6 +97,17 @@ pub const HANDOFF_CONTEXT_MAX_CHARS: usize = 12_000;
 pub const SNAPSHOT_HANDOFF_MAX_CHARS: usize = 600;
 /// An active child with no recorded activity for this long counts as quiet.
 pub const QUIET_AFTER_SECONDS: u64 = 180;
+/// Questions on one phase gate.
+pub const MAX_GATE_QUESTIONS: usize = 8;
+/// Attempts a gate may be given.
+pub const MAX_GATE_ATTEMPTS: u32 = 5;
+/// The threshold a gate gets when the plan names none.
+pub const DEFAULT_GATE_THRESHOLD: f64 = 0.8;
+/// Evaluations in a row that end in an error before the phase is blocked.
+pub const GATE_ERRORS_TO_BLOCK: u32 = 2;
+/// The state a gate's decision model reads, at most. Sized like the monitor
+/// window's default, so it fits a small local decision model.
+pub const GATE_STATE_MAX_CHARS: usize = 6_000;
 
 /// What a phase is for. Drives the glyph a surface draws; carries no behaviour.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, ToSchema)]
@@ -290,6 +321,32 @@ pub(crate) struct PlanPhase {
     pub(crate) started_at: Option<DateTime<Utc>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) finished_at: Option<DateTime<Utc>>,
+    /// The phase's decision gate, as the plan declared it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) gate: Option<PhaseGate>,
+    /// What the gate's evaluations so far came to. Reset when the gate changes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) gate_state: Option<GateState>,
+}
+
+/// A gate's record of its evaluations.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub(crate) struct GateState {
+    /// Evaluations that reached a verdict (passed or failed). Errors do not count.
+    #[serde(default)]
+    pub(crate) attempts: u32,
+    /// Evaluations in a row that ended in an error.
+    #[serde(default)]
+    pub(crate) consecutive_errors: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) last_passed: Option<bool>,
+    /// The lowest P(yes) across the questions at the last verdict.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) last_min_p: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) last_error: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) last_at: Option<DateTime<Utc>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -448,6 +505,110 @@ pub(crate) struct PlanPhaseInput {
     pub(crate) depends_on: Vec<String>,
 }
 
+/// One phase as `workspace_orchestrate action:"plan"` takes it: the phase,
+/// and optionally a decision gate on its completion.
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+pub(crate) struct OrchestratePhaseInput {
+    #[serde(flatten)]
+    pub(crate) phase: PlanPhaseInput,
+    /// Optional decision gate: yes/no questions a decision model answers from
+    /// the phase's hand-off and its subagents' results before the phase may
+    /// complete. Every question must reach the threshold. Leave it out of a
+    /// revision to keep the phase's gate as it is.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) gate: Option<PhaseGateInput>,
+}
+
+/// A phase gate as the model declares it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+pub(crate) struct PhaseGateInput {
+    /// 1 to 8 yes/no questions, name to question, each answerable from the
+    /// phase's results, for example {"tests_pass": "Do the results show every
+    /// new test passing?"}. Names are letters, digits, `_` or `-`.
+    #[schemars(with = "std::collections::BTreeMap<String, String>")]
+    pub(crate) questions: IndexMap<String, String>,
+    /// The P(yes) every question must reach, from 0 to 1. Default 0.8.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) threshold: Option<f64>,
+    /// Failed evaluations allowed before the phase is blocked, 1 to 5.
+    /// Default 3.
+    #[serde(
+        default,
+        alias = "maxAttempts",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub(crate) max_attempts: Option<u32>,
+    /// Accept verbalized (uncalibrated) probabilities. Default false: such a
+    /// source is refused.
+    #[serde(
+        default,
+        alias = "allowUncalibrated",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub(crate) allow_uncalibrated: Option<bool>,
+    /// Optional decision model as provider/model, from decision_models. Left
+    /// out, the configured default or the first model this chat may use.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) model: Option<String>,
+}
+
+/// Validate a declared gate into the stored [`PhaseGate`].
+pub(crate) fn validate_gate(phase_id: &str, input: &PhaseGateInput) -> Result<PhaseGate, String> {
+    let count = input.questions.len();
+    if count == 0 || count > MAX_GATE_QUESTIONS {
+        return Err(format!(
+            "Phase \"{phase_id}\"'s gate needs 1 to {MAX_GATE_QUESTIONS} yes/no questions, not \
+             {count}."
+        ));
+    }
+    let questions: IndexMap<String, Question> = input
+        .questions
+        .iter()
+        .map(|(name, text)| {
+            (
+                name.trim().to_string(),
+                Question {
+                    instructions: text.trim().to_string(),
+                    kind: DecisionKind::Binary {},
+                    threshold: None,
+                },
+            )
+        })
+        .collect();
+    validate_questions(&questions).map_err(|e| format!("Phase \"{phase_id}\"'s gate: {e}"))?;
+    let threshold = input.threshold.unwrap_or(DEFAULT_GATE_THRESHOLD);
+    if !threshold.is_finite() || !(0.0..=1.0).contains(&threshold) {
+        return Err(format!(
+            "Phase \"{phase_id}\"'s gate threshold must be a probability from 0 to 1."
+        ));
+    }
+    let max_attempts = input.max_attempts.unwrap_or_else(default_gate_attempts);
+    if !(1..=MAX_GATE_ATTEMPTS).contains(&max_attempts) {
+        return Err(format!(
+            "Phase \"{phase_id}\"'s gate may allow 1 to {MAX_GATE_ATTEMPTS} attempts, not \
+             {max_attempts}."
+        ));
+    }
+    let model = match input.model.as_deref().map(str::trim) {
+        Some(model) if !model.is_empty() => {
+            Some(DecisionModelRef::parse(model).ok_or_else(|| {
+                format!(
+                    "Phase \"{phase_id}\"'s gate model is provider/model, for example \
+                 ollama_decision/tev1:0.8b, not `{model}`."
+                )
+            })?)
+        }
+        _ => None,
+    };
+    Ok(PhaseGate {
+        questions,
+        threshold,
+        model,
+        max_attempts,
+        allow_uncalibrated: input.allow_uncalibrated.unwrap_or(false),
+    })
+}
+
 fn is_slug(id: &str) -> bool {
     !id.is_empty()
         && id.chars().count() <= MAX_PHASE_ID_CHARS
@@ -477,8 +638,13 @@ fn optional_text(raw: Option<&str>, max: usize, what: &str) -> Result<Option<Str
 
 /// One declared phase, validated against the phases listed before it
 /// (`earlier`) and merged with its stored self when its id persists.
+///
+/// A gate given replaces the stored one; when it differs, the gate's record
+/// starts over. A gate left out keeps the stored gate and its record, so a
+/// revision that lists the phases again without their gates loses none.
 fn build_phase(
     input: &PlanPhaseInput,
+    gate: Option<&PhaseGateInput>,
     earlier: &[&str],
     existing: Option<&OrchestrationPlan>,
 ) -> Result<PlanPhase, String> {
@@ -527,16 +693,28 @@ fn build_phase(
         .as_deref()
         .map(PhaseKind::parse_lenient)
         .unwrap_or(PhaseKind::Other);
+    let gate = gate.map(|gate| validate_gate(id, gate)).transpose()?;
 
     Ok(match existing.and_then(|plan| plan.phase(id)).cloned() {
-        Some(previous) => PlanPhase {
-            id: id.to_string(),
-            title,
-            goal,
-            kind,
-            depends_on,
-            ..previous
-        },
+        Some(previous) => {
+            let (gate, gate_state) = match gate {
+                None => (previous.gate.clone(), previous.gate_state.clone()),
+                Some(gate) if previous.gate.as_ref() == Some(&gate) => {
+                    (Some(gate), previous.gate_state.clone())
+                }
+                Some(gate) => (Some(gate), None),
+            };
+            PlanPhase {
+                id: id.to_string(),
+                title,
+                goal,
+                kind,
+                depends_on,
+                gate,
+                gate_state,
+                ..previous
+            }
+        }
         None => PlanPhase {
             id: id.to_string(),
             title,
@@ -548,22 +726,51 @@ fn build_phase(
             handoff: None,
             started_at: None,
             finished_at: None,
+            gate,
+            gate_state: None,
         },
     })
 }
 
-/// Declare a plan, or revise the stored one.
-///
-/// A phase whose id is kept keeps its agents, status, hand-off and timestamps;
-/// its title, goal, kind and dependencies take the new values. A phase that is
-/// dropped from the list is removed only when nothing was ever spawned into it,
-/// because its children would otherwise vanish from every surface that draws
-/// the plan.
+/// [`apply_gated_plan`] with no gates declared, the shape the tests write.
+#[cfg(test)]
 pub(crate) fn apply_plan(
     existing: Option<OrchestrationPlan>,
     title: Option<&str>,
     goal: Option<&str>,
     phases: &[PlanPhaseInput],
+) -> Result<OrchestrationPlan, String> {
+    let phases: Vec<(&PlanPhaseInput, Option<&PhaseGateInput>)> =
+        phases.iter().map(|phase| (phase, None)).collect();
+    apply_plan_inputs(existing, title, goal, &phases)
+}
+
+/// Declare a plan, or revise the stored one.
+///
+/// A phase whose id is kept keeps its agents, status, hand-off and timestamps;
+/// its title, goal, kind and dependencies take the new values, and its gate
+/// the one declared (a gate left out stays as it is). A phase that is dropped
+/// from the list is removed only when nothing was ever spawned into it,
+/// because its children would otherwise vanish from every surface that draws
+/// the plan.
+pub(crate) fn apply_gated_plan(
+    existing: Option<OrchestrationPlan>,
+    title: Option<&str>,
+    goal: Option<&str>,
+    phases: &[OrchestratePhaseInput],
+) -> Result<OrchestrationPlan, String> {
+    let phases: Vec<(&PlanPhaseInput, Option<&PhaseGateInput>)> = phases
+        .iter()
+        .map(|input| (&input.phase, input.gate.as_ref()))
+        .collect();
+    apply_plan_inputs(existing, title, goal, &phases)
+}
+
+fn apply_plan_inputs(
+    existing: Option<OrchestrationPlan>,
+    title: Option<&str>,
+    goal: Option<&str>,
+    phases: &[(&PlanPhaseInput, Option<&PhaseGateInput>)],
 ) -> Result<OrchestrationPlan, String> {
     let title = match (title.map(str::trim).filter(|t| !t.is_empty()), &existing) {
         (Some(title), _) => bounded_text(title, MAX_TITLE_CHARS, "The plan's title")?,
@@ -588,8 +795,8 @@ pub(crate) fn apply_plan(
 
     let mut seen: Vec<&str> = Vec::with_capacity(phases.len());
     let mut next_phases = Vec::with_capacity(phases.len());
-    for input in phases {
-        let phase = build_phase(input, &seen, existing.as_ref())?;
+    for (input, gate) in phases {
+        let phase = build_phase(input, *gate, &seen, existing.as_ref())?;
         seen.push(input.id.trim());
         next_phases.push(phase);
     }
@@ -626,6 +833,24 @@ pub(crate) fn apply_plan(
     })
 }
 
+/// [`apply_fresh_gated_plan`] with no gates declared, the shape the tests write.
+#[cfg(test)]
+pub(crate) fn apply_fresh_plan(
+    existing: Option<OrchestrationPlan>,
+    title: Option<&str>,
+    goal: Option<&str>,
+    phases: &[PlanPhaseInput],
+) -> Result<OrchestrationPlan, String> {
+    let phases: Vec<OrchestratePhaseInput> = phases
+        .iter()
+        .map(|phase| OrchestratePhaseInput {
+            phase: phase.clone(),
+            gate: None,
+        })
+        .collect();
+    apply_fresh_gated_plan(existing, title, goal, &phases)
+}
+
 /// `action:"plan"` with `fresh:true`: replace a FINISHED plan with a new one.
 ///
 /// The way past the plan's limits ([`MAX_PLAN_AGENTS`], [`MAX_PHASES`]): a
@@ -633,16 +858,17 @@ pub(crate) fn apply_plan(
 /// that reached either limit could never run another phase. Refused while any
 /// phase is still open, so no running or pending phase disappears. The new
 /// phases start empty, even where an id repeats, and receive none of the old
-/// plan's hand-offs; the old plan's children stay in the subagent roster. The
-/// title is kept when none is given, and the revision keeps counting up.
-pub(crate) fn apply_fresh_plan(
+/// plan's hand-offs or gates; the old plan's children stay in the subagent
+/// roster. The title is kept when none is given, and the revision keeps
+/// counting up.
+pub(crate) fn apply_fresh_gated_plan(
     existing: Option<OrchestrationPlan>,
     title: Option<&str>,
     goal: Option<&str>,
-    phases: &[PlanPhaseInput],
+    phases: &[OrchestratePhaseInput],
 ) -> Result<OrchestrationPlan, String> {
     let Some(previous) = existing else {
-        return apply_plan(None, title, goal, phases);
+        return apply_gated_plan(None, title, goal, phases);
     };
     let open: Vec<&str> = previous
         .phases
@@ -662,7 +888,7 @@ pub(crate) fn apply_fresh_plan(
         .map(str::trim)
         .filter(|title| !title.is_empty())
         .unwrap_or(previous.title.as_str());
-    apply_plan(None, Some(title), goal, phases)
+    apply_gated_plan(None, Some(title), goal, phases)
 }
 
 /// `action:"start"`: a pending or blocked phase moves to in progress. Returns
@@ -1058,7 +1284,7 @@ pub(crate) fn snapshot_of(plan: &OrchestrationPlan, rows: &[SubagentRow]) -> Orc
                 }),
                 started_at: phase.started_at,
                 finished_at: phase.finished_at,
-                gate: None,
+                gate: gate_snapshot(phase),
             }
         })
         .collect();
@@ -1121,8 +1347,34 @@ pub fn render_snapshot_text(snapshot: &OrchestrationSnapshot) -> String {
                 .collect();
             text.push_str(&format!("\n   hand-off: {first}"));
         }
+        if let Some(gate) = &phase.gate {
+            text.push_str(&format!("\n   gate: {}", gate_words(gate)));
+        }
     }
     text
+}
+
+/// A gate's state in a few words: "2 questions at P(yes) >= 0.80, attempt
+/// 1 of 3, last failed (lowest P(yes) 0.42)".
+pub fn gate_words(gate: &PhaseGateSnapshot) -> String {
+    let mut words = format!(
+        "{} question{} at P(yes) >= {:.2}, {} of {} attempts used",
+        gate.question_count,
+        if gate.question_count == 1 { "" } else { "s" },
+        gate.threshold,
+        gate.attempts,
+        gate.max_attempts
+    );
+    match (gate.last_passed, gate.last_min_p) {
+        (Some(true), _) => words.push_str(", passed"),
+        (Some(false), Some(p)) => words.push_str(&format!(", last failed (lowest P(yes) {p:.2})")),
+        (Some(false), None) => words.push_str(", last failed"),
+        (None, _) => {}
+    }
+    if gate.blocked {
+        words.push_str(", blocked");
+    }
+    words
 }
 
 /// The plan as the model sees it at the top of every turn: one line per phase.
@@ -1139,6 +1391,14 @@ pub fn render_moim(snapshot: &OrchestrationSnapshot) -> String {
             phase.status.as_str().replace('_', " "),
             progress_words(&phase.counts)
         ));
+        if let Some(gate) = &phase.gate {
+            text.push_str(&format!(
+                ", gated (attempt {} of {}{})",
+                gate.attempts,
+                gate.max_attempts,
+                if gate.blocked { ", blocked" } else { "" }
+            ));
+        }
     }
     text.push_str(
         "\nSpawn into a phase with subagent phase:\"<id>\"; complete a phase only after \
@@ -1657,6 +1917,370 @@ fn screened_state(
 fn first_line(text: &str) -> Option<String> {
     let line = text.lines().map(str::trim).find(|line| !line.is_empty())?;
     Some(truncate_chars(line, 300))
+}
+
+// ---------------------------------------------------------------------------
+// Decision gates. `workspace_orchestrate action:"complete"` (status completed)
+// on a gated phase: refuse an exhausted gate, dry-run the barrier, build the
+// state, evaluate it through the decision service, then write the verdict in
+// one transaction that re-checks the gate and, on a pass, the barrier.
+// ---------------------------------------------------------------------------
+
+/// The gate failed every attempt it was given.
+fn gate_exhausted(phase: &PlanPhase) -> bool {
+    match (&phase.gate, &phase.gate_state) {
+        (Some(gate), Some(state)) => {
+            state.attempts >= gate.max_attempts && state.last_passed == Some(false)
+        }
+        _ => false,
+    }
+}
+
+/// Blocked because of its gate: every attempt failed, or the phase was blocked
+/// by errors in a row.
+fn gate_blocked(phase: &PlanPhase) -> bool {
+    gate_exhausted(phase)
+        || (phase.status == PhaseStatus::Blocked
+            && phase
+                .gate_state
+                .as_ref()
+                .is_some_and(|state| state.consecutive_errors >= GATE_ERRORS_TO_BLOCK))
+}
+
+fn gate_snapshot(phase: &PlanPhase) -> Option<PhaseGateSnapshot> {
+    let gate = phase.gate.as_ref()?;
+    let state = phase.gate_state.clone().unwrap_or_default();
+    Some(PhaseGateSnapshot {
+        threshold: gate.threshold,
+        question_count: u32::try_from(gate.questions.len()).unwrap_or(u32::MAX),
+        attempts: state.attempts,
+        max_attempts: gate.max_attempts,
+        last_passed: state.last_passed,
+        last_min_p: state.last_min_p,
+        blocked: gate_blocked(phase),
+    })
+}
+
+/// The refusal for completing a phase whose gate has no attempts left, or
+/// `None` when the gate may still be asked.
+pub(crate) fn refuse_exhausted_gate(phase: &PlanPhase) -> Option<String> {
+    if !gate_exhausted(phase) {
+        return None;
+    }
+    let gate = phase.gate.as_ref()?;
+    Some(format!(
+        "Phase \"{}\"'s gate failed all {} attempts, so the phase cannot be completed through \
+         it. Tell the user what the gate asked and what failed. With their agreement, declare a \
+         different gate for the phase with action:\"plan\" (a changed gate starts its attempts \
+         again), or close the phase with status:\"skipped\". Nothing was changed.",
+        phase.id, gate.max_attempts
+    ))
+}
+
+/// The one state a gate's decision model reads: the phase's goal, its hand-off
+/// and, unless the hand-off was composed from them already, its children's
+/// result lines. `agents` are the screened states of [`phase_agent_states`],
+/// so a withheld child contributes its label and status, never its text.
+pub(crate) fn gate_state_text(phase: &PlanPhase, agents: &[PhaseAgentState]) -> String {
+    let mut text = format!(
+        "Phase \"{}\" ({}, {}) of a delegated task.\nGoal: {}",
+        phase.title,
+        phase.id,
+        phase.kind.as_str(),
+        phase.goal.as_deref().unwrap_or("(none stated)")
+    );
+    match &phase.handoff {
+        Some(handoff) => text.push_str(&format!("\n\nHand-off:\n{}", handoff.summary.trim())),
+        None => text.push_str("\n\nHand-off: (none written)"),
+    }
+    let composed = phase
+        .handoff
+        .as_ref()
+        .is_some_and(|handoff| handoff.source == HandoffSource::Auto);
+    if !composed && !agents.is_empty() {
+        text.push_str("\n\nSubagent results:");
+        for agent in agents {
+            let line = if agent.withheld {
+                "(result withheld)"
+            } else {
+                agent
+                    .result_line
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|line| !line.is_empty())
+                    .unwrap_or("(no result line)")
+            };
+            text.push_str(&format!(
+                "\n- {} [{}]: {}",
+                agent.label,
+                run_status_word(agent.status),
+                line
+            ));
+        }
+    }
+    truncate_chars(&text, GATE_STATE_MAX_CHARS)
+}
+
+/// One gate question's answer.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct GateAnswer {
+    pub(crate) question: String,
+    pub(crate) instructions: String,
+    pub(crate) p_yes: f64,
+    pub(crate) passed: bool,
+}
+
+/// What one evaluation of a gate came to.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum GateVerdict {
+    /// Every question reached the threshold.
+    Passed(Vec<GateAnswer>),
+    /// At least one question fell short.
+    Failed(Vec<GateAnswer>),
+    /// Nothing was decided: the model was refused, unreachable or unusable.
+    /// Never a pass.
+    Error(String),
+}
+
+/// Ask the gate's questions of `state` through `service`, as the chat
+/// `session` describes (origin `gate`, the phase id and title, the turn).
+pub(crate) async fn evaluate_gate(
+    service: &DecisionService,
+    session: &DecisionSession,
+    gate: &PhaseGate,
+    state: String,
+) -> GateVerdict {
+    let questions: IndexMap<String, Question> = gate
+        .questions
+        .iter()
+        .map(|(name, question)| {
+            (
+                name.clone(),
+                Question {
+                    threshold: Some(Threshold::Yes(gate.threshold)),
+                    ..question.clone()
+                },
+            )
+        })
+        .collect();
+    let request = DecisionRequest {
+        questions,
+        context: DecisionContext::Text(state),
+    };
+    let decisions = match service
+        .decide(Some(session), gate.model.as_ref(), &request)
+        .await
+    {
+        Ok(decisions) => decisions,
+        Err(error) => return GateVerdict::Error(error.to_string()),
+    };
+    if !gate.allow_uncalibrated {
+        if let Some(uncalibrated) = decisions.iter().find(|d| !d.calibrated) {
+            return GateVerdict::Error(format!(
+                "{} returned uncalibrated probabilities, which a gate refuses. Use a decision \
+                 model with its own probabilities, or set allowUncalibrated on the gate to \
+                 accept them.",
+                uncalibrated.model.label()
+            ));
+        }
+    }
+    let answers: Vec<GateAnswer> = gate
+        .questions
+        .iter()
+        .map(|(name, question)| {
+            let decision = decisions.iter().find(|d| &d.question == name);
+            let p_yes = decision
+                .and_then(|d| d.pass_probability)
+                .unwrap_or_default();
+            GateAnswer {
+                question: name.clone(),
+                instructions: question.instructions.clone(),
+                p_yes,
+                passed: decision.is_some_and(|d| d.passed == Some(true)),
+            }
+        })
+        .collect();
+    if answers.iter().all(|answer| answer.passed) {
+        GateVerdict::Passed(answers)
+    } else {
+        GateVerdict::Failed(answers)
+    }
+}
+
+fn min_p(answers: &[GateAnswer]) -> Option<f64> {
+    answers
+        .iter()
+        .map(|answer| answer.p_yes)
+        .fold(None, |acc: Option<f64>, p| {
+            Some(acc.map_or(p, |a| a.min(p)))
+        })
+}
+
+fn answers_words(answers: &[GateAnswer]) -> String {
+    answers
+        .iter()
+        .map(|answer| format!("{} P(yes) {:.2}", answer.question, answer.p_yes))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// Write one evaluation's verdict. Returns the plan, the sentence for the
+/// model, and whether the phase closed (the caller then checks for racing
+/// spawns, as it does for an ungated completion).
+///
+/// Refused, with nothing written, when the gate changed or the phase closed
+/// while the gate was being evaluated, or (on a pass) when the barrier no
+/// longer holds.
+pub(crate) fn apply_gate_verdict(
+    plan: Option<OrchestrationPlan>,
+    phase_id: &str,
+    evaluated: &PhaseGate,
+    verdict: &GateVerdict,
+    summary: Option<&str>,
+    agents: &[PhaseAgentState],
+    now: DateTime<Utc>,
+) -> Result<(OrchestrationPlan, String, bool), String> {
+    let plan = plan.ok_or_else(|| NO_PLAN.to_string())?;
+    {
+        let unknown = plan.unknown_phase(phase_id);
+        let phase = plan.phase(phase_id).ok_or(unknown)?;
+        if phase.gate.as_ref() != Some(evaluated) {
+            return Err(format!(
+                "Phase \"{phase_id}\"'s gate changed while it was being evaluated. Nothing was \
+                 changed; complete the phase again."
+            ));
+        }
+        if phase.status.is_closed() {
+            return Err(format!(
+                "Phase \"{phase_id}\" was {} while its gate was being evaluated. Nothing was \
+                 changed.",
+                phase.status.as_str()
+            ));
+        }
+    }
+    let threshold = evaluated.threshold;
+    let max_attempts = evaluated.max_attempts;
+
+    if let GateVerdict::Passed(answers) = verdict {
+        let (mut plan, note) = apply_complete(
+            Some(plan),
+            phase_id,
+            PhaseStatus::Completed,
+            summary,
+            agents,
+            now,
+        )?;
+        let phase = plan.phase_mut(phase_id).expect("completed above");
+        let state = phase.gate_state.get_or_insert_with(GateState::default);
+        state.attempts += 1;
+        state.consecutive_errors = 0;
+        state.last_passed = Some(true);
+        state.last_min_p = min_p(answers);
+        state.last_error = None;
+        state.last_at = Some(now);
+        let note = format!(
+            "{note} Its gate passed on attempt {} of {max_attempts}: {} (threshold {threshold:.2}).",
+            state.attempts,
+            answers_words(answers)
+        );
+        return Ok((plan, note, true));
+    }
+
+    let summary = optional_text(summary, MAX_HANDOFF_CHARS, "The hand-off summary")?;
+    let mut plan = plan;
+    let phase = plan.phase_mut(phase_id).expect("checked above");
+    if let Some(summary) = summary {
+        phase.handoff = Some(PhaseHandoff {
+            summary,
+            source: HandoffSource::Parent,
+            written_at: now,
+        });
+    }
+    let note = match verdict {
+        GateVerdict::Passed(_) => unreachable!("handled above"),
+        GateVerdict::Failed(answers) => record_gate_failure(phase, evaluated, answers, now),
+        GateVerdict::Error(message) => record_gate_error(phase, message, now),
+    };
+    Ok((plan, note, false))
+}
+
+/// A failed verdict: one attempt used. The phase stays in progress with a
+/// fix-it instruction, or is blocked once the attempts are used up.
+fn record_gate_failure(
+    phase: &mut PlanPhase,
+    gate: &PhaseGate,
+    answers: &[GateAnswer],
+    now: DateTime<Utc>,
+) -> String {
+    let (threshold, max_attempts) = (gate.threshold, gate.max_attempts);
+    let state = phase.gate_state.get_or_insert_with(GateState::default);
+    state.last_at = Some(now);
+    state.attempts += 1;
+    state.consecutive_errors = 0;
+    state.last_passed = Some(false);
+    state.last_min_p = min_p(answers);
+    state.last_error = None;
+    let attempts = state.attempts;
+    let failing: String = answers
+        .iter()
+        .filter(|answer| !answer.passed)
+        .map(|answer| {
+            format!(
+                "\n- {}: P(yes) {:.2}, below {threshold:.2}. Asked: \"{}\"",
+                answer.question, answer.p_yes, answer.instructions
+            )
+        })
+        .collect();
+    let phase_id = phase.id.clone();
+    if attempts >= max_attempts {
+        phase.status = PhaseStatus::Blocked;
+        phase.finished_at = Some(now);
+        return format!(
+            "Phase \"{phase_id}\" is blocked: its gate failed all {max_attempts} attempts. The \
+             questions that fell short:{failing}\nTell the user what the gate asked and what the \
+             results lacked. With their agreement, declare a different gate with \
+             action:\"plan\" (a changed gate starts its attempts again), or close the phase \
+             with status:\"skipped\"."
+        );
+    }
+    if phase.status != PhaseStatus::InProgress {
+        phase.status = PhaseStatus::InProgress;
+        phase.started_at.get_or_insert(now);
+        phase.finished_at = None;
+    }
+    format!(
+        "Phase \"{phase_id}\" was NOT completed: its gate failed on attempt {attempts} of \
+         {max_attempts}. Every question must reach P(yes) >= {threshold:.2}, and these fell \
+         short:{failing}\nFix what they point at: spawn subagents into the phase to do the \
+         missing work, or write a hand-off that states the evidence with action:\"handoff\". \
+         Then complete the phase again. It stays in progress."
+    )
+}
+
+/// An evaluation that decided nothing: no attempt used; the second in a row
+/// blocks the phase.
+fn record_gate_error(phase: &mut PlanPhase, message: &str, now: DateTime<Utc>) -> String {
+    let state = phase.gate_state.get_or_insert_with(GateState::default);
+    state.last_at = Some(now);
+    state.consecutive_errors += 1;
+    state.last_error = Some(message.to_string());
+    let blocked = state.consecutive_errors >= GATE_ERRORS_TO_BLOCK;
+    let phase_id = phase.id.clone();
+    if blocked {
+        phase.status = PhaseStatus::Blocked;
+        phase.finished_at = Some(now);
+        return format!(
+            "Phase \"{phase_id}\" is blocked: its gate could not be evaluated \
+             {GATE_ERRORS_TO_BLOCK} times in a row ({message}). Nothing was decided. Tell the \
+             user; once a decision model this chat may use is reachable, complete the phase \
+             again."
+        );
+    }
+    format!(
+        "Phase \"{phase_id}\" was NOT completed: its gate could not be evaluated ({message}). \
+         Nothing was decided and no attempt was used. Complete the phase again to retry; a \
+         second failure in a row blocks it."
+    )
 }
 
 #[cfg(test)]
@@ -2867,5 +3491,594 @@ mod tests {
             !by_id("ghost").withheld,
             "nothing to show, so nothing is withheld"
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // Decision gates
+    // -----------------------------------------------------------------------
+
+    fn gate_input(questions: &[(&str, &str)]) -> PhaseGateInput {
+        PhaseGateInput {
+            questions: questions
+                .iter()
+                .map(|(name, text)| (name.to_string(), text.to_string()))
+                .collect(),
+            threshold: None,
+            max_attempts: None,
+            allow_uncalibrated: None,
+            model: None,
+        }
+    }
+
+    fn gated(
+        id: &str,
+        kind: &str,
+        depends_on: &[&str],
+        gate: Option<PhaseGateInput>,
+    ) -> OrchestratePhaseInput {
+        OrchestratePhaseInput {
+            phase: input(id, kind, depends_on),
+            gate,
+        }
+    }
+
+    /// A plan whose "build" phase carries a two-question gate.
+    fn gated_plan() -> OrchestrationPlan {
+        apply_gated_plan(
+            None,
+            Some("Ship the parser"),
+            None,
+            &[
+                gated("research", "research", &[], None),
+                gated(
+                    "build",
+                    "implement",
+                    &["research"],
+                    Some(gate_input(&[
+                        ("tests_pass", "Do the results show every new test passing?"),
+                        ("scope_met", "Did the phase deliver every item in its goal?"),
+                    ])),
+                ),
+            ],
+        )
+        .unwrap()
+    }
+
+    fn stored_gate(plan: &OrchestrationPlan) -> PhaseGate {
+        plan.phase("build").unwrap().gate.clone().unwrap()
+    }
+
+    fn answers(ps: &[(&str, f64)], threshold: f64) -> Vec<GateAnswer> {
+        ps.iter()
+            .map(|(name, p)| GateAnswer {
+                question: name.to_string(),
+                instructions: format!("{name}?"),
+                p_yes: *p,
+                passed: *p >= threshold,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_gate_is_validated_and_takes_its_defaults() {
+        let plan = gated_plan();
+        let gate = stored_gate(&plan);
+        assert_eq!(gate.threshold, DEFAULT_GATE_THRESHOLD);
+        assert_eq!(gate.max_attempts, 3);
+        assert!(!gate.allow_uncalibrated);
+        assert_eq!(gate.questions.len(), 2);
+        assert!(gate
+            .questions
+            .values()
+            .all(|q| q.kind == DecisionKind::Binary {} && q.threshold.is_none()));
+
+        let nine: Vec<(String, String)> =
+            (0..9).map(|i| (format!("q{i}"), "yes?".into())).collect();
+        let nine: Vec<(&str, &str)> = nine.iter().map(|(a, b)| (a.as_str(), b.as_str())).collect();
+        let cases: Vec<(PhaseGateInput, &str)> = vec![
+            (gate_input(&[]), "1 to 8"),
+            (gate_input(&nine), "1 to 8"),
+            (gate_input(&[("bad name", "yes?")]), "bad name"),
+            (gate_input(&[("q", "  ")]), "instructions"),
+            (
+                PhaseGateInput {
+                    threshold: Some(1.5),
+                    ..gate_input(&[("q", "yes?")])
+                },
+                "from 0 to 1",
+            ),
+            (
+                PhaseGateInput {
+                    max_attempts: Some(0),
+                    ..gate_input(&[("q", "yes?")])
+                },
+                "1 to 5 attempts",
+            ),
+            (
+                PhaseGateInput {
+                    max_attempts: Some(6),
+                    ..gate_input(&[("q", "yes?")])
+                },
+                "1 to 5 attempts",
+            ),
+            (
+                PhaseGateInput {
+                    model: Some("tev1".into()),
+                    ..gate_input(&[("q", "yes?")])
+                },
+                "provider/model",
+            ),
+        ];
+        for (gate, expected) in cases {
+            let err = validate_gate("build", &gate).unwrap_err();
+            assert!(err.contains(expected), "expected {expected:?} in {err:?}");
+            assert!(err.contains("\"build\""), "{err}");
+        }
+        let named = validate_gate(
+            "build",
+            &PhaseGateInput {
+                model: Some("ollama_decision/tev1:0.8b".into()),
+                threshold: Some(0.9),
+                max_attempts: Some(5),
+                allow_uncalibrated: Some(true),
+                ..gate_input(&[("q", "yes?")])
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            named.model,
+            Some(DecisionModelRef::new("ollama_decision", "tev1:0.8b"))
+        );
+        assert!(named.allow_uncalibrated);
+    }
+
+    /// A revision that lists the phases again without their gates keeps them;
+    /// a changed gate starts its attempts again.
+    #[test]
+    fn a_revision_keeps_a_gate_left_out_and_a_changed_gate_starts_over() {
+        let mut plan = gated_plan();
+        let gate = stored_gate(&plan);
+        plan.phase_mut("build").unwrap().gate_state = Some(GateState {
+            attempts: 2,
+            last_passed: Some(false),
+            ..GateState::default()
+        });
+
+        let kept = apply_gated_plan(
+            Some(plan.clone()),
+            None,
+            None,
+            &[
+                gated("research", "research", &[], None),
+                gated("build", "implement", &["research"], None),
+            ],
+        )
+        .unwrap();
+        let build = kept.phase("build").unwrap();
+        assert_eq!(build.gate.as_ref(), Some(&gate));
+        assert_eq!(build.gate_state.as_ref().unwrap().attempts, 2);
+
+        let same = apply_gated_plan(
+            Some(plan.clone()),
+            None,
+            None,
+            &[
+                gated("research", "research", &[], None),
+                gated(
+                    "build",
+                    "implement",
+                    &["research"],
+                    Some(gate_input(&[
+                        ("tests_pass", "Do the results show every new test passing?"),
+                        ("scope_met", "Did the phase deliver every item in its goal?"),
+                    ])),
+                ),
+            ],
+        )
+        .unwrap();
+        assert_eq!(
+            same.phase("build")
+                .unwrap()
+                .gate_state
+                .as_ref()
+                .unwrap()
+                .attempts,
+            2,
+            "the same gate declared again keeps its record"
+        );
+
+        let changed = apply_gated_plan(
+            Some(plan),
+            None,
+            None,
+            &[
+                gated("research", "research", &[], None),
+                gated(
+                    "build",
+                    "implement",
+                    &["research"],
+                    Some(PhaseGateInput {
+                        threshold: Some(0.6),
+                        ..gate_input(&[("tests_pass", "Do the tests pass?")])
+                    }),
+                ),
+            ],
+        )
+        .unwrap();
+        let build = changed.phase("build").unwrap();
+        assert_eq!(build.gate.as_ref().unwrap().threshold, 0.6);
+        assert_eq!(build.gate_state, None, "a changed gate starts over");
+    }
+
+    #[test]
+    fn a_passing_gate_completes_the_phase() {
+        let plan = gated_plan();
+        let gate = stored_gate(&plan);
+        let verdict =
+            GateVerdict::Passed(answers(&[("tests_pass", 0.93), ("scope_met", 0.88)], 0.8));
+        let (plan, note, closed) =
+            apply_gate_verdict(Some(plan), "build", &gate, &verdict, None, &[], now()).unwrap();
+        assert!(closed);
+        let build = plan.phase("build").unwrap();
+        assert_eq!(build.status, PhaseStatus::Completed);
+        let state = build.gate_state.as_ref().unwrap();
+        assert_eq!(state.attempts, 1);
+        assert_eq!(state.last_passed, Some(true));
+        assert_eq!(state.last_min_p, Some(0.88));
+        assert!(note.contains("gate passed on attempt 1 of 3"), "{note}");
+        assert!(note.contains("tests_pass P(yes) 0.93"), "{note}");
+        let snap = snapshot_of(&plan, &[]).phases[1].gate.clone().unwrap();
+        assert_eq!(snap.last_passed, Some(true));
+        assert!(!snap.blocked);
+    }
+
+    /// A failure keeps the phase in progress and tells the model each failing
+    /// question and its p; the last allowed failure blocks it.
+    #[test]
+    fn a_failing_gate_keeps_the_phase_open_until_its_attempts_are_used_then_blocks() {
+        let mut plan = gated_plan();
+        let gate = stored_gate(&plan);
+        let fail = GateVerdict::Failed(answers(&[("tests_pass", 0.42), ("scope_met", 0.91)], 0.8));
+        for attempt in 1..=2u32 {
+            let (next, note, closed) = apply_gate_verdict(
+                Some(plan),
+                "build",
+                &gate,
+                &fail,
+                Some("Tests: 3 of 4 pass."),
+                &[],
+                now(),
+            )
+            .unwrap();
+            plan = next;
+            assert!(!closed);
+            let build = plan.phase("build").unwrap();
+            assert_eq!(build.status, PhaseStatus::InProgress);
+            assert_eq!(build.gate_state.as_ref().unwrap().attempts, attempt);
+            assert!(note.contains("NOT completed"), "{note}");
+            assert!(note.contains(&format!("attempt {attempt} of 3")), "{note}");
+            assert!(note.contains("tests_pass: P(yes) 0.42"), "{note}");
+            assert!(
+                !note.contains("scope_met: P(yes)"),
+                "a passing question is not listed: {note}"
+            );
+            assert_eq!(
+                build.handoff.as_ref().unwrap().summary,
+                "Tests: 3 of 4 pass.",
+                "the summary given is kept as the hand-off for the next attempt"
+            );
+            assert!(refuse_exhausted_gate(build).is_none());
+        }
+        let (plan, note, _) =
+            apply_gate_verdict(Some(plan), "build", &gate, &fail, None, &[], now()).unwrap();
+        let build = plan.phase("build").unwrap();
+        assert_eq!(build.status, PhaseStatus::Blocked);
+        assert!(note.contains("is blocked"), "{note}");
+        assert!(note.contains("Tell the user"), "{note}");
+        let snap = snapshot_of(&plan, &[]).phases[1].gate.clone().unwrap();
+        assert!(snap.blocked);
+        assert_eq!((snap.attempts, snap.max_attempts), (3, 3));
+        assert_eq!(snap.last_min_p, Some(0.42));
+        let refusal = refuse_exhausted_gate(build).unwrap();
+        assert!(refusal.contains("failed all 3 attempts"), "{refusal}");
+    }
+
+    /// An error never passes and uses no attempt; two in a row block.
+    #[test]
+    fn a_gate_error_uses_no_attempt_and_two_in_a_row_block() {
+        let plan = gated_plan();
+        let gate = stored_gate(&plan);
+        let error = GateVerdict::Error("the decision server failed".into());
+        let (plan, note, closed) =
+            apply_gate_verdict(Some(plan), "build", &gate, &error, None, &[], now()).unwrap();
+        assert!(!closed);
+        let build = plan.phase("build").unwrap();
+        assert_eq!(
+            build.status,
+            PhaseStatus::Pending,
+            "an error changes no status"
+        );
+        let state = build.gate_state.clone().unwrap();
+        assert_eq!((state.attempts, state.consecutive_errors), (0, 1));
+        assert!(note.contains("no attempt was used"), "{note}");
+        assert!(note.contains("the decision server failed"), "{note}");
+
+        let (plan, note, _) =
+            apply_gate_verdict(Some(plan), "build", &gate, &error, None, &[], now()).unwrap();
+        let build = plan.phase("build").unwrap();
+        assert_eq!(build.status, PhaseStatus::Blocked);
+        assert!(note.contains("2 times in a row"), "{note}");
+        assert!(
+            snapshot_of(&plan, &[]).phases[1]
+                .gate
+                .as_ref()
+                .unwrap()
+                .blocked
+        );
+        assert!(
+            refuse_exhausted_gate(build).is_none(),
+            "an error block is not an exhausted gate: completing again retries"
+        );
+
+        // Once the model is reachable again, a pass completes and clears the errors.
+        let pass = GateVerdict::Passed(answers(&[("tests_pass", 0.9), ("scope_met", 0.9)], 0.8));
+        let (plan, _, closed) =
+            apply_gate_verdict(Some(plan), "build", &gate, &pass, None, &[], now()).unwrap();
+        assert!(closed);
+        let state = plan.phase("build").unwrap().gate_state.clone().unwrap();
+        assert_eq!((state.attempts, state.consecutive_errors), (1, 0));
+    }
+
+    #[test]
+    fn a_verdict_is_refused_when_the_gate_changed_or_the_barrier_no_longer_holds() {
+        let plan = gated_plan();
+        let gate = stored_gate(&plan);
+        let other = PhaseGate {
+            threshold: 0.5,
+            ..gate.clone()
+        };
+        let pass = GateVerdict::Passed(answers(&[("tests_pass", 0.9), ("scope_met", 0.9)], 0.8));
+        let err = apply_gate_verdict(Some(plan.clone()), "build", &other, &pass, None, &[], now())
+            .unwrap_err();
+        assert!(
+            err.contains("changed while it was being evaluated"),
+            "{err}"
+        );
+
+        let busy = with_agents(plan, "build", &["c1"]);
+        let err = apply_gate_verdict(
+            Some(busy),
+            "build",
+            &gate,
+            &pass,
+            None,
+            &[state("c1", SubagentRunStatus::Running, None)],
+            now(),
+        )
+        .unwrap_err();
+        assert!(err.contains("cannot be completed yet"), "{err}");
+    }
+
+    /// The gate's model reads the goal, the hand-off and the children's result
+    /// lines, and never a withheld child's text.
+    #[test]
+    fn the_gate_state_carries_results_but_never_a_withheld_childs_text() {
+        let mut plan = with_agents(gated_plan(), "build", &["c1", "c2"]);
+        plan.phase_mut("build").unwrap().goal = Some("A parser with tests".into());
+        plan = apply_handoff(Some(plan), "build", "Parser done; 12 tests added.", now()).unwrap();
+        let mut withheld = state("c2", SubagentRunStatus::Completed, None);
+        withheld.withheld = true;
+        let agents = [
+            state(
+                "c1",
+                SubagentRunStatus::Completed,
+                Some("All 12 tests pass"),
+            ),
+            withheld,
+        ];
+        let text = gate_state_text(plan.phase("build").unwrap(), &agents);
+        assert!(text.contains("Goal: A parser with tests"), "{text}");
+        assert!(text.contains("Parser done; 12 tests added."), "{text}");
+        assert!(
+            text.contains("c1 role [completed]: All 12 tests pass"),
+            "{text}"
+        );
+        assert!(
+            text.contains("c2 role [completed]: (result withheld)"),
+            "{text}"
+        );
+
+        // An automatic hand-off already holds the lines; they are not repeated.
+        let (auto, _) = apply_complete(
+            Some(with_agents(gated_plan(), "build", &["c1"])),
+            "build",
+            PhaseStatus::Completed,
+            None,
+            &agents[..1],
+            now(),
+        )
+        .unwrap();
+        let text = gate_state_text(auto.phase("build").unwrap(), &agents[..1]);
+        assert_eq!(text.matches("All 12 tests pass").count(), 1, "{text}");
+
+        let longest = "x".repeat(MAX_HANDOFF_CHARS);
+        let plan = apply_handoff(Some(gated_plan()), "build", &longest, now()).unwrap();
+        let line = "y".repeat(200);
+        let many: Vec<PhaseAgentState> = (0..40)
+            .map(|i| state(&format!("c{i}"), SubagentRunStatus::Completed, Some(&line)))
+            .collect();
+        assert!(
+            gate_state_text(plan.phase("build").unwrap(), &many)
+                .chars()
+                .count()
+                <= GATE_STATE_MAX_CHARS
+        );
+    }
+
+    #[test]
+    fn the_plan_text_and_the_moim_show_a_gate() {
+        let plan = gated_plan();
+        let snap = snapshot_of(&plan, &[]);
+        let gate = snap.phases[1].gate.clone().unwrap();
+        assert_eq!(gate.question_count, 2);
+        assert_eq!(gate.attempts, 0);
+        assert!(snap.phases[0].gate.is_none());
+        let text = render_snapshot_text(&snap);
+        assert!(
+            text.contains("gate: 2 questions at P(yes) >= 0.80, 0 of 3 attempts used"),
+            "{text}"
+        );
+        assert!(render_moim(&snap).contains("gated (attempt 0 of 3)"));
+        let json = serde_json::to_value(&snap).unwrap();
+        assert_eq!(json["phases"][1]["gate"]["maxAttempts"], 3);
+        assert!(json["phases"][0]["gate"].is_null());
+    }
+
+    /// A plan stored before gates existed still reads.
+    #[test]
+    fn a_plan_stored_without_gates_still_parses() {
+        let mut value = serde_json::to_value(three_phase_plan()).unwrap();
+        for phase in value["phases"].as_array_mut().unwrap() {
+            let object = phase.as_object_mut().unwrap();
+            object.remove("gate");
+            object.remove("gate_state");
+        }
+        let plan = parse_stored(&value).unwrap();
+        assert!(plan.phases.iter().all(|p| p.gate.is_none()));
+    }
+
+    mod gate_evaluation {
+        use super::*;
+        use crate::agents::decisions_extension::test_support::{entry, model, service};
+        use crate::decision::DecisionAdapter;
+        use crate::privacy::ProviderTier;
+        use std::sync::atomic::Ordering;
+
+        fn session(private: bool, enforced: bool) -> DecisionSession {
+            DecisionSession::new(
+                "gate-session",
+                if private {
+                    SessionClassification::Private
+                } else {
+                    SessionClassification::Public
+                },
+                enforced,
+            )
+            .with_origin(crate::decision::DecisionOrigin::Gate, Some("build".into()))
+        }
+
+        fn gate_with(questions: &[(&str, &str)], allow_uncalibrated: bool) -> PhaseGate {
+            validate_gate(
+                "build",
+                &PhaseGateInput {
+                    allow_uncalibrated: Some(allow_uncalibrated),
+                    ..gate_input(questions)
+                },
+            )
+            .unwrap()
+        }
+
+        #[tokio::test]
+        async fn every_question_at_the_threshold_passes_and_one_below_fails() {
+            let local = model(
+                entry(
+                    "tev1",
+                    ProviderTier::Private,
+                    true,
+                    DecisionAdapter::SystemOne,
+                ),
+                0.95,
+            );
+            let svc = service(vec![local]);
+            let gate = gate_with(&[("a", "Is a done?"), ("b", "Is b done? [p=0.8]")], false);
+            let verdict = evaluate_gate(svc, &session(true, true), &gate, "state".into()).await;
+            let GateVerdict::Passed(answers) = verdict else {
+                panic!("{verdict:?}")
+            };
+            assert_eq!(answers.len(), 2);
+            assert!(
+                (answers[1].p_yes - 0.8).abs() < 1e-9,
+                "equal to the threshold passes"
+            );
+
+            let gate = gate_with(&[("a", "Is a done?"), ("b", "Is b done? [p=0.42]")], false);
+            let verdict = evaluate_gate(svc, &session(true, true), &gate, "state".into()).await;
+            let GateVerdict::Failed(answers) = verdict else {
+                panic!("{verdict:?}")
+            };
+            assert!(answers[0].passed && !answers[1].passed);
+            assert!((answers[1].p_yes - 0.42).abs() < 1e-9);
+        }
+
+        #[tokio::test]
+        async fn an_error_never_passes() {
+            let mut broken = model(
+                entry(
+                    "tev1",
+                    ProviderTier::Private,
+                    true,
+                    DecisionAdapter::SystemOne,
+                ),
+                0.99,
+            );
+            broken.fail_all = true;
+            let svc = service(vec![broken]);
+            let gate = gate_with(&[("a", "Is a done?")], false);
+            let verdict = evaluate_gate(svc, &session(false, true), &gate, "state".into()).await;
+            assert!(matches!(verdict, GateVerdict::Error(_)), "{verdict:?}");
+        }
+
+        #[tokio::test]
+        async fn a_verbalized_source_is_refused_unless_the_gate_allows_it() {
+            let verbal = model(
+                entry(
+                    "chatty",
+                    ProviderTier::Private,
+                    true,
+                    DecisionAdapter::Verbalized,
+                ),
+                0.99,
+            );
+            let svc = service(vec![verbal]);
+            let strict = gate_with(&[("a", "Is a done?")], false);
+            let verdict = evaluate_gate(svc, &session(false, true), &strict, "s".into()).await;
+            let GateVerdict::Error(message) = verdict else {
+                panic!("{verdict:?}")
+            };
+            assert!(message.contains("uncalibrated"), "{message}");
+            let lenient = gate_with(&[("a", "Is a done?")], true);
+            let verdict = evaluate_gate(svc, &session(false, true), &lenient, "s".into()).await;
+            assert!(matches!(verdict, GateVerdict::Passed(_)), "{verdict:?}");
+        }
+
+        /// Gate H: a private parent's phase results never reach a public
+        /// decision model, and nothing is sent.
+        #[tokio::test]
+        async fn a_private_chats_gate_never_reaches_a_public_model() {
+            let cloud = model(
+                entry(
+                    "cloud",
+                    ProviderTier::Public,
+                    false,
+                    DecisionAdapter::SystemOne,
+                ),
+                0.99,
+            );
+            let calls = cloud.calls.clone();
+            let svc = service(vec![cloud]);
+            let gate = gate_with(&[("a", "Is a done?")], false);
+            let verdict = evaluate_gate(svc, &session(true, true), &gate, "PHI".into()).await;
+            assert!(matches!(verdict, GateVerdict::Error(_)), "{verdict:?}");
+            let named = PhaseGate {
+                model: Some(DecisionModelRef::new("test_decision", "cloud")),
+                ..gate
+            };
+            let verdict = evaluate_gate(svc, &session(true, true), &named, "PHI".into()).await;
+            let GateVerdict::Error(message) = verdict else {
+                panic!("{verdict:?}")
+            };
+            assert!(message.contains("private"), "{message}");
+            assert_eq!(calls.load(Ordering::SeqCst), 0, "nothing may be sent");
+        }
     }
 }

@@ -367,6 +367,30 @@ impl DecisionService {
         rank_local_first(self.source.list().await)
     }
 
+    /// [`Self::models`], each with the reason `session` may not use it, or
+    /// `None` when it may: Gate H's downward rule and affiliation, answered by
+    /// the same check [`Self::decide`] asks before it sends anything. With no
+    /// session every model is usable. Advisory only, for pickers and listings:
+    /// the gate is asked again, on the classification as it stands then,
+    /// before every call.
+    pub async fn models_for(
+        &self,
+        session: Option<&DecisionSession>,
+    ) -> Vec<(super::model::DecisionModelEntry, Option<String>)> {
+        self.models()
+            .await
+            .into_iter()
+            .map(|entry| {
+                let reason = session.and_then(|session| {
+                    privacy_allows(session, &entry.display_name, entry.tier, entry.affiliation)
+                        .err()
+                        .map(|error| error.to_string())
+                });
+                (entry, reason)
+            })
+            .collect()
+    }
+
     /// Answer `request`'s questions over its state.
     ///
     /// `session` is the chat whose content the state is, or `None` for an ad
@@ -413,6 +437,22 @@ impl DecisionService {
         questions: &IndexMap<String, Question>,
         chunks: Vec<DecisionChunk>,
     ) -> DecisionResult<Vec<ChunkOutcome>> {
+        let batch_id = uuid::Uuid::now_v7().to_string();
+        self.decide_batch(session, model, questions, chunks, &batch_id)
+            .await
+    }
+
+    /// [`Self::decide_many`] with the caller's own batch id, so the caller can
+    /// name the batch (the `decide` tool's result does, and the decision
+    /// history filters on it) before or after it runs.
+    pub async fn decide_batch(
+        &self,
+        session: Option<&DecisionSession>,
+        model: Option<&DecisionModelRef>,
+        questions: &IndexMap<String, Question>,
+        chunks: Vec<DecisionChunk>,
+        batch_id: &str,
+    ) -> DecisionResult<Vec<ChunkOutcome>> {
         validate_questions(questions).map_err(DecisionError::Invalid)?;
         if chunks.is_empty() || chunks.len() > MAX_BATCH_CHUNKS {
             return Err(DecisionError::Invalid(format!(
@@ -435,12 +475,10 @@ impl DecisionService {
         if let Some(session) = session {
             self.check_privacy(session, resolved.as_ref()).await?;
         }
-        let batch_id = uuid::Uuid::now_v7().to_string();
         let parallel = self.concurrency(&caps).max(1);
         let model = resolved.as_ref();
         let outcomes = futures::stream::iter(chunks.into_iter().enumerate())
             .map(|(index, chunk)| {
-                let batch_id = batch_id.as_str();
                 async move {
                     let request = DecisionRequest {
                         questions: questions.clone(),
@@ -810,6 +848,9 @@ impl DecisionService {
     }
 
     async fn record(&self, entry: DecisionLogEntry) {
+        // Counted per turn and origin in process, for the one transcript
+        // marker a turn gets; never one row per call (owner rule A1).
+        super::monitor::note_decision(&entry);
         let sink = self.sink.read().ok().and_then(|sink| sink.clone());
         if let Some(sink) = sink {
             if let Err(error) = sink.record(entry).await {
@@ -1446,5 +1487,41 @@ mod tests {
     fn the_margin_scales_with_the_window() {
         assert_eq!(context_margin(16_384), 512);
         assert_eq!(context_margin(2_000), 128);
+    }
+
+    #[tokio::test]
+    async fn a_listing_names_why_a_chat_may_not_use_a_model_and_sends_nothing() {
+        let (svc, calls) = service(
+            vec![
+                entry("cloud", ProviderTier::Public, false),
+                entry("local", ProviderTier::Private, true),
+            ],
+            Duration::ZERO,
+        );
+        let reasons = |listed: Vec<(DecisionModelEntry, Option<String>)>| {
+            listed
+                .into_iter()
+                .map(|(entry, reason)| (entry.model, reason))
+                .collect::<Vec<_>>()
+        };
+
+        let private = reasons(svc.models_for(Some(&private_chat())).await);
+        assert_eq!(private[0], ("local".to_string(), None), "local first");
+        assert_eq!(private[1].0, "cloud");
+        let why = private[1].1.as_deref().expect("a public model is refused");
+        assert!(why.contains("private") && why.contains("cloud"), "{why}");
+
+        let public = DecisionSession::new("s2", SessionClassification::Public, true);
+        assert!(reasons(svc.models_for(Some(&public)).await)
+            .iter()
+            .all(|(_, reason)| reason.is_none()));
+        let off = DecisionSession::new("s3", SessionClassification::Private, false);
+        assert!(reasons(svc.models_for(Some(&off)).await)
+            .iter()
+            .all(|(_, reason)| reason.is_none()));
+        assert!(reasons(svc.models_for(None).await)
+            .iter()
+            .all(|(_, reason)| reason.is_none()));
+        assert_eq!(calls.load(Ordering::SeqCst), 0, "a listing asks no model");
     }
 }

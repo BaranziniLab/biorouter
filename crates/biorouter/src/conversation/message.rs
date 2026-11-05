@@ -11,6 +11,7 @@ use std::fmt;
 use utoipa::ToSchema;
 
 use crate::conversation::tool_preview::ToolPreview;
+use crate::decision::log::DecisionTurnMarker;
 use crate::conversation::tool_result_serde;
 use crate::permission::tool_risk::ToolRisk;
 use crate::utils::sanitize_unicode_tags;
@@ -966,7 +967,11 @@ pub struct MessageMetadata {
         deserialize_with = "deserialize_lenient_decision_summary",
         skip_serializing_if = "Option::is_none"
     )]
-    pub decision_summary: Option<crate::decision::log::DecisionTurnMarker>,
+    // Named by its bare type, imported above: utoipa 4 names a `$ref` after the
+    // path as written, so `crate::decision::log::DecisionTurnMarker` here became
+    // a `crate.decision.log.DecisionTurnMarker` schema nothing defines, and the
+    // generated client failed on the dangling reference.
+    pub decision_summary: Option<DecisionTurnMarker>,
 }
 
 fn deserialize_lenient_decision_id<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>

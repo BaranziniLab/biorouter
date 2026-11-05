@@ -13,17 +13,26 @@
 //!    `/api/chat` or an OpenAI-format endpoint.
 //! 3. [`verbalized`]: a number a chat model writes, never calibrated.
 //!
+//! [`chat`] is the decision model bound as a chat's main model: the provider
+//! the factory registers for `baseten_decision` and `ollama_decision`, and the
+//! reply a decision chat gives instead of an LLM loop.
+//!
 //! These live under `providers/` on purpose: the destination-key scan in
 //! `providers/destination_keys.rs` reads every config key this tree reads, so
 //! a new host key cannot be added here without deciding whether changing it
 //! over HTTP needs the user-action proof.
 
 pub mod catalog;
+pub mod chat;
 pub mod logprob;
 pub mod system_one;
 pub mod verbalized;
 
 pub use catalog::{ConfiguredDecisionModels, BASETEN_DECISION_PROVIDER, OLLAMA_DECISION_PROVIDER};
+pub use chat::{
+    is_decision_chat_provider, BasetenDecisionChatProvider, DecisionChatProvider,
+    OllamaDecisionChatProvider,
+};
 pub use logprob::LogprobAdapter;
 pub use system_one::SystemOneAdapter;
 pub use verbalized::VerbalizedAdapter;

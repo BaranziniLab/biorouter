@@ -7,6 +7,7 @@ use super::{
     claude_code::ClaudeCodeProvider,
     codex::CodexProvider,
     databricks::DatabricksProvider,
+    decision::chat::{BasetenDecisionChatProvider, OllamaDecisionChatProvider},
     gcpvertexai::GcpVertexAIProvider,
     githubcopilot::GithubCopilotProvider,
     google::GoogleProvider,
@@ -107,6 +108,17 @@ fn register_builtin_providers(registry: &mut ProviderRegistry) {
     registry
         .register::<XiaomiMimoProvider, _>(|m| Box::pin(XiaomiMimoProvider::from_env(m)), false);
     registry.register::<ZaiProvider, _>(|m| Box::pin(ZaiProvider::from_env(m)), false);
+    // Decision models as a chat's main model (`providers::decision::chat`).
+    // `preferred: false`: they answer a question about the text sent, with
+    // probabilities, and are not a chat model to suggest beside the others.
+    registry.register::<BasetenDecisionChatProvider, _>(
+        |m| Box::pin(BasetenDecisionChatProvider::from_env(m)),
+        false,
+    );
+    registry.register::<OllamaDecisionChatProvider, _>(
+        |m| Box::pin(OllamaDecisionChatProvider::from_env(m)),
+        false,
+    );
 }
 
 /// Every built-in provider's metadata from a fresh registry — no declarative or
@@ -564,6 +576,10 @@ pub(crate) mod tests {
                 "Local: `self_hosted_affiliation` on the resolved OLLAMA_HOST, or none for an Ollama cloud model",
             ),
             (
+                "ollama_decision",
+                "Local: `self_hosted_affiliation` on the resolved OLLAMA_HOST, or none for an Ollama cloud tag (decision::chat::declared_axes)",
+            ),
+            (
                 "versa_azure",
                 "Institution(ucsf): `ucsf_gateway_affiliation` on the resolved VERSA_AZURE_ENDPOINT",
             ),
@@ -588,6 +604,10 @@ pub(crate) mod tests {
             (
                 "azure_openai",
                 "public: a large cloud, whatever endpoint it is pointed at",
+            ),
+            (
+                "baseten_decision",
+                "public: Baseten's hosted decision models, as its chat provider is",
             ),
             (
                 "claude_code",
@@ -650,6 +670,10 @@ pub(crate) mod tests {
                 "private: a self-hosted server on this machine; an OLLAMA_HOST off it, or an Ollama cloud model, demotes the instance",
             ),
             (
+                "ollama_decision",
+                "private: a decision model on the same self-hosted Ollama; an OLLAMA_HOST off it, or a cloud tag, demotes the instance, and Gate H re-reads the opened model's tier before every decision",
+            ),
+            (
                 "versa_azure",
                 "private: the UCSF Versa gateway, under a signed agreement; an endpoint off the gateway demotes the instance",
             ),
@@ -675,6 +699,10 @@ pub(crate) mod tests {
     fn public_tier_providers() -> Vec<(&'static str, &'static str)> {
         let mut rows = vec![
             ("anthropic", "public: general commercial endpoint"),
+            (
+                "baseten_decision",
+                "public: Baseten's hosted decision models; Baseten's chat provider is Public too",
+            ),
             (
                 "azure_openai",
                 "public: a large cloud, at an endpoint the user types. ⚠ It stays \

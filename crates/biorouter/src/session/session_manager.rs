@@ -28,7 +28,15 @@ use std::sync::{Arc, LazyLock, OnceLock};
 use tracing::{debug, info, warn};
 use utoipa::ToSchema;
 
-pub const CURRENT_SCHEMA_VERSION: i32 = 20;
+pub const CURRENT_SCHEMA_VERSION: i32 = 21;
+
+/// The arm that adds the decision log's `decisions` table.
+///
+/// Named for the same reason as [`PRIVACY_REPAIR_ARM`]: a test that builds the
+/// store one version below it has to say which number it means, and
+/// `CURRENT_SCHEMA_VERSION - 1` stops meaning that the moment arm 22 lands.
+#[cfg(test)]
+const DECISIONS_ARM: i32 = 21;
 
 /// The arm that first ran issue #56's classification backfill.
 ///
@@ -700,6 +708,14 @@ pub struct Session {
     /// Gate B's `turn:*` always lands before Gate C's `mcp:*`.
     #[serde(default)]
     pub privacy_reason: Option<String>,
+    /// How many decision-model calls this chat has made (its rows in the
+    /// `decisions` table), for History's per-chat count. Filled by the full
+    /// listing (`GET /sessions`, `biorouter session list`) only, and only when
+    /// the chat has at least one; `None` everywhere else, so absent means
+    /// "none, or not counted here". Decision calls can number in the thousands,
+    /// which is why History shows this one number and never a row per call.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub decision_count: Option<u64>,
 }
 
 /// One child of a session, as [`SessionManager::list_subagent_children`] reads it.
@@ -3345,6 +3361,7 @@ impl Default for Session {
             parent_session_id: None,
             privacy_tier: SessionClassification::Public,
             privacy_reason: None,
+            decision_count: None,
         }
     }
 }
@@ -3792,6 +3809,14 @@ impl sqlx::FromRow<'_, sqlx::sqlite::SqliteRow> for Session {
             parent_session_id: row.try_get("parent_session_id").ok().flatten(),
             privacy_tier: read_privacy_tier(row),
             privacy_reason: row.try_get("privacy_reason").ok().flatten(),
+            // Tolerant, like `model_config`: only the full listing selects it,
+            // and a chat with no decision reads as `None` rather than `Some(0)`.
+            decision_count: row
+                .try_get::<Option<i64>, _>("decision_count")
+                .ok()
+                .flatten()
+                .and_then(|n| u64::try_from(n).ok())
+                .filter(|n| *n > 0),
         })
     }
 }
@@ -4367,6 +4392,9 @@ impl SessionStorage {
         // BR-7 externalized tool-result payloads (migration 16).
         Self::create_message_blobs_table(pool).await?;
 
+        // The decision log (migration 21), created inline for fresh DBs.
+        Self::create_decisions_table(pool).await?;
+
         // #56 declassification ledger (migration 18), created inline for fresh
         // DBs. The privacy columns are already in the `sessions` DDL above; this
         // is the other half of the same migration's shape.
@@ -4624,6 +4652,10 @@ impl SessionStorage {
         Self::ensure_privacy_schema(pool).await?;
         Self::create_and_backfill_messages_fts(pool, false).await?;
         Self::create_message_blobs_table(pool).await?;
+        // Arm 21 creates it too. Here as well for the O10 reason the grants
+        // table records: a database a development build already stamped 21 (or
+        // later) without this table would never re-enter that arm.
+        Self::create_decisions_table(pool).await?;
         // Last: every table it sweeps exists by now.
         Self::retire_side_rows_of_deleted_chats(pool).await?;
         Ok(())
@@ -4719,10 +4751,22 @@ impl SessionStorage {
         .await?
         .rows_affected();
 
-        if recall + checkpoints + grants > 0 {
+        // Decision rows on existence alone, as checkpoints are. The sink only
+        // inserts beside a live chat and `delete_session` removes them with it,
+        // so this finds nothing on a store this build has always written; it is
+        // here for a file shared with a build that does neither.
+        let decisions = sqlx::query(
+            "DELETE FROM decisions \
+              WHERE NOT EXISTS (SELECT 1 FROM sessions s WHERE s.id = decisions.session_id)",
+        )
+        .execute(&mut *connection)
+        .await?
+        .rows_affected();
+
+        if recall + checkpoints + grants + decisions > 0 {
             info!(
                 recall,
-                checkpoints, grants, "Retired side rows whose chat no longer exists"
+                checkpoints, grants, decisions, "Retired side rows whose chat no longer exists"
             );
         }
         Ok(())
@@ -5272,6 +5316,14 @@ impl SessionStorage {
                 // not assume any earlier arm ran.
                 Self::ensure_privacy_schema(pool).await?;
                 let _ = Self::backfill_privacy_from_recorded_provenance(pool).await?;
+            }
+            21 => {
+                // The decision log: one row per decision-model call (a monitor
+                // evaluation, one chunk of a `decide` batch, a phase gate, a
+                // decision chat's reply). Additive and `IF NOT EXISTS`, and the
+                // reconcile creates it too, so neither merge order nor a tester's
+                // database already stamped 21 can leave it missing.
+                Self::create_decisions_table(pool).await?;
             }
             _ => {
                 anyhow::bail!("Unknown migration version: {}", version);
@@ -6128,6 +6180,76 @@ impl SessionStorage {
         sqlx::query("CREATE INDEX IF NOT EXISTS idx_message_blobs_uid ON message_blobs(blob_uid)")
             .execute(pool)
             .await?;
+        Ok(())
+    }
+
+    /// The decision log's table (migration 21 + fresh-DB schema + reconcile):
+    /// one row per decision-model call, written by
+    /// [`crate::decision::log::SqliteDecisionSink`] and read only through
+    /// `crate::decision::log`'s functions.
+    ///
+    /// `created_at` is milliseconds since the epoch, because a `decide` batch
+    /// writes many rows a second and the page cursor (`created_at:id`) has to
+    /// order them. `context_json` holds exactly what the model was sent, capped
+    /// at `MAX_STORED_CONTEXT_BYTES`; it belongs to the same chat, carries the
+    /// same tier, and goes with it ([`Self::delete_chat_side_rows`]).
+    /// `answer` and `pass_probability` are derived at write time from
+    /// `decisions_json` so the summary and the probability filter never parse
+    /// JSON.
+    async fn create_decisions_table(pool: &Pool<Sqlite>) -> Result<()> {
+        sqlx::query(
+            r#"
+            CREATE TABLE IF NOT EXISTS decisions (
+                id TEXT PRIMARY KEY,
+                session_id TEXT,
+                created_at INTEGER NOT NULL,
+                origin TEXT NOT NULL,
+                origin_id TEXT,
+                label TEXT,
+                turn_id TEXT,
+                batch_id TEXT,
+                chunk_index INTEGER,
+                chunk_id TEXT,
+                provider TEXT,
+                model TEXT,
+                served_model TEXT,
+                tier TEXT,
+                adapter TEXT,
+                calibrated INTEGER,
+                questions_json TEXT NOT NULL,
+                decisions_json TEXT,
+                outcome TEXT NOT NULL,
+                answer TEXT,
+                pass_probability REAL,
+                context_json TEXT,
+                context_preview TEXT,
+                context_bytes INTEGER,
+                context_truncated INTEGER NOT NULL DEFAULT 0,
+                error TEXT,
+                latency_ms INTEGER,
+                input_tokens INTEGER,
+                output_tokens INTEGER,
+                privacy_enforced INTEGER NOT NULL
+            )
+        "#,
+        )
+        .execute(pool)
+        .await?;
+        for statement in [
+            "CREATE INDEX IF NOT EXISTS idx_decisions_session \
+                ON decisions(session_id, created_at)",
+            // The summary groups by origin and reads each group's newest row.
+            "CREATE INDEX IF NOT EXISTS idx_decisions_origin \
+                ON decisions(session_id, origin, origin_id, created_at)",
+            // The transcript's per-turn marker and the decide tool card open
+            // the history filtered to one turn or one batch.
+            "CREATE INDEX IF NOT EXISTS idx_decisions_turn \
+                ON decisions(session_id, turn_id, created_at)",
+            "CREATE INDEX IF NOT EXISTS idx_decisions_batch \
+                ON decisions(session_id, batch_id, created_at)",
+        ] {
+            sqlx::query(statement).execute(pool).await?;
+        }
         Ok(())
     }
 
@@ -7782,6 +7904,11 @@ impl SessionStorage {
     /// listing counts the same too. `the_full_listing_walks_the_updated_index`
     /// pins the plan.
     ///
+    /// History's per-chat decision count is the same shape of probe: a
+    /// correlated `COUNT(*)` answered from `idx_decisions_session`, so a chat
+    /// with thousands of decision calls costs one index range and no row is
+    /// read from `decisions` itself.
+    ///
     /// `s.id ASC` breaks a tied `updated_at` the way the sidebar's keyset
     /// listing does. `updated_at` has one-second granularity and a bulk write
     /// stamps hundreds of chats with the same second; without the tie-break the
@@ -7819,7 +7946,8 @@ impl SessionStorage {
                    s.provider_name, s.model_config_json, s.diverged_from, s.parent_session_id,
                    s.privacy_tier, s.privacy_reason,
                    CAST(s.updated_at AS TEXT) AS cursor_updated_at,
-                   (SELECT COUNT(*) FROM messages m WHERE m.session_id = s.id) AS message_count
+                   (SELECT COUNT(*) FROM messages m WHERE m.session_id = s.id) AS message_count,
+                   (SELECT COUNT(*) FROM decisions d WHERE d.session_id = s.id) AS decision_count
             FROM sessions s
             WHERE +s.session_type IN ({placeholders})
             {non_empty}
@@ -8204,6 +8332,11 @@ impl SessionStorage {
     ///   let through Gate C for flows accepted in a chat the user deleted.
     ///   `privacy::grant::GRANT_IS_THE_CHATS_OWN` also refuses such a grant at
     ///   read time, for the ones this delete never sees.
+    /// - `decisions` — the decision log. Each row holds the exact context a
+    ///   decision model was sent (a monitor's window of the chat, a chunk of a
+    ///   clinical note), so it is the chat's content at the chat's tier. A new
+    ///   chat under the id would have listed another chat's decisions in its
+    ///   decision history and counted them in History.
     ///
     /// Not here, deliberately: `classification_audit` survives deletion by
     /// design (privacy-tiers §12.5) — it records what has ever been
@@ -8223,7 +8356,7 @@ impl SessionStorage {
                 .execute(&mut *connection)
                 .await?;
         }
-        for table in ["checkpoints", "cross_affiliation_grants"] {
+        for table in ["checkpoints", "cross_affiliation_grants", "decisions"] {
             sqlx::query(&format!("DELETE FROM {table} WHERE session_id = ?"))
                 .bind(session_id)
                 .execute(&mut *connection)
@@ -8297,6 +8430,7 @@ impl SessionStorage {
             "token_events",
             "deleted_chat_usage",
             "cross_affiliation_grants",
+            "decisions",
         ] {
             sqlx::query(&format!("DELETE FROM {table}"))
                 .execute(&mut *tx)
@@ -10986,6 +11120,95 @@ mod tests {
         }
     }
 
+    /// The production upgrade path into the decision log: a populated store one
+    /// arm below it gains `decisions` (and its indexes) through the numbered
+    /// arm, keeps every chat and message, and lists the new count as absent.
+    #[tokio::test]
+    async fn migrates_the_arm_before_the_decision_log_and_keeps_every_chat() {
+        use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
+
+        let temp_dir = TempDir::new().unwrap();
+        let db_path = temp_dir.path().join(SESSIONS_FOLDER).join(DB_NAME);
+        let id = {
+            let sm = SessionManager::new(temp_dir.path().to_path_buf());
+            let id = sm
+                .create_session(
+                    temp_dir.path().to_path_buf(),
+                    "before decisions".to_string(),
+                    SessionType::User,
+                )
+                .await
+                .unwrap()
+                .id;
+            sm.add_message(&id, &Message::user().with_text("an older chat"))
+                .await
+                .unwrap();
+            sm.close().await;
+            id
+        };
+        {
+            let pool = SqlitePoolOptions::new()
+                .max_connections(1)
+                .connect_with(SqliteConnectOptions::new().filename(&db_path))
+                .await
+                .unwrap();
+            sqlx::query("DROP TABLE decisions")
+                .execute(&pool)
+                .await
+                .unwrap();
+            // A fresh store records only the version it was created at, so the
+            // counter is restamped rather than trimmed.
+            sqlx::query("DELETE FROM schema_version")
+                .execute(&pool)
+                .await
+                .unwrap();
+            sqlx::query("INSERT INTO schema_version (version) VALUES (?1)")
+                .bind(DECISIONS_ARM - 1)
+                .execute(&pool)
+                .await
+                .unwrap();
+            assert_eq!(
+                SessionStorage::get_schema_version(&pool).await.unwrap(),
+                DECISIONS_ARM - 1
+            );
+            pool.close().await;
+        }
+
+        let sm = SessionManager::new(temp_dir.path().to_path_buf());
+        let pool = sm.storage().pool().await.unwrap();
+        assert_eq!(
+            SessionStorage::get_schema_version(pool).await.unwrap(),
+            CURRENT_SCHEMA_VERSION
+        );
+        let ran: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM schema_version WHERE version = ?1")
+            .bind(DECISIONS_ARM)
+            .fetch_one(pool)
+            .await
+            .unwrap();
+        assert_eq!(ran, 1, "the decision-log arm is recorded as applied");
+        for index in [
+            "idx_decisions_session",
+            "idx_decisions_origin",
+            "idx_decisions_turn",
+            "idx_decisions_batch",
+        ] {
+            let exists: i64 =
+                sqlx::query_scalar("SELECT COUNT(*) FROM sqlite_master WHERE name = ?1")
+                    .bind(index)
+                    .fetch_one(pool)
+                    .await
+                    .unwrap();
+            assert_eq!(exists, 1, "missing {index}");
+        }
+        let listed = sm.list_sessions().await.unwrap();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(
+            (listed[0].id.as_str(), listed[0].message_count),
+            (id.as_str(), 1)
+        );
+        assert_eq!(listed[0].decision_count, None);
+    }
+
     #[tokio::test]
     async fn fresh_database_contains_full_v16_schema() {
         let temp_dir = TempDir::new().unwrap();
@@ -11002,6 +11225,7 @@ mod tests {
             "checkpoints",
             "messages_fts",
             "message_blobs",
+            "decisions",
         ] {
             let exists: i64 =
                 sqlx::query_scalar("SELECT COUNT(*) FROM sqlite_master WHERE name = ?1")
@@ -13393,7 +13617,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(version, CURRENT_SCHEMA_VERSION);
-        for table in ["checkpoints", "messages_fts", "message_blobs"] {
+        for table in ["checkpoints", "messages_fts", "message_blobs", "decisions"] {
             let exists: i64 =
                 sqlx::query_scalar("SELECT COUNT(*) FROM sqlite_master WHERE name = ?1")
                     .bind(table)
@@ -15222,6 +15446,7 @@ mod tests {
             parent_session_id: None,
             privacy_tier: SessionClassification::Public,
             privacy_reason: None,
+            decision_count: None,
         };
         SessionStorage::import_legacy_session(pool, &legacy)
             .await
@@ -19959,6 +20184,145 @@ mod deleted_chat_side_rows_tests {
             .await
             .unwrap();
         assert_eq!(remaining, 0, "a History reset kept the user's grants");
+    }
+
+    /// One decision-log row for `session_id`, written by the production sink.
+    async fn record_decision(sm: &Arc<SessionManager>, session_id: &str) {
+        use crate::decision::service::{DecisionLogEntry, DecisionOutcome, DecisionSink};
+        use crate::decision::types::{DecisionContext, DecisionKind, DecisionOrigin, Question};
+        let mut questions = indexmap::IndexMap::new();
+        questions.insert(
+            "has_ms".to_string(),
+            Question {
+                instructions: "Does this note state multiple sclerosis?".to_string(),
+                kind: DecisionKind::Binary {},
+                threshold: None,
+            },
+        );
+        crate::decision::log::SqliteDecisionSink {
+            session_manager: Arc::clone(sm),
+        }
+        .record(DecisionLogEntry {
+            session_id: Some(session_id.to_string()),
+            origin: DecisionOrigin::Tool,
+            origin_id: Some("call_1".to_string()),
+            origin_label: None,
+            turn_id: Some("t1".to_string()),
+            batch_id: None,
+            chunk_index: None,
+            chunk_id: None,
+            model: None,
+            served_model: None,
+            tier: None,
+            questions,
+            context: DecisionContext::Text("patient MRN 12345, RRMS".to_string()),
+            context_bytes: 23,
+            outcome: DecisionOutcome::Error,
+            decisions: Vec::new(),
+            error: Some("no model".to_string()),
+            latency_ms: None,
+            usage: Default::default(),
+            privacy_enforced: true,
+        })
+        .await
+        .unwrap();
+    }
+
+    /// The decision log holds the exact context a decision model was sent (a
+    /// chunk of a clinical note, a window of the chat), so it is the chat's own
+    /// content: it goes with the chat, and an id handed out again brings none
+    /// of it into the next chat's decision history or History count.
+    #[tokio::test]
+    async fn deleting_a_chat_deletes_its_decisions_and_a_reissued_id_inherits_none() {
+        let dir = TempDir::new().unwrap();
+        let sm = Arc::new(SessionManager::new(dir.path().to_path_buf()));
+        // The newest chat is the one deleted, so its id is the next one minted
+        // once the high-water mark is forgotten.
+        let kept = new_chat(&sm, &dir).await;
+        let deleted = new_chat(&sm, &dir).await;
+        for id in [&deleted, &kept] {
+            sm.add_message(id, &Message::user().with_text("find the MS notes"))
+                .await
+                .unwrap();
+            record_decision(&sm, id).await;
+            record_decision(&sm, id).await;
+        }
+        assert_eq!(
+            rows(&sm, "decisions", &deleted).await,
+            2,
+            "the fixture must log decisions, or this test proves nothing"
+        );
+
+        sm.delete_session(&deleted).await.unwrap();
+        assert_eq!(
+            rows(&sm, "decisions", &deleted).await,
+            0,
+            "a deleted chat's decisions stayed in the log"
+        );
+        assert_eq!(
+            rows(&sm, "decisions", &kept).await,
+            2,
+            "another chat's went too"
+        );
+
+        // Put the deleted id back in play the way a restored backup would.
+        let reissued = {
+            forget_minted_session_ids(&sm).await;
+            let next = new_chat(&sm, &dir).await;
+            assert_eq!(next, deleted, "the fixture must reproduce the id reuse");
+            next
+        };
+        let summary = crate::decision::log::summary(&sm, &reissued).await.unwrap();
+        assert_eq!(
+            summary.total, 0,
+            "the new chat inherited the old chat's decisions"
+        );
+    }
+
+    #[tokio::test]
+    async fn clearing_history_removes_every_decision() {
+        let dir = TempDir::new().unwrap();
+        let sm = Arc::new(SessionManager::new(dir.path().to_path_buf()));
+        let id = new_chat(&sm, &dir).await;
+        record_decision(&sm, &id).await;
+
+        sm.clear_all_sessions().await.unwrap();
+
+        let pool = sm.storage().pool().await.unwrap();
+        let remaining: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM decisions")
+            .fetch_one(pool)
+            .await
+            .unwrap();
+        assert_eq!(remaining, 0, "a History reset kept the decision log");
+    }
+
+    /// A decision row whose chat is gone (left by a build sharing the file that
+    /// never deletes them) is retired on open; a live chat's rows are not.
+    #[tokio::test]
+    async fn reopening_the_store_retires_decisions_whose_chat_is_gone() {
+        let dir = TempDir::new().unwrap();
+        let live = {
+            let sm = Arc::new(SessionManager::new(dir.path().to_path_buf()));
+            let live = new_chat(&sm, &dir).await;
+            record_decision(&sm, &live).await;
+            let pool = sm.storage().pool().await.unwrap();
+            sqlx::query(
+                "INSERT INTO decisions (id, session_id, created_at, origin, questions_json, \
+                     outcome, privacy_enforced) \
+                 VALUES ('d-gone', 'gone', 1, 'tool', '{}', 'error', 1)",
+            )
+            .execute(pool)
+            .await
+            .unwrap();
+            sm.close().await;
+            live
+        };
+        for open in 1..=2 {
+            let sm = SessionManager::new(dir.path().to_path_buf());
+            assert_eq!(rows(&sm, "decisions", "gone").await, 0, "open {open}");
+            assert_eq!(rows(&sm, "decisions", &live).await, 1, "open {open}");
+            sm.close().await;
+        }
     }
 
     /// The rows every earlier build left behind are retired by the reconcile that

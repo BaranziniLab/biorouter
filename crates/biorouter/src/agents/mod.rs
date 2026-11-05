@@ -15,6 +15,9 @@ pub(crate) mod chatrecall_extension;
 // sub-calls' full arguments (their records are truncated).
 pub(crate) mod code_delta;
 pub(crate) mod code_execution_extension;
+// Decision models: the `decide` and `decision_models` tools (a default-on
+// platform extension the delegation gate does not count).
+pub mod decisions_extension;
 // BR-48: a deterministic done-ness gate for interactive chat — reuses the
 // workflow `SuccessCheck` machinery to keep a turn working until its checks
 // pass. Config-gated, default OFF.

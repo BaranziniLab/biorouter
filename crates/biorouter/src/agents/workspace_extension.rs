@@ -757,10 +757,12 @@ struct WorkspaceOrchestrateParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     goal: Option<String>,
     /// For "plan": every phase, in order (at most 12). A revision lists them
-    /// all again; a phase whose id you keep keeps its subagents, status and
-    /// hand-off.
+    /// all again; a phase whose id you keep keeps its subagents, status,
+    /// hand-off and gate. A phase may carry a `gate`: yes/no questions a
+    /// decision model must answer with P(yes) at or above its threshold before
+    /// "complete" can close the phase.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    phases: Option<Vec<crate::agents::orchestration_plan::PlanPhaseInput>>,
+    phases: Option<Vec<crate::agents::orchestration_plan::OrchestratePhaseInput>>,
     /// The phase id, for "start", "handoff" and "complete".
     #[serde(default, skip_serializing_if = "Option::is_none")]
     phase: Option<String>,
@@ -776,6 +778,20 @@ struct WorkspaceOrchestrateParams {
     /// work once a plan has reached its 64-subagent or 12-phase limit.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     fresh: Option<bool>,
+}
+
+/// What [`WorkspaceClient::complete_gated`] needs, gathered by the barrier's
+/// reads in `complete_phase`.
+struct GatedCompletion<'a> {
+    caller: &'a str,
+    phase: &'a crate::agents::orchestration_plan::PlanPhase,
+    stored: Option<crate::agents::orchestration_plan::OrchestrationPlan>,
+    states: Vec<crate::agents::orchestration_plan::PhaseAgentState>,
+    summary: Option<String>,
+    spawns_before: crate::agents::orchestration_plan::PhaseSpawnMark,
+    /// The privacy master switch as this tool call sampled it.
+    enforced: bool,
+    now: chrono::DateTime<chrono::Utc>,
 }
 
 /// The phase-plan tool's bare name. `agents/agent.rs` reads it to strip the
@@ -801,6 +817,13 @@ const ORCHESTRATE_DESCRIPTION: &str = concat!(
     "results when you write none) carries a phase's results forward: every subagent later ",
     "spawned into a phase that depends on it receives them, which is how agents of later ",
     "phases meet earlier results. action \"read\" shows the plan with per-phase progress. ",
+    "A phase may carry a decision gate (`gate` on the phase in action \"plan\": 1 to 8 ",
+    "yes/no `questions`, a `threshold`, default 0.8, and `max_attempts`, default 3): on ",
+    "action \"complete\" a decision model reads the phase's goal, hand-off and subagent ",
+    "results, and the phase completes only when every question reaches P(yes) at or above ",
+    "the threshold. Otherwise it stays in progress and the reply lists the questions that ",
+    "fell short, so you can fix the work and complete again; once its attempts are used up ",
+    "the phase is blocked. A gate that cannot be evaluated never passes. ",
     "Subagents run in the background; the user sees the plan and its subagents in the chat's ",
     "side panel."
 );
@@ -1744,6 +1767,8 @@ const RETIRED_TOOL_NAMES: &[&str] = &[
 pub struct WorkspaceClient {
     info: InitializeResult,
     pub(crate) context: PlatformExtensionContext,
+    /// Answers a phase gate's questions. The process's service in production.
+    decision_service: &'static crate::decision::DecisionService,
 }
 
 impl WorkspaceClient {
@@ -1770,7 +1795,21 @@ impl WorkspaceClient {
             },
             instructions: Some(INSTRUCTIONS.to_string()),
         };
-        Ok(Self { info, context })
+        Ok(Self {
+            info,
+            context,
+            decision_service: crate::decision::global(),
+        })
+    }
+
+    /// Use another decision service for phase gates (tests: a fake source).
+    #[cfg(test)]
+    pub(crate) fn with_decision_service(
+        mut self,
+        service: &'static crate::decision::DecisionService,
+    ) -> Self {
+        self.decision_service = service;
+        self
     }
 
     fn tool(name: &str, description: &str, schema: serde_json::Value, read_only: bool) -> Tool {
@@ -6025,7 +6064,7 @@ impl McpClientTrait for WorkspaceClient {
             // because a success carries the plan as structured content.
             "workspace_orchestrate" => {
                 return Ok(self
-                    .handle_orchestrate(caller, arguments)
+                    .handle_orchestrate(caller, cap, arguments)
                     .await
                     .unwrap_or_else(|error| {
                         CallToolResult::error(vec![Content::text(format!("Error: {error}"))])
@@ -6137,6 +6176,7 @@ impl WorkspaceClient {
     async fn apply_orchestrate_action(
         &self,
         caller: &str,
+        cap: crate::privacy::CallCapability,
         params: &WorkspaceOrchestrateParams,
     ) -> Result<String, String> {
         use crate::agents::orchestration_plan as plan;
@@ -6169,9 +6209,14 @@ impl WorkspaceClient {
                 let (revising, replaced) = plan::mutate_plan(sm, caller, move |current| {
                     let existed = current.is_some();
                     let next = if fresh {
-                        plan::apply_fresh_plan(current, title.as_deref(), goal.as_deref(), &phases)
+                        plan::apply_fresh_gated_plan(
+                            current,
+                            title.as_deref(),
+                            goal.as_deref(),
+                            &phases,
+                        )
                     } else {
-                        plan::apply_plan(current, title.as_deref(), goal.as_deref(), &phases)
+                        plan::apply_gated_plan(current, title.as_deref(), goal.as_deref(), &phases)
                     };
                     next.map(|next| (next, (existed && !fresh, existed && fresh)))
                 })
@@ -6212,7 +6257,7 @@ impl WorkspaceClient {
             }
             "complete" => {
                 let phase = require_phase()?;
-                self.complete_phase(caller, &phase, params, now).await
+                self.complete_phase(caller, &phase, params, cap, now).await
             }
             "read" => Ok(String::new()),
             "" => Err(
@@ -6230,11 +6275,15 @@ impl WorkspaceClient {
     /// `action:"complete"`, the barrier. The phase's children are read BEFORE
     /// the write and the transition is handed exactly the ids that were looked
     /// at, so a child recorded in between is refused rather than skipped over.
+    ///
+    /// A phase with a decision gate is completed through [`Self::complete_gated`]
+    /// when the requested status is completed; a skip or a block never asks it.
     async fn complete_phase(
         &self,
         caller: &str,
         phase: &str,
         params: &WorkspaceOrchestrateParams,
+        cap: crate::privacy::CallCapability,
         now: chrono::DateTime<chrono::Utc>,
     ) -> Result<String, String> {
         use crate::agents::orchestration_plan as plan;
@@ -6272,6 +6321,29 @@ impl WorkspaceClient {
             .unwrap_or_default();
         let states = plan::phase_agent_states(sm, caller, &agents).await;
         let summary = params.summary.clone();
+        if status == plan::PhaseStatus::Completed {
+            let gated = stored.as_ref().and_then(|p| {
+                p.phases
+                    .iter()
+                    .find(|ph| ph.id == phase)
+                    .filter(|ph| ph.gate.is_some())
+                    .cloned()
+            });
+            if let Some(gated) = gated {
+                return self
+                    .complete_gated(GatedCompletion {
+                        caller,
+                        phase: &gated,
+                        stored,
+                        states,
+                        summary,
+                        spawns_before,
+                        enforced: cap.enforced(),
+                        now,
+                    })
+                    .await;
+            }
+        }
         plan::mutate_plan(sm, caller, |current| {
             let closed =
                 plan::apply_complete(current, phase, status, summary.as_deref(), &states, now)?;
@@ -6281,6 +6353,90 @@ impl WorkspaceClient {
                 plan::phase_spawn_mark(caller, phase),
             )?;
             Ok(closed)
+        })
+        .await
+        .map_err(|e| e.to_string())
+    }
+
+    /// `complete` (status completed) on a gated phase.
+    ///
+    /// 1. An exhausted gate is refused and nothing is asked.
+    /// 2. The barrier is dry-run on the stored plan, so a phase whose subagents
+    ///    are still working never reaches a decision model.
+    /// 3. The decision model reads the state the dry run would close the phase
+    ///    with (its hand-off as written or composed), through the decision
+    ///    service, as this chat at its own tier, with the master switch as
+    ///    this call sampled it.
+    /// 4. The verdict is written in one transaction that re-checks the gate
+    ///    and, on a pass, the barrier and the racing-spawn marks.
+    async fn complete_gated(&self, job: GatedCompletion<'_>) -> Result<String, String> {
+        use crate::agents::orchestration_plan as plan;
+
+        let sm = &self.context.session_manager;
+        let GatedCompletion {
+            caller,
+            phase,
+            stored,
+            states,
+            summary,
+            spawns_before,
+            enforced,
+            now,
+        } = job;
+        let gate = phase.gate.clone().expect("a gated phase");
+        if let Some(refusal) = plan::refuse_exhausted_gate(phase) {
+            return Err(refusal);
+        }
+        let (dry_run, _) = plan::apply_complete(
+            stored,
+            &phase.id,
+            plan::PhaseStatus::Completed,
+            summary.as_deref(),
+            &states,
+            now,
+        )?;
+        let closing = dry_run
+            .phases
+            .iter()
+            .find(|candidate| candidate.id == phase.id)
+            .cloned()
+            .unwrap_or_else(|| phase.clone());
+        let state = plan::gate_state_text(&closing, &states);
+
+        let verdict =
+            match crate::decision::DecisionSession::load(sm.clone(), caller, enforced).await {
+                Ok(session) => {
+                    let session = session
+                        .with_origin(
+                            crate::decision::DecisionOrigin::Gate,
+                            Some(phase.id.clone()),
+                        )
+                        .with_origin_label(Some(phase.title.clone()))
+                        .with_turn(crate::decision::turns::current_turn(caller));
+                    plan::evaluate_gate(self.decision_service, &session, &gate, state).await
+                }
+                Err(e) => plan::GateVerdict::Error(format!("this chat could not be read ({e})")),
+            };
+
+        let phase_id = phase.id.as_str();
+        plan::mutate_plan(sm, caller, |current| {
+            let (next, note, closed) = plan::apply_gate_verdict(
+                current,
+                phase_id,
+                &gate,
+                &verdict,
+                summary.as_deref(),
+                &states,
+                now,
+            )?;
+            if closed {
+                plan::refuse_racing_spawns(
+                    phase_id,
+                    spawns_before,
+                    plan::phase_spawn_mark(caller, phase_id),
+                )?;
+            }
+            Ok((next, note))
         })
         .await
         .map_err(|e| e.to_string())
@@ -6305,15 +6461,21 @@ impl WorkspaceClient {
     /// `workspace_orchestrate`. Every write is one per-key transaction on the
     /// caller's OWN plan; nothing here reads or writes another conversation,
     /// so the privacy gates that matter are the ones the spawn path applies.
+    ///
+    /// The one exception is a phase gate, which sends the phase's hand-off and
+    /// its subagents' result lines to a decision model through the decision
+    /// service (Gate H against this chat's own tier, with `cap.enforced()`
+    /// sampled once for this call).
     async fn handle_orchestrate(
         &self,
         caller: &str,
+        cap: crate::privacy::CallCapability,
         arguments: Option<JsonObject>,
     ) -> Result<CallToolResult, String> {
         use crate::agents::orchestration_plan as plan;
 
         let params: WorkspaceOrchestrateParams = parse_args(arguments)?;
-        let note = self.apply_orchestrate_action(caller, &params).await?;
+        let note = self.apply_orchestrate_action(caller, cap, &params).await?;
 
         let Some(snapshot) = self.plan_snapshot(caller).await else {
             return Ok(CallToolResult::success(vec![Content::text(
@@ -17234,5 +17396,198 @@ pub(crate) mod tests {
         }
         assert!(INSTRUCTIONS.contains("side panel"));
         assert!(DELEGATION_IS_NOT_THIS_TOOL.contains("side panel"));
+    }
+
+    // ---------------------------------------------------------------------
+    // workspace_orchestrate: decision gates
+    // ---------------------------------------------------------------------
+
+    fn gated_plan_args() -> serde_json::Value {
+        json!({
+            "action": "plan",
+            "title": "Ship the parser",
+            "phases": [
+                { "id": "research", "title": "Read the code", "kind": "research" },
+                { "id": "build", "title": "Build it", "kind": "implementation",
+                  "goal": "A parser with passing tests",
+                  "gate": {
+                      "questions": {
+                          "tests_pass": "Do the results show every new test passing?"
+                      },
+                      "threshold": 0.8,
+                      "maxAttempts": 2
+                  } }
+            ]
+        })
+    }
+
+    async fn gated_client(
+        models: Vec<crate::agents::decisions_extension::test_support::FakeModel>,
+    ) -> (WorkspaceClient, String) {
+        let (c, parent) = orchestrate_client().await;
+        let c = c.with_decision_service(crate::agents::decisions_extension::test_support::service(
+            models,
+        ));
+        (c, parent)
+    }
+
+    fn local_model(p: f64) -> crate::agents::decisions_extension::test_support::FakeModel {
+        use crate::agents::decisions_extension::test_support::{entry, model};
+        model(
+            entry(
+                "tev1",
+                crate::privacy::ProviderTier::Private,
+                true,
+                crate::decision::DecisionAdapter::SystemOne,
+            ),
+            p,
+        )
+    }
+
+    /// The whole loop the owner asked for: a gate that fails hands the work
+    /// back with each failing question's p, the model fixes the hand-off, and
+    /// the next completion passes.
+    #[tokio::test]
+    async fn a_gated_phase_fails_back_to_the_model_then_completes_once_fixed() {
+        let model = local_model(0.3);
+        let calls = model.calls.clone();
+        let (c, parent) = gated_client(vec![model]).await;
+        let declared = orchestrate(&c, &parent, gated_plan_args()).await;
+        assert_eq!(declared.is_error, Some(false), "{}", result_text(&declared));
+        let snapshot = declared.structured_content.clone().unwrap();
+        assert_eq!(snapshot["phases"][1]["gate"]["maxAttempts"], 2);
+        assert_eq!(snapshot["phases"][1]["gate"]["attempts"], 0);
+
+        let failed = orchestrate(
+            &c,
+            &parent,
+            json!({ "action": "complete", "phase": "build" }),
+        )
+        .await;
+        let text = result_text(&failed);
+        assert_eq!(failed.is_error, Some(false), "{text}");
+        assert!(text.contains("NOT completed"), "{text}");
+        assert!(text.contains("tests_pass: P(yes) 0.30"), "{text}");
+        assert!(text.contains("attempt 1 of 2"), "{text}");
+        let snapshot = failed.structured_content.unwrap();
+        assert_eq!(snapshot["phases"][1]["status"], "in_progress");
+        assert_eq!(snapshot["phases"][1]["gate"]["attempts"], 1);
+        assert_eq!(snapshot["phases"][1]["gate"]["lastPassed"], false);
+
+        // The fix: a hand-off that states the evidence.
+        orchestrate(
+            &c,
+            &parent,
+            json!({ "action": "handoff", "phase": "build",
+                    "summary": "All 14 tests pass [state-p=0.95]" }),
+        )
+        .await;
+        let passed = orchestrate(
+            &c,
+            &parent,
+            json!({ "action": "complete", "phase": "build" }),
+        )
+        .await;
+        let text = result_text(&passed);
+        assert!(text.contains("is completed"), "{text}");
+        assert!(text.contains("gate passed on attempt 2 of 2"), "{text}");
+        let snapshot = passed.structured_content.unwrap();
+        assert_eq!(snapshot["phases"][1]["status"], "completed");
+        assert_eq!(snapshot["phases"][1]["gate"]["lastPassed"], true);
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn a_gate_that_fails_every_attempt_blocks_the_phase_and_refuses_more() {
+        let model = local_model(0.1);
+        let calls = model.calls.clone();
+        let (c, parent) = gated_client(vec![model]).await;
+        orchestrate(&c, &parent, gated_plan_args()).await;
+        let complete = json!({ "action": "complete", "phase": "build" });
+        orchestrate(&c, &parent, complete.clone()).await;
+        let blocked = orchestrate(&c, &parent, complete.clone()).await;
+        let text = result_text(&blocked);
+        assert!(text.contains("is blocked"), "{text}");
+        let snapshot = blocked.structured_content.unwrap();
+        assert_eq!(snapshot["phases"][1]["status"], "blocked");
+        assert_eq!(snapshot["phases"][1]["gate"]["blocked"], true);
+
+        let refused = orchestrate(&c, &parent, complete).await;
+        assert_eq!(refused.is_error, Some(true));
+        assert!(result_text(&refused).contains("failed all 2 attempts"));
+        assert_eq!(
+            calls.load(std::sync::atomic::Ordering::SeqCst),
+            2,
+            "no third ask"
+        );
+
+        // A skip never asks the gate.
+        let skipped = orchestrate(
+            &c,
+            &parent,
+            json!({ "action": "complete", "phase": "build", "status": "skipped" }),
+        )
+        .await;
+        assert_eq!(skipped.is_error, Some(false), "{}", result_text(&skipped));
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 2);
+    }
+
+    /// Gate H on the gate path: a private chat's phase results never reach a
+    /// public decision model. The refusal is an error, which uses no attempt;
+    /// two in a row block the phase. Nothing is sent.
+    #[tokio::test]
+    async fn a_private_chats_gate_never_reaches_a_public_model_and_errors_block() {
+        use crate::agents::decisions_extension::test_support::{entry, model};
+        let cloud = model(
+            entry(
+                "cloud",
+                crate::privacy::ProviderTier::Public,
+                false,
+                crate::decision::DecisionAdapter::SystemOne,
+            ),
+            0.99,
+        );
+        let calls = cloud.calls.clone();
+        let (c, parent) = gated_client(vec![cloud]).await;
+        c.context
+            .session_manager
+            .update(&parent)
+            .raise_privacy(
+                crate::privacy::SessionClassification::Private,
+                "test:private",
+            )
+            .apply()
+            .await
+            .unwrap();
+        orchestrate(&c, &parent, gated_plan_args()).await;
+        let complete = json!({ "action": "complete", "phase": "build" });
+        let first = orchestrate(&c, &parent, complete.clone()).await;
+        let text = result_text(&first);
+        assert!(text.contains("could not be evaluated"), "{text}");
+        assert!(text.contains("no attempt was used"), "{text}");
+        let second = orchestrate(&c, &parent, complete).await;
+        let text = result_text(&second);
+        assert!(text.contains("is blocked"), "{text}");
+        let snapshot = second.structured_content.unwrap();
+        assert_eq!(snapshot["phases"][1]["gate"]["attempts"], 0);
+        assert_eq!(snapshot["phases"][1]["gate"]["blocked"], true);
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn the_orchestrate_description_and_schema_teach_gates() {
+        assert!(ORCHESTRATE_DESCRIPTION.contains("decision gate"));
+        assert!(ORCHESTRATE_DESCRIPTION.contains("never passes"));
+        let schema = serde_json::to_value(schema_for!(WorkspaceOrchestrateParams)).unwrap();
+        let text = schema.to_string();
+        for field in [
+            "gate",
+            "questions",
+            "threshold",
+            "max_attempts",
+            "allow_uncalibrated",
+        ] {
+            assert!(text.contains(field), "the schema lost {field}: {text}");
+        }
     }
 }

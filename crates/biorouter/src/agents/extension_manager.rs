@@ -1839,6 +1839,10 @@ impl ExtensionManager {
     /// That is the self-sustaining grant this function was written to prevent,
     /// arriving by the other door. Excluding it by name as well as by origin is
     /// what keeps the question honest.
+    ///
+    /// The `decisions` extension is excluded by name for the same reason: it is
+    /// default-on and loads as `Explicit`, so counting it would open the gate in
+    /// every chat whether or not the user enabled anything.
     pub async fn has_non_injected_extensions(&self) -> bool {
         self.extensions
             .lock()
@@ -1846,8 +1850,15 @@ impl ExtensionManager {
             .iter()
             .any(|(name, extension)| {
                 extension.origin != ExtensionOrigin::AutoInjected
-                    && !name.eq_ignore_ascii_case(crate::agents::agent::Agent::SPAWN_EXTENSION)
+                    && !Self::is_not_counted_by_the_delegation_gate(name)
             })
+    }
+
+    /// Default-on extensions that are not a capability the user granted for
+    /// the purpose the delegation gate asks about.
+    fn is_not_counted_by_the_delegation_gate(name: &str) -> bool {
+        name.eq_ignore_ascii_case(crate::agents::agent::Agent::SPAWN_EXTENSION)
+            || name.eq_ignore_ascii_case(crate::agents::decisions_extension::EXTENSION_NAME)
     }
 
     pub async fn add_client(
@@ -4288,6 +4299,43 @@ mod tests {
     use rmcp::model::ServerNotification;
 
     use tokio::sync::mpsc;
+
+    /// The delegation gate's condition 5 asks whether the user gave this chat
+    /// at least one real capability. `decisions` is default-on and loads as
+    /// Explicit, so if it counted, every chat would satisfy condition 5 by
+    /// itself and delegation would be on wherever the mode allows it.
+    #[tokio::test]
+    async fn the_default_on_decisions_extension_never_opens_the_delegation_gate_by_itself() {
+        let root = tempfile::tempdir().unwrap();
+        let manager = Arc::new(ExtensionManager::new_without_provider(
+            root.path().to_path_buf(),
+        ));
+        let platform = |name: &str| ExtensionConfig::Platform {
+            name: name.to_string(),
+            description: String::new(),
+            bundled: Some(true),
+            available_tools: Vec::new(),
+        };
+        manager
+            .add_extension(platform(crate::agents::decisions_extension::EXTENSION_NAME))
+            .await
+            .unwrap();
+        assert!(
+            manager
+                .is_extension_enabled(crate::agents::decisions_extension::EXTENSION_NAME)
+                .await
+        );
+        assert!(
+            !manager.has_non_injected_extensions().await,
+            "decisions alone must not count as a capability the user granted"
+        );
+
+        manager.add_extension(platform("todo")).await.unwrap();
+        assert!(
+            manager.has_non_injected_extensions().await,
+            "an ordinary extension still counts"
+        );
+    }
 
     #[tokio::test]
     async fn external_servers_cannot_impersonate_the_computer_use_approval_namespace() {
