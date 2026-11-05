@@ -277,6 +277,44 @@ this section is the ledger.
   `/config/upsert` or `/config/remove` of it is refused, like `OLLAMA_HOST`'s). A request for
   such a model from an instance that already answered Private is refused before anything is
   sent.
+- **Decision models are a further Gate H site (added 2026-11-04, after this ledger was
+  written).** A decision model answers a typed question (yes or no, a choice, a score level) with
+  probabilities instead of text; see [decision models](../agent-loop/decision-models.md). A
+  monitor's rolling window, the `decide` tool's chunks, a phase gate's hand-off text and an ad hoc
+  `POST /decisions/decide` each hand a chat's content to a model the session row never records.
+  Every one of them goes through one service, `DecisionService` in
+  `crates/biorouter/src/decision/service.rs`, which checks the chat before anything is sent. A
+  decision adapter is not a `Provider`, so the check is
+  `privacy::alt_provider::assert_alt_tier_allowed`: Gate H's downward half, keyed on the tier the
+  adapter declares.
+  - **A private chat never reaches a public decision model.** Baseten's decision models are
+    Public with no affiliation, as its chat provider is, so every private chat is refused them. So
+    is an Ollama decision model on a host that is not this computer, and an Ollama cloud tag. A
+    refused decision is logged as `refused`, and nothing is sent.
+  - **A public chat may use a private (local) decision model.** This is the residual plan mode
+    and prompt hooks already carry: a decision's answer is a probability that lands back in the
+    same chat and raises no tier. Making that cell a refusal too is an open owner decision, and it
+    would also keep public chats off local Ollama decision models.
+  - **The master switch is sampled once per call** by whoever builds it (`cap.enforced()` on the
+    `decide` tool, one read per request on a route) and threaded into the service, which never
+    reads it again. A row written while it is off records `privacy_enforced = 0`.
+  - **The classification is read again before every request of a batch**, so a chat raised to
+    Private in the middle of a 600-chunk batch stops reaching a public model at the next chunk.
+  - **Affiliation is checked beside the tier**, as for every Gate H site, and a Crew-scoped chat
+    is refused every decision, because a Crew grant fixes the one model its content may reach.
+  - **The routes** (`crates/biorouter-server/src/routes/decisions.rs`) ask `session_reach` first
+    on every route that names a chat. That includes the decision log, which stores what each call
+    was sent and is therefore the chat's own content. Writing a chat's decision settings (its
+    default decision model, its monitors, and the question a decision chat asks) also takes the
+    user-action proof on a daemon that holds a key. `GET /decisions/models?sessionId=` gives, for
+    each model, the sentence the gate would refuse it with, so a picker can explain a public model
+    in a private chat before the person picks it. The gate is asked again before every call
+    whatever a setting names.
+  - **The census** (`crates/biorouter/tests/privacy_guard_wiring.rs`) counts the one
+    `assert_alt_tier_allowed` call and the routes' one `session_reach` call.
+
+  The service builds on Albert Lee's prototype in PR #469, which first re-checked privacy before
+  every Baseten System One call.
 
 ### Did not ship
 

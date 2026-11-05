@@ -1022,6 +1022,7 @@ pub mod crew_observation;
 pub mod crew_profile;
 pub mod crew_setup;
 pub mod crew_transfers;
+pub mod decisions;
 pub mod errors;
 pub mod folder_access;
 pub mod knowledge;
@@ -1072,6 +1073,7 @@ pub fn configure(state: Arc<crate::state::AppState>, secret_key: String) -> Rout
         .merge(workflow::routes(state.clone()))
         .merge(session::routes(state.clone()))
         .merge(session_subagents::routes(state.clone()))
+        .merge(decisions::routes(state.clone()))
         .merge(usage::routes(state.clone()))
         .merge(schedule::routes(state.clone()))
         .merge(setup::routes(state.clone()))

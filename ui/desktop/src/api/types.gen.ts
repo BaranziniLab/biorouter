@@ -241,6 +241,22 @@ export type Annotations = {
 };
 
 /**
+ * The answer a distribution points to.
+ */
+export type Answer = {
+    type: 'binary';
+    value: boolean;
+} | {
+    option: string;
+    type: 'choice';
+} | {
+    expected: number;
+    label: string;
+    level: number;
+    type: 'score';
+};
+
+/**
  * What the vendor CLI's credential store says right now.
  *
  * `SignedInWithApiKey` is a distinct state rather than an error: the CLI works,
@@ -672,6 +688,16 @@ export type CheckProviderRequest = {
     provider: string;
 };
 
+/**
+ * One chunk's result in a batch. Exactly one of `decisions` and `error` is
+ * set; a failed chunk never fails the batch.
+ */
+export type ChunkOutcome = {
+    chunkId: string;
+    decisions?: Array<Decision> | null;
+    error?: string | null;
+};
+
 export type ClusterMode = 'public' | 'private';
 
 /**
@@ -860,6 +886,17 @@ export type ContextDraft = {
     facts: {
         [key: string]: unknown;
     };
+};
+
+/**
+ * One message of a [`DecisionContext::Messages`] state.
+ */
+export type ContextMessage = {
+    content: string;
+    /**
+     * `user`, `assistant` or `system`.
+     */
+    role: string;
 };
 
 export type ContinuationLeaseErrorResponse = {
@@ -1390,6 +1427,419 @@ export type DailyActivity = {
      * a measured zero.
      */
     tokensComplete: boolean;
+};
+
+/**
+ * An ad hoc decision: questions over one state (`context`) or over a batch of
+ * states (`chunks`), exactly one of the two.
+ */
+export type DecideRequest = {
+    /**
+     * Many states, one request each, answered in order (1 to 1,000).
+     */
+    chunks?: Array<DecisionChunk> | null;
+    context?: DecisionContext | null;
+    model?: DecisionModelRef | null;
+    /**
+     * Question name -> question, in the order they are answered (1 to 64).
+     */
+    questions: {
+        [key: string]: Question;
+    };
+    /**
+     * The chat the text came from. When given, the chat is gated for this
+     * caller first, the decision is checked against the chat's privacy tier
+     * before anything is sent, and the call is logged in the chat's decision
+     * history as an ad hoc decision.
+     */
+    sessionId?: string | null;
+};
+
+export type DecideResponse = {
+    /**
+     * One outcome per chunk, in chunk order, for `chunks`. A chunk that
+     * failed carries its error and never fails the batch.
+     */
+    chunks?: Array<ChunkOutcome> | null;
+    /**
+     * The answers for `context`, in question order.
+     */
+    decisions?: Array<Decision> | null;
+    /**
+     * Said when no chat was named, and when the model that answered is
+     * public, so the text sent left this computer.
+     */
+    note?: string | null;
+    /**
+     * The chat the decision was checked against and logged in, or `null`.
+     */
+    sessionId?: string | null;
+};
+
+/**
+ * One answered question.
+ */
+export type Decision = {
+    answer: Answer;
+    /**
+     * True only for a native distribution, or for logprobs whose option tokens
+     * held at least [`CALIBRATED_LOGPROB_MASS`] of the probability. Even then
+     * these are model probabilities that have not been validated on the
+     * caller's data.
+     */
+    calibrated: boolean;
+    /**
+     * How concentrated the distribution is, computed by BioRouter the same way
+     * for every adapter: (max p - 1/k) / (1 - 1/k) for k outcomes, which is
+     * |2p - 1| for a binary question. 0 is uniform, 1 is certain. Not the
+     * probability of the answer. A native value, when the model sent one, is
+     * in `raw`.
+     */
+    confidence: number;
+    latencyMs: number;
+    model: DecisionModelRef;
+    /**
+     * The probability the threshold was compared against, when there was one.
+     */
+    passProbability?: number | null;
+    /**
+     * Set when the question had a threshold.
+     */
+    passed?: boolean | null;
+    /**
+     * Sums to 1. Keyed `yes`/`no`, by option name, or by level index.
+     */
+    probabilities: {
+        [key: string]: number;
+    };
+    question: string;
+    /**
+     * What the backend returned for this question, unmodified.
+     */
+    raw: {
+        [key: string]: unknown;
+    };
+    /**
+     * The model request this decision came from. Decisions that share one
+     * share its `usage` and `latencyMs`, so sum usage per request id.
+     */
+    requestId: string;
+    source: ProbabilitySource;
+    tier: ProviderTier;
+    usage: DecisionUsage;
+};
+
+/**
+ * Which adapter produced a decision.
+ */
+export type DecisionAdapter = 'system_one' | 'logprob' | 'verbalized';
+
+/**
+ * Every call of one origin (one monitor, the decide tool, one phase gate, the
+ * decision chat) in one chat, aggregated.
+ */
+export type DecisionAggregate = {
+    count: number;
+    errors: number;
+    failed: number;
+    label: string;
+    /**
+     * The last call's first answer, readable ("yes", "rrms", "level 2").
+     */
+    lastAnswer?: string | null;
+    lastAt: string;
+    lastPassProbability?: number | null;
+    model?: DecisionModelRef | null;
+    origin: DecisionOrigin;
+    originId?: string | null;
+    passed: number;
+};
+
+/**
+ * A chat's decision-chat settings, or `null` when it has none.
+ */
+export type DecisionChatResponse = {
+    settings?: DecisionChatSettings | null;
+};
+
+/**
+ * The question a decision chat asks of each message the person sends.
+ */
+export type DecisionChatSettings = {
+    question: Question;
+};
+
+/**
+ * One chunk of a batch: an id the caller can find it by, and its state.
+ */
+export type DecisionChunk = {
+    context: DecisionContext;
+    id: string;
+};
+
+/**
+ * The state the questions are asked about.
+ */
+export type DecisionContext = {
+    /**
+     * Plain text: a note, a file, a tool result.
+     */
+    text: string;
+} | {
+    /**
+     * Structured data. A top-level number, boolean or null is wrapped as
+     * `{"text": ...}` on the wire, which System One requires.
+     */
+    json: unknown;
+} | {
+    /**
+     * A conversation, sent as System One's `{"messages":[...]}` state.
+     */
+    messages: Array<ContextMessage>;
+};
+
+/**
+ * One decision call with the exact context it was sent (capped).
+ */
+export type DecisionDetail = {
+    context: DecisionContext;
+    record: DecisionRecord;
+};
+
+/**
+ * What kind of answer a question takes.
+ *
+ * Serialized externally tagged, `{"binary":{}}`, `{"choice":{"options":{...}}}`
+ * and `{"score":{"levels":[...]}}`, which is the shape the design's monitor
+ * criteria and the decide tool use.
+ */
+export type DecisionKind = {
+    /**
+     * Yes or no. System One's `noul`.
+     */
+    binary: {
+        [key: string]: unknown;
+    };
+} | {
+    /**
+     * One of named options. Each name maps to an optional description, which
+     * is what the model reads; a missing description sends the name itself.
+     */
+    choice: {
+        options: {
+            [key: string]: string | null;
+        };
+    };
+} | {
+    /**
+     * An ordered rubric of 1 to 10 levels, lowest first, numbered from 0.
+     */
+    score: {
+        levels: Array<string>;
+    };
+};
+
+/**
+ * The kind of a question without its options, for capability lists.
+ */
+export type DecisionKindTag = 'binary' | 'choice' | 'score';
+
+/**
+ * One decision model in the catalog, with whether the named chat may use it.
+ */
+export type DecisionModelInfo = {
+    adapter: DecisionAdapter;
+    contextTokens: number;
+    displayName: string;
+    kinds: Array<DecisionKindTag>;
+    /**
+     * Runs on this computer.
+     */
+    local: boolean;
+    model: string;
+    /**
+     * `baseten_decision` or `ollama_decision`.
+     */
+    provider: string;
+    tier: ProviderTier;
+    /**
+     * Why the chat named in the request may not use this model (its privacy
+     * tier, or an institution the model does not cover), or `null` when it
+     * may. Always `null` when no chat was named.
+     */
+    unavailableReason?: string | null;
+};
+
+/**
+ * Names one decision model.
+ */
+export type DecisionModelRef = {
+    adapter?: DecisionAdapter | null;
+    model: string;
+    /**
+     * `baseten_decision` or `ollama_decision`.
+     */
+    provider: string;
+};
+
+export type DecisionModelsResponse = {
+    /**
+     * Local models first.
+     */
+    models: Array<DecisionModelInfo>;
+    /**
+     * The chat `unavailableReason` was worked out for, when one was named.
+     */
+    sessionId?: string | null;
+};
+
+/**
+ * Why a decision call happened, for the decision log.
+ */
+export type DecisionOrigin = 'chat' | 'monitor' | 'tool' | 'gate' | 'adhoc';
+
+/**
+ * What happened to one decision call, for the decision log.
+ */
+export type DecisionOutcome = 'passed' | 'failed' | 'decided' | 'error' | 'refused';
+
+export type DecisionPage = {
+    nextCursor?: string | null;
+    /**
+     * Newest first.
+     */
+    records: Array<DecisionRecord>;
+    /**
+     * Rows matching the filter, across all pages.
+     */
+    total: number;
+};
+
+/**
+ * Filters for [`list`]. Every field is optional; `limit` is capped at [`MAX_PAGE`].
+ */
+export type DecisionQuery = {
+    batchId?: string | null;
+    /**
+     * Opaque cursor from a previous page's `nextCursor` (newest first).
+     */
+    before?: string | null;
+    errorsOnly?: boolean;
+    limit?: number | null;
+    /**
+     * Keep rows whose lowest pass probability is at most this.
+     */
+    maxP?: number | null;
+    /**
+     * Keep rows whose lowest pass probability is at least this.
+     */
+    minP?: number | null;
+    origin?: DecisionOrigin | null;
+    originId?: string | null;
+    outcome?: DecisionOutcome | null;
+    turnId?: string | null;
+};
+
+/**
+ * One decision call, as a list row (without the full stored context).
+ */
+export type DecisionRecord = {
+    batchId?: string | null;
+    calibrated?: boolean | null;
+    chunkId?: string | null;
+    chunkIndex?: number | null;
+    contextBytes: number;
+    contextPreview: string;
+    contextTruncated: boolean;
+    createdAt: string;
+    decisions: Array<Decision>;
+    error?: string | null;
+    id: string;
+    inputTokens?: number | null;
+    /**
+     * A human label for the origin (the monitor's name, "decide", the phase title).
+     */
+    label?: string | null;
+    latencyMs?: number | null;
+    model?: DecisionModelRef | null;
+    origin: DecisionOrigin;
+    /**
+     * The monitor id, tool call id or phase id that asked.
+     */
+    originId?: string | null;
+    outcome: DecisionOutcome;
+    outputTokens?: number | null;
+    privacyEnforced: boolean;
+    /**
+     * The questions asked (name -> Question), as JSON.
+     */
+    questions: {
+        [key: string]: unknown;
+    };
+    servedModel?: string | null;
+    sessionId?: string | null;
+    /**
+     * `public` or `private`, the decision model's tier.
+     */
+    tier?: string | null;
+    turnId?: string | null;
+};
+
+export type DecisionSettings = {
+    defaultModel?: DecisionModelRef | null;
+    monitors?: Array<MonitorCriterion>;
+};
+
+/**
+ * What a per-turn transcript marker carries (in `MessageMetadata::decision_summary`):
+ * every decision call of one turn, aggregated per origin, never one row per call.
+ */
+export type DecisionTurnMarker = {
+    items: Array<DecisionTurnMarkerItem>;
+    turnId: string;
+};
+
+/**
+ * One origin's line in a per-turn transcript marker.
+ */
+export type DecisionTurnMarkerItem = {
+    count: number;
+    errors: number;
+    failed: number;
+    /**
+     * A monitor that fired this turn.
+     */
+    fired?: boolean;
+    label: string;
+    lastPassProbability?: number | null;
+    origin: DecisionOrigin;
+    originId?: string | null;
+    passed: number;
+};
+
+/**
+ * One origin's calls within one turn, aggregated (the transcript marker's data).
+ */
+export type DecisionTurnSummary = {
+    count: number;
+    errors: number;
+    failed: number;
+    firstAt: string;
+    label: string;
+    lastAt: string;
+    lastPassProbability?: number | null;
+    origin: DecisionOrigin;
+    originId?: string | null;
+    passed: number;
+    turnId: string;
+};
+
+/**
+ * Token usage of the model request a decision came from.
+ */
+export type DecisionUsage = {
+    inputTokens?: number | null;
+    outputTokens?: number | null;
 };
 
 export type DeclarativeProviderConfig = {
@@ -3313,6 +3763,13 @@ export type MessageMetadata = {
      */
     agentVisible: boolean;
     /**
+     * Decision models: the decision-log row an assistant message reports (the
+     * reply of a chat whose main model is a decision model). Surfaces draw a
+     * decision card from it; every wire format ignores it.
+     */
+    decisionId?: string | null;
+    decisionSummary?: DecisionTurnMarker | null;
+    /**
      * #51: carry this message verbatim through every compaction instead of
      * dissolving it into a summary. Never dropped by summarization — but still
      * subject to the overall context budget, which trims the oldest pins first
@@ -3458,6 +3915,81 @@ export type ModelUsageRow = {
      * Number of billed turns attributed to this group.
      */
     turns: number;
+};
+
+/**
+ * What a monitor does when it fires.
+ */
+export type MonitorAction = 'stop' | 'notify' | 'steer';
+
+/**
+ * One monitor: a decision model watching the chat for a criterion.
+ */
+export type MonitorCriterion = {
+    action?: MonitorAction;
+    /**
+     * Evaluations in a row at or above the threshold before it fires (1..5).
+     */
+    consecutive?: number;
+    enabled?: boolean;
+    /**
+     * Slug, unique within the chat.
+     */
+    id: string;
+    /**
+     * Evaluation cap per turn (at most 200).
+     */
+    maxEvalsPerTurn?: number;
+    model?: DecisionModelRef | null;
+    /**
+     * Short human name (at most 60 chars).
+     */
+    name: string;
+    onError?: MonitorErrorPolicy;
+    /**
+     * For a choice question: the option whose probability is compared. Binary
+     * questions compare P(yes).
+     */
+    option?: string | null;
+    question: Question;
+    /**
+     * After firing, re-arm only once P drops below this.
+     */
+    rearmBelow?: number | null;
+    /**
+     * Fires when P(wanted answer) is at least this (0..1).
+     */
+    threshold: number;
+    timing?: MonitorTiming;
+    window?: MonitorWindow;
+};
+
+/**
+ * What a monitor does when its decision call fails.
+ */
+export type MonitorErrorPolicy = 'notify' | 'pause';
+
+/**
+ * When a monitor is evaluated.
+ */
+export type MonitorTiming = 'post_iteration' | 'turn_end';
+
+/**
+ * The rolling window a monitor sees.
+ */
+export type MonitorWindow = {
+    /**
+     * Newest entries kept (messages and tool lines), at most 48.
+     */
+    entries: number;
+    /**
+     * Character budget, at most 12000.
+     */
+    maxChars: number;
+    /**
+     * Include tool calls and results.
+     */
+    toolCalls: boolean;
 };
 
 export type ObserveEvent = {
@@ -3803,6 +4335,25 @@ export type PhaseCounts = {
 };
 
 /**
+ * A phase gate as surfaces draw it.
+ */
+export type PhaseGateSnapshot = {
+    attempts: number;
+    blocked: boolean;
+    /**
+     * The lowest P(yes) across the gate's questions at the last evaluation.
+     */
+    lastMinP?: number | null;
+    /**
+     * The last evaluation's verdict, when there was one.
+     */
+    lastPassed?: boolean | null;
+    maxAttempts: number;
+    questionCount: number;
+    threshold: number;
+};
+
+/**
  * What a phase is for. Drives the glyph a surface draws; carries no behaviour.
  */
 export type PhaseKind = 'plan' | 'research' | 'execution' | 'implementation' | 'verification' | 'testing' | 'auditing' | 'review' | 'meeting' | 'synthesis' | 'other';
@@ -3815,6 +4366,7 @@ export type PhaseSnapshot = {
     counts: PhaseCounts;
     dependsOn: Array<string>;
     finishedAt?: string | null;
+    gate?: PhaseGateSnapshot | null;
     goal?: string | null;
     /**
      * The hand-off summary, truncated for display.
@@ -3976,6 +4528,19 @@ export type PrivacyDisclosureResponse = {
      * never has to know the English around it.
      */
     title_template: string;
+};
+
+/**
+ * Where a decision's probabilities came from.
+ */
+export type ProbabilitySource = {
+    kind: 'native';
+} | {
+    kind: 'logprob';
+    mass: number;
+} | {
+    kind: 'verbalized';
+    reason?: string | null;
 };
 
 export type ProvenanceKind = 'agent_injection' | 'user_direct' | 'spawn_context';
@@ -4176,6 +4741,15 @@ export type QueryBody = {
     file_as_page?: boolean | null;
     model: ModelRef;
     question: string;
+};
+
+/**
+ * One named question.
+ */
+export type Question = {
+    instructions: string;
+    kind: DecisionKind;
+    threshold?: Threshold | null;
 };
 
 export type RawAudioContent = {
@@ -4990,6 +5564,15 @@ export type Session = {
     conversation?: Conversation | null;
     created_at: string;
     /**
+     * How many decision-model calls this chat has made (its rows in the
+     * `decisions` table), for History's per-chat count. Filled by the full
+     * listing (`GET /sessions`, `biorouter session list`) only, and only when
+     * the chat has at least one; `None` everywhere else, so absent means
+     * "none, or not counted here". Decision calls can number in the thousands,
+     * which is why History shows this one number and never a row per call.
+     */
+    decision_count?: number | null;
+    /**
      * Id of the session this one was diverged (branched) from, if any. Set by
      * `diverge_session`; `None` for normally-created sessions. Lets the UI show
      * a session's lineage ("branched from …").
@@ -5052,6 +5635,15 @@ export type Session = {
  * `SessionUpdateBuilder`'s `CASE WHEN` emission).
  */
 export type SessionClassification = 'public' | 'private';
+
+export type SessionDecisionSummary = {
+    aggregates: Array<DecisionAggregate>;
+    /**
+     * Newest turn first, at most [`RECENT_TURNS`] turns.
+     */
+    recentTurns: Array<DecisionTurnSummary>;
+    total: number;
+};
 
 export type SessionDisplayInfo = {
     accumulatedInputTokens?: number | null;
@@ -6013,6 +6605,42 @@ export type TextContent = {
 export type ThinkingContent = {
     signature: string;
     thinking: string;
+};
+
+/**
+ * What "pass" means for one question. It acts on the probability of the
+ * answer the caller wants, never on [`Decision::confidence`], which measures
+ * how concentrated the distribution is and is not the probability of
+ * anything.
+ */
+export type Threshold = {
+    /**
+     * Binary: P(yes) at or above this.
+     */
+    yes: number;
+} | {
+    /**
+     * Binary: P(no) at or above this.
+     */
+    no: number;
+} | {
+    /**
+     * Choice: P(option) at or above `p`.
+     */
+    option: {
+        name: string;
+        p: number;
+    };
+} | {
+    /**
+     * Score: P(level >= `level`), the sum of the level probabilities from
+     * `level` up, at or above `p`. The fractional expected score is not used,
+     * because it hides a bimodal distribution.
+     */
+    at_least_level: {
+        level: number;
+        p: number;
+    };
 };
 
 export type TokenState = {
@@ -10114,6 +10742,105 @@ export type CrewTransferResumeResponses = {
 
 export type CrewTransferResumeResponse = CrewTransferResumeResponses[keyof CrewTransferResumeResponses];
 
+export type DecideData = {
+    body: DecideRequest;
+    path?: never;
+    query?: never;
+    url: '/decisions/decide';
+};
+
+export type DecideErrors = {
+    /**
+     * The request could not be read, or its questions or states are invalid (body = plain text)
+     */
+    400: unknown;
+    /**
+     * Unauthorized - Invalid or missing API key
+     */
+    401: unknown;
+    /**
+     * The named chat is out of this caller's reach (the same refusal, word for word, that `GET /sessions/{session_id}` gives), or its privacy tier or a Crew grant refuses the decision model; nothing was sent (body = plain text)
+     */
+    403: unknown;
+    /**
+     * The named chat, or a decision model, was not found (body = plain text)
+     */
+    404: unknown;
+    /**
+     * The state does not fit the model's window; split it (body = plain text)
+     */
+    413: unknown;
+    /**
+     * The model cannot answer this kind of question (body = plain text)
+     */
+    422: unknown;
+    /**
+     * Internal server error
+     */
+    500: unknown;
+    /**
+     * The decision model failed or answered in a shape that cannot be trusted (body = plain text)
+     */
+    502: unknown;
+    /**
+     * The decision model did not answer in time (body = plain text)
+     */
+    504: unknown;
+};
+
+export type DecideResponses = {
+    /**
+     * The decisions, with probabilities
+     */
+    200: DecideResponse;
+};
+
+export type DecideResponse2 = DecideResponses[keyof DecideResponses];
+
+export type ListDecisionModelsData = {
+    body?: never;
+    path?: never;
+    query?: {
+        /**
+         * A chat to work out `unavailableReason` for. Gated like every route that names a chat
+         */
+        sessionId?: string | null;
+    };
+    url: '/decisions/models';
+};
+
+export type ListDecisionModelsErrors = {
+    /**
+     * Invalid session id (body = plain text)
+     */
+    400: unknown;
+    /**
+     * Unauthorized - Invalid or missing API key
+     */
+    401: unknown;
+    /**
+     * Refused by a privacy boundary: the same refusal, word for word, that `GET /sessions/{session_id}` gives (body = plain text)
+     */
+    403: unknown;
+    /**
+     * Session not found (body = plain text)
+     */
+    404: unknown;
+    /**
+     * Internal server error
+     */
+    500: unknown;
+};
+
+export type ListDecisionModelsResponses = {
+    /**
+     * The decision models available now, local first, each with the reason the named chat may not use it
+     */
+    200: DecisionModelsResponse;
+};
+
+export type ListDecisionModelsResponse = ListDecisionModelsResponses[keyof ListDecisionModelsResponses];
+
 export type DiagnosticsData = {
     body?: never;
     path: {
@@ -12157,6 +12884,359 @@ export type GetSessionResponses = {
 };
 
 export type GetSessionResponse = GetSessionResponses[keyof GetSessionResponses];
+
+export type GetDecisionChatData = {
+    body?: never;
+    path: {
+        /**
+         * The chat whose decision-chat question to read
+         */
+        session_id: string;
+    };
+    query?: never;
+    url: '/sessions/{session_id}/decision-chat';
+};
+
+export type GetDecisionChatErrors = {
+    /**
+     * Invalid session id (body = plain text)
+     */
+    400: unknown;
+    /**
+     * Unauthorized - Invalid or missing API key
+     */
+    401: unknown;
+    /**
+     * Refused by a privacy boundary: the same refusal, word for word, that `GET /sessions/{session_id}` gives (body = plain text)
+     */
+    403: unknown;
+    /**
+     * Session not found (body = plain text)
+     */
+    404: unknown;
+    /**
+     * Internal server error
+     */
+    500: unknown;
+};
+
+export type GetDecisionChatResponses = {
+    /**
+     * The question a decision chat asks of each message, or `null` settings when it has none
+     */
+    200: DecisionChatResponse;
+};
+
+export type GetDecisionChatResponse = GetDecisionChatResponses[keyof GetDecisionChatResponses];
+
+export type PutDecisionChatData = {
+    body: DecisionChatSettings;
+    path: {
+        /**
+         * The chat whose decision-chat question to set
+         */
+        session_id: string;
+    };
+    query?: never;
+    url: '/sessions/{session_id}/decision-chat';
+};
+
+export type PutDecisionChatErrors = {
+    /**
+     * Invalid session id, or a question that could not be read or is invalid; the body is the sentence that says why (plain text)
+     */
+    400: unknown;
+    /**
+     * Unauthorized - Invalid or missing API key
+     */
+    401: unknown;
+    /**
+     * Refused: the named chat is out of this caller's reach (the same refusal, word for word, that `GET /sessions/{session_id}` gives), or, on a daemon that holds a user-action key, the request carried no proof it came from the person at the keyboard (body = plain text)
+     */
+    403: unknown;
+    /**
+     * Session not found (body = plain text)
+     */
+    404: unknown;
+    /**
+     * Internal server error
+     */
+    500: unknown;
+};
+
+export type PutDecisionChatResponses = {
+    /**
+     * The settings as stored
+     */
+    200: DecisionChatResponse;
+};
+
+export type PutDecisionChatResponse = PutDecisionChatResponses[keyof PutDecisionChatResponses];
+
+export type GetDecisionSettingsData = {
+    body?: never;
+    path: {
+        /**
+         * The chat whose decision settings to read
+         */
+        session_id: string;
+    };
+    query?: never;
+    url: '/sessions/{session_id}/decision-settings';
+};
+
+export type GetDecisionSettingsErrors = {
+    /**
+     * Invalid session id (body = plain text)
+     */
+    400: unknown;
+    /**
+     * Unauthorized - Invalid or missing API key
+     */
+    401: unknown;
+    /**
+     * Refused by a privacy boundary: the same refusal, word for word, that `GET /sessions/{session_id}` gives (body = plain text)
+     */
+    403: unknown;
+    /**
+     * Session not found (body = plain text)
+     */
+    404: unknown;
+    /**
+     * Internal server error
+     */
+    500: unknown;
+};
+
+export type GetDecisionSettingsResponses = {
+    /**
+     * The chat's default decision model and its monitors
+     */
+    200: DecisionSettings;
+};
+
+export type GetDecisionSettingsResponse = GetDecisionSettingsResponses[keyof GetDecisionSettingsResponses];
+
+export type PutDecisionSettingsData = {
+    body: DecisionSettings;
+    path: {
+        /**
+         * The chat whose decision settings to replace
+         */
+        session_id: string;
+    };
+    query?: never;
+    url: '/sessions/{session_id}/decision-settings';
+};
+
+export type PutDecisionSettingsErrors = {
+    /**
+     * Invalid session id, or settings that could not be read or are invalid; the body is the sentence that says why (plain text)
+     */
+    400: unknown;
+    /**
+     * Unauthorized - Invalid or missing API key
+     */
+    401: unknown;
+    /**
+     * Refused: the named chat is out of this caller's reach (the same refusal, word for word, that `GET /sessions/{session_id}` gives), or, on a daemon that holds a user-action key, the request carried no proof it came from the person at the keyboard (body = plain text)
+     */
+    403: unknown;
+    /**
+     * Session not found (body = plain text)
+     */
+    404: unknown;
+    /**
+     * Internal server error
+     */
+    500: unknown;
+};
+
+export type PutDecisionSettingsResponses = {
+    /**
+     * The settings as stored
+     */
+    200: DecisionSettings;
+};
+
+export type PutDecisionSettingsResponse = PutDecisionSettingsResponses[keyof PutDecisionSettingsResponses];
+
+export type ListSessionDecisionsData = {
+    body?: never;
+    path: {
+        /**
+         * The chat whose decisions to list
+         */
+        session_id: string;
+    };
+    query?: {
+        /**
+         * Only this source
+         */
+        origin?: DecisionOrigin | null;
+        /**
+         * Only this monitor, tool call or phase
+         */
+        originId?: string | null;
+        /**
+         * Only this agent turn
+         */
+        turnId?: string | null;
+        /**
+         * Only this `decide` batch
+         */
+        batchId?: string | null;
+        /**
+         * Only this outcome
+         */
+        outcome?: DecisionOutcome | null;
+        /**
+         * Lowest pass probability at least this (0 to 1)
+         */
+        minP?: number | null;
+        /**
+         * Lowest pass probability at most this (0 to 1)
+         */
+        maxP?: number | null;
+        /**
+         * Only failed and refused calls
+         */
+        errorsOnly?: boolean | null;
+        /**
+         * The previous page's `nextCursor`
+         */
+        before?: string | null;
+        /**
+         * Rows per page, 1 to 200
+         */
+        limit?: number | null;
+    };
+    url: '/sessions/{session_id}/decisions';
+};
+
+export type ListSessionDecisionsErrors = {
+    /**
+     * Invalid session id or filter (body = plain text)
+     */
+    400: unknown;
+    /**
+     * Unauthorized - Invalid or missing API key
+     */
+    401: unknown;
+    /**
+     * Refused by a privacy boundary: the same refusal, word for word, that `GET /sessions/{session_id}` gives (body = plain text)
+     */
+    403: unknown;
+    /**
+     * Session not found (body = plain text)
+     */
+    404: unknown;
+    /**
+     * Internal server error
+     */
+    500: unknown;
+};
+
+export type ListSessionDecisionsResponses = {
+    /**
+     * One page of the chat's decision calls, newest first, without their full context
+     */
+    200: DecisionPage;
+};
+
+export type ListSessionDecisionsResponse = ListSessionDecisionsResponses[keyof ListSessionDecisionsResponses];
+
+export type GetSessionDecisionSummaryData = {
+    body?: never;
+    path: {
+        /**
+         * The chat whose decisions to aggregate
+         */
+        session_id: string;
+    };
+    query?: never;
+    url: '/sessions/{session_id}/decisions/summary';
+};
+
+export type GetSessionDecisionSummaryErrors = {
+    /**
+     * Invalid session id (body = plain text)
+     */
+    400: unknown;
+    /**
+     * Unauthorized - Invalid or missing API key
+     */
+    401: unknown;
+    /**
+     * Refused by a privacy boundary: the same refusal, word for word, that `GET /sessions/{session_id}` gives (body = plain text)
+     */
+    403: unknown;
+    /**
+     * Session not found (body = plain text)
+     */
+    404: unknown;
+    /**
+     * Internal server error
+     */
+    500: unknown;
+};
+
+export type GetSessionDecisionSummaryResponses = {
+    /**
+     * The chat's decisions aggregated per source and criterion and per recent turn, never one row per call
+     */
+    200: SessionDecisionSummary;
+};
+
+export type GetSessionDecisionSummaryResponse = GetSessionDecisionSummaryResponses[keyof GetSessionDecisionSummaryResponses];
+
+export type GetSessionDecisionData = {
+    body?: never;
+    path: {
+        /**
+         * The chat the decision belongs to
+         */
+        session_id: string;
+        /**
+         * The decision's id
+         */
+        decision_id: string;
+    };
+    query?: never;
+    url: '/sessions/{session_id}/decisions/{decision_id}';
+};
+
+export type GetSessionDecisionErrors = {
+    /**
+     * Invalid session or decision id (body = plain text)
+     */
+    400: unknown;
+    /**
+     * Unauthorized - Invalid or missing API key
+     */
+    401: unknown;
+    /**
+     * Refused by a privacy boundary: the same refusal, word for word, that `GET /sessions/{session_id}` gives (body = plain text)
+     */
+    403: unknown;
+    /**
+     * No such chat, or the chat has no decision with that id (body = plain text)
+     */
+    404: unknown;
+    /**
+     * Internal server error
+     */
+    500: unknown;
+};
+
+export type GetSessionDecisionResponses = {
+    /**
+     * The decision call with the exact context it was sent (capped at 64 KiB)
+     */
+    200: DecisionDetail;
+};
+
+export type GetSessionDecisionResponse = GetSessionDecisionResponses[keyof GetSessionDecisionResponses];
 
 export type DeclassifySessionData = {
     body: DeclassifySessionRequest;

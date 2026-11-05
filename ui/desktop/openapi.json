@@ -5758,6 +5758,120 @@
         }
       }
     },
+    "/decisions/decide": {
+      "post": {
+        "tags": [
+          "decisions"
+        ],
+        "operationId": "decide",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DecideRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The decisions, with probabilities",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DecideResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request could not be read, or its questions or states are invalid (body = plain text)"
+          },
+          "401": {
+            "description": "Unauthorized - Invalid or missing API key"
+          },
+          "403": {
+            "description": "The named chat is out of this caller's reach (the same refusal, word for word, that `GET /sessions/{session_id}` gives), or its privacy tier or a Crew grant refuses the decision model; nothing was sent (body = plain text)"
+          },
+          "404": {
+            "description": "The named chat, or a decision model, was not found (body = plain text)"
+          },
+          "413": {
+            "description": "The state does not fit the model's window; split it (body = plain text)"
+          },
+          "422": {
+            "description": "The model cannot answer this kind of question (body = plain text)"
+          },
+          "500": {
+            "description": "Internal server error"
+          },
+          "502": {
+            "description": "The decision model failed or answered in a shape that cannot be trusted (body = plain text)"
+          },
+          "504": {
+            "description": "The decision model did not answer in time (body = plain text)"
+          }
+        },
+        "security": [
+          {
+            "api_key": []
+          }
+        ]
+      }
+    },
+    "/decisions/models": {
+      "get": {
+        "tags": [
+          "decisions"
+        ],
+        "operationId": "list_decision_models",
+        "parameters": [
+          {
+            "name": "sessionId",
+            "in": "query",
+            "description": "A chat to work out `unavailableReason` for. Gated like every route that names a chat",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "nullable": true
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The decision models available now, local first, each with the reason the named chat may not use it",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DecisionModelsResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid session id (body = plain text)"
+          },
+          "401": {
+            "description": "Unauthorized - Invalid or missing API key"
+          },
+          "403": {
+            "description": "Refused by a privacy boundary: the same refusal, word for word, that `GET /sessions/{session_id}` gives (body = plain text)"
+          },
+          "404": {
+            "description": "Session not found (body = plain text)"
+          },
+          "500": {
+            "description": "Internal server error"
+          }
+        },
+        "security": [
+          {
+            "api_key": []
+          }
+        ]
+      }
+    },
     "/diagnostics/{session_id}": {
       "get": {
         "tags": [
@@ -8419,6 +8533,500 @@
         ]
       }
     },
+    "/sessions/{session_id}/decision-chat": {
+      "get": {
+        "tags": [
+          "decisions"
+        ],
+        "operationId": "get_decision_chat",
+        "parameters": [
+          {
+            "name": "session_id",
+            "in": "path",
+            "description": "The chat whose decision-chat question to read",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The question a decision chat asks of each message, or `null` settings when it has none",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DecisionChatResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid session id (body = plain text)"
+          },
+          "401": {
+            "description": "Unauthorized - Invalid or missing API key"
+          },
+          "403": {
+            "description": "Refused by a privacy boundary: the same refusal, word for word, that `GET /sessions/{session_id}` gives (body = plain text)"
+          },
+          "404": {
+            "description": "Session not found (body = plain text)"
+          },
+          "500": {
+            "description": "Internal server error"
+          }
+        },
+        "security": [
+          {
+            "api_key": []
+          }
+        ]
+      },
+      "put": {
+        "tags": [
+          "decisions"
+        ],
+        "operationId": "put_decision_chat",
+        "parameters": [
+          {
+            "name": "session_id",
+            "in": "path",
+            "description": "The chat whose decision-chat question to set",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DecisionChatSettings"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The settings as stored",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DecisionChatResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid session id, or a question that could not be read or is invalid; the body is the sentence that says why (plain text)"
+          },
+          "401": {
+            "description": "Unauthorized - Invalid or missing API key"
+          },
+          "403": {
+            "description": "Refused: the named chat is out of this caller's reach (the same refusal, word for word, that `GET /sessions/{session_id}` gives), or, on a daemon that holds a user-action key, the request carried no proof it came from the person at the keyboard (body = plain text)"
+          },
+          "404": {
+            "description": "Session not found (body = plain text)"
+          },
+          "500": {
+            "description": "Internal server error"
+          }
+        },
+        "security": [
+          {
+            "api_key": []
+          }
+        ]
+      }
+    },
+    "/sessions/{session_id}/decision-settings": {
+      "get": {
+        "tags": [
+          "decisions"
+        ],
+        "operationId": "get_decision_settings",
+        "parameters": [
+          {
+            "name": "session_id",
+            "in": "path",
+            "description": "The chat whose decision settings to read",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The chat's default decision model and its monitors",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DecisionSettings"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid session id (body = plain text)"
+          },
+          "401": {
+            "description": "Unauthorized - Invalid or missing API key"
+          },
+          "403": {
+            "description": "Refused by a privacy boundary: the same refusal, word for word, that `GET /sessions/{session_id}` gives (body = plain text)"
+          },
+          "404": {
+            "description": "Session not found (body = plain text)"
+          },
+          "500": {
+            "description": "Internal server error"
+          }
+        },
+        "security": [
+          {
+            "api_key": []
+          }
+        ]
+      },
+      "put": {
+        "tags": [
+          "decisions"
+        ],
+        "operationId": "put_decision_settings",
+        "parameters": [
+          {
+            "name": "session_id",
+            "in": "path",
+            "description": "The chat whose decision settings to replace",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DecisionSettings"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The settings as stored",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DecisionSettings"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid session id, or settings that could not be read or are invalid; the body is the sentence that says why (plain text)"
+          },
+          "401": {
+            "description": "Unauthorized - Invalid or missing API key"
+          },
+          "403": {
+            "description": "Refused: the named chat is out of this caller's reach (the same refusal, word for word, that `GET /sessions/{session_id}` gives), or, on a daemon that holds a user-action key, the request carried no proof it came from the person at the keyboard (body = plain text)"
+          },
+          "404": {
+            "description": "Session not found (body = plain text)"
+          },
+          "500": {
+            "description": "Internal server error"
+          }
+        },
+        "security": [
+          {
+            "api_key": []
+          }
+        ]
+      }
+    },
+    "/sessions/{session_id}/decisions": {
+      "get": {
+        "tags": [
+          "decisions"
+        ],
+        "operationId": "list_session_decisions",
+        "parameters": [
+          {
+            "name": "session_id",
+            "in": "path",
+            "description": "The chat whose decisions to list",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "origin",
+            "in": "query",
+            "description": "Only this source",
+            "required": false,
+            "schema": {
+              "allOf": [
+                {
+                  "$ref": "#/components/schemas/DecisionOrigin"
+                }
+              ],
+              "nullable": true
+            }
+          },
+          {
+            "name": "originId",
+            "in": "query",
+            "description": "Only this monitor, tool call or phase",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "nullable": true
+            }
+          },
+          {
+            "name": "turnId",
+            "in": "query",
+            "description": "Only this agent turn",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "nullable": true
+            }
+          },
+          {
+            "name": "batchId",
+            "in": "query",
+            "description": "Only this `decide` batch",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "nullable": true
+            }
+          },
+          {
+            "name": "outcome",
+            "in": "query",
+            "description": "Only this outcome",
+            "required": false,
+            "schema": {
+              "allOf": [
+                {
+                  "$ref": "#/components/schemas/DecisionOutcome"
+                }
+              ],
+              "nullable": true
+            }
+          },
+          {
+            "name": "minP",
+            "in": "query",
+            "description": "Lowest pass probability at least this (0 to 1)",
+            "required": false,
+            "schema": {
+              "type": "number",
+              "format": "double",
+              "nullable": true
+            }
+          },
+          {
+            "name": "maxP",
+            "in": "query",
+            "description": "Lowest pass probability at most this (0 to 1)",
+            "required": false,
+            "schema": {
+              "type": "number",
+              "format": "double",
+              "nullable": true
+            }
+          },
+          {
+            "name": "errorsOnly",
+            "in": "query",
+            "description": "Only failed and refused calls",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "nullable": true
+            }
+          },
+          {
+            "name": "before",
+            "in": "query",
+            "description": "The previous page's `nextCursor`",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "nullable": true
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Rows per page, 1 to 200",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int32",
+              "nullable": true,
+              "minimum": 0
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "One page of the chat's decision calls, newest first, without their full context",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DecisionPage"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid session id or filter (body = plain text)"
+          },
+          "401": {
+            "description": "Unauthorized - Invalid or missing API key"
+          },
+          "403": {
+            "description": "Refused by a privacy boundary: the same refusal, word for word, that `GET /sessions/{session_id}` gives (body = plain text)"
+          },
+          "404": {
+            "description": "Session not found (body = plain text)"
+          },
+          "500": {
+            "description": "Internal server error"
+          }
+        },
+        "security": [
+          {
+            "api_key": []
+          }
+        ]
+      }
+    },
+    "/sessions/{session_id}/decisions/summary": {
+      "get": {
+        "tags": [
+          "decisions"
+        ],
+        "operationId": "get_session_decision_summary",
+        "parameters": [
+          {
+            "name": "session_id",
+            "in": "path",
+            "description": "The chat whose decisions to aggregate",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The chat's decisions aggregated per source and criterion and per recent turn, never one row per call",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SessionDecisionSummary"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid session id (body = plain text)"
+          },
+          "401": {
+            "description": "Unauthorized - Invalid or missing API key"
+          },
+          "403": {
+            "description": "Refused by a privacy boundary: the same refusal, word for word, that `GET /sessions/{session_id}` gives (body = plain text)"
+          },
+          "404": {
+            "description": "Session not found (body = plain text)"
+          },
+          "500": {
+            "description": "Internal server error"
+          }
+        },
+        "security": [
+          {
+            "api_key": []
+          }
+        ]
+      }
+    },
+    "/sessions/{session_id}/decisions/{decision_id}": {
+      "get": {
+        "tags": [
+          "decisions"
+        ],
+        "operationId": "get_session_decision",
+        "parameters": [
+          {
+            "name": "session_id",
+            "in": "path",
+            "description": "The chat the decision belongs to",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "decision_id",
+            "in": "path",
+            "description": "The decision's id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The decision call with the exact context it was sent (capped at 64 KiB)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DecisionDetail"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid session or decision id (body = plain text)"
+          },
+          "401": {
+            "description": "Unauthorized - Invalid or missing API key"
+          },
+          "403": {
+            "description": "Refused by a privacy boundary: the same refusal, word for word, that `GET /sessions/{session_id}` gives (body = plain text)"
+          },
+          "404": {
+            "description": "No such chat, or the chat has no decision with that id (body = plain text)"
+          },
+          "500": {
+            "description": "Internal server error"
+          }
+        },
+        "security": [
+          {
+            "api_key": []
+          }
+        ]
+      }
+    },
     "/sessions/{session_id}/declassify": {
       "post": {
         "tags": [
@@ -10410,6 +11018,80 @@
           }
         }
       },
+      "Answer": {
+        "oneOf": [
+          {
+            "type": "object",
+            "description": "`true` when P(yes) is at least one half.",
+            "required": [
+              "value",
+              "type"
+            ],
+            "properties": {
+              "type": {
+                "type": "string",
+                "enum": [
+                  "binary"
+                ]
+              },
+              "value": {
+                "type": "boolean"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "option",
+              "type"
+            ],
+            "properties": {
+              "option": {
+                "type": "string"
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "choice"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "The most probable level, plus the probability-weighted expected level\n(System One's fractional `score`). Gate on [`Threshold::AtLeastLevel`],\nnever on `expected`.",
+            "required": [
+              "level",
+              "label",
+              "expected",
+              "type"
+            ],
+            "properties": {
+              "expected": {
+                "type": "number",
+                "format": "double"
+              },
+              "label": {
+                "type": "string"
+              },
+              "level": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "score"
+                ]
+              }
+            }
+          }
+        ],
+        "description": "The answer a distribution points to.",
+        "discriminator": {
+          "propertyName": "type"
+        }
+      },
       "AuthState": {
         "oneOf": [
           {
@@ -11201,6 +11883,29 @@
           }
         }
       },
+      "ChunkOutcome": {
+        "type": "object",
+        "description": "One chunk's result in a batch. Exactly one of `decisions` and `error` is\nset; a failed chunk never fails the batch.",
+        "required": [
+          "chunkId"
+        ],
+        "properties": {
+          "chunkId": {
+            "type": "string"
+          },
+          "decisions": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Decision"
+            },
+            "nullable": true
+          },
+          "error": {
+            "type": "string",
+            "nullable": true
+          }
+        }
+      },
       "ClusterMode": {
         "type": "string",
         "enum": [
@@ -11610,6 +12315,24 @@
             "description": "The facts, exactly as `biorouter-crew probe --output-format json` answered them."
           }
         }
+      },
+      "ContextMessage": {
+        "type": "object",
+        "description": "One message of a [`DecisionContext::Messages`] state.",
+        "required": [
+          "role",
+          "content"
+        ],
+        "properties": {
+          "content": {
+            "type": "string"
+          },
+          "role": {
+            "type": "string",
+            "description": "`user`, `assistant` or `system`."
+          }
+        },
+        "additionalProperties": false
       },
       "ContinuationLeaseErrorResponse": {
         "type": "object",
@@ -12564,6 +13287,916 @@
           "tokensComplete": {
             "type": "boolean",
             "description": "False when at least one token event that day lacks billed-token\naccounting. `tokens` is then a known subtotal; zero is unavailable, not\na measured zero."
+          }
+        }
+      },
+      "DecideRequest": {
+        "type": "object",
+        "description": "An ad hoc decision: questions over one state (`context`) or over a batch of\nstates (`chunks`), exactly one of the two.",
+        "required": [
+          "questions"
+        ],
+        "properties": {
+          "chunks": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DecisionChunk"
+            },
+            "description": "Many states, one request each, answered in order (1 to 1,000).",
+            "nullable": true
+          },
+          "context": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/DecisionContext"
+              }
+            ],
+            "nullable": true
+          },
+          "model": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/DecisionModelRef"
+              }
+            ],
+            "nullable": true
+          },
+          "questions": {
+            "type": "object",
+            "description": "Question name -> question, in the order they are answered (1 to 64).",
+            "additionalProperties": {
+              "$ref": "#/components/schemas/Question"
+            }
+          },
+          "sessionId": {
+            "type": "string",
+            "description": "The chat the text came from. When given, the chat is gated for this\ncaller first, the decision is checked against the chat's privacy tier\nbefore anything is sent, and the call is logged in the chat's decision\nhistory as an ad hoc decision.",
+            "nullable": true
+          }
+        },
+        "additionalProperties": false
+      },
+      "DecideResponse": {
+        "type": "object",
+        "properties": {
+          "chunks": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ChunkOutcome"
+            },
+            "description": "One outcome per chunk, in chunk order, for `chunks`. A chunk that\nfailed carries its error and never fails the batch.",
+            "nullable": true
+          },
+          "decisions": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Decision"
+            },
+            "description": "The answers for `context`, in question order.",
+            "nullable": true
+          },
+          "note": {
+            "type": "string",
+            "description": "Said when no chat was named, and when the model that answered is\npublic, so the text sent left this computer.",
+            "nullable": true
+          },
+          "sessionId": {
+            "type": "string",
+            "description": "The chat the decision was checked against and logged in, or `null`.",
+            "nullable": true
+          }
+        }
+      },
+      "Decision": {
+        "type": "object",
+        "description": "One answered question.",
+        "required": [
+          "question",
+          "answer",
+          "probabilities",
+          "confidence",
+          "source",
+          "calibrated",
+          "model",
+          "tier",
+          "requestId",
+          "latencyMs",
+          "usage",
+          "raw"
+        ],
+        "properties": {
+          "answer": {
+            "$ref": "#/components/schemas/Answer"
+          },
+          "calibrated": {
+            "type": "boolean",
+            "description": "True only for a native distribution, or for logprobs whose option tokens\nheld at least [`CALIBRATED_LOGPROB_MASS`] of the probability. Even then\nthese are model probabilities that have not been validated on the\ncaller's data."
+          },
+          "confidence": {
+            "type": "number",
+            "format": "double",
+            "description": "How concentrated the distribution is, computed by BioRouter the same way\nfor every adapter: (max p - 1/k) / (1 - 1/k) for k outcomes, which is\n|2p - 1| for a binary question. 0 is uniform, 1 is certain. Not the\nprobability of the answer. A native value, when the model sent one, is\nin `raw`."
+          },
+          "latencyMs": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "model": {
+            "$ref": "#/components/schemas/DecisionModelRef"
+          },
+          "passProbability": {
+            "type": "number",
+            "format": "double",
+            "description": "The probability the threshold was compared against, when there was one.",
+            "nullable": true
+          },
+          "passed": {
+            "type": "boolean",
+            "description": "Set when the question had a threshold.",
+            "nullable": true
+          },
+          "probabilities": {
+            "type": "object",
+            "description": "Sums to 1. Keyed `yes`/`no`, by option name, or by level index.",
+            "additionalProperties": {
+              "type": "number",
+              "format": "double"
+            }
+          },
+          "question": {
+            "type": "string"
+          },
+          "raw": {
+            "type": "object",
+            "description": "What the backend returned for this question, unmodified."
+          },
+          "requestId": {
+            "type": "string",
+            "description": "The model request this decision came from. Decisions that share one\nshare its `usage` and `latencyMs`, so sum usage per request id."
+          },
+          "source": {
+            "$ref": "#/components/schemas/ProbabilitySource"
+          },
+          "tier": {
+            "$ref": "#/components/schemas/ProviderTier"
+          },
+          "usage": {
+            "$ref": "#/components/schemas/DecisionUsage"
+          }
+        }
+      },
+      "DecisionAdapter": {
+        "type": "string",
+        "description": "Which adapter produced a decision.",
+        "enum": [
+          "system_one",
+          "logprob",
+          "verbalized"
+        ]
+      },
+      "DecisionAggregate": {
+        "type": "object",
+        "description": "Every call of one origin (one monitor, the decide tool, one phase gate, the\ndecision chat) in one chat, aggregated.",
+        "required": [
+          "origin",
+          "label",
+          "count",
+          "passed",
+          "failed",
+          "errors",
+          "lastAt"
+        ],
+        "properties": {
+          "count": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "errors": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "failed": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "label": {
+            "type": "string"
+          },
+          "lastAnswer": {
+            "type": "string",
+            "description": "The last call's first answer, readable (\"yes\", \"rrms\", \"level 2\").",
+            "nullable": true
+          },
+          "lastAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "lastPassProbability": {
+            "type": "number",
+            "format": "double",
+            "nullable": true
+          },
+          "model": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/DecisionModelRef"
+              }
+            ],
+            "nullable": true
+          },
+          "origin": {
+            "$ref": "#/components/schemas/DecisionOrigin"
+          },
+          "originId": {
+            "type": "string",
+            "nullable": true
+          },
+          "passed": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          }
+        }
+      },
+      "DecisionChatResponse": {
+        "type": "object",
+        "description": "A chat's decision-chat settings, or `null` when it has none.",
+        "properties": {
+          "settings": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/DecisionChatSettings"
+              }
+            ],
+            "nullable": true
+          }
+        }
+      },
+      "DecisionChatSettings": {
+        "type": "object",
+        "description": "The question a decision chat asks of each message the person sends.",
+        "required": [
+          "question"
+        ],
+        "properties": {
+          "question": {
+            "$ref": "#/components/schemas/Question"
+          }
+        }
+      },
+      "DecisionChunk": {
+        "type": "object",
+        "description": "One chunk of a batch: an id the caller can find it by, and its state.",
+        "required": [
+          "id",
+          "context"
+        ],
+        "properties": {
+          "context": {
+            "$ref": "#/components/schemas/DecisionContext"
+          },
+          "id": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
+      },
+      "DecisionContext": {
+        "oneOf": [
+          {
+            "type": "object",
+            "required": [
+              "text"
+            ],
+            "properties": {
+              "text": {
+                "type": "string",
+                "description": "Plain text: a note, a file, a tool result."
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "json"
+            ],
+            "properties": {
+              "json": {
+                "description": "Structured data. A top-level number, boolean or null is wrapped as\n`{\"text\": ...}` on the wire, which System One requires."
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "messages"
+            ],
+            "properties": {
+              "messages": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/ContextMessage"
+                },
+                "description": "A conversation, sent as System One's `{\"messages\":[...]}` state."
+              }
+            }
+          }
+        ],
+        "description": "The state the questions are asked about."
+      },
+      "DecisionDetail": {
+        "type": "object",
+        "description": "One decision call with the exact context it was sent (capped).",
+        "required": [
+          "record",
+          "context"
+        ],
+        "properties": {
+          "context": {
+            "$ref": "#/components/schemas/DecisionContext"
+          },
+          "record": {
+            "$ref": "#/components/schemas/DecisionRecord"
+          }
+        }
+      },
+      "DecisionKind": {
+        "oneOf": [
+          {
+            "type": "object",
+            "required": [
+              "binary"
+            ],
+            "properties": {
+              "binary": {
+                "type": "object",
+                "description": "Yes or no. System One's `noul`."
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "choice"
+            ],
+            "properties": {
+              "choice": {
+                "type": "object",
+                "description": "One of named options. Each name maps to an optional description, which\nis what the model reads; a missing description sends the name itself.",
+                "required": [
+                  "options"
+                ],
+                "properties": {
+                  "options": {
+                    "type": "object",
+                    "additionalProperties": {
+                      "type": "string",
+                      "nullable": true
+                    }
+                  }
+                }
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "score"
+            ],
+            "properties": {
+              "score": {
+                "type": "object",
+                "description": "An ordered rubric of 1 to 10 levels, lowest first, numbered from 0.",
+                "required": [
+                  "levels"
+                ],
+                "properties": {
+                  "levels": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        ],
+        "description": "What kind of answer a question takes.\n\nSerialized externally tagged, `{\"binary\":{}}`, `{\"choice\":{\"options\":{...}}}`\nand `{\"score\":{\"levels\":[...]}}`, which is the shape the design's monitor\ncriteria and the decide tool use."
+      },
+      "DecisionKindTag": {
+        "type": "string",
+        "description": "The kind of a question without its options, for capability lists.",
+        "enum": [
+          "binary",
+          "choice",
+          "score"
+        ]
+      },
+      "DecisionModelInfo": {
+        "type": "object",
+        "description": "One decision model in the catalog, with whether the named chat may use it.",
+        "required": [
+          "provider",
+          "model",
+          "displayName",
+          "contextTokens",
+          "kinds",
+          "tier",
+          "adapter",
+          "local"
+        ],
+        "properties": {
+          "adapter": {
+            "$ref": "#/components/schemas/DecisionAdapter"
+          },
+          "contextTokens": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "displayName": {
+            "type": "string"
+          },
+          "kinds": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DecisionKindTag"
+            }
+          },
+          "local": {
+            "type": "boolean",
+            "description": "Runs on this computer."
+          },
+          "model": {
+            "type": "string"
+          },
+          "provider": {
+            "type": "string",
+            "description": "`baseten_decision` or `ollama_decision`."
+          },
+          "tier": {
+            "$ref": "#/components/schemas/ProviderTier"
+          },
+          "unavailableReason": {
+            "type": "string",
+            "description": "Why the chat named in the request may not use this model (its privacy\ntier, or an institution the model does not cover), or `null` when it\nmay. Always `null` when no chat was named.",
+            "nullable": true
+          }
+        }
+      },
+      "DecisionModelRef": {
+        "type": "object",
+        "description": "Names one decision model.",
+        "required": [
+          "provider",
+          "model"
+        ],
+        "properties": {
+          "adapter": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/DecisionAdapter"
+              }
+            ],
+            "nullable": true
+          },
+          "model": {
+            "type": "string"
+          },
+          "provider": {
+            "type": "string",
+            "description": "`baseten_decision` or `ollama_decision`."
+          }
+        },
+        "additionalProperties": false
+      },
+      "DecisionModelsResponse": {
+        "type": "object",
+        "required": [
+          "models"
+        ],
+        "properties": {
+          "models": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DecisionModelInfo"
+            },
+            "description": "Local models first."
+          },
+          "sessionId": {
+            "type": "string",
+            "description": "The chat `unavailableReason` was worked out for, when one was named.",
+            "nullable": true
+          }
+        }
+      },
+      "DecisionOrigin": {
+        "type": "string",
+        "description": "Why a decision call happened, for the decision log.",
+        "enum": [
+          "chat",
+          "monitor",
+          "tool",
+          "gate",
+          "adhoc"
+        ]
+      },
+      "DecisionOutcome": {
+        "type": "string",
+        "description": "What happened to one decision call, for the decision log.",
+        "enum": [
+          "passed",
+          "failed",
+          "decided",
+          "error",
+          "refused"
+        ]
+      },
+      "DecisionPage": {
+        "type": "object",
+        "required": [
+          "records",
+          "total"
+        ],
+        "properties": {
+          "nextCursor": {
+            "type": "string",
+            "nullable": true
+          },
+          "records": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DecisionRecord"
+            },
+            "description": "Newest first."
+          },
+          "total": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Rows matching the filter, across all pages.",
+            "minimum": 0
+          }
+        }
+      },
+      "DecisionQuery": {
+        "type": "object",
+        "description": "Filters for [`list`]. Every field is optional; `limit` is capped at [`MAX_PAGE`].",
+        "properties": {
+          "batchId": {
+            "type": "string",
+            "nullable": true
+          },
+          "before": {
+            "type": "string",
+            "description": "Opaque cursor from a previous page's `nextCursor` (newest first).",
+            "nullable": true
+          },
+          "errorsOnly": {
+            "type": "boolean"
+          },
+          "limit": {
+            "type": "integer",
+            "format": "int32",
+            "nullable": true,
+            "minimum": 0
+          },
+          "maxP": {
+            "type": "number",
+            "format": "double",
+            "description": "Keep rows whose lowest pass probability is at most this.",
+            "nullable": true
+          },
+          "minP": {
+            "type": "number",
+            "format": "double",
+            "description": "Keep rows whose lowest pass probability is at least this.",
+            "nullable": true
+          },
+          "origin": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/DecisionOrigin"
+              }
+            ],
+            "nullable": true
+          },
+          "originId": {
+            "type": "string",
+            "nullable": true
+          },
+          "outcome": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/DecisionOutcome"
+              }
+            ],
+            "nullable": true
+          },
+          "turnId": {
+            "type": "string",
+            "nullable": true
+          }
+        }
+      },
+      "DecisionRecord": {
+        "type": "object",
+        "description": "One decision call, as a list row (without the full stored context).",
+        "required": [
+          "id",
+          "createdAt",
+          "origin",
+          "questions",
+          "decisions",
+          "outcome",
+          "contextPreview",
+          "contextBytes",
+          "contextTruncated",
+          "privacyEnforced"
+        ],
+        "properties": {
+          "batchId": {
+            "type": "string",
+            "nullable": true
+          },
+          "calibrated": {
+            "type": "boolean",
+            "nullable": true
+          },
+          "chunkId": {
+            "type": "string",
+            "nullable": true
+          },
+          "chunkIndex": {
+            "type": "integer",
+            "format": "int32",
+            "nullable": true,
+            "minimum": 0
+          },
+          "contextBytes": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "contextPreview": {
+            "type": "string"
+          },
+          "contextTruncated": {
+            "type": "boolean"
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "decisions": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Decision"
+            }
+          },
+          "error": {
+            "type": "string",
+            "nullable": true
+          },
+          "id": {
+            "type": "string"
+          },
+          "inputTokens": {
+            "type": "integer",
+            "format": "int64",
+            "nullable": true
+          },
+          "label": {
+            "type": "string",
+            "description": "A human label for the origin (the monitor's name, \"decide\", the phase title).",
+            "nullable": true
+          },
+          "latencyMs": {
+            "type": "integer",
+            "format": "int64",
+            "nullable": true,
+            "minimum": 0
+          },
+          "model": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/DecisionModelRef"
+              }
+            ],
+            "nullable": true
+          },
+          "origin": {
+            "$ref": "#/components/schemas/DecisionOrigin"
+          },
+          "originId": {
+            "type": "string",
+            "description": "The monitor id, tool call id or phase id that asked.",
+            "nullable": true
+          },
+          "outcome": {
+            "$ref": "#/components/schemas/DecisionOutcome"
+          },
+          "outputTokens": {
+            "type": "integer",
+            "format": "int64",
+            "nullable": true
+          },
+          "privacyEnforced": {
+            "type": "boolean"
+          },
+          "questions": {
+            "type": "object",
+            "description": "The questions asked (name -> Question), as JSON."
+          },
+          "servedModel": {
+            "type": "string",
+            "nullable": true
+          },
+          "sessionId": {
+            "type": "string",
+            "nullable": true
+          },
+          "tier": {
+            "type": "string",
+            "description": "`public` or `private`, the decision model's tier.",
+            "nullable": true
+          },
+          "turnId": {
+            "type": "string",
+            "nullable": true
+          }
+        }
+      },
+      "DecisionSettings": {
+        "type": "object",
+        "properties": {
+          "defaultModel": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/DecisionModelRef"
+              }
+            ],
+            "nullable": true
+          },
+          "monitors": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/MonitorCriterion"
+            }
+          }
+        }
+      },
+      "DecisionTurnMarker": {
+        "type": "object",
+        "description": "What a per-turn transcript marker carries (in `MessageMetadata::decision_summary`):\nevery decision call of one turn, aggregated per origin, never one row per call.",
+        "required": [
+          "turnId",
+          "items"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DecisionTurnMarkerItem"
+            }
+          },
+          "turnId": {
+            "type": "string"
+          }
+        }
+      },
+      "DecisionTurnMarkerItem": {
+        "type": "object",
+        "description": "One origin's line in a per-turn transcript marker.",
+        "required": [
+          "origin",
+          "label",
+          "count",
+          "passed",
+          "failed",
+          "errors"
+        ],
+        "properties": {
+          "count": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "errors": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "failed": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "fired": {
+            "type": "boolean",
+            "description": "A monitor that fired this turn."
+          },
+          "label": {
+            "type": "string"
+          },
+          "lastPassProbability": {
+            "type": "number",
+            "format": "double",
+            "nullable": true
+          },
+          "origin": {
+            "$ref": "#/components/schemas/DecisionOrigin"
+          },
+          "originId": {
+            "type": "string",
+            "nullable": true
+          },
+          "passed": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          }
+        }
+      },
+      "DecisionTurnSummary": {
+        "type": "object",
+        "description": "One origin's calls within one turn, aggregated (the transcript marker's data).",
+        "required": [
+          "turnId",
+          "origin",
+          "label",
+          "count",
+          "passed",
+          "failed",
+          "errors",
+          "firstAt",
+          "lastAt"
+        ],
+        "properties": {
+          "count": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "errors": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "failed": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "firstAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "label": {
+            "type": "string"
+          },
+          "lastAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "lastPassProbability": {
+            "type": "number",
+            "format": "double",
+            "nullable": true
+          },
+          "origin": {
+            "$ref": "#/components/schemas/DecisionOrigin"
+          },
+          "originId": {
+            "type": "string",
+            "nullable": true
+          },
+          "passed": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "turnId": {
+            "type": "string"
+          }
+        }
+      },
+      "DecisionUsage": {
+        "type": "object",
+        "description": "Token usage of the model request a decision came from.",
+        "properties": {
+          "inputTokens": {
+            "type": "integer",
+            "format": "int64",
+            "nullable": true
+          },
+          "outputTokens": {
+            "type": "integer",
+            "format": "int64",
+            "nullable": true
           }
         }
       },
@@ -16393,6 +18026,19 @@
             "type": "boolean",
             "description": "Whether the message should be included in the agent's context window"
           },
+          "decisionId": {
+            "type": "string",
+            "description": "Decision models: the decision-log row an assistant message reports (the\nreply of a chat whose main model is a decision model). Surfaces draw a\ndecision card from it; every wire format ignores it.",
+            "nullable": true
+          },
+          "decisionSummary": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/DecisionTurnMarker"
+              }
+            ],
+            "nullable": true
+          },
           "pinned": {
             "type": "boolean",
             "description": "#51: carry this message verbatim through every compaction instead of\ndissolving it into a summary. Never dropped by summarization — but still\nsubject to the overall context budget, which trims the oldest pins first\nand reports it. Defaults to false."
@@ -16615,6 +18261,132 @@
             "type": "integer",
             "format": "int64",
             "description": "Number of billed turns attributed to this group."
+          }
+        }
+      },
+      "MonitorAction": {
+        "type": "string",
+        "description": "What a monitor does when it fires.",
+        "enum": [
+          "stop",
+          "notify",
+          "steer"
+        ]
+      },
+      "MonitorCriterion": {
+        "type": "object",
+        "description": "One monitor: a decision model watching the chat for a criterion.",
+        "required": [
+          "id",
+          "name",
+          "question",
+          "threshold"
+        ],
+        "properties": {
+          "action": {
+            "$ref": "#/components/schemas/MonitorAction"
+          },
+          "consecutive": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Evaluations in a row at or above the threshold before it fires (1..5).",
+            "minimum": 0
+          },
+          "enabled": {
+            "type": "boolean"
+          },
+          "id": {
+            "type": "string",
+            "description": "Slug, unique within the chat."
+          },
+          "maxEvalsPerTurn": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Evaluation cap per turn (at most 200).",
+            "minimum": 0
+          },
+          "model": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/DecisionModelRef"
+              }
+            ],
+            "nullable": true
+          },
+          "name": {
+            "type": "string",
+            "description": "Short human name (at most 60 chars)."
+          },
+          "onError": {
+            "$ref": "#/components/schemas/MonitorErrorPolicy"
+          },
+          "option": {
+            "type": "string",
+            "description": "For a choice question: the option whose probability is compared. Binary\nquestions compare P(yes).",
+            "nullable": true
+          },
+          "question": {
+            "$ref": "#/components/schemas/Question"
+          },
+          "rearmBelow": {
+            "type": "number",
+            "format": "double",
+            "description": "After firing, re-arm only once P drops below this.",
+            "nullable": true
+          },
+          "threshold": {
+            "type": "number",
+            "format": "double",
+            "description": "Fires when P(wanted answer) is at least this (0..1)."
+          },
+          "timing": {
+            "$ref": "#/components/schemas/MonitorTiming"
+          },
+          "window": {
+            "$ref": "#/components/schemas/MonitorWindow"
+          }
+        }
+      },
+      "MonitorErrorPolicy": {
+        "type": "string",
+        "description": "What a monitor does when its decision call fails.",
+        "enum": [
+          "notify",
+          "pause"
+        ]
+      },
+      "MonitorTiming": {
+        "type": "string",
+        "description": "When a monitor is evaluated.",
+        "enum": [
+          "post_iteration",
+          "turn_end"
+        ]
+      },
+      "MonitorWindow": {
+        "type": "object",
+        "description": "The rolling window a monitor sees.",
+        "required": [
+          "entries",
+          "maxChars",
+          "toolCalls"
+        ],
+        "properties": {
+          "entries": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Newest entries kept (messages and tool lines), at most 48.",
+            "minimum": 0
+          },
+          "maxChars": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Character budget, at most 12000.",
+            "minimum": 0
+          },
+          "toolCalls": {
+            "type": "boolean",
+            "description": "Include tool calls and results."
           }
         }
       },
@@ -17295,6 +19067,52 @@
           }
         }
       },
+      "PhaseGateSnapshot": {
+        "type": "object",
+        "description": "A phase gate as surfaces draw it.",
+        "required": [
+          "threshold",
+          "questionCount",
+          "attempts",
+          "maxAttempts",
+          "blocked"
+        ],
+        "properties": {
+          "attempts": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "blocked": {
+            "type": "boolean"
+          },
+          "lastMinP": {
+            "type": "number",
+            "format": "double",
+            "description": "The lowest P(yes) across the gate's questions at the last evaluation.",
+            "nullable": true
+          },
+          "lastPassed": {
+            "type": "boolean",
+            "description": "The last evaluation's verdict, when there was one.",
+            "nullable": true
+          },
+          "maxAttempts": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "questionCount": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "threshold": {
+            "type": "number",
+            "format": "double"
+          }
+        }
+      },
       "PhaseKind": {
         "type": "string",
         "description": "What a phase is for. Drives the glyph a surface draws; carries no behaviour.",
@@ -17343,6 +19161,14 @@
           "finishedAt": {
             "type": "string",
             "format": "date-time",
+            "nullable": true
+          },
+          "gate": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/PhaseGateSnapshot"
+              }
+            ],
             "nullable": true
           },
           "goal": {
@@ -17660,6 +19486,67 @@
           }
         }
       },
+      "ProbabilitySource": {
+        "oneOf": [
+          {
+            "type": "object",
+            "required": [
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "native"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "Token log-probabilities of a chat model, summed over each option's token\nvariants and renormalised. `mass` is the share of probability that fell\non option tokens before renormalising.",
+            "required": [
+              "mass",
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "logprob"
+                ]
+              },
+              "mass": {
+                "type": "number",
+                "format": "double"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "A number the model wrote. Never calibrated. `reason` says why a logprob\nadapter fell back to this, when it did.",
+            "required": [
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "verbalized"
+                ]
+              },
+              "reason": {
+                "type": "string",
+                "nullable": true
+              }
+            }
+          }
+        ],
+        "description": "Where a decision's probabilities came from.",
+        "discriminator": {
+          "propertyName": "kind"
+        }
+      },
       "ProvenanceKind": {
         "type": "string",
         "enum": [
@@ -17891,6 +19778,31 @@
             "type": "string"
           }
         }
+      },
+      "Question": {
+        "type": "object",
+        "description": "One named question.",
+        "required": [
+          "instructions",
+          "kind"
+        ],
+        "properties": {
+          "instructions": {
+            "type": "string"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/DecisionKind"
+          },
+          "threshold": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/Threshold"
+              }
+            ],
+            "nullable": true
+          }
+        },
+        "additionalProperties": false
       },
       "RawAudioContent": {
         "type": "object",
@@ -19566,6 +21478,13 @@
             "type": "string",
             "format": "date-time"
           },
+          "decision_count": {
+            "type": "integer",
+            "format": "int64",
+            "description": "How many decision-model calls this chat has made (its rows in the\n`decisions` table), for History's per-chat count. Filled by the full\nlisting (`GET /sessions`, `biorouter session list`) only, and only when\nthe chat has at least one; `None` everywhere else, so absent means\n\"none, or not counted here\". Decision calls can number in the thousands,\nwhich is why History shows this one number and never a row per call.",
+            "nullable": true,
+            "minimum": 0
+          },
           "diverged_from": {
             "type": "string",
             "description": "Id of the session this one was diverged (branched) from, if any. Set by\n`diverge_session`; `None` for normally-created sessions. Lets the UI show\na session's lineage (\"branched from …\").",
@@ -19666,6 +21585,34 @@
           "public",
           "private"
         ]
+      },
+      "SessionDecisionSummary": {
+        "type": "object",
+        "required": [
+          "total",
+          "aggregates",
+          "recentTurns"
+        ],
+        "properties": {
+          "aggregates": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DecisionAggregate"
+            }
+          },
+          "recentTurns": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DecisionTurnSummary"
+            },
+            "description": "Newest turn first, at most [`RECENT_TURNS`] turns."
+          },
+          "total": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          }
+        }
       },
       "SessionDisplayInfo": {
         "type": "object",
@@ -21585,6 +23532,88 @@
             "type": "string"
           }
         }
+      },
+      "Threshold": {
+        "oneOf": [
+          {
+            "type": "object",
+            "required": [
+              "yes"
+            ],
+            "properties": {
+              "yes": {
+                "type": "number",
+                "format": "double",
+                "description": "Binary: P(yes) at or above this."
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "no"
+            ],
+            "properties": {
+              "no": {
+                "type": "number",
+                "format": "double",
+                "description": "Binary: P(no) at or above this."
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "option"
+            ],
+            "properties": {
+              "option": {
+                "type": "object",
+                "description": "Choice: P(option) at or above `p`.",
+                "required": [
+                  "name",
+                  "p"
+                ],
+                "properties": {
+                  "name": {
+                    "type": "string"
+                  },
+                  "p": {
+                    "type": "number",
+                    "format": "double"
+                  }
+                }
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "at_least_level"
+            ],
+            "properties": {
+              "at_least_level": {
+                "type": "object",
+                "description": "Score: P(level >= `level`), the sum of the level probabilities from\n`level` up, at or above `p`. The fractional expected score is not used,\nbecause it hides a bimodal distribution.",
+                "required": [
+                  "level",
+                  "p"
+                ],
+                "properties": {
+                  "level": {
+                    "type": "integer",
+                    "minimum": 0
+                  },
+                  "p": {
+                    "type": "number",
+                    "format": "double"
+                  }
+                }
+              }
+            }
+          }
+        ],
+        "description": "What \"pass\" means for one question. It acts on the probability of the\nanswer the caller wants, never on [`Decision::confidence`], which measures\nhow concentrated the distribution is and is not the probability of\nanything."
       },
       "TokenState": {
         "type": "object",

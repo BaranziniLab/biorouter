@@ -1,0 +1,190 @@
+//! A chat's decision settings on a daemon that holds no user-action key
+//! (`biorouter serve`, or a hand-run `biorouterd`).
+//!
+//! There nothing can produce the proof a keyed daemon asks a settings write for,
+//! so `routes::decisions` leaves the reach gate as the whole of the gate, as
+//! SD-11 does for Stop: a browser on a `serve` host can set a chat's monitors.
+//! A desktop daemon that was meant to receive a key and did not keeps the
+//! refusal, because that is a fault a restart repairs, not a `serve` host.
+//!
+//! ⚠ Its own test binary on purpose: the installed digest is a process global
+//! (`OnceLock`), so a binary that installs a key can never observe a keyless
+//! daemon. Nothing here installs one. The keyed half is in the lib's
+//! `routes::decisions` tests.
+
+// Redirects this binary's Biorouter data/config/state dirs at a throwaway root
+// before `main`, so nothing here can open the developer's real `sessions.db`.
+#[path = "../src/test_sandbox.rs"]
+mod test_sandbox;
+
+use std::sync::Arc;
+
+use axum::body::Body;
+use axum::http::{HeaderMap, Request, StatusCode};
+use biorouter::model::ModelConfig;
+use biorouter::privacy::SessionClassification;
+use biorouter::session::session_manager::SessionType;
+use biorouter_server::auth::{user_action_proof, UserActionProof};
+use biorouter_server::routes::decisions::DECISION_SETTINGS_KEY_MISSING;
+use biorouter_server::routes::session_reach::{CALLER_PROVIDER_HEADER, SESSION_REACH_NO_KEY};
+use biorouter_server::state::AppState;
+use serde_json::{json, Value};
+use serial_test::serial;
+use tower::ServiceExt;
+
+fn assert_the_daemon_is_keyless() {
+    assert_eq!(
+        user_action_proof(&HeaderMap::new()),
+        UserActionProof::NoKeyInstalled,
+        "something in this binary installed a user-action digest, so these tests would be \
+         measuring a desktop daemon rather than a `biorouter serve` one"
+    );
+    assert!(
+        biorouter::privacy::privacy_tiers_enabled(),
+        "privacy tiers are off, so the reach gate below would admit everything either way"
+    );
+}
+
+async fn seed(state: &Arc<AppState>, tier: SessionClassification) -> String {
+    let manager = state.session_manager();
+    let session = manager
+        .create_session(
+            std::env::temp_dir(),
+            format!("Decision settings, keyless, {tier:?} (test fixture)"),
+            SessionType::User,
+        )
+        .await
+        .unwrap();
+    if tier == SessionClassification::Private {
+        manager
+            .update(&session.id)
+            .provider_name("versa_azure")
+            .model_config(ModelConfig::new("gpt-4o").unwrap())
+            .raise_privacy(SessionClassification::Private, "turn:versa_azure")
+            .apply()
+            .await
+            .unwrap();
+    }
+    session.id
+}
+
+fn settings() -> Value {
+    json!({
+        "monitors": [{
+            "id": "form",
+            "name": "Form reached",
+            "question": {
+                "instructions": "Has the agent reached the consent form page?",
+                "kind": { "binary": {} }
+            },
+            "threshold": 0.85,
+            "action": "notify"
+        }]
+    })
+}
+
+/// One request through the served tree, with the headers a browser tab on a
+/// `serve` daemon sends (its shim answers the user-action key with an empty
+/// string), plus a stated capability when given.
+async fn send(
+    state: &Arc<AppState>,
+    method: &str,
+    uri: &str,
+    body: Option<Value>,
+    caller_provider: Option<&str>,
+) -> (StatusCode, String) {
+    let app = biorouter_server::routes::configure(state.clone(), "keyless-secret".to_string());
+    let mut request = Request::builder()
+        .method(method)
+        .uri(uri)
+        .header("X-User-Action", "");
+    if let Some(provider) = caller_provider {
+        request = request.header(CALLER_PROVIDER_HEADER, provider);
+    }
+    let body = match body {
+        Some(json) => {
+            request = request.header("content-type", "application/json");
+            Body::from(serde_json::to_vec(&json).unwrap())
+        }
+        None => Body::empty(),
+    };
+    let res = app.oneshot(request.body(body).unwrap()).await.unwrap();
+    let status = res.status();
+    let bytes = axum::body::to_bytes(res.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    (status, String::from_utf8_lossy(&bytes).into_owned())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[serial]
+async fn a_browser_on_a_keyless_daemon_sets_a_reachable_chats_monitors() {
+    assert_the_daemon_is_keyless();
+    biorouter_server::launch::record_launch_state(false);
+    let state = AppState::new().await.unwrap();
+
+    let public = seed(&state, SessionClassification::Public).await;
+    let uri = format!("/sessions/{public}/decision-settings");
+    let (status, body) = send(&state, "PUT", &uri, Some(settings()), None).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let (status, body) = send(&state, "GET", &uri, None, None).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let stored: Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(stored["monitors"][0]["id"], "form", "{body}");
+
+    // A private chat is still the reach gate's: refused with its keyless
+    // sentence to a caller that states nothing, and admitted to one that states
+    // a private model, as every route that names a chat is on this daemon.
+    let private = seed(&state, SessionClassification::Private).await;
+    let uri = format!("/sessions/{private}/decision-settings");
+    let (status, body) = send(&state, "PUT", &uri, Some(settings()), None).await;
+    assert_eq!(
+        (status, body.as_str()),
+        (StatusCode::FORBIDDEN, SESSION_REACH_NO_KEY)
+    );
+    let (status, body) = send(&state, "PUT", &uri, Some(settings()), Some("versa_azure")).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    let _ = state.session_manager().delete_session(&public).await;
+    let _ = state.session_manager().delete_session(&private).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[serial]
+async fn a_desktop_daemon_that_lost_its_key_keeps_the_refusal() {
+    assert_the_daemon_is_keyless();
+    // The desktop launcher declared it would hand this daemon a key.
+    biorouter_server::launch::record_launch_state(true);
+    let state = AppState::new().await.unwrap();
+
+    let chat = seed(&state, SessionClassification::Public).await;
+    for uri in [
+        format!("/sessions/{chat}/decision-settings"),
+        format!("/sessions/{chat}/decision-chat"),
+    ] {
+        let body = if uri.ends_with("decision-chat") {
+            json!({ "question": { "instructions": "Is it done?", "kind": { "binary": {} } } })
+        } else {
+            settings()
+        };
+        let (status, got) = send(&state, "PUT", &uri, Some(body), None).await;
+        assert_eq!(
+            (status, got.as_str()),
+            (StatusCode::FORBIDDEN, DECISION_SETTINGS_KEY_MISSING),
+            "{uri}"
+        );
+    }
+    // Reading is not a write: still the reach gate alone.
+    let (status, body) = send(
+        &state,
+        "GET",
+        &format!("/sessions/{chat}/decision-settings"),
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    biorouter_server::launch::record_launch_state(false);
+    let _ = state.session_manager().delete_session(&chat).await;
+}
