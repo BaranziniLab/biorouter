@@ -39,26 +39,39 @@ ability to bypass another tool's permissions. An unattended route returns a stru
 ## Seeing and revoking a chat's folders
 
 In the desktop app, and in a browser served by `biorouter serve`, the name of the chat's
-working folder (its workspace) sits beneath the chat composer. Point at the name, or move focus
-to it with Tab, and a card opens above the composer with the working folder's full path and
-every other folder allowed for this session:
+working folder (its workspace) sits beneath the chat composer. Point at the name for a moment,
+or move focus to it with Tab, and a card opens above the composer. It never covers the draft
+or the composer's controls. The card has two sections:
 
-- Each additional folder shows its access (read only, or read and write), whether it includes
+- **Working folder** shows the folder's full path. On Home, and in a chat that has no messages
+  yet, a **Choose folder…** button in this section picks a different working folder. Once the
+  chat has messages its working folder is fixed, and the section says so instead.
+- **Other approved folders**, in a chat only, lists every other folder allowed for this
+  session. Each one shows its access (read only, or read and write), whether it includes
   subfolders, and a **Revoke** button. Folders allowed once are not listed, because that
   approval covers only its pending operation.
-- The card says what folder approval covers: built-in file tools ask before they use another
-  folder, and shell commands never ask for it.
-- While an existing chat's working folder has not loaded, a folder icon without a name stands
-  in for it and opens the same card, so the chat's grants stay listed and revocable.
-- Once the chat has messages, click the folder name, or press Enter or Space while it has
-  focus, to keep the card open. Opening it from the keyboard also moves focus into the card, so
-  Tab reaches each **Revoke** button. Before the first message, clicking the name chooses a
-  different working folder instead.
-- A card that was not kept open closes when the pointer leaves both the name and the card.
-  Escape, or a click outside the card, closes it either way. Escape, and Shift+Tab from the
+
+The card ends by saying what folder approval covers. The file editor, file analysis and image
+tools ask before they use another folder. Shell commands and document tools do not ask.
+
+- Click the folder name, or press Enter or Space while it has focus, to keep the card open.
+  This works in every state, including Home and a chat before its first message. A second
+  click closes it. Opening it from the keyboard also moves focus into the card, so Tab reaches
+  **Choose folder…** or each **Revoke** button. A press inside the card keeps it open too.
+- A card that was not kept open closes when the pointer leaves both the name and the card, or
+  when focus moves away from the name.
+- Escape, or a click outside the card, closes it either way. Escape, and Shift+Tab from the
   card itself, return focus to the folder name; a click outside leaves focus where you clicked.
-- In a browser, the card also holds the **Folder approval key** field once the chat has a
-  grant to revoke. See [Browser setup](#browser-setup).
+- While the system folder chooser that **Choose folder…** opens is on screen, no card shows.
+- While an existing chat's working folder has not loaded, a folder icon without a name stands
+  in for it and opens the same card. The Working folder section reads "Not known yet.", and
+  the chat's grants stay listed and revocable.
+- In the desktop app, ⌘-click (Ctrl-click on Windows and Linux) on the name opens the folder in
+  the file manager and does not open the card.
+- The context ring and the cost beside it open cards that behave the same way. One card is
+  open at a time across the footer: opening one closes the other.
+- In a browser, the Other approved folders section also holds the **Folder approval key**
+  field once the chat has a grant to revoke. See [Browser setup](#browser-setup).
 
 Revocation is checked by operations that already hold a file capability as well as
 future operations. It does not undo a completed edit. Read-only permission never silently

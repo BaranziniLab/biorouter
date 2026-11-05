@@ -1579,12 +1579,25 @@ footer line.
     **Superseded (2026-11):** the tooltip is now a hover card on a popover surface. It shows the
     full path (mono) and, in a chat, every other folder the chat may use, each with Revoke. It
     replaces the separate "Folder access" button and dialog that 1.94.0 added beside the folder.
-    Once a chat has messages the folder name is a button that keeps the card open; it still never
-    changes the folder (#44). See `docs/security/folder-access.md`, "Seeing and revoking a chat's
-    folders".
+    The folder name is a button that keeps the card open in every state. Choosing a different
+    folder moved into the card, as a "Choose folder…" button shown only before the first
+    message; the locked chip still never changes the folder (#44). The same light card replaces
+    the context ring's one-line tooltip and its separate click popover (the card holds "N% left",
+    the tokens used, the gauge with its draggable auto-compact marker, and Compact chat), and the
+    cost figure's multi-line tooltip (the total, the input and output tokens, and a By model
+    section). All three items share one behaviour from `bottom_menu/useFooterCard.ts` and one
+    format from `bottom_menu/FooterCard.tsx`: a pointer resting on the item opens its card after
+    300ms (touch never does), a Tab onto it opens the card at once, a click, Enter or Space keeps
+    it open, leaving both the item and the card closes a card that was not kept open after
+    150ms, Escape or a press outside closes it, and the card hangs above the composer card and
+    below the 44px drag band. One card is open at a time across the footer. See
+    `docs/security/folder-access.md`, "Seeing and revoking a chat's folders", and
+    `docs/desktop-ui/shared-controls.md`, "Composer footer cards".
   - On the right, a 14px context ring. Its text "N% left" appears **only below 50%**, and its
-    tooltip is one line, "72% context left · 92k of 128k".
+    tooltip is one line, "72% context left · 92k of 128k". **Superseded (2026-11):** the tooltip
+    and the click popover are one hover card; see the note above.
   - Cost appears **only when it is above $0 and inside a chat**, in sans `tabular-nums`.
+    **Superseded (2026-11):** its tooltip is the same hover card; see the note above.
 - **Placeholders:** "Ask Biorouter anything…" on Home and in empty chats (pinned by
   `Hub.startFailure.test.tsx`), and "Ask a follow-up" in a chat. This replaces "⌘↑/⌘↓ to navigate
   messages" (`utils/keyboardShortcuts.ts:6`).

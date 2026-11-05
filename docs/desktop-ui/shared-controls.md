@@ -1,6 +1,6 @@
 # The shared controls
 
-> **What this is.** The numbers and rules the desktop app's shared controls are built to (switch, segmented control, InfoTip, setting row, row actions, menus, tooltips, fields, tabs, dialogs and sheets), and the traps each one has already hit.
+> **What this is.** The numbers and rules the desktop app's shared controls are built to (switch, segmented control, InfoTip, the composer footer's cards, setting row, row actions, menus, tooltips, fields, tabs, dialogs and sheets), and the traps each one has already hit.
 > **Status:** Current
 > **Audience:** developers working on the desktop renderer, and agents editing `ui/desktop/src/components/ui/`
 
@@ -29,6 +29,30 @@ The words are always in the page: a visually hidden node holds them and the glyp
 - The `asChild` form makes an existing badge the trigger. The target carries `biorouter-focus-region` so the base focus rule (a fill and an inset edge for every `[tabindex]`) stays off it and its outline is the only mark.
 - Its name is "About" and the label's words. When the label is a node rather than a string, the words it shows are read from it (`plainTextOf`), and `Field` takes an explicit `infoLabel`. A field id is never a name: the workflow editor's "Initial prompt (optional)" was announced "About workflow-prompt" (V3-R3-3).
 - Its focus mark is a 20px box 2px inside the 24px hit box (`::before`), not the hit box itself. The hit box starts 1px before the label's end, so a mark on it lay over the label's last letter (V4-R3-1). The OS ring under `prefers-contrast: more` and forced colours is drawn on the same 20px edge.
+
+## Composer footer cards
+
+The three items on the footer line under the composer (the working folder, the context ring and the cost) each open a card, and the three are one control. `bottom_menu/useFooterCard.ts` holds the behaviour and `bottom_menu/FooterCard.tsx` the format. The consumers are `DirSwitcher.tsx` (with `FolderAccessCard.tsx`), `ContextWindowIndicator.tsx` and `CostTracker.tsx`. `ComposerFooter.tsx` wraps the line in `FooterCardGroup`, which carries the composer card's ref and keeps one card open at a time; a component rendered without the group still works alone. A new footer item uses the hook and the card, never a `Tooltip`: the three used to be a hover card, a one-line dark tooltip with a separate click popover, and a multi-line dark tooltip, and each answered a click, a key and a hover differently.
+
+The card is the light popover surface `PopoverContent` draws (`biorouter-popover-surface`: the default ground, a hairline, a shadow and a 12px radius), at most 320px wide, with 12px of padding and its sections 12px apart. It is built only from `FooterCardSection` (a muted 12px label over its content), `FooterCardValue` (the 13px reading, mono for a path), `FooterCardDetail` (a muted 12px line under a value), `FooterCardList` and `FooterCardRow` (rows with an optional trailing action, such as Revoke), `FooterCardNote` (a muted 12px sentence) and `FooterCardActions` (secondary `xs` buttons), so the same kind of reading looks the same in all three. While the surface itself holds keyboard focus its edge turns `--border-focus`. The CSS is `.br-footer-card*` in `bottom_menu/pickers.css`, authored rather than Tailwind strings.
+
+Every item behaves the same way:
+
+1. A mouse or pen resting on the trigger opens its card after 300ms (`FOOTER_CARD_OPEN_DELAY_MS`). Touch never opens one by hover.
+2. Leaving both the trigger and the card closes a card that is not pinned after 150ms (`FOOTER_CARD_CLOSE_GRACE_MS`). A pointer moving through the grace polygon toward the other surface keeps it open, and so does entering the card.
+3. A Tab onto the trigger opens the card at once, unpinned. A focus set by script does not. Tab away closes it. The cards are portalled to the end of the page, so where nothing tabbable follows the line (the folder chip on Home, a readout that ends a chat's line) the next Tab lands in the card instead, and focus that enters a card pins it, so a pointer crossing the trigger can no longer close it with focus inside.
+4. A click or tap on the trigger pins the card, and a second one unpins and closes it. Enter or Space pins it and also moves focus onto the card surface (a named dialog), so the next Tab reaches its first control. In a card that holds no control (the cost card, a locked chat's folder card with no grants) that Tab closes the card and carries on from the trigger to whatever follows it.
+5. A press inside the card pins it and moves focus into it, onto the control pressed or onto the card surface, as the browser's own focus for a press does (no focus edge). The context gauge's bar and marker keep that focus too: their drag no longer cancels the press, and `user-select: none` on `.br-context-gauge` stops the drag from selecting text.
+6. Escape closes the card and returns focus to the trigger, and so does Shift+Tab off the card surface. A press outside closes it and leaves focus where the press put it.
+7. Opening any card closes the other open one, without moving focus.
+8. A pinned card survives the trigger's blur when the window loses focus; an unpinned one closes on blur. Focus that really moves elsewhere in the page still closes a pinned card, through Radix's focus-outside dismissal. Coming back, the window refocuses whatever had focus, which is why rule 5 matters: a press that left focus in the draft read as focus outside the card and closed it.
+9. A scroll of an ancestor of the trigger closes an unpinned card. A scroll inside the card or in a sibling scroller does not.
+10. The trigger shows its open state: it is a real `<button type="button">` with its own `aria-label`, `aria-haspopup="dialog"`, `aria-expanded` and, while open, `aria-controls`, and `.br-footline__item[aria-expanded='true']` draws it.
+11. The card hangs above the composer card, never over the draft or its controls, and below the 44px drag band (a top collision padding of 52px). The folder card aligns to its chip's left edge, the context and cost cards to their trigger's right edge.
+
+`bottom_menu/footerCards.contract.test.tsx` holds the three items to these rules: it renders the real `ComposerFooter` and runs one table of cases over the folder, the context and the cost, so a rule that holds for one item and not another fails there. `bottom_menu/footerCard.browser.test.tsx` measures the same three in Chromium, where the placement, the pointer's way into a card and the surface's look can be read, and checks that the three cards' padding, radius, border, shadow and type compute the same. A new item joins both tables.
+
+The folder card adds two rules of its own. While the native folder chooser is open no card shows, and nothing armed before it opens one afterwards (#50). The chip of a chat that has messages never calls `updateWorkingDir` and never opens the chooser (#44); choosing a folder is the card's **Choose folder…** button, shown only while the folder can still change. ⌘-click (Ctrl-click) on the chip opens the folder in the file manager and does not pin the card. What the folder card lists is in [External folder access](../security/folder-access.md#seeing-and-revoking-a-chats-folders).
 
 ## Rows and row actions
 
@@ -193,3 +217,4 @@ To look at the components under the whole stylesheet, compile `main.css` with Vi
 - [Implementation spec, section 2.6](../design/codex-simplicity-redesign/implementation-spec.md): the numbers above and why they were chosen.
 - [The settings visual vocabulary](settings-visual-vocabulary.md): the rules Settings and the component views are built to, which lean on these controls.
 - [Renderer testing traps](renderer-testing-traps.md): other ways a frontend test passes while the code it covers is broken.
+- [External folder access](../security/folder-access.md): what the working folder's card lists and how a grant is revoked from it.

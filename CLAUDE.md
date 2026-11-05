@@ -1375,8 +1375,14 @@ value's *location* is as load-bearing as the number.
   notices, chips and the text, then one 32px controls row: `+`, the Tools chip,
   the model and effort chip, and Send. Under the card, a 12px muted footer
   (`bottom_menu/ComposerFooter.tsx`): the working folder on the left, the context
-  ring and the chat's cost on the right, only the folder on Home. The card's
-  classes live in one module, `composer/composerCard.ts`, and Home renders the
+  ring and the chat's cost on the right, only the folder on Home. The three
+  footer items open the same light hover card (`bottom_menu/useFooterCard.ts`,
+  `bottom_menu/FooterCard.tsx`) with one behaviour: a hover opens it after
+  300ms, a click or Enter pins it, Escape or a press outside closes it, one card
+  is open at a time, and it hangs above the composer card. A new footer item
+  uses that card, never a `Tooltip` (`docs/desktop-ui/shared-controls.md`,
+  "Composer footer cards"). The card's classes live in one module,
+  `composer/composerCard.ts`, and Home renders the
   same `ChatInput`, so the two never differ. Its surface,
   `composerCardSurfaceClassName`, is also what the in-place message edit card in
   `UserMessage.tsx` wears, because editing a message is writing in a composer
