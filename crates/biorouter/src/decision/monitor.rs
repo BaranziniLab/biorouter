@@ -41,10 +41,12 @@ use indexmap::IndexMap;
 
 use super::error::{DecisionError, DecisionResult};
 use super::log::{DecisionTurnMarker, DecisionTurnMarkerItem};
-use super::service::{DecisionLogEntry, DecisionOutcome, DecisionService, DecisionSession};
+use super::service::{
+    state_budget_tokens, DecisionLogEntry, DecisionOutcome, DecisionService, DecisionSession,
+};
 use super::settings::{
     DecisionSettings, MonitorAction, MonitorCriterion, MonitorErrorPolicy, MonitorTiming,
-    MonitorWindow,
+    MonitorWindow, MIN_WINDOW_CHARS,
 };
 use super::types::{Decision, DecisionModelRef, DecisionOrigin, DecisionRequest, Question};
 use super::window::{build_window, WindowSpec};
@@ -248,6 +250,29 @@ fn window_key(window: MonitorWindow) -> WindowKey {
     (window.entries, window.max_chars, window.tool_calls)
 }
 
+/// Tokens the window's opening line takes ("Recent work of an AI agent at loop
+/// iteration N, oldest first. ...", about 190 characters).
+const WINDOW_PREAMBLE_TOKENS: usize = 64;
+
+/// `spec` narrowed so the window, beside `questions`, fits a model of
+/// `context_tokens` (the service's own margin and estimate factor). Never
+/// below [`MIN_WINDOW_CHARS`] or the criterion's own size, whichever is
+/// smaller: a model too small for even that is refused by the size check
+/// before sending, which names the monitor, rather than asked about nothing.
+fn fit_window(
+    spec: WindowSpec,
+    context_tokens: usize,
+    questions: &IndexMap<String, Question>,
+) -> WindowSpec {
+    let budget = state_budget_tokens(context_tokens, questions);
+    let fitted = spec.fitted_to(budget, WINDOW_PREAMBLE_TOKENS);
+    let floor = (MIN_WINDOW_CHARS as usize).min(spec.max_chars);
+    WindowSpec {
+        max_chars: fitted.max_chars.max(floor),
+        ..fitted
+    }
+}
+
 /// One request an evaluation point will make: every due criterion that shares
 /// a model and a window, over one state.
 #[derive(Debug, Clone)]
@@ -379,16 +404,65 @@ impl MonitorRegistry {
         })
     }
 
-    /// The requests one evaluation point makes, grouped by (model, window).
-    /// A criterion whose window is unchanged since it was last asked is left
-    /// out; a criterion whose question cannot be built is reported by
-    /// [`Self::take_invalid`] and turned off for the turn.
+    /// The models the criteria due at `timing` ask (`None`: the service
+    /// chooses), each once, so their windows can be looked up before
+    /// [`Self::plan_fitted`].
+    pub fn due_models(
+        &self,
+        session_id: &str,
+        timing: MonitorTiming,
+    ) -> Vec<Option<DecisionModelRef>> {
+        let sessions = self.lock();
+        let Some(entry) = sessions.get(session_id) else {
+            return Vec::new();
+        };
+        let Some(settings) = entry.settings.as_ref() else {
+            return Vec::new();
+        };
+        let mut models = Vec::new();
+        for criterion in &settings.monitors {
+            let due = entry
+                .criteria
+                .get(&criterion.id)
+                .map(|state| state.is_due(criterion, timing))
+                .unwrap_or_else(|| CriterionState::default().is_due(criterion, timing));
+            let model = model_for(criterion, settings);
+            if due && !models.contains(&model) {
+                models.push(model);
+            }
+        }
+        models
+    }
+
+    /// [`Self::plan_fitted`] with no model windows known: every window is
+    /// built at its criterion's own size.
     pub fn plan(
         &self,
         session_id: &str,
         timing: MonitorTiming,
         conversation: &Conversation,
         iteration: u32,
+    ) -> Vec<PlannedRequest> {
+        self.plan_fitted(session_id, timing, conversation, iteration, |_| None)
+    }
+
+    /// The requests one evaluation point makes, grouped by (model, window).
+    /// A criterion whose window is unchanged since it was last asked is left
+    /// out; a criterion whose question cannot be built is reported by
+    /// [`Self::take_invalid`] and turned off for the turn.
+    ///
+    /// `context_tokens` names the window of the model a group asks (see
+    /// [`context_windows`]); a group whose model's window is known has its
+    /// window narrowed to fit beside its questions ([`fit_window`]), so a
+    /// small model is asked about the newest lines rather than refused as
+    /// too large. The unchanged-window check reads the narrowed window.
+    pub fn plan_fitted(
+        &self,
+        session_id: &str,
+        timing: MonitorTiming,
+        conversation: &Conversation,
+        iteration: u32,
+        context_tokens: impl Fn(Option<&DecisionModelRef>) -> Option<usize>,
     ) -> Vec<PlannedRequest> {
         let mut sessions = self.lock();
         let Some(entry) = sessions.get_mut(session_id) else {
@@ -414,11 +488,22 @@ impl MonitorRegistry {
         }
         let mut planned = Vec::new();
         for ((model, (entries, max_chars, tool_calls)), criteria) in groups {
-            let spec = WindowSpec {
+            let mut spec = WindowSpec {
                 messages: entries as usize,
                 max_chars: max_chars as usize,
                 tool_calls,
             };
+            if let Some(tokens) = context_tokens(model.as_ref()) {
+                let questions: IndexMap<String, Question> = criteria
+                    .iter()
+                    .filter_map(|criterion| {
+                        monitor_question(criterion)
+                            .ok()
+                            .map(|question| (criterion.id.clone(), question))
+                    })
+                    .collect();
+                spec = fit_window(spec, tokens, &questions);
+            }
             let Some(state) = build_window(conversation, spec, iteration) else {
                 continue;
             };
@@ -561,6 +646,24 @@ impl MonitorRegistry {
     }
 }
 
+/// The window, in tokens, of each model in `models` (from
+/// [`MonitorRegistry::due_models`]) as `service` would resolve it for `base`,
+/// read from its listing: nothing is opened or sent. A model the listing does
+/// not show is left out, and its window is built at the criterion's size.
+pub async fn context_windows(
+    service: &DecisionService,
+    base: &DecisionSession,
+    models: Vec<Option<DecisionModelRef>>,
+) -> HashMap<Option<DecisionModelRef>, usize> {
+    let mut windows = HashMap::new();
+    for model in models {
+        if let Some(tokens) = service.context_tokens_for(Some(base), model.as_ref()).await {
+            windows.insert(model, tokens);
+        }
+    }
+    windows
+}
+
 /// Ask every planned request, in parallel, through `service`. `base` is the
 /// chat as sampled for this point; each request is logged with origin
 /// `monitor`, the criterion id (ids joined with `+` for a shared request), the
@@ -691,19 +794,30 @@ pub fn note_decision(entry: &DecisionLogEntry) {
         tallies.shift_remove_index(0);
     }
     let items = tallies.entry(turn_id.to_string()).or_default();
-    let index = match items
-        .iter()
-        .position(|item| item.origin == entry.origin && item.origin_id == entry.origin_id)
-    {
+    let label = entry
+        .origin_label
+        .clone()
+        .unwrap_or_else(|| default_label(entry.origin).to_string());
+    // One item per source, as the decision log's summary groups them: a
+    // `decide` call's origin id is its own batch id, so tool calls are one
+    // item by label and carry no origin id; monitors and gates stay per id.
+    let origin_id = match entry.origin {
+        DecisionOrigin::Tool => None,
+        _ => entry.origin_id.clone(),
+    };
+    let index = match items.iter().position(|item| {
+        item.origin == entry.origin
+            && match entry.origin {
+                DecisionOrigin::Tool => item.label == label,
+                _ => item.origin_id == origin_id,
+            }
+    }) {
         Some(index) => index,
         None => {
             items.push(DecisionTurnMarkerItem {
                 origin: entry.origin,
-                origin_id: entry.origin_id.clone(),
-                label: entry
-                    .origin_label
-                    .clone()
-                    .unwrap_or_else(|| default_label(entry.origin).to_string()),
+                origin_id,
+                label,
                 count: 0,
                 passed: 0,
                 failed: 0,
@@ -1438,5 +1552,111 @@ mod tests {
              decide: 600 chunks, 2 errors; gate 'Build': 2 checks, 1 passed"
         );
         assert!(turn_marker("empty", Vec::new(), Vec::new()).is_none());
+    }
+
+    /// A monitor's window is narrowed to its model's context before the state
+    /// is built, so a small model is asked about the newest lines instead of
+    /// being refused as too large; a model whose window is unknown keeps the
+    /// criterion's own size, and nothing is ever narrowed to nothing.
+    #[tokio::test]
+    async fn a_window_is_fitted_to_the_monitor_models_context() {
+        use crate::decision::service::{context_margin, estimate_tokens};
+        let registry = MonitorRegistry::default();
+        registry.begin_turn("s", "t1");
+        let tiny = DecisionModelRef::new("ollama_decision", "tiny");
+        let mut small = criterion(0.8);
+        small.model = Some(tiny.clone());
+        let mut auto = criterion(0.8);
+        auto.id = "m2".into();
+        auto.name = "Signed".into();
+        registry.cache_settings("s", settings(vec![small, auto]));
+        assert_eq!(
+            registry.due_models("s", MonitorTiming::PostIteration),
+            vec![Some(tiny.clone()), None]
+        );
+        assert!(registry.due_models("s", MonitorTiming::TurnEnd).is_empty());
+
+        let texts: Vec<String> = (0..20)
+            .map(|i| format!("step {i}: {}", "lorem ipsum dolor ".repeat(22)))
+            .collect();
+        let conv = conversation(&texts.iter().map(String::as_str).collect::<Vec<_>>());
+        let chars = |plan: &PlannedRequest| plan.request.context.render_text().chars().count();
+
+        let unfitted = registry.plan("s", MonitorTiming::PostIteration, &conv, 1);
+        let fitted = registry.plan_fitted("s", MonitorTiming::PostIteration, &conv, 1, |model| {
+            (model == Some(&tiny)).then_some(1_024)
+        });
+        assert_eq!((unfitted.len(), fitted.len()), (2, 2));
+        let too_big = estimate_tokens(&unfitted[0].request).await;
+        assert!(
+            too_big + context_margin(1_024) > 1_024,
+            "the fixture must not fit unfitted ({too_big} tokens)"
+        );
+        let fits = estimate_tokens(&fitted[0].request).await;
+        assert!(
+            fits + context_margin(1_024) <= 1_024,
+            "the fitted window passes the size check ({fits} tokens)"
+        );
+        assert!(chars(&fitted[0]) < chars(&unfitted[0]));
+        assert!(
+            fitted[0].request.context.render_text().contains("step 19"),
+            "the newest lines are kept"
+        );
+        assert_ne!(fitted[0].window_sha, unfitted[0].window_sha);
+        assert_eq!(
+            fitted[1].request, unfitted[1].request,
+            "a model with no known window keeps the criterion's size"
+        );
+
+        let floor = registry.plan_fitted("s", MonitorTiming::PostIteration, &conv, 1, |_| Some(64));
+        assert!(
+            floor.iter().all(|plan| chars(plan) > 0),
+            "never narrowed to nothing"
+        );
+        assert!(floor.iter().all(|plan| chars(plan) < chars(&unfitted[1])));
+    }
+
+    /// Every `decide` call is its own batch, but the turn's marker shows the
+    /// tool as one source, as the decision log's summary does; gates stay one
+    /// item per phase.
+    #[test]
+    fn the_tally_counts_every_decide_call_of_a_turn_as_one_source() {
+        let turn = "tally-decide-calls-turn";
+        for batch in ["batch-1", "batch-2", "batch-3"] {
+            for _ in 0..2 {
+                note_decision(&entry(
+                    turn,
+                    DecisionOrigin::Tool,
+                    batch,
+                    DecisionOutcome::Decided,
+                ));
+            }
+        }
+        for phase in ["phase-1", "phase-2"] {
+            note_decision(&entry(
+                turn,
+                DecisionOrigin::Gate,
+                phase,
+                DecisionOutcome::Passed,
+            ));
+        }
+        let tally = take_turn_tally(turn);
+        let tools: Vec<_> = tally
+            .iter()
+            .filter(|item| item.origin == DecisionOrigin::Tool)
+            .collect();
+        assert_eq!(tools.len(), 1);
+        assert_eq!(tools[0].count, 6);
+        assert_eq!(tools[0].origin_id, None);
+        assert_eq!(tools[0].label, "decide");
+        let gates: Vec<_> = tally
+            .iter()
+            .filter(|item| item.origin == DecisionOrigin::Gate)
+            .map(|item| item.origin_id.clone())
+            .collect();
+        assert_eq!(
+            gates,
+            vec![Some("phase-1".to_string()), Some("phase-2".to_string())]
+        );
     }
 }

@@ -245,6 +245,62 @@ describe('DecisionHistory', () => {
     );
   });
 
+  it('fetches a call again when the person comes back to it before its first read landed', async () => {
+    // d0's first read never answers: the person moves on before it would.
+    let firstRead = true;
+    mocks.detail.mockImplementation(async (_s: string, id: string, signal: AbortSignal) => {
+      if (id === 'd0' && firstRead) {
+        firstRead = false;
+        return new Promise((_resolve, reject) =>
+          signal.addEventListener('abort', () => reject(new Error('aborted')))
+        );
+      }
+      return parseDecisionDetail({
+        record: wire(Number(id.slice(1))),
+        context: { text: `Full note ${id}` },
+      });
+    });
+    draw();
+    await waitFor(() =>
+      expect(mocks.detail).toHaveBeenCalledWith('s1', 'd0', expect.any(AbortSignal))
+    );
+    const list = screen.getByTestId('decision-list');
+    fireEvent.keyDown(list, { key: 'ArrowDown' });
+    await waitFor(() =>
+      expect(screen.getByTestId('decision-context')).toHaveTextContent('Full note d1')
+    );
+    fireEvent.keyDown(list, { key: 'ArrowUp' });
+    await waitFor(() =>
+      expect(screen.getByTestId('decision-context')).toHaveTextContent('Full note d0')
+    );
+    expect(mocks.detail.mock.calls.filter((call) => call[1] === 'd0')).toHaveLength(2);
+  });
+
+  it('shows the batch a decide card opened with, and lets it go with the chip or a new source', async () => {
+    const { unmount } = draw({ origin: 'tool', batchId: 'b1' });
+    await waitFor(() => expect(mocks.page).toHaveBeenCalled());
+    expect(mocks.page.mock.calls[0][1]).toMatchObject({ origin: 'tool', batchId: 'b1' });
+    const chip = screen.getByTestId('decision-filter-batch');
+    expect(chip).toHaveTextContent('This decide call only');
+    fireEvent.click(chip);
+    await waitFor(() =>
+      expect(mocks.page.mock.lastCall?.[1]).toMatchObject({ origin: 'tool', batchId: null })
+    );
+    expect(screen.queryByTestId('decision-filter-batch')).toBeNull();
+    unmount();
+
+    mocks.page.mockClear();
+    draw({ origin: 'tool', batchId: 'b1' });
+    await waitFor(() => expect(mocks.page).toHaveBeenCalled());
+    const source = within(screen.getByTestId('decision-filter-source')).getByRole('combobox');
+    fireEvent.keyDown(source, { key: 'ArrowDown' });
+    fireEvent.click(await screen.findByText('Any source'));
+    await waitFor(() =>
+      expect(mocks.page.mock.lastCall?.[1]).toMatchObject({ origin: null, batchId: null })
+    );
+    expect(screen.queryByTestId('decision-filter-batch')).toBeNull();
+  });
+
   it('opens with the filter it was given, and applies a new one from a later open', async () => {
     const { rerender } = draw({ origin: 'monitor', originId: 'form' }, 1);
     await waitFor(() => expect(mocks.page).toHaveBeenCalled());
@@ -264,6 +320,46 @@ describe('DecisionHistory', () => {
     );
     fireEvent.click(screen.getByTestId('decision-filter-clear'));
     await waitFor(() => expect(mocks.page.mock.lastCall?.[1]).toMatchObject({ origin: null }));
+  });
+
+  /**
+   * A decision card's link names its one call. The view asks for that call alone and for its
+   * detail at once, selects it, and lets it go as soon as the person sets a filter of their own.
+   */
+  it('opens on the one call a link names, selected, and lets it go once the person filters', async () => {
+    mocks.page.mockImplementation(async (_s, filter: DecisionHistoryFilter, page) =>
+      filter.decisionId
+        ? { records: [parseDecisionRecord(wire(7))!], nextCursor: null, total: 1 }
+        : pageAt(page?.before)
+    );
+    draw({ decisionId: 'd7', origin: 'tool', turnId: 't1' });
+    await waitFor(() =>
+      expect(mocks.detail).toHaveBeenCalledWith('s1', 'd7', expect.any(AbortSignal))
+    );
+    expect(mocks.detail).not.toHaveBeenCalledWith('s1', 'd0', expect.anything());
+    const detail = await screen.findByTestId('decision-detail');
+    expect(detail).toHaveAttribute('data-decision-id', 'd7');
+    expect(mocks.page.mock.calls[0][1]).toMatchObject({ decisionId: 'd7', origin: 'tool' });
+    expect(screen.getAllByTestId('decision-row')).toHaveLength(1);
+    expect(screen.getByTestId('decision-filter-clear')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByTestId('decision-filter-errors'));
+    await waitFor(() =>
+      expect(mocks.page.mock.lastCall?.[1]).toMatchObject({
+        decisionId: null,
+        errorsOnly: true,
+        origin: 'tool',
+        turnId: 't1',
+      })
+    );
+  });
+
+  it('still selects the named call on a daemon that lists more than it', async () => {
+    // A daemon from before `decisionId` ignores it and pages the source as usual.
+    draw({ decisionId: 'd7', origin: 'tool' });
+    const detail = await screen.findByTestId('decision-detail');
+    await waitFor(() => expect(detail).toHaveAttribute('data-decision-id', 'd7'));
+    expect(screen.getAllByTestId('decision-row').length).toBeGreaterThan(1);
   });
 
   it('says so when nothing matches, and when a read fails offers Retry', async () => {

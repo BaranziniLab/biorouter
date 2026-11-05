@@ -17,7 +17,6 @@ import {
   ChevronDown,
   CircleDotDashed,
   CircleHelp,
-  Gauge,
   Pencil,
   Upload,
   Puzzle,
@@ -378,6 +377,9 @@ const RUN_STATUS_GLYPHS: Record<
   incomplete: CircleDotDashed,
 };
 
+/** The decision-model mark beside a chat's decision count. */
+const DecisionMark = ENTITY_ICONS.decision;
+
 /** A run's own line can be a paragraph; the tooltip and the spoken text keep its start. */
 const RUN_RESULT_LINE_MAX = 160;
 
@@ -669,7 +671,7 @@ const HistoryRow = React.memo(function HistoryRow({
                   <TooltipTrigger asChild>
                     <span className="br-history-decisions" data-decision-count={decisionCount}>
                       <span aria-hidden="true">·</span>
-                      <Gauge className="br-history-decisions__glyph" aria-hidden="true" />
+                      <DecisionMark className="br-history-decisions__glyph" aria-hidden="true" />
                       <span aria-hidden="true">{decisionCount.toLocaleString()}</span>
                       <span className="sr-only">{decisionCallsLabel(decisionCount)}</span>
                     </span>

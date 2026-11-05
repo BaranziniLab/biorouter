@@ -9,7 +9,8 @@
  * shows as a row that never loads, not as an error the renderer can see.
  */
 import { useEffect, useState } from 'react';
-import { client } from '../../api/client.gen';
+import { getDecisionChat, putDecisionChat } from '../../api/sdk.gen';
+import type { PutDecisionChatData } from '../../api/types.gen';
 import { userActionHeaders } from '../../utils/userAction';
 import {
   fetchDecisionDetail,
@@ -99,8 +100,6 @@ export function useDecisionRecord(sessionId: string, decisionId: string): Decisi
 // A decision chat's question (`decision_chat.v1`)
 // ---------------------------------------------------------------------------
 
-const SECURITY = [{ name: 'X-Secret-Key', type: 'apiKey' as const }];
-
 /** The stored question in a `DecisionChatResponse` (`{ settings: { question } | null }`). */
 export function decisionChatQuestionOf(body: unknown): Question | null {
   if (!body || typeof body !== 'object') return null;
@@ -121,9 +120,7 @@ export async function fetchDecisionChatQuestion(
   signal?: AbortSignal
 ): Promise<Question | null> {
   const headers = await userActionHeaders();
-  const result = (await client.get({
-    security: SECURITY,
-    url: '/sessions/{session_id}/decision-chat',
+  const result = (await getDecisionChat({
     path: { session_id: sessionId },
     headers,
     signal,
@@ -142,20 +139,17 @@ export type SaveDecisionChatResult =
 /**
  * `PUT /sessions/{session_id}/decision-chat` with `{ question }`, carrying the
  * user-action proof, which a daemon that holds a user-action key requires.
- * These two calls go through the generated client's own `client`, by URL, until
- * `npm run generate-api` declares the routes.
  */
 export async function saveDecisionChatQuestion(
   sessionId: string,
   question: Question
 ): Promise<SaveDecisionChatResult> {
   const headers = await userActionHeaders();
-  const result = (await client.put({
-    security: SECURITY,
-    url: '/sessions/{session_id}/decision-chat',
+  const result = (await putDecisionChat({
     path: { session_id: sessionId },
-    body: { question: questionToWire(question) },
-    headers: { 'Content-Type': 'application/json', ...headers },
+    // The parsers' own wire writer, which mirrors the Rust enums the generated type spells out.
+    body: { question: questionToWire(question) } as PutDecisionChatData['body'],
+    headers,
   })) as { error?: unknown; response?: Response };
   const status = result.response?.status ?? null;
   if (result.error === undefined && status !== null && status < 400) return { ok: true };

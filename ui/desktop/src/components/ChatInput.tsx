@@ -384,6 +384,13 @@ interface ChatInputProps {
    * the left pane, the caret and the focused pane were the right pane's chat.
    */
   autoFocus?: boolean;
+  /**
+   * Open this chat's decision monitors (BaseChat's `MonitorsDialog`), from the
+   * `+` menu. The menu offers it only while the composer names a chat
+   * (`sessionId`): a chat that has not been created has nothing to attach a
+   * monitor to.
+   */
+  onOpenDecisionMonitors?: () => void;
 }
 
 export default function ChatInput({
@@ -419,6 +426,7 @@ export default function ChatInput({
   supportsVisionOverride,
   supportedInputMimeTypesOverride,
   autoFocus = true,
+  onOpenDecisionMonitors,
 }: ChatInputProps) {
   const [anonymousReasoningDraftKey] = useState(() => crypto.randomUUID());
   // A new chat's unsent message, as its tab last held it. Read ONCE, in the
@@ -3063,7 +3071,11 @@ export default function ChatInput({
         {/* THE CONTROLS ROW: what to add, what the agent can reach, which model
             answers, and Send at the end, Crew's `.crew-compose-controls`. */}
         <div data-testid="chat-input-toolbar" className="br-composer-controls">
-          <ComposerPlusMenu onAttachFiles={attachPickedFiles} onInsertTrigger={insertTrigger} />
+          <ComposerPlusMenu
+            onAttachFiles={attachPickedFiles}
+            onInsertTrigger={insertTrigger}
+            onOpenDecisionMonitors={sessionId ? onOpenDecisionMonitors : undefined}
+          />
           <ToolsChip
             sessionId={sessionId}
             privacyTier={sessionPrivacyTier}

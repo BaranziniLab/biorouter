@@ -439,6 +439,18 @@ The set of AI-agent provider ids is imported from `codingAgentStatus.ts`, which 
 owns the map of each agent's config key. `providerOrdering.test.ts` asserts the two agree,
 so a third coding agent cannot end up with a status pill and no section.
 
+**Decision-model providers have no row** (`baseten_decision`, `ollama_decision`, recognised by
+`isDecisionProvider` in `components/decisions/decisionWire.ts`, the list the model picker groups
+by). The daemon serves them on purpose, but they are not chat providers: a decision model answers
+a typed question with probabilities and writes no reply, so a row's Use or its default-model step
+would make every new chat a decision chat, and a knowledge ingest (`IngestModelPicker` reads the
+same groups) could not run on one. Their keys are their chat siblings' (`BASETEN_API_KEY`,
+`OLLAMA_HOST`), so the Baseten and Ollama rows set them up. `getOrderedProviderGroups` still
+classifies them by the daemon's tier and hands them back per tab as `decisionProviders`, and in
+Settings the tab says, in one quiet line with an InfoTip, that they are chosen per chat in the
+model picker's Decision models group. First run says nothing about them. See
+[Decision models in the desktop side panel](decision-models.md).
+
 ## Naming an institution
 
 ⚠ **An institution's name comes only from the daemon.** There is no literal `"UCSF"`

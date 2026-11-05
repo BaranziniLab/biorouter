@@ -1,6 +1,7 @@
 import './decisionsChat.css';
 import * as React from 'react';
 import { AlertTriangle, Check, Lock, X } from '../icons/app-icons';
+import { ENTITY_ICONS } from '../icons/entity-icons';
 import { Button } from '../ui/button';
 import { Progress } from '../ui/progress';
 import type { ArtifactSource } from '../artifacts/artifactTypes';
@@ -22,6 +23,8 @@ import {
 } from '../../utils/sessionDecisions';
 import { orderedProbabilities } from './decisionWire';
 import { useDecisionRecord } from './decisionChatApi';
+
+const DecisionMark = ENTITY_ICONS.decision;
 
 export const DECISION_CARD_COPY = {
   region: (question: string) => `Decision: ${question}`,
@@ -174,7 +177,12 @@ export function DecisionCardView({ record, sessionId, onOpenArtifact }: Decision
         </p>
       )}
       <div className="br-decision-card__meta" data-testid="decision-meta">
-        {model && <span className="br-decision-card__model">{model}</span>}
+        {model && (
+          <span className="br-decision-card__model">
+            <DecisionMark aria-hidden data-testid="decision-card-mark" />
+            <span>{model}</span>
+          </span>
+        )}
         {tier && (
           <span className="br-decision-card__tier" data-tier={tier}>
             {tier === 'private' && <Lock aria-hidden />}
@@ -190,10 +198,13 @@ export function DecisionCardView({ record, sessionId, onOpenArtifact }: Decision
           aria-label={DECISION_CARD_COPY.historyLabel}
           onClick={() =>
             onOpenArtifact(
-              decisionHistoryArtifact(
-                sessionId,
-                record.turnId ? { origin: 'chat', turnId: record.turnId } : { origin: 'chat' }
-              )
+              // This one call, selected. Its source and turn too, which still
+              // narrow the list on a daemon that predates `decisionId`.
+              decisionHistoryArtifact(sessionId, {
+                decisionId: record.id,
+                origin: 'chat',
+                ...(record.turnId ? { turnId: record.turnId } : {}),
+              })
             )
           }
         >

@@ -230,21 +230,38 @@ pub fn set_thinking_message(s: &String) {
     }
 }
 
+/// What a turn's decision marker prints in place of its content: ONE line per
+/// origin, never one per call (they can number in the thousands), with
+/// ` · fired` after a monitor that fired; `biorouter session decisions` lists
+/// the calls themselves. `None` for a message that is not a marker, which
+/// prints its content instead.
+fn decision_marker_lines(message: &Message) -> Option<Vec<String>> {
+    let marker = message.metadata.decision_summary.as_ref()?;
+    Some(
+        marker
+            .items
+            .iter()
+            .map(|item| {
+                let mut line = format!(
+                    "◇ {}",
+                    crate::commands::session_decisions::marker_text(item)
+                );
+                if item.fired {
+                    line.push_str(" · fired");
+                }
+                line
+            })
+            .collect(),
+    )
+}
+
 pub fn render_message(message: &Message, debug: bool) {
     let theme = get_theme();
 
-    // A turn's decision-model calls are ONE line per origin, never one per call
-    // (they can number in the thousands); `biorouter session decisions` lists
-    // the calls themselves.
-    if let Some(marker) = &message.metadata.decision_summary {
-        for item in &marker.items {
-            let mut line = format!(
-                "◇ {}",
-                crate::commands::session_decisions::marker_text(item)
-            );
-            if item.fired {
-                line.push_str(" · fired");
-            }
+    // A marker's notice text says the same thing in a sentence; only the
+    // per-origin lines are printed.
+    if let Some(lines) = decision_marker_lines(message) {
+        for line in lines {
             println!("{}", style(line).dim());
         }
         let _ = std::io::stdout().flush();
@@ -1738,6 +1755,53 @@ mod tests {
     use super::*;
     use base64::Engine as _;
     use rmcp::model::{CallToolResult, Content, Meta, RawResource, ResourceContents};
+
+    /// The classic CLI prints a turn's decision marker as one dim line per
+    /// origin, ` · fired` only after a monitor that fired, and nothing of the
+    /// notice's own sentence; any other message prints its content.
+    #[test]
+    fn a_decision_marker_prints_one_line_per_origin_and_nothing_else() {
+        use biorouter::decision::log::{DecisionTurnMarker, DecisionTurnMarkerItem};
+        use biorouter::decision::DecisionOrigin;
+        let item = |origin, label: &str, count, fired| DecisionTurnMarkerItem {
+            origin,
+            origin_id: None,
+            label: label.to_string(),
+            count,
+            passed: 0,
+            failed: count,
+            errors: 0,
+            last_pass_probability: None,
+            fired,
+        };
+        let mut marker = Message::assistant().with_text(
+            "Decision models: monitor 'Form reached' checked 18 times, fired; decide: 600 chunks",
+        );
+        marker.metadata.decision_summary = Some(DecisionTurnMarker {
+            turn_id: "t1".into(),
+            items: vec![
+                item(DecisionOrigin::Monitor, "Form reached", 18, true),
+                item(DecisionOrigin::Tool, "decide", 600, false),
+            ],
+        });
+        let lines = decision_marker_lines(&marker).expect("a marker prints its own lines");
+        assert_eq!(
+            lines.len(),
+            2,
+            "one line per origin, not per call: {lines:?}"
+        );
+        assert!(lines.iter().all(|line| line.starts_with("◇ ")), "{lines:?}");
+        assert!(lines[0].ends_with(" · fired"), "{}", lines[0]);
+        assert!(!lines[1].contains("fired"), "{}", lines[1]);
+        assert!(
+            lines.iter().all(|line| !line.contains("Decision models:")),
+            "the notice's sentence is not printed as well: {lines:?}"
+        );
+        assert_eq!(
+            decision_marker_lines(&Message::assistant().with_text("Hello.")),
+            None
+        );
+    }
 
     /// The default floor shows the tool output that tools actually produce.
     ///

@@ -29,6 +29,7 @@ The loop records what it is awaiting in a phase on the `Agent` (never in the rep
 |---|---|
 | Normal completion | Drained at the commit point; the turn continues and answers it. |
 | `max_turns`, `max_tool_calls`, stall stop | A steer the person typed restarts the count ("actions without user input") and is answered. One typed after the loop broke, while it waits for children, ends that wait and the runner continues the same turn with it — same turn id, one `TurnFinished`. |
+| A decision-model monitor's `stop` (or a `pause` monitor's error) | A steer the person typed before the monitor point is answered and the stop is skipped. The stop itself ends the loop like the limits above, never through the commit point: another chat's injection waiting there is stored unanswered rather than continuing the turn, and a steer typed after the stop, while the turn waits for its children, ends that wait and continues the turn. |
 | Spend cap, provider abort, stream error, structured final output | Stored with `steerOutcome: "unanswered"`, after any prose the reply had streamed. |
 | Stop | Stored unanswered, between the partial reply and the "Stopped." notice. |
 | Orphan reap | Never while a card is parked or an accepted steer is still unread; the clock restarts from the moment the loop reads it. A reap finishes as `reason: "orphaned"`. |

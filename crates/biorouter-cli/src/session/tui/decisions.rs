@@ -33,8 +33,8 @@ use ratatui::Frame;
 
 use super::app::ACCENT;
 use crate::commands::decide::{
-    answer_label, answer_probability, calibration_flag, clip, format_latency, format_p,
-    origin_word, outcome_labels, probability_bar, short_model, threshold_line,
+    answer_key, answer_label, answer_probability, calibration_flag, clip, format_latency, format_p,
+    origin_word, outcome_labels, probability_bar, short_model, terminal_text, threshold_line,
 };
 use crate::commands::session_decisions::{aggregate_line, marker_text, record_line, turn_line};
 
@@ -133,9 +133,12 @@ pub fn card_lines(record: &DecisionRecord) -> Vec<Line<'static>> {
             .max()
             .unwrap_or(0);
         let answer = answer_label(decision);
+        // By key alone: a score's level text can equal another level's index
+        // ("3" is the text of level 2), and two levels can share a text.
+        let answer_key = answer_key(decision);
         for (key, label) in &labels {
             let p = decision.probabilities.get(key).copied().unwrap_or(0.0);
-            let is_answer = *label == answer || *key == answer;
+            let is_answer = *key == answer_key;
             let marker = if is_answer { "▸ " } else { "  " };
             let label_style = if is_answer { bold } else { Style::default() };
             lines.push(Line::from(vec![
@@ -187,6 +190,27 @@ pub struct DecisionsOverlay {
     pub pending_calls: Option<usize>,
     /// Why the last read failed, shown in the overlay.
     pub error: Option<String>,
+    /// Rows the overlay showed when it was last drawn, so moving the
+    /// selection can scroll to keep it in view.
+    pub viewport_rows: std::cell::Cell<u16>,
+}
+
+/// `line` with every control character drawn as a space. The overlay's text
+/// comes from the decision log (option names, chunk ids, labels and errors a
+/// model wrote), and ratatui writes a control character into its cell as it
+/// is, so an escape sequence would otherwise reach the terminal.
+fn printable_line(line: Line<'static>) -> Line<'static> {
+    Line {
+        spans: line
+            .spans
+            .into_iter()
+            .map(|span| Span {
+                content: terminal_text(&span.content).into(),
+                ..span
+            })
+            .collect(),
+        ..line
+    }
 }
 
 impl DecisionsOverlay {
@@ -198,6 +222,7 @@ impl DecisionsOverlay {
             calls: None,
             pending_calls: None,
             error: None,
+            viewport_rows: std::cell::Cell::new(0),
         }
     }
 
@@ -208,6 +233,29 @@ impl DecisionsOverlay {
         }
         let next = (self.selected as i64 + i64::from(delta)).clamp(0, count as i64 - 1);
         self.selected = next as usize;
+        self.keep_selection_in_view();
+    }
+
+    /// Scroll so the selected aggregate's row is drawn: the first one shows
+    /// the heading above it too, any other is brought just into view.
+    fn keep_selection_in_view(&mut self) {
+        let rows = self.viewport_rows.get();
+        if rows == 0 {
+            return;
+        }
+        if self.selected == 0 {
+            self.scroll = 0;
+            return;
+        }
+        // Above the aggregates: the error line when there is one, the count
+        // line and the "By source" heading ([`Self::lines`]).
+        let line = u16::try_from(self.selected + 2 + usize::from(self.error.is_some()))
+            .unwrap_or(u16::MAX);
+        if line < self.scroll {
+            self.scroll = line;
+        } else if line >= self.scroll.saturating_add(rows) {
+            self.scroll = line + 1 - rows;
+        }
     }
 
     pub fn selected_aggregate(&self) -> Option<&DecisionAggregate> {
@@ -224,8 +272,16 @@ impl DecisionsOverlay {
         }
     }
 
-    /// The overlay's lines, in the order they are drawn.
+    /// The overlay's lines, in the order they are drawn, with no control
+    /// character left in them ([`printable_line`]).
     pub fn lines(&self) -> Vec<Line<'static>> {
+        self.unchecked_lines()
+            .into_iter()
+            .map(printable_line)
+            .collect()
+    }
+
+    fn unchecked_lines(&self) -> Vec<Line<'static>> {
         let head = Style::new().fg(ACCENT).add_modifier(Modifier::BOLD);
         let mut lines = Vec::new();
         if let Some(error) = &self.error {
@@ -342,6 +398,7 @@ pub fn draw_overlay(f: &mut Frame, overlay: &DecisionsOverlay, area: Rect) {
             Style::new().fg(ACCENT).add_modifier(Modifier::BOLD),
         ));
     let inner = block.inner(rect).inner(Margin::new(1, 0));
+    overlay.viewport_rows.set(inner.height);
     f.render_widget(block, rect);
     f.render_widget(Paragraph::new(lines).scroll((overlay.scroll, 0)), inner);
 }
@@ -364,6 +421,7 @@ pub fn on_key(overlay: &mut DecisionsOverlay, code: crossterm::event::KeyCode) -
         KeyCode::Esc => {
             if overlay.calls.take().is_some() {
                 overlay.scroll = 0;
+                overlay.keep_selection_in_view();
                 return OverlayKey::Consumed;
             }
             return OverlayKey::Closed;
@@ -574,6 +632,105 @@ mod tests {
             "Esc goes back to the aggregates first"
         );
         assert_eq!(on_key(&mut overlay, KeyCode::Esc), OverlayKey::Closed);
+    }
+
+    /// Option names, chunk ids, labels and errors in the overlay may be a
+    /// model's; no control character from them reaches a cell.
+    #[test]
+    fn the_overlay_draws_no_control_character_a_model_wrote() {
+        let mut tool = aggregate(DecisionOrigin::Tool, "dec\x1b[2Jide", 600);
+        tool.last_answer = Some("\x1b]52;c;cm0gLXJmIH4K\x07".into());
+        let mut overlay = DecisionsOverlay::new(SessionDecisionSummary {
+            total: 600,
+            aggregates: vec![tool],
+            recent_turns: vec![],
+        });
+        let has_control =
+            |screen: &[String]| screen.iter().any(|row| row.chars().any(|c| c.is_control()));
+        assert!(!has_control(&render(&overlay, 120, 12)));
+
+        let mut forged = record("d1", 0.4);
+        forged.chunk_id = Some("\x1b]52;c;x\x07".into());
+        forged.label = Some("\u{9b}2Jgate".into());
+        let mut broken = record("d2", 0.4);
+        broken.error = Some("failed \x1b[2J\x1b[Hall checks passed".into());
+        overlay.calls = Some(CallsView {
+            label: calls_label(overlay.selected_aggregate().unwrap()),
+            records: vec![forged, broken],
+            total: 2,
+        });
+        overlay.error = Some("\x1b[31mred".into());
+        let screen = render(&overlay, 140, 12);
+        assert!(!has_control(&screen), "{screen:?}");
+        assert!(
+            screen.iter().any(|row| row.contains("all checks passed")),
+            "the text itself is kept: {screen:?}"
+        );
+    }
+
+    /// A score whose level texts are numbers: the answer is marked by its
+    /// key alone, so level 2 ("3") is the one row marked, not also level 3.
+    #[test]
+    fn a_card_marks_one_answer_when_level_texts_are_numbers() {
+        use biorouter::decision::types::Answer;
+        let levels: Vec<String> = ["1", "2", "3", "4", "5"].map(String::from).to_vec();
+        let mut r = record("d1", 0.5);
+        r.origin = DecisionOrigin::Chat;
+        r.questions = serde_json::json!({
+            "q": Question {
+                instructions: "How sure is the note?".into(),
+                kind: DecisionKind::Score { levels: levels.clone() },
+                threshold: None,
+            }
+        });
+        let decision = &mut r.decisions[0];
+        decision.question = "q".into();
+        decision.answer = Answer::Score {
+            level: 2,
+            label: "3".into(),
+            expected: 2.0,
+        };
+        decision.probabilities = (0..5)
+            .map(|i| (i.to_string(), if i == 2 { 0.6 } else { 0.1 }))
+            .collect();
+        let lines = text(&card_lines(&r));
+        let marked: Vec<&String> = lines.iter().filter(|l| l.contains('▸')).collect();
+        assert_eq!(marked.len(), 1, "{lines:?}");
+        assert!(marked[0].starts_with("  ▸ 3 "), "{}", marked[0]);
+    }
+
+    /// Down past the last row drawn scrolls, so the selected source is always
+    /// on screen when Enter opens it.
+    #[test]
+    fn moving_the_selection_keeps_it_on_screen() {
+        let aggregates: Vec<DecisionAggregate> = (0..12)
+            .map(|i| aggregate(DecisionOrigin::Gate, &format!("phase-{i:02}"), 3))
+            .collect();
+        let mut overlay = DecisionsOverlay::new(SessionDecisionSummary {
+            total: 36,
+            aggregates,
+            recent_turns: vec![],
+        });
+        use crossterm::event::KeyCode;
+        // 12 rows: a 10-row overlay, 8 rows inside it, so the count line, the
+        // heading and the first 6 sources are drawn at first.
+        render(&overlay, 100, 12);
+        for step in 1..12 {
+            on_key(&mut overlay, KeyCode::Down);
+            let screen = render(&overlay, 100, 12).join("\n");
+            let wanted = format!("▸ gate     phase-{step:02}");
+            assert!(screen.contains(&wanted), "step {step}: {screen}");
+        }
+        for step in (0..11).rev() {
+            on_key(&mut overlay, KeyCode::Up);
+            let screen = render(&overlay, 100, 12).join("\n");
+            assert!(
+                screen.contains(&format!("▸ gate     phase-{step:02}")),
+                "back to {step}: {screen}"
+            );
+        }
+        assert_eq!(overlay.scroll, 0);
+        assert!(render(&overlay, 100, 12).join("\n").contains("By source"));
     }
 
     #[test]

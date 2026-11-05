@@ -2888,6 +2888,9 @@ function BaseChatContent({
             // so callers can still override.
             onWorkingDirChange={setPendingWorkingDir}
             autoFocus={autoFocusComposer}
+            // The first monitor's way in: the summary's Decisions section is
+            // drawn only once the chat has decision calls or monitors.
+            onOpenDecisionMonitors={sessionId ? openMonitors : undefined}
             {...customChatInputProps}
           />
         </PendingChatModelContext.Provider>
@@ -3304,7 +3307,10 @@ function BaseChatContent({
                   : null
             }
             settings={sessionDecisions.data?.settings ?? null}
-            onSaved={sessionDecisions.refresh}
+            onSaved={(stored) => {
+              sessionDecisions.applySettings(stored);
+              sessionDecisions.refresh();
+            }}
           />
 
           {/* Rung 0: the docked summary, its own grid column between the

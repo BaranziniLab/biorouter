@@ -6,10 +6,10 @@ import {
   Eye,
   EyeOff,
   Flag,
-  Gauge,
   SlidersHorizontal,
   X,
 } from '../icons/app-icons';
+import { ENTITY_ICONS, type EntityIcon } from '../icons/entity-icons';
 import { ProbabilityBar } from '../decisions/ProbabilityBar';
 import type { SessionDecisions } from '../../hooks/useSessionDecisions';
 import {
@@ -25,7 +25,7 @@ import './summaryDecisions.css';
 
 const copy = summaryCopy.decisions;
 
-type Glyph = typeof CircleIcon;
+type Glyph = EntityIcon;
 
 /**
  * A source's state, told apart by SHAPE (never by colour alone): an eye that
@@ -39,7 +39,7 @@ export const DECISION_STATE_ICONS: Record<DecisionSourceState, Glyph> = {
   fired: Flag,
   off: EyeOff,
   error: AlertTriangle,
-  done: Gauge,
+  done: ENTITY_ICONS.decision,
   passed: Check,
   failed: X,
   blocked: AlertCircle,

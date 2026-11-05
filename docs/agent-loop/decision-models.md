@@ -56,13 +56,13 @@ A monitor asks one question about a rolling window of the conversation while the
 
 - a **question** (any kind) and an optional **model**;
 - a **timing**: `post_iteration` (after every model reply and its tool results) or `turn_end` (once, as the turn is about to finish);
-- a **window**: the newest entries of the conversation (at most 48), a character budget (at most 12,000), and whether tool calls and results are included. The window is built from stored messages, which have already passed the secret-output guard;
+- a **window**: the newest messages of the conversation (at most 24; a message's tool calls and results count with it), a character budget (at most 6,000), and whether tool calls and results are included. The window is built from stored messages, which have already passed the secret-output guard;
 - a **threshold** on P(yes) or on a named option, a number of **consecutive** evaluations at or above it before it fires (1 to 5), and an optional **re-arm** level: after firing, the monitor latches and fires again only after the probability has dropped below it;
 - an **action**: `stop` ends the turn and hands control back to you, `notify` shows one notice and carries on, `steer` tells the agent (a stored note it reads on its next step) and carries on;
 - an **error policy**: `notify` (the default; after three errors in a row the monitor is off for the rest of the turn) or `pause`, which treats an error as firing with `stop`, for safety criteria;
 - a cap on evaluations per turn (at most 200).
 
-Monitors that share a timing, a model and a window are asked in one request. A window that has not changed since the last evaluation is not asked again. A message you type while the turn runs wins over a monitor's stop: the stop is skipped and your message is answered. Monitors are set in the desktop's Monitors dialog, with `biorouter session monitors`, or through `PUT /sessions/{session_id}/decision-settings`.
+Monitors that share a timing, a model and a window are asked in one request. Before the window is built, its character budget is narrowed to fit the model's context beside the questions, by the same margin the size check before sending uses, so a small model is asked about the newest lines rather than refused as too large; it is never narrowed below 200 characters. A window that has not changed since the last evaluation is not asked again. A message you type while the turn runs wins over a monitor's stop: the stop is skipped and your message is answered. Monitors are set in the desktop's Monitors dialog, with `biorouter session monitors`, or through `PUT /sessions/{session_id}/decision-settings`.
 
 ### The `decide` tool: screening a large input
 
@@ -102,7 +102,7 @@ A phase of an orchestration plan may carry a decision gate: 1 to 8 yes/no questi
 
 ### A decision model as the chat's own model
 
-A decision model can be picked as a chat's main model, like any model; the model picker groups decision models separately. Such a chat has no language-model loop. You write the question and its options (or a question on the first line of your message) and paste the text; each message is asked the question, and the reply is one message whose text reads everywhere (`Yes · P(yes) 0.93 · tev1:0.8b`) and from which the desktop draws a decision card with a bar per option, the threshold, the model and whether the probabilities are calibrated. The question is stored on the chat as `decision_chat.v1`. A browser session (`biorouter serve`) cannot change a chat's model, so it cannot start a decision chat, but it shows the cards, the decision history and the gates.
+A decision model can be picked as a chat's main model, like any model; the model picker groups decision models separately. Such a chat has no language-model loop. You write the question and its options (or a question line at the start of your message, beginning with `Q:` or `?`, as in `Q: Is the form signed?`) and paste the text; each message is asked the question, and the reply is one message whose text reads everywhere (`Yes · P(yes) 0.93 · tev1:0.8b`) and from which the desktop draws a decision card with a bar per option, the threshold, the model and whether the probabilities are calibrated. The question is stored on the chat as `decision_chat.v1`. A browser session (`biorouter serve`) cannot change a chat's model, so it cannot start a decision chat, but it shows the cards, the decision history and the gates.
 
 ## The decision log, and why the transcript never lists decisions
 
@@ -120,7 +120,9 @@ Every surface reads aggregates and shows decision activity once per source:
 | History | A per-chat count on the chat's row, never child rows. |
 | The CLI and the terminal UI | One summary line per source per turn; `biorouter session decisions` pages and filters. |
 
-Deleting a chat deletes its decision rows. A tool batch's rows carry the batch id as both `batch_id` and `origin_id`, and the label `decide`.
+Deleting a chat deletes its decision rows. A row's id is the request id every decision of that request carries, so a decision chat's reply names its row as `decisionId` with no lookup, and `GET /sessions/{session_id}/decisions?decisionId=` returns that one row. A row with no decisions (a failure) gets an id of its own. A batch stopped before any chunk was sent (no model the chat may use, a privacy refusal, a question kind the model cannot take) is one row, not one per chunk.
+
+A tool batch's rows carry the batch id as both `batch_id` and `origin_id`, and the label `decide`. The summary groups them by label, so every `decide` call in a chat is one source (and one line per turn) with no origin id, while monitors stay one source per monitor id and gates one per phase id; the history still filters one batch with `batchId`.
 
 ## Privacy
 
@@ -178,7 +180,7 @@ Configuration keys:
 - `biorouter models decision list` lists the decision models available now, local first.
 - `biorouter session decisions <session_id>` prints the aggregates first and then pages the calls, with filters for the source, the batch, the turn, the outcome and errors.
 - `biorouter session monitors <session_id> list|add|remove` reads and writes a chat's monitors.
-- The terminal UI shows one summary line per source per turn, draws a decision chat's replies as compact bars, and opens a `/decisions` overlay with the chat's aggregates and, on Enter, one call's detail.
+- The terminal UI shows one summary line per source per turn, draws a decision chat's replies as compact bars, and opens a `/decisions` overlay with the chat's aggregates by source; Enter on a source shows that source's last calls, and Esc goes back.
 
 The options in full are in the [CLI command reference](../cli/command-reference.md).
 

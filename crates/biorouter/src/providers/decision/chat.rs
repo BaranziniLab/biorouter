@@ -19,7 +19,6 @@
 //! however the provider described itself.
 
 use std::marker::PhantomData;
-use std::sync::Arc;
 
 use anyhow::Result;
 use async_trait::async_trait;
@@ -36,7 +35,7 @@ use super::system_one::{
 };
 use crate::conversation::message::Message;
 use crate::conversation::Conversation;
-use crate::decision::log::{decision_pass_probability, readable_answer, DecisionQuery};
+use crate::decision::log::{decision_pass_probability, readable_answer};
 use crate::decision::service::{DecisionService, DecisionSession};
 use crate::decision::settings::DecisionChatSettings;
 use crate::decision::types::{
@@ -49,7 +48,6 @@ use crate::privacy::ProviderTier;
 use crate::providers::base::{ConfigKey, ModelInfo, Provider, ProviderMetadata, ProviderUsage};
 use crate::providers::errors::ProviderError;
 use crate::providers::ollama::OLLAMA_HOST;
-use crate::session::SessionManager;
 
 /// The provider ids a decision model is bound under.
 pub const DECISION_CHAT_PROVIDERS: [&str; 2] =
@@ -456,24 +454,26 @@ pub fn answer_text(decision: &Decision) -> String {
     parts.join(" · ")
 }
 
-/// What a decision chat replies with: its text and, when the call was logged,
-/// the logged decision's id.
+/// What a decision chat replies with: its text and, when the model answered,
+/// the decision and the id of the log row that records it.
 #[derive(Debug, Clone, PartialEq)]
 pub struct DecisionChatReply {
     pub text: String,
+    /// The decision's request id, which is also its decision-log row's id
+    /// ([`crate::decision::log::row_id`]), so a reload, a card or a link names
+    /// the row without asking the log. `None` when nothing was decided.
     pub decision_id: Option<String>,
     pub decision: Option<Decision>,
 }
 
 /// Answer one decision-chat message: ask `model` the chat's question about
 /// `text` through `service` (Gate H, Crew, the size check and the log all
-/// apply there), and find the logged row so the reply can name it.
+/// apply there).
 ///
 /// `session` is the chat as sampled for this turn; it is logged with origin
 /// `chat` and `turn_id`.
 pub async fn run_decision_chat(
     service: &DecisionService,
-    session_manager: &Arc<SessionManager>,
     session: DecisionSession,
     model: &DecisionModelRef,
     settings: Option<&DecisionChatSettings>,
@@ -492,57 +492,28 @@ pub async fn run_decision_chat(
     let session = session
         .with_origin(DecisionOrigin::Chat, None)
         .with_origin_label(Some("Decision chat".to_string()));
-    let turn_id = session.turn_id.clone();
-    let session_id = session.session_id.clone();
     let request = DecisionRequest {
-        questions: IndexMap::from([(CHAT_QUESTION_NAME.to_string(), question.clone())]),
+        questions: IndexMap::from([(CHAT_QUESTION_NAME.to_string(), question)]),
         context: DecisionContext::Text(state),
     };
-    let outcome = service.decide(Some(&session), Some(model), &request).await;
-    let decision_id = logged_decision_id(session_manager, &session_id, turn_id.as_deref()).await;
-    match outcome {
+    match service.decide(Some(&session), Some(model), &request).await {
         Ok(decisions) => match decisions.into_iter().next() {
             Some(decision) => DecisionChatReply {
                 text: answer_text(&decision),
-                // The log's own row id when the sink stored one; else the
-                // request id, which names the call in the log's row too.
-                decision_id: decision_id.or_else(|| Some(decision.request_id.clone())),
+                decision_id: Some(decision.request_id.clone()),
                 decision: Some(decision),
             },
             None => DecisionChatReply {
                 text: "The decision model returned no answer.".to_string(),
-                decision_id,
+                decision_id: None,
                 decision: None,
             },
         },
         Err(error) => DecisionChatReply {
             text: format!("The decision model could not answer: {error}"),
-            decision_id,
+            decision_id: None,
             decision: None,
         },
-    }
-}
-
-/// The id the decision log gave this turn's decision-chat call, newest first.
-/// `None` when no log is installed or the row was not stored.
-async fn logged_decision_id(
-    session_manager: &SessionManager,
-    session_id: &str,
-    turn_id: Option<&str>,
-) -> Option<String> {
-    let turn_id = turn_id?;
-    let query = DecisionQuery {
-        origin: Some(DecisionOrigin::Chat),
-        turn_id: Some(turn_id.to_string()),
-        limit: Some(1),
-        ..DecisionQuery::default()
-    };
-    match crate::decision::log::list(session_manager, session_id, &query).await {
-        Ok(page) => page.records.into_iter().next().map(|record| record.id),
-        Err(error) => {
-            tracing::debug!("could not read the decision chat's logged row: {error:#}");
-            None
-        }
     }
 }
 

@@ -547,7 +547,8 @@ pub(crate) struct PhaseGateInput {
     )]
     pub(crate) allow_uncalibrated: Option<bool>,
     /// Optional decision model as provider/model, from decision_models. Left
-    /// out, the configured default or the first model this chat may use.
+    /// out, this chat's default decision model, else the configured default,
+    /// else the first model this chat may use.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) model: Option<String>,
 }
@@ -4008,6 +4009,72 @@ mod tests {
             };
             assert!(answers[0].passed && !answers[1].passed);
             assert!((answers[1].p_yes - 0.42).abs() < 1e-9);
+        }
+
+        /// A gate that names no model asks the chat's own default decision
+        /// model, read with the chat as the gate path reads it, ahead of the
+        /// configured default.
+        #[tokio::test]
+        async fn a_gate_without_a_model_asks_the_chats_default_decision_model() {
+            use crate::decision::settings::{save, DecisionSettings};
+            use crate::decision::DecisionModelRef;
+            use crate::session::{SessionManager, SessionType};
+
+            let local = model(
+                entry(
+                    "tev1",
+                    ProviderTier::Private,
+                    true,
+                    DecisionAdapter::SystemOne,
+                ),
+                0.95,
+            );
+            let cloud = model(
+                entry(
+                    "cloud",
+                    ProviderTier::Public,
+                    false,
+                    DecisionAdapter::SystemOne,
+                ),
+                0.95,
+            );
+            let (local_calls, cloud_calls) = (local.calls.clone(), cloud.calls.clone());
+            let svc = crate::agents::decisions_extension::test_support::service_with_default(
+                vec![local, cloud],
+                Some(DecisionModelRef::new("test_decision", "cloud")),
+            );
+            let dir = tempfile::tempdir().unwrap();
+            let manager = Arc::new(SessionManager::new_ephemeral(dir.path().join("data")));
+            let chat = manager
+                .create_session(dir.path().to_path_buf(), "gated".into(), SessionType::User)
+                .await
+                .unwrap();
+            save(
+                &manager,
+                &chat.id,
+                DecisionSettings {
+                    default_model: Some(DecisionModelRef::new("test_decision", "tev1")),
+                    monitors: Vec::new(),
+                },
+            )
+            .await
+            .unwrap();
+            let session = DecisionSession::load(manager, &chat.id, true)
+                .await
+                .unwrap()
+                .with_origin(crate::decision::DecisionOrigin::Gate, Some("build".into()));
+            let gate = gate_with(&[("a", "Is a done?")], false);
+            assert!(gate.model.is_none());
+
+            let verdict = evaluate_gate(svc, &session, &gate, "state".into()).await;
+
+            assert!(matches!(verdict, GateVerdict::Passed(_)), "{verdict:?}");
+            assert_eq!(local_calls.load(Ordering::SeqCst), 1, "the chat's default");
+            assert_eq!(
+                cloud_calls.load(Ordering::SeqCst),
+                0,
+                "not the configured one"
+            );
         }
 
         #[tokio::test]

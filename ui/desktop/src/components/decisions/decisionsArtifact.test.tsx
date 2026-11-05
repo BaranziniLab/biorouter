@@ -11,7 +11,7 @@ vi.mock('../../utils/sessionDecisions', async (original) => ({
 
 import { ThemeProvider } from '../../contexts/ThemeContext';
 import { decisionHistoryArtifact } from '../../utils/sessionDecisions';
-import { Gauge } from '../icons/app-icons';
+import { ENTITY_ICONS } from '../icons/entity-icons';
 import ArtifactViewer, { iconForArtifact } from '../artifacts/ArtifactViewer';
 
 /**
@@ -23,7 +23,7 @@ afterEach(() => vi.clearAllMocks());
 
 describe('the decisions kind in the artifact side panel', () => {
   it('draws the decision mark on its tab', () => {
-    expect(iconForArtifact(decisionHistoryArtifact('s1'))).toBe(Gauge);
+    expect(iconForArtifact(decisionHistoryArtifact('s1'))).toBe(ENTITY_ICONS.decision);
   });
 
   it('renders the decision history for the chat it names, filtered', async () => {

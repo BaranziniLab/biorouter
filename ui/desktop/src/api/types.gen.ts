@@ -1724,6 +1724,11 @@ export type DecisionQuery = {
      * Opaque cursor from a previous page's `nextCursor` (newest first).
      */
     before?: string | null;
+    /**
+     * Only the row with this id (a request id, as a decision chat's reply or
+     * a decision card names it): a page of at most one row.
+     */
+    decisionId?: string | null;
     errorsOnly?: boolean;
     limit?: number | null;
     /**
@@ -3979,11 +3984,12 @@ export type MonitorTiming = 'post_iteration' | 'turn_end';
  */
 export type MonitorWindow = {
     /**
-     * Newest entries kept (messages and tool lines), at most 48.
+     * Newest messages kept (a message's tool calls and results count with
+     * it), at most 24.
      */
     entries: number;
     /**
-     * Character budget, at most 12000.
+     * Character budget, at most 6000.
      */
     maxChars: number;
     /**
@@ -13070,6 +13076,10 @@ export type ListSessionDecisionsData = {
         session_id: string;
     };
     query?: {
+        /**
+         * Only this decision (its row id, which is the request id its decisions carry): a page of at most one row
+         */
+        decisionId?: string | null;
         /**
          * Only this source
          */

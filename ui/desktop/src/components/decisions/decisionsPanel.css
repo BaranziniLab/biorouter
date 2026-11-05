@@ -105,6 +105,33 @@
   min-height: 32px;
 }
 
+/* A filter no select shows (one decide call's batch), as a removable chip: a filled
+   control with a transparent edge, no resting outline. */
+.br-dh-chip {
+  display: inline-flex;
+  min-height: 32px;
+  align-items: center;
+  gap: 6px;
+  padding: 0 8px 0 10px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-element);
+  background-color: var(--br-control-ground, var(--background-fill));
+  color: var(--text-default);
+  font-size: var(--text-secondary);
+  cursor: pointer;
+}
+
+.br-dh-chip:hover {
+  background-color: var(--br-control-hover, var(--background-fill-strong));
+}
+
+.br-dh-chip svg {
+  width: 14px;
+  height: 14px;
+  flex: none;
+  color: var(--text-muted);
+}
+
 .br-dh-link {
   padding: 0;
   border: 0;
@@ -609,6 +636,9 @@
   align-items: center;
   gap: 8px;
   padding: 6px 8px;
+  /* A fill with no resting outline; forced colours draw this edge. Its controls rest
+     one step back (`.br-fill-surface` on the element): a fill never sits on a fill. */
+  border: 1px solid transparent;
   border-radius: var(--radius-element);
   background-color: var(--background-fill);
 }
@@ -641,6 +671,8 @@
   flex-direction: column;
   gap: 12px;
   padding: 12px;
+  /* As a list row: a transparent edge, and `.br-fill-surface` on the element. */
+  border: 1px solid transparent;
   border-radius: var(--radius-element);
   background-color: var(--background-fill);
 }

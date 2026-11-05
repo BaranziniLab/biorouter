@@ -72,6 +72,8 @@ export const DECISION_HISTORY_COPY = {
   maxP: 'Max P',
   pRangeInvalid: 'Use numbers from 0 to 1, the lower one first.',
   moreFilters: 'More filters',
+  batchOnly: 'This decide call only',
+  removeBatch: 'Remove the filter: this decide call only',
   clear: 'Clear filters',
   refresh: 'Refresh',
   calls: (n: number) => `${formatCount(n)} ${n === 1 ? 'call' : 'calls'}`,
@@ -189,6 +191,7 @@ function sameFilter(a: DecisionHistoryFilter, b: DecisionHistoryFilter): boolean
 
 function normalizeFilter(filter: DecisionHistoryFilter): DecisionHistoryFilter {
   return {
+    decisionId: filter.decisionId ?? null,
     origin: filter.origin ?? null,
     originId: filter.originId ?? null,
     turnId: filter.turnId ?? null,
@@ -469,7 +472,8 @@ function Filters({
           value={filter.origin ?? null}
           options={originOptions}
           testId="decision-filter-source"
-          onChange={(origin) => onChange({ ...filter, origin, originId: null })}
+          // A batch is one decide call: another source cannot hold it.
+          onChange={(origin) => onChange({ ...filter, origin, originId: null, batchId: null })}
         />
         {filter.origin && criterionOptions.length > 1 ? (
           <FilterSelect
@@ -478,8 +482,22 @@ function Filters({
             value={filter.originId ?? null}
             options={criterionOptions}
             testId="decision-filter-origin"
-            onChange={(originId) => onChange({ ...filter, originId })}
+            onChange={(originId) => onChange({ ...filter, originId, batchId: null })}
           />
+        ) : null}
+        {filter.batchId ? (
+          // No select names a batch, so the filter a decide card opened with is said here,
+          // where it can also be removed.
+          <button
+            type="button"
+            className="br-dh-chip"
+            aria-label={copy.removeBatch}
+            data-testid="decision-filter-batch"
+            onClick={() => onChange({ ...filter, batchId: null })}
+          >
+            <span>{copy.batchOnly}</span>
+            <X aria-hidden="true" />
+          </button>
         ) : null}
         <FilterSelect
           id={`${base}-outcome`}
@@ -714,7 +732,7 @@ function QuestionBlock({
       </p>
       {chosen !== null ? (
         <p className="br-dh-question__answer">
-          {copy.answer}: <strong>{chosen}</strong>
+          {copy.answer}: <strong className="font-semibold">{chosen}</strong>
           {decision && answerProbability(decision) !== null
             ? ` · P ${formatProbability(answerProbability(decision))}`
             : ''}
@@ -941,9 +959,13 @@ export default function DecisionHistory({
   const [filter, setFilter] = useState<DecisionHistoryFilter>(() => normalizeFilter(initial));
   const [appliedKey, setAppliedKey] = useState(filterKey);
   const [reload, setReload] = useState(0);
+  // Selection: the call a link named (a decision card's), else the newest row once
+  // the list lands, kept while it stays listed.
+  const [selectedId, setSelectedId] = useState<string | null>(initial.decisionId ?? null);
   if (appliedKey !== filterKey) {
     setAppliedKey(filterKey);
     setFilter(normalizeFilter(initial));
+    if (initial.decisionId) setSelectedId(initial.decisionId);
   }
 
   const { state, loadMore, retry } = useDecisionPages(sessionId, filter, reload);
@@ -958,8 +980,6 @@ export default function DecisionHistory({
     return () => controller.abort();
   }, [sessionId, reload, filterKey]);
 
-  // Selection: the newest row once the list lands, kept while it stays listed.
-  const [selectedId, setSelectedId] = useState<string | null>(null);
   const records = state.records;
   const selectedIndex = selectedId ? records.findIndex((entry) => entry.id === selectedId) : -1;
   useEffect(() => {
@@ -973,8 +993,11 @@ export default function DecisionHistory({
   const [detailRetry, setDetailRetry] = useState(0);
   useEffect(() => {
     if (!selectedId) return;
+    // Only a settled answer is kept. A 'loading' entry here belongs to a fetch an
+    // earlier selection started and then aborted when the person moved on, so
+    // nothing will ever settle it: fetch again.
     const existing = details[selectedId];
-    if (existing && existing.status !== 'error') return;
+    if (existing && (existing.status === 'ready' || existing.status === 'missing')) return;
     const controller = new AbortController();
     setDetails((current) => ({ ...current, [selectedId]: { status: 'loading' } }));
     fetchDecisionDetail(sessionId, selectedId, controller.signal)
@@ -1110,7 +1133,8 @@ export default function DecisionHistory({
           key={appliedKey}
           filter={filter}
           summary={summary}
-          onChange={(next) => setFilter(normalizeFilter(next))}
+          // A filter the person sets is browsing: the one call a link named lets go.
+          onChange={(next) => setFilter(normalizeFilter({ ...next, decisionId: null }))}
         />
         {filtered ? (
           <button

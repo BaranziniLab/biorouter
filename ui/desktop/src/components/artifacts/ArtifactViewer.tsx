@@ -57,7 +57,6 @@ import {
   FileText,
   FileX,
   Folder,
-  Gauge,
   GitBranch,
   Globe,
   Image,
@@ -508,7 +507,7 @@ export function iconForArtifact(
   if (!artifact) return File;
   if (artifact.kind === 'externalUrl') return Globe;
   // The decision-model mark the summary's Decisions section draws.
-  if (artifact.kind === 'decisions') return Gauge;
+  if (artifact.kind === 'decisions') return ENTITY_ICONS.decision;
   if (artifact.kind === 'file') {
     switch (loadedKind) {
       case 'gitDirectory':

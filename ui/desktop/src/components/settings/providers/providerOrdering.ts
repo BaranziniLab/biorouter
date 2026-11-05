@@ -4,6 +4,7 @@ import {
   type AffiliationInstitution,
 } from '../../privacy/providerAffiliation';
 import { CODING_AGENT_ORDER } from '../../onboarding/codingAgentStatus';
+import { isDecisionProvider } from '../../decisions/decisionWire';
 
 /**
  * The three public providers a user is most likely to already hold a key for,
@@ -119,6 +120,12 @@ export interface OrderedProviderGroup {
    */
   providers: ProviderDetails[];
   sections: OrderedProviderSection[];
+  /**
+   * The decision-model providers this tab's tier would hold (`ollama_decision`
+   * under Local, `baseten_decision` under Public), by display name. They are in
+   * no section and in {@link providers} nowhere: see {@link getOrderedProviderGroups}.
+   */
+  decisionProviders: ProviderDetails[];
 }
 
 function displayName(provider: ProviderDetails): string {
@@ -338,6 +345,18 @@ function commercialSections(providers: ProviderDetails[]): OrderedProviderSectio
  * they belong in, and that set is imported from `codingAgentStatus.ts` rather
  * than written here. A new entry in this catalog is a decision made where the
  * provider is registered, and so is removing one.
+ *
+ * ⚠ **The one kind kept out of the rows: decision-model providers**
+ * (`isDecisionProvider`, the list the model picker groups by too). They are
+ * served on purpose and they are not chat providers: a decision model answers a
+ * typed question with probabilities and writes no reply, so a row's "Use" or its
+ * default-model step would make every new chat a decision chat, and a knowledge
+ * ingest (`IngestModelPicker` reads this too) could not run on one at all. Their
+ * keys are their chat siblings' (`BASETEN_API_KEY`, `OLLAMA_HOST`), so the
+ * Baseten and Ollama rows already set them up. They are still classified by the
+ * daemon's own tier and handed back per tab as {@link
+ * OrderedProviderGroup.decisionProviders}, so the catalog says where they are
+ * (the picker's Decision models group) rather than dropping them silently.
  */
 export function getOrderedProviderGroups(providers: ProviderDetails[]): OrderedProviderGroup[] {
   const grouped: Record<ProviderGroupKey, ProviderDetails[]> = {
@@ -345,9 +364,16 @@ export function getOrderedProviderGroups(providers: ProviderDetails[]): OrderedP
     local: [],
     commercial: [],
   };
+  const decision: Record<ProviderGroupKey, ProviderDetails[]> = {
+    institutional: [],
+    local: [],
+    commercial: [],
+  };
 
   for (const provider of providers) {
-    grouped[classifyProvider(provider)].push(provider);
+    (isDecisionProvider(provider.name) ? decision : grouped)[classifyProvider(provider)].push(
+      provider
+    );
   }
 
   const sectionsByKey: Record<ProviderGroupKey, OrderedProviderSection[]> = {
@@ -364,12 +390,13 @@ export function getOrderedProviderGroups(providers: ProviderDetails[]): OrderedP
   };
 
   const withSections = (
-    group: Omit<OrderedProviderGroup, 'providers' | 'sections'>
+    group: Omit<OrderedProviderGroup, 'providers' | 'sections' | 'decisionProviders'>
   ): OrderedProviderGroup => {
     const sections = sectionsByKey[group.key];
     return {
       ...group,
       sections,
+      decisionProviders: [...decision[group.key]].sort(byDisplayName),
       // Flattened from the sections, so a provider under two institutions is
       // listed once per section here too — `IngestModelPicker` renders a
       // `<select>`, where a repeated option would be a repeated choice, so it

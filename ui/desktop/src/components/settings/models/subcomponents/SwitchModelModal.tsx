@@ -1,5 +1,6 @@
 import { useEffect, useState, useCallback, useId, useMemo, useRef } from 'react';
 import { ExternalLink, Lock } from '../../../icons/app-icons';
+import { ENTITY_ICONS } from '../../../icons/entity-icons';
 
 import { ModalShell } from '../../../ModalShell';
 import { Button } from '../../../ui/button';
@@ -189,6 +190,8 @@ export function groupProviderOptions(
  * A provider row: as a model row is, except that a decision provider's row carries the padlock
  * when its resolved tier is private, so the tier is a shape as well as a word.
  */
+const DecisionMark = ENTITY_ICONS.decision;
+
 const renderProviderOptionLabel = (
   rawOption: unknown,
   meta: { context: 'menu' | 'value' },
@@ -201,6 +204,11 @@ const renderProviderOptionLabel = (
   return (
     <div className="min-w-0 py-0.5" data-decision-provider={option.value}>
       <div className="flex min-w-0 items-center gap-1.5 text-label text-current">
+        <DecisionMark
+          aria-hidden
+          className="size-3.5 shrink-0"
+          data-testid="decision-provider-mark"
+        />
         <span className="truncate">{option.label}</span>
         {option.decision.tier === 'private' && (
           <Lock aria-hidden className="size-3.5 shrink-0" data-testid="decision-provider-lock" />

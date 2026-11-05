@@ -28,7 +28,7 @@ export const DECISION_COMPOSER_COPY = {
   atLeast: (level: string) => `At least ${level}`,
   placeholder: 'Paste the text to decide on',
   draftNote:
-    'Decision model: start your message with the question on its own line, then the text to decide on.',
+    'Decision model: start your message with a question line such as “Q: Is the form signed?”, then the text to decide on.',
   saving: 'Saving the question…',
   saved: 'The question is saved for this chat.',
   loading: 'Reading this chat’s question…',
@@ -38,7 +38,7 @@ export const DECISION_COMPOSER_COPY = {
   badThreshold: 'The threshold is a probability from 0 to 1.',
   refused: (message: string | null) =>
     message ??
-    'Biorouter could not save the question. A question line at the start of your message still works.',
+    'Biorouter could not save the question. A “Q:” question line at the start of your message still works.',
 } as const;
 
 /** The placeholder the composer's text box shows in a decision chat. */

@@ -35,10 +35,12 @@ pub const MAX_MONITOR_NAME_CHARS: usize = 60;
 /// monitors share one multi-question request, so it is never longer than a
 /// question name may be.
 pub const MAX_MONITOR_ID_CHARS: usize = 64;
-/// Window bounds: newest entries kept, and the character budget.
-pub const MAX_WINDOW_ENTRIES: u32 = 48;
+/// Window bounds: newest messages kept, and the character budget. The
+/// ceilings are what [`super::window::build_window`] can deliver, so a stored
+/// window is never accepted and shown at a size it is then cut from.
+pub const MAX_WINDOW_ENTRIES: u32 = super::window::MAX_WINDOW_MESSAGES as u32;
 pub const MIN_WINDOW_CHARS: u32 = 200;
-pub const MAX_WINDOW_CHARS: u32 = 12_000;
+pub const MAX_WINDOW_CHARS: u32 = super::window::MAX_WINDOW_CHARS as u32;
 /// Evaluations in a row before a monitor fires.
 pub const MAX_CONSECUTIVE: u32 = 5;
 /// Evaluation cap per turn.
@@ -85,9 +87,10 @@ pub enum MonitorErrorPolicy {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct MonitorWindow {
-    /// Newest entries kept (messages and tool lines), at most 48.
+    /// Newest messages kept (a message's tool calls and results count with
+    /// it), at most 24.
     pub entries: u32,
-    /// Character budget, at most 12000.
+    /// Character budget, at most 6000.
     pub max_chars: u32,
     /// Include tool calls and results.
     pub tool_calls: bool,
@@ -563,16 +566,18 @@ mod tests {
         refused(&with(|m| m.consecutive = 0), "1 to 5 evaluations");
         refused(&with(|m| m.consecutive = 6), "1 to 5 evaluations");
         refused(&with(|m| m.rearm_below = Some(0.9)), "re-arms below");
-        refused(&with(|m| m.window.entries = 0), "1 to 48 entries");
-        refused(&with(|m| m.window.entries = 49), "1 to 48 entries");
+        refused(&with(|m| m.window.entries = 0), "1 to 24 entries");
+        refused(&with(|m| m.window.entries = 25), "1 to 24 entries");
+        refused(&with(|m| m.window.entries = 48), "1 to 24 entries");
         refused(
-            &with(|m| m.window.max_chars = 12_001),
-            "200 to 12000 characters",
+            &with(|m| m.window.max_chars = 6_001),
+            "200 to 6000 characters",
         );
         refused(
-            &with(|m| m.window.max_chars = 10),
-            "200 to 12000 characters",
+            &with(|m| m.window.max_chars = 12_000),
+            "200 to 6000 characters",
         );
+        refused(&with(|m| m.window.max_chars = 10), "200 to 6000 characters");
         refused(&with(|m| m.max_evals_per_turn = 201), "1 to 200 times");
         refused(&with(|m| m.max_evals_per_turn = 0), "1 to 200 times");
         refused(

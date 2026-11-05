@@ -1,5 +1,5 @@
 import './decisionsChat.css';
-import { Gauge } from '../icons/app-icons';
+import { ENTITY_ICONS } from '../icons/entity-icons';
 import { Button } from '../ui/button';
 import { TranscriptRow } from '../TranscriptRow';
 import type { ArtifactSource } from '../artifacts/artifactTypes';
@@ -43,7 +43,7 @@ export function DecisionTurnMarker({ sessionId, marker, onOpenArtifact }: Decisi
   const fired = marker.items.some((item) => item.fired);
   return (
     <TranscriptRow
-      icon={Gauge}
+      icon={ENTITY_ICONS.decision}
       glyph="decision"
       label={decisionMarkerLine(marker)}
       data-testid="decision-turn-marker"

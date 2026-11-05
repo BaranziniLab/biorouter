@@ -8770,6 +8770,16 @@
             }
           },
           {
+            "name": "decisionId",
+            "in": "query",
+            "description": "Only this decision (its row id, which is the request id its decisions carry): a page of at most one row",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "nullable": true
+            }
+          },
+          {
             "name": "origin",
             "in": "query",
             "description": "Only this source",
@@ -13855,6 +13865,11 @@
             "description": "Opaque cursor from a previous page's `nextCursor` (newest first).",
             "nullable": true
           },
+          "decisionId": {
+            "type": "string",
+            "description": "Only the row with this id (a request id, as a decision chat's reply or\na decision card names it): a page of at most one row.",
+            "nullable": true
+          },
           "errorsOnly": {
             "type": "boolean"
           },
@@ -18375,13 +18390,13 @@
           "entries": {
             "type": "integer",
             "format": "int32",
-            "description": "Newest entries kept (messages and tool lines), at most 48.",
+            "description": "Newest messages kept (a message's tool calls and results count with\nit), at most 24.",
             "minimum": 0
           },
           "maxChars": {
             "type": "integer",
             "format": "int32",
-            "description": "Character budget, at most 12000.",
+            "description": "Character budget, at most 6000.",
             "minimum": 0
           },
           "toolCalls": {

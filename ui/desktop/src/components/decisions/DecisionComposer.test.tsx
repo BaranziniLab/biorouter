@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
@@ -140,6 +142,29 @@ describe('the decision composer', () => {
         'Only the person at the keyboard may set this.'
       )
     );
+  });
+
+  it('names the prefix the daemon reads a question line by, with an example it accepts', () => {
+    // `parse_question_line` reads only a first line that starts with `Q:`, `q:` or `?`;
+    // a bare question there gets the how-to reply and decides nothing.
+    const chat = readFileSync(
+      join(
+        process.cwd(),
+        '..',
+        '..',
+        'crates',
+        'biorouter',
+        'src',
+        'providers',
+        'decision',
+        'chat.rs'
+      ),
+      'utf8'
+    );
+    expect(chat).toContain('.strip_prefix("Q:")');
+    const example = DECISION_COMPOSER_COPY.draftNote.match(/“(.+?)”/)?.[1];
+    expect(example).toMatch(/^Q:\s*\S/);
+    expect(DECISION_COMPOSER_COPY.refused(null)).toContain('Q:');
   });
 
   it('explains the question line where there is no chat yet', () => {

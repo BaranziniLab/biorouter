@@ -256,19 +256,21 @@ pub fn format_p(p: f64) -> String {
 pub fn answer_label(decision: &Decision) -> String {
     match &decision.answer {
         Answer::Binary { value } => if *value { "yes" } else { "no" }.to_string(),
-        Answer::Choice { option } => option.clone(),
+        // Option names and level texts may be a model's (the `decide` tool's).
+        Answer::Choice { option } => terminal_text(option),
         Answer::Score { level, label, .. } => {
             if label.trim().is_empty() {
                 format!("level {level}")
             } else {
-                label.clone()
+                terminal_text(label)
             }
         }
     }
 }
 
-/// The key of [`Decision::probabilities`] the answer is.
-fn answer_key(decision: &Decision) -> String {
+/// The key of [`Decision::probabilities`] the answer is: `yes` or `no`, the
+/// option name, or the score level's index (never its text).
+pub fn answer_key(decision: &Decision) -> String {
     match &decision.answer {
         Answer::Binary { value } => if *value { "yes" } else { "no" }.to_string(),
         Answer::Choice { option } => option.clone(),
@@ -304,12 +306,7 @@ pub fn calibration_flag(decision: &Decision) -> String {
 
 /// The last segment of a model id: `tev1:0.8b`, `elephant-1`.
 pub fn short_model(model: &DecisionModelRef) -> String {
-    model
-        .model
-        .rsplit('/')
-        .next()
-        .unwrap_or(&model.model)
-        .to_string()
+    terminal_text(model.model.rsplit('/').next().unwrap_or(&model.model))
 }
 
 /// `1.2 s` or `22 ms`.
@@ -352,9 +349,25 @@ pub fn outcome_labels(decision: &Decision, question: Option<&Question>) -> Vec<(
         .collect()
 }
 
-/// Clip `text` to `max` characters, with an ellipsis when cut.
+/// Text a model or a stored row supplied, made safe to print: every control
+/// character (an escape sequence, a bell, a carriage return, a C1 code such
+/// as CSI) becomes a space, so a label, an option name, a chunk id or an error
+/// cannot move the cursor, recolour or retitle the terminal, write the
+/// clipboard or forge a line. The `decide` tool lets a model choose chunk ids
+/// and option names freely.
+pub fn terminal_text(text: &str) -> String {
+    text.chars()
+        .map(|c| if c.is_control() { ' ' } else { c })
+        .collect()
+}
+
+/// Clip `text` to `max` characters, with an ellipsis when cut, as
+/// [`terminal_text`] with its whitespace collapsed.
 pub fn clip(text: &str, max: usize) -> String {
-    let text = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    let text = terminal_text(text)
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
     if text.chars().count() <= max {
         return text;
     }
@@ -824,9 +837,45 @@ pub async fn handle_decide(options: DecideOptions) -> Result<()> {
         None => None,
     };
     let service = biorouter::decision::global();
+    let (session, model) = chat_and_model(&options, service, wanted).await?;
 
-    // The chat, when there is one, and the model.
-    let (session, model) = match options.session.as_deref() {
+    let target = Target {
+        service,
+        session: session.as_ref(),
+        model: model.as_ref(),
+        template: &DecisionRequest {
+            questions: std::iter::once((options.name.clone(), question.clone())).collect(),
+            context: DecisionContext::Text(String::new()),
+        },
+        question: &question,
+    };
+    match options.batch.as_deref() {
+        None => decide_text(&options, &target).await,
+        Some(dir) => decide_directory(&options, &target, dir).await,
+    }
+}
+
+/// What every decision of one `biorouter decide` run is asked against.
+struct Target<'a> {
+    service: &'static DecisionService,
+    session: Option<&'a DecisionSession>,
+    model: Option<&'a DecisionModelRef>,
+    /// The questions, held in a request so this module needs no direct
+    /// dependency on the map crate that names their type.
+    template: &'a DecisionRequest,
+    question: &'a Question,
+}
+
+/// The chat, when `--session` names one (checked as `POST /decisions/decide`
+/// checks it, and logged into), and the model: the one asked for, else for a
+/// chat the service's own choice, else the ad hoc resolution, which warns
+/// about a public model.
+async fn chat_and_model(
+    options: &DecideOptions,
+    service: &'static DecisionService,
+    wanted: Option<DecisionModelRef>,
+) -> Result<(Option<DecisionSession>, Option<DecisionModelRef>)> {
+    match options.session.as_deref() {
         Some(session_id) => {
             let manager = Arc::new(SessionManager::instance());
             let enforced = biorouter::privacy::privacy_tiers_enabled();
@@ -847,117 +896,112 @@ pub async fn handle_decide(options: DecideOptions) -> Result<()> {
                 .map_err(|_| anyhow!("Session '{session_id}' not found."))?
                 .with_origin(DecisionOrigin::Adhoc, None)
                 .with_origin_label(Some("biorouter decide".to_string()));
-            (Some(session), wanted)
+            Ok((Some(session), wanted))
         }
         None => {
             let resolved = resolve_adhoc(service, wanted).await?;
             if resolved.tier == ProviderTier::Public {
                 eprintln!("{}", public_model_warning(&resolved.display));
             }
-            (None, Some(resolved.model_ref))
+            Ok((None, Some(resolved.model_ref)))
         }
-    };
+    }
+}
 
-    let name = options.name.clone();
-    // The request's own field names the question map's type, so this module
-    // needs no direct dependency on the map crate.
-    let template = DecisionRequest {
-        questions: std::iter::once((name.clone(), question.clone())).collect(),
-        context: DecisionContext::Text(String::new()),
+/// One state, from `--text` or stdin.
+async fn decide_text(options: &DecideOptions, target: &Target<'_>) -> Result<()> {
+    let state = read_state(options.text.as_deref())?;
+    let request = DecisionRequest {
+        questions: target.template.questions.clone(),
+        context: DecisionContext::Text(state),
     };
-    let questions = &template.questions;
+    let decisions = target
+        .service
+        .decide(target.session, target.model, &request)
+        .await
+        .map_err(|e| anyhow!("{e}"))?;
+    if options.json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({ "decisions": decisions }))?
+        );
+    } else {
+        for decision in &decisions {
+            for line in render_decision(decision, Some(target.question)) {
+                println!("{line}");
+            }
+        }
+        eprintln!("{PROBABILITY_NOTE}");
+    }
+    Ok(())
+}
 
-    match options.batch.as_deref() {
-        None => {
-            let state = read_state(options.text.as_deref())?;
-            let request = DecisionRequest {
-                questions: questions.clone(),
-                context: DecisionContext::Text(state),
-            };
-            let decisions = service
-                .decide(session.as_ref(), model.as_ref(), &request)
-                .await
-                .map_err(|e| anyhow!("{e}"))?;
-            if options.json {
-                println!(
-                    "{}",
-                    serde_json::to_string_pretty(&serde_json::json!({ "decisions": decisions }))?
-                );
-            } else {
-                for decision in &decisions {
-                    for line in render_decision(decision, Some(&question)) {
-                        println!("{line}");
-                    }
-                }
-                eprintln!("{PROBABILITY_NOTE}");
+/// Every file of `--batch`, one chunk each, in groups the service takes.
+async fn decide_directory(options: &DecideOptions, target: &Target<'_>, dir: &Path) -> Result<()> {
+    let files = batch_files(dir)?;
+    let mut rows: Vec<Option<BatchRow>> = vec![None; files.len()];
+    let mut chunks: Vec<(usize, DecisionChunk)> = Vec::new();
+    for (index, path) in files.iter().enumerate() {
+        let label = file_label(path);
+        match read_batch_file(path) {
+            Ok(text) => chunks.push((
+                index,
+                DecisionChunk {
+                    id: label,
+                    context: DecisionContext::Text(text),
+                },
+            )),
+            Err(why) => {
+                rows[index] = Some(BatchRow {
+                    error: Some(format!("{label} {why}")),
+                    file: label,
+                    decision: None,
+                })
             }
         }
-        Some(dir) => {
-            let files = batch_files(dir)?;
-            let mut rows: Vec<Option<BatchRow>> = vec![None; files.len()];
-            let mut chunks: Vec<(usize, DecisionChunk)> = Vec::new();
-            for (index, path) in files.iter().enumerate() {
-                let label = file_label(path);
-                match read_batch_file(path) {
-                    Ok(text) => chunks.push((
-                        index,
-                        DecisionChunk {
-                            id: label,
-                            context: DecisionContext::Text(text),
-                        },
-                    )),
-                    Err(why) => {
-                        rows[index] = Some(BatchRow {
-                            error: Some(format!("{label} {why}")),
-                            file: label,
-                            decision: None,
-                        })
-                    }
-                }
-            }
-            for group in chunks.chunks(BATCH_GROUP) {
-                let positions: Vec<usize> = group.iter().map(|(index, _)| *index).collect();
-                let outcomes = service
-                    .decide_many(
-                        session.as_ref(),
-                        model.as_ref(),
-                        questions,
-                        group.iter().map(|(_, chunk)| chunk.clone()).collect(),
-                    )
-                    .await
-                    .map_err(|e| anyhow!("{e}"))?;
-                for (index, outcome) in positions.into_iter().zip(outcomes) {
-                    rows[index] = Some(BatchRow::from_outcome(outcome));
-                }
-            }
-            let rows: Vec<BatchRow> = rows.into_iter().flatten().collect();
-            if options.json {
-                let summary = summarize_batch(&rows);
-                let files: Vec<serde_json::Value> = rows
-                    .iter()
-                    .map(|row| {
-                        serde_json::json!({
-                            "file": row.file,
-                            "decision": row.decision,
-                            "error": row.error,
-                        })
-                    })
-                    .collect();
-                println!(
-                    "{}",
-                    serde_json::to_string_pretty(&serde_json::json!({
-                        "question": name,
-                        "files": files,
-                        "summary": summary,
-                    }))?
-                );
-            } else {
-                for line in render_batch(&rows, &question) {
-                    println!("{line}");
-                }
-                eprintln!("{PROBABILITY_NOTE}");
-            }
+    }
+    for group in chunks.chunks(BATCH_GROUP) {
+        let positions: Vec<usize> = group.iter().map(|(index, _)| *index).collect();
+        let outcomes = target
+            .service
+            .decide_many(
+                target.session,
+                target.model,
+                &target.template.questions,
+                group.iter().map(|(_, chunk)| chunk.clone()).collect(),
+            )
+            .await
+            .map_err(|e| anyhow!("{e}"))?;
+        for (index, outcome) in positions.into_iter().zip(outcomes) {
+            rows[index] = Some(BatchRow::from_outcome(outcome));
         }
+    }
+    let rows: Vec<BatchRow> = rows.into_iter().flatten().collect();
+    if options.json {
+        let summary = summarize_batch(&rows);
+        let files: Vec<serde_json::Value> = rows
+            .iter()
+            .map(|row| {
+                serde_json::json!({
+                    "file": row.file,
+                    "decision": row.decision,
+                    "error": row.error,
+                })
+            })
+            .collect();
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({
+                "question": options.name,
+                "files": files,
+                "summary": summary,
+            }))?
+        );
+    } else {
+        for line in render_batch(&rows, target.question) {
+            println!("{line}");
+        }
+        eprintln!("{PROBABILITY_NOTE}");
     }
     Ok(())
 }

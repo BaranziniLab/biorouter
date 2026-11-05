@@ -202,8 +202,21 @@
 }
 
 .br-decision-card__model {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
   min-width: 0;
   overflow-wrap: anywhere;
+}
+
+.br-decision-card__model > span {
+  min-width: 0;
+}
+
+.br-decision-card__model > svg {
+  width: 12px;
+  height: 12px;
+  flex: none;
 }
 
 .br-decision-card__tier {

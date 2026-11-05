@@ -93,6 +93,15 @@ describe('useSessionDecisions', () => {
     expect(mocks.settings).not.toHaveBeenCalled();
   });
 
+  it('takes a saved value as the chat’s settings even while it reads nothing', async () => {
+    const { result } = renderHook(() =>
+      useSessionDecisions('a', [], { visible: false, turnRunning: false })
+    );
+    act(() => result.current.applySettings(withMonitor));
+    expect(result.current.data?.settings).toEqual(withMonitor);
+    expect(mocks.settings).not.toHaveBeenCalled();
+  });
+
   it('reads the summary and the settings once the summary is shown', async () => {
     mocks.summary.mockResolvedValue({ data: summary(5000), missing: false });
     const { result } = renderHook(() =>

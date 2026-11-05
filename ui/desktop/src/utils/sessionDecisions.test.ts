@@ -6,12 +6,36 @@ import type { Message } from '../api';
 const mocks = vi.hoisted(() => ({ get: vi.fn(), put: vi.fn(), headers: vi.fn() }));
 vi.mock('../api/client.gen', () => ({ client: { get: mocks.get, put: mocks.put } }));
 vi.mock('./userAction', () => ({ userActionHeaders: mocks.headers }));
+/** The generated functions, watched: each still runs the real one (over the mocked client). */
+const sdk = vi.hoisted(() => ({
+  names: [
+    'getSessionDecisionSummary',
+    'getDecisionSettings',
+    'putDecisionSettings',
+    'listSessionDecisions',
+    'getSessionDecision',
+    'listDecisionModels',
+  ],
+  spies: new Map<string, ReturnType<typeof vi.fn>>(),
+}));
+vi.mock('../api/sdk.gen', async (original) => {
+  const real = await original<Record<string, (...args: unknown[]) => unknown>>();
+  const watched: Record<string, unknown> = { ...real };
+  for (const name of sdk.names) {
+    const spy = vi.fn(real[name]);
+    sdk.spies.set(name, spy);
+    watched[name] = spy;
+  }
+  return watched;
+});
 
 import {
   DECISION_ORIGINS,
   DECISION_OUTCOMES,
   MONITOR_ACTIONS,
   MONITOR_TIMINGS,
+  MONITOR_WINDOW_CHARS_MAX,
+  MONITOR_WINDOW_ENTRIES_MAX,
   answerProbability,
   calibrationText,
   decisionHistoryArtifact,
@@ -20,7 +44,9 @@ import {
   decisionSettingsToWire,
   decisionSourceRows,
   fetchDecisionDetail,
+  fetchDecisionModels,
   fetchDecisionPage,
+  fetchDecisionSettings,
   fetchDecisionSummary,
   firedMonitorIds,
   formatLatency,
@@ -253,6 +279,30 @@ describe('parsing', () => {
     expect(decisionSettingsToWire(settings)).toEqual(wire);
     // A wrapped answer reads the same.
     expect(parseDecisionSettings({ settings: wire })!.monitors).toHaveLength(1);
+  });
+
+  it('keeps a monitor window within what the window builder delivers', () => {
+    // The daemon's ceilings are the window builder's own, so a larger value is
+    // never offered, stored and shown while every evaluation cuts it.
+    const window = RS('decision', 'window.rs');
+    const rustConst = (name: string) =>
+      Number(
+        window.match(new RegExp(`pub const ${name}: usize = ([0-9_]+);`))?.[1].replace(/_/g, '')
+      );
+    expect(MONITOR_WINDOW_ENTRIES_MAX).toBe(rustConst('MAX_WINDOW_MESSAGES'));
+    expect(MONITOR_WINDOW_CHARS_MAX).toBe(rustConst('MAX_WINDOW_CHARS'));
+    const settings = parseDecisionSettings({
+      monitors: [
+        {
+          id: 'form',
+          name: 'Form',
+          question: { instructions: 'Reached the form?', kind: { binary: {} } },
+          window: { entries: 48, maxChars: 12000, toolCalls: true },
+          threshold: 0.8,
+        },
+      ],
+    })!;
+    expect(settings.monitors[0].window).toEqual({ entries: 24, maxChars: 6000, toolCalls: true });
   });
 
   it('reads the catalog bare or wrapped, and a phase gate', () => {
@@ -536,6 +586,12 @@ describe('the history view’s filter and tab', () => {
       before: 'c1',
       limit: 100,
     });
+    // A decision card's link names its one call (`DecisionQuery.decisionId`).
+    expect(decisionQuery({ decisionId: 'dec-1', origin: 'chat' })).toEqual({
+      decisionId: 'dec-1',
+      origin: 'chat',
+      limit: 100,
+    });
   });
 
   it('opens one decisions tab per chat', () => {
@@ -578,6 +634,69 @@ describe('requests carry the person’s proof', () => {
       path: { session_id: 's1', decision_id: 'd1' },
       headers: { 'X-User-Action': 'synthetic-proof' },
     });
+  });
+
+  /**
+   * Every request goes through its generated function (`api/sdk.gen.ts`), which owns the URL and
+   * the security scheme, never through the client's low-level methods by URL; and each carries
+   * the person's proof.
+   */
+  it('calls the generated functions, each with the proof', async () => {
+    for (const spy of sdk.spies.values()) spy.mockClear();
+    const proof = { 'X-User-Action': 'synthetic-proof' };
+    mocks.get.mockResolvedValueOnce(ok({ total: 0, aggregates: [], recentTurns: [] }));
+    await fetchDecisionSummary('s1');
+    mocks.get.mockResolvedValueOnce(ok({ defaultModel: null, monitors: [] }));
+    await fetchDecisionSettings('s1');
+    mocks.get.mockResolvedValueOnce(ok({ records: [], nextCursor: null, total: 0 }));
+    await fetchDecisionPage('s1', { origin: 'monitor', originId: 'form' });
+    mocks.get.mockResolvedValueOnce(ok({ record: wireRecord(), context: { text: 'note' } }));
+    await fetchDecisionDetail('s1', 'd1');
+    mocks.get.mockResolvedValueOnce(ok([]));
+    await fetchDecisionModels(undefined, 's1');
+    mocks.put.mockResolvedValueOnce(ok({ defaultModel: null, monitors: [] }));
+    await saveDecisionSettings('s1', { defaultModel: null, monitors: [] });
+
+    const called = (name: string) => sdk.spies.get(name)!.mock.calls[0]?.[0];
+    expect(called('getSessionDecisionSummary')).toMatchObject({
+      path: { session_id: 's1' },
+      headers: proof,
+    });
+    expect(called('getDecisionSettings')).toMatchObject({
+      path: { session_id: 's1' },
+      headers: proof,
+    });
+    expect(called('listSessionDecisions')).toMatchObject({
+      path: { session_id: 's1' },
+      query: { origin: 'monitor', originId: 'form', limit: 100 },
+      headers: proof,
+    });
+    expect(called('getSessionDecision')).toMatchObject({
+      path: { session_id: 's1', decision_id: 'd1' },
+      headers: proof,
+    });
+    expect(called('listDecisionModels')).toMatchObject({
+      query: { sessionId: 's1' },
+      headers: proof,
+    });
+    expect(called('putDecisionSettings')).toMatchObject({
+      path: { session_id: 's1' },
+      body: { defaultModel: null, monitors: [] },
+      headers: proof,
+    });
+    // And the PUT still says what its body is.
+    expect(mocks.put.mock.lastCall![0].headers).toMatchObject({
+      'Content-Type': 'application/json',
+      ...proof,
+    });
+  });
+
+  it('keeps no low-level request by URL in the decision fetchers', () => {
+    for (const file of ['sessionDecisions.ts', '../components/decisions/decisionChatApi.ts']) {
+      const source = readFileSync(join(__dirname, file), 'utf8');
+      expect(source, file).not.toMatch(/\bclient\.(get|put|post|delete)\(/);
+      expect(source, file).not.toMatch(/url:\s*'\//);
+    }
   });
 
   it('treats a daemon without the route as nothing to show, and a refusal as its sentence', async () => {

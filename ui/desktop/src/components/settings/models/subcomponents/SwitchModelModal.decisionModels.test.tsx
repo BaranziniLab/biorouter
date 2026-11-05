@@ -123,6 +123,10 @@ describe('decision models in the model picker', () => {
       `${switchModelCopy.decisionPublic} · ${switchModelCopy.decisionDetail}`
     );
     expect(within(baseten).queryByTestId('decision-provider-lock')).toBeNull();
+    // Both carry the decision mark, the glyph every decision surface draws.
+    for (const row of [ollama, baseten]) {
+      expect(within(row).getByTestId('decision-provider-mark')).toHaveClass('lucide-gauge');
+    }
     // The chat providers are not in that group.
     expect(within(group).queryByRole('option', { name: /Versa API Azure/ })).toBeNull();
     expect(screen.getByRole('option', { name: /Versa API Azure/ })).toBeInTheDocument();

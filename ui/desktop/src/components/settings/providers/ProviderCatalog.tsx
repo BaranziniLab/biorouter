@@ -854,6 +854,27 @@ export default function ProviderCatalog({
 
       {group.sections.map((section) => renderSection(group, section))}
 
+      {/*
+        The decision-model providers this tab's tier holds have no row (they are not chat
+        providers; `getOrderedProviderGroups`), so the tab says where they are. Settings only:
+        first run is choosing a chat model, and this would be news about something else.
+      */}
+      {!isOnboarding && group.decisionProviders.length > 0 && (
+        <div
+          className="br-provider-decision-note"
+          data-testid={`catalog-decision-models-${group.key}`}
+        >
+          <span className="text-secondary text-text-muted">
+            {catalogCopy.decisionModels(
+              group.decisionProviders.map(
+                (provider) => provider.metadata.display_name || provider.name
+              )
+            )}
+          </span>
+          <InfoTip label={catalogCopy.decisionModelsLabel} help={catalogCopy.decisionModelsHelp} />
+        </div>
+      )}
+
       {group.providers.length === 0 && group.key !== 'commercial' && (
         <p
           className="px-3 text-supporting text-text-muted"

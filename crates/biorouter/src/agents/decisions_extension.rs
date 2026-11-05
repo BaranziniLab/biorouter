@@ -136,8 +136,8 @@ struct DecideParams {
     #[schemars(extend("minItems" = 1, "maxItems" = 200))]
     chunks: Vec<DecideChunk>,
     /// Optional decision model as provider/model, one decision_models lists for
-    /// this chat. Leave it out for the configured default, or the first model
-    /// this chat may use.
+    /// this chat. Leave it out for this chat's default decision model, else the
+    /// configured default, else the first model this chat may use.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     model: Option<String>,
 }
@@ -975,7 +975,24 @@ impl DecisionsClient {
             .with_turn(crate::decision::turns::current_turn(session_id));
         let model = match params.model.as_deref().map(str::trim) {
             Some(wanted) if !wanted.is_empty() => Some(self.named_model(&session, wanted).await?),
-            _ => None,
+            // The chat's own default, checked as a named model is, so a default
+            // this chat may not use is refused with its reason up front.
+            _ => match &session.chat_default_model {
+                Ok(Some(default)) => Some(
+                    self.named_model(&session, &default.label())
+                        .await
+                        .map_err(|why| {
+                            format!("This chat's default decision model is not usable: {why}")
+                        })?,
+                ),
+                Ok(None) => None,
+                Err(why) => {
+                    return Err(format!(
+                        "{why}, so this chat's default decision model is unknown. Name one in \
+                         `model`."
+                    ))
+                }
+            },
         };
 
         let started = Instant::now();
@@ -1143,8 +1160,9 @@ pub fn render_models(rows: &[ModelRow], private_chat: bool) -> String {
         text.push_str("\nNone of these may read this chat, so decide will be refused here.");
     } else {
         text.push_str(
-            "\nName one in decide's `model` as provider/model, or leave `model` out for the \
-             configured default or the first model this chat may use.",
+            "\nName one in decide's `model` as provider/model, or leave `model` out for this \
+             chat's default decision model, else the configured default, else the first model \
+             this chat may use.",
         );
     }
     text
@@ -1378,10 +1396,18 @@ pub(crate) mod test_support {
     /// A service over `models` that never reads config, never asks Crew and
     /// lives for the rest of the test process.
     pub(crate) fn service(models: Vec<FakeModel>) -> &'static DecisionService {
+        service_with_default(models, None)
+    }
+
+    /// [`service`] with `default` standing in for `BIOROUTER_DECISION_MODEL`.
+    pub(crate) fn service_with_default(
+        models: Vec<FakeModel>,
+        default: Option<DecisionModelRef>,
+    ) -> &'static DecisionService {
         Box::leak(Box::new(
             DecisionService::new(Arc::new(FakeSource { models }))
                 .with_use_gate(Arc::new(Allow))
-                .with_default_model(None),
+                .with_default_model(default),
         ))
     }
 }
@@ -1760,6 +1786,86 @@ mod tests {
         .await;
         assert_eq!(off.is_error, Some(false), "{}", text(&off));
         assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+
+    /// With no `model`, decide asks the chat's own default decision model
+    /// (checked as a named model is), not the configured default.
+    #[tokio::test]
+    async fn decide_without_a_model_uses_the_chats_default_decision_model() {
+        let local = model(
+            entry(
+                "tev1",
+                ProviderTier::Private,
+                true,
+                DecisionAdapter::SystemOne,
+            ),
+            0.9,
+        );
+        let cloud = model(
+            entry(
+                "cloud",
+                ProviderTier::Public,
+                false,
+                DecisionAdapter::SystemOne,
+            ),
+            0.9,
+        );
+        let (local_calls, cloud_calls) = (local.calls.clone(), cloud.calls.clone());
+        let (client, session) = client_with(vec![], false).await;
+        let client = client.with_service(test_support::service_with_default(
+            vec![local, cloud],
+            Some(DecisionModelRef::new("test_decision", "cloud")),
+        ));
+        let args = json!({
+            "questions": {"q": {"instructions": "yes?"}},
+            "chunks": [{"id": "a", "text": "a note"}],
+        });
+
+        let configured = call(&client, &session, "decide", args.clone(), enforced()).await;
+        assert_eq!(configured.is_error, Some(false), "{}", text(&configured));
+        assert_eq!(cloud_calls.load(Ordering::SeqCst), 1);
+
+        crate::decision::settings::save(
+            &client.context.session_manager,
+            &session,
+            crate::decision::settings::DecisionSettings {
+                default_model: Some(DecisionModelRef::new("test_decision", "tev1")),
+                monitors: Vec::new(),
+            },
+        )
+        .await
+        .unwrap();
+        let chosen = call(&client, &session, "decide", args.clone(), enforced()).await;
+        assert_eq!(chosen.is_error, Some(false), "{}", text(&chosen));
+        assert_eq!(local_calls.load(Ordering::SeqCst), 1, "the chat's default");
+        assert_eq!(
+            cloud_calls.load(Ordering::SeqCst),
+            1,
+            "not the configured one"
+        );
+
+        crate::decision::settings::save(
+            &client.context.session_manager,
+            &session,
+            crate::decision::settings::DecisionSettings {
+                default_model: Some(DecisionModelRef::new("test_decision", "gone")),
+                monitors: Vec::new(),
+            },
+        )
+        .await
+        .unwrap();
+        let missing = call(&client, &session, "decide", args, enforced()).await;
+        assert_eq!(missing.is_error, Some(true));
+        assert!(
+            text(&missing).contains("default decision model is not usable"),
+            "{}",
+            text(&missing)
+        );
+        assert_eq!(
+            local_calls.load(Ordering::SeqCst) + cloud_calls.load(Ordering::SeqCst),
+            2,
+            "nothing else was sent"
+        );
     }
 
     #[tokio::test]

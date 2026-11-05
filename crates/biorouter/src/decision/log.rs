@@ -14,7 +14,13 @@
 //! request carried is in `decisions_json`, so a 3-question batch over 600 chunks
 //! is 600 rows, not 1,800. A refusal or an error is a row too (outcome `refused`
 //! or `error`), because the history view is where the person goes to see why a
-//! monitor stopped answering.
+//! monitor stopped answering. A batch stopped before any chunk was sent is ONE
+//! such row, never one per chunk.
+//!
+//! A row's id is the request id every [`Decision`] of that request carries
+//! ([`row_id`]), so anything holding a decision (a decision chat's reply, a
+//! tool result) names its row without asking the log. Only a row with no
+//! decisions (a failure) gets an id of its own.
 //!
 //! # Privacy
 //!
@@ -110,6 +116,9 @@ pub struct DecisionDetail {
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct DecisionQuery {
+    /// Only the row with this id (a request id, as a decision chat's reply or
+    /// a decision card names it): a page of at most one row.
+    pub decision_id: Option<String>,
     pub origin: Option<DecisionOrigin>,
     pub origin_id: Option<String>,
     pub turn_id: Option<String>,
@@ -265,7 +274,7 @@ impl DecisionSink for SqliteDecisionSink {
         let row = StoredRow::from_entry(&entry);
         let pool = self.session_manager.storage().pool().await?;
         let inserted = sqlx::query(INSERT_DECISION)
-            .bind(uuid::Uuid::now_v7().to_string())
+            .bind(row_id(&entry))
             .bind(&session_id)
             .bind(Utc::now().timestamp_millis())
             .bind(sql_enum(&entry.origin))
@@ -306,6 +315,18 @@ impl DecisionSink for SqliteDecisionSink {
         }
         Ok(())
     }
+}
+
+/// The id `entry` is stored under: the request id its decisions share (the
+/// service mints one per request, uuid v7, so ids sort by time), or for a row
+/// with no decisions, which only a failure has, a fresh uuid v7.
+pub fn row_id(entry: &DecisionLogEntry) -> String {
+    entry
+        .decisions
+        .first()
+        .map(|decision| decision.request_id.clone())
+        .filter(|id| !id.is_empty())
+        .unwrap_or_else(|| uuid::Uuid::now_v7().to_string())
 }
 
 /// The derived and serialized parts of one row.
@@ -668,6 +689,9 @@ fn push_filters(builder: &mut QueryBuilder<'_, Sqlite>, session_id: &str, query:
     builder
         .push(" WHERE session_id = ")
         .push_bind(session_id.to_string());
+    if let Some(decision_id) = &query.decision_id {
+        builder.push(" AND id = ").push_bind(decision_id.clone());
+    }
     if let Some(origin) = query.origin {
         builder.push(" AND origin = ").push_bind(sql_enum(&origin));
     }
@@ -779,50 +803,121 @@ pub async fn get(
     Ok(Some(DecisionDetail { record, context }))
 }
 
-/// Each origin's calls, with its newest row's label, answer, probability and
+// ⚠ What one aggregate is. A monitor is one source per monitor id and a gate
+// one per phase id, but a `decide` call's origin id is its own batch id, so
+// grouping tool rows by origin id would list one source per batch: a chat that
+// called `decide` forty times would show forty rows. Tool rows are therefore
+// grouped by label (one "decide" source per chat) and report no origin id; the
+// history still filters one batch by `batchId`. `SOURCE_KEY` and
+// `SOURCE_ORIGIN_ID` are spliced into every aggregate below, so the summary,
+// the recent turns and the turn marker group the same way.
+//
+// `SOURCE_KEY` is what rows are partitioned by beside `origin`.
+macro_rules! source_key {
+    ($t:literal) => {
+        concat!(
+            "CASE WHEN ",
+            $t,
+            "origin = 'tool' THEN ",
+            $t,
+            "label ELSE ",
+            $t,
+            "origin_id END"
+        )
+    };
+}
+// The origin id an aggregate reports: none for the tool's, which spans batches.
+macro_rules! source_origin_id {
+    ($t:literal) => {
+        concat!(
+            "CASE WHEN ",
+            $t,
+            "origin = 'tool' THEN NULL ELSE ",
+            $t,
+            "origin_id END"
+        )
+    };
+}
+
+/// Each source's calls, with its newest row's label, answer, probability and
 /// model. Window functions, so the newest row is chosen by `(created_at, id)`
 /// and never by which row SQLite happened to visit last.
-const AGGREGATES: &str = "\
-    SELECT origin, origin_id, label, answer, pass_probability, provider, model, adapter, \
-           created_at, n, passed, failed, errors \
-      FROM (SELECT origin, origin_id, label, answer, pass_probability, provider, model, adapter, \
-                   created_at, \
-                   COUNT(*) OVER g AS n, \
-                   SUM(outcome = 'passed') OVER g AS passed, \
-                   SUM(outcome = 'failed') OVER g AS failed, \
-                   SUM(outcome IN ('error', 'refused')) OVER g AS errors, \
-                   ROW_NUMBER() OVER (PARTITION BY origin, origin_id \
-                                      ORDER BY created_at DESC, id DESC) AS rn \
-              FROM decisions \
-             WHERE session_id = ?1 \
-            WINDOW g AS (PARTITION BY origin, origin_id)) \
-     WHERE rn = 1 \
-     ORDER BY created_at DESC, origin, origin_id";
+const AGGREGATES: &str = concat!(
+    "SELECT origin, origin_id, label, answer, pass_probability, provider, model, adapter, \
+            created_at, n, passed, failed, errors \
+       FROM (SELECT origin, ",
+    source_origin_id!(""),
+    " AS origin_id, label, answer, pass_probability, provider, model, adapter, \
+                    created_at, \
+                    COUNT(*) OVER g AS n, \
+                    SUM(outcome = 'passed') OVER g AS passed, \
+                    SUM(outcome = 'failed') OVER g AS failed, \
+                    SUM(outcome IN ('error', 'refused')) OVER g AS errors, \
+                    ROW_NUMBER() OVER (PARTITION BY origin, ",
+    source_key!(""),
+    " ORDER BY created_at DESC, id DESC) AS rn \
+               FROM decisions \
+              WHERE session_id = ?1 \
+             WINDOW g AS (PARTITION BY origin, ",
+    source_key!(""),
+    ")) \
+      WHERE rn = 1 \
+      ORDER BY created_at DESC, origin, origin_id"
+);
 
-/// The newest `?2` turns, each origin's calls within each, newest turn first.
-const RECENT_TURN_SUMMARIES: &str = "\
-    WITH recent AS (SELECT turn_id, MAX(created_at) AS turn_last \
-                      FROM decisions \
-                     WHERE session_id = ?1 AND turn_id IS NOT NULL \
-                     GROUP BY turn_id \
-                     ORDER BY turn_last DESC, turn_id DESC \
-                     LIMIT ?2) \
-    SELECT turn_id, origin, origin_id, label, pass_probability, turn_last, \
-           n, passed, failed, errors, first_at, last_at \
-      FROM (SELECT d.turn_id, d.origin, d.origin_id, d.label, d.pass_probability, r.turn_last, \
-                   COUNT(*) OVER g AS n, \
-                   SUM(d.outcome = 'passed') OVER g AS passed, \
-                   SUM(d.outcome = 'failed') OVER g AS failed, \
-                   SUM(d.outcome IN ('error', 'refused')) OVER g AS errors, \
-                   MIN(d.created_at) OVER g AS first_at, \
-                   MAX(d.created_at) OVER g AS last_at, \
-                   ROW_NUMBER() OVER (PARTITION BY d.turn_id, d.origin, d.origin_id \
-                                      ORDER BY d.created_at DESC, d.id DESC) AS rn \
-              FROM decisions d JOIN recent r ON r.turn_id = d.turn_id \
-             WHERE d.session_id = ?1 \
-            WINDOW g AS (PARTITION BY d.turn_id, d.origin, d.origin_id)) \
-     WHERE rn = 1 \
-     ORDER BY turn_last DESC, turn_id DESC, first_at ASC, origin, origin_id";
+/// The newest `?2` turns, each source's calls within each, newest turn first.
+const RECENT_TURN_SUMMARIES: &str = concat!(
+    "WITH recent AS (SELECT turn_id, MAX(created_at) AS turn_last \
+                       FROM decisions \
+                      WHERE session_id = ?1 AND turn_id IS NOT NULL \
+                      GROUP BY turn_id \
+                      ORDER BY turn_last DESC, turn_id DESC \
+                      LIMIT ?2) \
+     SELECT turn_id, origin, origin_id, label, pass_probability, turn_last, \
+            n, passed, failed, errors, first_at, last_at \
+       FROM (SELECT d.turn_id, d.origin, ",
+    source_origin_id!("d."),
+    " AS origin_id, d.label, d.pass_probability, r.turn_last, \
+                    COUNT(*) OVER g AS n, \
+                    SUM(d.outcome = 'passed') OVER g AS passed, \
+                    SUM(d.outcome = 'failed') OVER g AS failed, \
+                    SUM(d.outcome IN ('error', 'refused')) OVER g AS errors, \
+                    MIN(d.created_at) OVER g AS first_at, \
+                    MAX(d.created_at) OVER g AS last_at, \
+                    ROW_NUMBER() OVER (PARTITION BY d.turn_id, d.origin, ",
+    source_key!("d."),
+    " ORDER BY d.created_at DESC, d.id DESC) AS rn \
+               FROM decisions d JOIN recent r ON r.turn_id = d.turn_id \
+              WHERE d.session_id = ?1 \
+             WINDOW g AS (PARTITION BY d.turn_id, d.origin, ",
+    source_key!("d."),
+    ")) \
+      WHERE rn = 1 \
+      ORDER BY turn_last DESC, turn_id DESC, first_at ASC, origin, origin_id"
+);
+
+/// One turn's calls, each source's aggregated.
+const TURN_MARKER: &str = concat!(
+    "SELECT origin, origin_id, label, pass_probability, n, passed, failed, errors \
+       FROM (SELECT origin, ",
+    source_origin_id!(""),
+    " AS origin_id, label, pass_probability, created_at, \
+                    COUNT(*) OVER g AS n, \
+                    SUM(outcome = 'passed') OVER g AS passed, \
+                    SUM(outcome = 'failed') OVER g AS failed, \
+                    SUM(outcome IN ('error', 'refused')) OVER g AS errors, \
+                    MIN(created_at) OVER g AS first_at, \
+                    ROW_NUMBER() OVER (PARTITION BY origin, ",
+    source_key!(""),
+    " ORDER BY created_at DESC, id DESC) AS rn \
+               FROM decisions \
+              WHERE session_id = ?1 AND turn_id = ?2 \
+             WINDOW g AS (PARTITION BY origin, ",
+    source_key!(""),
+    ")) \
+      WHERE rn = 1 \
+      ORDER BY first_at ASC, origin, origin_id"
+);
 
 /// A chat's decisions aggregated by origin and by recent turn.
 ///
@@ -914,26 +1009,11 @@ pub async fn turn_marker(
     turn_id: &str,
 ) -> anyhow::Result<DecisionTurnMarker> {
     let pool = session_manager.storage().pool().await?;
-    let rows = sqlx::query(
-        "SELECT origin, origin_id, label, pass_probability, n, passed, failed, errors \
-           FROM (SELECT origin, origin_id, label, pass_probability, created_at, \
-                        COUNT(*) OVER g AS n, \
-                        SUM(outcome = 'passed') OVER g AS passed, \
-                        SUM(outcome = 'failed') OVER g AS failed, \
-                        SUM(outcome IN ('error', 'refused')) OVER g AS errors, \
-                        MIN(created_at) OVER g AS first_at, \
-                        ROW_NUMBER() OVER (PARTITION BY origin, origin_id \
-                                           ORDER BY created_at DESC, id DESC) AS rn \
-                   FROM decisions \
-                  WHERE session_id = ?1 AND turn_id = ?2 \
-                 WINDOW g AS (PARTITION BY origin, origin_id)) \
-          WHERE rn = 1 \
-          ORDER BY first_at ASC, origin, origin_id",
-    )
-    .bind(session_id)
-    .bind(turn_id)
-    .fetch_all(pool)
-    .await?;
+    let rows = sqlx::query(TURN_MARKER)
+        .bind(session_id)
+        .bind(turn_id)
+        .fetch_all(pool)
+        .await?;
     let items = rows
         .iter()
         .map(|row| -> anyhow::Result<DecisionTurnMarkerItem> {
@@ -1020,7 +1100,9 @@ mod tests {
             calibrated: true,
             model: DecisionModelRef::new("ollama_decision", "tev1:0.8b"),
             tier: ProviderTier::Private,
-            request_id: "r1".to_string(),
+            // One request per decision, minted as the service mints them: the
+            // row is stored under this id.
+            request_id: uuid::Uuid::now_v7().to_string(),
             latency_ms: 22,
             usage: DecisionUsage {
                 input_tokens: Some(120),
@@ -1622,6 +1704,211 @@ mod tests {
             panic!("a window stays a window");
         };
         assert!(kept[0].content.ends_with("THE END"));
+    }
+
+    /// A row is stored under the request id its decisions carry, so whatever
+    /// holds a decision (a decision chat's reply) names its row with no
+    /// lookup. A failure row, which has no decisions, gets an id of its own.
+    #[tokio::test]
+    async fn a_row_is_stored_under_its_requests_id() {
+        let (_dir, sm, id) = store().await;
+        let mut entry = log_entry(Some(&id), Entry::default());
+        // Two questions of one request share its id; the row takes it.
+        let request_id = entry.decisions[0].request_id.clone();
+        let mut second = decision("edss_stated", 0.7, Some(0.5));
+        second.request_id = request_id.clone();
+        entry.decisions.push(second);
+        assert_eq!(row_id(&entry), request_id);
+        write(&sm, entry).await;
+
+        let detail = get(&sm, &id, &request_id)
+            .await
+            .unwrap()
+            .expect("the row is found by its request id");
+        assert_eq!(detail.record.id, request_id);
+        assert!(detail
+            .record
+            .decisions
+            .iter()
+            .all(|d| d.request_id == request_id));
+
+        let failure = log_entry(
+            Some(&id),
+            Entry {
+                outcome: DecisionOutcome::Error,
+                p_yes: None,
+                ..Entry::default()
+            },
+        );
+        let (first, again) = (row_id(&failure), row_id(&failure));
+        assert_ne!(first, again, "a failure row's id is minted, not shared");
+        write(&sm, failure).await;
+        let page = list(&sm, &id, &DecisionQuery::default()).await.unwrap();
+        assert_eq!(page.total, 2);
+        assert!(page.records.iter().any(|r| r.id != request_id
+            && r.outcome == DecisionOutcome::Error
+            && uuid::Uuid::parse_str(&r.id).is_ok()));
+    }
+
+    /// `decisionId` selects exactly one row, so a decision card's link can
+    /// open the history on that call; the other filters still apply beside it.
+    #[tokio::test]
+    async fn a_decision_id_filter_selects_one_row() {
+        let (_dir, sm, id) = store().await;
+        let wanted = log_entry(Some(&id), Entry::default());
+        let wanted_id = row_id(&wanted);
+        write(&sm, wanted).await;
+        for _ in 0..3 {
+            write(&sm, log_entry(Some(&id), Entry::default())).await;
+        }
+        let one = list(
+            &sm,
+            &id,
+            &DecisionQuery {
+                decision_id: Some(wanted_id.clone()),
+                ..DecisionQuery::default()
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(one.total, 1);
+        assert_eq!(one.records.len(), 1);
+        assert_eq!(one.records[0].id, wanted_id);
+        assert_eq!(one.next_cursor, None);
+
+        let none = list(
+            &sm,
+            &id,
+            &DecisionQuery {
+                decision_id: Some(wanted_id.clone()),
+                origin: Some(DecisionOrigin::Tool),
+                ..DecisionQuery::default()
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(none.total, 0, "the id is one filter among the others");
+        let elsewhere = list(
+            &sm,
+            "another-chat",
+            &DecisionQuery {
+                decision_id: Some(wanted_id),
+                ..DecisionQuery::default()
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(elsewhere.total, 0, "an id never reaches another chat's row");
+    }
+
+    /// Every `decide` call has its own batch id as its origin id, so grouping
+    /// tool rows by origin id would list one source per call. They are one
+    /// "decide" source per chat (and per turn); monitors stay one per monitor
+    /// id and gates one per phase id, and the history still filters a batch.
+    #[tokio::test]
+    async fn tool_calls_are_one_source_while_monitors_and_gates_stay_per_id() {
+        let (_dir, sm, id) = store().await;
+        for (turn, batch) in [("t1", "b1"), ("t1", "b2"), ("t2", "b3")] {
+            for _ in 0..2 {
+                write(
+                    &sm,
+                    log_entry(
+                        Some(&id),
+                        Entry {
+                            origin: DecisionOrigin::Tool,
+                            origin_id: Some(batch),
+                            label: Some("decide"),
+                            turn: Some(turn),
+                            batch: Some(batch),
+                            outcome: DecisionOutcome::Passed,
+                            p_yes: Some(0.9),
+                            ..Entry::default()
+                        },
+                    ),
+                )
+                .await;
+            }
+        }
+        for (origin, origin_id, label) in [
+            (DecisionOrigin::Monitor, "form-reached", "Form reached"),
+            (DecisionOrigin::Monitor, "login-page", "Login page"),
+            (DecisionOrigin::Gate, "phase-1", "Collect"),
+            (DecisionOrigin::Gate, "phase-2", "Collect"),
+        ] {
+            write(
+                &sm,
+                log_entry(
+                    Some(&id),
+                    Entry {
+                        origin,
+                        origin_id: Some(origin_id),
+                        label: Some(label),
+                        turn: Some("t0"),
+                        ..Entry::default()
+                    },
+                ),
+            )
+            .await;
+        }
+
+        let summary = summary(&sm, &id).await.unwrap();
+        assert_eq!(summary.total, 10);
+        let tools: Vec<_> = summary
+            .aggregates
+            .iter()
+            .filter(|a| a.origin == DecisionOrigin::Tool)
+            .collect();
+        assert_eq!(tools.len(), 1, "one decide source, not one per batch");
+        assert_eq!(tools[0].label, "decide");
+        assert_eq!((tools[0].count, tools[0].passed), (6, 6));
+        assert_eq!(tools[0].origin_id, None, "it spans every batch");
+        let ids = |origin: DecisionOrigin| {
+            let mut ids: Vec<String> = summary
+                .aggregates
+                .iter()
+                .filter(|a| a.origin == origin)
+                .filter_map(|a| a.origin_id.clone())
+                .collect();
+            ids.sort();
+            ids
+        };
+        assert_eq!(ids(DecisionOrigin::Monitor), ["form-reached", "login-page"]);
+        assert_eq!(
+            ids(DecisionOrigin::Gate),
+            ["phase-1", "phase-2"],
+            "two gates with one title are still two gates"
+        );
+
+        let tool_turns: Vec<(&str, u64)> = summary
+            .recent_turns
+            .iter()
+            .filter(|t| t.origin == DecisionOrigin::Tool)
+            .map(|t| (t.turn_id.as_str(), t.count))
+            .collect();
+        assert_eq!(tool_turns, vec![("t2", 2), ("t1", 4)], "one line per turn");
+        let marker = turn_marker(&sm, &id, "t1").await.unwrap();
+        let tool_items: Vec<_> = marker
+            .items
+            .iter()
+            .filter(|i| i.origin == DecisionOrigin::Tool)
+            .collect();
+        assert_eq!(tool_items.len(), 1);
+        assert_eq!(
+            (tool_items[0].count, tool_items[0].origin_id.clone()),
+            (4, None)
+        );
+
+        let batch = list(
+            &sm,
+            &id,
+            &DecisionQuery {
+                batch_id: Some("b2".into()),
+                ..DecisionQuery::default()
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(batch.total, 2, "the history still filters one batch");
     }
 
     #[test]

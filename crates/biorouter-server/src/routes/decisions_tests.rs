@@ -786,7 +786,13 @@ fn decision(p_yes: f64, threshold: f64) -> Decision {
         calibrated: true,
         model: DecisionModelRef::new("ollama_decision", "tev1:0.8b"),
         tier: ProviderTier::Private,
-        request_id: uuid::Uuid::new_v4().to_string(),
+        // A row is stored under its request's id. Ids that sort in the order
+        // they were made, as the service's uuid v7 ids do, so "newest" never
+        // depends on a random id within one millisecond.
+        request_id: {
+            static NEXT: AtomicUsize = AtomicUsize::new(0);
+            format!("req-{:012}", NEXT.fetch_add(1, Ordering::SeqCst))
+        },
         latency_ms: 22,
         usage: DecisionUsage::default(),
         raw: json!({}),
@@ -931,6 +937,20 @@ async fn the_summary_aggregates_per_source_and_the_list_pages_newest_first() {
     .await;
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(json_of(&body)["total"], 2, "{body}");
+
+    // `decisionId` selects one row, as a decision card's link asks for it.
+    let (status, body) = send(
+        served(state.clone()),
+        "GET",
+        &format!("/sessions/{id}/decisions?decisionId={}", seen[3]),
+        None,
+        &[],
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let one = json_of(&body);
+    assert_eq!(one["total"], 1, "{body}");
+    assert_eq!(one["records"][0]["id"], seen[3].as_str(), "{body}");
 
     // One row in full, with the context it was sent.
     let (status, body) = send(

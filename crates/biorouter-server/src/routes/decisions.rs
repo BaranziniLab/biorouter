@@ -304,9 +304,13 @@ async fn chat_session(
     let manager = state.session_manager();
     let session = manager.get_session(session_id, false).await?;
     let affiliations = manager.session_affiliations(session_id).await?;
+    // The chat's own default decision model, the rung after a named model.
+    let chat_default_model =
+        biorouter::decision::service::load_chat_default_model(manager, session_id).await;
     Ok(
         DecisionSession::new(session_id, session.privacy_tier, enforced)
             .with_affiliations(affiliations)
+            .with_chat_default_model(chat_default_model)
             .with_live(Arc::new(StoredClassification(state.clone()))),
     )
 }
@@ -555,6 +559,7 @@ pub async fn decide(
     tag = "decisions",
     params(
         ("session_id" = String, Path, description = "The chat whose decisions to list"),
+        ("decisionId" = Option<String>, Query, description = "Only this decision (its row id, which is the request id its decisions carry): a page of at most one row"),
         ("origin" = Option<DecisionOrigin>, Query, description = "Only this source"),
         ("originId" = Option<String>, Query, description = "Only this monitor, tool call or phase"),
         ("turnId" = Option<String>, Query, description = "Only this agent turn"),

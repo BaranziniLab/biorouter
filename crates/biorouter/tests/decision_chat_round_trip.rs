@@ -281,6 +281,10 @@ async fn a_question_line_is_asked_and_the_reply_names_the_logged_decision() {
         "logged under the reply's turn"
     );
     assert_eq!(detail.record.decisions.len(), 1);
+    assert_eq!(
+        detail.record.decisions[0].request_id, id,
+        "the reply names its row by the decision's own request id, with no lookup"
+    );
 
     // Stored, with its id: a reload shows the same card.
     let stored = chat

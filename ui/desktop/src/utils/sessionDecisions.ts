@@ -1,5 +1,13 @@
 import type { Message } from '../api';
-import { client } from '../api/client.gen';
+import {
+  getDecisionSettings,
+  getSessionDecision,
+  getSessionDecisionSummary,
+  listDecisionModels,
+  listSessionDecisions,
+  putDecisionSettings,
+} from '../api/sdk.gen';
+import type { ListSessionDecisionsData, PutDecisionSettingsData } from '../api/types.gen';
 import { userActionHeaders } from './userAction';
 
 /**
@@ -294,8 +302,10 @@ export interface PhaseGateSnapshot {
 
 export const MAX_MONITORS = 8;
 export const MONITOR_NAME_MAX = 60;
-export const MONITOR_WINDOW_ENTRIES_MAX = 48;
-export const MONITOR_WINDOW_CHARS_MAX = 12_000;
+/** `MAX_WINDOW_ENTRIES` (= `window::MAX_WINDOW_MESSAGES`): newest messages kept. */
+export const MONITOR_WINDOW_ENTRIES_MAX = 24;
+/** `MAX_WINDOW_CHARS` (= `window::MAX_WINDOW_CHARS`): the most a window delivers. */
+export const MONITOR_WINDOW_CHARS_MAX = 6_000;
 export const MONITOR_CONSECUTIVE_MAX = 5;
 export const MONITOR_MAX_EVALS_MAX = 200;
 /** `MAX_PAGE` in `log.rs`. */
@@ -1236,6 +1246,12 @@ export function decisionRevisionHasActivity(revision: string): boolean {
 // ---------------------------------------------------------------------------
 
 export interface DecisionHistoryFilter {
+  /**
+   * Only this call (`DecisionQuery.decisionId`): a decision card's link, which
+   * opens the history on that one row, selected. Any other filter the person
+   * changes in the view lets it go.
+   */
+  decisionId?: string | null;
   origin?: DecisionOrigin | null;
   originId?: string | null;
   turnId?: string | null;
@@ -1280,6 +1296,7 @@ export function decisionQuery(
   page: { before?: string | null; limit?: number } = {}
 ): Record<string, string | number | boolean> {
   const query: Record<string, string | number | boolean> = {};
+  if (filter.decisionId) query.decisionId = filter.decisionId;
   if (filter.origin) query.origin = filter.origin;
   if (filter.originId) query.originId = filter.originId;
   if (filter.turnId) query.turnId = filter.turnId;
@@ -1298,14 +1315,11 @@ export function decisionQuery(
 // ---------------------------------------------------------------------------
 
 /*
- * Through the generated client's low-level methods until `npm run generate-api`
- * declares these routes; each then swaps for its generated function. The daemon
- * secret rides the client's security scheme exactly as a generated call's does,
- * and the person's proof rides every request: the routes filter a private chat's
- * decisions through `session_reach`, and without the proof a private chat's
- * rows would silently be refused.
+ * Through the generated functions (`api/sdk.gen.ts`), which carry the daemon
+ * secret's security scheme, and with the person's proof on every request: the
+ * routes filter a private chat's decisions through `session_reach`, and without
+ * the proof a private chat's rows would silently be refused.
  */
-const SECURITY = [{ name: 'X-Secret-Key', type: 'apiKey' as const }];
 
 export class DecisionRequestError extends Error {
   status: number | null;
@@ -1347,9 +1361,7 @@ export async function fetchDecisionSummary(
   signal?: AbortSignal
 ): Promise<{ data: SessionDecisionSummary | null; missing: boolean }> {
   const headers = await userActionHeaders();
-  const result = (await client.get({
-    security: SECURITY,
-    url: '/sessions/{session_id}/decisions/summary',
+  const result = (await getSessionDecisionSummary({
     path: { session_id: sessionId },
     headers,
     signal,
@@ -1366,9 +1378,7 @@ export async function fetchDecisionSettings(
   signal?: AbortSignal
 ): Promise<{ data: DecisionSettings | null; missing: boolean }> {
   const headers = await userActionHeaders();
-  const result = (await client.get({
-    security: SECURITY,
-    url: '/sessions/{session_id}/decision-settings',
+  const result = (await getDecisionSettings({
     path: { session_id: sessionId },
     headers,
     signal,
@@ -1386,12 +1396,11 @@ export async function saveDecisionSettings(
   settings: DecisionSettings
 ): Promise<DecisionSettings> {
   const headers = await userActionHeaders();
-  const result = (await client.put({
-    security: SECURITY,
-    url: '/sessions/{session_id}/decision-settings',
+  const result = (await putDecisionSettings({
     path: { session_id: sessionId },
-    body: decisionSettingsToWire(settings),
-    headers: { 'Content-Type': 'application/json', ...headers },
+    // The parsers' own wire writer, which mirrors the Rust enums the generated type spells out.
+    body: decisionSettingsToWire(settings) as PutDecisionSettingsData['body'],
+    headers,
   })) as ClientResult;
   const status = result.response?.status ?? null;
   if (result.error !== undefined || result.data === undefined) {
@@ -1410,11 +1419,9 @@ export async function fetchDecisionPage(
   signal?: AbortSignal
 ): Promise<DecisionPage> {
   const headers = await userActionHeaders();
-  const result = (await client.get({
-    security: SECURITY,
-    url: '/sessions/{session_id}/decisions',
+  const result = (await listSessionDecisions({
     path: { session_id: sessionId },
-    query: decisionQuery(filter, page),
+    query: decisionQuery(filter, page) as ListSessionDecisionsData['query'],
     headers,
     signal,
   })) as ClientResult;
@@ -1431,9 +1438,7 @@ export async function fetchDecisionDetail(
   signal?: AbortSignal
 ): Promise<DecisionDetail | null> {
   const headers = await userActionHeaders();
-  const result = (await client.get({
-    security: SECURITY,
-    url: '/sessions/{session_id}/decisions/{decision_id}',
+  const result = (await getSessionDecision({
     path: { session_id: sessionId, decision_id: decisionId },
     headers,
     signal,
@@ -1456,9 +1461,7 @@ export async function fetchDecisionModels(
   sessionId?: string
 ): Promise<DecisionModelEntry[]> {
   const headers = await userActionHeaders();
-  const result = (await client.get({
-    security: SECURITY,
-    url: '/decisions/models',
+  const result = (await listDecisionModels({
     ...(sessionId ? { query: { sessionId } } : {}),
     headers,
     signal,

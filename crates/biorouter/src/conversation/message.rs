@@ -11,8 +11,8 @@ use std::fmt;
 use utoipa::ToSchema;
 
 use crate::conversation::tool_preview::ToolPreview;
-use crate::decision::log::DecisionTurnMarker;
 use crate::conversation::tool_result_serde;
+use crate::decision::log::DecisionTurnMarker;
 use crate::permission::tool_risk::ToolRisk;
 use crate::utils::sanitize_unicode_tags;
 

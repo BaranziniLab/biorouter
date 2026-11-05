@@ -39,6 +39,12 @@ export interface SessionDecisionsState {
   error: boolean;
   /** Read again now, settings included (after the Monitors dialog saves, or Retry). */
   refresh: () => void;
+  /**
+   * Draw `settings` as the chat's settings now: the value a save stored, so the
+   * caller's copy is current even while the hook is not reading (summary hidden,
+   * no turn running), when `refresh` reads nothing.
+   */
+  applySettings: (settings: DecisionSettings) => void;
 }
 
 /** Whether the chat uses decision models at all: calls on record, or a monitor switched on. */
@@ -159,5 +165,11 @@ export function useSessionDecisions(
     loading: current ? current.loading : enabled,
     error: current?.error ?? false,
     refresh: () => setRetry((value) => value + 1),
+    applySettings: (settings) =>
+      setSnapshot((previous) =>
+        previous.sessionId === sessionId
+          ? { ...previous, data: { summary: previous.data?.summary ?? null, settings } }
+          : { sessionId, data: { summary: null, settings }, loading: false, error: false }
+      ),
   };
 }

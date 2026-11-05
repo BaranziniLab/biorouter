@@ -669,9 +669,16 @@ pub(crate) mod tests {
                 "ollama",
                 "private: a self-hosted server on this machine; an OLLAMA_HOST off it, or an Ollama cloud model, demotes the instance",
             ),
+            // Follows the `ollama` ruling above: the same self-hosted server,
+            // read through the same OLLAMA_HOST, Private on loopback and
+            // Public for a cloud model. It adds no new private destination,
+            // so it needs no ruling of its own. A cloud tag demotes the bound
+            // instance (`decision::chat::declared_axes`); a model renamed from
+            // a cloud model (`remote_host` in `/api/show`) reads Public when
+            // it is opened for a decision, so Gate H refuses it there.
             (
                 "ollama_decision",
-                "private: a decision model on the same self-hosted Ollama; an OLLAMA_HOST off it, or a cloud tag, demotes the instance, and Gate H re-reads the opened model's tier before every decision",
+                "private: a self-hosted server on this machine, as ollama; an OLLAMA_HOST off it, or an Ollama cloud tag, demotes the instance, and a remote_host model reads Public when opened, so Gate H refuses it to a private chat",
             ),
             (
                 "versa_azure",

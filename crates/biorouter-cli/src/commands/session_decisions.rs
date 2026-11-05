@@ -132,6 +132,7 @@ pub struct DecisionFilters {
 impl DecisionFilters {
     pub fn query(&self) -> DecisionQuery {
         DecisionQuery {
+            decision_id: None,
             origin: self.source.map(Into::into),
             origin_id: self.origin_id.clone(),
             turn_id: self.turn.clone(),
@@ -856,6 +857,71 @@ pub(crate) mod tests {
         );
     }
 
+    /// Labels, chunk ids, option names and errors are a model's to choose (the
+    /// `decide` tool), so none of their control characters reaches the
+    /// terminal: no escape sequence, bell or C1 CSI survives into a line.
+    #[test]
+    fn model_written_text_prints_without_control_characters() {
+        use biorouter::decision::types::Answer;
+        let mut tool = aggregate(DecisionOrigin::Tool, "\x1b]0;owned\x07decide", 600);
+        tool.last_answer = Some("\u{9b}2Jyes".into());
+        let summary = SessionDecisionSummary {
+            total: 602,
+            aggregates: vec![tool],
+            recent_turns: vec![DecisionTurnSummary {
+                turn_id: "0193a1b2c3d4e5".into(),
+                origin: DecisionOrigin::Gate,
+                origin_id: Some("build".into()),
+                label: "\x1b[31mBuild".into(),
+                count: 2,
+                passed: 1,
+                failed: 1,
+                errors: 0,
+                first_at: at(0),
+                last_at: at(60),
+                last_pass_probability: Some(0.5),
+            }],
+        };
+        let mut forged = record("d1", 0.9);
+        forged.label = Some("\x1b[2J\x1b[Hall checks passed".into());
+        forged.chunk_id = Some("\x1b]52;c;cm0gLXJmIH4K\x07".into());
+        forged.decisions[0].answer = Answer::Choice {
+            option: "\x1b]0;x\x07ms".into(),
+        };
+        forged.model = Some(DecisionModelRef::new("ollama_decision", "tev1\x1b[2J"));
+        let mut broken = record("d2", 0.5);
+        broken.decisions.clear();
+        broken.error = Some("boom\u{9b}2J\x07".into());
+        let page = DecisionPage {
+            records: vec![forged, broken],
+            next_cursor: None,
+            total: 2,
+        };
+        let lines = render_text("s1", &summary, &page, &DecisionFilters::default());
+        for line in &lines {
+            assert!(!line.chars().any(char::is_control), "{line:?}");
+        }
+        let text = lines.join("\n");
+        assert!(text.contains("all checks passed"), "{text}");
+        assert!(text.contains("boom"), "{text}");
+        assert!(
+            !marker_text(&DecisionTurnMarkerItem {
+                origin: DecisionOrigin::Gate,
+                origin_id: Some("build".into()),
+                label: "\x1b[2JBuild\x07".into(),
+                count: 1,
+                passed: 1,
+                failed: 0,
+                errors: 0,
+                last_pass_probability: None,
+                fired: false,
+            })
+            .chars()
+            .any(char::is_control),
+            "the transcript marker line"
+        );
+    }
+
     #[test]
     fn an_error_row_says_what_failed_and_an_empty_chat_says_so() {
         let mut failed = record("d3", 0.5);
@@ -949,6 +1015,8 @@ pub(crate) mod tests {
             let mut decision = yes_no(p);
             decision.pass_probability = Some(p);
             decision.passed = Some(p >= 0.85);
+            // A row is stored under its request's id, one per request.
+            decision.request_id = format!("{origin_id}-{p}");
             DecisionLogEntry {
                 session_id: Some(chat.id.clone()),
                 origin,

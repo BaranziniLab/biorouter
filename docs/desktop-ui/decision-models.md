@@ -42,12 +42,12 @@ Everything comes from the daemon's decision routes, through `utils/sessionDecisi
 | `GET /sessions/{id}/decisions` | the history view's list, a page at a time | `DecisionPage` of `DecisionRecord` |
 | `GET /sessions/{id}/decisions/{decision_id}` | the history view's detail pane | `DecisionDetail`, with the context |
 | `GET` and `PUT /sessions/{id}/decision-settings` | the summary (monitors), the Monitors dialog | `DecisionSettings` (`settings.rs`) |
-| `GET /decisions/models` | the Monitors dialog's model list | `DecisionModelEntry` (`model.rs`) |
+| `GET /decisions/models` | the Monitors dialog's model list | `DecisionModelsResponse` of `DecisionModelInfo` (`crates/biorouter-server/src/routes/decisions.rs`, not this folder; it carries `unavailableReason`, the daemon's reason this chat may not use a model) |
 
 Every request carries `userActionHeaders()`. The routes ask `session_reach`, so without the
-person's proof a private chat's decisions would be refused. Until the generated client declares
-these routes, the module calls them through the client's low-level `get` and `put` with the same
-security scheme a generated call uses; each then swaps for its generated function.
+person's proof a private chat's decisions would be refused. The module calls each route through
+its generated function (`listDecisionModels`, `getSessionDecisionSummary` and the others in
+`api/sdk.gen.ts`).
 
 The parsers mirror the Rust shapes one to one and are defensive in one direction only, as the
 subagent roster's are: a value this build does not know degrades to a neutral one (an unknown
@@ -107,9 +107,22 @@ builds the source. There is one tab per chat: opening it again with another filt
 that tab, and `openedAt` makes the same filter applied twice still apply. The tab draws the
 decision mark, has no "open externally" action, and puts its call count in the preview bar.
 
+The decision mark is `ENTITY_ICONS.decision` (`components/icons/entity-icons.ts`, a gauge), one
+glyph for one concept: the summary's Decisions rows, the per-turn marker, the decision-chat
+card's model line, the Decision models rows of the model picker, this tab, the count in History
+and every `decisions__*` tool row (`utils/toolGlyph.ts`, whose test reads the tool names from
+`decisions_extension.rs`) draw it, and nothing else does.
+
+- **One call, selected.** A decision-chat card's "Decision history" link opens the view on that
+  one call (`DecisionHistoryFilter.decisionId`, sent as `decisionId`), selected and with its
+  detail asked for at once, and with its source and turn as well, which still narrow the list on
+  a daemon from before `decisionId`. Setting any filter in the view lets the single call go.
+
 - **Filters.** Source, criterion (a monitor by name, a phase gate by its phase, a `decide` call
   by when it ran), outcome; under More filters, the turn, a probability range and errors only.
   The criterion and turn lists come from the summary, so they name what the chat actually has.
+  A `decide` card opens the view on its own batch, which no select names, so it shows as a
+  removable "This decide call only" chip; choosing another source or criterion lets it go too.
 - **The list** is a `listbox` of 44px rows, newest first, loaded 100 at a time. Only the rows in
   view and eight on either side are in the DOM, placed at their index times 44 inside a box as
   tall as the loaded rows, and the next page is asked for once the last loaded row is within 20
@@ -134,6 +147,22 @@ them. A monitor has a name, a question, yes or no or one of several options (wit
 that fires it), a model, a threshold (a slider from 0.50 to 0.99), an action (notify, tell the
 agent, stop the turn), when it checks (after each step, or when the turn ends) and an on switch.
 Save writes the whole list with `PUT /sessions/{id}/decision-settings`.
+
+- **Two ways in.** The summary's Decisions section has a Monitors row, but that section is drawn
+  only once a chat has a decision call or a monitor, so the composer's `+` menu also carries
+  "Decision monitors…" (`composer/ComposerPlusMenu.tsx`), which is how the first monitor is
+  added. The row is there only in a chat that exists (`ChatInput`'s `sessionId`), never on Home
+  or in a new chat before its first message. Both open the one dialog `BaseChat` mounts.
+- **It never saves what it has not read.** Every open reads
+  `GET /sessions/{id}/decision-settings` and keeps Add, Save and every row's controls off until
+  the answer arrives, even when the summary already holds a copy: Save replaces the whole record,
+  and the summary's copy of an idle chat can predate a write made with
+  `biorouter session monitors` or in another window. The copy is shown meanwhile, and used when
+  the read fails; opened before anything has read the settings (from the `+` menu while the
+  summary is folded away), a failed read keeps Add and Save off for good, because an empty list
+  saved in their place would replace every stored monitor and the chat's default decision model.
+  The value a save stores is handed back to the summary at once (`applySettings` in
+  `hooks/useSessionDecisions.ts`), so it is current even while the summary reads nothing.
 
 - **Validation is said by the field** before Save is pressed: a missing name or question, too
   few or duplicate options, no option chosen to fire on, and a public model on a private chat.
@@ -173,7 +202,8 @@ never shows one, and the calls are never rows of their own.
 | The history view's window, paging, selection, detail and filters | `components/decisions/DecisionHistory.test.tsx` |
 | 2,000 rows scrolled to the end in Chromium: every page loaded, 44px rows, a bounded window | `components/decisions/decisionHistory.browser.test.tsx` |
 | The `decisions` kind in the side panel | `components/decisions/decisionsArtifact.test.tsx` |
-| The Monitors dialog's validation, save, privacy reasons and the browser | `components/decisions/MonitorsDialog.test.tsx` |
+| The Monitors dialog's validation, save, privacy reasons, the browser, its read on every open (a caller's older copy is not what it saves) and its filled rows | `components/decisions/MonitorsDialog.test.tsx` |
+| The composer's `+` row that opens the dialog, only in a chat that exists | `components/ChatInput.decisionMonitors.test.tsx` |
 | The History count on top-level rows only | `components/sessions/SessionListView.decisionCount.test.tsx` |
 
 Run them with

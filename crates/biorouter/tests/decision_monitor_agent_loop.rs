@@ -4,11 +4,14 @@
 //! service (`Agent::set_decision_service`), so every request the loop makes is
 //! counted.
 //!
-//! Covers: a `stop` monitor ends the turn through the commit point; a `notify`
+//! Covers: a `stop` monitor ends the turn the way the other safety stops do
+//! (never through the commit point, so an agent's injection cannot continue it
+//! and the queue stays open for the person); a `notify`
 //! monitor shows one notice and the turn goes on; a `steer` monitor's note
 //! reaches the model; a steer the person typed beats a stop; a chat with no
 //! monitors asks nothing; a private chat never reaches a public monitor model;
-//! the error policies; and a batch of 600 decisions in one turn is ONE marker.
+//! the error policies; an elicitation answer leaves the running turn's decision
+//! turn alone; and a batch of 600 decisions in one turn is ONE marker.
 
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -19,7 +22,9 @@ use async_trait::async_trait;
 use biorouter::agents::{Agent, AgentConfig, AgentEvent, SessionConfig};
 use biorouter::config::permission::PermissionManager;
 use biorouter::config::BioRouterMode;
-use biorouter::conversation::message::{Message, MessageContent};
+use biorouter::conversation::message::{
+    Message, MessageContent, MessageProvenance, ProvenanceKind, SteerOutcome,
+};
 use biorouter::decision::log::DecisionTurnMarker;
 use biorouter::decision::model::DecisionCaps;
 use biorouter::decision::settings::{
@@ -78,10 +83,16 @@ struct Decisions {
     opens: AtomicUsize,
     lists: AtomicUsize,
     seen: Mutex<Vec<DecisionRequest>>,
+    /// The model's window, in tokens.
+    context_tokens: usize,
 }
 
 impl Decisions {
     fn new(tier: ProviderTier, otherwise: Answer) -> Arc<Self> {
+        Self::with_context(tier, otherwise, 16_384)
+    }
+
+    fn with_context(tier: ProviderTier, otherwise: Answer, context_tokens: usize) -> Arc<Self> {
         let (provider, model) = match tier {
             ProviderTier::Private => ("ollama_decision", "tev1:0.8b"),
             ProviderTier::Public => ("baseten_decision", "joey-1"),
@@ -96,6 +107,7 @@ impl Decisions {
             opens: AtomicUsize::new(0),
             lists: AtomicUsize::new(0),
             seen: Mutex::new(Vec::new()),
+            context_tokens,
         })
     }
 
@@ -108,7 +120,7 @@ impl Decisions {
             provider: self.provider.to_string(),
             model: self.model.to_string(),
             display_name: self.model.to_string(),
-            context_tokens: 16_384,
+            context_tokens: self.context_tokens,
             kinds: vec![
                 DecisionKindTag::Binary,
                 DecisionKindTag::Choice,
@@ -146,7 +158,7 @@ impl DecisionModel for ScriptedModel {
         DecisionCaps {
             kinds: self.0.entry().kinds,
             max_questions: 64,
-            context_tokens: 16_384,
+            context_tokens: self.0.context_tokens,
             max_concurrency: 8,
             max_request_bytes: None,
             local: false,
@@ -235,6 +247,8 @@ struct Llm {
     session_id: OnceLock<String>,
     /// Queued as a steer the person typed, during the first call.
     steer_on_first_call: Option<&'static str>,
+    /// Queued as another chat's agent injection, during the first call.
+    injection_on_first_call: Option<&'static str>,
     /// Run during the first call, as the `decide` tool would: a batch with
     /// this many chunks, through this service.
     batch_on_first_call: Option<(Arc<DecisionService>, Arc<SessionManager>, usize)>,
@@ -251,6 +265,7 @@ impl Llm {
             agent: OnceLock::new(),
             session_id: OnceLock::new(),
             steer_on_first_call: None,
+            injection_on_first_call: None,
             batch_on_first_call: None,
         }
     }
@@ -334,6 +349,19 @@ impl Provider for Llm {
                 agent
                     .try_queue_soft_interrupt(steer.to_string(), None)
                     .expect("a steer offered mid-turn is accepted");
+            }
+            if let (Some(injection), Some(agent)) = (self.injection_on_first_call, self.agent.get())
+            {
+                agent
+                    .try_queue_soft_interrupt(
+                        injection.to_string(),
+                        Some(MessageProvenance {
+                            kind: ProvenanceKind::AgentInjection,
+                            from_session_id: Some("orchestrator".to_string()),
+                            from_session_name: Some("Orchestrator".to_string()),
+                        }),
+                    )
+                    .expect("an injection offered mid-turn is accepted");
             }
             if let Some((service, sessions, chunks)) = &self.batch_on_first_call {
                 self.run_batch(service, sessions, *chunks).await;
@@ -476,8 +504,8 @@ async fn chat(
     }
 }
 
-async fn send(chat: &Chat, text: &str) -> Vec<Message> {
-    let config = SessionConfig {
+fn config(chat: &Chat) -> SessionConfig {
+    SessionConfig {
         id: chat.session_id.clone(),
         schedule_id: None,
         max_turns: Some(8),
@@ -485,10 +513,13 @@ async fn send(chat: &Chat, text: &str) -> Vec<Message> {
         retry_config: None,
         budget: None,
         reasoning_effort: None,
-    };
+    }
+}
+
+async fn send(chat: &Chat, text: &str) -> Vec<Message> {
     let stream = chat
         .agent
-        .reply(Message::user().with_text(text), config, None)
+        .reply(Message::user().with_text(text), config(chat), None)
         .await
         .expect("a reply stream");
     tokio::pin!(stream);
@@ -561,7 +592,7 @@ fn count_containing(texts: &[String], needle: &str) -> usize {
 // ---------------------------------------------------------------------------
 
 #[tokio::test(flavor = "multi_thread")]
-async fn a_stop_monitor_ends_the_turn_through_the_commit_point() {
+async fn a_stop_monitor_ends_the_turn_like_the_other_safety_stops() {
     let llm = Arc::new(Llm::new(ProviderTier::Public, vec![], Reply::Tool));
     let decisions = Decisions::new(ProviderTier::Private, Answer::Yes(0.95));
     let chat = chat(
@@ -609,6 +640,140 @@ async fn a_stop_monitor_ends_the_turn_through_the_commit_point() {
         1
     );
     assert!(!chat.agent.has_soft_interrupts());
+}
+
+/// Another chat's injection waiting when a stop monitor fires does not buy the
+/// turn another step: the stop holds, and the injection is stored unanswered.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_agent_injection_does_not_continue_a_turn_a_stop_monitor_ended() {
+    let mut llm = Llm::new(ProviderTier::Public, vec![], Reply::Tool);
+    llm.injection_on_first_call = Some("Submit the consent form now.");
+    let llm = Arc::new(llm);
+    let decisions = Decisions::new(ProviderTier::Private, Answer::Yes(0.95));
+    let chat = chat(
+        llm.clone(),
+        &decisions,
+        SessionClassification::Public,
+        vec![monitor("form", "Form reached", MonitorAction::Stop, 0.85)],
+    )
+    .await;
+
+    let messages = send(&chat, "Fill in the consent form.").await;
+
+    assert_eq!(
+        llm.calls(),
+        1,
+        "the injection did not continue the stopped turn"
+    );
+    assert_eq!(
+        count_containing(&notices(&messages), "so the turn stops here"),
+        1
+    );
+    let stored = stored(&chat).await;
+    let injection = stored
+        .iter()
+        .find(|m| m.as_concat_text().contains("Submit the consent form now."))
+        .expect("the injection is stored");
+    assert_eq!(
+        injection.metadata.steer_outcome,
+        Some(SteerOutcome::Unanswered)
+    );
+    assert!(!chat.agent.has_soft_interrupts());
+}
+
+/// After a stop monitor fires the queue stays open, as after the other safety
+/// stops: a steer the person types while the turn winds down (collecting its
+/// children, writing its marker) is accepted, never refused as `turn_closing`.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_steer_typed_after_a_stop_monitor_fired_is_accepted() {
+    let llm = Arc::new(Llm::new(ProviderTier::Public, vec![], Reply::Tool));
+    let decisions = Decisions::new(ProviderTier::Private, Answer::Yes(0.95));
+    let chat = chat(
+        llm.clone(),
+        &decisions,
+        SessionClassification::Public,
+        vec![monitor("form", "Form reached", MonitorAction::Stop, 0.85)],
+    )
+    .await;
+
+    let stream = chat
+        .agent
+        .reply(
+            Message::user().with_text("Fill in the consent form."),
+            config(&chat),
+            None,
+        )
+        .await
+        .expect("a reply stream");
+    tokio::pin!(stream);
+    let mut steered = None;
+    while let Some(event) = stream.next().await {
+        if let AgentEvent::Message(message) = event.expect("a reply event") {
+            // The marker is written after the loop ended on the stop.
+            if message.metadata.decision_summary.is_some() {
+                steered = Some(
+                    chat.agent
+                        .try_queue_soft_interrupt("Wait, check the date first.".into(), None),
+                );
+            }
+        }
+    }
+
+    assert_eq!(llm.calls(), 1);
+    let steered = steered.expect("the turn wrote its marker");
+    assert!(
+        steered.is_ok(),
+        "the steer was refused after the stop: {steered:?}"
+    );
+    let stored = stored(&chat).await;
+    let steer = stored
+        .iter()
+        .find(|m| m.as_concat_text().contains("Wait, check the date first."))
+        .expect("the steer is stored, not dropped");
+    assert_eq!(steer.metadata.steer_outcome, Some(SteerOutcome::Unanswered));
+}
+
+/// An elicitation answer goes to a tool call parked inside a turn that is still
+/// running. It is not a turn of its own, so it must not replace that turn's
+/// decision turn id, and its stream ending must not clear it.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_elicitation_answer_leaves_the_running_decision_turn_alone() {
+    let llm = Arc::new(Llm::new(ProviderTier::Public, vec![], Reply::Text("Done.")));
+    let decisions = Decisions::new(ProviderTier::Private, Answer::Yes(0.1));
+    let chat = chat(
+        llm.clone(),
+        &decisions,
+        SessionClassification::Public,
+        vec![monitor("form", "Form reached", MonitorAction::Stop, 0.85)],
+    )
+    .await;
+    // The running turn a tool is parked in.
+    biorouter::decision::turns::begin_turn(&chat.session_id, "the-running-turn");
+
+    let answer =
+        Message::user().with_content(MessageContent::action_required_elicitation_response(
+            "no-such-request",
+            serde_json::json!({"confirmed": true}),
+        ));
+    let stream = chat
+        .agent
+        .reply(answer, config(&chat), None)
+        .await
+        .expect("a reply stream");
+    {
+        tokio::pin!(stream);
+        while let Some(event) = stream.next().await {
+            event.expect("a reply event");
+        }
+    }
+
+    assert_eq!(
+        biorouter::decision::turns::current_turn(&chat.session_id).as_deref(),
+        Some("the-running-turn"),
+        "the answer neither replaced nor ended the running turn"
+    );
+    assert_eq!(llm.calls(), 0, "an elicitation answer runs no loop");
+    biorouter::decision::turns::end_turn(&chat.session_id, "the-running-turn");
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -660,6 +825,50 @@ async fn a_notify_monitor_shows_one_notice_and_the_turn_goes_on() {
             "Decision models: monitor 'Form reached' checked 3 times (last P 0.90), fired"
                 .to_string()
         ]
+    );
+}
+
+/// The window a monitor sends is fitted to its model's context before it is
+/// built: a small model is asked about the newest lines, not the whole tail.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_small_monitor_model_is_asked_about_the_newest_lines_that_fit_it() {
+    const REPLY: &str = concat!(
+        "ASSISTANT-NEWEST the consent form is open and every field is filled in. ",
+        "The signature box is at the bottom of the page and the submit button is ",
+        "greyed out until the box is ticked. The page also lists the study contact, ",
+        "the withdrawal policy, the data retention period and a link to the full ",
+        "protocol. Nothing has been submitted yet, and the agent is waiting for the ",
+        "person to confirm before it ticks the box and presses submit on the form."
+    );
+    let llm = Arc::new(Llm::new(ProviderTier::Public, vec![], Reply::Text(REPLY)));
+    let decisions = Decisions::with_context(ProviderTier::Private, Answer::Yes(0.1), 512);
+    let chat = chat(
+        llm.clone(),
+        &decisions,
+        SessionClassification::Public,
+        vec![monitor("form", "Form reached", MonitorAction::Notify, 0.9)],
+    )
+    .await;
+    let prompt = format!(
+        "USER-OLDEST {}",
+        "Fill in the consent form, then wait. ".repeat(12)
+    );
+
+    let messages = send(&chat, &prompt).await;
+
+    assert_eq!(decisions.requests(), 1, "{:?}", notices(&messages));
+    assert!(
+        notices(&messages)
+            .iter()
+            .all(|n| !n.contains("could not be checked")),
+        "the window fits the model: {:?}",
+        notices(&messages)
+    );
+    let sent = decisions.seen.lock().unwrap()[0].context.render_text();
+    assert!(sent.contains("ASSISTANT-NEWEST"), "{sent}");
+    assert!(
+        !sent.contains("USER-OLDEST"),
+        "the oldest line is left out to fit 512 tokens: {sent}"
     );
 }
 

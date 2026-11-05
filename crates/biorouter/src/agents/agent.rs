@@ -10039,10 +10039,28 @@ impl Agent {
         // phase gate, a decision chat) is logged under one fresh turn id, so
         // surfaces aggregate per turn instead of listing calls. The guard ends
         // the turn on every exit, a dropped stream included.
-        let decision_turn = crate::decision::monitor::DecisionTurnGuard::begin(
-            Arc::clone(&self.decisions.monitors),
-            &session_config.id,
-        );
+        //
+        // An elicitation answer is not a turn: it goes to a tool call parked
+        // inside a turn that is still running, and its own stream ends almost
+        // at once. Beginning a decision turn for it would replace the running
+        // turn's id and monitor state, and its guard's drop would then clear
+        // both while that turn goes on.
+        let answers_an_elicitation = user_message.content.iter().any(|content| {
+            matches!(
+                content,
+                MessageContent::ActionRequired(action_required)
+                    if matches!(
+                        action_required.data,
+                        ActionRequiredData::ElicitationResponse { .. }
+                    )
+            )
+        });
+        let decision_turn = (!answers_an_elicitation).then(|| {
+            crate::decision::monitor::DecisionTurnGuard::begin(
+                Arc::clone(&self.decisions.monitors),
+                &session_config.id,
+            )
+        });
         let mut replies = self
             .reply_with_computer_use_scope(user_message, session_config, cancel_token)
             .await?;
@@ -11098,6 +11116,53 @@ impl Agent {
         verdict
     }
 
+    /// `work`, unless a cancel or a steer the person typed comes first, in
+    /// which case `None` and the monitor point is dropped with nothing
+    /// observed (its windows are asked again at the next point).
+    async fn unless_cancelled_or_steered<T>(
+        &self,
+        session_id: &str,
+        cancel_token: Option<&CancellationToken>,
+        work: impl std::future::Future<Output = T>,
+    ) -> Option<T> {
+        tokio::select! {
+            biased;
+            _ = async {
+                match cancel_token {
+                    Some(token) => token.cancelled().await,
+                    None => std::future::pending::<()>().await,
+                }
+            } => None,
+            _ = self.user_steer_waiting() => {
+                info!(session_id, "a steer is waiting; monitors wait for the next point");
+                None
+            }
+            done = work => Some(done),
+        }
+    }
+
+    /// The window, in tokens, of each model the criteria due at `timing` ask,
+    /// so each window is fitted to its model before it is built (none when the
+    /// chat could not be read). The lookup reads the model listing, which can
+    /// wait on a slow Ollama, so it races a cancel and a steer like the
+    /// decision calls do: `None` when one of them came first.
+    async fn monitor_windows(
+        &self,
+        service: &crate::decision::DecisionService,
+        base: &Result<crate::decision::DecisionSession>,
+        session_id: &str,
+        timing: crate::decision::settings::MonitorTiming,
+        cancel_token: Option<&CancellationToken>,
+    ) -> Option<HashMap<Option<crate::decision::DecisionModelRef>, usize>> {
+        let Ok(base) = base else {
+            return Some(HashMap::new());
+        };
+        let due = self.decisions.monitors.due_models(session_id, timing);
+        let looked_up = crate::decision::monitor::context_windows(service, base, due);
+        self.unless_cancelled_or_steered(session_id, cancel_token, looked_up)
+            .await
+    }
+
     async fn evaluate_monitor_point(
         &self,
         session_id: &str,
@@ -11109,7 +11174,29 @@ impl Agent {
         use crate::decision::monitor;
         let registry = &self.decisions.monitors;
         let mut verdict = MonitorVerdict::default();
-        let planned = registry.plan(session_id, timing, conversation, iteration);
+        let custom = self.decisions.service.custom();
+        let service: &crate::decision::DecisionService = match custom.as_deref() {
+            Some(service) => service,
+            None => crate::decision::global(),
+        };
+        // Sampled once for this point and threaded (DR-15).
+        let enforced = crate::privacy::privacy_tiers_enabled();
+        let base = crate::decision::DecisionSession::load(
+            self.config.session_manager.clone(),
+            session_id,
+            enforced,
+        )
+        .await
+        .map(|base| base.with_turn(registry.turn_id(session_id)));
+        let Some(windows) = self
+            .monitor_windows(service, &base, session_id, timing, cancel_token)
+            .await
+        else {
+            return Ok(verdict);
+        };
+        let planned = registry.plan_fitted(session_id, timing, conversation, iteration, |model| {
+            windows.get(&model.cloned()).copied()
+        });
         for (name, why) in registry.take_invalid(session_id) {
             let notice = self
                 .durable_notice(
@@ -11122,36 +11209,15 @@ impl Agent {
         if planned.is_empty() {
             return Ok(verdict);
         }
-        // Sampled once for this point and threaded (DR-15).
-        let enforced = crate::privacy::privacy_tiers_enabled();
-        let outcomes = match crate::decision::DecisionSession::load(
-            self.config.session_manager.clone(),
-            session_id,
-            enforced,
-        )
-        .await
-        {
+        let outcomes = match base {
             Ok(base) => {
-                let base = base.with_turn(registry.turn_id(session_id));
-                let custom = self.decisions.service.custom();
-                let service: &crate::decision::DecisionService = match custom.as_deref() {
-                    Some(service) => service,
-                    None => crate::decision::global(),
-                };
                 let asked = monitor::ask_planned(service, &base, &planned);
-                tokio::select! {
-                    biased;
-                    _ = async {
-                        match cancel_token {
-                            Some(token) => token.cancelled().await,
-                            None => std::future::pending::<()>().await,
-                        }
-                    } => return Ok(verdict),
-                    _ = self.user_steer_waiting() => {
-                        info!(session_id, "a steer is waiting; monitors wait for the next point");
-                        return Ok(verdict);
-                    }
-                    outcomes = asked => outcomes,
+                match self
+                    .unless_cancelled_or_steered(session_id, cancel_token, asked)
+                    .await
+                {
+                    Some(outcomes) => outcomes,
+                    None => return Ok(verdict),
                 }
             }
             // The chat's classification cannot be read, so nothing is sent:
@@ -11286,7 +11352,6 @@ impl Agent {
         };
         let reply = crate::providers::decision::chat::run_decision_chat(
             service,
-            &session_manager,
             session,
             &model,
             settings.as_ref(),
@@ -13780,11 +13845,15 @@ impl Agent {
                         yield event;
                     }
                     if verdict.stop {
-                        // A steer waiting at the commit point is answered first.
-                        if self.commit_turn_exit_or_continue() {
-                            tokio::task::yield_now().await;
-                            continue;
-                        }
+                        // A safety stop, ended the way the action, tool-call
+                        // and stall limits end a turn: never through the
+                        // commit point, whose drain would continue the turn
+                        // for an agent's injection after the stop notice is
+                        // stored and the criterion latched, and whose close
+                        // would refuse every steer the person types while the
+                        // children are collected. The queue stays open; what
+                        // is left in it is stored as unanswered, or a steer
+                        // the person typed continues the turn.
                         self.record_turn_exit(TurnExit::ResumableForUserInput);
                         crate::agents::subagent_handle::begin_parent_closing(&session_config.id);
                         native_supervision_required = true;
@@ -13946,11 +14015,13 @@ impl Agent {
                             yield event;
                         }
                         if verdict.stop {
-                            if self.commit_turn_exit_or_continue() {
-                                tokio::task::yield_now().await;
-                                continue;
-                            }
+                            // A safety stop, as at the post-iteration point:
+                            // no commit point, the queue stays open.
                             self.record_turn_exit(TurnExit::ResumableForUserInput);
+                            crate::agents::subagent_handle::begin_parent_closing(
+                                &session_config.id,
+                            );
+                            native_supervision_required = true;
                             break;
                         }
                         if let Some(note) = verdict.steer {

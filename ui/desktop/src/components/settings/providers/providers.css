@@ -70,7 +70,8 @@
   padding-inline: 12px;
 }
 
-.br-provider-other-institutions {
+.br-provider-other-institutions,
+.br-provider-decision-note {
   display: flex;
   align-items: center;
   margin-block-start: 12px;

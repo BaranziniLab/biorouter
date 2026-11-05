@@ -86,6 +86,13 @@ describe('the decision card', () => {
     expect(meta).toHaveTextContent('22 ms');
   });
 
+  /** One glyph per concept: the model line carries the decision mark every decision surface draws. */
+  it('marks the model with the decision glyph', async () => {
+    show();
+    const meta = await screen.findByTestId('decision-meta');
+    expect(within(meta).getByTestId('decision-card-mark')).toHaveClass('lucide-gauge');
+  });
+
   it('says in words when a source is uncalibrated, and marks a failed threshold', async () => {
     mocks.get.mockResolvedValue(ok(wireChoiceDetail()));
     show('dec-2');
@@ -134,7 +141,7 @@ describe('the decision card', () => {
     expect(mocks.get).toHaveBeenCalledTimes(1);
   });
 
-  it('opens the decision history on this turn of the decision chat', async () => {
+  it('opens the decision history on this one call, in its turn of the decision chat', async () => {
     const { onOpenArtifact } = show();
     await screen.findByTestId('decision-card');
     fireEvent.click(screen.getByRole('button', { name: DECISION_CARD_COPY.historyLabel }));
@@ -142,7 +149,7 @@ describe('the decision card', () => {
       expect.objectContaining({
         kind: 'decisions',
         sessionId: 'chat-1',
-        filter: { origin: 'chat', turnId: 'turn-7' },
+        filter: { decisionId: 'dec-1', origin: 'chat', turnId: 'turn-7' },
       })
     );
   });

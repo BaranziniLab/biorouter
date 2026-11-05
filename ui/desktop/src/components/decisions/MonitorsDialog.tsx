@@ -15,6 +15,7 @@ import {
   MONITOR_NAME_MAX,
   decisionModelLabel,
   fetchDecisionModels,
+  fetchDecisionSettings,
   formatProbability,
   refusalText,
   saveDecisionSettings,
@@ -79,6 +80,8 @@ export const MONITORS_COPY = {
   save: 'Save',
   saving: 'Saving',
   saveFailed: 'Could not save the monitors.',
+  loading: 'Reading the monitors…',
+  loadFailed: "Could not read this chat's monitors. Close and open again to retry.",
   private: 'Private',
   public: 'Public',
   local: 'this computer',
@@ -304,7 +307,9 @@ function MonitorEditor({
   };
 
   return (
-    <div className="br-monitors__editor" data-testid="monitor-editor">
+    // A filled box, so the fields in it rest one step back on the page ground:
+    // a fill never sits on a fill (design.md 9.11).
+    <div className="br-monitors__editor br-fill-surface" data-testid="monitor-editor">
       <Field id={`${base}-name`} label={copy.name} error={errors.name} required>
         <Input
           value={draft.name}
@@ -538,7 +543,14 @@ export interface MonitorsDialogProps {
   sessionId: string;
   /** The chat's tier: a private chat refuses a public model. `null` when not known. */
   chatTier: DecisionTier | null;
-  /** The chat's stored settings (`useSessionDecisions`), or `null` before they are known. */
+  /**
+   * The chat's settings as the caller last read them (`useSessionDecisions`), or
+   * `null` before they are known. Shown at once, but every open reads what is
+   * stored now and holds every change until that answer arrives: the caller's copy
+   * can predate a write made elsewhere (`biorouter session monitors`, another
+   * window), and Save replaces the whole record, so a Save must never replace
+   * monitors it has not seen. When the read fails this copy is used.
+   */
   settings: DecisionSettings | null;
   /** The stored value after a save, so the caller can refresh what it draws. */
   onSaved?: (settings: DecisionSettings) => void;
@@ -583,14 +595,40 @@ export function MonitorsDialog({
   const [saveError, setSaveError] = useState<string | null>(null);
   const [fetchedModels, setFetchedModels] = useState<DecisionModelEntry[]>([]);
   const models = givenModels ?? fetchedModels;
+  // The dialog's own read, for an open that came before the caller's.
+  const [ownSettings, setOwnSettings] = useState<DecisionSettings | null>(null);
+  const [stored, setStored] = useState<'ready' | 'loading' | 'error'>('ready');
+  const base = ownSettings ?? settings;
+  const locked = readOnly || stored !== 'ready';
 
-  // Each open starts from what is stored.
+  // Each open starts from what is stored NOW, not from the caller's copy.
   useEffect(() => {
     if (!open) return;
     setMonitors(settings?.monitors ?? []);
     setEditing(null);
     setShowErrors(false);
     setSaveError(null);
+    setOwnSettings(null);
+    if (!sessionId) {
+      setStored('ready');
+      return;
+    }
+    setStored('loading');
+    const known = settings;
+    const controller = new AbortController();
+    fetchDecisionSettings(sessionId, controller.signal)
+      .then(({ data }) => {
+        if (controller.signal.aborted) return;
+        const fresh = data ?? known;
+        setOwnSettings(fresh);
+        setMonitors(fresh?.monitors ?? []);
+        setStored('ready');
+      })
+      .catch(() => {
+        // Nothing newer could be read: the caller's copy, when there is one, is the best known.
+        if (!controller.signal.aborted) setStored(known ? 'ready' : 'error');
+      });
+    return () => controller.abort();
     // Only on open: a poll that re-reads the same settings must not discard an edit.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open]);
@@ -651,6 +689,7 @@ export function MonitorsDialog({
   };
 
   const save = async () => {
+    if (stored !== 'ready') return;
     const next = commitDraft();
     if (!next) return;
     // Every monitor is checked again: a stored one may name a model this chat can no longer use.
@@ -666,7 +705,7 @@ export function MonitorsDialog({
     setSaveError(null);
     try {
       const stored = await saveDecisionSettings(sessionId, {
-        defaultModel: settings?.defaultModel ?? null,
+        defaultModel: base?.defaultModel ?? null,
         monitors: next,
       });
       onSaved?.(stored);
@@ -686,7 +725,7 @@ export function MonitorsDialog({
       </Button>
       <Button
         type="button"
-        disabled={readOnly || saving}
+        disabled={locked || saving}
         aria-busy={saving || undefined}
         data-testid="monitors-save"
         onClick={() => void save()}
@@ -709,7 +748,15 @@ export function MonitorsDialog({
       testId="monitors-dialog"
     >
       <div className="br-monitors">
-        {monitors.length === 0 && !editing ? (
+        {stored === 'loading' ? (
+          <p className="br-monitors__note" role="status" data-testid="monitors-loading">
+            {copy.loading}
+          </p>
+        ) : stored === 'error' ? (
+          <p className="br-monitors__error" role="alert" data-testid="monitors-load-error">
+            {copy.loadFailed}
+          </p>
+        ) : monitors.length === 0 && !editing ? (
           <p className="br-monitors__note">{copy.empty}</p>
         ) : null}
         {monitors.length > 0 ? (
@@ -718,7 +765,7 @@ export function MonitorsDialog({
               editing?.index === index ? null : (
                 <li
                   key={monitor.id || index}
-                  className="br-monitors__item"
+                  className="br-monitors__item br-fill-surface"
                   data-testid="monitor-item"
                 >
                   <span className="br-monitors__item-text">
@@ -727,7 +774,7 @@ export function MonitorsDialog({
                   </span>
                   <Switch
                     checked={monitor.enabled}
-                    disabled={readOnly}
+                    disabled={locked}
                     aria-label={copy.enabled(monitor.name)}
                     onCheckedChange={(checked) =>
                       setMonitors((current) =>
@@ -742,7 +789,7 @@ export function MonitorsDialog({
                     variant="ghost"
                     size="xs"
                     shape="round"
-                    disabled={readOnly || editing !== null}
+                    disabled={locked || editing !== null}
                     aria-label={copy.edit(monitor.name)}
                     onClick={() => setEditing({ index, draft: monitor })}
                   >
@@ -753,7 +800,7 @@ export function MonitorsDialog({
                     variant="ghost"
                     size="xs"
                     shape="round"
-                    disabled={readOnly || editing !== null}
+                    disabled={locked || editing !== null}
                     aria-label={copy.remove(monitor.name)}
                     onClick={() => setMonitors((current) => current.filter((_, i) => i !== index))}
                   >
@@ -804,7 +851,7 @@ export function MonitorsDialog({
               type="button"
               variant="secondary"
               size="sm"
-              disabled={readOnly || atLimit}
+              disabled={locked || atLimit}
               data-testid="monitor-add"
               onClick={() => {
                 setEditing({ index: null, draft: newMonitor() });

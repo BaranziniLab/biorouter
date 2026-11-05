@@ -54,11 +54,11 @@ use indexmap::IndexMap;
 use tokio::sync::Semaphore;
 
 use super::error::{DecisionError, DecisionResult};
-use super::model::{DecisionCaps, DecisionModel, DecisionModelSource};
+use super::model::{DecisionCaps, DecisionModel, DecisionModelEntry, DecisionModelSource};
 use super::types::{
     decision_from_verdict, validate_questions, ChunkOutcome, Decision, DecisionChunk,
     DecisionContext, DecisionKind, DecisionMeta, DecisionModelRef, DecisionOrigin, DecisionRequest,
-    DecisionUsage, Question,
+    DecisionUsage, ModelVerdicts, Question,
 };
 use crate::config::Config;
 use crate::privacy::affiliation::{owners_compatible, InstitutionId};
@@ -106,6 +106,13 @@ pub struct DecisionSession {
     /// Re-read before every request, so a chat raised to Private in the middle
     /// of a batch stops reaching a public model at the next chunk.
     pub live: Option<Arc<dyn LiveClassification>>,
+    /// The chat's own default decision model (`defaultModel` in
+    /// `decision_settings.v1`): asked when a call names no model, before the
+    /// configured default, so a person who chose a local model for this chat
+    /// is not overruled by `BIOROUTER_DECISION_MODEL`. `Err` says why the
+    /// chat's settings could not be read; a call that names no model is then
+    /// refused rather than sent where that default may have ruled out.
+    pub chat_default_model: Result<Option<DecisionModelRef>, String>,
 }
 
 impl std::fmt::Debug for DecisionSession {
@@ -136,7 +143,16 @@ impl DecisionSession {
             turn_id: None,
             origin_label: None,
             live: None,
+            chat_default_model: Ok(None),
         }
+    }
+
+    pub fn with_chat_default_model(
+        mut self,
+        model: Result<Option<DecisionModelRef>, String>,
+    ) -> Self {
+        self.chat_default_model = model;
+        self
     }
 
     pub fn with_affiliations(mut self, affiliations: BTreeSet<InstitutionId>) -> Self {
@@ -174,9 +190,37 @@ impl DecisionSession {
     ) -> anyhow::Result<Self> {
         let session = manager.get_session(session_id, false).await?;
         let affiliations = manager.session_affiliations(session_id).await?;
+        let chat_default_model = load_chat_default_model(&manager, session_id).await;
         Ok(Self::new(session_id, session.privacy_tier, enforced)
             .with_affiliations(affiliations)
+            .with_chat_default_model(chat_default_model)
             .with_live(manager))
+    }
+}
+
+/// The chat's default decision model as [`DecisionSession::chat_default_model`]
+/// holds it: `Err` (a sentence) when its decision settings cannot be read.
+pub async fn load_chat_default_model(
+    manager: &SessionManager,
+    session_id: &str,
+) -> Result<Option<DecisionModelRef>, String> {
+    super::settings::load(manager, session_id)
+        .await
+        .map(|settings| settings.default_model)
+        .map_err(|error| error.to_string())
+}
+
+/// The second rung of the model order: the chat's own default, when a call
+/// names no model.
+fn chat_default_model(
+    session: Option<&DecisionSession>,
+) -> DecisionResult<Option<DecisionModelRef>> {
+    match session.map(|session| &session.chat_default_model) {
+        None | Some(Ok(None)) => Ok(None),
+        Some(Ok(Some(model))) => Ok(Some(model.clone())),
+        Some(Err(why)) => Err(DecisionError::NoModel(format!(
+            "{why}, so this chat's default decision model is unknown. Name a model to decide with."
+        ))),
     }
 }
 
@@ -469,49 +513,69 @@ impl DecisionService {
                 )));
             }
         }
-        let resolved = self.resolve(session, model).await?;
+        let resolved = match self.resolve(session, model).await {
+            Ok(resolved) => resolved,
+            Err(error) => {
+                self.record_batch_failure(session, None, questions, &chunks, batch_id, &error)
+                    .await;
+                return Err(error);
+            }
+        };
         let caps = resolved.caps();
-        self.check_kinds(resolved.as_ref(), &caps, questions)?;
-        if let Some(session) = session {
-            self.check_privacy(session, resolved.as_ref()).await?;
+        let checks = async {
+            self.check_kinds(resolved.as_ref(), &caps, questions)?;
+            if let Some(session) = session {
+                self.check_privacy(session, resolved.as_ref()).await?;
+            }
+            Ok(())
+        };
+        if let Err(error) = checks.await {
+            self.record_batch_failure(
+                session,
+                Some(resolved.as_ref()),
+                questions,
+                &chunks,
+                batch_id,
+                &error,
+            )
+            .await;
+            return Err(error);
         }
         let parallel = self.concurrency(&caps).max(1);
         let model = resolved.as_ref();
         let outcomes = futures::stream::iter(chunks.into_iter().enumerate())
-            .map(|(index, chunk)| {
-                async move {
-                    let request = DecisionRequest {
-                        questions: questions.clone(),
-                        context: chunk.context,
-                    };
-                    let result = match request.validate() {
-                        Err(e) => Err(DecisionError::Invalid(e)),
-                        Ok(()) => {
-                            self.decide_one(
-                                model,
-                                &request,
-                                Attempt {
-                                    session,
-                                    batch_id: Some(batch_id),
-                                    chunk_index: Some(index),
-                                    chunk_id: Some(&chunk.id),
-                                },
-                            )
-                            .await
-                        }
-                    };
-                    match result {
-                        Ok(decisions) => ChunkOutcome {
-                            chunk_id: chunk.id,
-                            decisions: Some(decisions),
-                            error: None,
-                        },
-                        Err(error) => ChunkOutcome {
-                            chunk_id: chunk.id,
-                            decisions: None,
-                            error: Some(error.to_string()),
-                        },
+            .map(|(index, chunk)| async move {
+                let request = DecisionRequest {
+                    questions: questions.clone(),
+                    context: chunk.context,
+                };
+                let result = match request.validate() {
+                    Err(e) => Err(DecisionError::Invalid(e)),
+                    Ok(()) => {
+                        self.decide_one(
+                            model,
+                            &request,
+                            Attempt {
+                                session,
+                                batch_id: Some(batch_id),
+                                chunk_index: Some(index),
+                                chunk_id: Some(&chunk.id),
+                            },
+                        )
+                        .await
                     }
+                };
+                match result {
+                    Ok(decisions) => ChunkOutcome {
+                        chunk_id: chunk.id,
+                        decisions: Some(decisions),
+                        error: None,
+                    },
+                    Err(error) => ChunkOutcome {
+                        chunk_id: chunk.id,
+                        decisions: None,
+                        error: Some(error.to_string()),
+                    },
                 }
             })
             .buffered(parallel)
@@ -520,8 +584,8 @@ impl DecisionService {
         Ok(outcomes)
     }
 
-    /// The model named, else the configured default, else the first available
-    /// model this chat may use, local first.
+    /// The model named, else the chat's own default, else the configured
+    /// default, else the first available model this chat may use, local first.
     async fn resolve(
         &self,
         session: Option<&DecisionSession>,
@@ -530,38 +594,54 @@ impl DecisionService {
         if let Some(wanted) = wanted {
             return self.source.open(wanted).await;
         }
-        let configured = match &self.default_model {
+        if let Some(chat_default) = chat_default_model(session)? {
+            return self.source.open(&chat_default).await;
+        }
+        let provider = match self.configured() {
+            Some(ConfiguredDefault::Model(model)) => return self.source.open(&model).await,
+            Some(ConfiguredDefault::Provider(provider)) => Some(provider),
+            None => None,
+        };
+        let entries = self.models().await;
+        match automatic_choice(session, &entries, provider.as_deref()) {
+            Some(entry) => self.source.open(&entry.model_ref()).await,
+            None => Err(no_model_error(session)),
+        }
+    }
+
+    /// The window, in tokens, of the model a decision for `session` naming
+    /// `wanted` would use: that model, else the one [`Self::decide`] would
+    /// choose. Read from the listing, so nothing is opened and nothing is sent.
+    /// `None` when the listing does not show it; the size check before every
+    /// call still applies then.
+    pub async fn context_tokens_for(
+        &self,
+        session: Option<&DecisionSession>,
+        wanted: Option<&DecisionModelRef>,
+    ) -> Option<usize> {
+        let chat_default = chat_default_model(session).ok().flatten();
+        let (named, provider) = match wanted.cloned().or(chat_default) {
+            Some(wanted) => (Some(wanted), None),
+            None => match self.configured() {
+                Some(ConfiguredDefault::Model(model)) => (Some(model), None),
+                Some(ConfiguredDefault::Provider(provider)) => (None, Some(provider)),
+                None => (None, None),
+            },
+        };
+        let entries = self.models().await;
+        let entry = match &named {
+            Some(named) => entries.iter().find(|entry| entry.answers_to(named)),
+            None => automatic_choice(session, &entries, provider.as_deref()),
+        };
+        entry.map(|entry| entry.context_tokens)
+    }
+
+    /// `BIOROUTER_DECISION_PROVIDER` / `BIOROUTER_DECISION_MODEL`, or the
+    /// default this service was built with.
+    fn configured(&self) -> Option<ConfiguredDefault> {
+        match &self.default_model {
             DefaultModel::FromConfig => configured_default(),
             DefaultModel::Fixed(model) => model.clone().map(ConfiguredDefault::Model),
-        };
-        let entries = match configured {
-            Some(ConfiguredDefault::Model(model)) => return self.source.open(&model).await,
-            Some(ConfiguredDefault::Provider(provider)) => self
-                .models()
-                .await
-                .into_iter()
-                .filter(|entry| entry.provider == provider)
-                .collect::<Vec<_>>(),
-            None => self.models().await,
-        };
-        let allowed = entries.into_iter().find(|entry| {
-            session.is_none_or(|session| {
-                privacy_allows(session, &entry.display_name, entry.tier, entry.affiliation).is_ok()
-            })
-        });
-        match allowed {
-            Some(entry) => self.source.open(&entry.model_ref()).await,
-            None => Err(DecisionError::NoModel(match session {
-                Some(session) if session.enforced && session.classification.is_private() => {
-                    "No decision model this private chat may use is available. Pull a decision \
-                     model into a local Ollama (for example `ollama pull tev1:0.8b`), or set \
-                     BIOROUTER_DECISION_MODEL to a private one."
-                        .to_string()
-                }
-                _ => "No decision model is available. Add a Baseten API key, pull a decision \
-                      model into Ollama, or set BIOROUTER_DECISION_MODEL."
-                    .to_string(),
-            })),
         }
     }
 
@@ -672,26 +752,9 @@ impl DecisionService {
         attempt: Attempt<'_>,
     ) -> DecisionResult<Vec<Decision>> {
         let caps = model.caps();
-        let model_ref = model.model_ref();
-        let checks = async {
-            self.check_kinds(model, &caps, &request.questions)?;
-            if let Some(session) = attempt.session {
-                self.check_privacy(session, model).await?;
-            }
-            check_size(model, &caps, request, attempt.chunk_id).await
-        };
-        if let Err(error) = checks.await {
-            self.record_failure(
-                attempt.session,
-                Some(model),
-                request,
-                &error,
-                Some(&attempt),
-            )
-            .await;
-            return Err(error);
+        if let Err(error) = self.preflight(model, &caps, request, &attempt).await {
+            return Err(self.failed(model, request, &attempt, error).await);
         }
-
         let permit = self
             .semaphore(model, &caps)
             .acquire_owned()
@@ -699,114 +762,128 @@ impl DecisionService {
             .map_err(|_| {
                 DecisionError::NoModel("The decision service is shutting down.".to_string())
             })?;
-        let deadline = self.timeout_for(model, &caps);
-        let started = Instant::now();
-        let called = tokio::time::timeout(deadline, model.decide(request)).await;
-        let latency_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
+        let called = self.call_model(model, &caps, request).await;
         drop(permit);
-
-        let verdicts = match called {
-            Ok(Ok(verdicts)) => verdicts,
-            Ok(Err(error)) => {
-                self.record_failure(
-                    attempt.session,
-                    Some(model),
-                    request,
-                    &error,
-                    Some(&attempt),
-                )
-                .await;
-                return Err(error);
-            }
-            Err(_) => {
-                let error = DecisionError::Timeout {
-                    model: model.display_name(),
-                    seconds: deadline.as_secs(),
-                };
-                self.record_failure(
-                    attempt.session,
-                    Some(model),
-                    request,
-                    &error,
-                    Some(&attempt),
-                )
-                .await;
-                return Err(error);
-            }
+        let (verdicts, latency_ms) = match called {
+            Ok(called) => called,
+            Err(error) => return Err(self.failed(model, request, &attempt, error).await),
         };
-        if caps.local {
-            if let Ok(mut warm) = self.warm.lock() {
-                warm.insert(model_ref.label());
-            }
-        }
-
-        let request_id = uuid::Uuid::now_v7().to_string();
-        let meta = DecisionMeta {
-            model: &model_ref,
-            tier: model.tier(),
-            request_id: &request_id,
-            latency_ms,
-            usage: verdicts.usage,
+        let usage = verdicts.usage;
+        let served_model = verdicts.served_model.clone();
+        let decisions = match build_decisions(model, request, verdicts, latency_ms) {
+            Ok(decisions) => decisions,
+            Err(error) => return Err(self.failed(model, request, &attempt, error).await),
         };
-        let mut by_name: HashMap<String, _> = verdicts
-            .verdicts
-            .into_iter()
-            .map(|verdict| (verdict.question.clone(), verdict))
-            .collect();
-        let mut decisions = Vec::with_capacity(request.questions.len());
-        for (name, question) in &request.questions {
-            let built = by_name
-                .remove(name)
-                .ok_or_else(|| format!("no answer for question `{name}`"))
-                .and_then(|verdict| decision_from_verdict(name, question, verdict, &meta));
-            match built {
-                Ok(decision) => decisions.push(decision),
-                Err(detail) => {
-                    let error = DecisionError::malformed(&model.display_name(), detail);
-                    self.record_failure(
-                        attempt.session,
-                        Some(model),
-                        request,
-                        &error,
-                        Some(&attempt),
-                    )
-                    .await;
-                    return Err(error);
-                }
-            }
-        }
-
-        let outcome = if decisions.iter().any(|d| d.passed == Some(false)) {
-            DecisionOutcome::Failed
-        } else if decisions.iter().any(|d| d.passed == Some(true)) {
-            DecisionOutcome::Passed
-        } else {
-            DecisionOutcome::Decided
-        };
+        let session = attempt.session;
         self.record(DecisionLogEntry {
-            session_id: attempt.session.map(|s| s.session_id.clone()),
-            origin: attempt.session.map(|s| s.origin).unwrap_or_default(),
-            origin_id: attempt.session.and_then(|s| s.origin_id.clone()),
-            origin_label: attempt.session.and_then(|s| s.origin_label.clone()),
-            turn_id: attempt.session.and_then(|s| s.turn_id.clone()),
+            session_id: session.map(|s| s.session_id.clone()),
+            origin: session.map(|s| s.origin).unwrap_or_default(),
+            origin_id: session.and_then(|s| s.origin_id.clone()),
+            origin_label: session.and_then(|s| s.origin_label.clone()),
+            turn_id: session.and_then(|s| s.turn_id.clone()),
             batch_id: attempt.batch_id.map(str::to_string),
             chunk_index: attempt.chunk_index,
             chunk_id: attempt.chunk_id.map(str::to_string),
-            model: Some(model_ref),
-            served_model: verdicts.served_model,
+            model: Some(model.model_ref()),
+            served_model,
             tier: Some(model.tier()),
             questions: request.questions.clone(),
             context: request.context.clone(),
             context_bytes: request.context.byte_len(),
-            outcome,
+            outcome: outcome_of(&decisions),
             decisions: decisions.clone(),
             error: None,
             latency_ms: Some(latency_ms),
-            usage: verdicts.usage,
-            privacy_enforced: attempt.session.is_some_and(|s| s.enforced),
+            usage,
+            privacy_enforced: session.is_some_and(|s| s.enforced),
         })
         .await;
         Ok(decisions)
+    }
+
+    /// What is checked before one request is sent: the kinds, privacy as it
+    /// stands now, and the size.
+    async fn preflight(
+        &self,
+        model: &dyn DecisionModel,
+        caps: &DecisionCaps,
+        request: &DecisionRequest,
+        attempt: &Attempt<'_>,
+    ) -> DecisionResult<()> {
+        self.check_kinds(model, caps, &request.questions)?;
+        if let Some(session) = attempt.session {
+            self.check_privacy(session, model).await?;
+        }
+        check_size(model, caps, request, attempt.chunk_id).await
+    }
+
+    /// One request, under its deadline: the verdicts and the latency in
+    /// milliseconds. A local model that answered counts as warm from then on.
+    async fn call_model(
+        &self,
+        model: &dyn DecisionModel,
+        caps: &DecisionCaps,
+        request: &DecisionRequest,
+    ) -> DecisionResult<(ModelVerdicts, u64)> {
+        let deadline = self.timeout_for(model, caps);
+        let started = Instant::now();
+        let called = tokio::time::timeout(deadline, model.decide(request)).await;
+        let latency_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
+        let verdicts = match called {
+            Ok(result) => result?,
+            Err(_) => {
+                return Err(DecisionError::Timeout {
+                    model: model.display_name(),
+                    seconds: deadline.as_secs(),
+                })
+            }
+        };
+        if caps.local {
+            if let Ok(mut warm) = self.warm.lock() {
+                warm.insert(model.model_ref().label());
+            }
+        }
+        Ok((verdicts, latency_ms))
+    }
+
+    /// Log one request's failure and hand the error back.
+    async fn failed(
+        &self,
+        model: &dyn DecisionModel,
+        request: &DecisionRequest,
+        attempt: &Attempt<'_>,
+        error: DecisionError,
+    ) -> DecisionError {
+        self.record_failure(attempt.session, Some(model), request, &error, Some(attempt))
+            .await;
+        error
+    }
+
+    /// A batch stopped before any chunk was sent (no model, a kind the model
+    /// cannot take, privacy): ONE row for the whole batch, never one per
+    /// chunk. Its context names the chunks rather than holding them, because
+    /// none was sent.
+    async fn record_batch_failure(
+        &self,
+        session: Option<&DecisionSession>,
+        model: Option<&dyn DecisionModel>,
+        questions: &IndexMap<String, Question>,
+        chunks: &[DecisionChunk],
+        batch_id: &str,
+        error: &DecisionError,
+    ) {
+        let request = DecisionRequest {
+            questions: questions.clone(),
+            context: DecisionContext::Text(unsent_batch_text(chunks)),
+        };
+        let attempt = Attempt {
+            session,
+            batch_id: Some(batch_id),
+            chunk_index: None,
+            chunk_id: None,
+        };
+        self.record_failure(session, model, &request, error, Some(&attempt))
+            .await;
     }
 
     async fn record_failure(
@@ -886,6 +963,108 @@ fn privacy_allows(
     Ok(())
 }
 
+/// The first listed model `session` may use, among `provider`'s when one is
+/// configured. `entries` are ranked local first.
+fn automatic_choice<'a>(
+    session: Option<&DecisionSession>,
+    entries: &'a [DecisionModelEntry],
+    provider: Option<&str>,
+) -> Option<&'a DecisionModelEntry> {
+    entries
+        .iter()
+        .filter(|entry| provider.is_none_or(|provider| entry.provider == provider))
+        .find(|entry| {
+            session.is_none_or(|session| {
+                privacy_allows(session, &entry.display_name, entry.tier, entry.affiliation).is_ok()
+            })
+        })
+}
+
+fn no_model_error(session: Option<&DecisionSession>) -> DecisionError {
+    DecisionError::NoModel(match session {
+        Some(session) if session.enforced && session.classification.is_private() => {
+            "No decision model this private chat may use is available. Pull a decision model \
+             into a local Ollama (for example `ollama pull tev1:0.8b`), or set \
+             BIOROUTER_DECISION_MODEL to a private one."
+                .to_string()
+        }
+        _ => "No decision model is available. Add a Baseten API key, pull a decision model into \
+              Ollama, or set BIOROUTER_DECISION_MODEL."
+            .to_string(),
+    })
+}
+
+/// One request's decisions, in the questions' order, from what the model
+/// returned. Every decision of the request shares one request id, which is
+/// also the decision log's id for the row that records the request.
+fn build_decisions(
+    model: &dyn DecisionModel,
+    request: &DecisionRequest,
+    verdicts: ModelVerdicts,
+    latency_ms: u64,
+) -> DecisionResult<Vec<Decision>> {
+    let model_ref = model.model_ref();
+    let request_id = uuid::Uuid::now_v7().to_string();
+    let meta = DecisionMeta {
+        model: &model_ref,
+        tier: model.tier(),
+        request_id: &request_id,
+        latency_ms,
+        usage: verdicts.usage,
+    };
+    let mut by_name: HashMap<String, _> = verdicts
+        .verdicts
+        .into_iter()
+        .map(|verdict| (verdict.question.clone(), verdict))
+        .collect();
+    request
+        .questions
+        .iter()
+        .map(|(name, question)| {
+            by_name
+                .remove(name)
+                .ok_or_else(|| format!("no answer for question `{name}`"))
+                .and_then(|verdict| decision_from_verdict(name, question, verdict, &meta))
+                .map_err(|detail| DecisionError::malformed(&model.display_name(), detail))
+        })
+        .collect()
+}
+
+/// A request's outcome: failed when any thresholded question failed, passed
+/// when one passed and none failed, else decided.
+fn outcome_of(decisions: &[Decision]) -> DecisionOutcome {
+    if decisions.iter().any(|d| d.passed == Some(false)) {
+        DecisionOutcome::Failed
+    } else if decisions.iter().any(|d| d.passed == Some(true)) {
+        DecisionOutcome::Passed
+    } else {
+        DecisionOutcome::Decided
+    }
+}
+
+/// Chunk ids a batch-failure row names before it says how many more there were.
+const UNSENT_IDS_SHOWN: usize = 20;
+
+/// What a batch-failure row holds in place of a context: how many chunks, and
+/// which, since none was sent.
+fn unsent_batch_text(chunks: &[DecisionChunk]) -> String {
+    let mut ids: Vec<&str> = chunks
+        .iter()
+        .take(UNSENT_IDS_SHOWN)
+        .map(|chunk| chunk.id.as_str())
+        .collect();
+    let more = chunks.len().saturating_sub(UNSENT_IDS_SHOWN);
+    let more = (more > 0).then(|| format!("and {more} more"));
+    ids.extend(more.as_deref());
+    format!(
+        "Not sent: the batch of {} chunk{} was stopped before any chunk reached a decision \
+         model. Chunks: {}.",
+        chunks.len(),
+        if chunks.len() == 1 { "" } else { "s" },
+        ids.join(", ")
+    )
+}
+
 /// The token estimate for a request: the state and every question's text,
 /// through the shared o200k counter with the non-OpenAI margin.
 pub async fn estimate_tokens(request: &DecisionRequest) -> usize {
@@ -929,6 +1108,36 @@ pub async fn estimate_tokens(request: &DecisionRequest) -> usize {
 /// server's own framing and the answer positions.
 pub fn context_margin(context_tokens: usize) -> usize {
     (context_tokens / 32).max(128)
+}
+
+/// The tokens a state may take beside `questions` in a model of
+/// `context_tokens`, by the arithmetic the size check before sending applies
+/// (its margin, its per-question overhead and its non-OpenAI factor), with
+/// the questions' own text counted at three characters a token. For building
+/// a state that fits, such as a monitor's window; the check still judges.
+pub fn state_budget_tokens(context_tokens: usize, questions: &IndexMap<String, Question>) -> usize {
+    let overhead = context_margin(context_tokens) + PER_QUESTION_OVERHEAD * questions.len();
+    let estimated_room = context_tokens.saturating_sub(overhead) as f64 / TOKEN_ESTIMATE_MARGIN;
+    let question_tokens: usize = questions
+        .iter()
+        .map(|(name, question)| (name.len() + question_text_len(question)).div_ceil(3))
+        .sum();
+    (estimated_room.floor() as usize).saturating_sub(question_tokens)
+}
+
+/// Bytes of a question's text as [`estimate_tokens`] renders it.
+fn question_text_len(question: &Question) -> usize {
+    let kind = match &question.kind {
+        DecisionKind::Binary {} => 0,
+        DecisionKind::Choice { options } => options
+            .iter()
+            .map(|(option, description)| {
+                option.len() + 3 + description.as_ref().map_or(0, String::len)
+            })
+            .sum(),
+        DecisionKind::Score { levels } => levels.iter().map(|level| level.len() + 1).sum(),
+    };
+    question.instructions.len() + 2 + kind
 }
 
 async fn check_size(
@@ -1523,5 +1732,209 @@ mod tests {
             .iter()
             .all(|(_, reason)| reason.is_none()));
         assert_eq!(calls.load(Ordering::SeqCst), 0, "a listing asks no model");
+    }
+
+    fn chunks(n: usize) -> Vec<DecisionChunk> {
+        (0..n)
+            .map(|i| DecisionChunk {
+                id: format!("note-{i:03}"),
+                context: DecisionContext::Text(format!("SYNTHETIC NOTE {i}")),
+            })
+            .collect()
+    }
+
+    /// A batch the privacy gate refuses before any chunk is sent is ONE
+    /// refused row in the log, under the batch's id, never one per chunk and
+    /// never none: the history is where the person sees why it did not run.
+    #[tokio::test]
+    async fn a_batch_refused_before_sending_is_one_refused_row() {
+        let (svc, calls) = service(
+            vec![entry("cloud", ProviderTier::Public, false)],
+            Duration::ZERO,
+        );
+        let log = Arc::new(Log::default());
+        svc.set_sink(log.clone());
+        let named = DecisionModelRef::new("test_decision", "cloud");
+        let err = svc
+            .decide_batch(
+                Some(&private_chat()),
+                Some(&named),
+                &request("", None).questions,
+                chunks(50),
+                "batch-1",
+            )
+            .await
+            .unwrap_err();
+        assert!(matches!(err, DecisionError::Refused(_)), "{err:?}");
+        assert_eq!(calls.load(Ordering::SeqCst), 0, "nothing may be sent");
+        let rows = log.0.lock().unwrap();
+        assert_eq!(rows.len(), 1, "one row for the batch");
+        let row = &rows[0];
+        assert_eq!(row.outcome, DecisionOutcome::Refused);
+        assert_eq!(row.batch_id.as_deref(), Some("batch-1"));
+        assert_eq!((row.chunk_index, row.chunk_id.as_deref()), (None, None));
+        assert_eq!(row.model.as_ref().map(|m| m.model.as_str()), Some("cloud"));
+        assert!(row.decisions.is_empty());
+        let text = row.context.render_text();
+        assert!(
+            text.starts_with("Not sent") && text.contains("50 chunks") && text.contains("note-000"),
+            "{text}"
+        );
+        assert!(text.contains("and 30 more"), "{text}");
+        assert!(
+            !text.contains("SYNTHETIC NOTE"),
+            "the row names chunks, it does not hold them"
+        );
+    }
+
+    /// A batch with no model the chat may use is one row too, with the
+    /// outcome a single decision's `NoModel` gets.
+    #[tokio::test]
+    async fn a_batch_with_no_model_is_one_row() {
+        let (svc, calls) = service(
+            vec![entry("cloud", ProviderTier::Public, false)],
+            Duration::ZERO,
+        );
+        let log = Arc::new(Log::default());
+        svc.set_sink(log.clone());
+        let err = svc
+            .decide_batch(
+                Some(&private_chat()),
+                None,
+                &request("", None).questions,
+                chunks(3),
+                "batch-2",
+            )
+            .await
+            .unwrap_err();
+        assert!(matches!(err, DecisionError::NoModel(_)), "{err:?}");
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+        let rows = log.0.lock().unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].outcome, DecisionOutcome::Error);
+        assert_eq!(rows[0].batch_id.as_deref(), Some("batch-2"));
+        assert_eq!(rows[0].model, None);
+        assert!(rows[0].context.render_text().contains("3 chunks"));
+    }
+
+    /// Every decision of one request carries that request's id, and the log
+    /// stores the request's row under it, so a holder of any decision names
+    /// its row without a lookup.
+    #[tokio::test]
+    async fn a_requests_decisions_share_the_id_its_row_is_stored_under() {
+        let (svc, _) = service(
+            vec![entry("local", ProviderTier::Private, true)],
+            Duration::ZERO,
+        );
+        let log = Arc::new(Log::default());
+        svc.set_sink(log.clone());
+        let mut two = request("the note", Some(Threshold::Yes(0.5)));
+        two.questions.insert(
+            "signed".to_string(),
+            Question {
+                instructions: "Is the note signed?".into(),
+                kind: DecisionKind::Binary {},
+                threshold: None,
+            },
+        );
+        let decisions = svc.decide(None, None, &two).await.unwrap();
+        assert_eq!(decisions.len(), 2);
+        assert_eq!(decisions[0].request_id, decisions[1].request_id);
+        let other = svc.decide(None, None, &two).await.unwrap();
+        assert_ne!(other[0].request_id, decisions[0].request_id);
+        let rows = log.0.lock().unwrap();
+        assert_eq!(
+            crate::decision::log::row_id(&rows[0]),
+            decisions[0].request_id
+        );
+        assert_eq!(crate::decision::log::row_id(&rows[1]), other[0].request_id);
+    }
+
+    /// The window a decision would use is read from the listing, by the same
+    /// choice `decide` makes, and nothing is opened or sent to learn it.
+    /// The model order's second rung: a call that names no model uses the
+    /// chat's own default ahead of the configured one, and a chat whose
+    /// settings cannot be read refuses such a call rather than guess.
+    #[tokio::test]
+    async fn a_chats_default_decision_model_comes_before_the_configured_one() {
+        let mut local = entry("local", ProviderTier::Private, true);
+        local.context_tokens = 2_048;
+        let (svc, _) = service(
+            vec![entry("cloud", ProviderTier::Public, false), local],
+            Duration::ZERO,
+        );
+        // `BIOROUTER_DECISION_MODEL` names the hosted model.
+        let svc = svc.with_default_model(Some(DecisionModelRef::new("test_decision", "cloud")));
+        let public = DecisionSession::new("s", SessionClassification::Public, true);
+        let configured = svc
+            .decide(Some(&public), None, &request("x", None))
+            .await
+            .unwrap();
+        assert_eq!(configured[0].model.model, "cloud");
+
+        let local_default = public
+            .clone()
+            .with_chat_default_model(Ok(Some(DecisionModelRef::new("test_decision", "local"))));
+        let chosen = svc
+            .decide(Some(&local_default), None, &request("x", None))
+            .await
+            .unwrap();
+        assert_eq!(chosen[0].model.model, "local", "the chat's default wins");
+        assert_eq!(
+            svc.context_tokens_for(Some(&local_default), None).await,
+            Some(2_048),
+            "the window looked up is the chat default's"
+        );
+        let named = DecisionModelRef::new("test_decision", "cloud");
+        let overridden = svc
+            .decide(Some(&local_default), Some(&named), &request("x", None))
+            .await
+            .unwrap();
+        assert_eq!(overridden[0].model.model, "cloud", "a named model wins");
+
+        let unreadable = public
+            .with_chat_default_model(Err("This chat's decision settings could not be read".into()));
+        let err = svc
+            .decide(Some(&unreadable), None, &request("x", None))
+            .await
+            .unwrap_err();
+        assert!(matches!(err, DecisionError::NoModel(_)), "{err:?}");
+        assert!(err.to_string().contains("Name a model"), "{err}");
+        assert!(svc
+            .decide(Some(&unreadable), Some(&named), &request("x", None))
+            .await
+            .is_ok());
+    }
+
+    #[tokio::test]
+    async fn the_window_named_is_the_one_decide_would_use() {
+        let mut small = entry("local", ProviderTier::Private, true);
+        small.context_tokens = 2_048;
+        let (svc, calls) = service(
+            vec![entry("cloud", ProviderTier::Public, false), small],
+            Duration::ZERO,
+        );
+        assert_eq!(
+            svc.context_tokens_for(Some(&private_chat()), None).await,
+            Some(2_048),
+            "a private chat's automatic choice is the local model"
+        );
+        let cloud = DecisionModelRef::new("test_decision", "cloud");
+        assert_eq!(
+            svc.context_tokens_for(None, Some(&cloud)).await,
+            Some(4_096)
+        );
+        let unknown = DecisionModelRef::new("test_decision", "unlisted");
+        assert_eq!(svc.context_tokens_for(None, Some(&unknown)).await, None);
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn a_state_budget_leaves_room_for_the_margin_and_the_questions() {
+        let questions = request("", None).questions;
+        let budget = state_budget_tokens(4_096, &questions);
+        assert!(budget < 4_096 - context_margin(4_096));
+        assert!(budget > 3_000, "{budget}");
+        assert_eq!(state_budget_tokens(100, &questions), 0, "never negative");
     }
 }

@@ -397,13 +397,12 @@ impl App {
         ]));
     }
 
-    /// Render an agent message into the scrollback.
-    ///
-    /// Decision activity never adds one row per call: a turn's decision marker
-    /// (`metadata.decision_summary`) is one line per origin, and a
-    /// decision-chat reply (`metadata.decision_id`) is a small card when its
-    /// log row has been read, else its readable text.
-    pub fn push_message(&mut self, message: &Message, debug: bool) {
+    /// Draw `message` as decision activity when it is some, and say whether
+    /// it was. Decision activity never adds one row per call: a turn's
+    /// decision marker (`metadata.decision_summary`) is one line per origin,
+    /// and a decision-chat reply (`metadata.decision_id`) is a small card when
+    /// its log row has been read, else (`false`) its readable text.
+    fn push_decision_message(&mut self, message: &Message) -> bool {
         if let Some(marker) = &message.metadata.decision_summary {
             if !marker.items.is_empty() {
                 self.push_blank();
@@ -411,19 +410,27 @@ impl App {
                     self.push_line(line);
                 }
             }
-            return;
+            return true;
         }
-        if let Some(record) = message
+        let Some(record) = message
             .metadata
             .decision_id
             .as_ref()
             .and_then(|id| self.decision_records.get(id))
             .cloned()
-        {
-            self.push_blank();
-            for line in super::decisions::card_lines(&record) {
-                self.push_line(line);
-            }
+        else {
+            return false;
+        };
+        self.push_blank();
+        for line in super::decisions::card_lines(&record) {
+            self.push_line(line);
+        }
+        true
+    }
+
+    /// Render an agent message into the scrollback.
+    pub fn push_message(&mut self, message: &Message, debug: bool) {
+        if self.push_decision_message(message) {
             return;
         }
         for content in &message.content {
