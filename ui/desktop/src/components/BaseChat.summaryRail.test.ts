@@ -375,8 +375,10 @@ describe('BaseChat: a chat with no row yet paints nothing, not a new chat (V2-R5
 
 describe('BaseChat: no figure the usage ledger then withdraws (V2-R5-5)', () => {
   it('waits for this chat’s ledger before the Tokens value', () => {
+    // The live stream's counters ride along, so a reply that moves them before
+    // the chat record is read again (a decision chat's) asks the ledger again.
     expect(code).toMatch(
-      /const \{ sessionCosts, modelRows, ledgerSettled \} = useCostTracking\(\{ session \}\);/
+      /const \{ sessionCosts, modelRows, ledgerSettled \} = useCostTracking\(\{\s*session,\s*liveTokens: tokenState,\s*\}\);/
     );
     expect(summaryPropsBlock()).toMatch(/\.\.\.summaryFigures\(\{[\s\S]*?ledgerSettled,/);
     expect(summaryPropsBlock()).not.toContain('summaryTokensValue(');
