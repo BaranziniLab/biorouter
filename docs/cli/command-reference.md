@@ -125,8 +125,14 @@ model's. A model pulled through Ollama is removed with `ollama rm`. See the
 Ollama that declare the decision capability, and Baseten's when a Baseten API key is saved. Each
 line names the model as `provider/model` (the spelling `--model` takes everywhere), its privacy
 tier, whether it runs on this computer, its context window in tokens, the question kinds it
-answers (yes/no, choice, score) and the adapter that reads its probabilities. Local models come
-first. See [`decide`](#decide-options) and [Decision models](../agent-loop/decision-models.md).
+answers (yes/no, choice, score) and the adapter that reads its probabilities. The list is in the
+order the automatic choice tries it: local models first, with the shipped default `tev1:0.8b`
+first among the Ollama models and the rest by name, then Baseten's smallest first. A copy Ollama
+cannot load (one in a format it no longer supports) is listed last, marked `cannot be loaded`,
+with a line under it naming the fix (`ollama pull <model>` or `ollama rm <model>`); the automatic
+choice skips it. With `--format json` that sentence is the entry's `loadRefusal`, present only
+when it is set. See [`decide`](#decide-options) and
+[Decision models](../agent-loop/decision-models.md).
 
 ### version
 
@@ -166,6 +172,24 @@ Report token and cost usage, per day or per model, month-to-date.
 - **`--to <YYYY-MM-DD>`**: End of the range, local time and inclusive. Defaults to today
 - **`--by-model`**: Group by model instead of by day
 - **`--json`**: Print machine-readable JSON
+
+**Decision models.** Calls to decision models about a chat (monitors, the `decide` tool, phase
+gates, decision chats, `biorouter decide --session`) count in TOTAL, COST and the monthly limit,
+and never in TURNS. With `--by-model` a decision model's row is labelled with its name and
+`(decision model)`, Baseten's by their short names (`mammoth-1 (decision model)`), and shows a
+dash in TURNS. The range table and the month summary each add one line:
+
+```text
+Decision models: 600 requests, 1,200,600 tokens, $0.12. Counted in TOTAL and COST, not in TURNS.
+```
+
+The second sentence is on the table's line only. A local decision model has no price, so its
+share reads `not metered` (or `$X, some not metered` for a mix), it counts as $0, and it does not
+mark the totals as incomplete. A Baseten decision model with no known price does, because Baseten
+billed it. `--json` carries the same split as `decisionRequests` and `decisions` on each row
+and on the totals. A decision with no chat is not in this report; `biorouter decide` prints its
+usage on stderr instead. See
+[Usage and billing](../agent-loop/decision-models.md#usage-and-billing).
 
 **Usage:**
 
@@ -715,7 +739,19 @@ it. A change names where the chat's content goes, so a daemon started with a use
 wants the key: when it refuses a change, the command shows its reason and asks for the key once,
 without echo, and pressing Enter stops. `--user-action-key-stdin` supplies it without a prompt.
 Without a daemon the monitors are read and written in the local session store, under the same
-privacy rule as `session decisions`.
+privacy rule as `session decisions` and with no key, whatever kind of daemon the store belongs to.
+A daemon with no user-action key (`biorouter serve`) takes a change without the key too, except to
+a subagent's chat. Either way a change reaches the chat's next turn, never the one running.
+
+**What a `steer` monitor tells the model.** The note quotes the monitor's name and question as
+JSON strings inside a `<decision-monitor>` frame and says they come from the chat's monitor
+settings, not from the user, so a question cannot pass itself off as an instruction. The notice
+you see when it fires shows the question the model was told, on one line and clipped to 120
+characters:
+
+```text
+Monitor 'Form reached' fired (P 0.93, threshold 0.50) and told the agent. Its question: "Is the intake form complete?"
+```
 
 **Usage:**
 
@@ -917,8 +953,11 @@ and the latency.
 
 - **`--ask <QUESTION>`** (required): The question to ask about the text
 - **`--model <PROVIDER/MODEL>`**: The decision model, as `biorouter models decision list` names
-  it. Without it the model is `BIOROUTER_DECISION_MODEL` (or `BIOROUTER_DECISION_PROVIDER`),
-  else the first available model, local first
+  it. Without it the model is the chat's default decision model (with `--session`), else
+  `BIOROUTER_DECISION_MODEL` (or `BIOROUTER_DECISION_PROVIDER`), else the first model in the list
+  that may read the text: local first, `tev1:0.8b` first among the Ollama models, never a copy
+  Ollama cannot load. The model is chosen once, before anything is sent, and used for every
+  request of the run
 - **`--choice <NAME[=DESCRIPTION]>`**: Makes the question a choice; repeat it once per option (2
   to 26). The model reads the description, and the answer is the name
 - **`--levels <LEVEL,LEVEL,...>`**: Makes the question a score with 1 to 10 levels, lowest first
@@ -953,12 +992,31 @@ lines give the count of each answer, how many passed, how many failed with an er
 error in full. A file over 4 MiB, an empty file, or one that is not UTF-8 text is reported as an
 error row and not sent. So is a text too large for the model's window; split it and ask again.
 
+**On stderr.** Besides the line on probabilities, a run can print these:
+
+```text
+warning: <model> is hosted outside your institution (public tier). Do not send it private or patient data.
+note: this chat is not private, so the text you send is kept in its decision history, where public chats can read it. For private text, leave out --session or name a private chat.
+usage: 2 requests on baseten_decision/mammoth-1: 1,200,000 input and 3 output tokens, about $0.12. Without --session this is not recorded in Biorouter's usage.
+```
+
+- `warning:` comes before anything is sent, when the model is hosted outside your institution.
+  It is left out for a private chat with privacy tiers on, which refuses such a model anyway.
+- `note:` comes before anything is sent, with `--session` naming a chat that is not private and
+  privacy tiers on.
+- `usage:` comes after a run without `--session`, because nothing in Biorouter records that run.
+  A local model has no price, so its line gives tokens only, and a run whose model reported no
+  usage prints none. A run with `--session` is counted in [`usage`](#usage-options) instead.
+
 **Privacy.** With `--session`, the chat's privacy tier decides which decision models may read the
 text, exactly as it does for the agent: a private chat never reaches a model hosted outside your
-institution, and the refusal comes before anything is sent. Without `--session` there is no chat
-to protect and nothing is logged. When the model the command resolved is hosted outside your
-institution (Baseten's are), one line on stderr names it before the text is sent, so you can stop
-if the text is private.
+institution, and the refusal comes before anything is sent. The text is yours, not the chat's, and
+it is kept in the chat's decision history at the chat's reach, which is why a chat that is not
+private gets the note above. Without `--session` there is no chat to protect and nothing is
+logged. When the model the command resolved is hosted outside your institution (Baseten's are),
+one line on stderr names it before the text is sent, so you can stop if the text is private.
+Because the model is chosen once, a long `--batch` never moves from a local model to a hosted one
+partway: if the chosen model goes away, the run fails.
 
 The question types and their limits descend from Albert Lee's System One prototype in PR #469.
 
@@ -974,9 +1032,12 @@ biorouter decide --ask "Which MS course is described?" \
   --choice ppms="Primary progressive" --choice none="Not stated" \
   --threshold 0.8 --threshold-on rrms --text "Neuro f/u. 34F, RRMS dx 2019."
 
-# One decision per note in a directory, with a summary table
-biorouter decide --ask "Does this note state the patient has multiple sclerosis?" \
-  --threshold 0.9 --batch notes/
+# One decision per note in a directory, with a summary table. For a screen, a choice with the
+# abbreviations spelled out, a meaning for each answer and a threshold near 0.5 keeps true cases
+biorouter decide --ask "Does this note state the patient has multiple sclerosis (MS, RRMS, SPMS or PPMS)?" \
+  --choice yes="The patient has multiple sclerosis (MS, RRMS, SPMS or PPMS)." \
+  --choice no="The patient does not have multiple sclerosis." \
+  --threshold 0.5 --threshold-on yes --batch notes/
 
 # Record the decision in a chat's decision log, as JSON
 biorouter decide --session 20261104_1 --ask "Is the form complete?" --json < form.txt
@@ -1425,8 +1486,9 @@ chat's decision-model calls by source and by recent turn; ↑↓ selects a sourc
 last calls and Esc goes back. In the TUI and the classic CLI a turn's decision calls show as one
 line per source (`◇ Monitor Form reached: 18 checks this turn · 18 failed · last P 0.31`), never
 one line per call, and the reply of a chat whose main model is a decision model shows as a small
-card with a bar per option. The following commands are **classic CLI only**;
-start it with `BIOROUTER_CLI_CLASSIC=1 biorouter session`:
+card with a bar per option. Such a chat has no running context, so neither prints a context
+meter for it, and `/compact` answers that there is no context to compact. The following commands
+are **classic CLI only**; start it with `BIOROUTER_CLI_CLASSIC=1 biorouter session`:
 
 - `/builtin <names>` — add built-in extensions by name, comma-separated.
 - `/extension <command>` — add a stdio extension, with optional `ENV=value` prefixes.

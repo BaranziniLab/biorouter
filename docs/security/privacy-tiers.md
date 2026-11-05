@@ -280,9 +280,11 @@ this section is the ledger.
 - **Decision models are a further Gate H site (added 2026-11-04, after this ledger was
   written).** A decision model answers a typed question (yes or no, a choice, a score level) with
   probabilities instead of text; see [decision models](../agent-loop/decision-models.md). A
-  monitor's rolling window, the `decide` tool's chunks, a phase gate's hand-off text and an ad hoc
-  `POST /decisions/decide` each hand a chat's content to a model the session row never records.
-  Every one of them goes through one service, `DecisionService` in
+  monitor's rolling window, the `decide` tool's chunks and a phase gate's hand-off text each hand a
+  chat's content to a model the session row never records. An ad hoc decision that names a chat
+  (`POST /decisions/decide` with a `sessionId`, `biorouter decide --session`) hands the caller's
+  own text to one, and keeps it in that chat's decision history. Every one of them goes through
+  one service, `DecisionService` in
   `crates/biorouter/src/decision/service.rs`, which checks the chat before anything is sent. A
   decision adapter is not a `Provider`, so the check is
   `privacy::alt_provider::assert_alt_tier_allowed`: Gate H's downward half, keyed on the tier the
@@ -291,22 +293,56 @@ this section is the ledger.
     Public with no affiliation, as its chat provider is, so every private chat is refused them. So
     is an Ollama decision model on a host that is not this computer, and an Ollama cloud tag. A
     refused decision is logged as `refused`, and nothing is sent.
-  - **A public chat may use a private (local) decision model.** This is the residual plan mode
-    and prompt hooks already carry: a decision's answer is a probability that lands back in the
-    same chat and raises no tier. Making that cell a refusal too is an open owner decision, and it
-    would also keep public chats off local Ollama decision models.
+    When models are listed but this rule rules out every one for a chat, the automatic choice is
+    refused too, as a named public model is, rather than reported as no model.
+  - **A public chat may use a private (local) decision model (owner ruling, 2026-11-05).** The
+    model reads only text the chat's public model already has (a monitor's window is the stored
+    conversation, the `decide` tool's chunks are text the chat model wrote into its call, a gate
+    reads the hand-off and the result lines of children no more private than the parent), so
+    sending it to this computer discloses nothing more. Nothing but probabilities over the answers
+    the chat offered reaches the chat or its model, so no decision raises the chat's
+    classification; `raise_privacy` has no caller on any decision path. The one free text a
+    decision can produce is a logprob model's verbalized fallback, which keeps up to 2,000
+    characters of the model's reply in the log row's raw JSON and never reaches the transcript.
+    The two alternatives were rejected: refusing the cell (the symmetric rule) would push the same
+    text to a hosted model off this computer, and raising the chat to Private after a local
+    decision would make Gate B refuse its public model at the next turn. A local decision model
+    does not make a public chat safe for patient data. `decision_monitor_agent_loop`'s
+    `a_notify_monitor_shows_one_notice_and_the_turn_goes_on` pins that the chat stays Public and
+    its next turn runs.
+  - **A decision chat on a local model is Private before its first answer.** A decision model
+    picked as the chat's own model is the bound provider, so Gate B's turn ratchet raises the chat
+    to the model's tier first (reason `turn:ollama_decision` on a loopback Ollama), and Gate H then
+    checks each decision against that. This comes from the bind, not from a decision
+    (`a_decision_chat_on_a_local_model_is_a_private_chat` in `tests/decision_chat_round_trip.rs`).
+  - **An ad hoc decision about a chat is the caller's text at the chat's reach.** Gate H checks the
+    caller's text against the named chat's tier, and the row keeps it (up to 64 KiB) in that chat's
+    decision history. For a chat that is not private, with the switch on, that history is readable
+    wherever the chat is, so `biorouter decide --session` says so on stderr before sending
+    (`PUBLIC_CHAT_LOG_NOTE` in `commands/decide.rs`) and the route's answer says so in its `note`
+    (`PUBLIC_CHAT_LOG_NOTE` in `routes/decisions.rs`). A public model is named on stderr before
+    sending, with or without `--session`. The CLI resolves its model once through the service's own
+    order and pins it for the run, so a `--batch` never moves from a local model to a hosted one
+    partway when Ollama stops answering; it fails instead. This is a warning, not a refusal: the
+    person typed the command (user warns, agent never).
   - **The master switch is sampled once per call** by whoever builds it (`cap.enforced()` on the
     `decide` tool, one read per request on a route) and threaded into the service, which never
     reads it again. A row written while it is off records `privacy_enforced = 0`.
   - **The classification is read again before every request of a batch**, so a chat raised to
-    Private in the middle of a 600-chunk batch stops reaching a public model at the next chunk.
+    Private in the middle of a 600-chunk batch stops reaching a public model at the next chunk. The
+    chunks not yet asked are then not asked at all, and one refused row names them.
   - **Affiliation is checked beside the tier**, as for every Gate H site, and a Crew-scoped chat
     is refused every decision, because a Crew grant fixes the one model its content may reach.
   - **The routes** (`crates/biorouter-server/src/routes/decisions.rs`) ask `session_reach` first
     on every route that names a chat. That includes the decision log, which stores what each call
-    was sent and is therefore the chat's own content. Writing a chat's decision settings (its
-    default decision model, its monitors, and the question a decision chat asks) also takes the
-    user-action proof on a daemon that holds a key. `GET /decisions/models?sessionId=` gives, for
+    was sent and is therefore the chat's content, or for an ad hoc decision the caller's text at
+    the chat's reach. Writing a chat's decision settings (its default decision model, its monitors,
+    and the question a decision chat asks) also takes the user-action proof on a daemon that holds
+    a key. On a daemon that holds none, the reach gate is the whole gate, steer monitors included,
+    except that a subagent's chat is refused; `biorouter session monitors` with no daemon writes
+    the store directly under the tier rule alone. Both doors are in
+    [SD-11](../deployment/serve-decisions.md#sd-11--stop-works-on-a-daemon-with-no-key-steering-does-not-and-a-subagents-tab-stays-the-persons)'s
+    table. `GET /decisions/models?sessionId=` gives, for
     each model, the sentence the gate would refuse it with, so a picker can explain a public model
     in a private chat before the person picks it. The gate is asked again before every call
     whatever a setting names.

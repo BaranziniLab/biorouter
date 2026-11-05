@@ -449,7 +449,7 @@ same groups) could not run on one. Their keys are their chat siblings' (`BASETEN
 classifies them by the daemon's tier and hands them back per tab as `decisionProviders`, and in
 Settings the tab says, in one quiet line with an InfoTip, that they are chosen per chat in the
 model picker's Decision models group. First run says nothing about them. See
-[Decision models in the desktop side panel](decision-models.md).
+[Decision models in the desktop app](decision-models.md).
 
 ## Naming an institution
 

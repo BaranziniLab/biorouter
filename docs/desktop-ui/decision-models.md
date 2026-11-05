@@ -1,20 +1,22 @@
-# Decision models in the desktop side panel
+# Decision models in the desktop app
 
-> **What this is.** How the desktop app shows a chat's decision-model activity outside the
-> transcript: the Decisions section of the Chat summary, the decision history view (a tab of the
-> artifact side panel), the Monitors dialog, the gate chip on a phase row, and the per-chat count
-> in History. Covers what each one reads, the owner rule that keeps thousands of calls out of the
-> chat, and the tests that hold each part.
+> **What this is.** How the desktop app shows a chat's decision-model activity: the Decisions
+> section of the Chat summary, the decision history view (a tab of the artifact side panel), the
+> Monitors dialog, the gate chip on a phase row, the `decide` card in the transcript, a decision
+> chat's composer, the Decision models line of the Usage panel, and the per-chat count in History.
+> Covers what each one reads, the owner rule that keeps thousands of calls out of the chat, and the
+> tests that hold each part.
 > **Status:** Current. Built on the decision-model branch (`claude/decision-models`, November 2026).
-> **Audience:** developers working on the Chat summary, the artifact side panel, History or the
-> decision routes.
+> **Audience:** developers working on the Chat summary, the artifact side panel, History, the
+> composer, the Usage panel or the decision routes.
 
 A decision model answers a typed question (yes or no, one of several options, a score level)
 with a probability for every answer, in tens of milliseconds. A chat uses one in four ways: a
 monitor that watches the chat and acts when a criterion is met, the agent's `decide` tool over
 many chunks of input, a gate on an orchestration phase, or a decision model bound as the chat's
-own model. The agent loop, the routes and the transcript's own cards are described in
-[the agent-loop guide](../agent-loop/decision-models.md). This page covers the panel side.
+own model. The agent loop, the routes and the decision chat's card are described in
+[the agent-loop guide](../agent-loop/decision-models.md). This page covers the side panel, the
+`decide` card, a decision chat's composer and the Usage panel.
 The design builds on Albert Lee's prototype in PR #469, which first wired Baseten's decision
 models into the loop as exit criteria.
 
@@ -135,6 +137,10 @@ and every `decisions__*` tool row (`utils/toolGlyph.ts`, whose test reads the to
   concentration (explained as not the probability of the answer), whether the probabilities are
   calibrated (always said in words when they are not), the model and its tier, latency, tokens,
   the chunk, batch and turn, and the raw JSON.
+- **Model tier, not Tier.** The detail pane labels the decision model's tier "Model tier"
+  (`DECISION_HISTORY_COPY.tier`). It is the model's tier, not the chat's: a public chat that used a
+  local decision model reads "Model tier: Private", and its content is still public. The decision
+  card says the same thing as "Private model" or "Public model".
 
 The list sits over the detail in a narrow panel and beside it from 720px (a container query in
 `decisions/decisionsPanel.css`). The view only reads, so it works the same in a
@@ -168,14 +174,19 @@ Save writes the whole list with `PUT /sessions/{id}/decision-settings`.
   few or duplicate options, no option chosen to fire on, and a public model on a private chat.
   A refusal the daemon sends anyway is shown above the footer, and the dialog stays open.
 - **Privacy.** The dialog asks for the catalog naming the chat (`GET /decisions/models?sessionId=`),
-  so each model carries the daemon's own reason the chat may not use it (its tier, or an
-  institution the model does not cover). The list shows each model's tier, and a model with a
-  reason is offered disabled, with the reason, because Gate H refuses it before anything is
-  sent. Where the daemon gave no reason, a public model is still refused for a private chat.
+  so each model carries the daemon's own reason the chat may not use it (its tier, an
+  institution the model does not cover, or a local copy Ollama cannot load, whose reason names
+  the `ollama pull` or `ollama rm` that fixes it). The list shows each model's tier, and a model
+  with a reason is offered disabled, with the reason, because Gate H refuses it before anything
+  is sent, or Ollama would refuse to load it. Where the daemon gave no reason, a public model is
+  still refused for a private chat.
 - **The proof.** Save needs the person's proof on a daemon that holds a user-action key (the
   desktop app's) and none on a daemon that holds none (`biorouter serve`), so the dialog works
-  the same in a browser. A desktop daemon that was meant to receive a key and did not refuses
-  the write, and the dialog shows that sentence.
+  the same in a browser, steer monitors included. On a daemon with no key the one write refused is
+  to a subagent's chat, with the sentence that tab's other controls give there
+  (`DECISION_SETTINGS_SUBAGENT_NO_KEY`). A desktop daemon that was meant to receive a key and did
+  not refuses the write, and the dialog shows that sentence. A saved change reaches the chat's
+  next turn, never the one running.
 
 ## The gate chip on a phase row
 
@@ -184,6 +195,68 @@ shows one chip under its heading in the summary's Phases section: "Gate 0.91 ≥
 "Gate 0.62 < 0.80, attempt 2 of 3", "Gate blocked", or "Gate at 0.80" before it has run. Its
 state is a glyph and words. Pressing it opens the decision history filtered to that gate. A
 phase from a daemon before gates has no `gate` and draws no chip.
+
+## The `decide` card in the transcript
+
+A `decisions__decide` tool row's well (`components/decisions/DecideToolSummary.tsx`) shows the
+questions the call asked. Once the call answers, it shows a head line (chunks, model, errors,
+"uncalibrated" when it applies, the time) and one line per question with counts only:
+
+- for a yes/no question, how many said yes; for a choice or score, each answer's count;
+- how many passed, when the question has a threshold;
+- **how many are to review**, the chunks the agent has to read before it reports them (the
+  result's `review`, explained under "The review list" in
+  [the agent-loop guide](../agent-loop/decision-models.md#the-decide-tool-screening-a-large-input));
+- the highest probability.
+
+For example "has_ms yes 41, 6 to review, max p 0.98" and "course rrms 300, spms 200, none 98, 280
+passed, 12 to review, max p 0.71". The to-review count shows for any question that has one, so a
+choice or score with a threshold carries it as a yes/no question does; a count of zero is left
+out. Grouped errors follow, then a link to the batch in the decision history. The chunks, which
+may hold clinical text, and the result's text for the model, which names chunk ids, are never
+listed on the card. `decisionWire.ts` reads the count from `review` (with `reviewIds` and
+`moreReview` beside it) and never from the retired `uncertain` field, which named a fixed 0.4 to
+0.6 band.
+
+## A decision chat's composer
+
+When a chat's model is a decision model (`isDecisionProvider` in `decisionWire.ts`), `ChatInput`
+passes `showContext={false}` to `ComposerFooter`, which then draws no context ring: the footer
+keeps the working folder and the cost. A decision chat has no running context. Each message is
+asked on its own and nothing adds to the chat's token total, so a ring would show a total that
+never moves against a window from a static table, and its Compact action would ask a model that
+cannot summarise. `ChatInput` also skips the context-window lookup for such a chat. A message
+too long for the model is refused with a sentence naming its window, and a typed `/compact`
+answers that there is no context to compact.
+
+## Decision models in the Usage panel
+
+Settings > Usage counts decision-model usage in its totals and shows it on its own line
+(`components/settings/usage/UsagePanel.tsx`):
+
+- **A Decision models line** under the month's totals, with an InfoTip: "620 requests, 1.2M
+  tokens, $0.12". The cost part reads "Not metered" for a local model and "$0.04, some not
+  metered" for a mix, and it is dropped while costs are hidden.
+- **In the per-model table** a decision model shows its short name (`joey-1`), the subtitle
+  "Decision model · N requests", and a dash in Turns, which a screen reader reads as "Decision
+  requests are not turns." An unpriced local decision model reads "Not metered" rather than
+  "Unavailable". An unpriced Baseten decision model reads "Unavailable": Baseten billed it at a
+  rate Biorouter does not know.
+- **In the totals** decision tokens and priced dollars count, and so does the monthly budget.
+  Decision requests are not turns. A local decision model counts as $0 and does not mark the
+  totals as partial, so a month of only local decisions reads $0.00, not "Unavailable". An
+  unpriced Baseten decision model marks them partial like any other unpriced model.
+- **In a chat's cost** under the composer, and its breakdown, the same rule holds: a local
+  decision model's row reads "Not metered" and leaves the chat's cost exact
+  (`isUnmeteredDecisionRow` in `components/bottom_menu/CostTracker.tsx`).
+
+The panel reads the daemon's split (`decisionRequests` and `decisions` on each report row and on
+the totals), so it needs no list of decision providers. On Home, Favorite model never picks a
+decision model, and the Models tab lists one by its short name after the chat models, so the
+tab's first row is the Favorite model (`isDecisionUsageRow`, `modelBreakdown` and
+`decisionModelName` in `utils/usageStats.ts`). Where the numbers come from, and the prices, are in
+[Usage and billing](../agent-loop/decision-models.md#usage-and-billing). A decision's usage never
+moves its chat in the sidebar ([what moves a chat](sidebar-chat-list.md#what-moves-a-chat)).
 
 ## The count in History
 
@@ -199,15 +272,19 @@ never shows one, and the calls are never rows of their own.
 | The hook's gate, re-reads and polling | `hooks/useSessionDecisions.test.tsx` |
 | The section's rows, states, hiding, actions and stylesheet rules; the gate chip | `components/summary/SummaryDecisions.test.tsx` |
 | The section at 240px in Chromium: six rows for 5,000 calls, at least 28px, nothing past the card | `components/summary/summaryDecisions.browser.test.tsx` |
-| The history view's window, paging, selection, detail and filters | `components/decisions/DecisionHistory.test.tsx` |
+| The history view's window, paging, selection, detail (with the Model tier label) and filters | `components/decisions/DecisionHistory.test.tsx` |
 | 2,000 rows scrolled to the end in Chromium: every page loaded, 44px rows, a bounded window | `components/decisions/decisionHistory.browser.test.tsx` |
 | The `decisions` kind in the side panel | `components/decisions/decisionsArtifact.test.tsx` |
 | The Monitors dialog's validation, save, privacy reasons, the browser, its read on every open (a caller's older copy is not what it saves) and its filled rows | `components/decisions/MonitorsDialog.test.tsx` |
 | The composer's `+` row that opens the dialog, only in a chat that exists | `components/ChatInput.decisionMonitors.test.tsx` |
 | The History count on top-level rows only | `components/sessions/SessionListView.decisionCount.test.tsx` |
+| The `decide` card's per-question line, the to-review count on a choice with a threshold, and the review fields read under their own names | `components/decisions/DecideToolSummary.test.tsx`, `components/decisions/decisionWire.test.ts` |
+| No context ring and no window lookup in a decision chat, the ring still drawn for a chat model, and the footer without its ring | `components/ChatInput.decisionChatGauge.test.tsx`, `components/bottom_menu/ComposerFooter.test.tsx` |
+| The Usage panel's Decision models line, a decision model's row, and Home leaving decision models out of Favorite model and ranking them last in the Models tab | `components/settings/usage/UsagePanel.test.tsx`, `utils/usageStats.test.ts` |
+| A local decision model leaves a chat's cost exact and reads "Not metered" in its breakdown; an unpriced Baseten one leaves it partial | `components/bottom_menu/CostTracker.test.ts`, `components/bottom_menu/CostTracker.render.test.tsx`, `components/bottom_menu/ModelBreakdownTable.test.tsx` |
 
 Run them with
-`cd ui/desktop && npx vitest run src/utils/sessionDecisions.test.ts src/hooks/useSessionDecisions.test.tsx src/components/decisions src/components/summary src/components/sessions`.
+`cd ui/desktop && npx vitest run src/utils/sessionDecisions.test.ts src/hooks/useSessionDecisions.test.tsx src/components/decisions src/components/summary src/components/sessions src/components/ChatInput.decisionChatGauge.test.tsx src/components/bottom_menu/ComposerFooter.test.tsx src/components/settings/usage src/utils/usageStats.test.ts`.
 Set `DECISIONS_SCREENSHOT_DIR` to a folder to have the two browser tests save a picture of the
 section and the view.
 
@@ -219,4 +296,6 @@ section and the view.
   content keeps.
 - [Privacy tiers](../security/privacy-tiers.md): Gate H, which refuses a public decision model
   for a private chat.
+- [The sidebar chat list](sidebar-chat-list.md): what moves a chat, which a decision's usage
+  never does.
 - [Orchestration phases](../agent-loop/orchestration-phases.md): the phases a gate sits on.
