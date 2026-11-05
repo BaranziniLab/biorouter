@@ -950,6 +950,41 @@ pub struct MessageMetadata {
         skip_serializing_if = "Option::is_none"
     )]
     pub steer_outcome: Option<SteerOutcome>,
+    /// Decision models: the decision-log row an assistant message reports (the
+    /// reply of a chat whose main model is a decision model). Surfaces draw a
+    /// decision card from it; every wire format ignores it.
+    #[serde(
+        default,
+        deserialize_with = "deserialize_lenient_decision_id",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub decision_id: Option<String>,
+    /// Decision models: the per-turn aggregate a user-only notice summarises
+    /// (monitors and other decision calls of one turn, drawn as ONE marker).
+    #[serde(
+        default,
+        deserialize_with = "deserialize_lenient_decision_summary",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub decision_summary: Option<crate::decision::log::DecisionTurnMarker>,
+}
+
+fn deserialize_lenient_decision_id<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = Option::<serde_json::Value>::deserialize(deserializer)?;
+    Ok(value.and_then(|value| value.as_str().map(str::to_string)))
+}
+
+fn deserialize_lenient_decision_summary<'de, D>(
+    deserializer: D,
+) -> Result<Option<crate::decision::log::DecisionTurnMarker>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = Option::<serde_json::Value>::deserialize(deserializer)?;
+    Ok(value.and_then(|value| serde_json::from_value(value).ok()))
 }
 
 /// See [`MessageMetadata::steer_outcome`].
@@ -978,6 +1013,8 @@ impl Default for MessageMetadata {
             pinned: false,
             provenance: None,
             steer_outcome: None,
+            decision_id: None,
+            decision_summary: None,
         }
     }
 }
@@ -991,6 +1028,8 @@ impl MessageMetadata {
             pinned: false,
             provenance: None,
             steer_outcome: None,
+            decision_id: None,
+            decision_summary: None,
         }
     }
 
@@ -1002,6 +1041,8 @@ impl MessageMetadata {
             pinned: false,
             provenance: None,
             steer_outcome: None,
+            decision_id: None,
+            decision_summary: None,
         }
     }
 
@@ -1013,6 +1054,8 @@ impl MessageMetadata {
             pinned: false,
             provenance: None,
             steer_outcome: None,
+            decision_id: None,
+            decision_summary: None,
         }
     }
 

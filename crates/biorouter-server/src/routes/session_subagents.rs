@@ -225,6 +225,7 @@ mod tests {
             handoff: None,
             started_at: None,
             finished_at: None,
+            gate: None,
         }
     }
 

@@ -186,6 +186,44 @@ pub struct PhaseCounts {
     pub quiet: u32,
 }
 
+/// A decision-model gate on a phase (decision models, wave 2): before the phase
+/// can complete, a decision model reads its hand-off and its children's result
+/// lines and every question must reach P(yes) >= `threshold`. A failed gate keeps
+/// the phase in progress and hands the failing questions back to the model; after
+/// `max_attempts` failures the phase is blocked. Errors never pass.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct PhaseGate {
+    /// Question name -> question (1..=8, yes/no questions).
+    #[schema(value_type = Object)]
+    pub questions: indexmap::IndexMap<String, crate::decision::Question>,
+    pub threshold: f64,
+    pub model: Option<crate::decision::DecisionModelRef>,
+    #[serde(default = "default_gate_attempts")]
+    pub max_attempts: u32,
+    #[serde(default)]
+    pub allow_uncalibrated: bool,
+}
+
+fn default_gate_attempts() -> u32 {
+    3
+}
+
+/// A phase gate as surfaces draw it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct PhaseGateSnapshot {
+    pub threshold: f64,
+    pub question_count: u32,
+    pub attempts: u32,
+    pub max_attempts: u32,
+    /// The last evaluation's verdict, when there was one.
+    pub last_passed: Option<bool>,
+    /// The lowest P(yes) across the gate's questions at the last evaluation.
+    pub last_min_p: Option<f64>,
+    pub blocked: bool,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct PhaseSnapshot {
@@ -202,6 +240,9 @@ pub struct PhaseSnapshot {
     pub handoff: Option<String>,
     pub started_at: Option<DateTime<Utc>>,
     pub finished_at: Option<DateTime<Utc>>,
+    /// The phase's decision gate, when it has one.
+    #[serde(default)]
+    pub gate: Option<PhaseGateSnapshot>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
@@ -1017,6 +1058,7 @@ pub(crate) fn snapshot_of(plan: &OrchestrationPlan, rows: &[SubagentRow]) -> Orc
                 }),
                 started_at: phase.started_at,
                 finished_at: phase.finished_at,
+                gate: None,
             }
         })
         .collect();

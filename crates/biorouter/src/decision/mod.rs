@@ -20,8 +20,11 @@
 //! all carry over. Design: the decision-models design document, §2, §3 and §7.
 
 pub mod error;
+pub mod log;
 pub mod model;
 pub mod service;
+pub mod settings;
+pub mod turns;
 pub mod types;
 pub mod window;
 

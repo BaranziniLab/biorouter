@@ -98,6 +98,11 @@ pub struct DecisionSession {
     pub origin: DecisionOrigin,
     /// The criterion, tool call or phase that asked.
     pub origin_id: Option<String>,
+    /// The agent turn this decision belongs to, so surfaces can aggregate per
+    /// turn instead of listing every call.
+    pub turn_id: Option<String>,
+    /// A human label for the origin (a monitor's name, "decide", a phase title).
+    pub origin_label: Option<String>,
     /// Re-read before every request, so a chat raised to Private in the middle
     /// of a batch stops reaching a public model at the next chunk.
     pub live: Option<Arc<dyn LiveClassification>>,
@@ -128,6 +133,8 @@ impl DecisionSession {
             enforced,
             origin: DecisionOrigin::Adhoc,
             origin_id: None,
+            turn_id: None,
+            origin_label: None,
             live: None,
         }
     }
@@ -140,6 +147,16 @@ impl DecisionSession {
     pub fn with_origin(mut self, origin: DecisionOrigin, origin_id: Option<String>) -> Self {
         self.origin = origin;
         self.origin_id = origin_id;
+        self
+    }
+
+    pub fn with_turn(mut self, turn_id: Option<String>) -> Self {
+        self.turn_id = turn_id;
+        self
+    }
+
+    pub fn with_origin_label(mut self, label: Option<String>) -> Self {
+        self.origin_label = label;
         self
     }
 
@@ -215,7 +232,9 @@ impl DecisionUseGate for CrewUseGate {
 }
 
 /// What happened to one decision call, for the decision log.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, utoipa::ToSchema,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum DecisionOutcome {
     /// Every question with a threshold passed it.
@@ -235,6 +254,8 @@ pub struct DecisionLogEntry {
     pub session_id: Option<String>,
     pub origin: DecisionOrigin,
     pub origin_id: Option<String>,
+    pub origin_label: Option<String>,
+    pub turn_id: Option<String>,
     pub batch_id: Option<String>,
     pub chunk_index: Option<usize>,
     pub chunk_id: Option<String>,
@@ -728,6 +749,8 @@ impl DecisionService {
             session_id: attempt.session.map(|s| s.session_id.clone()),
             origin: attempt.session.map(|s| s.origin).unwrap_or_default(),
             origin_id: attempt.session.and_then(|s| s.origin_id.clone()),
+            origin_label: attempt.session.and_then(|s| s.origin_label.clone()),
+            turn_id: attempt.session.and_then(|s| s.turn_id.clone()),
             batch_id: attempt.batch_id.map(str::to_string),
             chunk_index: attempt.chunk_index,
             chunk_id: attempt.chunk_id.map(str::to_string),
@@ -765,6 +788,8 @@ impl DecisionService {
             session_id: session.map(|s| s.session_id.clone()),
             origin: session.map(|s| s.origin).unwrap_or_default(),
             origin_id: session.and_then(|s| s.origin_id.clone()),
+            origin_label: session.and_then(|s| s.origin_label.clone()),
+            turn_id: session.and_then(|s| s.turn_id.clone()),
             batch_id: attempt.and_then(|a| a.batch_id.map(str::to_string)),
             chunk_index: attempt.and_then(|a| a.chunk_index),
             chunk_id: attempt.and_then(|a| a.chunk_id.map(str::to_string)),
