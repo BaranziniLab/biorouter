@@ -2,7 +2,7 @@
 
 > **What this is.** The detailed design of the engine half of local dictation: the vendored whisper.cpp engine and the worker process that runs it, the native build and its platform floors, CPU and GPU backends, the speech model catalog, hosting the models in `BaranziniLab/biorouter-models`, installing and removing them on every OS and deployment, the administrator's switch, the daemon's `/dictation/*` routes, and the removal of the inherited cloud dictation.
 > **Status:** Current: a plan; nothing in it is implemented yet
-> **Audience:** developers who build PR-01, PR-02, PR-05, PR-06, PR-08 to PR-12 and PR-15, the reviewers of those pull requests, and the owner, who settles O-1, O-2, O-11, O-12, O-13, O-17, O-25, O-26 and O-27 and performs A-1.
+> **Audience:** developers who build PR-01, PR-02, PR-05, PR-06, PR-08 to PR-12 and PR-15, the reviewers of those pull requests, and the owner, whose decisions O-1, O-2 and O-17 of 2026-11-05 and the plan's defaults O-11 to O-13 and O-25 to O-27 this document follows, and who performs A-1.
 
 The [implementation plan](implementation-plan.md) decides what dictation does and in what order it ships. This document says how the part between a buffer of 16 kHz audio and a corrected string is built: which code is vendored, how it is compiled into `biorouter` and `biorouterd`, how a worker process runs it, which models exist and where they come from, how a person installs one, and how the daemon accepts audio over HTTP. How the personal dictionary biases and corrects recognition is in [dictionary](dictionary.md). Capture, the buttons, and every sentence a person sees are in [surfaces](surfaces.md). Tests, CI jobs, release guards and the measurements still to take are in [testing and release](testing-and-release.md). Everything here targets `main` at `52917f33e` (v1.94.1).
 
@@ -24,11 +24,11 @@ Identifier schemes, all indexed in the plan:
 | R1 to R8 | The owner's requirements |
 | S1 to S20 | The canonical surfaces |
 | DD-1 onward | Design decisions in the plan's decision register |
-| PR-01 to PR-33, A-1 | Pull requests in delivery order, and the owner's one setup action |
-| M-1 onward | Measurements still to take ([testing and release](testing-and-release.md)) |
-| O-1 onward | Decisions only the owner can make |
+| PR-01 to PR-33, A-1 | Pull requests in delivery order (PR-07 and PR-32 withdrawn), and the owner's one setup action |
+| M-1 onward | Measurements still to take (M-9 and M-13 withdrawn) ([testing and release](testing-and-release.md)) |
+| O-1 onward | The owner's decisions of 2026-11-05 and the plan's defaults |
 | MSG-… | Exact text a person sees ([surfaces](surfaces.md), "Message catalog") |
-| P-1 to P-15 | Privacy invariants, each held by a named test |
+| P-1 to P-16 | Privacy invariants, each held by a named test |
 | Build rules 1 to 11 | The build rules of DD-10 (never called R1 to R11, which are the owner's requirements) |
 
 This document elaborates DD-2 to DD-32, DD-87, DD-89 to DD-91 and DD-93. It restates an answer from the register only where an implementer needs it in place; the reasons and the rejected alternatives stay in the register. Where this document and the register disagree, the register wins. Code is cited as a file plus a symbol; a line number appears only where the plan verified it at `main`.
@@ -82,7 +82,7 @@ A pin moves only in a pull request that does all of this:
 4. Run the retired name guard (R-31) over the new text.
 5. Build in the three images (`rust:1.92-bullseye` cross, `rust:latest` mingw cross, native macOS for both architectures) and in the Docker builder. Bullseye's GCC 10.2 is the risk: a later ggml may need GCC 11 in the static path [R]. The fallback is a builder with a newer GCC and a glibc 2.31 sysroot, never a newer base image (that raises the glibc floor [C `scripts/cross-env.sh` comment at `LINUX_RUST_IMG`]).
 6. Run the self test in every package smoke and the Nehalem check of DD-12.
-7. Run a benchmark subset and the Tier 2 gate of [testing and release](testing-and-release.md): no strict recall regression over 3 points at fixed model and settings.
+7. Run a benchmark subset and the Tier 2 gate of [testing and release](testing-and-release.md): no strict recall regression over 5 points on either public set at fixed model and settings.
 8. Update the whisper.cpp line in `NOTICE`; the `NOTICE` version test fails otherwise.
 
 ## Vendoring
@@ -236,7 +236,7 @@ Frames go both ways as `[u32 LE json_len][json][u32 LE payload_len][payload]`, w
 | `hello` | worker to parent, first frame | `protocol: 1`, `whisper: "4da27c41"`, `ggml`, `backends: ["metal", "cpu"]`, `cpu: {avx2, fma, f16c, bmi2, dotprod}`, `isa`, `system_info` (the string `whisper_print_system_info()` returns) | none |
 | `load` | parent to worker | `model_path`, `model_sha256`, `model_size`, `vad_dir`, `vad_file`, `use_gpu`, `n_threads` | none |
 | `loaded` | worker to parent | `load_ms`, `backend: "metal" \| "cpu"`, `device`, `rss_bytes`, `n_vocab`, `multilingual` | none |
-| `set_bias` | parent to worker | `revision`, `scope: "public" \| "private"`, `entries: [{written, bias: "auto" \| "always"}]`, `params` (the decoder bonus parameters of [dictionary](dictionary.md)) | none |
+| `set_bias` | parent to worker | `revision`, `scope` (the key of one filtered set: `"public"`, `"all"`, or `"private:"` followed by the target affiliation's key, because private rows are filtered by institution, O-32 [I]), `entries: [{written, bias: "auto" \| "always"}]`, `params` (the decoder bonus parameters of [dictionary](dictionary.md)) | none |
 | `bias_ready` | worker to parent | `revision`, `scope`, `nodes`, `build_ms` | none |
 | `transcribe` | parent to worker | `id`, `bias: {revision, scope} \| null`, `prompt_terms` (ordered, best last), `prompt_budget_tokens: 150`, `language`, `decode` (DD-47), `vad` (DD-48) | PCM, at most 25 s |
 | `result` | worker to parent | `id`, `text` (timestamps stripped), `segments: [{t0_ms, t1_ms, text}]`, `prompt_terms_used` (how many terms from the tail made the token budget), `timings: {vad_ms, encode_ms, decode_ms}` | none |
@@ -268,7 +268,7 @@ The decode parameters the shim sets (DD-47; the reasons are in the register):
 | strategy | `WHISPER_SAMPLING_GREEDY`, `best_of = 5` |
 | `language` | `en` for a `.en` model; the configured language for turbo, never `auto` unless set |
 | `translate`, `no_context`, `no_timestamps`, `single_segment` | false, true, false (timestamps stripped from the text), false |
-| temperature | 0, with `temperature_inc 0.2` until M-9 |
+| temperature | 0, with `temperature_inc 0.2` until M-22 |
 | thresholds | `entropy_thold 2.4`, `logprob_thold -1.0`, `no_speech_thold 0.6` |
 | suppression | `suppress_blank = true`, `suppress_nst = false` |
 | prompt | `prompt_tokens` set; `initial_prompt` unset |
@@ -648,7 +648,7 @@ Who loses local dictation under the `x86-64-v3` pin: x86 processors before Haswe
 | Where | Text |
 |---|---|
 | Desktop | MSG-CPU, then MSG-CPU-DESKTOP (connect the app to a Biorouter server that supports dictation) |
-| `serve`, Jupyter and other servers | MSG-CPU-SERVER; when CPUID leaf 1 reports a hypervisor, MSG-CPU-VM follows [I for the detection] |
+| `serve` and other servers | MSG-CPU-SERVER; when CPUID leaf 1 reports a hypervisor, MSG-CPU-VM follows [I for the detection] |
 | The Intel build under Rosetta before macOS 15 | MSG-CPU-ROSETTA |
 
 A static build pinned to SSE4.2 instead would run nearly everywhere, but it was about 3.3 times slower than `x86-64-v3`, measured only under Rosetta translating to NEON, so only the direction and rough size hold [M]. A second helper build for Linux (`GGML_BACKEND_DL` with runtime CPU variants, 17.6 MB against 2.2 MB, and only after dropping two variants that need GCC 11 [M]) is O-11. The owner decides it after M-11, the census of lab hosts:
@@ -713,7 +713,7 @@ Catalog invariants, tested in `--lib` (PR-11): every `sha256` is 64 hex digits; 
 
 ### Measured accuracy and latency
 
-These figures chose the catalog. They are design measurements dated 2026-11-04 and labeled [M], not product claims: under DD-95 no accuracy claim about the product appears in user documentation, release notes, the announcement or the interface before the lab baseline exists. The full tables are in [speech model benchmarks](../research/voice-dictation/speech-model-benchmarks.md).
+These figures chose the catalog. They are design measurements dated 2026-11-04 and labeled [M], not product claims: under DD-95 no accuracy claim about the product ever appears in user documentation, release notes, the announcement or the interface (the owner's decision O-23, 2026-11-05). The full tables are in [speech model benchmarks](../research/voice-dictation/speech-model-benchmarks.md).
 
 | Measure | `whisper-large-v3-turbo-q5_0` | `whisper-small.en-q8_0` |
 |---|---|---|
@@ -739,7 +739,7 @@ No x86 machine was used for timing. Scaled from published x86 reports, each clas
 
 M-10 measures the shipped flags on an Intel Mac, a Windows laptop and a Linux server.
 
-M-10 confirms q8_0 on x86. Its decision rule: after a bench, turbo is `recommended` on a CPU host only when its real time factor is 0.5 or less (before a bench, the rule of [Suitability and bench](#suitability-and-bench) applies); a faster CPU tier (Parakeet or a GPU worker) is opened for a later release if `small.en`'s median exceeds 1.5 s per 5 s utterance on a lab laptop, or its real speech gene recall is below 75 % strict while turbo's real time factor there exceeds 0.5.
+The owner confirmed `whisper-small.en-q8_0` (264,477,561 B) as the CPU default on 2026-11-05 (DD-14); M-10 measures its x86 latency. Its decision rule: after a bench, turbo is `recommended` on a CPU host only when its real time factor is 0.5 or less (before a bench, the rule of [Suitability and bench](#suitability-and-bench) applies); a faster CPU tier (Parakeet or a GPU worker) is opened for a later release if `small.en`'s median exceeds 1.5 s per 5 s utterance on a lab laptop, or its gene recall on the MultiMed English gene subset (public real speech, internal measurement only) is below 75 % strict while turbo's real time factor there exceeds 0.5.
 
 Why q8_0 and not q5_1 for the `CPU` class (DD-14): on the portable build q5_1 needs 2.8 times the encoder work of q8_0 for no accuracy gain [M], and the projections above put q5_1 at about 8 s per sentence on a typical laptop [I]. M-10 also decides whether `whisper-large-v3-turbo-q8_0`, with the encoder window sized to the utterance and a repetition guard, joins the catalog for hosts with 8 or more big cores: it scored 94 % pooled strict on real speech and took 1.0 s per 5 s utterance on 4 threads here [M], about 0.7 s projected on a fast x86 desktop [I].
 
@@ -788,7 +788,7 @@ Adding any of them later is a catalog change shipped in an app release, with its
 
 ### The repository
 
-Speech models are hosted in a new public repository, `BaranziniLab/biorouter-models`, with GitHub's immutable releases turned on (DD-16, R7). Creating it, turning immutable releases on, naming who may publish, merging its workflow and publishing the first releases is owner action A-1, before PR-11 merges.
+Speech models are hosted in a new public repository, `BaranziniLab/biorouter-models`, with GitHub's immutable releases turned on (DD-16, R7). The hosting was decided by the owner on 2026-11-05; creating the repository, turning immutable releases on, naming who may publish, merging its workflow and publishing the first releases is owner action A-1, before PR-11 merges.
 
 | Choice | Reason |
 |---|---|
@@ -881,11 +881,11 @@ No speech model is part of an install or an update; a person chooses to install 
 | Surface | How a person opts in | Authority |
 |---|---|---|
 | S1 to S4 desktop app | The microphone's setup popover (**Install**) or **Settings > Models > Speech models**; or `biorouter dictation install` | The desktop holds the user action proof |
-| S5 to S7 `serve` | The browser's Settings; or `biorouter dictation install` on the host | The daemon secret on a keyless daemon, unless `biorouter serve --no-dictation-install`, `BIOROUTER_DICTATION_BROWSER_INSTALL=false` or managed policy forbids it (O-2) |
+| S5 to S7 `serve` | The browser's Settings; or `biorouter dictation install` on the host | The daemon secret on a keyless daemon, unless `biorouter serve --no-dictation-install`, `BIOROUTER_DICTATION_BROWSER_INSTALL=false` or managed policy forbids it (O-2, decided by the owner on 2026-11-05) |
 | S8 CLI package on a server | `sudo -u biorouter -H biorouter dictation install`, or `sudo biorouter dictation install --system` | A person at a terminal |
 | S9 to S11, S19 terminal | `biorouter dictation install`, `/dictate install` | A terminal confirmation, or `--yes` without a terminal; refused when `BIOROUTER_TERMINAL=1` even with `--yes` (MSG-INSTALL-SHELL) |
 | S12 ACP | None over ACP; the desktop or the CLI on that computer | as those surfaces |
-| S13 Jupyter AI | `biorouter dictation install` in a JupyterLab terminal, or the administrator's `--system` | a person at a terminal |
+| S13 Jupyter AI | Not offered: the owner excluded Jupyter from dictation (O-30) | n/a |
 | S14 Crew | Each member installs locally; models never cross the broker | as the member's surface |
 | S15 apps | The serving daemon's models; an exported app never contains a model, and a launcher that sets `BIOROUTER_PATH_ROOT` starts with an empty per user folder | as the serving daemon |
 | S16 Docker | `docker run … <image> dictation install` with a data volume, the browser through `serve`, or an administrator's derived image (`RUN biorouter dictation install --system --yes whisper-small.en-q8_0`) | a person, or the image's author |
@@ -897,7 +897,7 @@ Agents never install (DD-20, P-7): no tool installs, removes or selects a model,
 
 ### Where models go (O-1)
 
-"Installation location" is read as Biorouter's own per user data folder for the account that runs Biorouter, plus an administrator's system folder on servers (DD-19, O-1). Inside the app is impossible on macOS, where writing into the signed bundle breaks its seal and every update replaces the bundle [I], and in the Linux packages, where `/usr` belongs to the package manager. On Windows it is possible: beside Squirrel's versioned `app-<version>` folder, which each update replaces while the folder around it survives, or in the folder where a person unpacked the zip. But an uninstall deletes the first, and the zip has no fixed location [I from Squirrel's layout, not measured]. The per user data folder behaves the same way on every OS, and the desktop app and the CLI share one copy there.
+"Installation location" is read as Biorouter's own per user data folder for the account that runs Biorouter, plus an administrator's system folder on servers (DD-19, O-1, decided by the owner on 2026-11-05). Inside the app is impossible on macOS, where writing into the signed bundle breaks its seal and every update replaces the bundle [I], and in the Linux packages, where `/usr` belongs to the package manager. On Windows it is possible: beside Squirrel's versioned `app-<version>` folder, which each update replaces while the folder around it survives, or in the folder where a person unpacked the zip. But an uninstall deletes the first, and the zip has no fixed location [I from Squirrel's layout, not measured]. The per user data folder behaves the same way on every OS, and the desktop app and the CLI share one copy there.
 
 Where speech models go, per OS and deployment (O-1). In every case the folder is created by the installer, shown with the account in **Settings > Models > Speech models** (**Model folder** row) and printed by `biorouter dictation status`.
 
@@ -912,7 +912,6 @@ Where speech models go, per OS and deployment (O-1). In every case the folder is
 | Any server, shared by every account | root installs; every account reads | `/var/lib/biorouter/dictation/models/` (Linux), `/Library/Application Support/Biorouter/dictation/models/` (macOS), `%ProgramData%\Biorouter\dictation\models\` (Windows) | `sudo biorouter dictation install --system` |
 | A managed fleet | The administrator | The managed `dictation.models_dir`, read only, still hash checked | Files placed there by the administrator |
 | Docker (S16) | `biorouter` in the container | A data volume at `/home/biorouter/.local/share/biorouter`, or a read only mount at `/var/lib/biorouter/dictation/models` | `docker run … <image> dictation install`, or the browser's Settings through `serve` |
-| Jupyter AI (S13) | The Jupyter server's account (one per user on JupyterHub) | That account's data folder, or the system folder | `biorouter dictation install` in a JupyterLab terminal, or the administrator's `--system` |
 | WSL (S19) | The WSL Linux account | `~/.local/share/biorouter/dictation/models/` inside WSL | `biorouter dictation install`, or `--from /mnt/c/…` to reuse a Windows side download |
 | External backend (S17) | The account that runs the backend | The backend host's folder, not the laptop's | Settings on the laptop with that server's key, or the host CLI |
 | Air gapped hosts (S20) | As the surface | As the surface | `biorouter dictation install --from <file\|dir>`, or files placed in the folder and **Rescan** |
@@ -1051,7 +1050,7 @@ The release asset count stays exactly 11; `release_assets` and the updaters are 
 
 ### The install box and its terminal equivalent
 
-From PR-23 on, the first speech model install also offers **Suggest dictionary words from my chats**, ticked and visible beside **Install** in the setup popover and in Settings (O-33), with MSG-SETUP-SUGGEST below it (DD-56). At a terminal, `biorouter dictation install` asks "Suggest dictionary words from your chats? [Y/n]"; `--yes` without `--suggest-from-chats` leaves the capability off. After the first verified install the marker `dictation_dictionary_activation_version: 1` is written whatever the box says; the `dictionary` capability is turned on for new chats only when the box was ticked. A later "off" sticks, and nothing turns it on at daemon or CLI start. `POST /dictation/models/install` never carries the box: its body is `{model}` only, because on a keyless `serve` daemon any holder of the secret may install a model (DD-20), while turning on harvesting is the person's choice alone (DD-56). After a verified install the interface sends the box's value to `POST /dictionary/activation {suggest_from_chats}` with `userActionHeaders()` (specified in [dictionary](dictionary.md)), and that route calls `crates/biorouter/src/dictation/activation.rs`. On a keyed daemon it needs the proof; on a keyless daemon `false` is admitted and `true` is refused with MSG-DICTIONARY-HOST-SETTINGS, so the box is disabled before the click there. Before PR-23 neither the box nor the question exists, because a control appears only in the pull request that makes it work (DD-94).
+From PR-23 on, the first speech model install also offers **Suggest dictionary words from my chats**, ticked and visible beside **Install** in the setup popover and in Settings (O-33, decided by the owner on 2026-11-05), with MSG-SETUP-SUGGEST below it (DD-56). At a terminal, `biorouter dictation install` asks "Suggest dictionary words from your chats? [Y/n]"; `--yes` without `--suggest-from-chats` leaves the capability off. After the first verified install the marker `dictation_dictionary_activation_version: 1` is written whatever the box says; the `dictionary` capability is turned on for new chats only when the box was ticked. A later "off" sticks, and nothing turns it on at daemon or CLI start. `POST /dictation/models/install` never carries the box: its body is `{model}` only, because on a keyless `serve` daemon any holder of the secret may install a model (DD-20), while turning on harvesting is the person's choice alone (DD-56). After a verified install the interface sends the box's value to `POST /dictionary/activation {suggest_from_chats}` with `userActionHeaders()` (specified in [dictionary](dictionary.md)), and that route calls `crates/biorouter/src/dictation/activation.rs`. On a keyed daemon it needs the proof; on a keyless daemon `false` is admitted and `true` is refused with MSG-DICTIONARY-HOST-SETTINGS, so the box is disabled before the click there. Before PR-23 neither the box nor the question exists, because a control appears only in the pull request that makes it work (DD-94).
 
 **Acceptance (PR-06, PR-11, A-1).** On a Mac, a Windows laptop and a Linux server, `biorouter dictation install` then `verify` succeed and `status` lists the model as verified with its `location`; the installer, lookup order, suitability, catalog and command tests of [testing and release](testing-and-release.md) pass; `tests/model_download_live.rs` (`#[ignore]`) downloads the detector end to end from A-1's release; a planted model file fails the packaging guard; `BIOROUTER_PATH_ROOT=<r>` resolves the models folder to `<r>/data/dictation/models`.
 
@@ -1143,7 +1142,6 @@ A newer key on an older binary therefore turns dictation off rather than being i
 | `call_tool_boundary_refusal` [C `routes/agent.rs:3320`] | a managed deny arm, which also closes the general gap that a managed deny does not hold at `POST /agent/call_tool` | | |
 | The chat extractor | off | | `dictionary: false`, `dictionary_agent_writes: false` |
 | Every CLI door | exit 2 with MSG-POLICY | `dictate` and the terminal front ends exit 2 with MSG-POLICY-CAPTURE; `transcribe` works | `install` refuses under `model_downloads: false` unless its target is `models_dir` |
-| The Jupyter handler | its upload and finish routes answer 403 with MSG-POLICY, read through `biorouter dictation status` | its upload and finish routes answer 403 with MSG-POLICY-CAPTURE, because the browser recording is live capture, although `transcribe` itself is allowed | |
 | Tray and global shortcut, Electron main for an external backend | removed | removed | |
 
 The reason sentence for every refusal rides in the response and in status as an `Allowance`. The message catalog in [surfaces](surfaces.md) holds the four policy sentences: MSG-POLICY, MSG-POLICY-CAPTURE, MSG-POLICY-DOWNLOADS (a refusal under `model_downloads: false`; it names the managed `models_dir`) and MSG-POLICY-MODELS (a refusal under `allowed_models`; it names the allowed ids). The interface never learns policy from `GET /config`, which renders keys as editable rows; it reads `GET /dictation/status` `policy` only.
@@ -1185,7 +1183,7 @@ The keys in this table stay out of both `CAPABILITY_CONFIG_KEYS` and `NOT_CAPABI
 | Route | Body | Answer | Authority |
 |---|---|---|---|
 | `GET /dictation/status` | none | the status shape below | secret |
-| `POST /dictation/streams` | JSON at most 8 KiB `{sample_rate, format: "s16le", language?, target_kind: "chat" \| "new_chat" \| "editor" \| "crew" \| "external", session_id?, new_chat_provider?, include_private_terms?, context?}` (`new_chat_provider` is the per tab provider pick for `new_chat`, honored only from a caller with the proof; `include_private_terms` only with `crew` or `external`, honored only from a caller with the proof and private standing; `context` at most 2 KiB, ranking only, never logged) | 201 `{stream_id, max_chunk_bytes: 524288, idle_timeout_s: 60, max_seconds: 600}`; 409 `noModel`; 429 `tooManyStreams` with `Retry-After`; 403 with the policy sentence | secret (O-17 recommended); `session_id` through `session_reach` first |
+| `POST /dictation/streams` | JSON at most 8 KiB `{sample_rate, format: "s16le", language?, target_kind: "chat" \| "new_chat" \| "editor" \| "crew" \| "external", session_id?, new_chat_provider?, include_private_terms?, context?}` (`new_chat_provider` is the per tab provider pick for `new_chat`, honored only from a caller with the proof; `include_private_terms` only with `crew` or `external`, honored only from a caller with the proof and private standing; `context` at most 2 KiB, ranking only, never logged) | 201 `{stream_id, max_chunk_bytes: 524288, idle_timeout_s: 60, max_seconds: 600}`; 409 `noModel`; 429 `tooManyStreams` with `Retry-After`; 403 with the policy sentence | secret (O-17); `session_id` through `session_reach` first |
 | `PUT /dictation/streams/{id}/audio?seq=N` | `application/octet-stream`, raw s16le, at most 524,288 B | 200 `{received_s, partial?, queue_position}`; 409 `outOfOrder {expected_seq}`; 410 expired or cancelled; 413 | secret |
 | `POST /dictation/streams/{id}/finish` | none | 200 transcript, or 202 `{pending: true}` after 3 s; 500 `engineFailed` | secret |
 | `GET /dictation/streams/{id}` | none | as finish, answered at once | secret |
@@ -1258,7 +1256,7 @@ type Transcript = {
 };
 ```
 
-The correction stages and retry reasons are defined in [dictionary](dictionary.md). `biorouter transcribe --format json` (schema 1) uses these names for every field the two shapes share (`text`, `raw_text`, `changes` with `stage`, `model`, `audio_s`, `bias_scope`) and adds `schema`, `language` and `timings`, so the Jupyter extension and the renderer read one vocabulary. No response reports how many dictionary entries were eligible or withheld (P-6). `policy.install` reports only what managed policy and the operator lock allow; the top level `install` adds the engine, the processor and this caller's authority.
+The correction stages and retry reasons are defined in [dictionary](dictionary.md). `biorouter transcribe --format json` (schema 1) uses these names for every field the two shapes share (`text`, `raw_text`, `changes` with `stage`, `model`, `audio_s`, `bias_scope`) and adds `schema`, `language` and `timings`, so `transcribe`'s callers and the renderer read one vocabulary. No response reports how many dictionary entries were eligible or withheld (P-6). `policy.install` reports only what managed policy and the operator lock allow; the top level `install` adds the engine, the processor and this caller's authority.
 
 `install.reason` for a caller, in order of precedence: MSG-NO-ENGINE when the engine is not compiled; MSG-POLICY when policy forbids dictation; the CPU sentence of [Hosts without AVX2](#hosts-without-avx2) when the host class is `NO`; MSG-POLICY-DOWNLOADS when downloads are forbidden; MSG-INSTALL-AGENT for a caller without the proof on a keyed daemon; MSG-INSTALL-LOCKED on a keyless daemon with the operator lock. So no interface offers a button that would fail.
 
@@ -1289,7 +1287,7 @@ A proxy's own 413 for a small chunk is the client's MSG-413 ([surfaces](surfaces
 
 ### Stream lifecycle
 
-1. **Create.** The handler checks policy, the engine and the CPU class; validates the body; decides the target tier once ([Target and bias decision](#target-and-bias-decision)); builds the bias set; and calls `service().prepare(model)` without waiting for it. The stream id is 128 random bits in hex. A `sample_rate` other than 16,000 (the native rate fallback for Firefox before 148: only Firefox 146.0.1 was measured [M], and the 148 boundary comes from Bugzilla 1674892 [R]) is resampled in the daemon by `audio.rs`.
+1. **Create.** The handler checks policy, the engine and the CPU class; validates the body; decides the target tier and its model's affiliation once ([Target and bias decision](#target-and-bias-decision)); builds the bias set; and calls `service().prepare(model)` without waiting for it. The stream id is 128 random bits in hex. A `sample_rate` other than 16,000 (the native rate fallback for Firefox before 148: only Firefox 146.0.1 was measured [M], and the 148 boundary comes from Bugzilla 1674892 [R]) is resampled in the daemon by `audio.rs`.
 2. **Append.** Each PUT carries the next `seq`, starting at 0, strictly increasing. A repeated `seq` is idempotent: the daemon answers as before and ignores the body. A higher `seq` answers 409 `outOfOrder` with `expected_seq`. The route sets `DefaultBodyLimit::max(524_288)`; the JSON routes allow 8 KiB.
 3. **Segment.** Once 8 s or more are buffered past the decoded mark, the service asks the worker for `vad_segments` over the undecoded tail and queues each closed segment, split at the longest pause so none exceeds 25 s, decoded with `no_context = true` (DD-50). While 32 segments are already queued, closed segments wait in their stream, so a PUT never answers 429.
 4. **Partial text.** A PUT answer carries `partial`, the corrected text of the segments decoded so far, when it changed. The interface shows it only as a muted preview line, never in the field (DD-31).
@@ -1310,7 +1308,10 @@ let standing = caller.dictation_standing();
 let enforced = biorouter::privacy::privacy_tiers_enabled(); // loaded once per process
 let proven = auth::user_action_proof(&headers) == UserActionProof::Proven;
 
-let target_private = match (req.target_kind, req.session_id.as_deref()) {
+// The target's tier and its model's affiliation come from one provider read (DD-30, O-32);
+// None is an unstated affiliation, which admits only private rows with no institution.
+let public = || BiasTarget { private: false, affiliation: None, person_included: false };
+let target = match (req.target_kind, req.session_id.as_deref()) {
     (TargetKind::Chat | TargetKind::Editor, Some(id)) => {
         // resolve the tier before touching the session; a refusal degrades to public, silently
         match session_reach::session_reach(&manager, id, &headers).await {
@@ -1320,29 +1321,36 @@ let target_private = match (req.target_kind, req.session_id.as_deref()) {
                     TargetTier::Public => Some(SessionClassification::Public),
                     TargetTier::Unreadable => None,
                 };
-                let live = state.peek_agent(id).await.map(|agent| agent.bound_provider_tier());
-                target::chat_reach(stored, live) == ChatReach::Private // Unknown counts as public
+                // one lock on the live agent's provider: its tier() and affiliation()
+                let live = state.peek_agent(id).await.map(|agent| agent.bound_provider_tier_and_affiliation());
+                BiasTarget {
+                    private: target::chat_reach(stored, live.map(|(tier, _)| tier)) == ChatReach::Private, // Unknown counts as public
+                    affiliation: live.and_then(|(_, affiliation)| affiliation), // unstated when no agent is live
+                    person_included: false,
+                }
             }
-            Err(_) => false,
+            Err(_) => public(),
         }
     }
     (TargetKind::NewChat, _) => {
         // DD-30: the tier the new chat's bind would produce; the per tab pick counts only with the proof
         let pick = req.new_chat_provider.as_deref().filter(|_| proven);
-        target::new_chat_bind_tier(pick).await.is_private() // pick, else BIOROUTER_PROVIDER; Public on failure
+        let (tier, affiliation) = target::new_chat_bind_tier(pick).await; // pick, else BIOROUTER_PROVIDER; Public on failure
+        BiasTarget { private: tier.is_private(), affiliation, person_included: false }
     }
     (TargetKind::Crew | TargetKind::External, _) => {
-        // O-8: only for one recording the person confirmed after MSG-PRIVATE-TERMS
-        req.include_private_terms && proven && standing.is_private()
+        // O-8: only for one recording the person confirmed after MSG-PRIVATE-TERMS; every private row then passes
+        let included = req.include_private_terms && proven && standing.is_private();
+        BiasTarget { private: included, affiliation: None, person_included: included }
     }
-    _ => false, // chat or editor without a session id
+    _ => public(), // chat or editor without a session id
 };
-let bias = biorouter::dictation::bias::bias_set(&view, target_private, standing, enforced);
+let bias = biorouter::dictation::bias::bias_set(&view, &target, standing, enforced);
 ```
 
-`target_tier` [C `session_reach.rs:676`] reads metadata only; `peek_agent` [C `state.rs:1967`] catches a live chat whose bound provider is private before its row says so. `chat_reach` in `crates/biorouter/src/dictation/target.rs` is the one function that answers "is this chat private?" for the stream target, the observation stamp and the extractor stamp ([dictionary](dictionary.md)); a stream target counts its `Unknown` as public. A refusal from `session_reach` [C `session_reach.rs:695`] gives public scope and a byte identical response, so the route answers no question about another chat. `bias_set` and its truth table are in [dictionary](dictionary.md); with the privacy master switch off every entry is eligible. `new_chat_provider` carries the composer's per tab provider pick for Home and a new tab. From a caller without the proof it is ignored and `BIOROUTER_PROVIDER` decides, so an unproven caller cannot choose the tier its own stream is judged by (P-4).
+`target_tier` [C `session_reach.rs:676`] reads metadata only; `peek_agent` [C `state.rs:1967`] catches a live chat whose bound provider is private before its row says so. `chat_reach` in `crates/biorouter/src/dictation/target.rs` is the one function that answers "is this chat private?" for the stream target, the observation stamp and the extractor stamp ([dictionary](dictionary.md)); a stream target counts its `Unknown` as public. A refusal from `session_reach` [C `session_reach.rs:695`] gives public scope and a byte identical response, so the route answers no question about another chat. `bias_set` and its truth table are in [dictionary](dictionary.md); with the privacy master switch off every entry is eligible. Private rows carry the institutions of the model they were written under, decided by the owner on 2026-11-05 (O-32), and `bias_set` keeps such a row only when those institutions admit the target's model, asked through `affiliation::gate_cross_affiliation_warning` [C `crates/biorouter/src/privacy/affiliation.rs`] ([private rows and institutions](dictionary.md#private-rows-and-institutions), P-16). The target's model affiliation comes from the same provider read as its tier: the live agent's bound provider for a chat, unstated when no agent is live, and the instance `new_chat_bind_tier` builds for a new chat [I]. A row left out changes no field of the response. `new_chat_provider` carries the composer's per tab provider pick for Home and a new tab. From a caller without the proof it is ignored and `BIOROUTER_PROVIDER` decides, so an unproven caller cannot choose the tier its own stream is judged by (P-4).
 
-`new_chat_bind_tier` judges a new chat by the tier its bind would produce, never by a declared tier, because a declared tier is permissive in exactly the cases that matter here: `ollama` declares Private and resolves Public when `OLLAMA_HOST` points off the machine [C `session_reach.rs` `caller_capability`], its instance `tier()` is Public for a cloud tag such as `gpt-oss:120b-cloud` [C `providers/ollama.rs` `tier`], `llamacpp` with a remote `LLAMACPP_EXTERNAL_HOST` is Public the same way [C `providers/llamacpp.rs` `tier`], and a lead and worker pair binds `ProviderTier::least` of the two. So the function builds the provider from the `privacy::CAPABILITY_CONFIG_KEYS` values (with the pick in place of `BIOROUTER_PROVIDER` when there is one), takes its instance `tier()`, reduces a lead and worker pair with `ProviderTier::least`, caches the answer by those values, and answers Public on any failure (DD-30). The private draft flag judges "a public model" the same way, by the daemon's instance tier for the target chat, and warns if dictated text then goes to one ([surfaces](surfaces.md)).
+`new_chat_bind_tier` judges a new chat by the tier its bind would produce, never by a declared tier, because a declared tier is permissive in exactly the cases that matter here: `ollama` declares Private and resolves Public when `OLLAMA_HOST` points off the machine [C `session_reach.rs` `caller_capability`], its instance `tier()` is Public for a cloud tag such as `gpt-oss:120b-cloud` [C `providers/ollama.rs` `tier`], `llamacpp` with a remote `LLAMACPP_EXTERNAL_HOST` is Public the same way [C `providers/llamacpp.rs` `tier`], and a lead and worker pair binds `ProviderTier::least` of the two. So the function builds the provider from the `privacy::CAPABILITY_CONFIG_KEYS` values (with the pick in place of `BIOROUTER_PROVIDER` when there is one), takes its instance `tier()`, reduces a lead and worker pair with `ProviderTier::least`, caches the answer by those values, and answers Public on any failure (DD-30). It returns the instance's `affiliation()` beside the tier, and a lead and worker pair already folds both halves there [C `providers/lead_worker.rs` `affiliation`, `providers/mod.rs` `composite_affiliation`]; on a failure the affiliation is unstated. The private draft flag judges "a public model" the same way, by the daemon's instance tier for the target chat, and warns if dictated text then goes to one ([surfaces](surfaces.md)).
 
 Standing is `HttpCaller::dictation_standing`, a new function inside `crates/biorouter-server/src/routes/session_reach.rs` with its own census row, because `HttpCaller::capability` (`:966`) and `admits` (`:1051`) are private there [C]. It reads two inputs: the proof, and a private provider stated in `X-Caller-Provider` (`CALLER_PROVIDER_HEADER`, `:315`, read at `:661` by `caller_capability`). It never reads the third input `HttpCaller` carries, a `serve` daemon's operator tier for a request from its own page (`served_operator`): SD-10 gives the served interface its operator's reach on listings and knowledge bases and nothing else, and `HttpCaller`'s own documentation keeps it out of every other decision [C]. Listing private rows (`lists_dictionary_entry`) follows SD-10 like any other listing; biasing and stamping do not. A `serve` browser on a private host keeps private standing anyway, because `userActionHeaders()` states the host's provider in `X-Caller-Provider` on a browser surface (SD-12) [C `ui/desktop/src/utils/userAction.ts`].
 
@@ -1366,19 +1374,13 @@ On a hub with one daemon per person, each active dictating account loads its own
 
 ### Authority and O-17
 
-Every `/dictation/*` route takes the daemon secret through `check_token` (DD-29). Model install, select and delete need the user action proof on a daemon that holds a user action key (DD-20). Streams depend on O-17:
-
-| | Recommended (the plan is written to it) | Alternative |
-|---|---|---|
-| Stream creation on a keyed daemon | The secret suffices; the proof and private standing decide only which entries may bias | The proof is required for every stream; an unproven caller gets 403 `proofRequired` |
-| S17 against a keyed server without its key | Dictation works with public terms only, and the laptop shows MSG-REMOTE-NO-KEY (recommended text) | The microphone is unavailable, with MSG-REMOTE-NO-KEY (alternative text) |
-| `tests/dictation_keyed.rs` | Asserts streams are admitted on the secret | Asserts the refusal |
+Every `/dictation/*` route takes the daemon secret through `check_token` (DD-29). Model install, select and delete need the user action proof on a daemon that holds a user action key (DD-20). Streams take the secret alone, decided by the owner on 2026-11-05 (O-17): on a keyed daemon the proof and private standing decide only which entries may bias. S17 against a keyed server without its key therefore dictates with public terms only and shows MSG-REMOTE-NO-KEY; `tests/dictation_keyed.rs` asserts that streams are admitted on the secret.
 
 Transcription changes no tier and sends nothing off the host, and a secret holder that states a private `X-Caller-Provider` can already list private rows [C `session_reach.rs` `HttpCaller::lists_session` at `:982`, which reads `CALLER_PROVIDER_HEADER` (`:315`) through `caller_capability` at `:661`], so requiring the proof for streams would add little at the cost of S17.
 
 ### Privacy census
 
-`crates/biorouter/tests/privacy_guard_wiring.rs` gains `crates/biorouter-server/src/routes/dictation.rs` as a site on the existing rows `http_caller`, `session_reach` and `target_tier` (whose row moves from `Status::WiredThrough("session_reach")` to `Status::Wired`), a `Guard` row for `HttpCaller::dictation_standing` (`defined_in: SESSION_REACH`), and rows written by hand for `bias_set` and `chat_reach`, as [dictionary](dictionary.md) lists; the `every_gated_route_resolves_the_tier_before_it_touches_the_session` table in `session_reach.rs` gains the stream creation handler. PR-14 adds the `visible_to` site in `crates/biorouter/src/dictation/bias.rs`. No pull request here adds a `floor`, `raise_privacy`, `.call_tool(` or `CallCapability::sample(` site.
+`crates/biorouter/tests/privacy_guard_wiring.rs` gains `crates/biorouter-server/src/routes/dictation.rs` as a site on the existing rows `http_caller`, `session_reach` and `target_tier` (whose row moves from `Status::WiredThrough("session_reach")` to `Status::Wired`), a `Guard` row for `HttpCaller::dictation_standing` (`defined_in: SESSION_REACH`), and rows written by hand for `bias_set` and `chat_reach`, as [dictionary](dictionary.md) lists; the `every_gated_route_resolves_the_tier_before_it_touches_the_session` table in `session_reach.rs` gains the stream creation handler. PR-14 adds the `visible_to` site in `crates/biorouter/src/dictation/bias.rs`. PR-14 also adds a `Site` row to `crates/biorouter/tests/privacy_capability.rs` for the one `affiliation::gate_cross_affiliation` call in `bias.rs`, the institutions check of private rows (P-16). No pull request here adds a `floor`, `raise_privacy`, `.call_tool(` or `CallCapability::sample(` site.
 
 ### Logging
 
@@ -1388,7 +1390,7 @@ Tracing in the dictation routes and the service records stream ids, `target_kind
 
 ## Removal of the inherited cloud dictation
 
-The inherited cloud dictation is a daemon route that forwards audio to OpenAI or ElevenLabs on the daemon secret alone. It is deleted in the first pull request, PR-01 (DD-89, O-10). While it is merged, "audio is not sent anywhere else" is false, so no document may say that of a build before PR-01.
+The inherited cloud dictation is a daemon route that forwards audio to OpenAI or ElevenLabs on the daemon secret alone. It is deleted in the first pull request, PR-01 (DD-89, O-10, decided by the owner on 2026-11-05). While it is merged, "audio is not sent anywhere else" is false, so no document may say that of a build before PR-01.
 
 What is deleted:
 

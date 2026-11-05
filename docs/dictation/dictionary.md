@@ -2,7 +2,7 @@
 
 > **What this is.** The design of the personal dictionary that dictation recognizes: its data model and store, how privacy tiers filter it, who may read and change it on each surface, how it steers recognition and correction, how it learns from the person's edits, the `dictionary` capability the agent uses to ingest terms, automatic extraction from chats, the left sidebar **Dictionary** page and the terminal commands.
 > **Status:** Current: a plan; nothing in it is implemented yet
-> **Audience:** developers who build PR-13, PR-14, PR-16, PR-20, PR-22, PR-23, PR-24 and PR-26; reviewers of those pull requests; the owner, who settles O-3 to O-8, O-17, O-21, O-23 and O-31 to O-33.
+> **Audience:** developers who build PR-13, PR-14, PR-16, PR-20, PR-22, PR-23, PR-24 and PR-26; reviewers of those pull requests; the owner, whose decisions O-3, O-17, O-23 and O-31 to O-33 of 2026-11-05 and the plan's defaults O-5 to O-8 and O-21 this document follows.
 
 Each account that runs Biorouter has one dictionary: a file of terms such as UCSF or EPAS1 that dictation should spell the person's way. The daemon, the CLI and the agent's `dictionary` capability read and write that one file under one lock. Dictation feeds the eligible terms to the speech model as a token prompt and a decoder bonus, then corrects the transcript with guarded exact matching. Because Whisper can copy its prompt into the transcript when it hears no speech, a term learned in a private chat must never shape dictation aimed at a public model, so every channel reads one tier filtered set. This document specifies each part to the level an engineer can build from, with the acceptance check for each. The [implementation plan](implementation-plan.md) holds the decision register this document elaborates; where they differ, the plan wins.
 
@@ -24,11 +24,11 @@ Identifiers:
 | R1 to R8 | The owner's requirements | [Implementation plan](implementation-plan.md), "The owner's requirements" |
 | S1 to S20 | The canonical surfaces | [Surfaces](surfaces.md) |
 | DD-1 onward | Design decisions; this document elaborates DD-33 to DD-59, DD-67, DD-68, DD-71, DD-75 and DD-77 | [Implementation plan](implementation-plan.md), "Decision register" |
-| PR-01 to PR-33 | Pull requests in delivery order | [Implementation plan](implementation-plan.md), "Delivery plan" |
-| O-1 onward | Decisions only the owner can make; the text follows each recommended default | [Implementation plan](implementation-plan.md), "Owner decisions" |
+| PR-01 to PR-33 | Pull requests in delivery order (PR-07 and PR-32 withdrawn) | [Implementation plan](implementation-plan.md), "Delivery plan" |
+| O-1 onward | The owner's decisions of 2026-11-05 and the plan's defaults; the text follows each | [Implementation plan](implementation-plan.md), "Owner decisions" |
 | M-1 onward | Measurements still to take | [Testing and release](testing-and-release.md) |
 | MSG-… | Exact text a person sees | [Surfaces](surfaces.md), "Message catalog" |
-| P-1 to P-15 | Privacy invariants, each held by a named test | [Privacy invariants](#privacy-invariants) |
+| P-1 to P-16 | Privacy invariants, each held by a named test | [Privacy invariants](#privacy-invariants) |
 
 Code that exists at `main` is cited as a file plus a symbol. Files this plan creates are written as code spans, never as links. Rust and TypeScript blocks are sketches of the shape to build, not finished code.
 
@@ -43,8 +43,8 @@ Code that exists at `main` is cited as a file plus a symbol. Files this plan cre
 The default reading of R5:
 
 1. **Plugin or MCP extension.** The capability is a platform extension in the core crate. The agent reaches it through the same tool dispatch as any MCP extension, as `dictionary__add_terms`, `dictionary__list_terms` and `dictionary__remove_added_terms`. It is a platform extension rather than a bundled MCP server because it must read the caller's capability from the dispatch and the calling session's messages, and because app manifests already refuse a platform name they do not list (DD-51).
-2. **From conversations.** The agent may take terms from anywhere in the conversation it sees, not only from text the person typed (O-31, DD-55). The narrower rule (only text the person typed in that chat) stays available as a provenance check if the owner prefers it.
-3. **Like memory.** Memory has two stores. Its project store is written at once, but its instructions tell the model to act when the person asks and otherwise "offer to remember it and wait for agreement before writing" [C `crates/biorouter-mcp/src/memory/mod.rs` `base_instructions`]. Its machine wide store needs the person's approval for every read, write and delete [C `crates/biorouter/src/security/global_memory.rs` `GlobalMemoryInspector`]. The dictionary is machine wide, so by default an agent's term lands as a suggestion the person accepts (`suggest`, O-3). Memory's own protocol (`on_request`: a term the person asked for, or agreed to when the agent offered it, lands at once) and immediate writes with **Keep** and **Undo** (`add`) are the person's settings on the Dictionary page, not new code (DD-53). The recommended default departs from memory twice. The capability is off until the person ticks **Suggest dictionary words from my chats** at the first model install, while memory is on in every chat by default [C `crates/biorouter/src/config/extensions.rs` `inject_builtin_extensions`, `builtin_entry` with `enabled: true`]. Agent terms then wait for review even when the person asked for them, while memory writes its project store at once when asked. So `suggest` is the narrower reading of R5, and `on_request` is the literal one (O-3).
+2. **From conversations.** The agent may take terms from anywhere in the conversation it sees, not only from text the person typed (O-31, DD-55; decided by the owner on 2026-11-05).
+3. **Like memory.** Memory has two stores. Its project store is written at once, but its instructions tell the model to act when the person asks and otherwise "offer to remember it and wait for agreement before writing" [C `crates/biorouter-mcp/src/memory/mod.rs` `base_instructions`]. Its machine wide store needs the person's approval for every read, write and delete [C `crates/biorouter/src/security/global_memory.rs` `GlobalMemoryInspector`]. The owner decided on 2026-11-05 that the dictionary follows memory's own protocol by default (`on_request`, O-3): a term the person asked the agent to add, or agreed to when the agent offered it, lands at once, and every other agent term lands as a suggestion the person accepts, because the dictionary is machine wide. Waiting for review always (`suggest`) and immediate writes with **Keep** and **Undo** (`add`) are the person's settings on the Dictionary page and in `biorouter dictionary settings --agent-writes`, not new code (DD-53). The default departs from memory once: the capability is off until the person ticks **Suggest dictionary words from my chats** at the first model install, while memory is on in every chat by default [C `crates/biorouter/src/config/extensions.rs` `inject_builtin_extensions`, `builtin_entry` with `enabled: true`].
 4. **Ingestion that needs no agent turn.** The chat extractor finds term shaped tokens in the person's own messages and proposes them as suggestions. It ships switched on only if it passes the precision gate M-21 (DD-57).
 
 ## The data model
@@ -74,6 +74,7 @@ The schema is v1, snake_case on disk and in the HTTP API (DD-34). It lives in `c
 | `seen` | integer | the store | Distinct sightings (sessions for the extractor and the agent, record ids for the learner) |
 | `created_at`, `updated_at` | RFC 3339 | the store | |
 | `provenance` | null or `{reason: "publicized_by_user" \| "privatized_by_user", at}` | tier changes | Records the person's tier change |
+| `affiliation` | private rows only: `null`, or `{"institutions": [id, …]}` with 1 to 8 normalized institution ids | the server's stamp, never a client | The institutions whose agreements cover the model the row was written under; `bias_set` keeps the row out of dictation aimed at a model they do not admit ([Private rows and institutions](#private-rows-and-institutions), O-32) |
 
 The store file:
 
@@ -81,7 +82,7 @@ The store file:
 {
   "format": "biorouter.dictionary.store",
   "version": 1,
-  "settings": { "learn_from_chats": false, "agent_writes": "suggest" },
+  "settings": { "learn_from_chats": false, "agent_writes": "on_request" },
   "entries": [
     {
       "id": "dct_6f0b8a52-6a1e-4f7e-9d0b-2a3c1d4e5f60",
@@ -103,14 +104,15 @@ The store file:
       "seen": 1,
       "created_at": "2026-11-01T09:00:00Z",
       "updated_at": "2026-11-04T17:02:11Z",
-      "provenance": null
+      "provenance": null,
+      "affiliation": null
     }
   ],
   "tombstones": [{ "fold_key": "phd2", "tier": "private", "at": "2026-11-03T12:00:00Z" }]
 }
 ```
 
-`learn_from_chats` in a new store takes the compiled default `LEARN_FROM_CHATS_DEFAULT`, which PR-24 sets from the M-21 result ([The M-21 gate](#the-m-21-gate)). `agent_writes` starts at `suggest` (O-3).
+`learn_from_chats` in a new store takes the compiled default `LEARN_FROM_CHATS_DEFAULT`, which PR-24 sets from the M-21 result ([The M-21 gate](#the-m-21-gate)). `agent_writes` starts at `on_request` (O-3, decided by the owner on 2026-11-05).
 
 The Rust shape:
 
@@ -133,7 +135,7 @@ pub struct StoreSettings { pub learn_from_chats: bool, pub agent_writes: AgentWr
 
 #[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 #[serde(rename_all = "snake_case")]
-pub enum AgentWrites { Suggest, OnRequest, Add } // ordered: raising means a later variant
+pub enum AgentWrites { Suggest, OnRequest, Add } // ordered: raising means a later variant; a new store starts at OnRequest
 
 #[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[serde(rename_all = "snake_case")]
@@ -162,10 +164,12 @@ pub struct Entry {
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
     pub provenance: Option<Provenance>,
+    pub affiliation: Option<RowAffiliation>, // private rows only (O-32)
 }
 
 pub struct Misrecognition { pub text: String, pub count: u32, pub last_seen: DateTime<Utc> }
 pub struct Tombstone { pub fold_key: String, pub tier: EntryTier, pub at: DateTime<Utc> }
+pub struct RowAffiliation { pub institutions: Vec<String> } // normalized ids; the core maps them (P-16)
 ```
 
 ### Validation
@@ -335,6 +339,8 @@ No caller sends a tier that the server trusts. Each writer's stamp:
 
 `max` orders Private above Public. An edit whose stamp rises above the row's tier is written into the private twin (created from the public row if absent), and the public row stays unchanged; an edit never moves a row between tiers, because that would be a privatize, which a keyless daemon refuses (DD-38) and which would make the public row vanish (DD-35). On a keyless daemon no stamp is ever above the caller's standing, so a caller without private standing never writes into the private tier and never learns what it holds (oracle rule 1, P-14).
 
+Private rows also carry an institution stamp from the same read; [Private rows and institutions](#private-rows-and-institutions) gives it per writer.
+
 One function answers "is this chat private?" for every dictation door, so the stream target, the observation stamp and the extractor stamp cannot disagree:
 
 ```rust
@@ -368,7 +374,7 @@ A consequence on `serve`: on a host whose operator's provider is private, the se
 // crates/biorouter-dictation/src/recognize/mod.rs
 pub struct EligibleEntries {
     entries: Arc<[RecognitionEntry]>, // twins merged, active misrecognitions only, derived flags set
-    table: BonusTable,                // PublicRows | AllRows: which decoder bonus table to use
+    table: BonusTable,                // PublicRows | AllRows | PrivateRows(affiliation key): which decoder bonus table to use
 }
 impl EligibleEntries {
     /// Called only from crates/biorouter/src/dictation/bias.rs.
@@ -394,9 +400,14 @@ impl Standing {
     pub const fn is_private(&self) -> bool { self.private }
 }
 
-pub fn bias_set(view: &StoreView, target_private: bool, standing: Standing, enforced: bool) -> EligibleEntries {
+/// The model a dictation is aimed at. `private` comes from chat_reach, new_chat_bind_tier or the
+/// CLI rule of DD-77; `affiliation` from the same provider read (None: unstated or unknown);
+/// `person_included` is include_private_terms or --private-terms, admitted under O-8.
+pub struct BiasTarget { pub private: bool, pub affiliation: Option<ModelAffiliation>, pub person_included: bool }
+
+pub fn bias_set(view: &StoreView, target: &BiasTarget, standing: Standing, enforced: bool) -> EligibleEntries {
     // Private reach only for a private capable target AND a caller with private standing.
-    let reach = if !enforced || (target_private && standing.is_private()) {
+    let reach = if !enforced || (target.private && standing.is_private()) {
         ProviderTier::Private
     } else {
         ProviderTier::Public
@@ -405,14 +416,26 @@ pub fn bias_set(view: &StoreView, target_private: bool, standing: Standing, enfo
         .entries()
         .filter(|e| e.status == EntryStatus::Active && e.bias != BiasPolicy::Never)
         .filter(|e| privacy::visible_to(reach, classification_of(e.tier)))
+        .filter(|e| target.person_included || admits(e, target, reach, enforced))
         .map(RecognitionEntry::from)
         .collect();
-    let table = if reach.is_private() { BonusTable::AllRows } else { BonusTable::PublicRows };
+    let table = BonusTable::for_target(reach, target); // PublicRows, AllRows, or PrivateRows(affiliation key)
     EligibleEntries::new_filtered(merge_twins(rows), table)
+}
+
+/// DR-26 for one row (O-32, P-16): the row stands in for an extension of its tier whose
+/// allowlist is its institutions. A public row never mismatches; the gate reads the mixing policy.
+fn admits(e: &Entry, target: &BiasTarget, reach: ProviderTier, enforced: bool) -> bool {
+    let class = ExtensionClassification {
+        tier: provider_tier_of(e.tier),
+        affiliation: affiliation::written_row_affiliation(e.institutions()),
+    };
+    affiliation::gate_cross_affiliation_warning(enforced, reach, target.affiliation, "dictionary", &class)
+        .is_none()
 }
 ```
 
-The predicate is the plan's: `status = active ∧ bias ≠ never ∧ (¬enforced ∨ tier = public ∨ (target_private ∧ standing.private))`, compared through `privacy::visible_to` [C `crates/biorouter/src/privacy/mod.rs:417`]. The census in `crates/biorouter/tests/privacy_guard_wiring.rs` gains `bias.rs` as a `visible_to` site and a row for `bias_set` itself ([`HttpCaller` methods and the census](#httpcaller-methods-and-the-census)).
+The predicate is the plan's: `status = active ∧ bias ≠ never ∧ (¬enforced ∨ tier = public ∨ (target_private ∧ standing.private))`, compared through `privacy::visible_to` [C `crates/biorouter/src/privacy/mod.rs:417`]. A private row then also needs its institutions to admit the target's model, asked through `affiliation::gate_cross_affiliation_warning` [C `crates/biorouter/src/privacy/affiliation.rs`] ([Private rows and institutions](#private-rows-and-institutions)). The census in `crates/biorouter/tests/privacy_guard_wiring.rs` gains `bias.rs` as a `visible_to` site and a row for `bias_set` itself ([`HttpCaller` methods and the census](#httpcaller-methods-and-the-census)). It also gains a `Site` row in `crates/biorouter/tests/privacy_capability.rs` for the one `affiliation::gate_cross_affiliation` call in `bias.rs` [C census].
 
 The Tier 1 accuracy test builds its dictionary through `bias_set` like every other caller, so it lives in the core crate as `crates/biorouter/tests/dictation_accuracy.rs`. A test in the leaf crate's own `tests/` folder could reach `EligibleEntries` only through `new_filtered`, which the repository walk test forbids.
 
@@ -430,9 +453,60 @@ Who decides `target_private` (DD-30, never the client):
 | `transcribe` or `dictate` with `--session <id>` | DD-77: the chat is private AND `prompt_can_run()` AND `caller_capability()` is Private AND `BIOROUTER_TERMINAL` is unset |
 | `dictate` to stdout or `dictate --copy`, no `--session` | DD-77: false unless the person passes `--private-terms`, admitted only when `prompt_can_run()` is true, `BIOROUTER_TERMINAL` is unset and `caller_capability()` is Private, after MSG-PRIVATE-TERMS and a `y` (O-8) |
 
-Public by default, with private terms only for one recording the person confirms after MSG-PRIVATE-TERMS, and never for an agent (O-8): Crew's composers (O-21), **Dictate to clipboard** and app preview inserts (`external`), and `dictate` to stdout or `--copy`. Public only, whatever the caller: the Jupyter handler, `transcribe` without an admitted `--session`, and ACP, because no proof of a person reaches their transcription.
+The target's model affiliation comes from the same read as `target_private`: the live agent's bound provider for `session_id` (unstated when no agent is live), the built instance for `new_chat`, the session's provider in process for the TUI and REPL, and unstated for the shared daemon prompt, `session attach` and `--session`. `crew`, `external` and an admitted `--private-terms` take every private row (O-8).
 
-Why one filtered set and not "every term, because audio stays on the machine": the text lands in a composer whose content goes to that chat's model. Without voice detection, 4 of the 64 nonspeech decodes emitted dictionary terms outright (`PHD2, PHD2, PHD2`) [M]. With a text prompt and the decoder bonus, time reversed speech produced real symbols (`PHD2A, BRCA1`, voice detection off), and with the detector on the reversed speech still passed it and one dictionary term came through [M]; the token prompt with the bonus is unmeasured on nonspeech (M-9). A correction writes a term as surely as an echo does [I].
+Public by default, with private terms only for one recording the person confirms after MSG-PRIVATE-TERMS, and never for an agent (O-8): Crew's composers (O-21), **Dictate to clipboard** and app preview inserts (`external`), and `dictate` to stdout or `--copy`. Public only, whatever the caller: `transcribe` without an admitted `--session`, and ACP, because no proof of a person reaches their transcription.
+
+Why one filtered set and not "every term, because audio stays on the machine": the text lands in a composer whose content goes to that chat's model. Without voice detection, 4 of the 64 nonspeech decodes emitted dictionary terms outright (`PHD2, PHD2, PHD2`) [M]. With a text prompt and the decoder bonus, time reversed speech produced real symbols (`PHD2A, BRCA1`, voice detection off), and with the detector on the reversed speech still passed it and one dictionary term came through [M]; the token prompt with the bonus is unmeasured on nonspeech (M-22). A correction writes a term as surely as an echo does [I].
+
+### Private rows and institutions
+
+Private rows carry an institution affiliation, decided by the owner on 2026-11-05 (O-32, DD-35, DD-36). Tier asks how sensitive a term is; affiliation asks under whose agreements it was learned. HIPAA compliance does not transfer between institutions, so a term learned in a chat on one institution's model must not bias dictation aimed at another institution's model, even when both models are private (DR-26, [institutional affiliation](../security/institutional-affiliation.md)). The design reuses the comparison Biorouter already applies to extensions rather than adding a second one.
+
+**What a row records.** A private row carries `affiliation`: `null`, or `{"institutions": [id, …]}` with the institutions whose agreements cover the model the row was written under, as normalized ids (`ucsf`). Public rows never carry one. The value comes from the writer's `ModelAffiliation` [C `crates/biorouter/src/privacy/affiliation.rs`]: `Institutions(S)` records the ids of `S` (a lead and worker pair already folds both halves [C `crates/biorouter/src/providers/lead_worker.rs` `affiliation`, `providers::composite_affiliation`]); `Local` records `null`, because the term never left the machine and no agreement governs it; a private model that states no affiliation records `null` too. That is the rule a knowledge base follows for the same two callers: `contributed_owners` adds no institution for a local or an unstated caller, because a sentinel owner would leave the content unreachable from every institutional model with no way back [C `crates/biorouter-mcp/src/knowledge/affiliation.rs` `contributed_owners`, `knowledge/tier.rs` `raise_affiliation_unlocked`].
+
+**Who stamps it.** The server, in the same read that stamps the tier, never a client:
+
+| Writer | Affiliation of a private row |
+|---|---|
+| `dictionary__add_terms` | `McpMeta.capability.affiliation()`: the call's admitted `CallCapability`, sampled once with its tier [C `crates/biorouter/src/agents/mcp_client.rs` `McpMeta`, `crates/biorouter/src/privacy/capability.rs` `CallCapability::sample`] |
+| The chat extractor | the bound provider's `affiliation()`, read in the same provider read as its tier |
+| Observations | the live agent's bound provider's `affiliation()` (`AppState::peek_agent`), read with its tier; `null` when no agent is live or the request names no chat |
+| A person on the Dictionary page, at a terminal, or with `/dictionary add` in a session | `null`: a term the person adds is the person's own vocabulary, including from a chat's context menu |
+| `privatize` | `null`, the person's act on a public row; merging into an existing private twin keeps the twin's value |
+| `publicize` | removed, because public rows carry none |
+| Import | the file's `affiliation` on a row marked `"tier": "private"` when it is `null` or `{"institutions": [...]}` with 1 to 8 ids of 1 to 64 characters and no control character; any other value imports as `{"institutions": []}` |
+
+The value is set when the row is created. A later write that finds the row (a second sighting, an agent's add of the same term) leaves it as it is, so a row never widens to a second institution without the person. Stamps follow the real model even with the privacy master switch off or the mixing policy `open`, so turning either back restores the filter with correct rows.
+
+**How the bias set uses it.** `bias_set` asks one question per private row through `affiliation::gate_cross_affiliation_warning` [C `crates/biorouter/src/privacy/affiliation.rs`], the function `POST /agent/add_extension` and the subagent spawn already use to decide whether a model may reach a private extension. The row stands in for a private extension whose allowlist is its institutions, and `null` stands for `ExtensionAffiliation::Any`. Two helpers in `crates/biorouter/src/privacy/affiliation.rs` turn a model affiliation into stored ids and stored ids into an `ExtensionAffiliation` [I: new], because that file and its `biorouter-mcp` mirror are the only places allowed to compare affiliations [C `crates/biorouter/tests/privacy_capability.rs` `compatible_is_the_only_function_that_compares_two_affiliations`]. The answers follow DR-26's table [C `affiliation::compatible`, `gate_cross_affiliation`, `unstated_model`]:
+
+| Row's institutions | Target `Local` | Target `{ucsf}` | Target `{stanford}` | Target `{stanford, ucsf}` | Target unstated |
+|---|---|---|---|---|---|
+| `null` | eligible | eligible | eligible | eligible | eligible |
+| `{ucsf}` | eligible | eligible | left out | left out | left out |
+| `{stanford, ucsf}` | eligible | eligible | eligible | eligible | left out |
+| `[]` (an import that could not be read) | eligible | left out | left out | left out | left out |
+
+A model covered by two institutions reaches a row only when the row names both, because the subset rule keeps a term learned under one institution's agreements away from the other half of a pair [C `affiliation::compatible`].
+
+The conditions that lift the extension check lift this one: the privacy master switch off (`enforced` false); the mixing policy `open`, under which institution mixing is allowed silently and `refusing_mismatch` answers `None` [C `crates/biorouter/src/privacy/mixing.rs` `mismatch_refuses`]; and a public row, which the gate never refuses. One condition is the person's: when the person includes private terms for one recording after MSG-PRIVATE-TERMS (O-8), every private row is eligible, because the destination is the person's choice and MSG-PRIVATE-TERMS says Biorouter cannot keep the terms from other institutions' models. No grant is asked for: a cross affiliation grant covers a chat, an extension and a model [C `crates/biorouter/src/privacy/grant.rs`], and dictation makes no extension call to grant, so a row the gate leaves out stays out of that dictation.
+
+**The target's model.** `target.rs` reads the target's affiliation from the same provider read that gives `chat_reach` its live tier: the live agent's bound provider for `session_id`, unstated when no agent is live; the instance `new_chat_bind_tier` builds for `new_chat`, whose `affiliation()` it returns beside the tier; the session's provider in process for the TUI and REPL; and unstated for the shared daemon prompt, `session attach` and `--session`, which read a chat's stored tier offline. An unstated target gets the private rows with no institution and none of the others [I: the desktop composer's chat normally has a live agent, so its target is stated].
+
+**What the agent sees.** `dictionary__list_terms` leaves out a private row whose institutions the caller's capability does not admit, asked through `McpMeta.capability.cross_affiliation_warning("dictionary", &class)` [C `CallCapability::cross_affiliation_warning`], and reports no count, so an agent on one institution's model never reads another institution's terms. An observation from a chat whose model a private row does not admit leaves that row unchanged, silently.
+
+**No oracle.** A row left out changes no field of a dictation response: `bias_scope` is `private` whenever private standing reaches a private target, and no response reports a count (DD-40). Affiliation never changes what a public caller sees, because a public caller sees no private row. Oracle rule 9 holds per scope: the public table, the table of every row and one private table per target affiliation in use are rebuilt at every dictionary revision, with the filtered set for each.
+
+**On the page.** Line two of a private row starts with where the row is used: MSG-ROW-PRIVATE for a row with no institution, MSG-ROW-PRIVATE-INSTITUTION with the institutions' published names (`institution_display_name`, else the id [C `crates/biorouter/src/privacy/affiliation.rs`]) joined with "or", and MSG-ROW-PRIVATE-LOCAL for an empty list. `EntryView` carries `affiliation` on private rows: `null`, or `{"institutions": [{"id": "ucsf", "name": "UCSF"}]}`, with `name` null when the registry publishes none. Only a caller with private standing sees a private row at all.
+
+**Changing it.** No control edits a row's affiliation. `publicize` removes it after MSG-PUBLICIZE-WARN, because a public term may shape any chat. A person who wants a term in every private chat deletes the row and adds the term again by hand; that add carries no institution.
+
+**Export and import.** Export writes `affiliation` on each private row it carries (private rows only with private standing and MSG-EXPORT-PRIVATE, DD-43). Import keeps a well formed value on a row marked private and stores `{"institutions": []}` for any other value, which only local models clear until the person deletes the row and adds the term again.
+
+**What it does not cover.** The stamp follows the model a row was written under, not the connectors its chat read: a chat on a local model that read one institution's connector writes rows with no institution, which may then bias dictation aimed at another institution's private model. The institutions a chat touched (`sessions.session_affiliations` [C `crates/biorouter/src/session/session_manager.rs`]) would close that, at the cost of the union of owners rule beside the extension rule; the owner chose the extension rule. A term a person adds carries none either.
+
+**Acceptance.** PR-13: the schema field, import and export, `publicize` and `privatize` as above. PR-14: the table above in `bias.rs`, with the master switch, the three mixing policies and `include_private_terms`; the `Site` row in `crates/biorouter/tests/privacy_capability.rs`; `compatible_is_the_only_function_that_compares_two_affiliations` green. PR-15: a stream into a chat whose live model is covered by another institution leaves the row out with the same response fields. PR-16, PR-23, PR-24: each stamp; `list_terms` from a `{stanford}` chat omits a `{ucsf}` row; an observation from such a chat leaves the row unchanged (P-16).
 
 ### The master switch
 
@@ -450,7 +524,7 @@ Each rule has a byte identical test in `crates/biorouter-server/tests/dictionary
 6. Dictation uses private terms only with standing and a private target, and the response shape is identical either way.
 7. Refusals name no term.
 8. Caps count only the caller's tier.
-9. Decoder bonus tables for both scopes (public rows, all rows) are rebuilt at every dictionary revision, before the next request, so a request's latency never depends on which tier changed.
+9. Decoder bonus tables for every scope in use (public rows, all rows, and one private table per target affiliation in use, [Private rows and institutions](#private-rows-and-institutions)) are rebuilt at every dictionary revision, before the next request, so a request's latency never depends on which tier changed.
 10. No response reports a count of eligible or withheld entries.
 11. Ranking for a public scope request reads only the `public` usage map ([Usage](#usage)), so its prompt and its fuzzy set are identical whatever private scope dictations and private corrections have happened.
 
@@ -460,9 +534,9 @@ Every transcript reports `bias_scope`. The renderer stores it on the dictated sp
 
 ### What is and is not claimed
 
-The tier rules stop a cooperative agent or a person's slip from putting private terms into a public chat's dictation. They do not stop a determined actor with a shell, who can read `dictionary.json` directly (DR-17 left the filesystem open), unset `BIOROUTER_TERMINAL`, or relocate the managed policy file with `BIOROUTER_PATH_ROOT`. On a keyless daemon, any holder of the daemon secret, including an agent shell that recovers it, can install a pinned model and make the dictionary writes a `serve` browser may make (add, accept, dismiss, edit, delete and import on rows it can list; on a host whose operator's provider is private, that includes private rows). An agent holding a Biorouter Copilot grant on the person's web browser can press the microphone in a `serve` tab or the Jupyter AI chat, where the site's microphone grant records with no new prompt (DD-88, SD-16). Every control in this document is accident prevention for cooperative actors. Privacy tiers here, as everywhere in Biorouter, are a safety boundary against mistakes by cooperative actors, not a security boundary against a determined adversary.
+The tier rules stop a cooperative agent or a person's slip from putting private terms into a public chat's dictation. They do not stop a determined actor with a shell, who can read `dictionary.json` directly (DR-17 left the filesystem open), unset `BIOROUTER_TERMINAL`, or relocate the managed policy file with `BIOROUTER_PATH_ROOT`. On a keyless daemon, any holder of the daemon secret, including an agent shell that recovers it, can install a pinned model and make the dictionary writes a `serve` browser may make (add, accept, dismiss, edit, delete and import on rows it can list; on a host whose operator's provider is private, that includes private rows). An agent holding a Biorouter Copilot grant on Biorouter's own window, or on a browser that shows a `serve` tab, can start the microphone by clicking it or pressing the dictation chord, because Copilot's per task grant is the only gate there (DD-88, the owner's decision O-15 (2026-11-05), SD-16). Every control in this document is accident prevention for cooperative actors. Privacy tiers here, as everywhere in Biorouter, are a safety boundary against mistakes by cooperative actors, not a security boundary against a determined adversary.
 
-Dictionary rows have no affiliation axis (O-32). A private term may bias dictation aimed at any private model, of any institution, although HIPAA compliance does not transfer between institutions (DR-26, [institutional affiliation](../security/institutional-affiliation.md)). The plan accepts this because terms are screened for PII and secrets on every write path and are vocabulary, not records. If the owner decides otherwise, private rows carry the writer's affiliation (`CallCapability::affiliation()` [C `crates/biorouter/src/privacy/capability.rs`], `McpMeta.capability_affiliation` [C `crates/biorouter/src/agents/mcp_client.rs`]) and `bias_set` filters them by the rule `CallCapability::cross_affiliation` applies to extensions [C `crates/biorouter/src/privacy/capability.rs`].
+Private rows carry an institution affiliation, decided by the owner on 2026-11-05 (O-32, [Private rows and institutions](#private-rows-and-institutions)). A private row carries the institutions of the model it was written under, not of the connectors its chat read: a chat on a local model that read one institution's connector writes rows with no institution, and those rows may bias dictation aimed at another institution's private model. A term the person adds by hand carries no institution either. The mixing policy `open` turns the filter off, as it turns off the extension check.
 
 ## Authority on each surface
 
@@ -475,7 +549,7 @@ Private standing means the user action proof, a private capability the request s
 | Desktop app on its own keyed daemon (S1 to S4) | yes | yes; every call sends `userActionHeaders()` | with the proof | with the proof, after MSG-PUBLICIZE-WARN before publicize | private target and the proof |
 | `serve` browser, keyless daemon (S5, S6, S8, S16) | yes | with private standing only | admitted for rows the caller can list (O-4); stamped with the caller's standing; a private add without private standing refused with MSG-DICTIONARY-HOST-PRIVATE | refused; disabled before the click with MSG-DICTIONARY-HOST-TIER | private target and private standing |
 | External backend, with that server's User Action Key (S17) | yes | yes | as the desktop | as the desktop | as the desktop |
-| External backend, keyed server, no key (S17, O-17 recommended) | yes | no | refused; disabled before the click with MSG-REMOTE-NO-KEY | refused | never |
+| External backend, keyed server, no key (S17, O-17) | yes | no | refused; disabled before the click with MSG-REMOTE-NO-KEY | refused | never |
 | External backend, keyless server (S17) | as `serve` | as `serve` | as `serve` | as `serve` | as `serve` |
 | TUI and classic REPL (S9, S19) | yes | yes | yes, in process (`/dictionary add`, `/dictionary review`) | not from the session; `biorouter dictionary publicize` at a terminal | when the session is private capable |
 | `biorouter dictionary` at an interactive terminal | yes | yes (DD-37) | yes | after a typed confirmation (O-5) | n/a |
@@ -484,7 +558,6 @@ Private standing means the user action proof, a private capability the request s
 | The agent's tools (`dictionary__*`) | its tier scope | only for a private capability caller | `add_terms` per `agent_writes`; `remove_added_terms` on its own unreviewed rows | never | n/a: an agent never transcribes |
 | ACP stdio (S12) | through the tools | as the tools | suggestions only, in every mode | never | public only |
 | ACP `--ws` | no capability | no | no | no | public only |
-| Jupyter AI (S13) | through the persona's ACP tools; a JupyterLab terminal | at a JupyterLab terminal | suggestions only through the persona | at a JupyterLab terminal | public only |
 | Crew (S14) | the member's own sidebar | the member's own sidebar | the member's own sidebar; Crew scoped chats cannot call `dictionary__*` | the member's own sidebar | public by default; private terms for one recording after MSG-PRIVATE-TERMS (O-8, O-21) |
 | Agent Drafter apps (S15) | no | no | no; manifests refuse the capability | no | public by default; the desktop preview's `external` target takes private terms for one recording after MSG-PRIVATE-TERMS (O-8) |
 | **Dictate to clipboard** (S18) | n/a | n/a | n/a | n/a | public by default; private terms for one recording after MSG-PRIVATE-TERMS, never for an agent (O-8) |
@@ -513,14 +586,14 @@ Private standing means the user action proof, a private capability the request s
 
 There is no `POST /dictionary/clear`. A full wipe is `biorouter dictionary clear` at a terminal with a typed phrase, and the page's **Delete all terms…** deletes the listed rows through `POST /dictionary/entries/delete` (DD-38). Managed `dictionary: false` refuses writes and observations with MSG-POLICY; export and delete stay allowed.
 
-`EntryView` is the stored entry minus `seen`, plus the usage fields only for a caller with private standing:
+`EntryView` is the stored entry minus `seen`, plus the usage fields only for a caller with private standing; `affiliation` appears on private rows only, with each institution's published name ([Private rows and institutions](#private-rows-and-institutions)):
 
 ```json
 {
   "id": "dct_6f0b8a52-6a1e-4f7e-9d0b-2a3c1d4e5f60", "rev": 3, "written": "EPAS1", "tier": "public",
   "status": "active", "source": "user", "reviewed": true, "spoken_forms": ["epas one"],
   "misrecognitions": [{ "text": "a pass one", "count": 2 }], "kind": "gene_symbol", "match": "exact",
-  "bias": "auto", "context_cues": [], "note": null, "reason": null, "provenance": null,
+  "bias": "auto", "context_cues": [], "note": null, "reason": null, "provenance": null, "affiliation": null,
   "created_at": "2026-11-01T09:00:00Z", "updated_at": "2026-11-04T17:02:11Z",
   "uses": 14, "last_used_at": "2026-11-04T17:02:11Z", "corrected_to": 2, "suggested_in": "20261104_12"
 }
@@ -532,7 +605,7 @@ There is no `POST /dictionary/clear`. A full wipe is `biorouter dictionary clear
 {
   "suggest_from_chats": true,
   "learn_from_chats": true,
-  "agent_writes": "suggest",
+  "agent_writes": "on_request",
   "authority": {
     "write": { "allowed": true, "reason": null },
     "add_private": { "allowed": false, "reason": "Private terms are added on the server: `biorouter dictionary add --private <term>` or `biorouter dictionary import <file>` (as the service user)." },
@@ -637,7 +710,7 @@ audio
  -> {text, raw_text, changes[], bias_scope, ...}
 ```
 
-The service sends `set_bias` for both bonus tables (public rows, all rows) whenever the store generation changes, and waits for `bias_ready` before the next `transcribe`. A `transcribe` frame carries the ranked written forms for the prompt and names the table; the worker encodes the prompt, decodes and returns the segments and the exact prompt string it sent, which the service keeps in memory for the echo check and never logs.
+The service sends `set_bias` for every bonus table in use (public rows, all rows, and one private table per target affiliation in use) whenever the store generation changes, and waits for `bias_ready` before the next `transcribe`. A `transcribe` frame carries the ranked written forms for the prompt and names the table; the worker encodes the prompt, decodes and returns the segments and the exact prompt string it sent, which the service keeps in memory for the echo check and never logs.
 
 ### Ranking
 
@@ -655,7 +728,7 @@ score = 5.0 * in_context
 ties: updated_at descending, then id
 ```
 
-`uses`, `days_since_last_used`, `corrected_to` and `saturated` read the `public` usage map when the request uses the public rows table, and the `all` map otherwise (oracle rule 11). The weights are a starting point [I], tuned once on the lab set. `in_active_kb` is 0 for every entry in v1, because no field yet records which knowledge base a term came from. Two consumers take a slice of the ranking: the prompt (top 30) and the fuzzy set (the `match = fuzzy` entries among the top 30). The decoder bonus, the alias automaton and the exact keys take the whole bias set unranked.
+`uses`, `days_since_last_used`, `corrected_to` and `saturated` read the `public` usage map when the request uses the public rows table, and the `all` map otherwise (oracle rule 11). The weights are a starting point [I] and stay as written: the lab recordings that would have tuned them were withdrawn by the owner's decision O-23 (2026-11-05), and the public recordings of M-22 hold too few terms per utterance to tune a ranking. `in_active_kb` is 0 for every entry in v1, because no field yet records which knowledge base a term came from. Two consumers take a slice of the ranking: the prompt (top 30) and the fuzzy set (the `match = fuzzy` entries among the top 30). The decoder bonus, the alias automaton and the exact keys take the whole bias set unranked.
 
 ### Token prompt
 
@@ -669,7 +742,7 @@ ties: updated_at descending, then id
 
 The encoder: ranks equal the model's token ids (turbo's vocabulary differs from `multilingual.tiktoken` only at id 188; `.en` models use the GPT-2 vocabulary) [M]; the GPT-2 pre split regex through `fancy-regex` (in `Cargo.lock` [C]); `tiktoken-rs` 0.6.0 (already a core dependency [C]) if its `CoreBPE` takes an arbitrary rank map, otherwise a byte level encoder of about 100 lines. No tokenizer text file ships. Golden splits: ` EPAS1` to ` EP|AS|1` and ` Biorouter` to ` B|ior|outer` [M].
 
-Why ids and not text: whisper.cpp tokenizes `initial_prompt` text by greedy longest match, so the model copies a segmentation it was never trained on (` EPA|S|1`). On synthetic speech, the same list as canonical ids raised turbo from 80 to 93 % pooled strict recall and small.en from 85 to 90 % [M]. On real speech a text prompt was the largest single gain measured, +24 to +33 points on gene symbols [M]; ids on real speech are part of M-9.
+Why ids and not text: whisper.cpp tokenizes `initial_prompt` text by greedy longest match, so the model copies a segmentation it was never trained on (` EPA|S|1`). On synthetic speech, the same list as canonical ids raised turbo from 80 to 93 % pooled strict recall and small.en from 85 to 90 % [M]. On real speech a text prompt was the largest single gain measured, +24 to +33 points on gene symbols [M]; ids on real speech are part of M-22.
 
 Budget: 30 terms cost 115 to 118 tokens [M], so the 150 token cap rarely binds. A 54 term prompt (209 to 217 tokens) cost 2 to 10 points against 14 terms on synthetic speech [M].
 
@@ -694,7 +767,7 @@ Budget: 30 terms cost 115 to 118 tokens [M], so the 150 token cap rarely binds. 
 | Prefix steal guard | on | never boost a candidate whose bytes are a strict prefix of the model's current top token when that token is not a candidate |
 | End of text | untouched | never an id at or above `whisper_token_eot` |
 
-The callback is reentrant and runs inside `std::panic::catch_unwind`. Tables are built per (model hash, store generation, table) with an LRU of 4, and both tables are rebuilt at each generation (oracle rule 9). Measured on synthetic speech: 33 to 52 ms to build, 0.57 ms per utterance; 72 % strict recall at 1,000 terms against 49 to 52 % for the same terms as a prompt; 0 dictionary insertions on 75 probe clips [M].
+The callback is reentrant and runs inside `std::panic::catch_unwind`. Tables are built per (model hash, store generation, table) with an LRU of 4, and every table in use is rebuilt at each generation (oracle rule 9). Measured on synthetic speech: 33 to 52 ms to build, 0.57 ms per utterance; 72 % strict recall at 1,000 terms against 49 to 52 % for the same terms as a prompt; 0 dictionary insertions on 75 probe clips [M].
 
 ### Decoding parameters
 
@@ -707,7 +780,7 @@ Every dictation request (DD-47); the full table with reasons is in [Engine and m
 | `translate`, `no_context` | false, true |
 | `no_timestamps` | false; timestamps stripped from text. Timestamps off collapsed small.en on 12 of 49 real utterances, 2 of 49 with them on [M] |
 | `single_segment` | false |
-| `temperature`, `temperature_inc` | 0, 0.2 until M-9 |
+| `temperature`, `temperature_inc` | 0, 0.2 until M-22 |
 | `entropy_thold`, `logprob_thold`, `no_speech_thold` | 2.4, -1.0, 0.6 |
 | `suppress_blank`, `suppress_nst` | true, false (`suppress_nst` would block `HLA-B*57:01` and `C++`) |
 | `prompt_tokens`, `initial_prompt` | set, unset |
@@ -734,9 +807,9 @@ The 90 %, 3, 2 and 5 thresholds are OpenWhispr's design constants, not measureme
 
 On an echo, a collapse or a deleted start: one retry with no prompt, the voice detector and the bonus still on. The retry is adopted only if it is not itself prompt like; otherwise the transcript is `no_speech`. A trailing recital is stripped, not retried. The transcript reports `retried: {reason}` with no text. A retry without the voice detector is never made, because it reopens hallucination [M].
 
-### The M-9 gate and the declared fallback
+### The M-22 gate and the declared fallback
 
-The token prompt and the decoder bonus together ship as the default only if M-9 shows the combination on real speech at least as good as each alone, with no rise in nonspeech output, probe insertions or collapses (DD-44). Otherwise the declared fallback is the token prompt only, with the bonus off, because the prompt is the only channel with real speech evidence. The choice is a compiled default (`BiasChannels { prompt: true, bonus: <M-9> }`) changed only by a release; correction always runs. M-9 also decides `temperature_inc` (0 against 0.2).
+The token prompt and the decoder bonus together ship as the default only if M-22 shows the combination on public real speech (the PriMock57 subset and the MultiMed English gene subset) at least as good as each alone, with no rise in nonspeech output on the PriMock57 gaps and the synthetic nonspeech clips, in insertions on the synthetic probe clips, or in collapses (DD-44). Otherwise the declared fallback is the token prompt only, with the bonus off, because the prompt is the only channel with real speech evidence. The choice is a compiled default (`BiasChannels { prompt: true, bonus: <M-22> }`) changed only by a release; correction always runs. M-22 also decides `temperature_inc` (0 against 0.2). M-22 replaces M-9, which needed the lab recording set the owner withdrew on 2026-11-05 (O-23).
 
 ### Long dictation
 
@@ -746,7 +819,7 @@ During a stream, once 8 s or more are buffered the daemon asks the worker for vo
 
 ## Correction after decoding
 
-One pass in `crates/biorouter-dictation/src/recognize/correct.rs`, every change recorded as `{start, end, from, to, stage, entry_id}` and listed in the transcript's `changes` (DD-49). `transcribe --format json` schema 1 uses the same names as the HTTP `Transcript`: `changes` with `stage`, `audio_s` and `bias_scope`, so the Jupyter labextension and the renderer read one shape.
+One pass in `crates/biorouter-dictation/src/recognize/correct.rs`, every change recorded as `{start, end, from, to, stage, entry_id}` and listed in the transcript's `changes` (DD-49). `transcribe --format json` schema 1 uses the same names as the HTTP `Transcript`: `changes` with `stage`, `audio_s` and `bias_scope`, so `transcribe`'s callers and the renderer read one shape.
 
 ### Field effects per channel
 
@@ -809,7 +882,7 @@ No LLM corrector in v1.
 
 ### What was measured
 
-Fuzzy matching is what makes coined names work (`ventilin`, `klenl`, `FLET3`) [M], and over a 26 term drug list the guarded corrector made 0 genuine false edits across 7,108 real consultation utterances [M]. It is unsafe for short symbols: over a 37 term gene list, the guarded pass made 45 false edits across 4,651 real sentences (`here's` to HRAS 21 times, `aren't` and `ain't` to ARNT 12 times, `ras` to HRAS, `norms` to NRAS) [M]. Over the same sentences the 14 term list of the synthetic benchmark made 13 false edits (`UCSD` to UCSF 4 times, `exon 1` to EGLN1 3 times, `spikes` to SPOKE, `CRISPR` to CRISPRi) [M]. On real audio, the corrector turned NTRK, heard as `N-TRAC`, into NRAS [M]. The defaults above and the stop list would have blocked every one of those measured false edits [I]; M-9 and the Tier 1 gate check that on real corpora.
+Fuzzy matching is what makes coined names work (`ventilin`, `klenl`, `FLET3`) [M], and over a 26 term drug list the guarded corrector made 0 genuine false edits across 7,108 real consultation utterances [M]. It is unsafe for short symbols: over a 37 term gene list, the guarded pass made 45 false edits across 4,651 real sentences (`here's` to HRAS 21 times, `aren't` and `ain't` to ARNT 12 times, `ras` to HRAS, `norms` to NRAS) [M]. Over the same sentences the 14 term list of the synthetic benchmark made 13 false edits (`UCSD` to UCSF 4 times, `exon 1` to EGLN1 3 times, `spikes` to SPOKE, `CRISPR` to CRISPRi) [M]. On real audio, the corrector turned NTRK, heard as `N-TRAC`, into NRAS [M]. The defaults above and the stop list would have blocked every one of those measured false edits [I]; M-22 and the Tier 1 gate check that on public real corpora.
 
 ### The English word list
 
@@ -884,7 +957,7 @@ Neither hook exists at `main`; PR-26 adds both. In the TUI it adds `App::insert_
 
 ### Where nothing is learned
 
-ACP, Jupyter AI, **Dictate to clipboard** and Crew's boxes: Biorouter cannot see the person's edits there, or the text is colleagues' (DD-58, DD-83).
+ACP, **Dictate to clipboard** and Crew's boxes: Biorouter cannot see the person's edits there, or the text is colleagues' (DD-58, DD-83).
 
 **Acceptance.** PR-22: golden pairs (`Epas one` to `EPAS1` accepted; `gonna` to `going to`, `the` to `a`, a URL, an AWS key and an MRN rejected); idempotency; a browser test that a later programmatic change posts no stale pair; nothing persisted or logged; a cancelled send posts nothing; correcting `a pass one` to `EPAS1` in two messages adds the misrecognition to the active EPAS1 row. PR-26: one insert, edit and Enter in the TUI yield one correction pair, and one insert, edit and Enter in the classic REPL yield one correction pair.
 
@@ -934,15 +1007,15 @@ The `add_terms` input schema:
 
 ### What an agent write does
 
-The person's setting `settings.agent_writes` decides (DD-53, O-3). Only the person raises it ([Authority on each surface](#authority-on-each-surface)).
+The person's setting `settings.agent_writes` decides (DD-53, O-3); a new store starts at `on_request`, decided by the owner on 2026-11-05. Only the person raises it ([Authority on each surface](#authority-on-each-surface)).
 
 | Mode | Page label | A term lands | Above the caps |
 |---|---|---|---|
-| `suggest` (default, O-3) | **Wait for my review** | `suggested` | not recorded beyond 200 pending |
-| `on_request` (memory's own protocol) | **Add when I ask, suggest otherwise** | `active`, `reviewed: false`, only when the call sets `requested_by_user` and the term occurs (by fold key, at word boundaries) either in the latest person written user message of the calling chat or in the assistant message that this person message directly answers (the person's agreement to an offer that named it). That person message's provenance must not be `AgentInjection` or `SpawnContext` [C `crates/biorouter/src/conversation/message.rs:705`]. Otherwise `suggested` | `suggested` |
+| `suggest` | **Wait for my review** | `suggested` | not recorded beyond 200 pending |
+| `on_request` (default, O-3; memory's own protocol) | **Add when I ask, suggest otherwise** | `active`, `reviewed: false`, only when the call sets `requested_by_user` and the term occurs (by fold key, at word boundaries) either in the latest person written user message of the calling chat or in the assistant message that this person message directly answers (the person's agreement to an offer that named it). That person message's provenance must not be `AgentInjection` or `SpawnContext` [C `crates/biorouter/src/conversation/message.rs:705`]. Otherwise `suggested` | `suggested` |
 | `add` | **Add without asking** | `active`, `reviewed: false` | `suggested` |
 
-Memory's instructions tell the model to write when the person asks, and otherwise to offer and write after the person agrees [C `crates/biorouter-mcp/src/memory/mod.rs` `base_instructions`]. The offer arm is what makes `on_request` that protocol: in memory's commonest flow the agent asks "Shall I add EPAS1?" and the person answers "yes", a message that does not contain the term.
+Memory's instructions tell the model to write when the person asks, and otherwise to offer and write after the person agrees [C `crates/biorouter-mcp/src/memory/mod.rs` `base_instructions`]. The offer arm is what makes `on_request` that protocol: in memory's commonest flow the agent asks "Shall I add EPAS1?" and the person answers "yes", a message that does not contain the term. `requested_by_user` alone never activates a term: the store checks the fold key against the two messages itself, so a term injected through a tool result or a web page, which appears in neither, lands as a suggestion. The store cannot tell agreement from any other reply, so a term an injection gets the agent to name in its own message goes live once the person answers that message; it stays unreviewed, with **Keep** and **Undo** on the tool row and a place in the **Added by the agent** group.
 
 In every mode, ACP sessions only suggest. Unreviewed active rows bias dictation like any active row, show **Keep** and **Undo** on the tool row, and sit in the **Added by the agent** group of the page. The capability is the memory precedent's machine wide shape without a per call approval card: a card per call would be approval fatigue in every Auto mode turn, ACP answers it without a proven person, and a `serve` daemon would have to withhold the tool.
 
@@ -952,11 +1025,11 @@ In every mode, ACP sessions only suggest. Unreviewed active rows bias dictation 
 
 ### Where agent terms may come from
 
-From the conversation the agent sees, not only from text the person typed (O-31, DD-55). The mitigations: exact match only, no agent aliases, the caps per tier, tombstones, the validator and the secret scan, the default `suggest` mode, and instructions that forbid secrets, URLs, identifiers and text from tool results or web pages. If the owner chooses the narrower rule, `add_terms` refuses a term that does not occur in a person written message of the calling chat; that check is the provenance test of `on_request` (person written, not `AgentInjection` or `SpawnContext`) applied to every call, without the offer arm.
+From the conversation the agent sees, not only from text the person typed (O-31, DD-55; decided by the owner on 2026-11-05). The mitigations: exact match only, no agent aliases, the caps per tier, tombstones, the validator and the secret scan, the default `on_request` mode, which activates only a term found in the person's latest message or the offer it answers, and instructions that forbid secrets, URLs, identifiers and text from tool results or web pages.
 
 ### Stamps, dedupe and the result
 
-1. The stamp is the call's `McpMeta.capability` (Public or Private). Each tool takes the dispatch metadata only.
+1. The stamp is the call's `McpMeta.capability` (Public or Private), and on a private row its `affiliation()` ([Private rows and institutions](#private-rows-and-institutions)). Each tool takes the dispatch metadata only.
 2. A term whose `fold_key` matches a row of the stamp tier bumps that row's `seen` (when the session differs from its `suggested_in`) and creates nothing. A term whose `fold_key` matches a public row seen by a private caller writes nothing, so a private chat never moves a public row.
 3. A term tombstoned in the stamp tier writes nothing; it is counted as recorded, so the agent is not told what the person dismissed.
 4. The caps are counted in the stamp tier only.
@@ -966,7 +1039,7 @@ Result texts, constant in shape, with `<n>` counting the valid terms of the call
 - MSG-TOOL-SUGGESTED: "Recorded `<n>` suggestions for the person's review in Dictionary. Nothing changes in dictation until they accept."
 - MSG-TOOL-ADDED: "Added `<n>` terms to the dictionary. They are marked for the person's review."
 
-A call whose terms all land one way answers that sentence; a mixed call answers MSG-TOOL-ADDED then MSG-TOOL-SUGGESTED. On ACP, Jupyter and the CLI, MSG-TOOL-REVIEW-HINT follows: "Review them with `biorouter dictionary review` on this computer, or in Dictionary in Biorouter." Each entry point declares its surface once at start (`dictation::set_process_surface(Surface::Cli | Surface::Acp)`; the daemon is the default), which also forces suggestions on ACP. The result also carries a user audience content part (`Content::text(…).with_audience(vec![Role::User])`, a pattern `developer__text_editor` already uses beside its assistant audience part [C `crates/biorouter-mcp/src/developer/text_editor.rs`]) holding `{"dictionary_rows": [{"id", "written", "status", "reviewed"}]}` for the tool row's buttons; the model never sees it.
+A call whose terms all land one way answers that sentence; a mixed call answers MSG-TOOL-ADDED then MSG-TOOL-SUGGESTED. On ACP and the CLI, MSG-TOOL-REVIEW-HINT follows: "Review them with `biorouter dictionary review` on this computer, or in Dictionary in Biorouter." Each entry point declares its surface once at start (`dictation::set_process_surface(Surface::Cli | Surface::Acp)`; the daemon is the default), which also forces suggestions on ACP. The result also carries a user audience content part (`Content::text(…).with_audience(vec![Role::User])`, a pattern `developer__text_editor` already uses beside its assistant audience part [C `crates/biorouter-mcp/src/developer/text_editor.rs`]) holding `{"dictionary_rows": [{"id", "written", "status", "reviewed"}]}` for the tool row's buttons; the model never sees it.
 
 ### Instructions
 
@@ -989,7 +1062,7 @@ dictionary__remove_added_terms to take back a term you added by mistake.
 
 The person's own act (DD-56):
 
-1. At the first speech model install, the setup popover and **Settings > Models > Speech models** show **Suggest dictionary words from my chats**, ticked by default and visible beside **Install** (O-33), with MSG-SETUP-SUGGEST below it: "The agent and Biorouter can propose terms they see in your chats. Biorouter also looks for terms in every message you write, on this computer. Nothing is added until you accept it." The middle sentence is left out when `learn_from_chats` starts off (the M-21 gate failed). In `on_request` or `add` mode the last sentence reads "You can change how the agent's terms are added on the Dictionary page." The box starts ticked while `--yes` leaves the capability off, for one reason: the person sees the box beside the button they press, and a script that passes `--yes` never shows the question.
+1. At the first speech model install, the setup popover and **Settings > Models > Speech models** show **Suggest dictionary words from my chats**, ticked by default and visible beside **Install** (O-33, decided by the owner on 2026-11-05), with MSG-SETUP-SUGGEST below it: "The agent and Biorouter can propose terms they see in your chats. Biorouter also looks for terms in every message you write, on this computer. A term goes into your dictionary when you ask the agent to add it, or agree when it offers; everything else waits for you to accept it." The middle sentence is left out when `learn_from_chats` starts off (the M-21 gate failed). The quoted last sentence is the `on_request` variant; the owner decided on 2026-11-05 that `on_request` is the default (O-3). When `agent_writes` is `suggest` the last sentence reads "Nothing is added until you accept it.", and when it is `add` it reads "The agent's terms are added at once, and you can undo each one; everything else waits for you to accept it." The box starts ticked while `--yes` leaves the capability off, for one reason: the person sees the box beside the button they press, and a script that passes `--yes` never shows the question.
 2. `POST /dictation/models/install` carries `{model}` only. After a verified install, the renderer sends the box's value with `POST /dictionary/activation {suggest_from_chats}` and `userActionHeaders()`, the route the Dictionary page's switch also uses. The handler calls `crates/biorouter/src/dictation/activation.rs`, which writes `dictation_dictionary_activation_version: 1` (hidden in `ConfigSettings.tsx`) whatever the value, and enables `dictionary` for new chats only when it is true. Existing chats keep their roster. On a keyed daemon the request needs the proof. On a keyless daemon `true` is refused like raising `agent_writes`, with MSG-DICTIONARY-HOST-SETTINGS, and the box is disabled before the click from `authority.raise_settings`; `false` is admitted and writes the marker. Harvesting turned on by any holder of a `serve` daemon's secret would not be the person's choice (DD-56).
 3. At a terminal, `biorouter dictation install` asks "Suggest dictionary words from your chats? [Y/n]" and calls `activation.rs` in process. `--yes` without `--suggest-from-chats` leaves the capability off; `--no-suggest-from-chats` says so explicitly.
 4. Once the marker exists, the box is not shown again and nothing turns the capability on by itself; a later "off" sticks. Nothing turns it on at daemon or CLI start. A person who installed a model before PR-23 uses the switch in the Dictionary page's settings area, which sends the same request, or `biorouter dictionary settings --suggest-from-chats on` at a terminal.
@@ -1019,8 +1092,8 @@ The capability counts toward delegation condition 5 only when enabled, like any 
 |---|---|---|
 | On by default | yes: `inject_builtin_extensions` adds it with `builtin_entry`, `enabled: true` [C `crates/biorouter/src/config/extensions.rs`] | no: `default_enabled: false`, turned on by the install box or the settings switch |
 | Project or local store | written at once by `remember_memory` [C] | none: the dictionary is per account |
-| Machine wide store | every read, write and delete needs the person through `GlobalMemoryInspector` (issue #63) [C] | `suggest` by default: the person's accept is the consent |
-| Instructions | act when the person asks; otherwise offer and wait for agreement [C `base_instructions`] | `on_request` mode is that protocol: a term the person asked for, or agreed to when offered, lands at once; instructions forbid secrets, identifiers and tool output |
+| Machine wide store | every read, write and delete needs the person through `GlobalMemoryInspector` (issue #63) [C] | `on_request` by default: a term the person asked for or agreed to lands at once, unreviewed, with **Keep** and **Undo**; every other agent term waits for the person's accept |
+| Instructions | act when the person asks; otherwise offer and wait for agreement [C `base_instructions`] | `on_request`, the default, is that protocol: a term the person asked for, or agreed to when offered, lands at once; instructions forbid secrets, identifiers and tool output |
 | Private rows | a private origin tag, never in a system prompt, returned only to a private caller [C] | rows per tier, the bias set filter, no term text in instructions |
 | Listing to a public caller | memory adds "Withheld: N" | no count at all (oracle rule 10) |
 | HTTP listing | `GET /memory/inventory` lists both stores to any secret holder [C] | listing by standing through `HttpCaller` |
@@ -1034,13 +1107,13 @@ Every surface has a person's way to accept, and none is a tool, an ACP command o
 | Desktop and `serve` | the page's **Suggested** group, **Review all…**, and **Add to dictionary** on the tool row |
 | TUI and REPL | `/dictionary review` |
 | Any terminal | `biorouter dictionary review`, `accept`, `dismiss` |
-| ACP and Jupyter AI | the tool answer names `biorouter dictionary review` on that computer; Jupyter users run it in a JupyterLab terminal or use `serve`'s sidebar on the same host |
+| ACP | the tool answer names `biorouter dictionary review` on that computer |
 
 ### Files and hand synced lists
 
 Updated in PR-23: `ui/desktop/src/utils/toolGlyph.ts` `BUILT_IN_EXTENSION_KEYS` and its test; `components/settings/capabilities/capabilities.ts` and its test; `components/ToolCallWithResponse.tsx`; `ConfigSettings.tsx`; `crates/biorouter-acp/src/server.rs`; `routes/apps.rs`; new `docs/extensions/built-in/dictionary.md` and a row in [the bundled extensions index](../extensions/built-in/README.md).
 
-**Acceptance.** PR-23: an unknown `tier` field is rejected; the stamp follows `McpMeta.capability`; `list_terms` omits rows outside the caller's tier and reports no count; an 11th term per call is refused, and the 31st per session and the 201st unreviewed land suggested; `suggest` never produces an active row; `on_request` activates a term with `requested_by_user` only when it occurs in the latest person written message or in the assistant message that message answers: an assistant offer naming EPAS1, then the person's "yes", then `add_terms` with `requested_by_user` lands EPAS1 active and unreviewed, with **Keep** and **Undo** on the tool row, while a term named in neither lands suggested; ACP stdio always suggests; `remove_added_terms` cannot touch a person's row; agent terms never carry aliases; `an_agent_cannot_enable_the_dictionary_capability_in_any_chat` finds `workspace_set_tools`, `workspace_open`, `WorkspaceServices::start_session` and `manage_extensions` each refused; the tool is absent in Crew scoped, app, ACP `--ws`, SubAgent, Scheduled, Hidden and Terminal sessions; an app manifest naming `dictionary` gets `UnarmedExtension::Platform`; `/agent/call_tool` with `dictionary__add_terms` is refused; an `execute_code` script call of `dictionary__add_terms` or `dictionary__remove_added_terms` is refused, also when the script itself ran through `/agent/call_tool`; instructions contain no term text; the capability is off in a fresh configuration, the first install writes the marker whatever the box says, and only a ticked box (or the settings switch) turns it on; `POST /dictionary/activation` needs the proof on a keyed daemon, and on a keyless one admits `false` and refuses `true` with MSG-DICTIONARY-HOST-SETTINGS; `capabilities.test.ts` and `toolGlyph.test.ts` are green.
+**Acceptance.** PR-23: an unknown `tier` field is rejected; the stamp follows `McpMeta.capability`; a private row's `affiliation` follows `McpMeta.capability.affiliation()`; `list_terms` from a chat on a `{stanford}` model omits a private `{ucsf}` row; `list_terms` omits rows outside the caller's tier and reports no count; an 11th term per call is refused, and the 31st per session and the 201st unreviewed land suggested; a new store's `agent_writes` is `on_request`, and with it a term named in neither the person's latest message nor the offer it answers lands suggested; `suggest` never produces an active row; `on_request` activates a term with `requested_by_user` only when it occurs in the latest person written message or in the assistant message that message answers: an assistant offer naming EPAS1, then the person's "yes", then `add_terms` with `requested_by_user` lands EPAS1 active and unreviewed, with **Keep** and **Undo** on the tool row, while a term named in neither lands suggested; ACP stdio always suggests; `remove_added_terms` cannot touch a person's row; agent terms never carry aliases; `an_agent_cannot_enable_the_dictionary_capability_in_any_chat` finds `workspace_set_tools`, `workspace_open`, `WorkspaceServices::start_session` and `manage_extensions` each refused; the tool is absent in Crew scoped, app, ACP `--ws`, SubAgent, Scheduled, Hidden and Terminal sessions; an app manifest naming `dictionary` gets `UnarmedExtension::Platform`; `/agent/call_tool` with `dictionary__add_terms` is refused; an `execute_code` script call of `dictionary__add_terms` or `dictionary__remove_added_terms` is refused, also when the script itself ran through `/agent/call_tool`; instructions contain no term text; the capability is off in a fresh configuration, the first install writes the marker whatever the box says, and only a ticked box (or the settings switch) turns it on; `POST /dictionary/activation` needs the proof on a keyed daemon, and on a keyless one admits `false` and refuses `true` with MSG-DICTIONARY-HOST-SETTINGS; `capabilities.test.ts` and `toolGlyph.test.ts` are green.
 
 ## Automatic extraction from chats
 
@@ -1083,7 +1156,7 @@ Minus: a stop list (`OK`, `API`, `JSON`, `URL`, `HTTP`, `HTTPS`, `PDF`, `CSV`, `
 
 ### What it writes
 
-`suggested`, `source: auto`, stamped through `chat_reach` over the cached classification and the bound provider (Private unless it answers Public, [Who stamps the tier](#who-stamps-the-tier)). A new candidate gets `seen: 1` and `suggested_in` = the session. A sighting from a different session than `suggested_in` raises `seen` and moves `suggested_in`. Rows with `seen` below 2 are never listed, so a term appears for review only after the person wrote it in two different chats. The text is never logged.
+`suggested`, `source: auto`, stamped through `chat_reach` over the cached classification and the bound provider (Private unless it answers Public, [Who stamps the tier](#who-stamps-the-tier)), with the bound provider's institutions on a private row ([Private rows and institutions](#private-rows-and-institutions)). A new candidate gets `seen: 1` and `suggested_in` = the session. A sighting from a different session than `suggested_in` raises `seen` and moves `suggested_in`. Rows with `seen` below 2 are never listed, so a term appears for review only after the person wrote it in two different chats. The text is never logged.
 
 ### Performance budget
 
@@ -1093,7 +1166,7 @@ Candidate finding is pure and takes microseconds. The write uses `try_write_with
 
 `learn_from_chats` ships on only if an offline run over the person written messages of 200 of the owner's sessions reaches precision 0.8 or more at `seen ≥ 2`. Otherwise PR-24 sets `LEARN_FROM_CHATS_DEFAULT = false`, records the reason, and the page shows **Also find terms in my messages automatically** off. Suggestions bias nothing until accepted, so low precision costs the person review time, never recognition quality.
 
-The run reads the owner's own chats, which may hold patient data, so it needs the owner's consent and someone's labelling time, which is part of owner decision O-23. The recommended default: the owner runs it on their own machine; the owner, or a person they name, labels only the candidate tokens, never whole messages; sessions on private models are excluded, and any other session may be excluded; nothing leaves the machine. If the owner declines, `LEARN_FROM_CHATS_DEFAULT` is false and the reason is recorded.
+The run reads the owner's own chats, so the owner decided on 2026-11-05 how it runs (O-23): on the owner's own machine, over the person written messages of 200 of the owner's sessions, excluding every session that used a private model or holds patient data; the owner, or a person the owner names, labels only the candidate tokens, never whole messages; nothing leaves the machine. Below 0.8, `LEARN_FROM_CHATS_DEFAULT` is false and the reason is recorded.
 
 **Acceptance.** PR-24, driven through `Agent::reply` for the desktop and CLI consumers: `AgentInjection` provenance and SubAgent, Scheduled, Terminal, Crew scoped, app, ACP stdio and `--ws` sessions produce nothing; a private chat produces a private suggestion; a token `PiiDetector` flags is skipped; `seen` counts once per session; p99 under 50 ms with a 5,000 entry store and two writers.
 
@@ -1155,7 +1228,7 @@ A query in **Filter terms** collapses the groups into one **Matches** list.
 
 ### Rows
 
-Line one is the written form in `text-label`, with the lock badge when private (`withPrivateBadge` [C `components/icons/app-icons.tsx`]; private is a shape, not a tint). Line two is "Said as …" (spoken forms), else the note, else the source label. The meta is "12 uses", shown only when the answer carries usage (private standing).
+Line one is the written form in `text-label`, with the lock badge when private (`withPrivateBadge` [C `components/icons/app-icons.tsx`]; private is a shape, not a tint). Line two is "Said as …" (spoken forms), else the note, else the source label. On a private row it starts with where the row is used, MSG-ROW-PRIVATE, MSG-ROW-PRIVATE-INSTITUTION or MSG-ROW-PRIVATE-LOCAL, followed by " · " and the rest ([Private rows and institutions](#private-rows-and-institutions)). The meta is "12 uses", shown only when the answer carries usage (private standing).
 
 | Row | Primary `IconAction` | Menu |
 |---|---|---|
@@ -1188,7 +1261,7 @@ At the foot of the page:
 ### On `serve` and remote backends
 
 - `serve` (keyless): listing by standing; add, accept, dismiss, edit, delete and import work on rows the browser can list, stamped with its standing; **Only in private chats** is disabled before the click without private standing (MSG-DICTIONARY-HOST-PRIVATE); **Make public…** and **Make private…** are disabled before the click with MSG-DICTIONARY-HOST-TIER, with the term filled in (`publicize` or `privatize`); raising **Agent's terms**, and turning **Suggest dictionary words from my chats** or **Also find terms in my messages automatically** on, are disabled before the click with MSG-DICTIONARY-HOST-SETTINGS, which names `biorouter dictionary settings` with the option filled in; "12 uses" appears only with standing.
-- A desktop app on a keyed external backend without that server's key: public rows only; every write control is disabled before the click with MSG-REMOTE-NO-KEY (in the variant O-17 chose); with the key, the page behaves as on the desktop.
+- A desktop app on a keyed external backend without that server's key: public rows only; every write control is disabled before the click with MSG-REMOTE-NO-KEY (O-17); with the key, the page behaves as on the desktop.
 - Managed `dictionary: false`: the sidebar row is hidden; a visit to `/dictionary` shows MSG-POLICY and the list read only, with **Export…** and delete still allowed.
 
 ### Context menu door
@@ -1234,6 +1307,7 @@ biorouter dictionary clear     [--suggested-only]
 
 - Every command prints the account and the store folder it acts on to stderr, so stdout stays clean for `list` and `export`.
 - `--spoken` takes a comma separated list and may repeat. `add` stamps public unless `--private` (O-6: a terminal add starts from no chat).
+- A new store starts with `agent_writes` set to `on_request` (O-3); `settings --agent-writes suggest` lowers it and asks nothing, `--agent-writes add` raises it and asks first.
 - A `TERM` names every row with that exact written form that the caller can list. When it names more than one (twins), the command lists them with ids and asks which, or takes `--id`.
 - `review` shows suggestions and unreviewed agent rows in a multiselect (written form, source, lock for private, reason); the selected rows are accepted or kept, then it asks "Dismiss the rest? [y/N]".
 - `publicize` and `privatize` show MSG-PUBLICIZE-WARN (publicize) and then ask the person to type the term exactly (O-5). Only then is `UserDictionaryTierChange` constructed.
@@ -1270,12 +1344,12 @@ Export (DD-43):
     { "written": "EPAS1", "spoken_forms": ["epas one"], "misrecognitions": ["a pass one"],
       "kind": "gene_symbol", "match": "exact", "note": null },
     { "written": "PHD2", "spoken_forms": [], "misrecognitions": [], "kind": "gene_symbol",
-      "match": "exact", "note": null, "tier": "private" }
+      "match": "exact", "note": null, "tier": "private", "affiliation": null }
   ]
 }
 ```
 
-No ids, session ids or usage. Private rows only after MSG-EXPORT-PRIVATE, each carrying `"tier": "private"` so an import elsewhere restamps it private.
+No ids, session ids or usage. Private rows only after MSG-EXPORT-PRIVATE, each carrying `"tier": "private"` so an import elsewhere restamps it private, and its `affiliation` ([Private rows and institutions](#private-rows-and-institutions)).
 
 Import accepts:
 
@@ -1333,21 +1407,22 @@ A shell can read `dictionary.json` directly, because DR-17 left the filesystem o
 
 | Id | Invariant | Named tests |
 |---|---|---|
-| P-1 | Audio stays in memory in Biorouter's processes on the transcribing host: no temp file (the Jupyter handler pipes stdin), no log line, no diagnostics entry, no session row; the stream buffer is zeroed at finish, cancel or the 60 s expiry; no off machine engine in v1. A reverse proxy in front of `serve` is the operator's: `browser-access.md` names the setting that keeps request bodies in memory (`client_body_buffer_size 512k` or `proxy_request_buffering off` on nginx, whose stock configuration wrote every chunk above 16 KiB to disk [M]) | `dictation_routes.rs` (no new file in the sandbox root; tracing capture has no audio derived content); buffer zeroed on drop (unit); Jupyter handler test (no file under `TMPDIR`); `no_cloud_audio_routes.rs`; the `serve` job's nginx log has no "buffered to a temporary file" line |
+| P-1 | Audio stays in memory in Biorouter's processes on the transcribing host: no temp file, no log line, no diagnostics entry, no session row; the stream buffer is zeroed at finish, cancel or the 60 s expiry; no off machine engine in v1. A reverse proxy in front of `serve` is the operator's: `browser-access.md` names the setting that keeps request bodies in memory (`client_body_buffer_size 512k` or `proxy_request_buffering off` on nginx, whose stock configuration wrote every chunk above 16 KiB to disk [M]) | `dictation_routes.rs` (no new file in the sandbox root; tracing capture has no audio derived content); buffer zeroed on drop (unit); `no_cloud_audio_routes.rs`; the `serve` job's nginx log has no "buffered to a temporary file" line |
 | P-2 | Transcripts live only in the composer: never in notifications (counts only), logs, `messages.metadata_json`, telemetry or the worker's stderr | tracing capture in `dictation_routes.rs`; the `UserMessage.tsx` grep test; notification tests in `dictationAnywhere.test.ts`; the OpenAPI diff shows no dictation field on `Message`; the log callback test |
 | P-3 | One bias set feeds every channel | the `bias.rs` table test; `eligible_entries_are_built_only_by_bias_set` |
 | P-4 | The daemon decides the target | `dictation_routes.rs`: a refused `session_id` gives public scope and an identical response; an unproven caller's `new_chat_provider` is ignored; a `new_chat` stream takes the tier the bind would produce, so an `ollama` cloud tag, a remote `OLLAMA_HOST` and a private worker under a public lead give public scope |
-| P-5 | Public by default: Crew, clipboard, app preview and `dictate` without an admitted `--session` take private terms only for one recording a person confirms after MSG-PRIVATE-TERMS, never for an agent. Public only: Jupyter, ACP and `transcribe` without an admitted `--session` | `bias.rs` rows for `crew` and `external` with and without `include_private_terms`; `include_private_terms` ignored without the proof; CLI tests (`--private-terms` refused under `BIOROUTER_TERMINAL=1` and without a terminal); the Jupyter handler passes no session |
+| P-5 | Public by default: Crew, clipboard, app preview and `dictate` without an admitted `--session` take private terms only for one recording a person confirms after MSG-PRIVATE-TERMS, never for an agent. Public only: ACP and `transcribe` without an admitted `--session` | `bias.rs` rows for `crew` and `external` with and without `include_private_terms`; `include_private_terms` ignored without the proof; CLI tests (`--private-terms` refused under `BIOROUTER_TERMINAL=1` and without a terminal) |
 | P-6 | No existence oracle | `dictionary_oracles.rs` (including the keyless `private: true` add from a caller without private standing, byte identical for an existing and an absent private term); the echo oracle test in `dictation_routes.rs`; caps per tier (unit); `transcribe --format json` has `bias_scope` and no count |
-| P-7 | A cooperative agent, and any caller on a keyed daemon without the proof, never opens a microphone, transcribes for itself through a capture path, installs, removes or selects a model, accepts or dismisses suggestions, edits or deletes a person's row, changes a tier, raises `agent_writes` or turns learning on. On a keyless daemon, any holder of the daemon secret, including an agent shell that recovers it, can install a pinned model and make the dictionary writes a `serve` browser may make on rows it can list; and an agent holding a Biorouter Copilot grant on the person's web browser can press the microphone in a `serve` tab or the Jupyter AI chat (DD-88). Both residuals are recorded in SD-16 and [What is and is not claimed](#what-is-and-is-not-claimed) | `dictation_keyed.rs`; `capture_consent_is_minted_in_one_file`; CLI refusals when `BIOROUTER_TERMINAL=1`; the capability's tool list is exactly the three tools; boundary refusals at `call_tool` and in scripts; the Copilot refusal test; the keyless refusals in `dictionary_no_user_key.rs` |
+| P-7 | A cooperative agent, and any caller on a keyed daemon without the proof, never opens a microphone through a route, a tool or a capture path, transcribes for itself through a capture path, installs, removes or selects a model, accepts or dismisses suggestions, edits or deletes a person's row, changes a tier, raises `agent_writes` or turns learning on. Residuals, recorded in SD-16 and [What is and is not claimed](#what-is-and-is-not-claimed): on a keyless daemon any holder of the daemon secret, including an agent shell that recovers it, can install a pinned model and make the dictionary writes a `serve` browser may make on rows it can list (private ones on a host whose operator's provider is private); and an agent holding a Biorouter Copilot grant on Biorouter's own window, or on a browser that shows a `serve` tab, can start the microphone by clicking it or pressing the dictation chord, because Copilot's per task grant is the only gate there (DD-88, the owner's decision O-15 (2026-11-05)) | `dictation_keyed.rs`; `capture_consent_is_minted_in_one_file`; CLI refusals when `BIOROUTER_TERMINAL=1`; the capability's tool list is exactly the three tools; boundary refusals at `call_tool` and in scripts; no daemon route and no tool starts capture (`dictationAnywhere.test.ts`); the keyless refusals in `dictionary_no_user_key.rs` |
 | P-8 | The person is warned, then free: publicize, export private terms, include private terms in one clipboard, stdout, Crew or app preview recording, send a privately biased draft to a public model or switch to one, dictate to a plain `http:` remote, install turbo on a CPU host | renderer tests for MSG-PUBLICIZE-WARN, MSG-EXPORT-PRIVATE, MSG-PRIVATE-TERMS, MSG-PRIVATE-DRAFT, MSG-PRIVATE-DRAFT-SWITCH, MSG-REMOTE-HTTP, MSG-TURBO-CPU; the `--private-terms` CLI test |
-| P-9 | Agent terms carry no aliases and are suggestions by default; the capability is absent from Crew scoped, app, `--ws`, SubAgent, Scheduled, Hidden and Terminal sessions; ACP only suggests; the extractor never runs in ACP | the capability's tests in PR-23; the extractor tests in PR-24 |
+| P-9 | Agent terms carry no aliases; by default (`on_request`, O-3) an agent term is active only when it occurs in the person's latest message or in the agent message that this person message answers (checked mechanically; the reply is not checked for agreement, a residual recorded in the risks), and is a suggestion otherwise; the capability is absent from Crew scoped, app, `--ws`, SubAgent, Scheduled, Hidden and Terminal sessions; ACP only suggests; the extractor never runs in ACP | the capability's tests in PR-23 (a new store at `on_request`, and the mode tests); the extractor tests in PR-24 |
 | P-10 | The network facing daemon cannot record: `biorouterd` links no capture code; capture starts only behind `CaptureConsent` or a person's gesture in a page | the daemon binary contract in `dictation_routes_auth.rs` (`biorouterd __br-dictation-worker capture` exits 2; the bytes of the unstripped `biorouterd` contain neither `ma_device_init` nor `libpulse.so.0`); `cargo tree -p biorouter-server -e normal,build` holds no `biorouter-dictation-capture`; on the binaries `cross-build-nightly` builds with the release command itself (`cargo build --release --bin biorouterd --bin biorouter`), the exit check and `strings biorouterd \| grep -c libpulse` is 0; the same `strings` check in every package smoke. The release build is checked as well because one Cargo invocation unifies the features of a crate both binaries use, so a test that builds only `biorouter-server` cannot see what the release build links in [I] |
 | P-11 | Only pinned bytes are parsed | installer tests (mismatch deletes, `.partial` never loaded, ids only); the self test refuses a non pinned model; a fresh hash after an mtime change |
 | P-12 | The worker is a closed box: frames on stdin and stdout only, no socket, daemon secrets stripped, no configuration or log files, exits on end of file, library logs filtered | `dictation_worker.rs` environment scrub; the 300 byte log line test |
 | P-13 | Tier changes are the person's | `the_tier_proof_is_constructed_in_exactly_two_files`; the keyless tier refusal |
 | P-14 | No private entry text leaves the store except to a caller allowed to list it | instructions contain no term text; a piped `list` withholds private rows; refusal snapshots name no term; a keyless add from a caller without private standing never answers with a private row |
 | P-15 | Policy only narrows | the parse isolation test; `dictation_policy_routes.rs`; a resumed roster does not load `dictionary` under policy |
+| P-16 | A private dictionary row carries the institutions of the model it was written under (none for a local model, a model that states no affiliation, or the person's own add) and shapes dictation only into a target whose model those institutions admit, decided by the comparison DR-26 applies to extensions (`affiliation::gate_cross_affiliation_warning`), never by a hand comparison. Only the privacy master switch off, the mixing policy `open` (DR-27) and the person including private terms for one recording after MSG-PRIVATE-TERMS lift it. The agent's `list_terms` applies the same rule. A row left out changes no field of a response and is never counted | the affiliation table in `bias.rs` (rows `null`, `{ucsf}`, `{stanford, ucsf}` and `[]` against targets `Local`, `{ucsf}`, `{stanford}`, `{stanford, ucsf}` and unstated, with the master switch on and off, the mixing policies `standard`, `strict` and `open`, and `include_private_terms` admitted or not); the stamp tests for `add_terms`, the extractor and observations; `publicize` removes the value and an import stores `[]` for a malformed one; `list_terms` from a chat on a `{stanford}` model omits a `{ucsf}` row; `dictation_routes.rs`: a stream into a chat whose live model is covered by another institution answers the same fields as one where the row is eligible; the `privacy_capability.rs` census row for `affiliation::gate_cross_affiliation` in `bias.rs`; `compatible_is_the_only_function_that_compares_two_affiliations` stays green |
 
 ## Related documentation
 
@@ -1355,11 +1430,11 @@ A shell can read `dictionary.json` directly, because DR-17 left the filesystem o
 - [Voice dictation](README.md): the folder index and what each dictation document covers.
 - [Engine and models](engine-and-models.md): the worker protocol that carries the bias set, the decoding parameters, the `/dictation/*` routes and the managed `dictation:` block.
 - [Surfaces](surfaces.md): the composer, the private draft flag, the setup popover and the full message catalog quoted here by id.
-- [Testing and release](testing-and-release.md): where the dictionary's tests run, the accuracy gates and the measurements M-9, M-19 and M-21.
+- [Testing and release](testing-and-release.md): where the dictionary's tests run, the accuracy gates and the measurements M-19, M-21 and M-22.
 - [Speech model benchmarks](../research/voice-dictation/speech-model-benchmarks.md): the measurements behind the token prompt, the decoder bonus and the correction guards.
 - [Dictation tools survey](../research/voice-dictation/dictation-tools-survey.md): how other dictation tools handle vocabularies, aliases and learning.
 - [Privacy tiers](../security/privacy-tiers.md): the tier rules, DR-15 and DR-17, that the bias set and the stamps follow.
-- [Institutional affiliation](../security/institutional-affiliation.md): the affiliation axis (DR-26) that dictionary rows do not carry, the subject of O-32.
+- [Institutional affiliation](../security/institutional-affiliation.md): the affiliation axis (DR-26) that private dictionary rows carry (O-32, P-16).
 - [Managed policy](../security/managed-policy.md): the policy file that the `dictionary` and `dictionary_agent_writes` keys extend.
 - [Memory extension](../extensions/built-in/memory.md): the memory behaviour that R5 compares the `dictionary` capability with.
 - [Serve decisions](../deployment/serve-decisions.md): SD-8 and SD-11, the keyless shapes the `serve` write rules follow.

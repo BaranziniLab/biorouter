@@ -2,7 +2,7 @@
 
 > **What this is.** How local dictation works on each of Biorouter's 20 surfaces, S1 to S20: where audio is captured, how it travels, which process transcribes it, the controls and states a person sees, the operating system permissions involved, and the exact text shown when something is missing or impossible. It also holds the complete message catalog.
 > **Status:** Current: a plan; nothing in it is implemented yet
-> **Audience:** developers of the desktop, `serve`, terminal, Crew, app, clipboard, Jupyter AI and ACP pull requests (PR-17 to PR-32); reviewers who check that no surface ships a dead control; operators of shared hosts who need to know where models go and what people will see.
+> **Audience:** developers of the desktop, `serve`, terminal, Crew, app, clipboard and ACP pull requests (PR-17 to PR-31; PR-32 is withdrawn); reviewers who check that no surface ships a dead control; operators of shared hosts who need to know where models go and what people will see.
 
 This is one of the four area documents of the [implementation plan](implementation-plan.md). It elaborates the plan's decisions DD-1, DD-27 to DD-31 (the client side), DD-60 to DD-66, DD-69, DD-70, DD-72 to DD-88 and DD-92, and follows every other decision in the plan's register. The engine, the worker, the model catalog and the daemon side of the routes are in [engine and models](engine-and-models.md). The dictionary, its tiers, its sidebar page and its agent capability are in [dictionary](dictionary.md). Tests, CI jobs and the manual checklist are in [testing and release](testing-and-release.md). Where this document and the register disagree, the register wins.
 
@@ -17,7 +17,7 @@ Load bearing claims carry a label:
 | [R] | Reported by a third party's source, documentation or issue tracker, not measured here |
 | [I] | Inferred; the measurement that would settle it is named when it matters |
 
-Identifiers: R1 to R8 are the owner's requirements; S1 to S20 the canonical surfaces; DD the plan's decisions; PR-01 to PR-33 and A-1 its pull requests; O the owner decisions; M-1 to M-21 the measurements still to take; MSG the messages in the [message catalog](#message-catalog); P-1 to P-15 the privacy invariants. Code is cited as a file plus a symbol, with paths from the repository root. A file that does not exist yet is written as a code span, never as a link.
+Identifiers: R1 to R8 are the owner's requirements; S1 to S20 the canonical surfaces; DD the plan's decisions; PR-01 to PR-33 and A-1 its pull requests (PR-07 and PR-32 withdrawn); O the owner's decisions of 2026-11-05 and the plan's defaults; M-1 to M-22 the measurements still to take (M-9 and M-13 withdrawn); MSG the messages in the [message catalog](#message-catalog); P-1 to P-16 the privacy invariants. Code is cited as a file plus a symbol, with paths from the repository root. A file that does not exist yet is written as a code span, never as a link.
 
 Two rules govern every section below. First, a control, command or route appears only in the pull request that makes it work end to end, and until PR-21 lands the `serve` gates, Biorouter's pages hide every dictation control when `isBrowserSurface()` is true (DD-94). Second, a surface that cannot capture audio never shows a control that does nothing: it shows a specific alternative and a sentence from the catalog (R8, and the SD-8 rule "a control that can never work here says so, before it is touched").
 
@@ -25,8 +25,8 @@ Two rules govern every section below. First, a control, command or route appears
 
 DD-1 has two halves: **capture where the person is, transcribe where the agent and the dictionary live.**
 
-1. Only a process in front of the person opens a microphone: the desktop renderer, a browser tab, a capture child of `biorouter` at a person's terminal, or a JupyterLab page. A daemon never opens one. On a server it would record the wrong room, and on macOS the permission system would charge whichever process started the daemon [I]. `biorouterd` links no capture code at all (P-10).
-2. The process that owns the target chat transcribes, with its own account's model and dictionary: the daemon for Biorouter's pages, `biorouter` for the terminal front ends, the Jupyter host's `biorouter` for Jupyter AI. The bias set is therefore decided from the target chat's tier on the same host, and only text crosses into a chat.
+1. Only a process in front of the person opens a microphone: the desktop renderer, a browser tab, or a capture child of `biorouter` at a person's terminal. A daemon never opens one. On a server it would record the wrong room, and on macOS the permission system would charge whichever process started the daemon [I]. `biorouterd` links no capture code at all (P-10).
+2. The process that owns the target chat transcribes, with its own account's model and dictionary: the daemon for Biorouter's pages and `biorouter` for the terminal front ends. The bias set is therefore decided from the target chat's tier on the same host, and only text crosses into a chat.
 3. Every transcription runs the same Rust pipeline from the leaf crate `crates/biorouter-dictation`, linked into both binaries, so no surface depends on a package another surface lacks.
 4. One dictionary per account, at `<config>/dictionary/`, shared by the daemon, the CLI and the `dictionary` capability under one file lock.
 5. Composers Biorouter does not own (ACP editors, app pages opened in a browser, other applications) get **Dictate to clipboard**, from the desktop tray or `biorouter dictate --copy`.
@@ -37,8 +37,7 @@ Where audio is captured:
 |---|---|---|
 | A Biorouter page (the Electron renderer, or a browser tab on `serve`) | `getUserMedia` into a 16 kHz `AudioContext` and an AudioWorklet (`components/dictation/capture.ts`) | S1 to S6, S8 and S16 through `serve`, S14 (desktop), S15 (desktop preview), S17, S18 (desktop) |
 | A capture child of `biorouter` | `biorouter __br-dictation-worker capture`, miniaudio over CoreAudio, WASAPI, PulseAudio or ALSA | S9, S14 (CLI pipe), S18 (CLI), S19 |
-| A JupyterLab page | `MediaRecorder`, then a 16 kHz WAV built in the page | S13 |
-| None | the surface has no microphone or no Biorouter control | S7, S10, S11 (live), S12, S16 (inside the container), S20 inherits its surface |
+| None | the surface has no microphone or no Biorouter control | S7, S10, S11 (live), S12, S13 (not offered, O-30), S16 (inside the container), S20 inherits its surface |
 
 How audio travels:
 
@@ -46,24 +45,23 @@ How audio travels:
 |---|---|---|
 | A Biorouter page | its daemon | the chunked HTTP stream `/dictation/streams` (DD-27), the same code on the desktop and `serve`, because both build one renderer source with one Vite config and `utils/surface.ts` tells them apart at run time [C `ui/desktop/package.json` `build:web`] |
 | The capture child | its parent `biorouter` | length prefixed frames on the child's stdout; nothing leaves the process tree |
-| A JupyterLab page | the Jupyter server | chunked `PUT` under `{base_url}ai/biorouter/dictation/`, then the WAV on the stdin of `biorouter transcribe - --format json` |
 
 Which process transcribes:
 
 | Process | Worker | Surfaces |
 |---|---|---|
 | `biorouterd` (the desktop's daemon, a `serve` daemon, a backend host, the Docker image) | `biorouterd __br-dictation-worker engine` | S1 to S6, S8 (browser part), S14 desktop, S15, S16 `serve`, S17, S18 desktop; S20 as its surface |
-| `biorouter` (TUI, REPL, `dictate`, `transcribe`) | `biorouter __br-dictation-worker engine` | S7 (`transcribe` on the host), S8 to S11, S13 (through `transcribe`), S14 CLI, S16 `transcribe`, S18 CLI, S19; S20 as its surface |
+| `biorouter` (TUI, REPL, `dictate`, `transcribe`) | `biorouter __br-dictation-worker engine` | S7 (`transcribe` on the host), S8 to S11, S14 CLI, S16 `transcribe`, S18 CLI, S19; S20 as its surface |
 
 Three things hold everywhere:
 
 - Biorouter keeps audio in memory on the transcribing host: no temporary file, no log line, no diagnostics entry, no session row (P-1). Logs carry durations, byte counts and model ids only (DD-93). A reverse proxy in front of `serve` is outside Biorouter: nginx with its stock settings writes each chunk to a temporary file [M], so the [proxy guidance](#biorouter-serve-s5-to-s7) makes the setting that keeps chunks in its memory a requirement.
 - Nothing is sent automatically, on any surface (DD-70). Dictation inserts text for the person to check; **Send**, Enter or `y` is always the person's act.
-- The transcribing process decides which dictionary entries may bias a request, from the target, never from the client (DD-30, P-4). Targets that leave Biorouter or reach other people are public by default: Crew, the clipboard, the app preview and `dictate` take private terms only for one recording a person confirms after MSG-PRIVATE-TERMS, never for an agent (O-8). Jupyter AI, ACP and `transcribe` without an admitted `--session` are public only, because no proof of a person reaches their transcription (P-5).
+- The transcribing process decides which dictionary entries may bias a request, from the target, never from the client (DD-30, P-4). Targets that leave Biorouter or reach other people are public by default: Crew, the clipboard, the app preview and `dictate` take private terms only for one recording a person confirms after MSG-PRIVATE-TERMS, never for an agent (O-8). ACP and `transcribe` without an admitted `--session` are public only, because no proof of a person reaches their transcription (P-5). Jupyter AI has no dictation (O-30). A private entry that carries institutions shapes only dictation aimed at a model those institutions admit (O-32, P-16).
 
 ## The surface matrix
 
-The condensed form of the plan's matrix. **Bias** says which dictionary entries may shape the result: public entries are always eligible; private entries only when the transcribing process judges the target private capable and the caller has private standing (the user action proof, a stated private capability, or a person at an interactive terminal), or, for Crew, the clipboard, the app preview and `dictate`, when the person includes them for one recording after MSG-PRIVATE-TERMS (O-8); with the privacy master switch off every entry is eligible. Messages are named by id; their text is in the [message catalog](#message-catalog).
+The condensed form of the plan's matrix. **Bias** says which dictionary entries may shape the result: public entries are always eligible; private entries only when the transcribing process judges the target private capable and the caller has private standing (the user action proof, a stated private capability, or a person at an interactive terminal), or, for Crew, the clipboard, the app preview and `dictate`, when the person includes them for one recording after MSG-PRIVATE-TERMS (O-8); with the privacy master switch off every entry is eligible. A private entry that carries institutions is eligible only when the target chat's model is covered by those institutions' agreements or is a local model (O-32, P-16). Messages are named by id; their text is in the [message catalog](#message-catalog).
 
 | Surface | Capture | Transcription | Model folder and installer | Bias | Entry point | When it cannot work | Release |
 |---|---|---|---|---|---|---|---|
@@ -74,12 +72,12 @@ The condensed form of the plan's matrix. **Bias** says which dictionary entries 
 | S5 `serve`, browser on the same machine | Browser at the printed `http://127.0.0.1:8765/?t=…` address | Host's `biorouterd` worker | Host account; browser installs on the secret unless locked (O-2) | Private only for a private target with standing | Served microphone and **Dictionary** page | MSG-MIC-BROWSER, MSG-INSTALL-LOCKED, MSG-DISCLOSE-HOST, MSG-CPU-SERVER | PR-21 |
 | S6 `serve` behind an HTTPS proxy | Browser over HTTPS, also under a JupyterHub prefix | Per user `biorouterd` worker | Per account, `--system`, or managed `models_dir` | As S5 | As S5 | MSG-SHARED-ORIGIN, MSG-413, MSG-WAIT, MSG-SERVER-BUSY, MSG-SERVER-MEMORY | PR-21 |
 | S7 `serve` at a plain HTTP address | None (insecure origin) | Not reached; tunnel to S5, or `transcribe` on the host | Host account | n/a | `ssh -N -L 8765:127.0.0.1:8765 <host>`, then the printed address with 127.0.0.1 as its host, keeping its `?t=` part | Existing 403; MSG-INSECURE; MSG-SERVE-TUNNEL in the banner | PR-21 |
-| S8 CLI only Linux packages on a server | None on the server; the browser through S5 or S6 | `/usr/bin/biorouterd` worker; `/usr/bin/biorouter transcribe` | Service account's folder, or `--system` | As S5; `transcribe` under DD-77 | Served microphone; `biorouter transcribe <file>` | Over SSH: MSG-LINUX-NOAUDIO, then MSG-SSH-SERVICE when the service runs, else MSG-SSH-ROUTES; at a local console or in a JupyterLab terminal: MSG-LINUX-NOAUDIO then MSG-LINUX-ROUTES; MSG-OTHER-ACCOUNT, MSG-CPU-SERVER, MSG-CPU-VM | PR-11, PR-12, PR-21 |
+| S8 CLI only Linux packages on a server | None on the server; the browser through S5 or S6 | `/usr/bin/biorouterd` worker; `/usr/bin/biorouter transcribe` | Service account's folder, or `--system` | As S5; `transcribe` under DD-77 | Served microphone; `biorouter transcribe <file>` | Over SSH: MSG-LINUX-NOAUDIO, then MSG-SSH-SERVICE when the service runs, else MSG-SSH-ROUTES; at a local console or in any other terminal on the host outside SSH: MSG-LINUX-NOAUDIO then MSG-LINUX-ROUTES; MSG-OTHER-ACCOUNT, MSG-CPU-SERVER, MSG-CPU-VM | PR-11, PR-12, PR-21 |
 | S9 interactive CLI, local | Capture child | `biorouter` worker, in process | Per user folder; `dictation install` or `/dictate install` | Session tier (TUI, REPL); stored tier (shared prompt, attach) | Ctrl+T, `/dictate`, `biorouter dictate` | MSG-TCC-ZERO, MSG-WIN-ZERO, MSG-NO-MODEL-CLI, MSG-TOO-SHORT | PR-25, PR-26 |
 | S10 CLI over SSH or in a container | None; refused before a device opens | Remote worker (`serve`, `transcribe`), or the laptop's | Remote account, or the laptop's | Remote as S5; clipboard routes public | `serve` and a tunnel; paste; `transcribe` | MSG-SSH-ROUTES, MSG-SSH-SERVICE, MSG-SSH-MAC, MSG-CONTAINER, MSG-SYNC-HINT | PR-25 (messages), PR-21 (served route) |
 | S11 noninteractive CLI | None | `biorouter transcribe FILE\|-` | Account folder; `install --yes <id>` | `transcribe`: public only, unless DD-77 admits `--session`; `dictate`: public unless a person at the terminal passes `--private-terms` (O-8) | `transcribe`; `"$(biorouter dictate)"` from a person's terminal | MSG-AGENT-SHELL, MSG-NO-TTY | PR-12, PR-25 |
 | S12 ACP clients | None in the editor | Clipboard routes: desktop daemon or CLI worker | Local folder | Public only inside ACP (O-28); the clipboard routes follow S18 | Tray, global shortcut, `dictate --copy`, then paste; the editor's `/dictate` command | MSG-ACP-DICTATE from `/dictate`; MSG-ACP-NOTE in the turn; MSG-ACP in the docs | PR-30 (note, `/dictate`), PR-28 and PR-25 (clipboard) |
-| S13 Jupyter AI persona chat | Browser, `jupyter-ai-biorouter` labextension | Jupyter host's `biorouter transcribe -` | Jupyter account, or `--system` | Public only | Microphone in the chat box | MSG-JUPYTER-INSECURE to MSG-JUPYTER-FAILED (the S13 section), MSG-SHARED-ORIGIN, MSG-CPU-SERVER | PR-32 |
+| S13 Jupyter AI persona chat | None: not offered, decided by the owner on 2026-11-05 (O-30) | None | None | n/a | None: Biorouter adds no control there, so there is no dead control | None | None (PR-32 withdrawn) |
 | S14 Crew | Desktop renderer; CLI capture child | Member's own daemon or CLI worker | Member's folder | Public by default; private terms for one recording after MSG-PRIVATE-TERMS (O-8, O-21) | Microphone before Crew's **Send** and immediately left of the **Ask my agent** pane's submit button; the CLI pipe | MSG-CREW-TIP; "Crew needs the Biorouter desktop app" | PR-27 (CLI pipe PR-25) |
 | S15 Agent Drafter apps | Never the app page; the trusted renderer for the preview | Serving daemon's worker | That daemon's folder | Public by default; the desktop preview takes private terms for one recording after MSG-PRIVATE-TERMS (O-8) | **Dictate into this app**; **Dictate to clipboard** | MSG-APPS, MSG-APPS-BROWSER | PR-03 (headers), PR-28 |
 | S16 Docker image | None in the container; the host's browser through `serve` | Container's `biorouterd` worker, or `transcribe` | Data volume, or a read only mount | As S5; `transcribe` public | `docker run … serve`; `docker run … transcribe` | MSG-CONTAINER; MSG-SERVE-CONTAINER in the banner | PR-12, PR-31 |
@@ -105,7 +103,6 @@ This table is the plan's O-1 table, reproduced verbatim. Where speech models go,
 | Any server, shared by every account | root installs; every account reads | `/var/lib/biorouter/dictation/models/` (Linux), `/Library/Application Support/Biorouter/dictation/models/` (macOS), `%ProgramData%\Biorouter\dictation\models\` (Windows) | `sudo biorouter dictation install --system` |
 | A managed fleet | The administrator | The managed `dictation.models_dir`, read only, still hash checked | Files placed there by the administrator |
 | Docker (S16) | `biorouter` in the container | A data volume at `/home/biorouter/.local/share/biorouter`, or a read only mount at `/var/lib/biorouter/dictation/models` | `docker run … <image> dictation install`, or the browser's Settings through `serve` |
-| Jupyter AI (S13) | The Jupyter server's account (one per user on JupyterHub) | That account's data folder, or the system folder | `biorouter dictation install` in a JupyterLab terminal, or the administrator's `--system` |
 | WSL (S19) | The WSL Linux account | `~/.local/share/biorouter/dictation/models/` inside WSL | `biorouter dictation install`, or `--from /mnt/c/…` to reuse a Windows side download |
 | External backend (S17) | The account that runs the backend | The backend host's folder, not the laptop's | Settings on the laptop with that server's key, or the host CLI |
 | Air gapped hosts (S20) | As the surface | As the surface | `biorouter dictation install --from <file\|dir>`, or files placed in the folder and **Rescan** |
@@ -178,7 +175,7 @@ DD-27 to DD-31. `components/dictation/transport.ts` is the only module that talk
 | `GET /dictation/streams/{id}` | none | as finish, answered at once |
 | `DELETE /dictation/streams/{id}` | none | 204; queued segments dropped |
 
-Every route takes `X-Secret-Key` through `check_token`. Stream creation also sends `await userActionHeaders()`: the user action proof on the desktop, and on `serve` an `X-Caller-Provider` naming the host's configured provider [C `ui/desktop/src/utils/userAction.ts` `userActionHeaders`]. Under O-17's recommended answer the proof is not required to create a stream; it only decides whether private entries may bias (DD-29).
+Every route takes `X-Secret-Key` through `check_token`. Stream creation also sends `await userActionHeaders()`: the user action proof on the desktop, and on `serve` an `X-Caller-Provider` naming the host's configured provider [C `ui/desktop/src/utils/userAction.ts` `userActionHeaders`]. As decided by the owner on 2026-11-05 (O-17), the proof is not required to create a stream; it only decides whether private entries may bias (DD-29).
 
 What each composer sends:
 
@@ -408,7 +405,7 @@ O-8, DD-30, DD-83, DD-86. Crew's two boxes, the preview's **Dictate into this ap
 | **Dictate to clipboard** | the tray menu holds **Include my private terms** below **Dictate to clipboard** | the review card shows MSG-PRIVATE-TERMS first, then records as above; the global shortcut always records with public terms |
 | `biorouter dictate` | `--private-terms` | admitted only when `prompt_can_run()` is true, `BIOROUTER_TERMINAL` is unset and `caller_capability()` returns Private, after MSG-PRIVATE-TERMS and a `y` (DD-77); otherwise MSG-PRIVATE-TERMS-REFUSED and exit 2, before any device opens |
 
-The choice lasts one recording and is never remembered. The item is offered only where the caller holds the user action proof and private standing (the desktop's own daemon, or S17 with that server's **User Action Key**); elsewhere it is absent. The daemon admits `include_private_terms` only with the proof, so no agent path sets it, and Jupyter AI and ACP never offer it.
+The choice lasts one recording and is never remembered. The item is offered only where the caller holds the user action proof and private standing (the desktop's own daemon, or S17 with that server's **User Action Key**); elsewhere it is absent. The daemon admits `include_private_terms` only with the proof, so no agent path sets it, and ACP never offers it. Included private terms cover every private row, whatever institutions it carries (DD-36).
 
 ### Error map
 
@@ -455,7 +452,7 @@ DD-65. The renderer is the only desktop process that records, and its grant is n
 
 - The OS settings URLs live in the new `utils/micPermissionSettings.ts`, not in the Copilot helper, which refuses on an external backend and off macOS [C `utils/copilotPermissionSettings.ts`]; the microphone is always local to the app.
 - Test switches: when `!app.isPackaged && process.env.BIOROUTER_TEST_FAKE_MIC_WAV`, `appMain` adds `--use-fake-device-for-media-stream --use-file-for-fake-audio-capture=<wav>%noloop` (plus `--disable-features=AudioServiceSandbox` on macOS, where the sandboxed audio service otherwise cannot read the WAV and the track is digital silence, RMS 0 [M]; the fake device flag alone was not shown to cause it). `--use-fake-ui-for-media-stream` is forbidden by a source guard: it bypassed the permission handler entirely, with zero handler calls and audio plus video granted under a deny all policy [M].
-- Biorouter Copilot refuses control actions on Biorouter's own windows and refuses `press_key` for ⌘⇧D, Ctrl+Shift+D and the person's global shortcut on any target, with MSG-COPILOT-SELF (DD-88, O-15, PR-07, extended by PR-28). Observation is unchanged.
+- Biorouter Copilot places no restriction on dictation, decided by the owner on 2026-11-05 (O-15, DD-88): an agent holding a Copilot grant on Biorouter's own window, or on a browser that shows a `serve` tab, can start the microphone by clicking it or pressing the dictation chord, and can then press **Send** as it can for typed text. What limits it is Copilot's per task grant (one grant per task, chat, model and target), the composer's visible recording state, the operating system's microphone indicator, and Stop and revoke.
 
 ### macOS (S1, S2)
 
@@ -514,7 +511,7 @@ The four desktop surfaces share the capture, transport, insert, composer, permis
 | Bias | Public entries always; private entries when the target chat is private capable, since the desktop always holds the proof; Home and new tabs judged by the provider the new chat will bind (`new_chat_provider`); Crew, clipboard and preview public unless the person includes private terms for one recording (O-8) |
 | Entry points | Microphone left of **Send** in every composer; ⌘⇧D; tray **Dictate to clipboard** while **Show in menu bar** is on; the global shortcut the person turns on; **Dictionary** in the sidebar; **Settings > Models > Speech models** |
 | Permissions | TCC prompt on the first click, with the pinned usage string |
-| Messages | MSG-MIC-DENIED-MAC, MSG-MIC-RESTRICTED, MSG-MIC-GRANTED-FAILED, MSG-NO-DEVICE, MSG-MIC-BUSY, MSG-NOTHING, MSG-SILENT, MSG-TOO-SHORT, MSG-ENGINE-FAILED, MSG-POLICY, MSG-RESTART-BUSY, MSG-COPILOT-SELF, MSG-NO-TRAY |
+| Messages | MSG-MIC-DENIED-MAC, MSG-MIC-RESTRICTED, MSG-MIC-GRANTED-FAILED, MSG-NO-DEVICE, MSG-MIC-BUSY, MSG-NOTHING, MSG-SILENT, MSG-TOO-SHORT, MSG-ENGINE-FAILED, MSG-POLICY, MSG-RESTART-BUSY, MSG-NO-TRAY |
 | Release | PR-19 (Settings PR-18, sidebar PR-20, clipboard PR-28) |
 | Acceptance | A dev app run with `BIOROUTER_NO_HMR=1` and the fake device shows one ⌘Z removing exactly the dictated words in the real `ChatInput`, and nothing sent without Enter; M-4 (a signed, notarized app on macOS 12 and 13 transcribes once on Metal), M-6 (TCC denial on a signed app) and M-7 (a real microphone) recorded; checklist section S1 passes |
 
@@ -599,7 +596,7 @@ The banner knows the port and the token, so both messages name the full address 
 
 **The chord.** Browsers bind ⌘⇧D to their own commands (Chrome and Firefox bookmark all tabs; Safari adds to the Reading List [R]), and M-18 measures whether a page can take it. Until M-18 shows the page receives the chord, a `serve` browser's tooltip reads "Dictate" without it, Settings hides the **Shortcut** row, and the field's key handler does not claim the chord.
 
-**Copilot on the browser.** DD-88's refusal covers the desktop app's own windows (the running app's bundle and process), not a browser window that shows a `serve` page. An agent holding a Biorouter Copilot grant on that browser could click the served microphone, and the origin's existing grant would open it with no prompt; the chord refusal holds on any target, the click does not. The same holds for the Jupyter AI chat's microphone (S13). This residual is recorded in SD-16 and P-7 (DD-88); it concerns S5 on the person's own machine, S6 and S13 when the browser runs where Copilot does.
+**Copilot.** Biorouter Copilot places no restriction on dictation, decided by the owner on 2026-11-05 (O-15, DD-88): an agent holding a Copilot grant on Biorouter's own window, or on a browser that shows a `serve` tab, can start the microphone by clicking it or pressing the dictation chord, and can then press **Send** as it can for typed text. What limits it is Copilot's per task grant (one grant per task, chat, model and target), the composer's visible recording state, the operating system's microphone indicator, and Stop and revoke. On the browser, the origin's existing microphone grant opens the microphone with no prompt. This residual is recorded in SD-16 and P-7; it concerns S5 on the person's own machine and S6 when the browser runs where Copilot does.
 
 **Phones and tablets.** An HTTPS `serve` is reachable from a phone or tablet, and the composer then shows a microphone there. iOS Safari and Android Chrome (the 16 kHz context, the worklet, the gesture rules, the narrow layout) are untested [I]; checklist row S6.6 and M-8 cover them before any document claims they work.
 
@@ -617,7 +614,7 @@ The banner knows the port and the token, so both messages name the full address 
 
 M-17 runs the upload ladder through CHP, `jupyter-server-proxy`, `ingress-nginx`, Caddy and Traefik before the proxy section names them, and records for each the setting that keeps request bodies off its disk.
 
-**SD-16**, a new record in `docs/deployment/serve-decisions.md` (PR-03 starts it, PR-21 completes it): dictation on `serve` needs no proof; private bias standing comes from the proof or a stated `X-Caller-Provider`, never from the operator's tier that SD-10 gives listings; model install is admitted unless the operator locks it; app pages deny the microphone; the Firefox and Safari residual; the residual that any holder of a keyless daemon's secret, an agent shell that recovers it included, can install a pinned model and make a browser's dictionary writes; the Copilot on a browser residual; the ACP and Jupyter harvesting residual.
+**SD-16**, a new record in `docs/deployment/serve-decisions.md` (PR-03 starts it, PR-21 completes it): dictation on `serve` needs no proof; private bias standing comes from the proof or a stated `X-Caller-Provider`, never from the operator's tier that SD-10 gives listings; model install is admitted unless the operator locks it; app pages deny the microphone; the Firefox and Safari residual; the residual that any holder of a keyless daemon's secret, an agent shell that recovers it included, can install a pinned model and make a browser's dictionary writes; the Copilot residual (DD-88, O-15); the ACP harvesting residual.
 
 #### S5 `serve`, browser on the same machine
 
@@ -630,7 +627,7 @@ M-17 runs the upload ladder through CHP, `jupyter-server-proxy`, `ingress-nginx`
 | Bias | Public; private only for a private target with private standing (a private host's browser states `X-Caller-Provider`); an identical response shape either way |
 | Entry points | The served composer's microphone; the served **Dictionary** page; Settings |
 | Messages | MSG-MIC-BROWSER, MSG-INSTALL-LOCKED, MSG-DISCLOSE-HOST (once per host), MSG-SHARED-ORIGIN (once, in a browser that does not enforce `Permissions-Policy`), MSG-CPU-SERVER, MSG-NOTHING, MSG-WAIT, MSG-ENGINE-FAILED |
-| Residuals | Copilot holding a grant on the browser that shows this page can click the microphone (recorded in SD-16) |
+| Residuals | Copilot holding a grant on the browser that shows this page can click the microphone, with no refusal (DD-88, O-15; recorded in SD-16) |
 | Release | PR-21 |
 | Acceptance | The `rust.yml` `serve` job: Playwright Chromium (16 kHz) and Firefox (the native rate fallback) against `serve` on loopback with the debug test model show MSG-NOTHING, and the daemon received 32,000 B per second of audio; M-8 (Safari at `127.0.0.1`, including the first click and the first ⌘⇧D before the status store has loaded, which must reach `recording`) recorded |
 
@@ -673,7 +670,7 @@ The `biorouter-cli` deb and rpm need no new package entry, `Depends` or helper: 
 | Models | The service account's folder through `sudo -u biorouter -H biorouter dictation install`, or `sudo biorouter dictation install --system` into `/var/lib/biorouter/dictation/models` |
 | Bias | As S5 in the browser; `transcribe` public only unless DD-77 admits the session |
 | Entry points | The served microphone; `biorouter transcribe <file>` |
-| Messages | `biorouter dictate` on the server over SSH: MSG-LINUX-NOAUDIO, then MSG-SSH-SERVICE when a `biorouter serve` service runs there, else MSG-SSH-ROUTES; at the local console or in a JupyterLab terminal: MSG-LINUX-NOAUDIO, then MSG-LINUX-ROUTES; all before any model prompt; installing as the wrong account: MSG-OTHER-ACCOUNT; MSG-CPU-SERVER, then MSG-CPU-VM when the CPUID hypervisor bit is set |
+| Messages | `biorouter dictate` on the server over SSH: MSG-LINUX-NOAUDIO, then MSG-SSH-SERVICE when a `biorouter serve` service runs there, else MSG-SSH-ROUTES; at the local console or in any other terminal on the host outside SSH: MSG-LINUX-NOAUDIO, then MSG-LINUX-ROUTES; all before any model prompt; installing as the wrong account: MSG-OTHER-ACCOUNT; MSG-CPU-SERVER, then MSG-CPU-VM when the CPUID hypervisor bit is set |
 | Release | PR-11 (install), PR-12 (`transcribe`), PR-21 (served microphone) |
 | Acceptance | In both package smoke containers (`debian:bookworm-slim`, `rockylinux:9`), the self test prints `"selftest":"ok"` and `biorouter dictation status --format json` reports no installed model and `capture.available=false`, with `reason="not_compiled"` from PR-10 and `reason="no_audio_system"` from PR-25, which brings capture and its audio system probe; `strings biorouterd \| grep -c libpulse` is 0 (P-10) |
 
@@ -832,7 +829,7 @@ Two machines have two dictionaries. `biorouter dictionary export - | ssh <host> 
 
 #### S11 noninteractive CLI
 
-`run`, `session send`, workflows, scripts and `crew send` have no person at a terminal, so live capture is refused (MSG-NO-TTY, or MSG-AGENT-SHELL in an agent's shell, both exit 2). O-20 keeps it that way: a capture with no terminal is what an agent's tool call looks like, and hotkey wrappers use the desktop's tray and global shortcut instead. `biorouter transcribe FILE|-` works anywhere: cron, an agent's shell, the Jupyter handler, Docker.
+`run`, `session send`, workflows, scripts and `crew send` have no person at a terminal, so live capture is refused (MSG-NO-TTY, or MSG-AGENT-SHELL in an agent's shell, both exit 2). O-20 keeps it that way: a capture with no terminal is what an agent's tool call looks like, and hotkey wrappers use the desktop's tray and global shortcut instead. `biorouter transcribe FILE|-` works anywhere: cron, an agent's shell, scripts, Docker.
 
 ```bash
 biorouter transcribe memo.m4a --format json            # public only; schema 1
@@ -855,7 +852,7 @@ biorouter dictation install --yes whisper-small.en-q8_0 # provisioning; refused 
 
 ### S12 ACP clients
 
-Zed, JetBrains and other ACP editors render their own composer. None of the ACP clients checked (Zed, JetBrains AI Assistant, Jupyter AI's ACP client) sends audio: Zed only converts audio blocks between protocol versions and never builds one, JetBrains AI Assistant shows no sign of audio, and Jupyter AI's ACP client sends text and resource blocks only [R]. Biorouter advertises `.audio(false)` [C `crates/biorouter-acp/src/server.rs:755`]. Zed's request for dictation is the open issue zed#16410 [R]; no JetBrains issue was found. Biorouter owns no microphone control there, so there is nothing dead to show. The path is **Dictate to clipboard** and paste, and the editor learns it in the product, not only from the docs: at session start the ACP server advertises one available command, `/dictate`, through `AvailableCommandsUpdate` (in the pinned `agent-client-protocol-schema` 0.10.5 [R]). Invoking it answers MSG-ACP-DICTATE locally, with no model turn and no provider call.
+Zed, JetBrains and other ACP editors render their own composer. None of the ACP clients checked (Zed, JetBrains AI Assistant, Jupyter AI's ACP client) sends audio: Zed only converts audio blocks between protocol versions and never builds one, JetBrains AI Assistant shows no sign of audio, and Jupyter AI's ACP client sends text and resource blocks only [R]. Biorouter advertises `.audio(false)` [C `crates/biorouter-acp/src/server.rs:755`]. Zed's request for dictation is the open issue zed#16410 [R]; no JetBrains issue was found. Biorouter owns no microphone control there, so there is nothing dead to show. The path is **Dictate to clipboard** and paste, and the editor learns it in the product, not only from the docs: at session start the ACP server advertises one available command, `/dictate`, through `AvailableCommandsUpdate` (in the pinned `agent-client-protocol-schema` 0.10.5 [R]). Invoking it answers MSG-ACP-DICTATE locally, with no model turn and no provider call. The Jupyter AI persona is an ACP client too, launched as `[BIOROUTER_EXECUTABLE, "acp"]` with nothing that names it [C `integrations/jupyter-ai/jupyter_ai_biorouter/persona.py`], and the owner excluded Jupyter from dictation (O-30, S13). Whether Jupyter AI shows ACP available commands is unmeasured [I], so PR-30 checks it first; if it does, the persona names itself at launch and the server leaves `/dictate` out of its sessions.
 
 | Part | Design |
 |---|---|
@@ -865,63 +862,16 @@ Zed, JetBrains and other ACP editors render their own composer. None of the ACP 
 | Bias | Public only inside ACP (O-28 keeps it so when audio blocks arrive); the clipboard routes it relies on follow S18 |
 | Entry points | Tray **Dictate to clipboard**, the global shortcut, or `biorouter dictate --copy`, then paste; the editor's `/dictate` command explains this with MSG-ACP-DICTATE |
 | In the turn | `ContentBlock::Audio(..) => ()` at `server.rs:428` [C], today a silent drop, becomes a text part with MSG-ACP-NOTE |
-| Docs | MSG-ACP in `docs/cli/command-reference.md` (`### acp`) and `docs/integrations/jupyter-ai-persona.md` |
+| Docs | MSG-ACP in `docs/cli/command-reference.md` (`### acp`) |
 | Dictionary | stdio offers the `dictionary` capability in suggest form only, with no extractor; tool answers append MSG-TOOL-REVIEW-HINT; `--ws` refuses `--with-builtin dictionary` and never takes audio |
 | Release | PR-30 (note and `/dictate`), PR-28 and PR-25 (clipboard) |
-| Acceptance | An audio block yields the note and no audio; `on_initialize` still advertises `audio(false)`; `/dictate` appears in the editor's command list and answers MSG-ACP-DICTATE without calling the provider; a `--ws` agent loads no `dictionary` |
+| Acceptance | An audio block yields the note and no audio; `on_initialize` still advertises `audio(false)`; `/dictate` appears in the editor's command list and answers MSG-ACP-DICTATE without calling the provider; Jupyter AI's chat shows no `/dictate` (O-30); a `--ws` agent loads no `dictionary` |
 
 PR-30 also fixes the stale `resolve_ws_token` comment, which says the desktop sets `BIOROUTER_ACP_WS_TOKEN`; nothing under `ui/desktop/src` does [C]. Never add private `_…/dictation/*` methods, never take audio on `--ws` (an untrusted page could send near silent clips and read bias terms back through the prompt echo [I]), and never install models over ACP.
 
 ### S13 Jupyter AI persona chat
 
-DD-81 and O-30: a microphone in v1, shipped in the existing `jupyter-ai-biorouter` wheel. The browser records; the Jupyter server transcribes with `biorouter transcribe` on the Jupyter host, as the Jupyter account, with that account's model and dictionary.
-
-**The labextension** `jupyter-ai-biorouter:dictation` requires `IChatTracker` and never provides `IInputToolbarRegistryFactory`, because Jupyter AI already provides it and a second provider silently overrides the first [R]. It adds `biorouter-dictate` at position 90 (left of **Send** at 100) to every tracked chat widget, including widgets opened later. `@jupyter/chat` is `>=0.22.1 <0.27.0` as a shared singleton. The pins stay `jupyter-ai-acp-client>=0.1.5,<0.2.0` and `jupyter-ai-persona-manager>=0.0.11,<0.1.0` [C `integrations/jupyter-ai/pyproject.toml`], which means Jupyter AI 3.0.x and `jupyterlab-chat` 0.22.1.
-
-**Capture**: `MediaRecorder`, then `decodeAudioData`, then `OfflineAudioContext(1, n, 16000)`, then a 16 bit WAV; at most 2 minutes (3.84 MB). Where a browser cannot decode its own recording, a Blob URL AudioWorklet is the fallback (JupyterLab's CSP allows it) [R]. M-13 measures `decodeAudioData` on Chrome WebM and Opus, Firefox Ogg and Opus, and Safari MP4 and AAC.
-
-**Insert**: at the caret remembered when recording started (splice `value`, set `cursorIndex`, then `focus()`); never `send()`, never an `@Biorouter` mention.
-
-**The server extension**, under `{base_url}ai/biorouter/dictation/` (clear of the `{base_url}biorouter/` mount that the `serve` setup uses). Handlers subclass `APIHandler` with `@tornado.web.authenticated`, so the token and XSRF come through `ServerConnection`.
-
-| Route | Body | Answer |
-|---|---|---|
-| `GET status` | none | `biorouter dictation status --format json`, cached for 30 s |
-| `POST uploads` | none | `{upload_id}`; at most 4 open uploads, each expiring after 5 minutes idle; 403 with MSG-POLICY or MSG-POLICY-CAPTURE when the cached status reports dictation off or live capture not allowed |
-| `PUT uploads/{id}/{seq}` | WAV bytes, at most 512 KiB | received; 413 above 512 KiB per chunk or 8 MiB in total |
-| `POST uploads/{id}/finish` | none | 202 `{job}`; the same 403 as `POST uploads` |
-| `GET jobs/{job}` | none | the job's state, then the `transcribe` JSON (schema 1) |
-| `DELETE uploads/{id}` | none | drops the upload and kills the child's process group |
-
-One job at a time per server (`asyncio.Semaphore(1)`). The child is `biorouter transcribe - --format json` with the WAV on its stdin, `start_new_session=True` and a 180 s timeout; no file is written, and no audio or text reaches a log (P-1, P-2). The handler refuses live capture itself under managed `capture: false`, although `biorouter transcribe -`, which it runs, is allowed under that policy: the browser's microphone is live capture, and the labextension's own check is not the only door (accident prevention, not a security claim). A timeout, a nonzero exit of `transcribe`, or a 413 from the proxy in front ends the job with MSG-JUPYTER-FAILED.
-
-**Package fixes.** `jupyter_ai_biorouter/__init__.py` stops importing `.persona`, which resolves the executable at import and raises when `biorouter` is missing [C `integrations/jupyter-ai/jupyter_ai_biorouter/persona.py` `resolve_biorouter_executable`]; the resolver moves to `executable.py`; the package declares `_jupyter_server_extension_points` and `_jupyter_labextension_paths`, builds with `hatch-jupyter-builder`, and requires `jupyter_server>=2.4,<3`.
-
-**States and messages.** The idle tooltip is MSG-JUPYTER-TIP. The secure context check and the `GET status` prefetch run when the chat widget mounts. While either reports a condition marked "before the click" below, the labextension renders `biorouter-dictate` disabled (`aria-disabled`, inside a span so the tooltip still opens) with that condition's sentence as its tooltip, so no click can fail on it. The button is enabled only otherwise; the remaining messages appear as one line above the input during or after a click.
-
-| Condition | Message | When |
-|---|---|---|
-| `!window.isSecureContext` or no `navigator.mediaDevices` | MSG-JUPYTER-INSECURE | before the click, disabled |
-| `status`: the model is not installed | MSG-JUPYTER-NO-MODEL | before the click, disabled |
-| `status`: the `biorouter` executable is not found | MSG-JUPYTER-NO-BINARY | before the click, disabled |
-| `status`: built without the engine | MSG-NO-ENGINE | before the click, disabled |
-| `status`: the processor is unsupported | MSG-CPU-SERVER | before the click, disabled |
-| `status`: policy off, or capture off | MSG-POLICY or MSG-POLICY-CAPTURE | before the click, disabled |
-| First use on this origin | MSG-SHARED-ORIGIN, always in Jupyter: notebook outputs, including JavaScript from cells an agent ran, share the chat's document and origin at any path | before the first recording |
-| `NotAllowedError` | MSG-JUPYTER-DENIED | after the click |
-| `NotFoundError` or `NotReadableError` | MSG-JUPYTER-NO-DEVICE | after the click |
-| Recording | MSG-JUPYTER-RECORDING | during |
-| Transcribing | MSG-JUPYTER-TRANSCRIBING | during |
-| `no_speech` or `too_short` | MSG-JUPYTER-NOTHING | after |
-| The 180 s timeout, a nonzero exit of `transcribe`, a 413 | MSG-JUPYTER-FAILED | after |
-
-| Part | Design |
-|---|---|
-| Bias | Public only: the chat may route the text to a persona whose model Biorouter cannot classify, the handler passes no session, and no proof of a person reaches the transcription (O-8) |
-| Residuals | Copilot holding a grant on the browser that shows JupyterLab can click the microphone (DD-88, SD-16, P-7) |
-| Dictionary | No JupyterLab panel in v1; people use `biorouter dictionary review` in a JupyterLab terminal, or the **Dictionary** page of `serve` on the same host. No learning from Jupyter in v1 |
-| Release | PR-32 |
-| Acceptance | `pytest-jupyter` handler tests with a fake `biorouter` (authentication, XSRF, 413, timeouts, cleanup, the WAV piped on stdin, no file under `TMPDIR`, nothing logged); Jest tests for the caret insert and the WAV encoder; one Galata smoke on JupyterLab 4.5.9 with Jupyter AI 3.0.1; every Jupyter message (MSG-JUPYTER-INSECURE to MSG-JUPYTER-FAILED) renders in its state; Jest cases for the button disabled with the MSG-JUPYTER-INSECURE tooltip on an insecure page and with MSG-JUPYTER-NO-MODEL when status reports no model; a handler test for the 403 under `capture: false`; M-13 recorded |
+Not offered, decided by the owner on 2026-11-05 (O-30, DD-81): Biorouter builds no microphone or dictation feature for Jupyter, and Jupyter AI dictation is deprecated. Biorouter adds no control to Jupyter AI's chat, so there is no dead control and no message to show there (R8). There is no labextension, no Jupyter server handler and no JupyterLab dictionary panel; PR-32 and M-13 are withdrawn. `biorouter serve` behind JupyterHub's proxy (S6) is Biorouter's own page, not a Jupyter feature.
 
 ### S14 Crew
 
@@ -1019,11 +969,11 @@ DD-85. With **Use external server** on in **Settings > App**, the laptop records
 | Transport | The chunked stream to the backend URL; `connect-src` already admits the external origin [C `main.ts` `buildConnectSrc`]; `X-Secret-Key` is the configured **Secret Key**, and the proof is the configured **User Action Key**, or empty [C `ExternalBackendSection.tsx` labels; `main.ts` `getUserActionKey`] |
 | Transcription | The backend host's `biorouterd` worker |
 | Models | The backend host's folder; Settings installs there with that server's **User Action Key** on a keyed daemon, or with the secret on a keyless one; the **Model folder** row names the backend's folder and account, and the reveal button is hidden unless the backend is on loopback |
-| Bias | The backend's dictionary under the caller's standing: with the key, as S1; without it, public only (O-17, recommended) |
+| Bias | The backend's dictionary under the caller's standing: with the key, as S1; without it, public only (O-17) |
 | Entry points | The same microphone and sidebar |
 | Disclosure | MSG-DISCLOSE-REMOTE in Settings, in `ExternalBackendSection.tsx` and in the setup popover |
 | Plain `http:` | MSG-REMOTE-HTTP once per backend URL for a non loopback `http:` address; the person confirms and proceeds (O-18); the confirmation is kept in `ackHosts[]` |
-| No key on a keyed backend | Install disabled before the click with MSG-REMOTE-NO-KEY, in the variant O-17 chose |
+| No key on a keyed backend | Install disabled before the click with MSG-REMOTE-NO-KEY (O-17) |
 | A backend from before dictation | The laptop and the backend can run different versions here, and only here. When `GET /dictation/status` answers 404 or 405, the microphone is `unavailable` with MSG-REMOTE-OLD; when `/dictionary/settings` answers 404, the **Dictionary** page shows the same sentence and disables its controls |
 | The laptop's policy | `utils/managedDictationPolicy.ts` reads the laptop's managed policy file at the `Paths::managed_policy_path` locations (with `js-yaml`, already a dependency [C]) only when `externalBiorouterd.enabled`. It honours only `dictation.enabled: false` and `dictation.capture: false`; either makes `isAllowedRendererPermission` refuse `media`, removes the microphone, disables the clipboard switch, and shows MSG-POLICY or MSG-POLICY-CAPTURE. A Rust test pins the TypeScript path table against `Paths::managed_policy_path` |
 | Release | PR-29 |
@@ -1045,12 +995,7 @@ export function managedPolicyPath(env: NodeJS.ProcessEnv, platform: NodeJS.Platf
 export function readLaptopDictationPolicy(): { enabled: boolean; capture: boolean }; // fails closed on a parse error
 ```
 
-O-17 decides what a keyed backend does without its key:
-
-| O-17 outcome | Microphone without the key | Message |
-|---|---|---|
-| Recommended: streams on the secret only | works, with public entries only; install disabled | MSG-REMOTE-NO-KEY (O-17 recommended) |
-| Alternative: the proof for every stream | `unavailable` | MSG-REMOTE-NO-KEY (O-17 alternative) |
+Without the key, a keyed backend's microphone works with public entries only and installing is disabled, with MSG-REMOTE-NO-KEY, as decided by the owner on 2026-11-05 (O-17).
 
 The laptop's CLI has its own folder and needs its own `biorouter dictation install`; `status` names the host and account, so the two are not confused.
 
@@ -1060,14 +1005,14 @@ DD-86, O-8 and O-19. Two forms in v1 bring Biorouter's engine and dictionary to 
 
 **The desktop form** (`ui/desktop/src/utils/dictationAnywhere.ts`, PR-28):
 
-1. **Turn it on.** **Settings > Models > Speech models > Dictate into other apps**. Turning the switch on shows MSG-CLIPBOARD-EXPLAIN and, on macOS, calls `askForMediaAccess('microphone')` so the TCC prompt comes while the person looks at Biorouter. On Windows and Linux the row shows MSG-WINDOW-OPEN. The switch and the chosen shortcut live in `<config>/dictation/anywhere.json`, written only by Electron main and read by main at launch to build the tray item and register the shortcut (DD-88). `crates/biorouter/src/security/computer_use.rs` reads the shortcut from that file on each `press_key`, in whichever Biorouter process runs the agent. The file is outside `config.yaml`, so `/config/upsert` cannot reach it, and outside renderer `localStorage`, which neither main at launch nor the agent's process could read; like the privacy master switch record, a shell can still edit it (accident prevention, not a boundary).
+1. **Turn it on.** **Settings > Models > Speech models > Dictate into other apps**. Turning the switch on shows MSG-CLIPBOARD-EXPLAIN and, on macOS, calls `askForMediaAccess('microphone')` so the TCC prompt comes while the person looks at Biorouter. On Windows and Linux the row shows MSG-WINDOW-OPEN. The switch and the chosen shortcut live in `<config>/dictation/anywhere.json`, written only by Electron main and read by main at launch to build the tray item and register the shortcut (DD-88). The file is outside `config.yaml`, so `/config/upsert` cannot turn the global shortcut on, and outside renderer `localStorage`, which main could not read at launch; like the privacy master switch record, a shell can still edit it (accident prevention, not a boundary).
 2. **Start.** The tray item **Dictate to clipboard**, added to `updateTrayMenu` in `ui/desktop/src/utils/autoUpdater.ts` while policy allows, or the global shortcut. Below that tray item, **Include my private terms** starts one recording with private terms after MSG-PRIVATE-TERMS ([including private terms](#including-private-terms-for-one-recording)). The tray exists only while **Show in menu bar** is on in **Settings > App**, and `createTray` turns that setting off when the icon file is missing or the tray cannot be created [C `main.ts` `createTray`, `disableTray`]. While the tray is absent, the row shows MSG-NO-TRAY and the switch turns on only together with a shortcut, so the feature always has a way in. While the switch is off, the tray item opens Settings at that row instead of recording; with no model installed, it opens the Speech models section. The shortcut is off until the person picks one (`CommandOrControl+Alt+Shift+D` suggested); `globalShortcut.register()`'s result is checked, and `false` shows MSG-SHORTCUT-TAKEN. On GNOME Wayland the picker is replaced by MSG-GNOME. Toggle only: Electron reports no key up.
 3. **Record.** Main shows a recording tray image and the items **Stop and copy** and **Cancel**, starts `powerSaveBlocker.start('prevent-app-suspension')`, and opens a hidden capture window (`show: false`, `focusable: false`, `skipTaskbar: true`, `backgroundThrottling: false`) on the renderer partition, loading `#/dictation-capture`. That page runs the composer's capture and transport with `target_kind: "external"`. Deadlines come from worklet counts or main process timers, because hidden pages slow `setInterval` to once per second.
 4. **Stop and copy.** A second trigger or **Stop and copy** finishes the stream. Main writes with `clipboard.writeText`, then compares `readText()`. A match shows the notification MSG-CLIPBOARD-COPIED (`<key>` is ⌘V or Ctrl+V); a mismatch (a Wayland clipboard that needs focus) opens a focused review card holding **Copy**. `no_speech` shows MSG-CLIPBOARD-NOTHING and leaves the clipboard unchanged; a result made only of dictionary words shows MSG-CLIPBOARD-ECHO and copies nothing.
 5. **Errors.** A microphone refusal opens the review card with the mapped sentence and its action (MSG-MIC-DENIED-MAC, MSG-MIC-DENIED-WIN, MSG-NO-DEVICE, MSG-MIC-BUSY). An engine failure opens it with MSG-ENGINE-FAILED and **Retry**.
 6. **Afterwards.** The tray image returns, the power save blocker stops, and the capture window idles, then closes. The last transcript stays in main's memory for at most 5 minutes, for the review card only. Notifications carry counts, never text.
 
-On Windows and Linux the tray item and shortcut work only while a Biorouter window is open (minimized is fine), because closing the last window quits the app there [C `main.ts` `window-all-closed`]. On macOS the menu bar icon keeps the app alive while it is shown; without it, closing the last window quits, as on Windows and Linux (`process.platform !== 'darwin' || !tray` [C]). The feature is absent on `serve`, where `renderer.tsx`'s stand in reports it unavailable. Copilot refuses the person's chosen shortcut on any target (DD-88). The desktop path cannot attach the Windows cloud clipboard exclusion to the text with Electron 39 (see S3) [R].
+On Windows and Linux the tray item and shortcut work only while a Biorouter window is open (minimized is fine), because closing the last window quits the app there [C `main.ts` `window-all-closed`]. On macOS the menu bar icon keeps the app alive while it is shown; without it, closing the last window quits, as on Windows and Linux (`process.platform !== 'darwin' || !tray` [C]). The feature is absent on `serve`, where `renderer.tsx`'s stand in reports it unavailable. The desktop path cannot attach the Windows cloud clipboard exclusion to the text with Electron 39 (see S3) [R].
 
 **The CLI form**: `biorouter dictate --copy`, with the capture child and the review rule, through the helper `crates/biorouter-cli/src/clipboard.rs` (which also fixes the TUI's copy, whose `write_clipboard` drops the clipboard at once [C `session/tui/mod.rs`]):
 
@@ -1129,7 +1074,7 @@ DD-9. On x86, the engine is built for `x86-64-v3` and needs AVX2, FMA, F16C and 
 |---|---|---|
 | Desktop app (S2, S3, S4) | MSG-CPU, then MSG-CPU-DESKTOP, as the microphone's reason and in Settings | the system's own dictation, without the Biorouter dictionary; or connect the app to a Biorouter server that supports dictation (S17) |
 | Intel build under Rosetta on macOS 12 to 14 (any version before 15) | MSG-CPU-ROSETTA | install the Apple Silicon build |
-| `serve` browser, Jupyter AI, other servers (S5 to S8, S13, S16) | MSG-CPU-SERVER; on a Linux virtual machine, MSG-CPU-VM after it; the `serve` banner says "Dictation: unavailable on this processor" | the person's Biorouter app on a computer whose processor supports dictation, with **Dictate to clipboard**; the system's own dictation |
+| `serve` browser and other servers (S5 to S8, S16) | MSG-CPU-SERVER; on a Linux virtual machine, MSG-CPU-VM after it; the `serve` banner says "Dictation: unavailable on this processor" | the person's Biorouter app on a computer whose processor supports dictation, with **Dictate to clipboard**; the system's own dictation |
 | CLI (S9 to S11, S19) | MSG-CPU, exit 2 | as above |
 
 A second helper build for such hosts is O-11, decided after the census M-11 of lab hosts.
@@ -1142,7 +1087,6 @@ Each item below has a working path today, so no surface is left without one (R8)
 |---|---|---|
 | Transcribing ACP audio blocks (`audio(true)` on stdio only, transcribed in `on_prompt` before `convert_acp_prompt_to_message`, labelled "(dictated)", public only per O-28) | None of the ACP clients checked (Zed, JetBrains AI Assistant, Jupyter AI's ACP client) sends audio [R] | **Dictate to clipboard** or `biorouter dictate --copy`, then paste; `/dictate` in the editor answers MSG-ACP-DICTATE; MSG-ACP-NOTE in the turn |
 | `br.dictate()` and `br.dictation.attach()` in app pages, behind a deny by default `capabilities.dictation {enabled, max_seconds ≤ 120}`, `microphone=(self)` only for a declaring app, recording only from a user gesture and never from a `ui_*` tool, public only, text only | On the shared origin, agent written code could reach a granted microphone; per app origins (SD-14's follow up) come first (O-16) | **Dictate into this app** in the desktop preview if M-15 passes; **Dictate to clipboard** |
-| A JupyterLab dictionary panel | The microphone ships first (O-30) | `biorouter dictionary review` in a JupyterLab terminal; `serve`'s **Dictionary** page on the same host |
 | Hold to talk in the terminal | On Unix it needs crossterm's `REPORT_EVENT_TYPES` flag, which only terminals with the kitty keyboard protocol honour; on Windows crossterm always reports key release [R crossterm 0.28.1 `event.rs`]. The TUI already pushes `DISAMBIGUATE_ESCAPE_CODES` and keeps only `KeyEventKind::Press` [C `session/tui/mod.rs`, three filters]. The flag does not break key repeat by itself: with it pushed, auto repeat arrives as `KeyEventKind::Repeat` [R crossterm `parse.rs`], which those filters drop, so each must first accept `Press` or `Repeat` (DD-74) | Ctrl+T toggles |
 | A GNOME Wayland global shortcut | Electron 39 cannot register one on GNOME; GNOME works from Electron 43 with a reverse DNS `desktopName` [R] | The tray item (with the AppIndicator extension) and the composer microphone; MSG-GNOME |
 | Push to talk and synthetic paste for the clipboard | Electron reports no key up for global shortcuts, and synthetic paste needs Accessibility permission | Toggle, then the person pastes |
@@ -1150,18 +1094,20 @@ Each item below has a working path today, so no surface is left without one (R8)
 
 ## Message catalog
 
-Renderer copy lives in `ui/desktop/src/components/dictation/copy.ts` and `components/dictionary/copy.ts`; CLI copy in `crates/biorouter-cli/src/dictation/messages.rs`; both are pinned by snapshot tests. The other dictation documents quote these by id. Text in angle brackets is filled in unless the row says it stays as written; bold marks a button or link label. Every sentence a person sees is in this table; a pull request that needs a new one adds its row here first. "Biorouter does not … send it anywhere else" (MSG-DISCLOSE-HOST, MSG-JUPYTER-TIP) speaks for Biorouter only, not for a proxy in front of it, and is true only after PR-01 removes the inherited cloud dictation; no document may say it of an earlier build.
+Renderer copy lives in `ui/desktop/src/components/dictation/copy.ts` and `components/dictionary/copy.ts`; CLI copy in `crates/biorouter-cli/src/dictation/messages.rs`; both are pinned by snapshot tests. The other dictation documents quote these by id. Text in angle brackets is filled in unless the row says it stays as written; bold marks a button or link label. Every sentence a person sees is in this table; a pull request that needs a new one adds its row here first. "Biorouter does not … send it anywhere else" (MSG-DISCLOSE-HOST) speaks for Biorouter only, not for a proxy in front of it, and is true only after PR-01 removes the inherited cloud dictation; no document may say it of an earlier build.
+
+Two groups of message ids were retired on 2026-11-05 and are not reused: the Copilot refusal message (O-15) and the Jupyter AI messages (O-30).
 
 | Id | Text | Shown where |
 |---|---|---|
-| MSG-POLICY | Dictation is turned off on this computer by your organization's managed policy. | Every surface: Settings policy note, CLI (exit 2), Jupyter tooltip, tray, `/dictation/*` 403 |
+| MSG-POLICY | Dictation is turned off on this computer by your organization's managed policy. | Every surface: Settings policy note, CLI (exit 2), tray, `/dictation/*` 403 |
 | MSG-POLICY-CAPTURE | Your organization's managed policy turns off live microphone dictation on this computer. Transcribing a recording still works. | As MSG-POLICY, when only `capture` is off |
 | MSG-POLICY-DOWNLOADS | Your organization's managed policy turns off model downloads on this computer. Speech models come only from \<folder>; ask your administrator to place one there. | Settings, popover, CLI install, install route 403, when `model_downloads: false` refuses a download |
 | MSG-POLICY-MODELS | Your organization's managed policy allows only these speech models here: \<models>. | Settings, popover, CLI install, install route 403, when `allowed_models` excludes the request |
-| MSG-NO-ENGINE | This build of Biorouter has no local dictation engine. | Microphone tooltip, Settings, CLI step 1, Jupyter |
+| MSG-NO-ENGINE | This build of Biorouter has no local dictation engine. | Microphone tooltip, Settings, CLI step 1 |
 | MSG-CPU | This processor does not support the instructions local dictation needs (\<missing>). Your system's own dictation still works, without your Biorouter dictionary. | Desktop, CLI, the worker self test; \<missing> is `missing_cpu_features`, for example AVX2, FMA, F16C, BMI2 on x86 or dotprod on Linux arm64 |
 | MSG-CPU-DESKTOP | To use your Biorouter dictionary, connect this app to a Biorouter server whose processor supports dictation, in Settings > App > Use external server. | After MSG-CPU on the desktop |
-| MSG-CPU-SERVER | This server's processor cannot run local dictation (it lacks \<missing>). Your system's own dictation still works, without your Biorouter dictionary. If you have the Biorouter app on a computer whose processor supports dictation, Dictate to clipboard works there. | `serve` browser, Jupyter, other servers |
+| MSG-CPU-SERVER | This server's processor cannot run local dictation (it lacks \<missing>). Your system's own dictation still works, without your Biorouter dictionary. If you have the Biorouter app on a computer whose processor supports dictation, Dictate to clipboard works there. | `serve` browser, other servers |
 | MSG-CPU-VM | If this is a virtual machine, ask its administrator to expose the host CPU model (for example `host-passthrough`). | After MSG-CPU-SERVER on a Linux virtual machine |
 | MSG-CPU-ROSETTA | This is the Intel build of Biorouter running under Rosetta, which cannot run local dictation on this version of macOS. Install the Apple Silicon build of Biorouter. | Intel build under Rosetta on macOS 12 to 14 (any version before 15) |
 | MSG-NO-MODEL-CLI | Dictation needs a speech model on this computer (\<host>, account \<user>). Install \<model> (\<size>, from BaranziniLab's GitHub release)? Run `biorouter dictation install`, or type `/dictate install`. | CLI with no model |
@@ -1191,7 +1137,7 @@ Renderer copy lives in `ui/desktop/src/components/dictation/copy.ts` and `compon
 | MSG-NO-DEVICE | No microphone found. Connect one or make it the system default, then try again. | Composer card, review card, CLI |
 | MSG-MIC-BUSY | The microphone is in use by another app, or the system blocked it. | Composer card, review card |
 | MSG-INSECURE | Dictation needs a secure address. Your browser blocks the microphone on http://\<host>. Open Biorouter through an SSH tunnel (then it is localhost) or through an HTTPS address. | Microphone tooltip on an insecure page |
-| MSG-SHARED-ORIGIN | Your browser's microphone permission covers every page at \<origin>, including pages that code or an agent wrote there, such as Biorouter apps and notebook outputs. Choose Allow this time unless you trust every page there. | Once per origin before the first recording: on `serve` under a path prefix or in a browser that does not enforce `Permissions-Policy`; always in Jupyter |
+| MSG-SHARED-ORIGIN | Your browser's microphone permission covers every page at \<origin>, including pages that code or an agent wrote there, such as Biorouter apps and notebook outputs. Choose Allow this time unless you trust every page there. | Once per origin before the first recording: on `serve` under a path prefix or in a browser that does not enforce `Permissions-Policy` |
 | MSG-413 | The proxy in front of Biorouter refused the audio upload (413). Its request size limit is below 64 KB. | Composer card |
 | MSG-WAIT | Waiting for a free connection to Biorouter | Composer card after 1.5 s without an answer |
 | MSG-SERVER-BUSY | The server is busy transcribing for other people. Trying again in \<n> seconds. | Composer card on a 429 |
@@ -1207,14 +1153,14 @@ Renderer copy lives in `ui/desktop/src/components/dictation/copy.ts` and `compon
 | MSG-SYNC-HINT | To use your laptop's dictionary terms here, run on your laptop: `biorouter dictionary export - \| ssh <host> biorouter dictionary import -` | CLI over SSH, after the routes |
 | MSG-CONTAINER | This container has no microphone. Transcribe a recording with `biorouter transcribe <file>`, or run `biorouter serve` and dictate from your browser. | CLI in a container (`/.dockerenv`, `/run/.containerenv`, `KUBERNETES_SERVICE_HOST`, or a container runtime in `/proc/1/cgroup`) |
 | MSG-LINUX-NOAUDIO | No audio system is running here (no PulseAudio, PipeWire or ALSA capture device). | CLI on Linux without a sound server |
-| MSG-LINUX-ROUTES | To dictate with this computer's model and dictionary, run `biorouter serve` here and open it from your own computer through an SSH tunnel or an HTTPS address, or transcribe a recording with `biorouter transcribe <file>`. In JupyterLab with Jupyter AI, use the microphone in its chat. | CLI on Linux without a sound server, outside SSH, a container and WSL, always after MSG-LINUX-NOAUDIO |
+| MSG-LINUX-ROUTES | To dictate with this computer's model and dictionary, run `biorouter serve` here and open it from your own computer through an SSH tunnel or an HTTPS address, or transcribe a recording with `biorouter transcribe <file>`. | CLI on Linux without a sound server, outside SSH, a container and WSL, always after MSG-LINUX-NOAUDIO |
 | MSG-WSL2-NOPULSE | WSL delivers audio through WSLg's PulseAudio server. Install the PulseAudio client library (`sudo apt install libpulse0`), then try again. | CLI in WSL2 with WSLg, when `libpulse.so.0` is missing |
 | MSG-WSL2-NOWSLG | This WSL has no audio, because WSLg is not available or is turned off. Use Biorouter on Windows, run `biorouter serve` here and open the address it prints in a Windows browser, or transcribe a recording with `biorouter transcribe <file>`. | CLI in WSL2 without `/mnt/wslg/PulseServer` |
 | MSG-WSL1 | WSL1 has no audio. Use Biorouter on Windows, or WSL2 with WSLg. | CLI in WSL1 |
 | MSG-TCC-ZERO | macOS gave Biorouter only silence, which usually means \<terminal app> is not allowed to use the microphone. Turn it on in System Settings > Privacy & Security > Microphone, then quit and reopen it. If it is not listed: `tccutil reset Microphone <bundle id>`. If \<terminal app> never asks, it cannot use the microphone on macOS: run Biorouter in Terminal, iTerm2, Ghostty or VS Code instead, or use Dictate to clipboard in the Biorouter app. | CLI on macOS, step 10 |
 | MSG-WIN-ZERO | Windows gave Biorouter only silence. Turn on “Let desktop apps access your microphone” in Settings > Privacy & security > Microphone. | CLI on Windows, step 10 |
 | MSG-ACP-NOTE | (An audio clip was attached here. Biorouter does not take audio from this editor, so the clip was left out. To dictate, use Dictate to clipboard in the Biorouter app or run `biorouter dictate --copy`, then paste. Your system's own dictation also works, without your Biorouter dictionary.) | In an ACP turn |
-| MSG-ACP | Editors that connect over ACP do not send audio, so there is no microphone button in their chat. To dictate with Biorouter's speech model and dictionary, use Dictate to clipboard in the Biorouter app, or run `biorouter dictate --copy` in a terminal, then paste. Your system's own dictation also works, without your Biorouter dictionary. | `docs/cli/command-reference.md`, `docs/integrations/jupyter-ai-persona.md` |
+| MSG-ACP | Editors that connect over ACP do not send audio, so there is no microphone button in their chat. To dictate with Biorouter's speech model and dictionary, use Dictate to clipboard in the Biorouter app, or run `biorouter dictate --copy` in a terminal, then paste. Your system's own dictation also works, without your Biorouter dictionary. | `docs/cli/command-reference.md` |
 | MSG-ACP-DICTATE | To dictate, use Dictate to clipboard in the Biorouter app or run `biorouter dictate --copy`, then paste. Your system's own dictation also works, without your Biorouter dictionary. | The answer to the editor's `/dictate` command, with no model turn |
 | MSG-APPS | Apps cannot use the microphone themselves. Click into the app's text field, then use Dictate into this app, or use Dictate to clipboard in the Biorouter app (or `biorouter dictate --copy`) and paste. Your system's own dictation also works, without your Biorouter dictionary. | Preview bar tooltip; SDK reference |
 | MSG-APPS-NO-PREVIEW | Apps cannot use the microphone themselves. Use Dictate to clipboard in the Biorouter app (or `biorouter dictate --copy`) and paste. Your system's own dictation also works, without your Biorouter dictionary. | SDK reference, in place of MSG-APPS if M-15 fails |
@@ -1230,18 +1176,20 @@ Renderer copy lives in `ui/desktop/src/components/dictation/copy.ts` and `compon
 | MSG-NO-CLIPBOARD | No clipboard is reachable here, so the text is printed below. Copy it from the terminal. | `dictate --copy` (exit 5) |
 | MSG-CLIPBOARD-WAIT | Copied. Waiting up to 60 s for you to paste… | `dictate --copy` on Linux |
 | MSG-REMOTE-HTTP | Dictation sends your voice to \<host> without encryption, as your typed messages already are. Use an https address for this server to protect it. Continue? | S17, once per `http:` backend URL |
-| MSG-REMOTE-NO-KEY (O-17 recommended) | Dictation on \<host> uses only your public dictionary terms until you enter this server's User Action Key in Settings > App > Use external server. Installing models there also needs the key. | S17, keyed backend without the key |
-| MSG-REMOTE-NO-KEY (O-17 alternative) | Dictation on \<host> needs this server's User Action Key. Enter it in Settings > App > Use external server. | S17, if O-17 chooses the proof |
+| MSG-REMOTE-NO-KEY | Dictation on \<host> uses only your public dictionary terms until you enter this server's User Action Key in Settings > App > Use external server. Installing models there also needs the key. | S17, keyed backend without the key (O-17) |
 | MSG-DISCLOSE-LOCAL | Speech is transcribed by Biorouter on this computer. Audio is not saved. | Settings, popover (the desktop's own daemon) |
 | MSG-DISCLOSE-REMOTE | Audio is transcribed on \<host>, the computer running Biorouter's service. Models install there, not on this device. | Settings, popover, `ExternalBackendSection.tsx` (S17) |
 | MSG-DISCLOSE-HOST | Your voice is sent to the Biorouter server on \<host> and turned into text there. Biorouter does not save it or send it anywhere else. The text appears here for you to check before you send it. | Settings, popover, and once in the card (`serve`) |
 | MSG-SETUP | Dictation turns your speech into text \<where>. It needs a speech model: \<name> (\<size>), downloaded once from the Baranzini Lab's model repository on GitHub into \<folder>. Audio is not saved. (where is "on this computer" or "on the Biorouter server at \<host>"; buttons **Install**, **Not now**; link **More in Settings**) | Setup popover |
-| MSG-SETUP-SUGGEST | The agent and Biorouter can propose terms they see in your chats. Biorouter also looks for terms in every message you write, on this computer. Nothing is added until you accept it. (shown under **Suggest dictionary words from my chats**, which starts ticked, O-33; the middle sentence is left out when `learn_from_chats` starts off; in `on_request` or `add` mode the last sentence reads "You can change how the agent's terms are added on the Dictionary page.") | Setup popover, Settings |
+| MSG-SETUP-SUGGEST | The agent and Biorouter can propose terms they see in your chats. Biorouter also looks for terms in every message you write, on this computer. A term goes into your dictionary when you ask the agent to add it, or agree when it offers; everything else waits for you to accept it. (shown under **Suggest dictionary words from my chats**, which starts ticked, O-33; the middle sentence is left out when `learn_from_chats` starts off; when `agent_writes` is `suggest` the last sentence reads "Nothing is added until you accept it.", and when it is `add` it reads "The agent's terms are added at once, and you can undo each one; everything else waits for you to accept it.") | Setup popover, Settings |
 | MSG-PRIVATE-DRAFT | This message was dictated with your private dictionary terms turned on, so it may contain them, and \<model> is a public model. Send it anyway? (buttons **Send anyway**, **Cancel**) | Composer, before a send, a queue or a steer |
 | MSG-PRIVATE-DRAFT-SWITCH | This draft was dictated with your private dictionary terms turned on, so it may contain them. If you switch this chat to \<model>, a public model, the draft goes there with your next message. Switch anyway? (buttons **Switch anyway**, **Cancel**) | Model switcher |
-| MSG-PRIVATE-TERMS | Your private dictionary terms may appear in this text, and Biorouter cannot keep them away from public models once you paste or post it. Include them? (buttons **Include**, **Public terms only**; at a terminal, `[y/N]`) | After **Include my private terms** (Crew, **Dictate into this app**, the tray) and `biorouter dictate --private-terms`; one recording |
+| MSG-PRIVATE-TERMS | Your private dictionary terms may appear in this text, and Biorouter cannot keep them away from public models or from other institutions' models once you paste or post it. Include them? (buttons **Include**, **Public terms only**; at a terminal, `[y/N]`) | After **Include my private terms** (Crew, **Dictate into this app**, the tray) and `biorouter dictate --private-terms`; one recording |
 | MSG-PRIVATE-TERMS-REFUSED | Private dictionary terms need you at your own terminal and a private model configured on this computer, so `--private-terms` was refused. Run the command without it to dictate with public terms. | `biorouter dictate --private-terms` when DD-77 does not admit it (exit 2) |
 | MSG-PUBLICIZE-WARN | This term came from a private chat. Making it public lets it appear when you dictate into chats on public models. (buttons **Make public**, **Cancel**) | Dictionary page |
+| MSG-ROW-PRIVATE | Used only in private chats | Dictionary page, the start of line two of a private row with no institution (O-6, O-32) |
+| MSG-ROW-PRIVATE-INSTITUTION | Used only in private chats on \<institutions> models and on local models | Dictionary page, the start of line two of a private row that carries institutions; \<institutions> is each institution's published name (else its id) joined with "or" (O-32) |
+| MSG-ROW-PRIVATE-LOCAL | Used only in private chats on local models | Dictionary page, the start of line two of a private row whose institution list is empty (O-32) |
 | MSG-EXPORT-PRIVATE | This file leaves Biorouter. It will include your private terms. (buttons **Export with private terms**, **Export public terms only**) | Dictionary page export |
 | MSG-DICTIONARY-AGENT | Changing the dictionary needs the person. The agent's terms go through dictionary__add_terms. | Dictionary route refusals to an agent |
 | MSG-DICTIONARY-HOST-TIER | Do this on the server: `biorouter dictionary <verb> <term>` (as the service user). | Dictionary page on `serve`, before the click; \<verb> is `publicize` for **Make public…** and `privatize` for **Make private…**; the route's 403 leaves \<term> as written |
@@ -1260,22 +1208,11 @@ Renderer copy lives in `ui/desktop/src/components/dictation/copy.ts` and `compon
 | MSG-EMPTY | No terms yet. Add the words dictation should spell your way, such as UCSF or EPAS1. | Dictionary page empty state |
 | MSG-TOOL-SUGGESTED | Recorded \<n> suggestions for the person's review in Dictionary. Nothing changes in dictation until they accept. | `dictionary__add_terms` result |
 | MSG-TOOL-ADDED | Added \<n> terms to the dictionary. They are marked for the person's review. | `dictionary__add_terms` result |
-| MSG-TOOL-REVIEW-HINT | Review them with `biorouter dictionary review` on this computer, or in Dictionary in Biorouter. | Appended on ACP, Jupyter and the CLI |
+| MSG-TOOL-REVIEW-HINT | Review them with `biorouter dictionary review` on this computer, or in Dictionary in Biorouter. | Appended on ACP and the CLI |
 | MSG-SERVE-TUNNEL | Browsers refuse the microphone and this page on http://\<lan addr>:\<port>. On your own computer run `ssh -N -L <port>:127.0.0.1:<port> <host>`, then open http://127.0.0.1:\<port>/?t=\<token>. | `serve` banner: a non loopback bind without `--public-url`, outside a container; the port, token and host filled in, and no `?t=` part under `--no-token` |
 | MSG-SERVE-CONTAINER | This runs in a container. On the computer that publishes its port, open http://127.0.0.1:\<host port>/?t=\<token>, where \<host port> is the port published for container port \<port> (with Docker: -p 127.0.0.1:\<host port>:\<port>). Browsers refuse the microphone on other plain http addresses. | `serve` banner: a non loopback bind without `--public-url`, inside a container; the token and \<port> filled in, \<host port> left as written |
 | MSG-CREW-TIP | Dictate. The text goes into the box for you to check; nothing is posted until you press Send. | Crew microphone tooltip |
-| MSG-JUPYTER-TIP | Dictate. Your browser records; Biorouter on this Jupyter server turns it into text. Biorouter does not save the audio or send it anywhere else. | Jupyter microphone tooltip |
 | MSG-RESTART-BUSY | Dictation in progress. Restart anyway? | **Restart & update** while dictating |
-| MSG-COPILOT-SELF | Biorouter Copilot does not operate Biorouter's own window or press its dictation shortcuts. | Copilot refusal |
-| MSG-JUPYTER-INSECURE | Dictation needs a secure page. This JupyterLab address is plain HTTP, so your browser will not offer the microphone. Open JupyterLab at an https address, or at http://localhost through an SSH tunnel. | Jupyter tooltip, button disabled |
-| MSG-JUPYTER-NO-MODEL | Local dictation is not set up on this Jupyter server. Run `biorouter dictation install` in a JupyterLab terminal (on JupyterHub, ask your administrator if the download is blocked), then try again. | Jupyter tooltip, button disabled |
-| MSG-JUPYTER-NO-BINARY | Dictation needs the biorouter command on this Jupyter server. Install Biorouter or set BIOROUTER_EXECUTABLE, then restart JupyterLab. | Jupyter tooltip, button disabled |
-| MSG-JUPYTER-DENIED | Your browser blocked the microphone for this site. Allow it in the site settings, then try again. | Jupyter, after a click |
-| MSG-JUPYTER-NO-DEVICE | No microphone is available on this computer, or another app is using it. | Jupyter, after a click |
-| MSG-JUPYTER-RECORDING | Listening. Click again to stop (2 minutes at most). | Jupyter, recording |
-| MSG-JUPYTER-TRANSCRIBING | Transcribing on this Jupyter server… | Jupyter, transcribing |
-| MSG-JUPYTER-NOTHING | Nothing was heard. Try again a little closer to the microphone. | Jupyter, `no_speech` or `too_short` |
-| MSG-JUPYTER-FAILED | Transcription failed on this Jupyter server. Try again; if it keeps failing, run `biorouter dictation status --verbose` in a JupyterLab terminal. | Jupyter, after the 180 s timeout, a nonzero exit of `transcribe`, or a proxy's 413 |
 | Existing 403, unchanged (`web_ui.rs` `insecure_address`) | `Open Biorouter through localhost or HTTPS. Use an SSH tunnel, or an HTTPS reverse proxy that passes the browser's Sec-Fetch-* headers through, and a current browser that sends them.` | S7 |
 | Existing Crew refusal (`CrewNeedsDesktop.tsx`) | Crew needs the Biorouter desktop app | Crew in a `serve` browser |
 
@@ -1288,7 +1225,7 @@ Renderer copy lives in `ui/desktop/src/components/dictation/copy.ts` and `compon
 - [Browser access](../deployment/browser-access.md): how `biorouter serve` is reached and proxied, which S5, S6 and the proxy guidance build on.
 - [Serve decisions](../deployment/serve-decisions.md): SD-8, SD-14 and SD-15, and the SD-16 record this work adds.
 - [Headless Linux deployment](../deployment/headless-linux.md): the systemd service account and the plain HTTP address that S7 and S8 correct.
-- [Jupyter AI persona](../integrations/jupyter-ai-persona.md): the integration that S13 extends with a microphone.
+- [Jupyter AI persona](../integrations/jupyter-ai-persona.md): the integration where dictation is not offered, by the owner's decision O-30 (S13).
 - [Crew](../crew/README.md): the workspace whose composers S14 adds microphones to, and the manual its new strings join.
 - [Apps SDK reference](../apps-sdk/sdk-reference.md): where MSG-APPS and MSG-APPS-BROWSER are published for app authors.
 - [CLI command reference](../cli/command-reference.md): the `serve` and `acp` sections that gain dictation lines.
