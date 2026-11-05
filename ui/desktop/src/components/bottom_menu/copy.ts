@@ -1,7 +1,8 @@
 /**
  * The composer pickers' strings: the Tools chip and its three lists, the model
- * and effort chip, the footer line (folder, context, cost) and the folder
- * chip's card (folder access).
+ * and effort chip, the footer line (folder, context, cost) and the three cards
+ * its items open (`FooterCard`: the working folder, the context window, the
+ * cost).
  *
  * One place, so the tests import what the interface says instead of restating
  * it (Crew's `copy.ts` pattern). Sentence case, the noun is "chat", the
@@ -121,31 +122,26 @@ function grantScope(descendants: boolean): string {
 }
 
 /**
- * The working folder's card (`FolderAccessCard`): it opens from the footer's folder chip and
- * names the folder the chat works in and every other folder the chat may use, each with Revoke.
- * It replaced the footer's "Folder access" button and its dialog.
+ * The working folder's card (`FolderAccessCard`, a `FooterCard`): it opens from the footer's folder
+ * chip and names the folder the chat works in, lets an empty chat choose another, and lists every
+ * other folder the chat may use, each with Revoke. It replaced the footer's "Folder access" button
+ * and its dialog.
  */
 export const FOLDER_ACCESS_COPY = {
   /** The card's accessible name (it is a `dialog`). */
-  cardLabel: 'Folder access',
+  cardLabel: 'Working folder',
+  /** The first section's label. */
   workingFolder: 'Working folder',
   /** An existing chat whose folder has not been read yet, or whose row names none. */
   workingFolderUnknown: 'Not known yet.',
-  /**
-   * What folder approval covers, said exactly: Biorouter's built-in file tools (the editor, file
-   * analysis and images, `file_access_plan` in biorouter-mcp) ask for it, shell commands never do. A
-   * tool can still ask first as the person's permission mode says, so nothing here claims that
-   * nothing asks.
-   */
-  workingFolderNote:
-    'Built-in file tools need no folder approval in this folder. Shell commands never ask for it.',
-  otherFolders: 'Other folders this chat can use',
+  /** #44: once the chat has messages the folder cannot change, and the card says so. */
+  lockedNote: 'Fixed once the chat has messages.',
+  /** The empty chat's way to another folder (the native chooser). */
+  chooseFolder: 'Choose folder…',
+  otherFolders: 'Other approved folders',
   loading: 'Checking folder access…',
   loadFailed: 'Folder access could not be loaded.',
-  /** Scoped to the tools that ask: a shell command reads another folder without asking. */
-  none: 'None. Built-in file tools ask before they use any other folder.',
-  /** Home has no chat yet, so there is nothing to list. */
-  noChatYet: 'Built-in file tools ask before they use any other folder.',
+  none: 'None.',
   grantAccess,
   grantScope,
   /** The muted line under a granted folder's path. */
@@ -160,8 +156,15 @@ export const FOLDER_ACCESS_COPY = {
   approvalKey: 'Folder approval key',
   approvalKeyHelp:
     'Use the separate key configured with biorouter serve --folder-access-approval. It is cleared after each revocation.',
-  chooseHint: 'Click to choose a different folder.',
-  lockedHint: 'The working folder stays fixed once a chat has messages.',
+  /**
+   * What folder approval covers, said exactly, on Home and in a chat. Only the Developer and Files
+   * extensions' editor, file analysis and image tools ask (`admit_file_access` in
+   * `agents/extension_manager.rs`, `file_access_plan` in `biorouter-mcp/src/file_access.rs`); the
+   * shell and the PDF, Word and Excel tools never do. A tool can still ask first as the person's
+   * permission mode says, so nothing here claims that nothing else asks.
+   */
+  whoAsks:
+    'The file editor, file analysis and image tools ask before they use another folder. Shell commands and document tools do not ask.',
 } as const;
 
 export const FOOTER_COPY = {
@@ -171,19 +174,70 @@ export const FOOTER_COPY = {
   folderUnknownLabel: 'Working folder: not known yet',
   folderUpdateFailedTitle: 'Working folder update failed',
   folderUpdateFailed: 'The working folder could not be changed.',
-  /** Shown only below half: a full window says nothing worth reading. */
+  /**
+   * What is left of the window: beside the ring below half (a full window says nothing worth
+   * reading), and the context card's reading.
+   */
   contextLeft: (pct: number) => `${pct}% left`,
+  /** The ring's accessible name, which says the whole reading without opening the card. */
   contextTooltip: (pct: number, used: string, total: string) =>
     `${pct}% context left · ${used} of ${total}`,
-  contextLabel: 'Context',
-  contextUsed: 'Context window used',
-  /** The gauge's reading. The footer ring says what is LEFT; the bar fills with what is USED. */
-  gaugeUsed: (pct: number) => `${pct}% used`,
-  compact: 'Compact chat',
-  nothingToCompact: 'Nothing to compact yet',
-  thresholdLabel: 'Auto-compact threshold',
-  thresholdTooltip: (pct: number) => `Auto-compact at ${pct}%`,
   costUnavailable: 'Chat cost unavailable',
   cost: (label: string, estimated: boolean) =>
     `${estimated ? 'Estimated chat total' : 'Chat cost'} ${label}`,
+} as const;
+
+/**
+ * The context ring's card (`ContextWindowIndicator`, a `FooterCard`): how much of the window is
+ * left, the bar with the auto-compact marker, and Compact. Figures come in already formatted
+ * (`fmt` in ContextWindowIndicator.tsx: "92k", "1.1M").
+ */
+export const CONTEXT_CARD_COPY = {
+  /** The card's accessible name (it is a `dialog`). */
+  cardLabel: 'Context',
+  section: 'Context window',
+  /** The section's reading: what is LEFT, as the ring draws it. */
+  left: FOOTER_COPY.contextLeft,
+  /** The muted line under it: what is USED, as the bar fills. */
+  used: (used: string, total: string) => `${used} of ${total} tokens used`,
+  /** The bar's accessible name. */
+  barLabel: 'Context window used',
+  /** The marker's accessible name; it is a slider. */
+  thresholdLabel: 'Auto-compact threshold',
+  /** The marker's `aria-valuetext`, in place of the hover tooltip it used to have. */
+  thresholdValue: (pct: number) => `Auto-compact at ${pct}%`,
+  /** The marker's `aria-valuetext` while the saved threshold turns automatic compaction off. */
+  thresholdOff: 'Automatic compaction off',
+  /** The note under the bar; `pct` is what Biorouter compacts at, which the marker may not reach. */
+  autoCompactNote: (pct: number) =>
+    `Biorouter compacts this chat automatically at ${pct}% used. Drag the marker to change it.`,
+  /**
+   * The note while the saved threshold is 0 or 1 or outside them, which the daemon reads as off
+   * (`check_if_compaction_needed`). Moving the marker saves a share inside them.
+   */
+  autoCompactOff: 'Automatic compaction is off. Drag the marker to turn it on.',
+  compact: 'Compact chat',
+  /** Under a disabled Compact, while the chat has used no context. */
+  nothingToCompact: 'Nothing to compact yet.',
+} as const;
+
+/**
+ * The cost figure's card (`CostTracker`, a `FooterCard`): the chat's total and its tokens, then
+ * the cost per model. Money comes in already formatted (`formatCostEstimate` and
+ * `formatTooltipMoney` in CostTracker.tsx, which print "Unavailable" for an unknown price); token
+ * counts come in as numbers and are grouped here.
+ */
+export const COST_CARD_COPY = {
+  /** The card's accessible name (it is a `dialog`). */
+  cardLabel: 'Cost',
+  section: 'Cost of this chat',
+  /** The muted line under the total. */
+  tokens: (input: number, output: number) =>
+    `${input.toLocaleString()} input tokens · ${output.toLocaleString()} output tokens`,
+  /** When the estimate is partial: a price or a count is missing. */
+  partialNote: 'This is a conservative estimate from the token counts and prices available.',
+  byModel: 'By model',
+  /** The muted line under a model's name. */
+  modelDetail: (cost: string, input: number, output: number) =>
+    `${cost} · ${input.toLocaleString()} in · ${output.toLocaleString()} out`,
 } as const;

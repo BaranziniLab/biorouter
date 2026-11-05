@@ -141,10 +141,11 @@ describe('composer popup typography', () => {
    * Spec 3.7 acceptance: "No mono anywhere in the composer." Mono is for
    * machine strings (principle 3); a count, a cost or a folder name is not one.
    * The one sanctioned use is a full folder path, which lives in the folder
-   * chip's card (the working folder and each folder the chat may use, through
-   * one path component), not on the line. The chip itself has none.
+   * chip's card (the working folder and each folder the chat may use), set
+   * through the footer cards' one mono reading (`FooterCardValue mono`), not on
+   * the line. The chip and the folder card itself have none.
    */
-  const MONO_ALLOWED: Record<string, number> = { 'FolderAccessCard.tsx': 1 };
+  const MONO_ALLOWED: Record<string, number> = { 'FooterCard.tsx': 1 };
   const composerSurfaces = [
     ...popups.map((file) => join(DIR, file)),
     ...COMPOSER.map((file) => join(COMPONENTS, file)),
@@ -156,7 +157,7 @@ describe('composer popup typography', () => {
     const uses = code.match(/font-mono/g)?.length ?? 0;
     expect(
       uses,
-      `${name}: mono is for machine strings in the folder card only`
+      `${name}: mono is for machine strings in a footer card's mono reading only`
     ).toBeLessThanOrEqual(MONO_ALLOWED[name] ?? 0);
   });
 

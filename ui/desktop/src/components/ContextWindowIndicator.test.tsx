@@ -1,13 +1,25 @@
-import type React from 'react';
-import { render, screen, waitFor } from '@testing-library/react';
+import React, { useId } from 'react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   ContextWindowGauge,
   ContextWindowIndicator,
   contextWindowModelKey,
 } from './ContextWindowIndicator';
-import { FOOTER_COPY } from './bottom_menu/copy';
+import { CONTEXT_CARD_COPY, FOOTER_COPY } from './bottom_menu/copy';
+import {
+  FooterCard,
+  FooterCardGroup,
+  FooterCardRoot,
+  FooterCardSection,
+  FooterCardTrigger,
+} from './bottom_menu/FooterCard';
+import {
+  FOOTER_CARD_CLOSE_GRACE_MS,
+  FOOTER_CARD_OPEN_DELAY_MS,
+  useFooterCard,
+} from './bottom_menu/useFooterCard';
 
 // The gauge reads and writes the auto-compact threshold through ConfigContext
 // (never straight to the API — see ContextWindowIndicator.configCache.test.tsx,
@@ -20,6 +32,8 @@ const mocks = vi.hoisted(() => ({
 vi.mock('./ConfigContext', () => ({
   useConfig: () => ({ read: mocks.read, upsert: mocks.upsert }),
 }));
+
+const THRESHOLD_KEY = 'BIOROUTER_AUTO_COMPACT_THRESHOLD';
 
 beforeAll(() => {
   vi.stubGlobal(
@@ -36,133 +50,466 @@ afterAll(() => {
   vi.unstubAllGlobals();
 });
 
-describe('ContextWindowGauge compaction control', () => {
+afterEach(() => {
+  vi.useRealTimers();
+});
+
+const ringButton = () => screen.getByTestId('context-window-indicator');
+const contextCard = () => document.querySelector<HTMLElement>('[data-testid="context-card"]');
+const cardOpen = () => contextCard()?.getAttribute('data-state') === 'open';
+
+function hoverOpenRing() {
+  fireEvent.pointerEnter(ringButton(), { pointerType: 'mouse' });
+  act(() => {
+    vi.advanceTimersByTime(FOOTER_CARD_OPEN_DELAY_MS + 10);
+  });
+}
+
+/**
+ * The card's body (`ContextWindowGauge`): ONE "Context window" section in the footer cards' shared
+ * format, with what is left as the reading, what is used as the detail, the bar and its marker, the
+ * auto-compact sentence and Compact chat. No inline "Context" label beside the bar, no tooltip on
+ * the marker and no icon-only Compact any more.
+ */
+describe('the context card’s body', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mocks.read.mockResolvedValue(null);
     mocks.upsert.mockResolvedValue(undefined);
   });
 
-  it('uses an inward compression icon and a Biorouter tooltip when disabled', async () => {
+  const gauge = (props: Partial<React.ComponentProps<typeof ContextWindowGauge>> = {}) => (
+    <ContextWindowGauge
+      totalTokens={92_000}
+      tokenLimit={128_000}
+      isTokenLimitLoaded
+      onCompact={vi.fn()}
+      {...props}
+    />
+  );
+
+  it('reads what is left, then what is used, then the bar, the note and Compact, in that order', () => {
+    const { container } = render(gauge());
+    const section = container.querySelector('section.br-footer-card__section')!;
+    expect(section).not.toBeNull();
+    const lines = [...section.querySelectorAll(':scope > p')].map((p) => [
+      p.className,
+      p.textContent,
+    ]);
+    expect(lines).toEqual([
+      ['br-footer-card__label', 'Context window'],
+      ['br-footer-card__value', '28% left'],
+      ['br-footer-card__detail', '92k of 128k tokens used'],
+      [
+        'br-footer-card__note',
+        'Biorouter compacts this chat automatically at 80% used. Drag the marker to change it.',
+      ],
+    ]);
+    expect(CONTEXT_CARD_COPY.left(28)).toBe('28% left');
+    expect(CONTEXT_CARD_COPY.used('92k', '128k')).toBe('92k of 128k tokens used');
+
+    const bar = screen.getByRole('progressbar', { name: CONTEXT_CARD_COPY.barLabel });
+    expect(bar).toHaveAttribute('aria-valuenow', '72');
+    const order = [
+      section.querySelector('.br-footer-card__detail')!,
+      bar,
+      section.querySelector('.br-footer-card__note')!,
+      screen.getByRole('button', { name: CONTEXT_CARD_COPY.compact }),
+    ];
+    for (let i = 1; i < order.length; i++) {
+      expect(order[i - 1].compareDocumentPosition(order[i])).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
+    }
+    // No inline label beside the bar: the section's own label names it.
+    expect(screen.queryByText('Context')).toBeNull();
+  });
+
+  it('gives what is left the same rounding as the ring, so the two never disagree', () => {
+    // 12.5% used and 87.5% left both round up: "100 minus what is used" would read
+    // "87% left" beside a ring named "88% context left".
+    render(
+      <ContextWindowIndicator
+        totalTokens={1_000}
+        tokenLimit={8_000}
+        isTokenLimitLoaded
+        onCompact={vi.fn()}
+      />
+    );
+    const ring = screen.getByRole('button', { name: '88% context left · 1k of 8k' });
+    fireEvent.click(ring, { detail: 1 });
+    const card = screen.getByRole('dialog', { name: 'Context' });
+    expect(within(card).getByText('88% left')).toBeInTheDocument();
+    expect(within(card).getByRole('progressbar')).toHaveAttribute('aria-valuenow', '13');
+  });
+
+  it('names the marker as a slider whose value is said in words, with no hover tooltip', async () => {
     const user = userEvent.setup();
-    render(
-      <ContextWindowGauge
-        totalTokens={0}
-        tokenLimit={1_100_000}
-        isTokenLimitLoaded
-        onCompact={vi.fn()}
-      />
-    );
+    mocks.read.mockResolvedValue(0.6);
+    render(gauge());
+    const slider = screen.getByRole('slider', { name: CONTEXT_CARD_COPY.thresholdLabel });
+    await waitFor(() => expect(slider).toHaveAttribute('aria-valuenow', '60'));
+    expect(slider).toHaveAttribute('aria-valuetext', 'Auto-compact at 60%');
+    expect(slider).toHaveAttribute('aria-valuemin', '20');
+    expect(slider).toHaveAttribute('aria-valuemax', '90');
+    expect(slider).toHaveClass('br-context-gauge__marker');
+    expect(slider.style.left).toBe('60%');
+    // The note follows the live threshold.
+    expect(screen.getByText(CONTEXT_CARD_COPY.autoCompactNote(60))).toBeInTheDocument();
 
-    const button = screen.getByRole('button', { name: 'Nothing to compact yet' });
-    expect(button).toBeDisabled();
-    expect(button).not.toHaveAttribute('title');
-    expect(screen.getByTestId('compact-conversation-icon')).toHaveClass('size-4');
-    // 1.5, not 1.75: design.md §3.9 mandates a single stroke weight for every
-    // glyph. This used to assert 1.75 — lucide's native default, which leaked in
-    // because the icon was imported straight from `lucide-react` instead of the
-    // `light()` wrapper in app-icons. The test was pinning the drift (three
-    // stroke weights rendered on one screen), so it moved with the fix.
-    expect(screen.getByTestId('compact-conversation-icon')).toHaveAttribute('stroke-width', '1.5');
-
-    await user.hover(button.parentElement!);
-    const tooltip = await screen.findByRole('tooltip');
-    expect(tooltip).toHaveTextContent('Nothing to compact yet');
-    expect(document.querySelector('[data-slot="tooltip-content"]')).toHaveClass(
-      'bg-background-inverse',
-      'text-text-inverse',
-      // `rounded-container` (12px). This asserted `rounded-sm`, then
-      // `rounded-inner` — both 4px, the rung the ladder reserves for things
-      // nested INSIDE a control. A tooltip is a floating surface, and the
-      // cohesion design puts every floating surface on one 12px recipe; the
-      // v1.89.0 review caught the tooltip as the last one still two steps off.
-      'rounded-container'
-    );
-    expect(document.querySelector('[data-slot="tooltip-content"] svg')).toBeNull();
+    await user.hover(slider);
+    await act(() => new Promise((resolve) => setTimeout(resolve, 700)));
+    expect(screen.queryByRole('tooltip')).toBeNull();
+    expect(document.querySelector('[data-slot="tooltip-content"]')).toBeNull();
   });
 
-  it('reads the bar as what is used, since the ring beside it reads what is left', () => {
-    render(
-      <ContextWindowGauge
-        totalTokens={92_000}
-        tokenLimit={128_000}
-        isTokenLimitLoaded
-        onCompact={vi.fn()}
-      />
-    );
-    expect(screen.getByText(FOOTER_COPY.gaugeUsed(72))).toBeInTheDocument();
-    expect(screen.getByText('92k / 128k')).toBeInTheDocument();
+  // The daemon reads the saved value itself (`check_if_compaction_needed`): at or outside 0 and 1
+  // it never compacts, and inside them it compacts at that share even where the marker, which only
+  // reaches 20 to 90%, cannot sit. The card says what will happen, not where the marker is.
+  it.each([0, 1, -0.2, 1.5])(
+    'says automatic compaction is off for a saved %s, and the marker turns it on',
+    async (saved) => {
+      const user = userEvent.setup();
+      mocks.read.mockResolvedValue(saved);
+      render(gauge());
+      expect(await screen.findByText(CONTEXT_CARD_COPY.autoCompactOff)).toHaveClass(
+        'br-footer-card__note'
+      );
+      expect(screen.queryByText(/compacts this chat automatically/)).toBeNull();
+      const slider = screen.getByRole('slider', { name: CONTEXT_CARD_COPY.thresholdLabel });
+      expect(slider).toHaveAttribute('aria-valuetext', CONTEXT_CARD_COPY.thresholdOff);
+      // The marker waits at the default, where a change starts from.
+      expect(slider).toHaveAttribute('aria-valuenow', '80');
+      act(() => slider.focus());
+      await user.keyboard('{ArrowRight}');
+      expect(mocks.upsert).toHaveBeenCalledWith(THRESHOLD_KEY, 0.81, false);
+      expect(screen.getByText(CONTEXT_CARD_COPY.autoCompactNote(81))).toBeInTheDocument();
+      expect(slider).toHaveAttribute('aria-valuetext', 'Auto-compact at 81%');
+    }
+  );
+
+  it.each([
+    [0.95, 95, 90],
+    [0.1, 10, 20],
+    [0.9, 90, 90],
+    [0.2, 20, 20],
+  ])(
+    'says a saved %s as %i percent, with the marker at the nearest it reaches, %i',
+    async (saved, said, marker) => {
+      mocks.read.mockResolvedValue(saved);
+      render(gauge());
+      expect(await screen.findByText(CONTEXT_CARD_COPY.autoCompactNote(said))).toBeInTheDocument();
+      const slider = screen.getByRole('slider', { name: CONTEXT_CARD_COPY.thresholdLabel });
+      expect(slider).toHaveAttribute('aria-valuenow', String(marker));
+      expect(slider).toHaveAttribute('aria-valuetext', `Auto-compact at ${said}%`);
+    }
+  );
+
+  it.each([
+    ['{ArrowRight}', 0.81],
+    ['{ArrowUp}', 0.81],
+    ['{ArrowLeft}', 0.79],
+    ['{Shift>}{ArrowLeft}{/Shift}', 0.7],
+    ['{Shift>}{ArrowRight}{/Shift}', 0.9],
+    ['{Home}', 0.2],
+    ['{End}', 0.9],
+  ])('persists %s on the marker through the config context', async (keys, saved) => {
+    const user = userEvent.setup();
+    render(gauge());
+    const slider = screen.getByRole('slider');
+    act(() => slider.focus());
+    await user.keyboard(keys);
+    expect(mocks.upsert).toHaveBeenCalledTimes(1);
+    expect(mocks.upsert).toHaveBeenCalledWith(THRESHOLD_KEY, saved, false);
+    const pct = Math.round(saved * 100);
+    expect(slider).toHaveAttribute('aria-valuetext', `Auto-compact at ${pct}%`);
+    expect(screen.getByText(CONTEXT_CARD_COPY.autoCompactNote(pct))).toBeInTheDocument();
   });
 
-  it('runs compaction from the enabled control', async () => {
+  it('clamps the marker to 90% at the top and 20% at the bottom', async () => {
+    const user = userEvent.setup();
+    render(gauge());
+    const slider = screen.getByRole('slider');
+    act(() => slider.focus());
+    await user.keyboard('{End}{ArrowRight}');
+    expect(slider).toHaveAttribute('aria-valuenow', '90');
+    await user.keyboard('{Home}{ArrowLeft}');
+    expect(slider).toHaveAttribute('aria-valuenow', '20');
+  });
+
+  it('drags the marker live and saves once, on release', () => {
+    const rect = vi
+      .spyOn(Element.prototype, 'getBoundingClientRect')
+      .mockReturnValue({ left: 0, top: 0, width: 200, height: 8 } as DOMRect);
+    try {
+      render(gauge());
+      const bar = screen.getByRole('progressbar');
+      const slider = screen.getByRole('slider');
+      fireEvent.mouseDown(bar, { clientX: 100 });
+      expect(slider).toHaveAttribute('aria-valuenow', '50');
+      fireEvent.mouseMove(window, { clientX: 120 });
+      expect(slider).toHaveAttribute('aria-valuenow', '60');
+      expect(screen.getByText(CONTEXT_CARD_COPY.autoCompactNote(60))).toBeInTheDocument();
+      // Past the end of the bar: clamped.
+      fireEvent.mouseMove(window, { clientX: 400 });
+      expect(slider).toHaveAttribute('aria-valuenow', '90');
+      expect(mocks.upsert).not.toHaveBeenCalled();
+      fireEvent.mouseUp(window, { clientX: 400 });
+      expect(mocks.upsert).toHaveBeenCalledTimes(1);
+      expect(mocks.upsert).toHaveBeenCalledWith(THRESHOLD_KEY, 0.9, false);
+    } finally {
+      rect.mockRestore();
+    }
+  });
+
+  it('runs compaction from a text button, the footer cards’ one action', async () => {
     const user = userEvent.setup();
     const onCompact = vi.fn();
-    render(
-      <ContextWindowGauge
-        totalTokens={24_000}
-        tokenLimit={1_100_000}
-        isTokenLimitLoaded
-        onCompact={onCompact}
-      />
-    );
-
+    render(gauge({ totalTokens: 24_000, tokenLimit: 1_100_000, onCompact }));
     const button = screen.getByRole('button', { name: 'Compact chat' });
+    expect(button).toHaveTextContent('Compact chat');
+    expect(button).toBeEnabled();
+    expect(button.closest('.br-footer-card__actions')).not.toBeNull();
+    expect(button.querySelector('svg')).toBeNull();
+    expect(screen.queryByText(CONTEXT_CARD_COPY.nothingToCompact)).toBeNull();
     await user.click(button);
     expect(onCompact).toHaveBeenCalledTimes(1);
   });
 
-  it('states the window in one tooltip line, the same words as its name', async () => {
-    const user = userEvent.setup();
-    render(
-      <ContextWindowIndicator
-        totalTokens={92_000}
-        tokenLimit={128_000}
-        isTokenLimitLoaded
-        onCompact={vi.fn()}
-      />
-    );
+  it('disables Compact while there is nothing to compact, and says so under it', () => {
+    render(gauge({ totalTokens: 0, tokenLimit: 1_100_000 }));
+    const button = screen.getByRole('button', { name: 'Compact chat' });
+    expect(button).toBeDisabled();
+    expect(button).not.toHaveAttribute('title');
+    const note = screen.getByText('Nothing to compact yet.');
+    expect(note).toHaveClass('br-footer-card__note');
+    expect(button).toHaveAccessibleDescription('Nothing to compact yet.');
+    expect(button.closest('.br-footer-card__actions')!.nextElementSibling).toBe(note);
+  });
+});
 
-    const line = FOOTER_COPY.contextTooltip(28, '92k', '128k');
-    expect(line).toBe('28% context left · 92k of 128k');
-    const button = screen.getByRole('button', { name: line });
-    await user.hover(button);
-    await screen.findByRole('tooltip');
-    const tooltip = document.querySelector<HTMLElement>('[data-slot="tooltip-content"]');
-    expect(tooltip).toHaveTextContent(line);
-    // One line: no stacked blocks.
-    expect(tooltip!.querySelectorAll('.block')).toHaveLength(0);
+/**
+ * The ring follows the footer line's one contract (`useFooterCard`, `FooterCardTrigger`): the same
+ * button, hover, focus, click and close rules as the folder chip and the cost, and ONE card in
+ * place of the old dark tooltip and the separate click popover.
+ */
+describe('the ring and its card', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mocks.read.mockResolvedValue(null);
+    mocks.upsert.mockResolvedValue(undefined);
   });
 
-  it('reports itself expanded while its gauge is open, which the footer item styles on', async () => {
+  const ring = (props: Partial<React.ComponentProps<typeof ContextWindowIndicator>> = {}) => (
+    <ContextWindowIndicator
+      sessionId="chat-a"
+      totalTokens={92_000}
+      tokenLimit={128_000}
+      isTokenLimitLoaded
+      onCompact={vi.fn()}
+      {...props}
+    />
+  );
+
+  it('is the line’s trigger: a named button that says whether its card is open', () => {
+    render(ring());
+    const button = ringButton();
+    const line = FOOTER_COPY.contextTooltip(28, '92k', '128k');
+    expect(line).toBe('28% context left · 92k of 128k');
+    expect(button).toHaveAccessibleName(line);
+    expect(button.tagName).toBe('BUTTON');
+    expect(button).toHaveAttribute('type', 'button');
+    expect(button).toHaveClass('br-footline__item');
+    expect(button).toHaveAttribute('aria-haspopup', 'dialog');
+    expect(button).toHaveAttribute('aria-expanded', 'false');
+    expect(button).not.toHaveAttribute('aria-controls');
+  });
+
+  it('opens the context card on a hover after the delay, with no tooltip', () => {
+    vi.useFakeTimers();
+    render(ring());
+    fireEvent.pointerEnter(ringButton(), { pointerType: 'mouse' });
+    act(() => {
+      vi.advanceTimersByTime(FOOTER_CARD_OPEN_DELAY_MS - 10);
+    });
+    expect(cardOpen()).toBe(false);
+    act(() => {
+      vi.advanceTimersByTime(20);
+    });
+    expect(cardOpen()).toBe(true);
+    const card = screen.getByRole('dialog', { name: 'Context' });
+    expect(card).toBe(contextCard());
+    expect(card).toHaveClass('br-footer-card');
+    expect(ringButton()).toHaveAttribute('aria-expanded', 'true');
+    expect(ringButton()).toHaveAttribute('aria-controls', card.id);
+    const body = within(card);
+    expect(body.getByText('Context window')).toHaveClass('br-footer-card__label');
+    expect(body.getByText('28% left')).toHaveClass('br-footer-card__value');
+    expect(body.getByText('92k of 128k tokens used')).toHaveClass('br-footer-card__detail');
+    expect(
+      body.getByText(
+        'Biorouter compacts this chat automatically at 80% used. Drag the marker to change it.'
+      )
+    ).toHaveClass('br-footer-card__note');
+    expect(body.getByRole('progressbar', { name: 'Context window used' })).toBeInTheDocument();
+    expect(body.getByRole('slider', { name: 'Auto-compact threshold' })).toHaveAttribute(
+      'aria-valuetext',
+      'Auto-compact at 80%'
+    );
+    expect(body.getByRole('button', { name: 'Compact chat' })).toBeEnabled();
+    // The dark one-line tooltip is gone: the card replaced it.
+    expect(screen.queryByRole('tooltip')).toBeNull();
+    expect(document.querySelector('[data-slot="tooltip-content"]')).toBeNull();
+  });
+
+  it('never opens on a touch hover', () => {
+    vi.useFakeTimers();
+    render(ring());
+    fireEvent.pointerEnter(ringButton(), { pointerType: 'touch' });
+    act(() => {
+      vi.advanceTimersByTime(FOOTER_CARD_OPEN_DELAY_MS * 3);
+    });
+    expect(cardOpen()).toBe(false);
+  });
+
+  it('closes a hover-opened card once the pointer leaves, after the grace', () => {
+    vi.useFakeTimers();
+    render(ring());
+    hoverOpenRing();
+    fireEvent.pointerLeave(ringButton(), { pointerType: 'mouse' });
+    act(() => {
+      vi.advanceTimersByTime(FOOTER_CARD_CLOSE_GRACE_MS + 10);
+    });
+    expect(cardOpen()).toBe(false);
+  });
+
+  it('pins the card on a click, holds it while the pointer wanders off, and a second click closes it', async () => {
+    const user = userEvent.setup();
+    render(ring());
+    await user.click(ringButton());
+    expect(cardOpen()).toBe(true);
+    // `pickers.css` styles the open item on `aria-expanded`.
+    expect(ringButton()).toHaveAttribute('aria-expanded', 'true');
+    await user.unhover(ringButton());
+    await act(() => new Promise((resolve) => setTimeout(resolve, FOOTER_CARD_CLOSE_GRACE_MS * 2)));
+    expect(cardOpen()).toBe(true);
+    // A click does not move focus into the card.
+    expect(ringButton()).toHaveFocus();
+    await user.click(ringButton());
+    expect(cardOpen()).toBe(false);
+    expect(ringButton()).toHaveAttribute('aria-expanded', 'false');
+  });
+
+  it('opens unpinned on a Tab onto the ring and closes on a Tab away', async () => {
     const user = userEvent.setup();
     render(
-      <ContextWindowIndicator
-        totalTokens={10_000}
-        tokenLimit={128_000}
-        isTokenLimitLoaded
-        onCompact={vi.fn()}
-      />
+      <>
+        <button type="button">Before</button>
+        {ring()}
+        <button type="button">After</button>
+      </>
     );
-    const button = screen.getByTestId('context-window-indicator');
-    expect(button).toHaveAttribute('aria-expanded', 'false');
-    await user.click(button);
-    // `pickers.css` follows `aria-expanded`: the tooltip around the trigger
-    // overwrites `data-state`, so `[data-state='open']` never matched.
-    expect(button).toHaveAttribute('aria-expanded', 'true');
+    act(() => screen.getByRole('button', { name: 'Before' }).focus());
+    await user.tab();
+    expect(ringButton()).toHaveFocus();
+    expect(cardOpen()).toBe(true);
+    await user.tab();
+    expect(screen.getByRole('button', { name: 'After' })).toHaveFocus();
+    expect(cardOpen()).toBe(false);
+  });
+
+  it('pins on Enter and moves focus onto the card, whose first control is the marker', async () => {
+    const user = userEvent.setup();
+    render(ring());
+    act(() => ringButton().focus());
+    await user.keyboard('{Enter}');
+    await waitFor(() => expect(contextCard()).toHaveFocus());
+    expect(document.activeElement).toBe(screen.getByRole('dialog', { name: 'Context' }));
+    await user.tab();
+    expect(screen.getByRole('slider')).toHaveFocus();
+    await user.tab();
+    expect(screen.getByRole('button', { name: 'Compact chat' })).toHaveFocus();
+    expect(cardOpen()).toBe(true);
+  });
+
+  it('closes on Escape and hands focus back to the ring', async () => {
+    const user = userEvent.setup();
+    render(ring());
+    act(() => ringButton().focus());
+    await user.keyboard('{Enter}');
+    await waitFor(() => expect(contextCard()).toHaveFocus());
+    await user.tab();
+    await user.keyboard('{Escape}');
+    expect(cardOpen()).toBe(false);
+    expect(ringButton()).toHaveFocus();
+  });
+
+  it('runs Compact from the card, then closes it', async () => {
+    const user = userEvent.setup();
+    const onCompact = vi.fn();
+    render(ring({ onCompact }));
+    await user.click(ringButton());
+    await user.click(screen.getByRole('button', { name: 'Compact chat' }));
+    expect(onCompact).toHaveBeenCalledTimes(1);
+    expect(cardOpen()).toBe(false);
+    expect(ringButton()).toHaveAttribute('aria-expanded', 'false');
+  });
+
+  it('keeps a card the person is dragging the marker in, and saves the threshold on release', () => {
+    vi.useFakeTimers();
+    const rect = vi
+      .spyOn(Element.prototype, 'getBoundingClientRect')
+      .mockReturnValue({ left: 0, top: 0, width: 200, height: 8 } as DOMRect);
+    try {
+      render(ring());
+      hoverOpenRing();
+      const slider = screen.getByRole('slider');
+      // A press in the card pins it, so the pointer leaving mid-drag closes nothing.
+      fireEvent.pointerDown(slider);
+      fireEvent.mouseDown(slider, { clientX: 140 });
+      fireEvent.pointerLeave(contextCard()!, { pointerType: 'mouse' });
+      fireEvent.mouseMove(window, { clientX: 60 });
+      act(() => {
+        vi.advanceTimersByTime(FOOTER_CARD_CLOSE_GRACE_MS * 4);
+      });
+      expect(cardOpen()).toBe(true);
+      expect(slider).toHaveAttribute('aria-valuetext', 'Auto-compact at 30%');
+      fireEvent.mouseUp(window);
+      fireEvent.pointerUp(slider);
+      expect(mocks.upsert).toHaveBeenCalledTimes(1);
+      expect(mocks.upsert).toHaveBeenCalledWith(THRESHOLD_KEY, 0.3, false);
+    } finally {
+      rect.mockRestore();
+    }
+  });
+
+  it('saves a marker key from inside the opened card', async () => {
+    const user = userEvent.setup();
+    render(ring());
+    act(() => ringButton().focus());
+    await user.keyboard('{Enter}');
+    await waitFor(() => expect(contextCard()).toHaveFocus());
+    await user.tab();
+    await user.keyboard('{ArrowLeft}');
+    expect(mocks.upsert).toHaveBeenCalledWith(THRESHOLD_KEY, 0.79, false);
+    expect(screen.getByRole('slider')).toHaveAttribute('aria-valuetext', 'Auto-compact at 79%');
+  });
+
+  it('shuts its card when the ring stops being drawn, and does not reopen it when the ring returns', async () => {
+    const user = userEvent.setup();
+    const { rerender, container } = render(ring());
+    await user.click(ringButton());
+    expect(cardOpen()).toBe(true);
+    // The model changed: no window for it yet, so no ring.
+    rerender(ring({ isTokenLimitLoaded: false, sessionId: 'chat-b' }));
+    expect(container).toBeEmptyDOMElement();
+    expect(contextCard()).toBeNull();
+    rerender(ring({ sessionId: 'chat-b', tokenLimit: 200_000 }));
+    expect(ringButton()).toHaveAttribute('aria-expanded', 'false');
+    expect(contextCard()).toBeNull();
   });
 
   it('draws the ring at the chip size with a 2px stroke, and no mono', () => {
-    render(
-      <ContextWindowIndicator
-        totalTokens={10_000}
-        tokenLimit={128_000}
-        isTokenLimitLoaded
-        onCompact={vi.fn()}
-        showRemainingPercent
-      />
-    );
-    const button = screen.getByTestId('context-window-indicator');
-    expect(button).toHaveClass('br-footline__item');
+    render(ring({ totalTokens: 10_000, showRemainingPercent: true }));
+    const button = ringButton();
     const circles = button.querySelectorAll('circle');
     expect(circles).toHaveLength(2);
     circles.forEach((circle) => expect(circle).toHaveAttribute('stroke-width', '2'));
@@ -175,15 +522,7 @@ describe('ContextWindowGauge compaction control', () => {
     [65_000, true],
     [120_000, true],
   ])('with %i of 128k used, prints the figure: %s', (used, shown) => {
-    render(
-      <ContextWindowIndicator
-        totalTokens={used}
-        tokenLimit={128_000}
-        isTokenLimitLoaded
-        onCompact={vi.fn()}
-        showRemainingPercent
-      />
-    );
+    render(ring({ totalTokens: used, showRemainingPercent: true }));
     const remaining = Math.round(((128_000 - used) / 128_000) * 100);
     const figure = screen.queryByText(FOOTER_COPY.contextLeft(remaining));
     if (shown) expect(figure).toBeInTheDocument();
@@ -191,15 +530,72 @@ describe('ContextWindowGauge compaction control', () => {
   });
 
   it('never prints the figure unless asked to', () => {
-    render(
+    render(ring({ totalTokens: 120_000 }));
+    expect(screen.queryByText(/% left$/)).toBeNull();
+  });
+});
+
+/** A stand-in for the line's other items: the same trigger and surface, another card. */
+function OtherItem() {
+  const card = useFooterCard();
+  const cardId = useId();
+  return (
+    <FooterCardRoot card={card}>
+      <FooterCardTrigger card={card} cardId={cardId} aria-label="Other item" data-testid="other">
+        Other
+      </FooterCardTrigger>
+      <FooterCard card={card} id={cardId} label="Other card" align="end" testId="other-card">
+        <FooterCardSection label="Other">
+          <p>Other value</p>
+        </FooterCardSection>
+      </FooterCard>
+    </FooterCardRoot>
+  );
+}
+
+describe('one card at a time on the footer line', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mocks.read.mockResolvedValue(null);
+    mocks.upsert.mockResolvedValue(undefined);
+  });
+
+  const otherOpen = () =>
+    document.querySelector('[data-testid="other-card"]')?.getAttribute('data-state') === 'open';
+
+  const line = (
+    <FooterCardGroup>
+      <OtherItem />
       <ContextWindowIndicator
-        totalTokens={120_000}
+        sessionId="chat-a"
+        totalTokens={92_000}
         tokenLimit={128_000}
         isTokenLimitLoaded
         onCompact={vi.fn()}
       />
-    );
-    expect(screen.queryByText(/% left$/)).toBeNull();
+    </FooterCardGroup>
+  );
+
+  it('closes another item’s pinned card when the ring’s card opens on a hover, without moving focus', () => {
+    vi.useFakeTimers();
+    render(line);
+    act(() => screen.getByTestId('other').focus());
+    fireEvent.click(screen.getByTestId('other'), { detail: 1 });
+    expect(otherOpen()).toBe(true);
+    hoverOpenRing();
+    expect(cardOpen()).toBe(true);
+    expect(otherOpen()).toBe(false);
+    expect(screen.getByTestId('other')).toHaveFocus();
+  });
+
+  it('closes the ring’s card when another item’s card is pinned', async () => {
+    const user = userEvent.setup();
+    render(line);
+    await user.click(ringButton());
+    expect(cardOpen()).toBe(true);
+    await user.click(screen.getByTestId('other'));
+    expect(otherOpen()).toBe(true);
+    expect(cardOpen()).toBe(false);
   });
 });
 
@@ -230,7 +626,7 @@ describe('with no model bound', () => {
     expect(screen.queryByText(/context left/)).toBeNull();
   });
 
-  it('renders nothing in the popover-body gauge either', () => {
+  it('renders nothing in the card’s gauge either', () => {
     const { container } = render(
       <ContextWindowGauge totalTokens={0} tokenLimit={0} isTokenLimitLoaded onCompact={vi.fn()} />
     );

@@ -5,11 +5,16 @@ import type { ComponentProps } from 'react';
 
 /**
  * The working folder's card, driven through the real chip (`DirSwitcher`), which owns the
- * Popover root and its anchor. It replaced the footer's "Folder access" button and dialog, so
- * every behaviour `FolderAccess.test.tsx` pinned lives here now: grants load only when the card
- * opens, Revoke acts on the selected grant in its own chat with the proof header, a refused
- * revoke stays visible, and the browser's approval key is labelled, described, sent only as
- * `X-Folder-Access-Key` and cleared after every attempt.
+ * Popover root and its anchor. When a footer card opens and closes is pinned once for all three
+ * items, in one table, in `footerCards.contract.test.tsx` (the primitive's own corners are
+ * `useFooterCard.test.tsx`'s); this file pins what is the folder's own: the chip's click pins the
+ * card in EVERY state (the contract renders a chat with messages only), Choose folder… is the only
+ * way to the chooser and only while the chat is empty (#44), the card stays shut while the chooser
+ * is open (#50), Cmd or Ctrl-click, and the grants. It replaced the footer's "Folder access"
+ * button and dialog, so every behaviour `FolderAccess.test.tsx` pinned lives here now: grants load
+ * only when the card opens, Revoke acts on the selected grant in its own chat with the proof
+ * header, a refused revoke stays visible, and the browser's approval key is labelled, described,
+ * sent only as `X-Folder-Access-Key` and cleared after every attempt.
  */
 
 const mocks = vi.hoisted(() => ({
@@ -31,13 +36,7 @@ vi.mock('../../toasts', () => ({ toastError: vi.fn() }));
 
 import { DirSwitcher } from './DirSwitcher';
 import { FOLDER_ACCESS_COPY, FOOTER_COPY } from './copy';
-import {
-  FOLDER_CARD_CLOSE_GRACE_MS,
-  FOLDER_CARD_OPEN_DELAY_MS,
-  folderCardAnchorRect,
-  isPointInPolygon,
-  pointerGraceArea,
-} from './useFolderCard';
+import { FOOTER_CARD_CLOSE_GRACE_MS, FOOTER_CARD_OPEN_DELAY_MS } from './useFooterCard';
 
 const WORKING_DIR = '/Users/wgu/Projects/kdps';
 const RESULTS = {
@@ -91,411 +90,257 @@ type ChipProps = Partial<ComponentProps<typeof DirSwitcher>>;
 function Page(props: ChipProps) {
   return (
     <div>
-      <div data-testid="holds-chip">
-        <button type="button">Before</button>
-        <DirSwitcher sessionId="chat-a" workingDir={WORKING_DIR} locked {...props} />
-        <button type="button">Outside</button>
-      </div>
-      <div data-testid="beside">
-        <p>Plain text</p>
-      </div>
+      <button type="button">Before</button>
+      <DirSwitcher sessionId="chat-a" workingDir={WORKING_DIR} locked {...props} />
+      <button type="button">Outside</button>
     </div>
   );
 }
 
 const card = () => document.querySelector<HTMLElement>('[data-testid="folder-access-card"]');
 const isOpen = () => card()?.getAttribute('data-state') === 'open';
-const lockedChip = () => screen.getByTestId('dir-switcher-locked');
-const unlockedChip = () => screen.getByTestId('dir-switcher');
+const chip = () => screen.getByRole('button', { name: /^Working folder/ });
+const chooseButton = () => screen.queryByRole('button', { name: FOLDER_ACCESS_COPY.chooseFolder });
 
 /** Let the grant read (a resolved mock) land inside act. */
 const flush = () => act(async () => {});
 
-function hoverOpen(chip: HTMLElement) {
-  fireEvent.pointerEnter(chip, { pointerType: 'mouse' });
+function hoverOpen(target: HTMLElement) {
+  fireEvent.pointerEnter(target, { pointerType: 'mouse' });
   act(() => {
-    vi.advanceTimersByTime(FOLDER_CARD_OPEN_DELAY_MS + 10);
+    vi.advanceTimersByTime(FOOTER_CARD_OPEN_DELAY_MS + 10);
   });
 }
 
-describe('opening and closing', () => {
-  it('opens on hover after the delay, not before', async () => {
-    vi.useFakeTimers();
-    render(<Page />);
-    fireEvent.pointerEnter(lockedChip(), { pointerType: 'mouse' });
-    act(() => {
-      vi.advanceTimersByTime(FOLDER_CARD_OPEN_DELAY_MS - 10);
-    });
-    expect(isOpen()).toBe(false);
-    act(() => {
-      vi.advanceTimersByTime(20);
-    });
-    expect(isOpen()).toBe(true);
-    expect(screen.getByRole('dialog', { name: FOLDER_ACCESS_COPY.cardLabel })).toBe(card());
+/** A chooser that answers only when the test says so. */
+function holdChooser() {
+  let answer: ((value: { canceled: boolean; filePaths: string[] }) => void) | undefined;
+  window.electron.directoryChooser = vi.fn(
+    () =>
+      new Promise((resolve) => {
+        answer = resolve;
+      })
+  ) as typeof window.electron.directoryChooser;
+  return (value: { canceled: boolean; filePaths: string[] }) => act(async () => answer?.(value));
+}
+
+describe('the chip pins its card in every state', () => {
+  it.each([
+    ['on Home', { sessionId: undefined, locked: false }, 'dir-switcher'],
+    ['in an empty chat', { locked: false }, 'dir-switcher'],
+    ['in a chat with messages (#44)', { locked: true }, 'dir-switcher-locked'],
+    ['while the folder is not known yet', { workingDir: null }, 'dir-switcher-unknown'],
+    [
+      'while the folder of an empty chat is not known yet',
+      { workingDir: null, locked: false },
+      'dir-switcher-unknown',
+    ],
+  ] as const)(
+    'pins on a click %s, and a second click closes it, choosing nothing',
+    async (_state, props, testId) => {
+      const onWorkingDirChange = vi.fn();
+      const user = userEvent.setup();
+      render(<Page {...props} onWorkingDirChange={onWorkingDirChange} />);
+      const target = screen.getByTestId(testId);
+      expect(target).toBe(chip());
+      expect(target.tagName).toBe('BUTTON');
+      expect(target).toHaveAttribute('type', 'button');
+      expect(target).toHaveClass('br-footline__item');
+      expect(target).toHaveAttribute('aria-haspopup', 'dialog');
+      expect(target).toHaveAttribute('aria-expanded', 'false');
+
+      await user.click(target);
+      expect(isOpen()).toBe(true);
+      expect(target).toHaveAttribute('aria-expanded', 'true');
+      expect(target).toHaveAttribute('aria-controls', card()!.id);
+
+      // Pinned: the pointer wandering off does not close it.
+      await user.unhover(target);
+      await act(
+        () => new Promise((resolve) => setTimeout(resolve, FOOTER_CARD_CLOSE_GRACE_MS * 2))
+      );
+      expect(isOpen()).toBe(true);
+
+      await user.click(target);
+      expect(isOpen()).toBe(false);
+      expect(window.electron.directoryChooser).not.toHaveBeenCalled();
+      expect(mocks.update).not.toHaveBeenCalled();
+      expect(onWorkingDirChange).not.toHaveBeenCalled();
+    }
+  );
+});
+
+describe('choosing a folder (only from the card, only while the chat is empty)', () => {
+  it('offers Choose folder… in an empty chat and on Home, and nowhere else', async () => {
+    const user = userEvent.setup();
+    const view = render(<Page locked={false} />);
+    await user.click(chip());
+    expect(chooseButton()).toBeInTheDocument();
+    expect(card()).not.toHaveTextContent(FOLDER_ACCESS_COPY.lockedNote);
+    await user.click(chip());
+
+    view.rerender(<Page locked={false} sessionId={undefined} />);
+    await user.click(chip());
+    expect(chooseButton()).toBeInTheDocument();
+    await user.click(chip());
+
+    // #44: once the chat has messages the card says the folder is fixed, and offers no chooser.
+    view.rerender(<Page locked />);
+    await user.click(chip());
+    expect(chooseButton()).toBeNull();
+    expect(card()).toHaveTextContent(FOLDER_ACCESS_COPY.lockedNote);
+    await user.click(chip());
+
+    // No folder known: nothing to choose from, in either state.
+    view.rerender(<Page locked={false} workingDir={null} />);
+    await user.click(chip());
+    expect(chooseButton()).toBeNull();
+    expect(card()).not.toHaveTextContent(FOLDER_ACCESS_COPY.lockedNote);
+    await user.click(chip());
+    view.rerender(<Page locked workingDir={null} />);
+    await user.click(chip());
+    expect(chooseButton()).toBeNull();
+    expect(card()).toHaveTextContent(FOLDER_ACCESS_COPY.lockedNote);
     await flush();
+    expect(window.electron.directoryChooser).not.toHaveBeenCalled();
   });
 
-  it('stays open while the pointer crosses into the card, and closes when it leaves both', async () => {
+  it('closes the card, opens the chooser, and keeps the card shut while the chooser is open (#50)', async () => {
     vi.useFakeTimers();
-    render(<Page />);
-    hoverOpen(lockedChip());
-    await flush();
-    fireEvent.pointerLeave(lockedChip(), { pointerType: 'mouse' });
-    fireEvent.pointerEnter(card()!, { pointerType: 'mouse' });
-    act(() => {
-      vi.advanceTimersByTime(FOLDER_CARD_CLOSE_GRACE_MS * 4);
-    });
+    const answer = holdChooser();
+    render(<Page locked={false} sessionId={undefined} />);
+    fireEvent.click(chip(), { detail: 1 });
     expect(isOpen()).toBe(true);
-
-    fireEvent.pointerLeave(card()!, { pointerType: 'mouse' });
-    act(() => {
-      vi.advanceTimersByTime(FOLDER_CARD_CLOSE_GRACE_MS - 10);
-    });
-    expect(isOpen()).toBe(true);
-    act(() => {
-      vi.advanceTimersByTime(20);
-    });
+    fireEvent.click(chooseButton()!);
+    expect(window.electron.directoryChooser).toHaveBeenCalledTimes(1);
     expect(isOpen()).toBe(false);
-  });
 
-  it('never opens on a touch hover', () => {
-    vi.useFakeTimers();
-    render(<Page />);
-    fireEvent.pointerEnter(lockedChip(), { pointerType: 'touch' });
+    // The native chooser is up: a hover, a click or a focus must not bring the card back over it.
+    hoverOpen(chip());
+    expect(isOpen()).toBe(false);
+    fireEvent.click(chip(), { detail: 1 });
+    expect(isOpen()).toBe(false);
+    fireEvent.click(chip(), { detail: 1, metaKey: true });
+    expect(window.electron.openDirectoryInExplorer).not.toHaveBeenCalled();
+
+    await answer({ canceled: true, filePaths: [] });
+    // Nothing armed during the chooser opens the card now that it is gone, nor once any open
+    // delay has run out.
+    expect(isOpen()).toBe(false);
     act(() => {
-      vi.advanceTimersByTime(FOLDER_CARD_OPEN_DELAY_MS * 3);
+      vi.advanceTimersByTime(FOOTER_CARD_OPEN_DELAY_MS * 2);
     });
     expect(isOpen()).toBe(false);
     expect(mocks.list).not.toHaveBeenCalled();
+
+    // A fresh hover once the chooser has closed opens it again.
+    fireEvent.pointerLeave(chip(), { pointerType: 'mouse' });
+    hoverOpen(chip());
+    expect(isOpen()).toBe(true);
   });
 
-  it('opens at once when Tab moves focus onto the chip, and closes when Tab moves on', async () => {
+  it('hands focus back to the chip when Choose folder… is pressed from the keyboard', async () => {
+    const answer = holdChooser();
     const user = userEvent.setup();
-    render(<Page />);
-    act(() => screen.getByRole('button', { name: 'Before' }).focus());
-    await user.tab();
-    expect(lockedChip()).toHaveFocus();
-    expect(isOpen()).toBe(true);
-    // Focus stays on the chip: a hover card does not take it.
-    expect(lockedChip()).toHaveFocus();
-    await user.tab();
-    expect(isOpen()).toBe(false);
-  });
-
-  it('stays shut when a program focuses the chip (a focus restore)', async () => {
-    render(<Page />);
-    act(() => lockedChip().focus());
-    await act(() => new Promise((resolve) => setTimeout(resolve, 20)));
-    expect(isOpen()).toBe(false);
-    expect(mocks.list).not.toHaveBeenCalled();
-  });
-
-  it('closes on Escape', async () => {
-    const user = userEvent.setup();
-    render(<Page />);
-    act(() => screen.getByRole('button', { name: 'Before' }).focus());
-    await user.tab();
-    expect(isOpen()).toBe(true);
-    await user.keyboard('{Escape}');
-    expect(isOpen()).toBe(false);
-  });
-
-  it('closes on a press outside, but a press on the chip is not outside', async () => {
-    const user = userEvent.setup();
-    render(<Page />);
-    await user.click(lockedChip());
-    expect(isOpen()).toBe(true);
-    await user.click(screen.getByRole('button', { name: 'Outside' }));
-    expect(isOpen()).toBe(false);
-  });
-
-  it('leaves an unpinned card open for a scroll beside the chip or inside the card', async () => {
-    vi.useFakeTimers();
-    render(<Page />);
-    hoverOpen(lockedChip());
-    await flush();
-    // A scroller that does not hold the chip (the transcript streaming a reply, say) and the
-    // card's own list do not move the chip.
-    act(() => {
-      fireEvent.scroll(screen.getByTestId('beside'));
-    });
-    expect(isOpen()).toBe(true);
-    act(() => {
-      fireEvent.scroll(card()!);
-    });
-    expect(isOpen()).toBe(true);
-    // One that holds the chip does.
-    act(() => {
-      fireEvent.scroll(screen.getByTestId('holds-chip'));
-    });
-    expect(isOpen()).toBe(false);
-  });
-
-  it('closes an unpinned card on a scroll that moves the chip, and keeps a pinned one', async () => {
-    vi.useFakeTimers();
-    render(<Page />);
-    hoverOpen(lockedChip());
-    await flush();
-    act(() => {
-      fireEvent.scroll(window);
-    });
-    expect(isOpen()).toBe(false);
-
-    vi.useRealTimers();
-    fireEvent.click(lockedChip(), { detail: 1 });
-    await flush();
-    expect(isOpen()).toBe(true);
-    act(() => {
-      fireEvent.scroll(window);
-    });
-    expect(isOpen()).toBe(true);
-  });
-});
-
-describe('where focus goes when the card closes', () => {
-  async function pinFromKeyboard(user: ReturnType<typeof userEvent.setup>) {
-    act(() => lockedChip().focus());
+    render(<Page locked={false} />);
+    act(() => chip().focus());
     await user.keyboard('{Enter}');
     await waitFor(() => expect(card()).toHaveFocus());
-    await screen.findByText(RESULTS.folder);
-  }
-
-  it('sends Shift+Tab off the card’s own surface back to the chip, and closes the card', async () => {
-    const user = userEvent.setup();
-    render(<Page />);
-    await pinFromKeyboard(user);
-    await user.keyboard('{Shift>}{Tab}{/Shift}');
-    expect(lockedChip()).toHaveFocus();
-    expect(isOpen()).toBe(false);
-    // Tab was down when focus came back, yet that focus is the card's own restore: it opens
-    // nothing.
-    await act(() => new Promise((resolve) => setTimeout(resolve, 20)));
-    expect(isOpen()).toBe(false);
-  });
-
-  it('does the same after a press on the card’s background put focus on its surface', async () => {
-    const user = userEvent.setup();
-    render(<Page />);
-    await user.click(lockedChip());
-    await screen.findByText(RESULTS.folder);
-    await user.click(card()!);
-    expect(card()).toHaveFocus();
-    await user.keyboard('{Shift>}{Tab}{/Shift}');
-    expect(lockedChip()).toHaveFocus();
-    expect(isOpen()).toBe(false);
-  });
-
-  it('wraps Shift+Tab from the first Revoke inside the card, as Radix does', async () => {
-    mocks.list.mockResolvedValue({ data: [RESULTS, NOTES] });
-    const user = userEvent.setup();
-    render(<Page />);
-    await pinFromKeyboard(user);
     await user.tab();
-    const first = screen.getByRole('button', {
-      name: FOLDER_ACCESS_COPY.revokeLabel(RESULTS.folder),
-    });
-    expect(first).toHaveFocus();
-    await user.keyboard('{Shift>}{Tab}{/Shift}');
-    expect(
-      screen.getByRole('button', { name: FOLDER_ACCESS_COPY.revokeLabel(NOTES.folder) })
-    ).toHaveFocus();
-    expect(isOpen()).toBe(true);
-  });
-
-  it('leaves focus to an outside press, never handing it to the chip mid-click', async () => {
-    const user = userEvent.setup();
-    render(<Page />);
-    await pinFromKeyboard(user);
-    // A chip focus here would fire every focus handler around the chip (a split pane's
-    // onFocusCapture makes its pane the active one) during a press meant for somewhere else.
-    const chipFocused = vi.fn();
-    lockedChip().addEventListener('focus', chipFocused);
-    await user.click(screen.getByText('Plain text'));
-    expect(isOpen()).toBe(false);
-    expect(chipFocused).not.toHaveBeenCalled();
-    expect(lockedChip()).not.toHaveFocus();
-  });
-
-  it('still hands focus back to the chip on Escape and on the chip’s own click', async () => {
-    const user = userEvent.setup();
-    render(<Page />);
-    await pinFromKeyboard(user);
-    await user.keyboard('{Escape}');
-    expect(isOpen()).toBe(false);
-    expect(lockedChip()).toHaveFocus();
-
-    // A keyboard pin again, then the chip's own click (the press lands on the chip, which is not
-    // outside) closes it, with focus on the chip.
+    expect(chooseButton()).toHaveFocus();
     await user.keyboard('{Enter}');
-    await waitFor(() => expect(card()).toHaveFocus());
-    await user.click(lockedChip());
+    expect(window.electron.directoryChooser).toHaveBeenCalledTimes(1);
     expect(isOpen()).toBe(false);
-    expect(lockedChip()).toHaveFocus();
+    expect(chip()).toHaveFocus();
+    await answer({ canceled: true, filePaths: [] });
+    expect(isOpen()).toBe(false);
   });
-});
 
-describe('the locked chip (#44)', () => {
-  it('is a real button that pins the card and never opens the chooser', async () => {
+  it('persists the choice for an empty chat, bracketed by the restart, with the proof header', async () => {
+    window.electron.directoryChooser = vi.fn(async () => ({
+      canceled: false,
+      filePaths: ['/Users/wgu/Projects/other'],
+    }));
+    const onWorkingDirChange = vi.fn();
+    const onRestartStart = vi.fn();
+    const onRestartEnd = vi.fn();
+    const user = userEvent.setup();
+    render(
+      <Page
+        locked={false}
+        onWorkingDirChange={onWorkingDirChange}
+        onRestartStart={onRestartStart}
+        onRestartEnd={onRestartEnd}
+      />
+    );
+    await user.click(chip());
+    await user.click(chooseButton()!);
+    await waitFor(() =>
+      expect(mocks.update).toHaveBeenCalledWith({
+        headers: PROOF,
+        body: { session_id: 'chat-a', working_dir: '/Users/wgu/Projects/other' },
+        throwOnError: true,
+      })
+    );
+    expect(onRestartStart).toHaveBeenCalledTimes(1);
+    await waitFor(() => expect(onRestartEnd).toHaveBeenCalledTimes(1));
+    expect(onWorkingDirChange).toHaveBeenCalledWith('/Users/wgu/Projects/other');
+  });
+
+  it('never reaches the chooser or updateWorkingDir from a locked chip, by any press (#44)', async () => {
     const onWorkingDirChange = vi.fn();
     const user = userEvent.setup();
     render(<Page onWorkingDirChange={onWorkingDirChange} />);
-    const chip = lockedChip();
-    expect(chip.tagName).toBe('BUTTON');
-    expect(chip).toHaveAttribute('type', 'button');
-    expect(chip).toHaveAccessibleName(FOOTER_COPY.folderLabel(WORKING_DIR));
-    expect(chip).toHaveAttribute('aria-haspopup', 'dialog');
-    expect(chip).toHaveAttribute('aria-expanded', 'false');
-
-    await user.click(chip);
-    expect(isOpen()).toBe(true);
-    expect(chip).toHaveAttribute('aria-expanded', 'true');
-    expect(chip).toHaveAttribute('aria-controls', card()!.id);
-
-    // Pinned: the pointer wandering off does not close it.
-    await user.unhover(chip);
-    await act(() => new Promise((resolve) => setTimeout(resolve, FOLDER_CARD_CLOSE_GRACE_MS * 2)));
-    expect(isOpen()).toBe(true);
-
-    // A second click closes it.
-    await user.click(chip);
-    expect(isOpen()).toBe(false);
+    await user.click(chip());
+    await user.click(chip());
+    act(() => chip().focus());
+    await user.keyboard('{Enter}');
+    await user.keyboard('{Escape}');
+    await user.keyboard(' ');
+    await flush();
+    for (const button of screen.queryAllByRole('button')) {
+      expect(button).not.toHaveAccessibleName(FOLDER_ACCESS_COPY.chooseFolder);
+    }
     expect(window.electron.directoryChooser).not.toHaveBeenCalled();
     expect(mocks.update).not.toHaveBeenCalled();
     expect(onWorkingDirChange).not.toHaveBeenCalled();
   });
-
-  it('pins on Enter and moves focus into the card, so Revoke is reachable by keyboard', async () => {
-    const user = userEvent.setup();
-    render(<Page />);
-    act(() => lockedChip().focus());
-    await user.keyboard('{Enter}');
-    expect(isOpen()).toBe(true);
-    await waitFor(() => expect(card()).toHaveFocus());
-    await screen.findByText(RESULTS.folder);
-    await user.tab();
-    expect(
-      screen.getByRole('button', { name: FOLDER_ACCESS_COPY.revokeLabel(RESULTS.folder) })
-    ).toHaveFocus();
-    // Escape hands focus back to the chip, and that restore does not reopen the card.
-    await user.keyboard('{Escape}');
-    expect(isOpen()).toBe(false);
-    expect(lockedChip()).toHaveFocus();
-    await act(() => new Promise((resolve) => setTimeout(resolve, 20)));
-    expect(isOpen()).toBe(false);
-    expect(window.electron.directoryChooser).not.toHaveBeenCalled();
-  });
-
-  it('pins a card Tab already opened and moves focus into it on Enter', async () => {
-    const user = userEvent.setup();
-    render(<Page />);
-    act(() => screen.getByRole('button', { name: 'Before' }).focus());
-    await user.tab();
-    expect(isOpen()).toBe(true);
-    expect(lockedChip()).toHaveFocus();
-    await user.keyboard('{Enter}');
-    expect(isOpen()).toBe(true);
-    expect(card()).toHaveFocus();
-    // Pinned now: Tab stays in the card instead of closing it.
-    await screen.findByText(RESULTS.folder);
-    await user.tab();
-    expect(
-      screen.getByRole('button', { name: FOLDER_ACCESS_COPY.revokeLabel(RESULTS.folder) })
-    ).toHaveFocus();
-    expect(isOpen()).toBe(true);
-  });
-
-  it('pins a card a hover opened instead of closing it, and a press inside pins it too', async () => {
-    vi.useFakeTimers();
-    render(<Page />);
-    hoverOpen(lockedChip());
-    await flush();
-    fireEvent.pointerDown(card()!);
-    fireEvent.pointerLeave(lockedChip(), { pointerType: 'mouse' });
-    act(() => {
-      vi.advanceTimersByTime(FOLDER_CARD_CLOSE_GRACE_MS * 4);
-    });
-    expect(isOpen()).toBe(true);
-    fireEvent.pointerUp(card()!);
-  });
-
-  it('says the folder is fixed', async () => {
-    const user = userEvent.setup();
-    render(<Page />);
-    await user.click(lockedChip());
-    expect(card()).toHaveTextContent(FOLDER_ACCESS_COPY.lockedHint);
-    expect(card()).not.toHaveTextContent(FOLDER_ACCESS_COPY.chooseHint);
-    await flush();
-  });
 });
 
-describe('the unlocked chip', () => {
-  it('keeps the chooser on click, closes the card and keeps it shut while the chooser is open', async () => {
-    vi.useFakeTimers();
-    let answer: ((value: { canceled: boolean; filePaths: string[] }) => void) | undefined;
-    window.electron.directoryChooser = vi.fn(
-      () =>
-        new Promise((resolve) => {
-          answer = resolve;
-        })
-    ) as typeof window.electron.directoryChooser;
-    render(<Page locked={false} sessionId={undefined} />);
-    hoverOpen(unlockedChip());
-    expect(isOpen()).toBe(true);
-    expect(card()).toHaveTextContent(FOLDER_ACCESS_COPY.chooseHint);
-
-    fireEvent.click(unlockedChip());
-    expect(window.electron.directoryChooser).toHaveBeenCalledTimes(1);
-    expect(isOpen()).toBe(false);
-
-    // The native chooser is up: a hover or a focus must not bring the card back over it.
-    hoverOpen(unlockedChip());
-    expect(isOpen()).toBe(false);
-
-    await act(async () => answer?.({ canceled: true, filePaths: [] }));
-    expect(unlockedChip()).toBeEnabled();
-    // #50: the hover during the chooser armed nothing. The card does not pop open now that the
-    // chooser is gone, nor once any open delay has run out.
-    expect(isOpen()).toBe(false);
-    act(() => {
-      vi.advanceTimersByTime(FOLDER_CARD_OPEN_DELAY_MS * 2);
-    });
-    expect(isOpen()).toBe(false);
-    expect(mocks.list).not.toHaveBeenCalled();
-  });
-
-  it('opens again on a fresh hover once the chooser has closed', async () => {
-    vi.useFakeTimers();
-    render(<Page locked={false} sessionId={undefined} />);
-    fireEvent.click(unlockedChip());
-    await flush();
-    expect(unlockedChip()).toBeEnabled();
-    fireEvent.pointerLeave(unlockedChip(), { pointerType: 'mouse' });
-    hoverOpen(unlockedChip());
-    expect(isOpen()).toBe(true);
-  });
-
-  it('opens the folder in the file manager on Cmd-click', () => {
-    render(<Page locked={false} />);
-    fireEvent.click(unlockedChip(), { metaKey: true });
+describe('Cmd or Ctrl-click (an accelerator)', () => {
+  it.each([
+    ['an empty chat', { locked: false }],
+    ['a chat with messages', { locked: true }],
+  ] as const)('opens the folder of %s in the file manager, and pins nothing', (_state, props) => {
+    render(<Page {...props} />);
+    fireEvent.click(chip(), { metaKey: true, detail: 1 });
     expect(window.electron.openDirectoryInExplorer).toHaveBeenCalledWith(WORKING_DIR);
+    fireEvent.click(chip(), { ctrlKey: true, detail: 1 });
+    expect(window.electron.openDirectoryInExplorer).toHaveBeenCalledTimes(2);
+    expect(isOpen()).toBe(false);
     expect(window.electron.directoryChooser).not.toHaveBeenCalled();
+    expect(mocks.update).not.toHaveBeenCalled();
+  });
+
+  it('has no folder to open while the folder is not known, so it is an ordinary click', async () => {
+    render(<Page workingDir={null} locked={false} />);
+    fireEvent.click(chip(), { metaKey: true, detail: 1 });
+    expect(window.electron.openDirectoryInExplorer).not.toHaveBeenCalled();
+    expect(isOpen()).toBe(true);
+    await flush();
   });
 });
 
 describe('a chat whose working folder is not known yet', () => {
-  const unknownChip = () => screen.getByTestId('dir-switcher-unknown');
-
   it('keeps a nameless chip whose card lists and revokes the chat’s grants', async () => {
     const user = userEvent.setup();
     render(<Page workingDir={null} />);
-    const chip = unknownChip();
-    expect(chip.tagName).toBe('BUTTON');
-    expect(chip).toHaveAccessibleName(FOOTER_COPY.folderUnknownLabel);
-    expect(chip.querySelector('.br-footline__name')).toBeNull();
-    await user.click(chip);
+    const unknown = screen.getByTestId('dir-switcher-unknown');
+    expect(unknown).toHaveAccessibleName(FOOTER_COPY.folderUnknownLabel);
+    expect(unknown.querySelector('.br-footline__name')).toBeNull();
+    await user.click(unknown);
     const dialog = screen.getByRole('dialog', { name: FOLDER_ACCESS_COPY.cardLabel });
     expect(dialog).toHaveTextContent(FOLDER_ACCESS_COPY.workingFolderUnknown);
-    expect(dialog).not.toHaveTextContent(FOLDER_ACCESS_COPY.workingFolderNote);
     await screen.findByText(RESULTS.folder);
     mocks.list.mockResolvedValueOnce({ data: [] });
     await user.click(
@@ -509,78 +354,100 @@ describe('a chat whose working folder is not known yet', () => {
     );
     expect(await screen.findByText(FOLDER_ACCESS_COPY.none)).toBeInTheDocument();
   });
-
-  it('never opens the chooser, even before the chat has messages, and promises no click', async () => {
-    const user = userEvent.setup();
-    render(<Page workingDir={null} locked={false} />);
-    await user.click(unknownChip());
-    expect(isOpen()).toBe(true);
-    expect(card()).not.toHaveTextContent(FOLDER_ACCESS_COPY.chooseHint);
-    expect(card()).not.toHaveTextContent(FOLDER_ACCESS_COPY.lockedHint);
-    fireEvent.click(unknownChip(), { metaKey: true });
-    expect(window.electron.directoryChooser).not.toHaveBeenCalled();
-    expect(window.electron.openDirectoryInExplorer).not.toHaveBeenCalled();
-    expect(mocks.update).not.toHaveBeenCalled();
-    await flush();
-  });
 });
 
 describe('what the card says', () => {
   it('shows the full working folder in mono, and the chip only its name', async () => {
     const user = userEvent.setup();
     render(<Page />);
-    expect(lockedChip()).toHaveTextContent('kdps');
-    expect(lockedChip()).not.toHaveTextContent(WORKING_DIR);
-    await user.click(lockedChip());
+    expect(chip()).toHaveTextContent('kdps');
+    expect(chip()).not.toHaveTextContent(WORKING_DIR);
+    await user.click(chip());
     const dialog = screen.getByRole('dialog', { name: FOLDER_ACCESS_COPY.cardLabel });
+    expect(FOLDER_ACCESS_COPY.cardLabel).toBe('Working folder');
     expect(dialog).toHaveTextContent(FOLDER_ACCESS_COPY.workingFolder);
-    expect(dialog).toHaveTextContent(FOLDER_ACCESS_COPY.workingFolderNote);
     const path = within(dialog).getByText(WORKING_DIR);
     expect(path).toHaveClass('font-mono');
     expect(path).toHaveClass('break-all');
     await flush();
   });
 
-  it('says which tools ask for folder approval, and never that everything asks', async () => {
-    // Folder approval gates Biorouter's built-in file tools only (`file_access_plan`); a shell
-    // command reads another folder without one. So no sentence may say Biorouter as a whole asks.
-    for (const line of [
-      FOLDER_ACCESS_COPY.none,
-      FOLDER_ACCESS_COPY.noChatYet,
-      FOLDER_ACCESS_COPY.workingFolderNote,
-    ]) {
-      expect(line).toMatch(/Built-in file tools/);
-      expect(line).not.toMatch(/Biorouter (asks|needs)/);
-    }
-    expect(FOLDER_ACCESS_COPY.workingFolderNote).toMatch(/Shell commands never ask/);
+  it('builds the card from the shared pieces: labelled sections, then the note last', async () => {
+    const user = userEvent.setup();
+    render(<Page />);
+    await user.click(chip());
+    await screen.findByText(RESULTS.folder);
+    const surface = card()!;
+    expect(surface).toHaveClass('br-footer-card');
+    const labels = [
+      ...surface.querySelectorAll('.br-footer-card__section > .br-footer-card__label'),
+    ];
+    expect(labels.map((label) => label.textContent)).toEqual([
+      FOLDER_ACCESS_COPY.workingFolder,
+      FOLDER_ACCESS_COPY.otherFolders,
+    ]);
+    expect(surface.lastElementChild).toHaveTextContent(FOLDER_ACCESS_COPY.whoAsks);
+    expect(surface.lastElementChild).toHaveClass('br-footer-card__note');
+  });
+
+  it('says exactly which tools ask for folder approval, and never that everything asks', async () => {
+    // Folder approval gates the Developer and Files extensions' editor, analysis and image tools
+    // only (`file_access_plan`); a shell command or a document tool reads another folder without
+    // one. So no sentence may say Biorouter as a whole asks.
+    expect(FOLDER_ACCESS_COPY.whoAsks).toMatch(/file editor, file analysis and image tools ask/);
+    expect(FOLDER_ACCESS_COPY.whoAsks).toMatch(/Shell commands and document tools do not ask/);
+    expect(FOLDER_ACCESS_COPY.whoAsks).not.toMatch(/Biorouter (asks|needs)|Built-in file tools/);
     mocks.list.mockResolvedValue({ data: [] });
     const user = userEvent.setup();
     render(<Page />);
-    await user.click(lockedChip());
+    await user.click(chip());
     expect(await screen.findByText(FOLDER_ACCESS_COPY.none)).toBeInTheDocument();
-    expect(card()).toHaveTextContent(FOLDER_ACCESS_COPY.workingFolderNote);
+    expect(card()).toHaveTextContent(FOLDER_ACCESS_COPY.whoAsks);
   });
 
-  it('reads nothing on Home and says that any other folder is asked for', async () => {
+  it('reads nothing on Home, lists no other folders there, and still says which tools ask', async () => {
     vi.useFakeTimers();
     render(<Page sessionId={undefined} locked={false} />);
-    hoverOpen(unlockedChip());
+    hoverOpen(chip());
     await flush();
     expect(isOpen()).toBe(true);
     expect(card()).toHaveTextContent(WORKING_DIR);
-    expect(card()).toHaveTextContent(FOLDER_ACCESS_COPY.noChatYet);
-    expect(card()).toHaveTextContent(FOLDER_ACCESS_COPY.chooseHint);
+    expect(card()).toHaveTextContent(FOLDER_ACCESS_COPY.whoAsks);
     expect(card()).not.toHaveTextContent(FOLDER_ACCESS_COPY.otherFolders);
     expect(mocks.list).not.toHaveBeenCalled();
+  });
+
+  it('treats a new chat with no session yet like Home, then lists its grants once it has one', async () => {
+    // A new chat (`#/pair` before its first message) reaches the chip with an EMPTY session id,
+    // not `undefined`. Such a chat can hold no grant, so the card must not wait for a read that
+    // is never sent: it once said "Checking folder access…" for as long as it stayed open.
+    const user = userEvent.setup();
+    const view = render(<Page sessionId="" locked={false} />);
+    await user.click(chip());
+    await flush();
+    expect(isOpen()).toBe(true);
+    expect(card()).toHaveTextContent(WORKING_DIR);
+    expect(chooseButton()).toBeInTheDocument();
+    expect(card()).toHaveTextContent(FOLDER_ACCESS_COPY.whoAsks);
+    expect(card()).not.toHaveTextContent(FOLDER_ACCESS_COPY.loading);
+    expect(card()).not.toHaveTextContent(FOLDER_ACCESS_COPY.otherFolders);
+    expect(mocks.list).not.toHaveBeenCalled();
+
+    // The chat gets its session while the card is open: the section appears and reads it.
+    view.rerender(<Page sessionId="chat-a" locked={false} />);
+    expect(await within(card()!).findByText(RESULTS.folder)).toBeInTheDocument();
+    expect(card()).toHaveTextContent(FOLDER_ACCESS_COPY.otherFolders);
+    expect(mocks.list).toHaveBeenCalledTimes(1);
+    expect(mocks.list).toHaveBeenCalledWith({ query: { session_id: 'chat-a' }, headers: PROOF });
   });
 
   it('reads the grants only once the card opens, with the proof header', async () => {
     vi.useFakeTimers();
     render(<Page />);
     expect(mocks.list).not.toHaveBeenCalled();
-    fireEvent.pointerEnter(lockedChip(), { pointerType: 'mouse' });
+    fireEvent.pointerEnter(chip(), { pointerType: 'mouse' });
     act(() => {
-      vi.advanceTimersByTime(FOLDER_CARD_OPEN_DELAY_MS - 10);
+      vi.advanceTimersByTime(FOOTER_CARD_OPEN_DELAY_MS - 10);
     });
     expect(mocks.list).not.toHaveBeenCalled();
     act(() => {
@@ -604,7 +471,7 @@ describe('what the card says', () => {
     });
     const user = userEvent.setup();
     render(<Page />);
-    await user.click(lockedChip());
+    await user.click(chip());
     const list = await screen.findByRole('list', { name: FOLDER_ACCESS_COPY.otherFolders });
     const rows = within(list).getAllByRole('listitem');
     expect(rows).toHaveLength(3);
@@ -630,11 +497,11 @@ describe('what the card says', () => {
     );
     const user = userEvent.setup();
     render(<Page />);
-    await user.click(lockedChip());
+    await user.click(chip());
     expect(screen.getByRole('status')).toHaveTextContent(FOLDER_ACCESS_COPY.loading);
     await act(async () => answer?.({ data: [RESULTS] }));
     expect(screen.getByText(RESULTS.folder)).toBeInTheDocument();
-    await user.click(lockedChip());
+    await user.click(chip());
     expect(isOpen()).toBe(false);
 
     // Reopened: the read runs again, and the last list shows while it does.
@@ -644,7 +511,7 @@ describe('what the card says', () => {
           answer = resolve;
         })
     );
-    await user.click(lockedChip());
+    await user.click(chip());
     expect(mocks.list).toHaveBeenCalledTimes(2);
     expect(screen.getByText(RESULTS.folder)).toBeInTheDocument();
     expect(screen.queryByRole('status')).toBeNull();
@@ -656,7 +523,7 @@ describe('what the card says', () => {
     mocks.list.mockResolvedValue({ data: [] });
     const user = userEvent.setup();
     render(<Page />);
-    await user.click(lockedChip());
+    await user.click(chip());
     expect(await screen.findByText(FOLDER_ACCESS_COPY.none)).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /Revoke/ })).toBeNull();
   });
@@ -665,7 +532,7 @@ describe('what the card says', () => {
     mocks.list.mockResolvedValue({ error: 'refused' });
     const user = userEvent.setup();
     render(<Page />);
-    await user.click(lockedChip());
+    await user.click(chip());
     expect(await screen.findByRole('alert')).toHaveTextContent(FOLDER_ACCESS_COPY.loadFailed);
     expect(screen.queryByRole('list')).toBeNull();
   });
@@ -676,7 +543,7 @@ describe('what the card says', () => {
     });
     const user = userEvent.setup();
     render(<Page />);
-    await user.click(lockedChip());
+    await user.click(chip());
     await screen.findByText(RESULTS.folder);
     expect(card()).toHaveTextContent('desktop app quits');
   });
@@ -687,7 +554,7 @@ describe('revoking (the only revoke control in the interface)', () => {
     mocks.list.mockResolvedValueOnce({ data: [RESULTS, NOTES] });
     const user = userEvent.setup();
     render(<Page />);
-    await user.click(lockedChip());
+    await user.click(chip());
     await screen.findByText(NOTES.folder);
     mocks.list.mockResolvedValueOnce({ data: [RESULTS] });
     await user.click(
@@ -720,7 +587,7 @@ describe('revoking (the only revoke control in the interface)', () => {
     mocks.revoke.mockResolvedValueOnce({ error: 'refused' });
     const user = userEvent.setup();
     render(<Page />);
-    await user.click(lockedChip());
+    await user.click(chip());
     await screen.findByText(RESULTS.folder);
     await user.click(
       screen.getByRole('button', { name: FOLDER_ACCESS_COPY.revokeLabel(RESULTS.folder) })
@@ -741,7 +608,7 @@ describe('revoking (the only revoke control in the interface)', () => {
     );
     const user = userEvent.setup();
     render(<Page />);
-    await user.click(lockedChip());
+    await user.click(chip());
     await screen.findByText(NOTES.folder);
     await user.click(
       screen.getByRole('button', { name: FOLDER_ACCESS_COPY.revokeLabel(NOTES.folder) })
@@ -756,7 +623,7 @@ describe('revoking (the only revoke control in the interface)', () => {
     mocks.browser = true;
     const user = userEvent.setup();
     render(<Page />);
-    await user.click(lockedChip());
+    await user.click(chip());
     await screen.findByText(RESULTS.folder);
     // A browser's grants live as long as the backend, not the tab.
     expect(card()).toHaveTextContent('backend restarts');
@@ -789,7 +656,7 @@ describe('revoking (the only revoke control in the interface)', () => {
     mocks.list.mockResolvedValue({ data: [] });
     const user = userEvent.setup();
     render(<Page />);
-    await user.click(lockedChip());
+    await user.click(chip());
     await screen.findByText(FOLDER_ACCESS_COPY.none);
     expect(screen.queryByLabelText(FOLDER_ACCESS_COPY.approvalKey)).toBeNull();
   });
@@ -798,11 +665,11 @@ describe('revoking (the only revoke control in the interface)', () => {
     mocks.browser = true;
     const user = userEvent.setup();
     render(<Page />);
-    await user.click(lockedChip());
+    await user.click(chip());
     await screen.findByText(RESULTS.folder);
     await user.type(screen.getByLabelText(FOLDER_ACCESS_COPY.approvalKey), 'typed-then-left');
     await user.keyboard('{Escape}');
-    await user.click(lockedChip());
+    await user.click(chip());
     await screen.findByText(RESULTS.folder);
     expect(screen.getByLabelText(FOLDER_ACCESS_COPY.approvalKey)).toHaveValue('');
   });
@@ -820,7 +687,7 @@ describe('one chat at a time', () => {
     );
     const user = userEvent.setup();
     const view = render(<Page />);
-    await user.click(lockedChip());
+    await user.click(chip());
     expect(mocks.list).toHaveBeenLastCalledWith({
       query: { session_id: 'chat-a' },
       headers: PROOF,
@@ -852,7 +719,7 @@ describe('one chat at a time', () => {
   it('never shows one chat’s list under another while the new read runs', async () => {
     const user = userEvent.setup();
     const view = render(<Page />);
-    await user.click(lockedChip());
+    await user.click(chip());
     await screen.findByText(RESULTS.folder);
 
     mocks.list.mockImplementationOnce(() => new Promise(() => {}));
@@ -860,35 +727,5 @@ describe('one chat at a time', () => {
     await flush();
     expect(screen.queryByText(RESULTS.folder)).toBeNull();
     expect(screen.getByRole('status')).toHaveTextContent(FOLDER_ACCESS_COPY.loading);
-  });
-});
-
-describe('where the card hangs, and the pointer’s way to it', () => {
-  it('hangs from the chip stretched up to the composer’s top, keeping the chip’s left and width', () => {
-    const chip = new DOMRect(40, 560, 80, 20);
-    const composer = new DOMRect(24, 440, 700, 110);
-    const anchor = folderCardAnchorRect(chip, composer);
-    expect(anchor.left).toBe(40);
-    expect(anchor.width).toBe(80);
-    expect(anchor.top).toBe(440);
-    expect(anchor.bottom).toBe(580);
-    // No composer, or one with no layout yet: the chip itself.
-    expect(folderCardAnchorRect(chip, null)).toBe(chip);
-    expect(folderCardAnchorRect(chip, new DOMRect())).toBe(chip);
-  });
-
-  it('counts a pointer between the chip and the card as on its way, and one beside it as not', () => {
-    // The chip at the bottom, the card above the composer.
-    const exit = { x: 60, y: 560 };
-    const cardBox = { top: 160, right: 360, bottom: 430, left: 40 };
-    const area = pointerGraceArea(exit, cardBox);
-    // Straight up across the composer, and into the card.
-    expect(isPointInPolygon({ x: 62, y: 500 }, area)).toBe(true);
-    expect(isPointInPolygon({ x: 120, y: 440 }, area)).toBe(true);
-    expect(isPointInPolygon({ x: 200, y: 300 }, area)).toBe(true);
-    // Off along the composer's text, or below the chip.
-    expect(isPointInPolygon({ x: 600, y: 520 }, area)).toBe(false);
-    expect(isPointInPolygon({ x: 340, y: 550 }, area)).toBe(false);
-    expect(isPointInPolygon({ x: 60, y: 600 }, area)).toBe(false);
   });
 });

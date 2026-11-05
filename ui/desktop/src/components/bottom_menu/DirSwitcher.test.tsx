@@ -1,13 +1,14 @@
 import { describe, it, expect, vi, beforeEach, beforeAll, afterAll } from 'vitest';
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { act, render, screen, fireEvent, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 
-// #44 — the empty-chat-only working-directory rule at the chip level. While
-// the chat is completely empty the chip is the chooser (both the pre-session
-// #39 path and a fresh zero-message session); once the chat has messages it
-// only names the folder and holds its card open (full path and folder access
-// in the card), and it can never reach updateWorkingDir. The card's own
-// behaviour is pinned in FolderAccessCard.test.tsx.
+// #44 — the empty-chat-only working-directory rule at the chip level. The
+// chip's click pins its card in every state; while the chat is completely
+// empty (both the pre-session #39 path and a fresh zero-message session) the
+// card's Choose folder… opens the chooser, and once the chat has messages the
+// card offers none, so the chip can never reach updateWorkingDir. The card's
+// own behaviour is pinned in FolderAccessCard.test.tsx, and when every footer
+// card opens and closes in useFooterCard.test.tsx.
 
 vi.mock('../../api', () => ({
   updateWorkingDir: vi.fn(async () => ({ data: {} })),
@@ -29,7 +30,7 @@ import { DirSwitcher, workingDirLabel, deriveWorkingDirLocked } from './DirSwitc
 import { ChatState } from '../../types/chatState';
 import { updateWorkingDir } from '../../api';
 import { toastError } from '../../toasts';
-import { FOOTER_COPY } from './copy';
+import { FOLDER_ACCESS_COPY, FOOTER_COPY } from './copy';
 
 const WORKING_DIR = '/Users/wgu/Desktop';
 const CHOSEN_DIR = '/Users/wgu/Desktop/data';
@@ -174,6 +175,19 @@ describe('deriveWorkingDirLocked', () => {
   });
 });
 
+/**
+ * The chip's click pins its card; the card's Choose folder… opens the chooser.
+ * The press is inside act with the chooser's answer, so the chip's state
+ * updates after it land there too.
+ */
+async function chooseFromCard() {
+  fireEvent.click(screen.getByRole('button', { name: /^Working folder/ }), { detail: 1 });
+  const choose = await screen.findByRole('button', { name: FOLDER_ACCESS_COPY.chooseFolder });
+  await act(async () => {
+    fireEvent.click(choose);
+  });
+}
+
 describe('DirSwitcher while the chat is empty', () => {
   it('opens the chooser and persists the choice for a zero-message session', async () => {
     const onWorkingDirChange = vi.fn();
@@ -186,11 +200,11 @@ describe('DirSwitcher while the chat is empty', () => {
       />
     );
 
-    // Interactive chip: a real button naming the folder; the path is its name.
+    // A real button naming the folder; the path is its name.
     const chip = screen.getByRole('button');
     expect(chip).toHaveTextContent('Desktop');
     expect(chip).toHaveAccessibleName(`Working folder: ${WORKING_DIR}`);
-    fireEvent.click(chip);
+    await chooseFromCard();
 
     // throwOnError is required: without it the generated client resolves with
     // an error object on a 409 and the failure path would never run.
@@ -222,7 +236,7 @@ describe('DirSwitcher while the chat is empty', () => {
       />
     );
 
-    fireEvent.click(screen.getByRole('button'));
+    await chooseFromCard();
 
     await waitFor(() => expect(updateWorkingDir).toHaveBeenCalled());
     await waitFor(() => expect(onRestartEnd).toHaveBeenCalled());
@@ -239,7 +253,7 @@ describe('DirSwitcher while the chat is empty', () => {
   it('says "folder", like the rest of the line, when the server gives no reason', async () => {
     vi.mocked(updateWorkingDir).mockRejectedValueOnce({});
     render(<DirSwitcher sessionId="session-1" workingDir={WORKING_DIR} locked={false} />);
-    fireEvent.click(screen.getByRole('button'));
+    await chooseFromCard();
     await waitFor(() => expect(toastError).toHaveBeenCalled());
     expect(toastError).toHaveBeenCalledWith({
       title: FOOTER_COPY.folderUpdateFailedTitle,
@@ -260,7 +274,7 @@ describe('DirSwitcher while the chat is empty', () => {
       />
     );
 
-    fireEvent.click(screen.getByRole('button'));
+    await chooseFromCard();
 
     await waitFor(() => expect(onWorkingDirChange).toHaveBeenCalledWith(CHOSEN_DIR));
     expect(updateWorkingDir).not.toHaveBeenCalled();
@@ -268,11 +282,11 @@ describe('DirSwitcher while the chat is empty', () => {
 });
 
 describe('DirSwitcher once the chat has messages (locked, #44)', () => {
-  it('names the folder on a button that opens its card, never the chooser', async () => {
+  it('names the folder on a button that opens its card, which offers no chooser', async () => {
     const user = userEvent.setup();
     render(<DirSwitcher sessionId="session-1" workingDir={WORKING_DIR} locked={true} />);
 
-    // Basename only, on the one button there is: the card's, not the chooser's.
+    // Basename only, on the one button there is.
     const label = screen.getByTestId('dir-switcher-locked');
     expect(label).toHaveTextContent('Desktop');
     expect(label).not.toHaveTextContent(WORKING_DIR);
@@ -282,11 +296,13 @@ describe('DirSwitcher once the chat has messages (locked, #44)', () => {
     // A screen reader gets the path without opening the card.
     expect(label).toHaveAccessibleName(`Working folder: ${WORKING_DIR}`);
 
-    // The full path is one hover away, in the card.
+    // The full path is one hover away, in the card, which says the folder is
+    // fixed and has no Choose folder….
     await user.hover(label);
-    expect(await screen.findByRole('dialog', { name: 'Folder access' })).toHaveTextContent(
-      WORKING_DIR
-    );
+    const card = await screen.findByRole('dialog', { name: FOLDER_ACCESS_COPY.cardLabel });
+    expect(card).toHaveTextContent(WORKING_DIR);
+    expect(card).toHaveTextContent(FOLDER_ACCESS_COPY.lockedNote);
+    expect(screen.queryByRole('button', { name: FOLDER_ACCESS_COPY.chooseFolder })).toBeNull();
   });
 
   it('never opens the chooser or calls updateWorkingDir', async () => {
@@ -300,7 +316,8 @@ describe('DirSwitcher once the chat has messages (locked, #44)', () => {
       />
     );
 
-    fireEvent.click(screen.getByTestId('dir-switcher-locked'));
+    fireEvent.click(screen.getByTestId('dir-switcher-locked'), { detail: 1 });
+    fireEvent.click(screen.getByTestId('dir-switcher-locked'), { detail: 0 });
 
     // Nothing may happen — no chooser, no persistence, no local change.
     await waitFor(() => expect(window.electron.directoryChooser).not.toHaveBeenCalled());
@@ -348,9 +365,9 @@ describe('DirSwitcher card control mode (#50)', () => {
     rerender(<DirSwitcher sessionId="session-1" workingDir={WORKING_DIR} locked={true} />);
 
     await user.hover(screen.getByTestId('dir-switcher-locked'));
-    expect(await screen.findByRole('dialog', { name: 'Folder access' })).toHaveTextContent(
-      WORKING_DIR
-    );
+    expect(
+      await screen.findByRole('dialog', { name: FOLDER_ACCESS_COPY.cardLabel })
+    ).toHaveTextContent(WORKING_DIR);
   });
 });
 
@@ -372,7 +389,7 @@ describe('DirSwitcher: the folder name is sans, the path in its card is mono', (
     render(<DirSwitcher sessionId="session-1" workingDir={WORKING_DIR} locked={true} />);
 
     await user.hover(screen.getByTestId('dir-switcher-locked'));
-    const card = await screen.findByRole('dialog', { name: 'Folder access' });
+    const card = await screen.findByRole('dialog', { name: FOLDER_ACCESS_COPY.cardLabel });
 
     // On the node that holds the path, not on the surface: mono on the box
     // would set the card's sentences in mono too.

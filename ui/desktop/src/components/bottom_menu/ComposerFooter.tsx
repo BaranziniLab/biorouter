@@ -6,19 +6,25 @@ import { cn } from '../../utils';
 import { ContextWindowIndicator } from '../ContextWindowIndicator';
 import { CostTracker } from './CostTracker';
 import { DirSwitcher } from './DirSwitcher';
+import { FooterCardGroup } from './FooterCard';
 
 /**
  * The composer's footer line (spec 3.7): the working folder on the left, the
  * context ring and the chat's cost on the right, in 12px muted ink under the
  * card. On Home (`sessionId === null`) only the folder shows.
  *
- * Folder access has no control of its own on the line: hovering or focusing
- * the folder chip opens its card (`FolderAccessCard`), which shows the full
- * path, every other folder the chat may use and Revoke for each. It replaced
- * a "Folder access" button beside the chip and the dialog that button opened.
- * The card hangs above the composer card (`composerRef`), never over the
- * draft. In a chat the chip is always there, even before the chat's folder is
- * known, because it is the only way to the chat's grants and their Revoke.
+ * Each of the three items opens a card in ONE format and with ONE behaviour
+ * (`FooterCard`, `useFooterCard`): hover, Tab or a click opens it, a click
+ * pins it, and only one is open at a time. The line is a `FooterCardGroup`,
+ * which holds that rule and hands every card the composer card (`composerRef`)
+ * to hang above, so no card ever covers the draft or its controls.
+ *
+ * Folder access has no control of its own on the line: the folder chip's card
+ * (`FolderAccessCard`) shows the full path, every other folder the chat may
+ * use and Revoke for each. It replaced a "Folder access" button beside the chip
+ * and the dialog that button opened. In a chat the chip is always there, even
+ * before the chat's folder is known, because it is the only way to the chat's
+ * grants and their Revoke.
  *
  * ⚠ The props are the wave-0 contract (WS-PICKERS). `ChatInput` places this
  * under the composer card and owns nothing inside it.
@@ -64,8 +70,8 @@ export interface ComposerFooterProps {
   /** Layout only (the inset that lines the folder up with the card's text). */
   className?: string;
   /**
-   * The composer card above the line. The folder chip's card hangs above it,
-   * so a hover never covers the draft or its controls.
+   * The composer card above the line. Every item's card hangs above it, so a
+   * hover never covers the draft or its controls.
    */
   composerRef?: RefObject<HTMLElement | null>;
 }
@@ -92,42 +98,43 @@ export function ComposerFooter({
 }: ComposerFooterProps) {
   const inChat = sessionId !== null;
   return (
-    <div data-testid="composer-footer" className={cn('br-footline', className)}>
-      <div className="br-footline__side">
-        {(workingDir !== null || inChat) && (
-          <DirSwitcher
-            sessionId={sessionId ?? undefined}
-            locked={workingDirLocked}
-            workingDir={workingDir}
-            onWorkingDirChange={onWorkingDirChange}
-            onRestartStart={onRestartStart}
-            onRestartEnd={onRestartEnd}
-            composerRef={composerRef}
-          />
-        )}
-      </div>
-      {inChat && (
-        <div className="br-footline__side" data-side="end">
-          <ContextWindowIndicator
-            sessionId={sessionId}
-            totalTokens={totalTokens}
-            tokenLimit={tokenLimit}
-            isTokenLimitLoaded={isTokenLimitLoaded}
-            boundModel={boundModel}
-            tokenLimitModel={tokenLimitModel}
-            showRemainingPercent
-            onCompact={onCompact}
-          />
-          {COST_TRACKING_ENABLED && (
-            <CostTracker
-              inputTokens={inputTokens}
-              outputTokens={outputTokens}
-              sessionCosts={sessionCosts}
-              modelCostRows={modelCostRows}
+    <FooterCardGroup clearOf={composerRef}>
+      <div data-testid="composer-footer" className={cn('br-footline', className)}>
+        <div className="br-footline__side">
+          {(workingDir !== null || inChat) && (
+            <DirSwitcher
+              sessionId={sessionId ?? undefined}
+              locked={workingDirLocked}
+              workingDir={workingDir}
+              onWorkingDirChange={onWorkingDirChange}
+              onRestartStart={onRestartStart}
+              onRestartEnd={onRestartEnd}
             />
           )}
         </div>
-      )}
-    </div>
+        {inChat && (
+          <div className="br-footline__side" data-side="end">
+            <ContextWindowIndicator
+              sessionId={sessionId}
+              totalTokens={totalTokens}
+              tokenLimit={tokenLimit}
+              isTokenLimitLoaded={isTokenLimitLoaded}
+              boundModel={boundModel}
+              tokenLimitModel={tokenLimitModel}
+              showRemainingPercent
+              onCompact={onCompact}
+            />
+            {COST_TRACKING_ENABLED && (
+              <CostTracker
+                inputTokens={inputTokens}
+                outputTokens={outputTokens}
+                sessionCosts={sessionCosts}
+                modelCostRows={modelCostRows}
+              />
+            )}
+          </div>
+        )}
+      </div>
+    </FooterCardGroup>
   );
 }

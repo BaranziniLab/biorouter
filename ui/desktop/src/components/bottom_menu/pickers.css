@@ -352,33 +352,72 @@ button.br-footline__item:focus-visible {
 }
 
 /*
- * The folder chip's card (`FolderAccessCard`): the working folder, then the
- * other folders this chat may use, each with Revoke. A popover surface, since
- * it holds buttons and a field. Sections are parted by air, not lines (R-27);
- * the surface keeps the floating hairline and shadow `PopoverContent` gives
- * it. These rules beat the primitive's `w-60` and `p-1` utilities because this
- * file is unlayered.
+ * The footer's cards (`FooterCard.tsx`): the working folder, the context
+ * window and the chat's cost, in ONE format. A popover surface, since they hold
+ * buttons, a slider and a field; `PopoverContent` gives it the floating
+ * hairline, shadow, 12px radius and `--background-default` ground. Sections are
+ * parted by air, not lines (R-27). These rules beat the primitive's `w-60` and
+ * `p-1` utilities because this file is unlayered.
  */
-.br-folder-card {
+.br-footer-card {
   display: flex;
   flex-direction: column;
   gap: 12px;
-  width: 320px;
-  max-width: calc(100vw - 16px);
+  width: min(320px, calc(100vw - 16px));
   max-height: min(480px, var(--radix-popover-content-available-height, 70vh));
   overflow-y: auto;
   padding: 12px;
 }
 
-.br-folder-card__section,
-.br-folder-card__key {
+.br-footer-card__section,
+.br-footer-card__key {
   display: flex;
   flex-direction: column;
   gap: 4px;
   min-width: 0;
 }
 
-.br-folder-card__grants {
+/* A section's label: the supporting size, in the muted ink. */
+.br-footer-card__label {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: var(--text-supporting);
+  line-height: var(--text-supporting--line-height);
+}
+
+/* A section's reading: the secondary size, the default ink, tabular figures. */
+.br-footer-card__value {
+  margin: 0;
+  min-width: 0;
+  color: var(--text-default);
+  font-size: var(--text-secondary);
+  line-height: var(--text-secondary--line-height);
+  font-variant-numeric: tabular-nums;
+}
+
+/* A machine string (a path) wraps anywhere instead of widening the card or
+   being cut. Its face is `font-mono`. */
+.br-footer-card__value[data-mono] {
+  overflow-wrap: anywhere;
+  word-break: break-all;
+}
+
+/* The muted lines: a value's detail, and a sentence that explains. */
+.br-footer-card__detail,
+.br-footer-card__note {
+  margin: 0;
+  min-width: 0;
+  color: var(--text-muted);
+  font-size: var(--text-supporting);
+  line-height: var(--text-supporting--line-height);
+}
+
+/* A failure the person must read. */
+.br-footer-card__note[data-tone='danger'] {
+  color: var(--text-danger);
+}
+
+.br-footer-card__list {
   display: flex;
   flex-direction: column;
   gap: 8px;
@@ -387,33 +426,96 @@ button.br-footline__item:focus-visible {
   list-style: none;
 }
 
-.br-folder-card__grant {
+/* A row: its text on the left, an optional action on the trailing edge. */
+.br-footer-card__row {
   display: flex;
   align-items: flex-start;
   gap: 8px;
   min-width: 0;
 }
 
-.br-folder-card__grant-text {
+.br-footer-card__row-text {
+  display: flex;
   flex: 1 1 auto;
+  flex-direction: column;
   min-width: 0;
 }
 
-/* A long path wraps anywhere instead of widening the card or being cut. */
-.br-folder-card__path {
-  overflow-wrap: anywhere;
-  word-break: break-all;
+.br-footer-card__row-action {
+  display: flex;
+  flex: none;
+}
+
+/* The card's buttons: left-aligned, 8px apart, a little air above them. */
+.br-footer-card__actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 8px;
+}
+
+.br-footer-card__section > .br-footer-card__actions {
+  margin-top: 4px;
 }
 
 /*
  * A keyboard pin moves focus onto the card itself (the dialog). D-15 firms an
  * edge rather than drawing a ring, so the surface's own hairline takes the
- * focus ink; the shadow stays. The contrast and forced-colours ring in
- * main.css still applies on top.
+ * focus ink, with a 1px inset of the same ink so the edge reads at 2px rather
+ * than as a hairline that changed colour; the popover's shadow stays. The
+ * contrast and forced-colours ring in main.css still applies on top.
  */
-.biorouter-popover-surface.br-folder-card:focus-visible {
+.biorouter-popover-surface.br-footer-card:focus-visible {
   outline: none;
   border-color: var(--border-focus);
+  box-shadow:
+    inset 0 0 0 1px var(--border-focus),
+    var(--shadow-popover);
+}
+
+/*
+ * The context card's bar and its auto-compact marker (`ContextWindowGauge` in
+ * ContextWindowIndicator.tsx). The wrapper is exactly as wide as the track, so
+ * the marker's inline `left` is the threshold's share of the bar. Its 10px of
+ * top room is the triangle's: the marker's box runs from 2px above the wrapper
+ * to 6px into the 8px track, and the 10×6 glyph at its foot points down onto
+ * the track. The box is larger than the glyph so a press that grazes the glyph
+ * still lands on it; focused, it takes D-15's fill and edge from main.css.
+ * A press on either keeps the browser's own focus (it is what keeps the card
+ * open through a window switch), so a drag that starts here selecting the
+ * card's text is stopped by `user-select`, not by cancelling the press.
+ */
+.br-context-gauge {
+  position: relative;
+  padding-top: 10px;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+.br-context-gauge__bar {
+  cursor: pointer;
+}
+
+.br-context-gauge__marker {
+  position: absolute;
+  top: -2px;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  width: 22px;
+  height: 18px;
+  transform: translateX(-50%);
+  cursor: ew-resize;
+}
+
+.br-context-gauge__glyph {
+  width: 0;
+  height: 0;
+  border-right: 5px solid transparent;
+  border-left: 5px solid transparent;
+  border-top: 6px solid var(--text-default);
+  pointer-events: none;
 }
 
 @media (prefers-reduced-motion: reduce) {

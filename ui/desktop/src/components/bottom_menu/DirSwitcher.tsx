@@ -1,15 +1,14 @@
 import './pickers.css';
 import React, { useId, useState } from 'react';
 import { Folder } from '../icons/app-icons';
-import { Popover, PopoverAnchor } from '../ui/popover';
-import { cn } from '../../utils';
 import { updateWorkingDir } from '../../api';
 import { userActionHeaders } from '../../utils/userAction';
 import { toastError } from '../../toasts';
 import { ChatState } from '../../types/chatState';
 import { FOOTER_COPY } from './copy';
 import { FolderAccessCard } from './FolderAccessCard';
-import { useFolderCard } from './useFolderCard';
+import { FooterCardRoot, FooterCardTrigger } from './FooterCard';
+import { useFooterCard } from './useFooterCard';
 
 interface DirSwitcherProps {
   /** Layout only. */
@@ -24,21 +23,15 @@ interface DirSwitcherProps {
   workingDir: string | null;
   /**
    * #44: the working directory is choosable only while the chat is completely
-   * empty. Once the chat has messages, the chip no longer opens the chooser:
-   * its click pins the folder card open instead (basename on the chip, full
-   * path and folder access in the card). The backend enforces the same rule
-   * with a 409, so this is UX, not the guard.
+   * empty. Once the chat has messages, the card offers no Choose folder…: it
+   * says the folder is fixed instead, and nothing here can reach the chooser
+   * or `updateWorkingDir`. The backend enforces the same rule with a 409, so
+   * this is UX, not the guard.
    */
   locked?: boolean;
   onWorkingDirChange?: (newDir: string) => void;
   onRestartStart?: () => void;
   onRestartEnd?: () => void;
-  /**
-   * The composer card the chip sits under. The folder card hangs above it, so
-   * a card that a hover opened never covers the draft, `+` or Tools; without
-   * it the card hangs from the chip.
-   */
-  composerRef?: React.RefObject<HTMLElement | null>;
 }
 
 /**
@@ -95,24 +88,30 @@ export function deriveWorkingDirLocked(params: {
 }
 
 /**
- * The composer footer's working-folder chip (spec 3.7) and its card.
+ * The composer footer's working-folder chip (spec 3.7) and its card, one of the
+ * footer's three items that behave alike (`useFooterCard`, `FooterCard`).
  *
- * The chip names the folder; hovering it (300ms), or reaching it with Tab, opens
- * `FolderAccessCard`: the full path, every other folder the chat may use, and
- * Revoke for each. It replaced the plain path tooltip and the separate "Folder
- * access" button, so the only control that revokes a folder grant lives here.
- * The card hangs above the composer card (`composerRef`), never over the draft.
+ * The chip names the folder; hovering it (300ms), reaching it with Tab, or
+ * clicking it opens `FolderAccessCard`: the full path, Choose folder… while the
+ * chat is empty, every other folder the chat may use, and Revoke for each. It
+ * replaced the plain path tooltip and the separate "Folder access" button, so
+ * the only control that revokes a folder grant lives here. The card hangs above
+ * the composer card (the footer's `FooterCardGroup`), never over the draft.
  *
- * - Unlocked (an empty chat, or Home): the click opens the native folder
- *   chooser and Cmd/Ctrl-click opens the folder in the file manager, as before.
- *   Either click closes the card, and it stays shut while the chooser is open
- *   (#50: nothing stuck open over a native dialog).
- * - Locked (#44, the chat has messages): a real button whose click, Enter,
- *   Space or tap pins the card open (a keyboard press also moves focus into
- *   it). It never opens the chooser and never calls `updateWorkingDir`.
- * - Folder not known yet (`workingDir` null, an existing chat): the same
- *   card-only button with the folder glyph and no name, so Revoke never
- *   depends on the folder's row having answered.
+ * - The click (or tap, Enter, Space) pins the card in EVERY state: Home, an
+ *   empty chat, a chat with messages and a folder not known yet. A keyboard
+ *   press also moves focus into the card.
+ * - Choosing a folder is the card's Choose folder…, offered while the chat is
+ *   empty and its folder is known. It closes the card and opens the native
+ *   chooser, and the card stays shut while the chooser is open (#50: nothing
+ *   stuck open over a native dialog, nothing armed during it opens after).
+ * - Locked (#44, the chat has messages): the card says the folder is fixed,
+ *   and nothing here opens the chooser or calls `updateWorkingDir`.
+ * - Cmd/Ctrl-click opens a known folder in the file manager, in any state (an
+ *   accelerator: it neither pins the card nor changes the folder).
+ * - Folder not known yet (`workingDir` null, an existing chat): the folder
+ *   glyph and no name, and the same card, so Revoke never depends on the
+ *   folder's row having answered.
  */
 export const DirSwitcher: React.FC<DirSwitcherProps> = ({
   className,
@@ -122,14 +121,10 @@ export const DirSwitcher: React.FC<DirSwitcherProps> = ({
   onWorkingDirChange,
   onRestartStart,
   onRestartEnd,
-  composerRef,
 }) => {
   const [isDirectoryChooserOpen, setIsDirectoryChooserOpen] = useState(false);
-  const card = useFolderCard({ suppressed: isDirectoryChooserOpen, clearOf: composerRef });
+  const card = useFooterCard({ suppressed: isDirectoryChooserOpen });
   const cardId = useId();
-  // The card is the chip's only action once the chat has messages (#44), and
-  // while its folder is not known: there is no folder to choose from or open.
-  const cardOnly = locked || workingDir === null;
 
   const handleDirectoryChange = async () => {
     if (isDirectoryChooserOpen) return;
@@ -188,95 +183,76 @@ export const DirSwitcher: React.FC<DirSwitcherProps> = ({
     }
   };
 
-  const handleDirectoryClick = async (event: React.MouseEvent) => {
+  // #44: only an empty chat with a known folder may choose another, and only
+  // from the card. The locked chip passes nothing, so its card has no button.
+  const chooseFolder =
+    !locked && workingDir !== null
+      ? () => {
+          card.close();
+          void handleDirectoryChange();
+        }
+      : undefined;
+
+  /** Runs before the pin: the accelerators, which never pin the card. */
+  const onChipClick = (event: React.MouseEvent) => {
+    // The native chooser is up: a click arms nothing for after it (#50).
     if (isDirectoryChooserOpen) {
       event.preventDefault();
-      event.stopPropagation();
       return;
     }
-    // The person acted on the folder itself: the card gives way, as the old
-    // tooltip did on a trigger click.
-    card.close();
-    const isCmdOrCtrlClick = event.metaKey || event.ctrlKey;
-
-    if (isCmdOrCtrlClick) {
+    if ((event.metaKey || event.ctrlKey) && workingDir !== null) {
       event.preventDefault();
-      event.stopPropagation();
-      if (workingDir !== null) await window.electron.openDirectoryInExplorer(workingDir);
-    } else {
-      await handleDirectoryChange();
+      card.close();
+      void window.electron.openDirectoryInExplorer(workingDir);
     }
   };
 
-  // Both chips show the folder's NAME in the footer's sans (spec 3.7, principle
-  // 10: names, not paths); the full path is in the card, in mono, because a
-  // path is a machine string. `<bdi>` keeps a right-to-left folder name from
-  // reordering the line around it.
+  // The footer shows the folder's NAME in its sans (spec 3.7, principle 10:
+  // names, not paths); the full path is in the card, in mono, because a path is
+  // a machine string. `<bdi>` keeps a right-to-left folder name from reordering
+  // the line around it.
   const name =
     workingDir === null ? null : (
       <span className="br-footline__name">
         <bdi>{workingDirLabel(workingDir)}</bdi>
       </span>
     );
-  const shared = {
-    ref: card.triggerRef,
-    className: cn('br-footline__item', className),
-    // The chip's name carries the full path, so a screen reader has it without
-    // opening the card.
-    'aria-label':
-      workingDir === null ? FOOTER_COPY.folderUnknownLabel : FOOTER_COPY.folderLabel(workingDir),
-    ...card.triggerHandlers,
-  };
-  // #44: once the chat has messages the working dir is immutable, so the
-  // locked chip has no chooser affordance at all: it only holds the card open.
-  const trigger = cardOnly ? (
-    <button
-      type="button"
-      data-testid={workingDir === null ? 'dir-switcher-unknown' : 'dir-switcher-locked'}
-      aria-haspopup="dialog"
-      aria-expanded={card.open}
-      aria-controls={card.open ? cardId : undefined}
-      // `detail` is 0 for Enter, Space and an assistive technology's click: those
-      // move focus into the card, so Revoke can be reached from the keyboard.
-      onClick={(event) => card.togglePin({ moveFocus: event.detail === 0 })}
-      {...shared}
-    >
-      <Folder aria-hidden="true" />
-      {name}
-    </button>
-  ) : (
-    <button
-      type="button"
-      data-testid="dir-switcher"
-      onClick={handleDirectoryClick}
-      disabled={isDirectoryChooserOpen}
-      {...shared}
-    >
-      <Folder aria-hidden="true" />
-      {name}
-    </button>
-  );
 
-  // #50: the Popover is CONTROLLED for the component's whole lifetime. Locking
-  // swaps the trigger in place, so React reconciles both states into the same
-  // root, and a root that flipped from controlled to uncontrolled mid-life is
-  // what showed up as a stuck-open tooltip. `useFolderCard` also keeps the card
-  // shut while the native chooser is open.
-  //
-  // The anchor is VIRTUAL: the chip stretched up to the composer card's top
-  // (`folderCardAnchorRect`), so `side="top"` hangs the card above the whole
-  // composer instead of over its left half.
+  // #50: the Popover is CONTROLLED for the component's whole lifetime
+  // (`FooterCardRoot`). Locking changes only what the card says, never the
+  // trigger or the root, and `useFooterCard` keeps the card shut while the
+  // native chooser is open.
   return (
-    <Popover open={card.open} onOpenChange={card.onOpenChange}>
-      <PopoverAnchor virtualRef={card.anchor} />
-      {trigger}
+    <FooterCardRoot card={card}>
+      <FooterCardTrigger
+        card={card}
+        cardId={cardId}
+        className={className}
+        data-testid={
+          workingDir === null
+            ? 'dir-switcher-unknown'
+            : locked
+              ? 'dir-switcher-locked'
+              : 'dir-switcher'
+        }
+        // The chip's name carries the full path, so a screen reader has it
+        // without opening the card.
+        aria-label={
+          workingDir === null ? FOOTER_COPY.folderUnknownLabel : FOOTER_COPY.folderLabel(workingDir)
+        }
+        onClick={onChipClick}
+      >
+        <Folder aria-hidden="true" />
+        {name}
+      </FooterCardTrigger>
       <FolderAccessCard
         id={cardId}
         sessionId={sessionId}
         workingDir={workingDir}
         locked={locked}
+        onChooseFolder={chooseFolder}
         card={card}
       />
-    </Popover>
+    </FooterCardRoot>
   );
 };

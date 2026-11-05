@@ -1,11 +1,28 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useId, useState } from 'react';
 import { useModelAndProvider } from '../ModelAndProviderContext';
-import { Tooltip, TooltipContent, TooltipTrigger } from '../ui/Tooltip';
-import { FOOTER_COPY } from './copy';
+import { COST_CARD_COPY, FOOTER_COPY } from './copy';
 import './pickers.css';
 import { fetchModelPricing } from '../../utils/pricing';
 import { PricingData } from '../../api';
-import type { ModelCostRow, SessionCostRow, SessionCosts } from '../../hooks/useCostTracking';
+import {
+  modelRowKey,
+  type ModelCostRow,
+  type SessionCostRow,
+  type SessionCosts,
+} from '../../hooks/useCostTracking';
+import { modelLabel } from './ModelBreakdownTable';
+import {
+  FooterCard,
+  FooterCardDetail,
+  FooterCardList,
+  FooterCardNote,
+  FooterCardRoot,
+  FooterCardRow,
+  FooterCardSection,
+  FooterCardTrigger,
+  FooterCardValue,
+} from './FooterCard';
+import { useFooterCard } from './useFooterCard';
 
 interface CostTrackerProps {
   inputTokens?: number;
@@ -19,7 +36,14 @@ export interface CostEstimate {
   partial: boolean;
 }
 
-export function aggregateModelRowsCost(rows: ModelCostRow[]): CostEstimate {
+/**
+ * The total of priced rows: the ledger's per-model rows, or the legacy per-model map's values. A
+ * row with no price makes the total a conservative subtotal; no priced row at all leaves it
+ * unavailable rather than $0.
+ */
+export function aggregateModelRowsCost(
+  rows: Pick<SessionCostRow, 'totalCost' | 'costIsPartial'>[]
+): CostEstimate {
   let amount = 0;
   let hasKnownCost = false;
   let partial = false;
@@ -33,26 +57,6 @@ export function aggregateModelRowsCost(rows: ModelCostRow[]): CostEstimate {
     partial ||= row.costIsPartial ?? false;
   }
   return { amount: hasKnownCost ? amount : null, partial };
-}
-
-function aggregateSessionCosts(rows: SessionCostRow[]): CostEstimate {
-  let amount = 0;
-  let hasKnownCost = false;
-  let partial = false;
-  for (const row of rows) {
-    if (row.totalCost === null) {
-      partial = true;
-    } else {
-      amount += row.totalCost;
-      hasKnownCost = true;
-    }
-    partial ||= row.costIsPartial ?? false;
-  }
-  return { amount: hasKnownCost ? amount : null, partial };
-}
-
-export function sessionTokensSummary(inputTokens: number, outputTokens: number): string {
-  return `Input: ${inputTokens.toLocaleString()} tokens\nOutput: ${outputTokens.toLocaleString()} tokens`;
 }
 
 export function formatTooltipMoney(amount: number | null, currency = '$'): string {
@@ -70,22 +74,100 @@ export function formatCostEstimate(estimate: CostEstimate, currency = '$'): stri
 
 /**
  * Whether the footer shows a figure at all (spec 3.7): only a cost above $0.
- * "$0.00" and "Unavailable" are not worth a place on the line; the breakdown
- * is still one hover away once there is something to break down.
+ * "$0.00" and "Unavailable" are not worth a place on the line; the card is
+ * still one hover away once there is something to break down.
  */
 export function costIsWorthShowing(estimate: CostEstimate): boolean {
   return estimate.amount !== null && Number.isFinite(estimate.amount) && estimate.amount > 0;
 }
 
-/** The footer's figure: sans with tabular numbers (`.br-footline__item`). */
-function CostTrigger({ estimate, currency = '$' }: { estimate: CostEstimate; currency?: string }) {
+/**
+ * Everything the cost card shows, whichever of the three data paths produced it, so the three
+ * draw ONE card: the ledger's per-model rows, the legacy per-model map, or the counters priced at
+ * the current model's rate.
+ */
+export interface CostSummary {
+  estimate: CostEstimate;
+  currency: string;
+  inputTokens: number;
+  outputTokens: number;
+  /** The ledger's rows, one per model, for the card's By model section; empty on the other paths. */
+  models: ModelCostRow[];
+}
+
+/**
+ * Which data the footer prices, in order: the ledger's rows, else the legacy map, else the
+ * counters at the current model's rate (`pricing`, `null` while it loads or when the model has
+ * no price). The first path that has rows decides, even when its total is not worth showing:
+ * a ledger that priced the chat at nothing never falls back to pricing the counters. `null`
+ * draws nothing on the line.
+ */
+export function costSummary({
+  modelCostRows,
+  sessionCosts,
+  inputTokens,
+  outputTokens,
+  pricing,
+}: {
+  modelCostRows?: ModelCostRow[];
+  sessionCosts?: SessionCosts;
+  inputTokens: number;
+  outputTokens: number;
+  pricing: PricingData | null;
+}): CostSummary | null {
+  if (modelCostRows && modelCostRows.length > 0) {
+    const estimate = aggregateModelRowsCost(modelCostRows);
+    if (!costIsWorthShowing(estimate)) return null;
+    return {
+      estimate,
+      currency: '$',
+      inputTokens: modelCostRows.reduce((sum, row) => sum + row.inputTokens, 0),
+      outputTokens: modelCostRows.reduce((sum, row) => sum + row.outputTokens, 0),
+      models: modelCostRows,
+    };
+  }
+
+  const legacyRows = sessionCosts ? Object.values(sessionCosts) : [];
+  if (legacyRows.length > 0) {
+    const estimate = aggregateModelRowsCost(legacyRows);
+    if (!costIsWorthShowing(estimate)) return null;
+    return {
+      estimate,
+      currency: '$',
+      inputTokens: legacyRows.reduce((sum, row) => sum + row.inputTokens, 0),
+      outputTokens: legacyRows.reduce((sum, row) => sum + row.outputTokens, 0),
+      models: [],
+    };
+  }
+
+  if (!pricing) return null;
+  const estimate = {
+    amount:
+      inputTokens * (pricing.input_token_cost ?? 0) +
+      outputTokens * (pricing.output_token_cost ?? 0),
+    partial: true,
+  };
+  if (!costIsWorthShowing(estimate)) return null;
+  return { estimate, currency: pricing.currency, inputTokens, outputTokens, models: [] };
+}
+
+/**
+ * The footer's cost: the figure on the line (sans with tabular numbers, `.br-footline__item`) and
+ * the card it opens, one of the footer's three `FooterCard`s, which open and close alike
+ * (`useFooterCard`): the chat's total and its tokens, then the cost per model.
+ */
+function CostFigure({ summary }: { summary: CostSummary }) {
+  const card = useFooterCard();
+  const cardId = useId();
+  const byModelId = useId();
+  const { estimate, currency, models } = summary;
   const label = formatCostEstimate(estimate, currency);
   return (
-    <TooltipTrigger asChild>
-      <button
-        type="button"
+    <FooterCardRoot card={card}>
+      <FooterCardTrigger
+        card={card}
+        cardId={cardId}
         data-testid="chat-cost"
-        className="br-footline__item"
         aria-label={
           estimate.amount === null
             ? FOOTER_COPY.costUnavailable
@@ -93,17 +175,42 @@ function CostTrigger({ estimate, currency = '$' }: { estimate: CostEstimate; cur
         }
       >
         {label}
-      </button>
-    </TooltipTrigger>
+      </FooterCardTrigger>
+      <FooterCard
+        card={card}
+        id={cardId}
+        label={COST_CARD_COPY.cardLabel}
+        align="end"
+        testId="cost-card"
+      >
+        <FooterCardSection label={COST_CARD_COPY.section}>
+          <FooterCardValue>{label}</FooterCardValue>
+          <FooterCardDetail>
+            {COST_CARD_COPY.tokens(summary.inputTokens, summary.outputTokens)}
+          </FooterCardDetail>
+          {estimate.partial && <FooterCardNote>{COST_CARD_COPY.partialNote}</FooterCardNote>}
+        </FooterCardSection>
+        {models.length > 0 && (
+          <FooterCardSection label={COST_CARD_COPY.byModel} labelId={byModelId}>
+            <FooterCardList labelledBy={byModelId}>
+              {models.map((row, index) => (
+                <FooterCardRow key={`${modelRowKey(row.provider, row.model)}:${index}`}>
+                  <FooterCardValue>{modelLabel(row)}</FooterCardValue>
+                  <FooterCardDetail>
+                    {COST_CARD_COPY.modelDetail(
+                      formatTooltipMoney(row.totalCost, currency),
+                      row.inputTokens,
+                      row.outputTokens
+                    )}
+                  </FooterCardDetail>
+                </FooterCardRow>
+              ))}
+            </FooterCardList>
+          </FooterCardSection>
+        )}
+      </FooterCard>
+    </FooterCardRoot>
   );
-}
-
-export function costEstimateSummary(estimate: CostEstimate, currency = '$') {
-  if (estimate.amount === null) return 'Total cost unavailable';
-  const label = formatCostEstimate(estimate, currency);
-  return estimate.partial
-    ? `Estimated total: ${label}\nConservative estimate based on available token and pricing data.`
-    : `Total cost: ${label}`;
 }
 
 export function CostTracker({
@@ -151,58 +258,15 @@ export function CostTracker({
 
   if (!showPricing) return null;
 
-  if (modelCostRows && modelCostRows.length > 0) {
-    const estimate = aggregateModelRowsCost(modelCostRows);
-    if (!costIsWorthShowing(estimate)) return null;
-    const inputTotal = modelCostRows.reduce((sum, row) => sum + row.inputTokens, 0);
-    const outputTotal = modelCostRows.reduce((sum, row) => sum + row.outputTokens, 0);
-    return (
-      <Tooltip>
-        <CostTrigger estimate={estimate} />
-        <TooltipContent className="whitespace-pre-line">
-          {`${sessionTokensSummary(inputTotal, outputTotal)}\n${costEstimateSummary(estimate)}`}
-        </TooltipContent>
-      </Tooltip>
-    );
-  }
-
-  const legacyRows = sessionCosts ? Object.values(sessionCosts) : [];
-  if (legacyRows.length > 0) {
-    const estimate = aggregateSessionCosts(legacyRows);
-    if (!costIsWorthShowing(estimate)) return null;
-    const totals = legacyRows.reduce(
-      (sum, row) => ({
-        input: sum.input + row.inputTokens,
-        output: sum.output + row.outputTokens,
-      }),
-      { input: 0, output: 0 }
-    );
-    return (
-      <Tooltip>
-        <CostTrigger estimate={estimate} />
-        <TooltipContent className="whitespace-pre-line">
-          {`${sessionTokensSummary(totals.input, totals.output)}\n${costEstimateSummary(estimate)}`}
-        </TooltipContent>
-      </Tooltip>
-    );
-  }
-
-  if (!currentModel || !currentProvider) return null;
-
-  // Loading, or no price for this model: nothing to show on the line.
-  if (isLoading || !costInfo) return null;
-
-  const freshSubtotal =
-    inputTokens * (costInfo.input_token_cost ?? 0) +
-    outputTokens * (costInfo.output_token_cost ?? 0);
-  const estimate = { amount: freshSubtotal, partial: true };
-  if (!costIsWorthShowing(estimate)) return null;
-  return (
-    <Tooltip>
-      <CostTrigger estimate={estimate} currency={costInfo.currency} />
-      <TooltipContent className="whitespace-pre-line">
-        {`${sessionTokensSummary(inputTokens, outputTokens)}\n${costEstimateSummary(estimate, costInfo.currency)}`}
-      </TooltipContent>
-    </Tooltip>
-  );
+  const summary = costSummary({
+    modelCostRows,
+    sessionCosts,
+    inputTokens,
+    outputTokens,
+    // Loading, or no model to price the counters at: nothing from this path.
+    pricing: currentModel && currentProvider && !isLoading ? costInfo : null,
+  });
+  // One element at one place for every path, so a card the person pinned stays pinned when the
+  // ledger's answer replaces the live price.
+  return summary ? <CostFigure summary={summary} /> : null;
 }

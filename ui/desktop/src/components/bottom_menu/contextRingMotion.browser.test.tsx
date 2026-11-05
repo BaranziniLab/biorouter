@@ -11,6 +11,10 @@
  * bundled with esbuild, rendered by React in Chromium, styled by `pickers.css`
  * with the motion tokens read from `main.css`, and each change is committed
  * synchronously and asked for its running animations.
+ *
+ * The last test opens the ring's card and measures its bar and auto-compact marker, whose
+ * geometry is authored CSS (`.br-context-gauge*` in pickers.css, `.br-progress` in main.css)
+ * that jsdom never lays out.
  */
 import { readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
@@ -24,6 +28,13 @@ const MAIN_CSS = readFileSync(resolve(here, '../../styles/main.css'), 'utf8');
 const PICKERS_CSS = readFileSync(resolve(here, 'pickers.css'), 'utf8');
 
 const TOKEN_NAMES = ['--dur-med-min', '--dur-fast-min', '--ease-out', '--icon-chip'];
+
+/** The progress bar's own geometry (`.br-progress`, an 8px track), which the gauge's marker sits on. */
+function readProgressRule(): string {
+  const match = MAIN_CSS.match(/\n\.br-progress \{[^}]*\}/);
+  if (!match) throw new Error('main.css does not declare .br-progress');
+  return match[0];
+}
 
 /** The first declaration of each token in main.css, so a token change reaches this test. */
 function readTokens(): string {
@@ -40,9 +51,10 @@ const PREFLIGHT = `
 body { margin: 0; font-family: Arial, sans-serif; font-size: 14px; line-height: 20px; }
 button { margin: 0; padding: 0; border: 0; background: none; font: inherit; color: inherit; }
 svg { display: block; }
+:root { --text-default: #111; }
 `;
 
-/** The gauge inside the popover reads the threshold through ConfigContext; it never opens here. */
+/** The gauge inside the card reads the threshold through ConfigContext: none is saved here (80%). */
 const stubConfig: Plugin = {
   name: 'stub-config-context',
   setup(builder) {
@@ -151,7 +163,7 @@ describe('the context ring sweeps only for a live update in the same chat (V2-R3
       logLevel: 'silent',
     });
     script = bundle.outputFiles[0].text;
-    css = PREFLIGHT + readTokens() + PICKERS_CSS;
+    css = PREFLIGHT + readTokens() + readProgressRule() + PICKERS_CSS;
   }, 120_000);
 
   afterAll(async () => {
@@ -162,8 +174,8 @@ describe('the context ring sweeps only for a live update in the same chat (V2-R3
    * The composer as it mounts on an open or a tab switch. A reading whose window
    * has not loaded draws no ring (V2-R4-1), so then there is no arc to wait for.
    */
-  async function open(initial: Reading): Promise<Page> {
-    const tab = await browser!.newPage({ viewport: { width: 400, height: 200 } });
+  async function open(initial: Reading, viewport = { width: 400, height: 200 }): Promise<Page> {
+    const tab = await browser!.newPage({ viewport });
     await tab.setContent(
       `<!doctype html><html><head><style>${css}</style></head><body><div id="root"></div></body></html>`
     );
@@ -370,6 +382,68 @@ describe('the context ring sweeps only for a live update in the same chat (V2-R3
       });
       expect(m.still).toBe(false);
       expect(m.running).toEqual([{ property: 'stroke-dashoffset', duration: 250 }]);
+    } finally {
+      await tab.close();
+    }
+  });
+
+  it('opens a card whose auto-compact marker sits on the bar at its threshold', async (ctx) => {
+    if (!browser) return ctx.skip();
+    const tab = await open(
+      { sessionId: 'chat-a', totalTokens: 92_000, tokenLimit: 128_000, isTokenLimitLoaded: true },
+      { width: 480, height: 480 }
+    );
+    try {
+      await tab.click('[data-testid="context-window-indicator"]');
+      await tab.waitForSelector('[data-testid="context-card"] [role="slider"]');
+      const measure = () =>
+        tab.evaluate(() => {
+          const box = (el: Element) => {
+            const r = el.getBoundingClientRect();
+            return { left: r.left, right: r.right, top: r.top, bottom: r.bottom };
+          };
+          const card = document.querySelector('[data-testid="context-card"]')!;
+          const marker = card.querySelector('[role="slider"]')!;
+          return {
+            card: box(card),
+            track: box(card.querySelector('[role="progressbar"]')!),
+            marker: box(marker),
+            glyph: box(marker.querySelector('span')!),
+            valueText: marker.getAttribute('aria-valuetext'),
+          };
+        });
+      // Layout snaps to 1/64px, so a position is checked to a tenth of a pixel.
+      const px = (actual: number, expected: number, what: string) =>
+        expect(Math.abs(actual - expected), `${what}: ${actual} vs ${expected}`).toBeLessThan(0.1);
+      const check = (m: Awaited<ReturnType<typeof measure>>, share: number) => {
+        // The 8px track, and the 10×6 triangle pointing down onto its top.
+        px(m.track.bottom - m.track.top, 8, 'track height');
+        px(m.glyph.right - m.glyph.left, 10, 'glyph width');
+        px(m.glyph.bottom - m.glyph.top, 6, 'glyph height');
+        px(m.glyph.top, m.track.top, 'glyph top on the track top');
+        // Centred on the threshold's share of the bar, in a 22×18 box the press can land on.
+        const x = m.track.left + share * (m.track.right - m.track.left);
+        px((m.glyph.left + m.glyph.right) / 2, x, 'glyph centre');
+        px((m.marker.left + m.marker.right) / 2, x, 'marker centre');
+        px(m.marker.right - m.marker.left, 22, 'marker width');
+        px(m.marker.bottom - m.marker.top, 18, 'marker height');
+        // Never past the card's edge, at either end of its range.
+        expect(m.marker.left).toBeGreaterThanOrEqual(m.card.left);
+        expect(m.marker.right).toBeLessThanOrEqual(m.card.right);
+      };
+      const atDefault = await measure();
+      expect(atDefault.valueText).toBe('Auto-compact at 80%');
+      check(atDefault, 0.8);
+
+      await tab.focus('[data-testid="context-card"] [role="slider"]');
+      await tab.keyboard.press('End');
+      const atTop = await measure();
+      expect(atTop.valueText).toBe('Auto-compact at 90%');
+      check(atTop, 0.9);
+      await tab.keyboard.press('Home');
+      const atBottom = await measure();
+      expect(atBottom.valueText).toBe('Auto-compact at 20%');
+      check(atBottom, 0.2);
     } finally {
       await tab.close();
     }

@@ -4,45 +4,34 @@ import { listFolderAccess, revokeFolderAccess, type FolderGrantView } from '../.
 import { userActionHeaders } from '../../utils/userAction';
 import { isBrowserSurface } from '../../utils/surface';
 import { folderAccessLifetime } from '../../utils/folderAccessLifetime';
-import { PopoverContent } from '../ui/popover';
-import { Button } from '../ui/button';
 import { Input } from '../ui/input';
 import { FOLDER_ACCESS_COPY } from './copy';
-import type { FolderCard } from './useFolderCard';
+import {
+  FooterCard,
+  FooterCardAction,
+  FooterCardActions,
+  FooterCardDetail,
+  FooterCardList,
+  FooterCardNote,
+  FooterCardRow,
+  FooterCardSection,
+  FooterCardValue,
+} from './FooterCard';
+import type { FooterCard as FooterCardState } from './useFooterCard';
 
 /**
- * The folder chip's card (spec 3.7): the folder this chat works in, then every other folder the
- * chat may use, each with Revoke. It opens from the footer's folder chip (`DirSwitcher`), which
- * owns the Popover root and its anchor; `useFolderCard` says when it opens.
+ * The folder chip's card (spec 3.7), one of the footer's three `FooterCard`s: the folder this
+ * chat works in (with Choose folder… while the chat is empty), then every other folder the chat
+ * may use, each with Revoke, then which tools ask for folder approval. It opens from the footer's
+ * folder chip (`DirSwitcher`), which owns the Popover root and its anchor; `useFooterCard` says
+ * when it opens.
  *
  * ⚠ **This is the desktop's and the browser's only way to revoke a folder grant**
  * (docs/security/folder-access.md). It used to be a "Folder access" button beside the chip that
  * opened a dialog; the button is gone, the control is not. Revoke works exactly as it did there:
  * the proof-of-user headers, plus the browser's approval key as `X-Folder-Access-Key` when one is
  * typed, then a fresh read of the list.
- *
- * The popover surface, not the tooltip's inverse one: the card holds buttons and a field, and
- * InfoTip's rules keep controls off the inverse ground.
  */
-
-/**
- * How close the card may come to the window's edges: off the 44px window-drag band at the top
- * (`--chrome-height`, plus 8px), where a click on Revoke would be eaten by the drag region, as
- * for the Tools popover (`TOOLS_POPOVER_COLLISION_PADDING`).
- */
-export const FOLDER_CARD_COLLISION_PADDING = { top: 52, right: 8, bottom: 8, left: 8 } as const;
-
-/** A full path: a machine string, so mono, and wrapped anywhere rather than cut. */
-function FolderPath({ path }: { path: string }) {
-  return (
-    <span
-      dir="ltr"
-      className="br-folder-card__path block break-all font-mono text-code text-text-default"
-    >
-      {path}
-    </span>
-  );
-}
 
 /** The last answer for a chat. Keyed by chat, so one chat's grants never show under another. */
 type GrantList = { sessionId: string; grants: FolderGrantView[] };
@@ -140,15 +129,25 @@ function useFolderGrants(sessionId: string | undefined, open: boolean) {
 
 export interface FolderAccessCardProps {
   /** The card's surface id, for the chip's `aria-controls`. */
-  id?: string;
-  /** The chat whose grants are listed; `undefined` on Home, which lists none and reads nothing. */
+  id: string;
+  /**
+   * The chat whose grants are listed. `undefined` on Home and `''` in a new chat that has no
+   * session yet (`#/pair` before its first message): neither can hold a grant, so the card lists
+   * no other folders and reads nothing for them.
+   */
   sessionId: string | undefined;
   /** The chat's working folder, full path, or `null` while it is not known yet. */
   workingDir: string | null;
-  /** #44: the chip is read-only once the chat has messages, and the hint says so. */
+  /** #44: the folder is fixed once the chat has messages, and the card says so. */
   locked: boolean;
-  /** The open state, refs and handlers from `useFolderCard`. */
-  card: FolderCard;
+  /**
+   * Opens the native folder chooser. Given only while the chat is empty and its folder is known
+   * (`DirSwitcher`, the one place that decides it): the card offers Choose folder… exactly when it
+   * is given. The locked chip never passes it (#44).
+   */
+  onChooseFolder?: () => void;
+  /** The open state, refs and handlers from `useFooterCard`. */
+  card: FooterCardState;
 }
 
 export function FolderAccessCard({
@@ -156,26 +155,24 @@ export function FolderAccessCard({
   sessionId,
   workingDir,
   locked,
+  onChooseFolder,
   card,
 }: FolderAccessCardProps) {
   const labelId = useId();
   const approvalKeyId = useId();
-  const { grants, loadFailed, revokeFailed, busy, revoke } = useFolderGrants(sessionId, card.open);
+  // One test of "is this a chat" for the section and its read alike. They used to differ: the
+  // section showed for any defined id while the read skipped an empty one, so a new chat's card
+  // said "Checking folder access…" for as long as it stayed open.
+  const chatId = sessionId || undefined;
+  const { grants, loadFailed, revokeFailed, busy, revoke } = useFolderGrants(chatId, card.open);
   // Typed for one revocation and never kept: cleared after every attempt, when the card closes
   // and when the chip moves to another chat.
   const [approvalKey, setApprovalKey] = useState('');
   const browser = isBrowserSurface();
-  // What the chip's click does: nothing to say while the folder is not known,
-  // since the chip then only holds this card open.
-  const hint = locked
-    ? FOLDER_ACCESS_COPY.lockedHint
-    : workingDir !== null
-      ? FOLDER_ACCESS_COPY.chooseHint
-      : null;
 
   useEffect(() => {
     setApprovalKey('');
-  }, [card.open, sessionId]);
+  }, [card.open, chatId]);
 
   const onRevoke = async (grantId: string) => {
     const key = approvalKey;
@@ -192,83 +189,71 @@ export function FolderAccessCard({
   };
 
   return (
-    <PopoverContent
+    <FooterCard
+      card={card}
       id={id}
-      ref={card.contentRef}
-      // Above the anchor, which `useFolderCard` stretches from the chip up to the composer
-      // card's top: the card hangs over the transcript, never over the draft or its controls.
-      side="top"
+      label={FOLDER_ACCESS_COPY.cardLabel}
       align="start"
-      collisionPadding={FOLDER_CARD_COLLISION_PADDING}
-      aria-label={FOLDER_ACCESS_COPY.cardLabel}
-      data-testid="folder-access-card"
-      className="br-folder-card"
-      {...card.contentHandlers}
+      testId="folder-access-card"
     >
-      <section className="br-folder-card__section">
-        <p className="text-supporting text-text-muted">{FOLDER_ACCESS_COPY.workingFolder}</p>
+      <FooterCardSection label={FOLDER_ACCESS_COPY.workingFolder}>
         {workingDir === null ? (
-          <p className="text-supporting text-text-default">
-            {FOLDER_ACCESS_COPY.workingFolderUnknown}
-          </p>
+          <FooterCardValue>{FOLDER_ACCESS_COPY.workingFolderUnknown}</FooterCardValue>
         ) : (
-          <>
-            <FolderPath path={workingDir} />
-            <p className="text-supporting text-text-muted">
-              {FOLDER_ACCESS_COPY.workingFolderNote}
-            </p>
-          </>
+          <FooterCardValue mono>{workingDir}</FooterCardValue>
         )}
-      </section>
+        {locked && <FooterCardNote>{FOLDER_ACCESS_COPY.lockedNote}</FooterCardNote>}
+        {/* `DirSwitcher` alone decides whether the folder can be chosen (#44), so the card has
+            one rule to follow rather than a second copy of it that nothing could test. */}
+        {onChooseFolder && (
+          <FooterCardActions>
+            <FooterCardAction onClick={onChooseFolder}>
+              {FOLDER_ACCESS_COPY.chooseFolder}
+            </FooterCardAction>
+          </FooterCardActions>
+        )}
+      </FooterCardSection>
 
-      {sessionId === undefined ? (
-        <p className="text-supporting text-text-muted">{FOLDER_ACCESS_COPY.noChatYet}</p>
-      ) : (
-        <section className="br-folder-card__section">
-          <p id={labelId} className="text-supporting text-text-muted">
-            {FOLDER_ACCESS_COPY.otherFolders}
-          </p>
+      {chatId !== undefined && (
+        <FooterCardSection label={FOLDER_ACCESS_COPY.otherFolders} labelId={labelId}>
           {loadFailed ? (
-            <p role="alert" className="text-supporting text-text-danger">
+            <FooterCardNote role="alert" tone="danger">
               {FOLDER_ACCESS_COPY.loadFailed}
-            </p>
+            </FooterCardNote>
           ) : grants === null ? (
-            <p role="status" className="text-supporting text-text-muted">
-              {FOLDER_ACCESS_COPY.loading}
-            </p>
+            <FooterCardNote role="status">{FOLDER_ACCESS_COPY.loading}</FooterCardNote>
           ) : grants.length === 0 ? (
-            <p className="text-supporting text-text-default">{FOLDER_ACCESS_COPY.none}</p>
+            <FooterCardValue>{FOLDER_ACCESS_COPY.none}</FooterCardValue>
           ) : (
-            <ul className="br-folder-card__grants" aria-labelledby={labelId}>
+            <FooterCardList labelledBy={labelId}>
               {grants.map((grant) => (
-                <li key={grant.id} className="br-folder-card__grant">
-                  <div className="br-folder-card__grant-text">
-                    <FolderPath path={grant.folder} />
-                    <p className="text-supporting text-text-muted">
-                      {FOLDER_ACCESS_COPY.grantDetail(grant.access, grant.descendants)}
-                    </p>
-                  </div>
-                  <Button
-                    type="button"
-                    variant="secondary"
-                    size="xs"
-                    aria-label={FOLDER_ACCESS_COPY.revokeLabel(grant.folder)}
-                    disabled={busy || (browser && !approvalKey)}
-                    onClick={() => void onRevoke(grant.id)}
-                  >
-                    {FOLDER_ACCESS_COPY.revoke}
-                  </Button>
-                </li>
+                <FooterCardRow
+                  key={grant.id}
+                  action={
+                    <FooterCardAction
+                      aria-label={FOLDER_ACCESS_COPY.revokeLabel(grant.folder)}
+                      disabled={busy || (browser && !approvalKey)}
+                      onClick={() => void onRevoke(grant.id)}
+                    >
+                      {FOLDER_ACCESS_COPY.revoke}
+                    </FooterCardAction>
+                  }
+                >
+                  <FooterCardValue mono>{grant.folder}</FooterCardValue>
+                  <FooterCardDetail>
+                    {FOLDER_ACCESS_COPY.grantDetail(grant.access, grant.descendants)}
+                  </FooterCardDetail>
+                </FooterCardRow>
               ))}
-            </ul>
+            </FooterCardList>
           )}
           {revokeFailed && (
-            <p role="alert" className="text-supporting text-text-danger">
+            <FooterCardNote role="alert" tone="danger">
               {FOLDER_ACCESS_COPY.revokeFailed}
-            </p>
+            </FooterCardNote>
           )}
           {browser && grants !== null && grants.length > 0 && (
-            <div className="br-folder-card__key">
+            <div className="br-footer-card__key">
               <label htmlFor={approvalKeyId} className="text-supporting text-text-default">
                 {FOLDER_ACCESS_COPY.approvalKey}
               </label>
@@ -286,13 +271,13 @@ export function FolderAccessCard({
               </span>
             </div>
           )}
-          <p className="text-supporting text-text-muted">
+          <FooterCardNote>
             {folderAccessLifetime()} {FOLDER_ACCESS_COPY.onceNotListed}
-          </p>
-        </section>
+          </FooterCardNote>
+        </FooterCardSection>
       )}
 
-      {hint && <p className="text-supporting text-text-muted">{hint}</p>}
-    </PopoverContent>
+      <FooterCardNote>{FOLDER_ACCESS_COPY.whoAsks}</FooterCardNote>
+    </FooterCard>
   );
 }

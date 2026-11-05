@@ -93,10 +93,10 @@ describe('ComposerFooter (spec 3.7)', () => {
     expect(listFolderAccess).not.toHaveBeenCalled();
   });
 
-  it('hands the composer card to the folder chip, whose card hangs above it', async () => {
+  it('hands the composer card to the line’s cards, which hang above it', async () => {
     // jsdom places nothing, so the geometry is the browser test's
-    // (`folderAccessCard.browser.test.tsx`); this pins only that the footer
-    // passes the composer through rather than dropping it.
+    // (`footerCard.browser.test.tsx`); this pins only that the footer's
+    // `FooterCardGroup` passes the composer through rather than dropping it.
     const composer = { current: document.createElement('div') };
     const spy = vi.spyOn(composer.current, 'getBoundingClientRect');
     render(<ComposerFooter {...BASE} composerRef={composer} />);
