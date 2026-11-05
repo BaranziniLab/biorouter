@@ -162,6 +162,102 @@ impl SystemOneAdapter {
             tokio::time::sleep(delay).await;
         }
     }
+
+    /// The error for a non-2xx answer. Do not echo a remote error body:
+    /// validation errors can contain the submitted state. Only a short
+    /// `error_type` token is kept and, for Ollama, BioRouter's own reading of
+    /// two refusals ([`ollama_refusal`]), whose advice names `entry.model` and
+    /// never the body.
+    fn error_for_status(&self, status: u16, body: &Value) -> DecisionError {
+        let classified = match self.flavor {
+            SystemOneFlavor::Ollama => ollama_refusal(status, body),
+            SystemOneFlavor::Baseten => None,
+        };
+        let error_type =
+            safe_error_type(body).or_else(|| classified.map(|kind| kind.error_type().to_string()));
+        let message = match classified {
+            Some(kind) => kind.sentence(&self.name(), &self.entry.model),
+            None => status_sentence(&self.name(), status, error_type.as_deref()),
+        };
+        DecisionError::Backend {
+            model: self.entry.model.clone(),
+            status: Some(status),
+            error_type,
+            message,
+        }
+    }
+}
+
+/// An Ollama refusal BioRouter recognises from the error text, without copying
+/// any of it. Carried in `DecisionError::Backend.error_type` under the
+/// `biorouter.` prefix ([`OllamaRefusal::error_type`]), so a reader of the
+/// error, or of a log line, never takes it for a token the server sent.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OllamaRefusal {
+    /// The copy on disk is in a format this Ollama no longer loads (measured
+    /// on Ollama 0.40.14: a decision model built from a GGUF before the format
+    /// changed). Ollama checks this before it loads the model or reads the
+    /// questions.
+    FormatUnsupported,
+    /// The model's capabilities lack `decision`.
+    NotADecisionModel,
+}
+
+impl OllamaRefusal {
+    pub fn error_type(self) -> &'static str {
+        match self {
+            Self::FormatUnsupported => "biorouter.model_format_unsupported",
+            Self::NotADecisionModel => "biorouter.model_lacks_decision",
+        }
+    }
+
+    /// What to tell the person: `name` is how the model is described
+    /// ("Ollama decision model `x`"), `model` the name Ollama knows it by,
+    /// which the commands use.
+    pub fn sentence(self, name: &str, model: &str) -> String {
+        match self {
+            Self::FormatUnsupported => format!(
+                "{name} cannot be loaded: Ollama says this copy is in a format it no longer \
+                 supports. Re-download it with `ollama pull {model}`, or remove it with \
+                 `ollama rm {model}`."
+            ),
+            Self::NotADecisionModel => format!(
+                "{name} cannot answer through System One: Ollama says this model does not \
+                 support decisions (its capabilities lack `decision`). Ask with the `logprob` \
+                 adapter instead."
+            ),
+        }
+    }
+}
+
+/// Which [`OllamaRefusal`] an Ollama error answer is, read from the `error`
+/// text of a 400. Only the advice is chosen from it; nothing is copied, so a
+/// body that happened to contain the phrase can give the wrong advice but can
+/// never leak what it quoted.
+pub fn ollama_refusal(status: u16, body: &Value) -> Option<OllamaRefusal> {
+    if status != 400 {
+        return None;
+    }
+    let text = body.get("error")?.as_str()?;
+    if text.contains("no longer supported") {
+        Some(OllamaRefusal::FormatUnsupported)
+    } else if text.contains("does not support decision") {
+        Some(OllamaRefusal::NotADecisionModel)
+    } else {
+        None
+    }
+}
+
+/// The sentence a model Ollama will not load is listed with: the same one a
+/// request to it fails with.
+pub fn ollama_load_refusal_sentence(model: &str) -> String {
+    OllamaRefusal::FormatUnsupported.sentence(
+        &format!(
+            "{} decision model `{model}`",
+            SystemOneFlavor::Ollama.label()
+        ),
+        model,
+    )
 }
 
 fn parse_base(host: &str) -> DecisionResult<Url> {
@@ -218,19 +314,8 @@ impl DecisionModel for SystemOneAdapter {
         let response = self.post_with_retry(&body).await?;
         let status = response.status();
         if !status.is_success() {
-            // Do not echo a remote error body: validation errors can contain
-            // the submitted state. Keep only a short `error_type` token.
-            let error_type = response
-                .json::<Value>()
-                .await
-                .ok()
-                .and_then(|body| safe_error_type(&body));
-            return Err(DecisionError::Backend {
-                model: self.entry.model.clone(),
-                status: Some(status.as_u16()),
-                message: status_sentence(&self.name(), status.as_u16(), error_type.as_deref()),
-                error_type,
-            });
+            let body = response.json::<Value>().await.unwrap_or(Value::Null);
+            return Err(self.error_for_status(status.as_u16(), &body));
         }
         let payload: Value = response
             .json()
@@ -714,6 +799,79 @@ mod tests {
         assert_eq!(safe_error_type(&json!({"error": "x"})), None);
         let sentence = status_sentence("Baseten decision model `joey-1`", 413, Some("too_large"));
         assert!(sentence.contains("413") && sentence.contains("too_large"));
+    }
+
+    /// Ollama 0.40.14's answer for a decision model built from a GGUF before
+    /// the format change (measured 2026-11-05, `clef-flash:latest`).
+    fn format_refusal_body() -> Value {
+        json!({"error": "'clef-flash:latest' was downloaded in a format that is no longer \
+                         supported. To re-download, run 'ollama pull clef-flash:latest'"})
+    }
+
+    #[test]
+    fn an_ollama_format_refusal_names_the_fix_and_never_echoes_the_body() {
+        assert_eq!(
+            ollama_refusal(400, &format_refusal_body()),
+            Some(OllamaRefusal::FormatUnsupported)
+        );
+        // Only a 400 carries it, and the other 400s keep the generic sentence.
+        assert_eq!(ollama_refusal(422, &format_refusal_body()), None);
+        assert_eq!(
+            ollama_refusal(400, &json!({"error": "prompt 0 has 3309 tokens"})),
+            None
+        );
+        assert_eq!(
+            ollama_refusal(
+                400,
+                &json!({"error": "questions must contain 1\u{2013}64 fields"})
+            ),
+            None
+        );
+        assert_eq!(ollama_refusal(400, &Value::Null), None);
+        assert_eq!(
+            ollama_refusal(
+                400,
+                &json!({"error": "registry.ollama.ai/library/qwen3:8b does not support decision"})
+            ),
+            Some(OllamaRefusal::NotADecisionModel)
+        );
+
+        let name = "Ollama decision model `clef-flash:latest`";
+        let sentence = OllamaRefusal::FormatUnsupported.sentence(name, "clef-flash:latest");
+        assert!(
+            sentence.contains("ollama pull clef-flash:latest")
+                && sentence.contains("ollama rm clef-flash:latest")
+                && sentence.starts_with(name),
+            "{sentence}"
+        );
+        assert!(!sentence.contains("never truncates"), "{sentence}");
+        assert!(!sentence.contains("was downloaded"), "{sentence}");
+        assert_eq!(
+            ollama_load_refusal_sentence("clef-flash:latest"),
+            sentence,
+            "a listing and a failed request say the same thing"
+        );
+        // BioRouter's own classification is never spelled like a server token.
+        assert!(OllamaRefusal::FormatUnsupported
+            .error_type()
+            .starts_with("biorouter."));
+        assert!(OllamaRefusal::NotADecisionModel
+            .error_type()
+            .starts_with("biorouter."));
+    }
+
+    #[test]
+    fn a_refused_credential_and_a_server_fault_have_their_own_sentences() {
+        let name = "Baseten decision model `joey-1`";
+        let refused = status_sentence(name, 401, None);
+        assert!(
+            refused.contains("refused the credential (HTTP 401)"),
+            "{refused}"
+        );
+        assert!(status_sentence(name, 403, None).contains("refused the credential (HTTP 403)"));
+        let fault = status_sentence(name, 503, None);
+        assert_eq!(fault, format!("{name} failed (HTTP 503)."));
+        assert!(status_sentence(name, 429, None).contains("rate limited"));
     }
 
     #[test]

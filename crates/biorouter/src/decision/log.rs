@@ -19,13 +19,18 @@
 //!
 //! A row's id is the request id every [`Decision`] of that request carries
 //! ([`row_id`]), so anything holding a decision (a decision chat's reply, a
-//! tool result) names its row without asking the log. Only a row with no
-//! decisions (a failure) gets an id of its own.
+//! tool result) names its row without asking the log. A row with no decisions
+//! (a failure) gets an id of its own, unless its caller chose the request id
+//! before the call, as a decision chat does, so its failed reply names its row.
 //!
 //! # Privacy
 //!
 //! A row holds exactly what the model was sent (capped at
-//! [`MAX_STORED_CONTEXT_BYTES`]), so it is the chat's content at the chat's tier.
+//! [`MAX_STORED_CONTEXT_BYTES`]), kept at the chat's tier. For a monitor, the
+//! `decide` tool, a phase gate or a decision chat that is the chat's own
+//! content; for an ad hoc decision about a chat (`POST /decisions/decide` with
+//! a session, `biorouter decide --session`) it is whatever the caller sent,
+//! which the chat's reach then covers.
 //! The sink stores a row only beside a chat that exists, in the same statement
 //! that checks it, and `SessionStorage::delete_chat_side_rows` deletes a chat's
 //! rows with the chat, because session ids are reissued. A decision with no chat
@@ -34,12 +39,25 @@
 //! session id and never decide who may see it; every route that calls them asks
 //! `session_reach` first.
 //!
+//! # Usage
+//!
+//! A stored row with token usage is also added to the usage ledger
+//! (`token_events` and the chat's `accumulated_*` counters) through
+//! `SessionManager::apply_side_usage_event`, keyed `decision:<row id>`, so the
+//! Usage panel, `biorouter usage` and the chat's cost count it, as a decision
+//! request rather than a turn. That write never moves the context gauge, the
+//! chat's `schedule_id` or its `updated_at` (R-30), and a deleted chat's
+//! decision spend stays counted with its other usage. A decision with no chat
+//! is billed by its provider and counted nowhere here; `biorouter decide`
+//! prints its usage instead.
+//!
 //! The table schema lives with the rest of the session store
 //! (`SessionStorage::create_decisions_table`, migration 21).
 
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use anyhow::Context;
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use serde::de::DeserializeOwned;
@@ -54,7 +72,7 @@ use super::types::{
     Answer, ContextMessage, Decision, DecisionAdapter, DecisionContext, DecisionModelRef,
     DecisionOrigin, ProbabilitySource, YES,
 };
-use crate::session::SessionManager;
+use crate::session::{SessionManager, SideUsageEntry};
 
 /// Stored context is capped at this many bytes (the rest is cut and
 /// `context_truncated` set).
@@ -267,6 +285,23 @@ const RECORD_COLUMNS: &str = "id, session_id, created_at, origin, origin_id, lab
 #[async_trait]
 impl DecisionSink for SqliteDecisionSink {
     async fn record(&self, entry: DecisionLogEntry) -> anyhow::Result<()> {
+        let id = row_id(&entry);
+        self.store(id, entry).await
+    }
+
+    async fn record_as(&self, id: &str, entry: DecisionLogEntry) -> anyhow::Result<()> {
+        let id = if id.trim().is_empty() {
+            row_id(&entry)
+        } else {
+            id.to_string()
+        };
+        self.store(id, entry).await
+    }
+}
+
+impl SqliteDecisionSink {
+    /// Store `entry` as the row `id`, beside its chat only.
+    async fn store(&self, id: String, entry: DecisionLogEntry) -> anyhow::Result<()> {
         let Some(session_id) = entry.session_id.clone() else {
             tracing::debug!("an ad hoc decision with no chat is not stored in the decision log");
             return Ok(());
@@ -274,7 +309,7 @@ impl DecisionSink for SqliteDecisionSink {
         let row = StoredRow::from_entry(&entry);
         let pool = self.session_manager.storage().pool().await?;
         let inserted = sqlx::query(INSERT_DECISION)
-            .bind(row_id(&entry))
+            .bind(&id)
             .bind(&session_id)
             .bind(Utc::now().timestamp_millis())
             .bind(sql_enum(&entry.origin))
@@ -312,14 +347,65 @@ impl DecisionSink for SqliteDecisionSink {
                 session_id,
                 "a decision for a chat that no longer exists was not stored"
             );
+            return Ok(());
         }
-        Ok(())
+        // A separate statement after the row, so a billing failure can never
+        // lose the record of what was sent. Its error is returned, and the
+        // service only warns: the decision itself still succeeds.
+        let Some(usage) = side_usage(&id, &session_id, &entry) else {
+            return Ok(());
+        };
+        self.session_manager
+            .apply_side_usage_event(usage)
+            .await
+            .map(|_| ())
+            .with_context(|| {
+                format!(
+                    "decision {id} was logged, but its usage could not be added to the usage \
+                     ledger"
+                )
+            })
     }
 }
 
-/// The id `entry` is stored under: the request id its decisions share (the
-/// service mints one per request, uuid v7, so ids sort by time), or for a row
-/// with no decisions, which only a failure has, a fresh uuid v7.
+/// What the usage ledger takes for one stored decision row: its tokens, keyed
+/// `decision:<row id>` so a retried write bills once, under the provider and
+/// the model as requested (the price table is keyed by the requested Baseten
+/// slug, not the served model's name). `None` when there is nothing to bill: no
+/// model was reached (a refusal, no model), or the model reported no usage.
+///
+/// Only the decision providers are ledgered. The usage report tells decision
+/// requests from model turns by the provider's name
+/// (`is_decision_chat_provider`), so a decision recorded under a chat
+/// provider's name would be counted as a turn. No adapter does that today
+/// (every decision model opens under `baseten_decision` or `ollama_decision`);
+/// one that ever does needs its own discriminator before it is ledgered.
+fn side_usage(id: &str, session_id: &str, entry: &DecisionLogEntry) -> Option<SideUsageEntry> {
+    let model = entry.model.as_ref()?;
+    entry.usage.billed_total()?;
+    if !crate::providers::decision::chat::is_decision_chat_provider(&model.provider) {
+        tracing::debug!(
+            provider = model.provider.as_str(),
+            "a decision under a chat provider's name is not added to the usage ledger"
+        );
+        return None;
+    }
+    Some(SideUsageEntry {
+        event_key: format!("decision:{id}"),
+        session_id: session_id.to_string(),
+        provider: model.provider.clone(),
+        model_id: model.model.clone(),
+        input_tokens: entry.usage.input_tokens,
+        output_tokens: entry.usage.output_tokens,
+    })
+}
+
+/// The id `entry` is stored under when its caller chose none: the request id
+/// its decisions share (the service mints one per request, uuid v7, so ids
+/// sort by time), or for a row with no decisions, which only a failure has, a
+/// fresh uuid v7. A caller that chose the id first
+/// ([`super::DecisionService::decide_as`]) has its row stored under that id
+/// ([`DecisionSink::record_as`]), failure or not.
 pub fn row_id(entry: &DecisionLogEntry) -> String {
     entry
         .decisions
@@ -1909,6 +1995,250 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(batch.total, 2, "the history still filters one batch");
+    }
+
+    /// One `token_events` row: key, provider, model, input, output, billed,
+    /// session type.
+    type LedgerEvent = (
+        String,
+        String,
+        String,
+        Option<i64>,
+        Option<i64>,
+        Option<i64>,
+        String,
+    );
+    type Counts = (Option<i64>, Option<i64>, Option<i64>);
+    type SessionColumns = (Counts, Counts, Option<String>, String);
+
+    /// The ledger and the columns the side write must leave alone, for one chat.
+    #[derive(Debug, PartialEq)]
+    struct Ledger {
+        events: Vec<LedgerEvent>,
+        accumulated: Counts,
+        gauge: Counts,
+        schedule_id: Option<String>,
+        updated_at: String,
+    }
+
+    async fn ledger(sm: &SessionManager, id: &str) -> Ledger {
+        let pool = sm.storage().pool().await.unwrap();
+        let events = sqlx::query_as(
+            "SELECT event_key, provider, model_id, input_tokens, output_tokens, \
+                    billed_total_tokens, session_type \
+               FROM token_events WHERE session_id = ? ORDER BY id",
+        )
+        .bind(id)
+        .fetch_all(pool)
+        .await
+        .unwrap();
+        let row = sqlx::query(
+            "SELECT accumulated_total_tokens, accumulated_input_tokens, \
+                    accumulated_output_tokens, total_tokens, input_tokens, output_tokens, \
+                    schedule_id, CAST(updated_at AS TEXT) AS updated_at \
+               FROM sessions WHERE id = ?",
+        )
+        .bind(id)
+        .fetch_one(pool)
+        .await
+        .unwrap();
+        let counts = |a: &str, b: &str, c: &str| -> Counts { (row.get(a), row.get(b), row.get(c)) };
+        let (accumulated, gauge, schedule_id, updated_at): SessionColumns = (
+            counts(
+                "accumulated_total_tokens",
+                "accumulated_input_tokens",
+                "accumulated_output_tokens",
+            ),
+            counts("total_tokens", "input_tokens", "output_tokens"),
+            row.get("schedule_id"),
+            row.get("updated_at"),
+        );
+        Ledger {
+            events,
+            accumulated,
+            gauge,
+            schedule_id,
+            updated_at,
+        }
+    }
+
+    /// Give the chat a gauge, a schedule link and an old activity stamp, so a
+    /// write that touched any of them would show.
+    async fn mark_chat(sm: &SessionManager, id: &str) {
+        let pool = sm.storage().pool().await.unwrap();
+        sqlx::query(
+            "UPDATE sessions SET total_tokens = 5000, input_tokens = 4000, output_tokens = 1000, \
+                    schedule_id = 'sched-1', updated_at = '2026-01-01 00:00:00' WHERE id = ?",
+        )
+        .bind(id)
+        .execute(pool)
+        .await
+        .unwrap();
+    }
+
+    fn baseten_entry(session_id: &str, outcome: DecisionOutcome) -> DecisionLogEntry {
+        let mut entry = log_entry(
+            Some(session_id),
+            Entry {
+                outcome,
+                p_yes: matches!(outcome, DecisionOutcome::Passed | DecisionOutcome::Failed)
+                    .then_some(0.31),
+                ..Entry::default()
+            },
+        );
+        let slug = "decision-models/baseten-joey-2b-latest";
+        entry.model = Some(DecisionModelRef::new("baseten_decision", slug));
+        entry.served_model = Some("joey-2b-0.3".to_string());
+        for decision in &mut entry.decisions {
+            decision.model = DecisionModelRef::new("baseten_decision", slug);
+        }
+        entry
+    }
+
+    #[tokio::test]
+    async fn a_decision_with_usage_lands_in_the_usage_ledger_once() {
+        let (_dir, sm, id) = store().await;
+        mark_chat(&sm, &id).await;
+        let entry = baseten_entry(&id, DecisionOutcome::Failed);
+        let row = row_id(&entry);
+        let sink = SqliteDecisionSink {
+            session_manager: Arc::clone(&sm),
+        };
+        sink.record(entry.clone()).await.unwrap();
+
+        let after = ledger(&sm, &id).await;
+        assert_eq!(
+            after.events,
+            vec![(
+                format!("decision:{row}"),
+                "baseten_decision".to_string(),
+                // The requested slug, which the price table is keyed by, not
+                // the served model.
+                "decision-models/baseten-joey-2b-latest".to_string(),
+                Some(120),
+                Some(2),
+                Some(122),
+                "user".to_string(),
+            )],
+            "one ledger row under the decision's own row id"
+        );
+        assert_eq!(after.accumulated, (Some(122), Some(120), Some(2)));
+        assert_eq!(
+            after.gauge,
+            (Some(5000), Some(4000), Some(1000)),
+            "a decision is not part of the chat's context window"
+        );
+        assert_eq!(after.schedule_id.as_deref(), Some("sched-1"));
+        assert_eq!(
+            after.updated_at, "2026-01-01 00:00:00",
+            "a decision's usage is not activity (R-30)"
+        );
+
+        // The same row again is refused by the log's primary key before the
+        // ledger is reached, so nothing is billed twice.
+        assert!(sink.record_as(&row, entry).await.is_err());
+        assert_eq!(ledger(&sm, &id).await, after);
+
+        // The usage report counts it as a decision request, not a turn.
+        let usage = sm.get_session_model_usage(&id).await.unwrap();
+        assert!(
+            usage
+                .iter()
+                .any(|row| row.provider.as_deref() == Some("baseten_decision")),
+            "{usage:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_refusal_or_a_gone_chat_bills_nothing() {
+        let (_dir, sm, id) = store().await;
+        let mut refused = baseten_entry(&id, DecisionOutcome::Refused);
+        refused.usage = DecisionUsage::default();
+        write(&sm, refused).await;
+        // No model was reached at all.
+        let mut no_model = baseten_entry(&id, DecisionOutcome::Error);
+        no_model.model = None;
+        write(&sm, no_model).await;
+        write(&sm, baseten_entry("19990101_1", DecisionOutcome::Passed)).await;
+        let after = ledger(&sm, &id).await;
+        assert!(after.events.is_empty(), "{:?}", after.events);
+        assert_eq!(after.accumulated, (None, None, None));
+        let pool = sm.storage().pool().await.unwrap();
+        let orphans: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM token_events")
+            .fetch_one(pool)
+            .await
+            .unwrap();
+        assert_eq!(
+            orphans, 0,
+            "a decision for a gone chat writes no ledger row"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_billed_answer_that_failed_is_still_ledgered() {
+        let (_dir, sm, id) = store().await;
+        let failed = baseten_entry(&id, DecisionOutcome::Error);
+        assert!(failed.decisions.is_empty() && failed.usage.billed_total() == Some(122));
+        let sink = SqliteDecisionSink {
+            session_manager: Arc::clone(&sm),
+        };
+        sink.record_as("caller-chosen", failed).await.unwrap();
+        let events = ledger(&sm, &id).await.events;
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].0, "decision:caller-chosen");
+        assert_eq!(events[0].5, Some(122));
+    }
+
+    #[test]
+    fn only_a_decision_provider_is_ledgered() {
+        let mut entry = log_entry(Some("s"), Entry::default());
+        assert_eq!(
+            side_usage("r", "s", &entry).map(|usage| usage.event_key),
+            Some("decision:r".to_string())
+        );
+        // A decision recorded under a chat provider's name would read as a
+        // model turn in the usage report.
+        entry.model = Some(DecisionModelRef::new("openai", "gpt-4o-mini"));
+        assert!(side_usage("r", "s", &entry).is_none());
+        entry.model = Some(DecisionModelRef::new("ollama_decision", "tev1:0.8b"));
+        entry.usage = DecisionUsage::default();
+        assert!(
+            side_usage("r", "s", &entry).is_none(),
+            "no usage, nothing to bill"
+        );
+        entry.usage.output_tokens = Some(1);
+        assert_eq!(
+            side_usage("r", "s", &entry).map(|usage| (usage.input_tokens, usage.output_tokens)),
+            Some((None, Some(1)))
+        );
+    }
+
+    /// The usage report and the ledger tell a decision request from a turn by
+    /// the provider's name, and the desktop names the same providers
+    /// (`isDecisionProvider`, which labels a decision row in the chat's cost
+    /// popover and hides a decision chat's context ring). The two lists never
+    /// import each other, so they are read against each other here.
+    #[test]
+    fn the_desktop_names_the_same_decision_providers() {
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../ui/desktop/src/components/decisions/decisionWire.ts"
+        );
+        let source = std::fs::read_to_string(path).expect("the desktop's decision wire module");
+        let (_, after) = source
+            .split_once("export const DECISION_PROVIDER_IDS")
+            .expect("DECISION_PROVIDER_IDS is declared");
+        let (list, _) = after.split_once("]);").expect("the list ends");
+        let (_, list) = list.split_once("new Set([").expect("the list is a Set");
+        let mut desktop: Vec<&str> = list
+            .split(',')
+            .map(|item| item.trim().trim_matches('\''))
+            .filter(|item| !item.is_empty())
+            .collect();
+        desktop.sort_unstable();
+        let mut core = crate::providers::decision::chat::DECISION_CHAT_PROVIDERS.to_vec();
+        core.sort_unstable();
+        assert_eq!(desktop, core);
     }
 
     #[test]

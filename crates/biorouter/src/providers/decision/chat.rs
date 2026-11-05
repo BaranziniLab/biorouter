@@ -65,6 +65,13 @@ pub fn is_decision_chat_provider(name: &str) -> bool {
     DECISION_CHAT_PROVIDERS.contains(&name)
 }
 
+/// Whether a decision provider has no meter. Ollama bills nothing per token,
+/// so an unpriced request there costs nothing; an unpriced Baseten request was
+/// billed at a rate Biorouter does not know.
+pub fn is_unmetered_decision_provider(name: &str) -> bool {
+    name == OLLAMA_DECISION_PROVIDER
+}
+
 /// Which decision backend a [`DecisionChatProvider`] names.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DecisionChatKind {
@@ -459,9 +466,13 @@ pub fn answer_text(decision: &Decision) -> String {
 #[derive(Debug, Clone, PartialEq)]
 pub struct DecisionChatReply {
     pub text: String,
-    /// The decision's request id, which is also its decision-log row's id
+    /// The request's id, which is also its decision-log row's id
     /// ([`crate::decision::log::row_id`]), so a reload, a card or a link names
-    /// the row without asking the log. `None` when nothing was decided.
+    /// the row without asking the log. A failed or refused request names its
+    /// row too, which the cards draw as failed or refused. `None` when nothing
+    /// was asked (no question, or a request that failed validation, which is
+    /// not logged). A row whose write failed is a dangling id, and the
+    /// surfaces then show this reply's text.
     pub decision_id: Option<String>,
     pub decision: Option<Decision>,
 }
@@ -496,7 +507,21 @@ pub async fn run_decision_chat(
         questions: IndexMap::from([(CHAT_QUESTION_NAME.to_string(), question)]),
         context: DecisionContext::Text(state),
     };
-    match service.decide(Some(&session), Some(model), &request).await {
+    // A request that fails validation is never logged, so its reply names no
+    // row. Every later failure is logged under the id chosen here, so the
+    // reply names that row and draws as a failed or refused card.
+    if let Err(why) = request.validate() {
+        return DecisionChatReply {
+            text: format!("The decision model could not answer: {why}"),
+            decision_id: None,
+            decision: None,
+        };
+    }
+    let request_id = uuid::Uuid::now_v7().to_string();
+    match service
+        .decide_as(Some(&session), Some(model), &request, &request_id)
+        .await
+    {
         Ok(decisions) => match decisions.into_iter().next() {
             Some(decision) => DecisionChatReply {
                 text: answer_text(&decision),
@@ -511,7 +536,7 @@ pub async fn run_decision_chat(
         },
         Err(error) => DecisionChatReply {
             text: format!("The decision model could not answer: {error}"),
-            decision_id: None,
+            decision_id: Some(request_id),
             decision: None,
         },
     }

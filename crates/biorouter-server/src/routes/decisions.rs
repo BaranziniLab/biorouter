@@ -9,14 +9,15 @@
 //! | `GET /sessions/{id}/decisions/summary` | [`session_reach`] |
 //! | `GET /sessions/{id}/decisions/{decision_id}` | [`session_reach`] |
 //! | `GET /sessions/{id}/decision-settings` | [`session_reach`] |
-//! | `PUT /sessions/{id}/decision-settings` | [`session_reach`], then the user-action proof |
+//! | `PUT /sessions/{id}/decision-settings` | [`session_reach`], then the user-action proof on a keyed daemon, then the subagent rule on a keyless one |
 //! | `GET /sessions/{id}/decision-chat` | [`session_reach`] |
-//! | `PUT /sessions/{id}/decision-chat` | [`session_reach`], then the user-action proof |
+//! | `PUT /sessions/{id}/decision-chat` | [`session_reach`], then the user-action proof on a keyed daemon, then the subagent rule on a keyless one |
 //!
 //! Every handler that names a chat calls [`reach_chat`] before it reads or
 //! parses anything about that chat, and a refusal is the reach gate's exact
 //! text, so an unproven caller cannot tell a private chat from one that does
-//! not exist by asking for its decisions.
+//! not exist by asking for its decisions. The subagent rule reads the row
+//! `reach_chat` returns, so it too is asked only of an admitted caller.
 //!
 //! # Why these routes never draw one row per call
 //!
@@ -29,22 +30,32 @@
 //!
 //! # Privacy
 //!
-//! The decision log holds what was sent, which is the chat's own content at the
-//! chat's own tier, so reading it is reading the chat and takes the same gate.
-//! An ad hoc decision that names a chat is checked against that chat's
-//! classification by the decision service itself (Gate H, downward rule:
-//! `decision::service` and `privacy::alt_provider::assert_alt_tier_allowed`),
-//! with the master switch sampled once for the request. Without a chat there is
-//! no classification to check, and the answer says so.
+//! The decision log holds what was sent, kept at the chat's own tier, so
+//! reading it is reading the chat and takes the same gate. For a monitor, a
+//! gate or a decision chat that text is the chat's own content. For an ad hoc
+//! decision it is whatever the caller sent, so when the named chat is public
+//! (and privacy tiers are on) the answer says the text is now kept where public
+//! chats can read it. An ad hoc decision that names a chat is checked against
+//! that chat's classification by the decision service itself (Gate H, downward
+//! rule: `decision::service` and
+//! `privacy::alt_provider::assert_alt_tier_allowed`), with the master switch
+//! sampled once for the request. Without a chat there is no classification to
+//! check, and the answer says so.
 //!
 //! Writing a chat's decision settings chooses which model reads the chat's
 //! content and what a monitor may do to a running turn, so on a daemon that
 //! holds a user-action key the write needs that proof, as the other
 //! capability-moving writes do. On a daemon that holds none (`biorouter serve`,
 //! or a hand-run `biorouterd`) nothing can produce the proof, so the reach gate
-//! is the whole of the gate there, as it is for Stop (SD-11); a desktop daemon
+//! is the whole of the gate there, as it is for Stop (SD-11), steer monitors
+//! included (owner ruling). One exception: a subagent's chat is refused there
+//! with `SUBAGENT_CONTROL_NO_KEY`, as `/reply` and `/agent/stop` refuse it,
+//! because a subagent's turns load that chat's own monitors. A desktop daemon
 //! that was meant to receive a key and did not keeps the refusal, because that
-//! is a fault a restart repairs. Gate H is asked again before every call
+//! is a fault a restart repairs. These routes are not the only door: `biorouter
+//! session monitors` with no reachable daemon writes the same store directly,
+//! under the tier rule alone, on any daemon. A write reaches the chat's next
+//! turn, never the one in flight. Gate H is asked again before every call
 //! whatever the settings say, so no setting can carry a private chat to a
 //! public model.
 //!
@@ -75,6 +86,8 @@ use biorouter::decision::{
     LiveClassification,
 };
 use biorouter::privacy::{ProviderTier, SessionClassification};
+use biorouter::session::session_manager::SessionType;
+use biorouter::session::Session;
 use biorouter_server::auth::{user_action_proof, UserActionProof};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -88,6 +101,17 @@ const ADHOC_LABEL: &str = "Ad hoc";
 /// What an ad hoc decision with no chat says about itself.
 const NO_CHAT_CONTEXT: &str = "No chat was named, so this decision ran without a chat's \
      context: no chat's privacy tier was checked, and it is not in any chat's decision history.";
+
+/// What an ad hoc decision that names a public chat says, with privacy tiers
+/// on: the caller's text is now in that chat's log, at that chat's reach.
+pub const PUBLIC_CHAT_LOG_NOTE: &str = "This chat is public, so the text sent is kept in its \
+     decision history, where public chats can read it. For private text, name a private chat \
+     or no chat.";
+
+/// The refusal of a decision-settings write aimed at a subagent's chat on a
+/// daemon that holds no user-action key: the sentence `/reply` and
+/// `/agent/stop` answer there, so a subagent's tab reads one refusal.
+pub const DECISION_SETTINGS_SUBAGENT_NO_KEY: &str = crate::routes::agent::SUBAGENT_CONTROL_NO_KEY;
 
 /// The refusal of a decision-settings write that carried no proof of a person,
 /// on a daemon that holds a user-action key.
@@ -162,10 +186,11 @@ pub struct DecisionModelsQuery {
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct DecideRequest {
-    /// The chat the text came from. When given, the chat is gated for this
-    /// caller first, the decision is checked against the chat's privacy tier
-    /// before anything is sent, and the call is logged in the chat's decision
-    /// history as an ad hoc decision.
+    /// The chat to check the decision against and log it in. When given, the
+    /// chat is gated for this caller first, the decision is checked against
+    /// the chat's privacy tier before anything is sent, and the call, with the
+    /// text sent, is logged in the chat's decision history as an ad hoc
+    /// decision, at the chat's tier.
     #[serde(default)]
     pub session_id: Option<String>,
     /// The decision model to ask. Without one the service chooses the first
@@ -193,8 +218,10 @@ pub struct DecideResponse {
     /// One outcome per chunk, in chunk order, for `chunks`. A chunk that
     /// failed carries its error and never fails the batch.
     pub chunks: Option<Vec<ChunkOutcome>>,
-    /// Said when no chat was named, and when the model that answered is
-    /// public, so the text sent left this computer.
+    /// Said when no chat was named, when the chat named is public (with
+    /// privacy tiers on), so the text sent is kept where public chats can read
+    /// it, and when the model that answered is public, so the text sent left
+    /// this computer.
     pub note: Option<String>,
 }
 
@@ -233,12 +260,13 @@ fn decision_error_response(error: DecisionError) -> Response {
 /// module calls it: the id's shape (which says nothing about any chat), then
 /// [`session_reach`](crate::routes::session_reach::session_reach), whose
 /// refusal is returned word for word, then whether the chat exists. Only an
-/// admitted caller is told a chat is absent.
+/// admitted caller is told a chat is absent, and only an admitted caller gets
+/// the row back (the writes read its `session_type`).
 async fn reach_chat(
     state: &AppState,
     session_id: &str,
     headers: &HeaderMap,
-) -> Result<(), Response> {
+) -> Result<Session, Response> {
     if !crate::routes::session::is_valid_session_id(session_id) {
         return Err(plain(
             StatusCode::BAD_REQUEST,
@@ -253,7 +281,7 @@ async fn reach_chat(
         .await
         .map_err(IntoResponse::into_response)?;
     match manager.get_session(session_id, false).await {
-        Ok(_) => Ok(()),
+        Ok(session) => Ok(session),
         Err(error) if error.to_string().contains("not found") => Err(plain(
             StatusCode::NOT_FOUND,
             "There is no chat with that id.",
@@ -276,6 +304,28 @@ fn settings_write_refusal(proof: UserActionProof, expected_key: bool) -> Option<
         }
         UserActionProof::NoKeyInstalled => None,
     }
+}
+
+/// The subagent rule SD-11 keeps for Stop and steering, asked of a write the
+/// proof check admitted. A subagent's turns load its own chat's monitors, so a
+/// monitor written there stops or steers the subagent. On a daemon that holds
+/// no user-action key nothing shows that a person asked for that, so the write
+/// is refused; on a keyed daemon only a proven write gets this far, and the
+/// proof is what admits it. Pure, so every corner is tested.
+fn subagent_write_refusal(proof: UserActionProof, session_type: SessionType) -> Option<Response> {
+    (session_type == SessionType::SubAgent && proof == UserActionProof::NoKeyInstalled)
+        .then(|| plain(StatusCode::FORBIDDEN, DECISION_SETTINGS_SUBAGENT_NO_KEY))
+}
+
+/// Every refusal a decision write meets after the reach gate, in order: the
+/// proof, then the subagent rule.
+fn write_refusal(session: &Session, headers: &HeaderMap) -> Option<Response> {
+    let proof = user_action_proof(headers);
+    settings_write_refusal(
+        proof,
+        biorouter_server::launch::expected_a_user_action_key(),
+    )
+    .or_else(|| subagent_write_refusal(proof, session.session_type))
 }
 
 /// A chat's classification as stored now, re-read before every request of a
@@ -340,8 +390,12 @@ fn valid_decision_id(id: &str) -> bool {
     crate::routes::session::is_valid_session_id(id)
 }
 
-/// The note an ad hoc answer carries: no chat, and a public model.
+/// The note an ad hoc answer carries: no chat, a public chat whose log now
+/// holds the caller's text (only while privacy tiers are on, since with them
+/// off every chat reaches every log), and a public model.
 fn decide_note(session: Option<&DecisionSession>, decisions: &[&Decision]) -> Option<String> {
+    let public_chat =
+        session.is_some_and(|session| session.enforced && !session.classification.is_private());
     let public = decisions
         .iter()
         .find(|decision| !decision.tier.is_private())
@@ -353,6 +407,7 @@ fn decide_note(session: Option<&DecisionSession>, decisions: &[&Decision]) -> Op
         });
     let parts: Vec<String> = [
         session.is_none().then(|| NO_CHAT_CONTEXT.to_string()),
+        public_chat.then(|| PUBLIC_CHAT_LOG_NOTE.to_string()),
         public,
     ]
     .into_iter()
@@ -744,7 +799,8 @@ pub async fn get_decision_settings(
                                       same refusal, word for word, that `GET \
                                       /sessions/{session_id}` gives), or, on a daemon that holds \
                                       a user-action key, the request carried no proof it came \
-                                      from the person at the keyboard (body = plain text)"),
+                                      from the person at the keyboard, or, on a daemon that \
+                                      holds none, the chat is a subagent's (body = plain text)"),
         (status = 404, description = "Session not found (body = plain text)"),
         (status = 500, description = "Internal server error")
     ),
@@ -756,13 +812,11 @@ pub async fn put_decision_settings(
     headers: HeaderMap,
     body: Bytes,
 ) -> Response {
-    if let Err(refusal) = reach_chat(&routes.state, &session_id, &headers).await {
-        return refusal;
-    }
-    if let Some(refusal) = settings_write_refusal(
-        user_action_proof(&headers),
-        biorouter_server::launch::expected_a_user_action_key(),
-    ) {
+    let session = match reach_chat(&routes.state, &session_id, &headers).await {
+        Ok(session) => session,
+        Err(refusal) => return refusal,
+    };
+    if let Some(refusal) = write_refusal(&session, &headers) {
         return refusal;
     }
     let settings: DecisionSettings = match serde_json::from_slice(&body) {
@@ -835,7 +889,8 @@ pub async fn get_decision_chat(
                                       same refusal, word for word, that `GET \
                                       /sessions/{session_id}` gives), or, on a daemon that holds \
                                       a user-action key, the request carried no proof it came \
-                                      from the person at the keyboard (body = plain text)"),
+                                      from the person at the keyboard, or, on a daemon that \
+                                      holds none, the chat is a subagent's (body = plain text)"),
         (status = 404, description = "Session not found (body = plain text)"),
         (status = 500, description = "Internal server error")
     ),
@@ -847,13 +902,11 @@ pub async fn put_decision_chat(
     headers: HeaderMap,
     body: Bytes,
 ) -> Response {
-    if let Err(refusal) = reach_chat(&routes.state, &session_id, &headers).await {
-        return refusal;
-    }
-    if let Some(refusal) = settings_write_refusal(
-        user_action_proof(&headers),
-        biorouter_server::launch::expected_a_user_action_key(),
-    ) {
+    let session = match reach_chat(&routes.state, &session_id, &headers).await {
+        Ok(session) => session,
+        Err(refusal) => return refusal,
+    };
+    if let Some(refusal) = write_refusal(&session, &headers) {
         return refusal;
     }
     let settings: DecisionChatSettings = match serde_json::from_slice(&body) {

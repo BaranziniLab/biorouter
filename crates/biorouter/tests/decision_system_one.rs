@@ -18,8 +18,10 @@ use biorouter::decision::{
 };
 use biorouter::privacy::{ProviderTier, SessionClassification};
 use biorouter::providers::decision::catalog::{
-    baseten_entry, discover_ollama, ollama_entry, ollama_facts, OllamaDecisionFacts,
+    baseten_entry, discover_ollama, ollama_entry, ollama_facts, ollama_load_refusal,
+    OllamaDecisionFacts,
 };
+use biorouter::providers::decision::system_one::ollama_load_refusal_sentence;
 use biorouter::providers::decision::SystemOneAdapter;
 use indexmap::IndexMap;
 use serde_json::{json, Value};
@@ -524,4 +526,372 @@ async fn ollama_discovery_lists_only_decision_models() {
         .await
         .unwrap()
         .is_none());
+}
+
+/// Ollama 0.40.14's answer for a decision model whose copy it cannot load
+/// (measured 2026-11-05 on `clef-flash:latest`, built from a GGUF before the
+/// format change).
+fn format_refusal() -> ResponseTemplate {
+    ResponseTemplate::new(400).set_body_json(json!({
+        "error": "'clef-flash:latest' was downloaded in a format that is no longer supported. \
+                  To re-download, run 'ollama pull clef-flash:latest'"
+    }))
+}
+
+/// Ollama's answer to the load probe for a copy it can load (measured the same
+/// day on `tev1:0.8b`).
+fn empty_questions_refusal() -> ResponseTemplate {
+    ResponseTemplate::new(400)
+        .set_body_json(json!({"error": "questions must contain 1\u{2013}64 fields"}))
+}
+
+fn decision_facts() -> OllamaDecisionFacts {
+    OllamaDecisionFacts {
+        decision: true,
+        thinking: false,
+        remote: false,
+        context_tokens: 16_384,
+    }
+}
+
+fn ollama(server: &MockServer, name: &str) -> SystemOneAdapter {
+    let base = Url::parse(&server.uri()).unwrap();
+    let entry = ollama_entry(
+        &base,
+        name,
+        &decision_facts(),
+        biorouter::decision::DecisionAdapter::SystemOne,
+    );
+    SystemOneAdapter::ollama(&base, entry).expect("an Ollama adapter")
+}
+
+fn one_question(context: &str) -> DecisionRequest {
+    let mut asked = questions();
+    asked.truncate(1);
+    DecisionRequest {
+        questions: asked,
+        context: DecisionContext::Text(context.into()),
+    }
+}
+
+/// The parts of a backend error, or a panic naming what came back instead.
+fn backend(err: &DecisionError) -> (Option<u16>, Option<&str>, &str) {
+    let DecisionError::Backend {
+        status,
+        error_type,
+        message,
+        ..
+    } = err
+    else {
+        panic!("a backend error, not {err:?}");
+    };
+    (*status, error_type.as_deref(), message.as_str())
+}
+
+#[tokio::test]
+async fn an_ollama_model_in_an_old_format_is_reported_as_such() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/systemone"))
+        .respond_with(format_refusal())
+        .expect(2)
+        .mount(&server)
+        .await;
+    let err = ollama(&server, "clef-flash:latest")
+        .decide(&one_question(NOTE))
+        .await
+        .unwrap_err();
+    let (status, error_type, message) = backend(&err);
+    assert_eq!(status, Some(400));
+    // BioRouter's own reading, spelled so it is not taken for a server token.
+    assert_eq!(error_type, Some("biorouter.model_format_unsupported"));
+    assert_eq!(message, ollama_load_refusal_sentence("clef-flash:latest"));
+    assert!(
+        message.contains("`clef-flash:latest` cannot be loaded")
+            && message.contains("ollama pull clef-flash:latest")
+            && message.contains("ollama rm clef-flash:latest"),
+        "{message}"
+    );
+    assert!(!message.contains("never truncates"), "{message}");
+    assert!(!message.contains("was downloaded"), "{message}");
+    assert!(!err.is_transient());
+
+    // Baseten's reading of the same answer is unchanged.
+    let err = baseten(&server)
+        .decide(&one_question(NOTE))
+        .await
+        .unwrap_err();
+    let (status, error_type, message) = backend(&err);
+    assert_eq!((status, error_type), (Some(400), None));
+    assert!(message.contains("never truncates"), "{message}");
+}
+
+#[tokio::test]
+async fn a_copy_ollama_cannot_load_is_listed_last_with_the_fix() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/tags"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"models": [
+            {"name": "clef-flash:latest", "model": "clef-flash:latest", "digest": "a"},
+            {"name": "bespoke:1b", "model": "bespoke:1b", "digest": "b"},
+            {"name": "tev1:0.8b", "model": "tev1:0.8b", "digest": "c"}
+        ]})))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/api/show"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(json!({"capabilities": ["decision"]})),
+        )
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/v1/systemone"))
+        .respond_with(|request: &Request| {
+            let body: Value = request.body_json().expect("a JSON probe");
+            // The probe asks nothing and carries no state.
+            assert_eq!(body["questions"], json!({}), "{body}");
+            assert_eq!(body["state"], json!(""), "{body}");
+            if body["model"] == "clef-flash:latest" {
+                format_refusal()
+            } else {
+                empty_questions_refusal()
+            }
+        })
+        .expect(3)
+        .mount(&server)
+        .await;
+
+    let base = Url::parse(&server.uri()).unwrap();
+    let entries = discover_ollama(&base).await;
+    let order: Vec<_> = entries.iter().map(|e| e.model.as_str()).collect();
+    // The shipped default first, then by name, and the refused copy last.
+    assert_eq!(order, ["tev1:0.8b", "bespoke:1b", "clef-flash:latest"]);
+    assert_eq!(entries[0].load_refusal, None);
+    assert_eq!(entries[1].load_refusal, None);
+    assert_eq!(
+        entries[2].load_refusal.as_deref(),
+        Some(ollama_load_refusal_sentence("clef-flash:latest").as_str())
+    );
+    // The served shape only gains the field when it is set.
+    let served = serde_json::to_value(&entries).unwrap();
+    assert!(served[0].get("loadRefusal").is_none(), "{served}");
+    assert!(served[2]["loadRefusal"]
+        .as_str()
+        .is_some_and(|s| s.contains("ollama pull clef-flash:latest")));
+    let back: Vec<DecisionModelEntry> = serde_json::from_value(served).unwrap();
+    assert_eq!(
+        back.iter()
+            .map(|e| e.load_refusal.clone())
+            .collect::<Vec<_>>(),
+        entries
+            .iter()
+            .map(|e| e.load_refusal.clone())
+            .collect::<Vec<_>>()
+    );
+    // A shape stored before the field existed still reads, as loadable.
+    let older: DecisionModelEntry = serde_json::from_value(json!({
+        "provider": "ollama_decision", "model": "tev1:0.8b", "displayName": "tev1:0.8b",
+        "contextTokens": 8192, "kinds": ["binary"], "tier": "private",
+        "adapter": "system_one", "local": true
+    }))
+    .unwrap();
+    assert_eq!(older.load_refusal, None);
+}
+
+#[tokio::test]
+async fn the_load_probe_is_asked_once_per_copy_and_never_remembers_an_unclear_answer() {
+    let refusing = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/systemone"))
+        .respond_with(format_refusal())
+        .expect(2)
+        .mount(&refusing)
+        .await;
+    let base = Url::parse(&refusing.uri()).unwrap();
+    let sentence = ollama_load_refusal_sentence("clef-flash:latest");
+    for version in ["a", "a", "a-repulled"] {
+        assert_eq!(
+            ollama_load_refusal(&base, "clef-flash:latest", Some(version))
+                .await
+                .as_deref(),
+            Some(sentence.as_str()),
+            "copy {version}"
+        );
+    }
+
+    // A server fault says nothing about the copy: never marked, asked again.
+    let faulty = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/systemone"))
+        .respond_with(ResponseTemplate::new(500))
+        .expect(2)
+        .mount(&faulty)
+        .await;
+    let base = Url::parse(&faulty.uri()).unwrap();
+    for _ in 0..2 {
+        assert_eq!(
+            ollama_load_refusal(&base, "tev1:0.8b", Some("b")).await,
+            None
+        );
+    }
+
+    // Nor does a missing model or an unreachable server.
+    let missing = MockServer::start().await;
+    let base = Url::parse(&missing.uri()).unwrap();
+    assert_eq!(
+        ollama_load_refusal(&base, "gone:latest", Some("c")).await,
+        None
+    );
+    let closed = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = closed.local_addr().unwrap().port();
+    drop(closed);
+    let base = Url::parse(&format!("http://127.0.0.1:{port}/")).unwrap();
+    assert_eq!(
+        ollama_load_refusal(&base, "tev1:0.8b", Some("b")).await,
+        None
+    );
+}
+
+#[tokio::test]
+async fn a_refused_key_says_so_and_never_shows_the_key() {
+    let server = MockServer::start().await;
+    // The body inference.baseten.co sent to a request with no key
+    // (POST /v1/systemone, recorded 2026-11-04).
+    Mock::given(method("POST"))
+        .and(path("/v1/systemone"))
+        .respond_with(
+            ResponseTemplate::new(401).set_body_json(json!({"error": "Authentication required."})),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+    let err = baseten(&server)
+        .decide(&one_question(NOTE))
+        .await
+        .unwrap_err();
+    let (status, error_type, message) = backend(&err);
+    assert_eq!((status, error_type), (Some(401), None));
+    assert!(
+        message.contains("refused the credential (HTTP 401)"),
+        "{message}"
+    );
+    assert!(!message.contains("synthetic-test-key"), "{message}");
+    assert!(!message.contains("Authentication required"), "{message}");
+    assert!(!err.is_transient());
+}
+
+#[tokio::test]
+async fn a_rate_limit_that_persists_is_reported_after_the_retries() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/systemone"))
+        .respond_with(ResponseTemplate::new(429).insert_header("retry-after", "0"))
+        // The first try and two retries.
+        .expect(3)
+        .mount(&server)
+        .await;
+    let err = baseten(&server)
+        .decide(&one_question(NOTE))
+        .await
+        .unwrap_err();
+    let (status, _, message) = backend(&err);
+    assert_eq!(status, Some(429));
+    assert!(message.contains("rate limited"), "{message}");
+    assert!(err.is_transient());
+}
+
+#[tokio::test]
+async fn a_server_error_is_reported_without_its_body() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/systemone"))
+        .respond_with(
+            ResponseTemplate::new(503)
+                .set_body_json(json!({"error": "SYNTHETIC_SENSITIVE_STATE_SENTINEL"})),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+    let err = baseten(&server)
+        .decide(&one_question("SYNTHETIC_SENSITIVE_STATE_SENTINEL"))
+        .await
+        .unwrap_err();
+    let (status, error_type, message) = backend(&err);
+    assert_eq!((status, error_type), (Some(503), None));
+    assert_eq!(
+        message,
+        "Baseten decision model `joey-1` failed (HTTP 503)."
+    );
+    assert!(err.is_transient());
+}
+
+#[tokio::test]
+async fn an_unreachable_server_is_named_and_may_be_retried() {
+    let closed = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = closed.local_addr().unwrap().port();
+    drop(closed);
+    let adapter = SystemOneAdapter::baseten(
+        &format!("http://127.0.0.1:{port}"),
+        "synthetic-test-key".into(),
+        baseten_entry(JOEY, 16_384),
+    )
+    .unwrap();
+    let err = adapter.decide(&one_question(NOTE)).await.unwrap_err();
+    let (status, _, message) = backend(&err);
+    assert_eq!(status, None);
+    assert!(
+        message.starts_with("Baseten decision model `joey-1` could not be reached"),
+        "{message}"
+    );
+    assert!(!message.contains("synthetic-test-key"), "{message}");
+    assert!(err.is_transient());
+}
+
+#[tokio::test]
+async fn an_answer_naming_an_outcome_the_question_lacks_is_refused() {
+    let cases = [
+        (
+            "course",
+            json!({"type": "choice", "choice": "rrms",
+                   "probabilities": {"rrms": 0.5, "mystery": 0.5}}),
+            "`mystery`",
+        ),
+        (
+            "rating",
+            json!({"type": "score", "score": 1.6,
+                   "probabilities": {"0": 0.2, "7": 0.8}}),
+            "`7`",
+        ),
+    ];
+    for (question, answer, named) in cases {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/systemone"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(json!({"answers": {question: answer.clone()}})),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+        let mut asked = questions();
+        asked.retain(|name, _| name == question);
+        let err = service(baseten(&server))
+            .decide(
+                None,
+                Some(&DecisionModelRef::new("baseten_decision", JOEY)),
+                &DecisionRequest {
+                    questions: asked,
+                    context: DecisionContext::Text(NOTE.into()),
+                },
+            )
+            .await
+            .unwrap_err();
+        assert!(matches!(err, DecisionError::Malformed { .. }), "{err:?}");
+        assert!(
+            err.to_string().contains("unknown outcome") && err.to_string().contains(named),
+            "{err}"
+        );
+    }
 }

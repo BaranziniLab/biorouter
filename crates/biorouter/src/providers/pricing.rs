@@ -259,6 +259,7 @@ fn explicit_provider_model_pricing(provider: &str, model: &str) -> Option<Provid
         "custom_deepseek" | "deepseek" => deepseek_pricing(model),
         "moonshot" | "moonshotai" => moonshot_pricing(model),
         "baseten" => baseten_pricing(model),
+        "baseten_decision" => baseten_decision_pricing(model),
         "inception" => inception_pricing(model),
         "mistral" | "mistralai" => mistral_pricing(model),
         "xai" | "x-ai" => xai_pricing(model),
@@ -306,6 +307,14 @@ fn blocks_fallback_pricing(provider: &str) -> bool {
             | "claude_code"
             | "gemini_cli"
             | "cursor_agent"
+            // The decision providers. `baseten_decision` has its own table
+            // (`baseten_decision_pricing`) and a slug it lacks is unknown, not
+            // a catalog price. `ollama_decision` stays unpriced exactly like
+            // `ollama`: a local model has no meter and a cloud tag bills an
+            // ollama.com subscription, so a tag shaped like a catalog model
+            // (`qwen-2.5-0.5b`) must not be given that model's list price.
+            | "baseten_decision"
+            | "ollama_decision"
     )
 }
 
@@ -652,6 +661,53 @@ fn baseten_pricing(model: &str) -> Option<ProviderModelPricing> {
                 ..ProviderModelPricing::usd_per_million(input, output, context)
             },
         )
+}
+
+/// Baseten's decision models, USD per million INPUT tokens, as the live feed
+/// listed them on 2026-11-04. Output is billed at $0.00 (a decision model
+/// answers with one token per question), and every one has a 16,384-token
+/// window.
+///
+/// Kept out of [`BASETEN_SYNC_PRICING`] on purpose: these are not chat models,
+/// the declarative JSON does not list them, and the drift guard
+/// `baseten_sync_pricing_matches_declarative_metadata` would refuse them
+/// there. `live_catalog::BUNDLED_DECISION_PRICING_AS_OF` records the day this
+/// table was read; move it with the table.
+///
+/// The feed also lists cached input at $0.00, and System One reports only
+/// input tokens, so a prompt prefix Baseten serves from its cache is billed
+/// here at the full input rate: a small overstatement, never an understatement.
+pub(crate) const BASETEN_DECISION_PRICING: &[(&str, f64)] = &[
+    ("decision-models/baseten-joey-2b-latest", 0.01),
+    ("decision-models/baseten-elephant-9b-latest", 0.035),
+    ("decision-models/baseten-mammoth-27b-latest", 0.10),
+];
+
+/// Price of a `baseten_decision` model, named by its slug or its alias
+/// (`joey-1`; a decision chat binds the alias, the decision log records the
+/// slug). The live feed's price wins while one is in force, else the bundled
+/// row. `model` is already lowercased.
+fn baseten_decision_pricing(model: &str) -> Option<ProviderModelPricing> {
+    use crate::providers::decision::catalog::{BASETEN_DECISION_CONTEXT, BASETEN_DECISION_MODELS};
+    let slug = BASETEN_DECISION_MODELS
+        .iter()
+        .find(|known| known.name.eq_ignore_ascii_case(model))
+        .map_or(model, |known| known.slug);
+    let bundled = || {
+        BASETEN_DECISION_PRICING
+            .iter()
+            .find(|(name, _)| name.eq_ignore_ascii_case(slug))
+            .map(|&(_, input)| {
+                ProviderModelPricing::usd_per_million(
+                    input,
+                    0.0,
+                    u32::try_from(BASETEN_DECISION_CONTEXT).unwrap_or(u32::MAX),
+                )
+            })
+    };
+    crate::providers::live_catalog::current("baseten")
+        .and_then(|catalog| catalog.decision_pricing(slug))
+        .or_else(bundled)
 }
 
 fn inception_pricing(model: &str) -> Option<ProviderModelPricing> {
@@ -1526,6 +1582,108 @@ mod tests {
                 resolve_pricing_with_metadata(provider, model, Some(&metadata)).is_none(),
                 "{provider}/{model} must not be priced from provider metadata"
             );
+        }
+    }
+
+    const JOEY: &str = "decision-models/baseten-joey-2b-latest";
+    const ELEPHANT: &str = "decision-models/baseten-elephant-9b-latest";
+    const MAMMOTH: &str = "decision-models/baseten-mammoth-27b-latest";
+
+    #[test]
+    fn baseten_decision_models_bill_input_only() {
+        for (slug, per_million) in [(JOEY, 0.01), (ELEPHANT, 0.035), (MAMMOTH, 0.10)] {
+            let pricing = provider_model_pricing("baseten_decision", slug)
+                .unwrap_or_else(|| panic!("{slug} is priced"));
+            assert!(
+                (pricing.input_token_cost - per_million / 1_000_000.0).abs() < 1e-18,
+                "{slug}: {pricing:?}"
+            );
+            assert_eq!(pricing.output_token_cost, 0.0, "{slug}: output is free");
+            assert_eq!(pricing.context_length, Some(16_384));
+            // The async path, which the Usage panel and `/config/pricing` take,
+            // gives the same price.
+            assert_eq!(
+                resolve_pricing_with_metadata("baseten_decision", slug, None),
+                Some(pricing)
+            );
+        }
+        // One million input tokens and three output tokens on joey-1: $0.01.
+        let cost = model_cost("baseten_decision", JOEY, 1_000_000, 3).unwrap();
+        assert!((cost - 0.01).abs() < 1e-12, "got {cost}");
+        let cost = estimate_cost_usd("baseten_decision", MAMMOTH, 1_200_000, 600).unwrap();
+        assert!((cost - 0.12).abs() < 1e-12, "got {cost}");
+    }
+
+    /// A decision chat binds the alias (`baseten_decision/joey-1`) while the
+    /// decision log records the slug, so the footer's fallback, which prices
+    /// the chat's bound model, must find the same price under either name.
+    #[test]
+    fn a_decision_alias_prices_like_its_slug() {
+        for known in crate::providers::decision::catalog::BASETEN_DECISION_MODELS {
+            assert_eq!(
+                provider_model_pricing("baseten_decision", known.name),
+                provider_model_pricing("baseten_decision", known.slug),
+                "{}",
+                known.name
+            );
+            assert!(provider_model_pricing("baseten_decision", known.name).is_some());
+        }
+        assert!(provider_model_pricing("baseten_decision", "JOEY-1").is_some());
+    }
+
+    #[test]
+    fn bundled_decision_prices_cover_every_known_slug() {
+        for known in crate::providers::decision::catalog::BASETEN_DECISION_MODELS {
+            assert!(
+                BASETEN_DECISION_PRICING
+                    .iter()
+                    .any(|(slug, _)| *slug == known.slug),
+                "{} has no bundled price",
+                known.slug
+            );
+        }
+        // And the chat table stays free of them (its drift guard compares it
+        // with the declarative JSON, which lists no decision model).
+        for (slug, _) in BASETEN_DECISION_PRICING {
+            assert!(!BASETEN_SYNC_PRICING.iter().any(|row| row.0 == *slug));
+        }
+    }
+
+    /// The decision providers never fall through to the canonical catalog: an
+    /// Ollama decision tag named like a catalog model would otherwise be given
+    /// that model's list price, and a Baseten slug this release does not know
+    /// is unknown, not priced by a guess.
+    #[test]
+    fn decision_providers_never_take_a_catalog_price() {
+        // An unknown provider's tag reaches the catalog through its provider
+        // prefix (`qwen-qwen-plus` is `qwen/qwen-plus`).
+        let catalog_model = "qwen-qwen-plus";
+        assert!(
+            crate::providers::canonical::maybe_get_canonical_model(
+                "ollama_decision",
+                catalog_model
+            )
+            .is_some(),
+            "the catalog must hold a record for the tag, or this proves nothing"
+        );
+        for (provider, model) in [
+            ("ollama_decision", catalog_model),
+            ("ollama_decision", "tev1:0.8b"),
+            ("baseten_decision", catalog_model),
+            (
+                "baseten_decision",
+                "decision-models/baseten-unknown-1b-latest",
+            ),
+        ] {
+            assert!(
+                provider_model_pricing(provider, model).is_none(),
+                "{provider}/{model} must not be priced"
+            );
+            assert!(
+                resolve_pricing_with_metadata(provider, model, None).is_none(),
+                "{provider}/{model} must not be priced on the async path"
+            );
+            assert!(estimate_cost_usd(provider, model, 1_000, 1).is_none());
         }
     }
 }

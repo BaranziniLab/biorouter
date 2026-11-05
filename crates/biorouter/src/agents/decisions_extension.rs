@@ -12,12 +12,17 @@
 //! ⚠ **One tool call is one transcript row, however many decisions it makes.**
 //! A batch can be 200 chunks times 16 questions, and a model may call `decide`
 //! many times in a turn. The result is therefore an aggregate per question
-//! (counts, the highest probability, the ids that passed, capped), never one
-//! block per chunk; the decision log is the only place individual calls are
-//! listed, and the result names the batch id that finds them there. Small
-//! batches (at most [`PER_CHUNK_LINES`] chunks, and few questions) also get one
-//! compact line per chunk, because a model conditioning its work on a handful
-//! of decisions needs each one's probability.
+//! (counts, the highest probability, the ids that passed and the ids to review,
+//! capped), never one block per chunk; the decision log is the only place
+//! individual calls are listed, and the result names the batch id that finds
+//! them there. Small batches (at most [`PER_CHUNK_LINES`] chunks, and few
+//! questions) also get one compact line per chunk, because a model conditioning
+//! its work on a handful of decisions needs each one's probability.
+//!
+//! A chunk that is neither a clear no nor a clear pass ([`needs_review`]) is
+//! listed under review, and a per-chunk verdict never says a bare "fail":
+//! measured, an agent read "fail" as a no and reported a true RRMS note at
+//! P(yes) 0.36 as not having multiple sclerosis.
 //!
 //! The design builds on Albert Lee's prototype in PR #469, the first decision
 //! model integration in BioRouter; the decision-models design (section 5)
@@ -66,7 +71,7 @@ pub fn is_decision_tool_name(tool_name: &str) -> bool {
 pub const MAX_TOOL_QUESTIONS: usize = 16;
 /// Chunks in one `decide` call. A larger input takes several calls.
 pub const MAX_TOOL_CHUNKS: usize = 200;
-/// Chunk ids listed per list (passing, uncertain) before the rest are only
+/// Chunk ids listed per list (passing, to review) before the rest are only
 /// counted. Fewer per list when a call asks many questions; see [`id_cap`].
 pub const LISTED_IDS: usize = 40;
 /// The fewest ids a list shows, however many questions a call asks.
@@ -76,8 +81,30 @@ const MIN_LISTED_IDS: usize = 10;
 const PER_CHUNK_CELLS: usize = 80;
 /// A batch of at most this many chunks also gets one line per chunk.
 pub const PER_CHUNK_LINES: usize = 20;
-/// P(yes) in this band counts as uncertain: worth a person's look.
-pub const UNCERTAIN_BAND: (f64, f64) = (0.4, 0.6);
+/// Below this pass probability a chunk is a clear no and is not listed for
+/// review. Measured on tev1:0.8b, true multiple sclerosis notes that only used
+/// an abbreviation (RRMS, SPMS, PPMS) scored 0.34 to 0.53 on a bare question,
+/// and clear negatives scored 0.10 or less, so a floor of 0.2 lists the near
+/// misses and leaves the clear negatives out.
+pub const REVIEW_FLOOR: f64 = 0.2;
+/// At or above this pass probability (and the threshold, when it is higher) a
+/// chunk is a clear pass and is not listed for review.
+pub const CLEAR_PASS: f64 = 0.8;
+
+/// Whether a chunk whose pass probability is `p` must be read before its
+/// answer is reported: it is not a clear no (`p` at least [`REVIEW_FLOOR`])
+/// and not a clear pass (`p` under the larger of the threshold and
+/// [`CLEAR_PASS`]). The band is fixed on purpose: the agent that has to read
+/// the list does not get to choose how long it is.
+pub fn needs_review(p: f64, threshold: Option<f64>) -> bool {
+    p >= REVIEW_FLOOR && p < review_ceiling(threshold)
+}
+
+/// The top of the review band: the larger of the threshold and
+/// [`CLEAR_PASS`], or [`CLEAR_PASS`] with no threshold.
+fn review_ceiling(threshold: Option<f64>) -> f64 {
+    threshold.map_or(CLEAR_PASS, |t| t.max(CLEAR_PASS))
+}
 /// Distinct error messages listed, and chunk ids listed per message.
 const LISTED_ERRORS: usize = 5;
 const LISTED_ERROR_IDS: usize = 10;
@@ -99,17 +126,26 @@ const DECIDE_DESCRIPTION: &str = concat!(
     "P(at_least_level or higher).\n",
     "- A decision model only picks among the answers you offer: it never extracts a value, ",
     "quotes or explains. To get a value, ask whether a chunk states one, then read those ",
-    "chunks yourself. Its probabilities can be wrong: read what it flags, and the uncertain ",
-    "ones (P(yes) 0.4 to 0.6), before relying on them.\n",
-    "Example, 600 neurology notes: questions {\"has_ms\": {\"instructions\": \"Does this note ",
-    "state the patient has multiple sclerosis?\", \"threshold\": 0.9}, \"edss_stated\": ",
-    "{\"instructions\": \"Is an EDSS score stated in this note?\", \"threshold\": 0.8}} over ",
-    "chunks [{\"id\": \"note-0001\", \"text\": \"...\"}] in three calls of 200; then build the ",
-    "cohort from has_ms and read only the edss_stated notes to extract the EDSS value.\n",
+    "chunks yourself. Its probabilities can be wrong: read the chunks the result lists under ",
+    "review before you report them.\n",
+    "- For a screen, spell out abbreviations in the question and make it a choice whose ",
+    "options yes and no each say what they mean in one sentence, with a threshold near 0.5 ",
+    "and pass_option yes (has_ms below). A higher threshold fails true cases; the review list ",
+    "catches the rest.\n",
+    "Example, 600 neurology notes: questions {\"has_ms\": {\"type\": \"choice\", ",
+    "\"instructions\": \"Does this note state the patient has multiple sclerosis (MS, RRMS, ",
+    "SPMS or PPMS)?\", \"options\": {\"yes\": \"The patient has multiple sclerosis (MS, RRMS, ",
+    "SPMS or PPMS).\", \"no\": \"The patient does not have multiple sclerosis.\"}, ",
+    "\"threshold\": 0.5, \"pass_option\": \"yes\"}, \"edss_stated\": {\"instructions\": \"Is an ",
+    "EDSS (Expanded Disability Status Scale) score stated in this note?\", \"threshold\": 0.5}} ",
+    "over chunks [{\"id\": \"note-0001\", \"text\": \"...\"}] in three calls of 200; then build ",
+    "the cohort from the has_ms passes after reading its review list, and read only the ",
+    "edss_stated notes to extract the EDSS value.\n",
     "Privacy: a private chat can use only private decision models (on this computer or at ",
     "the user's institution); a public one is refused before anything is sent.\n",
-    "The result summarises each question (passes, highest probability, passing ids) under a ",
-    "batch id. Every call, with the text it read, is in the chat's decision history."
+    "The result summarises each question (passes, highest probability, passing ids, ids to ",
+    "review) under a batch id. Every call, with the text it read, is in the chat's decision ",
+    "history."
 );
 
 const DECISION_MODELS_DESCRIPTION: &str = concat!(
@@ -152,9 +188,10 @@ struct DecideParams {
 /// One question as the model writes it.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 struct DecideQuestion {
-    /// The question, asked of each chunk on its own, for example "Does this
-    /// note state the patient has multiple sclerosis?". `question` is accepted
-    /// as another name for it: models reach for that word first.
+    /// The question, asked of each chunk on its own, with its abbreviations
+    /// spelled out, for example "Does this note state the patient has multiple
+    /// sclerosis (MS, RRMS, SPMS or PPMS)?". `question` is accepted as another
+    /// name for it: models reach for that word first.
     #[serde(alias = "question")]
     instructions: String,
     /// yes_no (the default), choice or score.
@@ -212,8 +249,12 @@ fn kind_word(tag: DecisionKindTag) -> &'static str {
 
 fn adapter_words(adapter: DecisionAdapter) -> &'static str {
     match adapter {
-        DecisionAdapter::SystemOne => "System One, the model's own probabilities",
-        DecisionAdapter::Logprob => "token log-probabilities of a chat model",
+        DecisionAdapter::SystemOne => {
+            "System One, the model's own probabilities, not validated on your data"
+        }
+        DecisionAdapter::Logprob => {
+            "token log-probabilities of a chat model, not validated on your data"
+        }
         DecisionAdapter::Verbalized => "verbalized: a number the model wrote, never calibrated",
     }
 }
@@ -447,8 +488,11 @@ pub struct QuestionSummary {
     pub passed: Option<usize>,
     /// yes_no only: chunks with P(yes) of at least one half.
     pub yes: Option<usize>,
-    /// yes_no only: chunks with P(yes) in the uncertain band.
-    pub uncertain: Option<usize>,
+    /// Chunks to read before their answer is reported (see [`needs_review`]):
+    /// for yes_no on P(yes), or on the threshold's probability when there is
+    /// one; for choice and score only with a threshold. `None` when the rule
+    /// does not apply (a choice or score with no threshold).
+    pub review: Option<usize>,
     /// The highest pass probability (P(yes) for yes_no, else the threshold's
     /// probability, else the most probable answer's).
     pub max_p: Option<f64>,
@@ -459,9 +503,10 @@ pub struct QuestionSummary {
     pub passing_ids: Vec<String>,
     /// How many more passed than are listed.
     pub more_passing: usize,
-    /// yes_no only: the uncertain chunks, at most [`LISTED_IDS`].
-    pub uncertain_ids: Vec<String>,
-    pub more_uncertain: usize,
+    /// The chunks to review, at most [`LISTED_IDS`].
+    pub review_ids: Vec<String>,
+    /// How many more are to review than are listed.
+    pub more_review: usize,
 }
 
 /// One distinct error in a batch and the chunks it hit.
@@ -527,6 +572,28 @@ fn threshold_p(threshold: Option<&Threshold>) -> Option<f64> {
     })
 }
 
+/// The probability the review rule reads for one decision: the threshold's
+/// own when the question has one (P(yes), P(pass_option), P(at_least_level
+/// or higher)), P(yes) for a yes_no with no threshold, and `None` for a choice
+/// or score with no threshold, which has no pass to review against.
+fn review_probability(question: &Question, decision: &Decision) -> Option<f64> {
+    match (&question.threshold, &question.kind) {
+        (Some(_), _) => Some(
+            decision
+                .pass_probability
+                .unwrap_or_else(|| reported_p(decision)),
+        ),
+        (None, DecisionKind::Binary {}) => Some(p_yes(decision)),
+        (None, _) => None,
+    }
+}
+
+/// Whether this decision is on the review list (see [`needs_review`]).
+fn in_review(question: &Question, decision: &Decision) -> bool {
+    review_probability(question, decision)
+        .is_some_and(|p| needs_review(p, threshold_p(question.threshold.as_ref())))
+}
+
 /// Ids listed per list for a call of `questions` questions, so a 16-question
 /// call does not list sixteen times as many ids as a one-question call.
 pub fn id_cap(questions: usize) -> usize {
@@ -572,11 +639,10 @@ fn question_summary(
             binary && says_yes(d)
         }
     });
-    let uncertain = if binary {
-        ids_where(&|d| (UNCERTAIN_BAND.0..=UNCERTAIN_BAND.1).contains(&p_yes(d)))
-    } else {
-        Vec::new()
-    };
+    // A yes_no always has a pass to review against (P(yes) itself); a choice
+    // or score has one only through its threshold.
+    let reviewed = binary || has_threshold;
+    let review = ids_where(&|d| in_review(question, d));
     let answer_counts = (!binary).then(|| {
         let mut counts: IndexMap<String, usize> = match &question.kind {
             DecisionKind::Choice { options } => options.keys().map(|k| (k.clone(), 0)).collect(),
@@ -602,9 +668,9 @@ fn question_summary(
         });
     let passed = has_threshold.then_some(passing.len());
     let yes = binary.then(|| answered.iter().filter(|(_, d)| says_yes(d)).count());
-    let uncertain_count = binary.then_some(uncertain.len());
+    let review_count = reviewed.then_some(review.len());
     let (passing_ids, more_passing) = capped(passing, cap);
-    let (uncertain_ids, more_uncertain) = capped(uncertain, cap);
+    let (review_ids, more_review) = capped(review, cap);
     QuestionSummary {
         name: name.to_string(),
         kind: kind_word(question.kind.tag()).to_string(),
@@ -613,13 +679,13 @@ fn question_summary(
         decided: answered.len(),
         passed,
         yes,
-        uncertain: uncertain_count,
+        review: review_count,
         max_p,
         answer_counts,
         passing_ids,
         more_passing,
-        uncertain_ids,
-        more_uncertain,
+        review_ids,
+        more_review,
     }
 }
 
@@ -703,13 +769,18 @@ fn chunk_line(questions: &IndexMap<String, Question>, outcome: &ChunkOutcome) ->
         );
     };
     let parts: Vec<String> = questions
-        .keys()
-        .filter_map(|name| {
+        .iter()
+        .filter_map(|(name, question)| {
             let decision = decisions.iter().find(|d| &d.question == name)?;
-            let verdict = match decision.passed {
-                Some(true) => " pass",
-                Some(false) => " fail",
-                None => "",
+            // Never a bare "fail": an agent reads that as a no, and a near
+            // miss below the threshold is not one.
+            let verdict = match (decision.passed, in_review(question, decision)) {
+                (Some(true), false) => " pass",
+                (Some(true), true) => " pass, review",
+                (Some(false), false) => " below threshold",
+                (Some(false), true) => " below threshold, review",
+                (None, true) => " review",
+                (None, false) => "",
             };
             Some(match &decision.answer {
                 Answer::Binary { .. } => {
@@ -739,10 +810,11 @@ fn question_paragraph(question: &QuestionSummary, chunks: usize) -> String {
     if let Some(yes) = question.yes {
         facts.push(format!("{yes} yes"));
     }
-    if let Some(uncertain) = question.uncertain {
+    if let Some(review) = question.review {
         facts.push(format!(
-            "{uncertain} uncertain (P(yes) {:.1} to {:.1})",
-            UNCERTAIN_BAND.0, UNCERTAIN_BAND.1
+            "{review} to review (P from {REVIEW_FLOOR:.2} up to {:.2}: not a clear no, not a \
+             clear pass)",
+            review_ceiling(question.threshold)
         ));
     }
     if let Some(counts) = &question.answer_counts {
@@ -777,10 +849,10 @@ fn question_paragraph(question: &QuestionSummary, chunks: usize) -> String {
             ids_line(&question.passing_ids, question.more_passing)
         ));
     }
-    if !question.uncertain_ids.is_empty() {
+    if !question.review_ids.is_empty() {
         text.push_str(&format!(
-            "\n  uncertain: {}",
-            ids_line(&question.uncertain_ids, question.more_uncertain)
+            "\n  review: {}",
+            ids_line(&question.review_ids, question.more_review)
         ));
     }
     text
@@ -844,8 +916,9 @@ pub fn render_summary(
     }
     text.push_str(&format!(
         "\nEvery call, with the exact text it read, is in this chat's decision history (batch \
-         {}). A decision model only picks among the answers offered and can be wrong: read the \
-         chunks it flags before you rely on them.",
+         {}). A chunk listed under review is unresolved, not a no: read it before you report \
+         it, or report it as unresolved. A decision model can also be confidently wrong, so \
+         check a few passes.",
         summary.batch_id
     ));
     text
@@ -1090,7 +1163,9 @@ pub struct ModelRow {
     pub adapter: DecisionAdapter,
     /// Whether its probabilities are calibrated: yes for System One, no for
     /// verbalized, and unknown ahead of time for log-probabilities (it depends
-    /// on how much probability lands on the offered answers).
+    /// on how much probability lands on the offered answers). Calibrated means
+    /// the numbers are the model's own distribution, not that they have been
+    /// validated on the caller's data.
     pub calibrated: Option<bool>,
     pub kinds: Vec<String>,
     pub context_tokens: usize,
@@ -1390,6 +1465,7 @@ pub(crate) mod test_support {
             affiliation: local.then_some(crate::privacy::affiliation::ModelAffiliation::Local),
             adapter,
             local,
+            load_refusal: None,
         }
     }
 
@@ -1524,9 +1600,61 @@ mod tests {
             "EDSS",
             "a private chat can use only private decision models",
             "decision history",
+            "spell out abbreviations",
+            "pass_option yes",
+            "lists under review",
+            "the review list catches the rest",
         ] {
             assert!(DECIDE_DESCRIPTION.contains(needle), "missing {needle:?}");
         }
+        // The fixed 0.4 to 0.6 band is gone, and the description no longer
+        // teaches a bare question at 0.9, which passed 1 of 5 true notes.
+        assert!(!DECIDE_DESCRIPTION.contains("0.4 to 0.6"));
+        assert!(!DECIDE_DESCRIPTION.contains("\"threshold\": 0.9"));
+    }
+
+    /// The first JSON value in `text` after `marker`, read the way decide
+    /// reads its arguments.
+    fn json_after(text: &str, marker: &str) -> serde_json::Value {
+        let (_, rest) = text
+            .split_once(marker)
+            .unwrap_or_else(|| panic!("no {marker:?}"));
+        serde_json::Deserializer::from_str(rest)
+            .into_iter::<serde_json::Value>()
+            .next()
+            .unwrap_or_else(|| panic!("no JSON after {marker:?}"))
+            .unwrap_or_else(|e| panic!("the example after {marker:?} is not JSON: {e}"))
+    }
+
+    /// The agent copies the description's example, so it must be a call
+    /// decide takes, in the choice form that was measured to keep true cases.
+    #[test]
+    fn the_description_example_is_a_valid_call() {
+        let questions = json_after(DECIDE_DESCRIPTION, "neurology notes: questions ");
+        let chunks = json_after(DECIDE_DESCRIPTION, "over chunks ");
+        let params: DecideParams =
+            serde_json::from_value(json!({"questions": questions, "chunks": chunks}))
+                .expect("the example fits decide's schema");
+        let (built, chunks) = build_batch(&params).expect("the example is a valid call");
+        assert_eq!(chunks.len(), 1);
+        let has_ms = &built["has_ms"];
+        assert!(
+            has_ms.instructions.contains("RRMS, SPMS or PPMS"),
+            "the abbreviations are in the question itself"
+        );
+        let DecisionKind::Choice { options } = &has_ms.kind else {
+            panic!("has_ms is the choice form: {has_ms:?}")
+        };
+        assert_eq!(options.keys().collect::<Vec<_>>(), ["yes", "no"]);
+        assert!(options.values().all(|meaning| meaning.is_some()));
+        assert_eq!(
+            has_ms.threshold,
+            Some(Threshold::Option {
+                name: "yes".into(),
+                p: 0.5
+            })
+        );
+        assert_eq!(built["edss_stated"].kind, DecisionKind::Binary {});
     }
 
     /// Measured live: GPT-5.5 wrote `{"type": "yes_no", "question": "…"}` twice
@@ -1706,8 +1834,17 @@ mod tests {
         assert!(body.contains("196 pass"), "{body}");
         assert!(body.contains("(and 156 more)"), "{body}");
         assert!(
-            body.contains("196 uncertain"),
-            "edss at 0.5 is uncertain: {body}"
+            body.contains("196 to review (P from 0.20 up to 0.80"),
+            "edss at 0.5 under a 0.8 threshold is to review: {body}"
+        );
+        assert!(
+            body.contains("0 to review (P from 0.20 up to 0.90"),
+            "has_ms at 0.95 is a clear pass: {body}"
+        );
+        assert_eq!(
+            body.matches("to review").count(),
+            2,
+            "a choice with no threshold has no review list: {body}"
         );
         assert!(body.contains("rrms 196, spms 0, none 0"), "{body}");
         assert!(body.contains("decision history"), "{body}");
@@ -1729,6 +1866,12 @@ mod tests {
         assert_eq!(has_ms.passed, Some(196));
         assert_eq!(has_ms.passing_ids.len(), LISTED_IDS);
         assert_eq!(has_ms.more_passing, 196 - LISTED_IDS);
+        assert_eq!(has_ms.review, Some(0));
+        let edss = &summary.questions[1];
+        assert_eq!(edss.review, Some(196));
+        assert_eq!(edss.review_ids.len(), LISTED_IDS);
+        assert_eq!(edss.more_review, 196 - LISTED_IDS);
+        assert_eq!(summary.questions[2].review, None);
         assert_eq!(summary.tier, Some(ProviderTier::Private));
         assert_eq!(summary.calibrated, Some(true));
     }
@@ -1758,8 +1901,192 @@ mod tests {
         .await;
         let body = text(&result);
         assert!(body.contains("Per chunk:"), "{body}");
-        assert!(body.contains("- a: done P(yes) 0.20 fail"), "{body}");
+        assert!(
+            body.contains("- a: done P(yes) 0.20 below threshold, review"),
+            "{body}"
+        );
         assert!(body.contains("- b: failed:"), "{body}");
+        assert!(!says_bare_fail(&body), "{body}");
+    }
+
+    /// A per-chunk verdict printed as the bare word "fail", which an agent
+    /// reads as a no.
+    fn says_bare_fail(body: &str) -> bool {
+        body.lines()
+            .any(|line| line.ends_with(" fail") || line.contains(" fail;"))
+    }
+
+    /// One decide call with one question `has_ms` over chunks named `ids`, on
+    /// a fake model that gives every question `p`.
+    async fn decide_with(
+        p: f64,
+        question: serde_json::Value,
+        ids: &[&str],
+    ) -> (String, DecideSummary) {
+        let local = model(
+            entry(
+                "tev1",
+                ProviderTier::Private,
+                true,
+                DecisionAdapter::SystemOne,
+            ),
+            p,
+        );
+        let (client, session) = client_with(vec![local], false).await;
+        let chunks: Vec<serde_json::Value> = ids
+            .iter()
+            .map(|id| json!({"id": id, "text": format!("note {id}")}))
+            .collect();
+        let result = call(
+            &client,
+            &session,
+            "decide",
+            json!({"questions": {"has_ms": question}, "chunks": chunks}),
+            enforced(),
+        )
+        .await;
+        assert_eq!(result.is_error, Some(false), "{}", text(&result));
+        let summary = serde_json::from_value(result.structured_content.clone().unwrap()).unwrap();
+        (text(&result), summary)
+    }
+
+    /// The review band, as a table: from 0.2 up to the larger of the threshold
+    /// and 0.8.
+    #[test]
+    fn needs_review_table() {
+        for (p, threshold, expected) in [
+            (0.19, None, false),
+            (0.20, None, true),
+            (0.79, None, true),
+            (0.80, None, false),
+            (0.36, Some(0.9), true),
+            (0.85, Some(0.9), true),
+            (0.90, Some(0.9), false),
+            (0.85, Some(0.5), false),
+            (0.60, Some(0.5), true),
+            (0.05, Some(0.5), false),
+        ] {
+            assert_eq!(
+                needs_review(p, threshold),
+                expected,
+                "needs_review({p}, {threshold:?})"
+            );
+        }
+    }
+
+    /// Measured: a true RRMS note scored 0.36 against a 0.9 threshold. It was
+    /// printed "fail", the band 0.4 to 0.6 missed it, and the agent reported
+    /// it as a no. It is now listed for review and never called a fail.
+    #[tokio::test]
+    async fn a_near_miss_below_the_threshold_is_listed_for_review() {
+        let (body, summary) = decide_with(
+            0.36,
+            json!({"instructions": "Does this note state MS?", "threshold": 0.9}),
+            &["a", "b", "c"],
+        )
+        .await;
+        assert!(
+            body.contains("3 to review (P from 0.20 up to 0.90: not a clear no, not a clear pass)"),
+            "{body}"
+        );
+        assert!(body.contains("\n  review: a, b, c"), "{body}");
+        assert!(
+            body.contains("- a: has_ms P(yes) 0.36 below threshold, review"),
+            "{body}"
+        );
+        assert!(!says_bare_fail(&body), "{body}");
+        assert!(
+            body.contains("A chunk listed under review is unresolved, not a no"),
+            "{body}"
+        );
+        assert!(body.contains("check a few passes"), "{body}");
+        assert_eq!(summary.questions[0].review, Some(3));
+        assert_eq!(summary.questions[0].review_ids, ["a", "b", "c"]);
+    }
+
+    #[tokio::test]
+    async fn a_clear_no_is_not_listed_for_review() {
+        let (body, summary) = decide_with(
+            0.05,
+            json!({"instructions": "Does this note state MS?", "threshold": 0.9}),
+            &["a", "b"],
+        )
+        .await;
+        assert!(!body.contains("\n  review:"), "{body}");
+        assert!(body.contains("0 to review"), "{body}");
+        assert!(
+            body.contains("- a: has_ms P(yes) 0.05 below threshold\n"),
+            "{body}"
+        );
+        assert_eq!(summary.questions[0].review, Some(0));
+        assert!(summary.questions[0].review_ids.is_empty());
+    }
+
+    /// A pass under 0.8 is not a clear pass, and a yes_no with no threshold is
+    /// reviewed on P(yes) itself.
+    #[tokio::test]
+    async fn a_pass_short_of_a_clear_pass_is_listed_for_review() {
+        let (body, _) = decide_with(
+            0.6,
+            json!({"instructions": "Does this note state MS?", "threshold": 0.5}),
+            &["a"],
+        )
+        .await;
+        assert!(
+            body.contains("- a: has_ms P(yes) 0.60 pass, review"),
+            "{body}"
+        );
+        assert!(body.contains("\n  review: a"), "{body}");
+
+        let (body, summary) = decide_with(
+            0.45,
+            json!({"instructions": "Does this note state MS?"}),
+            &["a"],
+        )
+        .await;
+        assert!(body.contains("- a: has_ms P(yes) 0.45 review"), "{body}");
+        assert!(body.contains("(P from 0.20 up to 0.80"), "{body}");
+        assert_eq!(summary.questions[0].review, Some(1));
+
+        let (body, _) = decide_with(
+            0.85,
+            json!({"instructions": "Does this note state MS?", "threshold": 0.5}),
+            &["a"],
+        )
+        .await;
+        assert!(body.contains("- a: has_ms P(yes) 0.85 pass\n"), "{body}");
+        assert!(!body.contains("\n  review:"), "{body}");
+    }
+
+    /// The choice form the description teaches is reviewed on P(pass_option);
+    /// a choice with no threshold has no pass, so nothing to review against.
+    #[tokio::test]
+    async fn a_choice_with_a_threshold_is_reviewed_on_its_pass_option() {
+        let choice = |threshold: Option<f64>| {
+            let mut q = json!({
+                "type": "choice",
+                "instructions": "Does this note state the patient has multiple sclerosis?",
+                "options": {"yes": "The patient has MS.", "no": "The patient does not have MS."},
+            });
+            if let Some(t) = threshold {
+                q["threshold"] = json!(t);
+                q["pass_option"] = json!("yes");
+            }
+            q
+        };
+        let (body, summary) = decide_with(0.36, choice(Some(0.5)), &["a", "b"]).await;
+        assert_eq!(summary.questions[0].review, Some(2), "{body}");
+        assert!(
+            body.contains("2 to review (P from 0.20 up to 0.80"),
+            "{body}"
+        );
+        assert!(body.contains("\n  review: a, b"), "{body}");
+        assert!(body.contains("(P 0.36) below threshold, review"), "{body}");
+
+        let (body, summary) = decide_with(0.36, choice(None), &["a"]).await;
+        assert_eq!(summary.questions[0].review, None, "{body}");
+        assert!(!body.contains("to review"), "{body}");
+        assert!(!body.contains("\n  review:"), "{body}");
     }
 
     /// Gate H on the tool path: nothing is sent when a private chat names, or
@@ -1967,6 +2294,12 @@ mod tests {
         let cloud = body.find("test_decision/cloud").unwrap();
         assert!(tev1 < cloud, "usable models come first: {body}");
         assert!(body.contains("Not available to this chat"), "{body}");
+        // The listing says what the desktop and the CLI say: calibrated is
+        // the model's own distribution, not a check against the user's data.
+        assert!(
+            body.contains("System One, the model's own probabilities, not validated on your data"),
+            "{body}"
+        );
         let rows: Vec<ModelRow> =
             serde_json::from_value(result.structured_content.unwrap()["models"].clone()).unwrap();
         let cloud = rows.iter().find(|r| r.model == "cloud").unwrap();

@@ -90,6 +90,61 @@ fn a_settings_write_needs_the_proof_only_where_one_can_be_given() {
     );
 }
 
+#[tokio::test]
+async fn a_keyless_write_to_a_subagents_chat_is_refused_with_the_subagent_sentence() {
+    for session_type in [
+        SessionType::User,
+        SessionType::Scheduled,
+        SessionType::Hidden,
+        SessionType::Terminal,
+    ] {
+        for proof in [
+            UserActionProof::Proven,
+            UserActionProof::Unproven,
+            UserActionProof::NoKeyInstalled,
+        ] {
+            assert!(
+                subagent_write_refusal(proof, session_type).is_none(),
+                "{session_type:?} is not a subagent's chat ({proof:?})"
+            );
+        }
+    }
+    // On a keyed daemon the proof admits a subagent's chat (an unproven write
+    // was refused one step earlier, by `settings_write_refusal`).
+    assert!(subagent_write_refusal(UserActionProof::Proven, SessionType::SubAgent).is_none());
+    assert!(subagent_write_refusal(UserActionProof::Unproven, SessionType::SubAgent).is_none());
+    let refused = subagent_write_refusal(UserActionProof::NoKeyInstalled, SessionType::SubAgent)
+        .expect("a keyless daemon refuses a subagent's chat");
+    assert_eq!(refused.status(), StatusCode::FORBIDDEN);
+    let body = to_bytes(refused.into_body(), usize::MAX).await.unwrap();
+    assert_eq!(
+        String::from_utf8_lossy(&body),
+        crate::routes::agent::SUBAGENT_CONTROL_NO_KEY,
+        "one sentence for a subagent's tab, whichever control refuses it"
+    );
+}
+
+#[test]
+fn an_adhoc_note_says_a_public_chats_log_now_holds_the_text() {
+    let chat = |tier, enforced| DecisionSession::new("s1", tier, enforced);
+    let note = decide_note(Some(&chat(SessionClassification::Public, true)), &[])
+        .expect("a public chat with privacy tiers on is told");
+    assert_eq!(note, PUBLIC_CHAT_LOG_NOTE);
+    assert!(
+        decide_note(Some(&chat(SessionClassification::Private, true)), &[]).is_none(),
+        "a private chat's log stays at private reach"
+    );
+    assert!(
+        decide_note(Some(&chat(SessionClassification::Public, false)), &[]).is_none(),
+        "with privacy tiers off no tier separates one chat's log from another's"
+    );
+    let note = decide_note(None, &[]).unwrap();
+    assert!(
+        !note.contains(PUBLIC_CHAT_LOG_NOTE),
+        "no chat, no log: {note}"
+    );
+}
+
 #[test]
 fn a_filter_outside_its_range_is_refused_with_a_sentence() {
     let query = |f: fn(&mut DecisionQuery)| {
@@ -185,6 +240,7 @@ fn entry(name: &str, tier: ProviderTier, local: bool) -> DecisionModelEntry {
         affiliation: local.then_some(ModelAffiliation::Local),
         adapter: DecisionAdapter::SystemOne,
         local,
+        load_refusal: None,
     }
 }
 
@@ -682,6 +738,62 @@ async fn the_person_at_the_keyboard_stores_settings_that_read_back() {
     assert_eq!(json_of(&body), stored, "what was stored reads back");
 }
 
+// The subagent rule refuses only a keyless daemon's write: on a keyed one the
+// proof is what admits a subagent's chat, as it is for `/agent/stop`.
+#[tokio::test(flavor = "multi_thread")]
+#[serial]
+async fn a_proven_write_reaches_a_subagents_chat() {
+    install_test_user_action_key();
+    let state = AppState::new().await.unwrap();
+    let session = state
+        .session_manager()
+        .create_session(
+            PathBuf::from("/tmp/decisions_route"),
+            "Decisions route, a subagent's chat (test fixture)".to_string(),
+            SessionType::SubAgent,
+        )
+        .await
+        .unwrap();
+    let chat = Seeded {
+        state: state.clone(),
+        id: session.id,
+    };
+    let id = chat.id.as_str();
+
+    let (status, body) = send(
+        served(state.clone()),
+        "PUT",
+        &format!("/sessions/{id}/decision-settings"),
+        Some(json!({ "monitors": [monitor("m1")] })),
+        &[PROOF],
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(json_of(&body)["monitors"][0]["id"], "m1", "{body}");
+    let (status, body) = send(
+        served(state.clone()),
+        "PUT",
+        &format!("/sessions/{id}/decision-chat"),
+        Some(json!({ "question": yes_no(Some(0.9)) })),
+        &[PROOF],
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    // Unproven, it is the proof's refusal, not the subagent sentence.
+    let (status, body) = send(
+        served(state.clone()),
+        "PUT",
+        &format!("/sessions/{id}/decision-settings"),
+        Some(json!({ "monitors": [monitor("m2")] })),
+        &[],
+    )
+    .await;
+    assert_eq!(
+        (status, body.as_str()),
+        (StatusCode::FORBIDDEN, DECISION_SETTINGS_NEED_USER)
+    );
+}
+
 #[tokio::test(flavor = "multi_thread")]
 #[serial]
 async fn unreadable_or_invalid_writes_and_filters_are_400_with_the_sentence() {
@@ -1067,7 +1179,10 @@ async fn an_adhoc_decision_in_a_chat_is_gated_checked_against_its_tier_and_logge
     assert_eq!(status, StatusCode::OK, "{body}");
     let answer = json_of(&body);
     assert_eq!(answer["sessionId"], public.id.as_str());
-    assert!(answer["note"].is_null(), "a chat was named: {body}");
+    // A chat was named, and it is public: the caller's text is now in that
+    // chat's log, where public chats can read it, and the answer says so. The
+    // local model answered, so nothing says the text left this computer.
+    assert_eq!(answer["note"], PUBLIC_CHAT_LOG_NOTE, "{body}");
     {
         let log = fake.log.0.lock().unwrap();
         assert_eq!(log.len(), 1);
@@ -1113,9 +1228,11 @@ async fn an_adhoc_decision_in_a_chat_is_gated_checked_against_its_tier_and_logge
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{body}");
-    assert_eq!(
-        json_of(&body)["decisions"][0]["model"]["model"],
-        "local-checker"
+    let answer = json_of(&body);
+    assert_eq!(answer["decisions"][0]["model"]["model"], "local-checker");
+    assert!(
+        answer["note"].is_null(),
+        "a private chat's log stays at private reach, and the model is local: {body}"
     );
 }
 

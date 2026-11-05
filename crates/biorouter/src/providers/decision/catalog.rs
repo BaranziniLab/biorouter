@@ -6,9 +6,12 @@
 //!   `advertised()` drops them already (no `tools`, and a 16,384-token window
 //!   under the agent's floor), and nothing here changes that.
 //! - **Ollama**: every pulled model whose `/api/show` capabilities include
-//!   `decision` (System One), on the server `OLLAMA_HOST` names. A pulled model
-//!   without that capability can still be opened by name with the `logprob`
-//!   adapter (a yes/no checker such as bespoke-minicheck).
+//!   `decision` (System One), on the server `OLLAMA_HOST` names, the shipped
+//!   default first. A copy Ollama refuses to load (a format it no longer
+//!   supports) is found by a probe that loads nothing, and is listed last with
+//!   the reason. A pulled model without that capability can still be opened by
+//!   name with the `logprob` adapter (a yes/no checker such as
+//!   bespoke-minicheck).
 //!
 //! Tiers are declared, never inherited: Baseten is Public with no affiliation,
 //! as its chat provider is; an Ollama model takes the self-hosted rule
@@ -16,6 +19,7 @@
 //! `remote_host` in `/api/show`) is Public whatever the host, the same rule
 //! `OllamaProvider::tier` applies.
 
+use std::collections::HashMap;
 use std::sync::{Arc, LazyLock, Mutex};
 use std::time::{Duration, Instant};
 
@@ -33,8 +37,11 @@ use crate::providers::formats::ollama::ModelFacts;
 use crate::providers::live_catalog::{self, LiveCatalog};
 use crate::providers::ollama::{resolve_ollama_base_url, OLLAMA_HOST};
 
+use super::chat::OLLAMA_DEFAULT_DECISION_MODEL;
 use super::logprob::LogprobAdapter;
-use super::system_one::SystemOneAdapter;
+use super::system_one::{
+    ollama_load_refusal_sentence, ollama_refusal, OllamaRefusal, SystemOneAdapter, SYSTEM_ONE_PATH,
+};
 
 pub const BASETEN_DECISION_PROVIDER: &str = "baseten_decision";
 pub const OLLAMA_DECISION_PROVIDER: &str = "ollama_decision";
@@ -119,6 +126,7 @@ pub fn baseten_entry(slug: &str, context_tokens: usize) -> DecisionModelEntry {
         affiliation: None,
         adapter: DecisionAdapter::SystemOne,
         local: false,
+        load_refusal: None,
     }
 }
 
@@ -244,6 +252,7 @@ pub fn ollama_entry(
         affiliation,
         adapter,
         local: tier == ProviderTier::Private,
+        load_refusal: None,
     }
 }
 
@@ -291,11 +300,169 @@ pub async fn ollama_facts(
         .map(|show| ollama_facts_from_show(name, &show)))
 }
 
+/// Ollama decision models in the order an automatic choice tries them: the
+/// ones Ollama loads before the ones it refused ([`DecisionModelEntry::load_refusal`]),
+/// and within each, the shipped default ([`OLLAMA_DEFAULT_DECISION_MODEL`])
+/// first, then by name. A name sort alone made the order an accident of
+/// spelling, and put a copy Ollama refuses ahead of the default.
+pub fn order_ollama_entries(entries: &mut [DecisionModelEntry]) {
+    entries.sort_by(|a, b| {
+        let rank = |entry: &DecisionModelEntry| {
+            (
+                entry.load_refusal.is_some(),
+                entry.model != OLLAMA_DEFAULT_DECISION_MODEL,
+            )
+        };
+        rank(a).cmp(&rank(b)).then_with(|| a.model.cmp(&b.model))
+    });
+}
+
+/// One pulled model as `/api/tags` lists it.
+struct PulledModel {
+    name: String,
+    /// What identifies this copy: the manifest digest, else the modified
+    /// time. A re-pull changes it.
+    version: Option<String>,
+}
+
+fn pulled_models(tags: &Value) -> Vec<PulledModel> {
+    let Some(models) = tags.get("models").and_then(Value::as_array) else {
+        return Vec::new();
+    };
+    models
+        .iter()
+        .filter_map(|m| {
+            let name = m.get("name").or_else(|| m.get("model"))?.as_str()?;
+            let version = ["digest", "modified_at"]
+                .iter()
+                .find_map(|key| m.get(*key).and_then(Value::as_str))
+                .filter(|v| !v.is_empty())
+                .map(str::to_string);
+            Some(PulledModel {
+                name: name.to_string(),
+                version,
+            })
+        })
+        .collect()
+}
+
+async fn ollama_tags(client: &ApiClient) -> Option<Value> {
+    let tags = async {
+        let response = client.response_get("api/tags").await.ok()?;
+        if !response.status().is_success() {
+            return None;
+        }
+        response.json::<Value>().await.ok()
+    };
+    tokio::time::timeout(TAGS_TIMEOUT, tags)
+        .await
+        .ok()
+        .flatten()
+}
+
+/// How long a load probe may take. Ollama answers one in a few milliseconds.
+const LOAD_PROBE_TIMEOUT: Duration = Duration::from_secs(2);
+
+/// (base URL, model name, copy version) to the probe's answer: the refusal
+/// sentence, or `None` for a copy Ollama loads.
+type LoadProbeKey = (String, String, String);
+static LOAD_PROBES: LazyLock<Mutex<HashMap<LoadProbeKey, Option<String>>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+/// The sentence for a copy of `name` that the Ollama server at `base_url`
+/// refuses to load ([`ollama_load_refusal_sentence`]), or `None`.
+///
+/// Asked with a System One request whose questions are empty, which Ollama
+/// refuses either way: with the format refusal for a copy it cannot load,
+/// which it checks first, or with its complaint that the questions are empty
+/// for one it can. Neither loads the model (measured on Ollama 0.40.14:
+/// `/api/ps` listed nothing before or after, and each answer took about 7 ms),
+/// and the request carries no state.
+///
+/// Asked at most once per copy (`version`, the `/api/tags` digest) in this
+/// process, and only a 400 is remembered: the format refusal, or any other
+/// refusal of the empty questions, which comes only after the format check
+/// passed. Any other outcome (a timeout, an unreachable server, a 404 or a
+/// server fault) gives `None` and is asked again next time, so a model is
+/// never marked on an ambiguous answer.
+pub async fn ollama_load_refusal(
+    base_url: &Url,
+    name: &str,
+    version: Option<&str>,
+) -> Option<String> {
+    let client = ollama_client(base_url, LOAD_PROBE_TIMEOUT).ok()?;
+    probe_load_refusal(&client, base_url, name, version).await
+}
+
+async fn probe_load_refusal(
+    client: &ApiClient,
+    base_url: &Url,
+    name: &str,
+    version: Option<&str>,
+) -> Option<String> {
+    let key = version.map(|v| (base_url.to_string(), name.to_string(), v.to_string()));
+    if let Some(key) = &key {
+        if let Some(known) = LOAD_PROBES
+            .lock()
+            .ok()
+            .and_then(|probes| probes.get(key).cloned())
+        {
+            return known;
+        }
+    }
+    let ask = async {
+        let probe = json!({ "model": name, "state": "", "questions": {} });
+        let response = client.response_post(SYSTEM_ONE_PATH, &probe).await.ok()?;
+        let status = response.status().as_u16();
+        Some((
+            status,
+            response.json::<Value>().await.unwrap_or(Value::Null),
+        ))
+    };
+    let (status, body) = tokio::time::timeout(LOAD_PROBE_TIMEOUT, ask)
+        .await
+        .ok()
+        .flatten()?;
+    let refusal = (ollama_refusal(status, &body) == Some(OllamaRefusal::FormatUnsupported))
+        .then(|| ollama_load_refusal_sentence(name));
+    if status == 400 {
+        if let (Some(key), Ok(mut probes)) = (key, LOAD_PROBES.lock()) {
+            // A new copy replaces what was known about the old one.
+            probes.retain(|(base, model, _), _| !(*base == key.0 && *model == key.1));
+            probes.insert(key, refusal.clone());
+        }
+    }
+    refusal
+}
+
+/// The entry for one pulled model, or `None` when it is not a decision model
+/// or the server does not describe it.
+async fn discover_one(
+    client: &ApiClient,
+    base_url: &Url,
+    pulled: PulledModel,
+) -> Option<DecisionModelEntry> {
+    let show = show(client, &pulled.name).await?;
+    let facts = ollama_facts_from_show(&pulled.name, &show);
+    if !facts.decision {
+        return None;
+    }
+    let mut entry = ollama_entry(base_url, &pulled.name, &facts, DecisionAdapter::SystemOne);
+    // A cloud model is served by ollama.com, not loaded here; it is not probed.
+    if !facts.remote {
+        entry.load_refusal =
+            probe_load_refusal(client, base_url, &pulled.name, pulled.version.as_deref()).await;
+    }
+    Some(entry)
+}
+
 type Discovery = (Instant, String, Vec<DecisionModelEntry>);
 static DISCOVERED: LazyLock<Mutex<Option<Discovery>>> = LazyLock::new(|| Mutex::new(None));
 
 /// Every decision model pulled on the Ollama server at `base_url`, from
-/// `/api/tags` and each model's `/api/show`. An unreachable server lists none.
+/// `/api/tags` and each model's `/api/show`, with a copy Ollama will not load
+/// marked ([`ollama_load_refusal`]) and listed last. An unreachable server
+/// lists none.
 pub async fn discover_ollama(base_url: &Url) -> Vec<DecisionModelEntry> {
     let key = base_url.to_string();
     if let Ok(cache) = DISCOVERED.lock() {
@@ -308,47 +475,18 @@ pub async fn discover_ollama(base_url: &Url) -> Vec<DecisionModelEntry> {
     let Ok(client) = ollama_client(base_url, TAGS_TIMEOUT.max(SHOW_TIMEOUT)) else {
         return Vec::new();
     };
-    let tags = async {
-        let response = client.response_get("api/tags").await.ok()?;
-        if !response.status().is_success() {
-            return None;
-        }
-        response.json::<Value>().await.ok()
-    };
-    let Some(tags) = tokio::time::timeout(TAGS_TIMEOUT, tags)
-        .await
-        .ok()
-        .flatten()
-    else {
+    let Some(tags) = ollama_tags(&client).await else {
         return Vec::new();
     };
-    let names: Vec<String> = tags
-        .get("models")
-        .and_then(Value::as_array)
-        .map(|models| {
-            models
-                .iter()
-                .filter_map(|m| m.get("name").or_else(|| m.get("model")))
-                .filter_map(Value::as_str)
-                .map(str::to_string)
-                .collect()
-        })
-        .unwrap_or_default();
     use futures::StreamExt;
     let client = &client;
-    let mut entries: Vec<DecisionModelEntry> = futures::stream::iter(names)
-        .map(|name| async move {
-            let show = show(client, &name).await?;
-            let facts = ollama_facts_from_show(&name, &show);
-            facts
-                .decision
-                .then(|| ollama_entry(base_url, &name, &facts, DecisionAdapter::SystemOne))
-        })
+    let mut entries: Vec<DecisionModelEntry> = futures::stream::iter(pulled_models(&tags))
+        .map(|pulled| discover_one(client, base_url, pulled))
         .buffer_unordered(SHOW_CONCURRENCY)
         .filter_map(|entry| async move { entry })
         .collect()
         .await;
-    entries.sort_by(|a, b| a.model.cmp(&b.model));
+    order_ollama_entries(&mut entries);
     if let Ok(mut cache) = DISCOVERED.lock() {
         *cache = Some((Instant::now(), key, entries.clone()));
     }
@@ -660,6 +798,52 @@ mod tests {
         };
         let model = open_ollama(&base, &wanted, &decision).unwrap();
         assert_eq!(model.model_ref().adapter, Some(DecisionAdapter::SystemOne));
+    }
+
+    #[test]
+    fn the_shipped_default_leads_the_local_models_then_names_follow() {
+        let base = Url::parse("http://localhost:11434/").unwrap();
+        let facts = OllamaDecisionFacts {
+            decision: true,
+            thinking: false,
+            remote: false,
+            context_tokens: 8192,
+        };
+        let entry = |name: &str| ollama_entry(&base, name, &facts, DecisionAdapter::SystemOne);
+        let mut entries = vec![
+            entry("tev1:4b"),
+            entry("clef-flash:latest"),
+            entry(OLLAMA_DEFAULT_DECISION_MODEL),
+            entry("nimble:9b"),
+        ];
+        order_ollama_entries(&mut entries);
+        let order: Vec<_> = entries.iter().map(|e| e.model.as_str()).collect();
+        assert_eq!(
+            order,
+            ["tev1:0.8b", "clef-flash:latest", "nimble:9b", "tev1:4b"]
+        );
+        // The local-first rank keeps that order.
+        let ranked = rank_local_first(entries);
+        assert_eq!(ranked[0].model, OLLAMA_DEFAULT_DECISION_MODEL);
+        assert_eq!(ranked[1].model, "clef-flash:latest");
+
+        // A copy Ollama refuses goes after every one it loads, the default too.
+        let refused = |name: &str| DecisionModelEntry {
+            load_refusal: Some(ollama_load_refusal_sentence(name)),
+            ..entry(name)
+        };
+        let mut entries = vec![
+            refused("clef-flash:latest"),
+            entry("tev1:4b"),
+            refused(OLLAMA_DEFAULT_DECISION_MODEL),
+            entry("nimble:9b"),
+        ];
+        order_ollama_entries(&mut entries);
+        let order: Vec<_> = entries.iter().map(|e| e.model.as_str()).collect();
+        assert_eq!(
+            order,
+            ["nimble:9b", "tev1:4b", "tev1:0.8b", "clef-flash:latest"]
+        );
     }
 
     #[test]

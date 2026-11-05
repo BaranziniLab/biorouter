@@ -19,7 +19,6 @@ use serde_json::Value;
 use utoipa::ToSchema;
 
 use crate::privacy::ProviderTier;
-use crate::providers::base::{ProviderUsage, Usage};
 
 /// Questions per request. Ollama's System One limit; Baseten states none.
 pub const MAX_QUESTIONS: usize = 64;
@@ -502,23 +501,21 @@ impl std::ops::Add for DecisionUsage {
 }
 
 impl DecisionUsage {
-    /// The figure the usage ledger and reply budget take. The context gauge
-    /// must not: a decision is not part of the chat's window.
-    pub fn to_provider_usage(self, provider: &str, model: &str) -> ProviderUsage {
-        let clamp = |n: Option<i64>| n.and_then(|n| i32::try_from(n).ok());
-        let input = clamp(self.input_tokens);
-        let output = clamp(self.output_tokens);
-        let mut usage = ProviderUsage::new(
-            model.to_string(),
-            Usage {
-                input_tokens: input,
-                output_tokens: output,
-                total_tokens: input.zip(output).and_then(|(a, b)| a.checked_add(b)),
-                ..Usage::default()
-            },
-        );
-        usage.provider = Some(provider.to_string());
-        usage
+    /// The billed tokens: input plus output when either is known, a missing
+    /// count read as 0, and `None` when neither is (an unknown usage must not
+    /// read as 0 tokens). The rule `Usage::billed_total` follows; a decision
+    /// has no cache buckets. The figure the usage ledger and reply budget
+    /// take. The context gauge must not: a decision is not part of the chat's
+    /// window.
+    pub fn billed_total(&self) -> Option<i64> {
+        if self.input_tokens.is_none() && self.output_tokens.is_none() {
+            return None;
+        }
+        Some(
+            self.input_tokens
+                .unwrap_or(0)
+                .saturating_add(self.output_tokens.unwrap_or(0)),
+        )
     }
 }
 
@@ -1111,14 +1108,23 @@ mod tests {
     }
 
     #[test]
-    fn usage_maps_to_the_ledger_shape() {
+    fn usage_bills_input_plus_output_and_an_unknown_usage_bills_nothing() {
         let usage = DecisionUsage {
             input_tokens: Some(42),
             output_tokens: Some(1),
         };
-        let ledger = usage.to_provider_usage("baseten_decision", "joey-1");
-        assert_eq!(ledger.usage.total_tokens, Some(43));
-        assert_eq!(ledger.provider.as_deref(), Some("baseten_decision"));
+        assert_eq!(usage.billed_total(), Some(43));
+        let only_output = DecisionUsage {
+            input_tokens: None,
+            output_tokens: Some(2),
+        };
+        assert_eq!(only_output.billed_total(), Some(2));
+        assert_eq!(DecisionUsage::default().billed_total(), None);
+        let huge = DecisionUsage {
+            input_tokens: Some(i64::MAX),
+            output_tokens: Some(1),
+        };
+        assert_eq!(huge.billed_total(), Some(i64::MAX), "never wraps");
         assert_eq!(
             usage
                 + DecisionUsage {

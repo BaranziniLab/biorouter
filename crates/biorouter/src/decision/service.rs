@@ -20,11 +20,22 @@
 //! keyed on the adapter's declared tier: a private chat never reaches a public
 //! decision model. That is the rule plan mode and prompt hooks follow, and it
 //! fits for the same reason: a decision's answer lands back in the same chat
-//! and ratchets nothing. A public chat may therefore use a private (local)
-//! decision model, with the under-classification residual `alt_provider.rs`
-//! records for those sites. Making that cell a refusal too (the symmetric
-//! rule) is an owner decision the design leaves open; it would also keep
-//! public chats off local Ollama decision models.
+//! and ratchets nothing.
+//!
+//! **Owner ruling (2026-11-05): a public chat may use a private (local)
+//! decision model, and no decision raises the chat's classification.** The
+//! model reads only text the chat's own model already has (a monitor's
+//! window, the `decide` tool's chunks, a gate's hand-off), so sending it to
+//! this computer discloses nothing more. Nothing but probabilities over the
+//! answers the chat offered reaches the chat or its model. The one free text
+//! a decision can produce is a logprob model's verbalized fallback, which
+//! keeps up to 2,000 characters of the model's reply in the log row's raw
+//! JSON, never in the transcript. Refusing the cell (the symmetric rule)
+//! would push the same text to a hosted model off this computer instead, and
+//! ratcheting the chat would leave its public model unable to run the next
+//! turn. An ad hoc decision about a chat is the exception to "the chat's own
+//! text": its caller supplies the text, which is then kept at the chat's
+//! reach, so `biorouter decide --session` says so before sending.
 //!
 //! The master switch is sampled once per call by whoever builds the
 //! [`DecisionSession`] (`cap.enforced()` on a tool path) and threaded, never
@@ -86,9 +97,12 @@ const MODEL_KEY: &str = "BIOROUTER_DECISION_MODEL";
 #[derive(Clone)]
 pub struct DecisionSession {
     pub session_id: String,
-    /// The most private classification whose content this decision carries:
-    /// the chat's, or for a phase gate the most private of the parent and the
-    /// children whose results it reads.
+    /// The chat's classification. A phase gate uses its parent chat's, and
+    /// the gate's state already withholds every child more private than the
+    /// parent (`orchestration_plan::screened_state`), so nothing a gate sends
+    /// is more private than this. Do not raise it to a child's tier instead:
+    /// that would send a private child's text to a private model and report
+    /// the verdict into the public parent.
     pub classification: SessionClassification,
     /// The institutions whose private data the chat holds.
     pub affiliations: BTreeSet<InstitutionId>,
@@ -307,7 +321,9 @@ pub struct DecisionLogEntry {
     pub served_model: Option<String>,
     pub tier: Option<ProviderTier>,
     pub questions: IndexMap<String, Question>,
-    /// Exactly what was (or would have been) sent. Same chat, same tier.
+    /// Exactly what was (or would have been) sent, kept at the chat's tier.
+    /// For a monitor, `decide`, a gate or a decision chat it is the chat's own
+    /// content; for an ad hoc decision it is whatever the caller sent.
     pub context: DecisionContext,
     pub context_bytes: usize,
     pub outcome: DecisionOutcome,
@@ -323,6 +339,16 @@ pub struct DecisionLogEntry {
 #[async_trait]
 pub trait DecisionSink: Send + Sync {
     async fn record(&self, entry: DecisionLogEntry) -> anyhow::Result<()>;
+
+    /// [`Self::record`], storing the row under `id`, which the caller chose
+    /// before the call ([`DecisionService::decide_as`]), so a failed request,
+    /// whose row has no decision to carry an id, can still be named. A
+    /// successful request's decisions already carry the same id. The default
+    /// ignores `id`, for sinks that never name rows.
+    async fn record_as(&self, id: &str, entry: DecisionLogEntry) -> anyhow::Result<()> {
+        let _ = id;
+        self.record(entry).await
+    }
 }
 
 /// Which model to use when the caller names none.
@@ -355,11 +381,73 @@ pub fn global() -> &'static DecisionService {
 }
 
 /// What [`DecisionService::decide_one`] needs besides the request.
+#[derive(Clone, Copy, Default)]
 struct Attempt<'a> {
     session: Option<&'a DecisionSession>,
     batch_id: Option<&'a str>,
     chunk_index: Option<usize>,
     chunk_id: Option<&'a str>,
+    /// The request id the caller chose ([`DecisionService::decide_as`]), else
+    /// one is minted per request.
+    request_id: Option<&'a str>,
+    /// Set inside a batch: a refusal is not logged per chunk, because it is
+    /// the chat's (privacy or Crew), and the batch logs one row for every
+    /// chunk it stopped.
+    defer_refusal: bool,
+}
+
+impl<'a> Attempt<'a> {
+    fn single(session: Option<&'a DecisionSession>, request_id: Option<&'a str>) -> Self {
+        Self {
+            session,
+            request_id,
+            ..Self::default()
+        }
+    }
+}
+
+/// One batch while its chunks run.
+struct Batch<'a> {
+    session: Option<&'a DecisionSession>,
+    model: &'a dyn DecisionModel,
+    questions: &'a IndexMap<String, Question>,
+    batch_id: &'a str,
+    stopped: Mutex<Stopped>,
+}
+
+/// What stopped a batch partway (the first chat-wide refusal) and the chunks
+/// it held back, by position, so the batch logs them in one row.
+#[derive(Default)]
+struct Stopped {
+    error: Option<DecisionError>,
+    chunks: Vec<(usize, String)>,
+}
+
+impl Batch<'_> {
+    fn lock(&self) -> std::sync::MutexGuard<'_, Stopped> {
+        self.stopped
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// The refusal's sentence when the batch has stopped, with this chunk
+    /// counted among those it held back; `None` while the batch runs.
+    fn hold_if_stopped(&self, index: usize, chunk_id: &str) -> Option<String> {
+        let mut stopped = self.lock();
+        let reason = stopped.error.as_ref()?.to_string();
+        stopped.chunks.push((index, chunk_id.to_string()));
+        Some(reason)
+    }
+
+    /// Stop the batch at this chunk's refusal; the first refusal is the one
+    /// the batch's row gives.
+    fn stop(&self, index: usize, chunk_id: &str, error: &DecisionError) {
+        let mut stopped = self.lock();
+        if stopped.error.is_none() {
+            stopped.error = Some(error.clone());
+        }
+        stopped.chunks.push((index, chunk_id.to_string()));
+    }
 }
 
 impl DecisionService {
@@ -413,10 +501,13 @@ impl DecisionService {
 
     /// [`Self::models`], each with the reason `session` may not use it, or
     /// `None` when it may: Gate H's downward rule and affiliation, answered by
-    /// the same check [`Self::decide`] asks before it sends anything. With no
-    /// session every model is usable. Advisory only, for pickers and listings:
-    /// the gate is asked again, on the classification as it stands then,
-    /// before every call.
+    /// the same check [`Self::decide`] asks before it sends anything, then
+    /// the server's own refusal to load the model
+    /// ([`DecisionModelEntry::load_refusal`]), which holds with or without a
+    /// session. With no session every model that loads is usable. Advisory
+    /// only, for pickers and listings: the gate is asked again, on the
+    /// classification as it stands then, before every call, and a model the
+    /// caller names is still opened and asked.
     pub async fn models_for(
         &self,
         session: Option<&DecisionSession>,
@@ -425,11 +516,13 @@ impl DecisionService {
             .await
             .into_iter()
             .map(|entry| {
-                let reason = session.and_then(|session| {
-                    privacy_allows(session, &entry.display_name, entry.tier, entry.affiliation)
-                        .err()
-                        .map(|error| error.to_string())
-                });
+                let reason = session
+                    .and_then(|session| {
+                        privacy_allows(session, &entry.display_name, entry.tier, entry.affiliation)
+                            .err()
+                            .map(|error| error.to_string())
+                    })
+                    .or_else(|| entry.load_refusal.clone());
                 (entry, reason)
             })
             .collect()
@@ -446,34 +539,60 @@ impl DecisionService {
         model: Option<&DecisionModelRef>,
         request: &DecisionRequest,
     ) -> DecisionResult<Vec<Decision>> {
+        self.decide_single(model, request, Attempt::single(session, None))
+            .await
+    }
+
+    /// [`Self::decide`] under the caller's own request id, so the caller can
+    /// name the log row before the call ends, whether the request succeeds or
+    /// fails (a decision chat's reply names its row either way). Every
+    /// decision of the request carries `request_id`, and a failure's row is
+    /// stored under it. A request that fails validation is not logged, as with
+    /// [`Self::decide`]: nothing was resolved or sent.
+    pub async fn decide_as(
+        &self,
+        session: Option<&DecisionSession>,
+        model: Option<&DecisionModelRef>,
+        request: &DecisionRequest,
+        request_id: &str,
+    ) -> DecisionResult<Vec<Decision>> {
+        self.decide_single(model, request, Attempt::single(session, Some(request_id)))
+            .await
+    }
+
+    async fn decide_single(
+        &self,
+        model: Option<&DecisionModelRef>,
+        request: &DecisionRequest,
+        attempt: Attempt<'_>,
+    ) -> DecisionResult<Vec<Decision>> {
         request.validate().map_err(DecisionError::Invalid)?;
-        let resolved = match self.resolve(session, model).await {
+        let resolved = match self.resolve(attempt.session, model).await {
             Ok(resolved) => resolved,
             Err(error) => {
-                self.record_failure(session, None, request, &error, None)
-                    .await;
+                self.record_failure(
+                    attempt.session,
+                    None,
+                    request,
+                    &error,
+                    Some(&attempt),
+                    DecisionUsage::default(),
+                )
+                .await;
                 return Err(error);
             }
         };
-        self.decide_one(
-            resolved.as_ref(),
-            request,
-            Attempt {
-                session,
-                batch_id: None,
-                chunk_index: None,
-                chunk_id: None,
-            },
-        )
-        .await
+        self.decide_one(resolved.as_ref(), request, attempt).await
     }
 
     /// Answer the same questions over many states, one request per chunk, with
     /// bounded parallelism. The model is resolved and the privacy gate asked
     /// once before anything is sent: a refusal there is the whole batch's, and
     /// no chunk is sent. After that, one chunk's failure never fails the batch;
-    /// it is reported in that chunk's [`ChunkOutcome`]. Outcomes keep the
-    /// chunks' order.
+    /// it is reported in that chunk's [`ChunkOutcome`]. A refusal partway (the
+    /// chat became private, say) is the chat's, so the chunks not yet asked
+    /// are not asked: each reports that refusal, and the log holds one row for
+    /// all the chunks it stopped. Outcomes keep the chunks' order.
     pub async fn decide_many(
         &self,
         session: Option<&DecisionSession>,
@@ -542,46 +661,102 @@ impl DecisionService {
             return Err(error);
         }
         let parallel = self.concurrency(&caps).max(1);
-        let model = resolved.as_ref();
+        let total = chunks.len();
+        let batch = Batch {
+            session,
+            model: resolved.as_ref(),
+            questions,
+            batch_id,
+            stopped: Mutex::new(Stopped::default()),
+        };
         let outcomes = futures::stream::iter(chunks.into_iter().enumerate())
-            .map(|(index, chunk)| async move {
-                let request = DecisionRequest {
-                    questions: questions.clone(),
-                    context: chunk.context,
-                };
-                let result = match request.validate() {
-                    Err(e) => Err(DecisionError::Invalid(e)),
-                    Ok(()) => {
-                        self.decide_one(
-                            model,
-                            &request,
-                            Attempt {
-                                session,
-                                batch_id: Some(batch_id),
-                                chunk_index: Some(index),
-                                chunk_id: Some(&chunk.id),
-                            },
-                        )
-                        .await
-                    }
-                };
-                match result {
-                    Ok(decisions) => ChunkOutcome {
-                        chunk_id: chunk.id,
-                        decisions: Some(decisions),
-                        error: None,
-                    },
-                    Err(error) => ChunkOutcome {
-                        chunk_id: chunk.id,
-                        decisions: None,
-                        error: Some(error.to_string()),
-                    },
-                }
-            })
+            .map(|(index, chunk)| self.decide_chunk(&batch, index, chunk))
             .buffered(parallel)
             .collect::<Vec<_>>()
             .await;
+        let Stopped {
+            error,
+            chunks: mut held,
+        } = batch
+            .stopped
+            .into_inner()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(error) = &error {
+            held.sort_by_key(|(index, _)| *index);
+            let ids: Vec<&str> = held.iter().map(|(_, id)| id.as_str()).collect();
+            let request = DecisionRequest {
+                questions: questions.clone(),
+                context: DecisionContext::Text(unsent_partway_text(total, &ids)),
+            };
+            let attempt = Attempt {
+                session,
+                batch_id: Some(batch_id),
+                ..Attempt::default()
+            };
+            self.record_failure(
+                session,
+                Some(resolved.as_ref()),
+                &request,
+                error,
+                Some(&attempt),
+                DecisionUsage::default(),
+            )
+            .await;
+        }
         Ok(outcomes)
+    }
+
+    /// One chunk of a batch. A chunk the chat's privacy or Crew rule refuses
+    /// stops the rest: the chunks after it are not asked (no live read, no
+    /// send), and the batch logs them in one row when it ends.
+    async fn decide_chunk(
+        &self,
+        batch: &Batch<'_>,
+        index: usize,
+        chunk: DecisionChunk,
+    ) -> ChunkOutcome {
+        if let Some(reason) = batch.hold_if_stopped(index, &chunk.id) {
+            return ChunkOutcome {
+                chunk_id: chunk.id,
+                decisions: None,
+                error: Some(reason),
+            };
+        }
+        let request = DecisionRequest {
+            questions: batch.questions.clone(),
+            context: chunk.context,
+        };
+        let result = match request.validate() {
+            Err(e) => Err(DecisionError::Invalid(e)),
+            Ok(()) => {
+                let attempt = Attempt {
+                    session: batch.session,
+                    batch_id: Some(batch.batch_id),
+                    chunk_index: Some(index),
+                    chunk_id: Some(&chunk.id),
+                    request_id: None,
+                    defer_refusal: true,
+                };
+                self.decide_one(batch.model, &request, attempt).await
+            }
+        };
+        match result {
+            Ok(decisions) => ChunkOutcome {
+                chunk_id: chunk.id,
+                decisions: Some(decisions),
+                error: None,
+            },
+            Err(error) => {
+                if matches!(error, DecisionError::Refused(_)) {
+                    batch.stop(index, &chunk.id, &error);
+                }
+                ChunkOutcome {
+                    chunk_id: chunk.id,
+                    decisions: None,
+                    error: Some(error.to_string()),
+                }
+            }
+        }
     }
 
     /// The model named, else the chat's own default, else the configured
@@ -605,23 +780,92 @@ impl DecisionService {
         let entries = self.models().await;
         match automatic_choice(session, &entries, provider.as_deref()) {
             Some(entry) => self.source.open(&entry.model_ref()).await,
-            None => Err(no_model_error(session)),
+            None => {
+                let candidates = || {
+                    entries
+                        .iter()
+                        .filter(|entry| provider.as_deref().is_none_or(|p| entry.provider == p))
+                };
+                // A model the server will not load is not one a privacy rule
+                // ruled out: with only such models listed there is no model.
+                let listed = candidates().any(|entry| entry.load_refusal.is_none());
+                let unloadable = candidates().find_map(|entry| entry.load_refusal.as_deref());
+                Err(no_model_error(session, listed, unloadable))
+            }
         }
     }
 
-    /// The window, in tokens, of the model a decision for `session` naming
-    /// `wanted` would use: that model, else the one [`Self::decide`] would
-    /// choose. Read from the listing, so nothing is opened and nothing is sent.
-    /// `None` when the listing does not show it; the size check before every
-    /// call still applies then.
-    pub async fn context_tokens_for(
+    /// The model a decision for `session` naming `wanted` would use, opened by
+    /// the same order [`Self::decide`] follows (named, the chat's default, the
+    /// configured default, the automatic choice). Opening an Ollama model asks
+    /// its server's `/api/show` with the model's name only; nothing of the
+    /// chat is sent. For a caller that must name the model before it sends,
+    /// and then pin it (`biorouter decide`), so every request of a run reads
+    /// the same model.
+    pub async fn resolve_for(
         &self,
         session: Option<&DecisionSession>,
         wanted: Option<&DecisionModelRef>,
-    ) -> Option<usize> {
-        let chat_default = chat_default_model(session).ok().flatten();
-        let (named, provider) = match wanted.cloned().or(chat_default) {
-            Some(wanted) => (Some(wanted), None),
+    ) -> DecisionResult<Arc<dyn DecisionModel>> {
+        self.resolve(session, wanted).await
+    }
+
+    /// Log a decision about `session` that never started because no model
+    /// could be chosen: the row [`Self::decide`] writes when its own
+    /// resolution fails. For a caller that resolves first with
+    /// [`Self::resolve_for`] and reads the text after (`biorouter decide`),
+    /// so its refused attempt reaches the chat's decision history as the
+    /// route's does. Nothing was sent.
+    pub async fn record_unresolved(
+        &self,
+        session: &DecisionSession,
+        request: &DecisionRequest,
+        error: &DecisionError,
+    ) {
+        let attempt = Attempt::single(Some(session), None);
+        self.record_failure(
+            Some(session),
+            None,
+            request,
+            error,
+            Some(&attempt),
+            DecisionUsage::default(),
+        )
+        .await;
+    }
+
+    /// [`Self::record_unresolved`] for a batch: one row naming its chunks, as
+    /// [`Self::decide_many`] writes when it cannot choose a model.
+    pub async fn record_unresolved_batch(
+        &self,
+        session: &DecisionSession,
+        questions: &IndexMap<String, Question>,
+        chunks: &[DecisionChunk],
+        error: &DecisionError,
+    ) {
+        let batch_id = uuid::Uuid::now_v7().to_string();
+        self.record_batch_failure(Some(session), None, questions, chunks, &batch_id, error)
+            .await;
+    }
+
+    /// The listing's entry for the model a decision for `session` naming
+    /// `wanted` would use: that model, else the chat's default, else the
+    /// configured default, else the automatic choice [`Self::decide`] would
+    /// make. Read from the listing, so nothing is opened and nothing is sent.
+    /// `None` when the listing does not show that model, or when the chat's
+    /// settings cannot be read and nothing is named (a decision is then
+    /// refused, see [`DecisionSession::chat_default_model`]).
+    pub async fn model_entry_for(
+        &self,
+        session: Option<&DecisionSession>,
+        wanted: Option<&DecisionModelRef>,
+    ) -> Option<DecisionModelEntry> {
+        let named = match wanted {
+            Some(wanted) => Some(wanted.clone()),
+            None => chat_default_model(session).ok()?,
+        };
+        let (named, provider) = match named {
+            Some(named) => (Some(named), None),
             None => match self.configured() {
                 Some(ConfiguredDefault::Model(model)) => (Some(model), None),
                 Some(ConfiguredDefault::Provider(provider)) => (None, Some(provider)),
@@ -633,7 +877,20 @@ impl DecisionService {
             Some(named) => entries.iter().find(|entry| entry.answers_to(named)),
             None => automatic_choice(session, &entries, provider.as_deref()),
         };
-        entry.map(|entry| entry.context_tokens)
+        entry.cloned()
+    }
+
+    /// The window, in tokens, of the model a decision for `session` naming
+    /// `wanted` would use ([`Self::model_entry_for`]). `None` when the listing
+    /// does not show it; the size check before every call still applies then.
+    pub async fn context_tokens_for(
+        &self,
+        session: Option<&DecisionSession>,
+        wanted: Option<&DecisionModelRef>,
+    ) -> Option<usize> {
+        self.model_entry_for(session, wanted)
+            .await
+            .map(|entry| entry.context_tokens)
     }
 
     /// `BIOROUTER_DECISION_PROVIDER` / `BIOROUTER_DECISION_MODEL`, or the
@@ -753,7 +1010,8 @@ impl DecisionService {
     ) -> DecisionResult<Vec<Decision>> {
         let caps = model.caps();
         if let Err(error) = self.preflight(model, &caps, request, &attempt).await {
-            return Err(self.failed(model, request, &attempt, error).await);
+            let unsent = DecisionUsage::default();
+            return Err(self.failed(model, request, &attempt, error, unsent).await);
         }
         let permit = self
             .semaphore(model, &caps)
@@ -766,16 +1024,27 @@ impl DecisionService {
         drop(permit);
         let (verdicts, latency_ms) = match called {
             Ok(called) => called,
-            Err(error) => return Err(self.failed(model, request, &attempt, error).await),
+            // No answer, so no usage to report. A request that timed out may
+            // still have been billed by the provider; that is not counted.
+            Err(error) => {
+                let unknown = DecisionUsage::default();
+                return Err(self.failed(model, request, &attempt, error, unknown).await);
+            }
         };
         let usage = verdicts.usage;
         let served_model = verdicts.served_model.clone();
-        let decisions = match build_decisions(model, request, verdicts, latency_ms) {
+        let request_id = attempt
+            .request_id
+            .map_or_else(|| uuid::Uuid::now_v7().to_string(), str::to_string);
+        let decisions = match build_decisions(model, request, verdicts, latency_ms, &request_id) {
             Ok(decisions) => decisions,
-            Err(error) => return Err(self.failed(model, request, &attempt, error).await),
+            // The model answered, so the request was billed even though its
+            // answer cannot be used: the failure row keeps its usage, and the
+            // usage ledger counts it.
+            Err(error) => return Err(self.failed(model, request, &attempt, error, usage).await),
         };
         let session = attempt.session;
-        self.record(DecisionLogEntry {
+        let entry = DecisionLogEntry {
             session_id: session.map(|s| s.session_id.clone()),
             origin: session.map(|s| s.origin).unwrap_or_default(),
             origin_id: session.and_then(|s| s.origin_id.clone()),
@@ -796,8 +1065,8 @@ impl DecisionService {
             latency_ms: Some(latency_ms),
             usage,
             privacy_enforced: session.is_some_and(|s| s.enforced),
-        })
-        .await;
+        };
+        self.record(entry, Some(&request_id)).await;
         Ok(decisions)
     }
 
@@ -846,16 +1115,29 @@ impl DecisionService {
         Ok((verdicts, latency_ms))
     }
 
-    /// Log one request's failure and hand the error back.
+    /// Log one request's failure and hand the error back. Inside a batch a
+    /// refusal is left to the batch, which logs one row for every chunk it
+    /// stopped. `usage` is what the model reported when it answered before
+    /// the request failed (an answer that cannot be used), else the default.
     async fn failed(
         &self,
         model: &dyn DecisionModel,
         request: &DecisionRequest,
         attempt: &Attempt<'_>,
         error: DecisionError,
+        usage: DecisionUsage,
     ) -> DecisionError {
-        self.record_failure(attempt.session, Some(model), request, &error, Some(attempt))
+        if !(attempt.defer_refusal && matches!(error, DecisionError::Refused(_))) {
+            self.record_failure(
+                attempt.session,
+                Some(model),
+                request,
+                &error,
+                Some(attempt),
+                usage,
+            )
             .await;
+        }
         error
     }
 
@@ -879,13 +1161,22 @@ impl DecisionService {
         let attempt = Attempt {
             session,
             batch_id: Some(batch_id),
-            chunk_index: None,
-            chunk_id: None,
+            ..Attempt::default()
         };
-        self.record_failure(session, model, &request, error, Some(&attempt))
-            .await;
+        self.record_failure(
+            session,
+            model,
+            &request,
+            error,
+            Some(&attempt),
+            DecisionUsage::default(),
+        )
+        .await;
     }
 
+    /// One failure row. `usage` is the default unless the model answered
+    /// before the request failed; a billed answer keeps its usage, so the
+    /// usage ledger counts it under the row's id.
     async fn record_failure(
         &self,
         session: Option<&DecisionSession>,
@@ -893,13 +1184,14 @@ impl DecisionService {
         request: &DecisionRequest,
         error: &DecisionError,
         attempt: Option<&Attempt<'_>>,
+        usage: DecisionUsage,
     ) {
         let outcome = if matches!(error, DecisionError::Refused(_)) {
             DecisionOutcome::Refused
         } else {
             DecisionOutcome::Error
         };
-        self.record(DecisionLogEntry {
+        let entry = DecisionLogEntry {
             session_id: session.map(|s| s.session_id.clone()),
             origin: session.map(|s| s.origin).unwrap_or_default(),
             origin_id: session.and_then(|s| s.origin_id.clone()),
@@ -918,19 +1210,24 @@ impl DecisionService {
             decisions: Vec::new(),
             error: Some(error.to_string()),
             latency_ms: None,
-            usage: DecisionUsage::default(),
+            usage,
             privacy_enforced: session.is_some_and(|s| s.enforced),
-        })
-        .await;
+        };
+        self.record(entry, attempt.and_then(|a| a.request_id)).await;
     }
 
-    async fn record(&self, entry: DecisionLogEntry) {
+    /// Hand `entry` to the sink, under `id` when the caller chose one.
+    async fn record(&self, entry: DecisionLogEntry, id: Option<&str>) {
         // Counted per turn and origin in process, for the one transcript
         // marker a turn gets; never one row per call (owner rule A1).
         super::monitor::note_decision(&entry);
         let sink = self.sink.read().ok().and_then(|sink| sink.clone());
         if let Some(sink) = sink {
-            if let Err(error) = sink.record(entry).await {
+            let written = match id {
+                Some(id) => sink.record_as(id, entry).await,
+                None => sink.record(entry).await,
+            };
+            if let Err(error) = written {
                 tracing::warn!("decision log write failed: {error:#}");
             }
         }
@@ -964,7 +1261,9 @@ fn privacy_allows(
 }
 
 /// The first listed model `session` may use, among `provider`'s when one is
-/// configured. `entries` are ranked local first.
+/// configured, skipping one its server will not load
+/// ([`DecisionModelEntry::load_refusal`]): choosing it would fail every call
+/// that names no model. `entries` are ranked local first.
 fn automatic_choice<'a>(
     session: Option<&DecisionSession>,
     entries: &'a [DecisionModelEntry],
@@ -973,6 +1272,7 @@ fn automatic_choice<'a>(
     entries
         .iter()
         .filter(|entry| provider.is_none_or(|provider| entry.provider == provider))
+        .filter(|entry| entry.load_refusal.is_none())
         .find(|entry| {
             session.is_none_or(|session| {
                 privacy_allows(session, &entry.display_name, entry.tier, entry.affiliation).is_ok()
@@ -980,18 +1280,39 @@ fn automatic_choice<'a>(
         })
 }
 
-fn no_model_error(session: Option<&DecisionSession>) -> DecisionError {
-    DecisionError::NoModel(match session {
-        Some(session) if session.enforced && session.classification.is_private() => {
-            "No decision model this private chat may use is available. Pull a decision model \
-             into a local Ollama (for example `ollama pull tev1:0.8b`), or set \
-             BIOROUTER_DECISION_MODEL to a private one."
-                .to_string()
-        }
-        _ => "No decision model is available. Add a Baseten API key, pull a decision model into \
-              Ollama, or set BIOROUTER_DECISION_MODEL."
-            .to_string(),
-    })
+/// Why the automatic choice found nothing. `listed` says whether any model
+/// its server loads (of the configured provider, when one is set) was listed:
+/// then every one was ruled out for this chat by a privacy rule, which is a
+/// refusal, as it is for a model the call names. With nothing listed it is no
+/// model at all. `unloadable` is the sentence for a listed model the server
+/// will not load, which names its fix, so it is said too.
+fn no_model_error(
+    session: Option<&DecisionSession>,
+    listed: bool,
+    unloadable: Option<&str>,
+) -> DecisionError {
+    let private = session.is_some_and(|s| s.enforced && s.classification.is_private());
+    let text = if private {
+        "No decision model this private chat may use is available. Pull a decision model into a \
+         local Ollama (for example `ollama pull tev1:0.8b`), or set BIOROUTER_DECISION_MODEL to \
+         a private one."
+    } else if listed && session.is_some() {
+        "No listed decision model may read this chat: a privacy rule rules out every one. Pull \
+         a decision model into a local Ollama, or set BIOROUTER_DECISION_MODEL to one this chat \
+         may use."
+    } else {
+        "No decision model is available. Add a Baseten API key, pull a decision model into \
+         Ollama, or set BIOROUTER_DECISION_MODEL."
+    };
+    let text = match unloadable {
+        Some(unloadable) => format!("{text} {unloadable}"),
+        None => text.to_string(),
+    };
+    if listed && session.is_some() {
+        DecisionError::Refused(text)
+    } else {
+        DecisionError::NoModel(text)
+    }
 }
 
 /// One request's decisions, in the questions' order, from what the model
@@ -1002,13 +1323,13 @@ fn build_decisions(
     request: &DecisionRequest,
     verdicts: ModelVerdicts,
     latency_ms: u64,
+    request_id: &str,
 ) -> DecisionResult<Vec<Decision>> {
     let model_ref = model.model_ref();
-    let request_id = uuid::Uuid::now_v7().to_string();
     let meta = DecisionMeta {
         model: &model_ref,
         tier: model.tier(),
-        request_id: &request_id,
+        request_id,
         latency_ms,
         usage: verdicts.usage,
     };
@@ -1048,21 +1369,36 @@ const UNSENT_IDS_SHOWN: usize = 20;
 /// What a batch-failure row holds in place of a context: how many chunks, and
 /// which, since none was sent.
 fn unsent_batch_text(chunks: &[DecisionChunk]) -> String {
-    let mut ids: Vec<&str> = chunks
-        .iter()
-        .take(UNSENT_IDS_SHOWN)
-        .map(|chunk| chunk.id.as_str())
-        .collect();
-    let more = chunks.len().saturating_sub(UNSENT_IDS_SHOWN);
-    let more = (more > 0).then(|| format!("and {more} more"));
-    ids.extend(more.as_deref());
+    let ids: Vec<&str> = chunks.iter().map(|chunk| chunk.id.as_str()).collect();
     format!(
         "Not sent: the batch of {} chunk{} was stopped before any chunk reached a decision \
          model. Chunks: {}.",
         chunks.len(),
         if chunks.len() == 1 { "" } else { "s" },
-        ids.join(", ")
+        shown_ids(&ids)
     )
+}
+
+/// What the row for a batch stopped partway holds: how many of its chunks
+/// were held back, and which. None of them was sent.
+fn unsent_partway_text(total: usize, ids: &[&str]) -> String {
+    format!(
+        "Not sent: {} of {total} chunk{} {} stopped partway through the batch, when a privacy \
+         or Crew rule refused this chat's content to the decision model. Chunks: {}.",
+        ids.len(),
+        if total == 1 { "" } else { "s" },
+        if ids.len() == 1 { "was" } else { "were" },
+        shown_ids(ids)
+    )
+}
+
+/// The first [`UNSENT_IDS_SHOWN`] ids, then how many more there were.
+fn shown_ids(ids: &[&str]) -> String {
+    let mut shown: Vec<&str> = ids.iter().take(UNSENT_IDS_SHOWN).copied().collect();
+    let more = ids.len().saturating_sub(UNSENT_IDS_SHOWN);
+    let more = (more > 0).then(|| format!("and {more} more"));
+    shown.extend(more.as_deref());
+    shown.join(", ")
 }
 
 /// The token estimate for a request: the state and every question's text,
@@ -1296,6 +1632,7 @@ mod tests {
             affiliation: local.then_some(crate::privacy::affiliation::ModelAffiliation::Local),
             adapter: DecisionAdapter::SystemOne,
             local,
+            load_refusal: None,
         }
     }
 
@@ -1335,13 +1672,21 @@ mod tests {
         }
     }
 
+    /// Every entry the service hands over, and the id it named for each
+    /// (`None`: the sink chooses, as [`crate::decision::log::row_id`] does).
     #[derive(Default)]
-    struct Log(Mutex<Vec<DecisionLogEntry>>);
+    struct Log(Mutex<Vec<DecisionLogEntry>>, Mutex<Vec<Option<String>>>);
 
     #[async_trait]
     impl DecisionSink for Log {
         async fn record(&self, entry: DecisionLogEntry) -> anyhow::Result<()> {
             self.0.lock().unwrap().push(entry);
+            self.1.lock().unwrap().push(None);
+            Ok(())
+        }
+        async fn record_as(&self, id: &str, entry: DecisionLogEntry) -> anyhow::Result<()> {
+            self.0.lock().unwrap().push(entry);
+            self.1.lock().unwrap().push(Some(id.to_string()));
             Ok(())
         }
     }
@@ -1453,11 +1798,22 @@ mod tests {
             "local first, and the downward rule allows it"
         );
 
-        let (only_public, _) = service(
+        // A model is listed, but privacy rules every one out: a refusal, as
+        // naming that model would be, and nothing is sent.
+        let (only_public, calls) = service(
             vec![entry("cloud", ProviderTier::Public, false)],
             Duration::ZERO,
         );
         let err = only_public
+            .decide(Some(&private_chat()), None, &request("x", None))
+            .await
+            .unwrap_err();
+        assert!(matches!(err, DecisionError::Refused(_)), "{err:?}");
+        assert!(err.to_string().contains("private chat"), "{err}");
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+        // Nothing listed at all is no model, not a refusal.
+        let (none, _) = service(vec![], Duration::ZERO);
+        let err = none
             .decide(Some(&private_chat()), None, &request("x", None))
             .await
             .unwrap_err();
@@ -1787,10 +2143,10 @@ mod tests {
         );
     }
 
-    /// A batch with no model the chat may use is one row too, with the
-    /// outcome a single decision's `NoModel` gets.
+    /// A batch no listed model may serve (privacy rules out every one) is
+    /// one refused row, the outcome naming such a model would get.
     #[tokio::test]
-    async fn a_batch_with_no_model_is_one_row() {
+    async fn a_batch_no_listed_model_may_serve_is_one_refused_row() {
         let (svc, calls) = service(
             vec![entry("cloud", ProviderTier::Public, false)],
             Duration::ZERO,
@@ -1807,14 +2163,117 @@ mod tests {
             )
             .await
             .unwrap_err();
-        assert!(matches!(err, DecisionError::NoModel(_)), "{err:?}");
+        assert!(matches!(err, DecisionError::Refused(_)), "{err:?}");
         assert_eq!(calls.load(Ordering::SeqCst), 0);
         let rows = log.0.lock().unwrap();
         assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0].outcome, DecisionOutcome::Error);
+        assert_eq!(rows[0].outcome, DecisionOutcome::Refused);
         assert_eq!(rows[0].batch_id.as_deref(), Some("batch-2"));
         assert_eq!(rows[0].model, None);
         assert!(rows[0].context.render_text().contains("3 chunks"));
+    }
+
+    /// A batch with nothing listed at all is one error row: no model, not a
+    /// refusal.
+    #[tokio::test]
+    async fn a_batch_with_nothing_listed_is_one_error_row() {
+        let (svc, _) = service(vec![], Duration::ZERO);
+        let log = Arc::new(Log::default());
+        svc.set_sink(log.clone());
+        let err = svc
+            .decide_batch(
+                Some(&private_chat()),
+                None,
+                &request("", None).questions,
+                chunks(3),
+                "batch-3",
+            )
+            .await
+            .unwrap_err();
+        assert!(matches!(err, DecisionError::NoModel(_)), "{err:?}");
+        let rows = log.0.lock().unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].outcome, DecisionOutcome::Error);
+    }
+
+    /// A chat raised to Private partway through a batch stops the rest: the
+    /// chunks after the raise are not sent, and they are ONE refused row that
+    /// names them, never one row per chunk holding text that was never sent.
+    #[tokio::test]
+    async fn a_chat_raised_mid_batch_logs_one_row_for_the_unsent_rest() {
+        struct RaisedAfter(AtomicUsize);
+        #[async_trait]
+        impl LiveClassification for RaisedAfter {
+            async fn current(&self, _: &str) -> anyhow::Result<SessionClassification> {
+                Ok(if self.0.fetch_add(1, Ordering::SeqCst) < 3 {
+                    SessionClassification::Public
+                } else {
+                    SessionClassification::Private
+                })
+            }
+        }
+        let (svc, calls) = service(
+            vec![entry("cloud", ProviderTier::Public, false)],
+            Duration::ZERO,
+        );
+        let log = Arc::new(Log::default());
+        svc.set_sink(log.clone());
+        let live = Arc::new(RaisedAfter(AtomicUsize::new(0)));
+        let session =
+            DecisionSession::new("s", SessionClassification::Public, true).with_live(live.clone());
+        let outcomes = svc
+            .decide_batch(
+                Some(&session),
+                Some(&DecisionModelRef::new("test_decision", "cloud")),
+                &request("", None).questions,
+                chunks(8),
+                "batch-raised",
+            )
+            .await
+            .unwrap();
+        let stopped: Vec<&str> = outcomes
+            .iter()
+            .filter(|o| o.error.is_some())
+            .map(|o| o.chunk_id.as_str())
+            .collect();
+        assert!(!stopped.is_empty(), "{outcomes:?}");
+        let rows = log.0.lock().unwrap();
+        let refused: Vec<_> = rows
+            .iter()
+            .filter(|r| r.outcome == DecisionOutcome::Refused)
+            .collect();
+        assert_eq!(refused.len(), 1, "one row for the rest of the batch");
+        let row = refused[0];
+        assert_eq!(row.batch_id.as_deref(), Some("batch-raised"));
+        assert_eq!((row.chunk_index, row.chunk_id.as_deref()), (None, None));
+        let text = row.context.render_text();
+        assert!(
+            text.starts_with("Not sent") && text.contains("of 8 chunks"),
+            "{text}"
+        );
+        for id in &stopped {
+            assert!(text.contains(id), "{id} is named: {text}");
+        }
+        assert!(!text.contains("SYNTHETIC NOTE"), "{text}");
+        let decided = rows
+            .iter()
+            .filter(|r| r.outcome == DecisionOutcome::Decided)
+            .count();
+        assert!(rows
+            .iter()
+            .filter(|r| r.outcome == DecisionOutcome::Decided)
+            .all(|r| r.chunk_index.is_some()));
+        assert_eq!(rows.len(), decided + 1);
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            decided,
+            "nothing after the raise"
+        );
+        assert_eq!(decided + stopped.len(), 8);
+        assert!(
+            live.0.load(Ordering::SeqCst) < 9,
+            "the stopped rest is not read again chunk by chunk"
+        );
     }
 
     /// Every decision of one request carries that request's id, and the log
@@ -1848,6 +2307,106 @@ mod tests {
             decisions[0].request_id
         );
         assert_eq!(crate::decision::log::row_id(&rows[1]), other[0].request_id);
+    }
+
+    /// `decide_as` stores its row under the caller's id, whether the request
+    /// succeeds (every decision carries the id) or fails (the failure row has
+    /// no decision to carry one). A request that fails validation is not
+    /// logged at all.
+    #[tokio::test]
+    async fn decide_as_uses_the_callers_id() {
+        let (svc, _) = service(
+            vec![entry("local", ProviderTier::Private, true)],
+            Duration::ZERO,
+        );
+        let log = Arc::new(Log::default());
+        svc.set_sink(log.clone());
+        let chat = DecisionSession::new("s", SessionClassification::Public, true);
+        let decisions = svc
+            .decide_as(Some(&chat), None, &request("x", None), "req-ok")
+            .await
+            .unwrap();
+        assert!(decisions.iter().all(|d| d.request_id == "req-ok"));
+        let err = svc
+            .decide_as(Some(&chat), None, &request("FAIL", None), "req-fail")
+            .await
+            .unwrap_err();
+        assert!(matches!(err, DecisionError::Backend { .. }), "{err:?}");
+        let mut bad = request("x", None);
+        bad.questions.clear();
+        assert!(svc
+            .decide_as(Some(&chat), None, &bad, "req-invalid")
+            .await
+            .is_err());
+        let rows = log.0.lock().unwrap();
+        let ids = log.1.lock().unwrap();
+        assert_eq!(rows.len(), 2, "the invalid request is not logged");
+        assert_eq!(ids[0].as_deref(), Some("req-ok"));
+        assert_eq!(rows[0].outcome, DecisionOutcome::Decided);
+        assert_eq!(ids[1].as_deref(), Some("req-fail"));
+        assert_eq!(rows[1].outcome, DecisionOutcome::Error);
+        assert!(rows[1].decisions.is_empty());
+    }
+
+    /// A decision chat whose request fails names the failure's row, so the
+    /// reply draws as a failed card with a link to what would have been sent.
+    #[tokio::test]
+    async fn a_failed_decision_chat_reply_names_its_failure_row() {
+        let (svc, calls) = service(
+            vec![entry("cloud", ProviderTier::Public, false)],
+            Duration::ZERO,
+        );
+        let log = Arc::new(Log::default());
+        svc.set_sink(log.clone());
+        let chat = DecisionSession::new("s", SessionClassification::Public, true);
+        let model = DecisionModelRef::new("test_decision", "cloud");
+        let reply = crate::providers::decision::chat::run_decision_chat(
+            &svc,
+            chat,
+            &model,
+            None,
+            "Q: Is it done?\nFAIL this note",
+        )
+        .await;
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert!(reply.decision.is_none());
+        let id = reply.decision_id.clone().expect("the reply names its row");
+        assert!(reply
+            .text
+            .starts_with("The decision model could not answer"));
+        let rows = log.0.lock().unwrap();
+        let ids = log.1.lock().unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(ids[0].as_deref(), Some(id.as_str()));
+        assert_eq!(rows[0].outcome, DecisionOutcome::Error);
+    }
+
+    /// A refused decision-chat request names its refused row, and nothing is
+    /// sent.
+    #[tokio::test]
+    async fn a_refused_decision_chat_reply_names_its_refused_row() {
+        let (svc, calls) = service(
+            vec![entry("cloud", ProviderTier::Public, false)],
+            Duration::ZERO,
+        );
+        let log = Arc::new(Log::default());
+        svc.set_sink(log.clone());
+        let model = DecisionModelRef::new("test_decision", "cloud");
+        let reply = crate::providers::decision::chat::run_decision_chat(
+            &svc,
+            private_chat(),
+            &model,
+            None,
+            "Q: Is it done?\nSYNTHETIC NOTE",
+        )
+        .await;
+        assert_eq!(calls.load(Ordering::SeqCst), 0, "nothing may be sent");
+        let id = reply.decision_id.clone().expect("the reply names its row");
+        let rows = log.0.lock().unwrap();
+        let ids = log.1.lock().unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(ids[0].as_deref(), Some(id.as_str()));
+        assert_eq!(rows[0].outcome, DecisionOutcome::Refused);
     }
 
     /// The window a decision would use is read from the listing, by the same
@@ -1927,6 +2486,312 @@ mod tests {
         let unknown = DecisionModelRef::new("test_decision", "unlisted");
         assert_eq!(svc.context_tokens_for(None, Some(&unknown)).await, None);
         assert_eq!(calls.load(Ordering::SeqCst), 0);
+    }
+
+    /// The entry the listing names for a call is the model that call then
+    /// uses: the automatic choice (local first, and what the chat may use),
+    /// the chat's own default, a named model. A chat whose settings cannot be
+    /// read names none, because such a call is refused.
+    #[tokio::test]
+    async fn the_entry_named_is_the_model_decide_uses() {
+        let (svc, _) = service(
+            vec![
+                entry("cloud", ProviderTier::Public, false),
+                entry("local", ProviderTier::Private, true),
+            ],
+            Duration::ZERO,
+        );
+        let public = DecisionSession::new("s", SessionClassification::Public, true);
+        let chats_default = public
+            .clone()
+            .with_chat_default_model(Ok(Some(DecisionModelRef::new("test_decision", "cloud"))));
+        for session in [&public, &private_chat(), &chats_default] {
+            let named = svc.model_entry_for(Some(session), None).await.unwrap();
+            let used = svc
+                .decide(Some(session), None, &request("x", None))
+                .await
+                .unwrap();
+            assert_eq!(named.model_ref(), used[0].model, "{session:?}");
+        }
+        assert_eq!(
+            svc.model_entry_for(Some(&chats_default), None)
+                .await
+                .unwrap()
+                .model,
+            "cloud"
+        );
+        let cloud = DecisionModelRef::new("test_decision", "cloud");
+        assert_eq!(
+            svc.model_entry_for(Some(&public), Some(&cloud))
+                .await
+                .unwrap()
+                .model,
+            "cloud"
+        );
+        let unreadable = public.with_chat_default_model(Err("unreadable".into()));
+        assert!(svc.model_entry_for(Some(&unreadable), None).await.is_none());
+        assert!(svc.resolve_for(Some(&unreadable), None).await.is_err());
+    }
+
+    /// A model pinned for a run (as `biorouter decide` pins it) is the only
+    /// model the run reaches: once it leaves the listing, a request naming it
+    /// fails rather than moving to the next model, which here is hosted.
+    #[tokio::test]
+    async fn a_pinned_model_is_never_swapped_for_another() {
+        struct Vanishing {
+            entries: Vec<DecisionModelEntry>,
+            gone: Mutex<HashSet<String>>,
+            calls: Mutex<HashMap<String, Arc<AtomicUsize>>>,
+        }
+        impl Vanishing {
+            fn counter(&self, model: &str) -> Arc<AtomicUsize> {
+                self.calls
+                    .lock()
+                    .unwrap()
+                    .entry(model.to_string())
+                    .or_default()
+                    .clone()
+            }
+        }
+        #[async_trait]
+        impl DecisionModelSource for Vanishing {
+            async fn list(&self) -> Vec<DecisionModelEntry> {
+                let gone = self.gone.lock().unwrap().clone();
+                self.entries
+                    .iter()
+                    .filter(|e| !gone.contains(&e.model))
+                    .cloned()
+                    .collect()
+            }
+            async fn open(
+                &self,
+                wanted: &DecisionModelRef,
+            ) -> DecisionResult<Arc<dyn DecisionModel>> {
+                let entry = self
+                    .list()
+                    .await
+                    .into_iter()
+                    .find(|e| e.answers_to(wanted))
+                    .ok_or_else(|| DecisionError::NoModel("not listed".into()))?;
+                let calls = self.counter(&entry.model);
+                Ok(Arc::new(Fixed {
+                    entry,
+                    p: 0.9,
+                    calls,
+                    delay: Duration::ZERO,
+                }))
+            }
+        }
+        let source = Arc::new(Vanishing {
+            entries: vec![
+                entry("cloud", ProviderTier::Public, false),
+                entry("local", ProviderTier::Private, true),
+            ],
+            gone: Mutex::new(HashSet::new()),
+            calls: Mutex::new(HashMap::new()),
+        });
+        let svc = DecisionService::new(source.clone())
+            .with_use_gate(Arc::new(Allow))
+            .with_default_model(None);
+        let public = DecisionSession::new("s", SessionClassification::Public, true);
+        let pinned = svc
+            .resolve_for(Some(&public), None)
+            .await
+            .unwrap()
+            .model_ref();
+        assert_eq!(pinned.model, "local");
+        let questions = request("", None).questions;
+        let first = svc
+            .decide_many(Some(&public), Some(&pinned), &questions, chunks(2))
+            .await
+            .unwrap();
+        assert!(first.iter().all(|o| o.decisions.is_some()));
+
+        source.gone.lock().unwrap().insert("local".into());
+        assert!(svc
+            .decide_many(Some(&public), Some(&pinned), &questions, chunks(2))
+            .await
+            .is_err());
+        assert_eq!(source.counter("cloud").load(Ordering::SeqCst), 0);
+        // Unpinned, the same call would have moved to the hosted model.
+        svc.decide_many(Some(&public), None, &questions, chunks(1))
+            .await
+            .unwrap();
+        assert_eq!(source.counter("cloud").load(Ordering::SeqCst), 1);
+    }
+
+    /// A model that answers but leaves a question out has still been billed,
+    /// so its failure row keeps the usage the model reported, and the usage
+    /// ledger counts it.
+    #[tokio::test]
+    async fn a_malformed_answer_still_logs_its_usage() {
+        struct HalfAnswer(DecisionModelEntry);
+        #[async_trait]
+        impl DecisionModel for HalfAnswer {
+            fn model_ref(&self) -> DecisionModelRef {
+                self.0.model_ref()
+            }
+            fn display_name(&self) -> String {
+                self.0.display_name.clone()
+            }
+            fn tier(&self) -> ProviderTier {
+                self.0.tier
+            }
+            fn affiliation(&self) -> Option<crate::privacy::affiliation::ModelAffiliation> {
+                self.0.affiliation
+            }
+            fn caps(&self) -> DecisionCaps {
+                DecisionCaps {
+                    kinds: self.0.kinds.clone(),
+                    max_questions: 64,
+                    context_tokens: self.0.context_tokens,
+                    max_concurrency: 1,
+                    max_request_bytes: None,
+                    local: false,
+                }
+            }
+            async fn decide(&self, request: &DecisionRequest) -> DecisionResult<ModelVerdicts> {
+                let first = request.questions.keys().next().unwrap().clone();
+                Ok(ModelVerdicts {
+                    verdicts: vec![QuestionVerdict {
+                        question: first,
+                        probabilities: IndexMap::from([
+                            (YES.to_string(), 0.7),
+                            (NO.to_string(), 0.3),
+                        ]),
+                        source: ProbabilitySource::Native,
+                        calibrated: true,
+                        reported_choice: None,
+                        raw: serde_json::Value::Null,
+                    }],
+                    usage: DecisionUsage {
+                        input_tokens: Some(50),
+                        output_tokens: Some(2),
+                    },
+                    served_model: None,
+                })
+            }
+        }
+        struct OneModel(DecisionModelEntry);
+        #[async_trait]
+        impl DecisionModelSource for OneModel {
+            async fn list(&self) -> Vec<DecisionModelEntry> {
+                vec![self.0.clone()]
+            }
+            async fn open(&self, _: &DecisionModelRef) -> DecisionResult<Arc<dyn DecisionModel>> {
+                Ok(Arc::new(HalfAnswer(self.0.clone())))
+            }
+        }
+        let svc = DecisionService::new(Arc::new(OneModel(entry(
+            "half",
+            ProviderTier::Public,
+            false,
+        ))))
+        .with_use_gate(Arc::new(Allow))
+        .with_default_model(None);
+        let log = Arc::new(Log::default());
+        svc.set_sink(log.clone());
+        let mut asked = request("a note", None);
+        asked.questions.insert(
+            "signed".into(),
+            Question {
+                instructions: "Is it signed?".into(),
+                kind: DecisionKind::Binary {},
+                threshold: None,
+            },
+        );
+        let chat = DecisionSession::new("s1", SessionClassification::Public, true);
+        let err = svc.decide(Some(&chat), None, &asked).await.unwrap_err();
+        assert!(matches!(err, DecisionError::Malformed { .. }), "{err:?}");
+        let rows = log.0.lock().unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].outcome, DecisionOutcome::Error);
+        assert_eq!(
+            rows[0].usage,
+            DecisionUsage {
+                input_tokens: Some(50),
+                output_tokens: Some(2),
+            },
+            "the billed request's usage stays on its failure row"
+        );
+        assert!(
+            rows[0].model.is_some(),
+            "the ledger needs the model it billed"
+        );
+    }
+
+    /// A model its server will not load stays listed, with the server's
+    /// reason as the reason it is unavailable, and the automatic choice
+    /// passes over it. A call that names it is still sent to it.
+    #[tokio::test]
+    async fn the_automatic_choice_passes_over_a_model_its_server_will_not_load() {
+        let refusal = "Ollama decision model `stale` cannot be loaded: re-download it.";
+        let mut stale = entry("stale", ProviderTier::Private, true);
+        stale.load_refusal = Some(refusal.to_string());
+        let (svc, calls) = service(
+            vec![stale.clone(), entry("good", ProviderTier::Private, true)],
+            Duration::ZERO,
+        );
+        let listed = svc.models_for(None).await;
+        assert_eq!(
+            listed[0].0.model, "stale",
+            "still listed, in the order given"
+        );
+        assert_eq!(listed[0].1.as_deref(), Some(refusal));
+        assert_eq!(listed[1].1, None);
+        let public = DecisionSession::new("s2", SessionClassification::Public, true);
+        let for_chat = svc.models_for(Some(&public)).await;
+        assert_eq!(for_chat[0].1.as_deref(), Some(refusal));
+
+        for session in [None, Some(&public), Some(&private_chat())] {
+            let chosen = svc
+                .decide(session, None, &request("x", None))
+                .await
+                .unwrap();
+            assert_eq!(chosen[0].model.model, "good");
+            assert_eq!(
+                svc.model_entry_for(session, None).await.map(|e| e.model),
+                Some("good".to_string()),
+                "the CLI pins the same model"
+            );
+        }
+        let named = DecisionModelRef::new("test_decision", "stale");
+        let before = calls.load(Ordering::SeqCst);
+        svc.decide(None, Some(&named), &request("x", None))
+            .await
+            .unwrap();
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            before + 1,
+            "a named model is asked"
+        );
+
+        // Only that model listed: there is no model, not a privacy refusal,
+        // and the reason names the fix.
+        let (only_stale, calls) = service(vec![stale.clone()], Duration::ZERO);
+        for session in [None, Some(&public), Some(&private_chat())] {
+            let err = only_stale
+                .decide(session, None, &request("x", None))
+                .await
+                .unwrap_err();
+            assert!(matches!(err, DecisionError::NoModel(_)), "{err:?}");
+            assert!(err.to_string().contains(refusal), "{err}");
+        }
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+
+        // A private chat whose local model will not load, beside a hosted
+        // model it may not use: refused by privacy, and the stale copy is
+        // named too.
+        let (beside_public, _) = service(
+            vec![stale, entry("cloud", ProviderTier::Public, false)],
+            Duration::ZERO,
+        );
+        let err = beside_public
+            .decide(Some(&private_chat()), None, &request("x", None))
+            .await
+            .unwrap_err();
+        assert!(matches!(err, DecisionError::Refused(_)), "{err:?}");
+        assert!(err.to_string().contains(refusal), "{err}");
     }
 
     #[test]

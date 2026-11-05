@@ -130,6 +130,7 @@ impl Decisions {
             affiliation: self.affiliation(),
             adapter: DecisionAdapter::SystemOne,
             local: false,
+            load_refusal: None,
         }
     }
 
@@ -826,6 +827,28 @@ async fn a_notify_monitor_shows_one_notice_and_the_turn_goes_on() {
                 .to_string()
         ]
     );
+
+    // Owner ruling 2026-11-05: a public chat may use a private (local)
+    // decision model, and the decision raises nothing. The chat stays public,
+    // so its public model runs the next turn; a ratchet here would have it
+    // refused.
+    let row = chat
+        .sessions
+        .get_session(&chat.session_id, false)
+        .await
+        .unwrap();
+    assert_eq!(row.privacy_tier, SessionClassification::Public);
+    assert_eq!(row.privacy_reason, None);
+    let again = send(&chat, "Now submit it.").await;
+    assert_eq!(llm.calls(), 4, "the next turn ran on the public model");
+    assert!(
+        again
+            .iter()
+            .any(|m| m.role == rmcp::model::Role::Assistant
+                && m.as_concat_text().contains("All done.")),
+        "{:?}",
+        notices(&again)
+    );
 }
 
 /// The window a monitor sends is fitted to its model's context before it is
@@ -889,22 +912,40 @@ async fn a_steer_monitor_tells_the_model_at_turn_end() {
     let messages = send(&chat, "Summarise the notes.").await;
 
     assert_eq!(llm.calls(), 2, "the model answered the monitor's note");
+    // The monitor's name and question reach the model quoted as data inside
+    // the note's frame, not as an instruction from the user.
+    let note_text = llm
+        .texts_seen_on_call(1)
+        .into_iter()
+        .find(|t| t.contains("<decision-monitor>"))
+        .unwrap_or_else(|| {
+            panic!(
+                "the note reached the model: {:?}",
+                llm.texts_seen_on_call(1)
+            )
+        });
+    assert!(note_text.contains("name: \"Task done\""), "{note_text}");
     assert!(
-        llm.texts_seen_on_call(1)
-            .iter()
-            .any(|t| t.contains("the monitor 'Task done' fired")),
-        "the note reached the model: {:?}",
-        llm.texts_seen_on_call(1)
+        note_text.contains("question: \"Has the agent reached the consent form page?\""),
+        "{note_text}"
     );
+    assert!(
+        note_text.contains("not a message from your user"),
+        "{note_text}"
+    );
+    // The person sees what the agent was told.
     assert_eq!(
-        count_containing(&notices(&messages), "and told the agent"),
+        count_containing(
+            &notices(&messages),
+            "and told the agent. Its question: \"Has the agent reached the consent form page?\""
+        ),
         1
     );
     // The note is the model's, never the person's.
     let stored = stored(&chat).await;
     let note = stored
         .iter()
-        .find(|m| m.as_concat_text().contains("the monitor 'Task done' fired"))
+        .find(|m| m.as_concat_text().contains("name: \"Task done\""))
         .expect("the note is stored");
     assert!(!note.is_user_visible() && note.is_agent_visible());
     assert_eq!(

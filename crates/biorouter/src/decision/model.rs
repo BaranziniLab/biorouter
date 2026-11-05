@@ -71,6 +71,13 @@ pub struct DecisionModelEntry {
     pub affiliation: Option<ModelAffiliation>,
     pub adapter: DecisionAdapter,
     pub local: bool,
+    /// Set when the server will not load this copy of the model: the sentence
+    /// that says so and names the fix (an Ollama model downloaded in a format
+    /// that Ollama no longer supports). Such a model stays listed, so a person
+    /// sees it and why, and is listed after the ones that load. `None` when it
+    /// loads, and whenever discovery could not tell.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub load_refusal: Option<String>,
 }
 
 impl DecisionModelEntry {

@@ -123,6 +123,7 @@ impl DecisionModelSource for OneModel {
             affiliation: None,
             adapter: DecisionAdapter::SystemOne,
             local: true,
+            load_refusal: None,
         }]
     }
     async fn open(&self, _: &DecisionModelRef) -> DecisionResult<Arc<dyn DecisionModel>> {

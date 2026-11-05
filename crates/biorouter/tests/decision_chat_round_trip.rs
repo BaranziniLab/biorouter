@@ -43,6 +43,10 @@ fn sandbox() {
     std::fs::write(root.path().join("config/config.yaml"), "{}\n").expect("a config file");
     std::env::set_var("BIOROUTER_PATH_ROOT", root.path());
     std::env::set_var("BIOROUTER_DISABLE_KEYRING", "true");
+    // The Ollama decision chat's tier follows OLLAMA_HOST (loopback is
+    // Private); an off-loopback value in the developer's shell would turn the
+    // ratchet assertion below into a measurement of that shell.
+    std::env::remove_var("OLLAMA_HOST");
     static ROOT: OnceLock<TempDir> = OnceLock::new();
     let _ = ROOT.set(root);
 }
@@ -83,6 +87,7 @@ impl Decisions {
             affiliation: (self.tier == ProviderTier::Private).then_some(ModelAffiliation::Local),
             adapter: DecisionAdapter::SystemOne,
             local: false,
+            load_refusal: None,
         }
     }
 }
@@ -308,6 +313,76 @@ async fn a_question_line_is_asked_and_the_reply_names_the_logged_decision() {
         .messages()
         .iter()
         .all(|m| m.metadata.decision_summary.is_none()));
+}
+
+/// A decision chat on a local decision model is a private chat: that model is
+/// the chat's bound provider, so the turn's ratchet makes the chat Private
+/// before its first answer, as it would for any local chat model.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_decision_chat_on_a_local_model_is_a_private_chat() {
+    let decisions = Decisions::new(ProviderTier::Private, vec![0.7]);
+    let chat = decision_chat(&decisions, ollama_tev1()).await;
+
+    send(
+        &chat,
+        "Q: Is the note signed?\nSYNTHETIC NOTE: signed, Dr. A.",
+    )
+    .await;
+
+    assert_eq!(decisions.requests.load(Ordering::SeqCst), 1);
+    let row = chat
+        .sessions
+        .get_session(&chat.session_id, false)
+        .await
+        .unwrap();
+    assert_eq!(row.privacy_tier, SessionClassification::Private);
+    assert_eq!(row.privacy_reason.as_deref(), Some("turn:ollama_decision"));
+}
+
+/// A question the decision model fails on still names its row: the reply's
+/// `decision_id` is the failed row's id, so the card draws the failure and
+/// links to what would have been sent.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_failed_question_names_its_failure_row() {
+    let decisions = Decisions::new(ProviderTier::Private, vec![]);
+    let chat = decision_chat(&decisions, ollama_tev1()).await;
+    // Over the scripted model's 8,192-token window, so the size check refuses
+    // it before anything is sent.
+    let note = format!("Q: Is the note signed?\n{}", "word ".repeat(12_000));
+
+    let messages = send(&chat, &note).await;
+
+    assert_eq!(decisions.requests.load(Ordering::SeqCst), 0);
+    let reply = messages
+        .iter()
+        .find(|m| m.role == rmcp::model::Role::Assistant)
+        .expect("a reply");
+    assert!(
+        reply
+            .as_concat_text()
+            .starts_with("The decision model could not answer"),
+        "{}",
+        reply.as_concat_text()
+    );
+    let id = reply
+        .metadata
+        .decision_id
+        .clone()
+        .expect("the failed reply names its row");
+    let detail = biorouter::decision::log::get(&chat.sessions, &chat.session_id, &id)
+        .await
+        .unwrap()
+        .expect("the named row is in the log");
+    assert_eq!(
+        detail.record.outcome,
+        biorouter::decision::DecisionOutcome::Error
+    );
+    assert!(detail.record.decisions.is_empty());
+    assert!(detail
+        .record
+        .error
+        .as_deref()
+        .is_some_and(|e| e.contains("8192-token window")));
 }
 
 #[tokio::test(flavor = "multi_thread")]

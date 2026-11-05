@@ -2046,6 +2046,9 @@ impl CliSession {
         let provider = self.agent.provider().await?;
         let model_config = provider.get_model_config();
         let context_limit = model_config.context_limit();
+        // A decision chat has no running context to measure, so it prints no
+        // meter, as the TUI draws none; the cost line still prints.
+        let meter = tui::draws_context_meter(provider.get_name());
 
         let config = Config::global();
         let show_cost = config
@@ -2060,7 +2063,9 @@ impl CliSession {
             Ok(metadata) => {
                 let total_tokens = metadata.total_tokens.unwrap_or(0) as usize;
 
-                output::display_context_usage(total_tokens, context_limit);
+                if meter {
+                    output::display_context_usage(total_tokens, context_limit);
+                }
 
                 if show_cost {
                     let input_tokens = metadata.input_tokens.unwrap_or(0) as usize;
@@ -2073,9 +2078,10 @@ impl CliSession {
                     );
                 }
             }
-            Err(_) => {
+            Err(_) if meter => {
                 output::display_context_usage(0, context_limit);
             }
+            Err(_) => {}
         }
 
         Ok(())

@@ -8,6 +8,8 @@
 
 use anyhow::Result;
 use biorouter::config::{percent_of, UsageLimits};
+use biorouter::providers::decision::catalog::{baseten_display_name, BASETEN_DECISION_PROVIDER};
+use biorouter::session::session_manager::DecisionUsageSubtotal;
 use biorouter::session::{SessionManager, UsageGroup, UsageReportRow, UsageSummary};
 use chrono::{Local, NaiveDate, TimeZone};
 
@@ -144,12 +146,82 @@ fn fmt_cost_with_completeness(cost: Option<f64>, partial: bool) -> String {
     }
 }
 
+/// A row's COST cell. A bucket of requests to a local decision model alone
+/// is counted as $0 by the report (the model has no meter), and reads "not
+/// metered", as its decision line does. An unpriced Baseten bucket sets
+/// `has_unpriced` and keeps the usual "—".
+fn row_cost_cell(row: &UsageReportRow) -> String {
+    let unmetered = row.turns == 0
+        && !row.has_unpriced
+        && row
+            .decisions
+            .as_ref()
+            .is_some_and(|decisions| decisions.cost.is_none());
+    if unmetered {
+        return "not metered".to_string();
+    }
+    fmt_cost_with_completeness(row.cost, row.has_unpriced || row.cost_excludes_cache)
+}
+
 fn model_label(row: &UsageReportRow) -> String {
+    if row.decisions.is_some() && row.turns == 0 {
+        let model = row.model_id.as_deref().unwrap_or("unknown");
+        let name = if row.provider.as_deref() == Some(BASETEN_DECISION_PROVIDER) {
+            baseten_display_name(model)
+        } else {
+            model.to_string()
+        };
+        return format!("{name} (decision model)");
+    }
     match (row.model_id.as_deref(), row.provider.as_deref()) {
         (Some(model), Some(provider)) => format!("{model} ({provider})"),
         (Some(model), None) => model.to_string(),
         _ => "unknown".to_string(),
     }
+}
+
+/// The decision-model share of several report rows together. The rows of one
+/// grouping partition the range, so their sum is the range's.
+fn sum_decisions(rows: &[UsageReportRow]) -> (i64, Option<DecisionUsageSubtotal>) {
+    let requests = rows.iter().map(|row| row.decision_requests).sum();
+    let subtotal = rows
+        .iter()
+        .filter_map(|row| row.decisions.as_ref())
+        .cloned()
+        .reduce(|a, b| DecisionUsageSubtotal {
+            input_tokens: a.input_tokens + b.input_tokens,
+            output_tokens: a.output_tokens + b.output_tokens,
+            total_tokens: a.total_tokens.zip(b.total_tokens).map(|(a, b)| a + b),
+            cost: match (a.cost, b.cost) {
+                (None, None) => None,
+                (a, b) => Some(a.unwrap_or(0.0) + b.unwrap_or(0.0)),
+            },
+            has_unpriced: a.has_unpriced || b.has_unpriced,
+        });
+    (requests, subtotal)
+}
+
+/// `Decision models: 600 requests, 1,200,600 tokens, $0.12`. A decision
+/// model on Ollama has no meter, so a subtotal with no price reads "not
+/// metered" rather than a cost.
+fn decision_line(requests: i64, decisions: Option<&DecisionUsageSubtotal>) -> Option<String> {
+    let decisions = decisions?;
+    let tokens = decisions
+        .total_tokens
+        .unwrap_or(decisions.input_tokens + decisions.output_tokens);
+    let cost = match decisions.cost {
+        None => "not metered".to_string(),
+        Some(_) if decisions.has_unpriced => {
+            format!("{}, some not metered", fmt_cost(decisions.cost))
+        }
+        Some(_) => fmt_cost(decisions.cost),
+    };
+    let noun = if requests == 1 { "request" } else { "requests" };
+    Some(format!(
+        "Decision models: {} {noun}, {} tokens, {cost}",
+        fmt_tokens(requests),
+        fmt_tokens(tokens),
+    ))
 }
 
 fn format_report_rows(rows: &[UsageReportRow], group: UsageGroup) -> String {
@@ -181,14 +253,26 @@ fn format_report_rows(rows: &[UsageReportRow], group: UsageGroup) -> String {
             .cache_read_tokens
             .zip(row.cache_creation_tokens)
             .map(|(read, creation)| read + creation);
+        // A decision model's bucket has requests, not turns.
+        let turns = if row.decisions.is_some() && row.turns == 0 {
+            "—".to_string()
+        } else {
+            row.turns.to_string()
+        };
         out.push_str(&format!(
             "  {label:<28} {:>14} {:>14} {:>14} {:>14} {:>7} {:>12}\n",
             fmt_tokens(row.input_tokens),
             fmt_tokens(row.output_tokens),
             fmt_optional_tokens(cache_tokens),
             fmt_optional_tokens(row.total_tokens),
-            row.turns,
-            fmt_cost_with_completeness(row.cost, row.has_unpriced || row.cost_excludes_cache),
+            turns,
+            row_cost_cell(row),
+        ));
+    }
+    let (requests, decisions) = sum_decisions(rows);
+    if let Some(line) = decision_line(requests, decisions.as_ref()) {
+        out.push_str(&format!(
+            "  {line}. Counted in TOTAL and COST, not in TURNS.\n"
         ));
     }
     if any_unpriced {
@@ -213,6 +297,9 @@ fn format_usage_summary(summary: &UsageSummary, limits: &UsageLimits) -> String 
         fmt_cost_with_completeness(mtd.cost, mtd.has_unpriced || mtd.cost_excludes_cache),
         mtd.turns,
     ));
+    if let Some(line) = decision_line(mtd.decision_requests, mtd.decisions.as_ref()) {
+        out.push_str(&format!("  {line}\n"));
+    }
     let mtd_cache = mtd
         .cache_read_tokens
         .zip(mtd.cache_creation_tokens)
@@ -320,6 +407,8 @@ mod tests {
             cost,
             has_unpriced,
             cost_excludes_cache: false,
+            decision_requests: 0,
+            decisions: None,
         }
     }
 
@@ -334,6 +423,8 @@ mod tests {
             cost,
             has_unpriced: cost.is_none(),
             cost_excludes_cache: false,
+            decision_requests: 0,
+            decisions: None,
         };
         UsageSummary {
             month: "2026-07".to_string(),
@@ -428,6 +519,8 @@ mod tests {
                 cost: None,
                 has_unpriced: true,
                 cost_excludes_cache: false,
+                decision_requests: 0,
+                decisions: None,
             },
         ];
         let text = format_usage_text(
@@ -515,6 +608,8 @@ mod tests {
             cost: Some(0.01),
             has_unpriced: false,
             cost_excludes_cache: true,
+            decision_requests: 0,
+            decisions: None,
         }];
         let text = format_usage_text(
             &rows,
@@ -531,6 +626,115 @@ mod tests {
             text.contains("no cache pricing"),
             "the cost-excludes-cache note appears: {text}"
         );
+    }
+
+    fn decision_row(
+        provider: &str,
+        model: &str,
+        requests: i64,
+        cost: Option<f64>,
+    ) -> UsageReportRow {
+        UsageReportRow {
+            date: None,
+            model_id: Some(model.to_string()),
+            provider: Some(provider.to_string()),
+            input_tokens: 1_200_000,
+            output_tokens: 600,
+            total_tokens: Some(1_200_600),
+            cache_read_tokens: Some(0),
+            cache_creation_tokens: Some(0),
+            turns: 0,
+            cost,
+            has_unpriced: false,
+            cost_excludes_cache: false,
+            decision_requests: requests,
+            decisions: Some(DecisionUsageSubtotal {
+                input_tokens: 1_200_000,
+                output_tokens: 600,
+                total_tokens: Some(1_200_600),
+                cost,
+                has_unpriced: cost.is_none(),
+            }),
+        }
+    }
+
+    /// Decision requests are their own line: counted in tokens and dollars,
+    /// not in turns, and a local decision model reads "not metered".
+    #[test]
+    fn text_report_shows_decision_models_on_their_own_line() {
+        let rows = vec![
+            row(
+                "glm-5.2",
+                true,
+                (1_000_000, 0, 1_000_000),
+                3,
+                Some(1.40),
+                false,
+            ),
+            decision_row(
+                "baseten_decision",
+                "decision-models/baseten-mammoth-27b-latest",
+                600,
+                Some(0.12),
+            ),
+        ];
+        let mut month = summary(2_200_600, Some(1.52));
+        month.month_to_date.decision_requests = 600;
+        month.month_to_date.decisions = rows[1].decisions.clone();
+        let text = format_usage_text(
+            &rows,
+            UsageGroup::Model,
+            &month,
+            &UsageLimits::default(),
+            0,
+            0,
+        );
+        assert!(text.contains("mammoth-1 (decision model)"), "{text}");
+        assert!(
+            text.contains("Decision models: 600 requests, 1,200,600 tokens, $0.12"),
+            "{text}"
+        );
+        assert!(text.contains("not in TURNS"), "{text}");
+        // The month summary carries the same line under its totals.
+        let summary_text = format_usage_summary(&month, &UsageLimits::default());
+        assert!(
+            summary_text.contains("Decision models: 600 requests"),
+            "{summary_text}"
+        );
+        let mammoth_line = text
+            .lines()
+            .find(|line| line.contains("mammoth-1"))
+            .unwrap();
+        assert!(mammoth_line.contains('—'), "no turns: {mammoth_line}");
+
+        let local = [decision_row("ollama_decision", "tev1:0.8b", 1, None)];
+        let (requests, decisions) = sum_decisions(&local);
+        // The report counts a local model's bucket as $0; its row says why.
+        let local_row = UsageReportRow {
+            cost: Some(0.0),
+            ..local[0].clone()
+        };
+        assert_eq!(row_cost_cell(&local_row), "not metered");
+        let unlisted = UsageReportRow {
+            cost: None,
+            has_unpriced: true,
+            ..decision_row("baseten_decision", "decision-models/x", 1, None)
+        };
+        assert_eq!(row_cost_cell(&unlisted), "—", "billed at an unknown rate");
+        assert_eq!(
+            decision_line(requests, decisions.as_ref()).unwrap(),
+            "Decision models: 1 request, 1,200,600 tokens, not metered"
+        );
+        // A range with no decision requests prints no line.
+        let none = format_usage_text(
+            &rows[..1],
+            UsageGroup::Model,
+            &summary(1_000_000, Some(1.40)),
+            &UsageLimits::default(),
+            0,
+            0,
+        );
+        assert!(!none.contains("Decision models"), "{none}");
     }
 
     #[test]

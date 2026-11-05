@@ -241,6 +241,21 @@ impl BudgetTracker {
         }
     }
 
+    /// Add dollars this reply spent outside its own model turns: priced
+    /// decision-model calls (a monitor, the `decide` tool, a phase gate).
+    ///
+    /// Dollars only. It never touches the token axis, because a 1.2M-token
+    /// `decide` batch would trip a token cap set for the chat's own context,
+    /// and it never touches `priced`: the caller passes only calls it could
+    /// price, so an unpriced local decision model cannot switch the dollar
+    /// axis off for the whole reply. A negative or non-finite figure is
+    /// ignored.
+    pub fn record_external_usd(&mut self, usd: f64) {
+        if usd.is_finite() && usd > 0.0 {
+            self.usd += usd;
+        }
+    }
+
     /// The reading as of `elapsed`.
     pub fn snapshot_at(&self, elapsed: Duration) -> BudgetSnapshot {
         let elapsed_seconds = elapsed.as_secs();
@@ -581,5 +596,43 @@ mod tests {
         assert!(wrapup_instruction(&snapshot).contains("1000 tokens left"));
         assert!(stopped_message(&snapshot).contains("0 of 1000 tokens"));
         assert!(progress_note(&snapshot).contains("0% used"));
+    }
+
+    /// Decision spend reaches the dollar cap and nothing else: a large
+    /// `decide` batch must not trip a token cap meant for the chat's context,
+    /// and only priced calls are passed in, so the dollar axis stays on.
+    #[test]
+    fn external_decision_spend_counts_toward_the_dollar_cap_only() {
+        let mut tracker = BudgetTracker::new(ReplyBudget {
+            max_tokens: Some(1_000),
+            max_usd: Some(0.01),
+            ..Default::default()
+        });
+        tracker.record_external_usd(0.009);
+        let BudgetAction::Warn(snapshot) = tracker.check_at(Duration::ZERO) else {
+            panic!("90% of the dollar cap should warn");
+        };
+        assert_eq!(snapshot.axis, Some("cost"));
+        assert_eq!(
+            snapshot.tokens, 0,
+            "decision spend never reaches the token axis"
+        );
+        assert!(matches!(snapshot.usd, Some(usd) if (usd - 0.009).abs() < 1e-12));
+
+        // Garbage is ignored rather than wedging or refunding the reply.
+        tracker.record_external_usd(f64::NAN);
+        tracker.record_external_usd(-1.0);
+        tracker.record_external_usd(f64::INFINITY);
+        assert!(matches!(
+            tracker.snapshot_at(Duration::ZERO).usd,
+            Some(usd) if (usd - 0.009).abs() < 1e-12
+        ));
+
+        tracker.record_external_usd(0.002);
+        let BudgetAction::Exceeded(snapshot) = tracker.check_at(Duration::ZERO) else {
+            panic!("$0.011 of a $0.01 cap is spent");
+        };
+        assert_eq!(snapshot.axis, Some("cost"));
+        assert_eq!(snapshot.tokens, 0);
     }
 }

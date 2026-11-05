@@ -243,11 +243,18 @@ pub fn assert_alt_provider_matches_session(
 ///
 /// It is the DOWNWARD half only, like the sibling: a decision's output is an
 /// answer and a probability that lands back in the same chat (a tool result, a
-/// monitor notice, a gate verdict), never a ratchet input, so the upward choice
-/// leaves the residual recorded at the top of this module rather than a
-/// permanent loss. Whether a public chat may use a private decision model is
-/// therefore the same open question as plan mode and prompt hooks, not a new
-/// policy.
+/// monitor notice, a gate verdict), never a ratchet input.
+///
+/// Owner ruling (2026-11-05): a public chat may use a private (local)
+/// decision model, and the decision raises nothing. The model reads only text
+/// the chat's own model already has, so sending it to this computer discloses
+/// nothing more, and nothing but probabilities over the offered answers
+/// reaches the chat or its model. A logprob model's verbalized fallback keeps
+/// up to 2,000 characters of the model's reply in the decision log row, never
+/// in the transcript, so the under-classification residual recorded at the
+/// top of this module does not reach the conversation here. Refusing the
+/// cell would send the same text to a hosted model instead, and raising the
+/// chat would leave its public model unable to run the next turn.
 pub fn assert_alt_tier_allowed(
     what: &str,
     model_name: &str,

@@ -55,6 +55,11 @@ const PROVIDER: &str = "baseten";
 /// same change as either of them: a catalog fetched before this day is older
 /// than what the release ships, and is ignored.
 const BUNDLED_CATALOG_AS_OF: &str = "2026-10-18";
+/// The day `pricing::BASETEN_DECISION_PRICING` was read from the feed. A
+/// catalog fetched before it gives no decision price
+/// ([`LiveCatalog::decision_pricing`]), so an old cached feed cannot bill the
+/// decision models below what the release ships. Move it with that table.
+const BUNDLED_DECISION_PRICING_AS_OF: &str = "2026-11-04";
 const CACHE_SUBPATH: &str = "provider-catalogs/baseten.json";
 const SCHEMA_VERSION: u32 = 1;
 
@@ -249,6 +254,39 @@ impl LiveCatalog {
         })
     }
 
+    /// Prices for a Baseten decision model (`decision-models/…`), matched
+    /// case-blind like [`Self::pricing`].
+    ///
+    /// A decision model answers with one token per question, and Baseten lists
+    /// its output price as `0.00`. That zero is the real price, so here only
+    /// the INPUT rate must be above zero, and the output rate is taken as the
+    /// feed states it. [`Self::pricing`] keeps the chat rule (a zero on either
+    /// side is unknown) for every other model.
+    ///
+    /// `None` for a model outside `decision-models/`, a zero input rate, or a
+    /// catalog older than `BUNDLED_DECISION_PRICING_AS_OF`; the bundled
+    /// decision price then applies.
+    pub fn decision_pricing(&self, model: &str) -> Option<ProviderModelPricing> {
+        if self.fetched_at.date_naive() < decision_pricing_as_of() {
+            return None;
+        }
+        let found = self.models.iter().find(|candidate| {
+            candidate.id.eq_ignore_ascii_case(model)
+                && candidate
+                    .id
+                    .to_ascii_lowercase()
+                    .starts_with(DECISION_MODEL_PREFIX)
+        })?;
+        (found.input_token_cost > 0.0).then(|| ProviderModelPricing {
+            input_token_cost: found.input_token_cost,
+            output_token_cost: found.output_token_cost,
+            cache_read_cost: None,
+            cache_write_cost: None,
+            currency: "$".to_string(),
+            context_length: u32::try_from(found.context_length).ok(),
+        })
+    }
+
     /// The window this catalog states for exactly `model` (registry ids are
     /// case-sensitive), when the static registry has no row for the slug. A
     /// static row always wins; see the module comment.
@@ -323,6 +361,15 @@ fn bundled_as_of() -> NaiveDate {
     NaiveDate::parse_from_str(BUNDLED_CATALOG_AS_OF, "%Y-%m-%d")
         .expect("BUNDLED_CATALOG_AS_OF is a YYYY-MM-DD date")
 }
+
+fn decision_pricing_as_of() -> NaiveDate {
+    NaiveDate::parse_from_str(BUNDLED_DECISION_PRICING_AS_OF, "%Y-%m-%d")
+        .expect("BUNDLED_DECISION_PRICING_AS_OF is a YYYY-MM-DD date")
+}
+
+/// The id prefix of Baseten's decision models, as
+/// `providers::decision::catalog::DECISION_MODEL_PREFIX` spells it.
+const DECISION_MODEL_PREFIX: &str = crate::providers::decision::catalog::DECISION_MODEL_PREFIX;
 
 fn valid_id(id: &str) -> bool {
     !id.is_empty()
@@ -1065,5 +1112,50 @@ mod tests {
         assert!(read_cached(&path).is_none());
         atomic_write(&path, &feed(&[one_model()])).unwrap();
         assert_eq!(read_cached(&path).unwrap().models.len(), 1);
+    }
+
+    /// A decision model's output is listed at `0.00`, which is its real price.
+    /// `decision_pricing` reads the input rate from the feed; `pricing`, the
+    /// chat rule, still treats the zero as unknown.
+    #[test]
+    fn a_decision_model_takes_its_input_price_from_the_feed() {
+        let slug = "decision-models/baseten-elephant-9b-latest";
+        let decision = model(slug, 16_384, false, false, ["0.000000035", "0.00", "0.00"]);
+        let catalog = LiveCatalog::from_bytes(&feed_at(
+            "2026-11-05T00:00:00Z",
+            &[decision.clone(), one_model()],
+        ))
+        .unwrap();
+        let pricing = catalog.decision_pricing(slug).expect("a decision price");
+        assert!((pricing.input_token_cost - 3.5e-8).abs() < 1e-20);
+        assert_eq!(pricing.output_token_cost, 0.0);
+        assert_eq!(pricing.context_length, Some(16_384));
+        assert_eq!(
+            catalog.decision_pricing(&slug.to_ascii_uppercase()),
+            Some(pricing)
+        );
+        assert!(catalog.pricing(slug).is_none(), "the chat rule still holds");
+        // Only decision models: a chat model is never priced this way.
+        assert!(catalog.decision_pricing("a/b").is_none());
+
+        // A zero input price is unknown here too.
+        let free = model(slug, 16_384, false, false, ["0.00", "0.00", "0.00"]);
+        let catalog = LiveCatalog::from_bytes(&feed_at("2026-11-05T00:00:00Z", &[free])).unwrap();
+        assert!(catalog.decision_pricing(slug).is_none());
+
+        // A feed older than the bundled decision prices gives none, so it
+        // cannot bill under them.
+        let catalog =
+            LiveCatalog::from_bytes(&feed_at("2026-10-30T00:00:00Z", &[decision])).unwrap();
+        assert!(catalog.decision_pricing(slug).is_none());
+    }
+
+    #[test]
+    fn the_bundled_decision_date_is_a_date() {
+        assert_eq!(
+            decision_pricing_as_of().to_string(),
+            BUNDLED_DECISION_PRICING_AS_OF
+        );
+        assert!(decision_pricing_as_of() >= bundled_as_of());
     }
 }

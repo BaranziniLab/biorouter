@@ -765,7 +765,7 @@ pub(crate) mod tests {
         // Two UUID v7 ids minted milliseconds apart share their clock prefix.
         let a = "019a54c1-2b3c-7d4e-8f01-23456789abcd";
         let b = "019a54c1-2b3d-7e5f-9a12-3456789abcde";
-        assert_eq!(a[..8], b[..8]);
+        assert_eq!(a.get(..8), b.get(..8));
         assert_eq!(short_id(a), "6789abcd");
         assert_eq!(short_id(b), "789abcde");
         assert_eq!(short_id("t1"), "t1");

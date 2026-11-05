@@ -1,5 +1,6 @@
 //! What can go wrong with a decision, as sentences a person (or the model that
-//! asked) can act on. Each variant maps to one HTTP status when the routes land.
+//! asked) can act on. Each variant maps to one HTTP status
+//! (`biorouter-server/src/routes/decisions.rs`).
 //!
 //! ⚠ No variant carries a backend's error body. System One validation errors
 //! can quote the submitted state, and the state can be a private chat's text

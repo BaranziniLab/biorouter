@@ -193,6 +193,8 @@ mod tests {
             cost,
             has_unpriced,
             cost_excludes_cache: false,
+            decision_requests: 0,
+            decisions: None,
         }
     }
 
@@ -321,6 +323,8 @@ mod tests {
                     cost: Some(1.25),
                     has_unpriced: true,
                     cost_excludes_cache: false,
+                    decision_requests: 0,
+                    decisions: None,
                 },
                 UsageReportRow {
                     date: Some("2026-07-11".to_string()),
@@ -335,6 +339,8 @@ mod tests {
                     cost: None,
                     has_unpriced: true,
                     cost_excludes_cache: false,
+                    decision_requests: 0,
+                    decisions: None,
                 },
             ],
         };
@@ -365,5 +371,39 @@ mod tests {
             rows[0].get("cacheCreationTokens").and_then(|v| v.as_i64()),
             Some(0)
         );
+    }
+
+    /// The decision-model fields reach the wire camelCased, with a null
+    /// subtotal on a bucket that has no decision requests.
+    #[test]
+    fn report_rows_carry_the_decision_subtotal() {
+        let mut row = UsageReportRow {
+            date: Some("2026-11-04".to_string()),
+            model_id: None,
+            provider: None,
+            input_tokens: 1_200_000,
+            output_tokens: 600,
+            total_tokens: Some(1_200_600),
+            cache_read_tokens: Some(0),
+            cache_creation_tokens: Some(0),
+            turns: 0,
+            cost: Some(0.12),
+            has_unpriced: false,
+            cost_excludes_cache: false,
+            decision_requests: 600,
+            decisions: Some(biorouter::session::session_manager::DecisionUsageSubtotal {
+                input_tokens: 1_200_000,
+                output_tokens: 600,
+                total_tokens: Some(1_200_600),
+                cost: Some(0.12),
+                has_unpriced: false,
+            }),
+        };
+        let json = serde_json::to_value(&row).unwrap();
+        assert_eq!(json["decisionRequests"], 600);
+        assert_eq!(json["decisions"]["totalTokens"], 1_200_600);
+        assert_eq!(json["decisions"]["hasUnpriced"], false);
+        row.decisions = None;
+        assert!(serde_json::to_value(&row).unwrap()["decisions"].is_null());
     }
 }

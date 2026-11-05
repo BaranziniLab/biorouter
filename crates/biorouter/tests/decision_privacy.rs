@@ -172,12 +172,13 @@ async fn a_private_chat_with_a_public_decision_model_makes_zero_requests() {
         .await;
     assert!(matches!(batch, Err(DecisionError::Refused(_))), "{batch:?}");
 
-    // Chosen automatically: the only model is public, so there is none to use.
+    // Chosen automatically: the only model is public, so privacy rules out
+    // every listed model, which is a refusal, as naming it is.
     let err = svc
         .decide(Some(&session), None, &request())
         .await
         .unwrap_err();
-    assert!(matches!(err, DecisionError::NoModel(_)), "{err:?}");
+    assert!(matches!(err, DecisionError::Refused(_)), "{err:?}");
     assert!(err.to_string().contains("private chat"), "{err}");
 
     assert!(

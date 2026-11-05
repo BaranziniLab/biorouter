@@ -7554,6 +7554,23 @@ impl Agent {
         }
     }
 
+    /// BR-35: add the dollars this reply's priced decision calls (a monitor,
+    /// the `decide` tool, a phase gate) have cost since the last boundary to
+    /// the reply budget. Dollars only, and only priced calls: a 1.2M-token
+    /// `decide` batch must not trip a token cap set for the chat's own
+    /// context, and an unpriced local decision model must not switch the
+    /// dollar axis off. Synchronous and free when no budget is set; the turn's
+    /// spend is forgotten with the turn either way.
+    fn charge_decision_spend(&self, session_id: &str, budget: &mut BudgetTracker) {
+        if !budget.is_active() {
+            return;
+        }
+        let Some(turn_id) = self.decisions.monitors.turn_id(session_id) else {
+            return;
+        };
+        budget.record_external_usd(crate::decision::monitor::take_turn_decision_spend(&turn_id));
+    }
+
     /// Fold one provider round-trip (a turn, or an in-reply compaction) into the
     /// BR-35 budget. Free when no budget is set.
     async fn record_budget_usage(
@@ -11302,7 +11319,7 @@ impl Agent {
     }
 
     /// The bound provider when it is a decision model (a decision chat).
-    async fn bound_decision_chat_provider(&self) -> Option<Arc<dyn Provider>> {
+    pub(super) async fn bound_decision_chat_provider(&self) -> Option<Arc<dyn Provider>> {
         self.bound_provider_unchecked().await.filter(|provider| {
             crate::providers::decision::chat::is_decision_chat_provider(provider.get_name())
         })
@@ -12128,7 +12145,11 @@ impl Agent {
 
                 // BR-35: the per-reply budget meter. Cheap (no LLM call, no I/O):
                 // a comparison against the running totals `record_turn_usage` has
-                // already folded in, skipped entirely when no limit is set.
+                // already folded in, skipped entirely when no limit is set. The
+                // dollars this reply's decision models spent since the last
+                // boundary are folded in first; that is one in-process lock, not
+                // a wait, so it needs no steer arm.
+                self.charge_decision_spend(&session_config.id, &mut budget);
                 match budget.check_at(reply_started.elapsed()) {
                     BudgetAction::Proceed => {}
                     BudgetAction::Warn(snapshot) => {

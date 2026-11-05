@@ -81,8 +81,9 @@ const SUBAGENT_USER_ACTION_REQUIRED: &str =
 /// that route gates through [`authorize_agent_control`] there. A *steer* at the
 /// same turn is refused one step earlier, by `reply::steer_refusal`, which
 /// never reads the row — so the two sentences differ, and both open by naming
-/// this daemon rather than the caller.
-const SUBAGENT_CONTROL_NO_KEY: &str =
+/// this daemon rather than the caller. `routes::decisions` answers the same
+/// sentence to a keyless write of a subagent's decision settings.
+pub(crate) const SUBAGENT_CONTROL_NO_KEY: &str =
     "This daemon was started without a user-action key, so it cannot verify that a request came \
      from the person at the keyboard, and changing, resuming, stopping or steering a subagent from \
      its tab requires that proof. Nothing was changed. This control is unavailable on this \

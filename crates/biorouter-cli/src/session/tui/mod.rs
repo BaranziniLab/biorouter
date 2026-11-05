@@ -826,7 +826,9 @@ async fn submit(
     // /compact runs a normal turn whose trigger tells the agent to condense the
     // history (mirrors the classic `/compact`).
     if text.trim() == "/compact" {
-        app.push_note("Compacting the chat…");
+        if let Some(note) = compact_note(&app.status.provider) {
+            app.push_note(note);
+        }
         let msg = Message::user().with_text(biorouter::agents::COMPACT_TRIGGERS[0]);
         session.messages.push(msg.clone());
         return drive_response(session, app, tui, rx, msg).await;
@@ -2622,7 +2624,10 @@ fn shorten_home(p: &std::path::Path) -> String {
 /// session. Best-effort: failures leave the meter hidden.
 async fn refresh_context(session: &CliSession, app: &mut App) {
     if let Ok(provider) = session.agent.provider().await {
-        app.status.context_limit = provider.get_model_config().context_limit();
+        app.status.context_limit = gauge_limit(
+            provider.get_name(),
+            provider.get_model_config().context_limit(),
+        );
     }
     if let Ok(meta) = session.get_session().await {
         app.status.used_tokens = meta.total_tokens.unwrap_or(0) as usize;
@@ -2631,6 +2636,32 @@ async fn refresh_context(session: &CliSession, app: &mut App) {
             meta.provider_name.as_deref(),
             meta.model_config.as_ref().map(|m| m.model_name.as_str()),
         );
+    }
+}
+
+/// Whether a chat bound to this provider has a context meter, here and at the
+/// classic prompt. A chat whose model is a decision model has none: each
+/// message is asked on its own and nothing adds to the chat's token total, so
+/// a meter there would measure nothing. The only limit is per message, and the
+/// size refusal names it when a message is too long.
+pub(super) fn draws_context_meter(provider_name: &str) -> bool {
+    !biorouter::providers::decision::chat::is_decision_chat_provider(provider_name)
+}
+
+/// The note shown as `/compact` starts. None in a decision chat: the agent
+/// answers there that there is nothing to compact, and announcing a compaction
+/// first contradicted that answer on the next line.
+fn compact_note(provider_name: &str) -> Option<&'static str> {
+    draws_context_meter(provider_name).then_some("Compacting the chat…")
+}
+
+/// The window the context meter measures against, or 0, which draws no meter
+/// ([`context_spans`] and [`context_summary_spans`] are empty at 0).
+fn gauge_limit(provider_name: &str, limit: usize) -> usize {
+    if draws_context_meter(provider_name) {
+        limit
+    } else {
+        0
     }
 }
 
@@ -2705,6 +2736,32 @@ mod tests {
         assert!(text.contains("^C stop"), "{text}");
         assert!(!text.contains("type a"), "{text}");
         assert!(!text.contains("KBcontext"), "{text}");
+    }
+
+    #[test]
+    fn a_decision_chat_draws_no_context_meter() {
+        assert_eq!(gauge_limit("ollama_decision", 8_192), 0);
+        assert_eq!(gauge_limit("baseten_decision", 16_384), 0);
+        assert_eq!(gauge_limit("anthropic", 200_000), 200_000);
+        assert!(!draws_context_meter("ollama_decision"));
+        assert!(draws_context_meter("ollama"));
+
+        // Drawn, at a width where the full meter fits and at one where only
+        // the short `ctx N%` would: neither appears, and no "0%" stands in.
+        for width in [120, 72] {
+            let mut app = App::new(StatusInfo {
+                provider: "ollama_decision".into(),
+                model: "tev1:0.8b".into(),
+                used_tokens: 1_000,
+                context_limit: gauge_limit("ollama_decision", 8_192),
+                ..Default::default()
+            });
+            let text = buffer_text(&mut app, width, 24);
+            assert!(text.contains("tev1:0.8b"), "{text}");
+            assert!(!text.contains("context ▕"), "{text}");
+            assert!(!text.contains("ctx "), "{text}");
+            assert!(!text.contains("0%"), "{text}");
+        }
     }
 
     #[test]
@@ -4015,6 +4072,13 @@ mod tests {
         assert_eq!(hidden, 2);
         let (shown, hidden) = subagents::spawn_context_preview("one line");
         assert_eq!((shown, hidden), (vec!["one line"], 0));
+    }
+
+    #[test]
+    fn compact_announces_itself_only_where_there_is_a_context_to_compact() {
+        assert_eq!(compact_note("versa_azure"), Some("Compacting the chat…"));
+        assert_eq!(compact_note("ollama_decision"), None);
+        assert_eq!(compact_note("baseten_decision"), None);
     }
 
     #[test]

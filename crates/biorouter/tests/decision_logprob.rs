@@ -244,6 +244,7 @@ fn openai_model(server: &MockServer) -> Arc<dyn DecisionModel> {
         affiliation: None,
         adapter: DecisionAdapter::Logprob,
         local: false,
+        load_refusal: None,
     };
     Arc::new(LogprobAdapter::openai_compatible(
         client,

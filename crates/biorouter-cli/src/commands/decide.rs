@@ -11,15 +11,26 @@
 //! agent loop, the routes and the desktop use, so validation, the size check,
 //! the deadline and Gate H are the same here as everywhere else.
 //!
+//! The model is chosen once, by the service's own order (the one named, the
+//! chat's default, the configured default, the automatic choice), and pinned
+//! for every request of the run, so the warning below names the model that
+//! reads the text and a long `--batch` never moves to another model partway.
+//!
 //! * **With `--session <id>`** the decision is about that chat: the service
 //!   reads the chat's classification and refuses a model outside its tier
 //!   before anything is sent, and the call is written to the chat's decision
-//!   log with the `adhoc` origin.
+//!   log with the `adhoc` origin. The text is the caller's, not the chat's,
+//!   so when the chat is not private stderr says the text is kept where
+//!   public chats can read it.
 //! * **Without one** nothing is logged and no tier is enforced, because there is
-//!   no chat to protect. The text is the person's own; when the model the
-//!   command resolved is hosted outside the institution, one line on stderr says
-//!   so before anything is sent. The person is warned; the agent never is the
-//!   one choosing here.
+//!   no chat to protect. The text is the person's own. The provider still
+//!   bills the call and no usage record holds it, so the run ends with one
+//!   stderr line giving the tokens used, and the dollars when the model has a
+//!   price. With `--session` the usage is in the chat's usage ledger instead.
+//!
+//! Either way, when a model hosted outside the institution will read the
+//! text, one line on stderr says so before anything is sent. The person is
+//! warned; the agent never is the one choosing here.
 //!
 //! The renderers below are pure functions over decision values, shared with
 //! `session decisions` and the TUI, so every terminal surface draws a
@@ -32,9 +43,9 @@ use std::sync::Arc;
 use anyhow::{anyhow, bail, Context, Result};
 use biorouter::decision::types::validate_questions;
 use biorouter::decision::{
-    Answer, ChunkOutcome, Decision, DecisionChunk, DecisionContext, DecisionKind,
-    DecisionModelEntry, DecisionModelRef, DecisionModelSource, DecisionOrigin, DecisionRequest,
-    DecisionService, DecisionSession, ProbabilitySource, Question, Threshold,
+    Answer, ChunkOutcome, Decision, DecisionChunk, DecisionContext, DecisionError, DecisionKind,
+    DecisionModelEntry, DecisionModelRef, DecisionOrigin, DecisionRequest, DecisionResult,
+    DecisionService, DecisionSession, DecisionUsage, ProbabilitySource, Question, Threshold,
 };
 use biorouter::privacy::ProviderTier;
 use biorouter::session::SessionManager;
@@ -636,12 +647,20 @@ pub fn render_model_list(entries: &[DecisionModelEntry]) -> Vec<String> {
             .ok()
             .and_then(|v| v.as_str().map(str::to_string))
             .unwrap_or_default();
+        let unloadable = if entry.load_refusal.is_some() {
+            " · cannot be loaded"
+        } else {
+            ""
+        };
         out.push(format!(
-            "  {:<name_w$}  {place} · {} tokens · {} · {adapter}",
+            "  {:<name_w$}  {place} · {} tokens · {} · {adapter}{unloadable}",
             format!("{}/{}", entry.provider, entry.model),
             group_thousands(entry.context_tokens),
             kinds.join(", ")
         ));
+        if let Some(refusal) = &entry.load_refusal {
+            out.push(format!("    {}", terminal_text(refusal)));
+        }
     }
     out
 }
@@ -667,9 +686,9 @@ pub fn public_model_warning(display: &str) -> String {
 
 // ── running it ──────────────────────────────────────────────────────────────
 
-/// The model an ad hoc decision will use, resolved here (rather than inside
-/// the service) so the person is warned about the model that will actually
-/// read the text.
+/// The model a run of `biorouter decide` uses, chosen once before anything is
+/// sent so the person is warned about the model that will actually read the
+/// text, and then pinned for every request of the run.
 #[derive(Debug, Clone)]
 struct ResolvedModel {
     model_ref: DecisionModelRef,
@@ -677,84 +696,185 @@ struct ResolvedModel {
     tier: ProviderTier,
 }
 
-/// `BIOROUTER_DECISION_PROVIDER` / `BIOROUTER_DECISION_MODEL`, read the way the
-/// service reads them.
-enum ConfiguredDefault {
-    Model(DecisionModelRef),
-    Provider(String),
-}
-
-fn configured_default() -> Option<ConfiguredDefault> {
-    let config = biorouter::config::Config::global();
-    let read = |key: &str| {
-        config
-            .get_param::<String>(key)
-            .ok()
-            .map(|v| v.trim().to_string())
-            .filter(|v| !v.is_empty())
-    };
-    match (
-        read("BIOROUTER_DECISION_PROVIDER"),
-        read("BIOROUTER_DECISION_MODEL"),
-    ) {
-        (Some(provider), Some(model)) => Some(ConfiguredDefault::Model(DecisionModelRef::new(
-            provider, model,
-        ))),
-        (None, Some(model)) => DecisionModelRef::parse(&model).map(ConfiguredDefault::Model),
-        (Some(provider), None) => Some(ConfiguredDefault::Provider(provider)),
-        (None, None) => None,
-    }
-}
-
-async fn resolve_adhoc(
+/// The model the service would use for `session` naming `wanted`, by the
+/// service's own order (named, the chat's default, the configured default,
+/// the automatic choice), so the terminal and the daemon never choose
+/// differently. Read from the listing; a model the listing does not show is
+/// opened to learn its tier, which sends its name and nothing else.
+async fn resolve_run_model(
     service: &DecisionService,
-    wanted: Option<DecisionModelRef>,
-) -> Result<ResolvedModel> {
-    let entries = service.models().await;
-    let from_entry = |entry: &DecisionModelEntry| ResolvedModel {
-        model_ref: entry.model_ref(),
-        display: entry.display_name.clone(),
-        tier: entry.tier,
-    };
-    let wanted = match wanted {
-        Some(model) => Some(model),
-        None => match configured_default() {
-            Some(ConfiguredDefault::Model(model)) => Some(model),
-            Some(ConfiguredDefault::Provider(provider)) => {
-                return entries
-                    .iter()
-                    .find(|entry| entry.provider == provider)
-                    .map(from_entry)
-                    .ok_or_else(|| {
-                        anyhow!(
-                            "No `{provider}` decision model is available. {}",
-                            NO_MODEL_HELP
-                        )
-                    });
-            }
-            None => None,
-        },
-    };
-    match wanted {
-        Some(model) => {
-            if let Some(entry) = entries.iter().find(|entry| entry.answers_to(&model)) {
-                return Ok(from_entry(entry));
-            }
-            let opened = biorouter::providers::decision::ConfiguredDecisionModels
-                .open(&model)
-                .await
-                .map_err(|e| anyhow!("{e}"))?;
-            Ok(ResolvedModel {
-                model_ref: opened.model_ref(),
-                display: opened.display_name(),
-                tier: opened.tier(),
-            })
-        }
-        None => entries
-            .first()
-            .map(from_entry)
-            .ok_or_else(|| anyhow!("{NO_MODEL_HELP}")),
+    session: Option<&DecisionSession>,
+    wanted: Option<&DecisionModelRef>,
+) -> DecisionResult<ResolvedModel> {
+    if let Some(entry) = service.model_entry_for(session, wanted).await {
+        return Ok(ResolvedModel {
+            model_ref: entry.model_ref(),
+            display: entry.display_name.clone(),
+            tier: entry.tier,
+        });
     }
+    let opened = service.resolve_for(session, wanted).await?;
+    Ok(ResolvedModel {
+        model_ref: opened.model_ref(),
+        display: opened.display_name(),
+        tier: opened.tier(),
+    })
+}
+
+/// What stderr says before an ad hoc decision about a chat is sent. A public
+/// model is named, as it is with no chat, unless the chat's tier refuses it
+/// anyway (a private chat with privacy on). A chat that is not private keeps
+/// the text in its decision history, at the chat's reach, so that is said too.
+pub fn session_warnings(
+    chat_private: bool,
+    enforced: bool,
+    display: &str,
+    tier: ProviderTier,
+) -> Vec<String> {
+    let mut lines = Vec::new();
+    if tier == ProviderTier::Public && !(chat_private && enforced) {
+        lines.push(public_model_warning(display));
+    }
+    if enforced && !chat_private {
+        lines.push(PUBLIC_CHAT_LOG_NOTE.to_string());
+    }
+    lines
+}
+
+/// What a terminal is told when it records a decision in a chat that is not
+/// private.
+pub const PUBLIC_CHAT_LOG_NOTE: &str =
+    "note: this chat is not private, so the text you send is kept in its decision history, \
+     where public chats can read it. For private text, leave out --session or name a private \
+     chat.";
+
+/// The requests `decisions` came from, and their usage summed once per
+/// request: decisions that share a request id share its usage.
+pub fn request_usage<'a>(
+    decisions: impl IntoIterator<Item = &'a Decision>,
+) -> (usize, DecisionUsage) {
+    let mut seen = std::collections::HashSet::new();
+    decisions
+        .into_iter()
+        .filter(|decision| seen.insert(decision.request_id.as_str()))
+        .fold(
+            (0, DecisionUsage::default()),
+            |(requests, usage), decision| (requests + 1, usage + decision.usage),
+        )
+}
+
+/// `about $0.12`, or `less than $0.01` for the fractions of a cent most
+/// decision runs cost.
+fn format_usd(usd: f64) -> String {
+    if usd < 0.005 {
+        "less than $0.01".to_string()
+    } else {
+        format!("about ${usd:.2}")
+    }
+}
+
+/// The stderr line a run with no `--session` ends with: the provider bills
+/// the call and nothing in Biorouter records it, so the person is told what
+/// it used. `model` is how the run names its model, `provider/name`
+/// ([`PinnedModel::label`]). `cost` is the dollars when the model has a price,
+/// `None` when it has none (a local Ollama model). `None` when the model
+/// reported no usage.
+pub fn usage_line(
+    model: &str,
+    requests: usize,
+    usage: DecisionUsage,
+    cost: Option<f64>,
+) -> Option<String> {
+    usage.billed_total()?;
+    let tokens = |count: Option<i64>| {
+        count.map_or_else(
+            || "unknown".to_string(),
+            |n| group_thousands(usize::try_from(n).unwrap_or(0)),
+        )
+    };
+    let price = cost
+        .filter(|usd| usd.is_finite() && *usd >= 0.0)
+        .map_or_else(String::new, |usd| format!(", {}", format_usd(usd)));
+    Some(format!(
+        "usage: {} on {model}: {} input and {} output tokens{price}. Without --session this is \
+         not recorded in Biorouter's usage.",
+        plural(requests, "request", "requests"),
+        tokens(usage.input_tokens),
+        tokens(usage.output_tokens),
+    ))
+}
+
+/// Print [`usage_line`] for a run that named no chat, after its results.
+fn report_unrecorded_usage<'a>(
+    target: &Target<'_>,
+    decisions: impl IntoIterator<Item = &'a Decision>,
+) {
+    if target.session.is_some() {
+        return;
+    }
+    let RunModel::Pinned(pinned) = target.model else {
+        return;
+    };
+    let model = &pinned.model_ref;
+    let (requests, usage) = request_usage(decisions);
+    let tokens = |count: Option<i64>| u64::try_from(count.unwrap_or(0)).unwrap_or(0);
+    let cost = biorouter::providers::pricing::estimate_cost_usd(
+        &model.provider,
+        &model.model,
+        tokens(usage.input_tokens),
+        tokens(usage.output_tokens),
+    );
+    if let Some(line) = usage_line(&pinned.label, requests, usage, cost) {
+        eprintln!("{line}");
+    }
+}
+
+/// The model a run is pinned to, and how the run names it.
+#[derive(Debug, Clone, PartialEq)]
+struct PinnedModel {
+    model_ref: DecisionModelRef,
+    /// `provider/name`, by the listing's name (`baseten_decision/mammoth-1`),
+    /// which is what `--model` takes and the docs show, not the Baseten slug.
+    label: String,
+}
+
+/// The model a run sends to, or, for a run about a chat, why none could be
+/// chosen. That run then logs the failure in the chat's decision history once
+/// it has read the text, as `POST /decisions/decide` does, and fails. A run
+/// with no chat has no history, so it fails at once.
+#[derive(Debug)]
+enum RunModel {
+    Pinned(PinnedModel),
+    Unresolved(DecisionError),
+}
+
+/// Resolve the run's model once and say what must be said before sending.
+async fn pin_model(
+    service: &DecisionService,
+    session: Option<&DecisionSession>,
+    wanted: Option<DecisionModelRef>,
+) -> DecisionResult<(PinnedModel, Vec<String>)> {
+    let resolved = resolve_run_model(service, session, wanted.as_ref()).await?;
+    let lines = match session {
+        Some(session) => session_warnings(
+            session.classification.is_private(),
+            session.enforced,
+            &resolved.display,
+            resolved.tier,
+        ),
+        None if resolved.tier == ProviderTier::Public => {
+            vec![public_model_warning(&resolved.display)]
+        }
+        None => Vec::new(),
+    };
+    let label = format!("{}/{}", resolved.model_ref.provider, resolved.display);
+    Ok((
+        PinnedModel {
+            model_ref: resolved.model_ref,
+            label,
+        },
+        lines,
+    ))
 }
 
 /// Read the state from `--text`, else stdin. A terminal on stdin is refused
@@ -842,7 +962,7 @@ pub async fn handle_decide(options: DecideOptions) -> Result<()> {
     let target = Target {
         service,
         session: session.as_ref(),
-        model: model.as_ref(),
+        model: &model,
         template: &DecisionRequest {
             questions: std::iter::once((options.name.clone(), question.clone())).collect(),
             context: DecisionContext::Text(String::new()),
@@ -859,7 +979,7 @@ pub async fn handle_decide(options: DecideOptions) -> Result<()> {
 struct Target<'a> {
     service: &'static DecisionService,
     session: Option<&'a DecisionSession>,
-    model: Option<&'a DecisionModelRef>,
+    model: &'a RunModel,
     /// The questions, held in a request so this module needs no direct
     /// dependency on the map crate that names their type.
     template: &'a DecisionRequest,
@@ -867,14 +987,18 @@ struct Target<'a> {
 }
 
 /// The chat, when `--session` names one (checked as `POST /decisions/decide`
-/// checks it, and logged into), and the model: the one asked for, else for a
-/// chat the service's own choice, else the ad hoc resolution, which warns
-/// about a public model.
+/// checks it, and logged into), and the model, resolved once by the service's
+/// own order and pinned for the whole run, so a long `--batch` never moves to
+/// another model partway (an Ollama that stops answering lists nothing, and
+/// the automatic choice would then pick a hosted model). If the pinned model
+/// goes away, the run fails rather than sending the rest elsewhere. When no
+/// model can be chosen for the chat, the failure is returned as
+/// [`RunModel::Unresolved`], so the run logs it in the chat before it fails.
 async fn chat_and_model(
     options: &DecideOptions,
     service: &'static DecisionService,
     wanted: Option<DecisionModelRef>,
-) -> Result<(Option<DecisionSession>, Option<DecisionModelRef>)> {
+) -> Result<(Option<DecisionSession>, RunModel)> {
     match options.session.as_deref() {
         Some(session_id) => {
             let manager = Arc::new(SessionManager::instance());
@@ -896,15 +1020,36 @@ async fn chat_and_model(
                 .map_err(|_| anyhow!("Session '{session_id}' not found."))?
                 .with_origin(DecisionOrigin::Adhoc, None)
                 .with_origin_label(Some("biorouter decide".to_string()));
-            Ok((Some(session), wanted))
+            let model = run_model_for_chat(service, &session, wanted).await;
+            Ok((Some(session), model))
         }
         None => {
-            let resolved = resolve_adhoc(service, wanted).await?;
-            if resolved.tier == ProviderTier::Public {
-                eprintln!("{}", public_model_warning(&resolved.display));
+            let (model, lines) = pin_model(service, None, wanted)
+                .await
+                .map_err(|e| anyhow!("{e}"))?;
+            for line in lines {
+                eprintln!("{line}");
             }
-            Ok((None, Some(resolved.model_ref)))
+            Ok((None, RunModel::Pinned(model)))
         }
+    }
+}
+
+/// The run model for a run about `session`, its warnings printed. A failure
+/// is kept for the run to log in the chat (see [`RunModel`]).
+async fn run_model_for_chat(
+    service: &DecisionService,
+    session: &DecisionSession,
+    wanted: Option<DecisionModelRef>,
+) -> RunModel {
+    match pin_model(service, Some(session), wanted).await {
+        Ok((model, lines)) => {
+            for line in lines {
+                eprintln!("{line}");
+            }
+            RunModel::Pinned(model)
+        }
+        Err(error) => RunModel::Unresolved(error),
     }
 }
 
@@ -915,9 +1060,21 @@ async fn decide_text(options: &DecideOptions, target: &Target<'_>) -> Result<()>
         questions: target.template.questions.clone(),
         context: DecisionContext::Text(state),
     };
+    let model = match target.model {
+        RunModel::Pinned(pinned) => &pinned.model_ref,
+        RunModel::Unresolved(error) => {
+            if let Some(session) = target.session {
+                target
+                    .service
+                    .record_unresolved(session, &request, error)
+                    .await;
+            }
+            bail!("{error}");
+        }
+    };
     let decisions = target
         .service
-        .decide(target.session, target.model, &request)
+        .decide(target.session, Some(model), &request)
         .await
         .map_err(|e| anyhow!("{e}"))?;
     if options.json {
@@ -933,6 +1090,7 @@ async fn decide_text(options: &DecideOptions, target: &Target<'_>) -> Result<()>
         }
         eprintln!("{PROBABILITY_NOTE}");
     }
+    report_unrecorded_usage(target, &decisions);
     Ok(())
 }
 
@@ -960,13 +1118,27 @@ async fn decide_directory(options: &DecideOptions, target: &Target<'_>, dir: &Pa
             }
         }
     }
+    let model = match target.model {
+        RunModel::Pinned(pinned) => &pinned.model_ref,
+        RunModel::Unresolved(error) => {
+            if let (Some(session), false) = (target.session, chunks.is_empty()) {
+                let unsent: Vec<DecisionChunk> =
+                    chunks.iter().map(|(_, chunk)| chunk.clone()).collect();
+                target
+                    .service
+                    .record_unresolved_batch(session, &target.template.questions, &unsent, error)
+                    .await;
+            }
+            bail!("{error}");
+        }
+    };
     for group in chunks.chunks(BATCH_GROUP) {
         let positions: Vec<usize> = group.iter().map(|(index, _)| *index).collect();
         let outcomes = target
             .service
             .decide_many(
                 target.session,
-                target.model,
+                Some(model),
                 &target.template.questions,
                 group.iter().map(|(_, chunk)| chunk.clone()).collect(),
             )
@@ -1003,6 +1175,7 @@ async fn decide_directory(options: &DecideOptions, target: &Target<'_>, dir: &Pa
         }
         eprintln!("{PROBABILITY_NOTE}");
     }
+    report_unrecorded_usage(target, rows.iter().filter_map(|row| row.decision.as_ref()));
     Ok(())
 }
 
@@ -1412,6 +1585,7 @@ pub(crate) mod tests {
                 affiliation: None,
                 adapter: DecisionAdapter::SystemOne,
                 local: true,
+                load_refusal: None,
             },
             DecisionModelEntry {
                 provider: "baseten_decision".into(),
@@ -1423,6 +1597,7 @@ pub(crate) mod tests {
                 affiliation: None,
                 adapter: DecisionAdapter::SystemOne,
                 local: false,
+                load_refusal: None,
             },
         ];
         let lines = render_model_list(&entries);
@@ -1435,10 +1610,474 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn a_model_ollama_cannot_load_is_listed_with_its_fix() {
+        let refusal = biorouter::providers::decision::system_one::ollama_load_refusal_sentence(
+            "clef-flash:latest",
+        );
+        let entry = DecisionModelEntry {
+            provider: "ollama_decision".into(),
+            model: "clef-flash:latest".into(),
+            display_name: "clef-flash:latest".into(),
+            context_tokens: 16_384,
+            kinds: vec![DecisionKindTag::Binary],
+            tier: ProviderTier::Private,
+            affiliation: None,
+            adapter: DecisionAdapter::SystemOne,
+            local: true,
+            load_refusal: Some(refusal.clone()),
+        };
+        let lines = render_model_list(&[entry]);
+        assert_eq!(lines.len(), 3, "{lines:?}");
+        assert!(
+            lines[1].ends_with("system_one · cannot be loaded"),
+            "{}",
+            lines[1]
+        );
+        assert_eq!(lines[2], format!("    {refusal}"));
+        assert!(lines[2].contains("ollama pull clef-flash:latest"));
+    }
+
+    /// A run with no chat is billed by the provider and recorded nowhere, so
+    /// it ends with what it used: per request once, however many questions
+    /// the request carried, and the dollars only when the model has a price.
+    #[test]
+    fn a_run_with_no_chat_says_what_it_used() {
+        let usage = |input, output| DecisionUsage {
+            input_tokens: Some(input),
+            output_tokens: Some(output),
+        };
+        let mut a = yes_no(0.9);
+        a.usage = usage(1_000_000, 2);
+        let mut a_second_question = a.clone();
+        a_second_question.question = "edss".into();
+        let mut b = yes_no(0.2);
+        b.request_id = "r2".into();
+        b.usage = usage(200_000, 1);
+        let (requests, total) = request_usage([&a, &a_second_question, &b]);
+        assert_eq!(requests, 2);
+        assert_eq!(total, usage(1_200_000, 3));
+
+        let mammoth = "baseten_decision/mammoth-1";
+        let cost = biorouter::providers::pricing::estimate_cost_usd(
+            "baseten_decision",
+            "mammoth-1",
+            1_200_000,
+            3,
+        );
+        assert_eq!(
+            usage_line(mammoth, requests, total, cost).as_deref(),
+            Some(
+                "usage: 2 requests on baseten_decision/mammoth-1: 1,200,000 input and 3 output \
+                 tokens, about $0.12. Without --session this is not recorded in Biorouter's \
+                 usage."
+            )
+        );
+        let line = usage_line(
+            "baseten_decision/joey-1",
+            1,
+            usage(120, 1),
+            Some(0.000_001_2),
+        )
+        .unwrap();
+        assert!(
+            line.starts_with(
+                "usage: 1 request on baseten_decision/joey-1: 120 input and 1 output tokens, \
+                 less than $0.01."
+            ),
+            "{line}"
+        );
+        let local = "ollama_decision/tev1:0.8b";
+        let line = usage_line(local, 1, usage(120, 1), None).unwrap();
+        assert!(
+            line.ends_with(
+                "120 input and 1 output tokens. Without --session this is not recorded in \
+                 Biorouter's usage."
+            ),
+            "{line}"
+        );
+        assert!(!line.contains('$'), "a local model has no price: {line}");
+        assert_eq!(usage_line(local, 1, DecisionUsage::default(), None), None);
+        let line = usage_line(
+            local,
+            1,
+            DecisionUsage {
+                input_tokens: Some(9),
+                output_tokens: None,
+            },
+            None,
+        )
+        .unwrap();
+        assert!(line.contains("9 input and unknown output tokens"), "{line}");
+    }
+
+    #[test]
     fn the_public_warning_is_one_line_naming_the_model() {
         let line = public_model_warning("elephant-1");
         assert!(!line.contains('\n'));
         assert!(line.starts_with("warning: elephant-1 is hosted outside your institution"));
+    }
+
+    /// What a run about a chat says before it sends: a hosted model by name
+    /// (unless the private chat's tier refuses it anyway), and, for a chat that
+    /// is not private, that the text stays in its decision history.
+    #[test]
+    fn session_warnings_name_a_public_model_and_a_public_chat_log() {
+        let hosted = public_model_warning("joey-1");
+        let note = PUBLIC_CHAT_LOG_NOTE.to_string();
+        assert_eq!(
+            session_warnings(false, true, "joey-1", ProviderTier::Public),
+            vec![hosted.clone(), note.clone()]
+        );
+        assert_eq!(
+            session_warnings(false, true, "tev1:0.8b", ProviderTier::Private),
+            vec![note]
+        );
+        assert!(session_warnings(true, true, "tev1:0.8b", ProviderTier::Private).is_empty());
+        assert!(
+            session_warnings(true, true, "joey-1", ProviderTier::Public).is_empty(),
+            "the private chat refuses the hosted model before anything is sent"
+        );
+        assert_eq!(
+            session_warnings(true, false, "joey-1", ProviderTier::Public),
+            vec![hosted.clone()],
+            "privacy off: the hosted model reads the text, so it is named"
+        );
+        assert_eq!(
+            session_warnings(false, false, "joey-1", ProviderTier::Public),
+            vec![hosted]
+        );
+        assert!(session_warnings(false, false, "tev1:0.8b", ProviderTier::Private).is_empty());
+        assert!(!PUBLIC_CHAT_LOG_NOTE.contains('\n'));
+    }
+
+    mod pinned {
+        use super::*;
+        use biorouter::decision::types::{ModelVerdicts, QuestionVerdict};
+        use biorouter::decision::{
+            DecisionCaps, DecisionError, DecisionModel, DecisionModelSource, DecisionResult,
+            DecisionUseGate,
+        };
+        use biorouter::privacy::{ModelAffiliation, SessionClassification};
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Mutex;
+
+        fn listed(model: &str, tier: ProviderTier) -> DecisionModelEntry {
+            let local = tier == ProviderTier::Private;
+            DecisionModelEntry {
+                provider: if local {
+                    "ollama_decision"
+                } else {
+                    "baseten_decision"
+                }
+                .into(),
+                model: model.into(),
+                display_name: model.into(),
+                context_tokens: 4_096,
+                kinds: vec![DecisionKindTag::Binary],
+                tier,
+                affiliation: local.then_some(ModelAffiliation::Local),
+                adapter: DecisionAdapter::SystemOne,
+                local,
+                load_refusal: None,
+            }
+        }
+
+        /// A local model and a hosted one; the local one can leave the
+        /// listing, as it does when Ollama stops answering.
+        struct Lab {
+            local_gone: Mutex<bool>,
+            hosted_calls: Arc<AtomicUsize>,
+        }
+
+        struct Answers(DecisionModelEntry, Arc<AtomicUsize>);
+
+        #[async_trait::async_trait]
+        impl DecisionModel for Answers {
+            fn model_ref(&self) -> DecisionModelRef {
+                self.0.model_ref()
+            }
+            fn display_name(&self) -> String {
+                self.0.display_name.clone()
+            }
+            fn tier(&self) -> ProviderTier {
+                self.0.tier
+            }
+            fn affiliation(&self) -> Option<ModelAffiliation> {
+                self.0.affiliation
+            }
+            fn caps(&self) -> DecisionCaps {
+                DecisionCaps {
+                    kinds: self.0.kinds.clone(),
+                    max_questions: 64,
+                    context_tokens: self.0.context_tokens,
+                    max_concurrency: 2,
+                    max_request_bytes: None,
+                    local: self.0.local,
+                }
+            }
+            async fn decide(&self, request: &DecisionRequest) -> DecisionResult<ModelVerdicts> {
+                self.1.fetch_add(1, Ordering::SeqCst);
+                Ok(ModelVerdicts {
+                    verdicts: request
+                        .questions
+                        .keys()
+                        .map(|name| QuestionVerdict {
+                            question: name.clone(),
+                            probabilities: [("yes".to_string(), 0.9), ("no".to_string(), 0.1)]
+                                .into_iter()
+                                .collect(),
+                            source: ProbabilitySource::Native,
+                            calibrated: true,
+                            reported_choice: None,
+                            raw: serde_json::Value::Null,
+                        })
+                        .collect(),
+                    usage: DecisionUsage::default(),
+                    served_model: None,
+                })
+            }
+        }
+
+        #[async_trait::async_trait]
+        impl DecisionModelSource for Lab {
+            async fn list(&self) -> Vec<DecisionModelEntry> {
+                let mut entries = Vec::new();
+                if !*self.local_gone.lock().unwrap() {
+                    entries.push(listed("tev1:0.8b", ProviderTier::Private));
+                }
+                // Listed as Baseten lists it: by slug, with the alias as its name.
+                entries.push(DecisionModelEntry {
+                    model: "decision-models/baseten-joey-2b-latest".into(),
+                    ..listed("joey-1", ProviderTier::Public)
+                });
+                entries
+            }
+            async fn open(
+                &self,
+                wanted: &DecisionModelRef,
+            ) -> DecisionResult<Arc<dyn DecisionModel>> {
+                let entry = self
+                    .list()
+                    .await
+                    .into_iter()
+                    .find(|e| e.answers_to(wanted))
+                    .ok_or_else(|| DecisionError::NoModel("not listed".into()))?;
+                let calls = if entry.tier == ProviderTier::Public {
+                    self.hosted_calls.clone()
+                } else {
+                    Arc::new(AtomicUsize::new(0))
+                };
+                Ok(Arc::new(Answers(entry, calls)))
+            }
+        }
+
+        struct Open;
+
+        #[async_trait::async_trait]
+        impl DecisionUseGate for Open {
+            async fn check(
+                &self,
+                _: &DecisionSession,
+                _: &dyn DecisionModel,
+            ) -> DecisionResult<()> {
+                Ok(())
+            }
+        }
+
+        fn chunk(id: &str) -> DecisionChunk {
+            DecisionChunk {
+                id: id.into(),
+                context: DecisionContext::Text(format!("SYNTHETIC NOTE {id}")),
+            }
+        }
+
+        /// `biorouter decide --session` resolves the model once, by the
+        /// service's own order, warns about that model, and pins it, so a
+        /// later group of a batch fails when the local model leaves the
+        /// listing instead of reaching the hosted one.
+        #[tokio::test]
+        async fn a_run_about_a_chat_pins_the_services_choice() {
+            let lab = Arc::new(Lab {
+                local_gone: Mutex::new(false),
+                hosted_calls: Arc::new(AtomicUsize::new(0)),
+            });
+            let service = DecisionService::new(lab.clone())
+                .with_use_gate(Arc::new(Open))
+                .with_default_model(None);
+            let public = DecisionSession::new("s", SessionClassification::Public, true);
+            let (pinned, lines) = pin_model(&service, Some(&public), None).await.unwrap();
+            assert_eq!(
+                pinned.model_ref,
+                service
+                    .resolve_for(Some(&public), None)
+                    .await
+                    .unwrap()
+                    .model_ref(),
+                "the terminal chooses what the service would"
+            );
+            assert_eq!(pinned.model_ref.model, "tev1:0.8b");
+            assert_eq!(pinned.label, "ollama_decision/tev1:0.8b");
+            assert_eq!(lines, vec![PUBLIC_CHAT_LOG_NOTE.to_string()]);
+
+            let questions = DecisionRequest {
+                questions: std::iter::once((
+                    "q".to_string(),
+                    Question {
+                        instructions: "Does the note state MS?".into(),
+                        kind: DecisionKind::Binary {},
+                        threshold: None,
+                    },
+                ))
+                .collect(),
+                context: DecisionContext::Text(String::new()),
+            }
+            .questions;
+            let first = service
+                .decide_many(
+                    Some(&public),
+                    Some(&pinned.model_ref),
+                    &questions,
+                    vec![chunk("a")],
+                )
+                .await
+                .unwrap();
+            assert!(first[0].decisions.is_some());
+
+            *lab.local_gone.lock().unwrap() = true;
+            assert!(service
+                .decide_many(
+                    Some(&public),
+                    Some(&pinned.model_ref),
+                    &questions,
+                    vec![chunk("b")]
+                )
+                .await
+                .is_err());
+            assert_eq!(
+                lab.hosted_calls.load(Ordering::SeqCst),
+                0,
+                "nothing moved to the hosted model"
+            );
+
+            // A new run now chooses the hosted model, and says so first.
+            let (pinned, lines) = pin_model(&service, Some(&public), None).await.unwrap();
+            assert_eq!(
+                pinned.model_ref.model,
+                "decision-models/baseten-joey-2b-latest"
+            );
+            assert_eq!(
+                pinned.label, "baseten_decision/joey-1",
+                "the usage line names the model as --model and the docs do"
+            );
+            assert_eq!(
+                lines,
+                vec![
+                    public_model_warning("joey-1"),
+                    PUBLIC_CHAT_LOG_NOTE.to_string()
+                ]
+            );
+            let (alone, lines) = pin_model(&service, None, None).await.unwrap();
+            assert_eq!(
+                alone.model_ref.model,
+                "decision-models/baseten-joey-2b-latest"
+            );
+            assert_eq!(lines, vec![public_model_warning("joey-1")]);
+            // A private chat may use neither: refused before anything is sent.
+            let private = DecisionSession::new("p", SessionClassification::Private, true);
+            assert!(pin_model(&service, Some(&private), None).await.is_err());
+            assert_eq!(lab.hosted_calls.load(Ordering::SeqCst), 0);
+        }
+
+        /// Every row the service hands its sink.
+        #[derive(Default)]
+        struct Rows(Mutex<Vec<biorouter::decision::DecisionLogEntry>>);
+
+        #[async_trait::async_trait]
+        impl biorouter::decision::DecisionSink for Rows {
+            async fn record(&self, entry: biorouter::decision::DecisionLogEntry) -> Result<()> {
+                self.0.lock().unwrap().push(entry);
+                Ok(())
+            }
+        }
+
+        fn options(text: Option<&str>, batch: Option<PathBuf>) -> DecideOptions {
+            DecideOptions {
+                model: None,
+                ask: "Does the note state MS?".into(),
+                name: DEFAULT_QUESTION_NAME.into(),
+                choices: Vec::new(),
+                levels: None,
+                threshold: None,
+                threshold_on: None,
+                text: text.map(str::to_string),
+                batch,
+                session: Some("p".into()),
+                json: true,
+            }
+        }
+
+        /// `biorouter decide --session` on a private chat that only a hosted
+        /// model could answer is refused, and the refusal is logged in the
+        /// chat's decision history, as `POST /decisions/decide` logs it. It
+        /// used to end before the service saw it, so no row was written.
+        #[tokio::test]
+        async fn a_refused_run_about_a_chat_is_logged_in_the_chat() {
+            let lab = Arc::new(Lab {
+                local_gone: Mutex::new(true),
+                hosted_calls: Arc::new(AtomicUsize::new(0)),
+            });
+            let rows = Arc::new(Rows::default());
+            let service: &'static DecisionService = Box::leak(Box::new(
+                DecisionService::new(lab.clone())
+                    .with_use_gate(Arc::new(Open))
+                    .with_default_model(None)
+                    .with_sink(rows.clone()),
+            ));
+            let private = DecisionSession::new("p", SessionClassification::Private, true);
+            let model = run_model_for_chat(service, &private, None).await;
+            assert!(
+                matches!(model, RunModel::Unresolved(DecisionError::Refused(_))),
+                "{model:?}"
+            );
+            let single = options(Some("SYNTHETIC NOTE"), None);
+            let question = build_question(&single).unwrap();
+            let target = Target {
+                service,
+                session: Some(&private),
+                model: &model,
+                template: &DecisionRequest {
+                    questions: std::iter::once((single.name.clone(), question.clone())).collect(),
+                    context: DecisionContext::Text(String::new()),
+                },
+                question: &question,
+            };
+
+            assert!(decide_text(&single, &target).await.is_err());
+            {
+                let logged = rows.0.lock().unwrap();
+                assert_eq!(logged.len(), 1, "one refused row");
+                assert_eq!(logged[0].session_id.as_deref(), Some("p"));
+                assert_eq!(
+                    logged[0].outcome,
+                    biorouter::decision::DecisionOutcome::Refused
+                );
+                assert_eq!(logged[0].context.byte_len(), "SYNTHETIC NOTE".len());
+            }
+
+            let dir = tempfile::tempdir().unwrap();
+            std::fs::write(dir.path().join("a.txt"), "SYNTHETIC NOTE A").unwrap();
+            std::fs::write(dir.path().join("b.txt"), "SYNTHETIC NOTE B").unwrap();
+            let batch = options(None, Some(dir.path().to_path_buf()));
+            assert!(decide_directory(&batch, &target, dir.path()).await.is_err());
+            let logged = rows.0.lock().unwrap();
+            assert_eq!(logged.len(), 2, "one row for the whole batch");
+            assert_eq!(
+                logged[1].outcome,
+                biorouter::decision::DecisionOutcome::Refused
+            );
+            assert!(logged[1].batch_id.is_some());
+            assert_eq!(lab.hosted_calls.load(Ordering::SeqCst), 0, "nothing sent");
+        }
     }
 
     #[test]

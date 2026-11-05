@@ -4,8 +4,12 @@
 //! There nothing can produce the proof a keyed daemon asks a settings write for,
 //! so `routes::decisions` leaves the reach gate as the whole of the gate, as
 //! SD-11 does for Stop: a browser on a `serve` host can set a chat's monitors.
-//! A desktop daemon that was meant to receive a key and did not keeps the
-//! refusal, because that is a fault a restart repairs, not a `serve` host.
+//! That includes a steer monitor (owner ruling: the route does not refuse
+//! one; the steer note is framed as data where it is used). A subagent's chat
+//! is the exception, refused with the sentence `/reply` and `/agent/stop`
+//! answer there. A desktop daemon that was meant to receive a key and did not
+//! keeps the refusal, because that is a fault a restart repairs, not a `serve`
+//! host.
 //!
 //! ⚠ Its own test binary on purpose: the installed digest is a process global
 //! (`OnceLock`), so a binary that installs a key can never observe a keyless
@@ -25,7 +29,9 @@ use biorouter::model::ModelConfig;
 use biorouter::privacy::SessionClassification;
 use biorouter::session::session_manager::SessionType;
 use biorouter_server::auth::{user_action_proof, UserActionProof};
-use biorouter_server::routes::decisions::DECISION_SETTINGS_KEY_MISSING;
+use biorouter_server::routes::decisions::{
+    DECISION_SETTINGS_KEY_MISSING, DECISION_SETTINGS_SUBAGENT_NO_KEY,
+};
 use biorouter_server::routes::session_reach::{CALLER_PROVIDER_HEADER, SESSION_REACH_NO_KEY};
 use biorouter_server::state::AppState;
 use serde_json::{json, Value};
@@ -46,12 +52,20 @@ fn assert_the_daemon_is_keyless() {
 }
 
 async fn seed(state: &Arc<AppState>, tier: SessionClassification) -> String {
+    seed_typed(state, tier, SessionType::User).await
+}
+
+async fn seed_typed(
+    state: &Arc<AppState>,
+    tier: SessionClassification,
+    session_type: SessionType,
+) -> String {
     let manager = state.session_manager();
     let session = manager
         .create_session(
             std::env::temp_dir(),
-            format!("Decision settings, keyless, {tier:?} (test fixture)"),
-            SessionType::User,
+            format!("Decision settings, keyless, {tier:?} {session_type} (test fixture)"),
+            session_type,
         )
         .await
         .unwrap();
@@ -69,6 +83,10 @@ async fn seed(state: &Arc<AppState>, tier: SessionClassification) -> String {
 }
 
 fn settings() -> Value {
+    settings_with_action("notify")
+}
+
+fn settings_with_action(action: &str) -> Value {
     json!({
         "monitors": [{
             "id": "form",
@@ -78,9 +96,13 @@ fn settings() -> Value {
                 "kind": { "binary": {} }
             },
             "threshold": 0.85,
-            "action": "notify"
+            "action": action
         }]
     })
+}
+
+fn chat_question() -> Value {
+    json!({ "question": { "instructions": "Is it done?", "kind": { "binary": {} } } })
 }
 
 /// One request through the served tree, with the headers a browser tab on a
@@ -163,7 +185,7 @@ async fn a_desktop_daemon_that_lost_its_key_keeps_the_refusal() {
         format!("/sessions/{chat}/decision-chat"),
     ] {
         let body = if uri.ends_with("decision-chat") {
-            json!({ "question": { "instructions": "Is it done?", "kind": { "binary": {} } } })
+            chat_question()
         } else {
             settings()
         };
@@ -187,4 +209,118 @@ async fn a_desktop_daemon_that_lost_its_key_keeps_the_refusal() {
 
     biorouter_server::launch::record_launch_state(false);
     let _ = state.session_manager().delete_session(&chat).await;
+}
+
+// Owner ruling: on a keyless daemon the route does not refuse a steer
+// monitor. A shell reaches the same store through `biorouter session monitors`
+// with no daemon at all, so a route refusal would stop only the person in the
+// browser; the steer note is framed as data where it is used instead. Pinned so
+// the admission reads as a decision, not an accident.
+#[tokio::test(flavor = "multi_thread")]
+#[serial]
+async fn a_browser_on_a_keyless_daemon_may_add_a_steer_monitor() {
+    assert_the_daemon_is_keyless();
+    biorouter_server::launch::record_launch_state(false);
+    let state = AppState::new().await.unwrap();
+
+    let chat = seed(&state, SessionClassification::Public).await;
+    let uri = format!("/sessions/{chat}/decision-settings");
+    let (status, body) = send(
+        &state,
+        "PUT",
+        &uri,
+        Some(settings_with_action("steer")),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let (status, body) = send(&state, "GET", &uri, None, None).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let stored: Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(stored["monitors"][0]["action"], "steer", "{body}");
+
+    let _ = state.session_manager().delete_session(&chat).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[serial]
+async fn a_browser_on_a_keyless_daemon_sets_a_decision_chats_question() {
+    assert_the_daemon_is_keyless();
+    biorouter_server::launch::record_launch_state(false);
+    let state = AppState::new().await.unwrap();
+
+    let chat = seed(&state, SessionClassification::Public).await;
+    let uri = format!("/sessions/{chat}/decision-chat");
+    let (status, body) = send(&state, "PUT", &uri, Some(chat_question()), None).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let (status, body) = send(&state, "GET", &uri, None, None).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let stored: Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(
+        stored["settings"]["question"]["instructions"], "Is it done?",
+        "{body}"
+    );
+
+    let _ = state.session_manager().delete_session(&chat).await;
+}
+
+// SD-11 keeps a subagent's tab refused on a keyless daemon for Stop and
+// steering, and a subagent's turns load its own chat's monitors, so neither
+// write reaches a subagent's chat here. Reading it is not a write.
+#[tokio::test(flavor = "multi_thread")]
+#[serial]
+async fn a_keyless_write_never_reaches_a_subagents_chat() {
+    assert_the_daemon_is_keyless();
+    biorouter_server::launch::record_launch_state(false);
+    let state = AppState::new().await.unwrap();
+
+    let subagent = seed_typed(&state, SessionClassification::Public, SessionType::SubAgent).await;
+    for (uri, body) in [
+        (
+            format!("/sessions/{subagent}/decision-settings"),
+            settings(),
+        ),
+        (
+            format!("/sessions/{subagent}/decision-chat"),
+            chat_question(),
+        ),
+    ] {
+        let (status, got) = send(&state, "PUT", &uri, Some(body), None).await;
+        // The plain sentence, word for word (this module answers plain text,
+        // not `/agent/stop`'s JSON), which `biorouter session monitors` prints
+        // as the reason.
+        assert_eq!(
+            (status, got.as_str()),
+            (StatusCode::FORBIDDEN, DECISION_SETTINGS_SUBAGENT_NO_KEY),
+            "{uri}"
+        );
+    }
+    let (status, body) = send(
+        &state,
+        "GET",
+        &format!("/sessions/{subagent}/decision-settings"),
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let stored: Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(
+        stored["monitors"],
+        json!([]),
+        "a refused write stored nothing: {body}"
+    );
+    let (status, body) = send(
+        &state,
+        "GET",
+        &format!("/sessions/{subagent}/decision-chat"),
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let stored: Value = serde_json::from_str(&body).unwrap();
+    assert!(stored["settings"].is_null(), "{body}");
+
+    let _ = state.session_manager().delete_session(&subagent).await;
 }
