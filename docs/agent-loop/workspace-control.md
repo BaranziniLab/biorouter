@@ -1,6 +1,6 @@
 # Workspace control
 
-> **What this is.** A task-oriented guide to running more than one BioRouter conversation at once: laying them out across tabs, panes and windows, delegating work to subagents you can watch, checking on what is running, and doing all of it from the terminal as well as the desktop app.
+> **What this is.** A task-oriented guide to running more than one BioRouter conversation at once: laying them out across tabs, panes and windows, delegating work to subagents that run in the background and that you can open and watch, checking on what is running, and doing all of it from the terminal as well as the desktop app.
 > **Status:** Current.
 > **Audience:** end users — researchers organising a piece of work across several conversations.
 
@@ -15,24 +15,24 @@ Three jobs account for nearly all of it.
 | Job | What you say | What you get |
 |---|---|---|
 | **Run several conversations side by side** | "Open a second chat for the QC pass, in a split, and start it on the flowcell report." | A new session in its own pane, already working, sharing your working directory unless you asked otherwise |
-| **Delegate and keep working** | "Delegate the test suite to a subagent and tell me when it's done." | A child conversation in its own tab you can read, steer and stop, and a parent that waits on it properly instead of polling |
+| **Delegate and keep working** | "Delegate the test suite to a subagent and tell me when it's done." | A child conversation running in the background, listed in the chat's side panel where you can open it as a tab to read, steer and stop it, and a parent that waits on it properly instead of polling |
 | **Fix another conversation's setup from here** | "Give the transcriptomics chat the single-cell skill." | That chat reconfigured, with a confirmation card first and a toast in its tab afterwards |
 
 Everything below is the mechanics behind those three.
 
 ## Turning it on
 
-Workspace control ships in two sizes. The small one is automatic: any session allowed to delegate gets `subagent`, the child-scoped supervision tools (`workspace_read_conversation`, `workspace_close`, `workspace_watch`), and the two that make cross-chat injection usable — `workspace_list` to see which conversations exist and which are running, and `workspace_send_prompt` to write into one. The full surface — changing another conversation's tool set with `workspace_set_tools`, opening and moving tabs with `workspace_open`, reading the preview panel — is an explicit opt-in.
+Workspace control ships in two sizes. The small one is automatic: any session allowed to delegate gets `subagent`, `workspace_orchestrate` for work you ask to run in phases ([Orchestration phases](orchestration-phases.md)), the child-scoped supervision tools (`workspace_read_conversation`, `workspace_close`, `workspace_watch`), and the two that make cross-chat injection usable — `workspace_list` to see which conversations exist and which are running, and `workspace_send_prompt` to write into one. The full surface (changing another conversation's tool set with `workspace_set_tools`, opening and moving tabs with `workspace_open`, reading the preview panel) comes with the Workspace Control capability itself.
 
-The line between the two is **message versus capability change**: the automatic tier can talk to another conversation, and only the opt-in can re-tool one.
+The line between the two is **message versus capability change**: the automatic tier can talk to another conversation, and only the full capability can re-tool one.
 
-In the desktop app, open **Extensions** in the left sidebar and turn on **Workspace Control**. From the terminal, run `biorouter configure`, choose `Toggle Extensions`, and enable `workspace`. The extension is registered `default_enabled: false`; nothing enables it for you.
+Workspace Control is registered on by default (`default_enabled: true` in `crates/biorouter/src/agents/extension.rs`, pinned by `workspace_is_a_default_on_capability_granting_its_whole_surface`). To turn it off or back on in the desktop app, open **Extensions** in the left sidebar and use the **Workspace Control** switch. From the terminal, run `biorouter configure`, choose `Toggle Extensions`, and toggle `workspace`. Turning it off leaves the automatic tier in place for a session that may delegate.
 
 Jobs 1 and 3 need that full surface. Job 2 does not — but "allowed to delegate" is a real gate, and it is the likeliest reason a request for a subagent quietly does nothing.
 
 ### When delegation is allowed
 
-`Agent::subagents_enabled` (`crates/biorouter/src/agents/agent.rs:3711`) decides whether the spawn tool is offered at all, and it is consulted twice: once when the tool list is built, and again when a call arrives — so a model that simply remembers the name cannot spawn where delegation is off. It refuses with *Subagent delegation is not available in this session*.
+`Agent::subagents_enabled` (`crates/biorouter/src/agents/agent.rs`) decides whether the spawn tool, and `workspace_orchestrate` with it, is offered at all, and it is consulted twice: once when the tool list is built, and again when a call arrives — so a model that simply remembers the name cannot spawn where delegation is off. It refuses with *Subagent delegation is not available in this session*.
 
 All of the following must hold:
 
@@ -92,15 +92,19 @@ If the split is refused because the window is already at six panes, the agent is
 
 > **Note.** Opening a conversation never moves an existing one's working directory. Only a newly created session gets a directory, and it gets it at creation.
 
+### Opening subagent tabs automatically
+
+A subagent does not open a tab unless you ask for one. It runs in the background and is listed in the chat's side panel (see [Delegating work you can watch](#delegating-work-you-can-watch)). If you prefer the older behaviour, where each new subagent opened its own background tab, turn on **Settings → App → General → "Open subagent tabs automatically"**. The setting is stored as `BIOROUTER_WORKSPACE_OPEN_SUBAGENT_TABS` and is off by default. A spawn that asks for a tab, with `visible: true` or a `placement`, gets one whichever way the setting is, unless "Never open tabs automatically" (below) is on.
+
 ### Turning tabs off entirely
 
-If you would rather nothing ever appeared on its own, turn on **Settings → App → General → "Never open tabs automatically"**. Conversations and subagents still run; you get a notification naming them and open them from History when you want. The agent is explicitly told no tab opened, so it cannot report one. The setting is stored as `WORKSPACE_ANNOUNCE_ONLY` and is off by default.
+If you would rather nothing ever appeared on its own, turn on **Settings → App → General → "Never open tabs automatically"**. Conversations and subagents still run; you get a notification naming them and open them from the chat's side panel or from History when you want. The agent is explicitly told no tab opened, so it cannot report one. It wins over "Open subagent tabs automatically" and over a spawn that asks for a tab. The setting is stored as `WORKSPACE_ANNOUNCE_ONLY` and is off by default.
 
 ## Delegating work you can watch
 
 This section assumes delegation is available in the session — if asking for a subagent produces an ordinary answer instead, check [When delegation is allowed](#when-delegation-is-allowed) first.
 
-Ask for a subagent in plain language ("delegate the QC pass to a subagent") and, whenever the desktop app is open, the child opens in its own background tab carrying a **`sub`** badge and a link back to the conversation that spawned it. Inside that tab you can read the child's transcript as it streams, type into it to steer it mid-run, and stop it from the header.
+Ask for a subagent in plain language ("delegate the QC pass to a subagent") and the child starts in the background. No tab opens. The chat's side panel (the chat summary rail, or its header popover when the window is narrow) lists every subagent the chat started with its status, model and setup; hovering a row shows its extensions, skills and knowledge bases, and clicking it opens the child as a tab. That tab carries a **`sub`** badge and a link back to the conversation that spawned it. Inside it you can read the child's transcript as it streams, type into it to steer it mid-run, and stop it from the header. A tab opens on its own only when "Open subagent tabs automatically" is on, or when the agent asked for one with `visible: true` or a `placement`. The same list is in the browser (`biorouter serve`), in `biorouter session subagents <id>` and in the terminal UI's subagent pane.
 
 **Delegation and "open another chat" are different operations, and only one of them makes a subagent.** A subagent is a `sub_agent` session with its parent stamped on it before its first turn; that is what History nests, what the `sub` badge reads, and what "Show subagent runs" reveals. Only the `subagent` tool creates one. `workspace_open` starts a conversation **you** own, born with no parent — useful, but never your agent's delegate — and it refuses outright if asked for a subagent, pointing the agent at the right tool. So if you asked for three subagents and got three ordinary chats, that was [#111](https://github.com/BaranziniLab/biorouter/issues/111), now closed structurally rather than by advice; the full rule is the [session metadata contract](session-metadata-contract.md).
 
@@ -112,22 +116,19 @@ Three things about that tab that people get wrong:
 
 ### Fanning out
 
-At most **four** children *running at the same time* get a tab from one parent (`BIOROUTER_WORKSPACE_MAX_VISIBLE_CHILD_TABS`). Ask for ten in parallel and you get four tabs; the rest run in the background and appear in History nested under their parent. A spawn is never refused for hitting the cap — it is downgraded to a background run and the parent is told which children that happened to.
+When subagents open tabs (the setting is on, or the spawn asked for one), at most **four** children *running at the same time* get a tab from one parent (`BIOROUTER_WORKSPACE_MAX_VISIBLE_CHILD_TABS`). Ask for ten tabs in parallel and you get four; the rest run in the background and appear in the side panel and in History nested under their parent. A spawn is never refused for hitting the cap — it is downgraded to a background run and the parent is told which children that happened to.
 
 The cap counts *live* children, so a slot frees when a child finishes. Spawn four, wait, spawn four more, and you get tabs both times. It bounds the burst, not the running total.
 
-Tabs are not the only cap on a fan-out, though, and the other two are what actually decide how fast ten pieces of work get done. Only **eight** subagents run at a time (`SUBAGENT_SEMAPHORE`, `crates/biorouter/src/agents/subagent_tool.rs:52`): numbers nine and ten *queue* on that semaphore and do not start until a slot frees. With background handles off — the default — a queued child has no session and no tab yet; with `BIOROUTER_SUBAGENT_BACKGROUND` on, the session is created and the tab announced *before* the semaphore is acquired, so a queued child is visible but idle. The cap is per process, one daemon shared by every conversation in it, where the four-tab cap is per parent. And past **64** subagents in flight, queued and running counted together, a spawn is not queued but **refused**, with *Subagent limit reached: N already in flight (max 64)* (`subagent_tool.rs:709`). Both bounds, and the caveat about changing one of them, are in [the limits table](#the-limits-you-will-actually-meet).
+Tabs are not the only cap on a fan-out, though, and the other two are what actually decide how fast ten pieces of work get done. Only **eight** subagents run at a time (`SUBAGENT_SEMAPHORE`, `crates/biorouter/src/agents/subagent_tool.rs:52`): numbers nine and ten *queue* on that semaphore and do not start until a slot frees. Every spawn the agent makes is detached, so a queued child's session already exists: it is listed in the side panel as queued, and idle until a slot frees. The cap is per process, one daemon shared by every conversation in it, where the four-tab cap is per parent. And past **64** subagents in flight, queued and running counted together, a spawn is not queued but **refused**, with *Subagent limit reached: N already in flight (max 64)* (`subagent_tool.rs:709`). Both bounds, and the caveat about changing one of them, are in [the limits table](#the-limits-you-will-actually-meet).
 
 ### Long jobs
 
-**`background: true` is off by default,** which is the first thing to check if a request for a detached child quietly blocks anyway. `BIOROUTER_SUBAGENT_BACKGROUND` resolves through `Config::get_param` and falls back to `false` (`crates/biorouter/src/agents/subagent_handle.rs:53`), and while it is off the `background` argument is not advertised on the `subagent` tool at all — a model that sends it regardless is ignored and the call blocks like any other.
+Every spawn the agent makes runs in the background. The `subagent` call returns the child's session id at once and the parent keeps working; `BIOROUTER_SUBAGENT_BACKGROUND` no longer decides this for a spawn from the agent loop, which forces it. The parent collects the result by **waiting**, not polling: it parks on `workspace_watch` until one (or all) of up to 32 named conversations finishes, up to a 600-second bound. A timeout there is not an error; the conversations keep running and it can wait again. The parent cannot end its turn while a child it started is still running or its result is still uncollected.
 
-It is a **config parameter**, not an env var only, so either of these turns it on:
+### Staged work in phases
 
-- a line in `~/.config/biorouter/config.yaml` — `BIOROUTER_SUBAGENT_BACKGROUND: true`
-- the environment — `BIOROUTER_SUBAGENT_BACKGROUND=true`, which wins over the config file (`Config::get_param`, `crates/biorouter/src/config/base.rs:755`)
-
-With it on, a subagent started with `background: true` hands the parent the child's session id straight back and the parent keeps working. The right way to collect the result later is to **wait**, not poll — the agent parks on `workspace_watch` until one (or all) of up to 32 named conversations finishes, up to a 600-second bound. A timeout there is not an error; the conversations keep running and it can wait again.
+When you ask for work in stages ("research it, then implement, then verify"), the agent can declare a phase plan with `workspace_orchestrate`, spawn each subagent into a phase with a role, close each phase once its subagents are done, and pass each phase's results to the subagents of the phases after it. The side panel then groups the chat's subagents by phase, with each phase's progress. A simple delegation needs no plan. The whole mechanism is in [Orchestration phases](orchestration-phases.md).
 
 ## Checking on what is running
 
@@ -170,6 +171,8 @@ Every one of these is a real, named bound rather than a guideline.
 |---|---|---|
 | Panes in one window | 6 | not configurable |
 | Subagent tabs per parent, at once | 4 | `BIOROUTER_WORKSPACE_MAX_VISIBLE_CHILD_TABS` |
+| Phases in one orchestration plan | 12 | not configurable |
+| Subagents recorded in one orchestration plan | 64 | not configurable |
 | Subagents *running* at once, per process | 8 | `BIOROUTER_SUBAGENT_MAX_CONCURRENT` (see the caveat below) |
 | Subagents *in flight* at once — queued plus running, per process | 64 | `BIOROUTER_SUBAGENT_MAX_INFLIGHT` |
 | Turns one conversation may inject into others at once | 4 | `BIOROUTER_WORKSPACE_MAX_INJECTED_TURNS` |
@@ -190,18 +193,19 @@ The CLI is a first-class front end here, and it reaches the feature in **two dif
 
 ### As tools, inside `biorouter session`
 
-The CLI links the same core library the daemon does, so an interactive terminal chat advertises the same tool surface. `subagent` needs no extension enabled in `biorouter session` — only the same delegation gate as everywhere else, so `/mode auto` in the terminal chat is a prerequisite — and enabling the `workspace` extension adds the seven `workspace_*` tools there too. You ask for delegation in the terminal exactly as you would in the app.
+The CLI links the same core library the daemon does, so an interactive terminal chat advertises the same tool surface. `subagent` needs no extension enabled in `biorouter session` — only the same delegation gate as everywhere else, so `/mode auto` in the terminal chat is a prerequisite — and the `workspace` extension adds the other `workspace_*` tools there too. The terminal UI also shows the chat's subagents, and its phase plan when there is one, in a pane (`Ctrl-B` shows or hides it, `Ctrl-O` moves into it, Enter opens a subagent's chat to read). You ask for delegation in the terminal exactly as you would in the app.
 
 What changes without a daemon is not the tool list but what the handlers can reach. These keep working headlessly: listing conversations, reading them, waiting on them (the wait consults the parent's own background-subagent registry, so it still knows a child is running), leaving a note in another conversation, and spawning subagents. These refuse **by name**, with "requires the BioRouter daemon" rather than an obscure failure: starting a new session, starting or steering a turn in another conversation, setting knowledge bases, and cancelling a turn or stopping an agent. With no app attached, closing a tab is a stated no-op and a newly created session reports plainly that no tab was opened.
 
 ### As subcommands you type
 
-These are ordinary shell commands, and they split in two. The first three touch only the session store on disk and work with nothing else running. The last four — `send`, `watch`, `attach`, `cancel` — drive a live turn through a running `biorouterd` over HTTP and SSE, and fail without one. Having the desktop app open does **not** satisfy that requirement, which surprises nearly everyone: see [The desktop app's daemon is not the one your terminal finds](#the-desktop-apps-daemon-is-not-the-one-your-terminal-finds).
+These are ordinary shell commands, and they split in two. The first four touch only the session store on disk and work with nothing else running (`session subagents` asks a daemon for live status when one is reachable). The last four — `send`, `watch`, `attach`, `cancel` — drive a live turn through a running `biorouterd` over HTTP and SSE, and fail without one. Having the desktop app open does **not** satisfy that requirement, which surprises nearly everyone: see [The desktop app's daemon is not the one your terminal finds](#the-desktop-apps-daemon-is-not-the-one-your-terminal-finds).
 
 | What you want | Command | Needs a daemon |
 |---|---|---|
 | See what exists, including subagent runs nested under their parents | `biorouter session list --subagents` | no |
 | Read a conversation | `biorouter session export --session-id <id>` (or `--name <name>`; `--format markdown\|json\|yaml`) | no |
+| See a chat's subagents (status, model, setup) and its phase plan | `biorouter session subagents <id>` (`--format json`; `--watch` redraws every 2 seconds) | no, but live status needs one |
 | Start or name a session | `biorouter session --name <name>` | no |
 | Send a prompt into a session and stream its turn | `biorouter session send <id> "<text>"` (`--no-wait` to return as soon as the turn starts) | yes |
 | Wait for a turn to end | `biorouter session watch <id>` (exits on finish or error; `--follow` keeps watching past it) | yes |
@@ -311,7 +315,7 @@ That gate is coarse by design, and it is worth knowing where it is coarse: `sess
 
 ## When a tab does not appear
 
-Most of the time the answer is one of the deliberate behaviours above — announce-only is on, the fan-out cap downgraded the child, or the window was already at six panes. Three honest caveats beyond those:
+Most of the time the answer is one of the deliberate behaviours above: a subagent runs in the background unless a tab was asked for or "Open subagent tabs automatically" is on, announce-only is on, the fan-out cap downgraded the child, or the window was already at six panes. Three honest caveats beyond those:
 
 - **A subagent spawn does not wait for the window to answer.** When a conversation is opened directly, the agent parks on the renderer's reply and reports "NOT opened" with the reason if it was refused. A *subagent* announcement is fire-and-forget, deliberately: waiting would couple every spawn to the window, and one wedged window would stall a whole fan-out. So in the narrow case where the renderer refuses a subagent's tab, the agent may believe a tab opened when none did. The child still exists, still runs, and is still reachable from History and from a conversation read — check there before assuming the run failed.
 - **A request for a separate window is reported as *requested*.** The window is asked for and the answer comes back before the window has actually been created, so a window that fails to appear is not distinguished from one that did.
@@ -321,8 +325,9 @@ Most of the time the answer is one of the deliberate behaviours above — announ
 
 - [Session metadata contract](session-metadata-contract.md) — conversation ID, session kind, parent, and what makes something a subagent run.
 - [Workspace Control capability](../extensions/built-in/workspace.md) — the user-facing reference: the two tiers, what each tool asks you first, the always-confirm rule, and how injected messages are labelled forever.
-- [Workspace Control tool reference](workspace-control-tools.md) — the developer-facing contract for the same eight tools: exact arguments and defaults, every refusal string, the caps and clamps, and the cases where a tool reports success it did not earn.
+- [Workspace Control tool reference](workspace-control-tools.md) — the developer-facing contract for the same nine tools: exact arguments and defaults, every refusal string, the caps and clamps, and the cases where a tool reports success it did not earn.
 - [Subagents](subagents.md) — the glass-box tab in full, steering and stopping a child, and configuring one from a workflow file.
+- [Orchestration phases](orchestration-phases.md): staged delegation with `workspace_orchestrate`, the barrier between phases, and the hand-offs that carry results forward.
 - [Tool routing](tool-routing.md) — which tool the agent should reach for, and what separates workspace control from Chat Recall, Memory and the knowledge base.
 - [Permission modes](../security/permission-modes.md) — the four modes, what each one still puts to you for approval, and how to switch between them. It does not discuss delegation; that gate is [above](#when-delegation-is-allowed).
 - [biorouter CLI command reference](../cli/command-reference.md) — the rest of the `biorouter session` surface.

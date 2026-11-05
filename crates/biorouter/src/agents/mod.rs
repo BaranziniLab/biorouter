@@ -36,6 +36,9 @@ pub mod mcp_pool;
 pub mod mistakes;
 pub mod moim;
 pub mod operation_outcome;
+// A chat's orchestration plan (phases of delegated work) and the roster of its
+// subagents that every interface reads.
+pub mod orchestration_plan;
 // The one approval card `platform__manage_workflow` and `platform__manage_schedule`
 // park before they change the user's setup — shared so the two cannot disagree
 // about whether to ask (QA 2026-09-10, F1).
@@ -96,6 +99,7 @@ pub mod subagent_execution_tool;
 pub mod subagent_handle;
 pub mod subagent_handler;
 pub mod subagent_result;
+pub mod subagent_roster;
 pub(crate) mod subagent_runtime_profile;
 mod subagent_task_config;
 pub mod subagent_tool;

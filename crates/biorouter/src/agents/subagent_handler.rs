@@ -852,6 +852,24 @@ fn get_agent_messages(
             tracing::warn!("failed to persist subagent spawn context: {e}");
         }
 
+        // The structured half of the same grants, for the side panel, the CLI
+        // and the TUI (`subagent_roster`): the skills and knowledge bases the
+        // record above lists as prose. Merged into the spawn record the birth
+        // path started (role and phase), through a per-key transaction, after
+        // the runtime profile is installed. The profile install removes only
+        // its own keys, and this write never touches them. Best-effort for the
+        // same reason as the record above.
+        if let Err(e) = crate::agents::subagent_roster::record_spawn_grants(
+            &session_manager,
+            &session_id,
+            &skill_names,
+            &knowledge_bases,
+        )
+        .await
+        {
+            tracing::warn!("failed to record subagent spawn grants: {e}");
+        }
+
         // Handoff without an admission gap: queued child input remains accepted
         // until the live agent interrupt queue is open. The reply loop reuses
         // this exact prepared turn on its first poll rather than clearing it.
@@ -2080,6 +2098,9 @@ mod tests {
         /// peek can tell "the run registered its own" from "nothing did".
         sentinel: Option<Arc<Agent>>,
         mid_run: std::sync::Mutex<Option<MidRun>>,
+        /// What `knowledge_selection` answers with: the child's knowledge
+        /// bases, as the daemon's `KnowledgeService` would report them.
+        knowledge_bases: Vec<String>,
     }
 
     struct SpyLease {
@@ -2111,7 +2132,12 @@ mod tests {
                 cancel_mid_run: false,
                 sentinel: None,
                 mid_run: std::sync::Mutex::new(None),
+                knowledge_bases: Vec::new(),
             }
+        }
+        fn granting_knowledge_bases(mut self, kbs: &[&str]) -> Self {
+            self.knowledge_bases = kbs.iter().map(|kb| kb.to_string()).collect();
+            self
         }
         fn refusing(mut self, message: &str) -> Self {
             self.conflict = Some(message.to_string());
@@ -2248,7 +2274,10 @@ mod tests {
             if self.cancel_mid_run {
                 self.cancel_turn(session_id);
             }
-            crate::workspace_services::KbSelectionView::default()
+            crate::workspace_services::KbSelectionView {
+                kb_ids: self.knowledge_bases.clone(),
+                primary_kb: None,
+            }
         }
         async fn gui_command(
             &self,
@@ -2358,6 +2387,60 @@ mod tests {
             "and the registration must not outlive the run"
         );
         manager.deregister_agent_if_same(&child, &sentinel).await;
+    }
+
+    /// The structured spawn record's second half: once the child's runtime is
+    /// assembled, the skills and knowledge bases its spawn-context message lists
+    /// are merged into the record the birth path started, keeping the role and
+    /// phase written there, and the runtime profile installed in between does
+    /// not remove it.
+    #[tokio::test]
+    #[serial_test::serial(workspace_services)]
+    async fn the_run_records_its_grants_in_the_spawn_record() {
+        use crate::agents::subagent_roster::{read_spawn_record, record_spawn_identity};
+        let temp = tempfile::TempDir::new().unwrap();
+        let sm = std::sync::Arc::new(SessionManager::new(temp.path().to_path_buf()));
+        let child = sm
+            .create_session(
+                temp.path().to_path_buf(),
+                "granted child".into(),
+                crate::session::SessionType::SubAgent,
+            )
+            .await
+            .unwrap()
+            .id;
+        record_spawn_identity(&sm, &child, Some("reader"), Some("research"))
+            .await
+            .unwrap();
+
+        let _spy = LeaseSpy::new()
+            .granting_knowledge_bases(&["lab-notes", "soul"])
+            .install();
+        let (config, mut workflow, task_config) = bracket_fixture(&temp, &sm);
+        workflow.skills = Some(vec!["single-cell".to_string()]);
+        let _ = run_subagent_bounded!(config, workflow, task_config, true, child.clone(), None);
+        crate::workspace_services::clear_test_override();
+
+        let session = sm.get_session(&child, false).await.unwrap();
+        let record = read_spawn_record(&session.extension_data).expect("the spawn record");
+        assert_eq!(
+            record.role.as_deref(),
+            Some("reader"),
+            "the birth half survives"
+        );
+        assert_eq!(record.phase_id.as_deref(), Some("research"));
+        assert_eq!(record.skills, vec!["single-cell".to_string()]);
+        assert_eq!(
+            record.knowledge_bases,
+            vec!["lab-notes".to_string(), "soul".to_string()]
+        );
+        assert!(
+            session
+                .extension_data
+                .get_extension_state("subagent_runtime_profile", "v2")
+                .is_some(),
+            "fixture precondition: the runtime profile was installed before the grants"
+        );
     }
 
     /// Path 2 (Stop/abort): `cancel_turn` on the CHILD ends the child's run, and

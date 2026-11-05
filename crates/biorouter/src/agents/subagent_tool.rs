@@ -260,6 +260,43 @@ pub fn max_visible_child_tabs() -> usize {
     parse_visible_child_tabs(std::env::var(MAX_VISIBLE_CHILD_TABS_ENV).ok().as_deref())
 }
 
+/// The setting "Open subagent tabs automatically". OFF by default: a spawned
+/// child runs in the background, opens nothing, and is listed in its parent
+/// chat's side panel (and in History, and `biorouter session subagents`), where
+/// the person opens it as a tab when they want to. ON restores the older
+/// behaviour, where every child of a chat with a desktop window got its own tab
+/// (bounded by [`max_visible_child_tabs`]).
+///
+/// Read through [`crate::config::Config::get_param`], like every other
+/// daemon-visible preference, so it can come from `config.yaml`, the
+/// environment, or a task-scoped override.
+pub const OPEN_SUBAGENT_TABS_KEY: &str = "BIOROUTER_WORKSPACE_OPEN_SUBAGENT_TABS";
+
+/// Pure half of [`open_subagent_tabs_enabled`]. Tolerates a real bool and the
+/// quoted spellings the settings UI writes (`'true'`, `'false'`); anything else,
+/// including a missing key, is the default (off).
+fn open_subagent_tabs_from(configured: Option<&Value>) -> bool {
+    match configured {
+        Some(Value::Bool(enabled)) => *enabled,
+        Some(Value::String(text)) => matches!(
+            text.trim().to_ascii_lowercase().as_str(),
+            "true" | "1" | "yes" | "on"
+        ),
+        Some(Value::Number(number)) => number.as_i64() == Some(1),
+        _ => false,
+    }
+}
+
+/// Whether "Open subagent tabs automatically" is on. Default false.
+pub fn open_subagent_tabs_enabled() -> bool {
+    open_subagent_tabs_from(
+        crate::config::Config::global()
+            .get_param::<Value>(OPEN_SUBAGENT_TABS_KEY)
+            .ok()
+            .as_ref(),
+    )
+}
+
 /// The resolved visibility of one child, with the reason, so the parent can be
 /// told why a tab did not appear instead of silently believing one did.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -289,6 +326,13 @@ pub enum ChildVisibility {
     /// `VisibleChildGuard::try_claim` refused one. `cap` is the value in force
     /// at the time, which the env override can change.
     BackgroundCapped { cap: usize },
+    /// The default since subagents moved to the side panel: a GUI is attached,
+    /// nobody asked for a tab (`visible` and `placement` unset), and "Open
+    /// subagent tabs automatically" ([`OPEN_SUBAGENT_TABS_KEY`]) is off. The
+    /// child claims no slot and opens nothing, but its `annotate_tab` badge is
+    /// still sent, so a tab the person opens later from the side panel or from
+    /// History already shows as a subagent of its parent.
+    Background,
 }
 
 impl ChildVisibility {
@@ -317,21 +361,28 @@ impl ChildVisibility {
             ChildVisibility::TabUndelivered { reason } => format!(
                 "Subagent {child_session_id} is running, but NO TAB was opened: the desktop \
                  window did not take the request ({reason}). Do not tell the user you opened a \
-                 tab. They can open it from History, and you can read it with \
-                 workspace_read_conversation."
+                 tab. They can open it from this chat's side panel or from History, and you can \
+                 read it with workspace_read_conversation."
             ),
             ChildVisibility::BackgroundCapped { cap } => format!(
                 "Subagent {child_session_id} is running in the background: you already have \
-                 {cap} subagent tabs open, which is the limit. It is listed in History under \
-                 this conversation and you can read it with workspace_read_conversation."
+                 {cap} subagent tabs open, which is the limit. It is listed in this chat's side \
+                 panel and in History under this conversation, and you can read it with \
+                 workspace_read_conversation."
             ),
             ChildVisibility::AnnounceOnly => format!(
                 "Subagent {child_session_id} is running, but no tab was opened: the user \
                  turned on \"never open tabs automatically\". Do not tell them you opened a \
-                 tab. They can open it from History; you can read it with \
-                 workspace_read_conversation."
+                 tab. They can open it from this chat's side panel or from History; you can \
+                 read it with workspace_read_conversation."
             ),
-            _ => String::new(),
+            ChildVisibility::Background => format!(
+                "Subagent {child_session_id} is running in the background. No tab was opened: \
+                 it is listed in this chat's side panel, where the user can follow its progress \
+                 and open it as a tab if they want to. Supervise it with workspace_watch and \
+                 workspace_read_conversation. Do not tell the user a tab opened."
+            ),
+            ChildVisibility::Visible | ChildVisibility::OptedOut => String::new(),
         }
     }
 }
@@ -369,10 +420,20 @@ impl ChildVisibility {
 /// on a sample is the bug; whether a tab really opened is decided by whether a
 /// window took the frame, which only [`announce_subagent_tab`] can know.
 /// `Headless` therefore now means "no GUI **and** nobody asked for one".
+///
+/// **Background is the default** when a GUI is attached and nobody asked for a
+/// tab: the child is listed in its parent's side panel and opens nothing.
+/// `open_tabs_by_default` is "Open subagent tabs automatically"
+/// ([`OPEN_SUBAGENT_TABS_KEY`]); with it on, an unrequested child resolves
+/// exactly as it did before the side panel (decision 24: `Visible`, or
+/// `AnnounceOnly` under decision 7's setting). `requested` is the caller's
+/// EFFECTIVE request ([`requested_visibility`]), so a `placement` with
+/// `visible` unset arrives here as `Some(true)`.
 pub fn resolve_visibility(
     requested: Option<bool>,
     gui_attached: bool,
     announce_only: bool,
+    open_tabs_by_default: bool,
 ) -> ChildVisibility {
     if requested == Some(false) {
         return ChildVisibility::OptedOut;
@@ -380,10 +441,24 @@ pub fn resolve_visibility(
     if !gui_attached && requested != Some(true) {
         return ChildVisibility::Headless;
     }
+    if requested != Some(true) && !open_tabs_by_default {
+        return ChildVisibility::Background;
+    }
     if announce_only {
         return ChildVisibility::AnnounceOnly;
     }
     ChildVisibility::Visible
+}
+
+/// What the caller actually asked for. An explicit `visible` always wins; a
+/// `placement` with `visible` unset is a request for a tab (asking where a tab
+/// should open only makes sense if one should open), so it reads as
+/// `Some(true)`. Neither set is `None`, which [`resolve_visibility`] turns into
+/// the background default.
+fn requested_visibility(params: &SubagentParams) -> Option<bool> {
+    params
+        .visible
+        .or_else(|| params.placement.as_ref().map(|_| true))
 }
 
 /// Live count of visible children per parent session. RAII, like the in-flight
@@ -493,7 +568,12 @@ async fn announce_subagent_tab(
     let services = crate::workspace_services::get();
     let gui_attached = services.as_ref().is_some_and(|s| s.gui_attached());
     let announce_only = crate::agents::workspace_extension::announce_only_enabled();
-    let visibility = resolve_visibility(params.visible, gui_attached, announce_only);
+    let visibility = resolve_visibility(
+        requested_visibility(params),
+        gui_attached,
+        announce_only,
+        open_subagent_tabs_enabled(),
+    );
 
     // Nothing reaches the GUI for these two.
     if matches!(
@@ -548,7 +628,15 @@ async fn announce_subagent_tab(
     // `annotate_tab` in `tabAnnotations` keyed by session id whether or not a
     // tab exists yet. Sending it now is what makes that later tab show as a
     // subagent of its parent.
-    let open_a_tab = !matches!(visibility, ChildVisibility::BackgroundCapped { .. });
+    //
+    // A `Background` child (the default) is the same case, reached by choice
+    // rather than by the cap: no slot was claimed above, no tab opens here, and
+    // the badge below is still sent, because the side panel's "open as a tab"
+    // is exactly the later tab the badge is waiting for.
+    let open_a_tab = !matches!(
+        visibility,
+        ChildVisibility::BackgroundCapped { .. } | ChildVisibility::Background
+    );
 
     // `handle_subagent_tool` already rejected anything outside the vocabulary,
     // before a session was created. Defaulting here as well means no frame can
@@ -751,14 +839,52 @@ pub struct SubagentParams {
     /// delegation now forces this on so every provider can supervise the child.
     #[serde(default)]
     pub background: bool,
-    /// BR-71 §4.5: open the child as a visible tab. Defaults to true when a GUI
-    /// is attached and false headless (Task 36 resolves it); `false` forces
-    /// today's invisible run even with the app open.
+    /// BR-71 §4.5: open the child as a visible tab. Unset means the background
+    /// default ([`ChildVisibility::Background`]: listed in the parent's side
+    /// panel, no tab) unless "Open subagent tabs automatically" is on; `true`
+    /// asks for a tab; `false` runs it with no tab and no badge.
     #[serde(default)]
     pub visible: Option<bool>,
-    /// "tab" (default) | "split" | "window" — where the child's tab opens.
+    /// "tab" | "split" | "window": where the child's tab opens. Passing it with
+    /// `visible` unset asks for a tab ([`requested_visibility`]).
     #[serde(default)]
     pub placement: Option<String>,
+    /// The orchestration phase this child belongs to (an id from the chat's
+    /// `workspace_orchestrate` plan). Checked by
+    /// [`crate::agents::orchestration_plan::validate_spawn_phase`] before any
+    /// child session exists.
+    #[serde(default)]
+    pub phase: Option<String>,
+    /// A short label for what this child does ("reviewer", "data loader"),
+    /// shown beside it on every surface. Normalised by [`normalize_role`].
+    #[serde(default)]
+    pub role: Option<String>,
+}
+
+/// The longest `role` label kept, in characters.
+pub const MAX_ROLE_CHARS: usize = 40;
+
+/// A display label, not an instruction: control characters dropped, runs of
+/// whitespace collapsed to one space, trimmed, and cut at [`MAX_ROLE_CHARS`]
+/// characters. Empty after that is `None`. Cutting rather than refusing,
+/// because a label one character too long is not worth a refused spawn.
+pub(crate) fn normalize_role(raw: Option<&str>) -> Option<String> {
+    let collapsed = raw?
+        .split_whitespace()
+        .map(|word| word.chars().filter(|c| !c.is_control()).collect::<String>())
+        .filter(|word| !word.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ");
+    let cut: String = collapsed.chars().take(MAX_ROLE_CHARS).collect();
+    let cut = cut.trim().to_string();
+    (!cut.is_empty()).then_some(cut)
+}
+
+/// The phase id as the plan stores it: trimmed, and `None` when blank.
+pub(crate) fn normalize_phase(raw: Option<&str>) -> Option<String> {
+    raw.map(str::trim)
+        .filter(|phase| !phase.is_empty())
+        .map(str::to_string)
 }
 
 fn default_summary() -> bool {
@@ -820,12 +946,21 @@ pub fn create_subagent_tool(sub_workflows: &[SubWorkflow]) -> Tool {
             },
             "visible": {
                 "type": "boolean",
-                "description": "OMIT this field. A subagent works in its own tab that the user can watch and talk to, and that is the norm. The default is already true whenever the desktop app is open, and false when it is not, so there is nothing to decide. Pass false ONLY for a long mechanical job with nothing to watch (a bulk rename, a scripted sweep). Passing false hides the subagent's work from the user, who cannot then see what it did, correct it, or stop it; it is a deliberate exception, never the safe or tidy choice."
+                "description": "OMIT this field. A subagent runs in the background by default and opens no tab: it is listed in this chat's side panel, where the user can follow its status and open it as a tab whenever they want. Pass true ONLY when the user asks to watch a subagent in its own tab. There is no reason to pass false: the background is already the default, and false only removes the badge that marks a tab the user opens later as this chat's subagent."
             },
             "placement": {
                 "type": "string",
                 "enum": ["tab", "split", "window"],
-                "description": "Where the subagent's tab opens. Default \"tab\" (background, never steals focus)."
+                "description": "OMIT this unless the user asked to watch the subagent in its own tab. Passing it opens a tab (it implies visible: true): \"tab\" (opens in the background, never steals focus), \"split\" or \"window\"."
+            },
+            "phase": {
+                "type": "string",
+                "description": "Only when this chat has an orchestration plan (declared with workspace_orchestrate): the id of the phase this subagent works in. The phase must exist and must not be completed or skipped. Results handed off from the phases it depends on are added to the subagent's instructions. Omit it when there is no plan."
+            },
+            "role": {
+                "type": "string",
+                "maxLength": MAX_ROLE_CHARS,
+                "description": "A short label for what this subagent does, shown beside it in the side panel (for example \"reviewer\" or \"data loader\"). At most 40 characters; a longer label is cut."
             }
         }
     });
@@ -912,10 +1047,16 @@ pub(crate) fn build_tool_description(sub_workflows: &[SubWorkflow]) -> String {
          3. Augmented: Provide both `subworkflow` and `instructions` to add context\n\n\
          The subagent has access to the same tools as you by default. \
          Use `extensions` to limit which extensions the subagent can use.\n\n\
-         Subagents are WATCHABLE by default: each one gets its own tab the user can \
-         read while it works, and talk to. Leave `visible` and `extensions` unset and \
-         you get that; setting them takes something away from the user, so set them \
-         only when the task actually calls for it.\n\n\
+         Subagents run in the BACKGROUND by default and open no tab. Each one is \
+         listed in this chat's side panel with its status, model and setup, and the \
+         user can open any of them as a tab from there to read it while it works and \
+         talk to it. Leave `visible`, `placement` and `extensions` unset and you get \
+         that. Pass `visible: true` only when the user asks to watch a subagent in its \
+         own tab, and do not tell the user a tab opened unless this tool's result says \
+         one did.\n\n\
+         Give each subagent a short `role` label; the side panel shows it. When this \
+         chat has an orchestration plan (declared with workspace_orchestrate), also \
+         pass the `phase` each subagent works in.\n\n\
          A subagent starts with NO view of this conversation, so spell the task out: \
          name the actual files, paths and values rather than \"it\" or \"the other one\". \
          Resolving a referent costs you one step and costs the subagent a round trip \
@@ -1134,6 +1275,11 @@ fn handle_subagent_tool_inner(
         apply_supervised_background_default(&mut parsed_params, background);
     }
 
+    // Normalised ONCE, here, so the spawn record, the plan and the phase check
+    // below all read the same spelling.
+    parsed_params.role = normalize_role(parsed_params.role.as_deref());
+    parsed_params.phase = normalize_phase(parsed_params.phase.as_deref());
+
     // BR-71 decision 24: checked HERE, before a session, an inflight slot or a
     // visible-tab slot exists — the same order `workspace_open` uses. A rejected
     // typo costs the caller one retry; a forwarded one costs it a tab where it
@@ -1175,15 +1321,220 @@ fn handle_subagent_tool_inner(
     }
 }
 
-async fn execute_subagent(
+/// The orchestration-phase half of a spawn, run before anything exists: refuse
+/// a spawn into an unknown, completed or skipped phase with the plan's own
+/// sentence, then add the hand-off from the phases it depends on to the
+/// child's instructions ([`insert_task_context`]).
+///
+/// It runs here rather than beside `validate_placement` because both halves
+/// read the parent's stored plan, which is an `await`, and the tool entry point
+/// is synchronous. It still precedes the in-flight count and the child session,
+/// so a refused phase leaves no orphan row behind.
+///
+/// The hand-off is added AFTER `build_adhoc_workflow`'s security scan, like
+/// the steer block: it is the parent's own content (the hand-offs it wrote, or
+/// lines composed from its children's results), not caller task text. Unicode
+/// tag characters are still stripped from it, because the children's result
+/// lines it may be composed from are model output.
+async fn apply_orchestration_phase(
+    config: &AgentConfig,
+    parent_session_id: &str,
+    phase: Option<&str>,
+    workflow: &mut Workflow,
+) -> Result<(), ErrorData> {
+    let Some(phase_id) = phase else {
+        return Ok(());
+    };
+    crate::agents::orchestration_plan::validate_spawn_phase(
+        &config.session_manager,
+        parent_session_id,
+        phase_id,
+    )
+    .await
+    .map_err(|sentence| ErrorData {
+        code: ErrorCode::INVALID_PARAMS,
+        message: Cow::from(sentence),
+        data: None,
+    })?;
+    if let Some(handoff) = crate::agents::orchestration_plan::handoff_context_for(
+        &config.session_manager,
+        parent_session_id,
+        phase_id,
+    )
+    .await
+    {
+        let handoff = crate::utils::sanitize_unicode_tags(&handoff);
+        if !handoff.trim().is_empty() {
+            let current = workflow.instructions.take().unwrap_or_default();
+            workflow.instructions = Some(insert_task_context(&current, handoff.trim()));
+        }
+    }
+    Ok(())
+}
+
+/// Put `block` after the task's own instructions and BEFORE the two appendices
+/// `build_workflow` adds (the summary contract, then the supervisory-steer
+/// block), so the child reads it as part of its task and the steer block's
+/// "the instructions above" still covers it. Both appendices are this module's
+/// own constants, so finding them is exact; with neither present the block is
+/// simply appended.
+fn insert_task_context(instructions: &str, block: &str) -> String {
+    let steer = supervisory_steer_instructions();
+    let at = instructions
+        .find(SUMMARY_INSTRUCTIONS)
+        .or_else(|| instructions.find(&steer));
+    match at {
+        Some(at) => {
+            let (task, appendices) = instructions.split_at(at);
+            format!("{}\n\n{block}\n{appendices}", task.trim_end())
+        }
+        None => format!("{}\n\n{block}", instructions.trim_end()),
+    }
+}
+
+/// Record a spawn into a phase once the child's row exists and BEFORE the
+/// child runs, so the plan (and its barrier) counts it from the start.
+///
+/// A refusal is fatal to the spawn. The phase was checked before the child
+/// existed, and since then a `complete` may have closed it, a revision may have
+/// dropped it, or a parallel spawn may have taken the plan's last place. The
+/// child's fresh row is deleted and the spawn refused, so no child ever runs
+/// outside the plan its parent named; nothing has run yet, so nothing is lost.
+async fn record_phase_spawn(
+    session_manager: &crate::session::SessionManager,
+    parent_session_id: &str,
+    params: &SubagentParams,
+    child_session_id: &str,
+) -> Result<(), ErrorData> {
+    let Some(phase_id) = params.phase.as_deref() else {
+        return Ok(());
+    };
+    let Err(e) = crate::agents::orchestration_plan::record_spawn(
+        session_manager,
+        parent_session_id,
+        phase_id,
+        child_session_id,
+        params.role.as_deref(),
+    )
+    .await
+    else {
+        return Ok(());
+    };
+    if let Err(delete_error) = session_manager.delete_session(child_session_id).await {
+        tracing::warn!(
+            parent_session_id = %parent_session_id,
+            child_session_id = %child_session_id,
+            error = %delete_error,
+            "could not delete a subagent whose phase refused it"
+        );
+    }
+    let reason = e.to_string();
+    let reason = reason.trim_end();
+    let stop = if reason.ends_with('.') { "" } else { "." };
+    Err(ErrorData {
+        code: ErrorCode::INVALID_PARAMS,
+        message: Cow::from(format!(
+            "Could not spawn into phase \"{}\": {reason}{stop} Nothing was started.",
+            phase_id.trim()
+        )),
+        data: None,
+    })
+}
+
+/// Write the child's outcome record. Logged, never fatal: the parent already
+/// has (or is about to get) the result through its handle or tool result.
+async fn record_child_outcome(
+    session_manager: &crate::session::SessionManager,
+    child_session_id: &str,
+    result: &SubagentResult,
+) {
+    if let Err(e) =
+        crate::agents::subagent_roster::record_outcome(session_manager, child_session_id, result)
+            .await
+    {
+        tracing::warn!(
+            child_session_id = %child_session_id,
+            error = %e,
+            "could not record a subagent's outcome"
+        );
+    }
+}
+
+/// The detached half of [`execute_subagent`]: create the child's row, record
+/// it in its orchestration phase, start its run on a detached task, and return
+/// the handle to the parent at once.
+async fn start_background_child(
     config: AgentConfig,
     workflow: Workflow,
+    task_config: TaskConfig,
+    params: &SubagentParams,
+    working_dir: PathBuf,
+    inflight: InflightGuard,
+    max_pending: usize,
+) -> Result<rmcp::model::CallToolResult, ErrorData> {
+    // Issue #56: resolve the child's provider and tier BEFORE creating its
+    // row. A refusal must not leave a durable `SubAgent` session behind, and
+    // this path runs the whole stretch in a detached `tokio::spawn`.
+    let task_config = overridden_task_config(task_config, params).await?;
+    let session = create_subagent_session(
+        &config,
+        working_dir,
+        &task_config.parent_session_id,
+        params,
+        task_config.privacy_tier,
+        task_config.provider.as_ref(),
+    )
+    .await?;
+    // Recorded before the run starts, so a closed phase refuses the spawn
+    // before anything runs (see `record_phase_spawn`).
+    record_phase_spawn(
+        &config.session_manager,
+        &task_config.parent_session_id,
+        params,
+        &session.id,
+    )
+    .await?;
+    Ok(spawn_background_subagent(
+        config,
+        workflow,
+        task_config,
+        params,
+        session.id,
+        inflight,
+        max_pending,
+    )
+    .await)
+}
+
+async fn execute_subagent(
+    config: AgentConfig,
+    mut workflow: Workflow,
     task_config: TaskConfig,
     params: SubagentParams,
     working_dir: PathBuf,
     cancellation_token: Option<CancellationToken>,
     force_background: bool,
 ) -> Result<rmcp::model::CallToolResult, ErrorData> {
+    // Held until this returns: past `spawn_background_subagent` (whose handle
+    // the barrier then sees) on the detached path, past the child's whole run
+    // on the blocking one. While it is held, `complete` cannot close the phase
+    // over a child it might not see yet (see `begin_phase_spawn`).
+    let _phase_spawn = params.phase.as_deref().map(|phase_id| {
+        crate::agents::orchestration_plan::begin_phase_spawn(
+            &task_config.parent_session_id,
+            phase_id,
+        )
+    });
+    // Before the in-flight count and before any session: a refused phase must
+    // leave nothing behind (see `apply_orchestration_phase`).
+    apply_orchestration_phase(
+        &config,
+        &task_config.parent_session_id,
+        params.phase.as_deref(),
+        &mut workflow,
+    )
+    .await?;
+
     // Fork-bomb guard: count this spawn, refuse if too many are already in
     // flight, then throttle concurrency — and, if every concurrency slot is
     // taken, refuse rather than join an unbounded queue (`acquire_subagent_permit`).
@@ -1212,31 +1563,46 @@ async fn execute_subagent(
     // BR-40: detached run — create the child session (so the handle can name it),
     // register the handle, and hand it straight back to the parent.
     if should_run_in_background(&params, force_background) {
-        // Issue #56: resolve the child's provider and tier BEFORE creating its
-        // row. A refusal must not leave a durable `SubAgent` session behind, and
-        // this path runs the whole stretch in a detached `tokio::spawn`.
-        let task_config = overridden_task_config(task_config, &params).await?;
-        let session = create_subagent_session(
-            &config,
-            working_dir,
-            &task_config.parent_session_id,
-            &params,
-            task_config.privacy_tier,
-            task_config.provider.as_ref(),
-        )
-        .await?;
-        return Ok(spawn_background_subagent(
+        return start_background_child(
             config,
             workflow,
             task_config,
             &params,
-            session.id,
+            working_dir,
             inflight,
             max_pending,
         )
-        .await);
+        .await;
     }
 
+    run_blocking_child(
+        config,
+        workflow,
+        task_config,
+        params,
+        working_dir,
+        cancellation_token,
+        inflight,
+        max_pending,
+    )
+    .await
+}
+
+/// The blocking half of [`execute_subagent`]: claim a concurrency slot, create
+/// the child's row, run it to completion and return its result envelope. The
+/// in-flight guard and the permit are held until this returns, which is when
+/// the child finishes.
+#[allow(clippy::too_many_arguments)]
+async fn run_blocking_child(
+    config: AgentConfig,
+    workflow: Workflow,
+    task_config: TaskConfig,
+    params: SubagentParams,
+    working_dir: PathBuf,
+    cancellation_token: Option<CancellationToken>,
+    inflight: InflightGuard,
+    max_pending: usize,
+) -> Result<rmcp::model::CallToolResult, ErrorData> {
     // Door 1 of 2 onto the concurrency semaphore (door 2 is inside
     // `spawn_background_subagent`'s detached task). Both call the same gate.
     let _permit = acquire_subagent_permit(max_pending, cancellation_token.as_ref()).await?;
@@ -1264,8 +1630,21 @@ async fn execute_subagent(
     )
     .await?;
 
-    // BR-71 decision 24: glass-box by default. The guard lives for the child's
-    // whole run, so the slot is released exactly when the child finishes.
+    // The child exists: record it in its phase now, so the plan counts it
+    // while it runs rather than only once it has finished, and a phase that
+    // closed since the check refuses it before it runs.
+    let session_manager = config.session_manager.clone();
+    record_phase_spawn(
+        &session_manager,
+        &task_config.parent_session_id,
+        &params,
+        &session.id,
+    )
+    .await?;
+
+    // BR-71 decision 24, as amended for the side panel: background unless a tab
+    // was asked for. The guard lives for the child's whole run, so a claimed
+    // slot is released exactly when the child finishes.
     let (visibility, _visible_guard) =
         announce_subagent_tab(&session.id, &task_config.parent_session_id, &params).await;
     let visibility_note = visibility.parent_note(&session.id);
@@ -1277,6 +1656,7 @@ async fn execute_subagent(
     // The result envelope encodes success, an incomplete (tool-call-ending)
     // run, or a failure — all as structured content — so this always returns a
     // CallToolResult (with `is_error` set) rather than a bare tool error.
+    let child_session_id = session.id.clone();
     let result = run_complete_subagent_task(
         config,
         workflow,
@@ -1286,6 +1666,7 @@ async fn execute_subagent(
         cancellation_token,
     )
     .await;
+    record_child_outcome(&session_manager, &child_session_id, &result).await;
 
     let mut call_result = result.into_call_tool_result();
     if !visibility_note.is_empty() {
@@ -1427,6 +1808,27 @@ async fn create_subagent_session(
     // Keep the in-memory copy honest with the row we just wrote.
     session.parent_session_id = Some(parent_session_id.to_string());
     session.privacy_tier = privacy_tier;
+
+    // The structured spawn record's first half (role and phase), at birth, so a
+    // child still queued for a concurrency slot already shows them in its
+    // parent's side panel. Its presence is also what lets the roster read a
+    // child with no live handle and no outcome as "interrupted" rather than
+    // "unknown". Logged, never fatal: it is display metadata, and the stamp
+    // above is the one this row cannot do without.
+    if let Err(e) = crate::agents::subagent_roster::record_spawn_identity(
+        &config.session_manager,
+        &session.id,
+        params.role.as_deref(),
+        params.phase.as_deref(),
+    )
+    .await
+    {
+        tracing::warn!(
+            child_session_id = %session.id,
+            error = %e,
+            "could not record a subagent's spawn record"
+        );
+    }
     if provider.as_lead_worker().is_some() {
         let provider_name = provider.get_name().to_string();
         let model_config = provider.get_model_config();
@@ -1710,6 +2112,18 @@ async fn spawn_background_subagent(
                 result.human_intervened = true;
             }
         }
+        // The durable outcome is written BEFORE the handle publishes, so anyone
+        // woken by the completion (a `workspace_watch`, a panel poll) and then
+        // reading the child's row finds the record already there. Every exit
+        // reaches this line: a finished run, a refused or cancelled queue wait,
+        // and a panic (`catch_unwind` above), so none of them is left to read
+        // as "interrupted" after a restart.
+        record_child_outcome(
+            &completion_session_manager,
+            &completion_child_session_id,
+            &result,
+        )
+        .await;
         completion_handle.complete(result);
     }));
 
@@ -3282,21 +3696,121 @@ mod tests {
         );
     }
 
+    /// The side-panel default: with a GUI attached and nothing asked for, a
+    /// child runs in the BACKGROUND and opens no tab. Headless is unchanged.
     #[test]
-    fn visibility_defaults_to_visible_with_a_gui_and_invisible_headless() {
-        // Decision 24: glass-box is the default when there is somewhere to show it.
-        // (requested, gui_attached, announce_only)
-        assert!(resolve_visibility(None, true, false).is_visible());
+    fn visibility_defaults_to_background_with_a_gui_and_headless_without_one() {
+        // (requested, gui_attached, announce_only, open_tabs_by_default)
         assert_eq!(
-            resolve_visibility(None, false, false),
+            resolve_visibility(None, true, false, false),
+            ChildVisibility::Background
+        );
+        assert!(!resolve_visibility(None, true, false, false).is_visible());
+        // Announce-only does not change an unrequested child: it opens nothing
+        // either way, and the background note already says so.
+        assert_eq!(
+            resolve_visibility(None, true, true, false),
+            ChildVisibility::Background
+        );
+        assert_eq!(
+            resolve_visibility(None, false, false, false),
             ChildVisibility::Headless
         );
-        // Explicit opt-out wins in both cases.
-        assert!(!resolve_visibility(Some(false), true, false).is_visible());
+        // An explicit ask still gets a tab.
+        assert!(resolve_visibility(Some(true), true, false, false).is_visible());
+        // Explicit opt-out wins in every case.
         assert_eq!(
-            resolve_visibility(Some(false), false, false),
+            resolve_visibility(Some(false), true, false, false),
             ChildVisibility::OptedOut
         );
+        assert_eq!(
+            resolve_visibility(Some(false), false, false, true),
+            ChildVisibility::OptedOut
+        );
+    }
+
+    /// "Open subagent tabs automatically" ON restores the pre-side-panel
+    /// behaviour exactly: decision 24's `Visible`, or decision 7's
+    /// `AnnounceOnly`, for a child nobody asked a tab for.
+    #[test]
+    fn the_open_tabs_setting_restores_a_tab_for_every_child() {
+        assert_eq!(
+            resolve_visibility(None, true, false, true),
+            ChildVisibility::Visible
+        );
+        assert_eq!(
+            resolve_visibility(None, true, true, true),
+            ChildVisibility::AnnounceOnly
+        );
+        // Headless stays headless: there is nowhere to open it.
+        assert_eq!(
+            resolve_visibility(None, false, false, true),
+            ChildVisibility::Headless
+        );
+    }
+
+    /// The setting tolerates a real bool and the quoted strings the settings UI
+    /// writes, and is OFF for anything else, including a missing key.
+    #[test]
+    fn the_open_tabs_setting_reads_bools_and_quoted_strings() {
+        assert!(!open_subagent_tabs_from(None));
+        assert!(open_subagent_tabs_from(Some(&json!(true))));
+        assert!(!open_subagent_tabs_from(Some(&json!(false))));
+        assert!(open_subagent_tabs_from(Some(&json!("true"))));
+        assert!(open_subagent_tabs_from(Some(&json!(" TRUE "))));
+        assert!(!open_subagent_tabs_from(Some(&json!("false"))));
+        assert!(!open_subagent_tabs_from(Some(&json!("nonsense"))));
+        assert!(!open_subagent_tabs_from(Some(&json!(null))));
+        assert!(!open_subagent_tabs_from(Some(&json!(["true"]))));
+    }
+
+    /// The real reader, through the config store's task-scoped override, so
+    /// the key name itself is under test and not only the parse.
+    #[tokio::test]
+    async fn the_open_tabs_setting_is_read_from_its_config_key() {
+        assert_eq!(
+            OPEN_SUBAGENT_TABS_KEY,
+            "BIOROUTER_WORKSPACE_OPEN_SUBAGENT_TABS"
+        );
+        for (raw, expected) in [("true", true), ("false", false)] {
+            let overrides = HashMap::from([(OPEN_SUBAGENT_TABS_KEY.to_string(), raw.to_string())]);
+            let enabled = crate::config::with_config_overrides(overrides, async {
+                open_subagent_tabs_enabled()
+            })
+            .await;
+            assert_eq!(enabled, expected, "{OPEN_SUBAGENT_TABS_KEY}={raw}");
+        }
+    }
+
+    /// A `placement` is a request for a tab: asking where it opens only makes
+    /// sense if one should. An explicit `visible` still wins over it.
+    #[test]
+    fn a_placement_with_visible_unset_asks_for_a_tab() {
+        assert_eq!(requested_visibility(&spawn_params(None, None)), None);
+        assert_eq!(
+            requested_visibility(&spawn_params(None, Some("split"))),
+            Some(true)
+        );
+        assert_eq!(
+            requested_visibility(&spawn_params(None, Some("tab"))),
+            Some(true)
+        );
+        assert_eq!(
+            requested_visibility(&spawn_params(Some(false), Some("window"))),
+            Some(false)
+        );
+        assert_eq!(
+            requested_visibility(&spawn_params(Some(true), None)),
+            Some(true)
+        );
+        // So a placement under the background default resolves to a tab.
+        assert!(resolve_visibility(
+            requested_visibility(&spawn_params(None, Some("split"))),
+            true,
+            false,
+            false
+        )
+        .is_visible());
     }
 
     /// ⚠ THIS LINE USED TO ASSERT THE OPPOSITE, and the opposite was the bug.
@@ -3311,10 +3825,10 @@ mod tests {
     /// by whether a window took the frame, which is a fact rather than a sample.
     #[test]
     fn an_explicit_visible_true_is_not_overruled_by_a_momentary_gui_sample() {
-        assert!(resolve_visibility(Some(true), false, false).is_visible());
+        assert!(resolve_visibility(Some(true), false, false, false).is_visible());
         // …and it still respects the user's "never open tabs automatically".
         assert_eq!(
-            resolve_visibility(Some(true), false, true),
+            resolve_visibility(Some(true), false, true, false),
             ChildVisibility::AnnounceOnly
         );
     }
@@ -3327,6 +3841,7 @@ mod tests {
         for v in [
             ChildVisibility::Headless,
             ChildVisibility::AnnounceOnly,
+            ChildVisibility::Background,
             ChildVisibility::BackgroundCapped { cap: 4 },
             ChildVisibility::TabUndelivered {
                 reason: "no GUI attached".to_string(),
@@ -3359,6 +3874,7 @@ mod tests {
     fn announce_only_opens_no_tab_and_therefore_claims_no_slot() {
         let v = resolve_visibility(
             None, /* gui_attached */ true, /* announce_only */ true,
+            /* open_tabs_by_default */ true,
         );
         assert_eq!(v, ChildVisibility::AnnounceOnly);
         assert!(
@@ -3421,6 +3937,24 @@ mod tests {
         assert_eq!(visible_children_of("storm-parent"), cap);
         drop(granted);
         assert_eq!(visible_children_of("storm-parent"), 0);
+    }
+
+    /// The background default's note is what stops the parent telling the
+    /// user "I opened a tab for it": it says no tab opened, where the child is,
+    /// and how to supervise it.
+    #[test]
+    fn the_background_note_points_at_the_side_panel_and_the_supervision_tools() {
+        let note = ChildVisibility::Background.parent_note("child-bg");
+        assert!(note.contains("child-bg"), "got: {note}");
+        assert!(note.contains("No tab was opened"), "got: {note}");
+        assert!(note.contains("side panel"), "got: {note}");
+        assert!(note.contains("workspace_watch"), "got: {note}");
+        assert!(note.contains("workspace_read_conversation"), "got: {note}");
+        assert!(
+            note.contains("Do not tell the user a tab opened"),
+            "got: {note}"
+        );
+        assert!(!ChildVisibility::Background.is_visible());
     }
 
     #[test]
@@ -3690,17 +4224,75 @@ mod tests {
         serde_json::from_value(Value::Object(args)).unwrap()
     }
 
-    /// Decision 24 at the call site: with a GUI attached and nothing opted out,
-    /// the child claims a slot AND the tab frame really goes on the wire, with
-    /// the placement it asked for and `focus: false` (never steals the composer).
+    /// The background default at the call site: a GUI is attached and nobody
+    /// asked for a tab, so the child claims NO slot and NO open frame goes on
+    /// the wire, but the `annotate_tab` badge still does, because a tab the
+    /// person opens later from the side panel is exactly what it waits for.
+    #[tokio::test]
+    #[serial_test::serial(workspace_services)]
+    async fn a_background_child_claims_no_slot_and_sends_only_its_badge() {
+        let gui = FakeGui::install(true);
+        let parent = "announce-background-parent";
+        let overrides = HashMap::from([(OPEN_SUBAGENT_TABS_KEY.to_string(), "false".to_string())]);
+
+        let (visibility, guard) = crate::config::with_config_overrides(overrides, async {
+            announce_subagent_tab("child-bg", parent, &spawn_params(None, None)).await
+        })
+        .await;
+
+        assert_eq!(visibility, ChildVisibility::Background);
+        assert!(guard.is_none(), "a background child holds no tab slot");
+        assert_eq!(visible_children_of(parent), 0);
+        assert!(visibility.parent_note("child-bg").contains("side panel"));
+
+        let frames = gui.settle(1).await;
+        assert_eq!(gui.cmds(), vec!["annotate_tab"], "no tab may open");
+        assert_eq!(frames[0]["session_id"], "child-bg");
+        assert_eq!(frames[0]["badge"], "subagent");
+        assert_eq!(frames[0]["parent_session_id"], parent);
+        crate::workspace_services::clear_test_override();
+    }
+
+    /// "Open subagent tabs automatically" ON at the call site: an unrequested
+    /// child gets a tab again, exactly as before the side panel.
+    #[tokio::test]
+    #[serial_test::serial(workspace_services)]
+    async fn with_the_open_tabs_setting_an_unrequested_child_gets_a_tab() {
+        let gui = FakeGui::install(true);
+        let parent = "announce-setting-on-parent";
+        let overrides = HashMap::from([(OPEN_SUBAGENT_TABS_KEY.to_string(), "true".to_string())]);
+
+        let (visibility, guard) = crate::config::with_config_overrides(overrides, async {
+            announce_subagent_tab("child-tabbed", parent, &spawn_params(None, None)).await
+        })
+        .await;
+
+        assert_eq!(visibility, ChildVisibility::Visible);
+        assert!(guard.is_some(), "a real tab holds a slot");
+        gui.settle(2).await;
+        assert_eq!(gui.cmds(), vec!["open_tab", "annotate_tab"]);
+        drop(guard);
+        assert_eq!(visible_children_of(parent), 0);
+        crate::workspace_services::clear_test_override();
+    }
+
+    /// Decision 24 at the call site: with a GUI attached and a tab asked for
+    /// (here by `placement` alone, which implies `visible: true`), the child
+    /// claims a slot AND the tab frame really goes on the wire, with the
+    /// placement it asked for and `focus: false` (never steals the composer).
+    /// The setting is pinned OFF so this proves the placement, not the setting,
+    /// opened the tab.
     #[tokio::test]
     #[serial_test::serial(workspace_services)]
     async fn announcing_a_visible_child_claims_a_slot_and_emits_the_open_frame() {
         let gui = FakeGui::install(true);
         let parent = "announce-visible-parent";
 
-        let (visibility, guard) =
-            announce_subagent_tab("child-a", parent, &spawn_params(None, Some("split"))).await;
+        let overrides = HashMap::from([(OPEN_SUBAGENT_TABS_KEY.to_string(), "false".to_string())]);
+        let (visibility, guard) = crate::config::with_config_overrides(overrides, async {
+            announce_subagent_tab("child-a", parent, &spawn_params(None, Some("split"))).await
+        })
+        .await;
 
         assert_eq!(visibility, ChildVisibility::Visible);
         assert!(guard.is_some(), "a visible child must hold a slot");
@@ -3764,9 +4356,12 @@ mod tests {
 
         let mut guards = Vec::new();
         for i in 0..cap {
-            let (visibility, guard) =
-                announce_subagent_tab(&format!("child-{i}"), parent, &spawn_params(None, None))
-                    .await;
+            let (visibility, guard) = announce_subagent_tab(
+                &format!("child-{i}"),
+                parent,
+                &spawn_params(Some(true), None),
+            )
+            .await;
             assert_eq!(visibility, ChildVisibility::Visible, "child {i}");
             guards.push(guard.expect("within the cap"));
         }
@@ -3774,7 +4369,7 @@ mod tests {
         gui.settle(cap * 2).await;
 
         let (visibility, guard) =
-            announce_subagent_tab("child-past-cap", parent, &spawn_params(None, None)).await;
+            announce_subagent_tab("child-past-cap", parent, &spawn_params(Some(true), None)).await;
         assert_eq!(visibility, ChildVisibility::BackgroundCapped { cap });
         assert!(guard.is_none(), "the capped child holds no slot");
         assert_eq!(
@@ -3814,10 +4409,15 @@ mod tests {
     async fn an_announce_only_child_is_announced_but_claims_no_slot() {
         let gui = FakeGui::install(true);
         let parent = "announce-only-parent";
-        let overrides = HashMap::from([(
-            crate::agents::workspace_extension::ANNOUNCE_ONLY_KEY.to_string(),
-            "true".to_string(),
-        )]);
+        // The setting ON as well: with it off an unrequested child is
+        // `Background`, which announces nothing to downgrade.
+        let overrides = HashMap::from([
+            (
+                crate::agents::workspace_extension::ANNOUNCE_ONLY_KEY.to_string(),
+                "true".to_string(),
+            ),
+            (OPEN_SUBAGENT_TABS_KEY.to_string(), "true".to_string()),
+        ]);
 
         let (visibility, guard) = crate::config::with_config_overrides(overrides, async {
             announce_subagent_tab("child-quiet", parent, &spawn_params(None, None)).await
@@ -3952,18 +4552,19 @@ mod tests {
         crate::workspace_services::clear_test_override();
     }
 
-    /// D6, measured: in 4 of 4 spawns where the tester did not dictate
-    /// `visible`, the model sent `visible: false` — and one sent
-    /// `extensions: []` unprompted. The capability is not the problem (a silent
-    /// child is occasionally right); the INVITATION was. "Defaults to true when
-    /// the desktop app is open. Pass false to run it silently." reads as a
-    /// tidiness option with a stated way to take it, so the model took it, and
-    /// the glass box the whole feature exists for was closed by default.
+    /// What the `visible` and `placement` fields TELL the model, since a model
+    /// reads a JSON-Schema `description` as instructions.
     ///
-    /// A model reads a JSON-Schema `description` as instructions, so this
-    /// asserts what that field TELLS it, not merely that a field exists.
+    /// History, so the next edit does not undo either half. D6 measured 4 of 4
+    /// spawns sending `visible: false` when the wording offered "pass false to
+    /// run it silently" as a tidiness option, while every child got a tab by
+    /// default. The side panel moved the default to the background, so the
+    /// failure to guard against is now the opposite one: a model passing
+    /// `visible: true` (or a `placement`) on every spawn and filling the tab
+    /// strip. So the field says to omit it, that the background is the default
+    /// and where the child is instead, and that `true` is for one case only.
     #[test]
-    fn the_visible_field_presents_a_tab_as_the_norm_rather_than_an_option_to_decline() {
+    fn the_visible_field_presents_the_background_as_the_norm_and_a_tab_as_an_ask() {
         let tool = create_subagent_tool(&[]);
         let schema = &tool.input_schema;
         let visible = schema["properties"]["visible"]["description"]
@@ -3976,19 +4577,27 @@ mod tests {
             visible.contains("omit"),
             "the field must tell the model to omit it: {visible}"
         );
-        // …because a watchable tab is the norm, not a mode to opt into.
-        assert!(visible.contains("norm"), "got: {visible}");
-        // …and `false` is scoped to a narrow case, with its cost stated.
-        assert!(visible.contains("only"), "got: {visible}");
+        // …because the background, with the side panel, is the default…
+        assert!(visible.contains("background by default"), "got: {visible}");
+        assert!(visible.contains("side panel"), "got: {visible}");
+        // …and a tab is for one case: the user asked to watch it.
         assert!(
-            visible.contains("hides") || visible.contains("cannot then see"),
-            "the cost of false must be stated: {visible}"
+            visible.contains("only when the user asks"),
+            "got: {visible}"
         );
         // The wording that was measured producing 4-of-4 opt-outs.
         assert!(
             !visible.contains("pass false to run it silently"),
             "the old invitation is back: {visible}"
         );
+
+        // `placement` opens a tab, so it carries the same restraint.
+        let placement = schema["properties"]["placement"]["description"]
+            .as_str()
+            .expect("placement has a description")
+            .to_lowercase();
+        assert!(placement.contains("omit"), "got: {placement}");
+        assert!(placement.contains("visible: true"), "got: {placement}");
 
         // Same defect, same spawn: `extensions: []` was volunteered too.
         let extensions = schema["properties"]["extensions"]["description"]
@@ -4002,12 +4611,32 @@ mod tests {
         );
 
         // And the tool description, which models weight more heavily than a
-        // per-field one, says it as well.
+        // per-field one, says it as well, and no longer promises a tab.
         let desc = tool.description.as_ref().unwrap().to_lowercase();
         assert!(
-            desc.contains("watchable by default"),
+            desc.contains("run in the background by default"),
             "the top-level description must state the norm: {desc}"
         );
+        assert!(desc.contains("side panel"), "got: {desc}");
+        assert!(
+            !desc.contains("watchable by default"),
+            "the old tab-per-child promise is back: {desc}"
+        );
+    }
+
+    /// The two orchestration fields are advertised, and `role`'s bound is the
+    /// constant the normaliser enforces.
+    #[test]
+    fn the_schema_advertises_phase_and_role() {
+        let tool = create_subagent_tool(&[]);
+        let props = &tool.input_schema["properties"];
+        let phase = props["phase"]["description"]
+            .as_str()
+            .expect("phase has a description");
+        assert!(phase.contains("workspace_orchestrate"), "got: {phase}");
+        assert_eq!(props["phase"]["type"], "string");
+        assert_eq!(props["role"]["type"], "string");
+        assert_eq!(props["role"]["maxLength"], MAX_ROLE_CHARS);
     }
 
     /// **The ambiguous-delegation regression.**
@@ -4232,6 +4861,8 @@ mod tests {
             background: false,
             visible: None,
             placement: None,
+            phase: None,
+            role: None,
         };
         let workflow = build_workflow(&params, &HashMap::new()).expect("ad-hoc workflow");
         let instructions = workflow.instructions.expect("instructions");
@@ -4472,7 +5103,9 @@ mod tests {
             "summary": false,
             "background": true,
             "visible": false,
-            "placement": "split"
+            "placement": "split",
+            "phase": "research",
+            "role": "reader"
         }))
         .unwrap();
         assert_eq!(params.instructions.as_deref(), Some("count files"));
@@ -4484,6 +5117,8 @@ mod tests {
         assert!(params.background);
         assert_eq!(params.visible, Some(false));
         assert_eq!(params.placement.as_deref(), Some("split"));
+        assert_eq!(params.phase.as_deref(), Some("research"));
+        assert_eq!(params.role.as_deref(), Some("reader"));
     }
 
     #[test]
@@ -4559,6 +5194,507 @@ mod tests {
             crate::session::session_manager::SessionType::SubAgent
         );
         assert_eq!(reread.message_count, 0, "birth writes no message");
+    }
+
+    /// The spawn record's first half is written at birth, with the role and
+    /// phase the caller gave, so a child still queued for a concurrency slot
+    /// already shows them in its parent's side panel.
+    #[tokio::test]
+    async fn create_subagent_session_records_role_and_phase_at_birth() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let sm = std::sync::Arc::new(crate::session::SessionManager::new(
+            temp.path().to_path_buf(),
+        ));
+        let config = AgentConfig::new(
+            sm.clone(),
+            crate::config::permission::PermissionManager::instance(),
+            None,
+            crate::config::BioRouterMode::Auto,
+        );
+        let mut params: SubagentParams = serde_json::from_value(serde_json::json!({
+            "instructions": "review the diff",
+            "role": "  code   reviewer ",
+            "phase": " review "
+        }))
+        .unwrap();
+        params.role = normalize_role(params.role.as_deref());
+        params.phase = normalize_phase(params.phase.as_deref());
+        let provider = TieredParent {
+            tier: ProviderTier::Public,
+        };
+        let session = create_subagent_session(
+            &config,
+            temp.path().to_path_buf(),
+            "parent-roles",
+            &params,
+            crate::privacy::SessionClassification::Public,
+            &provider,
+        )
+        .await
+        .expect("session creation succeeds");
+
+        let reread = sm.get_session(&session.id, false).await.unwrap();
+        let record = crate::agents::subagent_roster::read_spawn_record(&reread.extension_data)
+            .expect("the spawn record is written at birth");
+        assert_eq!(record.role.as_deref(), Some("code reviewer"));
+        assert_eq!(record.phase_id.as_deref(), Some("review"));
+        assert!(record.skills.is_empty() && record.knowledge_bases.is_empty());
+    }
+
+    /// `role` is a display label: whitespace collapsed, control characters
+    /// dropped, cut at 40 characters, and blank is no label at all. `phase` is
+    /// trimmed and blank is no phase.
+    #[test]
+    fn role_and_phase_are_normalised_once() {
+        assert_eq!(normalize_role(None), None);
+        assert_eq!(normalize_role(Some("   ")), None);
+        assert_eq!(
+            normalize_role(Some(" data\tloader\n ")).as_deref(),
+            Some("data loader")
+        );
+        assert_eq!(
+            normalize_role(Some("red\u{1b}[31mteam")).as_deref(),
+            Some("red[31mteam")
+        );
+        let long = "a".repeat(MAX_ROLE_CHARS + 25);
+        assert_eq!(
+            normalize_role(Some(&long)).map(|r| r.chars().count()),
+            Some(MAX_ROLE_CHARS)
+        );
+        // Multi-byte characters are cut on a character boundary.
+        let wide = "é".repeat(MAX_ROLE_CHARS + 1);
+        assert_eq!(
+            normalize_role(Some(&wide)),
+            Some("é".repeat(MAX_ROLE_CHARS))
+        );
+
+        assert_eq!(normalize_phase(None), None);
+        assert_eq!(normalize_phase(Some("  ")), None);
+        assert_eq!(
+            normalize_phase(Some(" research ")).as_deref(),
+            Some("research")
+        );
+    }
+
+    /// The hand-off lands after the task and BEFORE the summary contract and
+    /// the steer block, so the child reads it as part of its task.
+    #[test]
+    fn a_handoff_is_inserted_between_the_task_and_the_appendices() {
+        let params: SubagentParams = serde_json::from_value(serde_json::json!({
+            "instructions": "implement the parser"
+        }))
+        .unwrap();
+        let workflow = build_workflow(&params, &HashMap::new()).unwrap();
+        let instructions = workflow.instructions.unwrap();
+        let with = insert_task_context(
+            &instructions,
+            "Results from earlier phases:\n- research: done",
+        );
+
+        let task = with.find("implement the parser").unwrap();
+        let handoff = with.find("Results from earlier phases").unwrap();
+        let summary = with.find("Your parent agent will only receive").unwrap();
+        let steer = with
+            .find(crate::agents::workspace_extension::SUPERVISOR_STEER_TAG)
+            .unwrap();
+        assert!(
+            task < handoff && handoff < summary && summary < steer,
+            "{with}"
+        );
+
+        // Without either appendix it is simply appended.
+        assert_eq!(insert_task_context("task", "ctx"), "task\n\nctx");
+    }
+
+    /// A spawn into a phase the plan does not have is refused BEFORE a child
+    /// session exists, with the plan's own sentence: an orphan row would be a
+    /// child the parent is never told about.
+    #[tokio::test]
+    async fn a_spawn_into_an_unknown_phase_creates_nothing() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let sm = std::sync::Arc::new(crate::session::SessionManager::new(
+            temp.path().to_path_buf(),
+        ));
+        let parent = sm
+            .create_session(
+                temp.path().to_path_buf(),
+                "parent".to_string(),
+                crate::session::session_manager::SessionType::User,
+            )
+            .await
+            .unwrap();
+        let config = AgentConfig::new(
+            sm.clone(),
+            crate::config::permission::PermissionManager::instance(),
+            None,
+            crate::config::BioRouterMode::Auto,
+        );
+        let provider: std::sync::Arc<dyn crate::providers::base::Provider> = std::sync::Arc::new(
+            crate::providers::testprovider::TestProvider::new_replaying(
+                temp.path().join("no-such-cassette.json").to_string_lossy(),
+            )
+            .unwrap(),
+        );
+        let task_config = TaskConfig::new(provider, &parent.id, temp.path(), vec![]);
+
+        let refused = handle_subagent_tool(
+            &config,
+            json!({ "instructions": "do the thing", "phase": "no-such-phase" }),
+            task_config,
+            HashMap::new(),
+            temp.path().to_path_buf(),
+            None,
+        );
+        let err = refused
+            .result
+            .await
+            .expect_err("a spawn into an unknown phase must not spawn");
+        assert_eq!(err.code, ErrorCode::INVALID_PARAMS);
+        assert!(
+            err.message.contains("no-such-phase"),
+            "got: {}",
+            err.message
+        );
+        assert_eq!(
+            sm.count_all_sessions().await.unwrap(),
+            1,
+            "only the parent exists: the refusal must precede session creation"
+        );
+    }
+
+    /// A child that records the system prompt it was given, so a test can read
+    /// what the spawn path put in front of it.
+    #[derive(Default)]
+    struct RecordingChildProvider {
+        systems: std::sync::Mutex<Vec<String>>,
+    }
+
+    #[async_trait::async_trait]
+    impl crate::providers::base::Provider for RecordingChildProvider {
+        fn metadata() -> crate::providers::base::ProviderMetadata {
+            crate::providers::base::ProviderMetadata::new(
+                "recording-child",
+                "Recording child",
+                "",
+                "recording-child-model",
+                vec![],
+                "",
+                vec![],
+            )
+        }
+
+        fn get_name(&self) -> &str {
+            "recording-child"
+        }
+
+        fn get_model_config(&self) -> crate::model::ModelConfig {
+            crate::model::ModelConfig::new_or_fail("recording-child-model")
+        }
+
+        async fn complete_with_model(
+            &self,
+            _model_config: &crate::model::ModelConfig,
+            system: &str,
+            _messages: &[crate::conversation::message::Message],
+            _tools: &[Tool],
+        ) -> std::result::Result<
+            (
+                crate::conversation::message::Message,
+                crate::providers::base::ProviderUsage,
+            ),
+            crate::providers::errors::ProviderError,
+        > {
+            self.systems.lock().unwrap().push(system.to_string());
+            Ok((
+                crate::conversation::message::Message::assistant()
+                    .with_text("Fixed the tab handling in lexer.rs."),
+                crate::providers::base::ProviderUsage::new(
+                    "recording-child-model".into(),
+                    crate::providers::base::Usage::default(),
+                ),
+            ))
+        }
+    }
+
+    const HANDOFF_TEXT: &str = "The lexer drops tabs before tokenizing.";
+
+    /// A parent chat with a two-phase plan whose first phase is complete and
+    /// handed forward: "research" (its hand-off is [`HANDOFF_TEXT`]), then
+    /// "fix", which depends on it.
+    async fn parent_with_a_handed_off_phase(
+        sm: &crate::session::SessionManager,
+        root: &std::path::Path,
+    ) -> String {
+        use crate::agents::orchestration_plan as plan;
+
+        let parent = sm
+            .create_session(
+                root.to_path_buf(),
+                "orchestrating parent".to_string(),
+                crate::session::session_manager::SessionType::User,
+            )
+            .await
+            .unwrap();
+        let phases: Vec<plan::PlanPhaseInput> = serde_json::from_value(json!([
+            { "id": "research", "title": "Read the code", "kind": "research" },
+            { "id": "fix", "title": "Fix it", "kind": "implementation", "depends_on": ["research"] }
+        ]))
+        .unwrap();
+        plan::mutate_plan(sm, &parent.id, |current| {
+            plan::apply_plan(current, Some("Review the parser"), None, &phases).map(|p| (p, ()))
+        })
+        .await
+        .unwrap();
+        plan::mutate_plan(sm, &parent.id, |current| {
+            plan::apply_handoff(current, "research", HANDOFF_TEXT, chrono::Utc::now())
+                .map(|p| (p, ()))
+        })
+        .await
+        .unwrap();
+        plan::mutate_plan(sm, &parent.id, |current| {
+            plan::apply_complete(
+                current,
+                "research",
+                plan::PhaseStatus::Completed,
+                None,
+                &[],
+                chrono::Utc::now(),
+            )
+        })
+        .await
+        .unwrap();
+        parent.id
+    }
+
+    /// The plan lists `child` under "fix" with role "fixer", and "fix" runs.
+    async fn assert_recorded_in_fix(
+        sm: &crate::session::SessionManager,
+        parent: &str,
+        child: &str,
+    ) {
+        use crate::agents::orchestration_plan as plan;
+
+        let stored = plan::load_plan(sm, parent).await.unwrap().unwrap();
+        let fix = stored.phases.iter().find(|p| p.id == "fix").unwrap();
+        assert_eq!(
+            fix.status,
+            plan::PhaseStatus::InProgress,
+            "the spawn started the phase"
+        );
+        assert_eq!(fix.agents.len(), 1, "{:?}", fix.agents);
+        assert_eq!(fix.agents[0].child_session_id, child);
+        assert_eq!(fix.agents[0].role.as_deref(), Some("fixer"));
+        let research = stored.phases.iter().find(|p| p.id == "research").unwrap();
+        assert!(research.agents.is_empty(), "recorded in its own phase only");
+    }
+
+    /// The child's instructions carry the research hand-off, after its own task
+    /// and before the summary contract.
+    fn assert_handed_off(provider: &RecordingChildProvider) {
+        let systems = provider.systems.lock().unwrap();
+        let system = systems
+            .first()
+            .expect("the child reached its provider")
+            .clone();
+        let block = system
+            .find("## Results from earlier phases")
+            .unwrap_or_else(|| panic!("no hand-off block in the child's prompt:\n{system}"));
+        assert!(system.contains(HANDOFF_TEXT), "{system}");
+        let task = system
+            .find("Repair the tab handling")
+            .expect("its own task");
+        let contract = system
+            .find("Your parent agent will only receive your final message")
+            .expect("the summary contract");
+        assert!(task < block && block < contract, "{system}");
+    }
+
+    /// The spawn path's two halves of a phase, end to end on the background
+    /// path: the child is recorded in its phase (with its role, starting the
+    /// phase) before the spawn returns, and it receives the hand-off of the
+    /// phase its phase depends on. Removing either call leaves the unit tests of
+    /// the pieces green, so only this would notice.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    #[serial_test::serial(workspace_services)]
+    async fn a_background_spawn_into_a_phase_is_recorded_and_receives_the_handoff() {
+        struct ClearWorkspaceServices;
+        impl Drop for ClearWorkspaceServices {
+            fn drop(&mut self) {
+                crate::workspace_services::clear_test_override();
+            }
+        }
+        crate::workspace_services::set_for_tests(None);
+        let _workspace_services = ClearWorkspaceServices;
+        let _serialised = QUEUE_DEPTH_TESTS.lock().await;
+
+        let temp = tempfile::TempDir::new().unwrap();
+        let root = temp.path().to_path_buf();
+        let sm = std::sync::Arc::new(crate::session::SessionManager::new(root.clone()));
+        let parent = parent_with_a_handed_off_phase(&sm, &root).await;
+        let config = AgentConfig::new(
+            sm.clone(),
+            crate::config::permission::PermissionManager::instance(),
+            None,
+            crate::config::BioRouterMode::Auto,
+        );
+        let recorder = std::sync::Arc::new(RecordingChildProvider::default());
+        let provider: std::sync::Arc<dyn crate::providers::base::Provider> = recorder.clone();
+        let task_config = TaskConfig::new(provider, &parent, &root, vec![]);
+
+        let started = handle_subagent_tool(
+            &config,
+            json!({
+                "instructions": "Repair the tab handling in the lexer.",
+                "phase": "fix",
+                "role": "fixer",
+                "visible": false,
+            }),
+            task_config,
+            HashMap::new(),
+            root,
+            None,
+        )
+        .result
+        .await
+        .expect("a spawn into an open phase starts");
+        let child = started
+            .structured_content
+            .as_ref()
+            .and_then(|value| value.get("child_session_id"))
+            .and_then(Value::as_str)
+            .expect("the handle names the child")
+            .to_string();
+
+        // Recorded before the spawn returned, while the child runs.
+        assert_recorded_in_fix(&sm, &parent, &child).await;
+
+        let handle = crate::agents::subagent_handle::list_for_session(&parent)
+            .into_iter()
+            .find(|handle| handle.child_session_id == child)
+            .expect("the parent holds the child's handle");
+        tokio::time::timeout(
+            std::time::Duration::from_secs(20),
+            handle.wait_until_complete(),
+        )
+        .await
+        .expect("the child finishes");
+        assert_handed_off(&recorder);
+    }
+
+    /// The same two halves on the blocking path, which records the child in
+    /// its own place (before it runs, after its row exists).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    #[serial_test::serial(workspace_services)]
+    async fn a_blocking_spawn_into_a_phase_is_recorded_and_receives_the_handoff() {
+        struct ClearWorkspaceServices;
+        impl Drop for ClearWorkspaceServices {
+            fn drop(&mut self) {
+                crate::workspace_services::clear_test_override();
+            }
+        }
+        crate::workspace_services::set_for_tests(None);
+        let _workspace_services = ClearWorkspaceServices;
+        let _serialised = QUEUE_DEPTH_TESTS.lock().await;
+
+        let temp = tempfile::TempDir::new().unwrap();
+        let root = temp.path().to_path_buf();
+        let sm = std::sync::Arc::new(crate::session::SessionManager::new(root.clone()));
+        let parent = parent_with_a_handed_off_phase(&sm, &root).await;
+        let config = AgentConfig::new(
+            sm.clone(),
+            crate::config::permission::PermissionManager::instance(),
+            None,
+            crate::config::BioRouterMode::Auto,
+        );
+        let recorder = std::sync::Arc::new(RecordingChildProvider::default());
+        let provider: std::sync::Arc<dyn crate::providers::base::Provider> = recorder.clone();
+        let task_config = TaskConfig::new(provider, &parent, &root, vec![]);
+
+        let finished = tokio::time::timeout(
+            std::time::Duration::from_secs(20),
+            handle_subagent_tool_inner(
+                &config,
+                json!({
+                    "instructions": "Repair the tab handling in the lexer.",
+                    "phase": "fix",
+                    "role": "fixer",
+                    "background": false,
+                    "visible": false,
+                }),
+                task_config,
+                HashMap::new(),
+                root,
+                None,
+                None,
+            )
+            .result,
+        )
+        .await
+        .expect("the blocking child finishes")
+        .expect("a spawn into an open phase runs");
+        assert_ne!(finished.is_error, Some(true), "{:?}", finished.content);
+
+        let children = sm.list_subagent_children(&parent).await.unwrap();
+        assert_eq!(children.len(), 1);
+        assert_recorded_in_fix(&sm, &parent, &children[0].session.id).await;
+        assert_handed_off(&recorder);
+    }
+
+    /// The phase was checked before the child existed; a `complete` that closed
+    /// it in between refuses the spawn at the record, deletes the child's fresh
+    /// row and leaves the plan as it was, so no child runs outside its plan.
+    #[tokio::test]
+    async fn a_spawn_whose_phase_closed_before_it_was_recorded_is_refused_and_leaves_nothing() {
+        use crate::agents::orchestration_plan as plan;
+
+        let temp = tempfile::TempDir::new().unwrap();
+        let root = temp.path().to_path_buf();
+        let sm = crate::session::SessionManager::new(root.clone());
+        let parent = parent_with_a_handed_off_phase(&sm, &root).await;
+        let child = sm
+            .create_session(
+                root,
+                "Subagent: late".to_string(),
+                crate::session::session_manager::SessionType::SubAgent,
+            )
+            .await
+            .unwrap();
+        let params: SubagentParams = serde_json::from_value(json!({
+            "instructions": "late work",
+            "phase": "research",
+            "role": "reader",
+        }))
+        .unwrap();
+
+        let refused = record_phase_spawn(&sm, &parent, &params, &child.id)
+            .await
+            .expect_err("a closed phase takes no child");
+        assert_eq!(refused.code, ErrorCode::INVALID_PARAMS);
+        assert!(
+            refused
+                .message
+                .contains("was completed while this subagent was being created"),
+            "{}",
+            refused.message
+        );
+        assert!(
+            refused.message.ends_with("Nothing was started."),
+            "{}",
+            refused.message
+        );
+        assert!(
+            sm.get_session(&child.id, false).await.is_err(),
+            "the child's row is deleted"
+        );
+        let stored = plan::load_plan(&sm, &parent).await.unwrap().unwrap();
+        assert!(stored.phases.iter().all(|phase| phase.agents.is_empty()));
+
+        // A spawn with no phase records nothing and is never refused here.
+        let unphased: SubagentParams =
+            serde_json::from_value(json!({ "instructions": "x" })).unwrap();
+        assert!(record_phase_spawn(&sm, &parent, &unphased, "anything")
+            .await
+            .is_ok());
     }
 
     /// Two children of one fan-out must be distinguishable in every listing.

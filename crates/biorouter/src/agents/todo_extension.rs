@@ -106,6 +106,11 @@ pub struct TodoClient {
     /// this extension carries its own lock instead. It is deliberately narrow —
     /// it guards only the session-metadata round trip (sub-millisecond, local),
     /// not the MCP dispatch path, so it costs nothing and cannot reintroduce H6.
+    ///
+    /// The round trip is now one `update_extension_data` transaction, which
+    /// also serializes it against every OTHER writer of the session's
+    /// `extension_data` (the lock only ever covered todo calls). The lock stays
+    /// so concurrent todo calls queue here rather than on SQLite's busy timeout.
     state_lock: tokio::sync::Mutex<()>,
 }
 
@@ -169,48 +174,71 @@ impl TodoClient {
 
     /// Load the session's todo state (migrating any legacy blob), let `f`
     /// mutate it, then persist. Returns `f`'s success message.
+    ///
+    /// The read and the write are ONE `update_extension_data` transaction, so
+    /// only `todo.v1` changes and nothing another writer committed in the
+    /// meantime is put back. A todo call shares a tool batch with every other
+    /// tool, including a spawn recording its child into the chat's
+    /// orchestration plan; the old `get_session` then whole-blob
+    /// `update().extension_data()` pair erased such a write. The whole-object
+    /// form rather than `update_extension_state`, because the read may migrate a
+    /// legacy `todo.v0` blob, a second key.
     async fn with_state<F>(&self, session_id: &str, f: F) -> Result<String, String>
     where
-        F: FnOnce(&mut TodoState) -> Result<String, String>,
+        F: FnOnce(&mut TodoState) -> Result<String, String> + Send,
     {
         // Held across the whole read-modify-write; see `state_lock`.
         let _state_guard = self.state_lock.lock().await;
 
-        let manager = &self.context.session_manager;
-        let mut session = manager
-            .get_session(session_id, false)
-            .await
-            .map_err(|_| "Failed to read session metadata".to_string())?;
+        // A refusal (`f`'s, or an unreadable checklist) rolls the transaction
+        // back and is reported in its own words.
+        let mut refusal: Option<String> = None;
+        let written = self
+            .context
+            .session_manager
+            .update_extension_data(session_id, |data| {
+                // ⚠ Never `TodoState::load(..).unwrap_or_default()` here. `load`
+                // reports a blob this build cannot parse as `None`, and the write
+                // below replaces the WHOLE `todo.v1` key — so one `todo_add`
+                // against a checklist a newer build wrote would silently destroy
+                // it. Refuse instead: the blob stays exactly where it is.
+                let loaded = TodoState::try_load(data).map_err(|unreadable| {
+                    format!(
+                        "This session's stored checklist (`{}`) was written by a newer build \
+                         of Biorouter and cannot be read here. Leaving it untouched rather \
+                         than overwriting it — update Biorouter to change this checklist.",
+                        unreadable.key
+                    )
+                });
+                let mut state = match loaded {
+                    Ok(state) => state.unwrap_or_default(),
+                    Err(sentence) => {
+                        refusal = Some(sentence);
+                        anyhow::bail!("todo state refused");
+                    }
+                };
+                let message = match f(&mut state) {
+                    Ok(message) => message,
+                    Err(sentence) => {
+                        refusal = Some(sentence);
+                        anyhow::bail!("todo change refused");
+                    }
+                };
+                if state.to_extension_data(data).is_err() {
+                    refusal = Some("Failed to serialize TODO state".to_string());
+                    anyhow::bail!("todo state did not serialize");
+                }
+                Ok(message)
+            })
+            .await;
 
-        // ⚠ Never `TodoState::load(..).unwrap_or_default()` here. `load` reports
-        // a blob this build cannot parse as `None`, and the write below replaces
-        // the WHOLE `todo.v1` key — so one `todo_add` against a checklist a
-        // newer build wrote would silently destroy it. Refuse instead: the blob
-        // stays exactly where it is.
-        let mut state = TodoState::try_load(&session.extension_data)
-            .map_err(|unreadable| {
-                format!(
-                    "This session's stored checklist (`{}`) was written by a newer build of \
-                     Biorouter and cannot be read here. Leaving it untouched rather than \
-                     overwriting it — update Biorouter to change this checklist.",
-                    unreadable.key
-                )
-            })?
-            .unwrap_or_default();
-        let message = f(&mut state)?;
-
-        state
-            .to_extension_data(&mut session.extension_data)
-            .map_err(|_| "Failed to serialize TODO state".to_string())?;
-
-        manager
-            .update(session_id)
-            .extension_data(session.extension_data)
-            .apply()
-            .await
-            .map_err(|_| "Failed to update session metadata".to_string())?;
-
-        Ok(message)
+        match written {
+            Ok(Some(message)) => Ok(message),
+            Ok(None) => Err("Failed to read session metadata".to_string()),
+            Err(_) => {
+                Err(refusal.unwrap_or_else(|| "Failed to update session metadata".to_string()))
+            }
+        }
     }
 
     fn max_items() -> usize {
@@ -1415,6 +1443,83 @@ mod tests {
                 after.extension_data.get_extension_state("todo", "v1"),
                 Some(&future),
                 "{tool} overwrote a checklist it could not read"
+            );
+        }
+    }
+
+    /// A todo call and a spawn into an orchestration phase can run in the same
+    /// tool batch, so a todo write must never put back a blob read before the
+    /// spawn's per-key write committed. Each todo write used to read the whole
+    /// `extension_data`, mutate `todo.v1` in memory and write the whole blob
+    /// back, which erased any other key committed in between: the plan, or a
+    /// child recorded into it.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_todo_write_never_erases_a_spawn_recorded_into_the_plan() {
+        use crate::agents::orchestration_plan::{
+            apply_plan, load_plan, mutate_plan, record_spawn, PlanPhaseInput,
+        };
+
+        const ROUNDS: usize = 24;
+        let temp = tempfile::tempdir().unwrap();
+        let (client, id) = client_and_session(&temp, "todo races a spawn").await;
+        let manager = Arc::clone(&client.context.session_manager);
+        let client = Arc::new(client);
+
+        let phase = PlanPhaseInput {
+            id: "build".to_string(),
+            title: "Build".to_string(),
+            kind: Some("implementation".to_string()),
+            goal: None,
+            depends_on: Vec::new(),
+        };
+        mutate_plan(&manager, &id, |plan| {
+            apply_plan(plan, Some("Race"), None, std::slice::from_ref(&phase)).map(|p| (p, ()))
+        })
+        .await
+        .unwrap();
+
+        let mut tasks = Vec::new();
+        for i in 0..ROUNDS {
+            let todo = Arc::clone(&client);
+            let session = id.clone();
+            tasks.push(tokio::spawn(async move {
+                let added = call(
+                    &todo,
+                    &session,
+                    "todo_add",
+                    serde_json::json!({"items": [format!("task {i}")]}),
+                )
+                .await;
+                assert_eq!(added.is_error, Some(false), "{}", text(&added));
+            }));
+            let plans = Arc::clone(&manager);
+            let session = id.clone();
+            tasks.push(tokio::spawn(async move {
+                record_spawn(&plans, &session, "build", &format!("child-{i}"), None)
+                    .await
+                    .unwrap();
+            }));
+        }
+        for task in tasks {
+            task.await.unwrap();
+        }
+
+        let plan = load_plan(&manager, &id)
+            .await
+            .unwrap()
+            .expect("a todo write erased the orchestration plan");
+        let recorded = plan.phases[0].agents.len();
+        assert_eq!(
+            recorded,
+            ROUNDS,
+            "a todo write erased {} recorded spawn(s)",
+            ROUNDS - recorded
+        );
+        let checklist = client.get_moim(&id).await.unwrap();
+        for i in 0..ROUNDS {
+            assert!(
+                checklist.contains(&format!("task {i}")),
+                "todo item {i} was lost: {checklist}"
             );
         }
     }
