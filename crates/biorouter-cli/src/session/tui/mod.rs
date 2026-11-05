@@ -2626,6 +2626,24 @@ async fn refresh_context(session: &CliSession, app: &mut App) {
     }
     if let Ok(meta) = session.get_session().await {
         app.status.used_tokens = meta.total_tokens.unwrap_or(0) as usize;
+        status_follow_binding(
+            &mut app.status,
+            meta.provider_name.as_deref(),
+            meta.model_config.as_ref().map(|m| m.model_name.as_str()),
+        );
+    }
+}
+
+/// The status line names the model this chat is bound to, not the configured
+/// default: `--provider`/`--model` and a decision chat bind something else, and
+/// the line used to keep naming the default (`gpt-5.5 · versa_azure` over a
+/// chat answering with `tev1:0.8b`).
+fn status_follow_binding(status: &mut StatusInfo, provider: Option<&str>, model: Option<&str>) {
+    if let Some(provider) = provider.filter(|p| !p.is_empty()) {
+        status.provider = provider.to_string();
+    }
+    if let Some(model) = model.filter(|m| !m.is_empty()) {
+        status.model = model.to_string();
     }
 }
 
@@ -3997,6 +4015,23 @@ mod tests {
         assert_eq!(hidden, 2);
         let (shown, hidden) = subagents::spawn_context_preview("one line");
         assert_eq!((shown, hidden), (vec!["one line"], 0));
+    }
+
+    #[test]
+    fn the_status_line_follows_the_chats_binding_not_the_default() {
+        let mut status = StatusInfo {
+            provider: "versa_azure".into(),
+            model: "gpt-5.5-2026-04-24".into(),
+            ..StatusInfo::default()
+        };
+        status_follow_binding(&mut status, Some("ollama_decision"), Some("tev1:0.8b"));
+        assert_eq!(
+            (status.provider.as_str(), status.model.as_str()),
+            ("ollama_decision", "tev1:0.8b")
+        );
+        // A row that names nothing yet keeps what the line had.
+        status_follow_binding(&mut status, None, Some(""));
+        assert_eq!(status.model, "tev1:0.8b");
     }
 
     #[test]
