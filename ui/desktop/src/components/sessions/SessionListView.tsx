@@ -89,7 +89,9 @@ import { useDiverge } from '../../hooks/useDiverge';
 import {
   folderName,
   historyRowTitle,
+  runModelFullName,
   runModelName,
+  subagentRoleOf,
   subagentOutcomeOf,
   type SubagentOutcome,
   type SubagentOutcomeStatus,
@@ -544,10 +546,15 @@ const HistoryRow = React.memo(function HistoryRow({
     [nested, session.extension_data]
   );
   const modelName = nested ? runModelName(session) : null;
+  const modelFullName = nested ? runModelFullName(session) : null;
+  const role = nested ? subagentRoleOf(session.extension_data) : null;
   const actionSize = nested ? 'sm' : 'default';
   const billedTokenEstimate = billedSessionTokenEstimate(session);
   const folder = folderName(session.working_dir);
-  const title = historyRowTitle(session);
+  const sessionTitle = historyRowTitle(session);
+  // A run leads with the role its parent gave it; the task-derived name stays in the
+  // tooltip and in the accessible name, so nothing is lost to a short label.
+  const title = role ?? sessionTitle;
   const parentName = session.diverged_from
     ? (sessionNameById.get(session.diverged_from) ?? session.diverged_from)
     : null;
@@ -574,14 +581,19 @@ const HistoryRow = React.memo(function HistoryRow({
             type="button"
             onClick={open}
             className="br-history-row-open"
-            aria-label={openChatLabel(title)}
+            aria-label={openChatLabel(role ? `${role}: ${sessionTitle}` : title)}
           >
             {/* The kind is the glyph's to say, once (V1-R2-10): a sub-agent run has no
                 "Subagent" badge and no "Subagent:" in its title, and an app chat reads as
                 the app's name, not `app:<id>`. The glyph carries the kind in its
                 accessible name. */}
             {nested ? (
-              <span className="br-history-row-title truncate">{title}</span>
+              <span
+                className="br-history-row-title truncate"
+                title={role ? sessionTitle : undefined}
+              >
+                {title}
+              </span>
             ) : (
               <span className="flex min-w-0 items-center gap-2">
                 <span className="text-label truncate">{title}</span>
@@ -621,7 +633,7 @@ const HistoryRow = React.memo(function HistoryRow({
                       </Badge>
                     </TooltipTrigger>
                     <TooltipContent side="bottom" align="start">
-                      {runModelTooltip(modelName, session.provider_name)}
+                      {runModelTooltip(modelFullName ?? modelName, session.provider_name)}
                     </TooltipContent>
                   </Tooltip>
                 ) : null
@@ -749,6 +761,7 @@ function matchesFilter(session: Session, needle: string): boolean {
   return (
     session.name.toLowerCase().includes(needle) ||
     historyRowTitle(session).toLowerCase().includes(needle) ||
+    (subagentRoleOf(session.extension_data)?.toLowerCase().includes(needle) ?? false) ||
     session.id.toLowerCase().includes(needle) ||
     session.working_dir.toLowerCase().includes(needle)
   );

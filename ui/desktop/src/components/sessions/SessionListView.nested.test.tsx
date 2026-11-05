@@ -173,6 +173,26 @@ describe('a run nested under its parent reads as subordinate', () => {
     expect(rowOf('Run b')!.querySelector('[data-run-model]')).toBeNull();
   });
 
+  it('leads a run with the role its parent gave it, keeping the task name in its tooltip and accessible name', async () => {
+    await renderRuns([
+      parent,
+      run('a', 10, {
+        extension_data: { 'subagent_spawn.v1': { role: 'celsius', phase_id: 'research' } },
+        model_config: { model_name: 'gpt-5.5-2026-04-24', toolshim: false },
+      }),
+      run('b', 11),
+    ]);
+    const opener = await screen.findByRole('button', { name: 'Open chat celsius: Run a' });
+    const row = opener.closest('[data-session-id]') as HTMLElement;
+    const title = within(row).getByText('celsius');
+    expect(title).toHaveClass('br-history-row-title');
+    expect(title).toHaveAttribute('title', 'Run a');
+    // The chip carries the short label; the full id is its tooltip's.
+    expect(within(row).getByText('gpt-5.5')).toBeInTheDocument();
+    // A run with no role keeps its task-derived title and no tooltip.
+    expect(within(rowOf('Run b')!).getByText('Run b')).not.toHaveAttribute('title');
+  });
+
   it("shows the run's status from its outcome record in the third cell, never its extensions", async () => {
     const extensions = {
       'enabled_extensions.v0': { extensions: [{ type: 'builtin', name: 'developer' }] },

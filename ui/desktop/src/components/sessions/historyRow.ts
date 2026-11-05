@@ -1,4 +1,5 @@
 import { chatKindOf, type ChatKindSource } from '../chats/chatKind';
+import { shortModelLabel } from '../../utils/sessionSubagents';
 
 /**
  * Small pure helpers for a chat row's second line in Chat history and the
@@ -119,12 +120,42 @@ export function subagentOutcomeOf(
 }
 
 /**
- * The model a run used, for the small chip on its History row: the model's own name, which is
- * what tells two runs of one parent apart. `null` when the row records none.
+ * The model a run used, for the small chip on its History row: the short label the chat
+ * summary and the terminal use too (`gpt-5.5`, not `gpt-5.5-2026-04-24`), which is what tells
+ * two runs of one parent apart. The full id stays in the chip's tooltip
+ * ([`runModelFullName`]). `null` when the row records none.
  */
 export function runModelName(session: {
   model_config?: { model_name?: string | null } | null;
 }): string | null {
+  const name = runModelFullName(session);
+  return name ? shortModelLabel(name) : null;
+}
+
+/** The model id a run recorded, unshortened, for the chip's tooltip. */
+export function runModelFullName(session: {
+  model_config?: { model_name?: string | null } | null;
+}): string | null {
   const name = session.model_config?.model_name?.trim();
   return name ? name : null;
+}
+
+/** `extension_data` key of a run's spawn record, which holds the role its parent gave it. */
+export const SUBAGENT_SPAWN_KEY = 'subagent_spawn.v1';
+
+/**
+ * The short role a run's parent gave it at spawn (`celsius`, `sq-3`), read from the spawn
+ * record, or `null`. A History run leads with it, as the chat summary and the terminal do,
+ * because the session name is the first words of the task and reads the same for every run of
+ * a fan-out.
+ */
+export function subagentRoleOf(
+  extensionData: Record<string, unknown> | null | undefined
+): string | null {
+  const record = extensionData?.[SUBAGENT_SPAWN_KEY];
+  if (!record || typeof record !== 'object') return null;
+  const role = (record as { role?: unknown }).role;
+  if (typeof role !== 'string') return null;
+  const trimmed = role.trim();
+  return trimmed ? trimmed : null;
 }

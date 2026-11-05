@@ -2,9 +2,12 @@ import { describe, expect, it } from 'vitest';
 import {
   folderName,
   historyRowTitle,
+  runModelFullName,
   runModelName,
   subagentOutcomeOf,
+  subagentRoleOf,
   SUBAGENT_OUTCOME_KEY,
+  SUBAGENT_SPAWN_KEY,
 } from './historyRow';
 import { messageCount } from './copy';
 
@@ -178,5 +181,24 @@ describe('runModelName', () => {
     expect(runModelName({ model_config: { model_name: '  ' } })).toBeNull();
     expect(runModelName({ model_config: null })).toBeNull();
     expect(runModelName({})).toBeNull();
+  });
+
+  it('shortens a dated id the way the chat summary does, and keeps the full id for the tooltip', () => {
+    const run = { model_config: { model_name: 'gpt-5.5-2026-04-24' } };
+    expect(runModelName(run)).toBe('gpt-5.5');
+    expect(runModelFullName(run)).toBe('gpt-5.5-2026-04-24');
+  });
+});
+
+describe('subagentRoleOf', () => {
+  it('reads the role from the spawn record, trimmed, or nothing', () => {
+    expect(subagentRoleOf({ [SUBAGENT_SPAWN_KEY]: { role: ' celsius ', phase_id: 'r' } })).toBe(
+      'celsius'
+    );
+    expect(subagentRoleOf({ [SUBAGENT_SPAWN_KEY]: { role: '   ' } })).toBeNull();
+    expect(subagentRoleOf({ [SUBAGENT_SPAWN_KEY]: { role: 7 } })).toBeNull();
+    expect(subagentRoleOf({ [SUBAGENT_SPAWN_KEY]: null })).toBeNull();
+    expect(subagentRoleOf({})).toBeNull();
+    expect(subagentRoleOf(null)).toBeNull();
   });
 });
