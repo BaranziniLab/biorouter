@@ -76,6 +76,7 @@ export const DECISION_HISTORY_COPY = {
   removeBatch: 'Remove the filter: this decide call only',
   clear: 'Clear filters',
   refresh: 'Refresh',
+  showNew: (n: number) => `Show ${formatCount(n)} new`,
   calls: (n: number) => `${formatCount(n)} ${n === 1 ? 'call' : 'calls'}`,
   loading: 'Loading decision calls',
   loadingMore: 'Loading more',
@@ -114,6 +115,11 @@ export const DECISION_HISTORY_COPY = {
 };
 
 const copy = DECISION_HISTORY_COPY;
+
+/** How often an open history checks for new calls (one small summary read). */
+export const FOLLOW_INTERVAL_MS = 4000;
+/** Within this many pixels of the top, new calls reload the list in place. */
+const FOLLOW_TOP_SLACK_PX = 24;
 
 type Glyph = typeof CircleIcon;
 
@@ -980,6 +986,45 @@ export default function DecisionHistory({
     return () => controller.abort();
   }, [sessionId, reload, filterKey]);
 
+  // Follow a running chat: monitors and decide batches keep adding calls while the
+  // view is open. A cheap summary read every FOLLOW_INTERVAL_MS while the window is
+  // visible; new calls reload the list in place when it is at the top, and are
+  // offered as "Show N new" when the person has scrolled into older calls, so the
+  // rows under the reader never move.
+  const seenTotal = useRef<number | null>(null);
+  const [newCalls, setNewCalls] = useState(0);
+  const atTopRef = useRef(true);
+  useEffect(() => {
+    if (summary) seenTotal.current = summary.total;
+  }, [summary]);
+  useEffect(() => {
+    let controller: AbortController | null = null;
+    const tick = () => {
+      if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return;
+      controller?.abort();
+      const current = new AbortController();
+      controller = current;
+      fetchDecisionSummary(sessionId, current.signal)
+        .then(({ data }) => {
+          if (current.signal.aborted || !data || seenTotal.current === null) return;
+          const added = data.total - seenTotal.current;
+          if (added <= 0) return;
+          if (atTopRef.current) {
+            setNewCalls(0);
+            setReload((value) => value + 1);
+          } else {
+            setNewCalls(added);
+          }
+        })
+        .catch(() => {});
+    };
+    const timer = setInterval(tick, FOLLOW_INTERVAL_MS);
+    return () => {
+      clearInterval(timer);
+      controller?.abort();
+    };
+  }, [sessionId]);
+
   const records = state.records;
   const selectedIndex = selectedId ? records.findIndex((entry) => entry.id === selectedId) : -1;
   useEffect(() => {
@@ -1051,6 +1096,7 @@ export default function DecisionHistory({
     cancelAnimationFrame(frame.current);
     frame.current = requestAnimationFrame(measure);
   };
+  atTopRef.current = viewport.top < FOLLOW_TOP_SLACK_PX;
   const range = visibleRange(viewport.top, viewport.height, records.length);
   useEffect(() => {
     if (state.nextCursor && range.end >= records.length - LOAD_AHEAD_ROWS) loadMore();
@@ -1114,6 +1160,19 @@ export default function DecisionHistory({
         <span data-testid="decision-history-count">{state.loaded ? copy.calls(total) : ''}</span>
       </PreviewBarMeta>
       <PreviewBarActions>
+        {newCalls > 0 && (
+          <button
+            type="button"
+            className="br-dh-new-calls"
+            data-testid="decision-history-new-calls"
+            onClick={() => {
+              setNewCalls(0);
+              setReload((value) => value + 1);
+            }}
+          >
+            {copy.showNew(newCalls)}
+          </button>
+        )}
         <PreviewTip content={copy.refresh}>
           <button
             type="button"

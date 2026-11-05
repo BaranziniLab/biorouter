@@ -54,6 +54,13 @@ const EXTENSION_TITLE: &str = "Decisions";
 pub const DECIDE_TOOL_NAME: &str = "decisions__decide";
 pub const DECISION_MODELS_TOOL_NAME: &str = "decisions__decision_models";
 
+/// The decision tools by exact name, for the code-execution filter
+/// (`reply_parts::survives_code_execution_filter`), which keeps them directly
+/// callable rather than only reachable from a script.
+pub fn is_decision_tool_name(tool_name: &str) -> bool {
+    tool_name == DECIDE_TOOL_NAME || tool_name == DECISION_MODELS_TOOL_NAME
+}
+
 /// Questions in one `decide` call. Under System One's own 64, so one request
 /// per chunk stays small and fast.
 pub const MAX_TOOL_QUESTIONS: usize = 16;
@@ -146,7 +153,9 @@ struct DecideParams {
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 struct DecideQuestion {
     /// The question, asked of each chunk on its own, for example "Does this
-    /// note state the patient has multiple sclerosis?".
+    /// note state the patient has multiple sclerosis?". `question` is accepted
+    /// as another name for it: models reach for that word first.
+    #[serde(alias = "question")]
     instructions: String,
     /// yes_no (the default), choice or score.
     #[serde(default, rename = "type", skip_serializing_if = "Option::is_none")]
@@ -1518,6 +1527,23 @@ mod tests {
         ] {
             assert!(DECIDE_DESCRIPTION.contains(needle), "missing {needle:?}");
         }
+    }
+
+    /// Measured live: GPT-5.5 wrote `{"type": "yes_no", "question": "…"}` twice
+    /// before reading the module, and both calls failed on the missing
+    /// `instructions`. The word it reaches for is accepted.
+    #[test]
+    fn a_question_written_as_question_is_read_as_its_instructions() {
+        let q: DecideQuestion = serde_json::from_value(json!({
+            "type": "yes_no",
+            "question": "Does this note state an EDSS score?",
+            "threshold": 0.8
+        }))
+        .unwrap();
+        assert_eq!(q.instructions, "Does this note state an EDSS score?");
+        assert!(is_decision_tool_name(DECIDE_TOOL_NAME));
+        assert!(is_decision_tool_name(DECISION_MODELS_TOOL_NAME));
+        assert!(!is_decision_tool_name("decisions__other"));
     }
 
     #[test]

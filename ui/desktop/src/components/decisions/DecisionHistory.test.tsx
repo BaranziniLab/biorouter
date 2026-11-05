@@ -1,14 +1,16 @@
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   parseDecisionDetail,
   parseDecisionRecord,
   type DecisionHistoryFilter,
   type DecisionPage,
 } from '../../utils/sessionDecisions';
+import { PreviewBar, PreviewBarScope } from '../artifacts/PreviewBar';
 import DecisionHistory, {
   DECISION_PAGE_SIZE,
   DECISION_ROW_HEIGHT,
+  FOLLOW_INTERVAL_MS,
   recordProbability,
   visibleRange,
 } from './DecisionHistory';
@@ -372,5 +374,106 @@ describe('DecisionHistory', () => {
     expect(await screen.findByText('Could not load decision calls.')).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
     await waitFor(() => expect(screen.getAllByTestId('decision-row').length).toBeGreaterThan(0));
+  });
+});
+
+describe('following a running chat', () => {
+  // The follow interval is captured and run by hand. Faking timers would also stop
+  // jsdom's animation frames, which the list measures its scroll position with.
+  let followTick: (() => void) | null = null;
+  beforeEach(() => {
+    followTick = null;
+    const realSetInterval = globalThis.setInterval;
+    vi.spyOn(globalThis, 'setInterval').mockImplementation(((
+      handler: () => void,
+      ms?: number,
+      ...rest: unknown[]
+    ) => {
+      if (ms === FOLLOW_INTERVAL_MS) {
+        followTick = handler;
+        return 0 as unknown as ReturnType<typeof setInterval>;
+      }
+      return realSetInterval(handler, ms, ...rest);
+    }) as typeof setInterval);
+  });
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  async function tick() {
+    expect(followTick).not.toBeNull();
+    await act(async () => {
+      followTick?.();
+    });
+  }
+
+  function grow(by: number) {
+    mocks.summary.mockResolvedValue({
+      data: { total: TOTAL + by, aggregates: [], recentTurns: [] },
+      missing: false,
+    });
+  }
+
+  function drawInBar() {
+    return render(
+      <PreviewBarScope>
+        <PreviewBar name="Decisions" />
+        <DecisionHistory sessionId="s1" filter={{}} filterKey={1} />
+      </PreviewBarScope>
+    );
+  }
+
+  it('reloads in place when new calls land while the list is at the top', async () => {
+    drawInBar();
+    await waitFor(() => expect(screen.getAllByTestId('decision-row').length).toBeGreaterThan(0));
+    await waitFor(() => expect(mocks.summary).toHaveBeenCalledTimes(1));
+    expect(mocks.page).toHaveBeenCalledTimes(1);
+
+    // Nothing new: the tick reads the summary and leaves the list alone.
+    await tick();
+    await waitFor(() => expect(mocks.summary).toHaveBeenCalledTimes(2));
+    expect(mocks.page).toHaveBeenCalledTimes(1);
+
+    grow(3);
+    await tick();
+    await waitFor(() => expect(mocks.page).toHaveBeenCalledTimes(2));
+    expect(mocks.page.mock.calls[1][2]).toMatchObject({ before: null });
+    expect(screen.queryByTestId('decision-history-new-calls')).toBeNull();
+
+    // The reload re-read the summary, so the same total does not reload again.
+    await waitFor(() => expect(mocks.summary).toHaveBeenCalledTimes(4));
+    await tick();
+    await waitFor(() => expect(mocks.summary).toHaveBeenCalledTimes(5));
+    expect(mocks.page).toHaveBeenCalledTimes(2);
+  });
+
+  it('offers "Show N new" instead of moving the rows under a reader who has scrolled', async () => {
+    drawInBar();
+    await waitFor(() => expect(screen.getAllByTestId('decision-row').length).toBeGreaterThan(0));
+    await waitFor(() => expect(mocks.summary).toHaveBeenCalledTimes(1));
+    const list = screen.getByTestId('decision-list');
+    sizeList(list);
+    act(() => {
+      list.scrollTop = DECISION_ROW_HEIGHT * 40;
+      fireEvent.scroll(list);
+    });
+    await waitFor(() =>
+      expect(
+        within(list)
+          .getAllByTestId('decision-row')
+          .some((row) => row.textContent?.includes('note-0045'))
+      ).toBe(true)
+    );
+
+    grow(3);
+    await tick();
+    const button = await screen.findByTestId('decision-history-new-calls');
+    expect(button).toHaveTextContent('Show 3 new');
+    expect(mocks.page).toHaveBeenCalledTimes(1);
+
+    fireEvent.click(button);
+    await waitFor(() => expect(mocks.page).toHaveBeenCalledTimes(2));
+    expect(mocks.page.mock.calls[1][2]).toMatchObject({ before: null });
+    expect(screen.queryByTestId('decision-history-new-calls')).toBeNull();
   });
 });
