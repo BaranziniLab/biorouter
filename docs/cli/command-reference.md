@@ -105,6 +105,10 @@ biorouter models local pull qwen3.8-27b
 
 # Delete a downloaded model's Hugging Face files
 biorouter models local rm gemma4-31b
+
+# The decision models this machine can use, local first
+biorouter models decision list
+biorouter models decision list --format json
 ```
 
 `models local` works on the shared model store directly, so it needs no running app or daemon.
@@ -116,6 +120,13 @@ download is still on disk, it also says how to free it. `local rm` resolves a na
 `local rm gemma4` deletes the files that retired model left behind and never the default
 model's. A model pulled through Ollama is removed with `ollama rm`. See the
 [Llama Server model catalog](../providers/llama-server/model-catalog.md).
+
+`models decision list` lists the decision models available now: the ones pulled into the local
+Ollama that declare the decision capability, and Baseten's when a Baseten API key is saved. Each
+line names the model as `provider/model` (the spelling `--model` takes everywhere), its privacy
+tier, whether it runs on this computer, its context window in tokens, the question kinds it
+answers (yes/no, choice, score) and the adapter that reads its probabilities. Local models come
+first. See [`decide`](#decide-options) and [Decision models](../agent-loop/decision-models.md).
 
 ### version
 
@@ -246,7 +257,9 @@ biorouter session -n my-session --debug --max-turns 25
 
 ### session list [options]
 
-List all saved sessions.
+List all saved sessions. A chat that has asked decision models shows how many calls it made at
+the end of its row (`- 642 decisions`), and the JSON carries it as `decision_count`. The calls
+themselves are listed by [`session decisions`](#session-decisions-options), never as rows here.
 
 **Options:**
 
@@ -595,6 +608,129 @@ biorouter session subagents 20261104_1 --watch
 biorouter session subagents 20261104_1 --format json
 ```
 
+### session decisions [options]
+
+List the decision-model calls one chat made. Decision models can be asked thousands of times in
+one chat (a monitor after every iteration, a `decide` call over hundreds of chunks), so the
+output leads with aggregates and pages through individual calls. This is the terminal counterpart
+of the desktop's decision history view.
+
+**Arguments:**
+
+- **`<SESSION_ID>`** (required): The chat whose decisions to list
+
+**Options:**
+
+- **`--source <SOURCE>`**: Only calls from `monitor`, `tool` (the agent's `decide` tool), `gate`
+  (a phase gate), `chat` (a chat whose main model is a decision model) or `adhoc` (a
+  `biorouter decide --session` call)
+- **`--origin-id <ID>`**: Only calls from one monitor, tool call or phase
+- **`--turn <TURN_ID>`**: Only calls made in one turn
+- **`--batch <BATCH_ID>`**: Only calls of one `decide` batch
+- **`--outcome <OUTCOME>`**: Only `passed`, `failed`, `decided`, `error` or `refused` calls
+- **`--min-p <P>`**, **`--max-p <P>`**: Only calls whose lowest pass probability is in the range
+- **`--errors`**: Only calls that failed or were refused
+- **`-l, --limit <N>`**: Calls per page, 20 by default and at most 200
+- **`--before <CURSOR>`**: The next page: the cursor the previous page's last line printed
+- **`--json`**: Print the summary and the page as JSON
+- **`--user-action-key-stdin`**: Read the raw user-action key from the first line of stdin, so a
+  daemon that holds a key lists a private chat's decisions
+
+**What it prints.** First the aggregates, one line per source and criterion (count, how many
+passed and failed, errors, the last answer and its probability, the model), then one line per
+source for each recent turn. A page of calls follows, newest first: the time, the source, the
+criterion (and the chunk), the answers, the probability, the outcome, the model and the latency.
+
+```
+Decisions in session 20261104_1: 618 calls
+
+By source:
+  monitor  Form reached  18 checks · 18 failed · last no P 0.31 ██▌░░░░░ · tev1:0.8b
+  tool     decide        600 calls · 41 passed · 557 failed · 2 errors · last yes P 0.93 ███████▌ · tev1:0.8b
+
+Recent turns:
+  0193a1b2  monitor  Form reached  18 checks · 18 failed · last P 0.31 · 10:42:01 to 10:44:12
+
+Calls, newest first (20 of 618):
+  11-04 10:44:12  monitor  Form reached  no  P 0.31 ██▌░░░░░  failed  tev1:0.8b  22 ms
+  ...
+More: biorouter session decisions 20261104_1 --before <cursor>
+```
+
+**With and without a daemon, and privacy.** As for [`session subagents`](#session-subagents-options):
+with a reachable daemon the calls come from it; without one they are read from the local session
+store and a note on stderr says so. A private chat's decisions are listed only to a caller that
+may open the chat, on either path.
+
+**Usage:**
+
+```bash
+# A chat's decision activity, aggregates first
+biorouter session decisions 20261104_1
+
+# The errors of one decide batch
+biorouter session decisions 20261104_1 --source tool --batch <batch id> --errors
+
+# The calls of one turn, 50 at a time, as JSON
+biorouter session decisions 20261104_1 --turn <turn id> --limit 50 --json
+```
+
+### session monitors
+
+List, add or remove the decision-model monitors that watch a chat. A monitor asks a decision
+model one question about the chat's recent messages after each agent iteration, or once as a turn
+ends. When the probability of the wanted answer reaches its threshold, it stops the turn, shows a
+notice, or tells the model. A turn that ran monitors shows one summary line per monitor, never
+one line per check. A chat takes at most 8 monitors. They are the same monitors the desktop's
+Monitors dialog edits.
+
+**Arguments:**
+
+- **`<SESSION_ID>`** (required): The chat
+- **`list [--json]`**: The chat's monitors and its default decision model
+- **`add`**: Add a monitor, with the options below
+- **`remove <MONITOR>`**: Remove a monitor by its id or name
+
+**`add` options:**
+
+- **`--name <NAME>`** (required): A short name, at most 60 characters. The id is made from it
+- **`--ask <QUESTION>`** (required): The question about the chat's recent messages
+- **`--threshold <P>`** (required): Fire when the probability of the wanted answer is at least `P`
+- **`--action <ACTION>`**: `notify` (the default) shows a notice, `stop` ends the turn and hands
+  control back to you, `steer` tells the model what the monitor found
+- **`--timing <TIMING>`**: `post-iteration` (the default) asks after every iteration of the agent
+  loop, `turn-end` once as a turn ends
+- **`--model <PROVIDER/MODEL>`**: The decision model; without it the chat's default
+- **`--choice <NAME[=DESCRIPTION]>`** and **`--option <OPTION>`**: Make the question a choice, and
+  name the option whose probability is compared
+- **`--consecutive <N>`**: Checks in a row at or above the threshold before it fires (1 to 5)
+- **`--rearm-below <P>`**: After firing, fire again only once the probability has dropped below `P`
+- **`--on-error <POLICY>`**: `notify` (the default) or `pause`, which stops the turn when a check
+  fails
+- **`--max-checks <N>`**: At most this many checks per turn (default 50, at most 200)
+- **`--id <ID>`**, **`--disabled`**: Choose the id, or add the monitor switched off
+
+**With and without a daemon.** With a reachable daemon the monitors are read and written through
+it. A change names where the chat's content goes, so a daemon started with a user-action key
+wants the key: when it refuses a change, the command shows its reason and asks for the key once,
+without echo, and pressing Enter stops. `--user-action-key-stdin` supplies it without a prompt.
+Without a daemon the monitors are read and written in the local session store, under the same
+privacy rule as `session decisions`.
+
+**Usage:**
+
+```bash
+# The chat's monitors
+biorouter session monitors 20261104_1 list
+
+# Stop the turn once the agent has reached the consent form
+biorouter session monitors 20261104_1 add --name "Form reached" \
+  --ask "Has the agent reached the consent form page?" --threshold 0.85 --action stop
+
+# Remove it again
+biorouter session monitors 20261104_1 remove form-reached
+```
+
 ### session diagnostics [options]
 
 Generate a comprehensive diagnostics bundle for troubleshooting issues with a specific session.
@@ -767,6 +903,83 @@ biorouter run --provider anthropic --model claude-sonnet-5 -t "initial prompt"
 
 # Run with limited turns before prompting user
 biorouter run --workflow workflow.yaml --max-turns 10
+```
+
+### decide [options]
+
+Ask a decision model one typed question about a text. A decision model answers with a typed
+answer (yes or no, one of named options, or a level of a score) and the probability of every
+outcome, in tens of milliseconds, instead of writing text. The command prints a probability bar
+per outcome, the answer and its probability, whether the probabilities are calibrated, the model
+and the latency.
+
+**Options:**
+
+- **`--ask <QUESTION>`** (required): The question to ask about the text
+- **`--model <PROVIDER/MODEL>`**: The decision model, as `biorouter models decision list` names
+  it. Without it the model is `BIOROUTER_DECISION_MODEL` (or `BIOROUTER_DECISION_PROVIDER`),
+  else the first available model, local first
+- **`--choice <NAME[=DESCRIPTION]>`**: Makes the question a choice; repeat it once per option (2
+  to 26). The model reads the description, and the answer is the name
+- **`--levels <LEVEL,LEVEL,...>`**: Makes the question a score with 1 to 10 levels, lowest first
+- **`--threshold <P>`**: Pass when the probability of the wanted answer is at least `P` (0 to 1)
+- **`--threshold-on <ANSWER>`**: What the threshold is on: `yes` (the default) or `no` for a
+  yes/no question, an option name for a choice, or a level (its text, or its number from 0) for a
+  score, which then counts that level and every level above it
+- **`--text <TEXT>`**: The text to decide on. Without it, and without `--batch`, the text is read
+  from stdin
+- **`--batch <DIR>`**: Decide once per file in the directory (not recursive, hidden files
+  skipped, in name order), several at a time, and print one row per file and a summary
+- **`--session <SESSION_ID>`**: Record the decision in that chat's decision log
+- **`--name <NAME>`**: The question's name in the log and the JSON (default `question`)
+- **`--json`**: Print JSON instead of text
+
+**What it prints.** For one text:
+
+```
+Does this note state the patient has multiple sclerosis?
+▸ yes  ███████████████████▋░░░░  0.82
+  no   ████▍░░░░░░░░░░░░░░░░░░░  0.18
+Answer: yes  p 0.82  calibrated  ollama_decision/tev1:0.8b  22 ms
+Threshold: P(yes) 0.82 ≥ 0.80, passed
+```
+
+`calibrated` means the probabilities are the model's own distribution, or token probabilities
+that covered at least 90% of the probability. `uncalibrated` says where the number came from
+instead, for example a number the model wrote. Either way these are model probabilities that have
+not been validated on your data, and a line on stderr says so. With `--batch`, one row per file
+shows the answer, its probability, a short bar and whether it passed the threshold. The last
+lines give the count of each answer, how many passed, how many failed with an error, and each
+error in full. A file over 4 MiB, an empty file, or one that is not UTF-8 text is reported as an
+error row and not sent. So is a text too large for the model's window; split it and ask again.
+
+**Privacy.** With `--session`, the chat's privacy tier decides which decision models may read the
+text, exactly as it does for the agent: a private chat never reaches a model hosted outside your
+institution, and the refusal comes before anything is sent. Without `--session` there is no chat
+to protect and nothing is logged. When the model the command resolved is hosted outside your
+institution (Baseten's are), one line on stderr names it before the text is sent, so you can stop
+if the text is private.
+
+The question types and their limits descend from Albert Lee's System One prototype in PR #469.
+
+**Usage:**
+
+```bash
+# Ask a yes/no question about a note
+biorouter decide --model ollama_decision/tev1:0.8b --ask "Is an EDSS score stated?" < note.txt
+
+# A choice, with a threshold on one option
+biorouter decide --ask "Which MS course is described?" \
+  --choice rrms="Relapsing-remitting" --choice spms="Secondary progressive" \
+  --choice ppms="Primary progressive" --choice none="Not stated" \
+  --threshold 0.8 --threshold-on rrms --text "Neuro f/u. 34F, RRMS dx 2019."
+
+# One decision per note in a directory, with a summary table
+biorouter decide --ask "Does this note state the patient has multiple sclerosis?" \
+  --threshold 0.9 --batch notes/
+
+# Record the decision in a chat's decision log, as JSON
+biorouter decide --session 20261104_1 --ask "Is the form complete?" --json < form.txt
 ```
 
 ### bench
@@ -1207,7 +1420,12 @@ start of the message. The chip is only how the composer draws it: the message is
 sent as `/bug <text>`.
 
 The TUI and classic CLI additionally support `/help` (alias `/?`), `/exit` (alias `/quit`),
-`/rename <name>`, and `/diverge [name]`. The following commands are **classic CLI only**;
+`/rename <name>`, and `/diverge [name]`. The TUI also has `/decisions`, an overlay listing the
+chat's decision-model calls by source and by recent turn; ↑↓ selects a source, Enter shows its
+last calls and Esc goes back. In the TUI and the classic CLI a turn's decision calls show as one
+line per source (`◇ Monitor Form reached: 18 checks this turn · 18 failed · last P 0.31`), never
+one line per call, and the reply of a chat whose main model is a decision model shows as a small
+card with a bar per option. The following commands are **classic CLI only**;
 start it with `BIOROUTER_CLI_CLASSIC=1 biorouter session`:
 
 - `/builtin <names>` — add built-in extensions by name, comma-separated.
@@ -1301,5 +1519,6 @@ Use the `"GWAS summary"` or `"enrichment"` search term to find and rerun it.
 - [Environment variables](../configuration/environment-variables.md) — per-invocation overrides for the same settings, including `BIOROUTER_CLI_THEME`.
 - [Managing sessions](../getting-started/managing-sessions.md) — how sessions are stored, resumed, and pruned behind the `session` subcommands.
 - [Workspace control](../agent-loop/workspace-control.md) — the daemon routes behind `session watch`, `send`, `attach`, and `cancel`, and the agent-side tools that do the same things.
+- [Decision models](../agent-loop/decision-models.md): what a decision model is, monitors, the `decide` tool and phase gates, behind `decide`, `models decision list`, `session decisions` and `session monitors`.
 - [Reaching Biorouter from a browser](../deployment/browser-access.md) — the full guide to `serve`: the access token, reaching it from another machine, and what a browser session cannot do.
 - [Creating and sharing workflows](../workflows/creating-and-sharing-workflows.md) — how to author the workflow files that `run --workflow`, `workflow`, and `schedule` consume.

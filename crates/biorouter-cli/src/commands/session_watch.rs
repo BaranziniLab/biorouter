@@ -1274,6 +1274,91 @@ pub(crate) async fn daemon_get_json(
     parse_http_response(&raw, &format!("GET {path}"))
 }
 
+/// A JSON request to a route that names a session and whose writes need the
+/// user-action proof (`PUT /sessions/{id}/decision-settings`), carrying the
+/// proof exactly when `auth` holds the key (see [`push_proof`]). The status and
+/// the body.
+pub(crate) async fn daemon_protected_json(
+    method: &str,
+    path: &str,
+    body: Option<&str>,
+    auth: &DaemonAuth,
+    port: u16,
+    deadline: std::time::Duration,
+) -> Result<(u16, String)> {
+    let body = body.unwrap_or("");
+    let mut request = Zeroizing::new(format!(
+        "{method} {path} HTTP/1.1\r\nHost: {DAEMON_HOST}\r\n{}",
+        auth.headers()
+    ));
+    push_proof(&mut request, auth);
+    request.push_str("Content-Type: application/json\r\nContent-Length: ");
+    request.push_str(&body.len().to_string());
+    request.push_str("\r\nAccept: application/json\r\nConnection: close\r\n\r\n");
+    request.push_str(body);
+    let raw = tokio::time::timeout(deadline, async {
+        let mut stream =
+            biorouter::net::connect_non_inheritable(format!("{DAEMON_HOST}:{port}")).await?;
+        stream.write_all(request.as_bytes()).await?;
+        let mut raw = Vec::new();
+        stream.read_to_end(&mut raw).await?;
+        Ok::<Vec<u8>, std::io::Error>(raw)
+    })
+    .await
+    .map_err(|_| anyhow!("the daemon did not answer {method} {path} within {deadline:?}"))??;
+    parse_http_response(&raw, &format!("{method} {path}"))
+}
+
+/// A settings write, made once without the key and, only if the daemon refuses
+/// it and a person is at the terminal, once more with the key they type.
+///
+/// Unlike the turn-control routes, a settings route does not promise an empty
+/// 403 for a missing key, so the refusal cannot say by its shape whether a key
+/// would help. The person is therefore shown the daemon's own words first and
+/// asked whether they hold a key; pressing Enter stops with that refusal. A
+/// request that already carried a key (`--user-action-key-stdin`) is never
+/// followed by a prompt, and without a terminal the refusal is returned as it
+/// came, for the caller to print.
+///
+/// Returns the last answer and the auth it was made with.
+pub(crate) async fn protected_write_with_key_if_wanted(
+    method: &str,
+    path: &str,
+    body: &str,
+    auth: DaemonAuth,
+    port: u16,
+    deadline: std::time::Duration,
+) -> Result<((u16, String), DaemonAuth)> {
+    let answer = daemon_protected_json(method, path, Some(body), &auth, port, deadline).await?;
+    if answer.0 != 403
+        || auth.holds_key()
+        || !std::io::stdin().is_terminal()
+        || !std::io::stderr().is_terminal()
+    {
+        return Ok((answer, auth));
+    }
+    if let Some(sentence) = refusal_sentence(&answer.1) {
+        eprintln!("The daemon refused the change: {sentence}");
+    }
+    eprintln!(
+        "If this daemon was started with a user-action key, enter it to try again, or press \
+         Enter to stop (input is hidden):"
+    );
+    let key = tokio::task::spawn_blocking(|| {
+        console::Term::stderr()
+            .read_secure_line()
+            .map(Zeroizing::new)
+    })
+    .await
+    .map_err(|join| anyhow!("could not read the user-action key: {join}"))??;
+    if key.is_empty() {
+        return Ok((answer, auth));
+    }
+    let auth = auth.with_user_action(key);
+    let answer = daemon_protected_json(method, path, Some(body), &auth, port, deadline).await?;
+    Ok((answer, auth))
+}
+
 /// An HTTP/1.1 chunked body, joined. Malformed framing ends the body where it
 /// breaks rather than inventing bytes.
 fn dechunk(mut rest: &[u8]) -> Vec<u8> {

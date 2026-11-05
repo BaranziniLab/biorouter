@@ -6,6 +6,7 @@
 //! classic readline loop) and rendered into a ratatui scrollback buffer.
 
 mod app;
+mod decisions;
 mod subagents;
 
 use std::io::Stdout;
@@ -194,6 +195,7 @@ pub async fn run(session: &mut CliSession, initial_prompt: Option<String>) -> Re
                             drain_queue(session, &mut app, &mut tui, &mut rx).await?;
                         }
                         open_pending_child(&session_manager, debug, &mut app).await;
+                        open_pending_decision_calls(&session_manager, &parent_id, &mut app).await;
                     }
                     Event::Paste(s) => on_paste(&mut app, &s),
                     Event::Mouse(m) => on_mouse(&mut app, m),
@@ -237,6 +239,71 @@ async fn refresh_subagents(
             tracing::debug!(%error, "could not read this chat's subagents");
             false
         }
+    }
+}
+
+/// Open the `/decisions` overlay over this chat's decision aggregates, read in
+/// this process from the session store (the TUI's turns run here).
+async fn open_decisions(session_manager: &SessionManager, session_id: &str, app: &mut App) {
+    match biorouter::decision::log::summary(session_manager, session_id).await {
+        Ok(summary) => {
+            app.completion = None;
+            app.decisions = Some(decisions::DecisionsOverlay::new(summary));
+        }
+        Err(error) => app.push_error(&format!("Couldn't read this chat's decisions: {error}")),
+    }
+}
+
+/// Read the last calls of the aggregate Enter picked in the overlay, if any.
+async fn open_pending_decision_calls(
+    session_manager: &SessionManager,
+    session_id: &str,
+    app: &mut App,
+) {
+    let Some(overlay) = app.decisions.as_mut() else {
+        return;
+    };
+    let Some(index) = overlay.pending_calls.take() else {
+        return;
+    };
+    let Some(aggregate) = overlay.summary.aggregates.get(index).cloned() else {
+        return;
+    };
+    let query = decisions::DecisionsOverlay::calls_query(&aggregate);
+    match biorouter::decision::log::list(session_manager, session_id, &query).await {
+        Ok(page) => {
+            overlay.error = None;
+            overlay.scroll = 0;
+            overlay.calls = Some(decisions::CallsView {
+                label: decisions::calls_label(&aggregate),
+                records: page.records,
+                total: page.total,
+            });
+        }
+        Err(error) => overlay.error = Some(format!("Couldn't read those calls: {error}")),
+    }
+}
+
+/// Read the decision-log row a decision-chat reply names, so the reply draws as
+/// a card. A row that cannot be read leaves the reply's own text to be drawn.
+async fn load_decision_record(
+    session_manager: &SessionManager,
+    session_id: &str,
+    app: &mut App,
+    message: &Message,
+) {
+    let Some(id) = message.metadata.decision_id.as_ref() else {
+        return;
+    };
+    if app.decision_records.contains_key(id) {
+        return;
+    }
+    match biorouter::decision::log::get(session_manager, session_id, id).await {
+        Ok(Some(detail)) => {
+            app.decision_records.insert(id.clone(), detail.record);
+        }
+        Ok(None) => {}
+        Err(error) => tracing::debug!(%error, "could not read a decision-log row"),
     }
 }
 
@@ -445,6 +512,14 @@ fn on_subagent_key(app: &mut App, key: KeyEvent, streaming: bool) -> PaneKey {
 /// Handle a key press in the idle (composing) state. Returns the text to submit
 /// when the user presses Enter on a non-empty buffer.
 fn on_key(app: &mut App, key: KeyEvent) -> Option<String> {
+    if let Some(overlay) = app.decisions.as_mut() {
+        let ctrl_c =
+            key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL);
+        if ctrl_c || decisions::on_key(overlay, key.code) == decisions::OverlayKey::Closed {
+            app.decisions = None;
+        }
+        return None;
+    }
     if on_subagent_key(app, key, false) == PaneKey::Consumed {
         app.refresh_completion();
         return None;
@@ -543,6 +618,18 @@ enum StreamAction {
 /// the user can compose the next message (or steer) instead of being locked
 /// out. Enter queues; Ctrl-C cancels the in-flight turn.
 fn on_key_streaming(app: &mut App, key: KeyEvent) -> StreamAction {
+    if let Some(overlay) = app.decisions.as_mut() {
+        // While a turn runs, ^C stops it wherever focus is, and closes the
+        // overlay with it.
+        if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
+            app.decisions = None;
+            return StreamAction::Cancel;
+        }
+        if decisions::on_key(overlay, key.code) == decisions::OverlayKey::Closed {
+            app.decisions = None;
+        }
+        return StreamAction::None;
+    }
     if on_subagent_key(app, key, true) == PaneKey::Consumed {
         app.refresh_completion();
         return StreamAction::None;
@@ -839,6 +926,7 @@ async fn drive_response(
                     Some(Event::Key(k)) if k.kind == KeyEventKind::Press => {
                         let action = on_key_streaming(app, k);
                         open_pending_child(&session_manager, debug, app).await;
+                        open_pending_decision_calls(&session_manager, &parent_id, app).await;
                         match action {
                             StreamAction::Cancel => {
                                 session.agent.extension_manager.computer_use.revoke();
@@ -937,6 +1025,7 @@ async fn drive_response(
                             // Any non-text event ends the streamed block: commit it
                             // first so ordering is preserved, then render this one.
                             commit_stream_to_session(app, &mut session.messages);
+                            load_decision_record(&session_manager, &parent_id, app, &message).await;
                             session.messages.push(message.clone());
                             app.push_message(&message, debug);
                         }
@@ -998,6 +1087,8 @@ async fn drive_response(
 /// calls / thinking / notifications).
 fn is_stream_text(m: &Message) -> bool {
     m.role == Role::Assistant
+        && m.metadata.decision_id.is_none()
+        && m.metadata.decision_summary.is_none()
         && !m.content.is_empty()
         && m.content
             .iter()
@@ -1205,6 +1296,11 @@ async fn handle_slash(session: &mut CliSession, app: &mut App, text: &str) -> bo
             subagent_slash(session, app, s).await;
             true
         }
+        "/decisions" => {
+            let session_manager = session.agent.config.session_manager.clone();
+            open_decisions(&session_manager, session.session_id(), app).await;
+            true
+        }
         s if s == "/diverge" || s.starts_with("/diverge ") => {
             let name = s.strip_prefix("/diverge").unwrap_or("").trim().to_string();
             let name = (!name.is_empty()).then_some(name);
@@ -1351,10 +1447,14 @@ fn draw(f: &mut Frame, app: &mut App) {
     // the input is the thing being typed into.
     if app.completion.is_some()
         && app.modal.is_none()
+        && app.decisions.is_none()
         && !app.subagents.focused
         && app.child.is_none()
     {
         draw_completion(f, app, chunks[5]);
+    }
+    if let Some(overlay) = &app.decisions {
+        decisions::draw_overlay(f, overlay, chunks[0]);
     }
     if app.modal.is_some() {
         draw_modal(f, app);
@@ -1693,7 +1793,19 @@ fn draw_hints(f: &mut Frame, app: &App, area: Rect) {
 /// The hints line: the longest candidate for what has focus that fits.
 fn hint_text(app: &App, width: usize) -> String {
     const COMPACT: &str = "↵ send · ^J newline · / commands · ↑↓ history · ^C stop";
-    let candidates: Vec<String> = if app.child.is_some() {
+    let candidates: Vec<String> = if let Some(overlay) = &app.decisions {
+        if overlay.calls.is_some() {
+            vec![
+                "esc back to the sources · ↑↓ or PgUp/PgDn to scroll".into(),
+                "esc back".into(),
+            ]
+        } else {
+            vec![
+                "↑↓ select a source · ↵ its last calls · esc close".into(),
+                "↑↓ · ↵ calls · esc close".into(),
+            ]
+        }
+    } else if app.child.is_some() {
         vec![
             "esc back to your chat · PgUp/PgDn or the mouse to scroll · read-only".into(),
             "esc back to your chat · PgUp/PgDn scroll · read-only".into(),
@@ -2290,6 +2402,10 @@ async fn build_catalog(session: &CliSession) -> Vec<app::CompletionItem> {
         "Show or hide this chat's subagents (list: number them)",
     ));
     items.push(cmd("/attach", "Read one subagent's chat"));
+    items.push(cmd(
+        "/decisions",
+        "This chat's decision-model calls, by source and turn",
+    ));
     items.push(cmd("/diverge", "Diverge this chat into a new window"));
     items.push(cmd("/rename", "Rename this chat"));
     items.push(cmd("/exit", "Leave the chat"));
@@ -2409,6 +2525,11 @@ fn help_into(app: &mut App) {
         (
             "/attach <n|id|name>".to_string(),
             "read one subagent's chat (Esc returns)".to_string(),
+        ),
+        (
+            "/decisions".to_string(),
+            "this chat's decision-model calls by source and turn (↵ shows the last calls)"
+                .to_string(),
         ),
         ("/exit, /quit".to_string(), "leave the chat".to_string()),
     ];
@@ -3907,5 +4028,223 @@ mod tests {
         let american = extension_completion_item("autovisualiser", "Use this extension", true);
         assert!(american.filter.contains("autovisualizer"));
         assert_eq!(american.insert, "/ext:autovisualiser ");
+    }
+
+    // ── decision models ─────────────────────────────────────────────────────
+
+    use biorouter::conversation::message::{MessageMetadata, SystemNotificationType};
+    use biorouter::decision::log::{
+        DecisionTurnMarker, DecisionTurnMarkerItem, SessionDecisionSummary,
+    };
+    use biorouter::decision::DecisionOrigin;
+
+    fn marker_item(
+        origin: DecisionOrigin,
+        label: &str,
+        count: u64,
+        fired: bool,
+    ) -> DecisionTurnMarkerItem {
+        DecisionTurnMarkerItem {
+            origin,
+            origin_id: Some(label.to_lowercase()),
+            label: label.to_string(),
+            count,
+            passed: 0,
+            failed: count,
+            errors: 0,
+            last_pass_probability: Some(0.31),
+            fired,
+        }
+    }
+
+    fn marker_notice(items: Vec<DecisionTurnMarkerItem>) -> Message {
+        let metadata = MessageMetadata {
+            decision_summary: Some(DecisionTurnMarker {
+                turn_id: "t1".into(),
+                items,
+            }),
+            ..MessageMetadata::user_only()
+        };
+        Message::assistant()
+            .with_system_notification(
+                SystemNotificationType::InlineMessage,
+                "Monitors checked 18 times this turn",
+            )
+            .with_metadata(metadata)
+    }
+
+    /// The owner rule: thousands of calls draw as ONE line per origin.
+    #[test]
+    fn a_turns_decision_marker_draws_one_line_per_origin() {
+        let mut app = App::new(StatusInfo::default());
+        app.push_message(
+            &marker_notice(vec![
+                marker_item(DecisionOrigin::Monitor, "Form reached", 1_800, false),
+                marker_item(DecisionOrigin::Gate, "Implementation", 3, true),
+            ]),
+            false,
+        );
+        let lines = buffer_lines(&mut app, 120, 30);
+        let markers: Vec<&String> = lines.iter().filter(|l| l.contains('◇')).collect();
+        assert_eq!(markers.len(), 2, "{lines:#?}");
+        assert!(markers[0].contains("Monitor Form reached: 1800 checks this turn · 1800 failed"));
+        assert!(markers[1].contains("Gate Implementation: 3 checks this turn"));
+        assert!(markers[1].contains("· fired"));
+        let all = lines.join("\n");
+        assert!(
+            !all.contains("Monitors checked 18 times"),
+            "the marker replaces the notice's text, it does not repeat it"
+        );
+
+        // An empty marker draws nothing.
+        let mut app = App::new(StatusInfo::default());
+        let before = app.scrollback.len();
+        app.push_message(&marker_notice(vec![]), false);
+        assert_eq!(app.scrollback.len(), before);
+    }
+
+    #[test]
+    fn an_inline_notice_without_decision_data_is_drawn_as_a_note() {
+        let mut app = App::new(StatusInfo::default());
+        app.push_message(
+            &Message::assistant().with_system_notification(
+                SystemNotificationType::InlineMessage,
+                "Monitor 'Form reached' fired: P(yes) 0.91. The turn was stopped.",
+            ),
+            false,
+        );
+        let all = buffer_lines(&mut app, 120, 20).join("\n");
+        assert!(all.contains("Monitor 'Form reached' fired"), "{all}");
+    }
+
+    fn decision_reply(id: &str) -> Message {
+        let metadata = MessageMetadata {
+            decision_id: Some(id.to_string()),
+            ..MessageMetadata::default()
+        };
+        Message::assistant()
+            .with_text("Yes · P(yes)=0.93 · tev1:0.8b")
+            .with_metadata(metadata)
+    }
+
+    #[test]
+    fn a_decision_chat_reply_is_a_card_once_its_row_is_read_else_its_text() {
+        let reply = decision_reply("d1");
+        assert!(
+            !is_stream_text(&reply),
+            "a decision reply is drawn whole, never streamed as text"
+        );
+        assert!(!is_stream_text(&marker_notice(vec![])));
+        assert!(is_stream_text(&Message::assistant().with_text("plain")));
+
+        let mut app = App::new(StatusInfo::default());
+        app.push_message(&reply, false);
+        let all = buffer_lines(&mut app, 100, 20).join("\n");
+        assert!(all.contains("Yes · P(yes)=0.93 · tev1:0.8b"), "{all}");
+
+        let mut record = crate::commands::session_decisions::tests::record("d1", 0.93);
+        record.origin = DecisionOrigin::Chat;
+        record.questions = serde_json::json!({
+            "has_ms": {
+                "instructions": "Does this note state the patient has MS?",
+                "kind": {"binary": {}}
+            }
+        });
+        let mut app = App::new(StatusInfo::default());
+        app.decision_records.insert("d1".into(), record);
+        app.push_message(&reply, false);
+        let lines = buffer_lines(&mut app, 100, 20);
+        let all = lines.join("\n");
+        assert!(
+            all.contains("◆ Decision · tev1:0.8b · private · 22 ms"),
+            "{all}"
+        );
+        assert!(
+            all.contains("Does this note state the patient has MS?"),
+            "{all}"
+        );
+        let (_, yes) = line_with(&lines, "▸ yes").expect("the answer row is marked");
+        assert!(yes.contains('█') && yes.contains("0.93"), "{yes}");
+        assert!(line_with(&lines, "  no ").is_some(), "{all}");
+        assert!(
+            !all.contains("P(yes)=0.93 · tev1"),
+            "the card replaces the text, it does not repeat it"
+        );
+    }
+
+    #[test]
+    fn the_decisions_overlay_draws_over_the_history_and_esc_closes_it() {
+        let mut app = App::new(StatusInfo::default());
+        let mut tool = crate::commands::session_decisions::tests::aggregate(
+            DecisionOrigin::Tool,
+            "decide",
+            600,
+        );
+        tool.last_answer = Some("yes".into());
+        app.decisions = Some(decisions::DecisionsOverlay::new(SessionDecisionSummary {
+            total: 618,
+            aggregates: vec![
+                crate::commands::session_decisions::tests::aggregate(
+                    DecisionOrigin::Monitor,
+                    "Form reached",
+                    18,
+                ),
+                tool,
+            ],
+            recent_turns: vec![],
+        }));
+        app.input = "/dec".into();
+        app.cursor = app.input.len();
+        app.refresh_completion();
+        let all = buffer_lines(&mut app, 140, 30).join("\n");
+        assert!(
+            all.contains("Decisions · ↑↓ select · ↵ last calls · esc close"),
+            "{all}"
+        );
+        assert!(all.contains("618 calls in this chat"), "{all}");
+        assert!(all.contains("▸ monitor  Form reached"), "{all}");
+        assert!(
+            all.contains("↑↓ select a source · ↵ its last calls · esc close"),
+            "the hints follow the overlay: {all}"
+        );
+
+        assert_eq!(on_key(&mut app, press(KeyCode::Down)), None);
+        assert_eq!(app.decisions.as_ref().unwrap().selected, 1);
+        assert_eq!(
+            on_key(&mut app, press(KeyCode::Enter)),
+            None,
+            "Enter never submits here"
+        );
+        assert_eq!(app.decisions.as_ref().unwrap().pending_calls, Some(1));
+        assert_eq!(app.input, "/dec", "keys go to the overlay, not the input");
+        on_key(&mut app, press(KeyCode::Esc));
+        assert!(app.decisions.is_none());
+
+        app.decisions = Some(decisions::DecisionsOverlay::new(SessionDecisionSummary {
+            total: 0,
+            aggregates: vec![],
+            recent_turns: vec![],
+        }));
+        assert!(matches!(
+            on_key_streaming(&mut app, ctrl('c')),
+            StreamAction::Cancel
+        ));
+        assert!(
+            app.decisions.is_none(),
+            "^C stops the turn and closes the overlay"
+        );
+    }
+
+    #[test]
+    fn decisions_is_a_tui_command_in_help_and_completion() {
+        let mut app = App::new(StatusInfo::default());
+        help_into(&mut app);
+        let all = buffer_lines(&mut app, 140, 60).join("\n");
+        assert!(all.contains("/decisions"), "{all}");
+        assert!(app::TUI_ONLY_SLASH_COMMANDS.contains(&"/decisions"));
+        for c in "/dec".chars() {
+            app.insert_char(c);
+        }
+        assert_eq!(app.ghost(), Some("isions"));
     }
 }

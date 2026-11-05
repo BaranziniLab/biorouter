@@ -233,6 +233,24 @@ pub fn set_thinking_message(s: &String) {
 pub fn render_message(message: &Message, debug: bool) {
     let theme = get_theme();
 
+    // A turn's decision-model calls are ONE line per origin, never one per call
+    // (they can number in the thousands); `biorouter session decisions` lists
+    // the calls themselves.
+    if let Some(marker) = &message.metadata.decision_summary {
+        for item in &marker.items {
+            let mut line = format!(
+                "◇ {}",
+                crate::commands::session_decisions::marker_text(item)
+            );
+            if item.fired {
+                line.push_str(" · fired");
+            }
+            println!("{}", style(line).dim());
+        }
+        let _ = std::io::stdout().flush();
+        return;
+    }
+
     for content in &message.content {
         match content {
             MessageContent::ActionRequired(action) => match &action.data {

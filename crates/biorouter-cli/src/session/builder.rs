@@ -794,6 +794,8 @@ pub async fn build_session(session_config: SessionBuilderConfig) -> CliSession {
         Agent::new()
     };
     let session_manager = agent.config.session_manager.clone();
+    // The decision log follows this session's store (a `--no-session` run's own).
+    biorouter::decision::log::install_global_sink(session_manager.clone());
 
     let (saved_provider, saved_model_config) = if session_config.resume {
         if let Some(ref session_id) = session_config.session_id {
