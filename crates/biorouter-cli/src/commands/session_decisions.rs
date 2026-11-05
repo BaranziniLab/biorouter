@@ -353,9 +353,14 @@ pub fn turn_line(turn: &DecisionTurnSummary, label_w: usize) -> String {
     line
 }
 
-/// The first eight characters of an id, enough to tell turns apart on screen.
+/// The LAST eight characters of an id, enough to tell turns apart on screen.
+/// Not the first eight: turn and batch ids are UUID v7, whose leading 48 bits
+/// are a millisecond clock, so every turn within about a minute shares its
+/// first eight characters (measured live: a turn, its batch and its rows all
+/// printed as `01a1aa8e`). The tail is the random part.
 pub fn short_id(id: &str) -> String {
-    id.chars().take(8).collect()
+    let chars: Vec<char> = id.chars().collect();
+    chars[chars.len().saturating_sub(8)..].iter().collect()
 }
 
 fn clock(at: DateTime<Utc>) -> String {
@@ -756,6 +761,17 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn turns_made_within_a_minute_get_different_short_ids() {
+        // Two UUID v7 ids minted milliseconds apart share their clock prefix.
+        let a = "019a54c1-2b3c-7d4e-8f01-23456789abcd";
+        let b = "019a54c1-2b3d-7e5f-9a12-3456789abcde";
+        assert_eq!(a[..8], b[..8]);
+        assert_eq!(short_id(a), "6789abcd");
+        assert_eq!(short_id(b), "789abcde");
+        assert_eq!(short_id("t1"), "t1");
+    }
+
+    #[test]
     fn the_filters_become_the_routes_camel_case_query() {
         let filters = DecisionFilters {
             source: Some(SourceArg::Monitor),
@@ -840,7 +856,7 @@ pub(crate) mod tests {
             "{tool}"
         );
         assert!(
-            lines[turns + 1].starts_with("  0193a1b2  monitor"),
+            lines[turns + 1].starts_with("  b2c3d4e5  monitor"),
             "{}",
             lines[turns + 1]
         );

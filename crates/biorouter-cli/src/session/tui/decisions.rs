@@ -596,7 +596,7 @@ mod tests {
         assert!(screen.contains("18 checks · 18 failed"), "{screen}");
         assert!(screen.contains("tool     decide"), "{screen}");
         assert!(screen.contains("Recent turns"), "{screen}");
-        assert!(screen.contains("0193a1b2  monitor"), "{screen}");
+        assert!(screen.contains("a1b2c3d4  monitor"), "{screen}");
 
         use crossterm::event::KeyCode;
         assert_eq!(on_key(&mut overlay, KeyCode::Down), OverlayKey::Consumed);

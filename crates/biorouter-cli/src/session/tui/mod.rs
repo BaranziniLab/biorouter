@@ -1225,9 +1225,14 @@ fn backend_slash_command(text: &str) -> bool {
         || biorouter::slash_commands::get_workflow_for_command(command).is_some()
 }
 
+/// The TUI-only commands the subagent pane answers. Not every entry of
+/// [`app::TUI_ONLY_SLASH_COMMANDS`]: `/decisions` is TUI-only too, and parsing
+/// it here sent it to `/attach`'s usage line instead of the overlay.
+const SUBAGENT_SLASH_COMMANDS: &[&str] = &["/subagents", "/attach"];
+
 /// `/subagents` or `/attach`, with what follows it.
 fn subagent_command(text: &str) -> Option<(&'static str, &str)> {
-    app::TUI_ONLY_SLASH_COMMANDS.iter().find_map(|&command| {
+    SUBAGENT_SLASH_COMMANDS.iter().find_map(|&command| {
         let rest = text.strip_prefix(command)?;
         (rest.is_empty() || rest.starts_with(' ')).then_some((command, rest.trim()))
     })
@@ -4005,6 +4010,11 @@ mod tests {
         assert_eq!(subagent_command("/attachment"), None);
         assert_eq!(subagent_command("/subagentsx"), None);
         assert_eq!(subagent_command("/help"), None);
+        // Another TUI-only command is not a subagent command.
+        assert_eq!(subagent_command("/decisions"), None);
+        for command in SUBAGENT_SLASH_COMMANDS {
+            assert!(app::TUI_ONLY_SLASH_COMMANDS.contains(command), "{command}");
+        }
     }
 
     #[test]
