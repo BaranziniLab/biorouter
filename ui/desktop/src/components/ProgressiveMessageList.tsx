@@ -38,6 +38,8 @@ import {
 } from './transcript/transcriptRhythm';
 import { useLiveRows } from './transcript/useLiveRows';
 import { transcriptCopy } from './transcript/copy';
+import { DecisionTurnMarker } from './decisions/DecisionTurnMarker';
+import { messageDecisionMarker } from '../utils/sessionDecisions';
 
 /** A row's key: its id, or its place and time for a row the daemon has not named yet. */
 const rowKey = (message: Message, index: number) => message.id ?? `msg-${index}-${message.created}`;
@@ -393,8 +395,16 @@ export default function ProgressiveMessageList({
         // `[data-motion-still] .biorouter-message-tool`).
         const motionStill = live ? undefined : '';
 
+        // A turn's decision-model calls (monitors, `decide` batches, gates)
+        // arrive as ONE user-only notice carrying their per-source aggregate,
+        // drawn as one marker line whatever the notice's own content is. It is
+        // never one row per call (owner addendum A1); the decision history
+        // lists the calls.
+        const marker = messageDecisionMarker(message);
+        const decisionMarker = marker && marker.items.length > 0 ? marker : null;
+
         // System notifications are never user messages, handle them first
-        if (hasInlineSystemNotification(message)) {
+        if (decisionMarker || hasInlineSystemNotification(message)) {
           return (
             <div
               key={key}
@@ -404,7 +414,15 @@ export default function ProgressiveMessageList({
               data-motion-still={motionStill}
               data-testid="message-container"
             >
-              <SystemNotificationInline message={message} />
+              {decisionMarker ? (
+                <DecisionTurnMarker
+                  sessionId={chat.sessionId}
+                  marker={decisionMarker}
+                  onOpenArtifact={onOpenArtifact}
+                />
+              ) : (
+                <SystemNotificationInline message={message} />
+              )}
             </div>
           );
         }

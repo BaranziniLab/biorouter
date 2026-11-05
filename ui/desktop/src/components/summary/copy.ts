@@ -135,6 +135,46 @@ export const summaryCopy = {
     },
   },
 
+  /**
+   * The Decisions section (`summary/SummaryDecisions.tsx`): one row per source,
+   * never one per call.
+   */
+  decisions: {
+    title: 'Decisions',
+    countSuffix: ' decision calls',
+    listLabel: 'Decision sources',
+    calls: (n: number) => `${n.toLocaleString()} ${n === 1 ? 'call' : 'calls'}`,
+    errors: (n: number) => `${n.toLocaleString()} ${n === 1 ? 'error' : 'errors'}`,
+    notChecked: 'Not checked yet',
+    last: (answer: string) => `last ${answer}`,
+    gateAttempt: (attempt: number, max: number) => `attempt ${attempt} of ${max}`,
+    gateBlocked: (max: number) => `blocked after ${max} attempts`,
+    monitors: 'Monitors',
+    monitorsOn: (n: number) => (n === 0 ? 'none on' : `${n} on`),
+    monitorsAdd: 'Add',
+    refreshFailed: 'Decisions did not refresh',
+    openHint: 'Opens the decision history',
+    state: {
+      pending: 'Not checked yet',
+      armed: 'Watching',
+      fired: 'Fired',
+      off: 'Off',
+      error: 'Error',
+      done: 'Decided',
+      passed: 'Passed',
+      failed: 'Failed',
+      blocked: 'Blocked',
+    },
+    gate: {
+      passed: (p: string, t: string) => `Gate ${p} ≥ ${t} passed`,
+      failed: (p: string, t: string, attempt: number, max: number) =>
+        `Gate ${p} < ${t}, attempt ${attempt} of ${max}`,
+      blocked: 'Gate blocked',
+      pending: (t: string) => `Gate at ${t}`,
+      label: 'Phase gate',
+    },
+  },
+
   /** The Stop & send banner above the composer, one line per state. */
   stopAndSend: {
     owned: 'Stop & send is waiting',

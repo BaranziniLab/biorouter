@@ -87,6 +87,8 @@ import {
   subscribeQueuedOfferReturns,
   type QueuedMessage,
 } from '../utils/composerQueues';
+import { DecisionComposer, DECISION_CHAT_PLACEHOLDER } from './decisions/DecisionComposer';
+import { isDecisionProvider } from './decisions/decisionWire';
 
 /**
  * Queued messages as a draft, for a composer with no chat to keep a queue for.
@@ -2207,6 +2209,13 @@ export default function ChatInput({
     effectiveModel?.provider ?? currentProvider
   );
 
+  /**
+   * The chat's main model is a decision model: there is no LLM loop, each message
+   * is the state the chat's question is asked of, and the reply is one decision
+   * card. The question is set above the text box (`DecisionComposer`).
+   */
+  const decisionChat = isDecisionProvider(effectiveModel?.provider ?? currentProvider);
+
   // Why a chat whose Crew access lapsed cannot send, for Enter to say instead of doing nothing.
   const crewHold = useCrewComposerHold(sessionId);
 
@@ -3005,6 +3014,8 @@ export default function ChatInput({
           onRemoveFile={handleRemoveDroppedFile}
         />
 
+        {decisionChat && <DecisionComposer sessionId={sessionId} />}
+
         <form id={composerFormId} onSubmit={onFormSubmit} className="relative flex min-w-0">
           {/* The field grows with what is typed by itself (`field-sizing:
               content` in `composer.css`, as Crew's fields do), up to ten lines,
@@ -3025,9 +3036,11 @@ export default function ChatInput({
               crewHold?.placeholder ??
               (composerCommand
                 ? CHIP_COMMANDS[composerCommand].placeholder
-                : (followUp ?? (messagesLength ?? 0) > 0)
-                  ? COMPOSER_COPY.placeholderFollowUp
-                  : COMPOSER_COPY.placeholderEmpty)
+                : decisionChat
+                  ? DECISION_CHAT_PLACEHOLDER
+                  : (followUp ?? (messagesLength ?? 0) > 0)
+                    ? COMPOSER_COPY.placeholderFollowUp
+                    : COMPOSER_COPY.placeholderEmpty)
             }
             // The prose after the command chip: every textarea offset is a
             // prose offset (`utils/composerCommand.ts`).

@@ -1,5 +1,6 @@
 import type { Message } from '../api';
 import { navigateToRoute } from './navigationUtils';
+import { parsePhaseGateSnapshot, type PhaseGateSnapshot } from './sessionDecisions';
 
 /**
  * A chat's subagents and its orchestration plan, as `GET /sessions/{id}/subagents`
@@ -110,6 +111,11 @@ export interface PhaseSnapshot {
   handoff: string | null;
   startedAt: string | null;
   finishedAt: string | null;
+  /**
+   * The phase's decision gate (`PhaseGateSnapshot`), when it has one. Optional:
+   * a daemon before decision gates sends none, and the row then draws no chip.
+   */
+  gate?: PhaseGateSnapshot | null;
 }
 
 export interface OrchestrationSnapshot {
@@ -222,6 +228,7 @@ function parsePhase(value: unknown): PhaseSnapshot | null {
     handoff: text(phase.handoff),
     startedAt: text(phase.startedAt),
     finishedAt: text(phase.finishedAt),
+    gate: parsePhaseGateSnapshot(phase.gate),
   };
 }
 

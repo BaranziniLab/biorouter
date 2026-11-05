@@ -1,0 +1,1469 @@
+import type { Message } from '../api';
+import { client } from '../api/client.gen';
+import { userActionHeaders } from './userAction';
+
+/**
+ * Decision models, as the renderer reads them: the decision log's rows and
+ * aggregates, a chat's decision settings (its monitors), and the catalog of
+ * decision models. Shared by the chat summary's Decisions section, the decision
+ * history view, the Monitors dialog (`components/decisions/`) and the chat's
+ * decision cards and turn markers.
+ *
+ * The shapes mirror the daemon's contract one to one, camelCase on the wire:
+ * `DecisionRecord`, `DecisionDetail`, `DecisionPage`, `DecisionAggregate`,
+ * `DecisionTurnSummary`, `SessionDecisionSummary` and `DecisionTurnMarker` in
+ * `crates/biorouter/src/decision/log.rs`; `Decision`, `Question`, `Threshold`
+ * and `DecisionModelRef` in `decision/types.rs`; `DecisionSettings` and
+ * `MonitorCriterion` in `decision/settings.rs`; `DecisionModelEntry` in
+ * `decision/model.rs`. Rust's enums are externally tagged there
+ * (`{"binary":{}}`, `{"yes":0.8}`), so the parsers turn them into tagged unions
+ * here and the `*ToWire` functions turn them back.
+ *
+ * The parsers are defensive in one direction only, as `sessionSubagents.ts` is:
+ * a value this build does not know degrades to a neutral one rather than
+ * dropping what a person should see. A row with no id is the exception, because
+ * nothing could open it.
+ *
+ * ⚠ The owner's rule (decision calls can number in the thousands): no surface
+ * draws one row per call except the decision history view. Everything else reads
+ * the aggregates.
+ */
+
+// ---------------------------------------------------------------------------
+// Types
+// ---------------------------------------------------------------------------
+
+export const DECISION_ORIGINS = ['chat', 'monitor', 'tool', 'gate', 'adhoc'] as const;
+export type DecisionOrigin = (typeof DECISION_ORIGINS)[number];
+
+export const DECISION_OUTCOMES = ['passed', 'failed', 'decided', 'error', 'refused'] as const;
+export type DecisionOutcome = (typeof DECISION_OUTCOMES)[number];
+
+export const DECISION_KIND_TAGS = ['binary', 'choice', 'score'] as const;
+export type DecisionKindTag = (typeof DECISION_KIND_TAGS)[number];
+
+export const DECISION_ADAPTERS = ['system_one', 'logprob', 'verbalized'] as const;
+export type DecisionAdapter = (typeof DECISION_ADAPTERS)[number];
+
+/** A decision model's tier, or a chat's. `null` where the wire carried neither. */
+export type DecisionTier = 'public' | 'private';
+
+export interface DecisionOption {
+  name: string;
+  /** What the model reads for this option; `null` sends the name itself. */
+  description: string | null;
+}
+
+export type DecisionKind =
+  | { type: 'binary' }
+  | { type: 'choice'; options: DecisionOption[] }
+  | { type: 'score'; levels: string[] };
+
+export type Threshold =
+  | { type: 'yes'; p: number }
+  | { type: 'no'; p: number }
+  | { type: 'option'; name: string; p: number }
+  | { type: 'at_least_level'; level: number; p: number };
+
+export interface Question {
+  instructions: string;
+  kind: DecisionKind;
+  threshold: Threshold | null;
+}
+
+/** A question with the name it was asked under (a map key on the wire). */
+export interface NamedQuestion extends Question {
+  name: string;
+}
+
+export type DecisionAnswer =
+  | { type: 'binary'; value: boolean }
+  | { type: 'choice'; option: string }
+  | { type: 'score'; level: number; label: string; expected: number };
+
+export type ProbabilitySource =
+  | { kind: 'native' }
+  | { kind: 'logprob'; mass: number }
+  | { kind: 'verbalized'; reason: string | null };
+
+export interface DecisionModelRef {
+  provider: string;
+  model: string;
+  adapter: DecisionAdapter | null;
+}
+
+export interface DecisionProbability {
+  /** `yes` / `no`, an option's name, or a score level's index (`"0"`, `"1"`, ...). */
+  key: string;
+  p: number;
+}
+
+export interface Decision {
+  /** The question's name. */
+  question: string;
+  answer: DecisionAnswer | null;
+  /** In the order the daemon sent them (binary: yes then no; levels lowest first). */
+  probabilities: DecisionProbability[];
+  /** How concentrated the distribution is (0 uniform, 1 certain). Not P(answer). */
+  confidence: number | null;
+  passed: boolean | null;
+  passProbability: number | null;
+  source: ProbabilitySource;
+  calibrated: boolean;
+  model: DecisionModelRef | null;
+  tier: DecisionTier | null;
+  requestId: string | null;
+  latencyMs: number | null;
+  inputTokens: number | null;
+  outputTokens: number | null;
+  raw: unknown;
+}
+
+export interface DecisionRecord {
+  id: string;
+  sessionId: string | null;
+  createdAt: string;
+  origin: DecisionOrigin;
+  originId: string | null;
+  label: string | null;
+  turnId: string | null;
+  batchId: string | null;
+  chunkIndex: number | null;
+  chunkId: string | null;
+  model: DecisionModelRef | null;
+  servedModel: string | null;
+  tier: DecisionTier | null;
+  calibrated: boolean | null;
+  questions: NamedQuestion[];
+  decisions: Decision[];
+  outcome: DecisionOutcome;
+  contextPreview: string;
+  contextBytes: number;
+  contextTruncated: boolean;
+  error: string | null;
+  latencyMs: number | null;
+  inputTokens: number | null;
+  outputTokens: number | null;
+  privacyEnforced: boolean;
+}
+
+export interface ContextMessage {
+  role: string;
+  content: string;
+}
+
+export type DecisionContext =
+  | { type: 'text'; text: string }
+  | { type: 'json'; value: unknown }
+  | { type: 'messages'; messages: ContextMessage[] };
+
+export interface DecisionDetail {
+  record: DecisionRecord;
+  context: DecisionContext | null;
+  /** The route's answer as it came, for the history view's raw JSON. */
+  raw?: unknown;
+}
+
+export interface DecisionPage {
+  /** Newest first. */
+  records: DecisionRecord[];
+  nextCursor: string | null;
+  /** Rows matching the filter, across every page. */
+  total: number;
+}
+
+export interface DecisionAggregate {
+  origin: DecisionOrigin;
+  originId: string | null;
+  label: string;
+  count: number;
+  passed: number;
+  failed: number;
+  errors: number;
+  lastAt: string;
+  /** Readable: `yes`, `rrms`, `level 2`. */
+  lastAnswer: string | null;
+  lastPassProbability: number | null;
+  model: DecisionModelRef | null;
+}
+
+export interface DecisionTurnSummary {
+  turnId: string;
+  origin: DecisionOrigin;
+  originId: string | null;
+  label: string;
+  count: number;
+  passed: number;
+  failed: number;
+  errors: number;
+  firstAt: string;
+  lastAt: string;
+  lastPassProbability: number | null;
+}
+
+export interface SessionDecisionSummary {
+  total: number;
+  aggregates: DecisionAggregate[];
+  /** Newest turn first. */
+  recentTurns: DecisionTurnSummary[];
+}
+
+export interface DecisionTurnMarkerItem {
+  origin: DecisionOrigin;
+  originId: string | null;
+  label: string;
+  count: number;
+  passed: number;
+  failed: number;
+  errors: number;
+  lastPassProbability: number | null;
+  fired: boolean;
+}
+
+export interface DecisionTurnMarker {
+  turnId: string;
+  items: DecisionTurnMarkerItem[];
+}
+
+export const MONITOR_TIMINGS = ['post_iteration', 'turn_end'] as const;
+export type MonitorTiming = (typeof MONITOR_TIMINGS)[number];
+
+export const MONITOR_ACTIONS = ['stop', 'notify', 'steer'] as const;
+export type MonitorAction = (typeof MONITOR_ACTIONS)[number];
+
+export const MONITOR_ERROR_POLICIES = ['notify', 'pause'] as const;
+export type MonitorErrorPolicy = (typeof MONITOR_ERROR_POLICIES)[number];
+
+export interface MonitorWindow {
+  entries: number;
+  maxChars: number;
+  toolCalls: boolean;
+}
+
+export interface MonitorCriterion {
+  id: string;
+  name: string;
+  question: Question;
+  model: DecisionModelRef | null;
+  timing: MonitorTiming;
+  window: MonitorWindow;
+  /** Fires when P(wanted answer) is at least this. */
+  threshold: number;
+  /** A choice question's option whose probability is compared; binary compares P(yes). */
+  option: string | null;
+  consecutive: number;
+  rearmBelow: number | null;
+  action: MonitorAction;
+  onError: MonitorErrorPolicy;
+  maxEvalsPerTurn: number;
+  enabled: boolean;
+}
+
+export interface DecisionSettings {
+  defaultModel: DecisionModelRef | null;
+  monitors: MonitorCriterion[];
+}
+
+export interface DecisionModelEntry {
+  provider: string;
+  model: string;
+  displayName: string;
+  contextTokens: number | null;
+  kinds: DecisionKindTag[];
+  tier: DecisionTier | null;
+  adapter: DecisionAdapter | null;
+  local: boolean;
+  /** Why the model cannot be used now, when the daemon says so. */
+  unavailableReason: string | null;
+}
+
+/** A phase gate as the side panel draws it (`PhaseGateSnapshot` in `orchestration_plan.rs`). */
+export interface PhaseGateSnapshot {
+  threshold: number;
+  questionCount: number;
+  attempts: number;
+  maxAttempts: number;
+  lastPassed: boolean | null;
+  lastMinP: number | null;
+  blocked: boolean;
+}
+
+// ---------------------------------------------------------------------------
+// Limits the daemon enforces (`settings.rs`), mirrored for inline validation
+// ---------------------------------------------------------------------------
+
+export const MAX_MONITORS = 8;
+export const MONITOR_NAME_MAX = 60;
+export const MONITOR_WINDOW_ENTRIES_MAX = 48;
+export const MONITOR_WINDOW_CHARS_MAX = 12_000;
+export const MONITOR_CONSECUTIVE_MAX = 5;
+export const MONITOR_MAX_EVALS_MAX = 200;
+/** `MAX_PAGE` in `log.rs`. */
+export const DECISION_PAGE_MAX = 200;
+
+export const DEFAULT_MONITOR_WINDOW: MonitorWindow = {
+  entries: 24,
+  maxChars: 6000,
+  toolCalls: true,
+};
+
+// ---------------------------------------------------------------------------
+// Parsing helpers
+// ---------------------------------------------------------------------------
+
+function record(value: unknown): Record<string, unknown> | undefined {
+  return value !== null && typeof value === 'object' && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : undefined;
+}
+
+function text(value: unknown): string | null {
+  return typeof value === 'string' && value.trim() ? value.trim() : null;
+}
+
+/** A string kept as sent (context and instructions are not trimmed). */
+function rawText(value: unknown): string | null {
+  return typeof value === 'string' ? value : null;
+}
+
+function count(value: unknown): number {
+  return typeof value === 'number' && Number.isFinite(value) && value > 0 ? Math.floor(value) : 0;
+}
+
+function optionalCount(value: unknown): number | null {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0
+    ? Math.floor(value)
+    : null;
+}
+
+function optionalNumber(value: unknown): number | null {
+  return typeof value === 'number' && Number.isFinite(value) ? value : null;
+}
+
+/** A probability in [0, 1], or `null`. A value just outside (rounding) is clamped. */
+export function probability(value: unknown): number | null {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return null;
+  if (value < -0.001 || value > 1.001) return null;
+  return Math.min(1, Math.max(0, value));
+}
+
+function optionalBool(value: unknown): boolean | null {
+  return typeof value === 'boolean' ? value : null;
+}
+
+function oneOf<T extends string>(values: readonly T[], value: unknown, fallback: T): T {
+  return values.includes(value as T) ? (value as T) : fallback;
+}
+
+function optionalOneOf<T extends string>(values: readonly T[], value: unknown): T | null {
+  return values.includes(value as T) ? (value as T) : null;
+}
+
+function tier(value: unknown): DecisionTier | null {
+  return value === 'public' || value === 'private' ? value : null;
+}
+
+/** The single key and value of an externally tagged enum (`{"binary":{}}`), or a bare string. */
+function tagged(value: unknown): [string, unknown] | null {
+  if (typeof value === 'string') return [value, null];
+  const object = record(value);
+  if (!object) return null;
+  const keys = Object.keys(object);
+  return keys.length === 1 ? [keys[0], object[keys[0]]] : null;
+}
+
+// ---------------------------------------------------------------------------
+// Questions and thresholds
+// ---------------------------------------------------------------------------
+
+export function parseDecisionKind(value: unknown): DecisionKind {
+  const entry = tagged(value);
+  if (entry?.[0] === 'choice') {
+    const options = record(record(entry[1])?.options);
+    return {
+      type: 'choice',
+      options: options
+        ? Object.entries(options).map(([name, description]) => ({
+            name,
+            description: text(description),
+          }))
+        : [],
+    };
+  }
+  if (entry?.[0] === 'score') {
+    const levels = record(entry[1])?.levels;
+    return {
+      type: 'score',
+      levels: Array.isArray(levels) ? levels.map((level) => String(level ?? '')) : [],
+    };
+  }
+  return { type: 'binary' };
+}
+
+export function parseThreshold(value: unknown): Threshold | null {
+  const entry = tagged(value);
+  if (!entry) return null;
+  const [key, inner] = entry;
+  if (key === 'yes' || key === 'no') {
+    const p = probability(inner);
+    return p === null ? null : { type: key, p };
+  }
+  const body = record(inner);
+  const p = probability(body?.p);
+  if (p === null) return null;
+  if (key === 'option') {
+    const name = text(body?.name);
+    return name ? { type: 'option', name, p } : null;
+  }
+  if (key === 'at_least_level') {
+    const level = optionalCount(body?.level);
+    return level === null ? null : { type: 'at_least_level', level, p };
+  }
+  return null;
+}
+
+export function parseQuestion(value: unknown): Question {
+  const body = record(value);
+  return {
+    instructions: rawText(body?.instructions) ?? '',
+    kind: parseDecisionKind(body?.kind),
+    threshold: parseThreshold(body?.threshold),
+  };
+}
+
+/** A `name -> Question` map, in the order it was sent. */
+export function parseNamedQuestions(value: unknown): NamedQuestion[] {
+  const body = record(value);
+  if (!body) return [];
+  return Object.entries(body).map(([name, question]) => ({ name, ...parseQuestion(question) }));
+}
+
+export function decisionKindToWire(kind: DecisionKind): Record<string, unknown> {
+  if (kind.type === 'choice') {
+    return {
+      choice: {
+        options: Object.fromEntries(
+          kind.options.map((option) => [option.name, option.description ?? null])
+        ),
+      },
+    };
+  }
+  if (kind.type === 'score') return { score: { levels: [...kind.levels] } };
+  return { binary: {} };
+}
+
+export function thresholdToWire(threshold: Threshold): Record<string, unknown> {
+  switch (threshold.type) {
+    case 'yes':
+      return { yes: threshold.p };
+    case 'no':
+      return { no: threshold.p };
+    case 'option':
+      return { option: { name: threshold.name, p: threshold.p } };
+    case 'at_least_level':
+      return { at_least_level: { level: threshold.level, p: threshold.p } };
+  }
+}
+
+export function questionToWire(question: Question): Record<string, unknown> {
+  return {
+    instructions: question.instructions,
+    kind: decisionKindToWire(question.kind),
+    ...(question.threshold ? { threshold: thresholdToWire(question.threshold) } : {}),
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Decisions and log rows
+// ---------------------------------------------------------------------------
+
+export function parseDecisionModelRef(value: unknown): DecisionModelRef | null {
+  const body = record(value);
+  const provider = text(body?.provider);
+  const model = text(body?.model);
+  if (!provider || !model) return null;
+  return { provider, model, adapter: optionalOneOf(DECISION_ADAPTERS, body?.adapter) };
+}
+
+export function decisionModelRefToWire(model: DecisionModelRef): Record<string, unknown> {
+  return {
+    provider: model.provider,
+    model: model.model,
+    ...(model.adapter ? { adapter: model.adapter } : {}),
+  };
+}
+
+function parseAnswer(value: unknown): DecisionAnswer | null {
+  const body = record(value);
+  if (!body) return null;
+  if (body.type === 'binary' && typeof body.value === 'boolean') {
+    return { type: 'binary', value: body.value };
+  }
+  if (body.type === 'choice') {
+    const option = rawText(body.option);
+    return option === null ? null : { type: 'choice', option };
+  }
+  if (body.type === 'score') {
+    const level = optionalCount(body.level);
+    if (level === null) return null;
+    return {
+      type: 'score',
+      level,
+      label: rawText(body.label) ?? String(level),
+      expected: optionalNumber(body.expected) ?? level,
+    };
+  }
+  return null;
+}
+
+function parseSource(value: unknown): ProbabilitySource {
+  const body = record(value);
+  if (body?.kind === 'logprob') return { kind: 'logprob', mass: probability(body.mass) ?? 0 };
+  if (body?.kind === 'verbalized') return { kind: 'verbalized', reason: text(body.reason) };
+  if (body?.kind === 'native') return { kind: 'native' };
+  // Unknown: say nothing we cannot back up. Treated as uncalibrated everywhere.
+  return { kind: 'verbalized', reason: null };
+}
+
+function parseProbabilities(value: unknown): DecisionProbability[] {
+  const body = record(value);
+  if (!body) return [];
+  const out: DecisionProbability[] = [];
+  for (const [key, p] of Object.entries(body)) {
+    const parsed = probability(p);
+    if (parsed !== null) out.push({ key, p: parsed });
+  }
+  return out;
+}
+
+export function parseDecision(value: unknown): Decision | null {
+  const body = record(value);
+  const question = text(body?.question);
+  if (!body || !question) return null;
+  const usage = record(body.usage);
+  return {
+    question,
+    answer: parseAnswer(body.answer),
+    probabilities: parseProbabilities(body.probabilities),
+    confidence: probability(body.confidence),
+    passed: optionalBool(body.passed),
+    passProbability: probability(body.passProbability),
+    source: parseSource(body.source),
+    calibrated: body.calibrated === true,
+    model: parseDecisionModelRef(body.model),
+    tier: tier(body.tier),
+    requestId: text(body.requestId),
+    latencyMs: optionalCount(body.latencyMs),
+    inputTokens: optionalCount(usage?.inputTokens),
+    outputTokens: optionalCount(usage?.outputTokens),
+    raw: body.raw ?? null,
+  };
+}
+
+function parseDecisions(value: unknown): Decision[] {
+  if (!Array.isArray(value)) return [];
+  return value.map(parseDecision).filter((entry): entry is Decision => entry !== null);
+}
+
+export function parseDecisionRecord(value: unknown): DecisionRecord | null {
+  const body = record(value);
+  const id = text(body?.id);
+  if (!body || !id) return null;
+  return {
+    id,
+    sessionId: text(body.sessionId),
+    createdAt: text(body.createdAt) ?? '',
+    origin: oneOf(DECISION_ORIGINS, body.origin, 'adhoc'),
+    originId: text(body.originId),
+    label: text(body.label),
+    turnId: text(body.turnId),
+    batchId: text(body.batchId),
+    chunkIndex: optionalCount(body.chunkIndex),
+    chunkId: text(body.chunkId),
+    model: parseDecisionModelRef(body.model),
+    servedModel: text(body.servedModel),
+    tier: tier(body.tier),
+    calibrated: optionalBool(body.calibrated),
+    questions: parseNamedQuestions(body.questions),
+    decisions: parseDecisions(body.decisions),
+    // An outcome this build does not know is drawn as an error: never as a pass.
+    outcome: oneOf(DECISION_OUTCOMES, body.outcome, 'error'),
+    contextPreview: rawText(body.contextPreview) ?? '',
+    contextBytes: count(body.contextBytes),
+    contextTruncated: body.contextTruncated === true,
+    error: text(body.error),
+    latencyMs: optionalCount(body.latencyMs),
+    inputTokens: optionalCount(body.inputTokens),
+    outputTokens: optionalCount(body.outputTokens),
+    privacyEnforced: body.privacyEnforced !== false,
+  };
+}
+
+export function parseDecisionContext(value: unknown): DecisionContext | null {
+  const entry = tagged(value);
+  if (!entry) return null;
+  const [key, inner] = entry;
+  if (key === 'text') return { type: 'text', text: rawText(inner) ?? '' };
+  if (key === 'json') return { type: 'json', value: inner };
+  if (key === 'messages') {
+    return {
+      type: 'messages',
+      messages: (Array.isArray(inner) ? inner : []).flatMap((message) => {
+        const body = record(message);
+        if (!body) return [];
+        return [{ role: text(body.role) ?? 'user', content: rawText(body.content) ?? '' }];
+      }),
+    };
+  }
+  return null;
+}
+
+export function parseDecisionDetail(value: unknown): DecisionDetail | null {
+  const body = record(value);
+  const parsed = parseDecisionRecord(body?.record);
+  if (!body || !parsed) return null;
+  return { record: parsed, context: parseDecisionContext(body.context), raw: value };
+}
+
+export function parseDecisionPage(value: unknown): DecisionPage | null {
+  const body = record(value);
+  if (!body) return null;
+  const seen = new Set<string>();
+  const records: DecisionRecord[] = [];
+  for (const entry of Array.isArray(body.records) ? body.records : []) {
+    const row = parseDecisionRecord(entry);
+    if (row && !seen.has(row.id)) {
+      seen.add(row.id);
+      records.push(row);
+    }
+  }
+  return {
+    records,
+    nextCursor: text(body.nextCursor),
+    total: Math.max(count(body.total), records.length),
+  };
+}
+
+export function parseDecisionAggregate(value: unknown): DecisionAggregate | null {
+  const body = record(value);
+  if (!body) return null;
+  const origin = oneOf(DECISION_ORIGINS, body.origin, 'adhoc');
+  return {
+    origin,
+    originId: text(body.originId),
+    label: text(body.label) ?? '',
+    count: count(body.count),
+    passed: count(body.passed),
+    failed: count(body.failed),
+    errors: count(body.errors),
+    lastAt: text(body.lastAt) ?? '',
+    lastAnswer: text(body.lastAnswer),
+    lastPassProbability: probability(body.lastPassProbability),
+    model: parseDecisionModelRef(body.model),
+  };
+}
+
+export function parseDecisionTurnSummary(value: unknown): DecisionTurnSummary | null {
+  const body = record(value);
+  const turnId = text(body?.turnId);
+  if (!body || !turnId) return null;
+  return {
+    turnId,
+    origin: oneOf(DECISION_ORIGINS, body.origin, 'adhoc'),
+    originId: text(body.originId),
+    label: text(body.label) ?? '',
+    count: count(body.count),
+    passed: count(body.passed),
+    failed: count(body.failed),
+    errors: count(body.errors),
+    firstAt: text(body.firstAt) ?? '',
+    lastAt: text(body.lastAt) ?? '',
+    lastPassProbability: probability(body.lastPassProbability),
+  };
+}
+
+export function parseSessionDecisionSummary(value: unknown): SessionDecisionSummary | null {
+  const body = record(value);
+  if (!body) return null;
+  const aggregates = (Array.isArray(body.aggregates) ? body.aggregates : [])
+    .map(parseDecisionAggregate)
+    .filter((entry): entry is DecisionAggregate => entry !== null);
+  const recentTurns = (Array.isArray(body.recentTurns) ? body.recentTurns : [])
+    .map(parseDecisionTurnSummary)
+    .filter((entry): entry is DecisionTurnSummary => entry !== null);
+  const summed = aggregates.reduce((sum, entry) => sum + entry.count, 0);
+  return { total: Math.max(count(body.total), summed), aggregates, recentTurns };
+}
+
+export function parseDecisionTurnMarker(value: unknown): DecisionTurnMarker | null {
+  const body = record(value);
+  const turnId = text(body?.turnId);
+  if (!body || !turnId) return null;
+  const items = (Array.isArray(body.items) ? body.items : []).flatMap(
+    (entry): DecisionTurnMarkerItem[] => {
+      const item = record(entry);
+      if (!item) return [];
+      return [
+        {
+          origin: oneOf(DECISION_ORIGINS, item.origin, 'adhoc'),
+          originId: text(item.originId),
+          label: text(item.label) ?? '',
+          count: count(item.count),
+          passed: count(item.passed),
+          failed: count(item.failed),
+          errors: count(item.errors),
+          lastPassProbability: probability(item.lastPassProbability),
+          fired: item.fired === true,
+        },
+      ];
+    }
+  );
+  return { turnId, items };
+}
+
+/** A message's `metadata.decisionSummary`, the per-turn marker's data, when it carries one. */
+export function messageDecisionMarker(message: Message): DecisionTurnMarker | null {
+  const metadata = record((message as { metadata?: unknown }).metadata);
+  return metadata ? parseDecisionTurnMarker(metadata.decisionSummary) : null;
+}
+
+/** A message's `metadata.decisionId` (a decision chat's reply), when it carries one. */
+export function messageDecisionId(message: Message): string | null {
+  const metadata = record((message as { metadata?: unknown }).metadata);
+  return text(metadata?.decisionId);
+}
+
+// ---------------------------------------------------------------------------
+// Settings
+// ---------------------------------------------------------------------------
+
+function clampInt(value: unknown, low: number, high: number, fallback: number): number {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return fallback;
+  return Math.min(high, Math.max(low, Math.round(value)));
+}
+
+export function parseMonitorCriterion(value: unknown): MonitorCriterion | null {
+  const body = record(value);
+  const id = text(body?.id);
+  if (!body || !id) return null;
+  const window = record(body.window);
+  return {
+    id,
+    name: text(body.name) ?? id,
+    question: parseQuestion(body.question),
+    model: parseDecisionModelRef(body.model),
+    timing: oneOf(MONITOR_TIMINGS, body.timing, 'post_iteration'),
+    window: {
+      entries: clampInt(window?.entries, 1, MONITOR_WINDOW_ENTRIES_MAX, 24),
+      maxChars: clampInt(window?.maxChars, 1, MONITOR_WINDOW_CHARS_MAX, 6000),
+      toolCalls: window?.toolCalls !== false,
+    },
+    threshold: probability(body.threshold) ?? 0.8,
+    option: text(body.option),
+    consecutive: clampInt(body.consecutive, 1, MONITOR_CONSECUTIVE_MAX, 1),
+    rearmBelow: probability(body.rearmBelow),
+    action: oneOf(MONITOR_ACTIONS, body.action, 'notify'),
+    onError: oneOf(MONITOR_ERROR_POLICIES, body.onError, 'notify'),
+    maxEvalsPerTurn: clampInt(body.maxEvalsPerTurn, 1, MONITOR_MAX_EVALS_MAX, 50),
+    enabled: body.enabled !== false,
+  };
+}
+
+export function parseDecisionSettings(value: unknown): DecisionSettings | null {
+  let body = record(value);
+  // Tolerate a route that wraps the stored value (`{ settings: {...} }`).
+  if (body && body.monitors === undefined && record(body.settings)) body = record(body.settings);
+  if (!body) return null;
+  const seen = new Set<string>();
+  const monitors: MonitorCriterion[] = [];
+  for (const entry of Array.isArray(body.monitors) ? body.monitors : []) {
+    const monitor = parseMonitorCriterion(entry);
+    if (monitor && !seen.has(monitor.id)) {
+      seen.add(monitor.id);
+      monitors.push(monitor);
+    }
+  }
+  return { defaultModel: parseDecisionModelRef(body.defaultModel), monitors };
+}
+
+export function monitorToWire(monitor: MonitorCriterion): Record<string, unknown> {
+  return {
+    id: monitor.id,
+    name: monitor.name,
+    question: questionToWire(monitor.question),
+    model: monitor.model ? decisionModelRefToWire(monitor.model) : null,
+    timing: monitor.timing,
+    window: { ...monitor.window },
+    threshold: monitor.threshold,
+    option: monitor.option,
+    consecutive: monitor.consecutive,
+    rearmBelow: monitor.rearmBelow,
+    action: monitor.action,
+    onError: monitor.onError,
+    maxEvalsPerTurn: monitor.maxEvalsPerTurn,
+    enabled: monitor.enabled,
+  };
+}
+
+export function decisionSettingsToWire(settings: DecisionSettings): Record<string, unknown> {
+  return {
+    defaultModel: settings.defaultModel ? decisionModelRefToWire(settings.defaultModel) : null,
+    monitors: settings.monitors.map(monitorToWire),
+  };
+}
+
+export function parseDecisionModelEntry(value: unknown): DecisionModelEntry | null {
+  const body = record(value);
+  const provider = text(body?.provider);
+  const model = text(body?.model);
+  if (!body || !provider || !model) return null;
+  const kinds = Array.isArray(body.kinds)
+    ? body.kinds.filter((kind): kind is DecisionKindTag =>
+        DECISION_KIND_TAGS.includes(kind as DecisionKindTag)
+      )
+    : [];
+  return {
+    provider,
+    model,
+    displayName: text(body.displayName) ?? model,
+    contextTokens: optionalCount(body.contextTokens),
+    kinds: kinds.length > 0 ? kinds : ['binary'],
+    tier: tier(body.tier),
+    adapter: optionalOneOf(DECISION_ADAPTERS, body.adapter),
+    local: body.local === true,
+    unavailableReason: text(body.unavailableReason ?? body.unavailable_reason),
+  };
+}
+
+/** `GET /decisions/models`: a bare list, or one wrapped as `{ models: [...] }`. */
+export function parseDecisionModelEntries(value: unknown): DecisionModelEntry[] | null {
+  const list = Array.isArray(value) ? value : record(value)?.models;
+  if (!Array.isArray(list)) return null;
+  return list
+    .map(parseDecisionModelEntry)
+    .filter((entry): entry is DecisionModelEntry => entry !== null);
+}
+
+export function parsePhaseGateSnapshot(value: unknown): PhaseGateSnapshot | null {
+  const body = record(value);
+  if (!body) return null;
+  const threshold = probability(body.threshold);
+  if (threshold === null) return null;
+  return {
+    threshold,
+    questionCount: count(body.questionCount),
+    attempts: count(body.attempts),
+    maxAttempts: Math.max(1, count(body.maxAttempts) || 3),
+    lastPassed: optionalBool(body.lastPassed),
+    lastMinP: probability(body.lastMinP),
+    blocked: body.blocked === true,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Readable answers and figures
+// ---------------------------------------------------------------------------
+
+/** The option's display text: a choice's name, a level's label, `Yes` / `No`. */
+export function outcomeLabel(question: Question | null | undefined, key: string): string {
+  if (question?.kind.type === 'score') {
+    const index = Number(key);
+    const label = Number.isInteger(index) ? question.kind.levels[index] : undefined;
+    return label?.trim() ? label : `Level ${key}`;
+  }
+  if (key === 'yes' && (!question || question.kind.type === 'binary')) return 'Yes';
+  if (key === 'no' && (!question || question.kind.type === 'binary')) return 'No';
+  return key;
+}
+
+/** The key of `probabilities` an answer names: `yes` / `no`, the option, the level index. */
+export function answerKey(answer: DecisionAnswer | null): string | null {
+  if (!answer) return null;
+  if (answer.type === 'binary') return answer.value ? 'yes' : 'no';
+  if (answer.type === 'choice') return answer.option;
+  return String(answer.level);
+}
+
+/** `Yes`, `rrms`, `Moderate`: the answer a person reads. */
+export function readableAnswer(decision: Decision, question?: Question | null): string {
+  const answer = decision.answer;
+  if (!answer) return 'No answer';
+  if (answer.type === 'binary') return answer.value ? 'Yes' : 'No';
+  if (answer.type === 'choice') return answer.option;
+  return answer.label?.trim() ? answer.label : outcomeLabel(question ?? null, String(answer.level));
+}
+
+/** The probability of the answer the decision gave, P(answer), or `null`. */
+export function answerProbability(decision: Decision): number | null {
+  const key = answerKey(decision.answer);
+  if (key === null) return null;
+  return decision.probabilities.find((entry) => entry.key === key)?.p ?? null;
+}
+
+/**
+ * The threshold marker's place on one option's bar, when the question's
+ * threshold is on that option: P(yes) for `yes`, P(no) for `no`, P(option).
+ * A score's at-least-level threshold acts on a SUM of levels, so it names no
+ * single bar and returns `null` here (`thresholdSummary` says it in words).
+ */
+export function thresholdOnOption(threshold: Threshold | null, key: string): number | null {
+  if (!threshold) return null;
+  if (threshold.type === 'yes') return key === 'yes' ? threshold.p : null;
+  if (threshold.type === 'no') return key === 'no' ? threshold.p : null;
+  if (threshold.type === 'option') return key === threshold.name ? threshold.p : null;
+  return null;
+}
+
+/** `P(yes) ≥ 0.80`, `P(rrms) ≥ 0.90`, `P(level ≥ Moderate) ≥ 0.80`. */
+export function thresholdSummary(threshold: Threshold, question?: Question | null): string {
+  const p = formatProbability(threshold.p);
+  switch (threshold.type) {
+    case 'yes':
+      return `P(yes) ≥ ${p}`;
+    case 'no':
+      return `P(no) ≥ ${p}`;
+    case 'option':
+      return `P(${threshold.name}) ≥ ${p}`;
+    case 'at_least_level':
+      return `P(level ≥ ${outcomeLabel(question ?? null, String(threshold.level))}) ≥ ${p}`;
+  }
+}
+
+/** Two decimals: `0.93`. A probability that rounds to 1 or 0 but is not says so: `>0.99`. */
+export function formatProbability(p: number | null | undefined): string {
+  if (p === null || p === undefined || !Number.isFinite(p)) return '';
+  if (p > 0.995 && p < 1) return '>0.99';
+  if (p < 0.005 && p > 0) return '<0.01';
+  return p.toFixed(2);
+}
+
+/** `22 ms`, `1.4 s`. */
+export function formatLatency(ms: number | null | undefined): string | null {
+  if (ms === null || ms === undefined || !Number.isFinite(ms) || ms < 0) return null;
+  if (ms < 1000) return `${Math.round(ms)} ms`;
+  return `${(ms / 1000).toFixed(ms < 10_000 ? 1 : 0)} s`;
+}
+
+/** A model reference as the person reads it: `tev1:0.8b`, the provider after it in the title. */
+export function decisionModelLabel(model: DecisionModelRef | null | undefined): string | null {
+  if (!model) return null;
+  const name = model.model.slice(model.model.lastIndexOf('/') + 1);
+  return name || model.model;
+}
+
+/** What a probability's source means, in words. Uncalibrated is always said. */
+export function calibrationText(source: ProbabilitySource, calibrated: boolean): string {
+  if (source.kind === 'verbalized') {
+    return source.reason
+      ? `Uncalibrated: the model wrote this number itself (${source.reason}).`
+      : 'Uncalibrated: the model wrote this number itself.';
+  }
+  if (!calibrated) {
+    return source.kind === 'logprob'
+      ? `Uncalibrated: only ${formatProbability(source.mass)} of the probability fell on the options.`
+      : 'Uncalibrated.';
+  }
+  return source.kind === 'logprob'
+    ? 'Model probabilities from token log-probabilities, not validated on your data.'
+    : "The decision model's own probabilities, not validated on your data.";
+}
+
+export const ORIGIN_NAMES: Record<DecisionOrigin, string> = {
+  chat: 'Decision chat',
+  monitor: 'Monitor',
+  tool: 'decide',
+  gate: 'Phase gate',
+  adhoc: 'Ad hoc',
+};
+
+/** The plural used by the history view's Source filter. */
+export const ORIGIN_FILTER_NAMES: Record<DecisionOrigin, string> = {
+  chat: 'Decision chat',
+  monitor: 'Monitors',
+  tool: 'decide tool',
+  gate: 'Phase gates',
+  adhoc: 'Ad hoc',
+};
+
+export const OUTCOME_NAMES: Record<DecisionOutcome, string> = {
+  passed: 'Passed',
+  failed: 'Failed',
+  decided: 'Decided',
+  error: 'Error',
+  refused: 'Refused',
+};
+
+/** A row's label: the origin's own (a monitor's name, a phase's title), else its kind. */
+export function originLabel(origin: DecisionOrigin, label?: string | null): string {
+  const named = label?.trim();
+  if (origin === 'tool') return ORIGIN_NAMES.tool;
+  return named || ORIGIN_NAMES[origin];
+}
+
+// ---------------------------------------------------------------------------
+// The summary's rows: one per source, never one per call
+// ---------------------------------------------------------------------------
+
+export type DecisionSourceState =
+  | 'pending'
+  | 'armed'
+  | 'fired'
+  | 'off'
+  | 'error'
+  | 'done'
+  | 'passed'
+  | 'failed'
+  | 'blocked';
+
+export interface DecisionSourceRow {
+  /** `monitor:<id>`, `tool`, `gate:<phase id>`, `chat`, `adhoc`. */
+  key: string;
+  origin: DecisionOrigin;
+  /** The filter the history view opens with; `null` for the whole origin. */
+  originId: string | null;
+  label: string;
+  count: number;
+  passed: number;
+  failed: number;
+  errors: number;
+  lastAt: string | null;
+  lastAnswer: string | null;
+  lastPassProbability: number | null;
+  state: DecisionSourceState;
+  /** A monitor's or gate's threshold, for the bar's marker. */
+  threshold: number | null;
+  /** A gate's attempt line: `attempt 2 of 3`. */
+  attempts: { attempts: number; maxAttempts: number } | null;
+}
+
+export interface DecisionGateSource {
+  phaseId: string;
+  title: string;
+  gate: PhaseGateSnapshot;
+}
+
+function later(a: string | null, b: string | null): boolean {
+  if (!b) return false;
+  if (!a) return true;
+  const left = Date.parse(a);
+  const right = Date.parse(b);
+  return Number.isFinite(right) && (!Number.isFinite(left) || right > left);
+}
+
+const SOURCE_ORDER: readonly DecisionOrigin[] = ['monitor', 'tool', 'gate', 'chat', 'adhoc'];
+
+function sourceKey(origin: DecisionOrigin, originId: string | null): string {
+  return origin === 'monitor' || origin === 'gate' ? `${origin}:${originId ?? ''}` : origin;
+}
+
+/**
+ * The chat summary's Decisions rows: one per monitor (by its id, including the
+ * monitors no call has reached yet), ONE for every `decide` batch together, one
+ * per phase gate, one for the decision chat and one for ad hoc calls. Never one
+ * per call: a chat with 5,000 calls draws as many rows as it has sources.
+ *
+ * Order: monitors as the settings list them (a removed monitor that still has
+ * calls after them), then the decide tool, the gates in plan order, the decision
+ * chat, ad hoc. `fired` is the set of monitor ids the newest turn marker says
+ * fired.
+ */
+export function decisionSourceRows(
+  summary: SessionDecisionSummary | null,
+  settings: DecisionSettings | null,
+  options: { gates?: readonly DecisionGateSource[]; fired?: ReadonlySet<string> } = {}
+): DecisionSourceRow[] {
+  const monitors = settings?.monitors ?? [];
+  const gates = options.gates ?? [];
+  const fired = options.fired ?? new Set<string>();
+  const rows = new Map<string, DecisionSourceRow & { rank: number }>();
+  let seen = 0;
+
+  const ensure = (origin: DecisionOrigin, originId: string | null, label: string) => {
+    const key = sourceKey(origin, originId);
+    let row = rows.get(key);
+    if (!row) {
+      const monitorIndex = monitors.findIndex((monitor) => monitor.id === originId);
+      const gateIndex = gates.findIndex((gate) => gate.phaseId === originId);
+      const within =
+        origin === 'monitor' && monitorIndex >= 0
+          ? monitorIndex
+          : origin === 'gate' && gateIndex >= 0
+            ? gateIndex
+            : 1000 + seen;
+      seen += 1;
+      row = {
+        key,
+        origin,
+        originId: origin === 'monitor' || origin === 'gate' ? originId : null,
+        label,
+        count: 0,
+        passed: 0,
+        failed: 0,
+        errors: 0,
+        lastAt: null,
+        lastAnswer: null,
+        lastPassProbability: null,
+        state: 'done',
+        threshold: null,
+        attempts: null,
+        rank: SOURCE_ORDER.indexOf(origin) * 100_000 + within,
+      };
+      rows.set(key, row);
+    }
+    return row;
+  };
+
+  for (const monitor of monitors) {
+    ensure('monitor', monitor.id, monitor.name).threshold = monitor.threshold;
+  }
+  for (const gate of gates) ensure('gate', gate.phaseId, gate.title);
+  for (const aggregate of summary?.aggregates ?? []) {
+    const row = ensure(
+      aggregate.origin,
+      aggregate.originId,
+      originLabel(aggregate.origin, aggregate.label)
+    );
+    row.count += aggregate.count;
+    row.passed += aggregate.passed;
+    row.failed += aggregate.failed;
+    row.errors += aggregate.errors;
+    if (row.lastAt === null || later(row.lastAt, aggregate.lastAt)) {
+      row.lastAt = aggregate.lastAt || row.lastAt;
+      row.lastAnswer = aggregate.lastAnswer;
+      row.lastPassProbability = aggregate.lastPassProbability;
+    }
+  }
+
+  for (const row of rows.values()) {
+    // The last call left no probability while calls have failed: it was one of them.
+    const lastFailed = row.count > 0 && row.errors > 0 && row.lastPassProbability === null;
+    if (row.origin === 'monitor') {
+      const monitor = monitors.find((entry) => entry.id === row.originId);
+      if (monitor && !monitor.enabled) row.state = 'off';
+      else if (lastFailed) row.state = 'error';
+      else if (
+        fired.has(row.originId ?? '') ||
+        (row.threshold !== null &&
+          row.lastPassProbability !== null &&
+          row.lastPassProbability >= row.threshold)
+      )
+        row.state = 'fired';
+      else row.state = 'armed';
+    } else if (row.origin === 'gate') {
+      const gate = gates.find((entry) => entry.phaseId === row.originId)?.gate;
+      if (gate) {
+        row.threshold = gate.threshold;
+        row.attempts = { attempts: gate.attempts, maxAttempts: gate.maxAttempts };
+        if (row.lastPassProbability === null) row.lastPassProbability = gate.lastMinP;
+      }
+      if (gate?.blocked) row.state = 'blocked';
+      else if (gate?.lastPassed === true) row.state = 'passed';
+      else if (gate?.lastPassed === false) row.state = 'failed';
+      else if (lastFailed) row.state = 'error';
+      else if (row.count === 0) row.state = 'pending';
+      else row.state = row.failed > 0 ? 'failed' : 'passed';
+    } else {
+      row.state = lastFailed ? 'error' : 'done';
+    }
+  }
+  return [...rows.values()].sort((a, b) => a.rank - b.rank).map(({ rank: _rank, ...row }) => row);
+}
+
+/** The monitor ids the newest turn marker in `messages` says fired, if any did. */
+export function firedMonitorIds(messages: readonly Message[]): Set<string> {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const marker = messageDecisionMarker(messages[index]);
+    if (!marker) continue;
+    return new Set(
+      marker.items
+        .filter((item) => item.origin === 'monitor' && item.fired && item.originId)
+        .map((item) => item.originId!)
+    );
+  }
+  return new Set();
+}
+
+// ---------------------------------------------------------------------------
+// When to refetch
+// ---------------------------------------------------------------------------
+
+/** Tools whose answer can add decision rows: a decide batch, or a phase completed through a gate. */
+const DECISION_TOOLS = new Set(['decide', 'workspace_orchestrate']);
+
+function isDecisionTool(name: unknown): boolean {
+  if (typeof name !== 'string' || !name) return false;
+  const segments = name.split('__');
+  return DECISION_TOOLS.has(segments[segments.length - 1]);
+}
+
+/**
+ * A string that changes when a decision-making tool call ANSWERS (a `decide`
+ * batch, a `workspace_orchestrate` call that may have run a gate), when a
+ * decision notice lands (a turn marker, a monitor that fired) and when a
+ * decision chat's reply lands. Streamed prose never moves it, and the same
+ * transcript always derives the same string.
+ */
+export function decisionRevision(messages: readonly Message[]): string {
+  const requests = new Set<string>();
+  const marks: string[] = [];
+  for (const message of messages) {
+    for (const content of message.content) {
+      if (content.type === 'toolRequest') {
+        const call = record(content.toolCall.value);
+        if (isDecisionTool(call?.name)) requests.add(content.id);
+      }
+    }
+  }
+  for (const message of messages) {
+    for (const content of message.content) {
+      if (content.type === 'toolResponse' && requests.has(content.id)) marks.push(content.id);
+    }
+    const marker = messageDecisionMarker(message);
+    if (marker) marks.push(`turn:${marker.turnId}:${message.id ?? ''}`);
+    const decisionId = messageDecisionId(message);
+    if (decisionId) marks.push(`decision:${decisionId}`);
+  }
+  return JSON.stringify(marks.sort());
+}
+
+/** `true` once the transcript holds any decision activity `decisionRevision` sees. */
+export function decisionRevisionHasActivity(revision: string): boolean {
+  return revision !== '' && revision !== '[]';
+}
+
+// ---------------------------------------------------------------------------
+// The decision history view's filter, and the artifact that opens it
+// ---------------------------------------------------------------------------
+
+export interface DecisionHistoryFilter {
+  origin?: DecisionOrigin | null;
+  originId?: string | null;
+  turnId?: string | null;
+  batchId?: string | null;
+  outcome?: DecisionOutcome | null;
+  errorsOnly?: boolean;
+  minP?: number | null;
+  maxP?: number | null;
+}
+
+/** The title of the decision history tab. One tab per chat. */
+export const DECISION_HISTORY_TITLE = 'Decisions';
+
+/**
+ * The artifact side panel source that opens the decision history view, filtered.
+ * One tab per chat: opening it again with another filter re-filters that tab
+ * (the panel replaces a tab's source when the key matches). `openedAt` makes
+ * the same filter applied twice still count as a new request.
+ */
+export function decisionHistoryArtifact(
+  sessionId: string,
+  filter: DecisionHistoryFilter = {}
+): {
+  kind: 'decisions';
+  title: string;
+  sessionId: string;
+  filter: DecisionHistoryFilter;
+  openedAt: number;
+} {
+  return {
+    kind: 'decisions',
+    title: DECISION_HISTORY_TITLE,
+    sessionId,
+    filter,
+    openedAt: Date.now(),
+  };
+}
+
+/** The query string `GET /sessions/{id}/decisions` takes, from a filter and a cursor. */
+export function decisionQuery(
+  filter: DecisionHistoryFilter,
+  page: { before?: string | null; limit?: number } = {}
+): Record<string, string | number | boolean> {
+  const query: Record<string, string | number | boolean> = {};
+  if (filter.origin) query.origin = filter.origin;
+  if (filter.originId) query.originId = filter.originId;
+  if (filter.turnId) query.turnId = filter.turnId;
+  if (filter.batchId) query.batchId = filter.batchId;
+  if (filter.outcome) query.outcome = filter.outcome;
+  if (filter.errorsOnly) query.errorsOnly = true;
+  if (typeof filter.minP === 'number' && Number.isFinite(filter.minP)) query.minP = filter.minP;
+  if (typeof filter.maxP === 'number' && Number.isFinite(filter.maxP)) query.maxP = filter.maxP;
+  if (page.before) query.before = page.before;
+  query.limit = Math.min(DECISION_PAGE_MAX, Math.max(1, page.limit ?? 100));
+  return query;
+}
+
+// ---------------------------------------------------------------------------
+// Requests
+// ---------------------------------------------------------------------------
+
+/*
+ * Through the generated client's low-level methods until `npm run generate-api`
+ * declares these routes; each then swaps for its generated function. The daemon
+ * secret rides the client's security scheme exactly as a generated call's does,
+ * and the person's proof rides every request: the routes filter a private chat's
+ * decisions through `session_reach`, and without the proof a private chat's
+ * rows would silently be refused.
+ */
+const SECURITY = [{ name: 'X-Secret-Key', type: 'apiKey' as const }];
+
+export class DecisionRequestError extends Error {
+  status: number | null;
+  constructor(message: string, status: number | null) {
+    super(message);
+    this.name = 'DecisionRequestError';
+    this.status = status;
+  }
+}
+
+/** The sentence a refusal carries: a plain-text body, or `message` / `error` in a JSON one. */
+export function refusalText(error: unknown): string | null {
+  if (typeof error === 'string') return error.trim() || null;
+  const body = record(error);
+  return text(body?.message) ?? text(body?.error) ?? text(body?.detail);
+}
+
+type ClientResult = {
+  data?: unknown;
+  error?: unknown;
+  response?: Response;
+};
+
+function settle(result: ClientResult, what: string): { data: unknown; missing: boolean } {
+  const status = result.response?.status ?? null;
+  if (status === 404) return { data: null, missing: true };
+  if (result.error !== undefined || result.data === undefined) {
+    throw new DecisionRequestError(refusalText(result.error) ?? `${what} unavailable`, status);
+  }
+  return { data: result.data, missing: false };
+}
+
+/**
+ * `GET /sessions/{id}/decisions/summary`. `missing` is a daemon that predates the
+ * route (404): nothing to show, and nothing Retry could fix.
+ */
+export async function fetchDecisionSummary(
+  sessionId: string,
+  signal?: AbortSignal
+): Promise<{ data: SessionDecisionSummary | null; missing: boolean }> {
+  const headers = await userActionHeaders();
+  const result = (await client.get({
+    security: SECURITY,
+    url: '/sessions/{session_id}/decisions/summary',
+    path: { session_id: sessionId },
+    headers,
+    signal,
+  })) as ClientResult;
+  const { data, missing } = settle(result, 'Decisions');
+  if (missing) return { data: null, missing };
+  const parsed = parseSessionDecisionSummary(data);
+  if (!parsed) throw new DecisionRequestError('Decisions unavailable', null);
+  return { data: parsed, missing };
+}
+
+export async function fetchDecisionSettings(
+  sessionId: string,
+  signal?: AbortSignal
+): Promise<{ data: DecisionSettings | null; missing: boolean }> {
+  const headers = await userActionHeaders();
+  const result = (await client.get({
+    security: SECURITY,
+    url: '/sessions/{session_id}/decision-settings',
+    path: { session_id: sessionId },
+    headers,
+    signal,
+  })) as ClientResult;
+  const { data, missing } = settle(result, 'Decision settings');
+  if (missing) return { data: null, missing };
+  const parsed = parseDecisionSettings(data);
+  if (!parsed) throw new DecisionRequestError('Decision settings unavailable', null);
+  return { data: parsed, missing };
+}
+
+/** `PUT /sessions/{id}/decision-settings`. The stored value, or the daemon's refusal as an error. */
+export async function saveDecisionSettings(
+  sessionId: string,
+  settings: DecisionSettings
+): Promise<DecisionSettings> {
+  const headers = await userActionHeaders();
+  const result = (await client.put({
+    security: SECURITY,
+    url: '/sessions/{session_id}/decision-settings',
+    path: { session_id: sessionId },
+    body: decisionSettingsToWire(settings),
+    headers: { 'Content-Type': 'application/json', ...headers },
+  })) as ClientResult;
+  const status = result.response?.status ?? null;
+  if (result.error !== undefined || result.data === undefined) {
+    throw new DecisionRequestError(
+      refusalText(result.error) ?? `Could not save (${status ?? 'no answer'})`,
+      status
+    );
+  }
+  return parseDecisionSettings(result.data) ?? settings;
+}
+
+export async function fetchDecisionPage(
+  sessionId: string,
+  filter: DecisionHistoryFilter,
+  page: { before?: string | null; limit?: number } = {},
+  signal?: AbortSignal
+): Promise<DecisionPage> {
+  const headers = await userActionHeaders();
+  const result = (await client.get({
+    security: SECURITY,
+    url: '/sessions/{session_id}/decisions',
+    path: { session_id: sessionId },
+    query: decisionQuery(filter, page),
+    headers,
+    signal,
+  })) as ClientResult;
+  const { data, missing } = settle(result, 'Decisions');
+  if (missing) return { records: [], nextCursor: null, total: 0 };
+  const parsed = parseDecisionPage(data);
+  if (!parsed) throw new DecisionRequestError('Decisions unavailable', null);
+  return parsed;
+}
+
+export async function fetchDecisionDetail(
+  sessionId: string,
+  decisionId: string,
+  signal?: AbortSignal
+): Promise<DecisionDetail | null> {
+  const headers = await userActionHeaders();
+  const result = (await client.get({
+    security: SECURITY,
+    url: '/sessions/{session_id}/decisions/{decision_id}',
+    path: { session_id: sessionId, decision_id: decisionId },
+    headers,
+    signal,
+  })) as ClientResult;
+  const { data, missing } = settle(result, 'Decision');
+  if (missing) return null;
+  const parsed = parseDecisionDetail(data);
+  if (!parsed) throw new DecisionRequestError('Decision unavailable', null);
+  return parsed;
+}
+
+/**
+ * `GET /decisions/models`. Name a chat (`sessionId`) and each model carries the
+ * daemon's own reason that chat may not use it (`unavailableReason`: its tier,
+ * or an institution the model does not cover); the route then asks
+ * `session_reach` like every route that names a chat.
+ */
+export async function fetchDecisionModels(
+  signal?: AbortSignal,
+  sessionId?: string
+): Promise<DecisionModelEntry[]> {
+  const headers = await userActionHeaders();
+  const result = (await client.get({
+    security: SECURITY,
+    url: '/decisions/models',
+    ...(sessionId ? { query: { sessionId } } : {}),
+    headers,
+    signal,
+  })) as ClientResult;
+  const { data, missing } = settle(result, 'Decision models');
+  if (missing) return [];
+  return parseDecisionModelEntries(data) ?? [];
+}

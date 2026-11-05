@@ -52,6 +52,11 @@ export const BILLED_TOKENS_EXACT =
   'Billed tokens across every turn, including recorded cache usage.';
 export const EXTENSIONS_STAT = 'Extensions';
 
+/** A top-level row's decision-model call count (never child rows: owner rule A1.5). */
+export const decisionCallsLabel = (count: number) =>
+  `${count.toLocaleString()} decision-model ${count === 1 ? 'call' : 'calls'}`;
+export const DECISION_CALLS_HINT = "Listed one by one in the chat's decision history.";
+
 /* A parent's runs, nested under it. The glyph says what a run is (V1-R2-10), so none of these
    name the kind. */
 

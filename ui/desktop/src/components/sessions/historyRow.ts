@@ -159,3 +159,15 @@ export function subagentRoleOf(
   const trimmed = role.trim();
   return trimmed ? trimmed : null;
 }
+
+/**
+ * How many decision-model calls a chat made, from its row (`decision_count`,
+ * which the daemon's listing fills from the `decisions` table), or 0. History
+ * shows it as one count on the chat's own row, never as rows of their own: a
+ * chat's decision calls can number in the thousands (owner rule A1.5).
+ */
+export function decisionCountOf(session: object): number {
+  const row = session as { decision_count?: unknown; decisionCount?: unknown };
+  const value = row.decision_count ?? row.decisionCount;
+  return typeof value === 'number' && Number.isFinite(value) && value > 0 ? Math.floor(value) : 0;
+}

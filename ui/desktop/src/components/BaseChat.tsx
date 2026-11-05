@@ -58,6 +58,14 @@ import { summaryCopy } from './summary/copy';
 import { collectCodeDelta } from './summary/codeDelta';
 import { useSessionTodos } from '../hooks/useSessionTodos';
 import { useSessionSubagents } from '../hooks/useSessionSubagents';
+import { useSessionDecisions } from '../hooks/useSessionDecisions';
+import { MonitorsDialog } from './decisions/MonitorsDialog';
+import {
+  decisionHistoryArtifact,
+  firedMonitorIds,
+  type DecisionGateSource,
+  type DecisionHistoryFilter,
+} from '../utils/sessionDecisions';
 import { isActiveStatus, openSubagentTab } from '../utils/sessionSubagents';
 import { summaryRailChat, useSummaryRail } from '../hooks/useSummaryRail';
 import { useLoadingChat } from './summary/useLoadingChat';
@@ -525,6 +533,9 @@ function artifactKey(artifact: ArtifactSource) {
       const blobLength = typeof resource.blob === 'string' ? resource.blob.length : 0;
       return `resource:${resource.uri}:${resource.mimeType ?? ''}:${textLength}:${blobLength}`;
     }
+    case 'decisions':
+      // One decision history tab per chat; never collected from a transcript.
+      return `decisions:${artifact.sessionId}`;
   }
 }
 
@@ -2469,6 +2480,38 @@ function BaseChatContent({
     visible: !chatLoading && (reviewOpen || summaryRail.shown),
     turnRunning: !chatLoading && summaryActive && isRunningState(chatState),
   });
+  // The chat's decision-model activity, aggregated per source (never one row
+  // per call), on the same gate as the roster: shown, or a turn running. It
+  // polls only while a turn runs in a chat with monitors or decision calls.
+  const sessionDecisions = useSessionDecisions(sessionId, messages, {
+    visible: !chatLoading && (reviewOpen || summaryRail.shown),
+    turnRunning: !chatLoading && summaryActive && isRunningState(chatState),
+  });
+  const [monitorsOpen, setMonitorsOpen] = useState(false);
+  const openDecisionHistory = useCallback(
+    (filter: DecisionHistoryFilter) => {
+      // The popover belongs to the chat; the history opens beside it.
+      setReviewOpen(false);
+      void handleOpenArtifact(decisionHistoryArtifact(sessionId, filter));
+    },
+    [handleOpenArtifact, sessionId]
+  );
+  const openMonitors = useCallback(() => {
+    setReviewOpen(false);
+    setMonitorsOpen(true);
+  }, []);
+  const openPhaseGate = useCallback(
+    (phaseId: string) => openDecisionHistory({ origin: 'gate', originId: phaseId }),
+    [openDecisionHistory]
+  );
+  const decisionGates = useMemo<DecisionGateSource[]>(
+    () =>
+      (sessionSubagents.data?.plan?.phases ?? []).flatMap((phase) =>
+        phase.gate ? [{ phaseId: phase.id, title: phase.title, gate: phase.gate }] : []
+      ),
+    [sessionSubagents.data]
+  );
+  const firedMonitors = useMemo(() => firedMonitorIds(messages), [messages]);
   const chatGroupsDispatch = chatGroups?.dispatch;
   const openSubagent = useCallback(
     (childSessionId: string, title?: string) => {
@@ -2519,7 +2562,15 @@ function BaseChatContent({
       codeDelta,
     }),
     todos: chatLoading ? { ...sessionTodos, loading: true } : sessionTodos,
-    subagents: { ...sessionSubagents, onOpen: openSubagent },
+    subagents: { ...sessionSubagents, onOpen: openSubagent, onOpenGate: openPhaseGate },
+    decisions: {
+      ...sessionDecisions,
+      sessionId,
+      onOpenHistory: openDecisionHistory,
+      onOpenMonitors: openMonitors,
+      gates: decisionGates,
+      fired: firedMonitors,
+    },
     hasWorkflow: !!(workflow ?? loadingChatRow?.workflow),
     onWorkflow: handleWorkflowReviewAction,
     onDiagnostics: handleDiagnosticsReviewAction,
@@ -3237,6 +3288,24 @@ function BaseChatContent({
               </div>
             )}
           </div>
+
+          {/* The chat's monitors. Mounted here, not inside the summary: the
+              popover form of the summary unmounts when it closes, and the
+              dialog would go with it. */}
+          <MonitorsDialog
+            open={monitorsOpen}
+            onOpenChange={setMonitorsOpen}
+            sessionId={sessionId}
+            chatTier={
+              session?.privacy_tier === 'private'
+                ? 'private'
+                : session?.privacy_tier === 'public'
+                  ? 'public'
+                  : null
+            }
+            settings={sessionDecisions.data?.settings ?? null}
+            onSaved={sessionDecisions.refresh}
+          />
 
           {/* Rung 0: the docked summary, its own grid column between the
               conversation and the preview (summary/summaryRail.css). */}

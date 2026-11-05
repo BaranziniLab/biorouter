@@ -88,7 +88,9 @@ describe('BaseChat: the subagents in the summary', () => {
   });
 
   it('hands the roster and the tab opener to both the rail and the popover', () => {
-    expect(base).toContain('subagents: { ...sessionSubagents, onOpen: openSubagent },');
+    expect(base).toContain(
+      'subagents: { ...sessionSubagents, onOpen: openSubagent, onOpenGate: openPhaseGate },'
+    );
     // One props object feeds both surfaces.
     expect(base).toContain('summary={summaryProps}');
     expect(base).toMatch(/<ChatSummaryRail[\s\S]*?\{\.\.\.summaryProps\}/);
