@@ -12,6 +12,12 @@
 //! proof; that check belongs to the route, not here. [`save`] and
 //! [`save_chat`] validate before they write and refuse with the sentence a
 //! person reads.
+//!
+//! Every record here refuses a key it does not have, as the question, kind,
+//! threshold and model reference inside it already do. A misspelled key
+//! (`on_error` for `onError`) would otherwise be dropped and its field left at
+//! the default, and the defaults (`notify` on a firing, `notify` on an error)
+//! are the ones that let a turn carry on.
 
 use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
@@ -85,7 +91,7 @@ pub enum MonitorErrorPolicy {
 
 /// The rolling window a monitor sees.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct MonitorWindow {
     /// Newest messages kept (a message's tool calls and results count with
     /// it), at most 24.
@@ -108,7 +114,7 @@ impl Default for MonitorWindow {
 
 /// One monitor: a decision model watching the chat for a criterion.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct MonitorCriterion {
     /// Slug, unique within the chat.
     pub id: String,
@@ -122,8 +128,9 @@ pub struct MonitorCriterion {
     pub window: MonitorWindow,
     /// Fires when P(wanted answer) is at least this (0..1).
     pub threshold: f64,
-    /// For a choice question: the option whose probability is compared. Binary
-    /// questions compare P(yes).
+    /// The answer whose probability is compared: `yes` (or none) or `no` for a
+    /// yes/no question, an option's name for a choice, and the lowest level that
+    /// counts for a score, by its label or its index (`"0"` is the lowest).
     pub option: Option<String>,
     /// Evaluations in a row at or above the threshold before it fires (1..5).
     #[serde(default = "one")]
@@ -216,7 +223,7 @@ impl MonitorCriterion {
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, ToSchema)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct DecisionSettings {
     pub default_model: Option<DecisionModelRef>,
     #[serde(default)]
@@ -225,7 +232,7 @@ pub struct DecisionSettings {
 
 /// The question a decision chat asks of each message the person sends.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct DecisionChatSettings {
     pub question: Question,
 }
@@ -526,6 +533,59 @@ mod tests {
         assert!(minimal.enabled);
         assert_eq!(minimal.action, MonitorAction::Notify);
         assert_eq!(minimal.window, MonitorWindow::default());
+    }
+
+    /// A key the record does not have is refused at every level, rather than
+    /// dropped with its field left at a default that fails open.
+    #[test]
+    fn a_key_the_record_does_not_have_is_refused_at_every_level() {
+        let full = serde_json::to_value(DecisionSettings {
+            default_model: Some(DecisionModelRef::new("ollama_decision", "tev1:0.8b")),
+            monitors: vec![monitor("form-reached")],
+        })
+        .unwrap();
+        // Every field written, read back unchanged: a stored record (always
+        // written from these structs) has no key they refuse.
+        let read: DecisionSettings = serde_json::from_value(full.clone()).unwrap();
+        assert_eq!(serde_json::to_value(&read).unwrap(), full);
+
+        let refused = |edit: &dyn Fn(&mut serde_json::Value), needle: &str| {
+            let mut value = full.clone();
+            edit(&mut value);
+            let error = serde_json::from_value::<DecisionSettings>(value.clone())
+                .expect_err(&format!("{value} was read"));
+            assert!(
+                error.to_string().contains(needle),
+                "{error} does not name {needle}"
+            );
+        };
+        refused(
+            &|v| v["Monitors"] = serde_json::json!([]),
+            "unknown field `Monitors`",
+        );
+        refused(
+            &|v| v["monitors"][0]["on_error"] = serde_json::json!("pause"),
+            "unknown field `on_error`",
+        );
+        refused(
+            &|v| v["monitors"][0]["Action"] = serde_json::json!("stop"),
+            "unknown field `Action`",
+        );
+        refused(
+            &|v| v["monitors"][0]["window"]["max_chars"] = serde_json::json!(800),
+            "unknown field `max_chars`",
+        );
+
+        let chat = serde_json::to_value(DecisionChatSettings { question: binary() }).unwrap();
+        let read: DecisionChatSettings = serde_json::from_value(chat.clone()).unwrap();
+        assert_eq!(serde_json::to_value(&read).unwrap(), chat);
+        let mut misspelled = chat;
+        misspelled["questions"] = misspelled["question"].clone();
+        let error = serde_json::from_value::<DecisionChatSettings>(misspelled).unwrap_err();
+        assert!(
+            error.to_string().contains("unknown field `questions`"),
+            "{error}"
+        );
     }
 
     #[test]

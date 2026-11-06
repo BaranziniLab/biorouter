@@ -335,6 +335,112 @@ fn write_refusal(session: &Session, headers: &HeaderMap) -> Option<Response> {
     .or_else(|| subagent_write_refusal(proof, session.session_type))
 }
 
+/// Read a settings body as `T`, the `what` it is ("decision settings") naming
+/// it in the refusal. The settings records refuse a key they do not have
+/// (`decision::settings`), and that refusal is answered with
+/// [`unknown_key_sentence`]; any other problem keeps serde's own text, as
+/// before.
+fn read_settings_body<T: serde::de::DeserializeOwned>(
+    body: &[u8],
+    what: &str,
+) -> Result<T, String> {
+    let could_not_read =
+        |error: &dyn std::fmt::Display| format!("The {what} could not be read: {error}");
+    let mut deserializer = serde_json::Deserializer::from_slice(body);
+    let value = serde_path_to_error::deserialize(&mut deserializer).map_err(|error| {
+        unknown_key_sentence(&error, body, what).unwrap_or_else(|| could_not_read(error.inner()))
+    })?;
+    deserializer.end().map_err(|error| could_not_read(&error))?;
+    Ok(value)
+}
+
+/// The sentence for a key a settings record does not have: the key, where it
+/// is (a monitor by its id, else by its place in the list), and the spelling
+/// that is accepted when the key is another spelling of a real field
+/// (`on_error` or `ON_ERROR` for `onError`); otherwise the fields that are
+/// accepted there. `None` for any other error.
+fn unknown_key_sentence(
+    error: &serde_path_to_error::Error<serde_json::Error>,
+    body: &[u8],
+    what: &str,
+) -> Option<String> {
+    use serde_path_to_error::Segment;
+
+    let segments: Vec<&Segment> = error.path().iter().collect();
+    let (last, parent) = segments.split_last()?;
+    let Segment::Map { key } = last else {
+        return None;
+    };
+    // serde's own wording for this error (`de::Error::unknown_field`), which
+    // lists the fields the record has as `a`, `b` or `c`.
+    let message = error.inner().to_string();
+    let rest = message.strip_prefix(&format!("unknown field `{key}`"))?;
+    let fields: Vec<&str> = rest
+        .split_once("expected ")
+        .map(|(_, list)| list.split('`').skip(1).step_by(2).collect())
+        .unwrap_or_default();
+
+    // A monitor is named by its id, which is read from the body when the body
+    // is whole JSON, else by its place in the list.
+    let (monitor, inner) = match parent {
+        [Segment::Map { key }, Segment::Seq { index }, inner @ ..] if key == "monitors" => {
+            let id = serde_json::from_slice::<Value>(body)
+                .ok()
+                .and_then(|value| {
+                    value["monitors"][*index]["id"]
+                        .as_str()
+                        .filter(|id| !id.trim().is_empty())
+                        .map(str::to_string)
+                });
+            let monitor = match id {
+                Some(id) => format!("monitor `{id}`"),
+                None => format!("monitor {} in the list", index + 1),
+            };
+            (Some(monitor), inner)
+        }
+        _ => (None, parent),
+    };
+    let mut place = String::new();
+    for segment in inner {
+        if !place.is_empty() && !matches!(segment, Segment::Seq { .. }) {
+            place.push('.');
+        }
+        place.push_str(&segment.to_string());
+    }
+    let owner = match (monitor, place.is_empty()) {
+        (Some(monitor), true) => monitor,
+        (Some(monitor), false) => format!("`{place}` in {monitor}"),
+        (None, true) => format!("the {what}"),
+        (None, false) => format!("`{place}`"),
+    };
+
+    let folded = |name: &str| -> String {
+        name.chars()
+            .filter(char::is_ascii_alphanumeric)
+            .map(|c| c.to_ascii_lowercase())
+            .collect()
+    };
+    let spelled = fields
+        .iter()
+        .find(|field| folded(field) == folded(key))
+        .map(|field| format!("; the field is spelled `{field}`."));
+    let accepted = || match fields.as_slice() {
+        [] => ".".to_string(),
+        fields => format!(
+            ". The fields accepted there are {}.",
+            fields
+                .iter()
+                .map(|field| format!("`{field}`"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+    };
+    Some(format!(
+        "The {what} could not be read: `{key}` is not a field of {owner}{}",
+        spelled.unwrap_or_else(accepted)
+    ))
+}
+
 /// A chat's classification as stored now, re-read before every request of a
 /// batch, from the same store this daemon's routes read.
 struct StoredClassification(Arc<AppState>);
@@ -831,14 +937,9 @@ pub async fn put_decision_settings(
     if let Some(refusal) = write_refusal(&session, &headers) {
         return refusal;
     }
-    let settings: DecisionSettings = match serde_json::from_slice(&body) {
+    let settings: DecisionSettings = match read_settings_body(&body, "decision settings") {
         Ok(settings) => settings,
-        Err(error) => {
-            return plain(
-                StatusCode::BAD_REQUEST,
-                format!("The decision settings could not be read: {error}"),
-            )
-        }
+        Err(sentence) => return plain(StatusCode::BAD_REQUEST, sentence),
     };
     if let Err(sentence) = decision_settings::validate(&settings) {
         return plain(StatusCode::BAD_REQUEST, sentence);
@@ -921,14 +1022,9 @@ pub async fn put_decision_chat(
     if let Some(refusal) = write_refusal(&session, &headers) {
         return refusal;
     }
-    let settings: DecisionChatSettings = match serde_json::from_slice(&body) {
+    let settings: DecisionChatSettings = match read_settings_body(&body, "decision-chat settings") {
         Ok(settings) => settings,
-        Err(error) => {
-            return plain(
-                StatusCode::BAD_REQUEST,
-                format!("The decision-chat settings could not be read: {error}"),
-            )
-        }
+        Err(sentence) => return plain(StatusCode::BAD_REQUEST, sentence),
     };
     if let Err(sentence) = decision_settings::validate_chat(&settings) {
         return plain(StatusCode::BAD_REQUEST, sentence);

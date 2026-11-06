@@ -3964,8 +3964,9 @@ export type MonitorCriterion = {
     name: string;
     onError?: MonitorErrorPolicy;
     /**
-     * For a choice question: the option whose probability is compared. Binary
-     * questions compare P(yes).
+     * The answer whose probability is compared: `yes` (or none) or `no` for a
+     * yes/no question, an option's name for a choice, and the lowest level that
+     * counts for a score, by its label or its index (`"0"` is the lowest).
      */
     option?: string | null;
     question: Question;

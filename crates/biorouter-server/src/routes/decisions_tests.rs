@@ -880,6 +880,304 @@ async fn unreadable_or_invalid_writes_and_filters_are_400_with_the_sentence() {
     }
 }
 
+/// A PUT of raw bytes, with the proof, through the served tree.
+async fn put_raw(state: &Arc<AppState>, uri: &str, body: &'static str) -> (StatusCode, String) {
+    let res = served(state.clone())
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri(uri)
+                .header("content-type", "application/json")
+                .header(PROOF.0, PROOF.1)
+                .body(Body::from(body))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let status = res.status();
+    let bytes = to_bytes(res.into_body(), usize::MAX).await.unwrap();
+    (status, String::from_utf8_lossy(&bytes).into_owned())
+}
+
+/// A misspelled key used to be dropped and its field stored at the default,
+/// and the defaults (`notify` on a firing, `notify` on an error) let the turn
+/// carry on: the opposite of `"on_error": "pause"`. Now the write is refused
+/// with a sentence naming the key, where it is and how it is spelled, and
+/// nothing is stored.
+#[tokio::test(flavor = "multi_thread")]
+#[serial]
+async fn a_misspelled_settings_key_is_refused_by_name_and_nothing_is_stored() {
+    install_test_user_action_key();
+    let state = AppState::new().await.unwrap();
+    let chat = seed(&state, SessionClassification::Public).await;
+    let id = chat.id.as_str();
+    let settings_uri = format!("/sessions/{id}/decision-settings");
+    let chat_uri = format!("/sessions/{id}/decision-chat");
+
+    let mut fail_closed = monitor("m1");
+    fail_closed["action"] = json!("stop");
+    fail_closed["onError"] = json!("pause");
+    let valid = json!({ "defaultModel": null, "monitors": [fail_closed] });
+    let (status, body) = send(
+        served(state.clone()),
+        "PUT",
+        &settings_uri,
+        Some(valid.clone()),
+        &[PROOF],
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let stored = json_of(&body);
+    assert_eq!(stored["monitors"][0]["onError"], "pause", "{body}");
+    let (status, body) = send(
+        served(state.clone()),
+        "PUT",
+        &chat_uri,
+        Some(json!({ "question": yes_no(Some(0.9)) })),
+        &[PROOF],
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let stored_chat = json_of(&body);
+    let before = state
+        .session_manager()
+        .get_session(id, false)
+        .await
+        .unwrap()
+        .extension_data;
+
+    /// Rename a key of the first monitor, as a person misspelling it would.
+    fn respell(value: &mut Value, from: &str, to: &str) {
+        let monitor = value["monitors"][0].as_object_mut().unwrap();
+        let field = monitor.remove(from).unwrap();
+        monitor.insert(to.to_string(), field);
+    }
+    /// An edit to the valid body, and the sentence its write is refused with.
+    type Case = (fn(&mut Value), &'static str);
+    let cases: [Case; 8] = [
+        (
+            |v| respell(v, "onError", "on_error"),
+            "`on_error` is not a field of monitor `m1`; the field is spelled `onError`.",
+        ),
+        (
+            |v| respell(v, "action", "Action"),
+            "`Action` is not a field of monitor `m1`; the field is spelled `action`.",
+        ),
+        (
+            |v| respell(v, "maxEvalsPerTurn", "max_evals_per_turn"),
+            "`max_evals_per_turn` is not a field of monitor `m1`; the field is spelled \
+             `maxEvalsPerTurn`.",
+        ),
+        (
+            |v| {
+                let window = v["monitors"][0]["window"].as_object_mut().unwrap();
+                let field = window.remove("maxChars").unwrap();
+                window.insert("max_chars".to_string(), field);
+            },
+            "`max_chars` is not a field of `window` in monitor `m1`; the field is spelled \
+             `maxChars`.",
+        ),
+        (
+            |v| v["monitors"][0]["question"]["Threshold"] = json!({ "yes": 0.5 }),
+            "`Threshold` is not a field of `question` in monitor `m1`; the field is spelled \
+             `threshold`.",
+        ),
+        (
+            |v| {
+                let root = v.as_object_mut().unwrap();
+                let field = root.remove("defaultModel").unwrap();
+                root.insert("default_model".to_string(), field);
+            },
+            "`default_model` is not a field of the decision settings; the field is spelled \
+             `defaultModel`.",
+        ),
+        (
+            |v| v["monitors"][0]["colour"] = json!("red"),
+            "`colour` is not a field of monitor `m1`. The fields accepted there are `id`, \
+             `name`, `question`, `model`, `timing`, `window`, `threshold`, `option`, \
+             `consecutive`, `rearmBelow`, `action`, `onError`, `maxEvalsPerTurn`, `enabled`.",
+        ),
+        (
+            // A monitor with no id is named by its place in the list.
+            |v| {
+                let mut second = v["monitors"][0].clone();
+                second.as_object_mut().unwrap().remove("id");
+                second["on_error"] = json!("pause");
+                v["monitors"].as_array_mut().unwrap().push(second);
+            },
+            "`on_error` is not a field of monitor 2 in the list; the field is spelled \
+             `onError`.",
+        ),
+    ];
+    for (edit, sentence) in cases {
+        let mut body = valid.clone();
+        edit(&mut body);
+        let (status, got) = send(
+            served(state.clone()),
+            "PUT",
+            &settings_uri,
+            Some(body),
+            &[PROOF],
+        )
+        .await;
+        assert_eq!(
+            (status, got.as_str()),
+            (
+                StatusCode::BAD_REQUEST,
+                format!("The decision settings could not be read: {sentence}").as_str()
+            )
+        );
+    }
+
+    for (body, sentence) in [
+        (
+            json!({ "Question": yes_no(None) }),
+            "`Question` is not a field of the decision-chat settings; the field is spelled \
+             `question`.",
+        ),
+        (
+            json!({ "question": yes_no(None), "questions": yes_no(None) }),
+            "`questions` is not a field of the decision-chat settings. The fields accepted \
+             there are `question`.",
+        ),
+    ] {
+        let (status, got) = send(
+            served(state.clone()),
+            "PUT",
+            &chat_uri,
+            Some(body),
+            &[PROOF],
+        )
+        .await;
+        assert_eq!(
+            (status, got.as_str()),
+            (
+                StatusCode::BAD_REQUEST,
+                format!("The decision-chat settings could not be read: {sentence}").as_str()
+            )
+        );
+    }
+
+    // Every other problem keeps serde's own text, as before: a mistyped
+    // value, trailing bytes and a key given twice are still refused.
+    let mut mistyped = valid.clone();
+    mistyped["monitors"][0]["consecutive"] = json!("two");
+    let (status, got) = send(
+        served(state.clone()),
+        "PUT",
+        &settings_uri,
+        Some(mistyped),
+        &[PROOF],
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{got}");
+    assert!(
+        got.starts_with("The decision settings could not be read: invalid type: string \"two\""),
+        "{got}"
+    );
+    for (raw, needle) in [
+        (r#"{"monitors": []} x"#, "trailing characters"),
+        (
+            r#"{"monitors": [], "monitors": []}"#,
+            "duplicate field `monitors`",
+        ),
+    ] {
+        let (status, got) = put_raw(&state, &settings_uri, raw).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{raw}: {got}");
+        assert!(
+            got.starts_with("The decision settings could not be read: ") && got.contains(needle),
+            "{raw}: {got}"
+        );
+    }
+
+    let (status, body) = send(served(state.clone()), "GET", &settings_uri, None, &[]).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        json_of(&body),
+        stored,
+        "a refused write changed the settings"
+    );
+    let (status, body) = send(served(state.clone()), "GET", &chat_uri, None, &[]).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        json_of(&body),
+        stored_chat,
+        "a refused write changed the question"
+    );
+    let after = state
+        .session_manager()
+        .get_session(id, false)
+        .await
+        .unwrap()
+        .extension_data;
+    assert_eq!(
+        serde_json::to_value(&after).unwrap(),
+        serde_json::to_value(&before).unwrap(),
+        "a refused write changed the chat's state"
+    );
+}
+
+/// What `GET` answers is a body `PUT` accepts and stores unchanged, every
+/// field set: refusing unknown keys refuses nothing a reader is handed.
+#[tokio::test(flavor = "multi_thread")]
+#[serial]
+async fn what_the_settings_read_answers_is_written_back_unchanged() {
+    install_test_user_action_key();
+    let state = AppState::new().await.unwrap();
+    let chat = seed(&state, SessionClassification::Public).await;
+    let id = chat.id.as_str();
+    let settings_uri = format!("/sessions/{id}/decision-settings");
+    let chat_uri = format!("/sessions/{id}/decision-chat");
+
+    let mut choice = monitor("subtype");
+    choice["name"] = json!("Secondary progressive");
+    choice["question"] = json!({
+        "instructions": "Which MS subtype does the note describe?",
+        "kind": { "choice": { "options": { "rrms": "Relapsing-remitting", "spms": null } } }
+    });
+    choice["model"] = json!({ "provider": "ollama_decision", "model": "tev1:0.8b" });
+    choice["timing"] = json!("turn_end");
+    choice["window"] = json!({ "entries": 6, "maxChars": 1200, "toolCalls": false });
+    choice["option"] = json!("spms");
+    choice["consecutive"] = json!(2);
+    choice["action"] = json!("steer");
+    choice["onError"] = json!("pause");
+    choice["maxEvalsPerTurn"] = json!(12);
+    choice["enabled"] = json!(false);
+    let written = json!({
+        "defaultModel": { "provider": "ollama_decision", "model": "tev1:0.8b" },
+        "monitors": [monitor("m1"), choice]
+    });
+
+    for (uri, body) in [
+        (&settings_uri, written),
+        (&chat_uri, json!({ "question": yes_no(Some(0.9)) })),
+    ] {
+        let (status, put) = send(served(state.clone()), "PUT", uri, Some(body), &[PROOF]).await;
+        assert_eq!(status, StatusCode::OK, "{uri}: {put}");
+        let (status, read) = send(served(state.clone()), "GET", uri, None, &[]).await;
+        assert_eq!(status, StatusCode::OK, "{uri}: {read}");
+        let read = json_of(&read);
+        // The decision-chat read wraps the settings as `{ settings }`; the
+        // write takes them bare.
+        let back = if uri == &chat_uri {
+            read["settings"].clone()
+        } else {
+            read.clone()
+        };
+        let (status, again) = send(served(state.clone()), "PUT", uri, Some(back), &[PROOF]).await;
+        assert_eq!(status, StatusCode::OK, "{uri}: {again}");
+        assert_eq!(
+            json_of(&again),
+            read,
+            "{uri}: the write-back stored what was read"
+        );
+        let (status, reread) = send(served(state.clone()), "GET", uri, None, &[]).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(json_of(&reread), read, "{uri}: unchanged by the round trip");
+    }
+}
+
 // ─── The log, aggregated and paged ───
 
 fn decision(p_yes: f64, threshold: f64) -> Decision {
