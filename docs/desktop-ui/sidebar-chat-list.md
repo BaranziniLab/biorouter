@@ -174,7 +174,7 @@ shared state only when that state holds a change not yet saved (`save_ui_state` 
 are saved; the declared initial state is never saved on its own, and a close after a saved change
 does not move the chat again.
 
-Two more things leave a chat in place. Re-binding the model a chat already records is not a change
+Three more things leave a chat in place. Re-binding the model a chat already records is not a change
 to it, whoever asks: the provider bind stamps only when the provider or the `model_name` differs
 from what the row records (`bind_provider_if_allowed`). So picking the same model again, a
 `--shared-daemon` resume that names the chat's own `--provider` and `--model`, and a local CLI
@@ -183,9 +183,21 @@ housekeeping on the machine that touches many chats at once is not activity in a
 uninstalling an extension prunes it from every saved roster inside
 `biorouter::session::activity::housekeeping`, and no chat moves.
 
+And a decision model's usage never moves a chat. Each decision about a chat (a monitor check, a
+`decide` chunk, a phase gate, a decision chat's reply, or an ad hoc decision from
+`POST /decisions/decide` with a `sessionId` or `biorouter decide --session`) adds its tokens to the
+usage ledger through `SessionManager::apply_side_usage_event`, which never stamps `updated_at`,
+inside a scope or out. Asked from outside any turn, a decision is a question about the chat, not a
+change to it, and a 1,000-chunk batch must not reorder the list. Asked inside a turn, it needs no
+stamp of its own, because the turn's message and token writes move the chat already. A turn's own
+token ledger (`apply_usage_event`) still stamps. See
+[Usage and billing](../agent-loop/decision-models.md#usage-and-billing).
+
 The tests: the store's `opening_is_not_activity_tests` (`session/session_manager.rs`, including the
 same-model rebind, a switch, the housekeeping save, and the writes behind the composer toggles,
-`workspace_set_tools` and a Crew grant), the door census
+`workspace_set_tools` and a Crew grant), the side usage write's
+`a_side_usage_write_bills_once_and_leaves_the_gauge_schedule_and_activity_alone` (the same file),
+the door census
 `only_the_opening_and_housekeeping_doors_enter_a_scope` (`session/activity.rs`, which fails if any
 other door enters a scope), the cold restore in `agents/agent.rs`,
 `opening_is_not_activity_route_tests` (`routes/agent.rs`: the desktop's own calls on a public and a

@@ -6,6 +6,7 @@ import {
   ChatBubble,
   Clock,
   Folder,
+  Gauge,
   KnowledgeGraph,
   Pipeline,
   Puzzle,
@@ -34,7 +35,8 @@ export type EntityKind =
   | 'agent'
   | 'chat'
   | 'model'
-  | 'folder';
+  | 'folder'
+  | 'decision';
 
 export type EntityIcon = React.ComponentType<{
   className?: string;
@@ -55,4 +57,8 @@ export const ENTITY_ICONS: Record<EntityKind, EntityIcon> = {
   model: Brain,
   // A working folder. "Open in Finder" is `FolderOpen`, an action, not this.
   folder: Folder,
+  // A decision model's call, or the aggregate of many: the summary's Decisions
+  // section, the per-turn marker, the decision-chat card, the Decision models
+  // group in the picker, the history tab and a `decisions__*` tool row.
+  decision: Gauge,
 };

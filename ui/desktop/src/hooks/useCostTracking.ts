@@ -39,6 +39,17 @@ type LegacySessionCosts = Record<
 
 interface UseCostTrackingProps {
   session?: Session | null;
+  /**
+   * The live stream's accumulated counters for this chat. A reply can move
+   * them before the chat record is read again (a decision chat's reply does),
+   * and the ledger must be asked again when they do: without it the footer kept
+   * an empty answer and priced the new tokens at the app's default model.
+   */
+  liveTokens?: {
+    accumulatedInputTokens?: number | null;
+    accumulatedOutputTokens?: number | null;
+    accumulatedTotalTokens?: number | null;
+  } | null;
 }
 
 /**
@@ -160,7 +171,7 @@ const NO_ROWS: ModelCostRow[] = [];
  * stands in for another's, and a refresh of the same chat (a turn moved its
  * counters) keeps the answer it has until the new one lands.
  */
-export const useCostTracking = ({ session }: UseCostTrackingProps) => {
+export const useCostTracking = ({ session, liveTokens }: UseCostTrackingProps) => {
   const [ledger, setLedger] = useState<{ sessionId: string; rows: ModelCostRow[] } | null>(null);
 
   const sessionId = session?.id;
@@ -169,6 +180,9 @@ export const useCostTracking = ({ session }: UseCostTrackingProps) => {
   const accumulatedInput = session?.accumulated_input_tokens;
   const accumulatedOutput = session?.accumulated_output_tokens;
   const accumulatedTotal = session?.accumulated_total_tokens;
+  const liveInput = liveTokens?.accumulatedInputTokens;
+  const liveOutput = liveTokens?.accumulatedOutputTokens;
+  const liveTotal = liveTokens?.accumulatedTotalTokens;
 
   useEffect(() => {
     if (!sessionId) return;
@@ -199,7 +213,15 @@ export const useCostTracking = ({ session }: UseCostTrackingProps) => {
     return () => {
       cancelled = true;
     };
-  }, [sessionId, accumulatedInput, accumulatedOutput, accumulatedTotal]);
+  }, [
+    sessionId,
+    accumulatedInput,
+    accumulatedOutput,
+    accumulatedTotal,
+    liveInput,
+    liveOutput,
+    liveTotal,
+  ]);
 
   const ledgerIsThisChats = !!sessionId && ledger?.sessionId === sessionId;
   const modelRows = ledgerIsThisChats ? ledger.rows : NO_ROWS;

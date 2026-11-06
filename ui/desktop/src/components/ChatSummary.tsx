@@ -12,6 +12,7 @@ import { InfoTip } from './ui/info-tip';
 import { Progress } from './ui/progress';
 import { summaryCopy } from './summary/copy';
 import { SummarySubagents, type SummarySubagentsData } from './summary/SummarySubagents';
+import { SummaryDecisions, type SummaryDecisionsData } from './summary/SummaryDecisions';
 import { prefersReducedMotion } from '../styles/motion';
 import type { TodoItem, TodoStatus } from '../utils/sessionTodos';
 import './summary/chatSummary.css';
@@ -118,6 +119,12 @@ export interface ChatSummaryProps {
    * Absent, or with nothing to list, the section draws nothing.
    */
   subagents?: SummarySubagentsData;
+  /**
+   * The chat's decision-model activity, one row per source
+   * (`hooks/useSessionDecisions.ts`). Absent, or with no calls and no monitors,
+   * the section draws nothing.
+   */
+  decisions?: SummaryDecisionsData;
   hasWorkflow: boolean;
   onWorkflow: () => void;
   onDiagnostics: () => void;
@@ -139,6 +146,7 @@ export function ChatSummary({
   codeDelta,
   todos,
   subagents,
+  decisions,
   hasWorkflow,
   onWorkflow,
   onDiagnostics,
@@ -262,6 +270,10 @@ export function ChatSummary({
             statistics. Their rows are buttons of their own (not the Button
             primitive), in their own module, so this card keeps its three. */}
         {subagents && <SummarySubagents {...subagents} />}
+        {/* Decision-model activity, aggregated per source: never one row per
+            call. Its rows and its Monitors action are plain buttons in its own
+            module, for the same reason as the subagents'. */}
+        {decisions && <SummaryDecisions {...decisions} />}
         <dl
           aria-label={summaryCopy.statsLabel}
           aria-busy={statsPending || undefined}

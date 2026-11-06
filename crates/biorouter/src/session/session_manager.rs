@@ -28,7 +28,15 @@ use std::sync::{Arc, LazyLock, OnceLock};
 use tracing::{debug, info, warn};
 use utoipa::ToSchema;
 
-pub const CURRENT_SCHEMA_VERSION: i32 = 20;
+pub const CURRENT_SCHEMA_VERSION: i32 = 21;
+
+/// The arm that adds the decision log's `decisions` table.
+///
+/// Named for the same reason as [`PRIVACY_REPAIR_ARM`]: a test that builds the
+/// store one version below it has to say which number it means, and
+/// `CURRENT_SCHEMA_VERSION - 1` stops meaning that the moment arm 22 lands.
+#[cfg(test)]
+const DECISIONS_ARM: i32 = 21;
 
 /// The arm that first ran issue #56's classification backfill.
 ///
@@ -700,6 +708,14 @@ pub struct Session {
     /// Gate B's `turn:*` always lands before Gate C's `mcp:*`.
     #[serde(default)]
     pub privacy_reason: Option<String>,
+    /// How many decision-model calls this chat has made (its rows in the
+    /// `decisions` table), for History's per-chat count. Filled by the full
+    /// listing (`GET /sessions`, `biorouter session list`) only, and only when
+    /// the chat has at least one; `None` everywhere else, so absent means
+    /// "none, or not counted here". Decision calls can number in the thousands,
+    /// which is why History shows this one number and never a row per call.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub decision_count: Option<u64>,
 }
 
 /// One child of a session, as [`SessionManager::list_subagent_children`] reads it.
@@ -820,6 +836,41 @@ pub struct UsageLedgerEntry {
     pub provider: Option<String>,
     pub cache_read_tokens: Option<i32>,
     pub cache_creation_tokens: Option<i32>,
+}
+
+/// One side call's usage: a provider call made for a chat that is not one of
+/// its turns. A decision model's call is the only kind today.
+///
+/// [`SessionManager::apply_side_usage_event`] adds it to the usage ledger (the
+/// Usage panel, `biorouter usage`, the chat's cost) and to the chat's
+/// `accumulated_*` counters, and to nothing else. It never moves the context
+/// gauge (`total_tokens`, `input_tokens`, `output_tokens`), never rewrites the
+/// chat's `schedule_id`, and never stamps `updated_at`: a side call is not
+/// activity (R-30, `session::activity`).
+#[derive(Debug, Clone)]
+pub struct SideUsageEntry {
+    /// Identifies the call, so a retried write applies once. A decision uses
+    /// `decision:<decision row id>`.
+    pub event_key: String,
+    pub session_id: String,
+    /// The provider that served the call, for example `baseten_decision`.
+    pub provider: String,
+    /// The model as requested, which is what the price table is keyed by (a
+    /// Baseten decision slug, not the served model's name).
+    pub model_id: String,
+    pub input_tokens: Option<i64>,
+    pub output_tokens: Option<i64>,
+}
+
+impl SideUsageEntry {
+    /// Billed tokens: input plus output when either is known, the rule
+    /// `Usage::billed_total` applies to a turn.
+    fn billed_total(&self) -> Option<i64> {
+        match (self.input_tokens, self.output_tokens) {
+            (None, None) => None,
+            (input, output) => Some(input.unwrap_or(0) + output.unwrap_or(0)),
+        }
+    }
 }
 
 pub struct SessionUpdateBuilder<'a> {
@@ -945,6 +996,37 @@ pub enum UsageGroup {
     DayModel,
 }
 
+/// The decision-model share of a usage bucket: the requests whose provider is a
+/// decision provider (`providers::decision::chat::is_decision_chat_provider`),
+/// shown as their own line.
+///
+/// Its tokens and priced dollars are already inside the bucket's own totals,
+/// so the totals still match the provider's meter. Its requests are not: a
+/// decision request is not a model turn, and the bucket's `turns` leaves it
+/// out.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct DecisionUsageSubtotal {
+    pub input_tokens: i64,
+    pub output_tokens: i64,
+    /// Billed tokens, or `None` when a request behind it reported neither count.
+    pub total_tokens: Option<i64>,
+    /// Dollar cost of the priced decision requests, or `None` when none is
+    /// priced. Never "$0" for unknown: `hasUnmetered` and `hasUnpriced` say
+    /// which kind of unpriced request is behind a `None`.
+    pub cost: Option<f64>,
+    /// `true` when at least one request went to a hosted decision model
+    /// (Baseten) Biorouter has no price for, or reported incomplete counts:
+    /// the provider billed it at a rate Biorouter does not know. Unlike the
+    /// bucket's own `hasUnpriced`, it says nothing about the chat totals.
+    pub has_unpriced: bool,
+    /// `true` when at least one request went to a decision model with no
+    /// meter (a local Ollama model). It cost nothing, so it is "not metered",
+    /// never "unavailable".
+    #[serde(default)]
+    pub has_unmetered: bool,
+}
+
 /// One bucket of the usage report.
 ///
 /// `date` is present unless grouping by [`UsageGroup::Model`]; `modelId` is
@@ -953,6 +1035,13 @@ pub enum UsageGroup {
 /// unpriced (an unknown model) — a `null` cost never means "$0". `hasUnpriced`
 /// flags a bucket that mixes priced, unpriced, or incomplete turns, so a day
 /// cost can be read as "at least this much" rather than exact.
+///
+/// Decision-model requests count in the tokens and the priced cost, never in
+/// `turns`; they are counted in `decisionRequests` and broken out in
+/// `decisions`. An unpriced request to a local Ollama decision model counts as
+/// $0 and does not set `hasUnpriced`: an automatic local decision model would
+/// otherwise mark almost every month as "at least". An unpriced Baseten
+/// decision request was billed, so it does set it.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct UsageReportRow {
@@ -973,6 +1062,14 @@ pub struct UsageReportRow {
     /// `true` when cache cost is omitted because a contributing model has no
     /// cache rate or an event did not report a required cache bucket.
     pub cost_excludes_cache: bool,
+    /// Decision-model requests in the bucket, which `turns` leaves out.
+    #[serde(default)]
+    pub decision_requests: i64,
+    /// The decision-model share of the bucket, or `None` when it has none.
+    /// Inline in the OpenAPI schema, so the spec needs no new component.
+    #[serde(default)]
+    #[schema(inline)]
+    pub decisions: Option<DecisionUsageSubtotal>,
 }
 
 /// Token + cost totals for a time span, priced through [`model_cost_with_cache`].
@@ -996,6 +1093,15 @@ pub struct UsageTotals {
     /// `true` when cache cost is omitted because pricing or cache accounting is
     /// incomplete — the figure is then a lower bound.
     pub cost_excludes_cache: bool,
+    /// Decision-model requests in the span, which `turns` leaves out. Their
+    /// tokens and priced dollars are in the totals above, as on
+    /// [`UsageReportRow`].
+    #[serde(default)]
+    pub decision_requests: i64,
+    /// The decision-model share of the span, or `None` when it has none.
+    #[serde(default)]
+    #[schema(inline)]
+    pub decisions: Option<DecisionUsageSubtotal>,
 }
 
 /// Month-to-date and all-time usage totals, for the summary gauge.
@@ -1109,18 +1215,85 @@ struct BucketAcc {
     total_tokens: Option<i64>,
     cache_read_tokens: Option<i64>,
     cache_creation_tokens: Option<i64>,
+    /// Grain rows added so far. The first one seeds the `Option` sums. This is
+    /// not `turns`, which stays 0 for a bucket of decision requests alone.
+    rows: i64,
     turns: i64,
     cost_sum: f64,
     priced_any: bool,
     unpriced_any: bool,
+    /// Set when an unpriced row came from a decision provider with no meter
+    /// (Ollama). It costs nothing, so it adds $0 rather than an unknown.
+    unmetered_any: bool,
     /// Set when a priced grain row carried cache tokens the model has no rate
     /// for, so `cost_sum` understates the true figure.
     cache_excluded_any: bool,
+    /// Decision-model requests, which `turns` leaves out.
+    decision_requests: i64,
+    decisions: DecisionAcc,
+}
+
+/// The decision-model share of one [`BucketAcc`].
+#[derive(Default)]
+struct DecisionAcc {
+    rows: i64,
+    input_tokens: i64,
+    output_tokens: i64,
+    total_tokens: Option<i64>,
+    cost_sum: f64,
+    priced_any: bool,
+    /// A hosted request with no known price, or one priced from incomplete
+    /// counts.
+    unpriced_any: bool,
+    /// An unpriced request to a decision model with no meter (Ollama), as
+    /// [`BucketAcc::unmetered_any`] tells it apart.
+    unmetered_any: bool,
+}
+
+impl DecisionAcc {
+    fn add(&mut self, row: &UsageGrainRow, price: &GrainPrice, unmetered: bool) {
+        let first_row = self.rows == 0;
+        self.rows += 1;
+        self.input_tokens += row.input_tokens;
+        self.output_tokens += row.output_tokens;
+        self.total_tokens = if first_row {
+            row.total_tokens
+        } else {
+            sum_complete(self.total_tokens, row.total_tokens)
+        };
+        match price.cost {
+            Some(TurnCost { cost, .. }) => {
+                self.cost_sum += cost;
+                self.priced_any = true;
+                self.unpriced_any |= price.incomplete;
+            }
+            // A local model's request is not metered; a Baseten request with
+            // no price was billed at a rate Biorouter does not know.
+            None if unmetered => self.unmetered_any = true,
+            None => self.unpriced_any = true,
+        }
+    }
+
+    /// `cost` stays `None` unless something is priced, so a span of local
+    /// requests alone reads "not metered" (`hasUnmetered`) and a span of
+    /// unpriced Baseten requests reads "unavailable" (`hasUnpriced`), never $0.
+    fn subtotal(&self) -> Option<DecisionUsageSubtotal> {
+        (self.rows > 0).then(|| DecisionUsageSubtotal {
+            input_tokens: self.input_tokens,
+            output_tokens: self.output_tokens,
+            total_tokens: self.total_tokens,
+            cost: (self.priced_any && !(self.unpriced_any && self.cost_sum == 0.0))
+                .then_some(self.cost_sum),
+            has_unpriced: self.unpriced_any,
+            has_unmetered: self.unmetered_any,
+        })
+    }
 }
 
 impl BucketAcc {
     fn add(&mut self, row: &UsageGrainRow, resolved: &ResolvedPricing) {
-        let first_row = self.turns == 0;
+        let first_row = self.rows == 0;
+        self.rows += 1;
         self.input_tokens += row.input_tokens;
         self.output_tokens += row.output_tokens;
         self.total_tokens = if first_row {
@@ -1138,9 +1311,20 @@ impl BucketAcc {
         } else {
             sum_complete(self.cache_creation_tokens, row.cache_creation_tokens)
         };
-        self.turns += row.turns;
         let price = price_grain(row, resolved);
-        self.unpriced_any |= price.incomplete;
+        // The provider is the discriminator: no turn is ever recorded under a
+        // decision provider's name, so its rows are decision requests.
+        let provider = row.provider.as_deref();
+        let decision =
+            provider.is_some_and(crate::providers::decision::chat::is_decision_chat_provider);
+        let unmetered =
+            provider.is_some_and(crate::providers::decision::chat::is_unmetered_decision_provider);
+        if decision {
+            self.decision_requests += row.turns;
+            self.decisions.add(row, &price, unmetered);
+        } else {
+            self.turns += row.turns;
+        }
         match price.cost {
             Some(TurnCost {
                 cost,
@@ -1149,16 +1333,26 @@ impl BucketAcc {
                 self.cost_sum += cost;
                 self.priced_any = true;
                 self.cache_excluded_any |= cache_excluded;
+                // Priced dollars counted from incomplete counts leave the
+                // bucket's cost a lower bound, decision requests included.
+                self.unpriced_any |= price.incomplete;
             }
+            // An unpriced request to a decision model with no meter costs
+            // nothing, so it leaves the bucket's cost exact; its subtotal says
+            // it is not metered. An unpriced Baseten request was billed at an
+            // unknown rate, so it marks the bucket partial like any other.
+            None if unmetered => self.unmetered_any = true,
             None => self.unpriced_any = true,
         }
     }
 
     /// `cost` is `None` only when the bucket is *entirely* unpriced, so a null
     /// cost can never be misread as "$0"; a partially-priced bucket returns its
-    /// priced sum with `has_unpriced = true`.
+    /// priced sum with `has_unpriced = true`. Unmetered decision requests count
+    /// as priced at $0, so a span of only those reads $0, not unknown.
     fn cost(&self) -> Option<f64> {
-        (self.priced_any && !(self.unpriced_any && self.cost_sum == 0.0)).then_some(self.cost_sum)
+        ((self.priced_any || self.unmetered_any) && !(self.unpriced_any && self.cost_sum == 0.0))
+            .then_some(self.cost_sum)
     }
 }
 
@@ -1223,6 +1417,8 @@ fn rollup_report_with_pricing(
             cost: a.cost(),
             has_unpriced: a.unpriced_any,
             cost_excludes_cache: a.cache_excluded_any,
+            decision_requests: a.decision_requests,
+            decisions: a.decisions.subtotal(),
             date: a.date,
             model_id: a.model_id,
             provider: a.provider,
@@ -1267,6 +1463,8 @@ fn totals_from_grain_with_pricing(
             cost: Some(0.0),
             has_unpriced: false,
             cost_excludes_cache: false,
+            decision_requests: 0,
+            decisions: None,
         };
     }
 
@@ -1284,6 +1482,8 @@ fn totals_from_grain_with_pricing(
         cost: acc.cost(),
         has_unpriced: acc.unpriced_any,
         cost_excludes_cache: acc.cache_excluded_any,
+        decision_requests: acc.decision_requests,
+        decisions: acc.decisions.subtotal(),
     }
 }
 
@@ -2583,6 +2783,19 @@ impl SessionManager {
         self.storage.apply_usage_event(entry).await
     }
 
+    /// Add one side call's usage ([`SideUsageEntry`]) to the usage ledger and to
+    /// the chat's accumulated counters, in one transaction, once per
+    /// `event_key`. `Ok(false)` when the key was already applied or the chat
+    /// does not exist; nothing is written then.
+    ///
+    /// Unlike [`Self::apply_usage_event`] it leaves the context gauge, the
+    /// chat's `schedule_id` and `updated_at` alone, so it may be called from
+    /// outside a turn (an ad hoc decision about a chat) without moving the chat
+    /// in the sidebar (R-30).
+    pub async fn apply_side_usage_event(&self, entry: SideUsageEntry) -> Result<bool> {
+        self.storage.apply_side_usage_event(entry).await
+    }
+
     /// Per-model usage rollup for one session (for the cost popover breakdown).
     pub async fn get_session_model_usage(&self, session_id: &str) -> Result<Vec<ModelUsageRow>> {
         self.storage.get_session_model_usage(session_id).await
@@ -3345,6 +3558,7 @@ impl Default for Session {
             parent_session_id: None,
             privacy_tier: SessionClassification::Public,
             privacy_reason: None,
+            decision_count: None,
         }
     }
 }
@@ -3792,6 +4006,14 @@ impl sqlx::FromRow<'_, sqlx::sqlite::SqliteRow> for Session {
             parent_session_id: row.try_get("parent_session_id").ok().flatten(),
             privacy_tier: read_privacy_tier(row),
             privacy_reason: row.try_get("privacy_reason").ok().flatten(),
+            // Tolerant, like `model_config`: only the full listing selects it,
+            // and a chat with no decision reads as `None` rather than `Some(0)`.
+            decision_count: row
+                .try_get::<Option<i64>, _>("decision_count")
+                .ok()
+                .flatten()
+                .and_then(|n| u64::try_from(n).ok())
+                .filter(|n| *n > 0),
         })
     }
 }
@@ -4367,6 +4589,9 @@ impl SessionStorage {
         // BR-7 externalized tool-result payloads (migration 16).
         Self::create_message_blobs_table(pool).await?;
 
+        // The decision log (migration 21), created inline for fresh DBs.
+        Self::create_decisions_table(pool).await?;
+
         // #56 declassification ledger (migration 18), created inline for fresh
         // DBs. The privacy columns are already in the `sessions` DDL above; this
         // is the other half of the same migration's shape.
@@ -4624,6 +4849,10 @@ impl SessionStorage {
         Self::ensure_privacy_schema(pool).await?;
         Self::create_and_backfill_messages_fts(pool, false).await?;
         Self::create_message_blobs_table(pool).await?;
+        // Arm 21 creates it too. Here as well for the O10 reason the grants
+        // table records: a database a development build already stamped 21 (or
+        // later) without this table would never re-enter that arm.
+        Self::create_decisions_table(pool).await?;
         // Last: every table it sweeps exists by now.
         Self::retire_side_rows_of_deleted_chats(pool).await?;
         Ok(())
@@ -4719,10 +4948,22 @@ impl SessionStorage {
         .await?
         .rows_affected();
 
-        if recall + checkpoints + grants > 0 {
+        // Decision rows on existence alone, as checkpoints are. The sink only
+        // inserts beside a live chat and `delete_session` removes them with it,
+        // so this finds nothing on a store this build has always written; it is
+        // here for a file shared with a build that does neither.
+        let decisions = sqlx::query(
+            "DELETE FROM decisions \
+              WHERE NOT EXISTS (SELECT 1 FROM sessions s WHERE s.id = decisions.session_id)",
+        )
+        .execute(&mut *connection)
+        .await?
+        .rows_affected();
+
+        if recall + checkpoints + grants + decisions > 0 {
             info!(
                 recall,
-                checkpoints, grants, "Retired side rows whose chat no longer exists"
+                checkpoints, grants, decisions, "Retired side rows whose chat no longer exists"
             );
         }
         Ok(())
@@ -5273,6 +5514,14 @@ impl SessionStorage {
                 Self::ensure_privacy_schema(pool).await?;
                 let _ = Self::backfill_privacy_from_recorded_provenance(pool).await?;
             }
+            21 => {
+                // The decision log: one row per decision-model call (a monitor
+                // evaluation, one chunk of a `decide` batch, a phase gate, a
+                // decision chat's reply). Additive and `IF NOT EXISTS`, and the
+                // reconcile creates it too, so neither merge order nor a tester's
+                // database already stamped 21 can leave it missing.
+                Self::create_decisions_table(pool).await?;
+            }
             _ => {
                 anyhow::bail!("Unknown migration version: {}", version);
             }
@@ -5587,6 +5836,14 @@ impl SessionStorage {
     /// `Provider::get_name()` string that `sessions.provider_name` is bound from.
     /// A row there is the same fact the live ratchet fires on — *this session ran
     /// a turn against this provider* — recorded before the ratchet existed.
+    ///
+    /// ⚠ Not every row is a turn. A decision model's call is a row too, written
+    /// by `apply_side_usage_event` under its decision provider
+    /// (`baseten_decision`, `ollama_decision`). It records that the chat's
+    /// content was sent to that provider, not that a turn ran there. Neither
+    /// name is in [`Self::BACKFILL_PRIVATE_PROVIDERS`], so this backfill never
+    /// reads one; a future backfill that lists a decision provider must decide
+    /// what such a row proves first.
     ///
     /// **The reason is `turn:<provider>`, not `backfill:<provider>`, and that is
     /// a deliberate downgrade of the declassification control.** §12.4 grades on
@@ -6128,6 +6385,76 @@ impl SessionStorage {
         sqlx::query("CREATE INDEX IF NOT EXISTS idx_message_blobs_uid ON message_blobs(blob_uid)")
             .execute(pool)
             .await?;
+        Ok(())
+    }
+
+    /// The decision log's table (migration 21 + fresh-DB schema + reconcile):
+    /// one row per decision-model call, written by
+    /// [`crate::decision::log::SqliteDecisionSink`] and read only through
+    /// `crate::decision::log`'s functions.
+    ///
+    /// `created_at` is milliseconds since the epoch, because a `decide` batch
+    /// writes many rows a second and the page cursor (`created_at:id`) has to
+    /// order them. `context_json` holds exactly what the model was sent, capped
+    /// at `MAX_STORED_CONTEXT_BYTES`; it belongs to the same chat, carries the
+    /// same tier, and goes with it ([`Self::delete_chat_side_rows`]).
+    /// `answer` and `pass_probability` are derived at write time from
+    /// `decisions_json` so the summary and the probability filter never parse
+    /// JSON.
+    async fn create_decisions_table(pool: &Pool<Sqlite>) -> Result<()> {
+        sqlx::query(
+            r#"
+            CREATE TABLE IF NOT EXISTS decisions (
+                id TEXT PRIMARY KEY,
+                session_id TEXT,
+                created_at INTEGER NOT NULL,
+                origin TEXT NOT NULL,
+                origin_id TEXT,
+                label TEXT,
+                turn_id TEXT,
+                batch_id TEXT,
+                chunk_index INTEGER,
+                chunk_id TEXT,
+                provider TEXT,
+                model TEXT,
+                served_model TEXT,
+                tier TEXT,
+                adapter TEXT,
+                calibrated INTEGER,
+                questions_json TEXT NOT NULL,
+                decisions_json TEXT,
+                outcome TEXT NOT NULL,
+                answer TEXT,
+                pass_probability REAL,
+                context_json TEXT,
+                context_preview TEXT,
+                context_bytes INTEGER,
+                context_truncated INTEGER NOT NULL DEFAULT 0,
+                error TEXT,
+                latency_ms INTEGER,
+                input_tokens INTEGER,
+                output_tokens INTEGER,
+                privacy_enforced INTEGER NOT NULL
+            )
+        "#,
+        )
+        .execute(pool)
+        .await?;
+        for statement in [
+            "CREATE INDEX IF NOT EXISTS idx_decisions_session \
+                ON decisions(session_id, created_at)",
+            // The summary groups by origin and reads each group's newest row.
+            "CREATE INDEX IF NOT EXISTS idx_decisions_origin \
+                ON decisions(session_id, origin, origin_id, created_at)",
+            // The transcript's per-turn marker and the decide tool card open
+            // the history filtered to one turn or one batch.
+            "CREATE INDEX IF NOT EXISTS idx_decisions_turn \
+                ON decisions(session_id, turn_id, created_at)",
+            "CREATE INDEX IF NOT EXISTS idx_decisions_batch \
+                ON decisions(session_id, batch_id, created_at)",
+        ] {
+            sqlx::query(statement).execute(pool).await?;
+        }
         Ok(())
     }
 
@@ -7782,6 +8109,11 @@ impl SessionStorage {
     /// listing counts the same too. `the_full_listing_walks_the_updated_index`
     /// pins the plan.
     ///
+    /// History's per-chat decision count is the same shape of probe: a
+    /// correlated `COUNT(*)` answered from `idx_decisions_session`, so a chat
+    /// with thousands of decision calls costs one index range and no row is
+    /// read from `decisions` itself.
+    ///
     /// `s.id ASC` breaks a tied `updated_at` the way the sidebar's keyset
     /// listing does. `updated_at` has one-second granularity and a bulk write
     /// stamps hundreds of chats with the same second; without the tie-break the
@@ -7819,7 +8151,8 @@ impl SessionStorage {
                    s.provider_name, s.model_config_json, s.diverged_from, s.parent_session_id,
                    s.privacy_tier, s.privacy_reason,
                    CAST(s.updated_at AS TEXT) AS cursor_updated_at,
-                   (SELECT COUNT(*) FROM messages m WHERE m.session_id = s.id) AS message_count
+                   (SELECT COUNT(*) FROM messages m WHERE m.session_id = s.id) AS message_count,
+                   (SELECT COUNT(*) FROM decisions d WHERE d.session_id = s.id) AS decision_count
             FROM sessions s
             WHERE +s.session_type IN ({placeholders})
             {non_empty}
@@ -8204,6 +8537,11 @@ impl SessionStorage {
     ///   let through Gate C for flows accepted in a chat the user deleted.
     ///   `privacy::grant::GRANT_IS_THE_CHATS_OWN` also refuses such a grant at
     ///   read time, for the ones this delete never sees.
+    /// - `decisions` — the decision log. Each row holds the exact context a
+    ///   decision model was sent (a monitor's window of the chat, a chunk of a
+    ///   clinical note), so it is the chat's content at the chat's tier. A new
+    ///   chat under the id would have listed another chat's decisions in its
+    ///   decision history and counted them in History.
     ///
     /// Not here, deliberately: `classification_audit` survives deletion by
     /// design (privacy-tiers §12.5) — it records what has ever been
@@ -8223,7 +8561,7 @@ impl SessionStorage {
                 .execute(&mut *connection)
                 .await?;
         }
-        for table in ["checkpoints", "cross_affiliation_grants"] {
+        for table in ["checkpoints", "cross_affiliation_grants", "decisions"] {
             sqlx::query(&format!("DELETE FROM {table} WHERE session_id = ?"))
                 .bind(session_id)
                 .execute(&mut *connection)
@@ -8297,6 +8635,7 @@ impl SessionStorage {
             "token_events",
             "deleted_chat_usage",
             "cross_affiliation_grants",
+            "decisions",
         ] {
             sqlx::query(&format!("DELETE FROM {table}"))
                 .execute(&mut *tx)
@@ -8549,6 +8888,82 @@ impl SessionStorage {
         if updated != 1 {
             anyhow::bail!("session not found");
         }
+
+        tx.commit().await?;
+        Ok(true)
+    }
+
+    /// See [`SessionManager::apply_side_usage_event`]. The row's cache buckets
+    /// are written as 0, not NULL: a side call has none, and a NULL would mark
+    /// every usage grain it lands in as missing cache accounting
+    /// ([`billable_usage_grain_sql`] counts each `*_known` against `turns`).
+    async fn apply_side_usage_event(&self, entry: SideUsageEntry) -> Result<bool> {
+        if entry.event_key.trim().is_empty() {
+            anyhow::bail!("usage event key must not be empty");
+        }
+
+        let pool = self.pool().await?;
+        let mut tx = pool.begin().await?;
+        let model = Some(entry.model_id.as_str()).filter(|model| !model.is_empty());
+        let provider = Some(entry.provider.as_str()).filter(|provider| !provider.is_empty());
+        let billed = entry.billed_total();
+        // `session_type` is read from the chat in the same statement, and the
+        // `WHERE` makes a chat that is gone insert nothing.
+        let inserted = sqlx::query(
+            r#"
+            INSERT INTO token_events
+                (session_id, ts, input_tokens, output_tokens, total_tokens, billed_total_tokens, model_id, provider,
+                 cache_read_tokens, cache_creation_tokens, event_key, session_type)
+            SELECT s.id, CAST(strftime('%s', 'now') AS INTEGER), ?, ?, ?, ?, ?, ?, 0, 0, ?, s.session_type
+              FROM sessions s
+             WHERE s.id = ?
+            ON CONFLICT DO NOTHING
+            "#,
+        )
+        .bind(entry.input_tokens)
+        .bind(entry.output_tokens)
+        .bind(billed.unwrap_or(0))
+        .bind(billed)
+        .bind(model)
+        .bind(provider)
+        .bind(&entry.event_key)
+        .bind(&entry.session_id)
+        .execute(&mut *tx)
+        .await?
+        .rows_affected()
+            == 1;
+
+        if !inserted {
+            tx.commit().await?;
+            return Ok(false);
+        }
+
+        // The lifetime counters only. No gauge column, no `schedule_id`, no
+        // `updated_at`: see `SessionManager::apply_side_usage_event`.
+        sqlx::query(
+            r#"
+            UPDATE sessions SET
+                accumulated_total_tokens = CASE
+                    WHEN ? IS NULL THEN accumulated_total_tokens
+                    ELSE COALESCE(accumulated_total_tokens, 0) + ? END,
+                accumulated_input_tokens = CASE
+                    WHEN ? IS NULL THEN accumulated_input_tokens
+                    ELSE COALESCE(accumulated_input_tokens, 0) + ? END,
+                accumulated_output_tokens = CASE
+                    WHEN ? IS NULL THEN accumulated_output_tokens
+                    ELSE COALESCE(accumulated_output_tokens, 0) + ? END
+            WHERE id = ?
+            "#,
+        )
+        .bind(billed)
+        .bind(billed)
+        .bind(entry.input_tokens)
+        .bind(entry.input_tokens)
+        .bind(entry.output_tokens)
+        .bind(entry.output_tokens)
+        .bind(&entry.session_id)
+        .execute(&mut *tx)
+        .await?;
 
         tx.commit().await?;
         Ok(true)
@@ -10799,6 +11214,176 @@ mod tests {
         }
     }
 
+    const JOEY_SLUG: &str = "decision-models/baseten-joey-2b-latest";
+
+    /// One decision call's usage, as the decision log's sink writes it.
+    fn decision_usage(session_id: &str, key: &str, input: i64, output: i64) -> SideUsageEntry {
+        SideUsageEntry {
+            event_key: format!("decision:{key}"),
+            session_id: session_id.to_string(),
+            provider: "baseten_decision".to_string(),
+            model_id: JOEY_SLUG.to_string(),
+            input_tokens: Some(input),
+            output_tokens: Some(output),
+        }
+    }
+
+    /// A side usage write is billing and nothing else: one ledger row and the
+    /// lifetime counters, once per key. The context gauge, the schedule link
+    /// and `updated_at` (R-30) must not move, because a decision is not part
+    /// of the chat's window, the writer does not know the schedule, and a
+    /// question asked about a chat is not activity in it.
+    #[tokio::test]
+    async fn a_side_usage_write_bills_once_and_leaves_the_gauge_schedule_and_activity_alone() {
+        let temp_dir = TempDir::new().unwrap();
+        let sm = SessionManager::new(temp_dir.path().to_path_buf());
+        let chat = sm
+            .create_session(
+                temp_dir.path().into(),
+                "Monitored".into(),
+                SessionType::User,
+            )
+            .await
+            .unwrap();
+        let pool = sm.storage().pool().await.unwrap();
+        sqlx::query(
+            "UPDATE sessions SET total_tokens = 5000, input_tokens = 4000, output_tokens = 1000, \
+             schedule_id = 'sched-1', updated_at = '2026-01-01 00:00:00' WHERE id = ?",
+        )
+        .bind(&chat.id)
+        .execute(pool)
+        .await
+        .unwrap();
+        type Untouched = (i64, i64, i64, Option<String>, String);
+        let untouched = || async {
+            sqlx::query_as::<_, Untouched>(
+                "SELECT total_tokens, input_tokens, output_tokens, schedule_id, updated_at \
+                 FROM sessions WHERE id = ?",
+            )
+            .bind(&chat.id)
+            .fetch_one(pool)
+            .await
+            .unwrap()
+        };
+        let accumulated = || async {
+            sqlx::query_as::<_, (Option<i64>, Option<i64>, Option<i64>)>(
+                "SELECT accumulated_total_tokens, accumulated_input_tokens, \
+                 accumulated_output_tokens FROM sessions WHERE id = ?",
+            )
+            .bind(&chat.id)
+            .fetch_one(pool)
+            .await
+            .unwrap()
+        };
+        let before = untouched().await;
+
+        assert!(sm
+            .apply_side_usage_event(decision_usage(&chat.id, "req-1", 120, 2))
+            .await
+            .unwrap());
+
+        type Ledger = (String, String, String, Option<i64>, String, i64, i64);
+        let rows: Vec<Ledger> = sqlx::query_as(
+            "SELECT event_key, provider, model_id, billed_total_tokens, session_type, \
+                    cache_read_tokens, cache_creation_tokens \
+             FROM token_events WHERE session_id = ?",
+        )
+        .bind(&chat.id)
+        .fetch_all(pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            rows,
+            vec![(
+                "decision:req-1".to_string(),
+                "baseten_decision".to_string(),
+                JOEY_SLUG.to_string(),
+                Some(122),
+                "user".to_string(),
+                0,
+                0,
+            )]
+        );
+        assert_eq!(accumulated().await, (Some(122), Some(120), Some(2)));
+        assert_eq!(
+            untouched().await,
+            before,
+            "the gauge, schedule_id and updated_at must not move"
+        );
+
+        // The same key again is a no-op, so a retried write never bills twice.
+        assert!(!sm
+            .apply_side_usage_event(decision_usage(&chat.id, "req-1", 120, 2))
+            .await
+            .unwrap());
+        assert_eq!(token_event_count(&sm, &chat.id).await, 1);
+        assert_eq!(accumulated().await, (Some(122), Some(120), Some(2)));
+        assert_eq!(untouched().await, before);
+    }
+
+    #[tokio::test]
+    async fn a_side_usage_write_for_a_missing_chat_writes_nothing() {
+        let temp_dir = TempDir::new().unwrap();
+        let sm = SessionManager::new(temp_dir.path().to_path_buf());
+        assert!(!sm
+            .apply_side_usage_event(decision_usage("20260101_99", "req-gone", 10, 1))
+            .await
+            .unwrap());
+        assert_eq!(token_event_count(&sm, "20260101_99").await, 0);
+        let mut empty_key = decision_usage("20260101_99", "x", 1, 1);
+        empty_key.event_key = "  ".to_string();
+        assert!(sm.apply_side_usage_event(empty_key).await.is_err());
+    }
+
+    /// Decision spend is billed like a turn's: deleting the chat folds it into
+    /// `deleted_chat_usage` rather than refunding it, and the summary counts
+    /// it as a decision request, not a turn.
+    #[tokio::test]
+    async fn decision_spend_survives_deleting_its_chat() {
+        let temp_dir = TempDir::new().unwrap();
+        let sm = SessionManager::new(temp_dir.path().to_path_buf());
+        let chat = sm
+            .create_session(temp_dir.path().into(), "Batch".into(), SessionType::User)
+            .await
+            .unwrap();
+        assert!(sm
+            .apply_usage_event(billed_turn(&chat.id, "turn-1", "zai", "glm-5.2", 300))
+            .await
+            .unwrap());
+        assert!(sm
+            .apply_side_usage_event(decision_usage(&chat.id, "req-1", 1_000, 1))
+            .await
+            .unwrap());
+
+        // The chat's cost popover lists the decision model as its own row.
+        let per_model = sm.get_session_model_usage(&chat.id).await.unwrap();
+        let decision_row = per_model
+            .iter()
+            .find(|row| row.provider.as_deref() == Some("baseten_decision"))
+            .expect("a separate decision model row");
+        assert_eq!(decision_row.model_id.as_deref(), Some(JOEY_SLUG));
+        assert_eq!(decision_row.total_tokens, Some(1_001));
+        assert_eq!(per_model.len(), 2, "{per_model:?}");
+
+        let before = sm.get_usage_summary().await.unwrap().all_time;
+        assert_eq!(before.turns, 1, "a decision request is not a turn");
+        assert_eq!(before.decision_requests, 1);
+        assert_eq!(before.total_tokens, Some(1_301));
+
+        sm.delete_session(&chat.id).await.unwrap();
+
+        assert_eq!(sm.get_usage_summary().await.unwrap().all_time, before);
+        let pool = sm.storage().pool().await.unwrap();
+        let folded: Vec<(String, i64, i64)> = sqlx::query_as(
+            "SELECT model_id, turns, billed_total_tokens FROM deleted_chat_usage \
+             WHERE provider = 'baseten_decision'",
+        )
+        .fetch_all(pool)
+        .await
+        .unwrap();
+        assert_eq!(folded, vec![(JOEY_SLUG.to_string(), 1, 1_001)]);
+    }
+
     /// Why F10 is more than hygiene. `create_session` mints `<day>_<MAX(N)+1>`,
     /// so deleting the newest chat of the day hands its id to the next chat
     /// created that day — "delete the chat I just made and start again" — and
@@ -10986,6 +11571,95 @@ mod tests {
         }
     }
 
+    /// The production upgrade path into the decision log: a populated store one
+    /// arm below it gains `decisions` (and its indexes) through the numbered
+    /// arm, keeps every chat and message, and lists the new count as absent.
+    #[tokio::test]
+    async fn migrates_the_arm_before_the_decision_log_and_keeps_every_chat() {
+        use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
+
+        let temp_dir = TempDir::new().unwrap();
+        let db_path = temp_dir.path().join(SESSIONS_FOLDER).join(DB_NAME);
+        let id = {
+            let sm = SessionManager::new(temp_dir.path().to_path_buf());
+            let id = sm
+                .create_session(
+                    temp_dir.path().to_path_buf(),
+                    "before decisions".to_string(),
+                    SessionType::User,
+                )
+                .await
+                .unwrap()
+                .id;
+            sm.add_message(&id, &Message::user().with_text("an older chat"))
+                .await
+                .unwrap();
+            sm.close().await;
+            id
+        };
+        {
+            let pool = SqlitePoolOptions::new()
+                .max_connections(1)
+                .connect_with(SqliteConnectOptions::new().filename(&db_path))
+                .await
+                .unwrap();
+            sqlx::query("DROP TABLE decisions")
+                .execute(&pool)
+                .await
+                .unwrap();
+            // A fresh store records only the version it was created at, so the
+            // counter is restamped rather than trimmed.
+            sqlx::query("DELETE FROM schema_version")
+                .execute(&pool)
+                .await
+                .unwrap();
+            sqlx::query("INSERT INTO schema_version (version) VALUES (?1)")
+                .bind(DECISIONS_ARM - 1)
+                .execute(&pool)
+                .await
+                .unwrap();
+            assert_eq!(
+                SessionStorage::get_schema_version(&pool).await.unwrap(),
+                DECISIONS_ARM - 1
+            );
+            pool.close().await;
+        }
+
+        let sm = SessionManager::new(temp_dir.path().to_path_buf());
+        let pool = sm.storage().pool().await.unwrap();
+        assert_eq!(
+            SessionStorage::get_schema_version(pool).await.unwrap(),
+            CURRENT_SCHEMA_VERSION
+        );
+        let ran: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM schema_version WHERE version = ?1")
+            .bind(DECISIONS_ARM)
+            .fetch_one(pool)
+            .await
+            .unwrap();
+        assert_eq!(ran, 1, "the decision-log arm is recorded as applied");
+        for index in [
+            "idx_decisions_session",
+            "idx_decisions_origin",
+            "idx_decisions_turn",
+            "idx_decisions_batch",
+        ] {
+            let exists: i64 =
+                sqlx::query_scalar("SELECT COUNT(*) FROM sqlite_master WHERE name = ?1")
+                    .bind(index)
+                    .fetch_one(pool)
+                    .await
+                    .unwrap();
+            assert_eq!(exists, 1, "missing {index}");
+        }
+        let listed = sm.list_sessions().await.unwrap();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(
+            (listed[0].id.as_str(), listed[0].message_count),
+            (id.as_str(), 1)
+        );
+        assert_eq!(listed[0].decision_count, None);
+    }
+
     #[tokio::test]
     async fn fresh_database_contains_full_v16_schema() {
         let temp_dir = TempDir::new().unwrap();
@@ -11002,6 +11676,7 @@ mod tests {
             "checkpoints",
             "messages_fts",
             "message_blobs",
+            "decisions",
         ] {
             let exists: i64 =
                 sqlx::query_scalar("SELECT COUNT(*) FROM sqlite_master WHERE name = ?1")
@@ -12304,6 +12979,212 @@ mod tests {
         assert!(totals.has_unpriced, "the unknown row leaves it partial");
     }
 
+    /// One complete grain row with no cache tokens.
+    fn grain_row(
+        provider: &str,
+        model: &str,
+        input: i64,
+        output: i64,
+        turns: i64,
+    ) -> UsageGrainRow {
+        UsageGrainRow {
+            day: "2026-11-04".into(),
+            model_id: Some(model.into()),
+            provider: Some(provider.into()),
+            input_tokens: input,
+            output_tokens: output,
+            total_tokens: Some(input + output),
+            cache_read_tokens: Some(0),
+            cache_creation_tokens: Some(0),
+            turns,
+            input_complete: 1,
+            output_complete: 1,
+            cache_read_complete: 1,
+            cache_creation_complete: 1,
+        }
+    }
+
+    /// A 600-chunk `decide` batch on mammoth-1 ($0.10 per million input
+    /// tokens) beside three glm-5.2 turns ($1.40 per million input tokens).
+    fn chat_and_decision_grain() -> Vec<UsageGrainRow> {
+        vec![
+            grain_row("zai", "glm-5.2", 1_000_000, 0, 3),
+            grain_row(
+                "baseten_decision",
+                "decision-models/baseten-mammoth-27b-latest",
+                1_200_000,
+                600,
+                600,
+            ),
+        ]
+    }
+
+    #[test]
+    fn decision_requests_are_not_turns() {
+        let rows = rollup_report(&chat_and_decision_grain(), UsageGroup::Day);
+        assert_eq!(rows.len(), 1);
+        let day = &rows[0];
+        assert_eq!(day.turns, 3, "only the chat's turns are turns");
+        assert_eq!(day.decision_requests, 600);
+        // Tokens and priced dollars include the decision requests.
+        assert_eq!(day.input_tokens, 2_200_000);
+        assert_eq!(day.total_tokens, Some(2_200_600));
+        assert!(approx(day.cost, 1.40 + 0.12), "got {:?}", day.cost);
+        assert!(!day.has_unpriced);
+        let decisions = day.decisions.as_ref().expect("a decision subtotal");
+        assert_eq!(decisions.input_tokens, 1_200_000);
+        assert_eq!(decisions.output_tokens, 600);
+        assert_eq!(decisions.total_tokens, Some(1_200_600));
+        assert!(approx(decisions.cost, 0.12), "got {:?}", decisions.cost);
+        assert!(!decisions.has_unpriced);
+
+        // By model, the decision model is its own bucket with requests only.
+        let by_model = rollup_report(&chat_and_decision_grain(), UsageGroup::Model);
+        let mammoth = by_model
+            .iter()
+            .find(|row| row.provider.as_deref() == Some("baseten_decision"))
+            .unwrap();
+        assert_eq!((mammoth.turns, mammoth.decision_requests), (0, 600));
+        let glm = by_model
+            .iter()
+            .find(|row| row.provider.as_deref() == Some("zai"))
+            .unwrap();
+        assert_eq!((glm.turns, glm.decision_requests), (3, 0));
+        assert_eq!(glm.decisions, None);
+    }
+
+    /// `BucketAcc` seeds its `Option` sums from the first row it sees. It used
+    /// to test `turns == 0` for that, which a bucket that has seen only
+    /// decision requests still passes, so the next chat row reset the sums.
+    #[test]
+    fn a_decision_grain_first_does_not_reset_the_bucket() {
+        let mut reversed = chat_and_decision_grain();
+        reversed.reverse();
+        assert_eq!(
+            totals_from_grain(&reversed),
+            totals_from_grain(&chat_and_decision_grain())
+        );
+        assert_eq!(totals_from_grain(&reversed).total_tokens, Some(2_200_600));
+        assert_eq!(
+            rollup_report(&reversed, UsageGroup::Day),
+            rollup_report(&chat_and_decision_grain(), UsageGroup::Day)
+        );
+    }
+
+    /// A local decision model has no meter. Its requests must not mark the
+    /// chat totals as "at least", or an automatic local monitor would put that
+    /// mark on almost every month; the decision subtotal carries the flag.
+    #[test]
+    fn an_unpriced_local_decision_does_not_mark_chat_cost_partial() {
+        let grain = vec![
+            grain_row("zai", "glm-5.2", 1_000_000, 0, 3),
+            grain_row("ollama_decision", "tev1:0.8b", 40_000, 20, 20),
+        ];
+        let totals = totals_from_grain(&grain);
+        assert!(approx(totals.cost, 1.40), "got {:?}", totals.cost);
+        assert!(!totals.has_unpriced);
+        assert_eq!(totals.turns, 3);
+        assert_eq!(totals.decision_requests, 20);
+        assert_eq!(totals.total_tokens, Some(1_040_020));
+        let decisions = totals.decisions.expect("a decision subtotal");
+        assert_eq!(decisions.cost, None, "not metered is not $0");
+        assert!(decisions.has_unmetered, "a local model is not metered");
+        assert!(
+            !decisions.has_unpriced,
+            "nothing was billed at an unknown rate"
+        );
+
+        // A plain Ollama chat model still marks the totals partial, as before.
+        let chat_on_ollama = vec![
+            grain_row("zai", "glm-5.2", 1_000_000, 0, 3),
+            grain_row("ollama", "tev1:0.8b", 40_000, 20, 2),
+        ];
+        assert!(totals_from_grain(&chat_on_ollama).has_unpriced);
+    }
+
+    /// A month whose only usage is a local decision model costs $0. It used to
+    /// read as unknown (`null`), which hid the dollar budget gauge, where the
+    /// same month with no usage at all read $0.
+    #[test]
+    fn only_local_decisions_cost_zero_not_unknown() {
+        let grain = vec![grain_row("ollama_decision", "tev1:0.8b", 40_000, 20, 20)];
+        let totals = totals_from_grain(&grain);
+        assert_eq!(totals.cost, Some(0.0));
+        assert!(!totals.has_unpriced);
+        assert_eq!(totals.turns, 0);
+        assert_eq!(totals.decision_requests, 20);
+        let decisions = totals.decisions.expect("a decision subtotal");
+        assert_eq!(decisions.cost, None, "the subtotal still reads not metered");
+
+        let days = rollup_report(&grain, UsageGroup::Day);
+        assert_eq!(days.len(), 1);
+        assert_eq!(days[0].cost, Some(0.0));
+        assert!(!days[0].has_unpriced);
+
+        // Beside a wholly unpriced chat row the span is still unknown.
+        let unknown_chat = vec![
+            grain_row("ollama_decision", "tev1:0.8b", 40_000, 20, 20),
+            grain_row("ollama", "qwen3.8:27b", 1_000, 10, 1),
+        ];
+        let totals = totals_from_grain(&unknown_chat);
+        assert_eq!(totals.cost, None);
+        assert!(totals.has_unpriced);
+    }
+
+    /// Baseten bills a decision model Biorouter has no price for, so its
+    /// requests leave the totals "at least", unlike a local model's.
+    #[test]
+    fn an_unpriced_hosted_decision_marks_the_totals_partial() {
+        let grain = vec![
+            grain_row("zai", "glm-5.2", 1_000_000, 0, 3),
+            grain_row(
+                "baseten_decision",
+                "decision-models/baseten-unlisted-99b-latest",
+                1_200_000,
+                600,
+                600,
+            ),
+        ];
+        let totals = totals_from_grain(&grain);
+        assert!(approx(totals.cost, 1.40), "got {:?}", totals.cost);
+        assert!(totals.has_unpriced, "billed dollars are missing");
+        let decisions = totals.decisions.expect("a subtotal");
+        assert_eq!(decisions.cost, None);
+        assert!(
+            decisions.has_unpriced,
+            "Baseten billed it at an unknown rate"
+        );
+        assert!(
+            !decisions.has_unmetered,
+            "a billed request is unavailable, never not metered"
+        );
+
+        // Beside a priced Baseten model and a local one, the line can say
+        // which part is unavailable and which is not metered.
+        let mixed = vec![
+            grain_row(
+                "baseten_decision",
+                "decision-models/baseten-mammoth-27b-latest",
+                1_200_000,
+                600,
+                600,
+            ),
+            grain_row("ollama_decision", "tev1:0.8b", 40_000, 20, 20),
+        ];
+        let decisions = totals_from_grain(&mixed).decisions.expect("a subtotal");
+        assert!(decisions.cost.is_some_and(|cost| cost > 0.0));
+        assert!(decisions.has_unmetered);
+        assert!(!decisions.has_unpriced);
+
+        let by_model = rollup_report(&grain, UsageGroup::Model);
+        let unlisted = by_model
+            .iter()
+            .find(|row| row.provider.as_deref() == Some("baseten_decision"))
+            .unwrap();
+        assert_eq!(unlisted.cost, None);
+        assert!(unlisted.has_unpriced);
+    }
+
     #[test]
     fn totals_are_fully_null_when_nothing_is_priced() {
         let grain = vec![UsageGrainRow {
@@ -13393,7 +14274,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(version, CURRENT_SCHEMA_VERSION);
-        for table in ["checkpoints", "messages_fts", "message_blobs"] {
+        for table in ["checkpoints", "messages_fts", "message_blobs", "decisions"] {
             let exists: i64 =
                 sqlx::query_scalar("SELECT COUNT(*) FROM sqlite_master WHERE name = ?1")
                     .bind(table)
@@ -15222,6 +16103,7 @@ mod tests {
             parent_session_id: None,
             privacy_tier: SessionClassification::Public,
             privacy_reason: None,
+            decision_count: None,
         };
         SessionStorage::import_legacy_session(pool, &legacy)
             .await
@@ -19959,6 +20841,145 @@ mod deleted_chat_side_rows_tests {
             .await
             .unwrap();
         assert_eq!(remaining, 0, "a History reset kept the user's grants");
+    }
+
+    /// One decision-log row for `session_id`, written by the production sink.
+    async fn record_decision(sm: &Arc<SessionManager>, session_id: &str) {
+        use crate::decision::service::{DecisionLogEntry, DecisionOutcome, DecisionSink};
+        use crate::decision::types::{DecisionContext, DecisionKind, DecisionOrigin, Question};
+        let mut questions = indexmap::IndexMap::new();
+        questions.insert(
+            "has_ms".to_string(),
+            Question {
+                instructions: "Does this note state multiple sclerosis?".to_string(),
+                kind: DecisionKind::Binary {},
+                threshold: None,
+            },
+        );
+        crate::decision::log::SqliteDecisionSink {
+            session_manager: Arc::clone(sm),
+        }
+        .record(DecisionLogEntry {
+            session_id: Some(session_id.to_string()),
+            origin: DecisionOrigin::Tool,
+            origin_id: Some("call_1".to_string()),
+            origin_label: None,
+            turn_id: Some("t1".to_string()),
+            batch_id: None,
+            chunk_index: None,
+            chunk_id: None,
+            model: None,
+            served_model: None,
+            tier: None,
+            questions,
+            context: DecisionContext::Text("patient MRN 12345, RRMS".to_string()),
+            context_bytes: 23,
+            outcome: DecisionOutcome::Error,
+            decisions: Vec::new(),
+            error: Some("no model".to_string()),
+            latency_ms: None,
+            usage: Default::default(),
+            privacy_enforced: true,
+        })
+        .await
+        .unwrap();
+    }
+
+    /// The decision log holds the exact context a decision model was sent (a
+    /// chunk of a clinical note, a window of the chat), so it is the chat's own
+    /// content: it goes with the chat, and an id handed out again brings none
+    /// of it into the next chat's decision history or History count.
+    #[tokio::test]
+    async fn deleting_a_chat_deletes_its_decisions_and_a_reissued_id_inherits_none() {
+        let dir = TempDir::new().unwrap();
+        let sm = Arc::new(SessionManager::new(dir.path().to_path_buf()));
+        // The newest chat is the one deleted, so its id is the next one minted
+        // once the high-water mark is forgotten.
+        let kept = new_chat(&sm, &dir).await;
+        let deleted = new_chat(&sm, &dir).await;
+        for id in [&deleted, &kept] {
+            sm.add_message(id, &Message::user().with_text("find the MS notes"))
+                .await
+                .unwrap();
+            record_decision(&sm, id).await;
+            record_decision(&sm, id).await;
+        }
+        assert_eq!(
+            rows(&sm, "decisions", &deleted).await,
+            2,
+            "the fixture must log decisions, or this test proves nothing"
+        );
+
+        sm.delete_session(&deleted).await.unwrap();
+        assert_eq!(
+            rows(&sm, "decisions", &deleted).await,
+            0,
+            "a deleted chat's decisions stayed in the log"
+        );
+        assert_eq!(
+            rows(&sm, "decisions", &kept).await,
+            2,
+            "another chat's went too"
+        );
+
+        // Put the deleted id back in play the way a restored backup would.
+        let reissued = {
+            forget_minted_session_ids(&sm).await;
+            let next = new_chat(&sm, &dir).await;
+            assert_eq!(next, deleted, "the fixture must reproduce the id reuse");
+            next
+        };
+        let summary = crate::decision::log::summary(&sm, &reissued).await.unwrap();
+        assert_eq!(
+            summary.total, 0,
+            "the new chat inherited the old chat's decisions"
+        );
+    }
+
+    #[tokio::test]
+    async fn clearing_history_removes_every_decision() {
+        let dir = TempDir::new().unwrap();
+        let sm = Arc::new(SessionManager::new(dir.path().to_path_buf()));
+        let id = new_chat(&sm, &dir).await;
+        record_decision(&sm, &id).await;
+
+        sm.clear_all_sessions().await.unwrap();
+
+        let pool = sm.storage().pool().await.unwrap();
+        let remaining: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM decisions")
+            .fetch_one(pool)
+            .await
+            .unwrap();
+        assert_eq!(remaining, 0, "a History reset kept the decision log");
+    }
+
+    /// A decision row whose chat is gone (left by a build sharing the file that
+    /// never deletes them) is retired on open; a live chat's rows are not.
+    #[tokio::test]
+    async fn reopening_the_store_retires_decisions_whose_chat_is_gone() {
+        let dir = TempDir::new().unwrap();
+        let live = {
+            let sm = Arc::new(SessionManager::new(dir.path().to_path_buf()));
+            let live = new_chat(&sm, &dir).await;
+            record_decision(&sm, &live).await;
+            let pool = sm.storage().pool().await.unwrap();
+            sqlx::query(
+                "INSERT INTO decisions (id, session_id, created_at, origin, questions_json, \
+                     outcome, privacy_enforced) \
+                 VALUES ('d-gone', 'gone', 1, 'tool', '{}', 'error', 1)",
+            )
+            .execute(pool)
+            .await
+            .unwrap();
+            sm.close().await;
+            live
+        };
+        for open in 1..=2 {
+            let sm = SessionManager::new(dir.path().to_path_buf());
+            assert_eq!(rows(&sm, "decisions", "gone").await, 0, "open {open}");
+            assert_eq!(rows(&sm, "decisions", &live).await, 1, "open {open}");
+            sm.close().await;
+        }
     }
 
     /// The rows every earlier build left behind are retired by the reconcile that

@@ -12,6 +12,12 @@ use super::Agent;
 pub const COMPACT_TRIGGERS: &[&str] =
     &["/compact", "Please compact this conversation", "/summarize"];
 
+/// What `/compact` answers in a decision chat, where there is nothing to
+/// compact.
+pub const DECISION_CHAT_COMPACT_NOTICE: &str =
+    "This chat's model is a decision model, so there is no context to compact: each message is \
+     asked on its own.";
+
 pub struct CommandDef {
     pub name: &'static str,
     pub description: &'static str,
@@ -225,6 +231,15 @@ impl Agent {
         &self,
         session_config: &SessionConfig,
     ) -> Result<Option<Message>> {
+        // A decision chat asks each message on its own, so it has no running
+        // context, and its model cannot write a summary: answer before any
+        // compaction runs.
+        if self.bound_decision_chat_provider().await.is_some() {
+            return Ok(Some(Message::assistant().with_system_notification(
+                SystemNotificationType::InlineMessage,
+                DECISION_CHAT_COMPACT_NOTICE,
+            )));
+        }
         let session_id = session_config.id.as_str();
         let manager = self.config.session_manager.clone();
         let (session, basis) = manager.snapshot_for_rewrite(session_id).await?;
@@ -598,6 +613,63 @@ mod slash_command_audit_tests {
             }
             _ => None,
         })
+    }
+
+    /// A decision chat has no running context and its model writes no
+    /// summary, so `/compact` (and its other spellings) is answered with one
+    /// plain sentence before compaction runs, on every surface that sends it
+    /// as a turn.
+    #[tokio::test]
+    async fn compact_in_a_decision_chat_says_there_is_nothing_to_compact() {
+        use crate::agents::AgentConfig;
+        use crate::config::permission::PermissionManager;
+        use crate::config::BioRouterMode;
+        use crate::model::ModelConfig;
+        use crate::providers::decision::OllamaDecisionChatProvider;
+        use crate::session::session_manager::SessionType;
+        use crate::session::SessionManager;
+
+        let dir = tempfile::TempDir::new().unwrap();
+        let sessions = std::sync::Arc::new(SessionManager::new_ephemeral(dir.path().join("data")));
+        let agent = Agent::with_config(AgentConfig::new(
+            sessions.clone(),
+            std::sync::Arc::new(PermissionManager::new(dir.path().join("permissions"))),
+            None,
+            BioRouterMode::Auto,
+        ));
+        let session = sessions
+            .create_session(
+                dir.path().to_path_buf(),
+                "decision chat".into(),
+                SessionType::User,
+            )
+            .await
+            .unwrap();
+        agent
+            .update_provider(
+                std::sync::Arc::new(OllamaDecisionChatProvider::with_model(
+                    ModelConfig::new_or_fail("tev1:0.8b"),
+                )),
+                &session.id,
+            )
+            .await
+            .unwrap();
+        let config: SessionConfig =
+            serde_json::from_value(serde_json::json!({ "id": session.id })).unwrap();
+        for command in COMPACT_TRIGGERS {
+            let message = agent
+                .execute_command(command, &config)
+                .await
+                .unwrap_or_else(|e| panic!("{command:?} errored: {e:#}"))
+                .unwrap_or_else(|| panic!("{command:?} fell through to the decision model"));
+            assert_eq!(message.role, rmcp::model::Role::Assistant);
+            assert_eq!(
+                inline_text(&message),
+                Some(DECISION_CHAT_COMPACT_NOTICE),
+                "{command:?}"
+            );
+        }
+        assert!(DECISION_CHAT_COMPACT_NOTICE.contains("no context to compact"));
     }
 
     #[test]

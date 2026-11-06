@@ -108,6 +108,7 @@ import DocumentPreview from './DocumentPreview';
 import MarkdownDocument from './MarkdownDocument';
 import WebPagePreview, { type LiveBrowserShare } from './WebPagePreview';
 import NotebookPreview from './NotebookPreview';
+import DecisionHistory from '../decisions/DecisionHistory';
 import type {
   ArtifactFileEntry,
   ArtifactFilePreview,
@@ -326,6 +327,8 @@ type HtmlPreview = { kind: 'html'; html: string };
 type ExternalPreview = { kind: 'externalUrl'; url: string; managedApp: boolean };
 type FilePreview = { kind: 'file'; preview: ArtifactFilePreview };
 type McpPreview = { kind: 'mcpResource' };
+/** A chat's decision history: the view loads its own pages, so there is nothing to preload. */
+type DecisionsPreview = { kind: 'decisions' };
 type LoadingPreview = { kind: 'loading' };
 type ErrorPreview = { kind: 'error'; message: string };
 type PreviewState =
@@ -333,6 +336,7 @@ type PreviewState =
   | ExternalPreview
   | FilePreview
   | McpPreview
+  | DecisionsPreview
   | LoadingPreview
   | ErrorPreview;
 
@@ -407,6 +411,8 @@ function artifactSourceKey(artifact: ArtifactSource) {
   if (artifact.kind === 'html') {
     return `html:${artifact.title}:${artifact.html.length}:${artifact.html.slice(0, 80)}`;
   }
+  // One decision history tab per chat: another filter re-filters it.
+  if (artifact.kind === 'decisions') return `decisions:${artifact.sessionId}`;
   const resource = artifact.resource as {
     uri?: string;
     mimeType?: string;
@@ -500,6 +506,8 @@ export function iconForArtifact(
 ) {
   if (!artifact) return File;
   if (artifact.kind === 'externalUrl') return Globe;
+  // The decision-model mark the summary's Decisions section draws.
+  if (artifact.kind === 'decisions') return ENTITY_ICONS.decision;
   if (artifact.kind === 'file') {
     switch (loadedKind) {
       case 'gitDirectory':
@@ -1244,6 +1252,11 @@ export default function ArtifactViewer({
         return;
       }
 
+      if (activeArtifact.kind === 'decisions') {
+        show({ kind: 'decisions' });
+        return;
+      }
+
       try {
         // No cast: the preload IPC contract and the shared ArtifactFilePreview
         // union are kept in lockstep, so the result assigns structurally.
@@ -1871,7 +1884,7 @@ export default function ArtifactViewer({
                 <span className="br-preview-update-dot" aria-hidden="true" />
               </PreviewIconButton>
             )}
-            {activeArtifact.kind !== 'mcpResource' && (
+            {activeArtifact.kind !== 'mcpResource' && activeArtifact.kind !== 'decisions' && (
               <PreviewIconButton label={PREVIEW_COPY.openExternally} onClick={openStandalone}>
                 <ExternalLink className="h-4 w-4" aria-hidden="true" />
               </PreviewIconButton>
@@ -2239,6 +2252,19 @@ function ArtifactPreviewBody({
           }}
         />
       </>
+    );
+  }
+
+  if (preview.kind === 'decisions' && artifact.kind === 'decisions') {
+    // The one place individual decision calls are listed. Keyed by the open, so
+    // a row clicked in the summary applies its filter even to an open tab.
+    return (
+      <DecisionHistory
+        key={artifact.sessionId}
+        sessionId={artifact.sessionId}
+        filter={artifact.filter}
+        filterKey={artifact.openedAt}
+      />
     );
   }
 

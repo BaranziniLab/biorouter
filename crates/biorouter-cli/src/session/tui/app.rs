@@ -16,7 +16,7 @@ use crate::session::completion::SLASH_COMMANDS;
 /// [`SLASH_COMMANDS`], which the classic CLI shares and which would then offer
 /// commands it cannot run. [`App::ghost`] tries these after the shared list, so
 /// a prefix both could complete still ghosts to the shared command.
-pub(crate) const TUI_ONLY_SLASH_COMMANDS: &[&str] = &["/subagents", "/attach"];
+pub(crate) const TUI_ONLY_SLASH_COMMANDS: &[&str] = &["/subagents", "/attach", "/decisions"];
 
 /// Brand warm tan-brown accent (xterm-256 137 ≈ #af875f), Biorouter's light cream palette
 pub const ACCENT: Color = Color::Indexed(137);
@@ -152,6 +152,12 @@ pub struct App {
     pub subagents: super::subagents::SubagentPane,
     /// A subagent's chat shown read-only in place of the history, if open.
     pub child: Option<Box<super::subagents::ChildView>>,
+    /// The `/decisions` overlay, while open.
+    pub decisions: Option<super::decisions::DecisionsOverlay>,
+    /// Decision-log rows of decision-chat replies, read before the reply is
+    /// drawn so it renders as a card ([`App::push_message`]).
+    pub decision_records:
+        std::collections::HashMap<String, biorouter::decision::log::DecisionRecord>,
 }
 
 impl App {
@@ -186,6 +192,8 @@ impl App {
             last_tool_result: None,
             subagents: super::subagents::SubagentPane::default(),
             child: None,
+            decisions: None,
+            decision_records: std::collections::HashMap::new(),
         }
     }
 
@@ -389,8 +397,42 @@ impl App {
         ]));
     }
 
+    /// Draw `message` as decision activity when it is some, and say whether
+    /// it was. Decision activity never adds one row per call: a turn's
+    /// decision marker (`metadata.decision_summary`) is one line per origin,
+    /// and a decision-chat reply (`metadata.decision_id`) is a small card when
+    /// its log row has been read, else (`false`) its readable text.
+    fn push_decision_message(&mut self, message: &Message) -> bool {
+        if let Some(marker) = &message.metadata.decision_summary {
+            if !marker.items.is_empty() {
+                self.push_blank();
+                for line in super::decisions::marker_lines(marker) {
+                    self.push_line(line);
+                }
+            }
+            return true;
+        }
+        let Some(record) = message
+            .metadata
+            .decision_id
+            .as_ref()
+            .and_then(|id| self.decision_records.get(id))
+            .cloned()
+        else {
+            return false;
+        };
+        self.push_blank();
+        for line in super::decisions::card_lines(&record) {
+            self.push_line(line);
+        }
+        true
+    }
+
     /// Render an agent message into the scrollback.
     pub fn push_message(&mut self, message: &Message, debug: bool) {
+        if self.push_decision_message(message) {
+            return;
+        }
         for content in &message.content {
             match content {
                 MessageContent::Text(t) => {
@@ -451,6 +493,16 @@ impl App {
                         let count = self.scrollback.len() - start;
                         self.last_tool_result =
                             (!debug && !has_artifact && count > 1).then_some((start, count));
+                    }
+                }
+                MessageContent::SystemNotification(note)
+                    if note.notification_type
+                        == biorouter::conversation::message::SystemNotificationType::InlineMessage
+                        && !note.msg.trim().is_empty() =>
+                {
+                    self.push_blank();
+                    for line in note.msg.lines() {
+                        self.push_note(line);
                     }
                 }
                 MessageContent::Thinking(t) => {

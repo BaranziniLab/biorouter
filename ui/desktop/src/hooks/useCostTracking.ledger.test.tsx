@@ -127,3 +127,26 @@ describe('useCostTracking: a reader can tell a pending ledger from an empty one'
     await waitFor(() => expect(result.current.modelRows).toHaveLength(2));
   });
 });
+
+describe('useCostTracking: the live counters ask the ledger again', () => {
+  it("reloads when a reply moves the stream's counters before the chat record changes", async () => {
+    // A decision chat's reply moves the stream's counters, not the chat record
+    // the hook was handed; the ledger kept its empty first answer and the
+    // footer priced the new tokens at the app's default model.
+    mocks.getSessionUsage
+      .mockResolvedValueOnce({ data: { models: [] } })
+      .mockResolvedValueOnce({ data: { models: [usageRow] } });
+    const session = chat('a', 0);
+    const { result, rerender } = renderHook(
+      ({ live }: { live: number }) =>
+        useCostTracking({ session, liveTokens: { accumulatedTotalTokens: live } }),
+      { initialProps: { live: 0 } }
+    );
+    await waitFor(() => expect(result.current.ledgerSettled).toBe(true));
+    expect(result.current.modelRows).toEqual([]);
+
+    rerender({ live: 144 });
+    await waitFor(() => expect(mocks.getSessionUsage).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(result.current.modelRows).toHaveLength(1));
+  });
+});

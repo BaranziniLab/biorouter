@@ -64,8 +64,10 @@ import {
   type SubagentRow,
   type SubagentRunStatus,
 } from '../../utils/sessionSubagents';
+import { formatProbability, type PhaseGateSnapshot } from '../../utils/sessionDecisions';
 import { summaryCopy } from './copy';
 import './summaryAgents.css';
+import './summaryDecisions.css';
 
 const copy = summaryCopy.agents;
 
@@ -120,6 +122,11 @@ export interface SummarySubagentsData {
   refresh: () => void;
   /** Open the subagent as a tab and make it the active one. */
   onOpen: (sessionId: string, title?: string) => void;
+  /**
+   * Open the decision history filtered to a phase's gate. Without it a phase's
+   * gate chip is drawn, but is not a control.
+   */
+  onOpenGate?: (phaseId: string) => void;
 }
 
 // ---------------------------------------------------------------------------
@@ -234,10 +241,13 @@ function buildList(
   return { label, rows, flat: null, groups };
 }
 
+const gateKey = (phase: PhaseSnapshot) => `gate:${phase.id}`;
+
 function buildView(
   data: SessionSubagents | null,
   openState: Record<string, boolean>,
-  showAll: Record<string, boolean>
+  showAll: Record<string, boolean>,
+  gatesOpen = false
 ): View {
   const keys: string[] = [];
   const rows = inSpawnOrder(data?.subagents ?? []);
@@ -254,10 +264,10 @@ function buildView(
       const key = `phase:${phase.id}`;
       const open = openState[key] ?? phaseOpenByDefault(phase, data.plan!.phases.length);
       const view: PhaseView = { phase, key, open, rows: slice(members, key, showAll) };
-      if (members.length > 0) {
-        keys.push(key);
-        if (open) pushSlice(keys, view.rows);
-      }
+      if (members.length > 0) keys.push(key);
+      // The gate chip sits under the phase's heading, before its rows.
+      if (gatesOpen && phase.gate) keys.push(gateKey(phase));
+      if (members.length > 0 && open) pushSlice(keys, view.rows);
       return view;
     });
     if (unphased.length > 0) {
@@ -434,6 +444,7 @@ interface RowControls {
   keyboardCard: string | null;
   onCardClosed: (key: string) => void;
   onOpen: SummarySubagentsData['onOpen'];
+  onOpenGate?: SummarySubagentsData['onOpenGate'];
   phaseTitles: Map<string, string>;
 }
 
@@ -616,6 +627,86 @@ function phaseCountsLine(phase: PhaseSnapshot): string {
     .join(' · ');
 }
 
+/** `Gate 0.91 ≥ 0.80 passed`, `Gate 0.62 < 0.80, attempt 2 of 3`, `Gate blocked`. */
+export function gateChipText(gate: PhaseGateSnapshot): string {
+  const gateCopy = summaryCopy.decisions.gate;
+  const t = formatProbability(gate.threshold);
+  if (gate.blocked) return gateCopy.blocked;
+  if (gate.lastPassed === true && gate.lastMinP !== null) {
+    return gateCopy.passed(formatProbability(gate.lastMinP), t);
+  }
+  if (gate.lastPassed === false && gate.lastMinP !== null) {
+    return gateCopy.failed(
+      formatProbability(gate.lastMinP),
+      t,
+      Math.max(1, gate.attempts),
+      gate.maxAttempts
+    );
+  }
+  return gateCopy.pending(t);
+}
+
+function gateState(gate: PhaseGateSnapshot): 'blocked' | 'passed' | 'failed' | 'pending' {
+  if (gate.blocked) return 'blocked';
+  if (gate.lastPassed === true) return 'passed';
+  if (gate.lastPassed === false) return 'failed';
+  return 'pending';
+}
+
+const GATE_ICONS: Record<ReturnType<typeof gateState>, Glyph> = {
+  pending: CircleIcon,
+  passed: Check,
+  failed: X,
+  blocked: AlertTriangle,
+};
+
+/**
+ * A phase gate as a chip on its phase row (owner rule: a gate's evaluations are
+ * never transcript rows). Pressing it opens the decision history filtered to
+ * that gate. Its state is a glyph and its words, never colour alone.
+ */
+function GateChip({ phase, controls }: { phase: PhaseSnapshot; controls: RowControls }) {
+  const gate = phase.gate;
+  if (!gate) return null;
+  const state = gateState(gate);
+  const Icon = GATE_ICONS[state];
+  const text = gateChipText(gate);
+  const content = (
+    <>
+      <span className="br-summary__glyph" aria-hidden="true">
+        <Icon />
+      </span>
+      <span className="br-agents__gate-text">{text}</span>
+    </>
+  );
+  if (!controls.onOpenGate) {
+    return (
+      <p className="br-agents__phase-counts" data-gate-state={state}>
+        {text}
+      </p>
+    );
+  }
+  const key = gateKey(phase);
+  const open = controls.onOpenGate;
+  return (
+    <div data-row-item="">
+      <button
+        type="button"
+        className="br-agents__gate"
+        data-row={key}
+        data-state={state}
+        data-testid={`phase-gate-${phase.id}`}
+        aria-label={`${text}, ${phase.title}`}
+        tabIndex={controls.tabIndexFor(key)}
+        onFocus={() => controls.onRowFocus(key)}
+        onClick={() => open(phase.id)}
+      >
+        {content}
+      </button>
+    </div>
+  );
+}
+
 function PhaseItem({
   view,
   layout,
@@ -689,6 +780,7 @@ function PhaseItem({
         label={copy.phaseProgressLabel(phase.title)}
       />
       {countsLine ? <p className="br-agents__phase-counts">{countsLine}</p> : null}
+      <GateChip phase={phase} controls={controls} />
       {open && rows.total > 0 ? (
         <RowList
           id={listId}
@@ -787,13 +879,19 @@ function ListCount({ rows }: { rows: SubagentRow[] }) {
  * reaching it with the keyboard, shows a card with its full setup. The whole
  * area is one tab stop; the arrow keys, Home and End move between rows.
  */
-export function SummarySubagents({ data, error, refresh, onOpen }: SummarySubagentsData) {
+export function SummarySubagents({
+  data,
+  error,
+  refresh,
+  onOpen,
+  onOpenGate,
+}: SummarySubagentsData) {
   const [openState, setOpenState] = useState<Record<string, boolean>>({});
   const [showAll, setShowAll] = useState<Record<string, boolean>>({});
   const [keyboardCard, setKeyboardCard] = useState<string | null>(null);
   const arrowMove = useRef(false);
 
-  const view = buildView(data, openState, showAll);
+  const view = buildView(data, openState, showAll, !!onOpenGate);
   const roving = useRovingRows(view.keys, view.preferredKey);
 
   // A row can be remounted under the person's focus. A poll that moves a child
@@ -840,6 +938,7 @@ export function SummarySubagents({ data, error, refresh, onOpen }: SummarySubage
     keyboardCard,
     onCardClosed: (key) => setKeyboardCard((current) => (current === key ? null : current)),
     onOpen,
+    onOpenGate,
     phaseTitles,
   };
   const toggle = (key: string, open: boolean) =>

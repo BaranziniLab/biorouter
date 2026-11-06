@@ -191,6 +191,24 @@
   gap: 4px;
 }
 
+/* A top-level chat's decision-model call count, after where it ran: the
+   decision mark and a figure, never rows of their own (owner rule A1.5).
+   It keeps its width; the folder before it is what truncates. */
+.br-history-decisions {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 4px;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+.br-history-decisions__glyph {
+  width: 12px;
+  height: 12px;
+  flex: none;
+}
+
 .br-history-row-stats {
   display: grid;
   flex-shrink: 0;

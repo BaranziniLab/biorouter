@@ -44,6 +44,15 @@ export const catalogCopy = {
   otherInstitutions: "Don't see your institution?",
   otherInstitutionsHelp:
     'A gateway appears here once Biorouter recognizes its endpoint as private. Anything else can be added under Public with Add custom provider, and is treated as public.',
+  /**
+   * Where a tab's decision-model providers went (Settings only): they are not chat providers,
+   * so they have no row. Each name is plural ("Ollama decision models"), hence "are".
+   */
+  decisionModels: (names: readonly string[]) =>
+    `${names.join(' and ')} are chosen per chat in the model picker, under Decision models.`,
+  decisionModelsLabel: 'Decision models',
+  decisionModelsHelp:
+    'A decision model answers a yes or no, choice or score question about the text it reads, with probabilities, and writes no chat replies. Monitors and the decide tool use them too. Each one runs on the setup of its provider in this list: the Ollama host, or the Baseten key.',
 } as const;
 
 /**

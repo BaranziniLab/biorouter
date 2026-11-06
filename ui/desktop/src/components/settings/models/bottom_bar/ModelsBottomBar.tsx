@@ -38,6 +38,8 @@ import {
 import { disclosureRequiredForTier, useDisclosure } from '../../../privacy/disclosureCopy';
 import { readResolvedProviderTier } from '../../../privacy/useBoundProviderTier';
 import { HostManagedModelNote } from '../../../privacy/HostManagedModelNote';
+import { isDecisionProvider } from '../../../decisions/decisionWire';
+import { switchModelCopy } from '../copy';
 import { isBrowserSurface } from '../../../../utils/surface';
 import type {
   ProviderDetails,
@@ -775,6 +777,17 @@ export default function ModelsBottomBar({
                     <span className="min-w-0 truncate">{affiliationWords.label}</span>
                   </>
                 )}
+              </div>
+            )}
+            {/* A decision model answers each message with a choice and its
+                probabilities, not with text; said here so the chip's menu names
+                what kind of model the chat runs on. */}
+            {isDecisionProvider(effectiveProvider) && (
+              <div
+                data-testid="model-decision-line"
+                className="text-supporting text-text-muted [overflow-wrap:anywhere]"
+              >
+                {`${switchModelCopy.decisionModel}: ${switchModelCopy.decisionDetail.toLowerCase()}`}
               </div>
             )}
             {showPrivacyBlock && (

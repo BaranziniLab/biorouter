@@ -87,6 +87,7 @@ import { chatDateBucket } from '../../utils/chatDateBuckets';
 import { exportConversation } from '../../utils/exportConversation';
 import { useDiverge } from '../../hooks/useDiverge';
 import {
+  decisionCountOf,
   folderName,
   historyRowTitle,
   runModelFullName,
@@ -118,6 +119,8 @@ import {
   CHAT_DELETED,
   CHAT_IMPORTED,
   EXTENSIONS_STAT,
+  DECISION_CALLS_HINT,
+  decisionCallsLabel,
   HISTORY_EMPTY,
   HISTORY_EMPTY_TITLE,
   HISTORY_INFO,
@@ -374,6 +377,9 @@ const RUN_STATUS_GLYPHS: Record<
   incomplete: CircleDotDashed,
 };
 
+/** The decision-model mark beside a chat's decision count. */
+const DecisionMark = ENTITY_ICONS.decision;
+
 /** A run's own line can be a paragraph; the tooltip and the spoken text keep its start. */
 const RUN_RESULT_LINE_MAX = 160;
 
@@ -550,6 +556,8 @@ const HistoryRow = React.memo(function HistoryRow({
   const role = nested ? subagentRoleOf(session.extension_data) : null;
   const actionSize = nested ? 'sm' : 'default';
   const billedTokenEstimate = billedSessionTokenEstimate(session);
+  // A top-level chat's decision calls are ONE count on its row; a run's never show.
+  const decisionCount = nested ? 0 : decisionCountOf(session);
   const folder = folderName(session.working_dir);
   const sessionTitle = historyRowTitle(session);
   // A run leads with the role its parent gave it; the task-derived name stays in the
@@ -657,6 +665,21 @@ const HistoryRow = React.memo(function HistoryRow({
                     </TooltipContent>
                   </Tooltip>
                 </span>
+              ) : null}
+              {decisionCount > 0 ? (
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <span className="br-history-decisions" data-decision-count={decisionCount}>
+                      <span aria-hidden="true">·</span>
+                      <DecisionMark className="br-history-decisions__glyph" aria-hidden="true" />
+                      <span aria-hidden="true">{decisionCount.toLocaleString()}</span>
+                      <span className="sr-only">{decisionCallsLabel(decisionCount)}</span>
+                    </span>
+                  </TooltipTrigger>
+                  <TooltipContent side="bottom" align="start">
+                    {decisionCallsLabel(decisionCount)}. {DECISION_CALLS_HINT}
+                  </TooltipContent>
+                </Tooltip>
               ) : null}
             </span>
           </button>
