@@ -3294,7 +3294,7 @@ fn dispatch_failure_response(error: &anyhow::Error) -> Result<CallToolResponse, 
 /// straight to the extension manager — bypassing the agent loop and therefore
 /// every [`ToolInspector`](biorouter::tool_inspection::ToolInspector).
 ///
-/// The three share one shape: an inspector would have refused or asked, nothing
+/// The four share one shape: an inspector would have refused or asked, nothing
 /// in an HTTP handler can put an operation to the user and wait, so the call is
 /// refused here rather than performed unasked. Each returns a tool ERROR rather
 /// than a status code, because the caller is a tool caller and the remedy is in
@@ -3311,6 +3311,16 @@ fn dispatch_failure_response(error: &anyhow::Error) -> Result<CallToolResponse, 
 ///   refusal names `DELETE /knowledge/bases/{id}`, the route the Knowledge
 ///   view's own delete button calls, so a person who means to delete a base
 ///   still has a door.
+/// * **A managed deny** (DD-90). `ManagedPolicyInspector` runs only in the
+///   agent loop too, so a tool the administrator's policy denies, including a
+///   `dictionary__*` tool while managed dictation policy keeps the agent out of
+///   the dictionary, ran here. The policy file is read for each request, so an
+///   administrator's change applies at the next call. Only a deny refuses: a
+///   managed ask is left to the person's own action that this route carries.
+///   This judges the outer tool name only. The calls inside a
+///   `code_execution__execute_code` script sent here are judged at the script
+///   door (`CodeExecution::uninspected_boundary_refusal`), which has no managed
+///   arm yet, so a managed-denied tool a person's script calls still runs.
 ///
 /// Extracted from [`call_tool`] rather than inlined: the third gate pushed that
 /// handler past the `clippy::too_many_lines` baseline, and a list of boundary
@@ -3321,10 +3331,32 @@ fn call_tool_boundary_refusal(
     tool_name: &str,
     arguments: Option<&serde_json::Map<String, Value>>,
 ) -> Option<String> {
+    call_tool_boundary_refusal_under(
+        &biorouter::managed::ManagedPolicy::load(),
+        tool_name,
+        arguments,
+    )
+}
+
+/// [`call_tool_boundary_refusal`] under a given managed policy, so a test can
+/// judge a policy without staging one at the path every test in the binary
+/// reads.
+fn call_tool_boundary_refusal_under(
+    managed: &biorouter::managed::ManagedPolicy,
+    tool_name: &str,
+    arguments: Option<&serde_json::Map<String, Value>>,
+) -> Option<String> {
     const BOUNDARY: biorouter::security::UninspectedBoundary =
         biorouter::security::UninspectedBoundary::AgentCallToolRoute;
 
-    biorouter::security::global_memory::uninspected_boundary_refusal(tool_name, arguments, BOUNDARY)
+    managed
+        .uninspected_boundary_refusal(tool_name)
+        .map(str::to_string)
+        .or_else(|| {
+            biorouter::security::global_memory::uninspected_boundary_refusal(
+                tool_name, arguments, BOUNDARY,
+            )
+        })
         .or_else(|| {
             biorouter::security::session_store::uninspected_boundary_refusal(
                 tool_name, arguments, BOUNDARY,
@@ -3335,6 +3367,106 @@ fn call_tool_boundary_refusal(
                 tool_name, arguments, BOUNDARY,
             )
         })
+}
+
+#[cfg(test)]
+mod managed_call_tool_tests {
+    //! DD-90: a managed deny holds at `POST /agent/call_tool`, which dispatches
+    //! without the inspector chain that enforces it everywhere else.
+    //!
+    //! ⚠ This module sits above the route handler, and other tests find the
+    //! handler by the first occurrence of its signature in this file, so the
+    //! needle below is assembled with `concat!` rather than written out.
+
+    use super::call_tool_boundary_refusal_under;
+    use biorouter::managed::{ManagedPolicy, ManagedPolicyFile};
+    use biorouter::permission::managed_inspector::MANAGED_DENY_REASON;
+
+    fn policy(yaml: &str) -> ManagedPolicy {
+        let file: ManagedPolicyFile = serde_yaml::from_str(yaml).unwrap();
+        ManagedPolicy::from_file(file)
+    }
+
+    fn refusal(managed: &ManagedPolicy, tool: &str) -> Option<String> {
+        call_tool_boundary_refusal_under(managed, tool, None)
+    }
+
+    #[test]
+    fn call_tool_refuses_a_managed_denied_tool() {
+        let managed = policy(
+            "permissions:\n  deny: [\"developer__shell\", \"memory__.*\"]\n  ask: [\"todo__write\"]\n",
+        );
+        assert_eq!(
+            refusal(&managed, "developer__shell").as_deref(),
+            Some(MANAGED_DENY_REASON)
+        );
+        assert_eq!(
+            refusal(&managed, "memory__retrieve_memories").as_deref(),
+            Some(MANAGED_DENY_REASON)
+        );
+        assert_eq!(refusal(&managed, "developer__text_editor"), None);
+        assert_eq!(
+            refusal(&managed, "todo__write"),
+            None,
+            "a managed ask is not refused here"
+        );
+        assert_eq!(refusal(&ManagedPolicy::empty(), "developer__shell"), None);
+    }
+
+    #[test]
+    fn call_tool_refuses_dictionary_tools_while_policy_keeps_the_agent_out() {
+        for yaml in [
+            "dictation:\n  enabled: false\n",
+            "dictation:\n  dictionary: false\n",
+            "dictation:\n  dictionary_agent_writes: false\n",
+            "dictation:\n  a_key_from_a_newer_release: true\n",
+            "dictation: [not, a, map]\n",
+        ] {
+            let managed = policy(yaml);
+            for tool in [
+                "dictionary__add_terms",
+                "dictionary__list_terms",
+                "dictionary__remove_added_terms",
+            ] {
+                assert_eq!(
+                    refusal(&managed, tool).as_deref(),
+                    Some(MANAGED_DENY_REASON),
+                    "{yaml:?} {tool}"
+                );
+            }
+            assert_eq!(refusal(&managed, "developer__shell"), None, "{yaml:?}");
+        }
+        for yaml in ["dictation:\n  capture: false\n", "dictation: {}\n"] {
+            assert_eq!(
+                refusal(&policy(yaml), "dictionary__add_terms"),
+                None,
+                "{yaml:?}"
+            );
+        }
+    }
+
+    /// The route reads the policy file for each request, and decides before it
+    /// resolves an agent or dispatches anything.
+    #[test]
+    fn the_route_reads_the_policy_per_request_before_dispatch() {
+        let source = include_str!("agent.rs");
+        let gate = crate::routes::body_of(source, "fn call_tool_boundary_refusal(");
+        assert!(
+            gate.contains("ManagedPolicy::load()"),
+            "the managed arm must read the file at each call: {gate}"
+        );
+        let handler = crate::routes::body_of(source, concat!("async fn call", "_tool("));
+        let decided = handler
+            .find("call_tool_boundary_refusal(")
+            .expect("the handler asks the boundary gates");
+        let agent = handler
+            .find("get_agent_for_route(")
+            .expect("the handler resolves an agent");
+        let dispatch = handler
+            .find("dispatch_direct_tool(")
+            .expect("the handler dispatches");
+        assert!(decided < agent && agent < dispatch);
+    }
 }
 
 /// What a direct call to a Crew tool on a Crew-scoped chat answers (W2-DMN-9).
