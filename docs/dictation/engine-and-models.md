@@ -393,6 +393,7 @@ Measured on Apple Silicon with Metal [M], on a machine under heavy load, so the 
 | Measure | Value |
 |---|---|
 | First worker with a cold Metal cache (the first dictation after a model install, after an app update that changes ggml's kernel sources, or after the shared per user Metal cache evicted the entry) | 3.0 to 4.2 s to ready, of which 2.8 to 3.9 s is the shader compile of the embedded library |
+| The same compile on GitHub's macos-latest runner (macOS 26, arm64, a Metal cache that starts empty), debug build, three workers starting at once | about 46 s from spawn to a refused `load`, nearly all of it before `hello`, because `hello` reads ggml's backend registry and that creates the Metal device; a `--version` of the same build run first had finished in under 0.3 s, and workers started after those three said `hello` in about 0.1 s (rust.yml run 42256072334, 2026-11-06). That is 14 s short of the 60 s `hello` deadline, so `tests/dictation_worker.rs` runs one worker to its `hello` before any test that times the worker or starts several at once |
 | First exec of the installed 155 MB `biorouterd` after a reboot | about 1.3 s, then 28 to 121 ms |
 | Warm spawn to ready, before the engine had its encoder warm up: `base.en`, `small.en`, turbo `q5_0` | 146 to 169 ms, 209 to 216 ms, 264 to 279 ms |
 | Warm model load inside a benchmark process | 0.12 to 0.36 s |

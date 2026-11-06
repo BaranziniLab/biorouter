@@ -98,20 +98,44 @@ fn jfk() -> Arc<[i16]> {
     read_wav_16k(&fixture(fixtures::JFK)).into()
 }
 
-/// On macOS the first process this test binary starts takes about 3 s, whatever it runs
-/// (measured 2026-11-05: the first worker's `hello` 3.0 s, the next ones 81 to 91 ms;
-/// with the corrupt header test alone, a first `--version` absorbed the same 3 s). It
-/// is the system's, not the engine's: `biorouter dictation status --verbose`, whose
-/// parent is the shipped CLI, starts a worker and reads its `hello` in 0.41 s end to
-/// end. The tests that time the worker start one throwaway process first.
-fn first_exec_done() {
+/// Two costs fall once on the first worker a test run starts on macOS, and neither is the
+/// engine's work on a request:
+///
+/// * the system checks a newly linked executable at its first exec: the first
+///   `--version` of a freshly linked debug `biorouter` took 7.0 s on an M4 Max, the next
+///   one 0.02 s (2026-11-06);
+/// * on Apple Silicon the worker's `hello` reads ggml's backend registry, which creates
+///   the Metal device and compiles the embedded shader library unless the per user Metal
+///   cache already holds it (engine-and-models.md, "Lifecycle and deadlines"). On
+///   GitHub's macos-latest runner, whose cache starts empty, that took about 46 s with
+///   three workers starting at once (rust.yml run 42256072334), while a `--version` run
+///   first had finished within 0.3 s, and every worker started after those three said
+///   `hello` in about 0.1 s.
+///
+/// A `--version` pays only the first. So the tests that time the worker, or start
+/// several at once, first run one engine worker to its `hello` with stdin at end of
+/// file, and wait for its exit: both costs are paid before any test starts a clock, and
+/// the compile happens once, not once per test running in parallel, each against the
+/// 60 s `hello` deadline.
+fn first_worker_done() {
     static ONCE: std::sync::Once = std::sync::Once::new();
     ONCE.call_once(|| {
-        let _ = Command::new(biorouter())
-            .arg("--version")
-            .stdout(Stdio::null())
+        let output = Command::new(biorouter())
+            .args([WORKER_MARKER, "engine"])
+            .env("GGML_NO_BACKTRACE", "1")
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
             .stderr(Stdio::null())
-            .status();
+            .output()
+            .expect("start the first worker");
+        assert_eq!(output.status.code(), Some(0), "{output:?}");
+        let frame = protocol::read_frame_blocking(&mut output.stdout.as_slice())
+            .expect("the first worker's hello");
+        let hello: FromWorker = serde_json::from_slice(&frame.json).expect("a message");
+        assert!(
+            matches!(hello, FromWorker::Hello(ref h) if h.protocol == 1),
+            "{hello:?}"
+        );
     });
 }
 
@@ -120,6 +144,7 @@ async fn a_killed_worker_gives_a_typed_error_and_the_next_job_a_new_worker() {
     if !ENGINE_COMPILED {
         return;
     }
+    first_worker_done();
     let supervisor = Supervisor::start(spawner(), SupervisorConfig::default());
     let spec = Arc::new(fixture_spec(2));
     supervisor
@@ -200,7 +225,7 @@ async fn a_corrupt_model_header_is_refused_within_2_s() {
         model_size: size,
         ..fixture_spec(2)
     };
-    first_exec_done();
+    first_worker_done();
     let supervisor = Supervisor::start(spawner(), SupervisorConfig::default());
     let started = Instant::now();
     let result = supervisor.prepare(Arc::new(spec)).await;
@@ -221,7 +246,7 @@ struct Worker {
 
 impl Worker {
     fn start(root: Option<&Path>) -> Worker {
-        first_exec_done();
+        first_worker_done();
         let mut command = Command::new(biorouter());
         command
             .args([WORKER_MARKER, "engine"])
@@ -354,7 +379,7 @@ async fn the_worker_leads_a_process_group_of_its_own() {
     if !ENGINE_COMPILED {
         return;
     }
-    first_exec_done();
+    first_worker_done();
     let supervisor = Supervisor::start(spawner(), SupervisorConfig::default());
     supervisor.spawn_ahead();
     wait_for_hello(&supervisor).await;
@@ -613,6 +638,7 @@ fn verbose_status_shows_the_workers_hello() {
     if !ENGINE_COMPILED {
         return;
     }
+    first_worker_done();
     let root = tempfile::tempdir().expect("a temporary folder");
     let output = sandboxed(
         &["dictation", "status", "--format", "json", "--verbose"],
@@ -1277,7 +1303,7 @@ async fn a_worker_killed_mid_transcription_real_model() {
         use_gpu: gpu,
         n_threads: 8,
     });
-    first_exec_done();
+    first_worker_done();
     let supervisor = Supervisor::start(spawner(), SupervisorConfig::default());
     let loaded = supervisor
         .prepare(Arc::clone(&spec))
@@ -1367,7 +1393,7 @@ async fn the_idle_unload_follows_config_yaml() {
     std::fs::create_dir_all(config.parent().expect("a folder")).expect("the config folder");
     std::fs::write(&config, "BIOROUTER_DICTATION_IDLE_UNLOAD_SECS: 2\n").expect("config.yaml");
     std::env::set_var(biorouter::dictation::service::WORKER_ENV, biorouter());
-    first_exec_done();
+    first_worker_done();
 
     let service = biorouter::dictation::service();
     service
@@ -1408,7 +1434,7 @@ async fn cold_transcribe_latency() {
         return;
     }
     std::env::set_var(biorouter::dictation::service::WORKER_ENV, biorouter());
-    first_exec_done();
+    first_worker_done();
     let service = biorouter::dictation::service();
     let pcm = jfk();
     let rounds: usize = std::env::var("BIOROUTER_DICTATION_LATENCY_ROUNDS")
