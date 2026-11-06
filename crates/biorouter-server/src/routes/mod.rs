@@ -1012,7 +1012,6 @@ pub mod action_required;
 pub mod active_work;
 pub mod agent;
 pub mod apps;
-pub mod audio;
 pub mod catalog;
 pub mod coding_agents;
 pub mod config_management;
@@ -1066,7 +1065,6 @@ pub fn configure(state: Arc<crate::state::AppState>, secret_key: String) -> Rout
         .merge(agent::routes(state.clone()))
         .merge(computer_use::routes(state.clone()))
         .merge(apps::routes(state.clone()))
-        .merge(audio::routes(state.clone()))
         .merge(config_management::routes(state.clone()))
         .merge(workflow::routes(state.clone()))
         .merge(session::routes(state.clone()))

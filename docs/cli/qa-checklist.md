@@ -212,7 +212,9 @@ Spot-checked:
 These are future work, not defects:
 
 - Image/file attachment (multimodal input) — GUI-only.
-- Voice dictation (Whisper) — GUI-only.
+- Voice dictation: local dictation is being built for the terminal and the desktop alike, so it
+  is not a GUI-only feature. Its manual checks per surface, including the interactive CLI, are in
+  [Dictation testing and release](../dictation/testing-and-release.md#the-manual-qa-checklist-per-surface).
 - Knowledge graph view, history/restore, `.brkb` export/import — server/GUI-only.
 - First-class secrets-management command (keys only via `configure` / per-extension `--secret`).
 - Tabs, chat groups and split panes, interactive MCP-UI resources, session-sharing tunnel,

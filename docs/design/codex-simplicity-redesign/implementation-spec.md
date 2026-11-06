@@ -569,7 +569,9 @@ workstream and by Crew-like rows elsewhere):
     `knowledge/KbTierControl.tsx`, and the locked blocks in `settings/privacy/PrivacyPanel.tsx`
     (§5 of settings-a);
   - generated code and other non-UI code: `api/**` (generated), `crates/**`, `preload.ts`;
-  - unmounted Settings folders: `settings/{dictation,tunnel,sessions}/**`;
+  - unmounted Settings folders: `settings/{tunnel,sessions}/**` (`settings/dictation/`, the
+    inherited cloud dictation, was frozen here until PR-01 of the
+    [dictation plan](../../dictation/implementation-plan.md) deleted it in 2026-11);
   - other areas outside this redesign: `context_management/**` (except the class-only pass on
     `SystemNotificationInline.tsx` below), `LauncherView.tsx`, `Pair.tsx`, `ConfigContext.tsx`,
     `ModelAndProviderContext.tsx`, and `index.html` (except the regions the generator writes and
@@ -660,7 +662,7 @@ workstream and by Crew-like rows elsewhere):
      (`CrossAffiliationAcceptCard`, `HostManagedModelPanel`, `FirstRunPrivacyNotice`,
      `NonPrivateModelDisclosure` and `HostManagedModelNote` carry legacy size classes today),
      `context_management/**` other than `SystemNotificationInline.tsx`, `LauncherView.tsx`,
-     `Pair.tsx`, the unmounted `settings/{dictation,tunnel,sessions}/**`, and `onboarding/**` plus
+     `Pair.tsx`, the unmounted `settings/{tunnel,sessions}/**`, and `onboarding/**` plus
      `ProviderGuard.tsx` until their P2 lands. Without the list the guard fails on arrival and
      gets disabled. Extend `styles/popupType.test.ts` to the transcript files.
      Its source list is owned by WS-COMPOSER; send the request.
@@ -3150,7 +3152,9 @@ vision loop, which still measures the running app.
 | 6.15 | Chat markdown tables and code blocks (section 0) | **Crew's recipes, one look app-wide** | The earlier booktabs table and header-less code block (two looks: one in Crew, one elsewhere) |
 
 Out of scope unless the owner asks:
-- deleting the unmounted Settings folders (`dictation`, `tunnel`, `sessions`);
+- deleting the unmounted Settings folders (`tunnel`, `sessions`; `dictation` was deleted in
+  2026-11 by PR-01 of the [dictation plan](../../dictation/implementation-plan.md), on the owner's
+  decision);
 - a ⌘K chat palette;
 - an app-level "Reduce motion" setting (the OS setting covers it, [motion N]);
 - A-03's 36px content rows;

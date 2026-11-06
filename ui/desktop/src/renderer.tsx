@@ -24,6 +24,7 @@ import { installViewportPinWarning } from './utils/viewportPin';
 import { readRegistryDownload } from './utils/registryDownloadResult';
 import { openAppInThisBrowser } from './utils/appLaunchLink';
 import { exportAppInThisBrowser } from './utils/appExportRequest';
+import { clearRetiredDictationSettings } from './utils/retiredDictationSettings';
 
 const App = lazy(() => import('./App'));
 
@@ -586,6 +587,9 @@ if (needsHeadlessElectron || typeof window.appConfig === 'undefined') {
   if (import.meta.env.DEV) {
     installViewportPinWarning();
   }
+
+  // The deleted cloud dictation's provider choice (DD-89). Local only, so it needs no daemon.
+  clearRetiredDictationSettings();
 
   // Check if we're in the launcher view (doesn't need biorouterd connection)
   const isLauncher = window.location.hash === '#/launcher';
