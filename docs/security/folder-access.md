@@ -39,11 +39,13 @@ ability to bypass another tool's permissions. An unattended route returns a stru
 ## Seeing and revoking a chat's folders
 
 In the desktop app, and in a browser served by `biorouter serve`, the name of the chat's
-working folder (its workspace) sits beneath the chat composer. Point at the name for a moment,
-or move focus to it with Tab, and a card opens above the composer. It never covers the draft
-or the composer's controls. The card has two sections:
+working folder (its workspace) sits beneath the chat composer. It is the folder's own name, as
+the sidebar's folder groups show it: `~` for your home folder, and `Crew` for the folder Crew
+tasks run in. Point at the name for a moment, or move focus to it with Tab, and a preview of a
+card opens above the composer. It never covers the draft or the composer's controls. The card
+has two sections:
 
-- **Working folder** shows the folder's full path. On Home, and in a chat that has no messages
+- **Working folder** shows where the folder is. On Home, and in a chat that has no messages
   yet, a **Choose folder…** button in this section picks a different working folder. Once the
   chat has messages its working folder is fixed, and the section says so instead.
 - **Other approved folders**, in a chat only, lists every other folder allowed for this
@@ -54,22 +56,40 @@ or the composer's controls. The card has two sections:
 The card ends by saying what folder approval covers. The file editor, file analysis and image
 tools ask before they use another folder. Shell commands and document tools do not ask.
 
+Every folder in the card is written in the card's ordinary text, in one colour. In the desktop
+app, `~` stands for your home folder, so a folder in it reads `~/Desktop/BioRouter`, and a folder
+anywhere else is written in full. In a browser served by `biorouter serve`, and when the desktop
+app uses an external backend, every folder is written in full, because it may be on another
+computer whose home folder is not yours. A long path wraps after a `/` or a `\`, not in the middle
+of a folder's name, and selecting it copies exactly what it shows. Each **Revoke** button reads its
+folder's full path to a screen reader. The folder approval card in the chat is different on
+purpose: there the folder is the exact thing you are allowing, so it is written in full in a
+monospaced face, `~` never stands in for it, and it still wraps after a separator.
+
+- A card that a hover or Tab opened is a preview. It closes when the pointer leaves both the
+  name and the card, or when focus moves away from the name, and the name looks as it does at
+  rest.
 - Click the folder name, or press Enter or Space while it has focus, to keep the card open.
-  This works in every state, including Home and a chat before its first message. A second
-  click closes it. Opening it from the keyboard also moves focus into the card, so Tab reaches
-  **Choose folder…** or each **Revoke** button. A press inside the card keeps it open too.
-- A card that was not kept open closes when the pointer leaves both the name and the card, or
-  when focus moves away from the name.
-- Escape, or a click outside the card, closes it either way. Escape, and Shift+Tab from the
-  card itself, return focus to the folder name; a click outside leaves focus where you clicked.
+  This works in every state, including Home and a chat before its first message, and the name
+  then stays shaded until the card closes. A second click closes it. Opening it from the
+  keyboard also moves focus into the card, so Tab reaches **Choose folder…** or each
+  **Revoke** button. A press inside the card keeps it open too.
+- A kept card stays open when the pointer moves away, when the page scrolls and when you switch
+  to another window. Escape, or a click outside the card, closes it, as does focus moving to
+  something else in the page. Escape, and Shift+Tab from the card itself, return focus to the
+  folder name; a click outside leaves focus where you clicked.
 - While the system folder chooser that **Choose folder…** opens is on screen, no card shows.
 - While an existing chat's working folder has not loaded, a folder icon without a name stands
   in for it and opens the same card. The Working folder section reads "Not known yet.", and
   the chat's grants stay listed and revocable.
-- In the desktop app, ⌘-click (Ctrl-click on Windows and Linux) on the name opens the folder in
-  the file manager and does not open the card.
+- In the desktop app, ⌘-click on macOS, or Ctrl-click on Windows and Linux, on the name opens
+  the folder in the file manager and does not keep the card. In a browser served by
+  `biorouter serve` there is no file manager to open, so the same click keeps the card like any
+  other click.
 - The context ring and the cost beside it open cards that behave the same way. One card is
-  open at a time across the footer: opening one closes the other.
+  open at a time across the footer: a preview gives way to the next one you point at, but while
+  you have kept a card open, pointing at another item opens nothing, so the kept card and
+  anything you typed in it stay. Click the other item, or Tab to it, to switch.
 - In a browser, the Other approved folders section also holds the **Folder approval key**
   field once the chat has a grant to revoke. See [Browser setup](#browser-setup).
 
@@ -154,7 +174,12 @@ denial, cancellation, concurrent requests, session isolation, unattended recover
 symbolic-link retargeting. Core authority tests ensure the folder proof cannot approve another
 protected action. Server tests exercise scope separation and the startup digest protocol.
 UI tests verify a refused key remains retryable, duplicate clicks produce one decision, and a
-failed revocation remains visible. Actual model-driven app verification is a separate release
+failed revocation remains visible. `bottom_menu/FolderAccessCard.test.tsx` and, in Chromium,
+`bottom_menu/footerCard.browser.test.tsx` cover how the card writes a folder (the `~` form, the
+full path for a backend that is not this machine's, where a long path wraps, right-to-left names,
+what a selection copies) and the modifier click on each platform and in a browser;
+`bottom_menu/footerCards.contract.test.tsx` covers preview and kept cards;
+`ToolCallPreview.folderAccess.test.tsx` holds the approval card to the exact, monospaced path. Actual model-driven app verification is a separate release
 gate; unit-test results alone do not establish that it passed.
 
 The desktop-lifetime correction is tracked by [#455](https://github.com/BaranziniLab/biorouter/issues/455),
@@ -168,4 +193,5 @@ acceptance gates; preparing the correction does not establish that they passed.
 - [Permission modes](permission-modes.md): the tool approvals that still apply inside the working folder.
 - [Secret guard](secret-guard.md): the credential file rules that a folder grant never overrides.
 - [Reaching Biorouter from a browser](../deployment/browser-access.md): starting `biorouter serve` and what a browser session can and cannot do.
+- [The shared controls](../desktop-ui/shared-controls.md#composer-footer-cards): how the working folder's card is built, writes a folder, and answers a hover and a click.
 - [External folder authorization requirements](assessment-2026-10/follow-up-proposals/external-folder-authorization.md): the requirements (#424) this behaviour was built to.

@@ -1377,9 +1377,14 @@ value's *location* is as load-bearing as the number.
   (`bottom_menu/ComposerFooter.tsx`): the working folder on the left, the context
   ring and the chat's cost on the right, only the folder on Home. The three
   footer items open the same light hover card (`bottom_menu/useFooterCard.ts`,
-  `bottom_menu/FooterCard.tsx`) with one behaviour: a hover opens it after
-  300ms, a click or Enter pins it, Escape or a press outside closes it, one card
-  is open at a time, and it hangs above the composer card. A new footer item
+  `bottom_menu/FooterCard.tsx`) with one behaviour: a hover previews it after
+  300ms and a Tab at once (its trigger holds nothing), a click, tap, Enter or Space keeps it
+  (its trigger holds `--background-fill-strong`, `data-pinned`), a hover never
+  replaces a kept card, Escape or a press outside closes it, one card is open at
+  a time, and it hangs above the composer card. That is the app's one pointer
+  rule, "hover peeks, click pins" (`design.md` D-43; `docs/desktop-ui/shared-controls.md`,
+  "Hover and click"). The folder card writes a path as `~/…` in the sans reading
+  (`FooterCardPath`, `utils/folderPath.ts`), never mono. A new footer item
   uses that card, never a `Tooltip` (`docs/desktop-ui/shared-controls.md`,
   "Composer footer cards"). The card's classes live in one module,
   `composer/composerCard.ts`, and Home renders the
