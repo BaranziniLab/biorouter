@@ -760,6 +760,24 @@ pub(crate) mod tests {
         }
     }
 
+    /// A Baseten decision model's record keeps the slug, and its lines name it
+    /// by the alias the run's warning and usage line use.
+    #[test]
+    fn a_baseten_decision_reads_by_its_alias() {
+        let slug =
+            DecisionModelRef::new("baseten_decision", "decision-models/baseten-joey-2b-latest");
+        let mut row = record("d1", 0.9);
+        row.model = Some(slug.clone());
+        let line = record_line(&row);
+        assert!(line.contains("  joey-1"), "{line}");
+        assert!(!line.contains("baseten-joey"), "{line}");
+
+        let mut agg = aggregate(DecisionOrigin::Monitor, "Form reached", 3);
+        agg.model = Some(slug);
+        let line = aggregate_line(&agg, 12);
+        assert!(line.ends_with(" · joey-1"), "{line}");
+    }
+
     #[test]
     fn turns_made_within_a_minute_get_different_short_ids() {
         // Two UUID v7 ids minted milliseconds apart share their clock prefix.

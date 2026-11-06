@@ -1439,6 +1439,13 @@ fn shorten_path_with_home(path: &str, debug: bool, home: Option<&Path>) -> Strin
 }
 
 // Session display functions
+/// The banner's `model` row: a Baseten decision model by its alias
+/// (`joey-1`), as every other terminal surface names it, any other model by
+/// its id.
+fn banner_model(provider: &str, model: &str) -> String {
+    crate::commands::decide::model_name(provider, model)
+}
+
 pub fn display_session_info(
     resume: bool,
     provider: &str,
@@ -1481,7 +1488,7 @@ pub fn display_session_info(
         }
         None => {
             row("provider", provider.to_string());
-            row("model", model.to_string());
+            row("model", banner_model(provider, model));
         }
     }
 
@@ -1755,6 +1762,19 @@ mod tests {
     use super::*;
     use base64::Engine as _;
     use rmcp::model::{CallToolResult, Content, Meta, RawResource, ResourceContents};
+
+    #[test]
+    fn the_banner_names_a_baseten_decision_model_by_its_alias() {
+        assert_eq!(
+            banner_model(
+                "baseten_decision",
+                "decision-models/baseten-mammoth-27b-latest"
+            ),
+            "mammoth-1"
+        );
+        assert_eq!(banner_model("ollama_decision", "tev1:0.8b"), "tev1:0.8b");
+        assert_eq!(banner_model("openai", "gpt-6-sol"), "gpt-6-sol");
+    }
 
     /// The classic CLI prints a turn's decision marker as one dim line per
     /// origin, ` · fired` only after a monitor that fired, and nothing of the

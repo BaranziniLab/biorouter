@@ -146,17 +146,21 @@ fn fmt_cost_with_completeness(cost: Option<f64>, partial: bool) -> String {
     }
 }
 
+/// Whether a decision subtotal is all requests to a local model with no
+/// meter: something unmetered, nothing billed at an unknown price, and no
+/// dollars.
+fn decisions_unmetered_only(decisions: &DecisionUsageSubtotal) -> bool {
+    decisions.has_unmetered && !decisions.has_unpriced && decisions.cost.unwrap_or(0.0) == 0.0
+}
+
 /// A row's COST cell. A bucket of requests to a local decision model alone
 /// is counted as $0 by the report (the model has no meter), and reads "not
 /// metered", as its decision line does. An unpriced Baseten bucket sets
-/// `has_unpriced` and keeps the usual "—".
+/// `has_unpriced` and keeps the usual "—": Baseten bills it.
 fn row_cost_cell(row: &UsageReportRow) -> String {
     let unmetered = row.turns == 0
         && !row.has_unpriced
-        && row
-            .decisions
-            .as_ref()
-            .is_some_and(|decisions| decisions.cost.is_none());
+        && row.decisions.as_ref().is_some_and(decisions_unmetered_only);
     if unmetered {
         return "not metered".to_string();
     }
@@ -197,24 +201,31 @@ fn sum_decisions(rows: &[UsageReportRow]) -> (i64, Option<DecisionUsageSubtotal>
                 (a, b) => Some(a.unwrap_or(0.0) + b.unwrap_or(0.0)),
             },
             has_unpriced: a.has_unpriced || b.has_unpriced,
+            has_unmetered: a.has_unmetered || b.has_unmetered,
         });
     (requests, subtotal)
 }
 
 /// `Decision models: 600 requests, 1,200,600 tokens, $0.12`. A decision
-/// model on Ollama has no meter, so a subtotal with no price reads "not
-/// metered" rather than a cost.
+/// model on Ollama has no meter, so its requests read "not metered". A
+/// Baseten model the price list does not know is billed at a price nobody
+/// here knows, so its requests read "unavailable", never "not metered".
 fn decision_line(requests: i64, decisions: Option<&DecisionUsageSubtotal>) -> Option<String> {
     let decisions = decisions?;
     let tokens = decisions
         .total_tokens
         .unwrap_or(decisions.input_tokens + decisions.output_tokens);
-    let cost = match decisions.cost {
-        None => "not metered".to_string(),
-        Some(_) if decisions.has_unpriced => {
-            format!("{}, some not metered", fmt_cost(decisions.cost))
+    let cost = if decisions.has_unpriced {
+        match decisions.cost {
+            Some(_) => format!("{}, some unavailable", fmt_cost(decisions.cost)),
+            None => "cost unavailable".to_string(),
         }
-        Some(_) => fmt_cost(decisions.cost),
+    } else if decisions_unmetered_only(decisions) || decisions.cost.is_none() {
+        "not metered".to_string()
+    } else if decisions.has_unmetered {
+        format!("{}, some not metered", fmt_cost(decisions.cost))
+    } else {
+        fmt_cost(decisions.cost)
     };
     let noun = if requests == 1 { "request" } else { "requests" };
     Some(format!(
@@ -653,7 +664,10 @@ mod tests {
                 output_tokens: 600,
                 total_tokens: Some(1_200_600),
                 cost,
-                has_unpriced: cost.is_none(),
+                // An unpriced Ollama request has no meter; an unpriced Baseten
+                // one is billed at a price nobody here knows.
+                has_unpriced: cost.is_none() && provider != "ollama_decision",
+                has_unmetered: cost.is_none() && provider == "ollama_decision",
             }),
         }
     }
@@ -725,6 +739,60 @@ mod tests {
             decision_line(requests, decisions.as_ref()).unwrap(),
             "Decision models: 1 request, 1,200,600 tokens, not metered"
         );
+        // A Baseten model the price list does not know is billed,
+        // so its requests never read "not metered".
+        let unpriced = [decision_row(
+            "baseten_decision",
+            "decision-models/baseten-unlisted-99b-latest",
+            20,
+            None,
+        )];
+        let (requests, decisions) = sum_decisions(&unpriced);
+        let line = decision_line(requests, decisions.as_ref()).unwrap();
+        assert_eq!(
+            line,
+            "Decision models: 20 requests, 1,200,600 tokens, cost unavailable"
+        );
+        // Mixed with a priced Baseten model, the dollars are a lower bound.
+        let priced = decision_row(
+            "baseten_decision",
+            "decision-models/baseten-mammoth-27b-latest",
+            600,
+            Some(0.12),
+        );
+        let mixed = [priced.clone(), unpriced[0].clone()];
+        let (requests, decisions) = sum_decisions(&mixed);
+        assert!(
+            decision_line(requests, decisions.as_ref())
+                .unwrap()
+                .ends_with(", $0.12, some unavailable"),
+            "{decisions:?}"
+        );
+        // Mixed with a local model, the rest has no meter.
+        let with_local = [priced, local[0].clone()];
+        let (requests, decisions) = sum_decisions(&with_local);
+        assert!(
+            decision_line(requests, decisions.as_ref())
+                .unwrap()
+                .ends_with(", $0.12, some not metered"),
+            "{decisions:?}"
+        );
+        // A local model alone reads "not metered" whether the subtotal's
+        // cost is absent or a $0.
+        let zero = DecisionUsageSubtotal {
+            cost: Some(0.0),
+            ..local[0].decisions.clone().unwrap()
+        };
+        assert!(decision_line(1, Some(&zero))
+            .unwrap()
+            .ends_with(", not metered"));
+        let local_zero_row = UsageReportRow {
+            cost: Some(0.0),
+            decisions: Some(zero),
+            ..local[0].clone()
+        };
+        assert_eq!(row_cost_cell(&local_zero_row), "not metered");
+
         // A range with no decision requests prints no line.
         let none = format_usage_text(
             &rows[..1],

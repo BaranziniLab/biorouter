@@ -548,6 +548,17 @@ mod tests {
         let lines = text(&card_lines(&failed));
         assert_eq!(lines.len(), 2);
         assert!(lines[1].contains("did not answer"));
+
+        // A Baseten model's card names it by its alias, as the status line
+        // and the reply text do, not by the slug the record keeps.
+        let mut hosted = card_record();
+        hosted.model = Some(biorouter::decision::DecisionModelRef::new(
+            "baseten_decision",
+            "decision-models/baseten-elephant-9b-latest",
+        ));
+        hosted.tier = Some("public".into());
+        let lines = text(&card_lines(&hosted));
+        assert_eq!(lines[0], "◆ Decision · elephant-1 · public · 22 ms");
     }
 
     fn summary() -> SessionDecisionSummary {

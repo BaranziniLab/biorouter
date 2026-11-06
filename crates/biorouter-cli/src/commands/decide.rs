@@ -45,9 +45,11 @@ use biorouter::decision::types::validate_questions;
 use biorouter::decision::{
     Answer, ChunkOutcome, Decision, DecisionChunk, DecisionContext, DecisionError, DecisionKind,
     DecisionModelEntry, DecisionModelRef, DecisionOrigin, DecisionRequest, DecisionResult,
-    DecisionService, DecisionSession, DecisionUsage, ProbabilitySource, Question, Threshold,
+    DecisionService, DecisionSession, DecisionUsage, ModelSource, ProbabilitySource, Question,
+    Threshold,
 };
 use biorouter::privacy::ProviderTier;
+use biorouter::providers::decision::catalog::{baseten_display_name, BASETEN_DECISION_PROVIDER};
 use biorouter::session::SessionManager;
 
 /// Cells a probability bar takes.
@@ -315,8 +317,34 @@ pub fn calibration_flag(decision: &Decision) -> String {
     }
 }
 
-/// The last segment of a model id: `tev1:0.8b`, `elephant-1`.
+/// How a terminal names a decision model: a known Baseten slug by its alias
+/// (`decision-models/baseten-joey-2b-latest` is `joey-1`), an unknown one
+/// without its `decision-models/` prefix, any other model by its id. Records,
+/// the decision log and the wire keep the slug; only what is printed changes.
+pub fn model_name(provider: &str, model: &str) -> String {
+    if provider == BASETEN_DECISION_PROVIDER {
+        baseten_display_name(model)
+    } else {
+        model.to_string()
+    }
+}
+
+/// `provider/name` by [`model_name`]: `baseten_decision/joey-1`, the name
+/// `--model` takes and the run's usage line prints.
+pub fn model_label(model: &DecisionModelRef) -> String {
+    terminal_text(&format!(
+        "{}/{}",
+        model.provider,
+        model_name(&model.provider, &model.model)
+    ))
+}
+
+/// The short name: a Baseten decision model's alias (`joey-1`), else the last
+/// segment of the model id (`tev1:0.8b`).
 pub fn short_model(model: &DecisionModelRef) -> String {
+    if model.provider == BASETEN_DECISION_PROVIDER {
+        return terminal_text(&baseten_display_name(&model.model));
+    }
     terminal_text(model.model.rsplit('/').next().unwrap_or(&model.model))
 }
 
@@ -444,7 +472,7 @@ pub fn render_decision(decision: &Decision, question: Option<&Question>) -> Vec<
         answer_label(decision),
         format_p(answer_probability(decision)),
         calibration_flag(decision),
-        decision.model.label(),
+        model_label(&decision.model),
         format_latency(decision.latency_ms)
     ));
     if let Some(line) = threshold_line(decision, question) {
@@ -622,13 +650,21 @@ pub fn render_model_list(entries: &[DecisionModelEntry]) -> Vec<String> {
     if entries.is_empty() {
         return vec![NO_MODEL_HELP.to_string()];
     }
-    let name_w = entries
+    // A Baseten model by its alias, as `--model` takes it; `--format json`
+    // keeps the slug.
+    let names: Vec<String> = entries
         .iter()
-        .map(|e| format!("{}/{}", e.provider, e.model).chars().count())
-        .max()
-        .unwrap_or(0);
+        .map(|e| {
+            terminal_text(&format!(
+                "{}/{}",
+                e.provider,
+                model_name(&e.provider, &e.model)
+            ))
+        })
+        .collect();
+    let name_w = names.iter().map(|n| n.chars().count()).max().unwrap_or(0);
     let mut out = vec![format!("Decision models ({}, local first):", entries.len())];
-    for entry in entries {
+    for (entry, name) in entries.iter().zip(&names) {
         let kinds: Vec<&str> = entry
             .kinds
             .iter()
@@ -654,7 +690,7 @@ pub fn render_model_list(entries: &[DecisionModelEntry]) -> Vec<String> {
         };
         out.push(format!(
             "  {:<name_w$}  {place} · {} tokens · {} · {adapter}{unloadable}",
-            format!("{}/{}", entry.provider, entry.model),
+            name,
             group_thousands(entry.context_tokens),
             kinds.join(", ")
         ));
@@ -836,6 +872,12 @@ struct PinnedModel {
     /// `provider/name`, by the listing's name (`baseten_decision/mammoth-1`),
     /// which is what `--model` takes and the docs show, not the Baseten slug.
     label: String,
+    /// Where the model came from (`--model` or the chat's own default, else
+    /// the configured default or the automatic choice), by the service's own
+    /// rule, so a privacy refusal advises what would change it. Every request
+    /// names the pinned model, which the service would otherwise read as
+    /// `--model`.
+    source: ModelSource,
 }
 
 /// The model a run sends to, or, for a run about a chat, why none could be
@@ -854,6 +896,7 @@ async fn pin_model(
     session: Option<&DecisionSession>,
     wanted: Option<DecisionModelRef>,
 ) -> DecisionResult<(PinnedModel, Vec<String>)> {
+    let source = ModelSource::of(session, wanted.as_ref());
     let resolved = resolve_run_model(service, session, wanted.as_ref()).await?;
     let lines = match session {
         Some(session) => session_warnings(
@@ -872,6 +915,7 @@ async fn pin_model(
         PinnedModel {
             model_ref: resolved.model_ref,
             label,
+            source,
         },
         lines,
     ))
@@ -1060,8 +1104,8 @@ async fn decide_text(options: &DecideOptions, target: &Target<'_>) -> Result<()>
         questions: target.template.questions.clone(),
         context: DecisionContext::Text(state),
     };
-    let model = match target.model {
-        RunModel::Pinned(pinned) => &pinned.model_ref,
+    let pinned = match target.model {
+        RunModel::Pinned(pinned) => pinned,
         RunModel::Unresolved(error) => {
             if let Some(session) = target.session {
                 target
@@ -1074,7 +1118,7 @@ async fn decide_text(options: &DecideOptions, target: &Target<'_>) -> Result<()>
     };
     let decisions = target
         .service
-        .decide(target.session, Some(model), &request)
+        .decide_pinned(target.session, &pinned.model_ref, pinned.source, &request)
         .await
         .map_err(|e| anyhow!("{e}"))?;
     if options.json {
@@ -1118,8 +1162,8 @@ async fn decide_directory(options: &DecideOptions, target: &Target<'_>, dir: &Pa
             }
         }
     }
-    let model = match target.model {
-        RunModel::Pinned(pinned) => &pinned.model_ref,
+    let pinned = match target.model {
+        RunModel::Pinned(pinned) => pinned,
         RunModel::Unresolved(error) => {
             if let (Some(session), false) = (target.session, chunks.is_empty()) {
                 let unsent: Vec<DecisionChunk> =
@@ -1136,9 +1180,10 @@ async fn decide_directory(options: &DecideOptions, target: &Target<'_>, dir: &Pa
         let positions: Vec<usize> = group.iter().map(|(index, _)| *index).collect();
         let outcomes = target
             .service
-            .decide_many(
+            .decide_many_pinned(
                 target.session,
-                Some(model),
+                &pinned.model_ref,
+                pinned.source,
                 &target.template.questions,
                 group.iter().map(|(_, chunk)| chunk.clone()).collect(),
             )
@@ -1450,6 +1495,43 @@ pub(crate) mod tests {
         assert_eq!(lines[4], "Threshold: P(yes) 0.31 < 0.80, failed");
     }
 
+    /// A Baseten decision model is named by its alias wherever a terminal
+    /// prints it, as the run's warning and usage line do: the record keeps
+    /// the slug, and the Answer line used to print it
+    /// (`baseten_decision/decision-models/baseten-joey-2b-latest`).
+    #[test]
+    fn a_baseten_decision_model_is_named_by_its_alias() {
+        let slug = "decision-models/baseten-joey-2b-latest";
+        let mut d = yes_no(0.82);
+        d.model = DecisionModelRef::new("baseten_decision", slug);
+        let lines = render_decision(&d, None);
+        let answer = lines.iter().find(|l| l.starts_with("Answer:")).unwrap();
+        assert!(answer.contains("  baseten_decision/joey-1  "), "{answer}");
+        assert!(!answer.contains("baseten-joey"), "{answer}");
+        assert_eq!(d.model.model, slug, "the record keeps the slug");
+
+        let model = DecisionModelRef::new("baseten_decision", slug);
+        assert_eq!(short_model(&model), "joey-1");
+        assert_eq!(model_label(&model), "baseten_decision/joey-1");
+        // An alias is already its own name, and an unknown slug loses only
+        // its prefix.
+        let alias = DecisionModelRef::new("baseten_decision", "joey-1");
+        assert_eq!(model_label(&alias), "baseten_decision/joey-1");
+        let unknown = DecisionModelRef::new(
+            "baseten_decision",
+            "decision-models/baseten-unlisted-99b-latest",
+        );
+        assert_eq!(short_model(&unknown), "baseten-unlisted-99b-latest");
+        assert_eq!(
+            model_label(&unknown),
+            "baseten_decision/baseten-unlisted-99b-latest"
+        );
+        // Every other model keeps its id.
+        let local = DecisionModelRef::new("ollama_decision", "tev1:0.8b");
+        assert_eq!(model_label(&local), "ollama_decision/tev1:0.8b");
+        assert_eq!(model_name("ollama_decision", "a/b"), "a/b");
+    }
+
     #[test]
     fn a_score_is_drawn_by_its_levels_and_gated_from_a_level_up() {
         let question = Question {
@@ -1589,7 +1671,7 @@ pub(crate) mod tests {
             },
             DecisionModelEntry {
                 provider: "baseten_decision".into(),
-                model: "decision-models/elephant-1".into(),
+                model: "decision-models/baseten-elephant-9b-latest".into(),
                 display_name: "elephant-1".into(),
                 context_tokens: 16_384,
                 kinds: vec![DecisionKindTag::Binary],
@@ -1607,6 +1689,13 @@ pub(crate) mod tests {
             "private · this computer · 8,192 tokens · yes/no, choice, score · system_one"
         ));
         assert!(lines[2].contains("public · 16,384 tokens · yes/no · system_one"));
+        // A Baseten model by its alias, the name `--model` takes.
+        assert!(
+            lines[2].starts_with("  baseten_decision/elephant-1  "),
+            "{}",
+            lines[2]
+        );
+        assert!(!lines[2].contains("decision-models/"), "{}", lines[2]);
     }
 
     #[test]
@@ -2078,6 +2167,62 @@ pub(crate) mod tests {
             assert!(logged[1].batch_id.is_some());
             assert_eq!(lab.hosted_calls.load(Ordering::SeqCst), 0, "nothing sent");
         }
+
+        /// A run about a private chat whose model the configured default
+        /// chose is refused with the advice to change that default, and one
+        /// that named the model with `--model` with the advice to name a
+        /// private one, for one text and for a batch alike. Every request names
+        /// the pinned model, so the service read every run as `--model` and
+        /// told a person who never named a model to name another.
+        #[tokio::test]
+        async fn a_refusal_advises_by_where_the_pinned_model_came_from() {
+            let key_advice = "Set BIOROUTER_DECISION_MODEL to a private model, or start this \
+                              work in a public chat.";
+            let named_advice = "Name a private decision model (decision_models lists them), or \
+                                start this work in a public chat.";
+            let lab = Arc::new(Lab {
+                local_gone: Mutex::new(true),
+                hosted_calls: Arc::new(AtomicUsize::new(0)),
+            });
+            let joey = DecisionModelRef::new("baseten_decision", "joey-1");
+            let service: &'static DecisionService = Box::leak(Box::new(
+                DecisionService::new(lab.clone())
+                    .with_use_gate(Arc::new(Open))
+                    .with_default_model(Some(joey.clone())),
+            ));
+            let private = DecisionSession::new("p", SessionClassification::Private, true);
+            let single = options(Some("SYNTHETIC NOTE"), None);
+            let question = build_question(&single).unwrap();
+            let template = DecisionRequest {
+                questions: std::iter::once((single.name.clone(), question.clone())).collect(),
+                context: DecisionContext::Text(String::new()),
+            };
+            let dir = tempfile::tempdir().unwrap();
+            std::fs::write(dir.path().join("a.txt"), "SYNTHETIC NOTE A").unwrap();
+            let batch = options(None, Some(dir.path().to_path_buf()));
+
+            for (wanted, advice) in [(None, key_advice), (Some(joey.clone()), named_advice)] {
+                let model = run_model_for_chat(service, &private, wanted.clone()).await;
+                let RunModel::Pinned(pinned) = &model else {
+                    panic!("the configured default pins: {model:?}");
+                };
+                assert_eq!(pinned.label, "baseten_decision/joey-1");
+                let target = Target {
+                    service,
+                    session: Some(&private),
+                    model: &model,
+                    template: &template,
+                    question: &question,
+                };
+                let why = decide_text(&single, &target).await.unwrap_err().to_string();
+                assert!(why.ends_with(advice), "{wanted:?}: {why}");
+
+                let outcome = decide_directory(&batch, &target, dir.path()).await;
+                let why = outcome.unwrap_err().to_string();
+                assert!(why.ends_with(advice), "{wanted:?}, batch: {why}");
+            }
+            assert_eq!(lab.hosted_calls.load(Ordering::SeqCst), 0, "nothing sent");
+        }
     }
 
     #[test]
@@ -2087,7 +2232,7 @@ pub(crate) mod tests {
         assert_eq!(
             short_model(&DecisionModelRef::new(
                 "baseten_decision",
-                "decision-models/joey-1"
+                "decision-models/baseten-joey-2b-latest"
             )),
             "joey-1"
         );

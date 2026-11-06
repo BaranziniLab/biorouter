@@ -21,6 +21,7 @@ use biorouter::providers::provider_test::test_provider_configuration;
 // Whether Ollama serves a model from ollama.com instead of this machine (a
 // `cloud` or `-cloud` tag). The provider's own rule, not a copy of it: the
 // copy that used to live here had to be pinned to the provider's test cases.
+use biorouter::providers::decision::chat::is_decision_chat_provider;
 use biorouter::providers::utils::is_ollama_cloud_model;
 use biorouter::providers::{create, providers, retry_operation, RetryConfig};
 use biorouter::session::SessionType;
@@ -909,13 +910,43 @@ where
     Ok(Some(checked))
 }
 
+/// The providers `configure` offers for a chat: every registered one but the
+/// decision providers, as the desktop's provider catalog does. A decision
+/// model answers a question with probabilities and runs no agent loop, so it
+/// can never pass the chat check at the end of the setup, and as a lead model
+/// it would make every later chat a decision chat. A decision model is bound
+/// with `biorouter models set --provider ollama_decision --model <model>`.
+async fn chat_providers() -> Vec<(
+    biorouter::providers::base::ProviderMetadata,
+    biorouter::providers::base::ProviderType,
+)> {
+    let mut available = providers().await;
+    available.retain(|(meta, _)| !is_decision_chat_provider(&meta.name));
+    available
+}
+
+/// What the lead/worker setup says when the default model is a decision model:
+/// the worker is the default model, and a decision model cannot take a chat's
+/// turns.
+const LEAD_WORKER_NEEDS_A_CHAT_DEFAULT: &str =
+    "Your default model is a decision model, which answers questions with probabilities and \
+     cannot take a chat's turns, so lead/worker mode does not apply. Choose a chat model as \
+     your default first (biorouter configure, then Configure Providers).";
+
+/// Why lead/worker mode cannot be set up over this default provider, or None.
+fn lead_worker_refusal(default_provider: Option<&str>) -> Option<&'static str> {
+    default_provider
+        .is_some_and(is_decision_chat_provider)
+        .then_some(LEAD_WORKER_NEEDS_A_CHAT_DEFAULT)
+}
+
 #[allow(clippy::too_many_lines)]
 pub async fn configure_provider_dialog() -> anyhow::Result<bool> {
     // Get global config instance
     let config = Config::global();
 
-    // Get all available providers and their metadata
-    let mut available_providers = providers().await;
+    // Get the chat providers and their metadata.
+    let mut available_providers = chat_providers().await;
 
     // Order as the GUI does: local models first (Llama Server, then Ollama),
     // institutional second, everything else alphabetically by display name.
@@ -1764,9 +1795,16 @@ pub async fn configure_lead_worker_dialog() -> anyhow::Result<()> {
         return Ok(());
     }
 
+    // The worker is the default model, so a decision model there leaves
+    // nothing for the lead to hand turns to.
+    if let Some(refusal) = lead_worker_refusal(config.get_biorouter_provider().ok().as_deref()) {
+        let _ = cliclack::log::warning(refusal);
+        return Ok(());
+    }
+
     // Pick the lead provider, defaulting to the configured lead provider or
     // the main provider.
-    let mut available_providers = providers().await;
+    let mut available_providers = chat_providers().await;
     available_providers.sort_by(|a, b| a.0.display_name.cmp(&b.0.display_name));
     let provider_items: Vec<(&String, &str, &str)> = available_providers
         .iter()
@@ -2660,6 +2698,45 @@ fn print_non_private_model_disclosure(
         cliclack::log::warning(note)?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod decision_provider_tests {
+    use super::{chat_providers, lead_worker_refusal, LEAD_WORKER_NEEDS_A_CHAT_DEFAULT};
+    use biorouter::providers::providers;
+
+    /// The two decision providers are registered, and neither is offered as a
+    /// chat's provider or as a lead model: a decision model cannot pass the
+    /// chat check, and as a lead it would turn every chat into a decision chat.
+    #[tokio::test]
+    async fn configure_offers_no_decision_provider() {
+        let registered: Vec<String> = providers().await.into_iter().map(|(m, _)| m.name).collect();
+        for name in ["ollama_decision", "baseten_decision"] {
+            assert!(registered.iter().any(|n| n == name), "{name} is registered");
+        }
+        let offered: Vec<String> = chat_providers()
+            .await
+            .into_iter()
+            .map(|(m, _)| m.name)
+            .collect();
+        assert!(
+            !offered.iter().any(|n| n.ends_with("_decision")),
+            "{offered:?}"
+        );
+        assert!(offered.iter().any(|n| n == "ollama"), "{offered:?}");
+        assert_eq!(offered.len(), registered.len() - 2);
+    }
+
+    #[test]
+    fn lead_worker_does_not_apply_over_a_decision_default() {
+        assert_eq!(
+            lead_worker_refusal(Some("ollama_decision")),
+            Some(LEAD_WORKER_NEEDS_A_CHAT_DEFAULT)
+        );
+        assert!(lead_worker_refusal(Some("baseten_decision")).is_some());
+        assert_eq!(lead_worker_refusal(Some("openai")), None);
+        assert_eq!(lead_worker_refusal(None), None);
+    }
 }
 
 #[cfg(test)]

@@ -1161,17 +1161,24 @@ impl CliSession {
     }
 
     async fn handle_compact(&mut self) -> Result<()> {
-        let prompt =
-            "Are you sure you want to compact this chat? This will condense the message history.";
-        let should_summarize = match cliclack::confirm(prompt).initial_value(true).interact() {
-            Ok(choice) => choice,
-            Err(e) => {
-                if e.kind() == std::io::ErrorKind::Interrupted {
-                    false
-                } else {
-                    return Err(e.into());
+        let provider_name = match self.agent.provider().await {
+            Ok(provider) => provider.get_name().to_string(),
+            Err(_) => String::new(),
+        };
+        // A decision chat asks nothing: the agent answers there that there is
+        // no context to compact, as the TUI does.
+        let should_summarize = match compact_confirmation(&provider_name) {
+            None => true,
+            Some(prompt) => match cliclack::confirm(prompt).initial_value(true).interact() {
+                Ok(choice) => choice,
+                Err(e) => {
+                    if e.kind() == std::io::ErrorKind::Interrupted {
+                        false
+                    } else {
+                        return Err(e.into());
+                    }
                 }
-            }
+            },
         };
 
         if should_summarize {
@@ -2114,6 +2121,15 @@ impl CliSession {
     }
 }
 
+/// What `/compact` asks before it runs, or None in a decision chat: there
+/// the agent answers that there is no context to compact, and a prompt that
+/// promised to condense the history contradicted that answer on the next line.
+fn compact_confirmation(provider_name: &str) -> Option<&'static str> {
+    tui::draws_context_meter(provider_name).then_some(
+        "Are you sure you want to compact this chat? This will condense the message history.",
+    )
+}
+
 fn emit_stream_event(event: &StreamEvent) {
     if let Ok(json) = serde_json::to_string(event) {
         println!("{}", json);
@@ -2821,6 +2837,14 @@ fn format_elapsed_time(duration: std::time::Duration) -> String {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn compact_asks_first_except_in_a_decision_chat() {
+        assert!(super::compact_confirmation("openai")
+            .is_some_and(|prompt| prompt.contains("condense the message history")));
+        assert_eq!(super::compact_confirmation("ollama_decision"), None);
+        assert_eq!(super::compact_confirmation("baseten_decision"), None);
+    }
 
     fn confirmation_card(tool_name: &str, arguments: serde_json::Value) -> super::Message {
         super::Message::assistant().with_content(

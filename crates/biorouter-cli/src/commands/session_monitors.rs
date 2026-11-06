@@ -24,7 +24,7 @@ use biorouter::decision::{DecisionKind, DecisionModelRef, Question};
 use biorouter::session::SessionManager;
 
 use super::apps::configured_port;
-use super::decide::{clip, format_p, parse_choice, parse_probability};
+use super::decide::{clip, format_p, model_label, parse_choice, parse_probability};
 use super::session_decisions::{check_local_reach, daemon_error, parse_json, reach, Reach};
 use super::session_watch::{
     daemon_get_json, protected_write_with_key_if_wanted, refusal_sentence, DaemonAuth,
@@ -375,13 +375,13 @@ pub fn render_monitors(session_id: &str, settings: &DecisionSettings) -> Vec<Str
                 monitor.max_evals_per_turn
             ));
             if let Some(model) = &monitor.model {
-                details.push(model.label());
+                details.push(model_label(model));
             }
             out.push(format!("     {}", details.join(" · ")));
         }
     }
     match &settings.default_model {
-        Some(model) => out.push(format!("Default decision model: {}", model.label())),
+        Some(model) => out.push(format!("Default decision model: {}", model_label(model))),
         None => out.push(
             "Default decision model: chosen automatically (local first, within the chat's tier)"
                 .to_string(),
@@ -840,6 +840,26 @@ mod tests {
         assert_eq!(
             lines[4],
             "Default decision model: ollama_decision/tev1:0.8b"
+        );
+
+        // A Baseten model configured by its slug is listed by its alias, as
+        // every other terminal surface names it; the record keeps the slug.
+        let mut hosted = settings.clone();
+        let slug = DecisionModelRef::new(
+            "baseten_decision",
+            "decision-models/baseten-mammoth-27b-latest",
+        );
+        hosted.monitors[0].model = Some(slug.clone());
+        hosted.default_model = Some(slug);
+        let lines = render_monitors("s1", &hosted);
+        assert!(
+            lines[3].ends_with(" · baseten_decision/mammoth-1"),
+            "{}",
+            lines[3]
+        );
+        assert_eq!(
+            lines[4],
+            "Default decision model: baseten_decision/mammoth-1"
         );
 
         let empty = render_monitors("s2", &DecisionSettings::default());

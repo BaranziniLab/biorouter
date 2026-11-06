@@ -1712,9 +1712,13 @@ fn draw_status(f: &mut Frame, app: &App, area: Rect) {
     let sep = || Span::styled("  ·  ", dim);
     let s = &app.status;
 
-    // Line 1: the large-language model and the provider.
+    // Line 1: the large-language model and the provider. A Baseten decision
+    // model reads by its alias (`joey-1`), as its cards and replies do.
     let line1 = Line::from(vec![
-        Span::styled(s.model.clone(), Style::new().fg(ACCENT)),
+        Span::styled(
+            crate::commands::decide::model_name(&s.provider, &s.model),
+            Style::new().fg(ACCENT),
+        ),
         sep(),
         Span::styled(s.provider.clone(), dim),
     ]);
@@ -4096,6 +4100,18 @@ mod tests {
         // A row that names nothing yet keeps what the line had.
         status_follow_binding(&mut status, None, Some(""));
         assert_eq!(status.model, "tev1:0.8b");
+
+        // A chat bound to a Baseten decision model by its slug reads by the
+        // alias.
+        status_follow_binding(
+            &mut status,
+            Some("baseten_decision"),
+            Some("decision-models/baseten-joey-2b-latest"),
+        );
+        let mut app = App::new(status);
+        let text = buffer_text(&mut app, 120, 24);
+        assert!(text.contains("joey-1  ·  baseten_decision"), "{text}");
+        assert!(!text.contains("baseten-joey"), "{text}");
     }
 
     #[test]
