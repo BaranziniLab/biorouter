@@ -311,6 +311,31 @@ export function parseDecideBatchSummary(toolResult: unknown): DecideBatchSummary
   return null;
 }
 
+const BINARY_TYPE_WORDS = new Set(['yes_no', 'yesno', 'binary', 'boolean', 'bool', 'noul']);
+const CHOICE_TYPE_WORDS = new Set(['choice', 'multiple_choice', 'multi_choice', 'options']);
+const SCORE_TYPE_WORDS = new Set(['score', 'rating', 'scale', 'levels']);
+
+/**
+ * The type a model-written question names, or the one its fields imply, by the
+ * tool's own rule (`question_type` in `agents/decisions_extension.rs`): the word
+ * trimmed, lowercased and with spaces, dashes and slashes read as underscores,
+ * its synonyms accepted, and with no word, `options` meaning a choice and
+ * `levels` a score. A word the tool refuses is returned as it was written.
+ */
+export function decideQuestionKind(question: Record<string, unknown> | null): string {
+  const written = typeof question?.type === 'string' ? question.type.trim() : '';
+  const word = written.toLowerCase().replace(/[ \-/]/g, '_');
+  if (!word) {
+    if (question?.options != null) return 'choice';
+    if (question?.levels != null) return 'score';
+    return 'yes_no';
+  }
+  if (BINARY_TYPE_WORDS.has(word)) return 'yes_no';
+  if (CHOICE_TYPE_WORDS.has(word)) return 'choice';
+  if (SCORE_TYPE_WORDS.has(word)) return 'score';
+  return written;
+}
+
 /** What a `decide` call's own arguments state: how many chunks, and its questions. */
 export function decideArguments(args: Record<string, unknown> | undefined): {
   chunks: number | null;
@@ -321,10 +346,17 @@ export function decideArguments(args: Record<string, unknown> | undefined): {
   const questions = raw
     ? Object.entries(raw).map(([name, value]) => {
         const question = record(value);
+        // `question` is the tool's other name for `instructions` (a serde alias).
+        const instructions =
+          typeof question?.instructions === 'string'
+            ? question.instructions
+            : typeof question?.question === 'string'
+              ? question.question
+              : '';
         return {
           name,
-          instructions: typeof question?.instructions === 'string' ? question.instructions : '',
-          kind: typeof question?.type === 'string' ? question.type : 'yes_no',
+          instructions,
+          kind: decideQuestionKind(question),
           threshold: probability(question?.threshold),
         };
       })

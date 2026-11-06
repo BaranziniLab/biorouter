@@ -70,7 +70,13 @@ function rowMeta(row: DecisionSourceRow): string {
   if (row.origin === 'gate' && row.attempts) {
     const t = row.threshold !== null ? formatProbability(row.threshold) : null;
     const p = row.lastPassProbability !== null ? formatProbability(row.lastPassProbability) : null;
-    if (row.state === 'blocked') return copy.gateBlocked(row.attempts.maxAttempts);
+    if (row.state === 'blocked') {
+      // A gate that ran out of attempts has used them all; one blocked by
+      // evaluation errors in a row has not, since an error uses no attempt.
+      return row.attempts.attempts >= row.attempts.maxAttempts
+        ? copy.gateBlocked(row.attempts.maxAttempts)
+        : copy.gateBlockedUnevaluated;
+    }
     if (row.state === 'passed' && p && t) return `${p} ≥ ${t}`;
     if (row.state === 'failed' && p && t) {
       return `${p} < ${t} · ${copy.gateAttempt(Math.max(1, row.attempts.attempts), row.attempts.maxAttempts)}`;

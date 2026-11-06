@@ -151,6 +151,34 @@ describe('the Decisions section', () => {
     expect(form.querySelector<HTMLElement>('.br-pbar__fill')?.style.width).toBe('31%');
   });
 
+  it('says a gate blocked by evaluation errors could not be evaluated, not that it ran out of attempts', () => {
+    const gate = (phaseId: string, attempts: number, lastPassed: boolean | null) => ({
+      phaseId,
+      title: phaseId,
+      gate: parsePhaseGateSnapshot({
+        threshold: 0.8,
+        attempts,
+        maxAttempts: 3,
+        lastPassed,
+        lastMinP: lastPassed === null ? null : 0.4,
+        blocked: true,
+      })!,
+    });
+    draw({ gates: [gate('errors', 0, null), gate('one', 1, false), gate('spent', 3, false)] });
+    // Two errors in a row block a gate and use no attempt.
+    const errors = screen.getByTestId('decision-source-gate:errors');
+    expect(errors).toHaveAttribute('data-state', 'blocked');
+    expect(errors).toHaveTextContent('blocked: could not be evaluated');
+    expect(errors).not.toHaveTextContent('attempts');
+    expect(screen.getByTestId('decision-source-gate:one')).toHaveTextContent(
+      'blocked: could not be evaluated'
+    );
+    // A gate that used every attempt says so.
+    expect(screen.getByTestId('decision-source-gate:spent')).toHaveTextContent(
+      'blocked after 3 attempts'
+    );
+  });
+
   it('opens the decision history filtered to the row it came from', () => {
     const { onOpenHistory } = draw();
     fireEvent.click(screen.getByTestId('decision-source-monitor:form'));

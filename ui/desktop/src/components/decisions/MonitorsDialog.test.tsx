@@ -3,17 +3,18 @@ import { join } from 'node:path';
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
+  parseDecisionCatalog,
   parseDecisionModelEntries,
   parseDecisionSettings,
   type DecisionSettings,
 } from '../../utils/sessionDecisions';
 import { MonitorsDialog, monitorSlug, newMonitor, validateMonitor } from './MonitorsDialog';
 
-const mocks = vi.hoisted(() => ({ save: vi.fn(), models: vi.fn(), settings: vi.fn() }));
+const mocks = vi.hoisted(() => ({ save: vi.fn(), catalog: vi.fn(), settings: vi.fn() }));
 vi.mock('../../utils/sessionDecisions', async (original) => ({
   ...(await original<typeof import('../../utils/sessionDecisions')>()),
   saveDecisionSettings: mocks.save,
-  fetchDecisionModels: mocks.models,
+  fetchDecisionCatalog: mocks.catalog,
   fetchDecisionSettings: mocks.settings,
 }));
 
@@ -82,7 +83,7 @@ beforeEach(() => {
   mocks.save
     .mockReset()
     .mockImplementation(async (_id: string, settings: DecisionSettings) => settings);
-  mocks.models.mockReset().mockResolvedValue(MODELS);
+  mocks.catalog.mockReset().mockResolvedValue({ models: MODELS, sessionUnavailableReason: null });
   mocks.settings.mockReset().mockResolvedValue({ data: STORED, missing: false });
 });
 
@@ -135,6 +136,28 @@ describe('validation, as the daemon would refuse it', () => {
     expect(validateMonitor(monitor, { chatTier: 'public', models: MODELS }).model).toBeUndefined();
   });
 
+  it('refuses every model, the chat’s own included, when the chat may use none', () => {
+    const crew =
+      'This chat works under a Crew grant, which fixes the one model its content may reach.';
+    const monitor = {
+      ...newMonitor(),
+      name: 'Done',
+      question: { instructions: 'Is it done?', kind: { type: 'binary' as const }, threshold: null },
+    };
+    expect(monitor.model).toBeNull();
+    expect(
+      validateMonitor(monitor, { chatTier: 'public', models: MODELS, chatRefusal: crew }).model
+    ).toBe(crew);
+    const local = {
+      ...monitor,
+      model: { provider: 'ollama_decision', model: 'tev1:0.8b', adapter: null },
+    };
+    expect(
+      validateMonitor(local, { chatTier: 'public', models: MODELS, chatRefusal: crew }).model
+    ).toBe(crew);
+    expect(validateMonitor(monitor, { chatTier: 'public', models: MODELS }).model).toBeUndefined();
+  });
+
   it('slugs an id that is unique in the chat', () => {
     expect(monitorSlug('Form reached', new Set())).toBe('form-reached');
     expect(monitorSlug('Form reached', new Set(['form-reached']))).toBe('form-reached-2');
@@ -150,6 +173,29 @@ describe('MonitorsDialog', () => {
     expect(item).toHaveTextContent(
       "P(yes) ≥ 0.85 · Stop the turn · After each step · The chat's decision model"
     );
+  });
+
+  it('names a Baseten model in the list by its alias, as its model menu does', () => {
+    const monitor = STORED.monitors[0];
+    draw({
+      settings: {
+        ...STORED,
+        monitors: [
+          {
+            ...monitor,
+            model: {
+              provider: 'baseten_decision',
+              model: 'decision-models/baseten-joey-2b-latest',
+              adapter: null,
+            },
+          },
+        ],
+      },
+      chatTier: 'public',
+    });
+    const item = screen.getByTestId('monitor-item');
+    expect(item).toHaveTextContent('After each step · joey-1');
+    expect(item).not.toHaveTextContent('baseten-joey-2b-latest');
   });
 
   it('shows what is missing inline and does not save it', async () => {
@@ -346,9 +392,36 @@ describe('MonitorsDialog', () => {
     await waitFor(() => expect(mocks.save).toHaveBeenCalled());
   });
 
+  /**
+   * A Crew grant rules out every decision model, so the daemon gives each row
+   * its sentence; a monitor left on the chat's decision model names no row,
+   * and used to be saved to be refused at every check.
+   */
+  it('in a Crew-scoped chat, blocks Save on the chat’s decision model with the Crew sentence', async () => {
+    const crew =
+      'This chat works under a Crew grant, which fixes the one model its content may reach, so a decision model cannot read it.';
+    mocks.catalog.mockResolvedValue(
+      parseDecisionCatalog({
+        models: MODELS.map((entry) => ({ ...entry, unavailableReason: crew })),
+        sessionUnavailableReason: crew,
+      })
+    );
+    await drawReady({ models: undefined, chatTier: 'public' });
+    await waitFor(() => expect(mocks.catalog).toHaveBeenCalled());
+    fireEvent.click(screen.getByTestId('monitor-add'));
+    fireEvent.change(screen.getByTestId('monitor-name'), { target: { value: 'Task achieved' } });
+    fireEvent.change(screen.getByTestId('monitor-question'), {
+      target: { value: 'Has the agent finished what was asked?' },
+    });
+    fireEvent.click(screen.getByTestId('monitors-save'));
+    const field = screen.getByTestId('monitor-model');
+    expect(await within(field).findByRole('alert')).toHaveTextContent(crew);
+    expect(mocks.save).not.toHaveBeenCalled();
+  });
+
   it('asks for the catalog naming the chat, and takes the daemon’s own reason', async () => {
-    mocks.models.mockResolvedValue(
-      parseDecisionModelEntries({
+    mocks.catalog.mockResolvedValue(
+      parseDecisionCatalog({
         models: [
           {
             ...MODELS[0],
@@ -358,7 +431,7 @@ describe('MonitorsDialog', () => {
       })
     );
     await drawReady({ models: undefined });
-    await waitFor(() => expect(mocks.models).toHaveBeenCalledWith(expect.any(AbortSignal), 's1'));
+    await waitFor(() => expect(mocks.catalog).toHaveBeenCalledWith(expect.any(AbortSignal), 's1'));
     fireEvent.click(screen.getByTestId('monitor-add'));
     const input = within(screen.getByTestId('monitor-model')).getByRole('combobox');
     fireEvent.keyDown(input, { key: 'ArrowDown' });

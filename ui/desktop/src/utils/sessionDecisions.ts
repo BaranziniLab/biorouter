@@ -8,6 +8,7 @@ import {
   putDecisionSettings,
 } from '../api/sdk.gen';
 import type { ListSessionDecisionsData, PutDecisionSettingsData } from '../api/types.gen';
+import { decisionModelName } from './usageStats';
 import { userActionHeaders } from './userAction';
 
 /**
@@ -854,6 +855,30 @@ export function parseDecisionModelEntries(value: unknown): DecisionModelEntry[] 
     .filter((entry): entry is DecisionModelEntry => entry !== null);
 }
 
+/** `GET /decisions/models` for one chat: its models, and what rules out every one. */
+export interface DecisionCatalog {
+  models: DecisionModelEntry[];
+  /**
+   * Why the chat may use no decision model at all, whichever is named or chosen
+   * for it (a Crew grant), or `null`. Every model's `unavailableReason` says the
+   * same; this one also covers a choice that names no model, such as a monitor
+   * left on the chat's decision model.
+   */
+  sessionUnavailableReason: string | null;
+}
+
+export function parseDecisionCatalog(value: unknown): DecisionCatalog | null {
+  const models = parseDecisionModelEntries(value);
+  if (!models) return null;
+  const body = Array.isArray(value) ? null : record(value);
+  return {
+    models,
+    sessionUnavailableReason: text(
+      body?.sessionUnavailableReason ?? body?.session_unavailable_reason
+    ),
+  };
+}
+
 export function parsePhaseGateSnapshot(value: unknown): PhaseGateSnapshot | null {
   const body = record(value);
   if (!body) return null;
@@ -954,9 +979,18 @@ export function formatLatency(ms: number | null | undefined): string | null {
   return `${(ms / 1000).toFixed(ms < 10_000 ? 1 : 0)} s`;
 }
 
-/** A model reference as the person reads it: `tev1:0.8b`, the provider after it in the title. */
-export function decisionModelLabel(model: DecisionModelRef | null | undefined): string | null {
+/**
+ * A model reference as the person reads it: a Baseten slug by its alias
+ * (`joey-1`, as the model picker, the Usage panel and the decision chat's reply
+ * name it; `baseten_display_name` in `providers/decision/catalog.rs`), an Ollama
+ * tag by its last path segment (`tev1:0.8b`). The provider goes after it in a
+ * title. The record keeps the slug.
+ */
+export function decisionModelLabel(
+  model: Pick<DecisionModelRef, 'provider' | 'model'> | null | undefined
+): string | null {
   if (!model) return null;
+  if (model.provider === 'baseten_decision') return decisionModelName(model.model) || model.model;
   const name = model.model.slice(model.model.lastIndexOf('/') + 1);
   return name || model.model;
 }
@@ -1460,6 +1494,18 @@ export async function fetchDecisionModels(
   signal?: AbortSignal,
   sessionId?: string
 ): Promise<DecisionModelEntry[]> {
+  return (await fetchDecisionCatalog(signal, sessionId)).models;
+}
+
+/**
+ * {@link fetchDecisionModels}, with the reason the named chat may use no
+ * decision model at all (`sessionUnavailableReason`), for a choice no row
+ * stands for: a monitor left on the chat's decision model.
+ */
+export async function fetchDecisionCatalog(
+  signal?: AbortSignal,
+  sessionId?: string
+): Promise<DecisionCatalog> {
   const headers = await userActionHeaders();
   const result = (await listDecisionModels({
     ...(sessionId ? { query: { sessionId } } : {}),
@@ -1467,6 +1513,6 @@ export async function fetchDecisionModels(
     signal,
   })) as ClientResult;
   const { data, missing } = settle(result, 'Decision models');
-  if (missing) return [];
-  return parseDecisionModelEntries(data) ?? [];
+  if (missing) return { models: [], sessionUnavailableReason: null };
+  return parseDecisionCatalog(data) ?? { models: [], sessionUnavailableReason: null };
 }

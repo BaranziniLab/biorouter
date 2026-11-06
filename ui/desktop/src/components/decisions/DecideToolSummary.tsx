@@ -4,6 +4,7 @@ import { TranscriptRowSection } from '../TranscriptRow';
 import type { ArtifactSource } from '../artifacts/artifactTypes';
 import {
   decisionHistoryArtifact,
+  decisionModelLabel,
   formatLatency,
   formatProbability,
 } from '../../utils/sessionDecisions';
@@ -22,7 +23,8 @@ export const DECIDE_TOOL_COPY = {
   historyShort: 'Decision history',
   noSummary: 'The result carried no batch summary.',
   uncalibrated: 'uncalibrated',
-  kind: (kind: string) => (kind === 'choice' ? 'choice' : kind === 'score' ? 'score' : 'yes or no'),
+  /** A question's type; a word the tool does not take is shown as it was written. */
+  kind: (kind: string) => (kind === 'yes_no' ? 'yes or no' : kind),
   threshold: (p: number) => `threshold ${formatProbability(p)}`,
   /** Chunks the agent has to read before it reports them (not a clear no or pass). */
   review: (count: number) => `${count.toLocaleString('en-US')} to review`,
@@ -95,9 +97,14 @@ export function DecideToolSummary({
   const summary = toolResult === undefined ? null : parseDecideBatchSummary(toolResult);
   const chunks = summary?.chunks ?? asked.chunks;
   const elapsed = formatLatency(summary?.elapsedMs);
+  // Once the batch answered, each question's type as the daemon read it.
+  const answeredKinds = new Map(
+    summary?.questions.map((question) => [question.name, question.kind])
+  );
   const head = [
     chunks !== null ? pluralize(chunks, 'chunk') : null,
-    summary?.model ? summary.model.model : null,
+    // Named as everywhere else: joey-1 for its Baseten slug, an Ollama tag as it is.
+    summary?.model ? decisionModelLabel(summary.model) : null,
     summary && summary.errors > 0 ? pluralize(summary.errors, 'error') : null,
     summary?.calibrated === false ? DECIDE_TOOL_COPY.uncalibrated : null,
     elapsed,
@@ -114,7 +121,7 @@ export function DecideToolSummary({
                 <span className="br-decide-summary__detail">
                   {[
                     question.instructions,
-                    DECIDE_TOOL_COPY.kind(question.kind),
+                    DECIDE_TOOL_COPY.kind(answeredKinds.get(question.name) ?? question.kind),
                     question.threshold !== null
                       ? DECIDE_TOOL_COPY.threshold(question.threshold)
                       : null,

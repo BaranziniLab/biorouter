@@ -146,8 +146,15 @@ export function DecisionCardView({ record, sessionId, onOpenArtifact }: Decision
     record.questions[0]?.instructions ||
     record.label ||
     record.id;
+  // A Baseten model reads as its alias (joey-1) here as everywhere else; the id
+  // Baseten says served it stays in the history's "Served by".
+  const ref = record.model ?? first?.model ?? null;
   const model =
-    record.servedModel ?? decisionModelLabel(record.model) ?? decisionModelLabel(first?.model);
+    ref?.provider === 'baseten_decision'
+      ? decisionModelLabel(ref)
+      : (record.servedModel ??
+        decisionModelLabel(record.model) ??
+        decisionModelLabel(first?.model));
   const tier = record.tier ?? first?.tier ?? null;
   const latency = formatLatency(record.latencyMs ?? first?.latencyMs);
   const failed = record.outcome === 'error' || record.outcome === 'refused';

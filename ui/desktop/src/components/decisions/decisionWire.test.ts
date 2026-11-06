@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   decideArguments,
+  decideQuestionKind,
   isDecisionProvider,
   markerItemText,
   orderedProbabilities,
@@ -237,5 +238,39 @@ describe('a decide call’s own arguments', () => {
       { name: 'has_ms', instructions: 'Does this note state MS?', kind: 'yes_no', threshold: 0.9 },
       { name: 'course', instructions: 'Which course?', kind: 'choice', threshold: null },
     ]);
+  });
+
+  it('reads `question` as the instructions and infers the type the way the tool does', () => {
+    const args = decideArguments({
+      questions: {
+        // No type: options make it a choice, levels a score, neither a yes or no.
+        course: { question: 'Which MS course is described?', options: { rrms: 'RR', spms: 'SP' } },
+        edss: { question: 'How disabled?', levels: ['none', 'mild', 'severe'] },
+        has_ms: { question: 'Is MS stated?' },
+        // The synonyms the tool accepts, however they are cased or separated.
+        picked: { instructions: 'Which one?', type: 'Multiple-Choice', options: { a: 'A' } },
+        rated: { instructions: 'How sure?', type: ' rating ', levels: ['low', 'high'] },
+        multi: { instructions: 'Which?', type: 'multi/choice', options: { a: 'A' } },
+        flag: { instructions: 'Is it?', type: 'Boolean' },
+        // The written type wins over the fields, as in the tool.
+        typed: { instructions: 'Is it?', type: 'yes_no', options: { a: 'A' } },
+        // A word the tool refuses is shown as written, never as a yes or no.
+        odd: { instructions: 'Rank them', type: 'Ranking' },
+      },
+    });
+    expect(Object.fromEntries(args.questions.map((q) => [q.name, q.kind]))).toEqual({
+      course: 'choice',
+      edss: 'score',
+      has_ms: 'yes_no',
+      picked: 'choice',
+      rated: 'score',
+      multi: 'choice',
+      flag: 'yes_no',
+      typed: 'yes_no',
+      odd: 'Ranking',
+    });
+    expect(args.questions[0].instructions).toBe('Which MS course is described?');
+    // A null field is an absent one, as serde reads an `Option`.
+    expect(decideQuestionKind({ type: null, options: null, levels: ['a'] })).toBe('score');
   });
 });

@@ -39,6 +39,7 @@ import {
   answerProbability,
   calibrationText,
   decisionHistoryArtifact,
+  decisionModelLabel,
   decisionQuery,
   decisionRevision,
   decisionSettingsToWire,
@@ -54,6 +55,7 @@ import {
   messageDecisionId,
   messageDecisionMarker,
   parseDecision,
+  parseDecisionCatalog,
   parseDecisionDetail,
   parseDecisionModelEntries,
   parseDecisionPage,
@@ -318,6 +320,14 @@ describe('parsing', () => {
     };
     expect(parseDecisionModelEntries([entry])![0].displayName).toBe('joey-1');
     expect(parseDecisionModelEntries({ models: [entry] })![0].tier).toBe('public');
+    // The chat-wide reason rides beside the rows, for a choice no row stands for.
+    const crew = 'This chat works under a Crew grant.';
+    expect(parseDecisionCatalog({ models: [entry], sessionUnavailableReason: crew })).toMatchObject(
+      { models: [{ displayName: 'joey-1' }], sessionUnavailableReason: crew }
+    );
+    expect(parseDecisionCatalog({ models: [entry] })!.sessionUnavailableReason).toBeNull();
+    expect(parseDecisionCatalog([entry])!.sessionUnavailableReason).toBeNull();
+    expect(parseDecisionCatalog({ sessionUnavailableReason: crew })).toBeNull();
     expect(
       parsePhaseGateSnapshot({
         threshold: 0.8,
@@ -379,6 +389,30 @@ describe('words and figures', () => {
     expect(formatProbability(1)).toBe('1.00');
     expect(formatLatency(22)).toBe('22 ms');
     expect(formatLatency(1400)).toBe('1.4 s');
+  });
+
+  it('names a Baseten decision model by its alias and an Ollama tag by its last segment', () => {
+    const baseten = (model: string) => ({ provider: 'baseten_decision', model });
+    expect(decisionModelLabel(baseten('decision-models/baseten-joey-2b-latest'))).toBe('joey-1');
+    expect(decisionModelLabel(baseten('decision-models/baseten-elephant-9b-latest'))).toBe(
+      'elephant-1'
+    );
+    expect(decisionModelLabel(baseten('decision-models/baseten-mammoth-27b-latest'))).toBe(
+      'mammoth-1'
+    );
+    // A monitor saved with the alias the person typed reads the same.
+    expect(decisionModelLabel(baseten('joey-1'))).toBe('joey-1');
+    // A slug this build does not know reads without its prefix.
+    expect(decisionModelLabel(baseten('decision-models/baseten-new-4b-latest'))).toBe(
+      'baseten-new-4b-latest'
+    );
+    expect(decisionModelLabel({ provider: 'ollama_decision', model: 'tev1:0.8b' })).toBe(
+      'tev1:0.8b'
+    );
+    expect(
+      decisionModelLabel({ provider: 'ollama_decision', model: 'hf.co/acme/clef-flash:latest' })
+    ).toBe('clef-flash:latest');
+    expect(decisionModelLabel(null)).toBeNull();
   });
 
   it('marks the threshold only on the option it is about', () => {

@@ -39,11 +39,15 @@ const SUMMARY = wireDecideSummary();
 /** What the model reads: a per-chunk table, which the row must never draw. */
 const TABLE = CHUNKS.map((chunk) => `${chunk.id} | has_ms yes 0.97`).join('\n');
 
-function show(answered: boolean) {
+function show(
+  answered: boolean,
+  args: Record<string, unknown> = ARGS,
+  summary: Record<string, unknown> = SUMMARY
+) {
   const toolRequest = {
     type: 'toolRequest',
     id: 'call-1',
-    toolCall: { status: 'success', value: { name: 'decisions__decide', arguments: ARGS } },
+    toolCall: { status: 'success', value: { name: 'decisions__decide', arguments: args } },
   } as ToolRequestMessageContent;
   const toolResponse = answered
     ? ({
@@ -51,7 +55,7 @@ function show(answered: boolean) {
         id: 'call-1',
         toolResult: {
           status: 'success',
-          value: { content: [{ type: 'text', text: TABLE }], structuredContent: SUMMARY },
+          value: { content: [{ type: 'text', text: TABLE }], structuredContent: summary },
         },
       } as ToolResponseMessageContent)
     : undefined;
@@ -109,6 +113,54 @@ describe('the decide tool row', () => {
     expect(container).not.toHaveTextContent('PHI-1');
     expect(container).not.toHaveTextContent('note-0');
     expect(container.textContent!.length).toBeLessThan(1200);
+  });
+
+  it('shows a question written with `question` and no type as the choice the tool ran', () => {
+    // The tool reads `question` as the instructions and options as a choice.
+    const args = {
+      questions: {
+        course: {
+          question: 'Which MS course is described?',
+          options: { rrms: 'Relapsing-remitting', spms: 'Secondary progressive' },
+        },
+        rated: { question: 'How sure is the note?', type: 'rating', levels: ['low', 'high'] },
+      },
+      chunks: CHUNKS,
+    };
+    const { container } = show(false, args);
+    fireEvent.click(container.querySelector('button.br-tool-disclosure')!);
+    const well = screen.getByTestId('decide-tool-summary');
+    expect(well).toHaveTextContent('courseWhich MS course is described? · choice');
+    expect(well).toHaveTextContent('ratedHow sure is the note? · score');
+    expect(well).not.toHaveTextContent('yes or no');
+  });
+
+  it('takes each question’s type from the answered batch once there is one', () => {
+    // The arguments alone read as a yes or no; the daemon's summary, which is what ran, says choice.
+    const args = { questions: { course: { instructions: 'Which course?' } }, chunks: CHUNKS };
+    const { container } = show(true, args);
+    fireEvent.click(container.querySelector('button.br-tool-disclosure')!);
+    expect(screen.getByTestId('decide-tool-summary')).toHaveTextContent(
+      'courseWhich course? · choice'
+    );
+  });
+
+  it('names a Baseten decision model by its alias in the head, not by its slug', () => {
+    const summary = {
+      ...SUMMARY,
+      model: {
+        provider: 'baseten_decision',
+        model: 'decision-models/baseten-joey-2b-latest',
+        adapter: 'system_one',
+      },
+      tier: 'public',
+    };
+    const { container } = show(true, ARGS, summary);
+    fireEvent.click(container.querySelector('button.br-tool-disclosure')!);
+    const head = screen.getByTestId('decide-tool-head');
+    expect(head).toHaveTextContent('600 chunks · joey-1 · 2 errors · 13 s');
+    expect(head).not.toHaveTextContent('decision-models/');
+    expect(head).not.toHaveTextContent('baseten-joey-2b-latest');
   });
 
   it('links to the batch in the decision history', () => {

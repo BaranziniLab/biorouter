@@ -9,6 +9,7 @@ import {
   formatCompactTokens,
   formatCost,
   formatCostEstimate,
+  formatDecisionCost,
   formatDecisionUsage,
   formatTokens,
   formatUsageDate,
@@ -669,6 +670,7 @@ describe('UsageReport decision models', () => {
       totalTokens: 1_200_600,
       cost: 0.12,
       hasUnpriced: false,
+      hasUnmetered: false,
     },
   };
   const localMonitor: UsageReportRow = {
@@ -682,12 +684,14 @@ describe('UsageReport decision models', () => {
     cost: 0,
     hasUnpriced: false,
     decisionRequests: 20,
+    // No request is priced, and none was billed: a local model has no meter.
     decisions: {
       inputTokens: 40_000,
       outputTokens: 20,
       totalTokens: 40_020,
       cost: null,
-      hasUnpriced: true,
+      hasUnpriced: false,
+      hasUnmetered: true,
     },
   };
   const withDecisions = () => {
@@ -696,12 +700,14 @@ describe('UsageReport decision models', () => {
       monthToDate: {
         ...base.monthToDate,
         decisionRequests: 620,
+        // mammoth's priced requests beside the local monitor's unmetered ones.
         decisions: {
           inputTokens: 1_240_000,
           outputTokens: 620,
           totalTokens: 1_240_620,
           cost: 0.12,
-          hasUnpriced: true,
+          hasUnpriced: false,
+          hasUnmetered: true,
         },
       },
     });
@@ -779,9 +785,56 @@ describe('UsageReport decision models', () => {
       '620 requests, 1.2M tokens'
     );
     expect(screen.getByTestId('usage-decision-line')).not.toHaveTextContent('$');
-    expect(
-      formatDecisionUsage(1, { ...mammoth.decisions!, cost: null, hasUnpriced: true }, true)
-    ).toBe('1 request, 1.2M tokens, Not metered');
+    expect(formatDecisionUsage(1, localMonitor.decisions!, true)).toBe(
+      '1 request, 40K tokens, Not metered'
+    );
+  });
+
+  it('says a decision request Baseten billed at an unknown price is unavailable, not unmetered', () => {
+    const base = mammoth.decisions!;
+    const subtotal = (cost: number | null, hasUnpriced: boolean, hasUnmetered: boolean) => ({
+      ...base,
+      cost,
+      hasUnpriced,
+      hasUnmetered,
+    });
+    // Only a local model's requests: nothing priced, nothing billed.
+    expect(formatDecisionCost(subtotal(null, false, true))).toBe('Not metered');
+    // Only hosted requests with no known price: Baseten billed them.
+    expect(formatDecisionCost(subtotal(null, true, false))).toBe('Unavailable');
+    expect(formatDecisionCost(subtotal(null, true, true))).toBe('Unavailable');
+    // Priced requests beside unpriced hosted ones, beside local ones, beside both.
+    expect(formatDecisionCost(subtotal(0.12, true, false))).toBe('$0.12, some unavailable');
+    expect(formatDecisionCost(subtotal(0.12, false, true))).toBe('$0.12, some not metered');
+    expect(formatDecisionCost(subtotal(0.12, true, true))).toBe('$0.12, some unavailable');
+    expect(formatDecisionCost(subtotal(0.12, false, false))).toBe('$0.12');
+  });
+
+  it('reads a month of unpriced Baseten decision requests as unavailable on the decision line', () => {
+    const unlisted: UsageReportRow = {
+      ...mammoth,
+      modelId: 'decision-models/baseten-unlisted-99b-latest',
+      cost: null,
+      hasUnpriced: true,
+      decisions: { ...mammoth.decisions!, cost: null, hasUnpriced: true },
+    };
+    const base = summary();
+    render(
+      <UsageReport
+        summary={summary({
+          monthToDate: {
+            ...base.monthToDate,
+            decisionRequests: 600,
+            decisions: { ...unlisted.decisions! },
+          },
+        })}
+        dayRows={dayRows}
+        modelRows={[mammoth, unlisted]}
+      />
+    );
+    const line = screen.getByTestId('usage-decision-line');
+    expect(line).toHaveTextContent('600 requests, 1.2M tokens, Unavailable');
+    expect(line).not.toHaveTextContent('Not metered');
   });
 });
 

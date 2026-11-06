@@ -235,6 +235,9 @@ const decisionCopy = {
     'They are not counted as turns.' +
     (showCosts ? ' A local decision model has no meter, so its requests have no cost.' : ''),
   notMetered: 'Not metered',
+  unavailable: 'Unavailable',
+  someUnavailable: (cost: string) => `${cost}, some unavailable`,
+  someNotMetered: (cost: string) => `${cost}, some not metered`,
   modelKind: 'Decision model',
   noTurns: 'Decision requests are not turns.',
 };
@@ -245,11 +248,29 @@ function requestCount(requests: number): string {
   return `${requests.toLocaleString('en-US')} ${requests === 1 ? 'request' : 'requests'}`;
 }
 
-/** `$0.04`, `Not metered` for a local decision model, `$0.04, some not metered` for a mix. */
+/**
+ * True when no decision request in the subtotal is priced and none was billed
+ * at an unknown rate: every one went to a model with no meter (a local Ollama
+ * decision model). The server leaves `cost` empty unless something is priced.
+ */
+function isNotMetered(decisions: DecisionSubtotal): boolean {
+  return decisions.cost == null && !decisions.hasUnpriced;
+}
+
+/**
+ * The decision line's dollars. A local model has no meter: `Not metered`, or
+ * `$0.04, some not metered` beside priced requests. A hosted model Baseten
+ * billed at a price Biorouter does not know is not "not metered":
+ * `Unavailable`, or `$0.04, some unavailable` beside priced requests, as the
+ * model's own row reads it.
+ */
 export function formatDecisionCost(decisions: DecisionSubtotal): string {
-  if (decisions.cost == null) return decisionCopy.notMetered;
+  if (isNotMetered(decisions)) return decisionCopy.notMetered;
+  if (decisions.cost == null) return decisionCopy.unavailable;
   const cost = formatCostEstimate(decisions.cost);
-  return decisions.hasUnpriced ? `${cost}, some not metered` : cost;
+  if (decisions.hasUnpriced) return decisionCopy.someUnavailable(cost);
+  if (decisions.hasUnmetered) return decisionCopy.someNotMetered(cost);
+  return cost;
 }
 
 /** `1,240 requests, 2.1M tokens, $0.04`; the cost is dropped while costs are hidden. */
@@ -270,7 +291,9 @@ export function formatDecisionUsage(
  * unpriced hosted decision model sets it and reads "Unavailable" instead.
  */
 function isUnmeteredDecisionsOnly(row: UsageReportRow): boolean {
-  return row.turns === 0 && !row.hasUnpriced && row.decisions != null && row.decisions.cost == null;
+  return (
+    row.turns === 0 && !row.hasUnpriced && row.decisions != null && isNotMetered(row.decisions)
+  );
 }
 
 function costCell(row: UsageReportRow): string {

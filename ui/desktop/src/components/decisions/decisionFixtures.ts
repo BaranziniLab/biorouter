@@ -70,7 +70,7 @@ export function wireChoiceDetail() {
       tier: 'public',
       calibrated: false,
       servedModel: null,
-      model: { provider: 'baseten_decision', model: 'decision-models/joey-1' },
+      model: { provider: 'baseten_decision', model: 'decision-models/baseten-joey-2b-latest' },
       questions: {
         course: {
           instructions: 'Which MS course is described?',
@@ -88,7 +88,7 @@ export function wireChoiceDetail() {
           passProbability: 0.2,
           source: { kind: 'verbalized', reason: null },
           calibrated: false,
-          model: { provider: 'baseten_decision', model: 'decision-models/joey-1' },
+          model: { provider: 'baseten_decision', model: 'decision-models/baseten-joey-2b-latest' },
           tier: 'public',
           requestId: 'req-2',
           latencyMs: 1400,

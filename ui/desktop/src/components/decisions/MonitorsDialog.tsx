@@ -14,7 +14,7 @@ import {
   MAX_MONITORS,
   MONITOR_NAME_MAX,
   decisionModelLabel,
-  fetchDecisionModels,
+  fetchDecisionCatalog,
   fetchDecisionSettings,
   formatProbability,
   refusalText,
@@ -160,11 +160,18 @@ function modelEntryFor(
 
 /**
  * What the daemon would refuse in one monitor (`settings.rs`'s `validate`), said
- * by the field it belongs to. Empty when the monitor can be saved.
+ * by the field it belongs to, and what every check of it would refuse: a model
+ * the chat may not use, or, with `chatRefusal` (a Crew grant on the chat), any
+ * model at all, the chat's decision model included. Empty when the monitor can
+ * be saved.
  */
 export function validateMonitor(
   monitor: MonitorCriterion,
-  context: { chatTier: DecisionTier | null; models: readonly DecisionModelEntry[] }
+  context: {
+    chatTier: DecisionTier | null;
+    models: readonly DecisionModelEntry[];
+    chatRefusal?: string | null;
+  }
 ): MonitorErrors {
   const errors: MonitorErrors = {};
   const name = monitor.name.trim();
@@ -182,7 +189,8 @@ export function validateMonitor(
     if (!monitor.option || !names.includes(monitor.option)) errors.option = copy.firesOnMissing;
   }
   const entry = modelEntryFor(monitor.model, context.models);
-  if (entry?.unavailableReason) errors.model = entry.unavailableReason;
+  if (context.chatRefusal) errors.model = context.chatRefusal;
+  else if (entry?.unavailableReason) errors.model = entry.unavailableReason;
   else if (context.chatTier === 'private' && entry?.tier === 'public') {
     errors.model = copy.modelPublicRefused;
   }
@@ -224,6 +232,7 @@ function MonitorEditor({
   errors,
   models,
   chatTier,
+  chatRefusal,
   readOnly,
 }: {
   draft: MonitorCriterion;
@@ -231,12 +240,15 @@ function MonitorEditor({
   errors: MonitorErrors;
   models: readonly DecisionModelEntry[];
   chatTier: DecisionTier | null;
+  /** Why this chat may use no decision model at all (a Crew grant), or `null`. */
+  chatRefusal: string | null;
   readOnly: boolean;
 }) {
   const base = useId();
   const kind = draft.question.kind;
   const options: ModelOption[] = [
-    { value: '', label: copy.chatDefault, model: null, reason: null },
+    // No row stands for the chat's decision model, so the chat-wide reason is its own.
+    { value: '', label: copy.chatDefault, model: null, reason: chatRefusal },
     ...models.map((entry) => {
       const refused = chatTier === 'private' && entry.tier === 'public';
       return {
@@ -269,7 +281,7 @@ function MonitorEditor({
       value: selectedKey,
       label: decisionModelLabel(draft.model) ?? selectedKey,
       model: draft.model,
-      reason: null,
+      reason: chatRefusal,
     });
   }
   const selected = options.find((option) => option.value === selectedKey) ?? options[0];
@@ -556,6 +568,8 @@ export interface MonitorsDialogProps {
   onSaved?: (settings: DecisionSettings) => void;
   /** For tests: the catalog, instead of `GET /decisions/models`. */
   models?: DecisionModelEntry[];
+  /** For tests, with `models`: the catalog's `sessionUnavailableReason`. */
+  chatRefusal?: string | null;
   /** Show the monitors without letting them change (a read-only surface). */
   readOnly?: boolean;
 }
@@ -584,6 +598,7 @@ export function MonitorsDialog({
   settings,
   onSaved,
   models: givenModels,
+  chatRefusal: givenChatRefusal,
   readOnly = false,
 }: MonitorsDialogProps) {
   const [monitors, setMonitors] = useState<MonitorCriterion[]>(settings?.monitors ?? []);
@@ -594,7 +609,11 @@ export function MonitorsDialog({
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [fetchedModels, setFetchedModels] = useState<DecisionModelEntry[]>([]);
+  const [fetchedChatRefusal, setFetchedChatRefusal] = useState<string | null>(null);
   const models = givenModels ?? fetchedModels;
+  // A Crew grant rules out every model, the chat's decision model included: no
+  // row stands for that one, so the catalog says it once for the chat.
+  const chatRefusal = givenModels ? (givenChatRefusal ?? null) : fetchedChatRefusal;
   // The dialog's own read, for an open that came before the caller's.
   const [ownSettings, setOwnSettings] = useState<DecisionSettings | null>(null);
   const [stored, setStored] = useState<'ready' | 'loading' | 'error'>('ready');
@@ -637,17 +656,19 @@ export function MonitorsDialog({
     if (!open || givenModels) return;
     const controller = new AbortController();
     // Named, so each model carries the daemon's own reason this chat may not use it.
-    fetchDecisionModels(controller.signal, sessionId || undefined)
-      .then((entries) => {
-        if (!controller.signal.aborted) setFetchedModels(entries);
+    fetchDecisionCatalog(controller.signal, sessionId || undefined)
+      .then((catalog) => {
+        if (controller.signal.aborted) return;
+        setFetchedModels(catalog.models);
+        setFetchedChatRefusal(catalog.sessionUnavailableReason);
       })
       .catch(() => {});
     return () => controller.abort();
   }, [open, givenModels, sessionId]);
 
   const draftErrors = useMemo(
-    () => (editing ? validateMonitor(editing.draft, { chatTier, models }) : {}),
-    [editing, chatTier, models]
+    () => (editing ? validateMonitor(editing.draft, { chatTier, models, chatRefusal }) : {}),
+    [editing, chatTier, models, chatRefusal]
   );
 
   const commitDraft = (): MonitorCriterion[] | null => {
@@ -694,7 +715,7 @@ export function MonitorsDialog({
     if (!next) return;
     // Every monitor is checked again: a stored one may name a model this chat can no longer use.
     const invalid = next.findIndex((monitor) =>
-      hasErrors(validateMonitor(monitor, { chatTier, models }))
+      hasErrors(validateMonitor(monitor, { chatTier, models, chatRefusal }))
     );
     if (invalid >= 0) {
       setEditing({ index: invalid, draft: next[invalid] });
@@ -818,6 +839,7 @@ export function MonitorsDialog({
               errors={showErrors ? draftErrors : {}}
               models={models}
               chatTier={chatTier}
+              chatRefusal={chatRefusal}
               readOnly={readOnly}
               onChange={(draft) => setEditing({ ...editing, draft })}
             />

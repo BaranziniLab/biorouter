@@ -149,6 +149,8 @@ export const summaryCopy = {
     last: (answer: string) => `last ${answer}`,
     gateAttempt: (attempt: number, max: number) => `attempt ${attempt} of ${max}`,
     gateBlocked: (max: number) => `blocked after ${max} attempts`,
+    /** Blocked by evaluation errors in a row, which use no attempt. */
+    gateBlockedUnevaluated: 'blocked: could not be evaluated',
     monitors: 'Monitors',
     monitorsOn: (n: number) => (n === 0 ? 'none on' : `${n} on`),
     monitorsAdd: 'Add',

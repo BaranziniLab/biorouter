@@ -204,6 +204,33 @@ describe('DecisionHistory', () => {
     expect(detail).toHaveTextContent('400 in · 1 out');
   });
 
+  it('names a Baseten model by its alias in the rows and the detail, not by its slug', async () => {
+    const slug = 'decision-models/baseten-joey-2b-latest';
+    const baseten = (index: number) => {
+      const row = wire(index, {
+        model: { provider: 'baseten_decision', model: slug },
+        servedModel: 'joey-2b-0.3',
+        tier: 'public',
+      });
+      return { ...row, decisions: row.decisions.map((d) => ({ ...d, model: row.model })) };
+    };
+    mocks.page.mockImplementation(async () => ({
+      records: [parseDecisionRecord(baseten(0))!],
+      nextCursor: null,
+      total: 1,
+    }));
+    mocks.detail.mockImplementation(async () =>
+      parseDecisionDetail({ record: baseten(0), context: { text: 'x' } })
+    );
+    draw();
+    const row = await screen.findByTestId('decision-row');
+    expect(row).toHaveTextContent('joey-1');
+    expect(row).not.toHaveTextContent('baseten-joey-2b-latest');
+    const detail = await screen.findByTestId('decision-detail');
+    expect(detail).toHaveTextContent('joey-1 (baseten_decision)');
+    expect(detail).not.toHaveTextContent(slug);
+  });
+
   it('says an uncalibrated call is uncalibrated, in words', async () => {
     mocks.page.mockResolvedValue({
       records: [

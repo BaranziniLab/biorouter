@@ -114,6 +114,18 @@ describe('the decision card', () => {
     expect(within(card).getByTestId('decision-meta')).toHaveTextContent('1.4 s');
   });
 
+  it('names a Baseten model by its alias, not its slug or the id Baseten served it under', async () => {
+    const detail = wireChoiceDetail();
+    mocks.get.mockResolvedValue(
+      ok({ ...detail, record: { ...detail.record, servedModel: 'joey-2b-0.3' } })
+    );
+    show('dec-2');
+    const meta = await screen.findByTestId('decision-meta');
+    expect(meta).toHaveTextContent('joey-1');
+    expect(meta).not.toHaveTextContent('baseten-joey-2b-latest');
+    expect(meta).not.toHaveTextContent('joey-2b-0.3');
+  });
+
   it('says why a failed call has no answer', async () => {
     mocks.get.mockResolvedValue(ok(wireErrorDetail()));
     show('dec-3');

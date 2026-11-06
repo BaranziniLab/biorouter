@@ -247,6 +247,7 @@ const decisionRow = (modelId: string, totalTokens: number): UsageReportRow =>
       totalTokens,
       cost: 0.12,
       hasUnpriced: false,
+      hasUnmetered: false,
     },
   });
 
