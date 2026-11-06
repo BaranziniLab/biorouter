@@ -61,7 +61,6 @@ import {
   Globe,
   Image,
   Lock,
-  MoreHorizontal,
   RefreshCw,
   Search,
   TextQuote,
@@ -81,7 +80,7 @@ import {
   DropdownMenuTrigger,
   MENU_ROW_TRAILING_CLASS_NAME,
 } from '../ui/dropdown-menu';
-import { Button, buttonVariants } from '../ui/button';
+import { Button } from '../ui/button';
 import { InfoTip } from '../ui/info-tip';
 import { SegmentedControl } from '../ui/segmented-control';
 import { artifactCardKind } from '../MCPUIResourceRenderer';
@@ -97,8 +96,8 @@ import {
   PreviewBarScope,
   PreviewIconButton,
   PreviewPanelPresence,
+  PreviewMoreMenu,
   PreviewSkeleton,
-  PreviewTip,
 } from './PreviewBar';
 import './preview-panel.css';
 import AnnotationOverlay, { type SelectedRegion } from './AnnotationOverlay';
@@ -1903,71 +1902,54 @@ export default function ArtifactViewer({
               </PreviewIconButton>
             )}
             {showMoreMenu && (
-              <DropdownMenu>
-                <PreviewTip content={PREVIEW_COPY.moreActions}>
-                  <DropdownMenuTrigger asChild>
-                    <button
-                      type="button"
-                      aria-label={PREVIEW_COPY.moreActions}
-                      data-testid="artifact-more-actions"
-                      className={cn(
-                        buttonVariants({ variant: 'ghost', shape: 'round' }),
-                        'br-preview-icon-button no-drag'
-                      )}
-                    >
-                      <MoreHorizontal className="h-4 w-4" aria-hidden="true" />
-                    </button>
-                  </DropdownMenuTrigger>
-                </PreviewTip>
-                <DropdownMenuContent align="end" className="min-w-[180px] max-w-[320px]">
-                  {canQuote && (
-                    // The same action as the header's Quote icon, kept in the menu
-                    // for a reader who reaches the selection from the keyboard. Only
-                    // while a selection exists: an item that can do nothing is noise.
-                    <DropdownMenuItem
-                      data-testid="artifact-quote-menu-item"
-                      onSelect={quoteSelectionToChat}
-                    >
-                      {PREVIEW_COPY.quoteSelection}
-                    </DropdownMenuItem>
-                  )}
-                  {sessionId && (
-                    // Annotation is available on EVERY preview kind, not just one:
-                    // a researcher reads a generated report and needs to point at
-                    // something in it. For this audience the report IS the artifact.
-                    <DropdownMenuItem
-                      data-testid="artifact-annotate"
-                      disabled={annotateUnavailable !== null}
-                      onSelect={() => void toggleAnnotation()}
-                      // The name stays the action; the reason it is off is the
-                      // item's description, and it stays visible (principle 2:
-                      // a refusal says why before the item is ever pressed).
-                      aria-label={PREVIEW_COPY.annotate}
-                      aria-describedby={annotateUnavailable ? annotateReasonId : undefined}
-                      className="flex-col items-start gap-0.5"
-                    >
-                      <span>{PREVIEW_COPY.annotate}</span>
-                      {annotateUnavailable && (
-                        <span id={annotateReasonId} className="text-supporting text-text-muted">
-                          {annotateUnavailable}
-                        </span>
-                      )}
-                    </DropdownMenuItem>
-                  )}
-                  {activeArtifact.kind === 'file' && (
-                    <DropdownMenuItem
-                      data-testid="artifact-reveal"
-                      onSelect={() =>
-                        void window.electron.openDirectoryInExplorer(
-                          dirnameFromPath(activeArtifact.path)
-                        )
-                      }
-                    >
-                      {revealLabel}
-                    </DropdownMenuItem>
-                  )}
-                </DropdownMenuContent>
-              </DropdownMenu>
+              <PreviewMoreMenu label={PREVIEW_COPY.moreActions} data-testid="artifact-more-actions">
+                {canQuote && (
+                  // The same action as the header's Quote icon, kept in the menu
+                  // for a reader who reaches the selection from the keyboard. Only
+                  // while a selection exists: an item that can do nothing is noise.
+                  <DropdownMenuItem
+                    data-testid="artifact-quote-menu-item"
+                    onSelect={quoteSelectionToChat}
+                  >
+                    {PREVIEW_COPY.quoteSelection}
+                  </DropdownMenuItem>
+                )}
+                {sessionId && (
+                  // Annotation is available on EVERY preview kind, not just one:
+                  // a researcher reads a generated report and needs to point at
+                  // something in it. For this audience the report IS the artifact.
+                  <DropdownMenuItem
+                    data-testid="artifact-annotate"
+                    disabled={annotateUnavailable !== null}
+                    onSelect={() => void toggleAnnotation()}
+                    // The name stays the action; the reason it is off is the
+                    // item's description, and it stays visible (principle 2:
+                    // a refusal says why before the item is ever pressed).
+                    aria-label={PREVIEW_COPY.annotate}
+                    aria-describedby={annotateUnavailable ? annotateReasonId : undefined}
+                    className="flex-col items-start gap-0.5"
+                  >
+                    <span>{PREVIEW_COPY.annotate}</span>
+                    {annotateUnavailable && (
+                      <span id={annotateReasonId} className="text-supporting text-text-muted">
+                        {annotateUnavailable}
+                      </span>
+                    )}
+                  </DropdownMenuItem>
+                )}
+                {activeArtifact.kind === 'file' && (
+                  <DropdownMenuItem
+                    data-testid="artifact-reveal"
+                    onSelect={() =>
+                      void window.electron.openDirectoryInExplorer(
+                        dirnameFromPath(activeArtifact.path)
+                      )
+                    }
+                  >
+                    {revealLabel}
+                  </DropdownMenuItem>
+                )}
+              </PreviewMoreMenu>
             )}
             {onToggleFold && (
               // Rendered in both layouts and hidden beside the conversation by

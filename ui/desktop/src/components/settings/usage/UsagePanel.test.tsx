@@ -16,7 +16,7 @@ import {
   formatUsageMonth,
   modelLabel,
 } from './UsagePanel';
-import { settingsUsageCopy as copy } from '../../usage/copy';
+import { MODEL_NOT_RECORDED, settingsUsageCopy as copy } from '../../usage/copy';
 import type { UsageReportRow, UsageSummaryResponse } from '../../../api';
 
 const dayRows: UsageReportRow[] = [
@@ -169,10 +169,14 @@ describe('formatters', () => {
     expect(formatUsageMonth('legacy')).toBe('legacy');
   });
 
-  it('labels models and folds the unknown bucket', () => {
+  it('labels models and names the bucket with no model in sentence case', () => {
     expect(modelLabel({ modelId: 'glm-5.2', provider: 'zai' })).toBe('zai/glm-5.2');
     expect(modelLabel({ modelId: 'glm-5.2', provider: null })).toBe('glm-5.2');
-    expect(modelLabel({ modelId: null, provider: null })).toBe('unknown');
+    // The one name Home's usage card and the cost card give the same bucket (usage/copy.test.ts).
+    expect(modelLabel({ modelId: null, provider: null })).toBe(MODEL_NOT_RECORDED);
+    expect(modelLabel({ modelId: null, provider: 'zai' })).toBe(MODEL_NOT_RECORDED);
+    // An empty id names no model either (the daemon stores one as '' and reports it as null).
+    expect(modelLabel({ modelId: '', provider: null })).toBe(MODEL_NOT_RECORDED);
   });
 });
 
@@ -208,7 +212,10 @@ describe('UsageReport', () => {
     expect(glmCells[2]).toHaveTextContent('3M in · 1M out');
     expect(glmCells[3]).toHaveTextContent('4M');
     expect(glmCells[4]).toHaveTextContent('$8.60');
-    const unknownRow = within(table).getByText('unknown').closest('tr')!;
+    // The row with no model reads in sentence case, never the lowercase key token.
+    expect(within(table).queryByText('unknown')).not.toBeInTheDocument();
+    const unknownRow = within(table).getByText(MODEL_NOT_RECORDED).closest('tr')!;
+    expect(within(unknownRow).getByText(copy.unattributedProvider)).toBeInTheDocument();
     // Unknown pricing is explicit and is never presented as $0.
     expect(within(unknownRow).getAllByRole('cell')[4].textContent).toBe('Unavailable');
   });

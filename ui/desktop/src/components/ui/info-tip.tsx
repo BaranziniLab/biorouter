@@ -13,13 +13,19 @@ import { TOOLTIP_SURFACE_CLASS_NAME, isFocusFromTabKey } from './Tooltip';
  * InfoTip: the one help affordance (spec 2.6, principle 2 "say it once, then hide the
  * explanation").
  *
- * A visible 14px info glyph in subtle ink sits 4px after a label. Its explanation opens:
- *   - on pointer hover after 200ms,
- *   - at once when the Tab key moves focus onto it (Tooltip's gate, so a focus a program
- *     restores never opens it),
- *   - on click or tap, as a toggle (a click while a hover has it open pins it instead).
- * It closes on pointer leave (100ms grace, enough to cross the 8px gap), blur, Escape and
- * scroll.
+ * A visible 14px info glyph in subtle ink sits 4px after a label. It follows the app's one rule
+ * for a disclosure trigger, "hover peeks, click pins" (docs/desktop-ui/shared-controls.md):
+ *   - a PREVIEW opens on pointer hover after 200ms, or at once when the Tab key moves focus onto
+ *     it (Tooltip's gate, so a focus a program restores never opens it). It closes on pointer
+ *     leave (100ms grace, enough to cross the 8px gap), blur, Escape and an ancestor scroll, and
+ *     the trigger carries no mark while it shows;
+ *   - a click, tap, Enter or Space KEEPS the very tip the hover previewed, and a second one
+ *     closes it. So does a press on the preview itself. A kept tip marks its trigger
+ *     (`data-pinned`: the strong fill on the glyph's 20px mark box, a pressed plate on an
+ *     `asChild` target) and closes only on Escape, a press outside, that second click, or focus
+ *     that really moves elsewhere in the page (Radix's own focus-outside dismissal). Pointer
+ *     leave, a scroll and a window switch, which blurs the trigger with nowhere for focus to go,
+ *     leave it open.
  *
  * It is never hover-only: the same text is always rendered in a visually hidden node, the
  * trigger points at it with `aria-describedby`, and `useInfoTipId()` / `id` let the control it
@@ -66,6 +72,58 @@ export function useInfoTipId(): string {
   return `br-info-tip-${reactId.replace(/[^a-zA-Z0-9_-]/g, '')}`;
 }
 
+/**
+ * The things an `asChild` trigger must not sit inside, because each is already the control a
+ * pointer or a key addresses there: a button, a link, a label, a menu or listbox row, a tab, a
+ * toggle, a field, another InfoTip's trigger. A focusable trigger in one would be a control inside
+ * a control: its click would also open the menu or pick the row, and its hint would stack on the
+ * host's own (spec 2.6, InfoTip "Never").
+ */
+export const INFO_TIP_HOST_CONTROL_SELECTOR = [
+  'button',
+  'a[href]',
+  'label',
+  'summary',
+  'input',
+  'select',
+  'textarea',
+  '[role="button"]',
+  '[role="link"]',
+  '[role="menuitem"]',
+  '[role="menuitemcheckbox"]',
+  '[role="menuitemradio"]',
+  '[role="option"]',
+  '[role="tab"]',
+  '[role="treeitem"]',
+  '[role="switch"]',
+  '[role="checkbox"]',
+  '[role="radio"]',
+  '[role="combobox"]',
+  '[data-slot="info-tip-trigger"]',
+].join(', ');
+
+/**
+ * For a component that may be drawn inside another control (a badge in a model chip or a picker
+ * row): `inside` turns true once its node is found inside one of
+ * {@link INFO_TIP_HOST_CONTROL_SELECTOR}, and the component then draws itself without an InfoTip,
+ * leaving the words to the control that holds it. Give `notice` to the node as its `ref` in both
+ * forms. The first commit draws the InfoTip form and the switch lands before paint, as
+ * `BuiltInBadge` does it.
+ */
+export function useInsideAControl(): {
+  inside: boolean;
+  notice: (node: HTMLElement | null) => void;
+} {
+  const [inside, setInside] = React.useState(false);
+  const notice = React.useCallback((node: HTMLElement | null) => {
+    if (node?.parentElement?.closest(INFO_TIP_HOST_CONTROL_SELECTOR)) setInside(true);
+  }, []);
+  return { inside, notice };
+}
+
+/** An element whose own Enter or Space already clicks it. */
+const NATIVELY_ACTIVATED = 'button, a[href], input, select, textarea, summary';
+
 export interface InfoTipProps {
   /**
    * What the help is about. The glyph's accessible name is "About {label}". In the `asChild`
@@ -91,6 +149,8 @@ export interface InfoTipProps {
 
 type OpenState = { open: boolean; pinned: boolean };
 const CLOSED: OpenState = { open: false, pinned: false };
+const PREVIEW: OpenState = { open: true, pinned: false };
+const KEPT: OpenState = { open: true, pinned: true };
 
 export const InfoTip = React.forwardRef<HTMLElement, InfoTipProps>(function InfoTip(
   {
@@ -156,10 +216,11 @@ export const InfoTip = React.forwardRef<HTMLElement, InfoTipProps>(function Info
     }
   }, []);
 
-  // A scroll that moves the glyph closes it (Radix Tooltip's rule); a scroll in an unrelated
-  // scroller beside it leaves it alone.
+  // A scroll that moves the glyph closes a preview (Radix Tooltip's rule); a scroll in an
+  // unrelated scroller beside it leaves it alone. A kept tip ignores scrolling: the person asked
+  // for it to stay, and the popper follows its trigger.
   React.useEffect(() => {
-    if (!state.open) return;
+    if (!state.open || state.pinned) return;
     const onScroll = (event: Event) => {
       const target = event.target;
       const trigger = triggerRef.current;
@@ -168,7 +229,7 @@ export const InfoTip = React.forwardRef<HTMLElement, InfoTipProps>(function Info
     };
     window.addEventListener('scroll', onScroll, { capture: true, passive: true });
     return () => window.removeEventListener('scroll', onScroll, { capture: true });
-  }, [state.open, close]);
+  }, [state.open, state.pinned, close]);
 
   const onPointerEnter = (event: React.PointerEvent) => {
     if (event.pointerType === 'touch') return;
@@ -176,7 +237,7 @@ export const InfoTip = React.forwardRef<HTMLElement, InfoTipProps>(function Info
     if (state.open || openTimer.current !== null) return;
     openTimer.current = window.setTimeout(() => {
       openTimer.current = null;
-      setState((current) => (current.open ? current : { open: true, pinned: false }));
+      setState((current) => (current.open ? current : PREVIEW));
     }, INFO_TIP_OPEN_DELAY_MS);
   };
 
@@ -188,16 +249,39 @@ export const InfoTip = React.forwardRef<HTMLElement, InfoTipProps>(function Info
   const onFocus = () => {
     if (!isFocusFromTabKey()) return;
     clearTimers();
-    setState((current) => (current.open ? current : { open: true, pinned: false }));
+    setState((current) => (current.open ? current : PREVIEW));
   };
 
-  const onBlur = () => close();
+  // The trigger's blur closes a preview. A kept tip outlives it: switching windows blurs the
+  // trigger with nowhere for focus to go, and closed a tip the person had kept. Focus that really
+  // moves to something else in the page still closes it, through the content's focus-outside
+  // dismissal (`onOpenChange` below), which a window switch never fires. Functional, so a press
+  // on the preview (which keeps it) and the blur that press causes settle in order.
+  const onBlur = () => {
+    clearTimers();
+    setState((current) => (current.pinned ? current : CLOSED));
+  };
+
+  /** Keep the tip, or close a kept one: the trigger's click, tap, Enter or Space. */
+  const toggleKept = () => {
+    clearTimers();
+    setState((current) => (current.open && current.pinned ? CLOSED : KEPT));
+  };
 
   const onClick = (event: React.MouseEvent) => {
     // The glyph is its own control: a click on it never reaches a row that navigates or toggles.
     event.stopPropagation();
-    clearTimers();
-    setState((current) => (current.open && current.pinned ? CLOSED : { open: true, pinned: true }));
+    toggleKept();
+  };
+
+  // An `asChild` target is a span with a tab stop, which no key clicks; Enter and Space do here
+  // what they do on the glyph's button. A target that is itself a native control keeps its own.
+  const onKeyDown = (event: React.KeyboardEvent<HTMLElement>) => {
+    if (event.key !== 'Enter' && event.key !== ' ') return;
+    if (event.currentTarget.matches(NATIVELY_ACTIVATED)) return;
+    event.preventDefault();
+    event.stopPropagation();
+    if (!event.repeat) toggleKept();
   };
 
   const Trigger: React.ElementType = asChild ? Slot : 'button';
@@ -219,6 +303,9 @@ export const InfoTip = React.forwardRef<HTMLElement, InfoTipProps>(function Info
           {...triggerProps}
           aria-describedby={text ? descriptionId : undefined}
           data-state={state.open ? 'open' : 'closed'}
+          // Only a kept tip marks its trigger (main.css, the InfoTip rules); a preview leaves it
+          // at rest, so the mark always means "this stays until you close it".
+          data-pinned={state.open && state.pinned ? 'true' : undefined}
           data-slot="info-tip-trigger"
           data-testid={testId}
           onPointerEnter={onPointerEnter}
@@ -226,6 +313,7 @@ export const InfoTip = React.forwardRef<HTMLElement, InfoTipProps>(function Info
           onFocus={onFocus}
           onBlur={onBlur}
           onClick={onClick}
+          onKeyDown={asChild ? onKeyDown : undefined}
         >
           {asChild ? children : <Info aria-hidden="true" focusable="false" size={14} />}
         </Trigger>
@@ -257,6 +345,12 @@ export const InfoTip = React.forwardRef<HTMLElement, InfoTipProps>(function Info
           onPointerEnter={cancelClose}
           onPointerLeave={(event) => {
             if (event.pointerType !== 'touch') scheduleClose();
+          }}
+          // A press on the preview keeps it, as a press inside a footer card does: the person
+          // reached for the words, and a pointer that then wanders off must not lose them.
+          onPointerDown={() => {
+            clearTimers();
+            setState((current) => (current.open ? KEPT : current));
           }}
           className={cn(
             TOOLTIP_SURFACE_CLASS_NAME,

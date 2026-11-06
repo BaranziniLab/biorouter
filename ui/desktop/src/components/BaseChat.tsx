@@ -2041,6 +2041,9 @@ function BaseChatContent({
     return submitAndReturnToBottom({ sessionId, submit: heldSubmit }, textValue, attachments);
   };
 
+  // `tokenState` is what moves in a live chat: `session` is the row the chat was
+  // opened with, so keyed on it alone the ledger, and the footer's cost and By
+  // model list, stayed as they were on open until a reload.
   const { sessionCosts, modelRows, ledgerSettled } = useCostTracking({
     session,
     liveTokens: tokenState,

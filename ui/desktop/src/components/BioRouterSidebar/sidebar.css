@@ -273,9 +273,11 @@
    coming from it once the pointer has moved into the menu (the ghost's hover
    tint goes with the pointer). Pressed is the strong fill: on the sidebar, a
    recessed ground, that is the step every fill takes (R-27 rule 2). A row or
-   a folder header whose menu is open is lit instead (`data-menu-open`, below),
-   so its ⋯ needs no state of its own. Read by `aria-expanded`: the tooltip
-   around the trigger overwrites its `data-state` (see the folder actions). */
+   a folder header whose menu is open is lit as well (`data-menu-open`, below),
+   and its ⋯ holds the same strong fill (`.br-surface-trigger`, main.css), one
+   step past the lit row, so every trigger whose menu a click opened reads
+   pressed. Read by `aria-expanded`: the tooltip around the trigger overwrites
+   its `data-state` (see the folder actions). */
 .br-sidebar-chats-actions [aria-haspopup='menu'][aria-expanded='true'] {
   background-color: var(--background-fill-strong);
   color: var(--text-default);

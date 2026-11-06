@@ -396,6 +396,12 @@ describe('the app sidebar under the whole stylesheet (R-27)', () => {
         expect(await ground(tab, '[data-testid="recent-chat-s4"]'), `${mode} lit row`).toBe(
           await paint(tab, 'var(--sidebar-hover)')
         );
+        // ...and the ⋯ itself pressed on the strong fill, one step past its lit row, as every
+        // trigger whose menu a click opened (H4). It rested clear on the lit row.
+        expect(
+          await ground(tab, '[data-testid="recent-chat-more-s4"]'),
+          `${mode}: the ⋯ pressed while its menu is open`
+        ).toBe(await paint(tab, 'var(--background-fill-strong)'));
         if (SHOTS) {
           await tab.screenshot({
             path: resolve(SHOTS, `sidebar-more-open-${mode}.png`),

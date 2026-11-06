@@ -37,19 +37,25 @@ type LegacySessionCosts = Record<
   { inputTokens: number; outputTokens: number; totalCost: number }
 >;
 
+/** The three lifetime counters of a chat's live `tokenState`. */
+export interface LiveTokenCounters {
+  accumulatedInputTokens?: number | null;
+  accumulatedOutputTokens?: number | null;
+  accumulatedTotalTokens?: number | null;
+}
+
 interface UseCostTrackingProps {
   session?: Session | null;
   /**
-   * The live stream's accumulated counters for this chat. A reply can move
-   * them before the chat record is read again (a decision chat's reply does),
-   * and the ledger must be asked again when they do: without it the footer kept
-   * an empty answer and priced the new tokens at the app's default model.
+   * This chat's live counters: the stream's `tokenState`. In a live chat the
+   * `session` row is the one the chat was opened with, and its counters never
+   * move (a decision chat's reply moves them before the row is read again), so
+   * without these the ledger was read once on open and the footer's cost stayed
+   * where it was until a reload. They move when a turn records usage (once per
+   * provider call, and on the turn's end), never per streamed token: every
+   * `Message` frame carries a copy of the last counters (BR-52).
    */
-  liveTokens?: {
-    accumulatedInputTokens?: number | null;
-    accumulatedOutputTokens?: number | null;
-    accumulatedTotalTokens?: number | null;
-  } | null;
+  liveTokens?: LiveTokenCounters | null;
 }
 
 /**
@@ -169,7 +175,15 @@ const NO_ROWS: ModelCostRow[] = [];
  * "N/A" and nothing, on every open (vision V2-R5-5). So a reader waits for it.
  * The answer is kept with the chat it was read for, so one chat's ledger never
  * stands in for another's, and a refresh of the same chat (a turn moved its
- * counters) keeps the answer it has until the new one lands.
+ * counters) keeps the answer it has until the new one lands. A refresh that
+ * fails keeps it too: only a chat's first read settles with no rows.
+ *
+ * The ledger is re-read when the chat's counters move, on its row or live
+ * (`liveTokens`). The row's counters move on an open or a resume; in a live
+ * chat only the stream's do, once per provider call that records usage and on
+ * the turn's end, each after the daemon wrote the turn's ledger row. They are
+ * compared by value, so the per-token frames that copy them ask for nothing.
+ * A read that a newer one has superseded never lands (`cancelled`).
  */
 export const useCostTracking = ({ session, liveTokens }: UseCostTrackingProps) => {
   const [ledger, setLedger] = useState<{ sessionId: string; rows: ModelCostRow[] } | null>(null);
@@ -197,14 +211,15 @@ export const useCostTracking = ({ session, liveTokens }: UseCostTrackingProps) =
           headers: await userActionHeaders(),
           throwOnError: false,
         });
-        const rows = response.data?.models ?? [];
-        const priced = await buildModelCostRows(rows, fetchModelPricing);
+        // A refused or failed read is not an answer with no rows.
+        if (!response.data) throw new Error('the usage ledger did not answer');
+        const priced = await buildModelCostRows(response.data.models ?? [], fetchModelPricing);
         if (!cancelled) {
           setLedger({ sessionId, rows: priced });
         }
       } catch {
         if (!cancelled) {
-          setLedger({ sessionId, rows: [] });
+          setLedger((held) => (held?.sessionId === sessionId ? held : { sessionId, rows: [] }));
         }
       }
     };

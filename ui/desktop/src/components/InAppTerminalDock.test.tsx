@@ -1,3 +1,6 @@
+import { readFileSync } from 'node:fs';
+import { dirname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { act, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
@@ -100,7 +103,31 @@ function shellPrompt(sessionId: string, bracketed: boolean, paneIndex = 0) {
   });
 }
 
+const here = dirname(fileURLToPath(import.meta.url));
+
 const terminalDisposer = vi.fn();
+
+/**
+ * This machine's home folder, and whether the daemon is this machine's: `homeFolder()`
+ * (utils/folderPath.ts) writes `~` only for the desktop's own managed daemon.
+ */
+function setAppConfig(config: Record<string, unknown> = {}) {
+  const values: Record<string, unknown> = {
+    BIOROUTER_HOME_DIR: '/Users/wgu',
+    BIOROUTER_LOCAL_BACKEND: true,
+    ...config,
+  };
+  Object.defineProperty(window, 'appConfig', {
+    configurable: true,
+    value: { get: vi.fn((key: string) => values[key]) },
+  });
+}
+
+/** The dock's working folder, as drawn beside the tabs. */
+const cwdLabel = (absolute: string) =>
+  [...document.querySelectorAll<HTMLElement>('.br-terminal-cwd')].find(
+    (node) => node.dataset.path === absolute
+  ) ?? null;
 
 beforeEach(() => {
   localStorage.clear();
@@ -136,10 +163,7 @@ beforeEach(() => {
       writeTerminalSession: vi.fn(async () => ({ success: true })),
     },
   });
-  Object.defineProperty(window, 'appConfig', {
-    configurable: true,
-    value: { get: vi.fn(() => '/Users/wgu') },
-  });
+  setAppConfig();
   Object.defineProperty(window, 'ResizeObserver', {
     configurable: true,
     value: class {
@@ -176,19 +200,101 @@ describe('InAppTerminalDock', () => {
     expect(window.electron.disposeTerminalSession).not.toHaveBeenCalled();
   });
   it('shortens the home folder to ~ only at a path separator', async () => {
-    // `appConfig.get` answers '/Users/wgu' for BIOROUTER_HOME_DIR (beforeEach).
+    // `appConfig` answers '/Users/wgu' for BIOROUTER_HOME_DIR (beforeEach).
     // A sibling folder that shares the prefix must not read '~2/work'.
     const { unmount } = render(
       <InAppTerminalDock open workingDir="/Users/wgu2/work" onClose={vi.fn()} />
     );
-    expect(screen.getByText('/Users/wgu2/work')).toBeInTheDocument();
-    expect(screen.queryByText('~2/work')).not.toBeInTheDocument();
+    expect(cwdLabel('/Users/wgu2/work')).toHaveTextContent(/^\/Users\/wgu2\/work$/);
     await waitFor(() => expect(window.electron.createTerminalSession).toHaveBeenCalled());
     unmount();
 
     render(<InAppTerminalDock open workingDir="/Users/wgu/work" onClose={vi.fn()} />);
-    expect(screen.getByText('~/work')).toBeInTheDocument();
+    expect(cwdLabel('/Users/wgu/work')).toHaveTextContent(/^~\/work$/);
     await waitFor(() => expect(window.electron.createTerminalSession).toHaveBeenCalledTimes(2));
+  });
+
+  it('writes the folder absolute when the daemon is not this machine’s', async () => {
+    // An external backend may report a folder on another machine, where `~` would name the
+    // wrong home (homeFolder, utils/folderPath.ts).
+    setAppConfig({ BIOROUTER_LOCAL_BACKEND: false });
+    render(<InAppTerminalDock open workingDir="/Users/wgu/work" onClose={vi.fn()} />);
+    expect(cwdLabel('/Users/wgu/work')).toHaveTextContent(/^\/Users\/wgu\/work$/);
+    expect(screen.getByRole('tab', { selected: true })).toHaveTextContent(/^work/);
+    await waitFor(() => expect(window.electron.createTerminalSession).toHaveBeenCalled());
+  });
+
+  it('keeps the folder’s own name in a piece that never shrinks, the leading part in one that does', async () => {
+    render(<InAppTerminalDock open workingDir="/Users/wgu/Desktop/BioRouter" onClose={vi.fn()} />);
+    const label = cwdLabel('/Users/wgu/Desktop/BioRouter')!;
+    // One line, written from `~`, every character kept for a screen reader and a selection.
+    expect(label.textContent).toBe('~/Desktop/BioRouter');
+    expect(label).toHaveAttribute('dir', 'ltr');
+    expect(label.querySelector('.br-terminal-cwd__lead')?.textContent).toBe('~/Desktop');
+    expect(label.querySelector('.br-terminal-cwd__name')?.textContent).toBe('/BioRouter');
+    // Each name isolated, so a right-to-left name cannot reorder the separators.
+    expect([...label.querySelectorAll('bdi')].map((node) => node.textContent)).toEqual([
+      '~',
+      'Desktop',
+      'BioRouter',
+    ]);
+    // No end ellipsis on the whole label: that is what cut the name first.
+    expect(label.className).not.toMatch(/\btruncate\b/);
+    await waitFor(() => expect(window.electron.createTerminalSession).toHaveBeenCalled());
+  });
+
+  it.each([
+    ['the home folder', '/Users/wgu', '~', '', '~'],
+    ['a root', '/', '/', '', '/'],
+    ['one name under the root', '/opt', '/opt', '', '/opt'],
+    [
+      'a Windows folder',
+      'C:\\Users\\other\\proj',
+      'C:\\Users\\other\\proj',
+      'C:\\Users\\other',
+      '\\proj',
+    ],
+  ])(
+    'splits %s into the part that may shrink (if any) and the folder’s own name',
+    async (_, dir, text, lead, name) => {
+      render(<InAppTerminalDock open workingDir={dir} onClose={vi.fn()} />);
+      const label = cwdLabel(dir)!;
+      expect(label.textContent).toBe(text);
+      expect(label.querySelector('.br-terminal-cwd__lead')?.textContent ?? '').toBe(lead);
+      expect(label.querySelector('.br-terminal-cwd__name')?.textContent).toBe(name);
+      await waitFor(() => expect(window.electron.createTerminalSession).toHaveBeenCalled());
+    }
+  );
+
+  it('lets only the leading part give way, by an authored rule (laid out in terminalCwd.browser.test.tsx)', () => {
+    const css = readFileSync(resolve(here, 'terminal-dock.css'), 'utf8');
+    const rule = (selector: string) =>
+      css.match(new RegExp(`\\${selector}\\s*\\{([^}]*)\\}`))?.[1] ?? '';
+    expect(rule('.br-terminal-cwd__lead')).toMatch(/flex:\s*0 1 auto/);
+    expect(rule('.br-terminal-cwd__lead')).toMatch(/text-overflow:\s*ellipsis/);
+    expect(rule('.br-terminal-cwd__name')).toMatch(/flex:\s*0 0 auto/);
+    expect(rule('.br-terminal-cwd__name')).toMatch(/max-width:\s*100%/);
+  });
+
+  it('names a pane’s tab by its folder whichever separator the path uses, `~` for home', async () => {
+    const { unmount } = render(
+      <InAppTerminalDock open workingDir={'C:\\Users\\other\\proj\\'} onClose={vi.fn()} />
+    );
+    // `basename` split on "/" only, so this tab read the whole Windows path.
+    expect(screen.getByRole('tab', { selected: true })).toHaveTextContent(/^proj/);
+    await waitFor(() => expect(window.electron.createTerminalSession).toHaveBeenCalled());
+    unmount();
+
+    render(<InAppTerminalDock open workingDir="/Users/wgu" onClose={vi.fn()} />);
+    expect(screen.getByRole('tab', { selected: true })).toHaveTextContent(/^~/);
+    await waitFor(() => expect(window.electron.createTerminalSession).toHaveBeenCalledTimes(2));
+  });
+
+  it('says "Chat terminal" when it has no folder', async () => {
+    render(<InAppTerminalDock open onClose={vi.fn()} />);
+    expect(document.querySelector('.br-terminal-cwd')).toHaveTextContent(/^Chat terminal$/);
+    expect(screen.getByRole('tab', { selected: true })).toHaveTextContent(/^terminal/);
+    await waitFor(() => expect(window.electron.createTerminalSession).toHaveBeenCalled());
   });
 
   it('opens with a visible active tab and lets users add another terminal tab', async () => {

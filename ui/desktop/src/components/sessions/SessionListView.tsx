@@ -60,6 +60,7 @@ import { Skeleton } from '../ui/skeleton';
 import { ConfirmationModal } from '../ui/ConfirmationModal';
 import { ImportSessionModal } from './ImportSessionModal';
 import { Tooltip, TooltipContent, TooltipTrigger } from '../ui/Tooltip';
+import { useSurfaceTriggerHint } from '../ui/surfaceTriggerHint';
 import { Badge } from '../ui/badge';
 import { importSession, Session, ExtensionConfig, ExtensionData } from '../../api';
 import { extensionDisplayName } from '../settings/extensions/extensionDisplayName';
@@ -88,7 +89,6 @@ import { exportConversation } from '../../utils/exportConversation';
 import { useDiverge } from '../../hooks/useDiverge';
 import {
   decisionCountOf,
-  folderName,
   historyRowTitle,
   runModelFullName,
   runModelName,
@@ -97,6 +97,7 @@ import {
   type SubagentOutcome,
   type SubagentOutcomeStatus,
 } from './historyRow';
+import { folderName, homeFolder, tildePath } from '../../utils/folderPath';
 import {
   applyHeldHistory,
   holdHistory,
@@ -468,6 +469,10 @@ const HistoryRow = React.memo(function HistoryRow({
    */
   const declassifyOnHost = declassifyBrowserReason();
   const [menuOpen, setMenuOpen] = useState(false);
+  // "More actions" names the `⋯` on a hover and never comes back over its open menu (H2), the
+  // rule `RowActions` keeps; this row draws its own cluster because its menu is the shared chat
+  // row menu, not a list of items.
+  const moreHint = useSurfaceTriggerHint(menuOpen);
 
   const open = useCallback(() => onSelectSession(session.id), [onSelectSession, session.id]);
 
@@ -558,7 +563,11 @@ const HistoryRow = React.memo(function HistoryRow({
   const billedTokenEstimate = billedSessionTokenEstimate(session);
   // A top-level chat's decision calls are ONE count on its row; a run's never show.
   const decisionCount = nested ? 0 : decisionCountOf(session);
-  const folder = folderName(session.working_dir);
+  // Named and written as the sidebar's folder groups and the composer's folder chip write it
+  // (utils/folderPath.ts): `~` for the home folder, `Crew` for the Crew task folder, else the
+  // folder's own name; the whole location `~/Desktop/BioRouter`, absolute outside home.
+  const home = homeFolder();
+  const folder = session.working_dir ? folderName(session.working_dir, home) : '';
   const sessionTitle = historyRowTitle(session);
   // A run leads with the role its parent gave it; the task-derived name stays in the
   // tooltip and in the accessible name, so nothing is lost to a short label.
@@ -659,9 +668,10 @@ const HistoryRow = React.memo(function HistoryRow({
                         {folder}
                       </span>
                     </TooltipTrigger>
-                    {/* The path is a machine string: mono, and only in a tooltip. */}
+                    {/* The whole location, only in a tooltip: in the tooltip's own sans and
+                        from `~`, as the sidebar's chat hover card writes it. */}
                     <TooltipContent side="bottom" align="start">
-                      <span className="font-mono">{session.working_dir}</span>
+                      {tildePath(session.working_dir, home)}
                     </TooltipContent>
                   </Tooltip>
                 </span>
@@ -748,8 +758,8 @@ const HistoryRow = React.memo(function HistoryRow({
                 onSelect={() => onRename(session)}
               />
               <DropdownMenu open={menuOpen} onOpenChange={setMenuOpen}>
-                <Tooltip>
-                  <TooltipTrigger asChild>
+                <Tooltip {...moreHint.tooltip}>
+                  <TooltipTrigger asChild {...moreHint.trigger}>
                     <DropdownMenuTrigger asChild>
                       <Button
                         type="button"
@@ -758,6 +768,8 @@ const HistoryRow = React.memo(function HistoryRow({
                         size={actionSize}
                         aria-label={moreActionsLabel(title)}
                         data-row-action=""
+                        // Holds the kept step while its menu is open (main.css).
+                        className="br-surface-trigger"
                         onClick={(event) => event.stopPropagation()}
                       >
                         <MoreHorizontal aria-hidden="true" />
@@ -779,14 +791,16 @@ const HistoryRow = React.memo(function HistoryRow({
 
 // The stored name AND the title the row shows: "living news" finds the chat drawn as
 // "Living news router" (stored `app:living-news-router`), and "subagent" still finds a run
-// whose row no longer says it.
+// whose row no longer says it. The folder likewise, as stored and as its tooltip writes it, so
+// "~/desktop" finds what the tooltip calls `~/Desktop`.
 function matchesFilter(session: Session, needle: string): boolean {
   return (
     session.name.toLowerCase().includes(needle) ||
     historyRowTitle(session).toLowerCase().includes(needle) ||
     (subagentRoleOf(session.extension_data)?.toLowerCase().includes(needle) ?? false) ||
     session.id.toLowerCase().includes(needle) ||
-    session.working_dir.toLowerCase().includes(needle)
+    session.working_dir.toLowerCase().includes(needle) ||
+    tildePath(session.working_dir, homeFolder()).toLowerCase().includes(needle)
   );
 }
 

@@ -1,7 +1,8 @@
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { AppTooltipLayer } from './AppTooltipLayer';
+import { TOOLTIP_DELAY_MS, TOOLTIP_SKIP_DELAY_MS } from './Tooltip';
 
 function NativeTitleTarget({ title }: { title?: string }) {
   return (
@@ -195,6 +196,82 @@ describe('AppTooltipLayer', () => {
     expect(await screen.findByRole('tooltip', {}, { timeout: 2000 })).toHaveTextContent(
       'Native action'
     );
+  });
+
+  describe('the label tooltips’ timing (H5)', () => {
+    function Pair() {
+      return (
+        <>
+          <AppTooltipLayer />
+          <button type="button" data-testid="first" title="First action">
+            1
+          </button>
+          <button type="button" data-testid="second" title="Second action">
+            2
+          </button>
+        </>
+      );
+    }
+
+    async function renderPair() {
+      render(<Pair />);
+      const first = screen.getByTestId('first');
+      const second = screen.getByTestId('second');
+      await waitFor(() => expect(second).toHaveAttribute('data-biorouter-tooltip'));
+      vi.useFakeTimers();
+      return { first, second };
+    }
+
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    const showing = () => screen.queryByRole('tooltip')?.textContent ?? null;
+    const wait = (ms: number) => act(() => vi.advanceTimersByTime(ms));
+
+    it('opens after the app’s label delay, not a delay of its own', async () => {
+      const { first } = await renderPair();
+      fireEvent.pointerOver(first);
+      wait(TOOLTIP_DELAY_MS - 1);
+      expect(showing()).toBeNull();
+      wait(1);
+      expect(showing()).toBe('First action');
+    });
+
+    it('opens a neighbour at once while one shows, and within the skip window after it', async () => {
+      const { first, second } = await renderPair();
+      fireEvent.pointerOver(first);
+      wait(TOOLTIP_DELAY_MS);
+      expect(showing()).toBe('First action');
+
+      // Straight across to the neighbour: no second wait.
+      fireEvent.pointerOut(first, { relatedTarget: second });
+      fireEvent.pointerOver(second, { relatedTarget: first });
+      expect(showing()).toBe('Second action');
+
+      // Off both, then back within the window.
+      fireEvent.pointerOut(second);
+      expect(showing()).toBeNull();
+      wait(TOOLTIP_SKIP_DELAY_MS - 1);
+      fireEvent.pointerOver(first);
+      expect(showing()).toBe('First action');
+    });
+
+    it('waits the whole delay again once the skip window has passed', async () => {
+      const { first, second } = await renderPair();
+      fireEvent.pointerOver(first);
+      wait(TOOLTIP_DELAY_MS);
+      fireEvent.pointerOut(first);
+      expect(showing()).toBeNull();
+
+      wait(TOOLTIP_SKIP_DELAY_MS);
+      fireEvent.pointerOver(second);
+      expect(showing()).toBeNull();
+      wait(TOOLTIP_DELAY_MS - 1);
+      expect(showing()).toBeNull();
+      wait(1);
+      expect(showing()).toBe('Second action');
+    });
   });
 
   it('fades on the motion tokens, not a literal duration', async () => {

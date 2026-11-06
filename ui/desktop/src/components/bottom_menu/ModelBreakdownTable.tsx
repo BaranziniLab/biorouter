@@ -1,8 +1,9 @@
 import type { ModelCostRow } from '../../hooks/useCostTracking';
-import { UNKNOWN_MODEL_LABEL } from '../../hooks/useCostTracking';
+import { modelRowKey } from '../../hooks/useCostTracking';
 import { billedTokens, knownBilledTokens } from '../../utils/usageAccounting';
 import { decisionModelName } from '../../utils/usageStats';
 import { isDecisionProvider, pluralize } from '../decisions/decisionWire';
+import { MODEL_NOT_RECORDED } from './copy';
 import { formatTooltipMoney, isUnmeteredDecisionRow } from './CostTracker';
 
 interface ModelBreakdownTableProps {
@@ -11,13 +12,14 @@ interface ModelBreakdownTableProps {
 }
 
 /**
- * Label a row's model, folding the null/unknown bucket to a readable name. A
- * decision model's row is named as one (`Decision model: joey-1`), since its
- * Baseten slug says little.
+ * Label a row's model for a person: `provider/model`, or `MODEL_NOT_RECORDED` for the bucket of
+ * turns saved without a model. A label is copy, never a key: key a row by `modelRowKey`. A
+ * decision model's row is named as one (`Decision model: joey-1`), since its Baseten slug says
+ * little.
  */
 export function modelLabel(row: Pick<ModelCostRow, 'provider' | 'model'>): string {
   if (!row.model) {
-    return UNKNOWN_MODEL_LABEL;
+    return MODEL_NOT_RECORDED;
   }
   if (isDecisionProvider(row.provider)) {
     return `Decision model: ${decisionModelName(row.model)}`;
@@ -84,7 +86,7 @@ export function ModelBreakdownTable({ rows, currency = '$' }: ModelBreakdownTabl
       <tbody>
         {rows.map((row) => (
           <tr
-            key={modelLabel(row)}
+            key={modelRowKey(row.provider, row.model)}
             className="h-10 border-b border-border-subtle text-text-default last:border-b-0"
           >
             <td className="pr-3">{modelLabel(row)}</td>

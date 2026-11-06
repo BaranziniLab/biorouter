@@ -1,11 +1,17 @@
 /**
  * The composer pickers' strings: the Tools chip and its three lists, the model
- * and effort chip, and the footer line (folder, context, cost).
+ * and effort chip, the footer line (folder, context, cost) and the three cards
+ * its items open (`FooterCard`: the working folder, the context window, the
+ * cost).
  *
  * One place, so the tests import what the interface says instead of restating
  * it (Crew's `copy.ts` pattern). Sentence case, the noun is "chat", the
  * ellipsis is "…", and nothing here is punctuated with a dash. Help text is at
  * most two sentences, because it is read in an InfoTip.
+ *
+ * One string here is not the footer's own: `MODEL_NOT_RECORDED`, re-exported from the usage
+ * surfaces' copy (`components/usage/copy.ts`), so the cost card names a row with no model exactly
+ * as Home's usage card and Settings > App > Usage do.
  *
  * Not here: the privacy sentences the daemon serves, the locked privacy copy in
  * `components/privacy/**`, and the effort labels and descriptions, which live
@@ -106,24 +112,209 @@ export const MODEL_COPY = {
   noModelTooltip: 'Opens the provider catalog',
 } as const;
 
+/** What the backend calls a grant's access (`access_name` in `folder_access.rs`), in words. */
+function grantAccess(access: string): string {
+  if (access === 'read-only') return 'Read only';
+  if (access === 'read/write') return 'Read and write';
+  // A value this build does not know is shown as the backend wrote it, never guessed at.
+  return access;
+}
+
+/** Whether a grant reaches the folder's subfolders, or only the files it was given for. */
+function grantScope(descendants: boolean): string {
+  return descendants ? 'includes subfolders' : 'listed files only';
+}
+
+/**
+ * The working folder's card (`FolderAccessCard`, a `FooterCard`): it opens from the footer's folder
+ * chip and names the folder the chat works in, lets an empty chat choose another, and lists every
+ * other folder the chat may use, each with Revoke. It replaced the footer's "Folder access" button
+ * and its dialog.
+ */
+export const FOLDER_ACCESS_COPY = {
+  /** The card's accessible name (it is a `dialog`). */
+  cardLabel: 'Working folder',
+  /** The first section's label. */
+  workingFolder: 'Working folder',
+  /** An existing chat whose folder has not been read yet, or whose row names none. */
+  workingFolderUnknown: 'Not known yet.',
+  /** #44: once the chat has messages the folder cannot change, and the card says so. */
+  lockedNote: 'Fixed once the chat has messages.',
+  /** The empty chat's way to another folder (the native chooser). */
+  chooseFolder: 'Choose folder…',
+  otherFolders: 'Other approved folders',
+  loading: 'Checking folder access…',
+  loadFailed: 'Folder access could not be loaded.',
+  none: 'None.',
+  grantAccess,
+  grantScope,
+  /** The muted line under a granted folder's path. */
+  grantDetail: (access: string, descendants: boolean) =>
+    `${grantAccess(access)} · ${grantScope(descendants)}`,
+  revoke: 'Revoke',
+  /** The button's name says which folder, so a list of them is not a list of "Revoke". */
+  revokeLabel: (folder: string) => `Revoke access to ${folder}`,
+  revokeFailed: 'Access could not be revoked. The grant is still listed; try again.',
+  /** Follows `folderAccessLifetime()`, the sentence about when a session grant ends. */
+  onceNotListed: 'Folders allowed once are not listed.',
+  approvalKey: 'Folder approval key',
+  approvalKeyHelp:
+    'Use the separate key configured with biorouter serve --folder-access-approval. It is cleared after each revocation.',
+  /**
+   * What folder approval covers, said exactly, on Home and in a chat. Only the Developer and Files
+   * extensions' editor, file analysis and image tools ask (`admit_file_access` in
+   * `agents/extension_manager.rs`, `file_access_plan` in `biorouter-mcp/src/file_access.rs`); the
+   * shell and the PDF, Word and Excel tools never do. A tool can still ask first as the person's
+   * permission mode says, so nothing here claims that nothing else asks.
+   */
+  whoAsks:
+    'The file editor, file analysis and image tools ask before they use another folder. Shell commands and document tools do not ask.',
+} as const;
+
 export const FOOTER_COPY = {
-  /** The folder item's name: the full path, which the line itself does not show. */
-  folderLabel: (dir: string) => `Working folder: ${dir}`,
+  /**
+   * The folder item's name: the full path, which the line itself does not show, and the word the
+   * line DOES show (`shown`), so the name contains the visible text (WCAG 2.5.3). Where that word
+   * is not in the path (`~` for the home folder, `Crew` for the Crew task folder), it comes first:
+   * "Working folder: ~ (/Users/me)".
+   */
+  folderLabel: (dir: string, shown?: string) =>
+    shown && !dir.includes(shown) ? `Working folder: ${shown} (${dir})` : `Working folder: ${dir}`,
+  /** The folder item's name while an existing chat's folder is not known yet. */
+  folderUnknownLabel: 'Working folder: not known yet',
   folderUpdateFailedTitle: 'Working folder update failed',
   folderUpdateFailed: 'The working folder could not be changed.',
-  /** Shown only below half: a full window says nothing worth reading. */
+  /**
+   * What is left of the window: beside the ring below half (a full window says nothing worth
+   * reading), and the context card's reading.
+   */
   contextLeft: (pct: number) => `${pct}% left`,
+  /** The ring's accessible name, which says the whole reading without opening the card. */
   contextTooltip: (pct: number, used: string, total: string) =>
     `${pct}% context left · ${used} of ${total}`,
-  contextLabel: 'Context',
-  contextUsed: 'Context window used',
-  /** The gauge's reading. The footer ring says what is LEFT; the bar fills with what is USED. */
-  gaugeUsed: (pct: number) => `${pct}% used`,
-  compact: 'Compact chat',
-  nothingToCompact: 'Nothing to compact yet',
-  thresholdLabel: 'Auto-compact threshold',
-  thresholdTooltip: (pct: number) => `Auto-compact at ${pct}%`,
   costUnavailable: 'Chat cost unavailable',
   cost: (label: string, estimated: boolean) =>
     `${estimated ? 'Estimated chat total' : 'Chat cost'} ${label}`,
+} as const;
+
+/**
+ * The context ring's card (`ContextWindowIndicator`, a `FooterCard`): how much of the window is
+ * left, the bar with the auto-compact marker, and Compact. Figures come in already formatted
+ * (`fmt` in ContextWindowIndicator.tsx: "92k", "1.1M").
+ */
+export const CONTEXT_CARD_COPY = {
+  /** The card's accessible name (it is a `dialog`). */
+  cardLabel: 'Context',
+  section: 'Context window',
+  /** The section's reading: what is LEFT, as the ring draws it. */
+  left: FOOTER_COPY.contextLeft,
+  /** The muted line under it: what is USED, as the bar fills. */
+  used: (used: string, total: string) => `${used} of ${total} tokens used`,
+  /** The bar's accessible name. */
+  barLabel: 'Context window used',
+  /** The marker's accessible name; it is a slider. */
+  thresholdLabel: 'Auto-compact threshold',
+  /** The marker's `aria-valuetext`, in place of the hover tooltip it used to have. */
+  thresholdValue: (pct: number) => `Auto-compact at ${pct}%`,
+  /** The marker's `aria-valuetext` while the saved threshold turns automatic compaction off. */
+  thresholdOff: 'Automatic compaction off',
+  /** The note under the bar; `pct` is what Biorouter compacts at, which the marker may not reach. */
+  autoCompactNote: (pct: number) =>
+    `Biorouter compacts this chat automatically at ${pct}% used. Drag the marker to change it.`,
+  /**
+   * The note while the saved threshold is 0 or 1 or outside them, which the daemon reads as off
+   * (`check_if_compaction_needed`). Moving the marker saves a share inside them.
+   */
+  autoCompactOff: 'Automatic compaction is off. Drag the marker to turn it on.',
+  compact: 'Compact chat',
+  /** Under a disabled Compact, while the chat has used no context. */
+  nothingToCompact: 'Nothing to compact yet.',
+} as const;
+
+/**
+ * What the cost card's By model list (`modelLabel` in ModelBreakdownTable.tsx) calls the ledger's
+ * `null` model bucket. Not declared here: the usage surfaces' copy owns the name, so this card,
+ * Home's usage card and Settings > App > Usage never name the bucket differently. It is only what a
+ * person reads: row keys and the legacy cost map's keys keep `UNKNOWN_MODEL_LABEL`
+ * (`hooks/useCostTracking.ts`).
+ */
+export { MODEL_NOT_RECORDED } from '../usage/copy';
+
+/**
+ * The tokens the cost card lists for the chat or for one model: the ledger's four disjoint
+ * buckets (`ModelUsageRow`), which add up to the billed total the summary's Tokens value and
+ * Settings > App > Usage show. A cache bucket is `null` (or absent) where it was not recorded: the
+ * live price's counters never split it out, and history from before cache accounting has none.
+ */
+export interface CostCardTokens {
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens?: number | null;
+  cacheCreationTokens?: number | null;
+}
+
+/** A no-break space: a figure keeps its word, as a number keeps its unit. */
+const NBSP = '\u00a0';
+
+/** "65,408 cache read", in one piece. */
+function tokenBucket(count: number, word: string): string {
+  return `${count.toLocaleString()} ${word}`.replace(/ /g, NBSP);
+}
+
+/**
+ * Buckets joined by "·", each separator held to the bucket before it, so the only place a line
+ * can break is after a "·". Measured in Chromium at the card's 294px column: an unpriced model's
+ * row ("Unavailable · 20,000 in · 1,500 out · 300,000 cache read") and a chat of millions broke
+ * between "cache" and "read" with plain spaces; with these they break after the last "·" that fits.
+ */
+function joinBuckets(parts: string[]): string {
+  return parts.join(`${NBSP}· `);
+}
+
+/**
+ * A detail's lines: `lead`, then each cache bucket that holds tokens, in Settings > App > Usage's
+ * order (in, out, cache read, cache write). A bucket with none, or not recorded, says nothing.
+ * Input, output and one cache bucket fit the card's 294px column on one line (284px at a million
+ * input tokens and ten million cache read, 12px Arial), so they stay on one. With both cache
+ * buckets the line runs to 355px at an ordinary chat's counts, so the cache takes a second line of
+ * its own instead of breaking wherever the column ends.
+ */
+function costTokenLines(lead: string[], tokens: CostCardTokens): string[] {
+  const cacheRead = tokens.cacheReadTokens ?? 0;
+  const cacheWrite = tokens.cacheCreationTokens ?? 0;
+  const cache = [
+    ...(cacheRead > 0 ? [tokenBucket(cacheRead, 'cache read')] : []),
+    ...(cacheWrite > 0 ? [tokenBucket(cacheWrite, 'cache write')] : []),
+  ];
+  return cache.length > 1
+    ? [joinBuckets(lead), joinBuckets(cache)]
+    : [joinBuckets([...lead, ...cache])];
+}
+
+/**
+ * The cost figure's card (`CostTracker`, a `FooterCard`): the chat's total and its tokens, then
+ * the cost per model. Money comes in already formatted (`formatCostEstimate` and
+ * `formatTooltipMoney` in CostTracker.tsx, which print "Unavailable" for an unknown price); token
+ * counts come in as numbers and are grouped here. A detail is one line, or two (`costTokenLines`),
+ * drawn as one muted paragraph.
+ */
+export const COST_CARD_COPY = {
+  /** The card's accessible name (it is a `dialog`). */
+  cardLabel: 'Cost',
+  section: 'Cost of this chat',
+  /** The muted line under the total: "22,788 input · 382 output · 65,408 cache read". */
+  tokens: (tokens: CostCardTokens) =>
+    costTokenLines(
+      [tokenBucket(tokens.inputTokens, 'input'), tokenBucket(tokens.outputTokens, 'output')],
+      tokens
+    ),
+  /** When the estimate is partial: a price or a count is missing. */
+  partialNote: 'This is a conservative estimate from the token counts and prices available.',
+  byModel: 'By model',
+  /** The muted line under a model's name: "$0.14 · 22,788 in · 382 out · 65,408 cache read". */
+  modelDetail: (cost: string, tokens: CostCardTokens) =>
+    costTokenLines(
+      [cost, tokenBucket(tokens.inputTokens, 'in'), tokenBucket(tokens.outputTokens, 'out')],
+      tokens
+    ),
 } as const;

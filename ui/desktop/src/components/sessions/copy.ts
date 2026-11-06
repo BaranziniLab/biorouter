@@ -137,7 +137,12 @@ export const RESUME_FAILED = "Couldn't open this chat";
 export const messageCount = (count: number) => `${count} ${count === 1 ? 'message' : 'messages'}`;
 /** "1,234 tokens" (or "≥1,234 tokens" for an older chat with last-turn usage only). */
 export const billedTokens = (formatted: string) => `${formatted} tokens`;
-/** InfoTip on a transcript's title: where the chat ran, which only a tooltip should name. */
+/**
+ * InfoTip on a transcript's title: where the chat ran, which only a tooltip should name. The
+ * caller writes the folder: `tildePath(path, homeFolder())` for the person's own chat in History
+ * ("This chat ran in ~/Desktop/BioRouter."), and the absolute path for a shared chat, whose folder
+ * is on the sharer's machine, where `~` would name the reader's home instead.
+ */
 export const ranIn = (workingDir: string) => `This chat ran in ${workingDir}.`;
 
 /* ------------------------------------------------------------ Shared chat */

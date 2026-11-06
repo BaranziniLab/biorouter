@@ -1,11 +1,13 @@
 import { describe, it, expect } from 'vitest';
 import { render, screen, within } from '@testing-library/react';
 import { ModelBreakdownTable, modelLabel } from './ModelBreakdownTable';
-import type { ModelCostRow } from '../../hooks/useCostTracking';
+import { MODEL_NOT_RECORDED } from './copy';
+import { homeUsageCopy } from '../usage/copy';
+import { UNKNOWN_MODEL_LABEL, type ModelCostRow } from '../../hooks/useCostTracking';
 
 // A fixed payload mirroring the backend rollup: two real models the user
-// switched between mid-thread, plus an unknown (null-model) bucket whose price
-// is unknown.
+// switched between mid-thread, plus the null-model bucket (turns saved without
+// a model), whose price is unknown.
 const rows: ModelCostRow[] = [
   {
     provider: 'openai',
@@ -46,10 +48,16 @@ const rows: ModelCostRow[] = [
 ];
 
 describe('modelLabel', () => {
-  it('joins provider and model, and folds the null bucket to "unknown"', () => {
+  it('joins provider and model, and names the null bucket in sentence case', () => {
     expect(modelLabel({ provider: 'openai', model: 'gpt-5' })).toBe('openai/gpt-5');
     expect(modelLabel({ provider: undefined, model: 'gpt-5' })).toBe('gpt-5');
-    expect(modelLabel({ provider: undefined, model: undefined })).toBe('unknown');
+    // Home's usage card's name for the bucket, not a second one (usage/copy.test.ts).
+    expect(MODEL_NOT_RECORDED).toBe(homeUsageCopy.notRecorded);
+    expect(modelLabel({ provider: undefined, model: undefined })).toBe(MODEL_NOT_RECORDED);
+    // A provider that reported no model is still the same bucket, and says so.
+    expect(modelLabel({ provider: 'openai', model: undefined })).toBe(MODEL_NOT_RECORDED);
+    // The key token is never what a person reads.
+    expect(modelLabel({ provider: undefined, model: undefined })).not.toBe(UNKNOWN_MODEL_LABEL);
   });
 
   it('names a decision model as one, by its alias', () => {
@@ -148,11 +156,12 @@ describe('ModelBreakdownTable', () => {
     const claudeRow = screen.getByText('anthropic/claude-fable-5').closest('tr')!;
     expect(within(claudeRow).getAllByRole('cell')[7].textContent).toBe('<$0.01');
 
-    // Unknown bucket: labelled "unknown", null price explicitly unavailable.
-    const unknownRow = screen.getByText('unknown').closest('tr')!;
+    // The bucket with no model: named in sentence case, null price explicitly unavailable.
+    expect(screen.queryByText(UNKNOWN_MODEL_LABEL)).not.toBeInTheDocument();
+    const unknownRow = screen.getByText(MODEL_NOT_RECORDED).closest('tr')!;
     const unknownCells = within(unknownRow).getAllByRole('cell');
     expect(unknownCells.map((c) => c.textContent)).toEqual([
-      'unknown',
+      MODEL_NOT_RECORDED,
       '1',
       '1',
       '0',

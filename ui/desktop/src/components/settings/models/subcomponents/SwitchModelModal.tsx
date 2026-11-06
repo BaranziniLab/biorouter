@@ -1289,11 +1289,17 @@ export const SwitchModelModal = ({
                   Issue #56, DR-26. Whose agreements cover the models under this
                   provider, stated before the user picks one. Nothing renders for
                   a public provider — it has no affiliation — so this row appears
-                  exactly when there is something to say.
+                  exactly when there is something to say. The sentence beside
+                  the badge is the one its InfoTip would say, so the badge
+                  draws none here (`describedOnScreen`): say it once.
                 */}
               {selectedAffiliationWords && (
                 <div data-testid="switch-model-affiliation" className="flex items-start gap-2">
-                  <AffiliationBadge affiliation={selectedAffiliation} className="mt-0.5" />
+                  <AffiliationBadge
+                    affiliation={selectedAffiliation}
+                    describedOnScreen
+                    className="mt-0.5"
+                  />
                   <p className="min-w-0 flex-1 text-supporting text-text-muted [overflow-wrap:anywhere]">
                     {selectedAffiliationWords.title}
                   </p>

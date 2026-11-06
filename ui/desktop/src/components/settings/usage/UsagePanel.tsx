@@ -16,7 +16,7 @@ import { InfoTip } from '../../ui/info-tip';
 import { Progress } from '../../ui/progress';
 import { SettingRow } from '../../ui/setting-row';
 import { StatGrid, type StatItem } from '../../usage/StatGrid';
-import { settingsUsageCopy as copy } from '../../usage/copy';
+import { MODEL_NOT_RECORDED, settingsUsageCopy as copy } from '../../usage/copy';
 import '../../usage/usage.css';
 
 /**
@@ -114,10 +114,14 @@ export function formatUsageMonth(month: string): string {
   });
 }
 
+/**
+ * A model row's full name (`provider/model`), or `MODEL_NOT_RECORDED` for the report's bucket of
+ * usage saved without a model: the one name Home's usage card and the cost card use too.
+ */
 export function modelLabel(row: Pick<UsageReportRow, 'modelId' | 'provider'>): string {
   if (row.modelId && row.provider) return `${row.provider}/${row.modelId}`;
   if (row.modelId) return row.modelId;
-  return 'unknown';
+  return MODEL_NOT_RECORDED;
 }
 
 export function cacheTokens(
@@ -603,7 +607,7 @@ export function UsageReport({ summary, dayRows, modelRows, showCosts = true }: U
                           <p className="truncate">
                             {decision && row.modelId
                               ? decisionModelName(row.modelId)
-                              : (row.modelId ?? 'unknown')}
+                              : row.modelId || MODEL_NOT_RECORDED}
                           </p>
                           <p
                             className="truncate text-supporting text-text-subtle"

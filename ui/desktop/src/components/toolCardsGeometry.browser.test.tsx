@@ -292,6 +292,251 @@ describe('the transcript cards in a real layout engine', () => {
     }
   });
 
+  /**
+   * A card narrow enough that every path below takes two lines or more in the mono face, and wide
+   * enough that each of its names fits a line by itself, so none may break inside (at 300px
+   * `multiple-sclerosis-progression-cohort` could not, and broke at its hyphens, as it should).
+   */
+  const APPROVAL_WIDTH = 400;
+
+  /**
+   * The folder-access approval's folder and files stay mono and absolute (the exact argument of
+   * the decision), and wrap like a path: right after a separator, never inside a name that fits a
+   * line. `break-all` split `results` into `resu` / `lts`; drawn as plain text, Chromium took no
+   * break after a backslash before a letter, nor after "/" before a digit, and broke after a hyphen
+   * and at a space inside a name (`biorouter-` / `workflows-and-skills`, `single cell ` / `atlas`)
+   * where a break at the separator before it would have fitted. `PathSegments` draws each name
+   * with the separator after it as one atomic piece, so a line breaks only between pieces. The
+   * folder is drawn in a paragraph and again as the one file, in a list item narrower than it.
+   */
+  it.for([
+    ['slashes', '/Volumes/shared/research/projects/alpha/beta/gamma/delta/epsilon/zeta/results'],
+    ['backslashes', 'C:\\Users\\other\\Documents\\research\\projects\\alpha\\beta\\gamma'],
+    [
+      'names that start with a digit',
+      '/Volumes/shared/2021/2022/2023/2024/2025/2026/0001/0002/0003',
+    ],
+    [
+      'names with hyphens',
+      '/Users/someone/Developer/baranzini-lab/biorouter-workflows-and-skills/scripts',
+    ],
+    [
+      'hyphenated names on another volume',
+      '/Volumes/lab-share/projects/multiple-sclerosis-progression-cohort/2026',
+    ],
+    [
+      'names with spaces',
+      '/Users/someone/Documents/UCSF Baranzini Lab/single cell atlas/analysis notebooks',
+    ],
+    [
+      'right-to-left names',
+      '/Users/someone/מסמכים משותפים/نتائج التحليل النهائية/ניסוי-שני/analysis notebooks',
+    ],
+  ] as const)(
+    'breaks a folder-access approval’s long path (%s) only after a separator, in mono',
+    async ([, folder], ctx) => {
+      if (!browser) return ctx.skip();
+      const preview = {
+        kind: 'folderAccess',
+        folder,
+        access: 'Read-only',
+        files: [folder],
+        descendants: true,
+        onceDescendants: false,
+        actionId: 'action-1',
+      } as unknown as ToolPreview;
+      // `folderAccessLifetime()` reads `window.appConfig`; this file renders in node.
+      const scope = globalThis as unknown as { window?: unknown };
+      scope.window = {};
+      let markup = '';
+      try {
+        markup = renderToStaticMarkup(<ToolCallPreview preview={preview} />);
+      } finally {
+        delete scope.window;
+      }
+      const tab = await open(
+        `<style>.font-mono { font-family: ui-monospace, Menlo, Consolas, monospace; }` +
+          `.space-y-2 > * + * { margin-top: 8px; }</style>` +
+          `<div style="width:${APPROVAL_WIDTH}px"><div class="br-action-card">${markup}</div></div>`
+      );
+      try {
+        const drawn = await tab.evaluate(() =>
+          [...document.querySelectorAll<HTMLElement>('[data-path]')].map((value) => {
+            const chars: { ch: string; top: number; right: number }[] = [];
+            const range = document.createRange();
+            const walker = document.createTreeWalker(value, NodeFilter.SHOW_TEXT);
+            for (let text = walker.nextNode(); text; text = walker.nextNode()) {
+              const content = text.textContent ?? '';
+              for (let i = 0; i < content.length; i++) {
+                range.setStart(text, i);
+                range.setEnd(text, i + 1);
+                const rect = range.getBoundingClientRect();
+                chars.push({ ch: content[i], top: rect.top, right: rect.right });
+              }
+            }
+            // Every line break, as the characters either side of it, read from each character's
+            // own box: where the drawing breaks, whatever the markup says.
+            const breaks: string[] = [];
+            for (let i = 1; i < chars.length; i++) {
+              if (chars[i].top > chars[i - 1].top + 4) breaks.push(chars[i - 1].ch + chars[i].ch);
+            }
+            const names = [...value.querySelectorAll('bdi')];
+            // The names drawn on more than one line: a name split inside itself.
+            const split = names
+              .filter((name) => {
+                range.selectNodeContents(name);
+                const tops = [...range.getClientRects()]
+                  .filter((rect) => rect.width > 0)
+                  .map((rect) => Math.round(rect.top));
+                return new Set(tops).size > 1;
+              })
+              .map((name) => name.textContent);
+            // The names wider than the line on their own, with the separators drawn beside them.
+            const probe = document.createElement('span');
+            probe.style.cssText = 'position: absolute; visibility: hidden; white-space: nowrap';
+            value.appendChild(probe);
+            const wide = names
+              .filter((name) => {
+                probe.textContent = (name.closest('.br-path-piece') ?? name).textContent;
+                return probe.getBoundingClientRect().width > value.clientWidth + 0.5;
+              })
+              .map((name) => name.textContent);
+            probe.remove();
+            // Each name (its `<bdi>`) and each separator in document order, drawn after the one
+            // before it: left to right on the same line, or on a later line.
+            const leaves: { text: string | null; left: number; right: number; top: number }[] = [];
+            const nodes = document.createTreeWalker(
+              value,
+              NodeFilter.SHOW_ELEMENT | NodeFilter.SHOW_TEXT
+            );
+            for (let node = nodes.nextNode(); node; node = nodes.nextNode()) {
+              const isName = node.nodeName === 'BDI';
+              const isSeparator =
+                node.nodeType === Node.TEXT_NODE && !node.parentElement?.closest('bdi');
+              if (!isName && !isSeparator) continue;
+              range.selectNodeContents(node);
+              const rect = range.getBoundingClientRect();
+              leaves.push({
+                text: node.textContent,
+                left: rect.left,
+                right: rect.right,
+                top: rect.top,
+              });
+            }
+            const misplaced: string[] = [];
+            for (let i = 1; i < leaves.length; i++) {
+              const [before, after] = [leaves[i - 1], leaves[i]];
+              const sameLine = Math.abs(after.top - before.top) < 4;
+              if (sameLine ? after.left < before.right - 0.5 : after.top < before.top)
+                misplaced.push(`"${after.text}" drawn before "${before.text}"`);
+            }
+            // What a selection of the whole drawn path copies, line breaks and all.
+            const selection = getSelection()!;
+            const whole = document.createRange();
+            whole.selectNodeContents(value);
+            selection.removeAllRanges();
+            selection.addRange(whole);
+            const copied = selection.toString();
+            selection.removeAllRanges();
+            const style = getComputedStyle(value);
+            return {
+              text: value.textContent,
+              family: style.fontFamily,
+              wordBreak: style.wordBreak,
+              breaks,
+              split,
+              wide,
+              misplaced,
+              copied,
+              right: Math.max(...chars.map((c) => c.right)),
+              boxRight: value.getBoundingClientRect().right,
+            };
+          })
+        );
+        expect(drawn).toHaveLength(2);
+        for (const path of drawn) {
+          expect(path.text).toBe(folder);
+          expect(path.family).toMatch(/mono/i);
+          expect(path.wordBreak).toBe('normal');
+          expect(path.wide, 'every name fits a line by itself').toEqual([]);
+          expect(path.breaks.length, 'it needed more than one line').toBeGreaterThan(0);
+          for (const at of path.breaks) expect(at, `a break at "${at}"`).toMatch(/^[\\/][^\\/]$/);
+          expect(path.split, 'no name split inside itself').toEqual([]);
+          expect(path.misplaced, 'names and separators in the order written').toEqual([]);
+          expect(path.copied, 'a selection copies the exact path, nothing added').toBe(folder);
+          expect(path.right, 'every line ends inside the card').toBeLessThanOrEqual(
+            path.boxRight + 0.5
+          );
+        }
+      } finally {
+        await tab.close();
+      }
+    }
+  );
+
+  /**
+   * The approval shows the exact folder being granted, and a model chooses it. A name that starts
+   * with a space begins its piece, and so a line of the piece's own (an atomic box), where a
+   * collapsible space is dropped: "/Users/me/ .ssh" was drawn and copied as "/Users/me/.ssh",
+   * another folder than the one the decision grants. A name of spaces alone lost all of them
+   * ("/tmp//x"), and a run of spaces inside a name drew as one. `textContent` keeps every one of
+   * them, so only what is drawn and what a selection copies show the loss.
+   */
+  it('draws and copies a folder-access approval’s paths with every space they are written with', async (ctx) => {
+    if (!browser) return ctx.skip();
+    const folder = '/Users/me/ .ssh';
+    const files = [folder, '/Volumes/share/ Lab/data', '/tmp/ /x', '/Users/me/two  spaces/x'];
+    const preview = {
+      kind: 'folderAccess',
+      folder,
+      access: 'Read-only',
+      files,
+      descendants: true,
+      onceDescendants: false,
+      actionId: 'action-1',
+    } as unknown as ToolPreview;
+    // `folderAccessLifetime()` reads `window.appConfig`; this file renders in node.
+    const scope = globalThis as unknown as { window?: unknown };
+    scope.window = {};
+    let markup = '';
+    try {
+      markup = renderToStaticMarkup(<ToolCallPreview preview={preview} />);
+    } finally {
+      delete scope.window;
+    }
+    const tab = await open(
+      `<style>.font-mono { font-family: ui-monospace, Menlo, Consolas, monospace; }</style>` +
+        `<div style="width:${APPROVAL_WIDTH}px"><div class="br-action-card">${markup}</div></div>`
+    );
+    try {
+      const drawn = await tab.evaluate(() =>
+        [...document.querySelectorAll<HTMLElement>('[data-path]')].map((value) => {
+          const selection = getSelection()!;
+          const whole = document.createRange();
+          whole.selectNodeContents(value);
+          selection.removeAllRanges();
+          selection.addRange(whole);
+          const copied = selection.toString();
+          selection.removeAllRanges();
+          return {
+            path: value.dataset.path,
+            text: value.textContent,
+            innerText: value.innerText,
+            copied,
+          };
+        })
+      );
+      expect(drawn.map((value) => value.path)).toEqual([folder, ...files]);
+      for (const value of drawn) {
+        expect(value.text).toBe(value.path);
+        expect(value.innerText, `"${value.path}" drawn as written`).toBe(value.path);
+        expect(value.copied, `"${value.path}" copied as written`).toBe(value.path);
+      }
+    } finally {
+      await tab.close();
+    }
+  });
+
   it('plays the entrance for a card that arrives live and not for one that mounts at rest', async () => {
     if (!browser) return;
     const card = `<div class="br-action-card br-enter">Run Shell?</div>`;

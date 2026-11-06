@@ -251,7 +251,11 @@ describe('the model and effort chip', () => {
     await user.keyboard('{ArrowUp}');
     expect(normal).toHaveFocus();
     expect(getReasoningEffort(SCOPE)).toBe('normal');
+    // Up again leaves the segment for the "About effort" glyph above it, not a value.
     await user.keyboard('{ArrowUp}');
+    expect(screen.getByTestId('effort-info')).toHaveFocus();
+    expect(getReasoningEffort(SCOPE)).toBe('normal');
+    await user.keyboard('{ArrowDown}');
     expect(normal).toHaveFocus();
     expect(getReasoningEffort(SCOPE)).toBe('normal');
 
@@ -268,6 +272,51 @@ describe('the model and effort chip', () => {
     await waitFor(() =>
       expect(screen.getByRole('menuitem', { name: MODEL_COPY.leadWorker })).toHaveFocus()
     );
+  });
+
+  // Tab leaves an open menu and Radix's Up and Down visit rows only, so the menu's InfoTips (the
+  // dense affiliation badge's "UCSF. Covered by UCSF's agreements…", the "About effort" glyph) had
+  // no key that reached them: their words were the pointer's alone.
+  it('reaches the affiliation badge and the About glyphs with Up, and Enter keeps a tip', async () => {
+    mocks.getProviders.mockResolvedValue([
+      {
+        name: 'versa_azure',
+        is_configured: true,
+        provider_type: 'Builtin',
+        metadata: {
+          name: 'versa_azure',
+          display_name: 'Versa API Azure',
+          tier: 'private',
+          runs_locally: false,
+        },
+        affiliation: { kind: 'institutions', institutions: [{ id: 'ucsf', display_name: 'UCSF' }] },
+        resolved_tier: 'private',
+      },
+    ]);
+    const user = userEvent.setup();
+    renderChip();
+    await openMenu();
+    const badge = await screen.findByTestId('affiliation-badge');
+    const change = screen.getByRole('menuitem', { name: MODEL_COPY.changeModel });
+
+    act(() => change.focus());
+    const stops: (string | null)[] = [];
+    for (let step = 0; step < 4; step++) {
+      await user.keyboard('{ArrowUp}');
+      const at = document.activeElement;
+      stops.push(
+        at?.getAttribute('role') === 'radio'
+          ? at.textContent
+          : (at?.getAttribute('data-testid') ?? null)
+      );
+    }
+    expect(stops).toEqual(['Normal', 'effort-info', 'affiliation-badge', 'affiliation-badge']);
+    expect(badge).toHaveFocus();
+    expect(getReasoningEffort(SCOPE)).toBe('normal');
+
+    await user.keyboard('{Enter}');
+    await waitFor(() => expect(badge).toHaveAttribute('data-pinned', 'true'));
+    expect(screen.getByRole('menu')).toBeInTheDocument();
   });
 
   it('closes on Escape from a segment and gives focus back to the chip', async () => {

@@ -10,6 +10,18 @@ import type { UsageRange } from '../../utils/usageStats';
 
 const days = (count: number) => (count === 1 ? '1 day' : `${count.toLocaleString('en-US')} days`);
 
+/**
+ * The one name for usage saved without a model: the report's and the ledger's `null` model
+ * bucket (turns recorded before model attribution, or from a provider that reported no model).
+ * Declared once here and read by every surface that lists usage by model: Home's usage card
+ * (`homeUsageCopy.notRecorded`), Settings > App > Usage's model table (`modelLabel` in
+ * UsagePanel.tsx) and the composer's cost card (`modelLabel` in bottom_menu/ModelBreakdownTable.tsx,
+ * through the re-export in bottom_menu/copy.ts). A second name for the same bucket reads as a second
+ * bucket; `copy.test.ts` ties the three to this constant. Row keys keep `UNKNOWN_MODEL_LABEL`
+ * (`hooks/useCostTracking.ts`), which no one reads.
+ */
+export const MODEL_NOT_RECORDED = 'Not recorded';
+
 export const homeUsageCopy = {
   /** The card's region name. */
   region: 'Usage',
@@ -21,7 +33,7 @@ export const homeUsageCopy = {
   modelsEmpty: 'No model usage in this period.',
   other: 'Other',
   /** Usage the report holds without a model name: last row, and the tile when it is all there is. */
-  notRecorded: 'Not recorded',
+  notRecorded: MODEL_NOT_RECORDED,
   notRecordedHelp: 'Usage saved without a model name. The shares above count named models only.',
   rangeLabel: 'Time range',
   ranges: {
