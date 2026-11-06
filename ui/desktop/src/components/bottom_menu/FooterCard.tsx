@@ -203,13 +203,35 @@ export function FooterCardValue({
  *   break point. A leading separator belongs to the first name, so a root never ends a line alone.
  * - `data-path` holds the absolute path it stands for; a selection copies what is drawn, `~` and
  *   all, with nothing added (the pieces and `<bdi>`s add no characters).
+ * - A triple-click selects the path and the paragraph break after it (Chromium's paragraph
+ *   selection runs to the start of the next block), so its copy read "~/Desktop/BioRouter\n\n",
+ *   and pasted after `cd ` in a terminal it ran the line. A copy that starts in the path drops the
+ *   line breaks at the selection's two ends (`copyWithoutEdgeBreaks`); one with none is left to
+ *   the browser.
  */
 export function FooterCardPath({ path }: { path: string }) {
   return (
-    <FooterCardValue dir="ltr" data-path={path} className="br-footer-card__path">
+    <FooterCardValue
+      dir="ltr"
+      data-path={path}
+      className="br-footer-card__path"
+      onCopy={copyWithoutEdgeBreaks}
+    >
       <PathSegments path={tildePath(path, homeFolder())} />
     </FooterCardValue>
   );
+}
+
+/** Line breaks at either end of a selection's text: what a paragraph selection adds. */
+const EDGE_BREAKS = /^[\r\n]+|[\r\n]+$/g;
+
+/** Copy the selection without the line breaks a paragraph selection carries at its ends. */
+function copyWithoutEdgeBreaks(event: React.ClipboardEvent<HTMLElement>) {
+  const text = window.getSelection()?.toString() ?? '';
+  const trimmed = text.replace(EDGE_BREAKS, '');
+  if (trimmed === text || trimmed === '' || !event.clipboardData) return;
+  event.preventDefault();
+  event.clipboardData.setData('text/plain', trimmed);
 }
 
 /** A muted line under a value: what it is, in fewer words ("Read only · includes subfolders"). */
@@ -273,9 +295,22 @@ export function FooterCardActions({ children }: { children: React.ReactNode }) {
   return <div className="br-footer-card__actions">{children}</div>;
 }
 
-/** Every button in a footer card: the compact secondary button, the same in all three. */
-export function FooterCardAction(
-  props: Omit<React.ComponentProps<typeof Button>, 'type' | 'variant' | 'size'>
-) {
-  return <Button type="button" variant="secondary" size="xs" {...props} />;
+/**
+ * Every button in a footer card: the compact secondary button, the same in all three. Its label
+ * is set at the card's reading size (`.br-footer-card__action`, pickers.css), not the control
+ * role's 14px, which made "Choose folder…" the largest text in the card.
+ */
+export function FooterCardAction({
+  className,
+  ...props
+}: Omit<React.ComponentProps<typeof Button>, 'type' | 'variant' | 'size'>) {
+  return (
+    <Button
+      type="button"
+      variant="secondary"
+      size="xs"
+      className={cn('br-footer-card__action', className)}
+      {...props}
+    />
+  );
 }

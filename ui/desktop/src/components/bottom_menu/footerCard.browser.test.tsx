@@ -64,6 +64,8 @@ const TOKEN_NAMES = [
   '--text-supporting--line-height',
   '--text-secondary',
   '--text-secondary--line-height',
+  '--text-label',
+  '--text-label--line-height',
   '--dur-fast-min',
   '--dur-med-min',
   '--ease-out',
@@ -115,6 +117,8 @@ svg { display: block; width: 14px; height: 14px; }
 .bg-background-default { background-color: var(--background-default); }
 /* The xs button's height (Button's \`xs\` size), which the card's row action centres on. */
 .h-control-compact { height: var(--control-compact); }
+/* Every Button's type role, 14/20/500, which a card's button must not keep. */
+.text-label { font-size: var(--text-label); line-height: var(--text-label--line-height); font-weight: 500; }
 `;
 
 /**
@@ -1270,6 +1274,49 @@ describe('the footer cards under a real pointer', () => {
       }
     });
 
+    /**
+     * Chromium's triple-click selects a paragraph WITH the break after it (to the start of the next
+     * block), so the copy of a triple-clicked folder read "~/data/results\n\n", and pasted after
+     * `cd ` in a terminal it ran the line. A copy that starts in the path drops those breaks.
+     */
+    it('copies a triple-clicked folder without the paragraph break after it', async (ctx) => {
+      if (!browser) return ctx.skip();
+      const folder = `${HOME}/data/results`;
+      const tab = await load(undefined, setup([{ id: 'g1', folder }]));
+      try {
+        await openFolderCard(tab);
+        for (const path of [folder, `${HOME}/Projects/kdps`]) {
+          const name = tab.locator(`${FOLDER.card} [data-path="${path}"] bdi`).last();
+          await name.click({ clickCount: 3 });
+          const copy = await tab.evaluate(() => {
+            const selection = getSelection()!;
+            const selected = selection.toString();
+            // A copy, fired where Chromium fires it: at the element the selection starts in.
+            const event = new ClipboardEvent('copy', {
+              bubbles: true,
+              cancelable: true,
+              clipboardData: new DataTransfer(),
+            });
+            const start = selection.anchorNode!;
+            (start instanceof Element ? start : start.parentElement)!.dispatchEvent(event);
+            return {
+              selected,
+              copied: event.defaultPrevented
+                ? event.clipboardData!.getData('text/plain')
+                : selected,
+            };
+          });
+          const written = `~${path.slice(HOME.length)}`;
+          expect(copy.selected, 'the instrument: a triple-click selects the break too').toMatch(
+            new RegExp(`^${written}\\n+$`)
+          );
+          expect(copy.copied, 'what the clipboard gets').toBe(written);
+        }
+      } finally {
+        await tab.close();
+      }
+    });
+
     it('centres each Revoke on the first line of its folder, clear of the section label', async (ctx) => {
       if (!browser) return ctx.skip();
       // The default grants: a short folder and the long hash path, which takes several lines.
@@ -1375,6 +1422,51 @@ describe('the footer cards under a real pointer', () => {
       expect(folder.detail).toMatchObject({ color: 'rgb(102, 102, 102)' });
       expect(context, 'the context card wears the folder card’s look').toEqual(folder);
       expect(cost, 'the cost card wears the folder card’s look').toEqual(folder);
+    } finally {
+      await tab.close();
+    }
+  });
+
+  /**
+   * A card's buttons (Choose folder…, Revoke, Compact chat) read at the card's reading size, the
+   * 13/18 of the values beside them. The shared xs button sets the 14/20 control role, which made
+   * a button's label the largest text in a card of 13px readings and 12px labels.
+   */
+  it('sets a card’s buttons at the reading size of the values beside them', async (ctx) => {
+    if (!browser) return ctx.skip();
+    const tab = await load();
+    try {
+      for (const item of [FOLDER, CONTEXT]) {
+        await tab.click(item.trigger);
+        await waitOpen(tab, item);
+        await tab.mouse.move(450, 30);
+        const type = await tab.evaluate((sel) => {
+          const card = document.querySelector<HTMLElement>(sel)!;
+          const look = (node: Element) => {
+            const s = getComputedStyle(node);
+            return { size: s.fontSize, lineHeight: s.lineHeight, weight: s.fontWeight };
+          };
+          return {
+            value: look(card.querySelector('.br-footer-card__value')!),
+            buttons: [...card.querySelectorAll('button[data-slot="button"]')].map((button) => ({
+              text: button.textContent,
+              ...look(button),
+            })),
+          };
+        }, item.card);
+        expect(type.buttons.length, `the ${item.name} card has a button`).toBeGreaterThan(0);
+        for (const button of type.buttons) {
+          expect(button, `"${button.text}" at the value’s size`).toEqual({
+            text: button.text,
+            size: type.value.size,
+            lineHeight: type.value.lineHeight,
+            // The control role's weight stays: it is a button.
+            weight: '500',
+          });
+        }
+        await tab.mouse.click(450, 30);
+        await waitClosed(tab, item);
+      }
     } finally {
       await tab.close();
     }

@@ -557,6 +557,18 @@ button.br-footline__item:focus-visible {
   margin-top: 4px;
 }
 
+/* A card's button (`FooterCardAction`: Choose folder…, Revoke, Compact chat)
+   reads at the card's reading size, 13/18 like the values beside it, keeping
+   the control role's weight. The shared xs button sets every rung in the 14/20
+   control role, which made a button's label the largest text in a card of 13px
+   readings and 12px labels. Only the type changes: the button keeps its 24px
+   height, which Revoke's offset above is derived from. Unlayered, so it beats
+   the button's `text-label` utility. */
+.br-footer-card__action {
+  font-size: var(--text-secondary);
+  line-height: var(--text-secondary--line-height);
+}
+
 /*
  * A keyboard pin moves focus onto the card itself (the dialog). D-15 firms an
  * edge rather than drawing a ring, so the surface's own hairline takes the
