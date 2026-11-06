@@ -1,16 +1,16 @@
 # Voice dictation
 
-This folder holds Biorouter's local voice dictation: the speech to text engine built into Biorouter's own binaries, the speech model a person chooses to install from the Baranzini Lab's GitHub, the personal dictionary that steers recognition toward their own terms (with its left sidebar page and its agent capability), and how dictation works on every surface that offers it, from the desktop composer to `biorouter serve`, the terminal and air gapped servers. Status: a plan; nothing in it is implemented yet. The documents target `main` at `52917f33e`, three commits after the v1.94.1 tag, and the [implementation plan](implementation-plan.md) is the one to read first: it holds the owner's requirements, the surface matrix, the decision register, the pull requests in order and the decisions the owner made on 2026-11-05.
+This folder holds Biorouter's local voice dictation: the speech to text engine built into Biorouter's own binaries, the speech model a person chooses to install from the Baranzini Lab's GitHub, the personal dictionary that steers recognition toward their own terms (with its left sidebar page and its agent capability), and how dictation works on every surface that offers it, from the desktop composer to `biorouter serve`, the terminal and air gapped servers. Status: the plan is being built on branch `feat/local-dictation`, pull request by pull request. The documents target `main` at `52917f33e`, three commits after the v1.94.1 tag, and the [implementation plan](implementation-plan.md) is the one to read first: it holds the owner's requirements, the surface matrix, the decision register, the pull requests in order and the decisions the owner made on 2026-11-05.
 
 ## Documents
 
 | Document | What it covers |
 |---|---|
-| [Implementation plan](implementation-plan.md) | The master plan: requirements R1 to R8, the 20 surfaces (the owner excluded one, S13, Jupyter AI), the architecture, decisions DD-1 onward, pull requests PR-01 to PR-33 (PR-07 and PR-32 withdrawn), risks, and the owner's decisions of 2026-11-05 with the plan's defaults, O-1 to O-33. |
+| [Implementation plan](implementation-plan.md) | The master plan: requirements R1 to R8, the 20 surfaces (the owner excluded one, S13, Jupyter AI), the architecture, decisions DD-1 onward, pull requests PR-01 to PR-33 (PR-07 and PR-32 withdrawn), risks, and the owner's decisions of 2026-11-05 with the plan's defaults, O-1 to O-38. |
 | [Engine and models](engine-and-models.md) | The whisper.cpp engine and its worker process, the native build and platform floors, CPU and GPU backends, the model catalog and tiers, hosting in `BaranziniLab/biorouter-models`, installing on every OS and deployment, the administrator's switch, the daemon's dictation routes, and the removal of the inherited cloud dictation. |
 | [Dictionary](dictionary.md) | The personal dictionary: data model and store, privacy tiers and the bias set, authority on each surface, biasing and correction, learning from edits, the `dictionary` capability and its tools, automatic extraction, the left sidebar page and the terminal commands. |
 | [Surfaces](surfaces.md) | Dictation on each surface S1 to S20 (S13, Jupyter AI, is not offered by the owner's decision O-30): capture, transport, where transcription runs, entry points, permissions, and the full catalog of messages a person sees. |
-| [Testing and release](testing-and-release.md) | Tests per component and surface, CI jobs, release guards, fixtures, the accuracy gates on public recordings and synthetic speech, the manual checklist and the measurements still to take. |
+| [Testing and release](testing-and-release.md) | Tests per component and surface, CI jobs, release guards, fixtures, the accuracy gates on public recordings (PriMock57 and the Fareez interviews) and synthetic speech, the manual checklist and the measurements still to take. |
 
 ## Where neighbouring topics live
 
