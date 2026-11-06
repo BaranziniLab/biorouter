@@ -1,0 +1,49 @@
+[package]
+name = "biorouter-dictation"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description.workspace = true
+build = "build.rs"
+
+[lints]
+workspace = true
+
+# The local dictation engine: whisper.cpp from `vendor/whisper.cpp`, built by
+# `build.rs` and driven through the C++ shim in `shim/`, plus the worker that runs
+# it in its own process (DD-2 to DD-13 of docs/dictation/implementation-plan.md).
+# A leaf crate: it depends on no Biorouter crate and takes every path as an
+# argument, so the CLI, the daemon and the core library can all reach it.
+[features]
+default = []
+# whisper.cpp, the shim and the worker (DD-5). The only feature. Without it the
+# crate still builds the CPU gate and the build facts, and `ENGINE_COMPILED` is
+# false.
+engine = ["dep:cmake", "dep:cc"]
+
+[build-dependencies]
+# Both already in Cargo.lock. No bindgen (build rule 8): the shim is compiled with
+# `cc` and `src/engine/ffi.rs` declares its functions by hand.
+cmake = { version = "0.1.58", optional = true }
+cc = { version = "1.2.64", optional = true }
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = { workspace = true }
+# The self test refuses a model or detector whose SHA-256 is not pinned (P-11).
+sha2 = "0.10"
+
+# `sysctlbyname` for the Rosetta and macOS version checks of the CPU gate, and
+# `dup`/`dup2` so the self test's one stdout line cannot be joined by a stray
+# write from C or C++ code.
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[dev-dependencies]
+tempfile = "3"
+
+[[test]]
+name = "dictation_engine_offline"
+required-features = ["engine"]

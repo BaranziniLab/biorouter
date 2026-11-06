@@ -16,6 +16,8 @@ path = "src/main.rs"
 
 [dependencies]
 biorouter = { path = "../biorouter" }
+# The dictation worker's entry point (DD-4); the engine runs in a worker process.
+biorouter-dictation = { path = "../biorouter-dictation", optional = true, features = ["engine"] }
 biorouter-acp = { path = "../biorouter-acp" }
 biorouter-bench = { path = "../biorouter-bench" }
 biorouter-mcp = { path = "../biorouter-mcp" }
@@ -92,9 +94,12 @@ winapi = { version = "0.3", features = ["wincred"] }
 libc = "0.2"
 
 [features]
-default = ["jemalloc"]
+default = ["jemalloc", "local-dictation"]
 # Use tuned jemalloc as the global allocator (returns freed pages to the OS).
 jemalloc = ["dep:tikv-jemallocator", "dep:tikv-jemalloc-ctl"]
+# The local dictation engine (DD-5). The direct dependency is for `main()`'s
+# `biorouter_dictation::worker::run_if_invoked()`.
+local-dictation = ["biorouter/local-dictation", "dep:biorouter-dictation"]
 
 [dev-dependencies]
 tempfile = "3"

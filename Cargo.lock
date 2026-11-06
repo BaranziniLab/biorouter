@@ -1010,6 +1010,7 @@ dependencies = [
  "axum",
  "base64 0.21.7",
  "biorouter-crew",
+ "biorouter-dictation",
  "biorouter-mcp",
  "biorouter-sandbox",
  "blake3",
@@ -1166,6 +1167,7 @@ dependencies = [
  "biorouter",
  "biorouter-acp",
  "biorouter-bench",
+ "biorouter-dictation",
  "biorouter-mcp",
  "bytes",
  "chrono",
@@ -1242,6 +1244,19 @@ dependencies = [
  "unicode-script",
  "unicode-security",
  "uuid",
+]
+
+[[package]]
+name = "biorouter-dictation"
+version = "1.94.1"
+dependencies = [
+ "cc",
+ "cmake",
+ "libc",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tempfile",
 ]
 
 [[package]]
@@ -1368,6 +1383,7 @@ dependencies = [
  "base64 0.21.7",
  "biorouter",
  "biorouter-crew",
+ "biorouter-dictation",
  "biorouter-mcp",
  "biorouter-sandbox",
  "bytes",
@@ -7139,7 +7155,6 @@ dependencies = [
  "js-sys",
  "log",
  "mime",
- "mime_guess",
  "percent-encoding",
  "pin-project-lite",
  "quinn",

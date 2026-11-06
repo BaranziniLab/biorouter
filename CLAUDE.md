@@ -2141,6 +2141,19 @@ setup, open governance, deletion and full-access contract in
   `node --test scripts/check-crew-manual.test.mjs`). A new `crew_*` code, quoted string or data path needs
   its line in `docs/crew/`.
 
+### Local dictation
+
+whisper.cpp is compiled into every default `biorouter` and `biorouterd` by
+`crates/biorouter-dictation/build.rs`; the plan and design are in [`docs/dictation/`](docs/dictation/).
+**The MSVC `test` leg builds the engine, not the `no_engine` stub (M-3).** The constant
+`MSVC_NATIVE = true` in that `build.rs` decides it; `false` would make every `*-windows-msvc` build
+answer `no_engine`. The `windows-latest` leg of `rust.yml`'s `test` job runs the engine's lib tests in
+"cargo test (workspace, lib + bins)" and the real `biorouterd` self test in "cargo test (dictation
+engine and worker roles)". Shipped Windows binaries are mingw, which `cross-build-nightly` and
+`windows-native-dictation` cover. PR-09 chose this before any dispatched run had built it (2026-11-05),
+as the plan prefers; flip the constant only when a dispatched run shows the MSVC build cannot be
+fixed, and record that here with the run id.
+
 ### Communication Flow
 
 ```

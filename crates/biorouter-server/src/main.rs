@@ -82,8 +82,13 @@ enum Commands {
 /// stack at 1 MiB in the executable header, where no runtime setting can reach
 /// it. The CLI hit that limit outright; the daemon shares the shape, so it
 /// shares the fix. See `biorouter::execution::runtime::run_on_agent_stack`.
+///
+/// The dictation worker (DD-4) is answered right after the libnotify step and before
+/// everything else, so a worker never starts the runtime, logging or configuration.
 fn main() -> anyhow::Result<()> {
     biorouter::fork_safety::complete_libnotify_init(); // before any thread; see fork_safety
+    #[cfg(feature = "local-dictation")]
+    biorouter_dictation::worker::run_if_invoked(); // returns only when argv[1] is not the marker
     biorouter::execution::runtime::run_on_agent_stack(|| {
         biorouter::execution::runtime::build_agent_runtime()?.block_on(async_main())
     })?

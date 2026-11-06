@@ -259,6 +259,13 @@ jobs:
             *) echo "::error::packaged backend is '$got' but this release is $v"; exit 1 ;;
           esac
 
+          # The local dictation engine loads the vendored test model and voice detector and
+          # decodes jfk.wav, offline, in both packaged binaries, natively on this Windows
+          # runner (DD-12). These are the staged copies both makers packaged.
+          bash scripts/dictation-self-test.sh --expect-backend cpu \
+            ./ui/desktop/out/Biorouter-win32-x64/resources/bin/biorouter.exe \
+            ./ui/desktop/out/Biorouter-win32-x64/resources/bin/biorouterd.exe
+
           # ⚠ A PRESENCE check, because this failure mode is an ABSENCE.
           # A package missing the platform tooling and the llamacpp sidecar is
           # byte-valid, correctly named and exits 0; only asking for the files

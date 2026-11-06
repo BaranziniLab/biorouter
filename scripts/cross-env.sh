@@ -134,6 +134,14 @@ cross_windows() {
     ${CROSS_TARGET_MOUNT:+-v "$CROSS_TARGET_MOUNT":/cross-target} \
     -w /usr/src/myapp "$WIN_RUST_IMG" sh -c "
       set -e
+      # rust:latest ships a newer stable than the 1.92 that rust-toolchain.toml pins. rustup
+      # used to install the pinned toolchain on first use, which it now warns is deprecated
+      # (rust-lang/rustup#4836), so install it explicitly: with no name, rustup 1.28 and later
+      # installs the active toolchain, the one rust-toolchain.toml names, with its profile
+      # (clippy included, which the cross-check socket gate runs). No self update: the image's
+      # rustup is what was tested.
+      rustup toolchain install --no-self-update
+      rustc --version
       rustup target add x86_64-pc-windows-gnu
       apt-get update && apt-get install -y mingw-w64 protobuf-compiler cmake
       $WIN_LINKER_WRAP

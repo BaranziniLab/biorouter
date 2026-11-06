@@ -113,6 +113,19 @@ jobs:
           ./scripts/check-dictation-fixtures.sh
           ./scripts/check-dictation-fixtures.sh --self-test
 
+      # The engine's build prerequisites (DD-10 rules 7, 8, 10 and 11): cmake in the Docker
+      # builder, the hermit cmake pin, a Release CMake profile whatever the Cargo profile, no
+      # bindgen; and the crate boundaries: no engine in the Crew broker, no capture in the
+      # daemon. Read from Cargo.lock, because this job has no Rust toolchain. The self tests of
+      # the two Python checks that the nightly and the package smokes run cost milliseconds, so
+      # a broken checker shows itself on the pull request instead of the night after.
+      - name: Dictation build prerequisites
+        run: |
+          ./scripts/check-dictation-build-prereqs.sh
+          ./scripts/check-dictation-build-prereqs.sh --self-test
+          python3 -I scripts/check-windows-imports.py --self-test
+          python3 -I scripts/check-dictation-status-json.py --self-test
+
   # ── 2. Cross COMPILE gate — the BR-70 core. Docker, the SAME images/flags as
   #      scripts/release.sh (both source scripts/cross-env.sh). ubuntu-latest is
   #      just the docker HOST; the TARGET triple is what is being proven.
@@ -536,6 +549,19 @@ jobs:
       - name: cargo test (sandbox integration)
         run: cargo test -p biorouter-sandbox --test sandbox ${{ matrix.os == 'windows-latest' && '--test bounded_fs' || '' }} --locked --no-fail-fast
 
+      # The dictation engine's offline tests and the real `biorouterd`'s worker roles
+      # (PR-09): capture and an unknown role answer 2, and the self test decodes jfk.wav
+      # with the vendored fixtures. Ubuntu runs both binaries in the offline integration
+      # step below; this is their run on macOS and on the MSVC leg, which is where M-3 is
+      # decided (`MSVC_NATIVE` in crates/biorouter-dictation/build.rs). `--workspace`
+      # keeps the unit graph of the lib + bins step, so only biorouterd and the two tests
+      # are compiled again.
+      - name: cargo test (dictation engine and worker roles)
+        if: matrix.os != 'ubuntu-latest'
+        env:
+          BIOROUTER_DISABLE_KEYRING: "true"
+        run: cargo test --workspace --test dictation_engine_offline --test dictation_worker_role --locked --no-fail-fast
+
       # ── Every other `tests/*.rs` binary, bar a table of exceptions ─────────
       #
       # Until this step no workflow ran them. The lib + bins selector above
@@ -682,6 +708,21 @@ jobs:
           . scripts/cross-env.sh
           cross_linux   "cargo build --release --bin biorouterd --bin biorouter --bin biorouter-crew"
           cross_windows "cargo build --release --bin biorouterd --bin biorouter" "" "$WIN_DLL_STAGE"
+
+      # For windows-native-dictation below: the exes and the runtime DLLs the release stages
+      # beside them, exactly as this job's release command built them. Uploaded before the
+      # Linux checks that follow, so a red Linux step never hides the Windows result.
+      - name: Keep the mingw binaries for the native Windows run
+        uses: actions/upload-artifact@v4
+        with:
+          name: mingw-binaries
+          path: |
+            target/x86_64-pc-windows-gnu/release/biorouter.exe
+            target/x86_64-pc-windows-gnu/release/biorouterd.exe
+            target/x86_64-pc-windows-gnu/release/*.dll
+          if-no-files-found: error
+          retention-days: 3
+
       - name: Assert the glibc floor (2.31 / bullseye) is not raised
         run: ./scripts/check-glibc-floor.sh
 
@@ -729,6 +770,10 @@ jobs:
       # scripts/cross-env.sh). Its apt mirrors are what make the install step
       # work; when Debian 11 finally leaves them, this image moves forward
       # together with that pin, not on its own.
+      #
+      # The dictation self test (DD-12) runs here too: the engine loads the
+      # vendored test model and voice detector and decodes jfk.wav, offline, on
+      # the oldest glibc we ship to.
       - name: Boot all Linux binaries on the oldest supported distro
         env:
           DEB_PACKAGES: ${{ steps.runtime-deps.outputs.deb_packages }}
@@ -739,11 +784,89 @@ jobs:
             apt-get install -y --no-install-recommends $DEB_PACKAGES
             /w/target/x86_64-unknown-linux-gnu/release/biorouter --version
             /w/target/x86_64-unknown-linux-gnu/release/biorouterd --version
+            bash /w/scripts/dictation-self-test.sh --fixtures /w/vendor/whisper.cpp/source --expect-backend cpu /w/target/x86_64-unknown-linux-gnu/release/biorouter /w/target/x86_64-unknown-linux-gnu/release/biorouterd
             test -x /w/target/x86_64-unknown-linux-gnu/release/biorouter-crew
             crew_version=$(/w/target/x86_64-unknown-linux-gnu/release/biorouter-crew --version)
             case "$crew_version" in "biorouter-crew "*) ;; *) exit 1 ;; esac
             /w/target/x86_64-unknown-linux-gnu/release/biorouter-crew --help
           '
+
+      # The engine's ggml code is compiled for x86-64-v3 (AVX2, FMA, F16C, BMI2). On a
+      # processor without them, both binaries must still start, and the dictation self test
+      # must answer exit 20 with the MSG-CPU sentence instead of dying on SIGILL. A compiler
+      # that vectorizes a static initializer would break `--version` for every user of such a
+      # processor, before any check of ours runs. The self test first proves each step can
+      # fail. `--no-status` until `biorouter dictation status` lands with PR-10.
+      - name: Old processors get a sentence, not a crash (DD-12)
+        run: |
+          set -euo pipefail
+          ./scripts/check-dictation-isa.sh --self-test
+          ./scripts/check-dictation-isa.sh --no-status
+
+      # whisper.cpp is C++. A mingw link that takes libstdc++, libgcc, winpthreads or OpenMP
+      # as a DLL starts here and fails on a user's machine with a loader dialog (DD-10 rules
+      # 3 to 5). Measured on the shipped v1.94.1 binaries, built without the engine: both
+      # import only system DLLs, so the script carries no allowance.
+      - name: Windows binaries import only system DLLs
+        run: |
+          set -euo pipefail
+          python3 -I scripts/check-windows-imports.py --self-test
+          python3 -I scripts/check-windows-imports.py target/x86_64-pc-windows-gnu/release/biorouter.exe target/x86_64-pc-windows-gnu/release/biorouterd.exe
+
+  # The shipped mingw binaries run the dictation self test on real Windows (M-1), with the
+  # fixtures in a folder whose path is not ASCII. whisper.cpp turns UTF-8 paths into UTF-16
+  # only under MSVC, so a mingw build that handed it a path would fail here; Biorouter opens
+  # the files itself. The folder name is built from a code point so this file stays ASCII.
+  # The real model run of M-1 (installed under such a folder, then `transcribe jfk.wav`)
+  # needs A-1's model releases and PR-12, and joins this job then.
+  #
+  # `!cancelled()`: it runs whenever the artifact exists, even when a Linux check of
+  # cross-build-nightly failed after the upload. When the build itself failed there is no
+  # artifact, and the download step fails on its own.
+  windows-native-dictation:
+    needs: cross-build-nightly
+    if: ${{ !cancelled() && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') }}
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: mingw-binaries
+          path: mingw-binaries
+      - name: Self test of the mingw biorouter.exe and biorouterd.exe from a folder whose path is not ASCII
+        shell: pwsh
+        run: |
+          $source = Join-Path $env:GITHUB_WORKSPACE 'vendor\whisper.cpp\source'
+          $folder = Join-Path $env:RUNNER_TEMP ('dictation-Jos' + [char]0x00E9)
+          New-Item -ItemType Directory -Force -Path $folder | Out-Null
+          $model = Join-Path $folder 'for-tests-ggml-base.en.bin'
+          $vad = Join-Path $folder 'for-tests-silero-v6.2.0-ggml.bin'
+          $wav = Join-Path $folder 'jfk.wav'
+          Copy-Item -LiteralPath (Join-Path $source 'models\for-tests-ggml-base.en.bin') -Destination $model
+          Copy-Item -LiteralPath (Join-Path $source 'models\for-tests-silero-v6.2.0-ggml.bin') -Destination $vad
+          Copy-Item -LiteralPath (Join-Path $source 'samples\jfk.wav') -Destination $wav
+          Write-Host "fixtures in $folder"
+          foreach ($name in @('biorouter.exe', 'biorouterd.exe')) {
+            $exe = Join-Path $env:GITHUB_WORKSPACE "mingw-binaries\$name"
+            $errFile = Join-Path $env:RUNNER_TEMP "$name.self-test.err"
+            $out = @(& $exe __br-dictation-worker self-test --model $model --vad $vad --wav $wav 2> $errFile)
+            $code = $LASTEXITCODE
+            $lines = @($out | ForEach-Object { "$_".TrimEnd("`r") } | Where-Object { $_ -ne '' })
+            if ($code -ne 0 -or $lines.Count -ne 1 -or -not $lines[0].Contains('"selftest":"ok"') -or -not $lines[0].Contains('"backend":"cpu"')) {
+              Get-Content -LiteralPath $errFile -ErrorAction SilentlyContinue | Select-Object -Last 40 | ForEach-Object { Write-Host $_ }
+              throw "$name dictation self test failed: exit $code, stdout: $($lines -join ' | ')"
+            }
+            Write-Host "${name}: $($lines[0])"
+          }
+          # The daemon never captures audio (P-10): the capture role answers 2 in biorouterd.
+          $daemon = Join-Path $env:GITHUB_WORKSPACE 'mingw-binaries\biorouterd.exe'
+          & $daemon __br-dictation-worker capture
+          if ($LASTEXITCODE -ne 2) {
+            throw "biorouterd.exe __br-dictation-worker capture exited $LASTEXITCODE, expected 2"
+          }
+          Write-Host 'biorouterd.exe answers the capture role with exit 2'
+          exit 0
 
   # `biorouter serve` end to end: the daemon serving the interface, the token
   # exchange, and the endpoints that were previously unauthenticated.

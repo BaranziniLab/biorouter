@@ -374,11 +374,12 @@ Measured on Apple Silicon with Metal [M], on a machine under heavy load, so the 
 |---|---|
 | First worker with a cold Metal cache (the first dictation after a model install, after an app update that changes ggml's kernel sources, or after the shared per user Metal cache evicted the entry) | 3.0 to 4.2 s to ready, of which 2.8 to 3.9 s is the shader compile of the embedded library |
 | First exec of the installed 155 MB `biorouterd` after a reboot | about 1.3 s, then 28 to 121 ms |
-| Warm spawn to ready: `base.en`, `small.en`, turbo `q5_0` | 146 to 169 ms, 209 to 216 ms, 264 to 279 ms |
+| Warm spawn to ready, before the engine had its encoder warm up: `base.en`, `small.en`, turbo `q5_0` | 146 to 169 ms, 209 to 216 ms, 264 to 279 ms |
 | Warm model load inside a benchmark process | 0.12 to 0.36 s |
+| `Engine::load` as the first load of a fresh process (Metal device, model and warm up, no process start), `small.en` f16 and turbo `q5_0`, warm file and Metal caches | 373 to 436 ms and 578 to 755 ms, of which the encoder warm up is 59 to 63 ms and 258 to 263 ms; with the warm up removed the first request was 6 to 14 ms slower than the steady state (2026-11-05, M4 Max, load average 15 to 60) |
 | Idle footprint of a warm worker: `small.en`, turbo `q5_0` | about 690 MB, about 730 MB |
 
-Any utterance longer than about 0.5 s hides a warm start. A cold start is hidden by a 5 s utterance; after a 2 s utterance the person waits 1 to 2 s more, and after a one word command about 3 s [M]. The `arming` phase of the composer covers the rest ([surfaces](surfaces.md)).
+Any utterance longer than about 0.5 s hides a warm start of `small.en`, and about 0.8 s one of turbo with its encoder warm up. A cold start is hidden by a 5 s utterance; after a 2 s utterance the person waits 1 to 2 s more, and after a one word command about 3 s [M]. The `arming` phase of the composer covers the rest ([surfaces](surfaces.md)).
 
 ### Concurrency
 

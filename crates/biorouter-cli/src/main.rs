@@ -21,8 +21,13 @@ static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
 /// `biorouter.exe` invocation (`--version` included) died with "thread 'main'
 /// has overflowed its stack". `run_on_agent_stack` gives the body the same
 /// 16 MiB the runtime's workers get.
+///
+/// The dictation worker (DD-4) is answered right after the libnotify step and before
+/// everything else, so a worker never starts the runtime, logging or configuration.
 fn main() -> ExitCode {
     biorouter::fork_safety::complete_libnotify_init(); // before any thread; see fork_safety
+    #[cfg(feature = "local-dictation")]
+    biorouter_dictation::worker::run_if_invoked(); // returns only when argv[1] is not the marker
     biorouter::execution::runtime::run_on_agent_stack(|| {
         biorouter::execution::runtime::build_agent_runtime()
             .expect("build the agent runtime")

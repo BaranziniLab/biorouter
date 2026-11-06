@@ -306,6 +306,45 @@ jobs:
             -Label "packaged v$env:VERSION"
           if ($LASTEXITCODE -ne 0) { throw "the packaged daemon's port test failed" }
 
+      # The local dictation engine loads the vendored test model and voice detector and
+      # decodes jfk.wav, offline, in the packaged CLI and daemon (DD-12): a publish gate,
+      # because a release whose engine cannot load on Windows must not go out. The installer
+      # step above proved the installed copies are the ZIP's byte for byte, so these two runs
+      # cover both Windows artifacts.
+      # ⚠ Last in the job on purpose. This workflow is also dispatched at an older version to
+      # prove the port step above can fail; a version from before the engine fails here, and
+      # placed earlier this step would skip that proof.
+      - name: Dictation self test of the packaged CLI and daemon
+        shell: pwsh
+        run: |
+          $desktopMatches = @(
+            Get-ChildItem -LiteralPath "artifact/unpacked" -File -Recurse |
+              Where-Object { $_.Name -ceq "Biorouter.exe" }
+          )
+          if ($desktopMatches.Count -ne 1) {
+            throw "Expected one packaged Biorouter.exe, found $($desktopMatches.Count)"
+          }
+          $app = $desktopMatches[0].Directory.FullName
+          $cli = Join-Path $app "resources/bin/biorouter.exe"
+          $daemon = Join-Path $app "resources/bin/biorouterd.exe"
+          $fixtures = Join-Path $env:GITHUB_WORKSPACE 'vendor\whisper.cpp\source'
+          $model = Join-Path $fixtures 'models\for-tests-ggml-base.en.bin'
+          $vad = Join-Path $fixtures 'models\for-tests-silero-v6.2.0-ggml.bin'
+          $wav = Join-Path $fixtures 'samples\jfk.wav'
+          foreach ($exe in @($cli, $daemon)) {
+            $name = Split-Path -Leaf $exe
+            $errFile = Join-Path $env:RUNNER_TEMP "$name.self-test.err"
+            $out = @(& $exe __br-dictation-worker self-test --model $model --vad $vad --wav $wav 2> $errFile)
+            $code = $LASTEXITCODE
+            $lines = @($out | ForEach-Object { "$_".TrimEnd("`r") } | Where-Object { $_ -ne '' })
+            if ($code -ne 0 -or $lines.Count -ne 1 -or -not $lines[0].Contains('"selftest":"ok"') -or -not $lines[0].Contains('"backend":"cpu"')) {
+              Get-Content -LiteralPath $errFile -ErrorAction SilentlyContinue | Select-Object -Last 40 | ForEach-Object { Write-Host $_ }
+              throw "Packaged $name dictation self test failed: exit $code, stdout: $($lines -join ' | ')"
+            }
+            Write-Host "${name}: $($lines[0])"
+          }
+          exit 0
+
   linux-native:
     if: inputs.linux_package_run != ''
     permissions:

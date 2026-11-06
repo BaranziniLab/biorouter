@@ -139,6 +139,22 @@ smoke_mac() (
     || die "$arch CLI architecture mismatch"
   "${runner[@]}" "$app/Contents/Resources/bin/biorouter" --version | grep -q "$VERSION"
   "${runner[@]}" "$app/Contents/Resources/bin/biorouterd" --version | grep -q "$VERSION"
+  # The local dictation engine loads and decodes in both shipped binaries (DD-12): Metal on
+  # arm64. The Intel build runs under Rosetta, which hides AVX2 from CPUID unless
+  # ROSETTA_ADVERTISE_AVX=1 asks it not to, and honours that only on macOS 15 or later.
+  if [ "$arch" = arm64 ]; then
+    bash "$ROOT/scripts/dictation-self-test.sh" --expect-backend metal \
+      "$app/Contents/Resources/bin/biorouter" "$app/Contents/Resources/bin/biorouterd" \
+      || die "$arch dictation self test failed"
+  else
+    local macos_major
+    macos_major="$(sw_vers -productVersion | cut -d. -f1)"
+    [ "$macos_major" -ge 15 ] || die "the Intel dictation self test needs macOS 15 or later on this Mac"
+    bash "$ROOT/scripts/dictation-self-test.sh" --prefix "env ROSETTA_ADVERTISE_AVX=1 arch -x86_64" \
+      --expect-backend cpu \
+      "$app/Contents/Resources/bin/biorouter" "$app/Contents/Resources/bin/biorouterd" \
+      || die "$arch dictation self test failed"
+  fi
   # ⚠ **`--user-data-dir`, because HOME does not move it.** On macOS Electron resolves userData
   # through the system (~/Library/Application Support/Biorouter), not through $HOME, so without
   # it the smoke run wrote into the operator's real profile, beside an app they may be using.
@@ -190,44 +206,65 @@ PYKEY
   cleanup_mac
   trap - EXIT
   [ -z "$failure" ] || die "$failure"
-  log "macOS $arch DMG, microphone entitlement and prompt sentence, CLI, daemon, silent shared startup, and desktop shutdown passed"
+  log "macOS $arch DMG, microphone entitlement and prompt sentence, CLI, daemon, dictation self test, silent shared startup, and desktop shutdown passed"
 )
 
 # Both packages use the same bounded silent-startup, replacement, fatal-error shutdown,
 # and per-window checks. `timeout` also bounds the whole container run.
 LINUX_DESKTOP_SMOKE="$ROOT/scripts/smoke-linux-desktop.sh"
 
+# The dictation self test inside a Linux container: the helper and the vendored fixtures
+# mounted read only, and ROSETTA_ADVERTISE_AVX=1 for Docker Desktop's amd64 emulation on an
+# Apple Silicon Mac (an x86 host ignores it). Run in the container as
+#   bash /smoke/dictation-self-test.sh --fixtures /whisper.cpp/source --expect-backend cpu BIN...
+DICTATION_SELF_TEST="$ROOT/scripts/dictation-self-test.sh"
+dictation_container_args() {
+  require_file "$DICTATION_SELF_TEST"
+  require_file "$ROOT/vendor/whisper.cpp/source/samples/jfk.wav"
+  DICTATION_DOCKER_ARGS=(-e ROSETTA_ADVERTISE_AVX=1
+    -v "$ROOT/vendor/whisper.cpp":/whisper.cpp:ro
+    -v "$DICTATION_SELF_TEST":/smoke/dictation-self-test.sh:ro)
+}
+
 smoke_deb() {
   local deb="$DESK/out/make/deb/x64/biorouter_${VERSION}_amd64.deb"
   require_file "$deb"
   require_file "$LINUX_DESKTOP_SMOKE"
+  dictation_container_args
   docker run --rm --platform linux/amd64 -e VERSION="$VERSION" \
     -v "$deb":/pkg/biorouter.deb:ro \
     -v "$LINUX_DESKTOP_SMOKE":/smoke/linux-desktop.sh:ro \
+    "${DICTATION_DOCKER_ARGS[@]}" \
     debian:bookworm-slim bash -euxc '
       apt-get update -qq
       apt-get install -y -qq /pkg/biorouter.deb xvfb >/dev/null
       /usr/lib/biorouter/resources/bin/biorouter --version | grep -q "$VERSION"
       /usr/lib/biorouter/resources/bin/biorouterd --version | grep -q "$VERSION"
+      bash /smoke/dictation-self-test.sh --fixtures /whisper.cpp/source --expect-backend cpu \
+        /usr/lib/biorouter/resources/bin/biorouter /usr/lib/biorouter/resources/bin/biorouterd
       timeout -k 10 600 bash /smoke/linux-desktop.sh /usr/bin/biorouter
     '
-  log "Linux desktop DEB, CLI, daemon, silent shared startup, replacement, fatal-error shutdown, and per-window startup passed"
+  log "Linux desktop DEB, CLI, daemon, dictation self test, silent shared startup, replacement, fatal-error shutdown, and per-window startup passed"
 }
 
 smoke_rpm() {
   local rpm="$DESK/out/make/rpm/x64/Biorouter-${VERSION}-1.x86_64.rpm"
   require_file "$rpm"
   require_file "$LINUX_DESKTOP_SMOKE"
+  dictation_container_args
   docker run --rm --platform linux/amd64 -e VERSION="$VERSION" \
     -v "$rpm":/pkg/biorouter.rpm:ro \
     -v "$LINUX_DESKTOP_SMOKE":/smoke/linux-desktop.sh:ro \
+    "${DICTATION_DOCKER_ARGS[@]}" \
     rockylinux:9 bash -euxc '
       dnf install -y -q /pkg/biorouter.rpm xorg-x11-server-Xvfb >/dev/null
       /usr/lib/Biorouter/resources/bin/biorouter --version | grep -q "$VERSION"
       /usr/lib/Biorouter/resources/bin/biorouterd --version | grep -q "$VERSION"
+      bash /smoke/dictation-self-test.sh --fixtures /whisper.cpp/source --expect-backend cpu \
+        /usr/lib/Biorouter/resources/bin/biorouter /usr/lib/Biorouter/resources/bin/biorouterd
       timeout -k 10 600 bash /smoke/linux-desktop.sh /usr/bin/Biorouter
     '
-  log "Linux desktop RPM, CLI, daemon, silent shared startup, replacement, fatal-error shutdown, and per-window startup passed"
+  log "Linux desktop RPM, CLI, daemon, dictation self test, silent shared startup, replacement, fatal-error shutdown, and per-window startup passed"
 }
 
 smoke_cli_packages() {
@@ -235,22 +272,29 @@ smoke_cli_packages() {
   local rpm="$ROOT/dist/cli/biorouter-cli-${VERSION}-1.x86_64.rpm"
   require_file "$deb"
   require_file "$rpm"
+  dictation_container_args
   docker run --rm --platform linux/amd64 -e VERSION="$VERSION" \
+    "${DICTATION_DOCKER_ARGS[@]}" \
     -v "$deb":/pkg/biorouter-cli.deb:ro debian:bookworm-slim bash -euxc '
       apt-get update -qq
       apt-get install -y -qq /pkg/biorouter-cli.deb >/dev/null
       biorouter --version | grep -q "$VERSION"
       biorouterd --version | grep -q "$VERSION"
+      bash /smoke/dictation-self-test.sh --fixtures /whisper.cpp/source --expect-backend cpu \
+        "$(command -v biorouter)" "$(command -v biorouterd)"
       biorouter term --help >/dev/null
     '
   docker run --rm --platform linux/amd64 -e VERSION="$VERSION" \
+    "${DICTATION_DOCKER_ARGS[@]}" \
     -v "$rpm":/pkg/biorouter-cli.rpm:ro rockylinux:9 bash -euxc '
       dnf install -y -q /pkg/biorouter-cli.rpm >/dev/null
       biorouter --version | grep -q "$VERSION"
       biorouterd --version | grep -q "$VERSION"
+      bash /smoke/dictation-self-test.sh --fixtures /whisper.cpp/source --expect-backend cpu \
+        "$(command -v biorouter)" "$(command -v biorouterd)"
       biorouter term --help >/dev/null
     '
-  log "CLI-only DEB/RPM version and terminal entry points passed"
+  log "CLI-only DEB/RPM version, dictation self test and terminal entry points passed"
 }
 
 smoke_serve() {

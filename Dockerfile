@@ -20,10 +20,13 @@ RUN case "$TARGETARCH" in amd64) HELPER_TARGET=linux-x64 ;; arm64) HELPER_TARGET
 # Build stage
 FROM rust:1.92-bookworm AS builder
 
-# Install build dependencies
+# Install build dependencies. cmake builds the local dictation engine (whisper.cpp) inside
+# the biorouter-dictation crate's build script; scripts/check-dictation-build-prereqs.sh
+# fails in CI if it goes missing from this stage.
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
     build-essential \
+    cmake \
     pkg-config \
     libssl-dev \
     libdbus-1-dev \

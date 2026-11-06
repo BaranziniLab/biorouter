@@ -134,9 +134,15 @@ chacha20poly1305 = "0.10"
 zeroize = "1"
 biorouter-crew = { version = "1.91.1", path = "../biorouter-crew" }
 biorouter-sandbox = { version = "1.93.4", path = "../biorouter-sandbox" }
+# The local dictation engine and its worker (DD-5), behind `local-dictation`.
+biorouter-dictation = { path = "../biorouter-dictation", optional = true }
 
 [features]
 default = ["aws-providers"]
+# The local dictation engine: whisper.cpp, the shim and the worker (DD-5). Not a
+# default here: `biorouter-cli` and `biorouter-server` turn it on by default, and a
+# crate that links neither binary (the Crew broker) never builds it.
+local-dictation = ["dep:biorouter-dictation", "biorouter-dictation/engine"]
 # Bedrock + SageMaker providers pull the AWS SDK (~23 crates). Default-on so the
 # shipped app is unchanged; build with `--no-default-features` (e.g. a headless
 # CLI-only package that doesn't need AWS) to drop them for a lighter/faster build.

@@ -18,8 +18,15 @@
 #   dist/cli/biorouter-cli-<version>-1.x86_64.rpm
 #
 # Each package is then smoke-tested in a clean container (install + run
-# `biorouter --version` and `biorouter doctor`) so we only ship functional
-# artifacts.
+# `biorouter --version`, the dictation self test and `biorouter doctor`) so we
+# only ship functional artifacts.
+#
+# The dictation self test (scripts/dictation-self-test.sh) loads the vendored
+# test model and voice detector into the installed `biorouter` and `biorouterd`
+# and decodes jfk.wav offline: the proof that the engine in each package loads
+# and runs on its target. ROSETTA_ADVERTISE_AVX=1 lets Docker Desktop's amd64
+# emulation on an Apple Silicon release Mac report AVX2 to the engine if its
+# emulator would otherwise hide it; an x86 host ignores it.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -51,6 +58,9 @@ br_require_command node "The pinned esbuild helper is verified and staged with N
 [ -f "$REL/biorouter" ]  || die "missing $REL/biorouter — run: scripts/release.sh backends $VERSION"
 [ -f "$REL/biorouterd" ] || die "missing $REL/biorouterd — run: scripts/release.sh backends $VERSION"
 [ -f "$REL/biorouter-crew" ] || die "missing $REL/biorouter-crew — run: scripts/release.sh backends $VERSION"
+# Checked here because a missing bind mount source becomes an empty directory in the container.
+[ -f "$ROOT/vendor/whisper.cpp/source/samples/jfk.wav" ] && [ -f "$ROOT/scripts/dictation-self-test.sh" ] \
+  || die "missing the dictation self test or its fixtures (vendor/whisper.cpp/source, scripts/dictation-self-test.sh)"
 # The bytes about to be packaged, not the ones a build step once checked: a broker without the
 # default `join-by-name` feature passes every smoke test below and lets nobody join by invitation.
 bash "$ROOT/scripts/check-crew-broker-join.sh" "$REL/biorouter-crew" \
@@ -96,7 +106,10 @@ log "rpm: $RPM ($(du -h "$RPM" | cut -f1))"
 
 # ── 2. Smoke-test the .deb on a clean Debian system ───────────────────────────
 log "smoke-testing .deb on debian:bookworm-slim"
-docker run --rm --platform linux/amd64 -v "$ROOT/$OUT":/pkg debian:bookworm-slim bash -euxc '
+docker run --rm --platform linux/amd64 -e ROSETTA_ADVERTISE_AVX=1 -v "$ROOT/$OUT":/pkg \
+  -v "$ROOT/vendor/whisper.cpp":/whisper.cpp:ro \
+  -v "$ROOT/scripts/dictation-self-test.sh":/smoke/dictation-self-test.sh:ro \
+  debian:bookworm-slim bash -euxc '
   apt-get update -q
   apt-get install -y --no-install-recommends "/pkg/'"$(basename "$DEB")"'"
   test -x /usr/libexec/biorouter/computer-use/ocu
@@ -106,6 +119,7 @@ docker run --rm --platform linux/amd64 -v "$ROOT/$OUT":/pkg debian:bookworm-slim
   command -v biorouter && command -v biorouterd && command -v biorouter-crew
   biorouter --version
   biorouterd --version
+  bash /smoke/dictation-self-test.sh --fixtures /whisper.cpp/source --expect-backend cpu "$(command -v biorouter)" "$(command -v biorouterd)"
   test -x /usr/libexec/biorouter/esbuild
   test "$(/usr/libexec/biorouter/esbuild --version)" = "'"$(node -p "require('./ui/desktop/scripts/fetch-esbuild').ESBUILD_VERSION")"'"
   printf "console.log(1);\n" >/tmp/app.ts
@@ -129,7 +143,10 @@ log "deb smoke test passed ✓"
 
 # ── 3. Smoke-test the .rpm on a clean Rocky Linux system ──────────────────────
 log "smoke-testing .rpm on rockylinux:9"
-docker run --rm --platform linux/amd64 -v "$ROOT/$OUT":/pkg rockylinux:9 bash -euxc '
+docker run --rm --platform linux/amd64 -e ROSETTA_ADVERTISE_AVX=1 -v "$ROOT/$OUT":/pkg \
+  -v "$ROOT/vendor/whisper.cpp":/whisper.cpp:ro \
+  -v "$ROOT/scripts/dictation-self-test.sh":/smoke/dictation-self-test.sh:ro \
+  rockylinux:9 bash -euxc '
   dnf install -y "/pkg/'"$(basename "$RPM")"'"
   test -x /usr/libexec/biorouter/computer-use/ocu
   test -s /usr/libexec/biorouter/computer-use/manifest.json
@@ -138,6 +155,7 @@ docker run --rm --platform linux/amd64 -v "$ROOT/$OUT":/pkg rockylinux:9 bash -e
   command -v biorouter && command -v biorouterd && command -v biorouter-crew
   biorouter --version
   biorouterd --version
+  bash /smoke/dictation-self-test.sh --fixtures /whisper.cpp/source --expect-backend cpu "$(command -v biorouter)" "$(command -v biorouterd)"
   test -x /usr/libexec/biorouter/esbuild
   test "$(/usr/libexec/biorouter/esbuild --version)" = "'"$(node -p "require('./ui/desktop/scripts/fetch-esbuild').ESBUILD_VERSION")"'"
   printf "console.log(1);\n" >/tmp/app.ts
