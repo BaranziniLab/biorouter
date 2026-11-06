@@ -19,6 +19,7 @@ pub mod session_watch;
 pub mod shared_conversation;
 pub mod skill;
 pub mod term;
+pub mod transcribe;
 pub mod usage;
 pub mod web;
 pub mod workflow;

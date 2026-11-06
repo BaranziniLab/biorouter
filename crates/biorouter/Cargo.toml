@@ -229,6 +229,11 @@ aws-smithy-runtime-api = "=1.9.3"
 # this adds no new package to the lock.
 walkdir = "2.5.0"
 aws-smithy-http-client = { version = "=1.1.5", default-features = false, features = ["test-util"] }
+# Test-only: `tests/dictation_accuracy.rs` reads the PriMock57 evaluation set, a tar of
+# FLAC files (PR-12). The same versions the CLI already locks; the daemon never decodes
+# a file (DD-78).
+symphonia = { version = "0.5.5", default-features = false, features = ["flac"] }
+tar = "0.4"
 
 # Test-only: `net.rs`'s Windows inheritance tests re-run one case in a fresh copy
 # of the test binary, and must start that copy with handle inheritance OFF, or it
@@ -246,6 +251,17 @@ windows = { version = "0.61", features = [
 [[example]]
 name = "agent"
 path = "examples/agent.rs"
+
+# Tier 1 accuracy (PR-12): the real speech models on the JFK clip and the PriMock57
+# evaluation set, ignored unless asked for; `dictation-accuracy.yml` runs them with
+# `cargo test -p biorouter --features local-dictation --test dictation_accuracy -- --ignored`.
+# Its own `main()` in place of libtest's, because the binary is also its own dictation
+# worker, answered after whisper.cpp's C++ statics are built: a constructor that ran the
+# worker before them failed every model load with `map::at: key not found` [M].
+[[test]]
+name = "dictation_accuracy"
+required-features = ["local-dictation"]
+harness = false
 
 [[example]]
 name = "databricks_oauth"

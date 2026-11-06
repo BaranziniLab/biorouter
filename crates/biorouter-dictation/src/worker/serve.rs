@@ -311,9 +311,11 @@ impl EngineThread {
 
     fn load(&mut self, load: Load) -> FromWorker {
         if let (Some(_), Some((current, answer))) = (&self.engine, &self.loaded) {
-            // The thread count is per request; any other difference is another model.
+            // The thread count is per request, and a model already loaded needs no warm
+            // up; any other difference is another model.
             let same = Load {
                 n_threads: current.n_threads,
+                warm_up: current.warm_up,
                 ..load.clone()
             };
             if *current == same {
@@ -337,13 +339,14 @@ impl EngineThread {
         }
         let model_path = PathBuf::from(&load.model_path);
         let vad_path = Path::new(&load.vad_dir).join(&load.vad_file);
-        let engine = match Engine::load(&LoadOptions {
+        let options = LoadOptions {
             model_path: &model_path,
             model_size: load.model_size,
             vad_path: &vad_path,
             use_gpu: load.use_gpu,
             n_threads: load.n_threads,
-        }) {
+        };
+        let engine = match Engine::load_with_warm_up(&options, load.warm_up) {
             Ok(engine) => engine,
             Err(e) => return error(None, ErrorCode::ModelLoadFailed, &e.to_string()),
         };
@@ -662,6 +665,7 @@ mod tests {
                 .to_string(),
             use_gpu: false,
             n_threads: 2,
+            warm_up: true,
         }
     }
 
@@ -699,6 +703,93 @@ mod tests {
         };
         assert_eq!(decode_params(&request), engine::decode_params("en", 2));
         assert_eq!(vad_params(&VadOptions::dd48()), engine::vad_params());
+    }
+
+    /// PR-12's parameter snapshot (DD-47, DD-48): the frame every file and stream sends,
+    /// through the worker's conversion, every field of the engine's `DecodeParams` and
+    /// `VadParams`; and through the shim's one parameter builder, the fields its
+    /// `br_params_view` reads back: the strategy, `best_of`, `no_context`,
+    /// `no_timestamps`, `single_segment`, the four print flags, the detector switch,
+    /// `temperature_inc`, `suppress_nst` and the thread count. The builder's other fields
+    /// (the thresholds, `suppress_blank`, `translate`, the temperature, the language, the
+    /// prompt fields and the context's `flash_attn`) are checked on `DecodeParams` only;
+    /// reading them back too needs `br_params_view` to grow. Greedy with `best_of = 5`,
+    /// timestamps on, `temperature_inc 0.2`, `suppress_nst` off, the detector on with its
+    /// four values, and at most 25 s of audio on the wire and in the engine. The
+    /// supervisor refuses 25.5 s before it queues anything
+    /// (`audio_over_the_caps_is_refused_before_it_is_queued`) and the worker answers a
+    /// longer payload `bad_audio` (`a_worker_answers_every_request_in_order`).
+    #[test]
+    fn the_decode_parameters_snapshot() {
+        let ToWorker::Transcribe(request) = transcribe(1) else {
+            unreachable!()
+        };
+        let decode = decode_params(&request);
+        assert_eq!(
+            decode,
+            engine::DecodeParams {
+                language: "en".into(),
+                n_threads: 2,
+                best_of: 5,
+                temperature: 0.0,
+                temperature_inc: 0.2,
+                entropy_thold: 2.4,
+                logprob_thold: -1.0,
+                no_speech_thold: 0.6,
+                translate: false,
+                no_context: true,
+                no_timestamps: false,
+                single_segment: false,
+                suppress_blank: true,
+                suppress_nst: false,
+                audio_ctx: 0,
+                max_tokens: 0,
+            }
+        );
+        let vad = vad_params(&request.vad);
+        assert_eq!(
+            vad,
+            engine::VadParams {
+                enabled: true,
+                threshold: 0.5,
+                min_speech_ms: 250,
+                min_silence_ms: 100,
+                max_speech_s: None,
+                speech_pad_ms: 30,
+                samples_overlap_s: 0.1,
+            }
+        );
+        assert_eq!(
+            engine::params_snapshot(&decode, &vad),
+            engine::ParamsView {
+                strategy: 0,
+                best_of: 5,
+                no_context: true,
+                no_timestamps: false,
+                single_segment: false,
+                print_special: false,
+                print_progress: false,
+                print_realtime: false,
+                print_timestamps: false,
+                vad: true,
+                temperature_inc: 0.2,
+                suppress_nst: false,
+                n_threads: 2,
+            }
+        );
+        // A multilingual model is told the configured language, never `auto` unless set.
+        let mut german = request.clone();
+        german.language = "de".into();
+        assert_eq!(decode_params(&german).language, "de");
+        assert_eq!(protocol::MAX_TRANSCRIBE_SAMPLES, 25 * 16_000);
+        assert_eq!(
+            protocol::MAX_TRANSCRIBE_SAMPLES,
+            engine::MAX_TRANSCRIBE_SAMPLES
+        );
+        // The parent keeps 0.3 s of audio before the first and after the last stretch of
+        // speech of every segment it plans (DD-48; `audio::plan_final_segments`).
+        assert_eq!(audio::EDGE_PAD_MS, 300);
+        assert!(request.prompt_terms.is_empty() && request.bias.is_none());
     }
 
     /// P-1: after the setup the engine role runs first, this process writes no core file

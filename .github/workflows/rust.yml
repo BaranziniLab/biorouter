@@ -821,7 +821,7 @@ jobs:
   # only under MSVC, so a mingw build that handed it a path would fail here; Biorouter opens
   # the files itself. The folder name is built from a code point so this file stays ASCII.
   # The real model run of M-1 (installed under such a folder, then `transcribe jfk.wav`)
-  # needs A-1's model releases and PR-12, and joins this job then.
+  # joined with PR-12; it is the job's last step.
   #
   # `!cancelled()`: it runs whenever the artifact exists, even when a Linux check of
   # cross-build-nightly failed after the upload. When the build itself failed there is no
@@ -830,7 +830,7 @@ jobs:
     needs: cross-build-nightly
     if: ${{ !cancelled() && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') }}
     runs-on: windows-latest
-    timeout-minutes: 20
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
@@ -899,6 +899,69 @@ jobs:
             throw "the probe worker did not say hello with protocol 1 and exit 0: $($status.probe | ConvertTo-Json -Compress -Depth 4)"
           }
           Write-Host "biorouter.exe dictation status: engine $($status.engine.state), worker hello protocol $($status.probe.hello.protocol), exit $($status.probe.exit_code)"
+
+      # M-1's real model run (PR-12, DD-94: `transcribe`'s gate lands with it). The shipped
+      # installer puts `whisper-small.en-q8_0` and its voice detector, from A-1's releases,
+      # under a BIOROUTER_PATH_ROOT whose path is not ASCII, and `transcribe jfk.wav` must
+      # give the JFK sentence, case and punctuation aside. The engine opens the model, and
+      # the detector by its bare name inside its folder, under that path; this is the one
+      # check of that on real Windows. The downloaded files are cached in an ASCII folder
+      # by the catalog's pins and installed from there with `--from` on a hit, so most runs
+      # download nothing and every run still goes through the installer's verification.
+      - name: Restore the Light model and its voice detector
+        id: m1-models
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ runner.temp }}\m1-models
+          key: dictation-m1-windows-small-en-${{ hashFiles('crates/biorouter-dictation/src/catalog.rs') }}
+      - name: transcribe jfk.wav with the real Light model under a path that is not ASCII
+        shell: pwsh
+        env:
+          CACHE_HIT: ${{ steps.m1-models.outputs.cache-hit }}
+        run: |
+          $root = Join-Path $env:RUNNER_TEMP ('dictation-Jos' + [char]0x00E9 + '-m1')
+          $cache = Join-Path $env:RUNNER_TEMP 'm1-models'
+          New-Item -ItemType Directory -Force -Path $root, $cache | Out-Null
+          $env:BIOROUTER_PATH_ROOT = $root
+          $env:BIOROUTER_DISABLE_KEYRING = 'true'
+          $cli = Join-Path $env:GITHUB_WORKSPACE 'mingw-binaries\biorouter.exe'
+          $errFile = Join-Path $env:RUNNER_TEMP 'm1.err'
+          if ($env:CACHE_HIT -eq 'true') {
+            & $cli dictation install --yes --from $cache 2> $errFile
+          } else {
+            & $cli dictation install --yes whisper-small.en-q8_0 2> $errFile
+          }
+          if ($LASTEXITCODE -ne 0) {
+            Get-Content -LiteralPath $errFile -ErrorAction SilentlyContinue | Select-Object -Last 40 | ForEach-Object { Write-Host $_ }
+            throw "biorouter.exe dictation install exited $LASTEXITCODE"
+          }
+          if ($env:CACHE_HIT -ne 'true') {
+            Get-ChildItem -LiteralPath $root -Recurse -File -Filter '*.bin' | ForEach-Object {
+              Copy-Item -LiteralPath $_.FullName -Destination $cache
+            }
+          }
+          $jfk = Join-Path $env:GITHUB_WORKSPACE 'vendor\whisper.cpp\source\samples\jfk.wav'
+          $out = @(& $cli transcribe $jfk --model whisper-small.en-q8_0 --format json 2> $errFile)
+          $code = $LASTEXITCODE
+          if ($code -ne 0) {
+            Get-Content -LiteralPath $errFile -ErrorAction SilentlyContinue | Select-Object -Last 40 | ForEach-Object { Write-Host $_ }
+            throw "biorouter.exe transcribe exited $code, stdout: $($out -join ' ')"
+          }
+          $transcript = ($out -join "`n") | ConvertFrom-Json
+          $words = { param($text) (($text.ToLowerInvariant() -split '[^a-z0-9]+') | Where-Object { $_ -ne '' }) -join ' ' }
+          $expected = & $words 'And so my fellow Americans, ask not what your country can do for you, ask what you can do for your country.'
+          $got = & $words $transcript.text
+          if ($got -ne $expected) {
+            throw "transcribe gave '$($transcript.text)', not the JFK sentence"
+          }
+          Write-Host "biorouter.exe transcribe under $root on $($transcript.timings.backend): $($transcript.text)"
+          Write-Host "timings: $($transcript.timings | ConvertTo-Json -Compress)"
+      - name: Save the Light model and its voice detector
+        if: success() && steps.m1-models.outputs.cache-hit != 'true' && github.ref == 'refs/heads/main'
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ runner.temp }}\m1-models
+          key: dictation-m1-windows-small-en-${{ hashFiles('crates/biorouter-dictation/src/catalog.rs') }}
 
   # `biorouter serve` end to end: the daemon serving the interface, the token
   # exchange, and the endpoints that were previously unauthenticated.

@@ -303,6 +303,17 @@ pub struct Load {
     pub vad_file: String,
     pub use_gpu: bool,
     pub n_threads: u32,
+    /// Whether the load ends with the encoder warm up on Metal (one encoder pass and one
+    /// decoder step). `true` for every long lived supervisor, and for a parent from before
+    /// the field. A process that loads one model for one recording (`biorouter
+    /// transcribe`) sends `false`: on a warm Metal cache the warm up cost turbo 250 ms and
+    /// saved its first decode 6 to 14 ms [M]. The detector's own warm up always runs.
+    #[serde(default = "warm_up_default")]
+    pub warm_up: bool,
+}
+
+fn warm_up_default() -> bool {
+    true
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -367,6 +378,25 @@ pub struct Transcribe {
 
 /// The token budget of a prompt (DD-47).
 pub const PROMPT_BUDGET_TOKENS: u32 = 150;
+
+/// Every language code the vendored whisper.cpp knows (`g_lang` in `src/whisper.cpp`), in
+/// its order. `transcribe.language` is one of these or `"auto"` (DD-15); a test reads the
+/// vendored source and holds the two equal.
+pub const WHISPER_LANGUAGES: &[&str] = &[
+    "en", "zh", "de", "es", "ru", "ko", "fr", "ja", "pt", "tr", "pl", "ca", "nl", "ar", "sv", "it",
+    "id", "hi", "fi", "vi", "he", "uk", "el", "ms", "cs", "ro", "da", "hu", "ta", "no", "th", "ur",
+    "hr", "bg", "lt", "la", "mi", "ml", "cy", "sk", "te", "fa", "lv", "bn", "sr", "az", "sl", "kn",
+    "et", "mk", "br", "eu", "is", "hy", "ne", "mn", "bs", "kk", "sq", "sw", "gl", "mr", "pa", "si",
+    "km", "sn", "yo", "so", "af", "oc", "ka", "be", "tg", "sd", "gu", "am", "yi", "lo", "uz", "fo",
+    "ht", "ps", "tk", "nn", "mt", "sa", "lb", "my", "bo", "tl", "mg", "as", "tt", "haw", "ln",
+    "ha", "ba", "jw", "su", "yue",
+];
+
+/// Whether `language` can go into a `transcribe` frame: `"auto"`, or a code of
+/// [`WHISPER_LANGUAGES`]. Codes are lower case, as whisper.cpp compares them.
+pub fn is_known_language(language: &str) -> bool {
+    language == "auto" || WHISPER_LANGUAGES.contains(&language)
+}
 
 /// The DD-47 decoding parameters on the wire.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -670,11 +700,12 @@ mod tests {
                 vad_file: "ggml-silero-v6.2.0.bin".into(),
                 use_gpu: true,
                 n_threads: 8,
+                warm_up: true,
             }),
             json!({"type":"load","model_path":"/m/ggml-large-v3-turbo-q5_0.bin",
                    "model_sha256":"3942","model_size":574_041_195u64,
                    "vad_dir":"/m/silero-vad-v6.2.0","vad_file":"ggml-silero-v6.2.0.bin",
-                   "use_gpu":true,"n_threads":8}),
+                   "use_gpu":true,"n_threads":8,"warm_up":true}),
         );
         golden(
             FromWorker::Loaded(Loaded {
@@ -795,6 +826,31 @@ mod tests {
         }
     }
 
+    /// The language list is whisper.cpp's own, read from the vendored source, so a code the
+    /// parent accepts is one the worker's `whisper_full` accepts.
+    #[test]
+    fn the_language_list_is_the_vendored_engines() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../vendor/whisper.cpp/source/src/whisper.cpp");
+        let source = std::fs::read_to_string(&path).expect("the vendored whisper.cpp");
+        let table = source
+            .split_once("g_lang = {")
+            .and_then(|(_, rest)| rest.split_once("};"))
+            .map(|(table, _)| table)
+            .expect("whisper.cpp has a g_lang table");
+        let codes: Vec<&str> = table
+            .lines()
+            .filter_map(|line| line.trim().strip_prefix("{ \""))
+            .filter_map(|line| line.split('"').next())
+            .collect();
+        assert_eq!(codes, WHISPER_LANGUAGES);
+        assert!(is_known_language("en") && is_known_language("auto"));
+        assert!(is_known_language("haw") && is_known_language("yue"));
+        for refused in ["", "EN", "english", "xx", "en-US", " en"] {
+            assert!(!is_known_language(refused), "{refused:?}");
+        }
+    }
+
     #[test]
     fn unknown_types_and_fields_are_tolerated() {
         let read: ToWorker =
@@ -816,5 +872,12 @@ mod tests {
         )
         .expect("no warmup_ms");
         assert_eq!(read.warmup_ms, 0);
+        // A parent from before `warm_up` asks for the warm up, as every load did.
+        let read: ToWorker = serde_json::from_str(
+            r#"{"type":"load","model_path":"/m/a.bin","model_sha256":"aa","model_size":1,
+                "vad_dir":"/m","vad_file":"v.bin","use_gpu":true,"n_threads":4}"#,
+        )
+        .expect("no warm_up");
+        assert!(matches!(read, ToWorker::Load(Load { warm_up: true, .. })));
     }
 }

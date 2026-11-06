@@ -18,7 +18,19 @@
 //!   install admitted (as root; elsewhere it stops at the root check);
 //! * `use` refuses an unknown id, an uninstalled model, and a `.en` model while the
 //!   language is not English (MSG-LANGUAGE-EN);
-//! * `list --format json` rates every catalog model.
+//! * `list --format json` rates every catalog model;
+//! * `biorouter transcribe` (PR-12): `jfk.wav` with the `for-tests` model exits 3 with
+//!   `{schema: 1, error_code: "no_speech", message}`, from a file and from standard input;
+//!   generated silence exits 3 before any worker is needed; both hold in an agent's shell
+//!   (`BIOROUTER_TERMINAL=1`); a recording under half a second exits 3; Opus and WebM
+//!   exit 1 with the `ffmpeg` line; a missing file exits 1; no model, an unknown or
+//!   uninstalled model, a language the model cannot take and a managed `enabled: false`
+//!   exit 2 with their sentences.
+//!
+//! Ignored, for the accuracy workflow and by hand: an MP3 encoded by `ffmpeg` decodes to
+//! the expected length and an M4A and an Ogg Vorbis file are refused with the `ffmpeg`
+//! line, and `transcribe` with the real catalog models in
+//! `BIOROUTER_DICTATION_MODELS_DIR` writes the JFK sentence and reports its timings.
 //!
 //! The vendored detector fixture is byte identical to the production detector, so it
 //! stands in for a real catalog file. A speech model is 264 MB or more, so the cases
@@ -603,4 +615,446 @@ fn list_rates_every_catalog_model() {
     let text = run(root.path(), &["ls"], &[]);
     assert_eq!(text.status.code(), Some(0));
     assert!(stdout(&text).contains("not installed"));
+}
+
+// ---- biorouter transcribe (PR-12) -------------------------------------------------
+
+const JFK_TEXT: &str = "And so my fellow Americans, ask not what your country can do for you, ask what you can do for your country.";
+
+/// Words, case folded, without punctuation: the catalog models agree on the JFK words
+/// and not on its commas (`whisper-small.en-q8_0` writes "And so, my fellow Americans,
+/// ... for you. Ask what ..." [M]).
+fn words(text: &str) -> Vec<String> {
+    text.split(|c: char| !c.is_alphanumeric())
+        .filter(|w| !w.is_empty())
+        .map(str::to_lowercase)
+        .collect()
+}
+
+fn vendored(relative: &str) -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../vendor/whisper.cpp/source")
+        .join(relative)
+}
+
+fn jfk_wav() -> PathBuf {
+    vendored("samples/jfk.wav")
+}
+
+/// Runs `biorouter transcribe <args>` under `root`, with `stdin` piped in when given.
+fn transcribe(root: &Path, args: &[&str], env: &[(&str, &str)], stdin: Option<&[u8]>) -> Output {
+    let mut command = Command::new(biorouter());
+    command
+        .arg("transcribe")
+        .args(args)
+        .env("BIOROUTER_PATH_ROOT", root)
+        .env("HOME", root.join("home"))
+        .env("BIOROUTER_DISABLE_KEYRING", "true")
+        .env_remove("BIOROUTER_TERMINAL")
+        .env_remove("BIOROUTER_DICTATION_MODELS_DIR")
+        .env_remove("BIOROUTER_DICTATION_TEST_MODEL")
+        .env_remove("BIOROUTER_DICTATION_WORKER")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .stdin(if stdin.is_some() {
+            Stdio::piped()
+        } else {
+            Stdio::null()
+        });
+    for (key, value) in env {
+        command.env(key, value);
+    }
+    let mut child = command.spawn().expect("run biorouter");
+    if let Some(bytes) = stdin {
+        use std::io::Write;
+        let mut pipe = child.stdin.take().expect("stdin");
+        pipe.write_all(bytes).expect("write stdin");
+    }
+    child.wait_with_output().expect("biorouter ends")
+}
+
+/// A 16 bit mono WAV at 16 kHz: `ms` of a 440 Hz tone, or of exact zeros.
+fn wav_16k(ms: u64, tone: bool) -> Vec<u8> {
+    let n = (ms * 16) as usize;
+    let mut data = Vec::with_capacity(n * 2);
+    for i in 0..n {
+        let x = if tone {
+            (8_000.0 * (2.0 * std::f64::consts::PI * 440.0 * i as f64 / 16_000.0).sin()) as i16
+        } else {
+            0
+        };
+        data.extend_from_slice(&x.to_le_bytes());
+    }
+    let mut out = Vec::new();
+    out.extend_from_slice(b"RIFF");
+    out.extend_from_slice(&(36 + data.len() as u32).to_le_bytes());
+    out.extend_from_slice(b"WAVEfmt ");
+    out.extend_from_slice(&16u32.to_le_bytes());
+    out.extend_from_slice(&1u16.to_le_bytes());
+    out.extend_from_slice(&1u16.to_le_bytes());
+    out.extend_from_slice(&16_000u32.to_le_bytes());
+    out.extend_from_slice(&32_000u32.to_le_bytes());
+    out.extend_from_slice(&2u16.to_le_bytes());
+    out.extend_from_slice(&16u16.to_le_bytes());
+    out.extend_from_slice(b"data");
+    out.extend_from_slice(&(data.len() as u32).to_le_bytes());
+    out.extend_from_slice(&data);
+    out
+}
+
+/// The schema 1 error `--format json` prints, and its exit code.
+fn assert_json_error(output: &Output, code: i32, error_code: &str) -> Value {
+    assert_eq!(
+        output.status.code(),
+        Some(code),
+        "{}{}",
+        stdout(output),
+        stderr(output)
+    );
+    let error = json(output);
+    assert_eq!(error["schema"], 1, "{error}");
+    assert_eq!(error["error_code"], error_code, "{error}");
+    assert!(error["message"].as_str().is_some_and(|m| !m.is_empty()));
+    error
+}
+
+/// The plan's offline acceptance (DD-48): the `for-tests` model decodes `jfk.wav` to
+/// nothing, so the command exits 3 with `no_speech`, from a file and from standard input.
+/// Debug builds only, since a release build ignores `BIOROUTER_DICTATION_TEST_MODEL`.
+#[cfg(debug_assertions)]
+#[test]
+fn transcribe_jfk_with_the_test_model_hears_nothing() {
+    if !can_install() {
+        return;
+    }
+    let root = sandbox();
+    let model = vendored("models/for-tests-ggml-base.en.bin");
+    let env = [("BIOROUTER_DICTATION_TEST_MODEL", model.to_str().unwrap())];
+    let jfk = jfk_wav();
+    let output = transcribe(
+        root.path(),
+        &[jfk.to_str().unwrap(), "--format", "json"],
+        &env,
+        None,
+    );
+    assert_json_error(&output, 3, "no_speech");
+
+    let bytes = std::fs::read(&jfk).unwrap();
+    let output = transcribe(root.path(), &["-", "--format", "json"], &env, Some(&bytes));
+    assert_json_error(&output, 3, "no_speech");
+
+    // Text format: the sentence alone on stderr, nothing on stdout.
+    let output = transcribe(root.path(), &[jfk.to_str().unwrap()], &env, None);
+    assert_eq!(output.status.code(), Some(3), "{}", stderr(&output));
+    assert!(stdout(&output).is_empty());
+    assert_eq!(
+        stderr(&output).trim(),
+        "No speech was heard in that recording, so nothing was transcribed."
+    );
+
+    // The fixture is English only.
+    let output = transcribe(
+        root.path(),
+        &[
+            jfk.to_str().unwrap(),
+            "--language",
+            "de",
+            "--format",
+            "json",
+        ],
+        &env,
+        None,
+    );
+    let error = assert_json_error(&output, 2, "language");
+    assert!(error["message"]
+        .as_str()
+        .unwrap()
+        .contains("understands only English"));
+}
+
+/// Exact zeros are no speech, decided before the engine is needed: no model is installed
+/// and the worker named cannot even start, yet the answer is exit 3.
+#[test]
+fn transcribe_hears_nothing_in_digital_silence_without_a_worker() {
+    if !can_install() {
+        return;
+    }
+    let root = sandbox();
+    let silence = root.path().join("silence.wav");
+    std::fs::write(&silence, wav_16k(2_000, false)).unwrap();
+    let nowhere = root.path().join("no-such-worker");
+    let output = transcribe(
+        root.path(),
+        &[silence.to_str().unwrap(), "--format", "json"],
+        &[("BIOROUTER_DICTATION_WORKER", nowhere.to_str().unwrap())],
+        None,
+    );
+    assert_json_error(&output, 3, "no_speech");
+}
+
+/// `transcribe` works in an agent's shell (S11): `BIOROUTER_TERMINAL=1` with no terminal
+/// changes nothing, where `dictate` and `install` refuse. In a debug build the `for-tests`
+/// model takes the whole path through the worker there too.
+#[test]
+fn transcribe_works_in_an_agent_shell() {
+    if !can_install() {
+        return;
+    }
+    let root = sandbox();
+    let agent = ("BIOROUTER_TERMINAL", "1");
+    let silence = root.path().join("silence.wav");
+    std::fs::write(&silence, wav_16k(2_000, false)).unwrap();
+    let output = transcribe(
+        root.path(),
+        &[silence.to_str().unwrap(), "--format", "json"],
+        &[agent],
+        None,
+    );
+    assert_json_error(&output, 3, "no_speech");
+    if cfg!(debug_assertions) {
+        let model = vendored("models/for-tests-ggml-base.en.bin");
+        let jfk = jfk_wav();
+        let output = transcribe(
+            root.path(),
+            &[jfk.to_str().unwrap(), "--format", "json"],
+            &[
+                agent,
+                ("BIOROUTER_DICTATION_TEST_MODEL", model.to_str().unwrap()),
+            ],
+            None,
+        );
+        assert_json_error(&output, 3, "no_speech");
+    }
+}
+
+#[test]
+fn transcribe_refuses_what_it_cannot_use() {
+    if !can_install() {
+        return;
+    }
+    let root = sandbox();
+    let dir = root.path();
+
+    // Under half a second: exit 3, before any model is needed.
+    let short = dir.join("short.wav");
+    std::fs::write(&short, wav_16k(300, true)).unwrap();
+    let output = transcribe(dir, &[short.to_str().unwrap()], &[], None);
+    assert_eq!(output.status.code(), Some(3), "{}", stderr(&output));
+    assert_eq!(
+        stderr(&output).trim(),
+        "That recording was under half a second, so nothing was transcribed."
+    );
+
+    // Opus and WebM: exit 1 with the ffmpeg line.
+    let opus = dir.join("memo.opus");
+    std::fs::write(&opus, wav_16k(1_000, true)).unwrap();
+    let output = transcribe(dir, &[opus.to_str().unwrap()], &[], None);
+    assert_eq!(output.status.code(), Some(1));
+    assert!(
+        stderr(&output).contains("Biorouter cannot read Opus recordings")
+            && stderr(&output).contains("ffmpeg -i"),
+        "{}",
+        stderr(&output)
+    );
+    let webm = dir.join("talk.webm");
+    std::fs::write(&webm, wav_16k(1_000, true)).unwrap();
+    let output = transcribe(
+        dir,
+        &[webm.to_str().unwrap(), "--format", "json"],
+        &[],
+        None,
+    );
+    assert_json_error(&output, 1, "unsupported_format");
+
+    // A file that is not there.
+    let missing = dir.join("missing.wav");
+    let output = transcribe(
+        dir,
+        &[missing.to_str().unwrap(), "--format", "json"],
+        &[],
+        None,
+    );
+    assert_json_error(&output, 1, "not_found");
+
+    // Speech to transcribe, but no model on this computer: exit 2 with MSG-NO-MODEL-CLI.
+    let tone = dir.join("tone.wav");
+    std::fs::write(&tone, wav_16k(2_000, true)).unwrap();
+    let output = transcribe(dir, &[tone.to_str().unwrap()], &[], None);
+    assert_eq!(output.status.code(), Some(2), "{}", stderr(&output));
+    assert!(
+        stderr(&output).starts_with("Dictation needs a speech model on this computer"),
+        "{}",
+        stderr(&output)
+    );
+    let output = transcribe(
+        dir,
+        &[
+            tone.to_str().unwrap(),
+            "--model",
+            SMALL_EN,
+            "--format",
+            "json",
+        ],
+        &[],
+        None,
+    );
+    let error = assert_json_error(&output, 2, "not_installed");
+    assert!(error["message"]
+        .as_str()
+        .unwrap()
+        .contains("biorouter dictation install whisper-small.en-q8_0"));
+    let output = transcribe(
+        dir,
+        &[
+            tone.to_str().unwrap(),
+            "--model",
+            "whisper-tiny",
+            "--format",
+            "json",
+        ],
+        &[],
+        None,
+    );
+    assert_json_error(&output, 2, "unknown_model");
+    let output = transcribe(
+        dir,
+        &[
+            tone.to_str().unwrap(),
+            "--language",
+            "xx",
+            "--format",
+            "json",
+        ],
+        &[],
+        None,
+    );
+    assert_json_error(&output, 2, "language");
+}
+
+/// A managed `enabled: false` declines every dictation door, `transcribe` included;
+/// `capture: false` stops only live microphones.
+#[test]
+fn transcribe_follows_the_managed_switch() {
+    if !can_install() {
+        return;
+    }
+    let root = sandbox();
+    let tone = root.path().join("tone.wav");
+    std::fs::write(&tone, wav_16k(2_000, true)).unwrap();
+    write_managed(root.path(), "  enabled: false\n");
+    let output = transcribe(root.path(), &[tone.to_str().unwrap()], &[], None);
+    assert_refused(&output, biorouter::managed::MANAGED_DICTATION_OFF);
+
+    write_managed(root.path(), "  capture: false\n");
+    let output = transcribe(root.path(), &[tone.to_str().unwrap()], &[], None);
+    // Past the switch, to the missing model.
+    assert_eq!(output.status.code(), Some(2), "{}", stderr(&output));
+    assert!(stderr(&output).starts_with("Dictation needs a speech model"));
+}
+
+/// MP3 and M4A, which no test process can encode, through `ffmpeg` (the accuracy workflow
+/// installs it). A 44.1 kHz stereo MP3 tone decodes to 16 kHz mono within 1 % of its
+/// length: gapless decoding trims the encoder's delay and padding, which on a 3 s tone
+/// were 1 % of it otherwise [M]. M4A (AAC) and Ogg Vorbis are refused with the `ffmpeg`
+/// line, from a file and from standard input: DD-78's size rule left their decoders out.
+#[cfg(feature = "dictation")]
+#[test]
+#[ignore = "needs ffmpeg"]
+fn mp3_decodes_to_the_expected_length_and_m4a_is_refused() {
+    use biorouter_cli::dictation::decode::{decode_path, decode_reader, DecodeError};
+    let dir = tempfile::tempdir().unwrap();
+    let source = dir.path().join("tone.wav");
+    let status = Command::new("ffmpeg")
+        .args([
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-f",
+            "lavfi",
+            "-i",
+            "sine=frequency=440:sample_rate=44100:duration=3",
+            "-ac",
+            "2",
+        ])
+        .arg(&source)
+        .status()
+        .expect("ffmpeg runs");
+    assert!(status.success());
+    let encode = |name: &str, codec: &str| {
+        let encoded = dir.path().join(name);
+        let status = Command::new("ffmpeg")
+            .args(["-hide_banner", "-loglevel", "error", "-i"])
+            .arg(&source)
+            .args(["-c:a", codec])
+            .arg(&encoded)
+            .status()
+            .expect("ffmpeg runs");
+        assert!(status.success(), "{name}");
+        encoded
+    };
+    let mp3 = decode_path(&encode("tone.mp3", "libmp3lame")).expect("MP3");
+    let expected = 3.0 * 16_000.0;
+    let got = mp3.samples.len() as f64;
+    assert!(
+        (got - expected).abs() <= expected * 0.01,
+        "{got} samples, expected {expected}"
+    );
+    assert_eq!(mp3.channels, 2);
+
+    // FLAC in an Ogg page stands for any Ogg stream: Vorbis needs libvorbis, which
+    // Homebrew's ffmpeg does not carry, and every Ogg stream is refused alike.
+    for (name, codec, kind) in [
+        ("tone.m4a", "aac", "M4A and AAC"),
+        ("tone.ogg", "flac", "Ogg"),
+    ] {
+        let encoded = encode(name, codec);
+        let refused = DecodeError::UnsupportedFormat {
+            kind: Some(kind.into()),
+        };
+        assert_eq!(decode_path(&encoded).unwrap_err(), refused, "{name}");
+        let bytes = std::fs::read(&encoded).unwrap();
+        assert_eq!(
+            decode_reader(bytes.as_slice()).unwrap_err(),
+            refused,
+            "{name} on stdin"
+        );
+        assert!(refused.message(name).contains("ffmpeg -i"));
+    }
+}
+
+/// `transcribe` with each catalog model found in `BIOROUTER_DICTATION_MODELS_DIR` writes
+/// the JFK sentence and reports its timings (printed for the record). The models are
+/// those `BIOROUTER_DICTATION_ACCURACY_MODELS` names, comma separated, or both.
+#[test]
+#[ignore = "needs the real speech models"]
+fn transcribe_writes_the_jfk_sentence_with_each_catalog_model() {
+    let models = std::env::var("BIOROUTER_DICTATION_MODELS_DIR")
+        .expect("set BIOROUTER_DICTATION_MODELS_DIR to a folder holding the catalog models");
+    let selected: Vec<String> = std::env::var("BIOROUTER_DICTATION_ACCURACY_MODELS")
+        .ok()
+        .filter(|list| !list.trim().is_empty())
+        .map(|list| list.split(',').map(|id| id.trim().to_string()).collect())
+        .unwrap_or_else(|| vec![SMALL_EN.to_string(), TURBO.to_string()]);
+    let root = sandbox();
+    let jfk = jfk_wav();
+    for model in selected.iter().map(String::as_str) {
+        let output = transcribe(
+            root.path(),
+            &[jfk.to_str().unwrap(), "--model", model, "--format", "json"],
+            &[("BIOROUTER_DICTATION_MODELS_DIR", models.as_str())],
+            None,
+        );
+        assert_eq!(
+            output.status.code(),
+            Some(0),
+            "{model}: {}",
+            stderr(&output)
+        );
+        let transcript = json(&output);
+        let text = transcript["text"].as_str().unwrap();
+        assert_eq!(words(text), words(JFK_TEXT), "{model}: {text}");
+        assert_eq!(transcript["model"], model);
+        assert_eq!(transcript["no_speech"], false);
+        println!("{model}: {text}\n{model}: {}", transcript["timings"]);
+    }
 }

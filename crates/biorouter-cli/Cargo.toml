@@ -18,6 +18,21 @@ path = "src/main.rs"
 biorouter = { path = "../biorouter" }
 # The dictation worker's entry point (DD-4); the engine runs in a worker process.
 biorouter-dictation = { path = "../biorouter-dictation", optional = true, features = ["engine"] }
+# `biorouter transcribe` reads recordings (DD-78): WAV of any rate, channel count and
+# depth, AIFF, FLAC and MP3. In this crate only: the engine and the daemon take 16 kHz
+# PCM and never parse a file. No SIMD features.
+#
+# ⚠ No M4A, AAC or Ogg Vorbis, by DD-78's own rule: they go when symphonia adds more than
+# 1.5 MB to a stripped `biorouter`, and with them it added 1,719,376 B to the stripped
+# release `biorouter` on macOS arm64, and 1,696,984 B to a stripped x86_64 test binary
+# against 1,638,304 B on arm64 [M, 2026-11-06]. The AAC decoder and the MP4 reader are
+# most of it. Without them the `dictation` feature (these readers and the `transcribe`
+# code) adds 556,496 B to the same `biorouter`, both builds from one tree, and symphonia
+# alone adds 590,896 B to a stripped probe on this Mac [M, 2026-11-06]. On Linux x86_64,
+# built in the release image, a stripped probe grew by 1,766,248 B with them and 650,512 B
+# without [M]. Those files, Opus and WebM are refused with an `ffmpeg` line that converts
+# them.
+symphonia = { version = "0.5.5", optional = true, default-features = false, features = ["wav", "pcm", "aiff", "flac", "mp3"] }
 biorouter-acp = { path = "../biorouter-acp" }
 biorouter-bench = { path = "../biorouter-bench" }
 biorouter-mcp = { path = "../biorouter-mcp" }
@@ -94,12 +109,15 @@ winapi = { version = "0.3", features = ["wincred"] }
 libc = "0.2"
 
 [features]
-default = ["jemalloc", "local-dictation"]
+default = ["jemalloc", "local-dictation", "dictation"]
 # Use tuned jemalloc as the global allocator (returns freed pages to the OS).
 jemalloc = ["dep:tikv-jemallocator", "dep:tikv-jemalloc-ctl"]
 # The local dictation engine (DD-5). The direct dependency is for `main()`'s
 # `biorouter_dictation::worker::run_if_invoked()`.
 local-dictation = ["biorouter/local-dictation", "dep:biorouter-dictation"]
+# The terminal's dictation commands: `biorouter transcribe` and its file decoders
+# (PR-12); PR-25 adds the capture crate. Without it `transcribe` answers MSG-NO-ENGINE.
+dictation = ["local-dictation", "dep:symphonia"]
 
 [dev-dependencies]
 tempfile = "3"

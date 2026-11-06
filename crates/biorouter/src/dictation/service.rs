@@ -19,6 +19,7 @@
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 use std::time::{Duration, Instant};
 
@@ -36,6 +37,7 @@ use tokio_util::sync::CancellationToken;
 use biorouter_dictation::catalog::{SttCatalogEntry, CATALOG};
 use biorouter_dictation::hardware::{self, BenchRecord};
 
+use super::file::RecordingTranscript;
 use super::paths::{self, Installed, Roots};
 use crate::config::paths::Paths;
 use crate::config::Config;
@@ -156,6 +158,11 @@ pub enum DictationError {
     EnglishOnly {
         model: String,
     },
+    /// A language code the engine does not know (PR-12): neither `auto` nor one of
+    /// whisper.cpp's codes.
+    LanguageUnsupported {
+        language: String,
+    },
 }
 
 impl std::fmt::Display for DictationError {
@@ -204,6 +211,10 @@ impl std::fmt::Display for DictationError {
             DictationError::EnglishOnly { model } => write!(
                 f,
                 "{model} understands only English. Choose a multilingual model for other languages, or set the language to English."
+            ),
+            DictationError::LanguageUnsupported { language } => write!(
+                f,
+                "Biorouter does not know the language {language:?}. Use a two letter code such as en or de, or auto to let the model decide."
             ),
         }
     }
@@ -283,6 +294,8 @@ pub struct WorkerProbe {
 pub struct DictationService {
     supervisor: Mutex<Option<Arc<Supervisor>>>,
     threads: Mutex<Option<(Instant, u32)>>,
+    /// Set by [`DictationService::one_shot`].
+    one_shot: AtomicBool,
 }
 
 /// The process's one service.
@@ -291,6 +304,7 @@ pub fn service() -> &'static DictationService {
     SERVICE.get_or_init(|| DictationService {
         supervisor: Mutex::new(None),
         threads: Mutex::new(None),
+        one_shot: AtomicBool::new(false),
     })
 }
 
@@ -364,6 +378,34 @@ impl DictationService {
             .await?)
     }
 
+    /// Starts the worker process now, before the model is chosen or the audio is ready,
+    /// after the gates every spawn passes. Returns at once: the process start (about 80 ms
+    /// to `hello` [M]) overlaps whatever the caller does next, such as decoding a file
+    /// and resolving the model.
+    pub fn spawn_ahead(&self) -> Result<(), DictationError> {
+        self.ready_supervisor()?.spawn_ahead();
+        Ok(())
+    }
+
+    /// A whole recording of 16 kHz mono samples (PR-12, [`super::file`]): the detector in
+    /// windows of at most 600 s, every closed stretch of speech queued for decoding as soon
+    /// as it is planned, at most 25 s per decode, one model load for all of it.
+    /// Cancelling `req.cancel` answers `Cancelled` at once and drops the recording's jobs.
+    pub async fn transcribe_recording_with(
+        &self,
+        mut spec: LoadSpec,
+        pcm: Arc<[i16]>,
+        req: TranscribeRequest,
+    ) -> Result<RecordingTranscript, DictationError> {
+        let supervisor = self.ready_supervisor()?;
+        if spec.n_threads == 0 {
+            spec.n_threads = self.request_threads(&supervisor).await;
+        }
+        let params = TranscribeParams::new(req.language, spec.n_threads);
+        super::file::transcribe_recording(&supervisor, Arc::new(spec), pcm, params, &req.cancel)
+            .await
+    }
+
     /// A request's thread count: the loaded worker's, read from memory, so the path
     /// from stop to text never waits for the sidecar; DD-32's count when nothing is
     /// loaded yet, worked out while the worker process starts, as `prepare_with` does.
@@ -386,16 +428,38 @@ impl DictationService {
     /// candidates are tried in order and the first usable one ends the search. Hashing a
     /// copy that changed runs off the runtime's threads.
     pub async fn resolve(&self, id: Option<&str>) -> Result<LoadSpec, DictationError> {
+        self.resolve_for(id, None).await
+    }
+
+    /// [`DictationService::resolve`] for a request in `language` (`None`: the configured
+    /// one), which must be a code the engine knows, and English for a `.en` model. In a
+    /// debug build, with no `id`, [`TEST_MODEL_ENV`] names a pinned fixture to load in
+    /// place of a catalog model.
+    pub async fn resolve_for(
+        &self,
+        id: Option<&str>,
+        language: Option<&str>,
+    ) -> Result<LoadSpec, DictationError> {
         let id = id.map(str::to_string);
+        let language = language.map(str::to_string);
         tokio::task::spawn_blocking(move || {
             let policy = crate::managed::ManagedPolicy::load().dictation().clone();
+            let language = language.unwrap_or_else(configured_language);
+            if id.is_none() {
+                if let Some(fixture) = test_model() {
+                    if !policy.enabled.is_allowed() {
+                        return Err(DictationError::Policy(policy.enabled.allowance()));
+                    }
+                    return test_model_spec(&fixture, &language);
+                }
+            }
             let roots = Roots::current();
             spec_for(
                 &mut paths::Lookup::new(&roots),
                 &policy,
                 id.as_deref(),
                 configured_model().as_deref(),
-                &configured_language(),
+                &language,
                 cpu::host_report().class,
             )
         })
@@ -574,9 +638,23 @@ impl DictationService {
         }
         let name = program.display().to_string();
         let spawner = CommandSpawner::new(name, move || worker_command(&program));
-        let supervisor = Arc::new(Supervisor::start(Arc::new(spawner), supervisor_config()));
+        let config = SupervisorConfig {
+            warm_up: !self.one_shot.load(Ordering::Relaxed),
+            ..supervisor_config()
+        };
+        let supervisor = Arc::new(Supervisor::start(Arc::new(spawner), config));
         *slot = Some(Arc::clone(&supervisor));
         Ok(supervisor)
+    }
+
+    /// Marks this process as one that loads one model for one recording, such as
+    /// `biorouter transcribe`: its loads skip the encoder warm up (`Load::warm_up`), which
+    /// on a warm Metal cache cost turbo 250 ms and `small.en` 56 ms of a one shot run and
+    /// saved the first decode 6 to 14 ms [M]. The daemon and the interactive front ends
+    /// never call it, so their first dictation still finds the encoder warm. Call it
+    /// before the first spawn; a supervisor already running keeps its own setting.
+    pub fn one_shot(&self) {
+        self.one_shot.store(true, Ordering::Relaxed);
     }
 }
 
@@ -732,12 +810,17 @@ fn idle_unload_secs(value: Option<serde_json::Value>) -> u64 {
         .unwrap_or(DEFAULT_IDLE_UNLOAD_SECS)
 }
 
-/// `BIOROUTER_DICTATION_LANGUAGE` from `config.yaml`, `en` when unset.
+/// `BIOROUTER_DICTATION_LANGUAGE` from `config.yaml` (or the environment), `en` when
+/// unset.
 pub fn configured_language() -> String {
-    Config::global()
-        .get_param::<String>(LANGUAGE_KEY)
-        .ok()
-        .map(|language| language.trim().to_string())
+    language_setting(Config::global().get_param::<String>(LANGUAGE_KEY).ok())
+}
+
+/// A language as written in the configuration, in the form the engine takes: trimmed and
+/// lower case, as `--language` is, so `EN` works wherever `en` does; `en` when empty.
+pub fn language_setting(written: Option<String>) -> String {
+    written
+        .map(|language| language.trim().to_ascii_lowercase())
         .filter(|language| !language.is_empty())
         .unwrap_or_else(|| "en".to_string())
 }
@@ -807,6 +890,86 @@ pub fn check_language(entry: &SttCatalogEntry, language: &str) -> Result<(), Dic
     Ok(())
 }
 
+/// The language must be `auto` or a code whisper.cpp knows, so a typing mistake is
+/// refused with a sentence instead of failing inside the worker.
+pub fn check_language_code(language: &str) -> Result<(), DictationError> {
+    if biorouter_dictation::protocol::is_known_language(language) {
+        Ok(())
+    } else {
+        Err(DictationError::LanguageUnsupported {
+            language: language.to_string(),
+        })
+    }
+}
+
+/// Environment only, and read only by a debug build: a path to one of the vendored
+/// `for-tests` models, which `resolve_for` loads in place of a catalog model when no id
+/// is named, with the `for-tests` voice detector beside it. Both files must hash to their
+/// pins. The fixture has no tensors and decodes to nothing [M], so it lets the CLI and
+/// route tests run the whole path offline; a release build ignores the variable, so it
+/// adds no way to load an arbitrary file (P-11).
+pub const TEST_MODEL_ENV: &str = "BIOROUTER_DICTATION_TEST_MODEL";
+
+fn test_model() -> Option<PathBuf> {
+    if !cfg!(debug_assertions) {
+        return None;
+    }
+    std::env::var_os(TEST_MODEL_ENV)
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+}
+
+/// The load spec for a `for-tests` fixture at `path`, on the CPU.
+fn test_model_spec(path: &Path, language: &str) -> Result<LoadSpec, DictationError> {
+    use biorouter_dictation::build_info::{fixtures, sha256_file};
+    let refused = || {
+        DictationError::Internal(format!(
+            "{TEST_MODEL_ENV} must name a pinned for-tests model with the for-tests detector beside it"
+        ))
+    };
+    let sha256 = sha256_file(path).map_err(|_| refused())?;
+    if !fixtures::MODEL_PINS.contains(&sha256.as_str()) {
+        return Err(refused());
+    }
+    let detector_name = Path::new(fixtures::SILERO)
+        .file_name()
+        .ok_or_else(refused)?;
+    let detector = path.with_file_name(detector_name);
+    if sha256_file(&detector).map_err(|_| refused())? != fixtures::SILERO_SHA256 {
+        return Err(refused());
+    }
+    check_language_code(language)?;
+    if sha256 == fixtures::BASE_EN_SHA256 && !language.eq_ignore_ascii_case("en") {
+        return Err(DictationError::EnglishOnly {
+            model: fixture_id(path),
+        });
+    }
+    Ok(LoadSpec {
+        model_size: std::fs::metadata(path).map_err(|_| refused())?.len(),
+        model_path: path.to_path_buf(),
+        model_sha256: sha256,
+        vad_path: detector,
+        use_gpu: false,
+        n_threads: 0,
+    })
+}
+
+fn fixture_id(path: &Path) -> String {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .map(|name| name.trim_end_matches(".bin").to_string())
+        .unwrap_or_default()
+}
+
+/// The id a transcript names for the model `spec` loads: its catalog id, or for a
+/// `for-tests` fixture its file name.
+pub fn model_id(spec: &LoadSpec) -> String {
+    CATALOG
+        .by_sha256(&spec.model_sha256)
+        .map(|entry| entry.id.to_string())
+        .unwrap_or_else(|| fixture_id(&spec.model_path))
+}
+
 /// The load spec for `id` (or the active model) from what is installed: a
 /// [`paths::Lookup`] for a load, a [`paths::Inventory`] in tests.
 pub fn spec_for(
@@ -841,6 +1004,7 @@ pub fn spec_for(
     if !allowance.allowed {
         return Err(DictationError::Policy(allowance));
     }
+    check_language_code(language)?;
     check_language(entry, language)?;
     let model = installed
         .found(entry)
@@ -1303,8 +1467,27 @@ mod tests {
             active_model(&mut both.clone(), &open, Some(SMALL_EN_ID), As).map(|e| e.id),
             Some(SMALL_EN_ID)
         );
-        // Turbo is multilingual, so another language is fine.
+        // Turbo is multilingual, so another language is fine, and so is `auto`.
         assert!(spec(&both, &open, Some(TURBO_ID), None, "fr").is_ok());
+        assert!(spec(&both, &open, Some(TURBO_ID), None, "auto").is_ok());
+        // A code the engine does not know is refused before the worker sees it (PR-12).
+        for language in ["xx", "EN", "english", "en-US", ""] {
+            assert!(
+                matches!(
+                    spec(&both, &open, Some(TURBO_ID), None, language),
+                    Err(DictationError::LanguageUnsupported { language: l }) if l == language
+                ),
+                "{language:?}"
+            );
+        }
+        // `config.yaml` is read as `--language` is: `EN` there is `en`, which small.en
+        // takes; before, it was refused for every model.
+        let written = language_setting(Some(" EN ".to_string()));
+        assert_eq!(written, "en");
+        assert!(spec_for(&mut small.clone(), &open, None, None, &written, As).is_ok());
+        assert_eq!(language_setting(Some("Auto".into())), "auto");
+        assert_eq!(language_setting(Some("  ".into())), "en");
+        assert_eq!(language_setting(None), "en");
 
         let only_turbo = DictationPolicy {
             managed: true,
@@ -1420,9 +1603,60 @@ mod tests {
                 DictationError::Policy(Allowance::granted()),
                 MANAGED_DICTATION_OFF,
             ),
+            (
+                DictationError::LanguageUnsupported {
+                    language: "xx".into(),
+                },
+                "Biorouter does not know the language \"xx\". Use a two letter code such as en or de, or auto to let the model decide.",
+            ),
         ];
         for (error, sentence) in cases {
             assert_eq!(error.to_string(), sentence);
         }
+    }
+
+    fn fixture(relative: &str) -> PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../vendor/whisper.cpp/source")
+            .join(relative)
+    }
+
+    /// `BIOROUTER_DICTATION_TEST_MODEL` loads only a pinned fixture with the pinned
+    /// detector beside it, on the CPU, and still refuses a language the model cannot take.
+    #[test]
+    fn the_test_model_is_a_pinned_fixture() {
+        use biorouter_dictation::build_info::fixtures;
+        let base = fixture(fixtures::BASE_EN);
+        let spec = test_model_spec(&base, "en").expect("the base.en fixture");
+        assert_eq!(spec.model_sha256, fixtures::BASE_EN_SHA256);
+        assert!(spec.vad_path.ends_with("for-tests-silero-v6.2.0-ggml.bin"));
+        assert!(!spec.use_gpu);
+        assert_eq!(spec.n_threads, 0);
+        assert_eq!(model_id(&spec), "for-tests-ggml-base.en");
+        assert!(matches!(
+            test_model_spec(&base, "de"),
+            Err(DictationError::EnglishOnly { model }) if model == "for-tests-ggml-base.en"
+        ));
+        assert!(matches!(
+            test_model_spec(&base, "klingon"),
+            Err(DictationError::LanguageUnsupported { .. })
+        ));
+        assert!(test_model_spec(&fixture(fixtures::TINY), "de").is_ok());
+        // Not a model fixture; a fixture without its detector beside it.
+        assert!(matches!(
+            test_model_spec(&fixture(fixtures::JFK), "en"),
+            Err(DictationError::Internal(_))
+        ));
+        let dir = tempfile::tempdir().unwrap();
+        let alone = dir.path().join("for-tests-ggml-base.en.bin");
+        std::fs::copy(&base, &alone).unwrap();
+        assert!(matches!(
+            test_model_spec(&alone, "en"),
+            Err(DictationError::Internal(_))
+        ));
+        assert!(matches!(
+            test_model_spec(&dir.path().join("missing.bin"), "en"),
+            Err(DictationError::Internal(_))
+        ));
     }
 }

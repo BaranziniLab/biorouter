@@ -269,6 +269,7 @@ impl Worker {
                 vad_file: "for-tests-silero-v6.2.0-ggml.bin".into(),
                 use_gpu: false,
                 n_threads: 2,
+                warm_up: true,
             }),
             &[],
         );

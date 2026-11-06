@@ -1,19 +1,24 @@
 //! Local dictation in the host process: the one [`service::DictationService`] per
 //! `biorouterd` or interactive `biorouter`, which owns the supervisor of the engine's
-//! worker (`docs/dictation/engine-and-models.md`, "Supervisor and service API"), and
-//! [`paths`], the order in which the folders that may hold speech models are read.
+//! worker (`docs/dictation/engine-and-models.md`, "Supervisor and service API"),
+//! [`paths`], the order in which the folders that may hold speech models are read, and
+//! [`file`], which transcribes a whole recording (`biorouter transcribe`).
 //!
 //! The engine itself never runs here (DD-4): it runs in a worker process that the
 //! service starts from this binary with a hidden first argument. A build without the
 //! `local-dictation` feature still has this module; its status answers `no_engine` and
 //! every request answers [`MSG_NO_ENGINE`].
 
+pub mod file;
 pub mod paths;
 pub mod service;
 
 /// The catalog, the installer and the suitability rules, from the leaf crate, so a
-/// caller built without the engine reaches them too.
-pub use biorouter_dictation::{catalog, hardware, models};
+/// caller built without the engine reaches them too; the PCM helpers and the recognizer
+/// for `biorouter transcribe`.
+pub use biorouter_dictation::{audio, catalog, hardware, models, recognize};
+
+pub use file::{RecordingTimings, RecordingTranscript, TimedText};
 
 pub use biorouter_dictation::audio::{PcmSlice, Span};
 pub use biorouter_dictation::protocol::{Hello, Loaded, TranscribeResult};

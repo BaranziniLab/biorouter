@@ -1182,6 +1182,67 @@ PY
   log "native Windows smoke is newer than every draft asset upload"
 }
 
+# The dictation accuracy gate (O-22; docs/dictation/testing-and-release.md, "Release
+# guards and packaging checks"): a release is published only when a successful
+# `dictation-accuracy.yml` run named `Dictation accuracy v<version>` exists at its source
+# commit. Dispatch it on main once the draft is up:
+# `gh workflow run dictation-accuracy.yml --ref main -f version=<v>`.
+#
+# ⚠ Inert, with a warning, until the workflow has had its first green run. Before that no
+# run can vouch for a release, and the gate would only block; the workflow fails only on
+# a default model's floor, so its first success is the first green Tier 1 run on a
+# default model, and from then on a missing or red run blocks publication.
+#
+# ⚠ Both questions are asked of GitHub with its own filters, never of a window of recent
+# runs. "Armed" is "has this workflow EVER succeeded" (`--status success --limit 1`), so a
+# long red or cancelled streak, the moment accuracy has been broken longest, can never
+# disarm the gate again; and the release's run is looked up by its commit
+# (`--commit <source>`), so it is found however many runs came after it. An earlier
+# version read the 200 newest runs for both and failed open on exactly that streak.
+require_dictation_accuracy() {
+  local v="$1" manifest source_sha green_json runs_json verdict=0
+  manifest="$(release_provenance_file "$v")"
+  source_sha="$(release_provenance_value "$manifest" source_sha)"
+  green_json="$(mktemp)"
+  runs_json="$(mktemp)"
+  if ! gh run list --workflow dictation-accuracy.yml --status success --limit 1 \
+      --json databaseId >"$green_json" \
+    || ! gh run list --workflow dictation-accuracy.yml --status success --commit "$source_sha" \
+      --limit 100 --json displayTitle,conclusion,headSha,event,url >"$runs_json"; then
+    rm -f "$green_json" "$runs_json"
+    die "could not read the dictation accuracy workflow runs"
+  fi
+  python3 - "$green_json" "$runs_json" "$v" "$source_sha" <<'PY' || verdict=$?
+import json
+import sys
+
+green_path, runs_path, version, source_sha = sys.argv[1:]
+with open(green_path, encoding="utf-8") as handle:
+    green = json.load(handle)
+with open(runs_path, encoding="utf-8") as handle:
+    runs = json.load(handle)
+if not isinstance(green, list) or not isinstance(runs, list):
+    raise SystemExit("gh did not answer with a list of runs")
+if not green:
+    sys.exit(3)
+title = f"Dictation accuracy v{version}"
+if not any(
+    run.get("displayTitle") == title
+    and run.get("conclusion") == "success"
+    and run.get("headSha") == source_sha
+    and run.get("event") == "workflow_dispatch"
+    for run in runs
+):
+    raise SystemExit(f"no successful dispatched '{title}' run at source {source_sha}")
+PY
+  rm -f "$green_json" "$runs_json"
+  case "$verdict" in
+    0) log "dictation accuracy passed for v$v at the source commit" ;;
+    3) log "WARNING: the dictation accuracy gate is inert: dictation-accuracy.yml has had no green run yet, so nothing vouches for v$v's dictation accuracy" ;;
+    *) die "dictation accuracy has not passed for v$v at its source commit. Run: gh workflow run dictation-accuracy.yml --ref main -f version=$v, wait for it to pass, then publish again" ;;
+  esac
+}
+
 cmd_draft() {
   local v="$1"
   local notes="$ROOT/docs/releases/notes/v$v.md"
@@ -1231,6 +1292,7 @@ cmd_publish() {
   log "draft target is the source commit ($draft_target)"
   verify_remote_release_assets "$v"
   require_fresh_windows_smoke "$v" "$LATEST_DRAFT_ASSET_UPDATED_AT"
+  require_dictation_accuracy "$v"
   gh release edit "v$v" --draft=false
   log "published: $(gh release view "v$v" --json url --jq .url)"
   log "next: scripts/release.sh landing $v   (the public site still cites the previous release)"

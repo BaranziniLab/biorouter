@@ -9,7 +9,8 @@
 //! engine: the frame protocol ([`protocol`]), the PCM helpers and the segment planner
 //! ([`audio`]) and the [`supervisor`] that spawns, times and restarts the worker. The
 //! speech model catalog ([`catalog`]), the installer ([`models`]) and the suitability
-//! rules ([`hardware`]) build everywhere too.
+//! rules ([`hardware`]) build everywhere too, and so does [`recognize`], which decides
+//! what of the engine's output is speech.
 //!
 //! A leaf crate: no Biorouter dependency, and every path is an argument.
 
@@ -22,6 +23,7 @@ pub mod engine;
 pub mod hardware;
 pub mod models;
 pub mod protocol;
+pub mod recognize;
 pub mod supervisor;
 /// The worker's marker, roles and exit codes. Present in every build, so both `main()`
 /// functions can call `worker::run_if_invoked()` and the supervisor can read the exit

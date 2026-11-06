@@ -186,6 +186,9 @@ pub struct SupervisorConfig {
     pub deadlines: Deadlines,
     /// How many stderr lines are kept for `status --verbose`.
     pub stderr_lines: usize,
+    /// Whether every `load` ends with the encoder warm up (`Load::warm_up`). Off only for
+    /// a process that loads one model for one job, such as `biorouter transcribe`.
+    pub warm_up: bool,
 }
 
 impl Default for SupervisorConfig {
@@ -194,6 +197,7 @@ impl Default for SupervisorConfig {
             idle_unload: Duration::from_secs(300),
             deadlines: Deadlines::default(),
             stderr_lines: STDERR_LINES,
+            warm_up: true,
         }
     }
 }
@@ -227,7 +231,7 @@ impl LoadSpec {
             && self.use_gpu == other.use_gpu
     }
 
-    fn to_load(&self) -> Result<Load, SupervisorError> {
+    fn to_load(&self, warm_up: bool) -> Result<Load, SupervisorError> {
         let utf8 = |path: &std::path::Path| {
             path.to_str()
                 .map(str::to_string)
@@ -250,6 +254,7 @@ impl LoadSpec {
             vad_file: vad_file.to_string(),
             use_gpu: self.use_gpu,
             n_threads: self.n_threads,
+            warm_up,
         })
     }
 }
@@ -1407,7 +1412,7 @@ impl Actor {
     }
 
     fn send_load(&mut self, spec: Arc<LoadSpec>) {
-        let load = match spec.to_load() {
+        let load = match spec.to_load(self.config.warm_up) {
             Ok(load) => load,
             Err(error) => {
                 self.fail_spec(&spec, &error);
@@ -1893,7 +1898,12 @@ mod tests {
 
     fn record(log: &Mutex<Log>, message: &ToWorker) {
         let event = match message {
-            ToWorker::Load(load) => format!("load {} gpu={}", load.model_sha256, load.use_gpu),
+            ToWorker::Load(load) => format!(
+                "load {} gpu={}{}",
+                load.model_sha256,
+                load.use_gpu,
+                if load.warm_up { "" } else { " no-warm-up" }
+            ),
             ToWorker::Transcribe(t) => format!("transcribe {}", t.id),
             ToWorker::VadSegments(v) => format!("vad {}", v.id),
             ToWorker::Cancel { id } => format!("cancel {id}"),
@@ -2477,6 +2487,21 @@ mod tests {
             })
             .collect();
         assert_eq!(order, expected);
+    }
+
+    /// Every load asks for the warm up unless the supervisor was started for one job.
+    #[tokio::test(start_paused = true)]
+    async fn a_one_shot_supervisor_loads_without_the_warm_up() {
+        let (supervisor, log) = start(Script::default());
+        supervisor.prepare(model("aa", false)).await.expect("ready");
+        assert_eq!(events(&log), ["load aa gpu=false"]);
+        let one_shot = SupervisorConfig {
+            warm_up: false,
+            ..SupervisorConfig::default()
+        };
+        let (supervisor, log) = start_with(Script::default(), one_shot);
+        supervisor.prepare(model("bb", false)).await.expect("ready");
+        assert_eq!(events(&log), ["load bb gpu=false no-warm-up"]);
     }
 
     #[tokio::test(start_paused = true)]

@@ -1797,6 +1797,38 @@ enum Command {
         command: DictationCommand,
     },
 
+    /// Turn a recording into text on this computer, with the speech model dictation uses.
+    /// Reads WAV, AIFF, FLAC and MP3 (convert anything else with ffmpeg); nothing leaves
+    /// this computer.
+    /// Exit codes: 0 text, 1 failed, 2 declined to start, 3 nothing heard, 4 cancelled.
+    #[command(about = "Transcribe a recording on this computer")]
+    Transcribe {
+        /// The recording, or - to read it from standard input
+        #[arg(value_name = "FILE|-")]
+        input: String,
+
+        #[arg(
+            long = "format",
+            value_name = "FORMAT",
+            default_value = "text",
+            value_parser = clap::builder::PossibleValuesParser::new(["text", "json", "srt", "vtt"])
+        )]
+        format: String,
+
+        /// Write the transcript to FILE instead of standard output
+        #[arg(short, long, value_name = "FILE")]
+        output: Option<std::path::PathBuf>,
+
+        /// The language spoken: a two letter code such as en, or auto (default: the
+        /// language set for dictation, en unless changed)
+        #[arg(long, value_name = "LANGUAGE")]
+        language: Option<String>,
+
+        /// A speech model id from `biorouter dictation list` (default: the model in use)
+        #[arg(long, value_name = "MODEL")]
+        model: Option<String>,
+    },
+
     /// Manage personal knowledge bases (ingest, lint, query)
     #[command(about = "Manage personal knowledge bases", visible_alias = "kb")]
     Knowledge {
@@ -2072,6 +2104,7 @@ fn get_command_name(command: &Option<Command>) -> &'static str {
         Some(Command::Usage { .. }) => "usage",
         Some(Command::Models { .. }) => "models",
         Some(Command::Dictation { .. }) => "dictation",
+        Some(Command::Transcribe { .. }) => "transcribe",
         Some(Command::Knowledge { .. }) => "knowledge",
         Some(Command::Extension { .. }) => "extension",
         Some(Command::Skill { .. }) => "skill",
@@ -3295,6 +3328,24 @@ async fn dispatch(command: Option<Command>) -> anyhow::Result<()> {
                 crate::commands::dictation::handle_warm_up(&model).await
             }
         },
+        Some(Command::Transcribe {
+            input,
+            format,
+            output,
+            language,
+            model,
+        }) => {
+            crate::commands::transcribe::handle_transcribe(
+                crate::commands::transcribe::TranscribeArgs {
+                    input,
+                    format: crate::commands::transcribe::OutputFormat::parse(&format),
+                    output,
+                    language,
+                    model,
+                },
+            )
+            .await
+        }
         Some(Command::Knowledge { command }) => handle_knowledge_subcommand(command).await,
         Some(Command::Extension { command }) => handle_extension_subcommand(command).await,
         Some(Command::Skill { command }) => handle_skill_subcommand(command).await,

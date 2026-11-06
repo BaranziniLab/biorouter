@@ -274,6 +274,14 @@ impl Engine {
     /// Both paths must be absolute. Making a relative one absolute here would resolve it
     /// against the folder an earlier load moved to, so it is refused instead.
     pub fn load(o: &LoadOptions) -> Result<Engine, EngineError> {
+        Engine::load_with_warm_up(o, true)
+    }
+
+    /// [`Engine::load`], with the Metal encoder pass only when `warm_up` is true. A load
+    /// for one recording (`biorouter transcribe`, PR-12) skips it: on a warm Metal cache
+    /// it cost turbo 250 ms and saved the first decode 6 to 14 ms [M]. The detector's
+    /// warm up, which opens the integrated detector, always runs.
+    pub fn load_with_warm_up(o: &LoadOptions, warm_up: bool) -> Result<Engine, EngineError> {
         if !o.model_path.is_absolute() || !o.vad_path.is_absolute() {
             return Err(EngineError::RelativePath);
         }
@@ -354,7 +362,7 @@ impl Engine {
         let vad_on = vad_params();
         let c_vad = vad_on.to_c(&engine.vad_file);
         // On a CPU an encoder pass of a large model costs seconds, more than it saves.
-        let encoder = engine.backend == Backend::Metal;
+        let encoder = warm_up && engine.backend == Backend::Metal;
         // SAFETY: `ctx` is live and `c_vad` points into `engine.vad_file`.
         let rc = unsafe { ffi::br_warmup(engine.ctx, &c_vad, n_threads, encoder) };
         match rc {

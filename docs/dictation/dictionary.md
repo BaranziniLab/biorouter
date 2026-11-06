@@ -748,7 +748,8 @@ audio
  -> token prompt: top 30 written forms, <= 150 BPE tokens   recognize/prompt.rs, engine/bpe.rs
     decoder bonus: whole bias set                    engine/booster.rs
  -> greedy decode, timestamps on                     engine/mod.rs
- -> whole output filter, echo and collapse checks, at most one retry   recognize/echo.rs
+ -> echo, recital and collapse checks, at most one retry   recognize/echo.rs
+ -> whole output filter                              recognize/text.rs
  -> correction: aliases, exact keys, guarded fuzzy  recognize/correct.rs
  -> {text, raw_text, changes[], bias_scope, ...}
 ```
@@ -834,7 +835,7 @@ Every dictation request (DD-47); the full table with reasons is in [Engine and m
 
 Silero always on, on every surface (DD-48): threshold 0.50, minimum speech 250 ms, minimum silence 100 ms, `speech_pad_ms = 30`, and 0.3 s kept before the first and after the last segment. On 16 real gaps (10 of room tone and 6 where only the other party bleeds in, bracketed tags not counted), turbo's output fell from 15 or 16 of 16 to 1 of 16 with the detector, and small.en's from 2 to 8 of 16 to 0 of 16 [M]. No segments or an all zero buffer: nothing is inserted, and the transcript reports `no_speech`.
 
-A whole output filter in `recognize/echo.rs` runs after trimming punctuation and removes the output only when all of it is one of: a run of bracketed or parenthesized tags, `you`, `Thank you.`, `Thank you for watching!`, `Okay.`, `so`, `and`, `.`, `Grazie`, `Grazie a tutti`, `Sous-titrage Société Radio-Canada`, `Gracias por ver el video`, `Altyazı M.K.`. Parentheses inside real speech are never stripped.
+A whole output filter in `recognize/text.rs` runs after trimming punctuation and removes the output only when all of it is one of: a run of bracketed or parenthesized tags, `you`, `Thank you.`, `Thank you for watching!`, `Okay.`, `so`, `and`, `.`, `Grazie`, `Grazie a tutti`, `Sous-titrage Société Radio-Canada`, `Gracias por ver el video`, `Altyazı M.K.`. Parentheses inside real speech are never stripped.
 
 ### Echo, collapse and one retry
 
