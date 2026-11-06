@@ -9096,7 +9096,12 @@ impl Agent {
             working_dir: session.working_dir.clone(),
             tool_name: tool_call.name.to_string(),
         };
-        let inner = result.result;
+        // AO-12: a Crew person tool's host learns which tool call it serves.
+        let inner = crate::crew::tool_host::scope_tool_call_id(
+            tool_call.name.as_ref(),
+            &request_id,
+            result.result,
+        );
 
         // BR-58: the returned future is what `select_all` drives concurrently, so
         // this is the choke point that must bound total tool parallelism and
@@ -9824,12 +9829,23 @@ impl Agent {
         if matches!(audience, ToolAudience::Model) {
             match crate::crew::manager() {
                 Ok(crew) => {
+                    // AO-12: which Crew tools this chat is offered (a granted chat its two
+                    // worker tools, any other chat the person tools it may use), sampled once
+                    // for the whole list. Dispatch and the tool itself ask the same rule.
+                    let crew_tools = crate::agents::crew_extension::roster_standing(
+                        &crew,
+                        &self.extension_manager,
+                        session_id,
+                        &prefixed_tools,
+                    )
+                    .await;
                     let mut admitted = Vec::with_capacity(prefixed_tools.len());
                     for tool in prefixed_tools {
                         if crew
                             .authorize_session_tool(session_id, tool.name.as_ref())
                             .await
                             .is_ok()
+                            && crew_tools.is_none_or(|crew_tools| crew_tools.offers(&tool.name))
                         {
                             admitted.push(tool);
                         }

@@ -3417,9 +3417,13 @@ impl ExtensionManager {
     ) -> Result<ToolCallResult> {
         // Some models strip the tool prefix, so auto-add it for known code_execution tools.
         let prefixed_name = self.prefixed_tool_name(tool_call.name.as_ref()).await;
-        let crew = crate::crew::manager()?;
-        crew.authorize_session_tool(session_id, &prefixed_name)
-            .await?;
+        // Crew: a chat a grant restricts calls only its worker tools and the checklist (gate
+        // B-1), and a Crew tool a chat is not offered is refused here as well as left off its
+        // tool list (AO-12). This is the choke point every path shares: the agent loop,
+        // `POST /agent/call_tool`, a Code Execution script and the coding-agent bridge.
+        let crew =
+            crate::agents::crew_extension::authorize_dispatch(self, session_id, &prefixed_name)
+                .await?;
 
         // Dispatch tool call based on the prefix naming convention. The client
         // and the config that authorizes it come out of ONE snapshot — see

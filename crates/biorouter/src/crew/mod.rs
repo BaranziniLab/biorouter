@@ -56,6 +56,7 @@ mod server_access_tests;
 pub use credentials::CredentialStatus;
 pub mod refusal;
 pub mod source_line;
+pub mod tool_host;
 pub use institution::{refusal_details as institution_refusal_details, AFFILIATION_REFUSAL};
 pub use refusal::CrewRefusal;
 mod ssh_policy;
