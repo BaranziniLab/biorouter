@@ -1757,13 +1757,31 @@ fn sanitize_extra_args(extra: &str) -> Vec<String> {
     out
 }
 
+/// One client for every `/health` probe, built on first use. Building a reqwest client
+/// reads the platform's root certificates, which cost a median 141 ms per `status()` call
+/// when each probe built its own (measured from the dictation service's thread probe,
+/// 2026-11-06). The timeout is set per request, so callers keep their own bound. No
+/// connection is kept idle: a pooled connection belongs to the runtime that opened it,
+/// and this client outlives runtimes (every `#[tokio::test]` has its own); a loopback
+/// connect costs far less than the client build this saves.
+fn health_client() -> Option<&'static reqwest::Client> {
+    static CLIENT: OnceLock<Option<reqwest::Client>> = OnceLock::new();
+    CLIENT
+        .get_or_init(|| {
+            reqwest::Client::builder()
+                .pool_max_idle_per_host(0)
+                .build()
+                .ok()
+        })
+        .as_ref()
+}
+
 async fn health_ok(port: u16, timeout: Duration) -> bool {
     let url = format!("http://127.0.0.1:{port}/health");
-    let client = match reqwest::Client::builder().timeout(timeout).build() {
-        Ok(c) => c,
-        Err(_) => return false,
+    let Some(client) = health_client() else {
+        return false;
     };
-    matches!(client.get(&url).send().await, Ok(r) if r.status().is_success())
+    matches!(client.get(&url).timeout(timeout).send().await, Ok(r) if r.status().is_success())
 }
 
 fn port_in_use(port: u16) -> bool {
