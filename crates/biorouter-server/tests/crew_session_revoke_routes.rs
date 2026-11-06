@@ -456,7 +456,7 @@ async fn a_revoke_the_workspace_cannot_confirm_stops_the_grant_here_and_says_so(
         assert_eq!(body["code"], "crew_revocation_unconfirmed", "{body}");
         assert_eq!(
             body["error"],
-            "Stopped on this device. The workspace hasn't confirmed yet; Biorouter confirms it by itself when the connection is back.",
+            "Stopped on this computer. The workspace hasn't confirmed yet; Biorouter confirms it by itself when the connection is back.",
         );
         assert_eq!(body["session_id"], json!(chat));
         assert_eq!(body["run_id"], CHAT_RUN);

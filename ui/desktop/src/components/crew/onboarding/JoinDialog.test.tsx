@@ -5,7 +5,7 @@ import { CrewHttpError } from '../crewApi';
 import { CREW_INVITATION_INVALID } from '../api/errors';
 import type { CrewInvitationPreview } from '../api/join';
 import { INSTITUTION_ID_PATTERN } from '../identity';
-import { joinCopy, setupCopy } from './copy';
+import { fullAccessHost, joinCopy, setupCopy } from './copy';
 import { readJoinContext, resetJoinContextForTests } from './joinContext';
 import { resetMemberSetupRequestsForTests, takeMemberSetupRequest, type SetupRun } from './setup';
 import {
@@ -1332,6 +1332,26 @@ describe('JoinDialog sets Crew up in the account (OW-9)', () => {
     fireEvent.click(row);
     fireEvent.click(screen.getByRole('radio', { name: /^Off/ }));
     expect(screen.queryByTestId('crew-onboard-full-warning')).toBeNull();
+  });
+
+  it('adds the host’s sentence only when the invitation’s host is the account that joins', async () => {
+    // Bob joins Alice's workspace: the warning has no host sentence.
+    mocks.previewInvitation.mockResolvedValue(PREVIEW);
+    const first = renderDialog();
+    await paste();
+    await screen.findByTestId('crew-join-summary');
+    expect(screen.getByTestId('crew-onboard-full-warning')).not.toHaveTextContent(
+      /act as the host/
+    );
+    first.unmount();
+    // Alice adds another computer of her own: full access there reaches lab's own files.
+    mocks.previewInvitation.mockResolvedValue({ ...PREVIEW, invitee_username: 'alice' });
+    renderDialog();
+    await paste();
+    await screen.findByTestId('crew-join-summary');
+    const warning = screen.getByTestId('crew-onboard-full-warning');
+    expect(warning).toHaveTextContent(joinCopy.fullWarning('alice', 'hpc.ucsf.edu'));
+    expect(warning).toHaveTextContent(fullAccessHost('lab'));
   });
 
   it('saves As me with a folder typed as full access, and needs no setup for it', async () => {

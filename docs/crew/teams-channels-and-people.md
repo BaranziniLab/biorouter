@@ -113,7 +113,7 @@ The channel name opens the channel menu. It has **Mark as read**, **Refresh chan
 | Tab | What it holds |
 |---|---|
 | **About** | Name, who can read it, owner, creator and team. Whoever may manage the channel also sees **Rename…** and **Archive channel…**, and **Delete channel…** where they may delete it. The owner also sees **Transfer ownership…**. |
-| **Members** | The channel's members, not the team's, with a dot after each person who is online. A person's **⋯** menu has **Copy username**, **Remove from #{channel}…** for whoever may manage the channel, and **Make owner…** for the owner. |
+| **Members** | The channel's members, not the team's, with a dot after each person who is online. Someone who left the workspace keeps a row marked "former member", but the count at the top, such as "3 members", counts only people who are members now, as the channel header does. A person's **⋯** menu has **Copy username**, **Remove from #{channel}…** for whoever may manage the channel, and **Make owner…** for the owner. |
 | **Files**, **Agent access** | Shared files, and your own chats and tasks that can post here. |
 
 ### Rename a team or channel

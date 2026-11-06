@@ -34,10 +34,10 @@ const RESTART_FOR_NAMES: &str = "Restart the shared Biorouter daemon to use name
 /// The same, for the invitation and device-code routes.
 const RESTART_FOR_JOINING: &str =
     "Restart the shared Biorouter daemon to invite or join with an invitation.";
-/// A revoke that stopped the grant on this device but that the workspace has not confirmed. It
+/// A revoke that stopped the grant on this computer but that the workspace has not confirmed. It
 /// is not a success, so the command exits non-zero (RV-D1). The daemon asks the workspace
 /// again by itself whenever the connection is back (F3), so no second command is needed.
-const STOPPED_ON_THIS_DEVICE: &str = "Stopped on this device. The workspace hasn't confirmed the revocation yet; Biorouter confirms it with the workspace by itself when the connection is back. biorouter crew grants list shows when it has.";
+const STOPPED_ON_THIS_COMPUTER: &str = "Stopped on this computer. The workspace hasn't confirmed the revocation yet; Biorouter confirms it with the workspace by itself when the connection is back. biorouter crew grants list shows when it has.";
 /// The same, for setting Crew up on a server (`/crew/setup`, design OW-9).
 const RESTART_FOR_SETUP: &str = "Restart the shared Biorouter daemon to set up Crew on a server.";
 /// The same, for deleting a workspace (`…/workspace/delete`, OW-5).
@@ -489,6 +489,7 @@ async fn execute(options: CrewOptions, sent: Arc<AtomicBool>) -> Result<()> {
         setup_poll: SETUP_POLL,
         connection_id: tokio::sync::OnceCell::new(),
         channel_labels: std::sync::Mutex::default(),
+        printed: Printed::Terminal,
     };
     let reply = match run(&api, command).await {
         Ok(reply) => reply,
@@ -1247,9 +1248,30 @@ struct Api {
     /// Each channel a selector named, by ID, as the resolver labelled it (`#methods`): what a
     /// refusal about that channel names.
     channel_labels: std::sync::Mutex<std::collections::HashMap<String, String>>,
+    /// Where a streamed command's text lines go ([`Self::print`]).
+    printed: Printed,
+}
+
+/// Where a streamed command's text lines go: standard output, or in tests a list the test reads.
+enum Printed {
+    Terminal,
+    #[cfg(test)]
+    Kept(std::sync::Mutex<Vec<String>>),
 }
 
 impl Api {
+    /// Print text lines of a streamed command as it goes ([`Printed`]).
+    fn print(&self, lines: &[String]) -> Result<()> {
+        match &self.printed {
+            Printed::Terminal => print_lines(lines),
+            #[cfg(test)]
+            Printed::Kept(kept) => {
+                kept.lock().expect("printed lines").extend_from_slice(lines);
+                Ok(())
+            }
+        }
+    }
+
     fn with_expected_mode(&self, body: Value) -> Value {
         add_expected_mode(body, self.expected_mode)
     }
@@ -1307,7 +1329,7 @@ impl Api {
     /// Print one step of a streamed command: sentences in text, the value as a JSON line.
     fn stream(&self, value: &Value, lines: &[String]) -> Result<()> {
         match self.format {
-            OutputFormat::Text => print_lines(lines),
+            OutputFormat::Text => self.print(lines),
             OutputFormat::Json | OutputFormat::StreamJson => {
                 emit(value, output::stream_format(self.format))
             }
@@ -1398,13 +1420,28 @@ impl Api {
 
     /// The workspace `connection` reaches, named for a sentence, when the person's account hosts
     /// it: as `listing` (a setup check job's list of the server's workspaces, or `Value::Null`)
-    /// says, else as the person's own snapshot says, which only a connected connection is asked
-    /// for. `None` when the account does not host it, or nothing can say so; the full-access
-    /// warning then leaves the host's sentence out, as the desktop's does without a snapshot.
+    /// says when that job checked this connection's own login, else as the person's own snapshot
+    /// says, which only a connected connection is asked for. `None` when the account does not
+    /// host it, or nothing can say so; the full-access warning then leaves the host's sentence
+    /// out, as the desktop's does without a snapshot.
+    ///
+    /// A listing names the place of the account it checked, and `open` may go on with a saved
+    /// connection of another login on the same server (the daemon prefers a connected one), so
+    /// its role is that connection's only when the logins agree.
     async fn hosted_workspace(&self, connection: &Value, listing: &Value) -> Option<String> {
         let name = name_text(&connection_name(connection));
         let workspace = connection["workspace_id"].as_str();
-        let listed = output::listed_role(listing, workspace);
+        let listed = output::listed_role(listing, workspace).filter(|_| {
+            let login = |value: &Value| {
+                value
+                    .as_str()
+                    .map(str::trim)
+                    .filter(|login| !login.is_empty())
+                    .map(str::to_owned)
+            };
+            let checked = login(&listing["server"]["login"]);
+            checked.is_some() && checked == login(&connection["ssh_target"])
+        });
         if listed.is_some() {
             return (listed.as_deref() == Some("host")).then_some(name);
         }
@@ -4132,7 +4169,7 @@ async fn member_setup(
     if api.text() && level == Some(AgentAccess::Full) {
         let hosted = api.hosted_workspace(&connection, listing).await;
         if let Some(notice) = full_access_notice(access, level, &connection, hosted.as_deref()) {
-            print_lines(&[notice])?;
+            api.print(&[notice])?;
         }
     }
     let (status, mut lines) = run_setup(api, request, &login, listing, interrupt).await?;
@@ -6247,11 +6284,11 @@ fn revoke_confirmation(
             Ok(Confirmation::Confirmed)
         }
         None if interactive => Ok(Confirmation::Ask(format!(
-            "Revoke {label}? Their membership, devices and agent grants stop working. Type @{} to confirm:",
+            "Revoke {label}? Their membership, computers and agent grants stop working. Type @{} to confirm:",
             safe_text(username)
         ))),
         None => Err(needs_a_terminal(format!(
-            "Revoking @{username} removes their membership, devices and agent grants. There is no terminal to ask in, so confirm with --confirm @{username}."
+            "Revoking @{username} removes their membership, computers and agent grants. There is no terminal to ask in, so confirm with --confirm @{username}."
         ))),
     }
 }
@@ -6281,7 +6318,7 @@ async fn revoke_member(api: &Api, member: &str, confirm: Option<&str>) -> Result
     Ok(api.say(
         result,
         vec![format!(
-            "Revoked {label}. Their membership, devices and agent grants no longer work."
+            "Revoked {label}. Their membership, computers and agent grants no longer work."
         )],
     ))
 }
@@ -8168,7 +8205,7 @@ async fn task(api: &Api, id: &str) -> Result<Value> {
         .iter()
         .find(|run| run["run_id"].as_str() == Some(id))
         .cloned()
-        .context("Task was not found on this device and connection")
+        .context("Task was not found on this computer and connection")
 }
 
 async fn watch_task(api: &Api, id: &str) -> Result<Reply> {
@@ -8435,9 +8472,10 @@ async fn revoke_grant(api: &Api, session: &str) -> Result<Reply> {
             Some(Refusal {
                 status: 503,
                 code: Some(code),
-            }) if code == "crew_revocation_unconfirmed" => {
-                restated(STOPPED_ON_THIS_DEVICE, Some("crew_revocation_unconfirmed"))
-            }
+            }) if code == "crew_revocation_unconfirmed" => restated(
+                STOPPED_ON_THIS_COMPUTER,
+                Some("crew_revocation_unconfirmed"),
+            ),
             _ => error,
         })?;
     let lines = revoked_lines(session, &answer)?;
@@ -8449,7 +8487,7 @@ fn revoked_lines(session: &str, answer: &Value) -> Result<Vec<String>> {
     let confirmed = answer["remote_revocation_confirmed"].as_bool() != Some(false);
     if revoked && !confirmed {
         return Err(restated(
-            STOPPED_ON_THIS_DEVICE,
+            STOPPED_ON_THIS_COMPUTER,
             Some("crew_revocation_unconfirmed"),
         ));
     }
@@ -8918,8 +8956,17 @@ mod tests {
             setup_poll: Duration::ZERO,
             connection_id: tokio::sync::OnceCell::new(),
             channel_labels: std::sync::Mutex::default(),
+            printed: Printed::Kept(Mutex::default()),
         };
         (api, fake)
+    }
+
+    /// The text lines a command streamed so far ([`Api::print`]).
+    fn printed(api: &Api) -> Vec<String> {
+        match &api.printed {
+            Printed::Kept(kept) => kept.lock().expect("printed lines").clone(),
+            Printed::Terminal => Vec::new(),
+        }
     }
 
     fn said(reply: Reply) -> Vec<String> {
@@ -9330,7 +9377,7 @@ mod tests {
         let error = run(&api, revoke_command())
             .await
             .expect_err("a 503 is not success");
-        assert!(message(&error).starts_with("Stopped on this device."));
+        assert!(message(&error).starts_with("Stopped on this computer."));
         assert_eq!(
             error_code(&error).as_deref(),
             Some("crew_revocation_unconfirmed")
@@ -9358,7 +9405,7 @@ mod tests {
             )
         });
         let error = run(&api, revoke_command()).await.expect_err("unconfirmed");
-        assert!(message(&error).starts_with("Stopped on this device."));
+        assert!(message(&error).starts_with("Stopped on this computer."));
 
         let (api, _) = revoke_with(|| Ok(json!({})));
         let error = run(&api, revoke_command()).await.expect_err("not revoked");
@@ -9427,13 +9474,13 @@ mod tests {
         );
         assert_eq!(
             lines,
-            ["Revoked \"Bob Lee\" (@bob). Their membership, devices and agent grants no longer work."]
+            ["Revoked \"Bob Lee\" (@bob). Their membership, computers and agent grants no longer work."]
         );
 
         assert_eq!(
             revoke_confirmation("bob", "Bob Lee (@bob)", None, true).expect("asks"),
             Confirmation::Ask(
-                "Revoke Bob Lee (@bob)? Their membership, devices and agent grants stop working. Type @bob to confirm:".into()
+                "Revoke Bob Lee (@bob)? Their membership, computers and agent grants stop working. Type @bob to confirm:".into()
             )
         );
         assert_eq!(
@@ -10645,7 +10692,7 @@ mod tests {
                 ("POST", true) => Err(refuse(
                     409,
                     Some("crew_join_code_mismatch"),
-                    "The host hasn't let this device in.",
+                    "The host hasn't let this computer in.",
                 )),
                 _ => standard(method, path, body),
             }
@@ -13095,7 +13142,7 @@ mod tests {
                 .expect("hosting is always mentioned");
             assert_eq!(
                 notice,
-                "You host lab. Its host controls continue only if one of your other enrolled computers still has lab saved:\n  3F2A 9C1E 77B0 D4E1 · added Sep 23, 2026 · via invitation code\nA computer stays on this list after its connection is removed there. If none of them still has lab saved, removing it here ends the host controls for good."
+                "You host lab. Its host controls continue only if one of your other enrolled computers still has lab saved:\n  3F2A 9C1E 77B0 D4E1 · added Sep 23, 2026 · with an invitation\nA computer stays on this list after its connection is removed there. If none of them still has lab saved, removing it here ends the host controls for good."
             );
             assert!(!notice.contains("70DC"), "{notice}");
         }
@@ -16228,6 +16275,151 @@ mod tests {
         assert!(message(&error).contains("takes no --connection"));
     }
 
+    /// The canonical full-access words (W1) and host clause (W2), for `running-lab`, as written.
+    const CANONICAL_W1: &str = "Crew treats anything running as your account as you, so your agent can also add a computer to your account and post in Crew as you, with no agent mark.";
+    const CANONICAL_W2_RUNNING_LAB: &str = "You host running-lab from this account, so your agent can also read the workspace's own files on the server, including channels you're not in. It can also act as the host of running-lab.";
+
+    /// `open running-lab --server wanjun@leo --agent-access full`'s daemon: its check lists
+    /// running-lab with the account's place in it as `role`. With `saved_login`, this computer
+    /// already has running-lab saved as that login's connection, which the listing names; with
+    /// none, open saves it with the login it checked. The connection's own snapshot says its
+    /// account hosts running-lab when `hosts`.
+    fn full_access_open_daemon(
+        role: &'static str,
+        saved_login: Option<&'static str>,
+        hosts: bool,
+    ) -> impl Fn(&str, &str, Option<&Value>) -> Result<Value> {
+        let mut listed = leo_workspaces();
+        listed[1]["role"] = json!(role);
+        if saved_login.is_some() {
+            listed[1]["saved_connection_id"] = json!(SAVED);
+            listed[1]["this_computer"] = json!("connected");
+        }
+        let listing = listing_daemon(listed);
+        let saved = json!({"id": SAVED, "name": "running-lab",
+            "ssh_target": saved_login.unwrap_or("wanjun@leo"), "workspace_id": RUNNING_ID,
+            "status": "connected", "public_key": "pk", "remote_root": "/home/crew-work/lab"});
+        move |method: &str, path: &str, body: Option<&Value>| {
+            let own = format!("/crew/connections/{SAVED}");
+            match (method, path) {
+                ("POST", "/crew/connections/from-invitation") => {
+                    assert!(
+                        saved_login.is_none(),
+                        "a saved connection is not saved again"
+                    );
+                    Ok(json!({"connection": saved.clone()}))
+                }
+                ("GET", "/crew/connections") => {
+                    let mut listed = standard(method, path, body)?;
+                    listed["connections"]
+                        .as_array_mut()
+                        .expect("connections")
+                        .push(saved.clone());
+                    Ok(listed)
+                }
+                ("POST", path)
+                    if path == format!("{own}/request")
+                        && body.is_some_and(|body| body["method"] == "workspace.snapshot") =>
+                {
+                    let mut snapshot = snapshot();
+                    if !hosts {
+                        snapshot["workspace"]["host_uid"] = json!(1001);
+                    }
+                    Ok(snapshot)
+                }
+                ("GET", path) if path == format!("{own}/join") => Ok(
+                    json!({"status": "joined", "workspace_name": "running-lab", "add_device": false}),
+                ),
+                _ => listing(method, path, body),
+            }
+        }
+    }
+
+    /// Runs `open running-lab --agent-access full` on `daemon` and answers what it printed and
+    /// the member setup it asked for.
+    async fn open_with_full_access(
+        daemon: impl Fn(&str, &str, Option<&Value>) -> Result<Value> + Send + Sync + 'static,
+    ) -> (Vec<String>, Value) {
+        let (api, fake) = api_with(OutputFormat::Text, daemon);
+        let mut args = open_args("running-lab");
+        args.agent_access = Some(AgentAccess::Full);
+        open(&api, args, std::future::pending())
+            .await
+            .expect("opened");
+        let member = setup_requests(&fake)
+            .into_iter()
+            .find(|request| request["intent"] == "member")
+            .expect("a member setup");
+        (printed(&api), member)
+    }
+
+    /// W1, W2 (review of 2026-11): `open --agent-access full` warns before its member setup, and
+    /// on the account that hosts the workspace the warning says what the host's account adds.
+    /// The check's listing says so for the login it checked, without asking the workspace: here
+    /// the snapshot would say otherwise, so only the listing can have named the host.
+    #[tokio::test]
+    async fn open_with_full_access_on_the_hosts_account_warns_as_its_host() {
+        let (shown, member) =
+            open_with_full_access(full_access_open_daemon("host", None, false)).await;
+        assert_eq!(
+            member,
+            json!({"target": {"kind": "connection", "connection_id": SAVED}, "intent": "member", "agent_access": "full"})
+        );
+        let notice = shown
+            .iter()
+            .find(|line| line.starts_with("Setup lets your agent work as you on "))
+            .unwrap_or_else(|| panic!("no full-access notice: {shown:#?}"));
+        assert!(
+            notice.ends_with(&format!(
+                " {CANONICAL_W1} {CANONICAL_W2_RUNNING_LAB} Public models never get this access."
+            )),
+            "{notice}"
+        );
+    }
+
+    /// The review's finding on `Api::hosted_workspace`: `open` goes on with the connection this
+    /// computer already has saved, which may be another login's on the same server, and the
+    /// listing names the place of the account it checked. The warning follows the connection
+    /// that gets full access, from that account's own snapshot: the host's clause is said when
+    /// that account hosts the workspace although the checked one is a member, and left out when
+    /// it does not although the checked one hosts it.
+    #[tokio::test]
+    async fn open_with_full_access_through_another_logins_connection_asks_that_account() {
+        let (shown, member) = open_with_full_access(full_access_open_daemon(
+            "member",
+            Some("gbellucci@leo"),
+            true,
+        ))
+        .await;
+        assert_eq!(member["target"]["connection_id"], SAVED);
+        let notice = shown
+            .iter()
+            .find(|line| line.contains(CANONICAL_W1))
+            .unwrap_or_else(|| panic!("no full-access notice: {shown:#?}"));
+        assert!(
+            notice.contains(&format!("{CANONICAL_W1} {CANONICAL_W2_RUNNING_LAB}")),
+            "{notice}"
+        );
+
+        let (shown, _) = open_with_full_access(full_access_open_daemon(
+            "host",
+            Some("gbellucci@leo"),
+            false,
+        ))
+        .await;
+        let notice = shown
+            .iter()
+            .find(|line| line.contains(CANONICAL_W1))
+            .unwrap_or_else(|| panic!("no full-access notice: {shown:#?}"));
+        assert!(!notice.contains("You host"), "{notice}");
+        assert!(
+            notice.ends_with(&format!(
+                " {CANONICAL_W1} Public models never get this access."
+            )),
+            "{notice}"
+        );
+    }
+
     /// AO-9: join on a server whose Crew knows the account joins on `ready` with the claim an
     /// approved code takes, and `removed` ends the command with AO-2's sentence and its code.
     #[tokio::test]
@@ -16448,12 +16640,12 @@ mod tests {
         assert_eq!(lines[0], "Computers enrolled as you in lab:");
         assert!(
             lines[1].starts_with("  70DC FFAF 1751 A59B · added ")
-                && lines[1].ends_with(" · via workspace setup · This computer"),
+                && lines[1].ends_with(" · when the workspace was created · This computer"),
             "{lines:?}"
         );
         assert!(
             lines[2].starts_with("  3F2A 9C1E 77B0 D4E1 · added ")
-                && lines[2].ends_with(" · via account sign-in · new"),
+                && lines[2].ends_with(" · by signing in to the server · new"),
             "{lines:?}"
         );
         assert!(lines[3].starts_with("1 computer was added since you last looked. If one isn't yours, take its SSH access to the server away first"), "{lines:?}");
@@ -16480,12 +16672,13 @@ mod tests {
 
         let (api, _) = api_with(OutputFormat::Text, devices_daemon);
         let shown = said(run(&api, CrewCommand::Status).await.expect("status")).join("\n");
+        // C2: in the desktop notice's words (`newDevicesCopy.one`), then the command that checks.
         assert!(
-            shown.contains("  New computer on your account: 3F2A 9C1E 77B0 D4E1 · added "),
+            shown.contains("  New computer on your account: 3F2A 9C1E 77B0 D4E1, added "),
             "{shown}"
         );
         assert!(
-            shown.contains(" · via account sign-in. Check it with biorouter crew --connection 'UCSF HPC' profile devices."),
+            shown.contains(", 2026 by signing in to the server. Check it with biorouter crew --connection 'UCSF HPC' profile devices."),
             "{shown}"
         );
 
@@ -16501,7 +16694,7 @@ mod tests {
         let (api, _) = api_with(OutputFormat::Text, disconnected);
         let shown = said(run(&api, CrewCommand::Status).await.expect("status")).join("\n");
         assert!(
-            shown.contains(" · via account sign-in. Connect with biorouter crew --connection 'UCSF HPC' connect, then check it with biorouter crew --connection 'UCSF HPC' profile devices."),
+            shown.contains(", 2026 by signing in to the server. Connect with biorouter crew --connection 'UCSF HPC' connect, then check it with biorouter crew --connection 'UCSF HPC' profile devices."),
             "{shown}"
         );
     }
@@ -16550,7 +16743,7 @@ mod tests {
         assert_eq!(
             lines,
             [
-                "Revoked this computer's device for lab.",
+                "Revoked this computer. It can no longer use lab as you.",
                 "Add this computer again with biorouter crew rejoin."
             ]
         );

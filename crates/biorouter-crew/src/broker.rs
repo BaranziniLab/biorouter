@@ -6833,7 +6833,7 @@ fn relay(
 /// the account and revoking one (account ownership, Security position).
 const JOB_REFUSED_METHODS: [&str; 2] = ["auth.account", "device.revoke"];
 /// What such a bridge answers them, under the code `agent_session_refused`.
-const AGENT_SESSION_REFUSED: &str = "agent_session_refused: An agent's job on the server cannot add or remove your devices. Do this from Biorouter on your computer.";
+const AGENT_SESSION_REFUSED: &str = "agent_session_refused: An agent's job on the server cannot add or remove your computers. Do this from Biorouter on your computer.";
 /// [`relay`] for a bridge that may run inside a full-access job (`inside_job`, from the mark
 /// the job supervisor puts in each job's environment). Such a bridge answers
 /// [`JOB_REFUSED_METHODS`] itself with [`AGENT_SESSION_REFUSED`] and never forwards them. This

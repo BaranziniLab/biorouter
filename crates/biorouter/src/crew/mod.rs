@@ -685,9 +685,9 @@ const GRANT_GONE: &str =
     "This chat's Crew access is no longer available. Start a new chat, or grant access again from Crew.";
 /// The chat's identity could not be read, so its grant can be neither trusted nor dropped.
 const GRANT_UNCONFIRMED: &str =
-    "Couldn't confirm this chat's Crew access on this device. Try again in a moment.";
+    "Couldn't confirm this chat's Crew access on this computer. Try again in a moment.";
 /// A grant asked for a chat that is not saved on this device (`--no-session`, or gone).
-const UNSAVED_CHAT: &str = "Crew can only grant access to a chat saved on this device. Start a saved chat, then grant it access from Crew.";
+const UNSAVED_CHAT: &str = "Crew can only grant access to a chat saved on this computer. Start a saved chat, then grant it access from Crew.";
 /// A grant asked for a chat whose id a chat saved in another Biorouter data folder on this
 /// computer also has, and that chat holds Crew access (CROSSCUT-8). One grant is kept per id,
 /// so granting this chat would take that chat's grant away.
@@ -1165,7 +1165,7 @@ pub struct GrantRow {
     pub source_channels: Vec<String>,
     /// The connection's policy epoch when the grant was made.
     pub policy_epoch: u64,
-    /// Stopped on this device: revoked, ended, or its connection was removed.
+    /// Stopped on this computer: revoked, ended, or its connection was removed.
     pub expired: bool,
     /// When the workspace ends the grant on its own, in Unix seconds; `null` for a grant
     /// recorded before that was kept.
@@ -5570,7 +5570,7 @@ impl CrewManager {
             })
             .await
             .map_err(|error| {
-                error.context("Couldn't save the revocation on this device; retry to finish it")
+                error.context("Couldn't save the revocation on this computer; retry to finish it")
             })??;
         self.forget_run_reads(session);
         self.forget_live_admission(session);
@@ -10939,7 +10939,7 @@ done
             .unwrap_err();
         assert_eq!(
             error.to_string(),
-            "Couldn't save the revocation on this device; retry to finish it"
+            "Couldn't save the revocation on this computer; retry to finish it"
         );
         assert!(manager.registry.lock().await.scopes["worker-race-session"].expired);
         assert_eq!(
@@ -12594,6 +12594,19 @@ done
         manager.disconnect(connection_id).await?;
         let _ = fs::remove_dir_all(root);
         Ok(())
+    }
+
+    /// C1: a person's machine is "this computer" in every sentence a grant refusal says.
+    #[test]
+    fn grant_refusals_call_the_persons_machine_this_computer() {
+        assert_eq!(
+            GRANT_UNCONFIRMED,
+            "Couldn't confirm this chat's Crew access on this computer. Try again in a moment."
+        );
+        assert_eq!(
+            UNSAVED_CHAT,
+            "Crew can only grant access to a chat saved on this computer. Start a saved chat, then grant it access from Crew."
+        );
     }
 
     /// A workspace, a connection to it and a manager with a live transport, for driving a grant

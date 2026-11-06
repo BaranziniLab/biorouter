@@ -650,7 +650,7 @@ pub(super) fn profile_revoke_device(ctx: &Ctx) -> BoxFuture<'_, Result<Value>> {
         if fingerprint.is_some() == this_device {
             return Err(said(
                 None,
-                "Name one device: its fingerprint, or this_device.",
+                "Name one computer: its fingerprint, or this_device.",
             ));
         }
         let target = target(ctx).await?;
@@ -715,8 +715,10 @@ const TAKES_BACK_GRANT: &str = "Crew access";
 /// A chat as `biorouter crew grants list` names it (`person_read_row`), mid-sentence:
 /// `chat "Counts" (chat 20260924_2)`, or `chat 20260924_2` when it has no title. A title is
 /// the person's or a model's text, so it is quoted with its quotes and backslashes escaped and
-/// any control or direction character spelled out, so it cannot add a line to a card, and it
-/// is isolated when it could hold right-to-left text, so it cannot reorder the words around it.
+/// any control or invisible formatting character (direction marks, zero-width characters, tag
+/// characters: [`biorouter::utils::is_invisible_formatting`], as the CLI's `quoted_name`
+/// escapes them) spelled out, so it cannot add a line to a card or hide text in one, and it is
+/// isolated when it could hold right-to-left text, so it cannot reorder the words around it.
 pub(super) fn chat_named(title: Option<&str>, session: &str) -> String {
     match title.filter(|title| !title.trim().is_empty()) {
         Some(title) => format!("chat {} (chat {session})", quoted_title(title)),
@@ -725,12 +727,13 @@ pub(super) fn chat_named(title: Option<&str>, session: &str) -> String {
 }
 
 fn quoted_title(title: &str) -> String {
+    let chars: Vec<char> = title.chars().collect();
     let mut text = String::with_capacity(title.len());
-    for ch in title.chars() {
+    for (index, &ch) in chars.iter().enumerate() {
         if matches!(ch, '"' | '\\') {
             text.push('\\');
             text.push(ch);
-        } else if ch.is_control() || direction_mark(ch) {
+        } else if unseen(ch) && !joins_visible_text(&chars, index) {
             text.extend(ch.escape_default());
         } else {
             text.push(ch);
@@ -743,13 +746,23 @@ fn quoted_title(title: &str) -> String {
     }
 }
 
-/// A character that changes the direction text around it is shown in, which a title must not
-/// carry into a card unescaped.
-fn direction_mark(ch: char) -> bool {
-    matches!(
-        ch,
-        '\u{061c}' | '\u{200e}' | '\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}'
-    )
+/// A character a title must not carry into a card as itself: a control character, or one a
+/// reader cannot see but a renderer still acts on.
+fn unseen(ch: char) -> bool {
+    ch.is_control() || biorouter::utils::is_invisible_formatting(ch)
+}
+
+/// Whether `chars[index]` is a zero-width joiner or non-joiner between two visible non-ASCII
+/// characters, where it is part of the text a person sees (an emoji sequence, Persian, an Indic
+/// script), so it is kept as the CLI keeps it (`joins_visible_text`). Anywhere else it joins
+/// nothing visible and is spelled out.
+fn joins_visible_text(chars: &[char], index: usize) -> bool {
+    let visible = |ch: Option<&char>| {
+        ch.is_some_and(|&ch| !ch.is_ascii() && !ch.is_whitespace() && !unseen(ch))
+    };
+    matches!(chars[index], '\u{200c}' | '\u{200d}')
+        && visible(index.checked_sub(1).and_then(|at| chars.get(at)))
+        && visible(chars.get(index + 1))
 }
 
 /// `biorouter crew grants revoke SESSION [--reads]` (AO-12): take back a chat's Crew access

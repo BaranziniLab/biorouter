@@ -42,19 +42,38 @@ export const versionCopy = {
   dismiss: 'Dismiss',
 } as const;
 
+/**
+ * How a computer was added to the account (the device's `added_via`), as a clause after "added",
+ * in the new-computer notice and in Keys alike, as `biorouter crew status` and `profile devices`
+ * say it. A value this build does not know has no clause.
+ */
+export const addedViaCopy: Record<string, string> = {
+  bootstrap: 'when the workspace was created',
+  token: 'with an invitation token',
+  invitation_code: 'with an invitation',
+  /** A computer that signed in to the server as the account (account ownership AO-2). */
+  account: 'by signing in to the server',
+};
+
+/** The clause for `via`, or null for none or one this build does not know. */
+export function addedViaText(via: string | null | undefined): string | null {
+  return via && Object.prototype.hasOwnProperty.call(addedViaCopy, via) ? addedViaCopy[via] : null;
+}
+
 export const newDevicesCopy = {
   /**
    * AO-10: from the daemon's `new_devices`, until acknowledged. One computer, named by the
    * fingerprint Keys lists it under and marks New, as `biorouter crew status` names it ("New
-   * computer on your account: …"). `when` is a calendar date.
+   * computer on your account: …, added … by signing in to the server."). `when` is a calendar
+   * date; `via` is how it was added (`addedViaText`).
    */
-  one: (fingerprint: string, when: string | null) =>
-    when
-      ? `New computer on your account: ${fingerprint}, added ${when}.`
-      : `New computer on your account: ${fingerprint}.`,
+  one: (fingerprint: string, when: string | null, via: string | null = null) => {
+    const added = [when, via].filter(Boolean).join(' ');
+    return added
+      ? `New computer on your account: ${fingerprint}, added ${added}.`
+      : `New computer on your account: ${fingerprint}.`;
+  },
   many: (count: number) => `${count} new computers on your account.`,
-  /** How it was added, after the sentence. */
-  viaAccount: 'It signed in to the server as you.',
   review: 'Review',
   reviewName: 'Review computers',
   acknowledge: 'Acknowledge',

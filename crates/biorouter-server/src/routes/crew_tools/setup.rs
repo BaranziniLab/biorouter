@@ -18,6 +18,8 @@ use biorouter::crew::{
 };
 use futures::future::BoxFuture;
 use serde_json::{json, Value};
+use std::future::Future;
+use std::time::Duration;
 
 use super::{catalog, job_answer, job_target, remember_job_target, said, Card, Ctx, Progress};
 use crate::routes::crew::connection_view;
@@ -464,10 +466,20 @@ fn restart_line(workspace: &SetupWorkspace, restart: bool) -> String {
     }
 }
 
+/// What every full-access card says (OW-6, AO-1), wherever full access is given or offered: to
+/// Crew, anything running as the account is the person. The CLI's `FULL_ACCESS_IS_YOU` and the
+/// desktop's full-access warning say it in these words.
+pub(super) const FULL_ACCESS_IS_YOU: &str = "Crew treats anything running as your account as you, so your agent can also add a computer to your account and post in Crew as you, with no agent mark.";
+
+/// How long a card waits for the person's own snapshot to say whether the account hosts the
+/// workspace, as the CLI's listing waits (`LISTING_WAIT`), so a workspace that doesn't answer
+/// cannot hold the card back.
+pub(super) const HOST_LOOKUP_WAIT: Duration = Duration::from_secs(10);
+
 fn access_line(access: Option<&str>, server: &str) -> Option<String> {
     match access? {
         "full" => Some(format!(
-            "Agents get full access: they can run any command as you on {server}, read and change any file your account can, and use the network. Crew treats anything running as your account as you, so they can also add a computer to your account and post in Crew as you, with no agent mark."
+            "Agents get full access: they can run any command as you on {server}, read and change any file your account can, and use the network. {FULL_ACCESS_IS_YOU}"
         )),
         "folder" => Some(format!(
             "Agents get a work folder on {server}, confined to that folder."
@@ -476,22 +488,40 @@ fn access_line(access: Option<&str>, server: &str) -> Option<String> {
     }
 }
 
-/// What full access means when the account hosts `workspace`, said after [`access_line`] in the
-/// words the desktop's full-access warning uses for a host (`fullWarningHost`): Crew treats
-/// anything running as the account as the account, and the account is the host, so agents can
-/// act as the host too. `None` for any other access.
+/// What full access means when the account hosts `workspace`, said right after
+/// [`FULL_ACCESS_IS_YOU`] in the words the CLI and the desktop's full-access warning use for a
+/// host (`fullWarningHost`): Crew treats anything running as the account as the account, and
+/// the account is the host, so the person's agent can act as the host too. `None` for any
+/// other access.
 pub(super) fn hosting_line(access: Option<&str>, workspace: &str) -> Option<String> {
     (access == Some("full")).then(|| {
         format!(
-            "You host {workspace} from this account, so agents can also read the workspace's own files on the server, including channels you're not in. They can also act as the host of {workspace}."
+            "You host {workspace} from this account, so your agent can also read the workspace's own files on the server, including channels you're not in. It can also act as the host of {workspace}."
         )
     })
 }
 
-/// [`hosting_line`] for a member's setup of the saved connection `saved` with `access`: said
-/// when the person's own snapshot of its workspace names them its host. Only a connected
-/// connection is asked, before the card is parked, and only that answer reaches the card,
-/// which names the workspace by the connection's name as its heading does.
+/// [`hosting_line`] for `workspace` when `snapshot`, the person's own, names them its host
+/// within `wait`. A snapshot that fails, can't say, or doesn't come in time adds nothing: the
+/// card then says what full access is without claiming the account hosts the workspace or
+/// not, as the CLI says it when it cannot tell.
+pub(super) async fn hosting_within(
+    wait: Duration,
+    snapshot: impl Future<Output = Result<Value>>,
+    access: Option<&str>,
+    workspace: &str,
+) -> Option<String> {
+    let snapshot = tokio::time::timeout(wait, snapshot).await.ok()?.ok()?;
+    if hosts(&snapshot) != Some(true) {
+        return None;
+    }
+    hosting_line(access, workspace)
+}
+
+/// [`hosting_line`] for full access through the saved connection `saved`: said when the
+/// person's own snapshot of its workspace names them its host within [`HOST_LOOKUP_WAIT`].
+/// Only a connected connection is asked, before the card is parked, and only that answer
+/// reaches the card, which names the workspace by the connection's name as its heading does.
 async fn saved_hosting_line(
     ctx: &Ctx,
     saved: Option<&Connection>,
@@ -501,11 +531,13 @@ async fn saved_hosting_line(
     if access != Some("full") || connection.status != "connected" {
         return None;
     }
-    let snapshot = ctx.snapshot(connection).await.ok()?;
-    if hosts(&snapshot) != Some(true) {
-        return None;
-    }
-    hosting_line(access, &connection.name)
+    hosting_within(
+        HOST_LOOKUP_WAIT,
+        ctx.snapshot(connection),
+        access,
+        &connection.name,
+    )
+    .await
 }
 
 /// `biorouter crew setup`: install or update Crew in the person's account on a server, and
@@ -1541,6 +1573,7 @@ pub(super) fn connections_set_access(ctx: &Ctx) -> BoxFuture<'_, Result<Value>> 
         };
         let mut input = saved_fields(&connection)?;
         let here = super::on_server(&connection.name, &server);
+        let full = !matches!(access.as_str(), "off" | "folder");
         let summary = match access.as_str() {
             "off" => {
                 if folder.is_some() {
@@ -1590,15 +1623,23 @@ pub(super) fn connections_set_access(ctx: &Ctx) -> BoxFuture<'_, Result<Value>> 
                 )
             }
         };
+        let mut card = Card::at(&connection.name, &server, |_| summary);
+        // Full access is said as every full-access card says it, with the host's sentence when
+        // the person's own snapshot names them the host (AO-1, OW-6).
+        if full {
+            card = card.line(FULL_ACCESS_IS_YOU);
+            if let Some(line) = saved_hosting_line(ctx, Some(&connection), Some("full")).await {
+                card = card.line(line);
+            }
+        }
         ctx.approve(
-            Card::at(&connection.name, &server, |_| summary)
-                .line(format!(
-                    "This ends every chat's and task's access through {}; grant it again where you need it.",
-                    connection.name
-                ))
-                .show("connection", connection.name.clone())
-                .show("access", access.clone())
-                .show("folder", input.get("remote_root").cloned().unwrap_or(Value::Null)),
+            card.line(format!(
+                "This ends every chat's and task's access through {}; grant it again where you need it.",
+                connection.name
+            ))
+            .show("connection", connection.name.clone())
+            .show("access", access.clone())
+            .show("folder", input.get("remote_root").cloned().unwrap_or(Value::Null)),
         )
         .await?;
         save_over(&connection, input).await

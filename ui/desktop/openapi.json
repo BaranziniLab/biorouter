@@ -16028,7 +16028,7 @@
           },
           "expired": {
             "type": "boolean",
-            "description": "Stopped on this device: revoked, ended, or its connection was removed."
+            "description": "Stopped on this computer: revoked, ended, or its connection was removed."
           },
           "expires_at": {
             "type": "integer",

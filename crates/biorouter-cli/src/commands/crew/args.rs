@@ -291,7 +291,7 @@ pub enum ConnectionCommand {
     List,
     /// Show one saved connection in detail.
     Show,
-    /// Prepare this device's enrollment public key in the daemon.
+    /// Prepare this computer's enrollment public key in the daemon.
     Prepare,
     /// Save a verified connection descriptor from JSON. Use - for stdin.
     Save {
@@ -553,7 +553,7 @@ pub struct JoinArgs {
 pub enum WorkspaceCommand {
     /// Show the workspace's privacy, people, teams, channels, invitations and agent grants.
     Show,
-    /// Initialize the workspace using this device's prepared public identity.
+    /// Initialize the workspace using this computer's prepared public identity.
     Bootstrap,
     /// Rename the workspace (host only): lowercase letters, numbers and dashes.
     Rename {
@@ -638,7 +638,7 @@ pub enum EnrollmentCommand {
     /// Join with an invitation instead.
     #[command(hide = true)]
     Accept(SecretInput),
-    /// Revoke a member's enrollment, devices and grants (host).
+    /// Revoke a member's enrollment, computers and grants (host).
     Revoke {
         /// The member, as @username or their ID. An ID never prompts, for scripts.
         member: String,
@@ -670,7 +670,7 @@ pub struct EnrollInviteArgs {
         conflicts_with = "username"
     )]
     pub public_key: Option<String>,
-    /// Deprecated: the member a legacy token adds a device to. With a username, use
+    /// Deprecated: the member a legacy token adds a computer to. With a username, use
     /// --add-device instead.
     #[arg(long, hide = true, requires = "uid", conflicts_with = "username")]
     pub existing_principal: Option<String>,
@@ -843,10 +843,10 @@ pub enum ProfileCommand {
     /// as you can add itself again. Asks first; add --yes where there is no terminal to ask in.
     #[command(group(ArgGroup::new("device").required(true).args(["fingerprint", "this_device"])))]
     RevokeDevice {
-        /// The device's fingerprint as profile devices shows it, like 3F2A 9C1E 77B0 D4E1.
+        /// The computer's fingerprint as profile devices shows it, like 3F2A 9C1E 77B0 D4E1.
         #[arg(num_args = 1..)]
         fingerprint: Vec<String>,
-        /// This computer's own device.
+        /// This computer, in place of a fingerprint.
         #[arg(long, conflicts_with = "fingerprint")]
         this_device: bool,
         /// Remove it without asking. Needed when there is no terminal to ask in.
@@ -1999,6 +1999,49 @@ mod tests {
             .expect("connections remove");
         let help = remove.render_long_help().to_string();
         assert!(help.contains("device key"), "{help}");
+    }
+
+    /// C1 (2026-11): a person's machine is a "computer" in every help text, hidden ones too.
+    /// "device key" still names the key itself, and the command and flag names keep theirs.
+    #[test]
+    fn help_says_computer_for_a_persons_machine() {
+        fn texts(command: &clap::Command, path: &str, out: &mut Vec<(String, String)>) {
+            for text in [command.get_about(), command.get_long_about()]
+                .into_iter()
+                .flatten()
+            {
+                out.push((path.to_owned(), text.to_string()));
+            }
+            for arg in command.get_arguments() {
+                for text in [arg.get_help(), arg.get_long_help()].into_iter().flatten() {
+                    out.push((format!("{path} {}", arg.get_id()), text.to_string()));
+                }
+            }
+            for sub in command.get_subcommands() {
+                texts(sub, &format!("{path} {}", sub.get_name()), out);
+            }
+        }
+        let mut said = Vec::new();
+        texts(&TestCli::command(), "crew", &mut said);
+        assert!(said.len() > 100, "{}", said.len());
+        let names = [
+            "device public key",
+            "device key",
+            "--add-device",
+            "revoke-device",
+            "profile devices",
+            "--this-device",
+        ];
+        let offenders: Vec<_> = said
+            .into_iter()
+            .filter(|(_, text)| {
+                let rest = names
+                    .iter()
+                    .fold(text.to_lowercase(), |rest, name| rest.replace(name, ""));
+                rest.contains("device")
+            })
+            .collect();
+        assert!(offenders.is_empty(), "{offenders:#?}");
     }
 
     /// CLI-14: a wrong command line is refused while it is read, with clap's usage status 2,

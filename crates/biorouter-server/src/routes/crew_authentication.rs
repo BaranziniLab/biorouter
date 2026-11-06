@@ -381,9 +381,9 @@ pub const JOIN_FAILED: &str = "Biorouter couldn't finish joining the workspace. 
 pub const REJOIN_FAILED: &str = "Biorouter couldn't add this computer to the workspace again. Try again. If it keeps failing, the Biorouter log has the details.";
 /// `crew_request_refused`'s sentence when the workspace could not be asked about the account.
 pub const ACCOUNT_STATUS_FAILED: &str = "Biorouter couldn't ask the workspace about your account. Try again. If it keeps failing, the Biorouter log has the details.";
-/// `crew_request_refused`'s sentence when the person's acknowledgement of new devices could not
-/// be saved.
-pub const ACKNOWLEDGE_FAILED: &str = "Biorouter couldn't save that you have seen these devices. Try again. If it keeps failing, the Biorouter log has the details.";
+/// `crew_request_refused`'s sentence when the person's acknowledgement of new computers on their
+/// account could not be saved.
+pub const ACKNOWLEDGE_FAILED: &str = "Biorouter couldn't save that you have seen these computers. Try again. If it keeps failing, the Biorouter log has the details.";
 
 /// A refusal from an admission route: `{code, error}` and any typed fields beside them. Every
 /// refusal carries a code, so a client can tell a refusal from a daemon without the route.
@@ -1272,6 +1272,16 @@ mod tests {
         assert_eq!(body["reason"], "invitation_not_found");
         assert!(!root.join("connections.json").exists());
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// C1: the new computers the person was shown are "computers" in the sentence a failed
+    /// acknowledgement answers.
+    #[test]
+    fn a_failed_acknowledgement_names_computers() {
+        assert_eq!(
+            ACKNOWLEDGE_FAILED,
+            "Biorouter couldn't save that you have seen these computers. Try again. If it keeps failing, the Biorouter log has the details."
+        );
     }
 
     /// A workspace refusal the core passes through untyped (the transport's text, carrying the

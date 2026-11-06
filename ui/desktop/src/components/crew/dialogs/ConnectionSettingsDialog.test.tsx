@@ -532,6 +532,10 @@ describe('ConnectionSettingsDialog', () => {
         /add a computer to your account and post in Crew as you, with no agent mark/
       );
       expect(warning).toHaveTextContent(/act as the host of lab\./);
+      // The host's sentence in the words the Join and Host dialogs and the command line use.
+      expect(warning).toHaveTextContent(
+        'You host lab from this account, so your agent can also read the workspace’s own files on the server, including channels you’re not in. It can also act as the host of lab.'
+      );
       // One warning, no typing: Save is the consent.
       expect(screen.queryByRole('alertdialog')).toBeNull();
       save();

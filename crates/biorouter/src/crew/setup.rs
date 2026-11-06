@@ -1866,6 +1866,30 @@ fn start_sentence(workspace: &SetupWorkspace, login: &str) -> Option<String> {
         })
 }
 
+/// Why the program installed as `version` in the account on `server` lists no workspaces, and
+/// what to do: setup replaces an older copy, or another build of the same version, with the
+/// one this app carries (`ours`), which lists them. The command repeats the job's `route`, so
+/// it reaches the server the way the job did. With no copy of its own, or one older than the
+/// program there (which setup never replaces), it has nothing to offer, and says only why.
+fn too_old_sentence(version: &str, server: &str, ours: Option<&str>, route: &Route) -> String {
+    let said = format!("Crew {version} in your account on {server} is too old to list workspaces.");
+    let replaceable = ours.is_some_and(|ours| {
+        !matches!(
+            (version_of(version), version_of(ours)),
+            (Some(theirs), Some(ours)) if theirs > ours
+        )
+    });
+    if replaceable {
+        format!(
+            "{said} Update it with biorouter crew setup --server {}{}.",
+            route.ssh_target,
+            route.flags()
+        )
+    } else {
+        said
+    }
+}
+
 // ---------------------------------------------------------------------------------------------
 // Jobs
 // ---------------------------------------------------------------------------------------------
@@ -1891,6 +1915,37 @@ impl Route {
     /// What a setup sign-in is bound to: the job's route, so a sign-in never carries another.
     fn digest(&self) -> Vec<u8> {
         Sha256::digest(serde_json::to_vec(self).unwrap_or_default()).to_vec()
+    }
+    /// The route flags a suggested command repeats after `--server LOGIN`, as the CLI's
+    /// `route_flags` prints them: the port, key file and jump route this job was given, each
+    /// one shell word, so the command reaches the server the way the job did. Empty when the
+    /// job was given none.
+    fn flags(&self) -> String {
+        let mut flags = String::new();
+        if let Some(port) = self.port {
+            flags.push_str(&format!(" --port {port}"));
+        }
+        if let Some(identity) = &self.identity_file {
+            flags.push_str(&format!(" --identity-file {}", command_word(identity)));
+        }
+        if let Some(jump) = &self.proxy_jump {
+            flags.push_str(&format!(" --proxy-jump {}", command_word(jump)));
+        }
+        flags
+    }
+}
+
+/// A word of a suggested command as a POSIX shell reads it back, quoted as the CLI's
+/// `shell_word` quotes it: bare when it is plain, else in single quotes.
+fn command_word(text: &str) -> String {
+    if !text.is_empty()
+        && text
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b"-_.@/:".contains(&b))
+    {
+        text.to_owned()
+    } else {
+        format!("'{}'", text.replace('\'', "'\\''"))
     }
 }
 
@@ -3374,30 +3429,11 @@ impl Job {
         self.skip(SetupStageName::Workspaces, note);
     }
 
-    /// Why the program installed as `version` lists no workspaces, and what to do: setup
-    /// replaces an older copy, or another build of the same version, with the one this app
-    /// carries, which lists them. With no copy of its own, or one older than the program there
-    /// (which setup never replaces), it has nothing to offer, and says only why.
+    /// Why the program installed as `version` lists no workspaces, and what to do
+    /// ([`too_old_sentence`], with this job's server, route and the copy this app carries).
     fn too_old(&self, version: &str) -> String {
-        let said = format!(
-            "Crew {version} in your account on {} is too old to list workspaces.",
-            self.server()
-        );
         let ours = self.progress().artifact.map(|artifact| artifact.version);
-        let replaceable = ours.as_deref().is_some_and(|ours| {
-            !matches!(
-                (version_of(version), version_of(ours)),
-                (Some(theirs), Some(ours)) if theirs > ours
-            )
-        });
-        if replaceable {
-            format!(
-                "{said} Update it with biorouter crew setup --server {}.",
-                self.route.ssh_target
-            )
-        } else {
-            said
-        }
+        too_old_sentence(version, self.server(), ours.as_deref(), &self.route)
     }
 
     /// What this computer has for each listed workspace: its saved connection, connected or

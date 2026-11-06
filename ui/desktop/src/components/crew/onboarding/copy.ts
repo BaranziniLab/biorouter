@@ -9,6 +9,22 @@
  * (`personLabel`, `workspaceName`, `connectionServer`); nothing here formats a person or an ID.
  */
 
+/**
+ * Full access ("As me on the server", OW-6), said in the same words wherever it is granted or
+ * offered, as the command line and the chat cards say them: Crew cannot tell the agent from the
+ * person when both run as the account. Ends every full-access warning.
+ */
+export const FULL_ACCESS_IS_YOU =
+  'Crew treats anything running as your account as you, so your agent can also add a computer to your account and post in Crew as you, with no agent mark.';
+
+/**
+ * After `FULL_ACCESS_IS_YOU`, only when the account that gets full access hosts `workspace`: the
+ * workspace's own files live in that account. Connection settings and the Join and Host dialogs
+ * all say it.
+ */
+export const fullAccessHost = (workspace: string) =>
+  `You host ${workspace} from this account, so your agent can also read the workspace’s own files on the server, including channels you’re not in. It can also act as the host of ${workspace}.`;
+
 export const welcomeCopy = {
   title: 'Work together in Crew',
   body: 'Chat, share files and run agents with your lab.',
@@ -313,10 +329,9 @@ export const joinCopy = {
    * that what others write can try to steer it. Shown while the level is chosen; no typing.
    */
   fullWarning: (user: string | null, server: string) =>
-    `Your agent will run commands as ${user ?? 'you'} on ${server}: it can read and change anything your account can, use the network, and start programs that keep running after access ends. Other people’s messages and files in channels it reads can try to steer it. Use a private model you trust. Crew treats anything running as your account as you, so your agent can also add a computer to your account and post in Crew as you, with no agent mark.`,
+    `Your agent will run commands as ${user ?? 'you'} on ${server}: it can read and change anything your account can, use the network, and start programs that keep running after access ends. Other people’s messages and files in channels it reads can try to steer it. Use a private model you trust. ${FULL_ACCESS_IS_YOU}`,
   /** The host's extra sentence: their account also holds the workspace's own files. */
-  fullWarningHost: (workspace: string) =>
-    `You host ${workspace} from this account, so your agent can also read the workspace’s own files on the server, including channels you’re not in. It can also act as the host of ${workspace}.`,
+  fullWarningHost: fullAccessHost,
   /** Under Join (decision 5.7): pressing it also sets Crew up when the account lacks it. */
   installsCrew: (server: string) =>
     `If Crew isn’t set up for your account on ${server} yet, Biorouter installs it there for you.`,

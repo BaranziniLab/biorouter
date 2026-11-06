@@ -795,8 +795,215 @@ fn an_open_through_another_login_s_connection_says_so() {
         .any(|line| line == "You join it as its host."));
 }
 
-/// The sentence a full-access card adds for a host, in the desktop's words for one.
-const HOSTING_LAB: &str = "You host lab from this account, so agents can also read the workspace's own files on the server, including channels you're not in. They can also act as the host of lab.";
+/// The sentence a full-access card adds for a host, in the words the CLI and the desktop use for
+/// one (W2).
+const HOSTING_LAB: &str = "You host lab from this account, so your agent can also read the workspace's own files on the server, including channels you're not in. It can also act as the host of lab.";
+
+/// What every full-access card says (W1), word for word as the CLI and the desktop say it.
+const FULL_ACCESS_IS_YOU: &str = "Crew treats anything running as your account as you, so your agent can also add a computer to your account and post in Crew as you, with no agent mark.";
+
+/// Every full-access card says W1 in the CLI's and the desktop's exact words, after what full
+/// access lets agents do, and the host's sentence (W2) right after it on the host's account.
+#[test]
+fn full_access_is_said_in_the_words_every_surface_uses() {
+    use super::setup::open_card;
+    assert_eq!(super::setup::FULL_ACCESS_IS_YOU, FULL_ACCESS_IS_YOU);
+    let hosted = listed_workspace("lab", "1.95.0", true);
+    let card = open_card(&hosted, "alice@leo", Some("full"), None);
+    let at = card
+        .lines
+        .iter()
+        .position(|line| line.starts_with("Agents get full access"))
+        .expect("an access line");
+    assert_eq!(
+        card.lines[at],
+        format!("Agents get full access: they can run any command as you on alice@leo, read and change any file your account can, and use the network. {FULL_ACCESS_IS_YOU}")
+    );
+    assert_eq!(
+        card.lines.get(at + 1).map(String::as_str),
+        Some(HOSTING_LAB)
+    );
+    for line in &card.lines {
+        assert!(!line.contains(['\u{2014}', '\u{2013}']), "{line}");
+    }
+}
+
+/// Whether the account hosts a saved connection's workspace is asked of the person's own
+/// snapshot for at most [`HOST_LOOKUP_WAIT`](super::setup::HOST_LOOKUP_WAIT), the CLI's
+/// listing wait, so a wedged workspace can't hold the card back. One that doesn't answer in
+/// time, fails or can't say adds no host sentence: the card says W1 alone, claiming neither.
+#[tokio::test]
+async fn the_host_s_sentence_waits_only_so_long_for_the_snapshot() {
+    use super::setup::{hosting_within, HOST_LOOKUP_WAIT};
+    use std::time::{Duration, Instant};
+    assert!(HOST_LOOKUP_WAIT <= Duration::from_secs(10));
+    let host = json!({
+        "actor": {"id": "p-alice"},
+        "workspace": {"host_principal_id": "p-alice"},
+    });
+    let member = json!({
+        "actor": {"id": "p-bob"},
+        "workspace": {"host_principal_id": "p-alice"},
+    });
+    let wait = Duration::from_millis(50);
+    let ready = |snapshot: Value| async move { Ok::<Value, anyhow::Error>(snapshot) };
+    assert_eq!(
+        hosting_within(wait, ready(host.clone()), Some("full"), "lab")
+            .await
+            .as_deref(),
+        Some(HOSTING_LAB)
+    );
+    assert_eq!(
+        hosting_within(wait, ready(host.clone()), Some("folder"), "lab").await,
+        None
+    );
+    assert_eq!(
+        hosting_within(wait, ready(member), Some("full"), "lab").await,
+        None
+    );
+    assert_eq!(
+        hosting_within(wait, ready(json!({})), Some("full"), "lab").await,
+        None
+    );
+    let failed = async { Err::<Value, _>(anyhow::anyhow!("the workspace refused")) };
+    assert_eq!(
+        hosting_within(wait, failed, Some("full"), "lab").await,
+        None
+    );
+    // A workspace that never answers: the card goes on at the wait, without the sentence.
+    let started = Instant::now();
+    let wedged = std::future::pending::<Result<Value>>();
+    assert_eq!(
+        hosting_within(wait, wedged, Some("full"), "lab").await,
+        None
+    );
+    assert!(started.elapsed() < Duration::from_secs(5));
+    // One slower than the wait is not waited for either, though it would say host.
+    let slow = async move {
+        tokio::time::sleep(Duration::from_secs(30)).await;
+        Ok::<Value, anyhow::Error>(host)
+    };
+    let started = Instant::now();
+    assert_eq!(hosting_within(wait, slow, Some("full"), "lab").await, None);
+    assert!(started.elapsed() < Duration::from_secs(5));
+}
+
+/// A task given full server access runs as the account, so its card says W1 after what the
+/// task can do there, and W2 when the account hosts the workspace. A task with a work folder or
+/// none says neither.
+#[test]
+fn a_task_with_full_access_says_what_full_access_is() {
+    use super::tasks::access_lines;
+    let mut connection = saved("lab", "alice@leo");
+    connection.remote_root = Some("/home/you/crew-work/lab".into());
+    connection.remote_access = biorouter::crew::RemoteAccess::Full;
+    let full = format!("With a private model it can run any command as you on leo, and read and change any file your account can. {FULL_ACCESS_IS_YOU}");
+    assert_eq!(
+        access_lines(&connection, "leo", "lab", true),
+        [full.clone(), HOSTING_LAB.to_owned()]
+    );
+    assert_eq!(access_lines(&connection, "leo", "lab", false), [full]);
+
+    connection.remote_access = biorouter::crew::RemoteAccess::Folder;
+    assert_eq!(
+        access_lines(&connection, "leo", "lab", true),
+        ["With a private model it can run commands in its work folder on leo, confined to that folder."]
+    );
+    connection.remote_root = None;
+    assert_eq!(
+        access_lines(&connection, "leo", "lab", true),
+        ["It can't work on leo."]
+    );
+}
+
+/// What `describe` says is chat text, so a person's machine is a "computer" in it (C1). Only
+/// the protocol's own names keep "device": a device code or key, and the parameter and action
+/// names a call uses (`this_device`, `profile_devices`).
+#[test]
+fn the_catalog_says_computer_not_device() {
+    let words = |text: &str| -> Vec<String> {
+        text.split(|ch: char| !(ch.is_alphanumeric() || ch == '_'))
+            .filter(|word| !word.is_empty())
+            .map(str::to_lowercase)
+            .collect()
+    };
+    for action in ACTIONS {
+        let texts = std::iter::once(action.summary).chain(action.params.iter().map(|p| p.about));
+        for text in texts {
+            let said = words(text);
+            for (at, word) in said.iter().enumerate() {
+                if word == "device" || word == "devices" {
+                    let next = said.get(at + 1).map(String::as_str);
+                    assert!(
+                        matches!(next, Some("code" | "codes" | "key" | "keys" | "id")),
+                        "{}: {text}",
+                        action.name
+                    );
+                }
+            }
+        }
+    }
+}
+
+/// A Crew too old to list the workspaces says so with the command line's command; a chat is told
+/// its own action instead, in the note and in the stage that repeats it. The code stays, and a
+/// note that names no command is left as the daemon wrote it.
+#[test]
+fn a_crew_too_old_to_list_names_the_chat_s_action() {
+    use biorouter::crew::{
+        SetupIntent, SetupServer, SetupStage, SetupStageName, SetupStageState,
+        SetupWorkspacesUnlisted,
+    };
+    let cli = "Crew 1.93.0 in your account on leo.ucsf.edu is too old to list workspaces. Update it with biorouter crew setup --server wanjun@leo.ucsf.edu.";
+    let status = |note: &str, unlisted| SetupStatus {
+        job_id: "job-1".into(),
+        intent: SetupIntent::Check,
+        state: SetupState::Finished,
+        stage: SetupStageName::Done,
+        stages: vec![SetupStage {
+            name: SetupStageName::Workspaces,
+            state: SetupStageState::Skipped,
+            detail: Some(note.to_owned()),
+        }],
+        server: SetupServer {
+            login: "wanjun@leo.ucsf.edu".into(),
+            ..SetupServer::default()
+        },
+        installed: None,
+        artifact: None,
+        workspaces: Vec::new(),
+        workspaces_scan: None,
+        workspaces_note: Some(note.to_owned()),
+        workspaces_unlisted: Some(unlisted),
+        outcome: None,
+        error: None,
+    };
+    let chat = format!(
+        "Crew 1.93.0 in your account on leo.ucsf.edu is too old to list workspaces. {}",
+        super::UPDATE_TO_LIST
+    );
+    assert_eq!(
+        super::UPDATE_TO_LIST,
+        "Update it with crew__change action setup, which then lists them."
+    );
+    let answer = job_answer(&status(cli, SetupWorkspacesUnlisted::TooOld), false);
+    assert_eq!(answer["workspaces_note"], chat.as_str());
+    assert_eq!(answer["stages"][0]["detail"], chat.as_str());
+    assert_eq!(answer["workspaces_unlisted"], "too_old");
+    assert!(!answer.to_string().contains("biorouter crew"), "{answer}");
+
+    // Nothing to update to: the daemon says only why, and that is kept.
+    let said = "Crew 1.99.0 in your account on leo.ucsf.edu is too old to list workspaces.";
+    let kept = job_answer(&status(said, SetupWorkspacesUnlisted::TooOld), false);
+    assert_eq!(kept["workspaces_note"], said);
+    // Another reason is the daemon's own words.
+    let missing = "Crew isn't installed in your account on leo.ucsf.edu, so Biorouter can't look for workspaces there.";
+    let other = job_answer(
+        &status(missing, SetupWorkspacesUnlisted::NotInstalled),
+        false,
+    );
+    assert_eq!(other["workspaces_note"], missing);
+}
 
 /// Full access for the account that hosts the workspace is host authority: anything running as
 /// the account is the host. An open's card says so after its access line, whoever's
@@ -875,4 +1082,28 @@ fn a_chat_is_named_as_the_cli_names_it() {
     );
     let reordered = chat_named(Some("a\u{202e}b\u{2069}c"), "1");
     assert_eq!(reordered, "chat \"a\\u{202e}b\\u{2069}c\" (chat 1)");
+    // Zero-width and tag characters are spelled out too, so nothing can hide in a card's
+    // name for a chat: the title reads as what it holds.
+    let hidden = chat_named(Some("Counts\u{200b}\u{e0041}x"), "1");
+    assert_eq!(hidden, "chat \"Counts\\u{200b}\\u{e0041}x\" (chat 1)");
+    assert!(
+        !hidden
+            .chars()
+            .any(biorouter::utils::is_invisible_formatting),
+        "{hidden:?}"
+    );
+    assert_eq!(
+        chat_named(Some("\u{feff}a\u{2060}b"), "1"),
+        "chat \"\\u{feff}a\\u{2060}b\" (chat 1)"
+    );
+    // A joiner inside an emoji sequence is part of what a person sees, as the CLI keeps it;
+    // beside ASCII it joins nothing and is spelled out.
+    assert_eq!(
+        chat_named(Some("👩\u{200d}🔬 notes"), "1"),
+        "chat \"\u{2068}👩\u{200d}🔬 notes\u{2069}\" (chat 1)"
+    );
+    assert_eq!(
+        chat_named(Some("crew\u{200d}_alice"), "1"),
+        "chat \"crew\\u{200d}_alice\" (chat 1)"
+    );
 }

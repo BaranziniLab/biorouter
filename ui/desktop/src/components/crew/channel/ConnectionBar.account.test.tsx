@@ -1,7 +1,13 @@
 import { act, fireEvent, screen, waitFor, within } from '@testing-library/react';
 import { useState } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { newDevicesCopy, rejoinCopy, setupJobsCopy, versionCopy } from '../account/copy';
+import {
+  addedViaText,
+  newDevicesCopy,
+  rejoinCopy,
+  setupJobsCopy,
+  versionCopy,
+} from '../account/copy';
 import { resetBuildBrokerVersionForTests } from '../account/brokerVersion';
 import { markNeedsRejoin, needsRejoin, resetRejoinMarksForTests } from '../account/rejoinMarks';
 import { CrewHttpError, type CrewConnection } from '../crewApi';
@@ -184,10 +190,14 @@ describe('new computers on the account (AO-10)', () => {
       })
     );
     const note = await screen.findByTestId('crew-new-devices');
-    // Which computer: its fingerprint, as Keys lists it and the CLI names it.
-    expect(note).toHaveTextContent(newDevicesCopy.one('AAAA BBBB CCCC DDDD', null));
-    expect(note).toHaveTextContent('New computer on your account: AAAA BBBB CCCC DDDD.');
-    expect(note).toHaveTextContent(newDevicesCopy.viaAccount);
+    // Which computer and how it was added: its fingerprint, as Keys lists it, in the sentence
+    // `biorouter crew status` says.
+    expect(note).toHaveTextContent(
+      newDevicesCopy.one('AAAA BBBB CCCC DDDD', null, addedViaText('account'))
+    );
+    expect(within(note).getByText(/^New computer on your account:/)).toHaveTextContent(
+      /^New computer on your account: AAAA BBBB CCCC DDDD, added by signing in to the server\.$/
+    );
     fireEvent.click(within(note).getByRole('button', { name: newDevicesCopy.reviewName }));
     expect(rendered.crew().openDialog).toHaveBeenCalledWith({ kind: 'keys' });
     fireEvent.click(within(note).getByRole('button', { name: newDevicesCopy.acknowledge }));
@@ -199,6 +209,25 @@ describe('new computers on the account (AO-10)', () => {
       fingerprints: ['AAAA BBBB CCCC DDDD'],
     });
     await waitFor(() => expect(screen.queryByTestId('crew-new-devices')).toBeNull());
+  });
+
+  it('says how any other computer was added in Keys’ words, and nothing for a way it does not know', async () => {
+    const connection = fakeConnection({
+      new_devices: [{ fingerprint: 'BBBB', added_at: 1_700_000_100, added_via: 'token' }],
+    });
+    const rendered = renderBar(connection);
+    expect(await screen.findByTestId('crew-new-devices')).toHaveTextContent(
+      `New computer on your account: BBBB, added ${calendarDate(1_700_000_100)} with an invitation token.`
+    );
+    const unknown = fakeConnection({
+      new_devices: [{ fingerprint: 'CCCC', added_at: null, added_via: 'carrier_pigeon' }],
+    });
+    rendered.update({ connection: unknown, connections: [unknown] });
+    await waitFor(() =>
+      expect(
+        within(screen.getByTestId('crew-new-devices')).getByText(/^New computer on your account:/)
+      ).toHaveTextContent(/^New computer on your account: CCCC\.$/)
+    );
   });
 
   it('acknowledges every device it counted, and only those', async () => {
@@ -253,7 +282,7 @@ describe('new computers on the account (AO-10)', () => {
       },
     });
     expect(await screen.findByTestId('crew-new-devices')).toHaveTextContent(
-      newDevicesCopy.one('BBBB', null)
+      newDevicesCopy.one('BBBB', null, addedViaText('account'))
     );
     expect(screen.queryByText(newDevicesCopy.acknowledgeFailed)).toBeNull();
   });
@@ -335,7 +364,7 @@ describe('new computers on the account (AO-10)', () => {
     const connection = fakeConnection({ new_devices: [added] });
     rendered.update({ connection, connections: [connection], snapshot: view([own, added]) });
     expect(await screen.findByTestId('crew-new-devices')).toHaveTextContent(
-      newDevicesCopy.one(added.fingerprint, calendarDate(added.added_at))
+      `New computer on your account: AAAA BBBB CCCC DDDD, added ${calendarDate(added.added_at)} by signing in to the server.`
     );
     expect(reloadConnections).toHaveBeenCalledTimes(1);
   });

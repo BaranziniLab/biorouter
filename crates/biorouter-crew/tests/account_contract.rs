@@ -497,7 +497,7 @@ mod account {
         assert_eq!(code, "forbidden");
         assert_eq!(
             message,
-            "forbidden: The device to replace belongs to someone else. Nothing was changed."
+            "forbidden: The computer to replace belongs to someone else. Nothing was changed."
         );
         assert_eq!(ws.journal_records(), records);
         ws.host_snapshot();
@@ -968,6 +968,25 @@ mod account {
             let (code, message) = refused(ws.call(&mut laptop, "device.revoke", wrong.clone()));
             assert_eq!(code, "invalid_params", "{wrong}: {message}");
         }
+        // C1: the person's machines are computers in what the refusals say.
+        let (_, message) = refused(ws.call(
+            &mut laptop,
+            "device.revoke",
+            json!({"fingerprint": fingerprint(&ws.host.key)}),
+        ));
+        assert_eq!(
+            message,
+            "invalid_params: None of your computers has that fingerprint. Check it in Keys and try again."
+        );
+        let (_, message) = refused(ws.call(
+            &mut laptop,
+            "device.revoke",
+            json!({"fingerprint": "not a fingerprint"}),
+        ));
+        assert_eq!(
+            message,
+            "invalid_params: fingerprint must be the 16 hex digits of a computer's fingerprint, as Keys shows it"
+        );
         // Lower case without spaces names the same device.
         let typed = fingerprint(&desktop.key).replace(' ', "").to_lowercase();
         let answer = ws.call_ok(&mut laptop, "device.revoke", json!({"fingerprint": typed}));

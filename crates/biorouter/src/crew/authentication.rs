@@ -1639,7 +1639,7 @@ impl AccountJoined {
             answer["device_id"]
                 .as_str()
                 .is_none_or(|device| device == device_id),
-            "The workspace's answer names a different device. Check your join status."
+            "The workspace's answer names a different computer. Check your join status."
         );
         let role = answer["role"]
             .as_str()
@@ -3136,7 +3136,7 @@ impl CrewManager {
             answer["device_id"]
                 .as_str()
                 .is_none_or(|device| device == c.device_id),
-            "The workspace's answer names a different device. Check your join status."
+            "The workspace's answer names a different computer. Check your join status."
         );
         Ok(JoinStatus {
             add_device: observed.status.add_device,
@@ -5677,7 +5677,10 @@ fi
         );
         attach_transport(&manager, &connection).await;
         let error = manager.join(&connection.id).await.unwrap_err();
-        assert!(error.to_string().contains("different device"), "{error}");
+        assert_eq!(
+            error.to_string(),
+            "The workspace's answer names a different computer. Check your join status."
+        );
         let _ = fs::remove_dir_all(root);
     }
 
@@ -6399,7 +6402,10 @@ fi
         );
         attach_transport(&manager, &connection).await;
         let error = manager.account_join(id).await.unwrap_err();
-        assert!(error.to_string().contains("different device"), "{error}");
+        assert_eq!(
+            error.to_string(),
+            "The workspace's answer names a different computer. Check your join status."
+        );
 
         // Removed: the status says so before anything is sent, and the workspace's own refusal
         // reads the same.

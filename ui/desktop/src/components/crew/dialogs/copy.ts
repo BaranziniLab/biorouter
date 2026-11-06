@@ -1,3 +1,5 @@
+import { addedViaCopy } from '../account/copy';
+import { FULL_ACCESS_IS_YOU, fullAccessHost } from '../onboarding/copy';
 import type { LocalPlatform } from './localPath';
 
 /**
@@ -116,10 +118,12 @@ export const connectionSettingsCopy = {
    * the person's consent. `user` is the account (`@crew_alice`), `server` the server's name.
    */
   fullWarning: (user: string, server: string) =>
-    `Your agent will run commands as ${user} on ${server || 'the server'}: it can read and change anything your account can, use the network, and start programs that keep running after access ends. Other people’s messages and files in channels it reads can try to steer it. Use a private model you trust. Crew treats anything running as your account as you, so your agent can also add a computer to your account and post in Crew as you, with no agent mark.`,
-  /** The host's extra sentence: the broker's own files live in this account. */
-  fullWarningHost: (workspace: string) =>
-    `You host ${workspace} in this account, so it can also read everything ${workspace} keeps on the server, including channels you aren’t in. It can also act as the host of ${workspace}.`,
+    `Your agent will run commands as ${user} on ${server || 'the server'}: it can read and change anything your account can, use the network, and start programs that keep running after access ends. Other people’s messages and files in channels it reads can try to steer it. Use a private model you trust. ${FULL_ACCESS_IS_YOU}`,
+  /**
+   * The host's extra sentence: the workspace's own files live in this account. The Join and Host
+   * dialogs say the same words (`fullAccessHost`).
+   */
+  fullWarningHost: fullAccessHost,
   portRange: 'Use a port from 1 to 65535.',
   /** Its own disclosure, closed until opened, whatever Advanced holds (QA T-33). */
   workspaceDetails: 'Workspace details',
@@ -765,13 +769,8 @@ export const keysCopy = {
   /** The account's computers, as `biorouter crew profile devices` heads them. */
   devices: 'Computers enrolled as you',
   deviceAdded: (date: string) => `Added ${date}`,
-  addedVia: {
-    bootstrap: 'when the workspace was created',
-    token: 'with an invitation token',
-    invitation_code: 'with an invitation',
-    /** A computer that signed in to the server as the account (account ownership AO-2). */
-    account: 'by signing in to the server',
-  } as Record<string, string>,
+  /** How each computer was added: the new-computer notice's own words (`addedViaCopy`). */
+  addedVia: addedViaCopy,
   vaultToggle: 'Use an encrypted vault instead',
   vaultNote: 'Only for a new Crew profile. Existing identities aren’t moved.',
   setUpVault: 'Set up vault…',

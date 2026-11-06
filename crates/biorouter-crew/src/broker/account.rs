@@ -30,13 +30,13 @@ const NAME_UNUSABLE: &str =
     "identity_unavailable: This account's name on the server can't be used with Crew.";
 /// `replaces_device_id` names a device of another principal.
 const REPLACES_ANOTHER: &str =
-    "forbidden: The device to replace belongs to someone else. Nothing was changed.";
+    "forbidden: The computer to replace belongs to someone else. Nothing was changed.";
 /// `device.revoke` names no device, or more than one, of the caller's own.
 const NO_SUCH_DEVICE: &str =
-    "invalid_params: None of your devices has that fingerprint. Check it in Keys and try again.";
+    "invalid_params: None of your computers has that fingerprint. Check it in Keys and try again.";
 const BAD_FINGERPRINT: &str =
-    "invalid_params: fingerprint must be the 16 hex digits of a device fingerprint, as Keys shows it";
-const AGENT_REFUSED: &str = "forbidden: only a person can revoke a device";
+    "invalid_params: fingerprint must be the 16 hex digits of a computer's fingerprint, as Keys shows it";
+const AGENT_REFUSED: &str = "forbidden: only a person can remove a computer";
 
 /// In-memory state of the account path, never journaled: a restart forgets it, which only
 /// resets a quota allowance and the connection counts (every connection is new then too).
@@ -553,4 +553,18 @@ pub(super) fn revoke_device(s: &mut State, actor: &Actor, req: &Request) -> Resu
         .as_ref()
         .is_some_and(|auth| auth.device_id == device_id);
     Ok(json!({"revoked": true, "fingerprint": fingerprint, "this_device": this_device}))
+}
+
+#[cfg(test)]
+mod tests {
+    /// C1: `device.revoke` through an agent's grant is refused in a person's words, where their
+    /// machine is a computer. The worker gate answers first on the wire, so this sentence is
+    /// pinned here.
+    #[test]
+    fn an_agents_revoke_is_refused_naming_a_computer() {
+        assert_eq!(
+            super::AGENT_REFUSED,
+            "forbidden: only a person can remove a computer"
+        );
+    }
 }

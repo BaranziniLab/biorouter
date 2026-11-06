@@ -151,7 +151,7 @@ pub(crate) static ACTIONS: &[Action] = &[
     Action {
         tool: PersonTool::Read,
         name: "connections_show",
-        summary: "Show one saved connection: its server, privacy, agent access and new devices.",
+        summary: "Show one saved connection: its server, privacy, agent access and new computers.",
         params: &[CONNECTION],
         example: r#"{"connection":"baranzini-lab"}"#,
         run: Some(setup::connections_show),
@@ -556,7 +556,7 @@ pub(crate) static ACTIONS: &[Action] = &[
     Action {
         tool: PersonTool::Change,
         name: "enroll_revoke",
-        summary: "Remove a person from the workspace for everyone: their membership, devices and agent grants.",
+        summary: "Remove a person from the workspace for everyone: their membership, computers and agent grants.",
         params: &[CONNECTION, MEMBER],
         example: r#"{"member":"@bob"}"#,
         run: Some(workspace::enroll_revoke),
@@ -731,8 +731,8 @@ pub(crate) static ACTIONS: &[Action] = &[
         summary: "Revoke one of the person's own computers in the workspace, by its fingerprint, or this computer.",
         params: &[
             CONNECTION,
-            p("fingerprint", Text, "The device's fingerprint, as profile_devices lists it."),
-            p("this_device", Flag, "Revoke this computer's own device."),
+            p("fingerprint", Text, "The computer's fingerprint, as profile_devices lists it."),
+            p("this_device", Flag, "Revoke this computer."),
         ],
         example: r#"{"fingerprint":"3F2A 9C1E 77B0 D4E1"}"#,
         run: Some(workspace::profile_revoke_device),

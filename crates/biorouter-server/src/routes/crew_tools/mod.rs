@@ -48,7 +48,7 @@ use biorouter::crew::refusal::{self as crew_refusal};
 use biorouter::crew::tool_host::{CrewToolHost, PersonToolCall};
 use biorouter::crew::{
     manager, ClusterMode, Connection, CrewManager, CrewRefusal, SetupRefused, SetupState,
-    SetupStatus,
+    SetupStatus, SetupWorkspacesUnlisted,
 };
 use biorouter::pending_user_action::{
     user_proof_available, ToolApprovalRequest, UserActionOutcome, UserActionRequest,
@@ -1198,6 +1198,7 @@ fn narrow(visible: &mut Value, key: &str, keep: impl Fn(&Value) -> bool) -> Opti
 /// (`job_id`, `state`, `stage` first), with the step the person takes when it waits for them.
 pub(crate) fn job_answer(status: &SetupStatus, still_running: bool) -> Value {
     let mut answer = serde_json::to_value(status).unwrap_or_else(|_| json!({}));
+    chat_unlisted_note(status, &mut answer);
     let job = status.job_id.as_str();
     if still_running {
         answer["note"] = json!(
@@ -1223,6 +1224,40 @@ pub(crate) fn job_answer(status: &SetupStatus, still_running: bool) -> Value {
         _ => {}
     }
     answer
+}
+
+/// What a chat does where a Crew too old to list the workspaces asks for an update: the
+/// daemon's note names the command line's command, which a chat cannot run.
+pub(crate) const UPDATE_TO_LIST: &str =
+    "Update it with crew__change action setup, which then lists them.";
+
+/// A job whose Crew is too old to list the workspaces (`workspaces_unlisted` `too_old`) says
+/// so in a note that ends with the command line's command (`biorouter crew setup --server …`).
+/// The chat is told its own action instead, as its other refusals name one, in the note and in
+/// the `workspaces` stage that repeats it. A note that names no command is left as it is.
+fn chat_unlisted_note(status: &SetupStatus, answer: &mut Value) {
+    if status.workspaces_unlisted != Some(SetupWorkspacesUnlisted::TooOld) {
+        return;
+    }
+    let Some(note) = status.workspaces_note.as_deref() else {
+        return;
+    };
+    let Some((before, _)) = note.split_once("biorouter crew ") else {
+        return;
+    };
+    // The command's whole sentence goes, from the end of the sentence before it.
+    let said = match before.rsplit_once(". ") {
+        Some((kept, _)) => format!("{kept}. {UPDATE_TO_LIST}"),
+        None => UPDATE_TO_LIST.to_owned(),
+    };
+    answer["workspaces_note"] = json!(said);
+    if let Some(stages) = answer["stages"].as_array_mut() {
+        for stage in stages {
+            if stage["detail"].as_str() == Some(note) {
+                stage["detail"] = json!(said);
+            }
+        }
+    }
 }
 
 /// The lines of `old` and `new` as a diff preview, for a document a change replaces. Lines

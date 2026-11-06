@@ -48,6 +48,11 @@ const MAX_QUEUED_RUN_PROJECTIONS: usize = 256;
 const RUN_PROJECTION_DRAIN_TIMEOUT: Duration = Duration::from_secs(50);
 static RUN_SLOTS: LazyLock<Arc<Semaphore>> =
     LazyLock::new(|| Arc::new(Semaphore::new(MAX_CONCURRENT_RUNS)));
+/// A task start refused because [`RUN_SLOTS`] has no slot left.
+const RUN_SLOTS_FULL: &str =
+    "Four Crew tasks are already active on this computer. Finish or cancel one first.";
+/// A cancel naming a task this computer's ledger does not hold on that connection.
+const TASK_NOT_OWNED: &str = "This task is not owned by this computer and connection.";
 static LEDGERS: LazyLock<Mutex<HashMap<PathBuf, Arc<RunLedger>>>> = LazyLock::new(Mutex::default);
 struct RunLedger {
     path: PathBuf,
@@ -1133,11 +1138,9 @@ pub(crate) async fn start_owned_run(
             "Crew task history has reached its 4096-request safety limit",
         )?;
     }
-    let permit = Arc::clone(&RUN_SLOTS).try_acquire_owned().map_err(|_| {
-        anyhow::anyhow!(
-            "Four Crew tasks are already active on this device. Finish or cancel one first."
-        )
-    })?;
+    let permit = Arc::clone(&RUN_SLOTS)
+        .try_acquire_owned()
+        .map_err(|_| anyhow::anyhow!(RUN_SLOTS_FULL))?;
     let provider = biorouter::providers::create(
         &body.provider,
         ModelConfig::new(&body.model).map_err(anyhow::Error::from)?,
@@ -2395,7 +2398,7 @@ async fn reserve_cancellation(
         .runs
         .get_mut(run_id)
         .filter(|run| run.view.connection_id == connection_id)
-        .ok_or_else(|| anyhow::anyhow!("This task is not owned by this device and connection."))?;
+        .ok_or_else(|| anyhow::anyhow!(TASK_NOT_OWNED))?;
     if matches!(
         run.view.status.as_str(),
         "completed" | "failed" | "cancelled"
@@ -2692,7 +2695,7 @@ mod tests {
         reserve_cancellation, run_with_deadline, settle_confirmed_revocations,
         transition_run_status, CancelReservation, LedgerState, OwnedCancellation, OwnedRun,
         RunLedger, RunProjection, RunStatusUpdate, RunView, StartRunRequest,
-        COMPLETED_REVOCATION_UNCONFIRMED, MAX_QUEUED_RUN_PROJECTIONS,
+        COMPLETED_REVOCATION_UNCONFIRMED, MAX_QUEUED_RUN_PROJECTIONS, RUN_SLOTS_FULL,
     };
     use biorouter::agents::AgentEvent;
     use biorouter::conversation::message::Message;
@@ -3133,6 +3136,27 @@ mod tests {
         }
         assert_eq!(persisted_status(&ledger.path), "completed");
         assert_eq!(final_reason(&ledger, &view).await, "complete");
+    }
+
+    /// C1: a cancel for a task this computer's ledger does not hold on that connection, and a
+    /// start with no task slot left, call the person's machine "this computer".
+    #[tokio::test]
+    async fn task_refusals_call_the_persons_machine_this_computer() {
+        let (_temp, ledger, _view) = ledger_fixture("running", false).await;
+        for (connection, run) in [("connection-2", "run-1"), ("connection-1", "run-unknown")] {
+            let refused = reserve_cancellation(&ledger, connection, run)
+                .await
+                .err()
+                .expect("a task this computer does not own is refused");
+            assert_eq!(
+                refused.to_string(),
+                "This task is not owned by this computer and connection."
+            );
+        }
+        assert_eq!(
+            RUN_SLOTS_FULL,
+            "Four Crew tasks are already active on this computer. Finish or cancel one first."
+        );
     }
 
     #[tokio::test]

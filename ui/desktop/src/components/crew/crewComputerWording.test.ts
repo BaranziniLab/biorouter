@@ -1,3 +1,5 @@
+import { readdirSync, readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import * as access from './access/copy';
 import * as account from './account/copy';
@@ -90,5 +92,85 @@ describe('a person’s machine is a computer in Crew’s desktop', () => {
     expect(dialogs.keysCopy.devices).toBe('Computers enrolled as you');
     expect(account.deviceCopy.removeLabel('AAAA')).toBe('Remove computer AAAA');
     expect(account.deviceCopy.confirmAction).toBe('Remove computer');
+  });
+
+  it('says how a computer was added in the notice’s words and in Keys’, as the command line does', () => {
+    const via = account.addedViaText('account');
+    expect(via).toBe('by signing in to the server');
+    // `biorouter crew status`: "New computer on your account: {fingerprint}, added {date} by
+    // signing in to the server."
+    expect(account.newDevicesCopy.one('AAAA BBBB CCCC DDDD', 'November 6, 2026', via)).toBe(
+      'New computer on your account: AAAA BBBB CCCC DDDD, added November 6, 2026 by signing in to the server.'
+    );
+    expect(account.newDevicesCopy.one('AAAA', null, via)).toBe(
+      'New computer on your account: AAAA, added by signing in to the server.'
+    );
+    // Keys says the same clause for each way a computer is added.
+    expect(dialogs.keysCopy.addedVia).toBe(account.addedViaCopy);
+    for (const code of ['bootstrap', 'token', 'invitation_code', 'account'])
+      expect(account.addedViaText(code)).toBe(dialogs.keysCopy.addedVia[code]);
+    // One this build does not know has no clause, never the raw code.
+    expect(account.addedViaText('carrier_pigeon')).toBeNull();
+    expect(account.addedViaText('toString')).toBeNull();
+    expect(account.addedViaText(undefined)).toBeNull();
+  });
+});
+
+/** Every Crew source file a person's words can sit in, tests left out. */
+function crewSources(dir: string): string[] {
+  return readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
+    const path = join(dir, entry.name);
+    if (entry.isDirectory()) return entry.name === 'test' ? [] : crewSources(path);
+    return /\.tsx?$/.test(entry.name) && !/\.test\.tsx?$/.test(entry.name) ? [path] : [];
+  });
+}
+
+/**
+ * The words a source file says that sound like a sentence: string literals and JSX text holding a
+ * space, with comments left out. A route (`/devices/acknowledge`) or an ID (`${formId}-device`)
+ * has no space, so it is never read as words, and text between an arrow or a type's `>` and the
+ * next `<` is code, not JSX text.
+ */
+function sourceWords(source: string): string[] {
+  const code = source.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+  const literals = [...code.matchAll(/'((?:[^'\\\n]|\\.)*)'|"((?:[^"\\\n]|\\.)*)"|`([^`]*)`/g)].map(
+    (match) => match[1] ?? match[2] ?? match[3]
+  );
+  const jsxText = [...code.matchAll(/(?<![=-])>([^<>{}]+)<(?=\/|[A-Za-z])/g)]
+    .map((match) => match[1])
+    .filter((text) => /[A-Za-z]/.test(text) && !/[;=&|()]/.test(text));
+  return [...literals, ...jsxText].filter((text) => /\s/.test(text.trim()));
+}
+
+const saysDevice = (text: string) => /\bdevices?\b/i.test(text.replace(PROTOCOL_NAMES, ''));
+
+describe('a person’s machine is a computer in every Crew component', () => {
+  it('finds "device" in a sentence written into a component, and passes a route or an ID', () => {
+    const bad = `<p>Remove this device</p>; const label = 'A new device was added';`;
+    expect(sourceWords(bad).filter(saysDevice)).toEqual([
+      'A new device was added',
+      'Remove this device',
+    ]);
+    const good =
+      'crewHttp(`/connections/${id}/devices/acknowledge`); const id = `${formId}-device`; // a device\n' +
+      "/* the device */ const code = 'Enter the device code';";
+    expect(sourceWords(good).filter(saysDevice)).toEqual([]);
+  });
+
+  it('says "device" in no component’s own words, only in the protocol’s names', () => {
+    const files = crewSources(__dirname);
+    expect(files.length).toBeGreaterThan(100);
+    const said = files.flatMap((path) =>
+      sourceWords(readFileSync(path, 'utf8')).map(
+        (text) => [path.slice(__dirname.length + 1), text] as const
+      )
+    );
+    // It reads the components' own words, not only the copy modules'.
+    expect(said.length).toBeGreaterThan(1000);
+    expect(said.some(([path]) => path === join('dialogs', 'KeysDialog.tsx'))).toBe(true);
+    const offenders = said
+      .filter(([, text]) => saysDevice(text))
+      .map(([path, text]) => `${path}: ${text}`);
+    expect(offenders).toEqual([]);
   });
 });

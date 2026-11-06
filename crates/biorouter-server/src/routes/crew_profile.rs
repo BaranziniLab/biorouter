@@ -46,7 +46,7 @@ pub const REVOCATION_NOT_SAVED: &str = "crew_revocation_not_saved";
 pub const REVOCATION_UNCONFIRMED: &str = "crew_revocation_unconfirmed";
 /// The text of a [`REVOCATION_UNCONFIRMED`] refusal (RV-D1). The daemon asks the workspace
 /// again by itself whenever the connection is back (F3), so it asks nothing more of the person.
-pub const REVOCATION_UNCONFIRMED_MESSAGE: &str = "Stopped on this device. The workspace hasn't confirmed yet; Biorouter confirms it by itself when the connection is back.";
+pub const REVOCATION_UNCONFIRMED_MESSAGE: &str = "Stopped on this computer. The workspace hasn't confirmed yet; Biorouter confirms it by itself when the connection is back.";
 /// A chat held no consent to read the connection's workspace as the person (AO-12).
 pub const NOT_FOUND: &str = "crew_not_found";
 /// [`NOT_FOUND`]'s sentence for a read consent.
@@ -773,6 +773,11 @@ mod tests {
             assert_eq!(refusal.status, StatusCode::SERVICE_UNAVAILABLE);
             assert_eq!(refusal.code, REVOCATION_UNCONFIRMED);
             assert_eq!(refusal.error, REVOCATION_UNCONFIRMED_MESSAGE);
+            // C1: the person's machine is "this computer".
+            assert_eq!(
+                refusal.error,
+                "Stopped on this computer. The workspace hasn't confirmed yet; Biorouter confirms it by itself when the connection is back."
+            );
             assert_eq!(refusal.fields["detail"], json!(detail));
             assert_eq!(refusal.fields["stopped_on_this_device"], json!(true));
             assert_eq!(refusal.fields["remote_revocation_confirmed"], json!(false));
@@ -808,7 +813,7 @@ mod tests {
     async fn a_revoke_that_did_not_land_says_why() {
         let (_root, crew) = registry_with_one_grant();
         let error =
-            || anyhow::anyhow!("Couldn't save the revocation on this device; retry to finish it");
+            || anyhow::anyhow!("Couldn't save the revocation on this computer; retry to finish it");
 
         let gone = not_revoked(&crew, "session-gone", "run-current", error()).await;
         assert_eq!(
@@ -829,7 +834,7 @@ mod tests {
         );
         assert_eq!(
             unsaved.error,
-            "Couldn't save the revocation on this device; retry to finish it"
+            "Couldn't save the revocation on this computer; retry to finish it"
         );
     }
 

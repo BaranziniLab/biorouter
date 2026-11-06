@@ -3486,6 +3486,46 @@ async fn a_crew_too_old_to_list_says_what_to_do_and_an_install_lists_them() {
     }
 }
 
+/// The too-old note's command repeats the route the job reached the server by (the port, key
+/// file and jump route, quoted as the CLI's `route_flags` quotes them), so running it reaches
+/// the same server; with no route given it names the login alone, and a program newer than
+/// this app's copy gets no command at all.
+#[test]
+fn the_too_old_note_repeats_the_route_the_job_used() {
+    let route = Route {
+        ssh_target: LOGIN.into(),
+        port: Some(2222),
+        identity_file: Some("/Users/wanjun/.ssh/lab key".into()),
+        proxy_jump: Some("jump@gw".into()),
+    };
+    assert_eq!(
+        too_old_sentence("1.0.0", "lab-server", Some(VERSION), &route),
+        format!(
+            "Crew 1.0.0 in your account on lab-server is too old to list workspaces. Update it with biorouter crew setup --server {LOGIN} --port 2222 --identity-file '/Users/wanjun/.ssh/lab key' --proxy-jump jump@gw."
+        )
+    );
+    let bare = Route {
+        ssh_target: LOGIN.into(),
+        port: None,
+        identity_file: None,
+        proxy_jump: None,
+    };
+    assert_eq!(
+        too_old_sentence("1.0.0", "lab-server", Some(VERSION), &bare),
+        format!(
+            "Crew 1.0.0 in your account on lab-server is too old to list workspaces. Update it with biorouter crew setup --server {LOGIN}."
+        )
+    );
+    assert_eq!(
+        too_old_sentence("999.0.0", "lab-server", Some(VERSION), &route),
+        "Crew 999.0.0 in your account on lab-server is too old to list workspaces."
+    );
+    assert_eq!(
+        too_old_sentence("1.0.0", "lab-server", None, &route),
+        "Crew 1.0.0 in your account on lab-server is too old to list workspaces."
+    );
+}
+
 /// AO-8: a password server signs in once for a server target, and the next job on the same
 /// login rides that sign-in.
 #[tokio::test]

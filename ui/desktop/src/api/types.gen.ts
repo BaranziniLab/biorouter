@@ -2558,7 +2558,7 @@ export type GrantRow = {
     channel_id: string;
     connection_id: string;
     /**
-     * Stopped on this device: revoked, ended, or its connection was removed.
+     * Stopped on this computer: revoked, ended, or its connection was removed.
      */
     expired: boolean;
     /**

@@ -250,6 +250,11 @@ const REVISION_CONFLICT: &str = "Someone changed the workspace context since you
 /// sentence of its own.
 const NAME_CHANGED: &str =
     "Its name changed since you chose it, so nothing was deleted. Check the name, then try again.";
+/// A joiner's claim the host has not approved (`code_mismatch`). A person's machine is a
+/// "computer" in every sentence (2026-11), and a workspace keeps running the broker it started
+/// with, so the words are this terminal's whatever an older broker wrote ("…this device in").
+const CODE_MISMATCH: &str =
+    "The host hasn't let this computer in. Send the host the code shown on your screen.";
 
 fn identity_conflict(username: Option<&str>) -> String {
     match username {
@@ -613,6 +618,7 @@ pub fn broker_refusal_text_in(code: &str, message: &str, place: &RefusalPlace) -
             identity_conflict(named)
         }
         ("device_conflict", _) => DEVICE_CONFLICT.to_owned(),
+        ("code_mismatch", _) => CODE_MISMATCH.to_owned(),
         ("identity_mismatch", _) if !reads_as_sentence(sentence) => IDENTITY_MISMATCH.to_owned(),
         // A full workspace ([`workspace_full`]). The desktop matches the same texts
         // (`STORAGE_FULL_TEXT` in `refusals.ts`). Its host reads what the host can do (MSG2-N6).
@@ -1314,10 +1320,12 @@ fn setup_workspace_lines(status: &Value, login: &str, server: &str) -> Vec<Strin
     }
     let outcome = &status["outcome"];
     lines.extend(list_key(outcome, "restarted").iter().map(restarted_line));
+    // A check only looks: nothing was asked to restart, so nothing "wasn't restarted".
+    let look_only = str_field(status, "intent") == Some("check");
     lines.extend(
         list_key(outcome, "outdated")
             .iter()
-            .map(|entry| outdated_line(entry, server, login)),
+            .map(|entry| outdated_line(entry, server, login, look_only)),
     );
     for failed in list_key(outcome, "restart_failed") {
         lines.extend(restart_failed_lines(failed, server, login));
@@ -1436,8 +1444,10 @@ fn restarted_line(entry: &Value) -> String {
 }
 
 /// A workspace the account hosts that still runs an older Crew than the one installed, and why
-/// setup left it (AO-8), with the command that restarts it where one can.
-fn outdated_line(entry: &Value, server: &str, login: &str) -> String {
+/// setup left it (AO-8), with the command that restarts it where one can. `look_only` is a job
+/// that was not asked to restart anything (a check): it says what updating does, never that the
+/// workspace "wasn't restarted", which only a run that left it running can say.
+fn outdated_line(entry: &Value, server: &str, login: &str, look_only: bool) -> String {
     let name = listed_name(entry);
     let running = str_field(entry, "running_version").map_or_else(
         || "an older Crew".to_owned(),
@@ -1451,30 +1461,51 @@ fn outdated_line(entry: &Value, server: &str, login: &str) -> String {
         "biorouter crew setup --server {}",
         safe_text(&super::shell_word(login.trim()))
     );
+    // Restart only this workspace, never every outdated one the account hosts.
+    let restart = str_field(entry, "name").map_or_else(
+        || "--restart".to_owned(),
+        |raw| format!("--restart-workspace {}", safe_text(&super::shell_word(raw))),
+    );
     match str_field(entry, "reason") {
-        Some("others_connected") => {
-            let who = match entry.get("others_connected").and_then(Value::as_u64) {
-                Some(1) => "1 other person is connected to it".to_owned(),
-                Some(n) => format!("{n} other people are connected to it"),
-                None => "other people may be connected to it".to_owned(),
-            };
-            // Restart only this workspace, never every outdated one the account hosts.
-            let restart = str_field(entry, "name").map_or_else(
-                || "--restart".to_owned(),
-                |raw| format!("--restart-workspace {}", safe_text(&super::shell_word(raw))),
-            );
-            format!(
-                "{name} still runs {running}, not {installed}, and {who}, so it wasn't restarted. To restart it anyway, run {setup} {restart}; what they have running there stops."
-            )
-        }
         Some("running_newer") => {
             format!("{name} runs {running}, newer than {installed}, so it was left running.")
         }
         Some("custom_state_dir") => format!(
             "{name} still runs {running}, not {installed}, and keeps its state outside ~/.local/share/biorouter-crew, so setup can't restart it. Restart it on {server} yourself."
         ),
+        _ if look_only => looked_outdated_line(entry, &name, &setup, &restart),
+        Some("others_connected") => {
+            let who = match entry.get("others_connected").and_then(Value::as_u64) {
+                Some(1) => "1 other person is connected to it".to_owned(),
+                Some(n) => format!("{n} other people are connected to it"),
+                None => "other people may be connected to it".to_owned(),
+            };
+            format!(
+                "{name} still runs {running}, not {installed}, and {who}, so it wasn't restarted. To restart it anyway, run {setup} {restart}; what they have running there stops."
+            )
+        }
         _ => format!("{name} still runs {running}, not {installed}. Run {setup} to restart it."),
     }
+}
+
+/// [`outdated_line`] for a job that only looked: which Crew it runs, and the command that
+/// restarts it on the installed one, warning that other people may be connected (the desktop's
+/// "Runs Crew {running}. Update Crew restarts it." for the same row).
+fn looked_outdated_line(entry: &Value, name: &str, setup: &str, restart: &str) -> String {
+    let running = str_field(entry, "running_version").map(safe_text);
+    let installed = str_field(entry, "installed_version").map(safe_text);
+    let runs = match (&running, &installed) {
+        (Some(running), Some(installed)) => format!("runs Crew {running}, not {installed}"),
+        (Some(running), None) => format!("runs Crew {running}"),
+        (None, _) => "runs an older Crew".to_owned(),
+    };
+    let on = installed.map_or_else(
+        || "the Crew installed there".to_owned(),
+        |installed| format!("Crew {installed}"),
+    );
+    format!(
+        "{name} {runs}. To restart it on {on}, run {setup} {restart}; other people may be connected, and their running agent commands stop."
+    )
 }
 
 /// A stage's detail, when the daemon wrote one: what it found or why it was skipped.
@@ -1986,6 +2017,20 @@ fn fingerprint_hex(text: &str) -> Option<String> {
         .then(|| digits.to_ascii_uppercase())
 }
 
+/// How a computer was added (`added_via`), in the desktop's words for it in its new-computer
+/// notice and in Keys (`addedViaCopy` in `ui/desktop/src/components/crew/account/copy.ts`). A
+/// value this build does not know has no words, never its raw code.
+fn added_via(device: &Value) -> Option<&'static str> {
+    match str_field(device, "added_via")? {
+        "bootstrap" => Some("when the workspace was created"),
+        "token" => Some("with an invitation token"),
+        "invitation_code" => Some("with an invitation"),
+        // AO-2: a computer that signed in to the server as the account.
+        "account" => Some("by signing in to the server"),
+        _ => None,
+    }
+}
+
 /// Whether two device entries are the same computer, by fingerprint.
 fn same_device(left: &Value, right: &Value) -> bool {
     let digits = |device: &Value| str_field(device, "fingerprint").and_then(fingerprint_hex);
@@ -2099,7 +2144,7 @@ pub fn revoke_device_warning(
 pub fn device_revoked_lines(fingerprint: &str, here: bool, workspace: &str) -> Vec<String> {
     if here {
         vec![
-            format!("Revoked this computer's device for {workspace}."),
+            format!("Revoked this computer. It can no longer use {workspace} as you."),
             "Add this computer again with biorouter crew rejoin.".to_owned(),
         ]
     } else {
@@ -3124,6 +3169,12 @@ impl Ctx {
                 out.extend(row(self, item).into_iter().map(|line| format!("  {line}")));
             }
             out.extend(note.map(|note| format!("  {note}")));
+            if key == "former_principals" {
+                out.extend(
+                    self.alike_former_note(&items)
+                        .map(|note| format!("  {note}")),
+                );
+            }
         }
         out
     }
@@ -3175,23 +3226,46 @@ impl Ctx {
     }
 
     /// Former members as one line per account (live finding): an account removed and let in
-    /// again twice left two earlier entries, and both read "@gbellucci · a member again". An
-    /// entry is kept only for the first of its account, the member it is now when it is one
-    /// again ([`Directory::now_member`]), else its own username and UID. An entry with no
-    /// username cannot be told apart from another, so it stays.
+    /// again twice left two earlier entries, and both read "@gbellucci · a member again". The
+    /// earlier entries of a member again are one line, that member's
+    /// ([`Directory::now_member`]). Every other entry keeps its own line: the broker sends no UID
+    /// for a former member, so two entries of one username may be two accounts (one deleted on
+    /// the server and a new one made with its name), and folding them would hide one.
     fn one_line_per_account(&self, former: &mut Vec<Value>) {
-        let mut accounts = std::collections::BTreeSet::new();
-        former.retain(|principal| {
-            let person = str_field(principal, "id")
-                .and_then(|id| self.dir.people.get(id))
-                .cloned()
-                .unwrap_or_else(|| person_from(principal));
-            let account = self.dir.now_member(&person).unwrap_or(&person);
-            match account.username.clone() {
-                Some(username) => accounts.insert((username, account.uid)),
+        let mut members = std::collections::BTreeSet::new();
+        former.retain(
+            |principal| match self.dir.now_member(&self.listed_person(principal)) {
+                Some(member) => members.insert((member.username.clone(), member.uid)),
                 None => true,
-            }
-        });
+            },
+        );
+    }
+
+    /// Said under the former members when two of their lines read alike: entries of one
+    /// username that no member holds now, which only their IDs tell apart.
+    fn alike_former_note(&self, former: &[Value]) -> Option<String> {
+        if self.show_ids {
+            return None;
+        }
+        let mut seen = std::collections::BTreeSet::new();
+        former
+            .iter()
+            .map(|principal| self.listed_person(principal))
+            .filter(|person| self.dir.now_member(person).is_none())
+            .filter_map(|person| person.username)
+            .any(|username| !seen.insert(username))
+            .then(|| {
+                "Some former members share a username. Add --show-ids to tell them apart."
+                    .to_owned()
+            })
+    }
+
+    /// The person a listed principal is: as the directory names its ID, else as it says itself.
+    fn listed_person(&self, principal: &Value) -> Person {
+        str_field(principal, "id")
+            .and_then(|id| self.dir.people.get(id))
+            .cloned()
+            .unwrap_or_else(|| person_from(principal))
     }
 
     /// How many of a team's or channel's `members` (principal IDs) are members now. An ID the
@@ -3209,7 +3283,13 @@ impl Ctx {
         let mut out = self.member_row(principal);
         let devices = list_key(principal, "devices");
         if !devices.is_empty() {
-            out.push(format!("  Devices ({}):", devices.len()));
+            // A person's machine is a computer (2026-11), headed as the desktop's Keys heads it.
+            let heading = if self.is_actor(str_field(principal, "id")) {
+                "Computers enrolled as you"
+            } else {
+                "Computers"
+            };
+            out.push(format!("  {heading} ({}):", devices.len()));
             for device in devices {
                 out.push(format!("    {}", self.device_row(device)));
             }
@@ -3218,28 +3298,39 @@ impl Ctx {
     }
 
     fn device_row(&self, device: &Value) -> String {
-        let mut parts = vec![
-            str_field(device, "fingerprint").map_or_else(|| "Unknown device".into(), safe_text)
-        ];
+        let mut parts =
+            vec![str_field(device, "fingerprint")
+                .map_or_else(|| "Unknown computer".into(), safe_text)];
         if let Some(at) = device.get("added_at").and_then(Value::as_i64) {
             parts.push(format!("added {}", self.date(at)));
         }
-        if let Some(via) = str_field(device, "added_via") {
-            let via = match via {
-                "bootstrap" => "workspace setup".into(),
-                "token" => "enrollment token".into(),
-                "invitation_code" => "invitation code".into(),
-                // AO-2: a computer that signed in to the server as the account.
-                "account" => "account sign-in".into(),
-                other => sentence_case(other).to_lowercase(),
-            };
-            parts.push(format!("via {via}"));
-        }
+        parts.extend(added_via(device).map(str::to_owned));
         // AO-5: the key that signed the snapshot this row came from.
         if device.get("this_device").and_then(Value::as_bool) == Some(true) {
             parts.push("This computer".into());
         }
         parts.join(" · ")
+    }
+
+    /// A new computer in the desktop's notice's words (`newDevicesCopy.one`): its fingerprint,
+    /// then when and how it was added, as known ("3F2A 9C1E 77B0 D4E1, added Sep 23, 2026 by
+    /// signing in to the server").
+    fn new_device_text(&self, device: &Value) -> String {
+        let fingerprint =
+            str_field(device, "fingerprint").map_or_else(|| "Unknown computer".into(), safe_text);
+        let when = device
+            .get("added_at")
+            .and_then(Value::as_i64)
+            .map(|at| self.date(at));
+        let added: Vec<String> = when
+            .into_iter()
+            .chain(added_via(device).map(str::to_owned))
+            .collect();
+        if added.is_empty() {
+            fingerprint
+        } else {
+            format!("{fingerprint}, added {}", added.join(" "))
+        }
     }
 
     /// AO-10: a line under a connection for each computer added to the person's account there
@@ -3273,7 +3364,7 @@ impl Ctx {
             .map(|device| {
                 format!(
                     "  New computer on your account: {}. {check}",
-                    self.device_row(device)
+                    self.new_device_text(device)
                 )
             })
             .collect()
@@ -3787,7 +3878,7 @@ impl Ctx {
         if stopped {
             return match str_field(grant, "revocation") {
                 Some("unconfirmed") => {
-                    "Stopped on this device; the workspace hasn't confirmed yet".into()
+                    "Stopped on this computer; the workspace hasn't confirmed yet".into()
                 }
                 Some("ended_by_workspace") => "Ended: Crew settings changed".into(),
                 _ if task => task_over(),
@@ -5478,7 +5569,7 @@ mod tests {
         let profile = named(&bob_snapshot()["actor"], &bob_snapshot());
         assert_eq!(
             profile,
-            format!("{} · you\n  Devices (1):\n    70DC-FFAF-1751-A59B · added Sep 24, 2026 · via enrollment token", bob())
+            format!("{} · you\n  Computers enrolled as you (1):\n    70DC-FFAF-1751-A59B · added Sep 24, 2026 · with an invitation token", bob())
         );
         for text in [channels, invites, profile] {
             assert_no_machine_ids(&text);
@@ -5732,7 +5823,7 @@ mod tests {
             ),
             (
                 json!({"kind": "chat", "expired": true, "revocation": "unconfirmed", "remote_revocation_confirmed": false}),
-                format!("Chat 20260924_3 {base} · Stopped on this device; the workspace hasn't confirmed yet · policy epoch 4"),
+                format!("Chat 20260924_3 {base} · Stopped on this computer; the workspace hasn't confirmed yet · policy epoch 4"),
             ),
             (
                 json!({"kind": "chat", "expired": true, "revocation": "ended_by_workspace", "remote_revocation_confirmed": null}),
@@ -5766,7 +5857,7 @@ mod tests {
             [
                 format!("Chat 20260924_3 {base} · Active · policy epoch 4"),
                 "Earlier access no chat holds any more:".into(),
-                format!("  Chat 20260924_3 {base} · Stopped on this device; the workspace hasn't confirmed yet · policy epoch 4"),
+                format!("  Chat 20260924_3 {base} · Stopped on this computer; the workspace hasn't confirmed yet · policy epoch 4"),
                 "Biorouter confirms these with the workspace by itself whenever the connection is up.".into(),
             ]
             .join("\n")
@@ -6372,7 +6463,12 @@ mod tests {
         (
             "code_mismatch",
             "code_mismatch: The host hasn't let this device in. Send the host the code shown on your screen.",
-            "The host hasn't let this device in. Send the host the code shown on your screen.",
+            CODE_MISMATCH,
+        ),
+        (
+            "code_mismatch",
+            "code_mismatch: The host hasn't let this computer in. Send the host the code shown on your screen.",
+            CODE_MISMATCH,
         ),
         (
             "forbidden",
@@ -7029,6 +7125,57 @@ mod tests {
         assert!(unnamed.contains(" · 2 members"), "{unnamed}");
     }
 
+    /// The broker sends no UID for a former member, so two former entries of one username that
+    /// no member holds now may be two accounts (one deleted on the server, another made with its
+    /// name). Each keeps its line, and the IDs tell them apart. Only the earlier entries of a
+    /// member again are folded, into that member's one line.
+    #[test]
+    fn former_entries_of_one_username_stay_apart_without_a_member_now() {
+        let snapshot = json!({
+            "workspace": {"id": WORKSPACE, "name": "acct-lab", "host_uid": 1020},
+            "actor": {"id": ALICE, "username": "wanjun", "uid": 1020},
+            "principals": [{"id": ALICE, "username": "wanjun", "uid": 1020}],
+            "former_principals": [
+                {"id": CAROL, "username": "gbellucci", "active": false},
+                {"id": DAVE, "username": "gbellucci", "active": false}
+            ],
+            "teams": [],
+            "channels": []
+        });
+        let shown = named(&snapshot, &snapshot);
+        assert!(
+            shown.contains("Former members (2):\n  @gbellucci · former member\n  @gbellucci · former member\n  Some former members share a username. Add --show-ids to tell them apart.\n"),
+            "{shown}"
+        );
+        let ids = with_ids(&snapshot, &snapshot);
+        assert!(
+            ids.contains(&format!("Former members (2):\n  @gbellucci · former member [ID {CAROL}]\n  @gbellucci · former member [ID {DAVE}]\n")),
+            "{ids}"
+        );
+        assert!(!ids.contains("share a username"), "{ids}");
+        // One former entry of a username is one line, and nothing needs telling apart.
+        let mut one = snapshot.clone();
+        one["former_principals"] = json!([{"id": CAROL, "username": "gbellucci", "active": false}]);
+        let shown = named(&one, &one);
+        assert!(
+            shown.contains("Former members (1):\n  @gbellucci · former member\n"),
+            "{shown}"
+        );
+        assert!(!shown.contains("share a username"), "{shown}");
+        // Let in again, the account's earlier entries are its member's one line.
+        let mut again = snapshot.clone();
+        again["principals"]
+            .as_array_mut()
+            .expect("principals")
+            .push(json!({"id": BOB, "username": "gbellucci", "uid": 1022}));
+        let shown = named(&again, &again);
+        assert!(
+            shown.contains("Former members (1):\n  @gbellucci · a member again\n"),
+            "{shown}"
+        );
+        assert!(!shown.contains("share a username"), "{shown}");
+    }
+
     /// OW-9: a check says what the server is and what is installed; an install says what it did;
     /// a member's setup says it connected and what agents may do.
     #[test]
@@ -7211,9 +7358,32 @@ mod tests {
                 reach,
                 "2 other workspaces on wanjun@leo run an older Crew, which can't say whether you belong to them.",
                 "There was more on wanjun@leo than setup looks through at once, so this list may not be complete.",
-                "baranzini-lab still runs Crew 1.94.1, not Crew 1.94.2. Run biorouter crew setup --server wanjun@leo to restart it.",
+                "baranzini-lab runs Crew 1.94.1, not 1.94.2. To restart it on Crew 1.94.2, run biorouter crew setup --server wanjun@leo --restart-workspace baranzini-lab; other people may be connected, and their running agent commands stop.",
             ]
         );
+        // C3: a check asked nothing to restart, so a workspace others are connected to is said
+        // as a look, never as one that "wasn't restarted".
+        let mut busy = check.clone();
+        busy["outcome"]["outdated"] = json!([
+            {"workspace_id": "b", "name": "busy lab", "running_version": "1.94.1",
+             "installed_version": "1.94.2", "others_connected": 3, "reason": "others_connected"},
+            {"workspace_id": "e", "reason": "others_connected"}
+        ]);
+        let looked = setup_summary_lines(&busy, "wanjun@leo", None);
+        assert_eq!(
+            looked[looked.len() - 2..],
+            [
+                "busy lab runs Crew 1.94.1, not 1.94.2. To restart it on Crew 1.94.2, run biorouter crew setup --server wanjun@leo --restart-workspace 'busy lab'; other people may be connected, and their running agent commands stop.",
+                "A workspace runs an older Crew. To restart it on the Crew installed there, run biorouter crew setup --server wanjun@leo --restart; other people may be connected, and their running agent commands stop.",
+            ]
+        );
+        assert!(!looked.iter().any(|line| line.contains("wasn't restarted")));
+        // The same entry from a job that could restart it, and left it running, says so.
+        let mut ran = busy.clone();
+        ran["intent"] = json!("install");
+        assert!(setup_summary_lines(&ran, "wanjun@leo", None).contains(
+            &"busy lab still runs Crew 1.94.1, not Crew 1.94.2, and 3 other people are connected to it, so it wasn't restarted. To restart it anyway, run biorouter crew setup --server wanjun@leo --restart-workspace 'busy lab'; what they have running there stops.".to_owned()
+        ));
         // The reach sentences replace "Ready", so the progress lines leave it out.
         assert!(
             setup_progress_lines(&Value::Null, &check, "wanjun@leo", &SetupNamed::default())
@@ -7309,15 +7479,50 @@ mod tests {
         );
     }
 
-    /// AO-5, AO-12: device rows name an account sign-in and this computer, and the grants list
-    /// names a chat that reads a workspace as the person.
+    /// AO-5, AO-12, C2: a computer's row says how it was added, in the desktop's words, and
+    /// which is this computer; the grants list names a chat that reads a workspace as the person.
     #[test]
     fn devices_and_reads_are_said_in_words() {
         let options = HumanOptions::in_utc_at(1_790_214_655);
         let device = json!({"fingerprint": "3F2A 9C1E 77B0 D4E1", "added_at": 1_790_200_000, "added_via": "account", "this_device": true});
         assert_eq!(
             device_text(&device, &options),
-            "3F2A 9C1E 77B0 D4E1 · added Sep 23, 2026 · via account sign-in · This computer"
+            "3F2A 9C1E 77B0 D4E1 · added Sep 23, 2026 · by signing in to the server · This computer"
+        );
+        // C2: how a computer was added reads as the desktop's notice and Keys say it, byte for
+        // byte (`addedViaCopy`), and one this build does not know has no words.
+        let copy = std::fs::read_to_string(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../ui/desktop/src/components/crew/account/copy.ts"),
+        )
+        .expect("the desktop copy deck");
+        for (via, said) in [
+            ("account", "by signing in to the server"),
+            ("bootstrap", "when the workspace was created"),
+            ("token", "with an invitation token"),
+            ("invitation_code", "with an invitation"),
+        ] {
+            let row = device_text(&json!({"fingerprint": "AAAA", "added_via": via}), &options);
+            assert_eq!(row, format!("AAAA · {said}"));
+            assert!(copy.contains(&format!("{via}: '{said}',")), "{via}: {said}");
+        }
+        assert_eq!(
+            device_text(&json!({"added_via": "migration"}), &options),
+            "Unknown computer"
+        );
+        // The status line's new computer, as the desktop's notice says it.
+        let ctx = Ctx::new(Directory::default(), false, options.clock);
+        assert_eq!(
+            ctx.new_device_text(&device),
+            "3F2A 9C1E 77B0 D4E1, added Sep 23, 2026 by signing in to the server"
+        );
+        assert_eq!(
+            ctx.new_device_text(&json!({"fingerprint": "AAAA", "added_via": "account"})),
+            "AAAA, added by signing in to the server"
+        );
+        assert_eq!(
+            ctx.new_device_text(&json!({"fingerprint": "AAAA", "added_via": "migration"})),
+            "AAAA"
         );
         let grants = json!({"grants": [], "person_reads": [
             {"session_id": "20260924_2", "connection_id": "c", "granted_at": 1_790_200_000, "connection_name": "lab"}

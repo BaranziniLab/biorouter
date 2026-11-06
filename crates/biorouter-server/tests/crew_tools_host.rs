@@ -2062,8 +2062,9 @@ fn full_access_where_the_person_hosts_says_agents_can_act_as_the_host() {
             .position(|line| line.starts_with("Agents get full access"))
             .unwrap_or_else(|| panic!("no access line: {lines:?}"));
         let hosting = format!(
-            "You host {name} from this account, so agents can also read the workspace's own files on the server, including channels you're not in. They can also act as the host of {name}."
+            "You host {name} from this account, so your agent can also read the workspace's own files on the server, including channels you're not in. It can also act as the host of {name}."
         );
+        assert!(lines[at].ends_with(FULL_ACCESS_IS_YOU), "{lines:?}");
         assert_eq!(
             lines.get(at + 1).copied(),
             Some(hosting.as_str()),
@@ -2085,6 +2086,11 @@ fn full_access_where_the_person_hosts_says_agents_can_act_as_the_host() {
             member.cards[0].prompt
         );
         assert!(
+            member.cards[0].prompt.contains(FULL_ACCESS_IS_YOU),
+            "{}",
+            member.cards[0].prompt
+        );
+        assert!(
             !member.cards[0].prompt.contains("act as the host"),
             "{}",
             member.cards[0].prompt
@@ -2095,6 +2101,129 @@ fn full_access_where_the_person_hosts_says_agents_can_act_as_the_host() {
             "a denied setup started a job"
         );
         remove(&connection).await;
+    });
+}
+
+/// Turning full access on for a saved connection says what every full-access card says (W1),
+/// after what full access lets an agent do, and on the host's account the host's sentence (W2)
+/// right after it, as the setup, open and host cards do. Through a workspace someone else
+/// hosts, W1 alone. Nothing is saved when the person declines.
+#[test]
+#[serial]
+fn setting_full_access_says_what_it_is_and_the_host_s_sentence_where_the_person_hosts() {
+    run(async {
+        const WORKSPACE: &str = "3f2a9c1e-77b0-4d4e-8a11-0000000c000e";
+        const HOST: &str = "set-full.example.test";
+        let connection = workspace(
+            WORKSPACE,
+            HOST,
+            false,
+            snapshot("private", Some("ucsf"), false),
+            false,
+        )
+        .await;
+        // A server whose Crew and bridge can give full access.
+        let full_capable = |snapshot_answer: Value| {
+            let mut capabilities = ACCOUNT_CAPABILITIES.to_vec();
+            capabilities.push(biorouter::crew::REMOTE_ACCESS_CAPABILITY);
+            Scenario::new(WORKSPACE, &capabilities)
+                .answer("workspace.snapshot", snapshot_answer)
+                .answer(
+                    "bridge.hello",
+                    json!({"result": {
+                        "capabilities": [biorouter::crew::BRIDGE_FULL_CAPABILITY],
+                        "home": "/home/alice",
+                    }}),
+                )
+        };
+        stage(
+            HOST,
+            &full_capable(snapshot("private", Some("ucsf"), false)),
+        );
+        crew()
+            .connect(&connection.id)
+            .await
+            .expect("the fake workspace verifies");
+        let saved_before = crew().connection(&connection.id).await.unwrap();
+        let session = chat("set full access").await;
+        let set_full = |session: String, id: String| async move {
+            call(
+                &session,
+                private_local().await,
+                PersonTool::Change,
+                "connections_set_access",
+                json!({"connection": id, "access": "full", "folder": "/home/alice/crew-work/lab"}),
+                &["deny"],
+            )
+            .await
+        };
+
+        let hosted = set_full(session.clone(), connection.id.clone()).await;
+        assert_eq!(hosted.cards.len(), 1, "{:?}", hosted.answer);
+        assert_eq!(
+            hosted.refusal(),
+            "The person declined. Nothing was changed."
+        );
+        let lines: Vec<&str> = hosted.cards[0].prompt.lines().collect();
+        assert!(
+            lines[0].ends_with("Public models never get this access"),
+            "{lines:?}"
+        );
+        assert_eq!(lines.get(1).copied(), Some(FULL_ACCESS_IS_YOU), "{lines:?}");
+        let name = &connection.name;
+        let hosting = format!(
+            "You host {name} from this account, so your agent can also read the workspace's own files on the server, including channels you're not in. It can also act as the host of {name}."
+        );
+        assert_eq!(lines.get(2).copied(), Some(hosting.as_str()), "{lines:?}");
+        let saved_after = crew().connection(&connection.id).await.unwrap();
+        assert_eq!(saved_after.remote_access, saved_before.remote_access);
+        assert_eq!(saved_after.remote_root, saved_before.remote_root);
+
+        // Bob hosts it: W1 still, and nothing of the host's authority.
+        let mut bobs = snapshot("private", Some("ucsf"), false);
+        bobs["result"]["workspace"]["host_principal_id"] = json!("p-bob");
+        stage(HOST, &full_capable(bobs));
+        let member = set_full(session.clone(), connection.id.clone()).await;
+        assert_eq!(member.cards.len(), 1, "{:?}", member.answer);
+        let prompt = &member.cards[0].prompt;
+        assert!(
+            prompt.lines().any(|line| line == FULL_ACCESS_IS_YOU),
+            "{prompt}"
+        );
+        assert!(!prompt.contains("act as the host"), "{prompt}");
+        remove(&connection).await;
+    });
+}
+
+/// W1, word for word as the CLI and the desktop say it.
+const FULL_ACCESS_IS_YOU: &str = "Crew treats anything running as your account as you, so your agent can also add a computer to your account and post in Crew as you, with no agent mark.";
+
+/// Revoking one of the person's computers names one computer: a call that names none, or both
+/// ways, is refused in those words before any card.
+#[test]
+#[serial]
+fn revoking_a_computer_needs_one_named() {
+    run(async {
+        let session = chat("revoke computer").await;
+        for params in [
+            json!({}),
+            json!({"fingerprint": "AAAA", "this_device": true}),
+        ] {
+            let refused = call(
+                &session,
+                private_local().await,
+                PersonTool::Change,
+                "profile_revoke_device",
+                params,
+                &[],
+            )
+            .await;
+            assert!(refused.cards.is_empty());
+            assert_eq!(
+                refused.refusal(),
+                "Name one computer: its fingerprint, or this_device."
+            );
+        }
     });
 }
 

@@ -1850,7 +1850,7 @@ test('account-sentences: the desktop says "computer", and its "device" words are
   assertCaught(
     {
       [PRIVACY]: swap(
-        '"New computer on your account: {fingerprint}, added {date}."',
+        '"New computer on your account: {fingerprint}, added {date} by signing in to the server."',
         '"A new device was added to your account on {date}.", followed by "Its fingerprint is {fingerprint}."'
       ),
     },
@@ -1867,14 +1867,27 @@ test('account-sentences: the desktop says "computer", and its "device" words are
     'account-sentences',
     /quotes "\{count\} new devices were added to your account\.", which is not how the new-computer notice/
   );
+  // The notice's second sentence, gone since it says how a computer was added in its first.
+  assertCaught(
+    {
+      [PRIVACY]: swap(
+        ' by signing in to the server.", or says ',
+        '." and "It signed in to the server as you.", or says '
+      ),
+    },
+    'account-sentences',
+    /privacy-and-security\.md quotes "It signed in to the server as you\.", which is not how the new-computer notice/
+  );
   // The page the notice sends a reader to stops quoting it.
   assertCaught(
     {
       [PRIVACY]: (text) =>
         text
-          .replace('"New computer on your account: {fingerprint}, added {date}." and, ', '')
-          .replace('"It signed in to the server as you.", or ', '')
-          .replace('"{count} new computers on your account." for several', 'a count for several'),
+          .replace(
+            ', such as "New computer on your account: {fingerprint}, added {date} by signing in to the server.", or says ',
+            ', or a count '
+          )
+          .replace('"{count} new computers on your account." for several', 'for several'),
     },
     'account-sentences',
     /privacy-and-security\.md does not quote the new-computer notice/

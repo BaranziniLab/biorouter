@@ -65,7 +65,7 @@ pub(super) const MEMBERSHIP_CHANGED: &str = "account_changed: Membership for thi
 /// The person who invited (or, in an open workspace, admitted) the joiner no longer holds that
 /// authority: they were removed, or the workspace became managed and they are not the host.
 pub(super) const INVITER_CHANGED: &str = "account_changed: The person who invited you can no longer let people in. Ask the host to invite you again.";
-const CODE_MISMATCH: &str = "code_mismatch: The host hasn't let this device in. Send the host the code shown on your screen.";
+const CODE_MISMATCH: &str = "code_mismatch: The host hasn't let this computer in. Send the host the code shown on your screen.";
 const NAME_INVALID: &str = "name_invalid: Type the account's name on the server, with no spaces, slashes, colons or invisible characters.";
 const NAME_DIGITS: &str =
     "name_invalid: Type the account's name on the server, not its numeric user ID.";
@@ -493,7 +493,7 @@ fn admission_target(s: &State, account: &Account, add_device: bool) -> Result<Op
         Some(member) if member.username == account.name => {
             ensure!(
                 add_device,
-                "already_member: @{} is already a member. Choose Add device to add another computer for them.",
+                "already_member: @{} is already a member. To add another computer for them, choose Add another computer.",
                 member.username
             );
             Ok(Some(member.id.clone()))
@@ -507,7 +507,7 @@ fn admission_target(s: &State, account: &Account, add_device: bool) -> Result<Op
         None => {
             ensure!(
                 !add_device,
-                "invalid_params: @{} is not a member yet. Invite them without Add device.",
+                "invalid_params: @{} is not a member yet. Turn off Add another computer, then invite them.",
                 account.name
             );
             Ok(None)

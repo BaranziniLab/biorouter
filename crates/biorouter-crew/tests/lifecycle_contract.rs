@@ -577,10 +577,10 @@ mod linux {
         let answers = bridge(&socket, &workspace_id, Some("job-1"), &methods);
         for answer in &answers[..2] {
             assert_eq!(answer["error"]["code"], "agent_session_refused", "{answer}");
-            assert!(answer["error"]["message"]
-                .as_str()
-                .unwrap()
-                .starts_with("agent_session_refused: "));
+            assert_eq!(
+                answer["error"]["message"],
+                "agent_session_refused: An agent's job on the server cannot add or remove your computers. Do this from Biorouter on your computer."
+            );
         }
         assert_eq!(answers[2]["result"]["ok"], true);
         assert_eq!(

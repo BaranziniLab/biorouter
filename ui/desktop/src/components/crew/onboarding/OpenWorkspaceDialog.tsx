@@ -76,6 +76,50 @@ export function workspaceOutdated(
  */
 const LEFT_FOR_GOOD: readonly SetupOutdatedReason[] = ['running_newer', 'custom_state_dir'];
 
+/**
+ * What a job was asked to restart or start: every workspace the account hosts
+ * (`restart_workspaces: true`), or the IDs it named in `restart_workspace_ids` and
+ * `start_workspaces`.
+ */
+interface RestartScope {
+  all: boolean;
+  ids: ReadonlySet<string>;
+}
+
+const NO_RESTART: RestartScope = { all: false, ids: new Set() };
+
+/** The scope of a job started with `extra`. */
+function restartScope(extra: {
+  restart_workspaces?: boolean;
+  restart_workspace_ids?: readonly string[];
+  start_workspaces?: readonly string[];
+}): RestartScope {
+  return {
+    all: extra.restart_workspaces === true,
+    ids: new Set([...(extra.restart_workspace_ids ?? []), ...(extra.start_workspaces ?? [])]),
+  };
+}
+
+/**
+ * Whether the job behind the list was asked to restart `entry`, a workspace the account hosts.
+ * Only then can a row say a restart was left undone; any other row was only looked at, whatever
+ * the job did for the rows beside it.
+ */
+function askedToRestart(scope: RestartScope, entry: SetupWorkspace): boolean {
+  return entry.role === 'host' && (scope.all || scope.ids.has(entry.workspaceId));
+}
+
+/**
+ * Whether installing this computer's Crew (`ours`) replaces the Crew in the account (`installed`)
+ * as the daemon's install does (setup.rs `plan`): an older version, or the same version built
+ * from other bytes. A newer one stays, and a version that can't be read can't be compared, so
+ * Update Crew would change nothing there.
+ */
+export function installReplaces(installed: string | null, ours: string | null): boolean {
+  const shaped = (version: string | null) => version !== null && /^\d+\.\d+\.\d+/.test(version);
+  return shaped(installed) && shaped(ours) && !versionOlder(ours, installed);
+}
+
 /** Two hosts have a workspace of one name here (AO-6): the dialog says so, and names each host. */
 function sharedNames(workspaces: readonly SetupWorkspace[]): string[] {
   const hosts = new Map<string, Set<string>>();
@@ -168,11 +212,11 @@ function OpenWorkspaceView({
   /** The last finished job: its list of workspaces and what it restarted. */
   const [found, setFound] = useState<SetupRun | null>(null);
   /**
-   * Whether `found` came from a job that asked to restart or start nothing (a look, or updating
-   * the Crew in the account): it says what Update Crew would do, never why a restart was left.
+   * What the job behind `found` was asked to restart or start (`restartScope`). A row outside it
+   * was only looked at: it says what Update Crew would do, never why a restart was left.
    */
-  const [foundLookOnly, setFoundLookOnly] = useState(true);
-  const jobLookOnly = useRef(true);
+  const [foundScope, setFoundScope] = useState<RestartScope>(NO_RESTART);
+  const jobScope = useRef<RestartScope>(NO_RESTART);
   /** The row (`setupWorkspaceKey`) whose Update Crew is asking first. */
   const [confirmUpdate, setConfirmUpdate] = useState<string | null>(null);
   /** The row being opened. */
@@ -198,7 +242,7 @@ function OpenWorkspaceView({
     server,
     onFinished: (run) => {
       setFound(run);
-      setFoundLookOnly(jobLookOnly.current);
+      setFoundScope(jobScope.current);
     },
   });
   const busy = preparing || job.busy || opening !== null;
@@ -225,7 +269,7 @@ function OpenWorkspaceView({
     setJobIntent(intent);
     setConfirmUpdate(null);
     focusAfterJob.current = row;
-    jobLookOnly.current = !extra.restart_workspace_ids?.length && !extra.start_workspaces?.length;
+    jobScope.current = restartScope(extra);
     const result = await job.start({
       target: { kind: 'server', ...on.route, preparation_id: on.preparationId },
       intent,
@@ -393,10 +437,15 @@ function OpenWorkspaceView({
    * Why the last job listed no workspaces, and whether installing this computer's Crew in the
    * account answers it: a Crew there too old to list them, or none (live QA: an older Crew in the
    * account was a dead end). The install restarts no workspace (`restart_workspaces: false`), and
-   * the same job then looks for the workspaces again with the Crew it installed.
+   * the same job then looks for the workspaces again with the Crew it installed. Update Crew is
+   * offered only where the install replaces the Crew there (`installReplaces`); for one newer than
+   * this computer's, or one whose version can't be read, the daemon's sentence alone is said.
    */
   const unlisted = found?.workspacesUnlisted ?? null;
-  const installs = available !== null && (unlisted === 'too_old' || unlisted === 'not_installed');
+  const installs =
+    available !== null &&
+    ((unlisted === 'too_old' && installReplaces(found?.installedVersion ?? null, available)) ||
+      unlisted === 'not_installed');
   const unlistedText = !found
     ? null
     : installs && unlisted === 'too_old'
@@ -514,13 +563,14 @@ function OpenWorkspaceView({
             {openCopy.outdated(entry.version, available)}
           </p>
         );
-      // Why the last update left it, when a reason says more than "older" does. After a look,
-      // which asked to restart nothing, what Update Crew would do instead (it was never tried).
+      // Why the last update left it, when a reason says more than "older" does. A row the last job
+      // was not asked to restart (a look, or Update Crew or Start for another row) says what Update
+      // Crew would do instead: nobody tried to restart it.
       const reason =
         left?.reason === 'others_connected'
-          ? foundLookOnly
-            ? openCopy.restartsOnUpdate(othersOf(entry))
-            : openCopy.leftRunning.others_connected(othersOf(entry))
+          ? askedToRestart(foundScope, entry)
+            ? openCopy.leftRunning.others_connected(othersOf(entry))
+            : openCopy.restartsOnUpdate(othersOf(entry))
           : left?.reason === 'running_newer'
             ? openCopy.leftRunning.running_newer(left.runningVersion ?? entry.version)
             : left?.reason === 'custom_state_dir'

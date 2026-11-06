@@ -21,7 +21,7 @@ use serde_json::{json, Value};
 use super::places::{
     channel_phrase, crossing, item, place, public_safe, reading, resolve, yours, Place, Reading,
 };
-use super::setup::CREW_TASK_MODEL;
+use super::setup::{hosting_line, hosts, CREW_TASK_MODEL, FULL_ACCESS_IS_YOU};
 use super::{idempotency_key, refusal_text, said, Card, Ctx, Progress};
 use crate::routes::crew::names::SelectorKind;
 use crate::routes::crew::{
@@ -297,16 +297,30 @@ fn task_model(ctx: &Ctx) -> Result<(String, String)> {
     Ok(choice)
 }
 
-/// What the task may do on the server, as its card says it.
-fn access_line(connection: &biorouter::crew::Connection, server: &str) -> String {
+/// What the task may do on the server, as its card says it. With full access, the task runs as
+/// the account, so the card also says what every full-access card says ([`FULL_ACCESS_IS_YOU`])
+/// and, when the account hosts `workspace` (`account_hosts`, from the person's own snapshot),
+/// what that adds ([`hosting_line`]).
+pub(super) fn access_lines(
+    connection: &biorouter::crew::Connection,
+    server: &str,
+    workspace: &str,
+    account_hosts: bool,
+) -> Vec<String> {
     match (&connection.remote_root, connection.remote_access) {
-        (None, _) => format!("It can't work on {server}."),
-        (Some(_), RemoteAccess::Folder) => format!(
+        (None, _) => vec![format!("It can't work on {server}.")],
+        (Some(_), RemoteAccess::Folder) => vec![format!(
             "With a private model it can run commands in its work folder on {server}, confined to that folder."
-        ),
-        (Some(_), RemoteAccess::Full) => format!(
-            "With a private model it can run any command as you on {server}, and read and change any file your account can."
-        ),
+        )],
+        (Some(_), RemoteAccess::Full) => {
+            let mut lines = vec![format!(
+                "With a private model it can run any command as you on {server}, and read and change any file your account can. {FULL_ACCESS_IS_YOU}"
+            )];
+            if account_hosts {
+                lines.extend(hosting_line(Some("full"), workspace));
+            }
+            lines
+        }
     }
 }
 
@@ -387,11 +401,14 @@ pub(super) fn tasks_ask(ctx: &Ctx) -> BoxFuture<'_, Result<Value>> {
         } else {
             format!("It may also read {}.", and_list(&source_names))
         })
-        .line(access_line(&place.connection, &place.server))
         .show("channel", channel.label.clone())
         .show("prompt", prompt.clone())
         .show("provider", provider.clone())
         .show("model", model.clone());
+        let host = hosts(&place.snapshot) == Some(true);
+        for line in access_lines(&place.connection, &place.server, &place.workspace, host) {
+            card = card.line(line);
+        }
         if !source_names.is_empty() {
             card = card.show("context_channels", json!(source_names));
         }

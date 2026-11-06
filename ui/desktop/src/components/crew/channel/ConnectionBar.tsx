@@ -13,7 +13,7 @@ import {
 import { acknowledgeNewDevices, rejoinConnection, type CrewRejoined } from '../account/api';
 import { useBuildBrokerVersion } from '../account/brokerVersion';
 import { ChatSetupJobNotes } from '../account/ChatSetupJobs';
-import { newDevicesCopy, rejoinCopy, versionCopy } from '../account/copy';
+import { addedViaText, newDevicesCopy, rejoinCopy, versionCopy } from '../account/copy';
 import { clearNeedsRejoin, useNeedsRejoin } from '../account/rejoinMarks';
 import { buildPeopleDirectory, personLabel } from '../identity';
 import { useJoinContext } from '../onboarding/joinContext';
@@ -800,18 +800,17 @@ export function ConnectionBar({ className }: ConnectionBarProps) {
           }
         >
           <p>
-            {/* Which one: its fingerprint, as Keys lists it and marks it New. */}
+            {/* Which one: its fingerprint, as Keys lists it and marks it New, and how it was
+                added, as `biorouter crew status` says it. */}
             {unseenDevices.length === 1 && newestDevice
               ? newDevicesCopy.one(
                   newestDevice.fingerprint,
                   typeof newestDevice.added_at === 'number'
                     ? calendarDate(newestDevice.added_at)
-                    : null
+                    : null,
+                  addedViaText(newestDevice.added_via)
                 )
               : newDevicesCopy.many(unseenDevices.length)}
-            {unseenDevices.length === 1 && newestDevice?.added_via === 'account'
-              ? ` ${newDevicesCopy.viaAccount}`
-              : null}
           </p>
           {ackErrorHere ? <p className="text-text-danger">{ackErrorHere}</p> : null}
         </Note>

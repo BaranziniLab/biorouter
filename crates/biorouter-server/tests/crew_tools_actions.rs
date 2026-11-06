@@ -2159,6 +2159,100 @@ fn tasks_are_asked_for_on_one_card_and_a_private_chat_s_cannot_use_a_public_mode
     });
 }
 
+/// A task asked through a connection with full access runs as the account, so its card says
+/// what every full-access card says (W1) right after what the task can do on the server, and,
+/// since Alice hosts the workspace, the host's sentence (W2) after that. Nothing is sent when
+/// the person declines.
+#[test]
+#[serial]
+fn a_task_with_full_server_access_says_what_full_access_is() {
+    run(async {
+        const WORKSPACE: &str = "3f2a9c1e-77b0-4d4e-8a11-0000000d00f1";
+        const HOST: &str = "tasks-full.example.test";
+        let connection = workspace(
+            HOST,
+            false,
+            scenario(WORKSPACE, "private", snapshot("private", false)),
+        )
+        .await;
+        // Full access, saved as `connections set-access full` saves it.
+        let whole = serde_json::to_value(&connection).unwrap();
+        let mut fields = serde_json::Map::new();
+        for key in [
+            "name",
+            "ssh_target",
+            "port",
+            "identity_file",
+            "proxy_jump",
+            "socket_path",
+            "owner_uid",
+            "workspace_id",
+            "workspace_public_key",
+            "cluster_connection_id",
+            "mode",
+            "institution_id",
+        ] {
+            if let Some(value) = whole.get(key) {
+                fields.insert(key.into(), value.clone());
+            }
+        }
+        fields.insert("remote_root".into(), json!("/home/alice/crew-work/lab"));
+        fields.insert("remote_execution".into(), json!(true));
+        fields.insert("remote_access".into(), json!("full"));
+        let full = crew()
+            .update(
+                &connection.id,
+                serde_json::from_value(Value::Object(fields)).unwrap(),
+            )
+            .await
+            .expect("full access saves");
+        assert_eq!(full.remote_access, biorouter::crew::RemoteAccess::Full);
+        let session = private_chat("tasks full").await;
+        crew()
+            .grant_person_read(&session, &connection.id)
+            .await
+            .unwrap();
+
+        let asked = change(
+            &session,
+            private_local().await,
+            "tasks_ask",
+            on(
+                &connection,
+                json!({
+                    "channel": "#general",
+                    "prompt": "Summarize this week's runs.",
+                    "provider": "openai",
+                    "model": "gpt-4o",
+                }),
+            ),
+            "deny",
+        )
+        .await;
+        asked.refusal();
+        let lines: Vec<&str> = asked.cards[0].prompt.lines().collect();
+        let server = server_of(&connection).await;
+        let at = lines
+            .iter()
+            .position(|line| line.starts_with("With a private model it can run any command"))
+            .unwrap_or_else(|| panic!("no access line: {lines:?}"));
+        assert_eq!(
+            lines[at],
+            format!(
+                "With a private model it can run any command as you on {server}, and read and change any file your account can. Crew treats anything running as your account as you, so your agent can also add a computer to your account and post in Crew as you, with no agent mark."
+            ),
+            "{lines:?}"
+        );
+        assert_eq!(
+            lines.get(at + 1).copied(),
+            Some("You host lab from this account, so your agent can also read the workspace's own files on the server, including channels you're not in. It can also act as the host of lab."),
+            "{lines:?}"
+        );
+        assert!(sent(HOST, "run.create").is_empty());
+        remove(&connection).await;
+    });
+}
+
 /// Refusing to delete a team's `#general` names the team only to a call that may be shown names
 /// from the workspace: a public model in a Private workspace is told what to do without it.
 #[test]
