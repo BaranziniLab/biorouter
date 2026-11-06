@@ -12,6 +12,7 @@ import {
   composerDraftKeyForTab,
   giveBackToComposer,
   hasComposerDraft,
+  insertIntoComposerDraft,
   mergeComposerDraft,
   readComposerDraft,
   resetComposerDraftsForTests,
@@ -259,5 +260,40 @@ describe('send ownership after an existing tab disappears', () => {
     current.giveBack(draft('current question'));
     expect(readComposerDraft(key)?.text).toBe('current question');
     expect(isComposerSending(key)).toBe(false);
+  });
+});
+
+describe('insertIntoComposerDraft: dictated text for a composer that unmounted', () => {
+  it('splices at the anchor, keeps images and files, and stamps the key', () => {
+    const key = composerDraftKeyForTab('dictation');
+    saveComposerDraft(key, draft('Check the  results', { images: [image(9)] }));
+    const before = composerDraftVersion(key);
+    insertIntoComposerDraft(key, 'Check the'.length, 'EPAS1');
+    const stored = readComposerDraft(key);
+    expect(stored?.text).toBe('Check the EPAS1  results');
+    expect(stored?.images).toEqual([image(9)]);
+    expect(composerDraftVersion(key)).toBeGreaterThan(before);
+  });
+
+  it('puts the text where the person was, not before the draft as a give-back would', () => {
+    const key = composerDraftKeyForTab('order');
+    saveComposerDraft(key, draft('first line'));
+    insertIntoComposerDraft(key, 'first line'.length, 'spoken words');
+    expect(readComposerDraft(key)?.text).toBe('first line spoken words');
+  });
+
+  it('replaces a selection the dictation was started over', () => {
+    const key = composerDraftKeyForTab('selection');
+    saveComposerDraft(key, draft('replace THIS please'));
+    insertIntoComposerDraft(key, { start: 8, end: 12 }, 'that');
+    expect(readComposerDraft(key)?.text).toBe('replace that please');
+  });
+
+  it('creates the draft when the key held nothing, and ignores empty text', () => {
+    const key = composerDraftKeyForTab('empty');
+    insertIntoComposerDraft(key, 0, '   ');
+    expect(readComposerDraft(key)).toBeUndefined();
+    insertIntoComposerDraft(key, 0, '/bug in the parser');
+    expect(readComposerDraft(key)?.text).toBe('bug in the parser');
   });
 });

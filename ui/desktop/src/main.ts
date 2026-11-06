@@ -27,6 +27,7 @@ import {
   MenuItem,
   nativeTheme,
   Notification,
+  powerMonitor,
   powerSaveBlocker,
   screen,
   session,
@@ -98,6 +99,13 @@ import {
   type GhostWindowHandle,
 } from './dragGhostWindow';
 import { CopilotPermissionSettings } from './utils/copilotPermissionSettings';
+import { setDictationBusy } from './utils/dictationBusy';
+import {
+  FAKE_MIC_WAV_ENV,
+  fakeMicrophoneSwitches,
+  micSettingsUrl,
+  normalizeMicAccessStatus,
+} from './utils/micPermissionSettings';
 import { expandTilde, reinterpretTildeAsAbsolute } from './utils/pathUtils';
 import { friendlyArtifactFileError } from './utils/artifactFileErrors';
 import {
@@ -820,6 +828,21 @@ if (process.env.ENABLE_PLAYWRIGHT) {
   const cdpPort = process.env.PLAYWRIGHT_CDP_PORT ?? '9222';
   console.log(`[Main] Enabling Playwright remote debugging on port ${cdpPort}`);
   app.commandLine.appendSwitch('remote-debugging-port', cdpPort);
+}
+
+// Dictation tests (DD-65): a development build hears the WAV named by
+// BIOROUTER_TEST_FAKE_MIC_WAV instead of a microphone. Never in a packaged app,
+// and never the switch that also fakes the permission prompt, which bypasses the
+// session's permission handler (utils/micPermissionSettings.ts). Appended at load,
+// before `ready`, like the switch above, so the media stack starts with them.
+for (const fakeMic of fakeMicrophoneSwitches({
+  isPackaged: app.isPackaged,
+  wavPath: process.env[FAKE_MIC_WAV_ENV],
+  platform: process.platform,
+  existingDisabledFeatures: app.commandLine.getSwitchValue('disable-features'),
+})) {
+  if (fakeMic.value === undefined) app.commandLine.appendSwitch(fakeMic.name);
+  else app.commandLine.appendSwitch(fakeMic.name, fakeMic.value);
 }
 
 // Register as the handler for biorouter:// deep links.
@@ -3456,6 +3479,65 @@ ipcMain.handle('open-copilot-permission-settings', async (event, permission: unk
   }
   const url = copilotPermissionSettings.urlForWindow(owner, process.platform, permission);
   await shell.openExternal(url);
+});
+
+// ── Dictation (DD-65) ───────────────────────────────────────────────────────
+// The renderer is the only desktop process that records. These answer only a
+// Biorouter window's main frame: no artifact or preview frame may ask about, or
+// open, the microphone settings.
+function isDictationSender(event: Electron.IpcMainInvokeEvent | Electron.IpcMainEvent): boolean {
+  const win = BrowserWindow.fromWebContents(event.sender);
+  return (
+    !!win &&
+    !win.isDestroyed() &&
+    windowMap.has(win.id) &&
+    win.webContents === event.sender &&
+    event.senderFrame === event.sender.mainFrame
+  );
+}
+
+ipcMain.handle('dictation:mic-status', (event) => {
+  if (!isDictationSender(event)) return 'unknown';
+  if (process.platform !== 'darwin' && process.platform !== 'win32') return 'unknown';
+  try {
+    return normalizeMicAccessStatus(
+      process.platform,
+      systemPreferences.getMediaAccessStatus('microphone')
+    );
+  } catch {
+    return 'unknown';
+  }
+});
+
+// macOS asks only while the status is `not-determined`, so the prompt comes from
+// the person's first click on a microphone and names Biorouter.
+ipcMain.handle('dictation:mic-request', async (event) => {
+  if (!isDictationSender(event)) return false;
+  if (process.platform !== 'darwin') return true;
+  const status = systemPreferences.getMediaAccessStatus('microphone');
+  if (status === 'granted') return true;
+  if (status !== 'not-determined') return false;
+  try {
+    return await systemPreferences.askForMediaAccess('microphone');
+  } catch {
+    return false;
+  }
+});
+
+ipcMain.handle('dictation:open-mic-settings', async (event) => {
+  if (!isDictationSender(event)) return false;
+  const url = micSettingsUrl(process.platform);
+  if (!url) return false;
+  await shell.openExternal(url);
+  return true;
+});
+
+// Windows that are arming, recording or transcribing; a restart for an update
+// asks first while any is (MSG-RESTART-BUSY, `utils/dictationBusy.ts`
+// `isDictationBusy`, which the updater imports from there, not from here).
+ipcMain.on('dictation:busy', (event, busy: unknown) => {
+  if (!isDictationSender(event)) return;
+  setDictationBusy(event.sender, busy === true);
 });
 
 // Handle opening system notifications preferences
@@ -6546,6 +6628,13 @@ async function appMain() {
   registerDependencyIpcHandlers();
   registerCliInstallHandlers();
   registerCrewShareHandler();
+
+  // A locked screen ends any dictation: every window stops and inserts what it heard.
+  powerMonitor.on('lock-screen', () => {
+    for (const win of BrowserWindow.getAllWindows()) {
+      if (!win.isDestroyed()) win.webContents.send('dictation:lock-screen');
+    }
+  });
 
   try {
     globalShortcut.register('CommandOrControl+Alt+Shift+G', () => {

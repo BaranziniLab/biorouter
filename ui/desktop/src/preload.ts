@@ -316,6 +316,27 @@ type ElectronAPI = {
   setSpellcheck: (enable: boolean) => Promise<boolean>;
   getSpellcheckState: () => Promise<boolean>;
   openNotificationsSettings: () => Promise<boolean>;
+  /**
+   * Dictation (DD-65). Optional, so a bridge that predates them, or a test's
+   * partial one, reads as "no answer" rather than throwing.
+   *
+   * - `dictationMicStatus`: the operating system's microphone access for this
+   *   app; `unknown` on Linux.
+   * - `dictationMicRequest`: on macOS, the system prompt while the status is
+   *   `not-determined`; elsewhere `true`.
+   * - `dictationOpenMicSettings`: the microphone page of the system settings;
+   *   `false` where there is none (Linux).
+   * - `setDictationBusy`: this window arms, records or transcribes, so a restart
+   *   for an update asks first.
+   * - `onDictationLockScreen`: the screen locked; stop and insert.
+   */
+  dictationMicStatus?: () => Promise<
+    'not-determined' | 'granted' | 'denied' | 'restricted' | 'unknown'
+  >;
+  dictationMicRequest?: () => Promise<boolean>;
+  dictationOpenMicSettings?: () => Promise<boolean>;
+  setDictationBusy?: (busy: boolean) => void;
+  onDictationLockScreen?: (callback: () => void) => () => void;
   onMouseBackButtonClicked: (callback: () => void) => () => void;
   offMouseBackButtonClicked: (callback: () => void) => void;
   /** Subscribe to a main-process IPC event. Returns a disposer; call it to
@@ -782,6 +803,15 @@ const electronAPI: ElectronAPI = {
   setSpellcheck: (enable: boolean) => ipcRenderer.invoke('set-spellcheck', enable),
   getSpellcheckState: () => ipcRenderer.invoke('get-spellcheck-state'),
   openNotificationsSettings: () => ipcRenderer.invoke('open-notifications-settings'),
+  dictationMicStatus: () => ipcRenderer.invoke('dictation:mic-status'),
+  dictationMicRequest: () => ipcRenderer.invoke('dictation:mic-request'),
+  dictationOpenMicSettings: () => ipcRenderer.invoke('dictation:open-mic-settings'),
+  setDictationBusy: (busy: boolean) => ipcRenderer.send('dictation:busy', busy === true),
+  onDictationLockScreen: (callback: () => void) => {
+    const listener = () => callback();
+    ipcRenderer.on('dictation:lock-screen', listener);
+    return () => ipcRenderer.removeListener('dictation:lock-screen', listener);
+  },
   onMouseBackButtonClicked: (callback: () => void) => {
     const wrapper = (_event: Electron.IpcRendererEvent) => callback();
     ipcRenderer.on('mouse-back-button-clicked', wrapper);
@@ -1012,6 +1042,12 @@ const appConfigAPI: AppConfigAPI = {
 // Expose the APIs
 contextBridge.exposeInMainWorld('electron', electronAPI);
 contextBridge.exposeInMainWorld('appConfig', appConfigAPI);
+
+// A new document dictates nothing yet. A reload or a crash recovery while the
+// old one was dictating would otherwise leave this window counted as busy by
+// the main process, and the update restart would ask about a dictation that is
+// gone (`utils/dictationBusy.ts`).
+ipcRenderer.send('dictation:busy', false);
 
 // Type declaration for TypeScript
 declare global {

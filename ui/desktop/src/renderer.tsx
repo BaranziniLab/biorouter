@@ -314,6 +314,15 @@ if (needsHeadlessElectron || typeof window.appConfig === 'undefined') {
       setDockIcon: async () => false,
       getDockIconState: async () => false,
       openNotificationsSettings: async () => false,
+      // Dictation in a browser: the browser owns the microphone permission and
+      // asks for it itself, so there is no operating system status to read, no
+      // prompt to raise first and no settings page to open (MSG-MIC-BROWSER says
+      // where the switch is); no screen lock signal and no update restart to hold.
+      dictationMicStatus: async () => 'unknown',
+      dictationMicRequest: async () => true,
+      dictationOpenMicSettings: async () => false,
+      setDictationBusy: () => {},
+      onDictationLockScreen: () => () => {},
       getSettings: async () => {
         const result = await headlessJson<HeadlessSettingsResponse>(
           headlessConfig.headlessBaseUrl,

@@ -117,15 +117,20 @@ Every Biorouter page records, uploads and inserts with the same modules, added i
 ui/desktop/src/components/dictation/
   capture.ts              getUserMedia, AudioContext, worklet, fallbacks
   pcmCapture.worklet.js   processor 'biorouter-pcm-capture' (plain JS)
+  dictationApi.ts         the one module that spells the /dictation/* routes
   transport.ts            the chunked stream client
   dictationStore.ts       status store over GET /dictation/status
   dictationSession.ts     which composer owns the microphone
   micErrors.ts            error to sentence map
   copy.ts                 every string in this document's catalog for the renderer
-ui/desktop/src/utils/dictatedText.ts      spliceDictation, insertDictatedText
+ui/desktop/src/utils/dictatedText.ts      spliceDictation, insertDictatedText, mapAnchor
+ui/desktop/src/utils/dictationLedger.ts   locateEdit and the correction ledger's spans
 ui/desktop/src/utils/composerDrafts.ts    insertIntoComposerDraft (new)
-ui/desktop/src/utils/micPermissionSettings.ts   OS settings URLs (not the Copilot helper)
+ui/desktop/src/utils/micPermissionSettings.ts   OS settings URLs (not the Copilot helper) and the fake microphone switches
+ui/desktop/src/utils/dictationBusy.ts     the main process's record of dictating windows, for the update restart
 ```
+
+`dictationApi.ts` was written by hand against the shapes in [engine and models](engine-and-models.md) before PR-15's routes and the generated client existed; a source guard keeps every `/dictation/` path in that one file, so moving the JSON calls onto the generated client changes only it.
 
 ### Capture in a Biorouter page
 
@@ -134,27 +139,34 @@ DD-64. The steps, all inside the click or keydown handler that starts dictation,
 1. Check, before any request or prompt: `!window.isSecureContext || !navigator.mediaDevices?.getUserMedia` puts the button in `unavailable` with MSG-INSECURE. Chromium exposes the `AudioWorkletNode` constructor on an insecure origin while `ctx.audioWorklet` is missing, so testing the constructor is not enough [M].
 2. Call `getUserMedia({audio: {deviceId, echoCancellation: false, noiseSuppression: <per viewer, default false>, autoGainControl: false}})`. `deviceId` is `{exact: id}` when the person chose a device in Settings. Automatic gain control stays off because Chromium's gain control on Windows rewrites the system microphone volume [R].
 3. Create `new AudioContext({sampleRate: 16000, latencyHint: 'interactive'})` and call `resume()` inside the same gesture. WebKit's `resume()` never settled without a gesture [M]. Whether the gesture survives an `await` on a network request was not measured [I], which is why nothing is awaited before this step.
-4. Load the worklet with `import workletUrl from './pcmCapture.worklet.js?url&no-inline'`. `vite.renderer.config.mts` also sets `build.assetsInlineLimit` to a function that returns `false` for `*.worklet.js`.
+4. Load the worklet with `import workletUrl from './pcmCapture.worklet.js?url&no-inline'`, starting `addModule` in the same synchronous block as steps 2 and 3, so the device, the context and the module come up in parallel. `vite.renderer.config.mts` also sets `build.assetsInlineLimit` to a function that returns `false` for `*.worklet.js`.
 5. Connect `createMediaStreamSource(stream)` to `new AudioWorkletNode(ctx, 'biorouter-pcm-capture', {channelCount: 1, channelCountMode: 'explicit'})`, never to `ctx.destination`. The processor downmixes, clamps, converts to Int16, and posts chunks of 1,600 frames (100 ms at 16 kHz) with their RMS and peak.
-6. Fallbacks, in this order: a `NotSupportedError` from `createMediaStreamSource` (measured in Firefox 146 [M]; Bugzilla 1674892 fixes it in Firefox 148 [R]) closes the context and retries at the device's native rate, declaring that `sample_rate` to the daemon, which resamples; any `addModule` rejection (`AbortError` or `SecurityError`) switches to `MediaRecorder`, decoded on stop with `decodeAudioData` and `OfflineAudioContext(1, n, 16000)`, then uploaded as PCM chunks with no live meter; an `OverconstrainedError` for a stale `deviceId` retries by label, then the default device.
+6. Fallbacks, in this order: a `NotSupportedError` from `createMediaStreamSource` (measured in Firefox 146 [M]; Bugzilla 1674892 fixes it in Firefox 148 [R]) closes the context and retries at the device's native rate, declaring that `sample_rate` to the daemon, which resamples; any `addModule` rejection (`AbortError` or `SecurityError`), or a worklet node that cannot be created once the module loaded (an `InvalidStateError` for a processor that did not register), switches to `MediaRecorder`, decoded on stop with `decodeAudioData` and `OfflineAudioContext(1, n, 16000)`, then uploaded as PCM chunks with no live meter (a recording it cannot decode ends with MSG-RECORDING-FAILED, never MSG-TOO-SHORT); an `OverconstrainedError` for a stale `deviceId` retries by label, then the default device.
 7. Every exit (stop, cancel, error, unmount, track `ended`) stops every track and closes the context. The operating system's microphone indicator is the proof.
 
 ```ts
 // ui/desktop/src/components/dictation/capture.ts
 export interface CaptureOptions {
   deviceId?: string;          // per viewer; stale ids fall back by label, then default
+  deviceLabel?: string;       // that device's label, for the fallback
   noiseSuppression: boolean;  // "Reduce background noise", default false
   onChunk(pcm: Int16Array, level: { rms: number; peak: number }): void; // 100 ms each
+  onLive?(): void;            // the first render quantum that carries the microphone's input
 }
 export interface Capture {
   readonly sampleRate: number;              // 16000, or the device rate on the Firefox fallback
   readonly mode: 'worklet' | 'recorder';    // 'recorder' has no live level
-  stop(): Promise<void>;                    // flushes the last partial chunk, ends tracks, closes the context
+  readonly timings: CaptureTimings;         // ms from the call: stream, module, connected, live, first chunk
+  stop(): Promise<void>;                    // flushes the last partial chunk, ends tracks, starts closing the context
   cancel(): void;
   readonly ended: Promise<'stopped' | 'track-ended'>;
+  readonly closed: Promise<void>;           // the context is closed; nothing on the stop path waits for it
 }
 export function startCapture(opts: CaptureOptions): Promise<Capture>; // call inside the gesture
+export function prewarmCapture(): void;     // enumerateDevices(), at most every 30 s; opens nothing
 ```
+
+**Warming before the press.** The first `getUserMedia` in a window pays for the browser's first device enumeration. `prewarmCapture()` calls `enumerateDevices()`, which opens no device, shows no microphone indicator and asks for no permission, and `noteDictationInterest()` in the [status store](#the-status-store) calls it when a composer's field takes focus or the pointer reaches a microphone, at most every 30 s. Measured in the `dictation-capture-electron` probe on an Apple Silicon Mac (Electron 39.8.10, the fake device, 2026-11-05, a fresh profile per run from the live check on) [M]: press to `getUserMedia` resolving took 209 to 463 ms on the first press in a fresh window (five runs) and 28 to 38 ms after the warm-up (thirteen runs; 64 ms once, while two other Electron apps, a vitest run and a cargo build shared the machine), and press to the first audio frame in the worklet 30 to 40 ms (108 ms in that run); warming an `AudioContext` instead only reached 91 ms. With the warm-up, the first 100 ms chunk arrives 126 to 154 ms after the press (195 ms in the loaded run). On stop the worklet's last partial chunk arrives 0.5 to 0.8 ms after a stop that is not an input event, but 0.7 to 10.2 ms after a click (eleven stops in six runs, then eighteen in the live check, fifteen of them 5 to 10 ms) [M], because Chromium renders the frame that follows an input event before it delivers the worklet's answer to the page, so the wait depends on where the click falls between frames [I]. That wait is the client's floor on the stop path: the tail cannot go up before it arrives. A composer that renders on the stop adds to it only what its render takes beyond that wait: with a stand in render of 10 ms on every change of the session's snapshot (`BIOROUTER_DICTATION_CAPTURE_RENDER_MS=10`) the last chunk came 11 ms after the click, whether the flush was posted before the render or after it, since the page takes the answer only once the render is done [M]. So the card's render on stop must stay well inside one frame.
 
 What the measurements showed [M]:
 
@@ -162,10 +174,11 @@ What the measurements showed [M]:
 - Capture into a 16 kHz context gave RMS 0.35353 against 0.35355 expected and 440.1 Hz for a 440 Hz tone in Electron 39.8.10 and Chromium 145; WebKit 26.0, fed a synthetic 48 kHz stream, gave RMS 0.35329 and 441.5 Hz. Firefox 146.0.1 throws `NotSupportedError` on a cross rate `createMediaStreamSource`; the native rate path works there.
 - An unconnected `AudioWorkletNode` is still processed. `channelCount: {ideal: 1}` does not give mono; `channelCountMode: 'explicit'` does. The resampler overshoots peaks by up to about 5 %, hence the clamp.
 - A worklet in a hidden, never shown Electron window delivered 375 render quanta per second, still at 350 s.
+- Speech through the whole client path, with a recorded clip as the fake device (`BIOROUTER_DICTATION_CAPTURE_SPEECH_WAV`, `c01_Samantha.wav` and `s09_Daniel.wav` from the bench, 2026-11-05): after its first 130 ms, the audio the loopback stand in received matched the clip at one constant lag, 36.9 dB signal to error (38.1 dB below 6 kHz), with no seam at a 100 ms chunk or a 2 s `PUT` boundary and the level within 0.03 dB. Chromium's resampling between the clip and the device rate cut the band above 6 kHz (energy 0.72 of the clip's at 6 to 7.2 kHz, 0.12 at 7.2 to 8 kHz). whisper small.en and large-v3-turbo q5_0 transcribed the received audio word for word as they transcribed the clip. The first 28 ms the worklet received after `onLive` (450 or 451 samples) were digital zeros, the clip's first 39 ms never reached it, and in one run, on a loaded machine, a 10 ms glitch 119 ms in replaced 8.75 ms with zeros and repeated 1.3 ms. All of that falls before anyone could start speaking after the card changes.
 
 ### The client side of a stream
 
-DD-27 to DD-31. `components/dictation/transport.ts` is the only module that talks to `/dictation/streams`, so the composer test factories that mock `../api` need no new export.
+DD-27 to DD-31. `components/dictation/transport.ts` is the only stream client, and it reaches `/dictation/streams` only through `components/dictation/dictationApi.ts`, so the composer test factories that mock `../api` need no new export.
 
 | Route | Body | Answer |
 |---|---|---|
@@ -191,10 +204,10 @@ The daemon decides the target tier once per stream (DD-30): with `session_id`, `
 
 The stream, step by step:
 
-1. **Create** when capture starts, in parallel with `getUserMedia`. A 409 `noModel` opens the setup popover; a 403 shows the policy sentence from the body; a 429 shows MSG-SERVER-BUSY with `<n>` counted down from `Retry-After`, then retries once.
+1. **Create** when capture starts, in parallel with `getUserMedia`. A 409 `noModel` opens the setup popover; a 403 shows the policy sentence from the body; a 429 shows MSG-SERVER-BUSY with `<n>` counted down from `Retry-After` (at most 30 s), then tries again. It tries again on every 429 while the person speaks, since the audio is buffered meanwhile and waiting costs no speech, and for up to 30 s after the stop. A 429 after that ends the dictation with MSG-SERVER-BUSY-FAILED and **Retry**, and the audio is kept for 5 minutes, as for MSG-ENGINE-FAILED.
 2. **Buffer** the worklet's 100 ms chunks in memory. The client keeps every chunk until `finish` answers with text, so a failed stream can be replayed; after a failure it keeps them for at most 5 minutes, for **Retry**, and drops them on the next dictation, on cancel or on unmount.
-3. **Upload** every 2 to 3 s (64,000 to 96,000 B at 16 kHz), never more than `max_chunk_bytes`. Exactly one `PUT` is in flight, with `AbortSignal.timeout(10_000)`. On a timeout the same `seq` is sent again; the daemon treats a repeated `seq` as idempotent. Capture keeps buffering while a `PUT` waits.
-4. **Shrink** on a 413, or on a network error for a chunk over 64 KiB: halve the chunk size and resend, with a floor of 64 KiB. A 413 at 64 KiB ends the dictation with MSG-413, because the proxy in front cannot pass even the smallest chunk.
+3. **Upload** every 2 to 3 s (64,000 to 96,000 B at 16 kHz), never more than `max_chunk_bytes`. Exactly one `PUT` is in flight, with a 10 s timeout. On a timeout the same `seq` is sent again with the same bytes; the daemon treats a repeated `seq` as idempotent. The sixth timeout in a row on one chunk (60 s, the daemon's idle expiry) ends the dictation with MSG-LOST, and so does a fourth network error, 5xx or 429 answer in a row on a chunk the next step cannot shrink. The daemon never answers a `PUT` with 429, so one comes from a proxy that rate limits, and it is waited out like any other transient failure, for at most 10 s at a time. Capture keeps buffering while a `PUT` waits. A failure in this step, or in steps 4, 5 and 7, ends the dictation when it happens, also while the person is still speaking (`onFailed`): the microphone goes off and the card shows the notice, rather than recording into a stream that can take nothing more until the stop.
+4. **Shrink** on a 413, or on a network error for a chunk over 64 KiB: halve the chunk size and resend, with a floor of 64 KiB. A 413 at 64 KiB ends the dictation with MSG-413, because the proxy in front cannot pass even the smallest chunk. After a network error the first, larger body may have arrived with only its answer lost; the daemon then ignores the halved repeat of that `seq` and answers with the full chunk's `received_s`, and the client skips the half it would otherwise send twice.
 5. **Reorder** on 409 `outOfOrder`: resend from `expected_seq`.
 6. **Wait visibly.** When a `PUT` or a poll has had no answer for 1.5 s, the card shows MSG-WAIT until it answers.
 7. **Recover** from a 410 that the person did not cause (the 60 s idle expiry after a long stall): open one new stream and replay the buffered audio from `seq=0`. A second failure ends the dictation in the `error` phase with MSG-LOST and inserts nothing.
@@ -227,17 +240,29 @@ export interface Transcript {
   no_speech: boolean;
 }
 export interface DictationStream {
+  readonly id: string | null;                      // a replay or a retry replaces it
+  readonly ready: Promise<void>;                   // the daemon accepted the stream
+  readonly audioSeconds: number;
   push(pcm: Int16Array): void;                     // buffers; uploads on its own clock
   finish(): Promise<Transcript>;
-  cancel(): Promise<void>;
+  retry(): Promise<Transcript>;                    // after engineFailed or a busy server: a new stream, the same audio
+  cancel(): Promise<void>;                         // DELETE, nothing inserted
+  release(): void;                                 // DELETE after the text went in
   onPartial(cb: (text: string) => void): () => void;
   onWaiting(cb: (waiting: boolean) => void): () => void;   // drives MSG-WAIT
   onCapWarning(cb: () => void): () => void;                 // 30 s before max_seconds
+  onCapReached(cb: () => void): () => void;                 // at max_seconds: stop and insert
+  onBusy(cb: (seconds: number) => void): () => void;        // a 429 at creation: MSG-SERVER-BUSY
+  onFailed(cb: (error: DictationStreamError) => void): () => void; // the upload failed while recording
 }
+// Returns at once, so audio can be pushed while the daemon answers the create; `ready` settles with it.
+export function createDictationStream(req: StreamRequest, options?: { signal?: AbortSignal }): DictationStream;
 export function openDictationStream(req: StreamRequest, signal: AbortSignal): Promise<DictationStream>;
 ```
 
 The `PUT` is a hand written `fetch(getApiUrl(…))` (`ui/desktop/src/config.ts` `getApiUrl`) with `X-Secret-Key` and `Content-Type: application/octet-stream`, because the body is raw bytes. A packaged `file://` page sent it with no CORS preflight [M]; a `serve` page is same origin.
+
+Measured in the `dictation-capture-electron` probe against a loopback stand in for the daemon that holds each `PUT` 15 ms (Apple Silicon, Electron 39.8.10, 2026-11-05, six runs of a 3 s dictation, then nine more in the live check, two of them of 5 s speech clips) [M]: the create left the page 1 to 23 ms after the press, after capture had started; on stop, the final `PUT` left 6 to 10 ms after the click, `finish` 25 to 29 ms after it, and the text was in the field 1 or 2 ms after the transcript arrived. So the client adds about 10 ms and one `PUT` round trip to the daemon's own time. No run sent a CORS preflight.
 
 Why there is no long lived dictation request: the renderer already holds up to five long requests by design, two observer streams (`MAX_LIVE_OBSERVER_STREAMS = 2` at `crates/biorouter-server/src/state.rs:879`), two long polls and one `/reply` [C]. Electron, Chromium, Firefox and WebKit allow six HTTP/1.1 connections per origin; with five held a `PUT` took 2 to 10 ms, and with six held it waited for a long poll to end [M]. Over HTTP/2 no engine of the three stalled, and with ten streams held a `PUT` took 7 to 17 ms [M]. Uploads of 64 to 512 KiB took about 3 to 14 ms through nginx across the three engines [M]. M-5 measures the real app with two windows and two `serve` tabs.
 
@@ -263,18 +288,22 @@ export function insertDictatedText(
   anchor: Anchor,
   text: string,
   setByState: (value: string, caret: number) => void,
-): 'undoable' | 'state' | 'draft';
+  options?: { composing?: boolean },  // true takes the state path; the session waits for compositionend first
+): 'undoable' | 'state' | 'draft';     // 'draft': no field; the caller splices into the stored draft
+export function mapAnchor(anchor: Anchor, before: string, after: string, caretAfter?: number): Anchor;
 // ui/desktop/src/utils/composerDrafts.ts
-export function insertIntoComposerDraft(key: string, at: number, text: string): void;
+export function insertIntoComposerDraft(key: string, at: number | Anchor, text: string): void;
 ```
 
 Measured on Electron 39.8.10 with React 19.2.4 [M]: `execCommand('insertText')` returns `true`, fires `input` and React's `onChange`, and one ⌘Z (through the Edit menu or `webContents.undo()`) removes exactly the dictated words; a `setSelectionRange` before each insert keeps two dictations as two undo steps; any later programmatic `setState` that changes the value wipes the whole undo history; `setRangeText` fires no `input` event and is unusable; `execCommand` writes into whatever editable element has focus, which is why step 3 checks focus. No copy may promise "⌘Z removes the last dictation" without that qualification.
 
 ### The status store
 
-`components/dictation/dictationStore.ts` is a `useSyncExternalStore` singleton over `GET /dictation/status` (shape in [engine and models](engine-and-models.md)). It sends no request when `ChatInput` mounts, because 23 test files render the real composer under an offline fetch guard [C `ui/desktop/src/test/setup.ts`]. It loads when a composer's textarea first gains focus, on the first `pointerenter`, focus or click of any microphone, and when the Settings section or the Dictionary page mounts; refreshes on window focus and after install, select or delete; and polls every 1.5 s only while `install_job` runs. A focused textarea is where ⌘⇧D is pressed, so the chord rarely meets a store that has not loaded.
+`components/dictation/dictationStore.ts` is a `useSyncExternalStore` singleton over `GET /dictation/status` (shape in [engine and models](engine-and-models.md)). It sends no request when `ChatInput` mounts, because 23 test files render the real composer under an offline fetch guard [C `ui/desktop/src/test/setup.ts`]. It loads when a composer's textarea first gains focus, on the first `pointerenter`, focus or click of any microphone, and when the Settings section or the Dictionary page mounts (`noteDictationInterest()`, which also warms the device list, see [capture](#capture-in-a-biorouter-page)); refreshes on window focus and after install, select or delete; and polls every 1.5 s only while `install_job` runs. A focused textarea is where ⌘⇧D is pressed, so the chord rarely meets a store that has not loaded.
 
-Until it has loaded, the button shows the `idle` look. A click or chord then runs steps 1 to 3 of [capture](#capture-in-a-biorouter-page) at once, inside the gesture, and only then waits for the one status request. If the phase it reports is not `idle`, the handler stops every track, closes the context and acts on the real phase (the setup popover, or the reason sentence); no stream is opened before the answer. The interface learns policy only from `status.policy`, never from `GET /config`.
+Until it has loaded, the button shows the `idle` look. A click or chord then runs steps 1 to 3 of [capture](#capture-in-a-biorouter-page) at once, inside the gesture, and only then waits for the one status request. If the phase it reports is not `idle`, the handler stops every track, closes the context and acts on the real phase (the setup popover, or the reason sentence); no stream is opened before the answer. Each status read has a 5 s deadline (`STATUS_TIMEOUT_MS`): a daemon that takes the connection and never answers would otherwise hold that press in Transcribing until Escape, and every later read of the window with it. After the deadline the store reads `failed`, the phase `idle`, the stream opens, and its create's own answer (409 `noModel`, 403, 404) decides. The interface learns policy only from `status.policy`, never from `GET /config`.
+
+Where the daemon is decides what the card says about it (DD-92). `dictationDaemonPlace()` in the store answers `this-computer` only when `main.ts` told the window it started the daemon itself (`BIOROUTER_LOCAL_BACKEND`), `external-backend` on S17 and `serve` in a browser, each with the host the daemon reports for itself (`status.host`), or the address the API calls go to. MSG-ENGINE-FAILED fills `<where>` from it, MSG-SETUP fills its own `<where>` (the forms with "on", `setupWhereOnServer` in `copy.ts`), and the setup popover picks its privacy line by its `kind`. A phase decision fills MSG-INSECURE with the page's own address and MSG-REMOTE-OLD with the daemon's and this app's version even when its caller passes nothing, so no sentence reaches a person with a placeholder in it.
 
 Per viewer conveniences live in `localStorage` key `biorouter:dictation-viewer`, every read and write wrapped in try and catch: `{deviceId, noiseReduction, showButton, ackHosts[], policyOffHint}`. `ackHosts[]` remembers each host whose MSG-DISCLOSE-HOST was shown and each `http:` backend URL whose MSG-REMOTE-HTTP was confirmed; `policyOffHint` hides the button at the next launch when the last status said policy forbids dictation. The daemon checks policy on every request regardless.
 
@@ -336,12 +365,14 @@ Which phase the button takes, checked in this order:
 | `status.policy.enabled` or `status.policy.capture` not allowed | button removed | Settings shows MSG-POLICY or MSG-POLICY-CAPTURE |
 | `status.engine.compiled` false | `unavailable` | MSG-NO-ENGINE |
 | `status.engine.state` is `unsupported_cpu` | `unavailable` | desktop: MSG-CPU then MSG-CPU-DESKTOP; Intel build under Rosetta on macOS 12 to 14 (any version before 15): MSG-CPU-ROSETTA; `serve`: MSG-CPU-SERVER |
+| no installed model, `status.install_job` running | `installing` | none |
 | no installed model, `status.install.allowed` true | `not-installed` | none |
 | no installed model, install refused | `unavailable` | `status.install.reason` (MSG-INSTALL-LOCKED, MSG-POLICY, MSG-POLICY-DOWNLOADS, MSG-POLICY-MODELS), or MSG-REMOTE-NO-KEY on S17 |
-| `status.install_job` running | `installing` | none |
-| otherwise | `idle` | none |
+| otherwise (a usable model, even while another one installs) | `idle` | none |
 
-There is no fifth composer card edge and no square glyph: a square would read as a second Stop beside the turn's Stop [C `ui/Stop.tsx`]. The level bars are driven from the worklet's 100 ms RMS through CSS custom properties in a `requestAnimationFrame` loop, with no React render per frame, and are static under `prefers-reduced-motion`. A visually hidden `role="status"` announces Recording, Transcribing, Inserted and errors. The placeholder becomes "Listening…" only when the prose is empty; the field stays editable throughout. `arming` lasts until the first chunk arrives from the worklet, so the person never speaks into a microphone that is not yet live [R: the Codex desktop app lost a median 587 ms of speech by showing "listening" early].
+"No installed model" means `status.active_model` names no installed model. The `installing` row comes before `not-installed`: with the order reversed, the first install would show `not-installed` until it finished, and the progress ring after **Install** would never appear (`resolveDictationPhase` in `dictationStore.ts`).
+
+There is no fifth composer card edge and no square glyph: a square would read as a second Stop beside the turn's Stop [C `ui/Stop.tsx`]. The level bars are driven from the worklet's 100 ms RMS through CSS custom properties in a `requestAnimationFrame` loop, with no React render per frame, and are static under `prefers-reduced-motion`. The level is therefore not part of the session's React snapshot: the loop reads `getDictationLevel()` (or `subscribeDictationLevel`), and the snapshot changes only with the activity, a notice, the partial line, MSG-WAIT or the whole second of the timer, at most twice per second of speech, so a person typing while dictating pays no render per chunk. A visually hidden `role="status"` announces Recording, Transcribing, Inserted and errors. The placeholder becomes "Listening…" only when the prose is empty; the field stays editable throughout. `arming` lasts until the worklet reports the first render quantum that carries the microphone's input (`onLive`), so the person never speaks into a microphone that is not yet live [R: the Codex desktop app lost a median 587 ms of speech by showing "listening" early]. The source node's first 28 ms after that quantum are still zeros (measured with a speech clip as the fake device [M]), well under anyone's reaction to the card, so no speech is lost to them. That is 90 to 120 ms sooner than waiting for the first 100 ms chunk (31 to 40 ms against 126 to 154 ms after the press, measured in the `dictation-capture-electron` probe [M]).
 
 Results that are not text:
 
@@ -352,7 +383,9 @@ Results that are not text:
 | 3 s below the noise floor while recording | MSG-NO-AUDIO-YET, recording continues | kept |
 | `no_speech: true` | MSG-NOTHING | finished |
 | 500 `engineFailed` | MSG-ENGINE-FAILED with **Retry** | ended; the chunks kept for 5 minutes |
+| A 429 at creation still 30 s after the stop | MSG-SERVER-BUSY-FAILED with **Retry** | never created; the chunks kept for 5 minutes |
 | A second failure after a 410 | MSG-LOST | ended |
+| The `MediaRecorder` fallback cannot decode its recording | MSG-RECORDING-FAILED | `DELETE`, nothing transcribed |
 
 ### Gestures
 
@@ -368,14 +401,15 @@ DD-62. A click toggles. ⌘⇧D on macOS and Ctrl+Shift+D elsewhere, matched on 
 
 | Event | What happens |
 |---|---|
-| Dictation starts in pane B while pane A records | A stops, and A's text is inserted into A |
-| The composer unmounts while arming, recording or transcribing | capture stops, the stream finishes, and the text goes into the stored draft at the mapped anchor |
+| Dictation starts in pane B while pane A records | A stops, and A's text is inserted into A; edits in A meanwhile move its anchor. A press in B that cannot start (B's phase is not `idle`) leaves A recording |
+| Pane A's background dictation fails | A's notice, with **Retry** and the kept audio where it has one, shows in A's card once B has ended (at once if nothing else holds the card), unless B ended with a failure of its own, which keeps the card |
+| The composer unmounts while arming, recording or transcribing | capture stops, the stream finishes, and the text goes into the stored draft at the mapped anchor; during the first use macOS prompt, the microphone is never opened |
 | Screen lock (main forwards `powerMonitor` `lock-screen` as `dictation:lock-screen`) | stop and insert |
 | A track ends (headset unplugged) | stop and insert what was captured |
 | 30 s before `max_seconds` | MSG-CAP-WARN in the card; at the cap, stop, insert and show MSG-CAP-STOPPED |
 | **Restart & update** while dictating | the renderer has set `dictation:busy`; the restart asks MSG-RESTART-BUSY |
 
-Two windows may each record; the daemon queues their streams.
+`dictation:busy` stays set while any composer in the window still waits for its text, including a pane that a press in another pane stopped, which finishes in the background. A recording kept for **Retry** does not hold it. The main process keeps the record in `utils/dictationBusy.ts`, which the updater imports, and drops a window's entry when the window closes or its renderer crashes; every new document (a reload, a crash recovery) sends `false` from its preload first, so no window stays busy for a dictation that is gone. Two windows may each record; the daemon queues their streams.
 
 ### The setup popover and disclosure
 
@@ -451,7 +485,7 @@ DD-65. The renderer is the only desktop process that records, and its grant is n
 | `dictionary:add-term` | main to renderer | `{text, x, y}` | opens the term dialog prefilled (the context menu door); the renderer resolves the chat at that point, and the add names it as `origin_session_id`, or sends `origin_unresolved: true` for a transcript it cannot resolve, so a private term takes that chat's institutions (O-36) |
 
 - The OS settings URLs live in the new `utils/micPermissionSettings.ts`, not in the Copilot helper, which refuses on an external backend and off macOS [C `utils/copilotPermissionSettings.ts`]; the microphone is always local to the app.
-- Test switches: when `!app.isPackaged && process.env.BIOROUTER_TEST_FAKE_MIC_WAV`, `appMain` adds `--use-fake-device-for-media-stream --use-file-for-fake-audio-capture=<wav>%noloop` (plus `--disable-features=AudioServiceSandbox` on macOS, where the sandboxed audio service otherwise cannot read the WAV and the track is digital silence, RMS 0 [M]; the fake device flag alone was not shown to cause it). `--use-fake-ui-for-media-stream` is forbidden by a source guard: it bypassed the permission handler entirely, with zero handler calls and audio plus video granted under a deny all policy [M].
+- Test switches: when `!app.isPackaged && process.env.BIOROUTER_TEST_FAKE_MIC_WAV`, `main.ts` adds `--use-fake-device-for-media-stream --use-file-for-fake-audio-capture=<wav>%noloop` (plus `--disable-features=AudioServiceSandbox` on macOS, added to any features already disabled, where the sandboxed audio service otherwise cannot read the WAV and the track is digital silence, RMS 0 [M]; the fake device flag alone was not shown to cause it). It adds them as the module loads, before `ready`, like its Playwright debugging switch, not in `appMain`, which runs after `ready`; the list comes from `fakeMicrophoneSwitches` in `utils/micPermissionSettings.ts`, which the `dictation-capture-electron` probe bundles too. `--use-fake-ui-for-media-stream` is forbidden by a source guard on any use under `ui/desktop/` (a comment may name it to say it is not used, as PR-03's `serve` spec does): it bypassed the permission handler entirely, with zero handler calls and audio plus video granted under a deny all policy [M].
 - Biorouter Copilot places no restriction on dictation, decided by the owner on 2026-11-05 (O-15, DD-88): an agent holding a Copilot grant on Biorouter's own window, or on a browser that shows a `serve` tab, can start the microphone by clicking it or pressing the dictation chord, and can then press **Send** as it can for typed text. What limits it is Copilot's per task grant (one grant per task, chat, model and target), the composer's visible recording state, the operating system's microphone indicator, and Stop and revoke.
 
 ### macOS (S1, S2)
@@ -1123,7 +1157,7 @@ Two groups of message ids were retired on 2026-11-05 and are not reused: the Cop
 | MSG-SERVER-MEMORY | This server does not have enough free memory to load \<model> (\<x> GB needed, \<y> GB free). Try again later, or ask the administrator to install the Light model. | Composer card on S5 to S8 and S17 |
 | MSG-ENGINE-FAILED | Transcription failed on \<where>, so no text was produced. Your recording is kept for 5 minutes. (button **Retry**) | Composer card, clipboard review card; \<where> is "this computer" or "the Biorouter server at \<host>" |
 | MSG-ENGINE-FAILED-CLI | Transcription failed. Type /dictate retry within 5 minutes to try the same recording again. | TUI, REPL, shared prompt; `dictate` and `transcribe` print the first sentence and exit 1 |
-| MSG-LOST | Dictation lost its connection to Biorouter, so nothing was inserted. Try again. | Composer card, after a second failure following a 410 |
+| MSG-LOST | Dictation lost its connection to Biorouter, so nothing was inserted. Try again. | Composer card: a second failure following a 410, the sixth timeout in a row on one chunk, the fourth network error, 5xx or 429 in a row, or no answer at all; shown when it happens, also while recording |
 | MSG-CAP-WARN | Dictation stops in 30 seconds. What you said so far will be inserted. | Composer card and the terminal front ends, at 570 s |
 | MSG-CAP-STOPPED | Dictation stopped at the 10 minute limit and inserted what you said. | Composer card and the terminal front ends, at 600 s |
 | MSG-PAUSED | Dictation failed three times in a row, so it is paused for this session. Type /dictate status to see why. | Terminal front ends, after three failures within 10 s |
@@ -1140,7 +1174,9 @@ Two groups of message ids were retired on 2026-11-05 and are not reused: the Cop
 | MSG-SHARED-ORIGIN | Your browser's microphone permission covers every page at \<origin>, including pages that code or an agent wrote there, such as Biorouter apps and notebook outputs. Choose Allow this time unless you trust every page there. | Once per origin before the first recording, on every `serve` origin (SD-16) |
 | MSG-413 | The proxy in front of Biorouter refused the audio upload (413). Its request size limit is below 64 KB. | Composer card |
 | MSG-WAIT | Waiting for a free connection to Biorouter | Composer card after 1.5 s without an answer |
-| MSG-SERVER-BUSY | The server is busy transcribing for other people. Trying again in \<n> seconds. | Composer card on a 429 |
+| MSG-SERVER-BUSY | The server is busy transcribing for other people. Trying again in \<n> seconds. | Composer card while a 429 at stream creation is waited out |
+| MSG-SERVER-BUSY-FAILED | The server is still busy transcribing for other people, so nothing was inserted. Your recording is kept for 5 minutes. (button **Retry**) | Composer card, when stream creation still answers 429 30 s after the stop |
+| MSG-RECORDING-FAILED | Biorouter could not read the recording, so nothing was inserted. Try again. | Composer card, when the `MediaRecorder` fallback cannot decode what it recorded |
 | MSG-NOTHING | Nothing was heard, so nothing was inserted. | Composer card |
 | MSG-SILENT | The microphone sent only silence. Check that it is not muted. | Composer card; CLI on Linux |
 | MSG-NO-AUDIO-YET | No audio detected. Check that your microphone is not muted. | Composer card and TUI while recording |

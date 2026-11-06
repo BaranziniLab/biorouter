@@ -1,4 +1,5 @@
 import type { DroppedFile } from '../hooks/useFileDrop';
+import { spliceDictation, type Anchor } from './dictatedText';
 
 /**
  * What a NEW chat's composer holds while nobody has sent it — text, staged
@@ -239,6 +240,26 @@ export function giveBackToComposer(key: string, returned: ComposerDraft): void {
   if (isEmptyComposerDraft(returned)) return;
   saveComposerDraft(key, mergeComposerDraft(drafts.get(key), returned));
   for (const listener of [...(giveBackListeners.get(key) ?? [])]) listener(returned);
+}
+
+/**
+ * A transcript for a composer that unmounted while it dictated (a tab switch, a
+ * split, leaving Home): spliced into the draft stored under `key`, at `at`, with
+ * the same spacing rules as a live insert (`utils/dictatedText.ts`
+ * `spliceDictation`). `at` is the recording's anchor as last mapped, a caret
+ * position or the selection the dictation replaces.
+ *
+ * NOT a give-back. `giveBackToComposer` puts returned text before the draft,
+ * because a give-back is a message that was written first; dictated text goes
+ * where the person was when they started speaking. The write stamps the key like
+ * any other, so a composer mounted under it later adopts the new text.
+ */
+export function insertIntoComposerDraft(key: string, at: number | Anchor, text: string): void {
+  const current = drafts.get(key) ?? EMPTY_COMPOSER_DRAFT;
+  const anchor = typeof at === 'number' ? { start: at, end: at } : at;
+  const { value, inserted } = spliceDictation(current.text, anchor, text);
+  if (!inserted) return;
+  saveComposerDraft(key, { ...current, text: value });
 }
 
 export type ComposerSend = {
