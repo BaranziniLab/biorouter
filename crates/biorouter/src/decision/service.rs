@@ -1435,9 +1435,29 @@ pub async fn estimate_tokens(request: &DecisionRequest) -> usize {
         // The tokenizer failed to load: the four-characters-a-token estimate
         // the context budget uses, which errs low, so the margin below matters.
         Err(_) => crate::context_budget::estimate_tokens(&text),
-    };
+    } + extra_digit_tokens(&text);
     ((raw as f64) * TOKEN_ESTIMATE_MARGIN).ceil() as usize
         + PER_QUESTION_OVERHEAD * request.questions.len()
+}
+
+/// The tokens a per-digit tokenizer spends on `text`'s numbers beyond what
+/// o200k counts. o200k folds up to three digits into one token, while the
+/// Qwen-family tokenizers decision models use give every digit its own, so
+/// the flat margin alone under-counted lab values: live on 2026-11-05, a labs
+/// note this estimate put at joey-1's window was refused by Baseten as over
+/// it (HTTP 422), while prose at the same estimate was well inside.
+fn extra_digit_tokens(text: &str) -> usize {
+    let mut extra = 0;
+    let mut run = 0usize;
+    for ch in text.chars().chain(std::iter::once(' ')) {
+        if ch.is_ascii_digit() {
+            run += 1;
+        } else if run > 0 {
+            extra += run - run.div_ceil(3);
+            run = 0;
+        }
+    }
+    extra
 }
 
 /// Room kept below a model's window for what the estimate cannot see: the
@@ -1734,6 +1754,17 @@ mod tests {
 
     fn private_chat() -> DecisionSession {
         DecisionSession::new("s1", SessionClassification::Private, true)
+    }
+
+    #[test]
+    fn digits_are_counted_one_token_each_beyond_what_o200k_folds() {
+        assert_eq!(extra_digit_tokens(""), 0);
+        assert_eq!(extra_digit_tokens("no numbers here"), 0);
+        // 138 is one o200k token and three per-digit ones; 4.1 is two runs of one.
+        assert_eq!(extra_digit_tokens("Na 138 K 4.1"), 2);
+        // A run is closed at the end of the text too: 2026 is 2 + 2 in o200k terms.
+        assert_eq!(extra_digit_tokens("EDSS since 2026"), 2);
+        assert_eq!(extra_digit_tokens("1234567"), 7 - 3);
     }
 
     #[tokio::test]
