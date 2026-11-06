@@ -11,17 +11,20 @@
 //!   chat;
 //! - a private model gets none either while the workspace can't be read (here it is not
 //!   connected), even with the person's consent: the check fails closed;
-//! - everything else the listing says (chats, runs, consents) is as before.
+//! - everything else the listing says (chats, runs, consents) is as before;
+//! - `grants_revoke`'s card names the chat as `biorouter crew grants list` does and shows that
+//!   it takes back Crew access, and a card stopped before the person answers changes nothing.
 //!
 //! ⚠ **Its own binary**: the grant registry is loaded once per process, the first time Crew is
 //! used, so a seeded grant has to be on disk before anything else touches Crew, and the host is
-//! a process-global `OnceLock`. Offline: the seeded connection is never connected, so nothing
-//! here opens a socket.
+//! a process-global `OnceLock`. **One runtime**: the fixture's daemon state belongs to the
+//! runtime that made it, so every test runs on [`RUNTIME`]. Offline: the seeded connection is
+//! never connected, so nothing here opens a socket.
 
 #[path = "../src/test_sandbox.rs"]
 mod test_sandbox;
 
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
 
 use biorouter::config::paths::Paths;
 use biorouter::crew::tool_host::{self, PersonTool, PersonToolCall};
@@ -61,6 +64,15 @@ fn select_the_file_credential_backend() {
         );
     }
 }
+
+/// The one runtime every test here runs on.
+static RUNTIME: LazyLock<tokio::runtime::Runtime> = LazyLock::new(|| {
+    tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .enable_all()
+        .build()
+        .expect("a runtime")
+});
 
 /// The daemon's state and a person's own chat holding a grant, seeded once, before anything
 /// reads Crew.
@@ -226,10 +238,13 @@ fn names_nothing(answer: &Value) {
 /// A public model gets the grants on a Private workspace without their names, the replaced one
 /// included, and is told how many were left out. A private model the person let read the
 /// workspace still gets no names while the workspace can't be read to say whether it may: the
-/// labels are left out, not shown on trust. One test, because the fixture's daemon state
-/// belongs to the runtime that made it.
-#[tokio::test(flavor = "multi_thread")]
-async fn a_grant_s_names_reach_only_a_call_that_may_read_the_workspace() {
+/// labels are left out, not shown on trust.
+#[test]
+fn a_grant_s_names_reach_only_a_call_that_may_read_the_workspace() {
+    RUNTIME.block_on(names_reach_only_a_call_that_may_read());
+}
+
+async fn names_reach_only_a_call_that_may_read() {
     let (state, chat) = fixture().await;
     let saved = biorouter::crew::manager()
         .expect("the sandboxed Crew manager")
@@ -286,4 +301,78 @@ async fn a_grant_s_names_reach_only_a_call_that_may_read_the_workspace() {
         "{answer}"
     );
     names_nothing(&answer);
+}
+
+/// The card `grants_revoke` parks for `params`, called from `session`, as the person sees it
+/// (`prompt`, `arguments`), and what the call answered once Stop was pressed on it.
+async fn stopped_revoke_card(session: &str, params: Value) -> (Value, String) {
+    let host = tool_host::get().expect("the host is installed");
+    let cancel = CancellationToken::new();
+    let call = PersonToolCall {
+        tool: PersonTool::Change,
+        action: "grants_revoke".to_owned(),
+        params,
+        session_id: session.to_owned(),
+        tool_call_id: Some(format!("call-{}", uuid::Uuid::new_v4())),
+        capability: private_local().await,
+        cancel: cancel.clone(),
+        approvals: Arc::clone(PendingUserActions::global()),
+    };
+    let task = tokio::spawn(async move { host.call(call).await.map_err(|e| e.to_string()) });
+    let card = loop {
+        let parked = PendingUserActions::global().pending_cards_for_session(session);
+        if let Some(message) = parked.first() {
+            break serde_json::to_value(message).unwrap()["content"][0]["data"].clone();
+        }
+        if task.is_finished() {
+            panic!("it answered without a card: {:?}", task.await);
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    };
+    cancel.cancel();
+    let refusal = match task.await.expect("the call ran") {
+        Ok(answer) => panic!("a stopped card changed something: {answer}"),
+        Err(error) => error,
+    };
+    (card, refusal)
+}
+
+/// Taking a chat's Crew access back asks on one card that names the chat as `biorouter crew
+/// grants list` does, its title quoted and then its ID, with no possessive, and shows that it
+/// takes back Crew access rather than a permission to read. Stopped there, nothing changes.
+#[test]
+fn taking_back_crew_access_names_the_chat_as_the_cli_does() {
+    RUNTIME.block_on(async {
+        let (state, chat) = fixture().await;
+        let asker = state
+            .session_manager()
+            .create_session(
+                std::env::temp_dir().join("crew-tools-grants"),
+                "a revoker".to_owned(),
+                SessionType::User,
+            )
+            .await
+            .expect("a chat")
+            .id;
+        let (card, refusal) =
+            stopped_revoke_card(&asker, json!({"connection": "lab", "session": chat})).await;
+        let server = biorouter::crew::server_label("crew@crew.invalid", None).await;
+        assert_eq!(
+            card["prompt"],
+            format!(
+                "Take back Crew access to lab on {server} from chat \"a chat with Crew access\" (chat {chat})\nIf it is a task, the task stops."
+            )
+        );
+        assert_eq!(card["arguments"]["takes_back"], "Crew access", "{card}");
+        assert_eq!(card["arguments"]["session"], chat.as_str(), "{card}");
+        assert!(refusal.starts_with("Nothing was changed"), "{refusal}");
+        assert!(
+            biorouter::crew::manager()
+                .expect("the sandboxed Crew manager")
+                .run_metadata(&chat)
+                .await
+                .is_some(),
+            "a stopped card took the grant back"
+        );
+    });
 }

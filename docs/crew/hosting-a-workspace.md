@@ -47,7 +47,7 @@ The dialog has three steps: Name, Start and Create. To do the same from a termin
 1. In **Workspace name**, type a name, such as `Wong Lab`. Crew shows it as "Your workspace: wong-lab". Anyone who can sign in to the server can see it, so leave out patient and sample IDs.
 2. In **Your server login**, type your login, such as `alice@hpc.example.edu`, or the server's short name from your SSH settings.
 3. Under **Privacy**, keep **Private** or choose **Public**. With Private, type your short ID in **Institution** if it is empty.
-4. Check **Your agent on {server}**. It starts at **As me on the server**, which lets your agent run commands as your account there, with the warning that goes with it. Choose **In a folder** or **Off** to give it less ([What your agent may do on the server](agents-and-chat-access.md#what-your-agent-may-do-on-the-server)). As host, your account also holds the workspace's own files, so full access lets your agent read channels you are not in.
+4. Check **Your agent on {server}**. It starts at **As me on the server**, which lets your agent run commands as your account there, with the warning that goes with it. Choose **In a folder** or **Off** to give it less ([What your agent may do on the server](agents-and-chat-access.md#what-your-agent-may-do-on-the-server)). As host, your account also holds the workspace's own files, so full access lets your agent read channels you are not in and act as the host. The warning says so: "You host {workspace} from this account, so your agent can also read the workspace’s own files on the server, including channels you’re not in. It can also act as the host of {workspace}."
 5. Fill in **Advanced** only if IT gave you a port, an identity file or a jump host.
 6. Choose **Continue**. Biorouter makes a hosting key, so only this computer can create the workspace. The dialog moves to step 2, Start.
 
@@ -226,7 +226,7 @@ Each person's own Biorouter sets Crew up in their server account when they join,
 
 An invitation is for one person and expires after 24 hours. Inviting the person again replaces it. The message holds no secret.
 
-On a server with a current Crew, the result under step 4 says "Bob gets in by opening the workspace while signed in to the server as themselves. If their Biorouter shows a code instead, choose Let in… next to their name in the sidebar." A member adds another computer by themselves, with **Open a workspace on a server** ([Open a workspace on a server](joining-a-workspace.md#open-a-workspace-on-a-server)), so the Invite dialog has no **Add another device** option, and inviting a member says "@bob is already in chen-lab. A new computer of theirs gets in when they open chen-lab on it, signed in to the server as @bob." On a server with an older Crew, turn on **Add another device for @{name}** and choose **Invite**. If you invite a member without it there, Crew says "@{name} is already in {workspace}. To add this computer of theirs, Add another device for @{name} is now on: choose Invite again."
+On a server with a current Crew, the result under step 4 says "Bob gets in by opening the workspace while signed in to the server as themselves. If their Biorouter shows a code instead, choose Let in… next to their name in the sidebar." A member adds another computer by themselves, with **Open a workspace on a server** ([Open a workspace on a server](joining-a-workspace.md#open-a-workspace-on-a-server)), so the Invite dialog has no **Add another computer** option, and inviting a member says "@bob is already in chen-lab. A new computer of theirs gets in when they open chen-lab on it, signed in to the server as @bob." On a server with an older Crew, turn on **Add another computer for @{name}** and choose **Invite**. If you invite a member without it there, Crew says "@{name} is already in {workspace}. To add this computer of theirs, Add another computer for @{name} is now on: choose Invite again."
 
 If the person still sees "Crew isn’t set up" after joining, they choose **Set up Crew for my account** on that screen. If that cannot work, for example because the server cannot reach their account, send them or IT the lines under **If {first} sees “Crew isn’t set up”**. They run in the person's own account. Then the person chooses **Try again**.
 
@@ -246,7 +246,7 @@ The steps below are for a person whose Biorouter is older, or a server with an o
 
 A code you or a member enters works only while that person may still let people in. If a member who invited someone is removed, or the workspace becomes managed, their invitation stops working and the joiner is told to ask the host to invite them again.
 
-For another computer of a member, invited with **Add another device for @{name}**, the dialog lets in "{first}’s new computer". Its button reads **Let {first}’s new computer in**, and once that computer checks in, the dialog shows "{first}’s new computer is in {workspace}". The person keeps their teams and channels, so choose **Done**.
+For another computer of a member, invited with **Add another computer for @{name}**, the dialog lets in "{first}’s new computer". Its button reads **Let {first}’s new computer in**, and once that computer checks in, the dialog shows "{first}’s new computer is in {workspace}". The person keeps their teams and channels, so choose **Done**.
 
 If you closed the dialog before step 5 in a managed workspace, choose **Add to a team…** on the person's row under "Joined, not in your teams".
 
@@ -360,7 +360,7 @@ The host role belongs to the server account that runs the workspace. On a server
 
 To add a second computer on a server with an older Crew:
 
-1. Invite your own username with **Add another device for @{username}** turned on.
+1. Invite your own username with **Add another computer for @{username}** turned on.
 2. [Join](joining-a-workspace.md) on the second computer with that invitation.
 3. Let it in from this computer with the code it shows.
 
@@ -400,9 +400,9 @@ The status row under the workspace name reads "Connected" again. Starting again 
 
 Each Biorouter carries a copy of Crew's server program. When yours is newer than the one in your server account, update the server so members get the newest Crew. Your account's copy also runs the workspaces you host.
 
-When the workspace's server runs an older Crew than your Biorouter carries (or, on a server too old to report its version, a Crew from before account ownership), the connection bar says "{workspace}’s server runs an older Crew." The host sees **Update Crew** beside it, which opens **Open a workspace on a server** for that server and looks for your workspaces there. Members read "Ask @{host} to update Crew." instead. Either can close the note with ×.
+When the workspace's server runs an older Crew than your Biorouter carries (or, on a server too old to report its version, a Crew from before account ownership), the connection bar says "{workspace}’s server runs an older Crew." The host sees **Update Crew** beside it, which opens **Open a workspace on a server** for that server and looks for your workspaces there. If the Crew in your own account there is too old to list them, the dialog says so with its own **Update Crew**, which updates that Crew without restarting anything and then lists your workspaces ([Open a workspace on a server](joining-a-workspace.md#open-a-workspace-on-a-server)). Members read "Ask @{host} to update Crew." instead. Either can close the note with ×.
 
-In **Open a workspace on a server**, every running workspace you host that runs an older Crew than this Biorouter shows "Runs Crew {version}; {newer version} is available." and **Update Crew**. **Update Crew** restarts that workspace and no other. When other people are connected to it, Crew asks first, such as "2 people are connected. Their running agent commands will stop.", with **Update and restart** and **Not now**. A workspace on a Crew from before account ownership cannot say who is connected, so Crew asks then too: "Other people may be connected. Their running agent commands will stop." After the update, a workspace left running says why under its row ([Open a workspace on a server](joining-a-workspace.md#open-a-workspace-on-a-server)).
+In **Open a workspace on a server**, every running workspace you host that runs an older Crew than this Biorouter shows "Runs Crew {version}; {newer version} is available." and **Update Crew**. Under it, "Update Crew restarts it." is followed by who is connected, when anyone is or may be. **Update Crew** restarts that workspace and no other. When other people are connected to it, Crew asks first, such as "2 people are connected. Their running agent commands will stop.", with **Update and restart** and **Not now**. A workspace on a Crew from before account ownership cannot say who is connected, so Crew asks then too: "Other people may be connected. Their running agent commands will stop." After the update, a workspace left running says why under its row ([Open a workspace on a server](joining-a-workspace.md#open-a-workspace-on-a-server)).
 
 From a terminal, run `biorouter crew setup --server alice@hpc.example.edu`, or `biorouter crew setup` with a saved connection. Setup:
 

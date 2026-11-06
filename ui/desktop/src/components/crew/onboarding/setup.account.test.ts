@@ -232,6 +232,30 @@ describe('what a job found and did (AO-6, AO-8)', () => {
     expect(setupWorkspacesFrom(null)).toEqual([]);
   });
 
+  it('reads why nothing was listed as a code, and the Crew in the account, live QA finding 2', () => {
+    const run = (wire: Record<string, unknown>) =>
+      setupRunFrom({ ...RUNNING, intent: 'check', state: 'finished', stage: 'done', ...wire });
+    const old = run({
+      workspaces: [],
+      workspaces_note: 'Crew 1.93.0 in your account on leo is too old to list workspaces.',
+      workspaces_unlisted: 'too_old',
+      installed: { path: '~/.local/bin/biorouter-crew', state: 'file', version: '1.93.0' },
+    });
+    expect(old.workspacesUnlisted).toBe('too_old');
+    expect(old.installedVersion).toBe('1.93.0');
+    for (const code of ['not_installed', 'failed', 'timed_out']) {
+      expect(run({ workspaces_unlisted: code }).workspacesUnlisted).toBe(code);
+    }
+    // A code this build does not know, and a version that is not one, are never kept.
+    const odd = run({
+      workspaces_unlisted: 'rm -rf',
+      installed: { version: '1.93.0; reboot' },
+    });
+    expect(odd.workspacesUnlisted).toBeNull();
+    expect(odd.installedVersion).toBeNull();
+    expect(run({ installed: null }).installedVersion).toBeNull();
+  });
+
   it('reads the workspaces, the note, and what the job restarted, left outdated or failed', () => {
     const run = setupRunFrom({
       ...RUNNING,
@@ -269,6 +293,8 @@ describe('what a job found and did (AO-6, AO-8)', () => {
     });
     expect(run.workspaces).toHaveLength(1);
     expect(run.workspacesNote).toBe('timed out');
+    // A daemon before `workspaces_unlisted` says nothing as a code.
+    expect(run.workspacesUnlisted).toBeNull();
     expect(run.outcome?.restarted).toEqual([
       {
         workspaceId: HOSTED.workspace_id,

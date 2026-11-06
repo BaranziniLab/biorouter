@@ -376,8 +376,8 @@ export const inviteCopy = {
   cancel: 'Cancel',
   retry: 'Retry',
   invitationUnavailable: 'The invitation message couldn’t be loaded.',
-  addDevice: (username: string) => `Add another device for @${username}`,
-  addDeviceUnnamed: 'Add another device for this person',
+  addDevice: (username: string) => `Add another computer for @${username}`,
+  addDeviceUnnamed: 'Add another computer for this person',
   refusal: {
     noAccount: (text: string) => `No account named @${text} on this server.`,
     /**
@@ -385,7 +385,7 @@ export const inviteCopy = {
      * computer. The switch is turned on with it, and the sentence says so.
      */
     alreadyMember: (username: string, workspace: string) =>
-      `@${username} is already in ${workspace}. To add this computer of theirs, Add another device for @${username} is now on: choose Invite again.`,
+      `@${username} is already in ${workspace}. To add this computer of theirs, Add another computer for @${username} is now on: choose Invite again.`,
     /**
      * The same refusal from a workspace that belongs to accounts (account ownership AO-1): a
      * member's new computer needs nothing from the host, so nothing is turned on.
@@ -760,9 +760,10 @@ export const keysCopy = {
   deviceKey: 'This computer',
   deviceKeyLabel: 'this computer’s fingerprint',
   thisDevice: 'This computer',
-  /** A device the new-device notice is about, until it is acknowledged (AO-10). */
+  /** A computer the new-computer notice is about, until it is acknowledged (AO-10). */
   newDevice: 'New',
-  devices: 'Devices on your account',
+  /** The account's computers, as `biorouter crew profile devices` heads them. */
+  devices: 'Computers enrolled as you',
   deviceAdded: (date: string) => `Added ${date}`,
   addedVia: {
     bootstrap: 'when the workspace was created',
@@ -833,7 +834,7 @@ export const confirmCopy = {
      * the server; only a new invitation brings it back.
      */
     description:
-      'Removes all of their devices and agent access. Their messages stay in history. Signing in to the server as them no longer opens the workspace: to let them back in, invite them again.',
+      'Removes all of their computers and agent access. Their messages stay in history. Signing in to the server as them no longer opens the workspace: to let them back in, invite them again.',
     confirm: (workspace: string) => `Remove from ${workspace}`,
     /** The case-sensitive check on top of the primitive's case-folded one. */
     mismatch: 'Type the exact username to remove access.',
@@ -865,14 +866,14 @@ export const confirmCopy = {
      * refused for a member, so it names the one that works. `username` is the person's, or null.
      */
     memberDescription: (workspace: string, username: string | null) =>
-      `It disconnects, ends every chat’s access through it and deletes this computer’s key for the workspace. Your messages stay on the server. To use ${workspace} on this computer again, ask the host to invite you with Add another device for ${username ? `@${username}` : 'you'}.`,
+      `It disconnects, ends every chat’s access through it and deletes this computer’s key for the workspace. Your messages stay on the server. To use ${workspace} on this computer again, ask the host to invite you with Add another computer for ${username ? `@${username}` : 'you'}.`,
     /**
      * The host removing it from the only computer of theirs the workspace lists (CLI-1): the host
      * controls end for good, so it asks for the workspace's name first, as the CLI asks for
      * `--give-up-host-controls`.
      */
     onlyHostDescription: (workspace: string, username: string | null) =>
-      `You host ${workspace}, and no other computer of yours can act as its host. Removing it here ends the host controls for good: nobody could let people in, change its privacy or remove anyone again. To keep them, first invite another computer of yours with Add another device for ${username ? `@${username}` : 'yourself'}.`,
+      `You host ${workspace}, and no other computer of yours can act as its host. Removing it here ends the host controls for good: nobody could let people in, change its privacy or remove anyone again. To keep them, first invite another computer of yours with Add another computer for ${username ? `@${username}` : 'yourself'}.`,
     onlyHostConfirm: 'Remove and give up hosting',
     /**
      * Against a server older than account ownership (AO-9): the host-only guard stays, and says

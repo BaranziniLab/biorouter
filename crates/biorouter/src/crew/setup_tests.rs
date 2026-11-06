@@ -1128,9 +1128,14 @@ async fn an_older_program_is_replaced_unless_kept_and_kept_as_previous() {
         .detail
         .unwrap()
         .contains(&format!("Kept Crew 1.0.0; this app has {VERSION}")));
+    // Kept on purpose, it still says what to do: setup without `keep_older` replaces it.
     assert_eq!(
         kept.workspaces_note.as_deref(),
-        Some("Crew 1.0.0 in your account on lab-server is too old to list workspaces.")
+        Some("Crew 1.0.0 in your account on lab-server is too old to list workspaces. Update it with biorouter crew setup --server wanjun@lab-server.")
+    );
+    assert_eq!(
+        kept.workspaces_unlisted,
+        Some(SetupWorkspacesUnlisted::TooOld)
     );
     assert_eq!(
         stage(&kept, SetupStageName::Workspaces).state,
@@ -2717,6 +2722,10 @@ async fn the_servers_workspaces_are_listed_with_what_this_computer_has() {
         (1, 2, false)
     );
     assert_eq!(scan.account_uid, Some(1022));
+    assert_eq!(
+        (done.workspaces_unlisted, done.workspaces_note.as_deref()),
+        (None, None)
+    );
 
     // A check never restarts, and still says what is outdated and why.
     assert!(restarted_ids(&server).is_empty());
@@ -3333,6 +3342,10 @@ async fn a_listing_that_fails_never_stops_the_job() {
         Some("Crew on lab-server couldn't list its workspaces, so they aren't shown.")
     );
     assert_eq!(
+        done.workspaces_unlisted,
+        Some(SetupWorkspacesUnlisted::Failed)
+    );
+    assert_eq!(
         stage(&done, SetupStageName::Workspaces).state,
         SetupStageState::Skipped
     );
@@ -3356,6 +3369,10 @@ async fn a_listing_that_fails_never_stops_the_job() {
         done.workspaces_note.as_deref(),
         Some("Crew on lab-server couldn't list its workspaces, so they aren't shown.")
     );
+    assert_eq!(
+        done.workspaces_unlisted,
+        Some(SetupWorkspacesUnlisted::Failed)
+    );
     let listed = server
         .remotes()
         .iter()
@@ -3363,6 +3380,110 @@ async fn a_listing_that_fails_never_stops_the_job() {
         .count();
     assert_eq!(listed, 2, "the check ran the listing");
     assert!(done.workspaces_scan.is_none() && done.workspaces.is_empty());
+}
+
+/// AO-8: a check that finds Crew in the account too old to list the workspaces says so as a
+/// code a surface can act on (`too_old`) and in a sentence that says what to do; an install
+/// that restarts nothing (the desktop's Update Crew) then replaces it and lists them. With
+/// nothing installed the code is `not_installed`.
+#[tokio::test]
+async fn a_crew_too_old_to_list_says_what_to_do_and_an_install_lists_them() {
+    if !crate::test_sandbox::in_a_process_of_its_own() {
+        return;
+    }
+    let server = server().await;
+    let lab = listing(vec![hosted(
+        W_LAB,
+        "lab",
+        "running",
+        "1.0.0",
+        Some(false),
+        None,
+        Some("lab"),
+    )]);
+    serve_listing(&lab, &restart_arm(&[W_LAB]), None);
+
+    let missing = ran(&server, on_server(SetupIntent::Check)).await;
+    assert_eq!(missing.state, SetupState::Finished, "{missing:?}");
+    assert_eq!(
+        missing.workspaces_unlisted,
+        Some(SetupWorkspacesUnlisted::NotInstalled)
+    );
+    assert_eq!(
+        missing.workspaces_note.as_deref(),
+        Some("Crew isn't installed in your account on lab-server, so Biorouter can't look for workspaces there.")
+    );
+
+    server.install(&broker_script("1.0.0", false));
+    let old = ran(&server, on_server(SetupIntent::Check)).await;
+    assert_eq!(old.state, SetupState::Finished, "{old:?}");
+    assert_eq!(
+        old.workspaces_unlisted,
+        Some(SetupWorkspacesUnlisted::TooOld)
+    );
+    assert_eq!(
+        old.workspaces_note.as_deref(),
+        Some("Crew 1.0.0 in your account on lab-server is too old to list workspaces. Update it with biorouter crew setup --server wanjun@lab-server.")
+    );
+    assert_eq!(
+        stage(&old, SetupStageName::Workspaces).state,
+        SetupStageState::Skipped
+    );
+    assert!(old.workspaces.is_empty() && old.workspaces_scan.is_none());
+    assert!(
+        !server.remotes().contains(&remote(WORKSPACES_SCRIPT)),
+        "decided from the version, never from running it"
+    );
+
+    // Update Crew, with no workspace restart: the install replaces the program and lists.
+    let updated = ran(
+        &server,
+        SetupRequest {
+            restart_workspaces: Some(false),
+            ..on_server(SetupIntent::Install)
+        },
+    )
+    .await;
+    assert_eq!(updated.state, SetupState::Finished, "{updated:?}");
+    assert_eq!(
+        (
+            updated.workspaces_unlisted,
+            updated.workspaces_note.as_deref()
+        ),
+        (None, None)
+    );
+    let replaced = updated.outcome.as_ref().unwrap().upgraded_from.clone();
+    assert_eq!(
+        replaced.and_then(|from| from.version).as_deref(),
+        Some("1.0.0")
+    );
+    let ids: Vec<&str> = updated
+        .workspaces
+        .iter()
+        .map(|workspace| workspace.workspace_id.as_str())
+        .collect();
+    assert_eq!(ids, [W_LAB]);
+    assert!(
+        restarted_ids(&server).is_empty(),
+        "nothing restarted without the person's consent"
+    );
+
+    // Another build of this app's version, while that version predates the listing, is too
+    // old as well, and setup replaces it too, so the sentence says the same.
+    if !lists_workspaces(Some(VERSION), Some("another build"), None) {
+        server.install(&broker_script(VERSION, false));
+        let rebuilt = ran(&server, on_server(SetupIntent::Check)).await;
+        assert_eq!(
+            rebuilt.workspaces_unlisted,
+            Some(SetupWorkspacesUnlisted::TooOld)
+        );
+        assert_eq!(
+            rebuilt.workspaces_note,
+            Some(format!(
+                "Crew {VERSION} in your account on lab-server is too old to list workspaces. Update it with biorouter crew setup --server {LOGIN}."
+            ))
+        );
+    }
 }
 
 /// AO-8: a password server signs in once for a server target, and the next job on the same

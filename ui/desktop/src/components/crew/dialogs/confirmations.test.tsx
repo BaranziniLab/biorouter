@@ -281,7 +281,7 @@ describe('CrewConfirmation', () => {
       name: confirmCopy.removeConnection.title('lab'),
     });
     expect(dialog).toHaveTextContent(
-      'To use lab on this computer again, ask the host to invite you with Add another device for @bob.'
+      'To use lab on this computer again, ask the host to invite you with Add another computer for @bob.'
     );
     await act(async () => {
       fireEvent.click(within(dialog).getByRole('button', { name: 'Remove' }));

@@ -238,9 +238,9 @@ If you choose **Deny**, the chat is told "The person declined. Nothing was read.
 
 - The permission is for that chat and that connection, and lasts until you take it back. It does not expire after an hour, as a Crew grant does.
 - Content is messages, files and their names, the workspace context, team, channel and people names, and task output. Lists of your connections, setup results and the server's workspace list carry none, so any chat reads them without asking. Downloading a file to this computer, and the state of a transfer that names its file, ask for this permission as reads do.
-- In the chat itself, a bar above the message box reads "Reads chen-lab as you" for each workspace the chat may read, with **Revoke**. It appears as soon as you allow the card. Choose **Revoke**, and the bar says "This chat no longer reads chen-lab as you." **Dismiss** closes that note. If the permission was already gone, the note reads "This chat had no permission left to take back."
+- In the chat itself, a bar above the message box reads "Reads chen-lab as you" for each workspace the chat may read, with **Revoke**. It appears as soon as you allow the card. Choose **Revoke**, and the bar says "This chat no longer reads chen-lab as you." **Dismiss** closes that note. If the permission was already gone, the note reads "This chat had no permission left to take back." If the chat reads chen-lab again later, its card asks again, and once you allow it the bar shows "Reads chen-lab as you" again, in place of the note.
 - In Crew, type `/crew` in the chat. Under the Chat access pane, "Reads as you" lists "Reads chen-lab as you", with the date you allowed it, such as "Since November 6", and **Revoke**. Choose **Revoke**, and the pane says "This chat no longer reads chen-lab as you."
-- From a terminal, `biorouter crew grants list` lists each permission, such as `Chat 20260924_2 reads chen-lab as you · since Nov 6, 2026`, and `biorouter crew grants revoke SESSION_ID --reads` takes it back ([A chat that reads as you](command-line.md#a-chat-that-reads-as-you)). You can also ask the chat to take it back. That is a change, so its card asks first: "Take back chat {chat}'s permission to read {connection} on {server} as you".
+- From a terminal, `biorouter crew grants list` lists each permission, such as `Chat 20260924_2 reads chen-lab as you · since Nov 6, 2026`, and `biorouter crew grants revoke SESSION_ID --reads` takes it back ([A chat that reads as you](command-line.md#a-chat-that-reads-as-you)). You can also ask the chat to take it back. That is a change, so its card asks first, naming the chat as `grants list` does: “Take back permission for chat "Plot review" (chat 20260924_2) to read chen-lab on lab.example.edu as you”, or `chat 20260924_2` alone for a chat with no title. Its details say what it takes back: "permission to read as you".
 - A chat that read Crew content keeps every other tool it has, unlike a chat with Crew access. With a private model it becomes Private: see [Privacy](#privacy-for-a-chat-that-reads-as-you).
 
 ### Every change waits for you
@@ -261,6 +261,7 @@ The card names its targets as Crew found them before it asked: every card names 
 | Adding this computer again (`rejoin`) | "Its old key on this computer stops working." and that chats with Crew access through the connection each need access granted again. |
 | Removing one of your computers (`profile_revoke_device`) | "A lost computer can still sign in as you while it holds an SSH key or password for your account on lab.example.edu: remove its key from ~/.ssh/authorized_keys there, or change your password, first." |
 | Removing a workspace from this computer (`connections_remove`) | What it ends, and on a server with a current Crew, "The workspace can be opened again from any computer that signs in to the server as your account." |
+| Taking back a chat's Crew access (`grants_revoke`) | “Take back Crew access to chen-lab on lab.example.edu from chat "Plot review" (chat 20260924_2)”, then "If it is a task, the task stops." Its details say what it takes back: "Crew access". |
 | Deleting, archiving or removing for everyone | "for everyone; this cannot be undone", such as "Archive #methods (Analysis Lab) in chen-lab on lab.example.edu for everyone; this cannot be undone". |
 
 If the chat gets Crew access while a card waits, the change does not run.
@@ -399,6 +400,13 @@ At **As me on the server**, your agent runs commands as your own account on the 
 
 > **Warning.** Crew shows this before you choose it: "Your agent will run commands as {you} on {server}: it can read and change anything your account can, use the network, and start programs that keep running after access ends. Other people’s messages and files in channels it reads can try to steer it. Use a private model you trust. Crew treats anything running as your account as you, so your agent can also add a computer to your account and post in Crew as you, with no agent mark." If you host the workspace from that account, the warning adds that your agent can also read everything the workspace keeps on the server, including channels you are not in, and ends "It can also act as the host of {workspace}." See the end of this section.
 
+Every other way to set full access gives the same warning:
+
+- In a terminal, `setup`, `open` and `join` print it when they give your agent full access, `host` prints it after the list of what it will do, and `connections set-access full` asks with it ([Agent access](command-line.md#agent-access)).
+- A chat's card for setting Crew up, opening a workspace or hosting one says "Agents get full access: they can run any command as you on lab.example.edu, read and change any file your account can, and use the network. Crew treats anything running as your account as you, so they can also add a computer to your account and post in Crew as you, with no agent mark."
+
+On the account that hosts the workspace, each adds what that means, such as "You host chen-lab from this account, so your agent can also read the workspace's own files on the server, including channels you're not in. It can also act as the host of chen-lab." A chat's card says "agents" and "They" there. When Biorouter cannot tell whether you host the workspace, for example because a saved connection is not connected, it leaves that sentence out.
+
 What the agent can do there:
 
 - **Run a command.** `remote.shell` runs one command in your login shell. Crew waits up to 20 seconds for it (10 by default), then answers with its output, or with a job the agent checks with `remote.job_status`. A command may run for up to an hour. A longer one runs as a detached job (`detach`), which keeps running after the task ends, and the agent or a later task checks it with `remote.job_status` or stops it with `remote.cancel`.
@@ -454,7 +462,7 @@ Most refusals say what to do. For these:
 | Badge | Meaning |
 |---|---|
 | "Active · ends 4:40 PM" | Can read and post |
-| "Stopped on this device" | Revoked here, not yet confirmed by the workspace |
+| "Stopped on this computer" | Revoked here, not yet confirmed by the workspace |
 | "Revoked · 2:05 PM" | Revoked and confirmed |
 | "Expired" | Its hour ran out |
 | "Ended" | A task's access ended with the task |
@@ -472,7 +480,7 @@ Revoking stops the whole chat on this computer at once, then asks the workspace 
 
 You see "Access revoked.", and the chat shows the note in [After access ends](#after-access-ends).
 
-"Stopped on this device" means the workspace was unreachable. The chat is already stopped here. Crew keeps asking the workspace, even after a restart, and shows "Confirmed. The workspace has stopped this chat’s access too." when it answers. **Retry** asks at once. If the workspace still cannot be reached, it says "Still can’t reach {workspace} · checked just now. Connect to confirm it now.", with **Connect** where the screen has one. In the chat, one note names the workspace, with **Retry** and **Start a new chat**.
+"Stopped on this computer" means the workspace was unreachable. The chat is already stopped here. Crew keeps asking the workspace, even after a restart, and shows "Confirmed. The workspace has stopped this chat’s access too." when it answers. **Retry** asks at once. If the workspace still cannot be reached, it says "Still can’t reach {workspace} · checked just now. Connect to confirm it now.", with **Connect** where the screen has one. In the chat, one note names the workspace, with **Retry** and **Start a new chat**.
 
 "Not revoked. This chat can still read and post." is followed by Crew's reason. Revoke again, or revoke from the workspace the chat is connected to.
 

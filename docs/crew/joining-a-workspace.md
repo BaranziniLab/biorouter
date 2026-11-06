@@ -181,7 +181,16 @@ Use this on a new computer, or after you removed a workspace from this one, to o
 | **Start** | You host the workspace, and it is stopped, for example after the server restarted. | Starts that workspace on the server, and restarts no other, then says "Started chen-lab on Crew {version}.". Then choose **Open**. |
 | **Update Crew** | You host the workspace, it is running, and it runs an older Crew than this Biorouter has. | Updates Crew in your account and restarts that workspace on it, and no other, then says "Restarted chen-lab on Crew {version}.". When other people are connected, Crew asks first: "2 people are connected. Their running agent commands will stop." A server with a Crew from before account ownership cannot say who is connected, so Crew asks then too: "Other people may be connected. Their running agent commands will stop." Choose **Update and restart**, or **Not now**. |
 
-After an update, a workspace left on its older Crew says why under its row, such as "It wasn’t restarted, because 2 people are connected. Choose Update Crew to restart it anyway." A workspace that runs a newer Crew than the one installed in your account, or keeps its data outside `~/.local/share/biorouter-crew`, is not offered **Update Crew** again, because an update cannot restart it: it reads "It runs Crew {version}, newer than the Crew installed in your account, so it was left running." or "It keeps its state outside ~/.local/share/biorouter-crew, so Crew can’t restart it. Restart it on lab.example.edu yourself." A restart that fails says so under the row, with Crew's reason.
+Until you update it, a running workspace you host that runs an older Crew says under its row what **Update Crew** does: "Update Crew restarts it.", then who is connected, such as "2 people are connected. Their running agent commands will stop." You see this after **Look for workspaces**, and after **Update Crew** or **Install Crew** in a note about the Crew in your account (below), because neither restarts a workspace.
+
+After **Update Crew** or **Start** on a row, a workspace left on its older Crew says why under its row, such as "It wasn’t restarted, because 2 people are connected. Choose Update Crew to restart it anyway." A workspace that runs a newer Crew than the one installed in your account, or keeps its data outside `~/.local/share/biorouter-crew`, is not offered **Update Crew** again, because an update cannot restart it: it reads "It runs Crew {version}, newer than the Crew installed in your account, so it was left running." or "It keeps its state outside ~/.local/share/biorouter-crew, so Crew can’t restart it. Restart it on lab.example.edu yourself." A restart that fails says so under the row, with Crew's reason.
+
+The workspaces are listed by the Crew in your own account on the server. When that Crew cannot list them, the steps end at "Looking for workspaces", marked as failed, with no "Ready", and the dialog says why:
+
+- "Crew {version} in your account on lab.example.edu is too old to list workspaces. Choose Update Crew to update it.", with **Update Crew**.
+- "Crew isn’t installed in your account on lab.example.edu, so Biorouter can’t look for workspaces there. Choose Install Crew to install it.", with **Install Crew**.
+
+Either button installs this Biorouter's Crew in your account and restarts no workspace. The same step then lists the workspaces, so you do not need to choose **Look for workspaces** again. A Biorouter that carries no Crew of its own shows only the reason, after "Crew couldn’t list the workspaces on the server:", with no button. When the listing fails or takes too long, the dialog shows Crew's reason the same way.
 
 When a step ends, and the button you pressed lost the keyboard focus while it ran, Crew puts the focus on that workspace's first button, or on the first workspace found.
 
@@ -206,7 +215,7 @@ To fix it:
 
 Crew makes a new key for this computer and adds it to the workspace as your account. The bar then says "This computer is back in {workspace}. Chats that had Crew access through it need access again." The saved connection stays, with its settings. Grant a chat its access again with `/crew`. **Reconnect** is a different action: it only dials the server again with the key this computer has.
 
-A workspace keeps up to 32 computers for each person. When a new one would be the 33rd, the workspace removes your oldest computer, and the bar adds "To make room, the workspace removed your oldest device, {fingerprint}."
+A workspace keeps up to 32 computers for each person. When a new one would be the 33rd, the workspace removes your oldest computer, and the bar adds "To make room, the workspace removed your oldest computer, {fingerprint}."
 
 From a terminal, run `biorouter crew rejoin` ([Add this computer again from a terminal](command-line.md#add-this-computer-again-from-a-terminal)). It needs a current Crew on the server.
 
@@ -216,7 +225,7 @@ On a server with a current Crew, use [Open a workspace on a server](#open-a-work
 
 On a server with an older Crew:
 
-1. Ask your host to invite you with **Add another device for @bob** turned on.
+1. Ask your host to invite you with **Add another computer for @bob** turned on.
 2. On the new computer, join with that invitation, as in [Join from the Biorouter app](#join-from-the-biorouter-app).
 3. Send your host the new code.
 
@@ -272,7 +281,7 @@ A message under a field, or in a red note, names the rule a value broke. Correct
 | "You’re no longer in chen-lab", with "You were removed from chen-lab. Ask a member to invite you again." | Your account was removed from the workspace. Ask a member for a new invitation, then join with it. |
 | "chen-lab's server runs an older Crew. Ask @alice to update it." | Opening a workspace by account and **Add this computer again** need a current Crew on the server. Ask your host to update it. A host reads "chen-lab's server runs an older Crew. Update it with biorouter crew setup --server alice@lab.example.edu." and runs that command ([Keep Crew current on the server](hosting-a-workspace.md#keep-crew-current-on-the-server)). |
 | "The code Alice entered doesn’t match this computer…" | Send the same code again. |
-| "You’re not in chen-lab yet" | Send your host the "message to your host" text, which on a server with a current Crew reads "Hi Alice, please invite @bob to chen-lab in Crew." If `bob` is wrong, fix **Your server login** in **Connection settings…** and connect again. On a server with an older Crew, the card also says "If you were in chen-lab before, ask Alice Chen (@alice) to use Add another device for @bob." Do that if you were a member before, for example if you removed chen-lab from this computer. |
+| "You’re not in chen-lab yet" | Send your host the "message to your host" text, which on a server with a current Crew reads "Hi Alice, please invite @bob to chen-lab in Crew." If `bob` is wrong, fix **Your server login** in **Connection settings…** and connect again. On a server with an older Crew, the card also says "If you were in chen-lab before, ask Alice Chen (@alice) to use Add another computer for @bob." Do that if you were a member before, for example if you removed chen-lab from this computer. |
 | "This invitation expired…" | Ask your host to invite you again. The card returns with the same code. |
 | "Crew isn’t connected to chen-lab…" | Choose **Reconnect**. |
 | "Crew couldn’t check your invitation…" | Wait. If it continues, quit and reopen Biorouter. |

@@ -1015,10 +1015,110 @@ pub fn setup_stage_words(name: &str) -> String {
     }
 }
 
+/// The workspaces a setup request names by ID (AO-8): stopped ones to start
+/// (`start_workspaces`) and running ones to restart (`restart_workspace_ids`). Its restart stage
+/// is said by their names ([`setup_progress_lines`]).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct SetupNamed {
+    start: Vec<String>,
+    restart: Vec<String>,
+}
+
+/// What `request` (a `POST /crew/setup` body) names to start and restart ([`SetupNamed`]).
+pub fn named_in_setup(request: &Value) -> SetupNamed {
+    let ids = |key: &str| -> Vec<String> {
+        list_key(request, key)
+            .iter()
+            .filter_map(Value::as_str)
+            .map(str::to_owned)
+            .collect()
+    };
+    SetupNamed {
+        start: ids("start_workspaces"),
+        restart: ids("restart_workspace_ids"),
+    }
+}
+
+impl SetupNamed {
+    /// The restart stage in `current`'s words: "Restarting old-lab", "Starting acct-lab", or
+    /// "Restarting old-lab, then starting acct-lab", each workspace by the name the job's own
+    /// listing gives its ID (the server restarts before it starts). `None` when nothing is
+    /// named, or the listing names none of them: the stage then keeps its own words.
+    fn restart_words(&self, current: &Value) -> Option<String> {
+        let names = |ids: &[String]| -> Vec<String> {
+            ids.iter()
+                .filter_map(|id| {
+                    list_key(current, "workspaces")
+                        .iter()
+                        .find(|workspace| str_field(workspace, "workspace_id") == Some(id.as_str()))
+                        .and_then(|workspace| str_field(workspace, "name"))
+                        .map(display_text)
+                })
+                .collect()
+        };
+        let (restart, start) = (names(&self.restart), names(&self.start));
+        match (restart.is_empty(), start.is_empty()) {
+            (true, true) => None,
+            (false, true) => Some(format!("Restarting {}", super::and_list(&restart))),
+            (true, false) => Some(format!("Starting {}", super::and_list(&start))),
+            (false, false) => Some(format!(
+                "Restarting {}, then starting {}",
+                super::and_list(&restart),
+                super::and_list(&start)
+            )),
+        }
+    }
+}
+
+/// `previous` with the stages `earlier`, another job of the same command, said as it ran (the
+/// listing `setup --start` and `open` run first), so a stage is said once in the command
+/// ([`setup_progress_lines`]). Its Done stage is not among them: the listing was not the end.
+pub fn with_said_stages(previous: &Value, earlier: &Value) -> Value {
+    let said: Vec<Value> = list_key(earlier, "stages")
+        .iter()
+        .filter(|stage| str_field(stage, "name") != Some("done"))
+        .cloned()
+        .collect();
+    if said.is_empty() {
+        return previous.clone();
+    }
+    let mut stages = list_key(previous, "stages").to_vec();
+    stages.extend(said);
+    json!({"state": previous.get("state").cloned().unwrap_or(Value::Null), "stages": stages})
+}
+
+/// The lines a listing ends with when the command goes on to another job (`setup --start`,
+/// `open`): its own "Ready" left out, since the command is not done.
+pub fn before_the_setup(lines: Vec<String>) -> Vec<String> {
+    let ready = setup_stage_words("done");
+    lines.into_iter().filter(|line| *line != ready).collect()
+}
+
+/// The account's place in the workspace `workspace_id` as a setup check job listed it (`host`,
+/// `member` or `invited`), when every row the listing has for that ID agrees. `None` when the
+/// listing does not name it, or names it twice with different places.
+pub fn listed_role(listing: &Value, workspace_id: Option<&str>) -> Option<String> {
+    let id = workspace_id?;
+    let mut roles = list_key(listing, "workspaces")
+        .iter()
+        .filter(|workspace| str_field(workspace, "workspace_id") == Some(id))
+        .map(|workspace| str_field(workspace, "role"));
+    let first = roles.next()??;
+    roles
+        .all(|role| role == Some(first))
+        .then(|| first.to_owned())
+}
+
 /// The lines a setup job's change from `previous` to `current` adds: each stage the first time
 /// it is seen running or done (a quick stage can finish between two looks), and a sign-in the
-/// server asks for. A skipped stage says nothing; a failure is the command's error.
-pub fn setup_progress_lines(previous: &Value, current: &Value, login: &str) -> Vec<String> {
+/// server asks for. A skipped stage says nothing; a failure is the command's error. The restart
+/// stage names the workspaces `named` asks for ([`SetupNamed::restart_words`]).
+pub fn setup_progress_lines(
+    previous: &Value,
+    current: &Value,
+    login: &str,
+    named: &SetupNamed,
+) -> Vec<String> {
     let seen = |status: &Value, name: &str| {
         list(status, "stages").iter().any(|stage| {
             str_field(stage, "name") == Some(name)
@@ -1028,18 +1128,29 @@ pub fn setup_progress_lines(previous: &Value, current: &Value, login: &str) -> V
                 )
         })
     };
+    // A check that could not list the workspaces says why (`workspaces_note`, in the summary),
+    // and that is all it found: no bare "Ready" before it.
+    let unlisted_check = str_field(current, "intent") == Some("check")
+        && str_field(current, "workspaces_note").is_some();
     let mut lines: Vec<String> = list(current, "stages")
         .iter()
         .filter(|stage| matches!(str_field(stage, "state"), Some("running" | "done")))
         // AO-8: a job that found workspaces this computer cannot reach says so in place of a
         // bare "Ready" (the Done stage's detail), and the summary says it.
         .filter(|stage| {
-            !(str_field(stage, "name") == Some("done") && str_field(stage, "detail").is_some())
+            !(str_field(stage, "name") == Some("done")
+                && (str_field(stage, "detail").is_some() || unlisted_check))
         })
         .filter_map(|stage| str_field(stage, "name"))
         .filter(|name| !seen(previous, name))
         .map(|name| match name {
             "done" => setup_stage_words(name),
+            "restart" => format!(
+                "{}…",
+                named
+                    .restart_words(current)
+                    .unwrap_or_else(|| setup_stage_words(name))
+            ),
             _ => format!("{}…", setup_stage_words(name)),
         })
         .collect();
@@ -2977,9 +3088,16 @@ impl Ctx {
         ];
         for (title, key, row) in sections {
             let mut items = list_key(snapshot, key).to_vec();
+            // What the workspace sent, which its totals count, before any entry is folded.
+            let listed = items.len();
             let noun = match key {
-                "principals" | "former_principals" => {
+                "principals" => {
                     people_in_order(&mut items, self.dir.host_id(), self.dir.actor_id.as_deref());
+                    ""
+                }
+                "former_principals" => {
+                    people_in_order(&mut items, self.dir.host_id(), self.dir.actor_id.as_deref());
+                    self.one_line_per_account(&mut items);
                     ""
                 }
                 "teams" => {
@@ -2994,7 +3112,7 @@ impl Ctx {
                 "references" => "remote references",
                 _ => "agent grants",
             };
-            let note = partial_list_note(noun, items.len(), snapshot["totals"][key].as_u64());
+            let note = partial_list_note(noun, listed, snapshot["totals"][key].as_u64());
             if items.is_empty() && note.is_none() {
                 if matches!(title, "People" | "Teams" | "Channels") {
                     out.push(format!("{title}: none"));
@@ -3056,6 +3174,37 @@ impl Ctx {
         vec![row]
     }
 
+    /// Former members as one line per account (live finding): an account removed and let in
+    /// again twice left two earlier entries, and both read "@gbellucci · a member again". An
+    /// entry is kept only for the first of its account, the member it is now when it is one
+    /// again ([`Directory::now_member`]), else its own username and UID. An entry with no
+    /// username cannot be told apart from another, so it stays.
+    fn one_line_per_account(&self, former: &mut Vec<Value>) {
+        let mut accounts = std::collections::BTreeSet::new();
+        former.retain(|principal| {
+            let person = str_field(principal, "id")
+                .and_then(|id| self.dir.people.get(id))
+                .cloned()
+                .unwrap_or_else(|| person_from(principal));
+            let account = self.dir.now_member(&person).unwrap_or(&person);
+            match account.username.clone() {
+                Some(username) => accounts.insert((username, account.uid)),
+                None => true,
+            }
+        });
+    }
+
+    /// How many of a team's or channel's `members` (principal IDs) are members now. An ID the
+    /// workspace lists as a former member is an earlier entry of someone, who is counted by the
+    /// ID they hold now, if they are in it at all; an ID nothing names is counted.
+    fn active_members(&self, members: &[Value]) -> usize {
+        members
+            .iter()
+            .filter_map(Value::as_str)
+            .filter(|id| self.dir.people.get(*id).is_none_or(|person| person.active))
+            .count()
+    }
+
     fn profile(&self, principal: &Value) -> Vec<String> {
         let mut out = self.member_row(principal);
         let devices = list_key(principal, "devices");
@@ -3100,18 +3249,30 @@ impl Ctx {
         if devices.is_empty() {
             return Vec::new();
         }
-        let command = match str_field(connection, "name") {
+        let command = |verb: &str| match str_field(connection, "name") {
             Some(name) => format!(
-                "biorouter crew --connection {} profile devices",
+                "biorouter crew --connection {} {verb}",
                 safe_text(&super::shell_word(name))
             ),
-            None => "biorouter crew profile devices".to_owned(),
+            None => format!("biorouter crew {verb}"),
+        };
+        // `profile devices` reads the workspace, so on a connection that is down it is refused
+        // until it connects, as every read is: the line names connect first.
+        let down = str_field(connection, "status").is_some_and(|status| status != "connected");
+        let check = if down {
+            format!(
+                "Connect with {}, then check it with {}.",
+                command("connect"),
+                command("profile devices")
+            )
+        } else {
+            format!("Check it with {}.", command("profile devices"))
         };
         devices
             .iter()
             .map(|device| {
                 format!(
-                    "  New computer on your account: {}. Check it with {command}.",
+                    "  New computer on your account: {}. {check}",
                     self.device_row(device)
                 )
             })
@@ -3129,7 +3290,7 @@ impl Ctx {
         }
         let mut parts = vec![name];
         if let Some(members) = team.get("members").and_then(Value::as_array) {
-            parts.push(count(members.len(), "member", "members"));
+            parts.push(count(self.active_members(members), "member", "members"));
         }
         match str_field(team, "created_by") {
             creator if self.is_actor(creator) => parts.push("created by you".into()),
@@ -3158,7 +3319,7 @@ impl Ctx {
             parts.push("Archived".into());
         }
         if let Some(members) = channel.get("members").and_then(Value::as_array) {
-            parts.push(count(members.len(), "member", "members"));
+            parts.push(count(self.active_members(members), "member", "members"));
         }
         match str_field(channel, "owner_id") {
             owner if self.is_actor(owner) => parts.push("you own it".into()),
@@ -5271,13 +5432,15 @@ mod tests {
             "Former members (1):".into(),
             format!("  {} (@dave) · former member", q("Dave Old")),
             "Teams (1):".into(),
+            // Dave, a former member, is still on the team's and channel's lists; he is not
+            // counted (live re-test).
             format!(
-                "  Crew QA Lab (crew-qa-lab) · 3 members · created by {}",
+                "  Crew QA Lab (crew-qa-lab) · 2 members · created by {}",
                 alice()
             ),
             "Channels (1):".into(),
             format!(
-                "  #general · Crew QA Lab · Restricted · 3 members · owner {}",
+                "  #general · Crew QA Lab · Restricted · 2 members · owner {}",
                 alice()
             ),
             "Invitations (1):".into(),
@@ -6687,7 +6850,7 @@ mod tests {
     fn setup_progress_says_each_stage_once() {
         let first = json!({"state": "running", "stages": [stage("check", "running"), stage("install", "pending")]});
         assert_eq!(
-            setup_progress_lines(&Value::Null, &first, "bob@hpc"),
+            setup_progress_lines(&Value::Null, &first, "bob@hpc", &SetupNamed::default()),
             ["Checking the server…"]
         );
         let later = json!({"state": "running", "stages": [
@@ -6695,17 +6858,17 @@ mod tests {
             stage("start", "skipped"), stage("install", "running")
         ]});
         assert_eq!(
-            setup_progress_lines(&first, &later, "bob@hpc"),
+            setup_progress_lines(&first, &later, "bob@hpc", &SetupNamed::default()),
             [
                 "Making the work folder…",
                 "Installing Crew in your account…"
             ]
         );
-        assert!(setup_progress_lines(&later, &later, "bob@hpc").is_empty());
+        assert!(setup_progress_lines(&later, &later, "bob@hpc", &SetupNamed::default()).is_empty());
         let sign_in = json!({"state": "needs_sign_in", "server": {"login": "bob@leo"},
             "stages": [stage("check", "running"), stage("sign_in", "running")]});
         assert_eq!(
-            setup_progress_lines(&first, &sign_in, "ignored"),
+            setup_progress_lines(&first, &sign_in, "ignored", &SetupNamed::default()),
             [
                 "Signing in…",
                 "bob@leo asks for your password or a verification code."
@@ -6713,9 +6876,157 @@ mod tests {
         );
         let done = json!({"state": "finished", "stages": [stage("check", "done"), stage("brand_new", "done"), stage("done", "done")]});
         assert_eq!(
-            setup_progress_lines(&first, &done, "bob@hpc"),
+            setup_progress_lines(&first, &done, "bob@hpc", &SetupNamed::default()),
             ["Brand new…", "Ready"]
         );
+    }
+
+    /// Live re-test: `setup --start` and `--restart-workspace` list the server first, and the
+    /// setup that follows said "Checking the server…" and "Looking for workspaces…" again, with
+    /// a "Ready" in between and never the workspace's name. Each stage is said once in the
+    /// command, the listing leaves its "Ready" to the setup, and the restart stage names what
+    /// it starts or restarts.
+    #[test]
+    fn a_setup_after_its_listing_says_each_stage_once_and_names_what_it_starts() {
+        let listing = json!({"intent": "check", "state": "finished", "stages": [
+            stage("check", "done"), stage("sign_in", "skipped"),
+            stage("workspaces", "done"), stage("done", "done")
+        ]});
+        let none = SetupNamed::default();
+        assert_eq!(
+            before_the_setup(setup_progress_lines(&Value::Null, &listing, "w@leo", &none)),
+            ["Checking the server…", "Looking for workspaces…"]
+        );
+        let install = json!({"intent": "install", "state": "finished",
+        "stages": [
+            stage("check", "done"), stage("install", "skipped"), stage("workspaces", "done"),
+            stage("restart", "done"), stage("done", "done")
+        ],
+        "workspaces": [
+            {"workspace_id": "s", "name": "acct-lab", "role": "host"},
+            {"workspace_id": "r", "name": "old-lab", "role": "host"},
+            {"workspace_id": "x", "name": "chen-lab", "role": "member"}
+        ]});
+        let said = with_said_stages(&Value::Null, &listing);
+        let progress = |request: Value| {
+            setup_progress_lines(&said, &install, "w@leo", &named_in_setup(&request))
+        };
+        assert_eq!(
+            progress(json!({"start_workspaces": ["s"]})),
+            ["Starting acct-lab…", "Ready"]
+        );
+        assert_eq!(
+            progress(json!({"restart_workspace_ids": ["r"]})),
+            ["Restarting old-lab…", "Ready"]
+        );
+        assert_eq!(
+            progress(json!({"start_workspaces": ["s"], "restart_workspace_ids": ["r", "x"]})),
+            [
+                "Restarting old-lab and chen-lab, then starting acct-lab…",
+                "Ready"
+            ]
+        );
+        // Nothing named, or an ID the job's listing doesn't name: the stage's own words.
+        assert_eq!(
+            progress(json!({})),
+            ["Updating running workspaces…", "Ready"]
+        );
+        assert_eq!(
+            progress(json!({"start_workspaces": ["gone"]})),
+            ["Updating running workspaces…", "Ready"]
+        );
+        // A job with no listing before it says its stages as it always did.
+        assert_eq!(
+            setup_progress_lines(&Value::Null, &install, "w@leo", &none)[..2],
+            ["Checking the server…", "Looking for workspaces…"]
+        );
+        // The listing's stages join what this job already said, never replace it.
+        let running = json!({"state": "running", "stages": [stage("restart", "running")]});
+        assert_eq!(
+            setup_progress_lines(
+                &with_said_stages(&running, &listing),
+                &install,
+                "w@leo",
+                &none
+            ),
+            ["Ready"]
+        );
+        assert_eq!(with_said_stages(&running, &Value::Null), running);
+
+        // A check that could not list the workspaces says why in its summary, with no bare
+        // "Ready" before it; an install that could not list them still says Ready.
+        let unlisted = json!({"intent": "check", "state": "finished",
+            "workspaces_note": "Crew isn't installed in your account on leo, so Biorouter can't look for workspaces there.",
+            "stages": [stage("check", "done"), stage("workspaces", "skipped"), stage("done", "done")]});
+        assert_eq!(
+            setup_progress_lines(&Value::Null, &unlisted, "w@leo", &none),
+            ["Checking the server…"]
+        );
+        let mut installed = unlisted.clone();
+        installed["intent"] = json!("install");
+        assert_eq!(
+            setup_progress_lines(&Value::Null, &installed, "w@leo", &none),
+            ["Checking the server…", "Ready"]
+        );
+
+        // Whether the account hosts a workspace, as the listing says: one place for its ID.
+        assert_eq!(listed_role(&install, Some("s")).as_deref(), Some("host"));
+        assert_eq!(listed_role(&install, Some("x")).as_deref(), Some("member"));
+        assert_eq!(listed_role(&install, Some("unknown")), None);
+        assert_eq!(listed_role(&Value::Null, Some("s")), None);
+        assert_eq!(listed_role(&install, None), None);
+        let mut twice = install.clone();
+        twice["workspaces"]
+            .as_array_mut()
+            .expect("workspaces")
+            .push(json!({"workspace_id": "s", "name": "acct-lab", "role": "member"}));
+        assert_eq!(listed_role(&twice, Some("s")), None);
+    }
+
+    /// Live re-test: an account removed and let in again twice left two earlier entries, which
+    /// teams and channels still list. The workspace's two people were "4 members", and former
+    /// members listed "@gbellucci · a member again" twice. Counts are of members now, and former
+    /// members are one line per account.
+    #[test]
+    fn a_member_let_in_again_counts_once_and_is_one_former_member() {
+        let snapshot = json!({
+            "workspace": {"id": WORKSPACE, "name": "acct-lab", "host_uid": 1020},
+            "actor": {"id": ALICE, "username": "wanjun", "uid": 1020},
+            "principals": [
+                {"id": ALICE, "username": "wanjun", "uid": 1020},
+                {"id": BOB, "username": "gbellucci", "uid": 1022}
+            ],
+            "former_principals": [
+                {"id": CAROL, "username": "gbellucci", "active": false},
+                {"id": DAVE, "username": "gbellucci", "active": false}
+            ],
+            "teams": [{"id": TEAM, "name": "Account Test", "general_channel_id": GENERAL,
+                       "members": [CAROL, BOB, DAVE, ALICE]}],
+            "channels": [{"id": GENERAL, "team_id": TEAM, "name": "general",
+                          "classification": "restricted", "members": [CAROL, BOB, DAVE, ALICE]},
+                         {"id": METHODS, "team_id": TEAM, "name": "methods",
+                          "classification": "restricted", "members": [BOB, DAVE, ALICE]}]
+        });
+        let shown = named(&snapshot, &snapshot);
+        assert!(
+            shown.contains("Former members (1):\n  @gbellucci · a member again\nTeams"),
+            "{shown}"
+        );
+        assert!(
+            !shown.contains("4 members") && !shown.contains("3 members"),
+            "{shown}"
+        );
+        assert_eq!(shown.matches(" · 2 members").count(), 3, "{shown}");
+        // channels list counts the same way.
+        let listed = named(&snapshot["channels"], &snapshot);
+        assert_eq!(listed.matches(" · 2 members").count(), 2, "{listed}");
+        // An ID nothing names is still counted: it may be someone the names don't reach.
+        let unnamed = named(
+            &json!([{"id": GENERAL, "team_id": TEAM, "name": "general",
+            "classification": "restricted", "members": [BOB, "someone-else"]}]),
+            &snapshot,
+        );
+        assert!(unnamed.contains(" · 2 members"), "{unnamed}");
     }
 
     /// OW-9: a check says what the server is and what is installed; an install says what it did;
@@ -6904,11 +7215,13 @@ mod tests {
             ]
         );
         // The reach sentences replace "Ready", so the progress lines leave it out.
-        assert!(setup_progress_lines(&Value::Null, &check, "wanjun@leo")
-            .iter()
-            .all(|line| line != "Ready"));
+        assert!(
+            setup_progress_lines(&Value::Null, &check, "wanjun@leo", &SetupNamed::default())
+                .iter()
+                .all(|line| line != "Ready")
+        );
         assert_eq!(
-            setup_progress_lines(&Value::Null, &check, "wanjun@leo"),
+            setup_progress_lines(&Value::Null, &check, "wanjun@leo", &SetupNamed::default()),
             ["Looking for workspaces…"]
         );
 

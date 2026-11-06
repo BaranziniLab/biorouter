@@ -1416,6 +1416,21 @@ fn a_chat_reads_a_workspace_only_after_the_person_lets_it() {
         .await;
         assert_eq!(revoked.ok()["revoked"], true);
         assert!(!crew().has_person_read(&session, &connection.id).await);
+        // Its card names the chat as `grants list` does, and shows that it takes back the
+        // permission to read, not a Crew grant.
+        assert_eq!(revoked.cards.len(), 1);
+        let server = biorouter::crew::server_label(&connection.ssh_target, connection.port).await;
+        assert_eq!(
+            revoked.cards[0].prompt,
+            format!(
+                "Take back permission for chat \"consent\" (chat {session}) to read lab on {server} as you"
+            )
+        );
+        assert_eq!(
+            revoked.cards[0].arguments["takes_back"],
+            "permission to read as you"
+        );
+        assert_eq!(revoked.cards[0].arguments["session"], session.as_str());
         remove(&connection).await;
     });
 }
@@ -2000,6 +2015,85 @@ fn joining_a_saved_connection_names_its_host() {
             "{prompt}"
         );
         assert!(prompt.contains("Workspace key fingerprint:"), "{prompt}");
+        remove(&connection).await;
+    });
+}
+
+/// Setting full access up on a connection whose account hosts the workspace is host authority,
+/// and its card says so in the desktop's words, after what full access lets agents do. On a
+/// workspace someone else hosts, it does not.
+#[test]
+#[serial]
+fn full_access_where_the_person_hosts_says_agents_can_act_as_the_host() {
+    run(async {
+        const WORKSPACE: &str = "3f2a9c1e-77b0-4d4e-8a11-0000000c000d";
+        const HOST: &str = "full-host.example.test";
+        let connection = workspace(
+            WORKSPACE,
+            HOST,
+            false,
+            snapshot("private", Some("ucsf"), false),
+            true,
+        )
+        .await;
+        let session = chat("full access").await;
+        let setup = |session: String, id: String| async move {
+            call(
+                &session,
+                private_local().await,
+                PersonTool::Change,
+                "setup",
+                json!({"connection": id, "agent_access": "full"}),
+                &["deny"],
+            )
+            .await
+        };
+        let before = biorouter::crew::setup_jobs().len();
+        let hosted = setup(session.clone(), connection.id.clone()).await;
+        assert_eq!(hosted.cards.len(), 1, "{:?}", hosted.answer);
+        assert_eq!(
+            hosted.refusal(),
+            "The person declined. Nothing was changed."
+        );
+        let lines: Vec<&str> = hosted.cards[0].prompt.lines().collect();
+        let name = &connection.name;
+        let at = lines
+            .iter()
+            .position(|line| line.starts_with("Agents get full access"))
+            .unwrap_or_else(|| panic!("no access line: {lines:?}"));
+        let hosting = format!(
+            "You host {name} from this account, so agents can also read the workspace's own files on the server, including channels you're not in. They can also act as the host of {name}."
+        );
+        assert_eq!(
+            lines.get(at + 1).copied(),
+            Some(hosting.as_str()),
+            "{lines:?}"
+        );
+
+        // Bob hosts it: full access is no host authority, and the card says nothing of it.
+        let mut bobs = snapshot("private", Some("ucsf"), false);
+        bobs["result"]["workspace"]["host_principal_id"] = json!("p-bob");
+        stage(
+            HOST,
+            &Scenario::new(WORKSPACE, &ACCOUNT_CAPABILITIES).answer("workspace.snapshot", bobs),
+        );
+        let member = setup(session.clone(), connection.id.clone()).await;
+        assert_eq!(member.cards.len(), 1, "{:?}", member.answer);
+        assert!(
+            member.cards[0].prompt.contains("Agents get full access"),
+            "{}",
+            member.cards[0].prompt
+        );
+        assert!(
+            !member.cards[0].prompt.contains("act as the host"),
+            "{}",
+            member.cards[0].prompt
+        );
+        assert_eq!(
+            biorouter::crew::setup_jobs().len(),
+            before,
+            "a denied setup started a job"
+        );
         remove(&connection).await;
     });
 }

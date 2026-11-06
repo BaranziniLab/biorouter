@@ -131,7 +131,9 @@
 // holds the consent card's **Allow** and its answered row, a declined read, the grant's origin
 // rule, a change stopped after it was allowed, the new-device notice's fingerprint, the restart
 // question for an unknown count and why an update left a workspace running, the host's refused
-// rename, and the command line's invitation line on a server that knows accounts.
+// rename, and the command line's invitation line on a server that knows accounts. The desktop then
+// said "computer" for a person's machine everywhere, as the command line does: the new-computer
+// notice and the Keys dialog's **Remove computer** are held to those words, and the old ones refused.
 //
 // Every rule reads the code it depends on, and a rule whose anchor in the code
 // is gone FAILS rather than passing vacuously: the fix is then to re-read the
@@ -1258,15 +1260,19 @@ export function checkCrewManual(tree = repoTree()) {
       requiredWhole: true,
     },
     {
-      name: `the new-device notice in ${ACCOUNT_COPY}`,
+      // A person's machine is a computer on every surface (2026-11), so the notice says it as the
+      // command line's status line does. Its words before then still open the family, so a page
+      // that keeps them is refused. The command line writes its own line, which its page quotes.
+      name: `the new-computer notice in ${ACCOUNT_COPY}`,
       opens:
-        /^(?:A new device was added to your account|\S+ new devices were added to your account|It signed in to the server as you|Its fingerprint is)\b/,
+        /^(?:New computer on your account|\S+ new computers on your account|It signed in to the server as you|A new device was added to your account|\S+ new devices were added to your account|Its fingerprint is)\b/,
       templates: opening(
         accountLiterals,
-        /^(?:A new device was added to your account|\{count\} new devices were added to your account|It signed in to the server as you|Its fingerprint is)\b/
+        /^(?:New computer on your account|\{count\} new computers on your account|It signed in to the server as you)\b/
       ),
       source: accountCopySource,
       requiredIn: [PRIVACY_PAGE],
+      notIn: [COMMAND_LINE],
     },
     {
       name: `the Keys dialog's removal of a device in ${ACCOUNT_COPY}`,
@@ -1506,7 +1512,8 @@ export function checkCrewManual(tree = repoTree()) {
       [HOSTING_PAGE, TROUBLESHOOTING],
     ],
     [ACCOUNT_COPY, accountCopySource, 'Add this computer again', [JOINING_PAGE, TROUBLESHOOTING]],
-    [ACCOUNT_COPY, accountCopySource, 'Remove device', [PRIVACY_PAGE]],
+    // "Remove device" until the computer wording of 2026-11.
+    [ACCOUNT_COPY, accountCopySource, 'Remove computer', [PRIVACY_PAGE]],
     [ACCOUNT_COPY, accountCopySource, 'Acknowledge', [PRIVACY_PAGE]],
     // The Keys dialog said "This device" until the fix wave of 2026-11; the contract says This
     // computer, and so do the badge, the heading and this computer's own Remove.

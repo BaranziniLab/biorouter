@@ -707,6 +707,51 @@ pub(super) fn profile_revoke_device(ctx: &Ctx) -> BoxFuture<'_, Result<Value>> {
     })
 }
 
+/// What a `grants_revoke` card shows it takes back, so its payload tells a read consent from a
+/// Crew grant as its sentence does.
+const TAKES_BACK_READS: &str = "permission to read as you";
+const TAKES_BACK_GRANT: &str = "Crew access";
+
+/// A chat as `biorouter crew grants list` names it (`person_read_row`), mid-sentence:
+/// `chat "Counts" (chat 20260924_2)`, or `chat 20260924_2` when it has no title. A title is
+/// the person's or a model's text, so it is quoted with its quotes and backslashes escaped and
+/// any control or direction character spelled out, so it cannot add a line to a card, and it
+/// is isolated when it could hold right-to-left text, so it cannot reorder the words around it.
+pub(super) fn chat_named(title: Option<&str>, session: &str) -> String {
+    match title.filter(|title| !title.trim().is_empty()) {
+        Some(title) => format!("chat {} (chat {session})", quoted_title(title)),
+        None => format!("chat {session}"),
+    }
+}
+
+fn quoted_title(title: &str) -> String {
+    let mut text = String::with_capacity(title.len());
+    for ch in title.chars() {
+        if matches!(ch, '"' | '\\') {
+            text.push('\\');
+            text.push(ch);
+        } else if ch.is_control() || direction_mark(ch) {
+            text.extend(ch.escape_default());
+        } else {
+            text.push(ch);
+        }
+    }
+    if text.is_ascii() {
+        format!("\"{text}\"")
+    } else {
+        format!("\"\u{2068}{text}\u{2069}\"")
+    }
+}
+
+/// A character that changes the direction text around it is shown in, which a title must not
+/// carry into a card unescaped.
+fn direction_mark(ch: char) -> bool {
+    matches!(
+        ch,
+        '\u{061c}' | '\u{200e}' | '\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}'
+    )
+}
+
 /// `biorouter crew grants revoke SESSION [--reads]` (AO-12): take back a chat's Crew access
 /// through the connection, through the same revocation as the route, or with `reads`, its
 /// permission to read the workspace as the person. Only a chat this chat may list can be named.
@@ -721,15 +766,14 @@ pub(super) fn grants_revoke(ctx: &Ctx) -> BoxFuture<'_, Result<Value>> {
                 "No chat this chat can see has that ID.",
             ));
         }
-        let name = ctx
+        let title = ctx
             .state
             .session_manager()
             .get_session(&session, false)
             .await
             .ok()
-            .map(|found| found.name)
-            .filter(|name| !name.trim().is_empty())
-            .unwrap_or_else(|| session.clone());
+            .map(|found| found.name);
+        let chat = chat_named(title.as_deref(), &session);
         let server = Ctx::server_label(&connection).await;
         if ctx.flag("reads") == Some(true) {
             let held =
@@ -744,9 +788,10 @@ pub(super) fn grants_revoke(ctx: &Ctx) -> BoxFuture<'_, Result<Value>> {
             }
             ctx.approve(
                 Card::at(&connection.name, &server, |here| {
-                    format!("Take back chat {name}'s permission to read {here} as you")
+                    format!("Take back permission for {chat} to read {here} as you")
                 })
-                .show("session", session.clone()),
+                .show("session", session.clone())
+                .show("takes_back", TAKES_BACK_READS),
             )
             .await?;
             return match crew.revoke_person_read(&session, &connection.id).await {
@@ -775,10 +820,11 @@ pub(super) fn grants_revoke(ctx: &Ctx) -> BoxFuture<'_, Result<Value>> {
         }
         ctx.approve(
             Card::at(&connection.name, &server, |here| {
-                format!("Take back chat {name}'s Crew access to {here}")
+                format!("Take back Crew access to {here} from {chat}")
             })
             .line("If it is a task, the task stops.")
-            .show("session", session.clone()),
+            .show("session", session.clone())
+            .show("takes_back", TAKES_BACK_GRANT),
         )
         .await?;
         match crate::routes::crew_profile::revoke_grant(connection.id.clone(), session).await {

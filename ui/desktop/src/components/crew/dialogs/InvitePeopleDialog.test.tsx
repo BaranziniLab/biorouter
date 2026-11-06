@@ -357,7 +357,7 @@ describe('InvitePeopleDialog', () => {
     ).toBeInTheDocument();
     // F3: the broker's "Choose Add device" is kept, and the switch it names is turned on.
     expect(inviteCopy.refusal.alreadyMember('bob', 'lab')).toBe(
-      '@bob is already in lab. To add this computer of theirs, Add another device for @bob is now on: choose Invite again.'
+      '@bob is already in lab. To add this computer of theirs, Add another computer for @bob is now on: choose Invite again.'
     );
     const addDevice = screen.getByRole('switch', { name: inviteCopy.addDevice('bob') });
     await waitFor(() => expect(addDevice).toBeChecked());

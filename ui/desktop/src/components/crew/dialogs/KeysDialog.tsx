@@ -164,7 +164,7 @@ const HEX_DIGEST = /^[0-9a-f]{64}$/i;
 /**
  * This device's fingerprint, grouped as the broker projects every device's (`grouped_fingerprint`
  * of the device ID, which is SHA-256 of the device's public key) — so it matches its own row in
- * "Devices on your account". Read from the saved device ID when that is the digest, else computed
+ * "Computers enrolled as you". Read from the saved device ID when that is the digest, else computed
  * from the key. Never the 64-hex key itself (QA T-33).
  */
 function useDeviceFingerprint(connection: CrewConnection | null): string | null {
@@ -182,8 +182,9 @@ function useDeviceFingerprint(connection: CrewConnection | null): string | null 
  * so there is no refresh button. Unlocking and setting up a vault prompt for the passphrase in the
  * main process's own native dialog; nothing secret passes through this renderer.
  *
- * It also lists the devices on the person's account, so "A new device was added…" has somewhere to
- * send them to review it: each device's fingerprint, and under it, on its own left-aligned line,
+ * It also lists the computers on the person's account ("Computers enrolled as you"), so "New
+ * computer on your account: …" has somewhere to send them to review it: each computer's
+ * fingerprint, and under it, on its own left-aligned line,
  * when and how it was added (QA Q3-41). When this computer is the only device, that line sits under
  * its fingerprint above and nothing repeats the fingerprint. The dialog opens on Done: it is read,
  * not filled in, and the first key must not copy anything. Done keeps that focus while the menu

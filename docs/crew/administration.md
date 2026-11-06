@@ -294,6 +294,8 @@ The host's copy also runs the workspace, which keeps running the old program unt
 
 In **Open a workspace on a server**, a workspace the person hosts that runs an older Crew than their Biorouter reads "Runs Crew {version}; {newer version} is available." with **Update Crew**. When a workspace's server runs an older Crew than this Biorouter carries (or, for a server too old to report its version, a Crew from before account ownership), its connection bar says "{workspace}’s server runs an older Crew.", with **Update Crew** for the host and "Ask @{host} to update Crew." for everyone else.
 
+The list of workspaces comes from the Crew in the person's own account. When that copy is too old to list them, **Open a workspace on a server** says "Crew {version} in your account on {server} is too old to list workspaces. Choose Update Crew to update it." Its **Update Crew** installs the Crew their Biorouter carries in their account, restarts no workspace, and lists the workspaces in the same step. `biorouter crew setup --check` says it in its own words and names the command that updates it ([Workspaces on the server](command-line.md#workspaces-on-the-server)).
+
 To upgrade by hand:
 
 1. Install the new file beside the old one, and check it:

@@ -9,10 +9,11 @@ import { resetSetupStartedHereForTests, startSetup } from '../onboarding/setup';
 import { fakeConnection, fakeSnapshot, makeCrew, renderWithCrew } from '../onboarding/testCrew';
 import type { CrewController } from '../state/types';
 import { ConnectionBar } from './ConnectionBar';
+import { calendarDate } from './presentation';
 
 /**
  * The connection bar's account-ownership notes (docs/crew/design/account-ownership.md, "Desktop"):
- * Add this computer again, the daemon's new devices with Acknowledge, the older-Crew notice by
+ * Add this computer again, the daemon's new computers with Acknowledge, the older-Crew notice by
  * role (by the server's `server_version` against this build's broker, or by the account capability
  * when the server says no version), and setups a chat started, with Sign in.
  */
@@ -174,7 +175,7 @@ describe('Add this computer again (AO-9)', () => {
   });
 });
 
-describe('new devices on the account (AO-10)', () => {
+describe('new computers on the account (AO-10)', () => {
   it('names a device added by signing in, and acknowledges it on the daemon', async () => {
     daemon({ 'POST /connections/conn-1/devices/acknowledge': () => null });
     const rendered = renderBar(
@@ -183,9 +184,9 @@ describe('new devices on the account (AO-10)', () => {
       })
     );
     const note = await screen.findByTestId('crew-new-devices');
-    expect(note).toHaveTextContent(newDevicesCopy.one(null));
-    // Which computer: its fingerprint, as Keys lists it.
-    expect(note).toHaveTextContent(newDevicesCopy.which('AAAA BBBB CCCC DDDD'));
+    // Which computer: its fingerprint, as Keys lists it and the CLI names it.
+    expect(note).toHaveTextContent(newDevicesCopy.one('AAAA BBBB CCCC DDDD', null));
+    expect(note).toHaveTextContent('New computer on your account: AAAA BBBB CCCC DDDD.');
     expect(note).toHaveTextContent(newDevicesCopy.viaAccount);
     fireEvent.click(within(note).getByRole('button', { name: newDevicesCopy.reviewName }));
     expect(rendered.crew().openDialog).toHaveBeenCalledWith({ kind: 'keys' });
@@ -252,7 +253,7 @@ describe('new devices on the account (AO-10)', () => {
       },
     });
     expect(await screen.findByTestId('crew-new-devices')).toHaveTextContent(
-      newDevicesCopy.which('BBBB')
+      newDevicesCopy.one('BBBB', null)
     );
     expect(screen.queryByText(newDevicesCopy.acknowledgeFailed)).toBeNull();
   });
@@ -310,6 +311,33 @@ describe('new devices on the account (AO-10)', () => {
     await waitFor(() =>
       expect(document.activeElement).toBe(screen.getByRole('button', { name: 'general' }))
     );
+  });
+
+  it('shows a computer added while the Crew view is open, from the next verified view', async () => {
+    const own = { fingerprint: '1111 1111 1111 1111', added_at: 1, added_via: 'invitation' };
+    const added = { fingerprint: 'AAAA BBBB CCCC DDDD', added_at: 2, added_via: 'account' };
+    const view = (devices: (typeof own)[]) =>
+      fakeSnapshot({ actor: { ...fakeSnapshot().actor, devices } });
+    const reloadConnections = vi.fn();
+    const rendered = renderBar(fakeConnection(), {
+      snapshot: view([own]),
+      reloadConnections,
+    });
+    await waitFor(() => expect(calls('GET', '/setup')).toHaveLength(1));
+    // A view arrives every few seconds: the same computers again read nothing.
+    rendered.update({ snapshot: view([own]) });
+    expect(reloadConnections).not.toHaveBeenCalled();
+    expect(screen.queryByTestId('crew-new-devices')).toBeNull();
+    // The person's new computer signed in: the next view lists it, and the connections are read
+    // again, once, without leaving the view (live QA: only after going Home and back).
+    rendered.update({ snapshot: view([own, added]) });
+    await waitFor(() => expect(reloadConnections).toHaveBeenCalledTimes(1));
+    const connection = fakeConnection({ new_devices: [added] });
+    rendered.update({ connection, connections: [connection], snapshot: view([own, added]) });
+    expect(await screen.findByTestId('crew-new-devices')).toHaveTextContent(
+      newDevicesCopy.one(added.fingerprint, calendarDate(added.added_at))
+    );
+    expect(reloadConnections).toHaveBeenCalledTimes(1);
   });
 
   it('counts several', async () => {

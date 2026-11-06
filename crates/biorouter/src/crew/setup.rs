@@ -702,6 +702,23 @@ pub struct SetupWorkspace {
     pub this_computer: SetupThisComputer,
 }
 
+/// Why a job did not list the workspaces on the server ([`SetupStatus::workspaces_unlisted`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, utoipa::ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum SetupWorkspacesUnlisted {
+    /// No Crew program in the account.
+    NotInstalled,
+    /// The Crew program in the account is too old to list them: older than the first release
+    /// that lists workspaces, and not this app's own build. An `install` job (without
+    /// `keep_older`) replaces it with this app's copy and lists them, when this app carries a
+    /// copy (`GET /crew/setup/artifact`) no older than it.
+    TooOld,
+    /// The listing failed, or answered nothing readable.
+    Failed,
+    /// The listing took too long.
+    TimedOut,
+}
+
 /// What else the listing said (design AO-6).
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, utoipa::ToSchema)]
 pub struct SetupWorkspaceScan {
@@ -789,6 +806,11 @@ pub struct SetupStatus {
     /// Why the workspaces could not be listed: the program in the account is missing or too old,
     /// or the listing failed or took too long. It never stops a job.
     pub workspaces_note: Option<String>,
+    /// The same as a code, beside `workspaces_note`: `not_installed`, `too_old` (an `install`
+    /// job replaces the Crew in the account and lists them), `failed` or `timed_out`. `null`
+    /// when they were listed, or before the `workspaces` stage.
+    #[schema(inline)]
+    pub workspaces_unlisted: Option<SetupWorkspacesUnlisted>,
     pub outcome: Option<SetupOutcome>,
     pub error: Option<SetupError>,
 }
@@ -1902,7 +1924,8 @@ struct Progress {
     artifact: Option<SetupArtifact>,
     workspaces: Vec<SetupWorkspace>,
     workspaces_scan: Option<SetupWorkspaceScan>,
-    workspaces_note: Option<String>,
+    /// Why the workspaces were not listed, as a code and a sentence.
+    workspaces_note: Option<(SetupWorkspacesUnlisted, String)>,
     outcome: Option<SetupOutcome>,
     error: Option<SetupError>,
 }
@@ -2188,7 +2211,8 @@ impl Job {
             artifact: progress.artifact,
             workspaces: progress.workspaces,
             workspaces_scan: progress.workspaces_scan,
-            workspaces_note: progress.workspaces_note,
+            workspaces_unlisted: progress.workspaces_note.as_ref().map(|(why, _)| *why),
+            workspaces_note: progress.workspaces_note.map(|(_, note)| note),
             outcome: progress.outcome,
             error: progress.error,
         }
@@ -3285,19 +3309,21 @@ impl Job {
     /// leaves `workspaces_note` and no list.
     async fn workspaces(&self, version: Option<&str>, current: bool) -> Result<(), Stop> {
         use SetupStageName as Name;
+        use SetupWorkspacesUnlisted as Unlisted;
         self.begin(Name::Workspaces);
         let server = self.server().to_owned();
         let unlisted = match version {
-            None => Some(format!(
-                "Crew isn't installed in your account on {server}, so Biorouter can't look for workspaces there."
+            None => Some((
+                Unlisted::NotInstalled,
+                format!(
+                    "Crew isn't installed in your account on {server}, so Biorouter can't look for workspaces there."
+                ),
             )),
-            Some(version) if !current => Some(format!(
-                "Crew {version} in your account on {server} is too old to list workspaces."
-            )),
+            Some(version) if !current => Some((Unlisted::TooOld, self.too_old(version))),
             Some(_) => None,
         };
-        if let Some(note) = unlisted {
-            self.unlisted(note);
+        if let Some((why, note)) = unlisted {
+            self.unlisted(why, note);
             return Ok(());
         }
         let ran = self
@@ -3315,11 +3341,17 @@ impl Job {
             .then(|| read_workspaces(&ran.stdout))
             .flatten();
         let Some((mut workspaces, scan)) = listing else {
-            self.unlisted(if ran.timed_out {
-                format!("{server} took too long to list its workspaces, so they aren't shown.")
+            if ran.timed_out {
+                self.unlisted(
+                    Unlisted::TimedOut,
+                    format!("{server} took too long to list its workspaces, so they aren't shown."),
+                );
             } else {
-                format!("Crew on {server} couldn't list its workspaces, so they aren't shown.")
-            });
+                self.unlisted(
+                    Unlisted::Failed,
+                    format!("Crew on {server} couldn't list its workspaces, so they aren't shown."),
+                );
+            }
             return Ok(());
         };
         self.annotate(&mut workspaces).await;
@@ -3336,10 +3368,36 @@ impl Job {
         Ok(())
     }
 
-    /// The workspaces were not listed, and why.
-    fn unlisted(&self, note: String) {
-        self.update(|progress| progress.workspaces_note = Some(note.clone()));
+    /// The workspaces were not listed, and why: `why` as a code, `note` as a sentence.
+    fn unlisted(&self, why: SetupWorkspacesUnlisted, note: String) {
+        self.update(|progress| progress.workspaces_note = Some((why, note.clone())));
         self.skip(SetupStageName::Workspaces, note);
+    }
+
+    /// Why the program installed as `version` lists no workspaces, and what to do: setup
+    /// replaces an older copy, or another build of the same version, with the one this app
+    /// carries, which lists them. With no copy of its own, or one older than the program there
+    /// (which setup never replaces), it has nothing to offer, and says only why.
+    fn too_old(&self, version: &str) -> String {
+        let said = format!(
+            "Crew {version} in your account on {} is too old to list workspaces.",
+            self.server()
+        );
+        let ours = self.progress().artifact.map(|artifact| artifact.version);
+        let replaceable = ours.as_deref().is_some_and(|ours| {
+            !matches!(
+                (version_of(version), version_of(ours)),
+                (Some(theirs), Some(ours)) if theirs > ours
+            )
+        });
+        if replaceable {
+            format!(
+                "{said} Update it with biorouter crew setup --server {}.",
+                self.route.ssh_target
+            )
+        } else {
+            said
+        }
     }
 
     /// What this computer has for each listed workspace: its saved connection, connected or

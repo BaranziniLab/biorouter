@@ -707,7 +707,7 @@ describe('a chat whose Crew connection is offline', () => {
     // Stopped here at once: the chat is held, and it says the workspace confirms by itself.
     expect(await screen.findByText(accessCopy.unconfirmedIn('Fixture'))).toBeInTheDocument();
     expect(accessCopy.unconfirmedIn('Fixture')).toBe(
-      'Stopped on this device. Fixture confirms it when it reconnects.'
+      'Stopped on this computer. Fixture confirms it when it reconnects.'
     );
     // AG-F11: one state, one note. "Access was removed, so this chat can't continue" beneath it
     // said the same thing as settled.

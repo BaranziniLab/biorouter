@@ -1362,17 +1362,7 @@ impl Api {
         }
         // A listing must not wait on a workspace that is slow to answer: after a few seconds
         // its privacy reads as not checked, as it does offline.
-        let snapshot = tokio::time::timeout(
-            LISTING_WAIT,
-            self.client.request(
-                "POST",
-                &format!("/crew/connections/{id}/request"),
-                Some(json!({"method": "workspace.snapshot", "params": {}, "request_id": null})),
-            ),
-        )
-        .await
-        .ok()
-        .and_then(Result::ok);
+        let snapshot = self.quick_snapshot(&id).await;
         if stopped_saving {
             let standing = snapshot.as_ref().map_or(HostStanding::Unknown, |snapshot| {
                 host_standing(snapshot, None)
@@ -1387,6 +1377,47 @@ impl Api {
             with_privacy_of(connection, snapshot.as_ref())
         } else {
             with_privacy_of(connection, None)
+        }
+    }
+
+    /// The person's snapshot of the workspace connection `id` reaches, or `None` when it does
+    /// not answer within [`LISTING_WAIT`] or refuses.
+    async fn quick_snapshot(&self, id: &str) -> Option<Value> {
+        tokio::time::timeout(
+            LISTING_WAIT,
+            self.client.request(
+                "POST",
+                &format!("/crew/connections/{id}/request"),
+                Some(json!({"method": "workspace.snapshot", "params": {}, "request_id": null})),
+            ),
+        )
+        .await
+        .ok()?
+        .ok()
+    }
+
+    /// The workspace `connection` reaches, named for a sentence, when the person's account hosts
+    /// it: as `listing` (a setup check job's list of the server's workspaces, or `Value::Null`)
+    /// says, else as the person's own snapshot says, which only a connected connection is asked
+    /// for. `None` when the account does not host it, or nothing can say so; the full-access
+    /// warning then leaves the host's sentence out, as the desktop's does without a snapshot.
+    async fn hosted_workspace(&self, connection: &Value, listing: &Value) -> Option<String> {
+        let name = name_text(&connection_name(connection));
+        let workspace = connection["workspace_id"].as_str();
+        let listed = output::listed_role(listing, workspace);
+        if listed.is_some() {
+            return (listed.as_deref() == Some("host")).then_some(name);
+        }
+        let id = connection["id"]
+            .as_str()
+            .filter(|_| connection["status"].as_str() == Some("connected"))
+            .and_then(|id| component(id).ok())?;
+        let snapshot = self.quick_snapshot(id).await?;
+        match host_standing(&snapshot, None) {
+            HostStanding::NotHost | HostStanding::Unknown => None,
+            HostStanding::HostElsewhereToo { .. } | HostStanding::OnlyHostComputer { .. } => {
+                Some(name)
+            }
         }
     }
 
@@ -2638,6 +2669,8 @@ async fn set_access(
         })
     };
     let mut input = saved_fields(&connection);
+    // What full access means, said with the result when --yes skipped the question.
+    let mut warned = None;
     let line = match access {
         AgentAccess::Off => {
             ensure!(
@@ -2684,14 +2717,7 @@ async fn set_access(
                 ));
             }
             let root = folder_or_existing()?;
-            if let Consent::Ask(question) = yes_or_ask(
-                yes,
-                api.interactive,
-                format!("Let agents work as you on {server}? Through {shown}, an agent can run any command your account can, read and change any file it can reach, use the network, and start jobs that keep running after its task ends. Public models never get this access."),
-                format!("Full access lets agents run anything as you on {server}. There is no terminal to ask in, so add --yes."),
-            )? {
-                ask_yes(question, "Nothing was changed.").await?;
-            }
+            warned = confirm_full_access(api, &connection, yes).await?;
             let line = format!(
                 "Agents can work as you on {server}, starting in {}.",
                 safe_text(&root)
@@ -2707,12 +2733,51 @@ async fn set_access(
         .request("PATCH", &api.path("").await?, Some(Value::Object(input)))
         .await?;
     let mut lines = vec![line];
+    lines.extend(warned);
     if saved["policy_epoch"] != connection["policy_epoch"] && !saved["policy_epoch"].is_null() {
         lines.push(format!(
             "This ended every chat's and task's access through {shown}; grant it again where you need it."
         ));
     }
     Ok(api.say(saved, lines))
+}
+
+/// `set-access full`'s one question (OW-6), with what full access means
+/// ([`full_access_warning`], the host's authority included on the host's account), or, with
+/// `--yes`, that warning to say with the result, which this answers. Nothing is sent before
+/// the terminal refusal; the account is looked up only once there is a question or a text
+/// result to say it in.
+async fn confirm_full_access(api: &Api, connection: &Value, yes: bool) -> Result<Option<String>> {
+    let server = server_label(connection);
+    let consent = yes_or_ask(
+        yes,
+        api.interactive,
+        String::new(),
+        format!("Full access lets agents run anything as you on {server}. There is no terminal to ask in, so add --yes."),
+    )?;
+    let asks = matches!(consent, Consent::Ask(_));
+    let hosted = if asks || api.text() {
+        api.hosted_workspace(connection, &Value::Null).await
+    } else {
+        None
+    };
+    let warning = full_access_warning(hosted.as_deref());
+    if !asks {
+        return Ok(Some(warning));
+    }
+    let shown = name_text(&connection_name(connection));
+    ask_yes(
+        full_access_question(&server, &shown, &warning),
+        "Nothing was changed.",
+    )
+    .await?;
+    Ok(None)
+}
+
+/// The question `set-access full` asks on a terminal: what an agent can do through `shown` on
+/// `server`, then `warning` ([`full_access_warning`]).
+fn full_access_question(server: &str, shown: &str, warning: &str) -> String {
+    format!("Let agents work as you on {server}? Through {shown}, an agent can run any command your account can, read and change any file it can reach, use the network, and start jobs that keep running after its task ends. {warning} Public models never get this access.")
 }
 
 async fn prepare(api: &Api) -> Result<Value> {
@@ -3443,7 +3508,14 @@ async fn set_up_for_join(
         let server = server_label(&connection);
         print_lines(&[join_setup_line(error, &server, changes)])?;
     }
-    member_setup(api, &SetupChoices::default(), access, interrupt).await?;
+    member_setup(
+        api,
+        &SetupChoices::default(),
+        access,
+        &Value::Null,
+        interrupt,
+    )
+    .await?;
     Ok(())
 }
 
@@ -3751,7 +3823,8 @@ async fn setup(
                 .unwrap_or_default()
                 .to_owned();
             let request = json!({"target": connection_target, "intent": "check"});
-            let (status, mut lines) = run_setup(api, request, &login, &mut interrupt).await?;
+            let (status, mut lines) =
+                run_setup(api, request, &login, &Value::Null, &mut interrupt).await?;
             // The bridge's last report says what the SSH check cannot: whether the kernel
             // confines commands to a folder.
             let connection = api.connection().await.ok();
@@ -3763,11 +3836,12 @@ async fn setup(
             api.stream(&status, &lines)?;
             return Ok(Reply::Streamed);
         }
+        let mut listing = Value::Null;
         if !named.is_empty() {
             let connection = api.connection().await?;
             let login = connection["ssh_target"].as_str().unwrap_or_default();
             let route = route_flags(&connection);
-            named
+            listing = named
                 .match_ids(
                     api,
                     &connection_target,
@@ -3779,7 +3853,7 @@ async fn setup(
                 .await?;
         }
         let access = MemberAccess::Asked(agent_access);
-        member_setup(api, &choices, access, &mut interrupt).await?;
+        member_setup(api, &choices, access, &listing, &mut interrupt).await?;
         return Ok(Reply::Streamed);
     };
     ensure!(
@@ -3811,9 +3885,10 @@ async fn setup_server(
     );
     let setup_target = server_target(server, route.0, route.1, route.2, None)?;
     let login = server.trim().to_owned();
+    let mut listing = Value::Null;
     if !named.is_empty() {
         let flags = route_flags(&setup_target);
-        named
+        listing = named
             .match_ids(
                 api,
                 &setup_target,
@@ -3827,7 +3902,8 @@ async fn setup_server(
     let intent = if check { "check" } else { "install" };
     let mut request = json!({"target": setup_target, "intent": intent});
     choices.apply(&mut request);
-    let (status, mut lines) = match run_setup(api, request, &login, &mut interrupt).await {
+    let (status, mut lines) = match run_setup(api, request, &login, &listing, &mut interrupt).await
+    {
         Err(error) if is_older_setup_daemon(&error) && !choices.newer() => {
             // Finding 36: the daemon predates the server target; the request it always read.
             let preparation = preparation_id(api).await?;
@@ -3836,7 +3912,7 @@ async fn setup_server(
                 "intent": intent,
             });
             choices.apply(&mut request);
-            run_setup(api, request, &login, &mut interrupt).await?
+            run_setup(api, request, &login, &listing, &mut interrupt).await?
         }
         answer => answer?,
     };
@@ -3903,7 +3979,8 @@ impl Named {
     /// One check job on `target` lists the workspaces on the server, and each name is matched
     /// to the one workspace the account hosts under it that can be started or restarted, into
     /// `choices`. A name it hosts none of, or more than one of, is refused before anything is
-    /// changed. `route` is the route flags given, which a suggested command repeats.
+    /// changed. `route` is the route flags given, which a suggested command repeats. Answers the
+    /// check job's status, whose stages the setup that follows does not say again.
     async fn match_ids(
         &self,
         api: &Api,
@@ -3912,10 +3989,11 @@ impl Named {
         route: &str,
         choices: &mut SetupChoices,
         interrupt: impl std::future::Future<Output = std::io::Result<()>>,
-    ) -> Result<()> {
+    ) -> Result<Value> {
         let request = json!({"target": target, "intent": "check"});
-        let (status, lines) = run_setup(api, request, login, interrupt).await?;
-        api.stream(&status, &lines)?;
+        let (status, lines) = run_setup(api, request, login, &Value::Null, interrupt).await?;
+        // The listing is not the end of the command: the setup that follows says Ready.
+        api.stream(&status, &output::before_the_setup(lines))?;
         let server = output::setup_server(&status, login);
         let refused = |sentence| restated(sentence, None);
         choices.start_workspaces = self
@@ -3930,7 +4008,7 @@ impl Named {
             .map(|name| output::workspace_to_restart(&status, name, &server, route))
             .collect::<std::result::Result<Vec<_>, _>>()
             .map_err(refused)?;
-        Ok(())
+        Ok(status)
     }
 }
 
@@ -3965,37 +4043,75 @@ fn member_agent_access(access: MemberAccess, connection: &Value) -> Option<Agent
     }
 }
 
-/// The one warning a member's setup gives when it sets full access by default (OW-6), with how
-/// to choose otherwise: `crew setup` takes `--agent-access`, and `crew join` does not, so it
-/// names `set-access`. `None` when the level was named or nothing is set.
+/// What every full-access warning says (OW-6, AO-1): to Crew, anything running as the account is
+/// the person. Setup's notice, `connections set-access full`'s question and `host`'s plan carry
+/// it in these words, as the desktop's warning and the chat's setup card do.
+const FULL_ACCESS_IS_YOU: &str = "Crew treats anything running as your account as you, so your agent can also add a computer to your account and post in Crew as you, with no agent mark.";
+
+/// [`FULL_ACCESS_IS_YOU`], and, when the account hosts `hosted` (named for a sentence), what
+/// full access on the host's account adds: the workspace's own files and the host's authority,
+/// in the desktop's words for a host (`fullWarningHost`). Every full-access warning is built
+/// here, so the commands cannot say it differently.
+fn full_access_warning(hosted: Option<&str>) -> String {
+    match hosted {
+        Some(workspace) => format!(
+            "{FULL_ACCESS_IS_YOU} You host {workspace} from this account, so your agent can also read the workspace's own files on the server, including channels you're not in. It can also act as the host of {workspace}."
+        ),
+        None => FULL_ACCESS_IS_YOU.to_owned(),
+    }
+}
+
+/// The one warning a member's setup gives when it sets full access (OW-6), with how to choose
+/// otherwise where the person did not name the level: `crew setup` takes `--agent-access`, and
+/// `crew join` does not, so it names `set-access`. `hosted` is the workspace when the account
+/// hosts it ([`full_access_warning`]). `None` when full access is not what the setup sets.
 fn full_access_notice(
     access: MemberAccess,
     level: Option<AgentAccess>,
     connection: &Value,
+    hosted: Option<&str>,
 ) -> Option<String> {
+    if level != Some(AgentAccess::Full) {
+        return None;
+    }
     let otherwise = match access {
         MemberAccess::Asked(None) => {
-            "To choose otherwise, add --agent-access folder or --agent-access off.".to_owned()
+            " To choose otherwise, add --agent-access folder or --agent-access off.".to_owned()
         }
         MemberAccess::JoinDefault => format!(
-            "To choose otherwise afterwards, run biorouter crew --connection {} connections set-access folder, or set-access off.",
+            " To choose otherwise afterwards, run biorouter crew --connection {} connections set-access folder, or set-access off.",
             safe_text(&shell_word(&connection_name(connection)))
         ),
-        MemberAccess::Asked(Some(_)) | MemberAccess::Unchanged => return None,
+        // Named with --agent-access full: what it means is said, with nothing to choose.
+        MemberAccess::Asked(Some(_)) => String::new(),
+        MemberAccess::Unchanged => return None,
     };
     let server = server_label(connection);
-    (level == Some(AgentAccess::Full)).then(|| format!(
-        "Setup lets your agent work as you on {server}: it can run any command your account can there, starting in a work folder it makes in your home folder. Crew treats anything running as your account as you, so your agent can also add a computer to your account and post in Crew as you, with no agent mark. Public models never get this access. {otherwise}"
+    // The folder the connection already has stays its folder; setup makes one only without.
+    let start = connection["remote_root"]
+        .as_str()
+        .map(str::trim)
+        .filter(|root| !root.is_empty())
+        .map_or_else(
+            || "a work folder it makes in your home folder".to_owned(),
+            safe_text,
+        );
+    let warning = full_access_warning(hosted);
+    Some(format!(
+        "Setup lets your agent work as you on {server}: it can run any command your account can there, starting in {start}. {warning} Public models never get this access.{otherwise}"
     ))
 }
 
 /// A member's setup of the selected saved connection (OW-9): install or update Crew in the
 /// person's own account, connect, and, when asked, set what agents may do there. Its progress
-/// and what it did are printed as it goes; the finished job's status is answered.
+/// and what it did are printed as it goes; the finished job's status is answered. `listing` is
+/// the check job this command already ran on the server (`Value::Null` when none): its stages
+/// are not said again, and its list says whether the account hosts the workspace.
 async fn member_setup(
     api: &Api,
     choices: &SetupChoices,
     access: MemberAccess,
+    listing: &Value,
     interrupt: impl std::future::Future<Output = std::io::Result<()>>,
 ) -> Result<Value> {
     let connection = api.connection().await?;
@@ -4011,12 +4127,15 @@ async fn member_setup(
     if let Some(level) = level {
         request["agent_access"] = json!(level.as_str());
     }
-    // OW-6: full access by default is said once, before anything is done, with how to choose
-    // otherwise.
-    if let Some(notice) = full_access_notice(access, level, &connection).filter(|_| api.text()) {
-        print_lines(&[notice])?;
+    // OW-6: full access is said once, before anything is done, with how to choose otherwise
+    // where the person did not choose it, and the host's authority on the host's account.
+    if api.text() && level == Some(AgentAccess::Full) {
+        let hosted = api.hosted_workspace(&connection, listing).await;
+        if let Some(notice) = full_access_notice(access, level, &connection, hosted.as_deref()) {
+            print_lines(&[notice])?;
+        }
     }
-    let (status, mut lines) = run_setup(api, request, &login, interrupt).await?;
+    let (status, mut lines) = run_setup(api, request, &login, listing, interrupt).await?;
     // What agents may do is what the connection says now, not what the job could have set.
     let connection = api.connection().await.ok();
     lines.extend(output::setup_summary_lines(
@@ -4042,18 +4161,20 @@ async fn member_setup(
 /// starts, signing in on a terminal when the server asks (`needs_sign_in`). Answers the
 /// finished status and the lines its last change adds, which the caller prints with its own.
 /// Ctrl-C stops the job. A job that failed is its typed error, said as the daemon's refusals
-/// are ([`DaemonRefusal::reported`]).
+/// are ([`DaemonRefusal::reported`]). `said` is an earlier job of the same command, whose
+/// stages were said already ([`follow_setup`]).
 async fn run_setup(
     api: &Api,
     request: Value,
     login: &str,
+    said: &Value,
     interrupt: impl std::future::Future<Output = std::io::Result<()>>,
 ) -> Result<(Value, Vec<String>)> {
     let Followed {
         status,
         lines,
         interrupted,
-    } = follow_setup(api, request, login, interrupt).await?;
+    } = follow_setup(api, request, login, said, interrupt).await?;
     match (status["state"].as_str(), interrupted) {
         (Some("failed"), _) => {
             if api.text() {
@@ -4099,14 +4220,20 @@ struct Followed {
 /// caller can read what the job did before it stopped (`host`: the saved connection and the
 /// steps left). Ctrl-C stops the job and answers at once with the last status read
 /// ([`settle_setup`] waits for where it ended).
+///
+/// Each stage is said once in the command: `said` is an earlier job of it (the listing `setup
+/// --start` and `open` run first, or `Value::Null`), whose stages this job does not say again.
+/// The restart stage names the workspaces the request asks to restart or start.
 async fn follow_setup(
     api: &Api,
     request: Value,
     login: &str,
+    said: &Value,
     interrupt: impl std::future::Future<Output = std::io::Result<()>>,
 ) -> Result<Followed> {
     tokio::pin!(interrupt);
     let newer = uses_newer_setup(&request);
+    let named = output::named_in_setup(&request);
     let mut status = api
         .client
         .request("POST", "/crew/setup", Some(request))
@@ -4123,7 +4250,8 @@ async fn follow_setup(
     let mut sign_ins = 0;
     let mut signed_in_at = None;
     loop {
-        let lines = output::setup_progress_lines(&shown, &status, login);
+        let previous = output::with_said_stages(&shown, said);
+        let lines = output::setup_progress_lines(&previous, &status, login, &named);
         if matches!(
             status["state"].as_str(),
             Some("finished" | "failed" | "cancelled")
@@ -4668,12 +4796,7 @@ impl Hosting {
     /// The one question `host` asks, before anything is set up: what hosting installs and
     /// what it lets agents do. `--yes` where there is no terminal.
     async fn confirm(&self, api: &Api) -> Result<()> {
-        let Self {
-            shown,
-            login,
-            privacy,
-            ..
-        } = self;
+        let Self { shown, login, .. } = self;
         let installs = match self.agent_access {
             AgentAccess::Full => format!(
                 "Hosting {shown} installs Crew in your account on {login} and lets your agent work as you there."
@@ -4691,32 +4814,49 @@ impl Hosting {
             "Go ahead?".to_owned(),
             format!("{installs} There is no terminal to ask in, so add --yes."),
         )? {
-            let mut lines = vec![
-                format!("Host {shown} on {login}? Biorouter will:"),
-                "  install Crew in your account there (~/.local/bin/biorouter-crew),".to_owned(),
-                format!("  start {shown} and save it on this computer,"),
-            ];
-            match self.agent_access {
-                AgentAccess::Full => {
-                    lines.push(format!("  make it {privacy} and open: every member can manage teams, channels and people,"));
-                    lines.push(format!("  and let your agent work as you on {login}: it can run any command your account can and reach any file it can. Public models never get this access."));
-                }
-                AgentAccess::Folder => {
-                    lines.push(format!("  make it {privacy} and open: every member can manage teams, channels and people,"));
-                    lines.push(format!("  and let your agent work in a folder it makes in your home folder on {login}."));
-                }
-                AgentAccess::Off => lines.push(format!(
-                    "  and make it {privacy} and open: every member can manage teams, channels and people."
-                )),
-            }
             let mut stderr = std::io::stderr().lock();
-            for line in lines {
+            for line in self.plan_lines() {
                 writeln!(stderr, "{line}")?;
             }
             drop(stderr);
             ask_yes(question, "Nothing was set up.").await?;
         }
         Ok(())
+    }
+
+    /// What `host` says it will do before it asks ([`Self::confirm`]). With full access, what
+    /// that means follows the list, the host's authority included, since the account hosts the
+    /// workspace ([`full_access_warning`]).
+    fn plan_lines(&self) -> Vec<String> {
+        let Self {
+            shown,
+            login,
+            privacy,
+            ..
+        } = self;
+        let mut lines = vec![
+            format!("Host {shown} on {login}? Biorouter will:"),
+            "  install Crew in your account there (~/.local/bin/biorouter-crew),".to_owned(),
+            format!("  start {shown} and save it on this computer,"),
+        ];
+        match self.agent_access {
+            AgentAccess::Full => {
+                lines.push(format!("  make it {privacy} and open: every member can manage teams, channels and people,"));
+                lines.push(format!("  and let your agent work as you on {login}: it can run any command your account can and reach any file it can."));
+                lines.push(format!(
+                    "{} Public models never get this access.",
+                    full_access_warning(Some(shown))
+                ));
+            }
+            AgentAccess::Folder => {
+                lines.push(format!("  make it {privacy} and open: every member can manage teams, channels and people,"));
+                lines.push(format!("  and let your agent work in a folder it makes in your home folder on {login}."));
+            }
+            AgentAccess::Off => lines.push(format!(
+                "  and make it {privacy} and open: every member can manage teams, channels and people."
+            )),
+        }
+        lines
     }
 }
 
@@ -4820,7 +4960,7 @@ async fn run_host_setup(
     if hosting.fix_permissions {
         request["fix_storage_permissions"] = json!(true);
     }
-    let mut followed = follow_setup(api, request, &hosting.server, interrupt).await?;
+    let mut followed = follow_setup(api, request, &hosting.server, &Value::Null, interrupt).await?;
     if followed.interrupted {
         followed.status = settle_setup(api, followed.status).await;
     }
@@ -5107,10 +5247,17 @@ fn hosted_lines(
         .map(str::trim)
         .filter(|folder| !folder.is_empty());
     match (folder, connection["remote_access"].as_str()) {
-        (Some(folder), Some("full")) => lines.push(format!(
-            "Your agent can work as you on {login}, starting in {}. Change that with biorouter crew connections set-access.",
-            safe_text(folder)
-        )),
+        (Some(folder), Some("full")) => {
+            lines.push(format!(
+                "Your agent can work as you on {login}, starting in {}. Change that with biorouter crew connections set-access.",
+                safe_text(folder)
+            ));
+            // OW-6: --yes skipped the plan, so what full access means on the host's account is
+            // said here.
+            if hosting.yes {
+                lines.push(full_access_warning(Some(shown)));
+            }
+        }
         (Some(folder), _) => lines.push(format!(
             "Your work folder on {login} is {}. Choose what agents may do there with biorouter crew connections set-access.",
             safe_text(folder)
@@ -5182,8 +5329,9 @@ async fn open(
     )?;
     let login = server.trim().to_owned();
     let request = json!({"target": target, "intent": "check"});
-    let (status, lines) = run_setup(api, request, &login, &mut interrupt).await?;
-    api.stream(&status, &lines)?;
+    let (status, lines) = run_setup(api, request, &login, &Value::Null, &mut interrupt).await?;
+    // The listing is not the end of the command: joining is.
+    api.stream(&status, &output::before_the_setup(lines))?;
     let shown_server = output::setup_server(&status, &login);
     let entry = output::workspace_to_open(
         &status,
@@ -5209,6 +5357,7 @@ async fn open(
             api,
             &SetupChoices::default(),
             MemberAccess::Asked(Some(level)),
+            &status,
             &mut interrupt,
         )
         .await?;
@@ -13883,13 +14032,41 @@ mod tests {
                 .await
                 .expect("full"),
         );
+        // Live re-test R6: --yes skips the question, so the result says what full access
+        // means, and, since the snapshot names Bob's account the host, the host's authority.
         assert_eq!(
             lines,
             [
                 "Agents can work as you on hpc, starting in /pool1/home/bob/crew-work/lab.",
+                "Crew treats anything running as your account as you, so your agent can also add a computer to your account and post in Crew as you, with no agent mark. You host UCSF HPC from this account, so your agent can also read the workspace's own files on the server, including channels you're not in. It can also act as the host of UCSF HPC.",
                 "This ended every chat's and task's access through UCSF HPC; grant it again where you need it.",
             ]
         );
+        // The question a terminal is asked carries the same words.
+        assert_eq!(
+            full_access_question("hpc", "UCSF HPC", &full_access_warning(None)),
+            format!("Let agents work as you on hpc? Through UCSF HPC, an agent can run any command your account can, read and change any file it can reach, use the network, and start jobs that keep running after its task ends. {FULL_ACCESS_IS_YOU} Public models never get this access.")
+        );
+        // A member's account is not the host's: the host's sentence is left out.
+        let mut member_snapshot = snapshot();
+        member_snapshot["actor"] = member_snapshot["principals"][1].clone();
+        let daemon = access_daemon(connection_with_levels());
+        let handler = move |method: &str, path: &str, body: Option<&Value>| -> Result<Value> {
+            if body.and_then(|body| body["method"].as_str()) == Some("workspace.snapshot") {
+                return Ok(member_snapshot.clone());
+            }
+            daemon(method, path, body)
+        };
+        let (member_api, _) = api_with(OutputFormat::Text, handler);
+        let lines = said(
+            run(
+                &member_api,
+                set(AgentAccess::Full, Some("~/crew-work/lab"), true),
+            )
+            .await
+            .expect("full"),
+        );
+        assert_eq!(lines[1], FULL_ACCESS_IS_YOU);
         let body = patched(&fake).expect("saved");
         assert_eq!(body["remote_root"], "/pool1/home/bob/crew-work/lab");
         assert_eq!(body["remote_execution"], true);
@@ -14506,16 +14683,51 @@ mod tests {
         .expect("checked");
         let finished = host_daemon()("GET", &format!("/crew/setup/{JOB}"), None).expect("job");
         let done = "Started chen-lab on alice@leo and saved it on this computer";
+        // Live re-test R6: --yes skipped the plan, so what full access means on the host's
+        // account is said with the result.
+        let host_warning = "Crew treats anything running as your account as you, so your agent can also add a computer to your account and post in Crew as you, with no agent mark. You host chen-lab from this account, so your agent can also read the workspace's own files on the server, including channels you're not in. It can also act as the host of chen-lab.";
         assert_eq!(
             hosted_lines(&hosting, &finished, &hosted_connection_view(true), done, "chen-lab"),
             [
                 "Started chen-lab on alice@leo and saved it on this computer.",
                 "chen-lab is Private · ucsf and open: every member can manage teams, channels and people.",
                 "Your agent can work as you on alice@leo, starting in /home/alice/crew-work/chen-lab. Change that with biorouter crew connections set-access.",
+                host_warning,
                 "Wrote the workspace context from what alice@leo has (revision 1). Read it with biorouter crew workspace context show.",
                 "Next: invite people with biorouter crew --connection chen-lab enroll invite @USERNAME",
             ]
         );
+        // Asked on a terminal, the plan said it before anything was done, so the result does
+        // not say it again.
+        let asked = Hosting::check(
+            &api_with(OutputFormat::Text, standard).0,
+            host_command(Some("ucsf"), false),
+        )
+        .expect("checked");
+        let plan = asked.plan_lines();
+        assert_eq!(
+            plan[3..],
+            [
+                "  make it Private · ucsf and open: every member can manage teams, channels and people,",
+                "  and let your agent work as you on alice@leo: it can run any command your account can and reach any file it can.",
+                format!("{host_warning} Public models never get this access.").as_str(),
+            ]
+        );
+        assert!(!hosted_lines(
+            &asked,
+            &finished,
+            &hosted_connection_view(true),
+            done,
+            "chen-lab"
+        )
+        .iter()
+        .any(|line| line.contains(FULL_ACCESS_IS_YOU)));
+        let mut folder = host_command(Some("ucsf"), false);
+        folder.agent_access = AgentAccess::Folder;
+        let folder = Hosting::check(&api_with(OutputFormat::Text, standard).0, folder)
+            .expect("checked")
+            .plan_lines();
+        assert!(!folder.iter().any(|line| line.contains(FULL_ACCESS_IS_YOU)));
         // A start that did not say it created the workspace leaves its settings as steps.
         let mut older = finished.clone();
         older["outcome"]["governance"] = Value::Null;
@@ -14524,10 +14736,11 @@ mod tests {
         older["stages"] = json!([{"name": "configure", "state": "skipped",
             "detail": "Crew on leo didn't say it created the workspace, so its privacy and settings are left for you to set."}]);
         assert_eq!(
-            hosted_lines(&hosting, &older, &hosted_connection_view(true), done, "chen-lab")[1..4],
+            hosted_lines(&hosting, &older, &hosted_connection_view(true), done, "chen-lab")[1..5],
             [
                 "Crew on leo didn't say it created the workspace, so its privacy and settings are left for you to set.",
                 "Your agent can work as you on alice@leo, starting in /home/alice/crew-work/chen-lab. Change that with biorouter crew connections set-access.",
+                host_warning,
                 "To finish setting it up, run these in order:",
             ]
         );
@@ -14882,25 +15095,65 @@ mod tests {
         );
         // The one warning says how to choose otherwise in the command that gave it.
         let full = Some(AgentAccess::Full);
-        let warned = |access| full_access_notice(access, full, &connection_with_levels());
+        let warned = |access| full_access_notice(access, full, &connection_with_levels(), None);
         let setup = warned(MemberAccess::Asked(None)).expect("warned");
         assert!(
             setup.starts_with("Setup lets your agent work as you on hpc: "),
             "{setup}"
         );
+        assert!(setup.contains(FULL_ACCESS_IS_YOU), "{setup}");
         assert!(
             setup.ends_with("add --agent-access folder or --agent-access off."),
             "{setup}"
         );
         let join = warned(MemberAccess::JoinDefault).expect("warned");
+        assert!(join.contains(FULL_ACCESS_IS_YOU), "{join}");
         assert!(
             join.ends_with("run biorouter crew --connection 'UCSF HPC' connections set-access folder, or set-access off."),
             "{join}"
         );
-        assert_eq!(warned(MemberAccess::Asked(full)), None);
+        // Live re-test R6: --agent-access full, named, is warned too, with nothing to choose.
+        assert_eq!(
+            warned(MemberAccess::Asked(full)).as_deref(),
+            Some(
+                "Setup lets your agent work as you on hpc: it can run any command your account can there, starting in a work folder it makes in your home folder. Crew treats anything running as your account as you, so your agent can also add a computer to your account and post in Crew as you, with no agent mark. Public models never get this access."
+            )
+        );
+        // A connection with its folder keeps it, and the warning says where it starts.
+        let mut with_folder = connection_with_levels();
+        with_folder["remote_root"] = json!("/scratch/bob/proj");
+        let named = full_access_notice(MemberAccess::Asked(full), full, &with_folder, None)
+            .expect("warned");
+        assert!(
+            named.contains("there, starting in /scratch/bob/proj. Crew treats"),
+            "{named}"
+        );
+        // On the host's account full access is the host's authority, and the warning says so.
+        let hosting = full_access_notice(
+            MemberAccess::Asked(None),
+            full,
+            &connection_with_levels(),
+            Some("lab"),
+        )
+        .expect("warned");
+        assert!(
+            hosting.contains(&format!(
+                "{FULL_ACCESS_IS_YOU} You host lab from this account, so your agent can also read the workspace's own files on the server, including channels you're not in. It can also act as the host of lab. Public models never get this access."
+            )),
+            "{hosting}"
+        );
         assert_eq!(warned(MemberAccess::Unchanged), None);
         assert_eq!(
-            full_access_notice(MemberAccess::JoinDefault, None, &own_connection()),
+            full_access_notice(MemberAccess::JoinDefault, None, &own_connection(), None),
+            None
+        );
+        assert_eq!(
+            full_access_notice(
+                MemberAccess::Asked(Some(AgentAccess::Folder)),
+                Some(AgentAccess::Folder),
+                &own_connection(),
+                None
+            ),
             None
         );
     }
@@ -16233,6 +16486,22 @@ mod tests {
         );
         assert!(
             shown.contains(" · via account sign-in. Check it with biorouter crew --connection 'UCSF HPC' profile devices."),
+            "{shown}"
+        );
+
+        // Live re-test: profile devices is refused while the connection is down, as every read
+        // is, so on a disconnected connection the line names connect first.
+        let disconnected = |method: &str, path: &str, body: Option<&Value>| -> Result<Value> {
+            let mut answer = devices_daemon(method, path, body)?;
+            if (method, path) == ("GET", "/crew/connections") {
+                answer["connections"][0]["status"] = json!("disconnected");
+            }
+            Ok(answer)
+        };
+        let (api, _) = api_with(OutputFormat::Text, disconnected);
+        let shown = said(run(&api, CrewCommand::Status).await.expect("status")).join("\n");
+        assert!(
+            shown.contains(" · via account sign-in. Connect with biorouter crew --connection 'UCSF HPC' connect, then check it with biorouter crew --connection 'UCSF HPC' profile devices."),
             "{shown}"
         );
     }

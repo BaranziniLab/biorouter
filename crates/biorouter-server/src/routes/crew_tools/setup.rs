@@ -476,6 +476,38 @@ fn access_line(access: Option<&str>, server: &str) -> Option<String> {
     }
 }
 
+/// What full access means when the account hosts `workspace`, said after [`access_line`] in the
+/// words the desktop's full-access warning uses for a host (`fullWarningHost`): Crew treats
+/// anything running as the account as the account, and the account is the host, so agents can
+/// act as the host too. `None` for any other access.
+pub(super) fn hosting_line(access: Option<&str>, workspace: &str) -> Option<String> {
+    (access == Some("full")).then(|| {
+        format!(
+            "You host {workspace} from this account, so agents can also read the workspace's own files on the server, including channels you're not in. They can also act as the host of {workspace}."
+        )
+    })
+}
+
+/// [`hosting_line`] for a member's setup of the saved connection `saved` with `access`: said
+/// when the person's own snapshot of its workspace names them its host. Only a connected
+/// connection is asked, before the card is parked, and only that answer reaches the card,
+/// which names the workspace by the connection's name as its heading does.
+async fn saved_hosting_line(
+    ctx: &Ctx,
+    saved: Option<&Connection>,
+    access: Option<&str>,
+) -> Option<String> {
+    let connection = saved?;
+    if access != Some("full") || connection.status != "connected" {
+        return None;
+    }
+    let snapshot = ctx.snapshot(connection).await.ok()?;
+    if hosts(&snapshot) != Some(true) {
+        return None;
+    }
+    hosting_line(access, &connection.name)
+}
+
 /// `biorouter crew setup`: install or update Crew in the person's account on a server, and
 /// for a saved connection, connect it (AO-8).
 pub(super) fn setup(ctx: &Ctx) -> BoxFuture<'_, Result<Value>> {
@@ -545,6 +577,11 @@ pub(super) fn setup(ctx: &Ctx) -> BoxFuture<'_, Result<Value>> {
         }
         if let Some(line) = access_line(access.as_deref(), &login) {
             card = card.line(line);
+        }
+        if member {
+            if let Some(line) = saved_hosting_line(ctx, saved.as_ref(), access.as_deref()).await {
+                card = card.line(line);
+            }
         }
         for key in [
             "keep_older",
@@ -618,6 +655,9 @@ pub(super) fn host(ctx: &Ctx) -> BoxFuture<'_, Result<Value>> {
         .show("mode", mode.clone())
         .show("agent_access", access.clone());
         if let Some(line) = access_line(Some(&access), &server) {
+            card = card.line(line);
+        }
+        if let Some(line) = hosting_line(Some(&access), &name) {
             card = card.line(line);
         }
         if let Some(institution) = &institution {
@@ -887,7 +927,25 @@ pub(super) fn open_card(
     if let Some(line) = access_line(access, access_login) {
         card = card.line(line).show("agent_access", access);
     }
+    if opener_hosts(entry, login, reused) {
+        if let Some(line) = hosting_line(access, &shown) {
+            card = card.line(line);
+        }
+    }
     card
+}
+
+/// Whether the account an open joins through hosts `entry`: the checked login's role, or, when
+/// the open reuses a connection that signs in as another login, whether that login's user is
+/// the host the listing names. For the card's words only.
+fn opener_hosts(entry: &SetupWorkspace, login: &str, reused: Option<&Connection>) -> bool {
+    match reused {
+        Some(saved) if saved.ssh_target != login => {
+            let user = saved.ssh_target.rsplit_once('@').map(|(user, _)| user);
+            user.is_some() && user == entry.host_username.as_deref()
+        }
+        _ => entry.role == SetupWorkspaceRole::Host,
+    }
 }
 
 fn role_of(entry: &SetupWorkspace) -> &'static str {

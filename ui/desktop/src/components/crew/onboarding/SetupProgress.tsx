@@ -20,6 +20,7 @@ import {
 import {
   manualInstallCommands,
   plainStage,
+  plainStages,
   plainStagesFor,
   readSetup,
   readSetupArtifact,
@@ -302,15 +303,35 @@ export function useSetupJob({
 type StepState = 'done' | 'current' | 'next' | 'failed';
 
 /**
+ * A check, and an install from Open a workspace on a server, are there to list the server's
+ * workspaces (AO-8): one that finished without listing them (`workspaces_unlisted`) did not get
+ * where it was going. Its Looking for workspaces step reads as failed, and it never says Ready
+ * (live QA: a Crew in the account too old to list them ended at a green Ready).
+ */
+function listingFailed(intent: SetupIntent, job: SetupJob): boolean {
+  return (
+    (intent === 'check' || intent === 'install') &&
+    job.phase === 'finished' &&
+    Boolean(job.run?.workspacesUnlisted)
+  );
+}
+
+/**
  * The plain steps to show: Signing in only for a job that asked for it, and Looking for workspaces
- * and Updating running workspaces where the job has them (AO-8, `plainStagesFor`).
+ * and Updating running workspaces where the job has them (AO-8, `plainStagesFor`). A job whose
+ * listing failed ends at Looking for workspaces.
  */
 function shownStages(intent: SetupIntent, job: SetupJob): PlainSetupStage[] {
   const signIn = job.run?.stages.find((stage) => stage.name === 'sign_in');
   const signedIn =
     job.askedToSignIn ||
     (signIn !== undefined && signIn.state !== 'skipped' && signIn.state !== 'pending');
-  return plainStagesFor(intent, job.run).filter((stage) => stage !== 'signing-in' || signedIn);
+  const keep = (stage: PlainSetupStage) => stage !== 'signing-in' || signedIn;
+  if (listingFailed(intent, job)) {
+    const stages = plainStages(intent).filter(keep);
+    return stages.slice(0, stages.indexOf('finding') + 1);
+  }
+  return plainStagesFor(intent, job.run).filter(keep);
 }
 
 /**
@@ -332,8 +353,9 @@ export function SetupProgress({
   server: string;
   testId?: string;
   /**
-   * List the workspaces the job found on the server (AO-8), under its steps. Off where the caller
-   * lists them itself, with its own actions (Open a workspace on a server).
+   * List the workspaces the job found on the server (AO-8), under its steps, or say why they could
+   * not be listed. Off where the caller does both itself, with its own actions (Open a workspace
+   * on a server).
    */
   showWorkspaces?: boolean;
   /** One more way on beside Try again, for a refusal the caller can answer (Open, AO-9). */
@@ -342,14 +364,17 @@ export function SetupProgress({
   const fixHintId = useId();
   if (job.phase === 'idle' || job.phase === 'outdated') return null;
   const stages = shownStages(intent, job);
+  const unlisted = listingFailed(intent, job);
   const current: PlainSetupStage =
     job.phase === 'starting' || !job.run
       ? 'checking'
-      : job.phase === 'finished'
-        ? 'ready'
-        : plainStage(job.run);
+      : unlisted
+        ? 'finding'
+        : job.phase === 'finished'
+          ? 'ready'
+          : plainStage(job.run);
   const index = Math.max(0, stages.indexOf(current));
-  const failed = job.phase === 'failed';
+  const failed = job.phase === 'failed' || unlisted;
   const outcome = job.run?.outcome ?? null;
   const installedDetail =
     outcome?.installedVersion && outcome.reused
@@ -369,7 +394,7 @@ export function SetupProgress({
       <ol className="crew-setup-steps" aria-label={setupCopy.stepsLabel}>
         {stages.map((stage, position) => {
           const state: StepState =
-            job.phase === 'finished' || position < index
+            (job.phase === 'finished' && !unlisted) || position < index
               ? 'done'
               : position === index
                 ? failed
@@ -465,7 +490,7 @@ export function SetupProgress({
       {showWorkspaces && job.run?.workspaces ? (
         <SetupWorkspaceList workspaces={job.run.workspaces} label={setupCopy.foundLabel(server)} />
       ) : null}
-      {workspacesNoteText(job.run?.workspacesNote ?? null) ? (
+      {showWorkspaces && workspacesNoteText(job.run?.workspacesNote ?? null) ? (
         <p className="text-supporting text-text-muted" data-testid="crew-setup-workspaces-note">
           {workspacesNoteText(job.run?.workspacesNote ?? null)}
         </p>

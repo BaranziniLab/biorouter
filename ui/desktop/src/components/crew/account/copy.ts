@@ -1,8 +1,10 @@
 /**
  * Account ownership's strings (docs/crew/design/account-ownership.md, "Desktop"): adding this
- * computer again, the account's devices, the version and new-device notices, setups a chat
- * started, and the chats that read a workspace as the person. American English, sentence case,
- * typographic apostrophes, no dashes. A string a test asserts is read from here.
+ * computer again, the computers on the account, the version and new-computer notices, setups a
+ * chat started, and the chats that read a workspace as the person. American English, sentence
+ * case, typographic apostrophes, no dashes. A person's machine is a "computer" here, as the CLI
+ * says it; "device" stays in code and protocol names only. A string a test asserts is read from
+ * here.
  */
 
 export const rejoinCopy = {
@@ -23,9 +25,9 @@ export const rejoinCopy = {
   /** Once the workspace admitted the new key. Chats need access again: the policy epoch moved. */
   done: (workspace: string) =>
     `This computer is back in ${workspace}. Chats that had Crew access through it need access again.`,
-  /** The cap of 32 made room by removing the oldest device (AO-2). */
+  /** The cap of 32 made room by removing the oldest computer (AO-2). */
   evicted: (fingerprint: string) =>
-    `To make room, the workspace removed your oldest device, ${fingerprint}.`,
+    `To make room, the workspace removed your oldest computer, ${fingerprint}.`,
   failed: 'Couldn’t add this computer again.',
 } as const;
 
@@ -41,25 +43,27 @@ export const versionCopy = {
 } as const;
 
 export const newDevicesCopy = {
-  /** AO-10: from the daemon's `new_devices`, until acknowledged. `when` is a calendar date. */
-  one: (when: string | null) =>
+  /**
+   * AO-10: from the daemon's `new_devices`, until acknowledged. One computer, named by the
+   * fingerprint Keys lists it under and marks New, as `biorouter crew status` names it ("New
+   * computer on your account: …"). `when` is a calendar date.
+   */
+  one: (fingerprint: string, when: string | null) =>
     when
-      ? `A new device was added to your account on ${when}.`
-      : 'A new device was added to your account.',
-  many: (count: number) => `${count} new devices were added to your account.`,
-  /** After `one`: which device, by the fingerprint Keys lists it under and marks New. */
-  which: (fingerprint: string) => `Its fingerprint is ${fingerprint}.`,
+      ? `New computer on your account: ${fingerprint}, added ${when}.`
+      : `New computer on your account: ${fingerprint}.`,
+  many: (count: number) => `${count} new computers on your account.`,
   /** How it was added, after the sentence. */
   viaAccount: 'It signed in to the server as you.',
   review: 'Review',
-  reviewName: 'Review devices',
+  reviewName: 'Review computers',
   acknowledge: 'Acknowledge',
-  acknowledgeFailed: 'Couldn’t mark the new devices as seen. Try again.',
+  acknowledgeFailed: 'Couldn’t mark the new computers as seen. Try again.',
 } as const;
 
 export const deviceCopy = {
   remove: 'Remove',
-  removeLabel: (fingerprint: string) => `Remove device ${fingerprint}`,
+  removeLabel: (fingerprint: string) => `Remove computer ${fingerprint}`,
   removeThisLabel: 'Remove this computer',
   /** AO-5: revoking is the second step; SSH access is the first. */
   sshWarning:
@@ -69,13 +73,13 @@ export const deviceCopy = {
   /** Removing this computer: what follows. */
   thisFollows:
     'This computer stops reaching the workspace until you choose Add this computer again.',
-  confirmAction: 'Remove device',
+  confirmAction: 'Remove computer',
   /** This computer's own question's button: it is the computer in use, not a lost one. */
   confirmThisAction: 'Remove this computer',
   keep: 'Keep',
   removed: (fingerprint: string) => `Removed ${fingerprint}.`,
   removedThis: 'Removed this computer. Choose Add this computer again to use the workspace here.',
-  failed: 'Couldn’t remove the device.',
+  failed: 'Couldn’t remove the computer.',
 } as const;
 
 export const setupJobsCopy = {

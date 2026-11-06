@@ -167,6 +167,12 @@ function OpenWorkspaceView({
   const [jobIntent, setJobIntent] = useState<SetupIntent>('check');
   /** The last finished job: its list of workspaces and what it restarted. */
   const [found, setFound] = useState<SetupRun | null>(null);
+  /**
+   * Whether `found` came from a job that asked to restart or start nothing (a look, or updating
+   * the Crew in the account): it says what Update Crew would do, never why a restart was left.
+   */
+  const [foundLookOnly, setFoundLookOnly] = useState(true);
+  const jobLookOnly = useRef(true);
   /** The row (`setupWorkspaceKey`) whose Update Crew is asking first. */
   const [confirmUpdate, setConfirmUpdate] = useState<string | null>(null);
   /** The row being opened. */
@@ -188,7 +194,13 @@ function OpenWorkspaceView({
   const server =
     connectionServer({ id: '', ssh_target: (looked?.route.ssh_target ?? login).trim() }) ||
     login.trim();
-  const job = useSetupJob({ server, onFinished: (run) => setFound(run) });
+  const job = useSetupJob({
+    server,
+    onFinished: (run) => {
+      setFound(run);
+      setFoundLookOnly(jobLookOnly.current);
+    },
+  });
   const busy = preparing || job.busy || opening !== null;
 
   const routeNow = (): OpenWorkspaceRoute => ({
@@ -213,6 +225,7 @@ function OpenWorkspaceView({
     setJobIntent(intent);
     setConfirmUpdate(null);
     focusAfterJob.current = row;
+    jobLookOnly.current = !extra.restart_workspace_ids?.length && !extra.start_workspaces?.length;
     const result = await job.start({
       target: { kind: 'server', ...on.route, preparation_id: on.preparationId },
       intent,
@@ -376,6 +389,24 @@ function OpenWorkspaceView({
       setupWorkspaceKey(entry)
     );
 
+  /**
+   * Why the last job listed no workspaces, and whether installing this computer's Crew in the
+   * account answers it: a Crew there too old to list them, or none (live QA: an older Crew in the
+   * account was a dead end). The install restarts no workspace (`restart_workspaces: false`), and
+   * the same job then looks for the workspaces again with the Crew it installed.
+   */
+  const unlisted = found?.workspacesUnlisted ?? null;
+  const installs = available !== null && (unlisted === 'too_old' || unlisted === 'not_installed');
+  const unlistedText = !found
+    ? null
+    : installs && unlisted === 'too_old'
+      ? openCopy.tooOld(found.installedVersion ?? null, server)
+      : installs
+        ? openCopy.notInstalled(server)
+        : workspacesNoteText(found.workspacesNote ?? null);
+  const installInAccount = () =>
+    void runOnServer('install', { restart_workspaces: false }, looked, '');
+
   const actions = (entry: SetupWorkspace) => {
     const name = foundWorkspaceTitle(entry);
     const key = setupWorkspaceKey(entry);
@@ -483,10 +514,13 @@ function OpenWorkspaceView({
             {openCopy.outdated(entry.version, available)}
           </p>
         );
-      // Why the last update left it, when a reason says more than "older" does.
+      // Why the last update left it, when a reason says more than "older" does. After a look,
+      // which asked to restart nothing, what Update Crew would do instead (it was never tried).
       const reason =
         left?.reason === 'others_connected'
-          ? openCopy.leftRunning.others_connected(othersOf(entry))
+          ? foundLookOnly
+            ? openCopy.restartsOnUpdate(othersOf(entry))
+            : openCopy.leftRunning.others_connected(othersOf(entry))
           : left?.reason === 'running_newer'
             ? openCopy.leftRunning.running_newer(left.runningVersion ?? entry.version)
             : left?.reason === 'custom_state_dir'
@@ -643,6 +677,31 @@ function OpenWorkspaceView({
             showWorkspaces={false}
             testId="crew-open-progress"
           />
+          {/* Said here, not by the steps, so the way on can sit beside it. */}
+          {!job.busy && unlistedText && installs ? (
+            <Note
+              tone="warning"
+              role="status"
+              testId="crew-open-unlisted"
+              action={
+                <Button
+                  type="button"
+                  variant="secondary"
+                  size="sm"
+                  disabled={busy}
+                  onClick={installInAccount}
+                >
+                  {unlisted === 'too_old' ? openCopy.update : openCopy.install}
+                </Button>
+              }
+            >
+              {unlistedText}
+            </Note>
+          ) : !job.busy && unlistedText ? (
+            <p className="text-supporting text-text-muted" data-testid="crew-setup-workspaces-note">
+              {unlistedText}
+            </p>
+          ) : null}
           {found && workspaces.length === 0 && !workspacesNoteText(found.workspacesNote ?? null) ? (
             <p className="text-body text-text-default" role="status">
               {openCopy.none(server)}

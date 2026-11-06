@@ -339,8 +339,23 @@ describe('Open a workspace on a server', () => {
       binaryCurrent: false,
       othersConnected: null,
     });
-    mocks.startSetup.mockResolvedValue(
-      finished([custom, busy], {
+    const quiet = entry({
+      workspaceId: '33333333-2222-4333-8444-555555555555',
+      role: 'host',
+      name: 'quiet-lab',
+      binaryCurrent: false,
+      othersConnected: 0,
+    });
+    mocks.startSetup.mockResolvedValueOnce(finished([custom, busy, quiet])).mockResolvedValueOnce({
+      ...finished([custom, busy, quiet], {
+        restarted: [
+          {
+            workspaceId: quiet.workspaceId,
+            name: 'quiet-lab',
+            fromVersion: '1.94.1',
+            toVersion: '1.95.0',
+          },
+        ],
         outdated: [
           {
             workspaceId: custom.workspaceId,
@@ -359,11 +374,19 @@ describe('Open a workspace on a server', () => {
             reason: 'others_connected',
           },
         ],
-      })
-    );
+      }),
+      intent: 'install',
+    });
     renderDialog();
     const dialog = await look();
-    const found = await within(dialog).findByTestId('crew-open-found');
+    // The update of one workspace, which left the others running.
+    fireEvent.click(
+      await within(dialog).findByRole('button', { name: openCopy.updateLabel('quiet-lab') })
+    );
+    expect(
+      await within(dialog).findByText(openCopy.restarted('quiet-lab', '1.95.0'))
+    ).toBeVisible();
+    const found = within(dialog).getByTestId('crew-open-found');
     expect(
       within(found).getByText(openCopy.leftRunning.custom_state_dir('leo.ucsf.edu'))
     ).toBeVisible();
@@ -376,6 +399,169 @@ describe('Open a workspace on a server', () => {
     expect(
       within(found).getByRole('button', { name: openCopy.updateLabel('busy-lab') })
     ).toBeVisible();
+  });
+
+  it('after a look, says what Update Crew would do, never that a restart was tried (live QA finding 6)', async () => {
+    const old = entry({
+      role: 'host',
+      name: 'old-lab',
+      version: null,
+      binaryCurrent: false,
+      othersConnected: null,
+    });
+    mocks.startSetup.mockResolvedValue(
+      finished([old], {
+        outdated: [
+          {
+            workspaceId: old.workspaceId,
+            name: 'old-lab',
+            runningVersion: null,
+            installedVersion: '1.95.0',
+            othersConnected: null,
+            reason: 'others_connected',
+          },
+        ],
+      })
+    );
+    renderDialog();
+    const dialog = await look();
+    const found = await within(dialog).findByTestId('crew-open-found');
+    expect(within(found).getByText(openCopy.outdated(null, '1.95.0'))).toBeVisible();
+    expect(within(found).getByText(openCopy.restartsOnUpdate(null))).toBeVisible();
+    expect(openCopy.restartsOnUpdate(null)).toBe(
+      'Update Crew restarts it. Other people may be connected. Their running agent commands will stop.'
+    );
+    expect(within(found).queryByText(openCopy.leftRunning.others_connected(null))).toBeNull();
+    expect(within(found).queryByText(/wasn’t restarted/)).toBeNull();
+    expect(
+      within(found).getByRole('button', { name: openCopy.updateLabel('old-lab') })
+    ).toBeVisible();
+  });
+
+  it('offers Update Crew when the Crew in your account is too old to list workspaces, then lists them (live QA finding 2)', async () => {
+    const said =
+      'Crew 1.93.0 in your account on leo.ucsf.edu is too old to list workspaces. Update it with biorouter crew setup --server wanjun@leo.ucsf.edu.';
+    const tooOld: SetupRun = {
+      ...finished([]),
+      stages: [
+        { name: 'check', state: 'done', detail: null },
+        { name: 'sign_in', state: 'pending', detail: null },
+        { name: 'workspaces', state: 'skipped', detail: said },
+        { name: 'done', state: 'done', detail: null },
+      ],
+      workspacesNote: said,
+      workspacesUnlisted: 'too_old',
+      installedVersion: '1.93.0',
+    };
+    const old = entry({
+      role: 'host',
+      name: 'old-lab',
+      version: null,
+      binaryCurrent: false,
+      othersConnected: null,
+    });
+    const listed: SetupRun = {
+      ...finished([old], {
+        installedVersion: '1.95.0',
+        reused: false,
+        previousKept: true,
+        replacedVersion: '1.93.0',
+        outdated: [
+          {
+            workspaceId: old.workspaceId,
+            name: 'old-lab',
+            runningVersion: null,
+            installedVersion: '1.95.0',
+            othersConnected: null,
+            reason: 'others_connected',
+          },
+        ],
+      }),
+      intent: 'install',
+      stages: [
+        { name: 'check', state: 'done', detail: null },
+        { name: 'install', state: 'done', detail: null },
+        { name: 'workspaces', state: 'done', detail: null },
+        { name: 'restart', state: 'done', detail: null },
+        { name: 'done', state: 'done', detail: null },
+      ],
+    };
+    mocks.startSetup.mockResolvedValueOnce(tooOld).mockResolvedValueOnce(listed);
+    renderDialog();
+    const dialog = await look();
+    const unlisted = await within(dialog).findByTestId('crew-open-unlisted');
+    expect(unlisted).toHaveTextContent(openCopy.tooOld('1.93.0', 'leo.ucsf.edu'));
+    // The dialog's own way on, not the terminal command the daemon's sentence gives.
+    expect(within(dialog).queryByText(/biorouter crew setup/)).toBeNull();
+    // The listing failed: the steps end at Looking for workspaces, and never say Ready.
+    const steps = within(dialog).getByRole('list', { name: setupCopy.stepsLabel });
+    expect(within(steps).getByText(setupCopy.stages.finding).closest('li')).toHaveAttribute(
+      'data-state',
+      'failed'
+    );
+    expect(within(steps).queryByText(setupCopy.stages.ready)).toBeNull();
+
+    fireEvent.click(within(unlisted).getByRole('button', { name: openCopy.update }));
+    await waitFor(() => expect(mocks.startSetup).toHaveBeenCalledTimes(2));
+    // It updates the Crew in the account and restarts no workspace.
+    expect(mocks.startSetup.mock.calls[1][0]).toEqual({
+      target: { kind: 'server', ssh_target: LOGIN, preparation_id: 'prep-1' },
+      intent: 'install',
+      restart_workspaces: false,
+    });
+    // The same job looked again with the Crew it installed.
+    const found = await within(dialog).findByTestId('crew-open-found');
+    expect(within(found).getByText(openCopy.hostedByYou('old-lab'))).toBeVisible();
+    // Nothing was asked to restart, so the row says what Update Crew would do.
+    expect(within(found).getByText(openCopy.restartsOnUpdate(null))).toBeVisible();
+    expect(within(dialog).queryByTestId('crew-open-unlisted')).toBeNull();
+    const after = within(dialog).getByRole('list', { name: setupCopy.stepsLabel });
+    expect(within(after).getByText(setupCopy.stages.ready)).toBeVisible();
+    expect(within(after).getByText(setupCopy.updated('1.93.0', '1.95.0'))).toBeVisible();
+  });
+
+  it('offers Install Crew when Crew isn’t installed in your account', async () => {
+    const said =
+      'Crew isn’t installed in your account on leo.ucsf.edu, so Biorouter can’t look for workspaces there.';
+    mocks.startSetup.mockResolvedValue({
+      ...finished([]),
+      workspacesNote: said,
+      workspacesUnlisted: 'not_installed',
+    });
+    renderDialog();
+    const dialog = await look();
+    const unlisted = await within(dialog).findByTestId('crew-open-unlisted');
+    expect(unlisted).toHaveTextContent(openCopy.notInstalled('leo.ucsf.edu'));
+    fireEvent.click(within(unlisted).getByRole('button', { name: openCopy.install }));
+    await waitFor(() => expect(mocks.startSetup).toHaveBeenCalledTimes(2));
+    expect(mocks.startSetup.mock.calls[1][0]).toEqual({
+      target: { kind: 'server', ssh_target: LOGIN, preparation_id: 'prep-1' },
+      intent: 'install',
+      restart_workspaces: false,
+    });
+  });
+
+  it('only says why nothing was listed when this computer has no Crew to install', async () => {
+    const carried = mocks.setupSupport.artifact;
+    mocks.setupSupport.artifact = null;
+    try {
+      const said = 'Crew 1.93.0 in your account on leo.ucsf.edu is too old to list workspaces.';
+      mocks.startSetup.mockResolvedValue({
+        ...finished([]),
+        workspacesNote: said,
+        workspacesUnlisted: 'too_old',
+        installedVersion: '1.93.0',
+      });
+      renderDialog();
+      const dialog = await look();
+      expect(await within(dialog).findByTestId('crew-setup-workspaces-note')).toHaveTextContent(
+        setupCopy.workspacesNote(said)
+      );
+      expect(within(dialog).queryByTestId('crew-open-unlisted')).toBeNull();
+      expect(within(dialog).queryByRole('button', { name: openCopy.update })).toBeNull();
+    } finally {
+      mocks.setupSupport.artifact = carried;
+    }
   });
 
   it('updates at once when nobody else is connected', async () => {

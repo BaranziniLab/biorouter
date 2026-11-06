@@ -307,7 +307,7 @@ export async function revokeSessionGrant(
   if (answer.remote_revocation_confirmed === false)
     throw new CrewHttpError(
       (isRecord(result) ? optionalText(result.error) : undefined) ??
-        'Stopped on this device. The workspace has not confirmed yet; reconnect and retry.',
+        'Stopped on this computer. The workspace has not confirmed yet; reconnect and retry.',
       200,
       CREW_REVOCATION_UNCONFIRMED
     );

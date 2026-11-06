@@ -40,7 +40,7 @@ import {
 import { CHANNEL_LOST_ERROR_CODE } from '../state/useCrewObservation';
 import { connectionBarCopy } from './copy';
 import { calendarDate, workspaceLabel } from './presentation';
-import { useNewDeviceNotice } from './useNewDeviceNotice';
+import { useDevicesChanged, useNewDeviceNotice } from './useNewDeviceNotice';
 import { useVaultStatus } from './useVaultStatus';
 import './channel.css';
 
@@ -248,6 +248,14 @@ export function ConnectionBar({ className }: ConnectionBarProps) {
     connectionId,
     verified?.actor.id ?? null,
     verified ? (verified.actor.devices ?? null) : null
+  );
+  // A computer added to or removed from the account shows in the next verified view, and the
+  // daemon noted it from that same view: read the saved connections again so `new_devices` below
+  // follows while the Crew view stays open (AO-10).
+  useDevicesChanged(
+    connectionId,
+    verified ? (verified.actor.devices ?? null) : null,
+    crew.reloadConnections
   );
 
   // ── Account ownership (docs/crew/design/account-ownership.md, "Desktop") ──────────────────
@@ -792,17 +800,15 @@ export function ConnectionBar({ className }: ConnectionBarProps) {
           }
         >
           <p>
-            {unseenDevices.length === 1
+            {/* Which one: its fingerprint, as Keys lists it and marks it New. */}
+            {unseenDevices.length === 1 && newestDevice
               ? newDevicesCopy.one(
-                  typeof newestDevice?.added_at === 'number'
+                  newestDevice.fingerprint,
+                  typeof newestDevice.added_at === 'number'
                     ? calendarDate(newestDevice.added_at)
                     : null
                 )
               : newDevicesCopy.many(unseenDevices.length)}
-            {/* Which one: its fingerprint, as Keys lists it and marks it New. */}
-            {unseenDevices.length === 1 && newestDevice?.fingerprint
-              ? ` ${newDevicesCopy.which(newestDevice.fingerprint)}`
-              : null}
             {unseenDevices.length === 1 && newestDevice?.added_via === 'account'
               ? ` ${newDevicesCopy.viaAccount}`
               : null}

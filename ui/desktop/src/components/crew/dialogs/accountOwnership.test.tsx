@@ -269,7 +269,7 @@ describe('inviting on a workspace that belongs to accounts', () => {
     });
   }
 
-  it('never turns Add another device on: a member’s new computer signs in by itself', async () => {
+  it('never turns Add another computer on: a member’s new computer signs in by itself', async () => {
     renderInvite([ACCOUNT_IDENTITY_CAPABILITY]);
     fireEvent.change(await screen.findByLabelText('Username'), { target: { value: 'bob' } });
     await act(async () => {
@@ -279,10 +279,10 @@ describe('inviting on a workspace that belongs to accounts', () => {
       await screen.findByText(inviteCopy.refusal.alreadyMemberAccount('bob', 'lab'))
     ).toBeInTheDocument();
     expect(screen.queryByRole('switch')).toBeNull();
-    expect(document.body.textContent).not.toMatch(/Add another device/);
+    expect(document.body.textContent).not.toMatch(/Add another (computer|device)/);
   });
 
-  it('keeps Add another device on an older server', async () => {
+  it('keeps Add another computer on an older server', async () => {
     renderInvite(null);
     fireEvent.change(await screen.findByLabelText('Username'), { target: { value: 'bob' } });
     await act(async () => {

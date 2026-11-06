@@ -127,6 +127,52 @@ describe('a chat that reads a workspace as you, with no grant (AO-12)', () => {
     expect(screen.queryByTestId('crew-chat-reads-bar')).toBeNull();
   });
 
+  it('shows a consent given again in the same chat, and drops the note that said it was gone', async () => {
+    let reads = [consent];
+    installDaemon({ reads: () => reads });
+    renderChat();
+    const first = await screen.findByRole('button', { name: readsCopy.revokeLabel('Fixture') });
+    reads = [];
+    fireEvent.click(first);
+    expect(await screen.findByText(readsCopy.revoked('Fixture'))).toBeInTheDocument();
+    const dismiss = screen.getByRole('button', { name: readsCopy.dismiss });
+    await waitFor(() => expect(document.activeElement).toBe(dismiss));
+    await waitFor(() => expect(grantReads()).toBe(2));
+    // The person allows the read again on a card in this chat (live QA g2-05).
+    reads = [consent];
+    act(() => {
+      window.dispatchEvent(
+        new CustomEvent(CREW_READ_CONSENT_EVENT, { detail: { sessionId: 'chat-1' } })
+      );
+    });
+    expect(await screen.findByText(readsCopy.reads('Fixture'))).toBeInTheDocument();
+    const revoke = screen.getByRole('button', { name: readsCopy.revokeLabel('Fixture') });
+    expect(revoke).toHaveTextContent(readsCopy.revoke);
+    expect(screen.queryByText(readsCopy.revoked('Fixture'))).toBeNull();
+    // The note's Dismiss went with it: focus is on the row's Revoke, never on the page.
+    await waitFor(() => expect(document.activeElement).toBe(revoke));
+  });
+
+  it('keeps a consent it took back hidden from a list read before the revoke landed', async () => {
+    // The list read after the revoke still names the old consent, as one read before it would.
+    let reads = [consent];
+    installDaemon({ reads: () => reads });
+    renderChat();
+    fireEvent.click(await screen.findByRole('button', { name: readsCopy.revokeLabel('Fixture') }));
+    expect(await screen.findByText(readsCopy.revoked('Fixture'))).toBeInTheDocument();
+    await waitFor(() => expect(grantReads()).toBe(2));
+    expect(screen.queryByText(readsCopy.reads('Fixture'))).toBeNull();
+    // A consent given afterwards carries a later time, and shows.
+    reads = [{ ...consent, granted_at: consent.granted_at + 60 }];
+    act(() => {
+      window.dispatchEvent(
+        new CustomEvent(CREW_READ_CONSENT_EVENT, { detail: { sessionId: 'chat-1' } })
+      );
+    });
+    expect(await screen.findByText(readsCopy.reads('Fixture'))).toBeInTheDocument();
+    expect(screen.queryByText(readsCopy.revoked('Fixture'))).toBeNull();
+  });
+
   it('reads again once the person allows the consent on its card', async () => {
     let reads: (typeof consent)[] = [];
     installDaemon({ reads: () => reads });

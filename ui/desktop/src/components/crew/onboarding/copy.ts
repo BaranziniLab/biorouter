@@ -19,6 +19,18 @@ export const welcomeCopy = {
 } as const;
 
 /**
+ * AO-8: a restart ends what members had running there. `null` is a count the server did not give
+ * (a Crew from before account ownership), which may hide people connected now.
+ */
+function othersConnected(count: number | null): string {
+  return count === null
+    ? 'Other people may be connected. Their running agent commands will stop.'
+    : count === 1
+      ? '1 person is connected. Their running agent commands will stop.'
+      : `${count} people are connected. Their running agent commands will stop.`;
+}
+
+/**
  * Open a workspace on a server (account ownership, "Desktop"; AO-6, AO-8, AO-9): sign in to a server
  * as the account, see the workspaces there that the account hosts or belongs to, and open one, start
  * one that is stopped, or update the Crew one runs. The host of every workspace offered is named
@@ -73,16 +85,8 @@ export const openCopy = {
   startLabel: (workspace: string) => `Start ${workspace}`,
   update: 'Update Crew',
   updateLabel: (workspace: string) => `Update Crew for ${workspace}`,
-  /**
-   * AO-8: a restart ends what members had running there. `null` is a count the server did not
-   * give (a Crew from before account ownership), which may hide people connected now.
-   */
-  othersConnected: (count: number | null) =>
-    count === null
-      ? 'Other people may be connected. Their running agent commands will stop.'
-      : count === 1
-        ? '1 person is connected. Their running agent commands will stop.'
-        : `${count} people are connected. Their running agent commands will stop.`,
+  /** Update Crew's question before a restart others may be connected to. */
+  othersConnected,
   updateAnyway: 'Update and restart',
   keepRunning: 'Not now',
   /** Under a workspace that runs an older Crew than this computer has. */
@@ -108,6 +112,23 @@ export const openCopy = {
     custom_state_dir: (server: string) =>
       `It keeps its state outside ~/.local/share/biorouter-crew, so Crew can’t restart it. Restart it on ${server} yourself.`,
   },
+  /**
+   * After a look, which restarts nothing (a check, or updating the Crew in your account): what
+   * Update Crew would do to a workspace that runs an older Crew, with the caution its question
+   * asks (`othersConnected`). `null` is a count the server did not give.
+   */
+  restartsOnUpdate: (count: number | null) =>
+    count === 0 ? 'Update Crew restarts it.' : `Update Crew restarts it. ${othersConnected(count)}`,
+  /**
+   * The Crew in your account couldn’t list the workspaces (the job's `workspaces_unlisted`), as the
+   * daemon's sentence says it, with the button that installs this computer's Crew there. That
+   * restarts no workspace, and lists the workspaces again.
+   */
+  tooOld: (version: string | null, server: string) =>
+    `${version ? `Crew ${version}` : 'The Crew'} in your account on ${server} is too old to list workspaces. Choose Update Crew to update it.`,
+  notInstalled: (server: string) =>
+    `Crew isn’t installed in your account on ${server}, so Biorouter can’t look for workspaces there. Choose Install Crew to install it.`,
+  install: 'Install Crew',
   /** A removed account cannot open it; AO-2's words. */
   removed: (workspace: string) =>
     `You were removed from ${workspace}. Ask a member to invite you again.`,
@@ -392,9 +413,9 @@ export const joinStateCopy = {
    * host's plain invitation, which the workspace refuses for a member, is not the only ask.
    */
   notInvitedBefore: (workspace: string, person: string, username: string | null) =>
-    `If you were in ${workspace} before, ask ${person} to use Add another device for ${username ? `@${username}` : 'you'}.`,
+    `If you were in ${workspace} before, ask ${person} to use Add another computer for ${username ? `@${username}` : 'you'}.`,
   notInvitedMessage: (first: string | null, username: string | null, workspace: string) =>
-    `${first ? `Hi ${first}, please` : 'Please'} invite ${username ? `@${username}` : 'me'} to ${workspace} in Crew. If I’m already a member there, please use Add another device for ${username ? `@${username}` : 'me'} instead.`,
+    `${first ? `Hi ${first}, please` : 'Please'} invite ${username ? `@${username}` : 'me'} to ${workspace} in Crew. If I’m already a member there, please use Add another computer for ${username ? `@${username}` : 'me'} instead.`,
   notInvitedMessageLabel: 'message to your host',
   /**
    * A member the workspace no longer admits (Q3-50): this computer was a member this session, or

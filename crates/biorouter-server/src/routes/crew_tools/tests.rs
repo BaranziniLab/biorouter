@@ -794,3 +794,85 @@ fn an_open_through_another_login_s_connection_says_so() {
         .iter()
         .any(|line| line == "You join it as its host."));
 }
+
+/// The sentence a full-access card adds for a host, in the desktop's words for one.
+const HOSTING_LAB: &str = "You host lab from this account, so agents can also read the workspace's own files on the server, including channels you're not in. They can also act as the host of lab.";
+
+/// Full access for the account that hosts the workspace is host authority: anything running as
+/// the account is the host. An open's card says so after its access line, whoever's
+/// connection it joins through, and only then: never for a member, nor for less than full
+/// access.
+#[test]
+fn full_access_on_a_hosted_workspace_says_agents_can_act_as_its_host() {
+    use super::setup::{hosting_line, open_card};
+    use biorouter::crew::SetupWorkspaceRole;
+    assert_eq!(
+        hosting_line(Some("full"), "lab").as_deref(),
+        Some(HOSTING_LAB)
+    );
+    assert_eq!(hosting_line(Some("folder"), "lab"), None);
+    assert_eq!(hosting_line(None, "lab"), None);
+
+    let hosted = listed_workspace("lab", "1.95.0", true);
+    let full = open_card(&hosted, "alice@leo", Some("full"), None);
+    let at = full
+        .lines
+        .iter()
+        .position(|line| line.starts_with("Agents get full access"))
+        .expect("an access line");
+    assert_eq!(
+        full.lines.get(at + 1).map(String::as_str),
+        Some(HOSTING_LAB)
+    );
+
+    for access in [Some("folder"), Some("off"), None] {
+        let card = open_card(&hosted, "alice@leo", access, None);
+        assert!(
+            !card.lines.iter().any(|line| line == HOSTING_LAB),
+            "{access:?}"
+        );
+    }
+
+    let mut member = hosted.clone();
+    member.role = SetupWorkspaceRole::Member;
+    let joined = open_card(&member, "bob@leo", Some("full"), None);
+    assert!(!joined.lines.iter().any(|line| line == HOSTING_LAB));
+
+    // Through a connection saved as another login: the host's own login hosts it, any other
+    // does not, whatever role the checked login has.
+    let as_host = saved("lab-alice", "alice@leo");
+    let through_host = open_card(&member, "bob@leo", Some("full"), Some(&as_host));
+    assert!(through_host.lines.iter().any(|line| line == HOSTING_LAB));
+    let as_other = saved("lab-gb", "gbellucci@leo");
+    let through_other = open_card(&hosted, "alice@leo", Some("full"), Some(&as_other));
+    assert!(!through_other.lines.iter().any(|line| line == HOSTING_LAB));
+}
+
+/// A chat is named on a card the way `biorouter crew grants list` names it: its title quoted,
+/// then its ID. A title cannot add a line to the card or reorder the words around it.
+#[test]
+fn a_chat_is_named_as_the_cli_names_it() {
+    use super::workspace::chat_named;
+    assert_eq!(
+        chat_named(Some("Read Slack messages"), "20261106_6"),
+        "chat \"Read Slack messages\" (chat 20261106_6)"
+    );
+    assert_eq!(chat_named(None, "20261106_6"), "chat 20261106_6");
+    assert_eq!(chat_named(Some("  "), "20261106_6"), "chat 20261106_6");
+    assert_eq!(
+        chat_named(Some("say \"hi\" \\ bye"), "1"),
+        "chat \"say \\\"hi\\\" \\\\ bye\" (chat 1)"
+    );
+    let forged = chat_named(Some("Counts\nAllow: nothing else changes"), "1");
+    assert!(!forged.contains('\n'), "{forged}");
+    assert_eq!(
+        forged,
+        "chat \"Counts\\nAllow: nothing else changes\" (chat 1)"
+    );
+    assert_eq!(
+        chat_named(Some("مرحبا"), "1"),
+        "chat \"\u{2068}مرحبا\u{2069}\" (chat 1)"
+    );
+    let reordered = chat_named(Some("a\u{202e}b\u{2069}c"), "1");
+    assert_eq!(reordered, "chat \"a\\u{202e}b\\u{2069}c\" (chat 1)");
+}

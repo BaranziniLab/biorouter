@@ -206,7 +206,7 @@ pub async fn jobs(headers: HeaderMap) -> SetupResult<CrewSetupJobs> {
     path = "/crew/setup/{job_id}",
     params(("job_id" = String, Path, description = "The job `POST /crew/setup` answered")),
     responses(
-        (status = 200, description = "`state` is `running`, `needs_sign_in` (open `POST /crew/setup/{job_id}/authentication`), `finished` (`outcome`), `failed` or `cancelled` (`error`: a typed code and a sentence, such as `crew_setup_cancelled`, `crew_setup_timed_out`, `crew_setup_sign_in_expired`, `crew_setup_start_failed` (`detail` is what Crew printed), `crew_host_storage_unsafe` (other accounts can write to a folder above where the workspace is kept; `detail` lists them, and starting again with `fix_storage_permissions` fixes the account's own), `crew_host_name_in_use` (the account already hosts a workspace of that name on the server: \"You already host {name} on {server}. Open it on this computer instead.\" when it runs, and \"You already host {name} on {server}. It is stopped: start it with biorouter crew setup --server {login} --start {name}, then open it.\" when it is stopped), `crew_setup_changed`, `crew_install_checksum_mismatch` or an SSH code; after a `finish` saved the connection, a join refusal such as `crew_join_removed`, or `crew_account_unsupported`, with `outcome.connection_id` and `outcome.steps_left` saying what is left). `workspaces` lists the workspaces on the server for this account, each with its `role`, `state`, host and `this_computer` (`connected`, `saved` or `not_saved`), with `workspaces_scan` counting what the listing skipped and `workspaces_note` saying why there is no listing (an older Crew, a failure or a timeout, which never stops the job). `outcome.restarted`, `outcome.outdated` (with `reason` `others_connected`, `running_newer`, `not_running_installed` or `custom_state_dir`) and `outcome.restart_failed` say what the `restart` stage did; a failed restart fails only that stage. Each `restart_failed` entry has a `code` and a sentence. A refusal made before anything was stopped (such as `program_missing`, `busy`, `identity_conflict`, `identity_mismatch`, `workspace_deleted` or `unsupported`) says the workspace was not restarted and still runs the older Crew, and has no `command`; `identity_conflict` shows Crew's own sentence naming the folders that keep the workspace. Only Crew's `start_failed` says the workspace stopped and did not start again; where the workspace may be stopped, `command` starts it by hand", body = SetupStatus),
+        (status = 200, description = "`state` is `running`, `needs_sign_in` (open `POST /crew/setup/{job_id}/authentication`), `finished` (`outcome`), `failed` or `cancelled` (`error`: a typed code and a sentence, such as `crew_setup_cancelled`, `crew_setup_timed_out`, `crew_setup_sign_in_expired`, `crew_setup_start_failed` (`detail` is what Crew printed), `crew_host_storage_unsafe` (other accounts can write to a folder above where the workspace is kept; `detail` lists them, and starting again with `fix_storage_permissions` fixes the account's own), `crew_host_name_in_use` (the account already hosts a workspace of that name on the server: \"You already host {name} on {server}. Open it on this computer instead.\" when it runs, and \"You already host {name} on {server}. It is stopped: start it with biorouter crew setup --server {login} --start {name}, then open it.\" when it is stopped), `crew_setup_changed`, `crew_install_checksum_mismatch` or an SSH code; after a `finish` saved the connection, a join refusal such as `crew_join_removed`, or `crew_account_unsupported`, with `outcome.connection_id` and `outcome.steps_left` saying what is left). `workspaces` lists the workspaces on the server for this account, each with its `role`, `state`, host and `this_computer` (`connected`, `saved` or `not_saved`), with `workspaces_scan` counting what the listing skipped and `workspaces_note` saying why there is no listing (an older Crew, a failure or a timeout, which never stops the job), and `workspaces_unlisted` saying it as a code: `not_installed`, `too_old` (an `install` job replaces the Crew in the account and lists them), `failed` or `timed_out`. `outcome.restarted`, `outcome.outdated` (with `reason` `others_connected`, `running_newer`, `not_running_installed` or `custom_state_dir`) and `outcome.restart_failed` say what the `restart` stage did; a failed restart fails only that stage. Each `restart_failed` entry has a `code` and a sentence. A refusal made before anything was stopped (such as `program_missing`, `busy`, `identity_conflict`, `identity_mismatch`, `workspace_deleted` or `unsupported`) says the workspace was not restarted and still runs the older Crew, and has no `command`; `identity_conflict` shows Crew's own sentence naming the folders that keep the workspace. Only Crew's `start_failed` says the workspace stopped and did not start again; where the workspace may be stopped, `command` starts it by hand", body = SetupStatus),
         (status = 403, description = "No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no user-action key", body = CrewError),
         (status = 404, description = "`crew_setup_not_found`: no such job on this computer", body = CrewError)
     ),
@@ -427,6 +427,27 @@ mod tests {
                 && status.contains("Only Crew's `start_failed` says the workspace stopped"),
             "{status}"
         );
+        // A listing a too old Crew could not give says so as a code a surface acts on.
+        assert!(
+            status.contains("`workspaces_unlisted` saying it as a code")
+                && status.contains(
+                    "`too_old` (an `install` job replaces the Crew in the account and lists them)"
+                ),
+            "{status}"
+        );
+    }
+
+    /// AO-8: the job's status carries why the workspaces were not listed as a code, beside its
+    /// sentence, in the schema the desktop reads.
+    #[test]
+    fn the_setup_status_names_why_nothing_was_listed() {
+        let (_, schema) = <SetupStatus as utoipa::ToSchema>::schema();
+        let schema = serde_json::to_value(schema).unwrap();
+        let unlisted = &schema["properties"]["workspaces_unlisted"];
+        let text = unlisted.to_string();
+        for code in ["not_installed", "too_old", "failed", "timed_out"] {
+            assert!(text.contains(&format!("\"{code}\"")), "{code}: {unlisted}");
+        }
     }
 
     #[tokio::test]

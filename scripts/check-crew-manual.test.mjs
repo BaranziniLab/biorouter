@@ -1749,9 +1749,11 @@ test("account-sentences: the first pass's words, written from the design, are re
   );
   // A control renamed in the code, and the manual still names the old one.
   assertCaught(
-    { [ACCOUNT_COPY]: swap("confirmAction: 'Remove device',", "confirmAction: 'Revoke device',") },
+    {
+      [ACCOUNT_COPY]: swap("confirmAction: 'Remove computer',", "confirmAction: 'Revoke computer',"),
+    },
     'account-sentences',
-    /account\/copy\.ts no longer shows "Remove device"/
+    /account\/copy\.ts no longer shows "Remove computer"/
   );
   // A constant reworded in the code fails every quote of its old words.
   assertCaught(
@@ -1840,6 +1842,55 @@ test('account-sentences: the words the 2026-11 fix wave replaced are refused (ac
     },
     'account-sentences',
     /command-line\.md does not quote the account invitation's last line/
+  );
+});
+
+test('account-sentences: the desktop says "computer", and its "device" words are refused (2026-11)', () => {
+  // The new-computer notice, quoted in the words it had before.
+  assertCaught(
+    {
+      [PRIVACY]: swap(
+        '"New computer on your account: {fingerprint}, added {date}."',
+        '"A new device was added to your account on {date}.", followed by "Its fingerprint is {fingerprint}."'
+      ),
+    },
+    'account-sentences',
+    /privacy-and-security\.md quotes "A new device was added to your account on \{date\}\.", which is not how the new-computer notice/
+  );
+  assertCaught(
+    {
+      [PRIVACY]: swap(
+        '"{count} new computers on your account."',
+        '"{count} new devices were added to your account."'
+      ),
+    },
+    'account-sentences',
+    /quotes "\{count\} new devices were added to your account\.", which is not how the new-computer notice/
+  );
+  // The page the notice sends a reader to stops quoting it.
+  assertCaught(
+    {
+      [PRIVACY]: (text) =>
+        text
+          .replace('"New computer on your account: {fingerprint}, added {date}." and, ', '')
+          .replace('"It signed in to the server as you.", or ', '')
+          .replace('"{count} new computers on your account." for several', 'a count for several'),
+    },
+    'account-sentences',
+    /privacy-and-security\.md does not quote the new-computer notice/
+  );
+  // The Keys dialog's button, named as it read before.
+  assertCaught(
+    { [PRIVACY]: (text) => text.replaceAll('**Remove computer**', '**Remove device**') },
+    'account-sentences',
+    /privacy-and-security\.md does not name the control .* shows as \*\*Remove computer\*\*/
+  );
+  // The command line words its status line its own way, and its page quotes that.
+  assert.deepEqual(
+    failuresOf(fixed, 'account-sentences').filter((failure) =>
+      failure.includes('command-line.md quotes "New computer on your account')
+    ),
+    []
   );
 });
 

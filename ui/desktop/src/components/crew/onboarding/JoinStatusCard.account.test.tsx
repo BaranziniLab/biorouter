@@ -90,12 +90,12 @@ describe('JoinStatusCard on a workspace that belongs to accounts', () => {
     expect(claims()).toHaveLength(0);
   });
 
-  it('never asks for Add another device when the account is not a member at all', async () => {
+  it('never asks for Add another computer when the account is not a member at all', async () => {
     answer({ status: 'not_invited', add_device: false, workspace_name: 'lab' });
     renderCard();
     expect(await screen.findByText(joinStateCopy.notInvitedTitle('lab'))).toBeInTheDocument();
     expect(screen.queryByTestId('crew-join-not-invited-before')).toBeNull();
-    expect(document.body.textContent).not.toMatch(/Add another device/);
+    expect(document.body.textContent).not.toMatch(/Add another (computer|device)/);
   });
 
   it('never joins another connection on a Join pressed for the first (finding 40)', async () => {
@@ -134,11 +134,11 @@ describe('JoinStatusCard on a workspace that belongs to accounts', () => {
     expect(posts('conn-2')).toHaveLength(0);
   });
 
-  it('keeps Add another device on an older server', async () => {
+  it('keeps Add another computer on an older server', async () => {
     answer({ status: 'not_invited', add_device: false, workspace_name: 'lab' });
     renderCard(fakeConnection({ account_identity: false }));
     expect(await screen.findByTestId('crew-join-not-invited-before')).toHaveTextContent(
-      /Add another device/
+      /Add another computer for/
     );
   });
 });

@@ -30,7 +30,7 @@ pub use setup::{
     SetupOutdated, SetupOutdatedReason, SetupRefused, SetupRequest, SetupRestartFailed,
     SetupRestarted, SetupServer, SetupStage, SetupStageName, SetupStageState, SetupState,
     SetupStatus, SetupStep, SetupTarget, SetupThisComputer, SetupWorkspace, SetupWorkspaceRole,
-    SetupWorkspaceScan, SetupWorkspaceState,
+    SetupWorkspaceScan, SetupWorkspaceState, SetupWorkspacesUnlisted,
 };
 mod keepalive;
 mod local_host;

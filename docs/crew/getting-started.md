@@ -92,7 +92,7 @@ If support staff ask for an ID, **Copy for support** in the menu of that person,
 | Chat access | Lets an ordinary chat read and post in a channel after you type `/crew` in it. It ends when you revoke it, or after an hour. |
 | Connection | This computer's saved link to one workspace: your server login, SSH settings, privacy choice and institution. Change it in **Connection settings…**. |
 | Crew profile | Your Crew keys and saved workspaces on this computer. A new one has no keys yet. |
-| Device | A computer where you use Crew, each with its own key. **Keys and security…** lists yours, and removes one ([Your computers](privacy-and-security.md#your-computers)). |
+| Device key | The key one of your computers holds for a workspace. Each computer where you use Crew has its own. **Keys and security…** lists your computers, and removes one ([Your computers](privacy-and-security.md#your-computers)). |
 | Fingerprint | A value you compare with a trusted copy to confirm an identity. Workspace and server fingerprints differ. Neither is your code. |
 | Host | The lab member who runs the workspace in their server account, from any computer that signs in as that account. Only the host removes people from the workspace, changes its privacy or governance, renames it or deletes it. In a managed workspace, only the host invites people and lets them in. |
 | Institution | Your organization's short ID, such as `ucsf`. A Private workspace needs it before agents can work there. |

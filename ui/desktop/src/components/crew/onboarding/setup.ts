@@ -136,6 +136,13 @@ export interface SetupRestarted {
   toVersion: string | null;
 }
 
+/**
+ * Why a job did not list the workspaces on the server (AO-8's `workspaces_unlisted`). `too_old`
+ * and `not_installed` are answered by an install, which puts this computer's Crew in the account
+ * and lists them.
+ */
+export type SetupWorkspacesUnlisted = 'not_installed' | 'too_old' | 'failed' | 'timed_out';
+
 /** Why a running workspace was left on its older Crew (AO-8). */
 export type SetupOutdatedReason =
   | 'others_connected'
@@ -230,6 +237,10 @@ export interface SetupRun {
   workspaces?: SetupWorkspace[];
   /** Why the server's workspaces could not be listed, when they could not. */
   workspacesNote?: string | null;
+  /** The same as a code; null when they were listed, or from a daemon that does not say. */
+  workspacesUnlisted?: SetupWorkspacesUnlisted | null;
+  /** The version of the Crew in the account, as the job's check found it. */
+  installedVersion?: string | null;
 }
 
 /** How often a running job is read again. */
@@ -307,6 +318,12 @@ const OUTDATED_REASONS: readonly string[] = [
   'not_running_installed',
   'custom_state_dir',
 ] satisfies SetupOutdatedReason[];
+const UNLISTED: readonly string[] = [
+  'not_installed',
+  'too_old',
+  'failed',
+  'timed_out',
+] satisfies SetupWorkspacesUnlisted[];
 
 /** A count from the wire, or null. */
 function countOf(value: unknown): number | null {
@@ -446,6 +463,7 @@ export function setupRunFrom(wire: unknown): SetupRun {
   const server = isRecord(wire.server)
     ? { login: filled(wire.server.login), user: filled(wire.server.user) }
     : null;
+  const unlisted = text(wire.workspaces_unlisted);
   return {
     jobId,
     intent: intent as SetupIntent,
@@ -460,6 +478,10 @@ export function setupRunFrom(wire: unknown): SetupRun {
     output: text(wire.output) ?? '',
     workspaces: setupWorkspacesFrom(wire.workspaces),
     workspacesNote: filled(wire.workspaces_note),
+    // A code this build does not know reads as none: the sentence still says why.
+    workspacesUnlisted:
+      unlisted && UNLISTED.includes(unlisted) ? (unlisted as SetupWorkspacesUnlisted) : null,
+    installedVersion: isRecord(wire.installed) ? versionOf(wire.installed.version) : null,
   };
 }
 
