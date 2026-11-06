@@ -14,8 +14,19 @@
 #   rule 3  crates/biorouter-dictation/build.rs has no `.profile("Release")` outside a comment.
 #           cmake-rs maps opt-level 0 to Debug and opt-level "z" (the Dockerfile's) to
 #           MinSizeRel, and either one makes the engine several times slower.
-#   rule 4  the dependency closure of biorouter-dictation in Cargo.lock holds `bindgen`. The FFI
-#           is written by hand; bindgen would need libclang on every build host.
+#   rule 4  biorouter-dictation reaches `bindgen` in Cargo.lock by any route other than
+#           aws-lc-sys's own dependency on bindgen. The engine's FFI is written by hand, and
+#           bindgen would need libclang on every build host. That one edge is allowed: the
+#           model installer's TLS stack reaches aws-lc-sys (reqwest, rustls, aws-lc-rs), the
+#           whole workspace already builds it for the same stack in biorouter core, and on every
+#           target Biorouter builds its bindgen is optional and it uses pregenerated bindings.
+#           Any other route is refused and the error names it: a direct dependency, a route
+#           through another crate, or a package below aws-lc-sys that needs bindgen itself.
+#           Cargo.lock records no features, so this rule cannot see whether a build turns on
+#           aws-lc-sys's `bindgen` or `ssl` feature (or aws-lc-rs's `bindgen`), which would
+#           build bindgen without changing the lock. None does today: measured on 2026-11-06,
+#           `cargo tree --locked -p biorouter-cli -p biorouter-server -e features -i aws-lc-sys
+#           --target all` lists only `default` and `prebuilt-nasm`.
 #   rule 5  the closure of biorouter-crew holds biorouter-dictation. The Crew broker is copied
 #           to servers over SSH and carries no engine.
 #   rule 6  the closure of biorouter-server holds biorouter-dictation-capture. The daemon never
@@ -32,13 +43,16 @@ set -euo pipefail
 SCRIPT_PATH="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
 DEFAULT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
-# lock_reaches <Cargo.lock> <from> <to>: exit 0 when <to> is in the dependency closure of
-# <from> (itself included), 1 when it is not. A name that appears in several versions is one
-# node whose edges are the union of all of them. The answer is awk's own exit status, never a
-# `| grep -q`: under pipefail, grep leaving early can kill the writer with SIGPIPE and turn a
-# match into a miss.
+# lock_reaches <Cargo.lock> <from> <to> [<through>]: exit 0 when <to> is in the dependency
+# closure of <from> (itself included), and print one shortest route as `a -> b -> c`; exit 1
+# when it is not. With <through>, that package's own direct dependency on <to> is not
+# followed and every other dependency of it is, so the answer is whether <to> can be reached
+# by any route other than that one edge, including a route below <through>. A name that appears
+# in several versions is one node whose edges are the union of all of them. The answer is
+# awk's own exit status, never a `| grep -q`: under pipefail, grep leaving early can kill the
+# writer with SIGPIPE and turn a match into a miss.
 lock_reaches() {
-  awk -v start="$2" -v want="$3" '
+  awk -v start="$2" -v want="$3" -v through="${4:-}" '
     function flush() {
       if (name != "") { edges[name] = edges[name] " " found }
       name = ""; found = ""; in_deps = 0
@@ -71,11 +85,17 @@ lock_reaches() {
       head = 1; tail = 1; queue[1] = start; seen[start] = 1
       while (head <= tail) {
         p = queue[head]; head++
-        if (p == want) { exit 0 }
+        if (p == want) {
+          route = p; q = p
+          while (q != start) { q = parent[q]; route = q " -> " route }
+          print route
+          exit 0
+        }
         count = split(edges[p], next_deps, " ")
         for (i = 1; i <= count; i++) {
           d = next_deps[i]
-          if (d != "" && !(d in seen)) { seen[d] = 1; tail++; queue[tail] = d }
+          if (through != "" && p == through && p != start && d == want) { continue }
+          if (d != "" && !(d in seen)) { seen[d] = 1; parent[d] = p; tail++; queue[tail] = d }
         }
       }
       exit 1
@@ -116,7 +136,7 @@ builder_apt_packages() {
 }
 
 check() {
-  local root="$1" fail=0 crate lock
+  local root="$1" fail=0 crate lock route
   crate="$root/crates/biorouter-dictation"
   lock="$root/Cargo.lock"
   err() { printf '::error::check-dictation-build-prereqs %s\n' "$1" >&2; fail=1; }
@@ -162,19 +182,19 @@ check() {
   if [ ! -f "$lock" ]; then
     err "rules 4 to 6: $lock is missing"
   else
-    if lock_reaches "$lock" biorouter-dictation bindgen; then
-      err "rule 4: biorouter-dictation's dependency closure in Cargo.lock holds bindgen; the engine's FFI is written by hand (DD-10 rule 8)"
+    if route=$(lock_reaches "$lock" biorouter-dictation bindgen aws-lc-sys); then
+      err "rule 4: biorouter-dictation reaches bindgen in Cargo.lock other than through aws-lc-sys's own dependency on it ($route); the engine's FFI is written by hand (DD-10 rule 8), and only aws-lc-sys, whose bindgen is optional on every target Biorouter builds, may depend on it"
     fi
-    if lock_reaches "$lock" biorouter-crew biorouter-dictation; then
-      err "rule 5: biorouter-crew's dependency closure in Cargo.lock holds biorouter-dictation; the Crew broker must not carry the engine"
+    if route=$(lock_reaches "$lock" biorouter-crew biorouter-dictation); then
+      err "rule 5: biorouter-crew's dependency closure in Cargo.lock holds biorouter-dictation ($route); the Crew broker must not carry the engine"
     fi
-    if lock_reaches "$lock" biorouter-server biorouter-dictation-capture; then
-      err "rule 6: biorouter-server's dependency closure in Cargo.lock holds biorouter-dictation-capture; the daemon never links audio capture (P-10)"
+    if route=$(lock_reaches "$lock" biorouter-server biorouter-dictation-capture); then
+      err "rule 6: biorouter-server's dependency closure in Cargo.lock holds biorouter-dictation-capture ($route); the daemon never links audio capture (P-10)"
     fi
   fi
 
   [ "$fail" -eq 0 ] || return 1
-  echo "dictation build prerequisites: cmake in the Docker builder, the hermit cmake pin, a Release CMake profile, no bindgen, and no engine in the Crew broker or capture in the daemon"
+  echo "dictation build prerequisites: cmake in the Docker builder, the hermit cmake pin, a Release CMake profile, no bindgen outside aws-lc-sys, and no engine in the Crew broker or capture in the daemon"
 }
 
 self_test() {
@@ -312,6 +332,40 @@ EOF
     mv "$1.new" "$1"
   }
 
+  # add_package <lock> <name> [<dependency>...]: append a [[package]] block to a scratch lock.
+  add_package() {
+    local lock=$1 name=$2 dep
+    shift 2
+    printf '\n[[package]]\nname = "%s"\nversion = "1.0.0"\n' "$name" >> "$lock"
+    if [ "$#" -gt 0 ]; then
+      printf 'dependencies = [\n' >> "$lock"
+      for dep in "$@"; do printf ' "%s",\n' "$dep" >> "$lock"; done
+      printf ']\n' >> "$lock"
+    fi
+  }
+
+  # add_dependency <lock> <package> <dependency>: one more entry in the multi line
+  # `dependencies` list of a package the scratch lock already has.
+  add_dependency() {
+    awk -v pkg="$2" -v dep="$3" '
+      { print }
+      $0 == ("name = \"" pkg "\"") { want = 1; next }
+      want && /^dependencies = \[$/ { print " \"" dep "\","; want = 0 }
+      /^$/ { want = 0 }
+    ' "$1" > "$1.new"
+    mv "$1.new" "$1"
+  }
+
+  # The model installer's TLS stack as Cargo.lock records it: bindgen under aws-lc-sys only.
+  add_tls_stack() { # add_tls_stack <lock>
+    add_dependency "$1" biorouter-dictation reqwest
+    add_package "$1" reqwest rustls
+    add_package "$1" rustls aws-lc-rs
+    add_package "$1" aws-lc-rs aws-lc-sys
+    add_package "$1" aws-lc-sys "bindgen 0.72.1" cc cmake
+    add_package "$1" bindgen
+  }
+
   local r="$sandbox/root"
 
   clean_root "$r"
@@ -354,20 +408,52 @@ EOF
     "$r/Cargo.lock" > "$r/Cargo.lock.new"
   printf '\n[[package]]\nname = "bindgen"\nversion = "0.72.1"\n' >> "$r/Cargo.lock.new"
   mv "$r/Cargo.lock.new" "$r/Cargo.lock"
-  expect fail "bindgen three steps below the crate fails rule 4" "$r" "rule 4: biorouter-dictation's dependency closure"
+  expect fail "bindgen three steps below the crate fails rule 4" "$r" "(biorouter-dictation -> cc -> shlex -> bindgen)"
+
+  clean_root "$r"
+  add_dependency "$r/Cargo.lock" biorouter-dictation "bindgen 0.72.1"
+  add_package "$r/Cargo.lock" bindgen
+  expect fail "bindgen as a direct dependency of the crate fails rule 4" "$r" "rule 4: biorouter-dictation reaches bindgen in Cargo.lock other than through aws-lc-sys's own dependency on it (biorouter-dictation -> bindgen)"
+
+  clean_root "$r"
+  add_tls_stack "$r/Cargo.lock"
+  expect pass "bindgen only through aws-lc-sys passes rule 4" "$r" "no bindgen outside aws-lc-sys"
+
+  clean_root "$r"
+  add_tls_stack "$r/Cargo.lock"
+  add_dependency "$r/Cargo.lock" biorouter-dictation zstd-sys
+  add_package "$r/Cargo.lock" zstd-sys "bindgen 0.72.1" cc
+  expect fail "bindgen through aws-lc-sys and also through another crate fails rule 4" "$r" "other than through aws-lc-sys's own dependency on it (biorouter-dictation -> zstd-sys -> bindgen)"
+
+  clean_root "$r"
+  add_tls_stack "$r/Cargo.lock"
+  add_dependency "$r/Cargo.lock" biorouter-dictation "bindgen 0.72.1"
+  expect fail "bindgen through aws-lc-sys and also directly fails rule 4" "$r" "other than through aws-lc-sys's own dependency on it (biorouter-dictation -> bindgen)"
+
+  clean_root "$r"
+  add_tls_stack "$r/Cargo.lock"
+  add_dependency "$r/Cargo.lock" aws-lc-rs zstd-sys
+  add_package "$r/Cargo.lock" zstd-sys "bindgen 0.72.1"
+  expect fail "bindgen through a sibling of aws-lc-sys fails rule 4" "$r" "(biorouter-dictation -> reqwest -> rustls -> aws-lc-rs -> zstd-sys -> bindgen)"
+
+  clean_root "$r"
+  add_tls_stack "$r/Cargo.lock"
+  add_dependency "$r/Cargo.lock" aws-lc-sys foo-sys
+  add_package "$r/Cargo.lock" foo-sys "bindgen 0.72.1"
+  expect fail "bindgen through a package below aws-lc-sys fails rule 4" "$r" "(biorouter-dictation -> reqwest -> rustls -> aws-lc-rs -> aws-lc-sys -> foo-sys -> bindgen)"
 
   clean_root "$r"
   awk '{ print } /^name = "sha2"/ { getline; print; if ($0 ~ /0.11.0/) { getline; print "dependencies = [\"digest\", \"biorouter-dictation\"]"; next } }' \
     "$r/Cargo.lock" > "$r/Cargo.lock.new"
   mv "$r/Cargo.lock.new" "$r/Cargo.lock"
-  expect fail "the engine reached through a second version of a dependency fails rule 5" "$r" "rule 5: biorouter-crew's dependency closure"
+  expect fail "the engine reached through a second version of a dependency fails rule 5" "$r" "rule 5: biorouter-crew's dependency closure in Cargo.lock holds biorouter-dictation (biorouter-crew -> sha2 -> biorouter-dictation)"
 
   clean_root "$r"
   awk '{ print } /^name = "biorouter"$/ { getline; print; getline; print; print " \"biorouter-dictation-capture\"," }' \
     "$r/Cargo.lock" > "$r/Cargo.lock.new"
   printf '\n[[package]]\nname = "biorouter-dictation-capture"\nversion = "1.0.0"\n' >> "$r/Cargo.lock.new"
   mv "$r/Cargo.lock.new" "$r/Cargo.lock"
-  expect fail "capture reached from the daemon through core fails rule 6" "$r" "rule 6: biorouter-server's dependency closure"
+  expect fail "capture reached from the daemon through core fails rule 6" "$r" "(biorouter-server -> biorouter -> biorouter-dictation-capture)"
 
   clean_root "$r"
   printf '\n[[package]]\nname = "biorouter-dictation-capture"\nversion = "1.0.0"\n' >> "$r/Cargo.lock"

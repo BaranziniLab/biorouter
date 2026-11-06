@@ -543,18 +543,21 @@ mod tests {
 
     /// `Paths::in_local_data_dir("dictation/models")` under a sandbox root, and the
     /// system folder beside it.
+    ///
+    /// The root is this binary's own sandbox, held where it already is: moving the
+    /// variable in the shared test process would move it for every sibling that
+    /// resolves `Paths` without the env lock (`test_sandbox`'s guard refuses that).
     #[test]
     fn the_folders_follow_the_sandbox_root() {
-        let root = tempfile::tempdir().unwrap();
-        let _env =
-            env_lock::lock_env([("BIOROUTER_PATH_ROOT", Some(root.path().to_str().unwrap()))]);
+        let _root = crate::test_sandbox::pin_sandbox_path_root();
+        let root = Path::new(crate::test_sandbox::sandbox_path_root());
         assert_eq!(
             user_models_dir(),
-            root.path().join("data").join("dictation").join("models")
+            root.join("data").join("dictation").join("models")
         );
         assert_eq!(
             system_models_dir(),
-            Some(root.path().join("system").join("dictation").join("models"))
+            Some(root.join("system").join("dictation").join("models"))
         );
     }
 }

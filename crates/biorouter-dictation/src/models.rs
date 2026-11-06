@@ -337,7 +337,59 @@ fn write_atomically(path: &Path, bytes: &[u8], mode: WriteMode) -> io::Result<()
         file.sync_all()?;
     }
     set_file_mode(&tmp, mode)?;
-    fs::rename(&tmp, path)
+    retry_while_held(|| fs::rename(&tmp, path))
+}
+
+/// Flushes a file this process wrote, and has closed, to the disk. Windows's
+/// `FlushFileBuffers` needs a handle that may write and answers a read only one with
+/// "Access is denied", so there the file is opened for writing (never created or
+/// truncated); `fsync` takes any handle, and macOS and Linux keep the read only open.
+/// The handle is closed before this returns, so a rename that follows finds none.
+fn sync_file(path: &Path) -> io::Result<()> {
+    let mut options = OpenOptions::new();
+    if cfg!(windows) {
+        options.write(true);
+    } else {
+        options.read(true);
+    }
+    options.open(path)?.sync_all()
+}
+
+/// Runs a rename, a delete or the flush's open for writing, and on Windows runs it again
+/// while it fails with "Access is denied" or a sharing violation, up to 10 times over about
+/// 2 s. An antivirus scanner or the search indexer opens a file it has just seen for a
+/// moment, and until it lets go the file can be neither renamed, deleted nor opened by a
+/// handle that may write; every handle the installer opened itself is closed before it gets
+/// here. On macOS and Linux the operation runs once.
+fn retry_while_held(mut op: impl FnMut() -> io::Result<()>) -> io::Result<()> {
+    let attempts = if cfg!(windows) { 10 } else { 1 };
+    let mut attempt = 1;
+    loop {
+        match op() {
+            Err(e) if attempt < attempts && held_by_another_handle(&e) => {
+                attempt += 1;
+                std::thread::sleep(Duration::from_millis(200));
+            }
+            result => return result,
+        }
+    }
+}
+
+/// Windows's "Access is denied" and sharing violation: what a rename, a delete or an open
+/// for writing of a file another process has open fails with. Never true elsewhere.
+fn held_by_another_handle(error: &io::Error) -> bool {
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::Foundation::{ERROR_ACCESS_DENIED, ERROR_SHARING_VIOLATION};
+        error.raw_os_error().is_some_and(|code| {
+            code == ERROR_ACCESS_DENIED as i32 || code == ERROR_SHARING_VIOLATION as i32
+        })
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = error;
+        false
+    }
 }
 
 /// A new file at `path`: whatever was there is unlinked first, and the open refuses an
@@ -476,10 +528,13 @@ fn publish(
     let dir = root.join(entry.id);
     create_dirs(root, mode)?;
     create_dirs(&dir, mode)?;
-    File::open(staged)?.sync_all()?;
+    // On Windows the flush opens the staged file for writing a moment after the writer
+    // closed it, which is when a scanner is most likely to hold it without sharing write
+    // access. Opening and flushing again does no harm, so it is retried like the rename.
+    retry_while_held(|| sync_file(staged))?;
     set_file_mode(staged, mode)?;
     let target = model_path(root, entry);
-    fs::rename(staged, &target)?;
+    retry_while_held(|| fs::rename(staged, &target))?;
     write_licenses(&dir, entry, mode)?;
     write_record(root, entry, digest, source, Some(mode))?;
     sync_dir(&dir);
@@ -570,7 +625,8 @@ pub fn remove(root: &Path, entry: &SttCatalogEntry) -> Result<bool, RemoveError>
     } else {
         None
     };
-    let removed = match fs::remove_file(model_path(root, entry)) {
+    let model = model_path(root, entry);
+    let removed = match retry_while_held(|| fs::remove_file(&model)) {
         Ok(()) => true,
         Err(e) if e.kind() == io::ErrorKind::NotFound => false,
         Err(e) => return Err(io_error(e)),
@@ -1609,6 +1665,9 @@ async fn one_attempt(
         match response.chunk().await {
             Ok(Some(chunk)) => {
                 if written + chunk.len() as u64 > size {
+                    // Closed first: on Windows a file deleted while a handle to it is open
+                    // can stay in its folder until that handle closes.
+                    drop(file);
                     discard_partial(partial, meta_path);
                     return Attempt::Fatal(InstallError::Hash);
                 }
@@ -3108,8 +3167,9 @@ mod tests {
                     "--test-threads=1",
                 ])
                 .env(PROXY_ROOT, root)
-                .env(PROXY_EXPECT, expect)
-                .env("HTTP_PROXY", &proxy_url);
+                .env(PROXY_EXPECT, expect);
+            // Removed before `HTTP_PROXY` is set: Windows compares variable names without
+            // case, so removing `http_proxy` afterwards removed `HTTP_PROXY` with it.
             for name in [
                 "http_proxy",
                 "HTTPS_PROXY",
@@ -3121,6 +3181,7 @@ mod tests {
             ] {
                 command.env_remove(name);
             }
+            command.env("HTTP_PROXY", &proxy_url);
             if let Some(hosts) = no_proxy {
                 command.env("NO_PROXY", hosts);
             }
