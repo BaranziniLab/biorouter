@@ -793,3 +793,316 @@ async fn deleting_through_the_store_keeps_the_grant_restricting_and_revocable() 
     }
     assert!(crew.is_scoped_session(&reset).await);
 }
+
+// -------------------------------------------------------------------------------------------------
+// Account ownership: removed connections' records (AO-11), the scoped tool allowlist and read
+// consent (AO-12), new devices (AO-10)
+// -------------------------------------------------------------------------------------------------
+
+/// File credentials under a profile of this test's own, so nothing reaches the OS keychain.
+/// Only in a process of its own.
+fn file_credentials(profile: &Path) -> env_lock::EnvGuard<'static> {
+    let profile_root = profile.to_string_lossy().into_owned();
+    crate::test_sandbox::relocate_path_root_and(
+        profile_root.as_str(),
+        [
+            ("BIOROUTER_DEV_PROFILE_ROOT", Some(profile_root.as_str())),
+            ("BIOROUTER_DISABLE_KEYRING", Some("true")),
+        ],
+    )
+}
+
+/// A stopped grant whose run ended long enough ago to have settled.
+fn settled(scope: Scope) -> Scope {
+    Scope {
+        expired: true,
+        expires_at: Some(revocation::unix_now() - revocation::REPLACED_KEPT_PAST_END - 60),
+        ..scope
+    }
+}
+
+/// AO-11: a removed connection's grant goes, with its run credential, only once its chat is
+/// gone from this store and the grant has settled. A grant whose chat still exists is that
+/// chat's restriction and stays; so does one of another store, one not yet settled and one
+/// never bound to its chat. Finished preparations and read consents of gone connections go in
+/// the same sweep.
+#[tokio::test]
+async fn a_removed_connections_grant_is_swept_only_once_its_chat_is_gone_and_settled() {
+    if !crate::test_sandbox::in_a_process_of_its_own() {
+        return;
+    }
+    let profile = TempDir::new().unwrap();
+    let _env = file_credentials(profile.path());
+    let device = Device::new().await;
+    let crew = &device.crew;
+    let (live, live_incarnation) = device.chat().await;
+    let gone = "gone-chat";
+    device
+        .record(gone, settled(device.granted("run-gone", 4242)))
+        .await;
+    device
+        .record(&live, settled(device.granted("run-live", live_incarnation)))
+        .await;
+    device
+        .record(
+            "elsewhere-chat",
+            Scope {
+                session_store: Some("/another/store".into()),
+                ..settled(device.granted("run-elsewhere", 7))
+            },
+        )
+        .await;
+    device
+        .record(
+            "unsettled-chat",
+            Scope {
+                expires_at: Some(revocation::unix_now()),
+                ..settled(device.granted("run-unsettled", 8))
+            },
+        )
+        .await;
+    device
+        .record(
+            "unbound-chat",
+            Scope {
+                session_incarnation: None,
+                ..settled(device.granted("run-unbound", 9))
+            },
+        )
+        .await;
+    for session in [gone, live.as_str()] {
+        crew.write_credential(&format!("run:{session}"), "run-credential")
+            .unwrap();
+    }
+    crew.grant_person_read(&live, CONNECTION).await.unwrap();
+    {
+        let mut registry = crew.registry.lock().await;
+        registry
+            .completed_preparations
+            .insert(CONNECTION.into(), "saved".into());
+        registry
+            .completed_preparations
+            .insert("gone-preparation".into(), "gone".into());
+        crew.persist(&registry).unwrap();
+    }
+
+    // While the connection is saved, its grants all stay; a gone preparation does not.
+    crew.sweep_removed_connections().await;
+    assert_eq!(device.saved_scopes().len(), 5);
+    assert_eq!(
+        crew.registry
+            .lock()
+            .await
+            .completed_preparations
+            .keys()
+            .cloned()
+            .collect::<Vec<_>>(),
+        vec![CONNECTION.to_owned()]
+    );
+
+    // The connection is removed (as another process saved it).
+    {
+        let mut registry = crew.registry.lock().await;
+        registry.connections.clear();
+        crew.persist(&registry).unwrap();
+    }
+    crew.sweep_removed_connections().await;
+    let saved = device.saved_scopes();
+    assert!(
+        !saved.contains_key(gone),
+        "the gone chat's settled grant goes"
+    );
+    assert!(crew.read_credential(&format!("run:{gone}")).is_err());
+    for kept in [
+        live.as_str(),
+        "elsewhere-chat",
+        "unsettled-chat",
+        "unbound-chat",
+    ] {
+        assert!(saved.contains_key(kept), "{kept} was swept");
+    }
+    assert!(crew.read_credential(&format!("run:{live}")).is_ok());
+    let registry = crew.registry.lock().await;
+    assert!(registry.completed_preparations.is_empty());
+    assert!(registry.person_reads.is_empty());
+}
+
+/// AO-11 fails closed: a store that cannot answer, or a saved registry that cannot be read,
+/// prunes nothing.
+#[tokio::test]
+async fn a_sweep_prunes_nothing_when_the_store_or_the_registry_cannot_answer() {
+    let device = Device::new().await;
+    device
+        .record("gone-chat", settled(device.granted("run-gone", 4242)))
+        .await;
+    {
+        let mut registry = device.crew.registry.lock().await;
+        registry.connections.clear();
+        device.crew.persist(&registry).unwrap();
+    }
+    device.store.close().await;
+    device.crew.sweep_removed_connections().await;
+    assert!(device.saved_scopes().contains_key("gone-chat"));
+
+    let unreadable = Device::new().await;
+    unreadable
+        .record("gone-chat", settled(unreadable.granted("run-gone", 4242)))
+        .await;
+    {
+        let mut registry = unreadable.crew.registry.lock().await;
+        registry.connections.clear();
+        unreadable.crew.persist(&registry).unwrap();
+    }
+    let path = unreadable.crew_root.path().join("connections.json");
+    let broken = b"{\"connections\": [{\"unreadable\": tru";
+    std::fs::write(&path, broken).unwrap();
+    unreadable.crew.sweep_removed_connections().await;
+    assert_eq!(std::fs::read(&path).unwrap(), broken);
+    assert!(unreadable
+        .crew
+        .registry
+        .lock()
+        .await
+        .scopes
+        .contains_key("gone-chat"));
+}
+
+/// AO-12, gate B-1: a chat a grant restricts may call exactly the grant's two worker tools and
+/// the checklist; the person tools are refused there.
+#[tokio::test]
+async fn a_scoped_chat_may_call_only_the_worker_tools_and_the_checklist() {
+    let device = Device::new().await;
+    let (chat, incarnation) = device.chat().await;
+    device
+        .record(&chat, device.granted("run-scoped", incarnation))
+        .await;
+    let crew = &device.crew;
+    for allowed in ["crew__connections", "crew__request", "todo__write"] {
+        crew.authorize_session_tool(&chat, allowed).await.unwrap();
+    }
+    for refused in [
+        "crew__read",
+        "crew__change",
+        "crew__anything",
+        "developer__shell",
+    ] {
+        assert!(
+            crew.authorize_session_tool(&chat, refused).await.is_err(),
+            "{refused}"
+        );
+    }
+    let (unscoped, _) = device.chat().await;
+    crew.authorize_session_tool(&unscoped, "crew__change")
+        .await
+        .unwrap();
+}
+
+/// AO-12: a chat's consent to read a workspace as the person is kept per chat and connection,
+/// in the saved registry, listed and revocable, and never inherited by a later chat under the
+/// same id.
+#[tokio::test]
+async fn a_read_consent_is_kept_per_chat_and_connection_and_never_inherited() {
+    let device = Device::new().await;
+    let (chat, _) = device.chat().await;
+    let crew = &device.crew;
+    assert!(!crew.has_person_read(&chat, CONNECTION).await);
+    crew.grant_person_read(&chat, CONNECTION).await.unwrap();
+    assert!(crew.has_person_read(&chat, CONNECTION).await);
+    assert!(!crew.has_person_read(&chat, "another-connection").await);
+    assert_eq!(crew.person_reads(&chat).await.len(), 1);
+    assert!(
+        device.restarted().has_person_read(&chat, CONNECTION).await,
+        "another process reads the same consent"
+    );
+    assert_eq!(
+        crew.grant_person_read(&chat, "another-connection")
+            .await
+            .unwrap_err()
+            .to_string(),
+        "Unknown Crew connection"
+    );
+    assert_eq!(
+        crew.grant_person_read("never-saved", CONNECTION)
+            .await
+            .unwrap_err()
+            .to_string(),
+        UNSAVED_CHAT
+    );
+
+    assert!(crew.revoke_person_read(&chat, CONNECTION).await.unwrap());
+    assert!(!crew.has_person_read(&chat, CONNECTION).await);
+    assert!(!crew.revoke_person_read(&chat, CONNECTION).await.unwrap());
+
+    // A chat handed the id of a chat that consented does not inherit the consent.
+    crew.grant_person_read(&chat, CONNECTION).await.unwrap();
+    let rows = crew.person_read_rows().await;
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].session_id, chat);
+    let (reissued, _) = device.reissue(&chat).await;
+    assert!(!crew.has_person_read(&reissued, CONNECTION).await);
+    assert!(crew.person_reads(&reissued).await.is_empty());
+}
+
+/// AO-10 through the manager: the first snapshot sets what was seen; a device added after it
+/// is reported, in every process sharing the profile, until the person acknowledges it.
+#[tokio::test]
+async fn a_new_device_is_reported_until_acknowledged() {
+    let device = Device::new().await;
+    let crew = &device.crew;
+    // Saved, so a second process reads what this one sees.
+    {
+        let registry = crew.registry.lock().await;
+        crew.persist(&registry).unwrap();
+    }
+    let devices = |listed: &[(&str, &str, u64)]| {
+        let listed: Vec<Value> = listed
+            .iter()
+            .map(|(fingerprint, via, at)| {
+                json!({"fingerprint": fingerprint, "added_via": via, "added_at": at})
+            })
+            .collect();
+        json!({"actor": {"id": "p-1", "devices": listed}})
+    };
+    // This computer's own device, as the snapshot shows it.
+    let own = "2222 2222 2222 2222";
+    let laptop = "ABCD ABCD ABCD ABCD";
+    let desktop = "1234 5678 9ABC DEF0";
+    crew.observe_devices(
+        CONNECTION,
+        &devices(&[(own, "invitation", 1), (laptop, "invitation", 2)]),
+    )
+    .await;
+    assert!(crew.new_devices(CONNECTION).await.unwrap().is_empty());
+
+    let added = devices(&[
+        (own, "invitation", 1),
+        (laptop, "invitation", 2),
+        (desktop, "account", 3),
+    ]);
+    crew.observe_devices(CONNECTION, &added).await;
+    let reported = crew.new_devices(CONNECTION).await.unwrap();
+    assert_eq!(
+        reported,
+        vec![NewDevice {
+            fingerprint: desktop.into(),
+            added_via: Some("account".into()),
+            added_at: Some(3),
+        }]
+    );
+    assert_eq!(
+        device.restarted().new_devices(CONNECTION).await.unwrap(),
+        reported
+    );
+
+    crew.acknowledge_devices(CONNECTION).await.unwrap();
+    crew.observe_devices(CONNECTION, &added).await;
+    assert!(crew.new_devices(CONNECTION).await.unwrap().is_empty());
+    assert!(device
+        .restarted()
+        .new_devices(CONNECTION)
+        .await
+        .unwrap()
+        .is_empty());
+    assert!(crew.new_devices("not-a-connection").await.is_err());
+    assert!(crew.acknowledge_devices("not-a-connection").await.is_err());
+}

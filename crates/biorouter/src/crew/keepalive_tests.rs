@@ -4010,6 +4010,7 @@ fn a_confirmed_revocation_is_never_forgotten_across_processes() {
             replaced: Vec::new(),
             pending_device: None,
             completed_preparations: HashMap::new(),
+            ..Default::default()
         }
     };
     for (here, theirs, merged) in [
@@ -4544,6 +4545,15 @@ async fn removing_a_disconnected_connection_stops_its_grants_without_dialling() 
     let scope = f.manager.registry.lock().await.scopes[WORKER].clone();
     assert!(scope.expired);
     assert_eq!(scope.revocation, Some(Revocation::Unconfirmed));
+    // AO-11: the run lapses within the hour, so the grant can settle and be swept once its
+    // chat is gone; it is kept while the chat exists.
+    assert!(
+        scope
+            .expires_at
+            .is_some_and(|end| end <= super::revocation::unix_now() + 60 * 60),
+        "{:?}",
+        scope.expires_at
+    );
     assert!(f.manager.read_credential(&format!("run:{WORKER}")).is_err());
     let cap = CallCapability::for_test(ProviderTier::Private, true);
     assert!(f.manager.check_dispatch(WORKER, &cap).await.is_err());

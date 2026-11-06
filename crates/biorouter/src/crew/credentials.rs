@@ -42,6 +42,37 @@ pub struct CredentialStatus {
     pub available: bool,
 }
 
+/// A credential the store answered for and does not hold: the OS keyring has no entry, the
+/// development key file is missing, or the unlocked vault lacks it (account ownership AO-9).
+/// Kept apart from every other failure, so a lost device key can be told from a locked vault or
+/// a keyring that refused: only this one is `crew_device_key_missing`. `Display` keeps the
+/// store's own words, which were the error before it was typed.
+#[derive(Debug)]
+pub(super) struct CredentialAbsent(String);
+
+impl CredentialAbsent {
+    pub(super) fn new(message: impl Into<String>) -> Self {
+        Self(message.into())
+    }
+}
+
+impl std::fmt::Display for CredentialAbsent {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for CredentialAbsent {}
+
+/// Whether `error` says the store does not hold the credential it was asked for
+/// ([`CredentialAbsent`]), anywhere in its chain.
+pub(super) fn is_absent(error: &anyhow::Error) -> bool {
+    error.downcast_ref::<CredentialAbsent>().is_some()
+        || error
+            .chain()
+            .any(|cause| cause.downcast_ref::<CredentialAbsent>().is_some())
+}
+
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct Selection {
@@ -278,10 +309,11 @@ impl CredentialVault {
         }
         let unlocked = require_unlocked(&state)?;
         let mut contents = decrypt(&self.read_envelope()?, unlocked)?;
-        let value = contents
-            .credentials
-            .remove(id)
-            .ok_or_else(|| anyhow::anyhow!("Crew credential is absent from the encrypted vault"))?;
+        let value = contents.credentials.remove(id).ok_or_else(|| {
+            anyhow::Error::new(CredentialAbsent::new(
+                "Crew credential is absent from the encrypted vault",
+            ))
+        })?;
         Ok(value.0)
     }
 

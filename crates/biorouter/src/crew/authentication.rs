@@ -1146,6 +1146,14 @@ pub async fn cancel_and_disconnect(id: &str, controller: &str) -> Result<()> {
 
 /// The `hello` capability of a broker that answers `enrollment.pending` and `auth.join`.
 pub const JOIN_BY_NAME_CAPABILITY: &str = "join_by_name_v1";
+/// The `hello` capability of a broker that answers `account.status` and `auth.account`, so a
+/// computer signed in as an account joins, opens and adds itself again with no device code
+/// (account ownership AO-4, AO-9).
+pub const ACCOUNT_IDENTITY_CAPABILITY: &str = "account_identity_v1";
+/// The staged device key a rejoin signs with until the workspace accepts it (AO-9).
+fn staged_device_credential(id: &str) -> String {
+    format!("device-next:{id}")
+}
 /// How the transport reports a broker's refusal: this prefix, then the error envelope as JSON.
 const BROKER_REFUSAL_PREFIX: &str = "Crew broker refused request: ";
 /// The longest join ID accepted from a broker (it is 128 random bits; this is generous).
@@ -1410,6 +1418,12 @@ pub enum JoinState {
     Joined,
     /// The workspace does not support joining by invitation (`join_by_name_v1` absent).
     Unsupported,
+    /// The account may join with this computer's key, with no code (AO-9): it is invited, or
+    /// it is the host or a member and the workspace does not know this computer's device.
+    /// Never joins by itself; [`CrewManager::join`] joins on it.
+    Ready,
+    /// The workspace removed this account (AO-9).
+    Removed,
 }
 
 /// A person named in a join status. Labels only.
@@ -1454,6 +1468,205 @@ impl JoinStatus {
     }
 }
 
+/// What a workspace knows about the account a bridge signs in as (`account.status`, AO-3).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, utoipa::ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum AccountRole {
+    /// The account the workspace's server runs as, even before its first device.
+    Host,
+    Member,
+    /// A pending join names the account, live or expired.
+    Invited,
+    Removed,
+    /// None of these.
+    None,
+}
+
+impl AccountRole {
+    /// The host or a member: the workspace still counts the account in.
+    pub fn is_member(self) -> bool {
+        matches!(self, Self::Host | Self::Member)
+    }
+    fn read(word: &str) -> Option<Self> {
+        Some(match word {
+            "host" => Self::Host,
+            "member" => Self::Member,
+            "invited" => Self::Invited,
+            "removed" => Self::Removed,
+            "none" => Self::None,
+            _ => return None,
+        })
+    }
+}
+
+/// The workspace's answer to `account.status` (AO-3), read about the account the bridge signs
+/// in as and nothing else. Unsigned: it chooses which card to show and which words to use, and
+/// the workspace still decides every join itself.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, utoipa::ToSchema)]
+pub struct AccountStatus {
+    pub role: AccountRole,
+    /// The workspace's name as the answer gives it; a signed `hello`'s name is preferred
+    /// wherever both are known.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub workspace_name: Option<String>,
+    /// The account's username as the workspace stored it; absent for [`AccountRole::None`].
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub username: Option<String>,
+    /// The host principal's stored username; absent before the host has one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub host_username: Option<String>,
+    /// Who invited the account, with [`AccountRole::Invited`].
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub invited_by: Option<JoinPerson>,
+    /// When the invitation expires (seconds since the Unix epoch), with [`AccountRole::Invited`].
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub expires_at: Option<u64>,
+    /// The invitation expired.
+    pub expired: bool,
+    /// How many devices the account has, for the host or a member.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub devices: Option<u64>,
+    /// How many live connections the server holds from other accounts; told only to the host.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub others_connected: Option<u64>,
+}
+
+/// The longest workspace name accepted from an unsigned answer.
+const MAX_ANSWER_NAME_BYTES: usize = 256;
+
+impl AccountStatus {
+    /// `account.status`'s answer, refused when its role is not one of the five. Every other
+    /// field that is missing, of another type or not plain text is left out.
+    fn read(answer: &Value) -> Result<Self> {
+        let role = answer["role"]
+            .as_str()
+            .and_then(AccountRole::read)
+            .context(
+                "The workspace's account status names no role this version of Biorouter knows",
+            )?;
+        let username = |value: &Value| {
+            value
+                .as_str()
+                .filter(|name| {
+                    biorouter_crew::valid_username(name) && !name.chars().any(char::is_control)
+                })
+                .map(str::to_owned)
+        };
+        Ok(Self {
+            role,
+            workspace_name: answer["workspace_name"]
+                .as_str()
+                .filter(|name| {
+                    name.len() <= MAX_ANSWER_NAME_BYTES
+                        && biorouter_crew::workspace_name_valid(name)
+                })
+                .map(str::to_owned),
+            username: username(&answer["username"]),
+            host_username: username(&answer["host_username"]),
+            invited_by: join_person(&answer["invited_by"]),
+            expires_at: answer["expires_at"].as_u64(),
+            expired: answer["expired"].as_bool() == Some(true),
+            devices: answer["devices"].as_u64(),
+            others_connected: answer["others_connected"].as_u64(),
+        })
+    }
+}
+
+/// How the workspace admitted this computer's key (`auth.account`'s `admitted`, AO-2). Shown,
+/// never relied on: a retried request answers `device` whatever the first one did.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum AccountAdmission {
+    /// A device of an account the workspace already counted in.
+    Device,
+    /// The host's first device.
+    Host,
+    /// The account's pending invitation, now taken.
+    Invitation,
+}
+
+/// The device the workspace removed to keep the account within its device cap (AO-2).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
+pub struct EvictedDevice {
+    /// The grouped 16-hex fingerprint (`3F2A 9C1E 77B0 D4E1`).
+    pub fingerprint: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub added_at: Option<u64>,
+}
+
+/// What [`CrewManager::account_join`] and [`CrewManager::rejoin`] answer: the join status
+/// (always [`JoinState::Joined`]) and what the workspace said about the account.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, utoipa::ToSchema)]
+pub struct AccountJoined {
+    pub status: JoinStatus,
+    /// [`AccountRole::Host`] or [`AccountRole::Member`].
+    pub role: AccountRole,
+    /// The account as the workspace knows it, when its answer named it readably.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub principal: Option<JoinPerson>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub admitted: Option<AccountAdmission>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub evicted_device: Option<EvictedDevice>,
+}
+
+impl AccountJoined {
+    /// `auth.account`'s answer, for a key whose device ID is `device_id`. Refused when the
+    /// answer names another device or no role a member holds.
+    fn read(answer: &Value, device_id: &str, workspace_name: Option<String>) -> Result<Self> {
+        ensure!(
+            answer["device_id"]
+                .as_str()
+                .is_none_or(|device| device == device_id),
+            "The workspace's answer names a different device. Check your join status."
+        );
+        let role = answer["role"]
+            .as_str()
+            .and_then(AccountRole::read)
+            .filter(|role| role.is_member())
+            .unwrap_or(AccountRole::Member);
+        let admitted = answer["admitted"]
+            .as_str()
+            .and_then(|word| serde_json::from_value(json!(word)).ok());
+        let evicted_device = answer["evicted_device"]["fingerprint"]
+            .as_str()
+            .filter(|fingerprint| grouped_fingerprint_shape(fingerprint))
+            .map(|fingerprint| EvictedDevice {
+                fingerprint: fingerprint.to_owned(),
+                added_at: answer["evicted_device"]["added_at"].as_u64(),
+            });
+        let workspace_name = workspace_name.or_else(|| {
+            answer["workspace"]["name"]
+                .as_str()
+                .filter(|name| {
+                    name.len() <= MAX_ANSWER_NAME_BYTES
+                        && biorouter_crew::workspace_name_valid(name)
+                })
+                .map(str::to_owned)
+        });
+        Ok(Self {
+            status: JoinStatus::bare(JoinState::Joined, workspace_name),
+            role,
+            principal: join_person(&answer["principal"]),
+            admitted,
+            evicted_device,
+        })
+    }
+}
+
+/// Whether `text` has the shape of a grouped device fingerprint: four groups of four uppercase
+/// hex digits, as the workspace's snapshot shows them.
+pub(super) fn grouped_fingerprint_shape(text: &str) -> bool {
+    text.len() == 19
+        && text.split(' ').count() == 4
+        && text.split(' ').all(|group| {
+            group.len() == 4
+                && group
+                    .bytes()
+                    .all(|b| b.is_ascii_digit() || (b'A'..=b'F').contains(&b))
+        })
+}
+
 /// Why [`CrewManager::join`] did not join.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum JoinRefusal {
@@ -1471,6 +1684,8 @@ pub enum JoinRefusal {
     DeviceConflict,
     /// Another active member has this username.
     IdentityConflict,
+    /// The workspace removed this account (AO-9).
+    Removed,
     /// Any other refusal from the workspace.
     Refused,
 }
@@ -1479,7 +1694,9 @@ impl JoinRefusal {
     fn from_broker_code(code: &str) -> Self {
         match code {
             "code_mismatch" => Self::CodeMismatch,
-            "not_invited" => Self::NotInvited,
+            // `not_member` is the account join's word for an account nobody invited (AO-2).
+            "not_invited" | "not_member" => Self::NotInvited,
+            "removed" => Self::Removed,
             "join_expired" => Self::Expired,
             "join_changed" => Self::Replaced,
             "account_changed" => Self::AccountChanged,
@@ -1496,7 +1713,8 @@ impl JoinRefusal {
             JoinState::NotInvited => Some(Self::NotInvited),
             JoinState::Expired => Some(Self::Expired),
             JoinState::Unsupported => Some(Self::Unsupported),
-            JoinState::Approved | JoinState::Joined => None,
+            JoinState::Removed => Some(Self::Removed),
+            JoinState::Approved | JoinState::Joined | JoinState::Ready => None,
         }
     }
     pub fn api_code(self) -> &'static str {
@@ -1510,9 +1728,12 @@ impl JoinRefusal {
             Self::AccountChanged => "crew_join_account_changed",
             Self::DeviceConflict => "crew_join_device_conflict",
             Self::IdentityConflict => "crew_join_identity_conflict",
+            Self::Removed => "crew_join_removed",
             Self::Refused => "crew_join_refused",
         }
     }
+    /// The sentence a person reads. [`Self::Removed`] names the workspace when the refusal
+    /// knows it ([`JoinRefused`]'s `Display`); this is its sentence when it does not.
     fn message(self) -> &'static str {
         match self {
             Self::Unsupported => "This workspace's server doesn't support joining by invitation yet. Ask your host for an invitation token instead.",
@@ -1524,6 +1745,7 @@ impl JoinRefusal {
             Self::AccountChanged => "Your account on the server changed since your host invited it. Ask your host to invite you again.",
             Self::DeviceConflict => "This computer's key is already in this workspace.",
             Self::IdentityConflict => "Another member of this workspace already has your username. Ask your host to remove the old account first.",
+            Self::Removed => "You were removed from this workspace. Ask a member to invite you again.",
             Self::Refused => "The workspace didn't let this computer join.",
         }
     }
@@ -1536,13 +1758,18 @@ impl JoinRefusal {
 pub struct JoinRefused {
     refusal: JoinRefusal,
     broker_message: Option<String>,
+    /// The workspace as a person calls it, for the sentences that name it (AO-9's removal).
+    workspace: Option<String>,
 }
 
 impl JoinRefused {
-    fn error(refusal: JoinRefusal) -> anyhow::Error {
+    /// A refusal decided here, before asking the workspace, naming `workspace` where the
+    /// sentence does.
+    fn error_in(refusal: JoinRefusal, workspace: &str) -> anyhow::Error {
         anyhow::Error::new(Self {
             refusal,
             broker_message: None,
+            workspace: Some(workspace.to_owned()),
         })
     }
     pub fn refusal(&self) -> JoinRefusal {
@@ -1559,7 +1786,13 @@ impl JoinRefused {
 
 impl fmt::Display for JoinRefused {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(self.refusal.message())
+        match (self.refusal, &self.workspace) {
+            (JoinRefusal::Removed, Some(workspace)) => write!(
+                f,
+                "You were removed from {workspace}. Ask a member to invite you again."
+            ),
+            _ => f.write_str(self.refusal.message()),
+        }
     }
 }
 
@@ -2769,14 +3002,29 @@ impl CrewManager {
     /// under, would only show the host a warning about a device with a different code. A
     /// refusal the workspace reports for the join but this computer never received (another
     /// device's) does not stop the claim; see [`RefusedClaim`].
+    ///
+    /// On a workspace whose server advertises [`ACCOUNT_IDENTITY_CAPABILITY`], `ready` joins
+    /// with this computer's key and no code, through the account join (AO-9).
     pub async fn join(&self, id: &str) -> Result<JoinStatus> {
         let observed = self.observe_join(id).await?;
         let workspace_name = observed.status.workspace_name.clone();
         if observed.status.status == JoinState::Joined {
             return Ok(observed.status);
         }
+        if observed.status.status == JoinState::Ready {
+            let c = self.connection(id).await?;
+            let joined = self.claim_by_account(id, &c, workspace_name).await?;
+            return Ok(JoinStatus {
+                inviter: observed.status.inviter,
+                ..joined.status
+            });
+        }
         if let Some(refusal) = JoinRefusal::from_state(observed.status.status) {
-            return Err(JoinRefused::error(refusal));
+            let workspace = match workspace_name {
+                Some(name) => name,
+                None => self.workspace_label(id).await,
+            };
+            return Err(JoinRefused::error_in(refusal, &workspace));
         }
         let join_id = observed
             .join_id
@@ -2800,6 +3048,7 @@ impl CrewManager {
                 return Err(anyhow::Error::new(JoinRefused {
                     refusal,
                     broker_message: Some(message),
+                    workspace: workspace_name,
                 }));
             }
         };
@@ -2825,6 +3074,19 @@ impl CrewManager {
             .as_ref()
             .filter(|hello| hello.signature_version >= 2)
             .and_then(|hello| hello.workspace_name.clone());
+        // AO-9: a server that can say what it knows about this account is asked that, and no
+        // device code is shown against it.
+        if self.offers_account_identity(id) {
+            match self.account_status_of(id).await {
+                Ok(status) => return self.observe_account(id, status, signed_name).await,
+                // An unsigned capability can be spoofed; a broker without the method refuses
+                // it, and the older join is read instead.
+                Err(error) => match broker_refusal(&error) {
+                    Some((code, _)) if matches!(code.as_str(), "unauthorized" | "unsupported") => {}
+                    _ => return Err(error),
+                },
+            }
+        }
         let unsupported = || ObservedJoin {
             status: JoinStatus::bare(JoinState::Unsupported, signed_name.clone()),
             join_id: None,
@@ -2839,7 +3101,7 @@ impl CrewManager {
         }
         let asked_at = claim_clock_tick();
         let answer = match self
-            .pre_authentication_request(id, "enrollment.pending")
+            .pre_authentication_request(id, "enrollment.pending", json!({}))
             .await
         {
             Ok(answer) => answer,
@@ -2867,7 +3129,7 @@ impl CrewManager {
         let state = pending.state(refused_here);
         let code = match state {
             JoinState::Invited | JoinState::Approved | JoinState::CodeMismatch => {
-                Some(self.device_code_of(&c)?)
+                Some(self.device_code_of(&c).await?)
             }
             _ => None,
         };
@@ -2930,21 +3192,14 @@ impl CrewManager {
     /// computed here and never asked of the workspace. Needs no connection.
     pub async fn device_code(&self, id: &str) -> Result<String> {
         let c = self.connection(id).await?;
-        self.device_code_of(&c)
+        self.device_code_of(&c).await
     }
 
     /// `device_code(workspace_id, W, K)` over the pinned workspace key `W` and the public key
     /// `K` of the saved signing key, which must be the key the connection saved, formatted for
-    /// display.
-    fn device_code_of(&self, c: &Connection) -> Result<String> {
-        let secret: [u8; 32] = unhex(&self.read_credential(&format!("device:{}", c.id))?)?
-            .try_into()
-            .map_err(|_| anyhow::anyhow!("Invalid device key"))?;
-        let public = SigningKey::from_bytes(&secret).verifying_key().to_bytes();
-        ensure!(
-            hex(&public) == c.public_key && hex(&Sha256::digest(public)) == c.device_id,
-            "Saved Crew device identity does not match its signing credential; reconnect using a verified device identity"
-        );
+    /// display. A key the store no longer holds is `crew_device_key_missing` (AO-9).
+    async fn device_code_of(&self, c: &Connection) -> Result<String> {
+        let public = self.device_signer(c).await?.verifying_key().to_bytes();
         let workspace_key: [u8; 32] = unhex(&c.workspace_public_key)?
             .try_into()
             .map_err(|_| anyhow::anyhow!("Invalid workspace key"))?;
@@ -2961,6 +3216,14 @@ impl CrewManager {
             .await
         {
             Ok(_) => Ok(true),
+            // The unknown device of an account the workspace still counts in (AO-9).
+            Err(error)
+                if super::CrewRefusal::find(&error).is_some_and(|refusal| {
+                    refusal.code() == super::refusal::DEVICE_NOT_RECOGNIZED
+                }) =>
+            {
+                Ok(false)
+            }
             Err(error) => match broker_refusal(&error) {
                 Some((code, _)) if code == "unauthorized" => Ok(false),
                 // Refused after authenticating: a member, on a broker without the method.
@@ -2970,15 +3233,25 @@ impl CrewManager {
         }
     }
 
-    /// An unsigned request before authentication, like `hello`. Only `enrollment.pending`.
-    async fn pre_authentication_request(&self, id: &str, method: &str) -> Result<Value> {
+    /// An unsigned request before authentication, like `hello`: the join status
+    /// (`enrollment.pending`), the account's standing (`account.status`, AO-3), or a bare
+    /// `auth.challenge` whose answer names the account's UID (for words only, AO-9).
+    async fn pre_authentication_request(
+        &self,
+        id: &str,
+        method: &str,
+        params: Value,
+    ) -> Result<Value> {
         ensure!(
-            method == "enrollment.pending",
+            matches!(
+                method,
+                "enrollment.pending" | "account.status" | "auth.challenge"
+            ),
             "Only the join status is read before authentication"
         );
         let transport = self.live_transport(id).await?;
         let mut locked = transport.lock().await;
-        let result = locked.request(method, json!({}), None, None, None).await;
+        let result = locked.request(method, params, None, None, None).await;
         let usable = locked.is_usable();
         drop(locked);
         if !usable {
@@ -2986,6 +3259,417 @@ impl CrewManager {
                 .await?;
         }
         result
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
+// Joining, opening and adding a computer again by account (account ownership AO-9)
+// ---------------------------------------------------------------------------------------------
+
+impl CrewManager {
+    /// Whether the connection's verified `hello` advertises [`ACCOUNT_IDENTITY_CAPABILITY`],
+    /// signed or not: enough to offer the account path, which the workspace still decides on
+    /// its own (AO-4). `false` when this process holds no verified `hello` for it.
+    pub(super) fn offers_account_identity(&self, id: &str) -> bool {
+        self.capabilities(id).is_some_and(|capabilities| {
+            capabilities
+                .iter()
+                .any(|capability| capability == ACCOUNT_IDENTITY_CAPABILITY)
+        })
+    }
+
+    /// Whether the connection's verified `hello` advertises [`ACCOUNT_IDENTITY_CAPABILITY`]
+    /// under its v2 signature: what the command line and the desktop decide the removal guard
+    /// on (AO-9). With it, removing the host's last computer no longer ends the host controls,
+    /// since any computer that signs in as the account can open the workspace again.
+    /// `Some(false)` for a `hello` that does not advertise it, or whose capabilities are
+    /// unsigned (v1); `None` when this process holds no verified `hello` for the connection
+    /// (it is not connected). Either way the older guard stays.
+    pub fn account_identity(&self, id: &str) -> Option<bool> {
+        self.broker_hello(id).map(|hello| {
+            hello.signature_version >= 2
+                && hello
+                    .capabilities
+                    .iter()
+                    .any(|capability| capability == ACCOUNT_IDENTITY_CAPABILITY)
+        })
+    }
+
+    /// The workspace's name as its signed (v2) `hello` gave it.
+    fn signed_workspace_name(&self, id: &str) -> Option<String> {
+        self.broker_hello(id)
+            .filter(|hello| hello.signature_version >= 2)
+            .and_then(|hello| hello.workspace_name)
+    }
+
+    /// The join status from `account.status` (AO-9), in place of `enrollment.pending`:
+    ///
+    /// | role | this computer's device | state |
+    /// |---|---|---|
+    /// | invited | | `ready`, or `expired` |
+    /// | host or member | unknown (the signed `profile.suggest` is refused) | `ready` |
+    /// | host or member | a member's device | `joined` |
+    /// | removed | | `removed` |
+    /// | none | | `not_invited` |
+    ///
+    /// No device code is shown. A key this computer no longer holds is
+    /// `crew_device_key_missing` rather than `ready`, since only adding the computer again can
+    /// help it.
+    async fn observe_account(
+        &self,
+        id: &str,
+        status: AccountStatus,
+        signed_name: Option<String>,
+    ) -> Result<ObservedJoin> {
+        let state = match status.role {
+            AccountRole::Invited if status.expired => JoinState::Expired,
+            AccountRole::Invited => JoinState::Ready,
+            AccountRole::Host | AccountRole::Member => {
+                if self.is_member(id).await? {
+                    JoinState::Joined
+                } else {
+                    JoinState::Ready
+                }
+            }
+            AccountRole::Removed => JoinState::Removed,
+            AccountRole::None => JoinState::NotInvited,
+        };
+        let invited = status.role == AccountRole::Invited;
+        Ok(ObservedJoin {
+            status: JoinStatus {
+                status: state,
+                code: None,
+                inviter: status.invited_by.filter(|_| invited),
+                workspace_name: signed_name.or(status.workspace_name),
+                expires_at: status.expires_at.filter(|_| invited),
+                add_device: false,
+            },
+            join_id: None,
+        })
+    }
+
+    /// `account.status`, unsigned and before authentication, read with no capability check.
+    /// [`Self::account_status`] is the checked one.
+    pub(super) async fn account_status_of(&self, id: &str) -> Result<AccountStatus> {
+        let answer = self
+            .pre_authentication_request(id, "account.status", json!({}))
+            .await?;
+        AccountStatus::read(&answer)
+    }
+
+    /// What the connection's workspace knows about the account this computer signs in to the
+    /// server as (`account.status`, AO-3): its role, and the names, invitation and counts that
+    /// role carries. Unsigned, and answered about that account alone; the workspace's name is
+    /// the signed `hello`'s where there is one. Needs the connection connected. A server
+    /// without [`ACCOUNT_IDENTITY_CAPABILITY`] is `crew_account_unsupported`, worded by role.
+    pub async fn account_status(&self, id: &str) -> Result<AccountStatus> {
+        self.connection(id).await?;
+        self.transport(id).await?;
+        if !self.offers_account_identity(id) {
+            return Err(self.account_unsupported(id).await.into());
+        }
+        let mut status = self.account_status_of(id).await?;
+        if let Some(name) = self.signed_workspace_name(id) {
+            status.workspace_name = Some(name);
+        }
+        Ok(status)
+    }
+
+    /// Join the connection's workspace as the account this computer signs in to the server as
+    /// (AO-2, AO-9): send `auth.account {public_key}` signed with the connection's saved key,
+    /// through the one door that may send it. The workspace decides: it admits its host, a
+    /// member's new computer and an invited account, and answers a key it already holds for
+    /// the account as a retry, so this is idempotent. Needs the connection connected.
+    ///
+    /// A refusal is a [`JoinRefused`]: `crew_join_removed` for a removed account,
+    /// `crew_join_not_invited` for one nobody invited, `crew_join_device_conflict` for a key
+    /// another member holds. A server without [`ACCOUNT_IDENTITY_CAPABILITY`] is
+    /// `crew_account_unsupported`, worded by role, with nothing sent, and a key this computer
+    /// no longer holds is `crew_device_key_missing`.
+    pub async fn account_join(&self, id: &str) -> Result<AccountJoined> {
+        let c = self.connection(id).await?;
+        // Disconnected is an error, not a status: nothing can be asked.
+        self.transport(id).await?;
+        if !self.offers_account_identity(id) {
+            return Err(self.account_unsupported(id).await.into());
+        }
+        let workspace_name = self.signed_workspace_name(id);
+        self.claim_by_account(id, &c, workspace_name).await
+    }
+
+    /// `auth.account` with `c`'s saved key, and its answer read.
+    async fn claim_by_account(
+        &self,
+        id: &str,
+        c: &Connection,
+        workspace_name: Option<String>,
+    ) -> Result<AccountJoined> {
+        let params = json!({"public_key": c.public_key});
+        match self.signed_account_request(id, params).await {
+            Ok(answer) => AccountJoined::read(&answer, &c.device_id, workspace_name),
+            Err(error) => Err(self.account_refusal(id, error, workspace_name).await),
+        }
+    }
+
+    /// An `auth.account` refusal as a person reads it: the workspace's code as a
+    /// [`JoinRefused`], or `crew_account_unsupported` from a server that does not know the
+    /// method. Anything that is not the workspace's answer stays as it is.
+    async fn account_refusal(
+        &self,
+        id: &str,
+        error: anyhow::Error,
+        workspace_name: Option<String>,
+    ) -> anyhow::Error {
+        let Some((code, message)) = broker_refusal(&error) else {
+            return error;
+        };
+        if code == "unsupported" {
+            return self.account_unsupported(id).await.into();
+        }
+        let workspace = match workspace_name {
+            Some(name) => name,
+            None => self.workspace_label(id).await,
+        };
+        anyhow::Error::new(JoinRefused {
+            refusal: JoinRefusal::from_broker_code(&code),
+            broker_message: Some(message),
+            workspace: Some(workspace),
+        })
+    }
+
+    /// Add this computer again (AO-9): give the saved connection `id` a new device key in
+    /// place, keeping its connection ID so that chats granted through it can be granted again.
+    /// For a computer whose key is gone (`crew_device_key_missing`) or that the workspace no
+    /// longer recognizes (`crew_device_not_recognized`). Needs the connection connected; the
+    /// HTTP route requires the person's proof.
+    ///
+    /// Under the connection's lifecycle guard, the new key is written as the staged credential
+    /// `device-next:{id}` and recorded as the connection's pending rekey, then `auth.account`
+    /// is sent signed by it, with `replaces_device_id` naming the saved device. Only when the
+    /// workspace accepts it does the key become `device:{id}`, the connection take its public
+    /// key and device ID, the policy epoch move (so live grants end and can be granted again)
+    /// and the ended-membership mark clear; the staged key is deleted last. A refusal deletes
+    /// the staged key and keeps the old one. A request whose answer was lost keeps both, and
+    /// the next rejoin sends the same staged key, which the workspace answers as a retry.
+    ///
+    /// ⚠ **Device identity; needs human review.**
+    pub async fn rejoin(&self, id: &str) -> Result<AccountJoined> {
+        // Before the lifecycle guard: a bridge found gone is dialled again under that guard,
+        // and this would then wait on itself. Finding the words of an older server's refusal
+        // sends requests of its own, so it is done here too.
+        self.connection(id).await?;
+        self.live_transport(id).await?;
+        if !self.offers_account_identity(id) {
+            return Err(self.account_unsupported(id).await.into());
+        }
+        let workspace_name = self.signed_workspace_name(id);
+        let lifecycle = self.connection_guard(id).await?;
+        let c = self.connection(id).await?;
+        let (signer, pending) = self.staged_device(&c).await?;
+        // The bridge as it is now: nothing under this guard may dial.
+        let transport = self.transport(id).await?;
+        let staged = Connection {
+            public_key: pending.public_key.clone(),
+            device_id: pending.device_id.clone(),
+            ..c.clone()
+        };
+        let params = json!({
+            "public_key": pending.public_key,
+            "replaces_device_id": pending.replaces_device_id,
+            "idempotency_key": uuid::Uuid::new_v4().to_string(),
+        });
+        let mut locked = transport.lock().await;
+        let result = self
+            .signed_exchange(&mut locked, &staged, "auth.account", params, None, &signer)
+            .await;
+        let usable = locked.is_usable();
+        drop(locked);
+        if !usable {
+            self.retire_locked(
+                id,
+                &transport,
+                super::bridge_loss_message("auth.account", &result),
+            )
+            .await;
+        }
+        let answer = match result {
+            Ok(answer) => answer,
+            Err(error) => {
+                if broker_refusal(&error).is_none() {
+                    // Whether the workspace took the key is not known: keep it for a retry.
+                    return Err(error);
+                }
+                // The workspace answered: the staged key goes, and the saved one stays.
+                self.drop_staged_device(id, &pending).await;
+                drop(lifecycle);
+                return Err(self.account_refusal(id, error, workspace_name).await);
+            }
+        };
+        let joined = match AccountJoined::read(&answer, &pending.device_id, workspace_name) {
+            Ok(joined) => joined,
+            Err(error) => {
+                self.drop_staged_device(id, &pending).await;
+                return Err(error);
+            }
+        };
+        self.commit_staged_device(id, &signer, &pending).await?;
+        drop(lifecycle);
+        Ok(joined)
+    }
+
+    /// The staged key of a rejoin of `c` and its record: the one an earlier rejoin left when
+    /// its answer was lost, else a new one, written to the credential store and recorded in
+    /// the registry before anything is sent.
+    async fn staged_device(&self, c: &Connection) -> Result<(SigningKey, super::PendingRekey)> {
+        let id = c.id.as_str();
+        let credential = staged_device_credential(id);
+        let recorded = self.registry.lock().await.pending_rekeys.get(id).cloned();
+        if let Some(pending) = recorded {
+            let earlier = self
+                .read_credential(&credential)
+                .ok()
+                .and_then(|secret| unhex(&secret).ok())
+                .and_then(|bytes| <[u8; 32]>::try_from(bytes).ok())
+                .map(|secret| SigningKey::from_bytes(&secret))
+                .filter(|signer| hex(&signer.verifying_key().to_bytes()) == pending.public_key);
+            if let Some(signer) = earlier {
+                return Ok((signer, pending));
+            }
+        }
+        let signer = SigningKey::from_bytes(&rand::random::<[u8; 32]>());
+        let public = signer.verifying_key().to_bytes();
+        let pending = super::PendingRekey {
+            public_key: hex(&public),
+            device_id: hex(&Sha256::digest(public)),
+            replaces_device_id: c.device_id.clone(),
+        };
+        self.write_credential(&credential, &hex(&signer.to_bytes()))?;
+        let record = pending.clone();
+        let saved = self
+            .update_registry(|r| {
+                ensure!(
+                    r.connections.iter().any(|saved| saved.id == id),
+                    "Unknown Crew connection"
+                );
+                r.pending_rekeys.insert(id.to_owned(), record);
+                Ok(())
+            })
+            .await;
+        if let Err(error) = saved {
+            if let Err(deleting) = self.delete_credential(&credential) {
+                tracing::warn!(connection = id, error = %deleting, "Couldn't delete a staged Crew device key that was never recorded");
+            }
+            return Err(error);
+        }
+        Ok((signer, pending))
+    }
+
+    /// Forget a rejoin's staged key the workspace refused: its record, then the key. A record
+    /// that cannot be saved keeps the key it names.
+    async fn drop_staged_device(&self, id: &str, pending: &super::PendingRekey) {
+        let dropped = self
+            .update_registry(|r| {
+                if r.pending_rekeys.get(id) == Some(pending) {
+                    r.pending_rekeys.remove(id);
+                }
+                Ok(())
+            })
+            .await;
+        if let Err(error) = dropped {
+            tracing::warn!(connection = id, %error, "Couldn't forget a refused staged Crew device key");
+            return;
+        }
+        if let Err(error) = self.delete_credential(&staged_device_credential(id)) {
+            tracing::warn!(connection = id, %error, "Couldn't delete a refused staged Crew device key");
+        }
+    }
+
+    /// The workspace accepted a rejoin's staged key: make it the connection's device key and
+    /// identity, move the policy epoch of the connection's workspace (so live grants end and
+    /// can be granted again), clear the ended-membership mark, then delete the staged key.
+    async fn commit_staged_device(
+        &self,
+        id: &str,
+        signer: &SigningKey,
+        pending: &super::PendingRekey,
+    ) -> Result<()> {
+        self.write_credential(&format!("device:{id}"), &hex(&signer.to_bytes()))?;
+        self.update_registry(|r| {
+            let cluster = r
+                .connections
+                .iter()
+                .find(|saved| saved.id == id)
+                .map(|saved| saved.cluster_connection_id.clone())
+                .context("Unknown Crew connection")?;
+            let epoch = r
+                .connections
+                .iter()
+                .filter(|saved| saved.cluster_connection_id == cluster)
+                .map(|saved| saved.policy_epoch)
+                .max()
+                .unwrap_or(0)
+                + 1;
+            for saved in r
+                .connections
+                .iter_mut()
+                .filter(|saved| saved.cluster_connection_id == cluster)
+            {
+                saved.policy_epoch = epoch;
+                if saved.id == id {
+                    saved.public_key = pending.public_key.clone();
+                    saved.device_id = pending.device_id.clone();
+                }
+            }
+            r.pending_rekeys.remove(id);
+            Ok(())
+        })
+        .await?;
+        self.clear_error_code(id);
+        self.note_member(id);
+        if let Err(error) = self.delete_credential(&staged_device_credential(id)) {
+            tracing::warn!(connection = id, %error, "Couldn't delete a staged Crew device key after using it");
+        }
+        Ok(())
+    }
+
+    /// `crew_account_unsupported` for the connection `id` (AO-9), worded by role. To the host
+    /// (the account the bridge signs in as has the workspace's host UID, as the server's own
+    /// `auth.challenge` answer says, used for words only), how to update Crew there; to anyone
+    /// else, whom to ask, named from a signed snapshot when this computer can still read one.
+    async fn account_unsupported(&self, id: &str) -> super::CrewRefusal {
+        let workspace = self.workspace_label(id).await;
+        let Ok(c) = self.connection(id).await else {
+            return super::CrewRefusal::account_unsupported_for_member(&workspace, None);
+        };
+        let uid = self
+            .pre_authentication_request(id, "auth.challenge", json!({"device_id": c.device_id}))
+            .await
+            .ok()
+            .and_then(|answer| answer["uid"].as_u64());
+        if uid == Some(u64::from(c.owner_uid)) {
+            return super::CrewRefusal::account_unsupported_for_host(&workspace, &c.ssh_target);
+        }
+        let host = self.host_username(id, &c).await;
+        super::CrewRefusal::account_unsupported_for_member(&workspace, host.as_deref())
+    }
+
+    /// The workspace host's username, from a signed snapshot: the active principal with the
+    /// host UID `hello` pinned. `None` when this computer cannot read one.
+    async fn host_username(&self, id: &str, c: &Connection) -> Option<String> {
+        let snapshot = self
+            .signed_request(id, "workspace.snapshot", json!({}), None)
+            .await
+            .ok()?;
+        snapshot["principals"]
+            .as_array()?
+            .iter()
+            .find(|principal| {
+                principal["uid"].as_u64() == Some(u64::from(c.owner_uid))
+                    && principal["active"].as_bool() != Some(false)
+            })
+            .and_then(|principal| principal["username"].as_str())
+            .filter(|name| biorouter_crew::valid_username(name))
+            .map(str::to_owned)
     }
 }
 
@@ -5413,6 +6097,517 @@ fi
         };
         let preview = preview_with(vec![foreign], same).await;
         assert_eq!(preview.institution_conflict, None);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    // -----------------------------------------------------------------------------------------
+    // Account ownership (AO-9)
+    // -----------------------------------------------------------------------------------------
+
+    /// The workspace's `{code, message}` refusal as the fake bridge answers it.
+    fn broker_error(code: &str, message: &str) -> Value {
+        json!({"error": {"code": code, "message": message}})
+    }
+
+    fn unknown_device() -> Value {
+        broker_error("unauthorized", "unauthorized: unknown device")
+    }
+
+    fn refusal_code(error: &anyhow::Error) -> Option<&'static str> {
+        crate::crew::CrewRefusal::find(error).map(crate::crew::CrewRefusal::code)
+    }
+
+    /// AO-9's join state table: against a server that advertises `account_identity_v1`, the
+    /// join status is read from the unsigned `account.status`, never from
+    /// `enrollment.pending`, and no device code is shown.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn the_account_status_maps_to_each_join_state() {
+        if !crate::test_sandbox::in_a_process_of_its_own() {
+            return;
+        }
+        let (root, _env, connection, manager) = joiner_fixture(
+            "account-status",
+            "6a6a6a6a-6a6a-46a6-86a6-6a6a6a6a6a6a",
+            &[JOIN_BY_NAME_CAPABILITY, ACCOUNT_IDENTITY_CAPABILITY],
+        )
+        .await;
+        let id = connection.id.as_str();
+        let invited = json!({"role": "invited", "workspace_name": "lab", "username": "bob",
+            "invited_by": {"username": "alice", "display_name": "Alice Chen"},
+            "expires_at": now_seconds() + 3600, "expired": false});
+        let mut expired = invited.clone();
+        expired["expired"] = json!(true);
+        let member = json!({"role": "member", "workspace_name": "lab", "username": "bob",
+            "host_username": "alice", "devices": 1});
+        let host = json!({"role": "host", "workspace_name": "lab", "username": "bob",
+            "host_username": "bob", "devices": 0, "others_connected": 2});
+        let known = json!({"result": {}});
+        let cases = [
+            (invited, unknown_device(), JoinState::Ready),
+            (expired, unknown_device(), JoinState::Expired),
+            (member.clone(), unknown_device(), JoinState::Ready),
+            (host.clone(), unknown_device(), JoinState::Ready),
+            (member, known, JoinState::Joined),
+            (
+                json!({"role": "removed", "workspace_name": "lab", "username": "bob"}),
+                unknown_device(),
+                JoinState::Removed,
+            ),
+            (
+                json!({"role": "none", "workspace_name": "lab"}),
+                unknown_device(),
+                JoinState::NotInvited,
+            ),
+        ];
+        for (case, (account, probe, expected)) in cases.into_iter().enumerate() {
+            write_fake_ssh(
+                &root,
+                &[],
+                &[
+                    ("account.status", json!({"result": account})),
+                    ("profile.suggest", probe),
+                ],
+            );
+            attach_transport(&manager, &connection).await;
+            let status = manager.join_status(id).await.unwrap();
+            assert_eq!(status.status, expected, "case {case}");
+            assert_eq!(
+                status.code, None,
+                "case {case}: no code against this server"
+            );
+            assert_eq!(status.workspace_name.as_deref(), Some("lab"));
+            // An invitation, live or expired, says who sent it.
+            if case < 2 {
+                assert_eq!(status.inviter.as_ref().unwrap().display_name, "Alice Chen");
+                assert!(status.expires_at.is_some());
+            } else {
+                assert_eq!(status.inviter, None, "case {case}");
+            }
+            assert_eq!(
+                serde_json::to_value(status.status).unwrap(),
+                json!(match expected {
+                    JoinState::Ready => "ready",
+                    JoinState::Removed => "removed",
+                    JoinState::Expired => "expired",
+                    JoinState::Joined => "joined",
+                    _ => "not_invited",
+                })
+            );
+        }
+        assert!(
+            logged(&root, "enrollment.pending").is_empty(),
+            "the account status replaces enrollment.pending"
+        );
+        assert!(
+            logged(&root, "auth.account").is_empty(),
+            "a status read never joins"
+        );
+        assert!(logged(&root, "account.status")
+            .iter()
+            .all(|line| !line.contains("\"auth\"") && !line.contains("signature")));
+        // An unknown device of an account the workspace counts in never ends its membership.
+        assert!(manager.transports.lock().await.contains_key(id));
+
+        // The parsed answer, for the host: the counts the host alone is told.
+        write_fake_ssh(&root, &[], &[("account.status", json!({"result": host}))]);
+        attach_transport(&manager, &connection).await;
+        let status = manager.account_status(id).await.unwrap();
+        assert_eq!(status.role, AccountRole::Host);
+        assert_eq!(
+            (
+                status.devices,
+                status.others_connected,
+                status.host_username.as_deref()
+            ),
+            (Some(0), Some(2), Some("bob"))
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    /// `ready` joins with this computer's key and no code, through `auth.account`; a removed
+    /// account is told so, naming the workspace.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn join_on_ready_sends_auth_account_and_a_removal_names_the_workspace() {
+        if !crate::test_sandbox::in_a_process_of_its_own() {
+            return;
+        }
+        let (root, _env, connection, manager) = joiner_fixture(
+            "account-join",
+            "6b6b6b6b-6b6b-46b6-86b6-6b6b6b6b6b6b",
+            &[ACCOUNT_IDENTITY_CAPABILITY],
+        )
+        .await;
+        let id = connection.id.as_str();
+        let invited = json!({"result": {"role": "invited", "workspace_name": "lab",
+            "invited_by": {"username": "alice", "display_name": "Alice Chen"},
+            "expires_at": now_seconds() + 3600}});
+        let joined = json!({"result": {
+            "principal": {"id": "p-2", "username": "bob", "display_name": "Bob Lee"},
+            "device_id": connection.device_id, "workspace": {"id": WORKSPACE_ID, "name": "lab"},
+            "role": "member", "admitted": "invitation"}});
+        write_fake_ssh(
+            &root,
+            &[],
+            &[("account.status", invited), ("auth.account", joined)],
+        );
+        attach_transport(&manager, &connection).await;
+        let status = manager.join(id).await.unwrap();
+        assert_eq!(status.status, JoinState::Joined);
+        assert_eq!(status.code, None);
+        assert_eq!(status.inviter.unwrap().username, "alice");
+        let sent = logged(&root, "auth.account");
+        assert_eq!(sent.len(), 1);
+        let frame: Value = serde_json::from_str(&sent[0]).unwrap();
+        assert_eq!(frame["params"]["public_key"], json!(connection.public_key));
+        assert!(frame["params"].get("replaces_device_id").is_none());
+        assert_eq!(frame["auth"]["device_id"], json!(connection.device_id));
+        assert!(frame["auth"]["signature"]
+            .as_str()
+            .is_some_and(|s| s.len() == 128));
+        assert!(logged(&root, "auth.join").is_empty());
+
+        // The account join itself reports what the workspace said.
+        attach_transport(&manager, &connection).await;
+        let account = manager.account_join(id).await.unwrap();
+        assert_eq!(account.status.status, JoinState::Joined);
+        assert_eq!(account.role, AccountRole::Member);
+        assert_eq!(account.admitted, Some(AccountAdmission::Invitation));
+        assert_eq!(account.principal.unwrap().display_name, "Bob Lee");
+        // An answer naming another device is not taken as joined.
+        write_fake_ssh(
+            &root,
+            &[],
+            &[(
+                "auth.account",
+                json!({"result": {"device_id": "cd".repeat(32), "role": "member"}}),
+            )],
+        );
+        attach_transport(&manager, &connection).await;
+        let error = manager.account_join(id).await.unwrap_err();
+        assert!(error.to_string().contains("different device"), "{error}");
+
+        // Removed: the status says so before anything is sent, and the workspace's own refusal
+        // reads the same.
+        let removed_sentence = "You were removed from lab. Ask a member to invite you again.";
+        write_fake_ssh(
+            &root,
+            &[],
+            &[
+                (
+                    "account.status",
+                    json!({"result": {"role": "removed", "workspace_name": "lab"}}),
+                ),
+                (
+                    "auth.account",
+                    broker_error("removed", "removed: You were removed from lab."),
+                ),
+            ],
+        );
+        attach_transport(&manager, &connection).await;
+        let sent_before = logged(&root, "auth.account").len();
+        let error = manager.join(id).await.unwrap_err();
+        let typed = error.downcast_ref::<JoinRefused>().unwrap();
+        assert_eq!(typed.api_code(), "crew_join_removed");
+        assert_eq!(error.to_string(), removed_sentence);
+        assert_eq!(logged(&root, "auth.account").len(), sent_before);
+        attach_transport(&manager, &connection).await;
+        let error = manager.account_join(id).await.unwrap_err();
+        assert_eq!(
+            error.downcast_ref::<JoinRefused>().unwrap().api_code(),
+            "crew_join_removed"
+        );
+        assert_eq!(error.to_string(), removed_sentence);
+
+        // An account nobody invited is `not_member`, read as not invited.
+        write_fake_ssh(
+            &root,
+            &[],
+            &[(
+                "auth.account",
+                broker_error("not_member", "not_member: not a member"),
+            )],
+        );
+        attach_transport(&manager, &connection).await;
+        let error = manager.account_join(id).await.unwrap_err();
+        assert_eq!(
+            error.downcast_ref::<JoinRefused>().unwrap().api_code(),
+            "crew_join_not_invited"
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    /// AO-9's compatibility rows: against a server without `account_identity_v1`, the account
+    /// join, the account status and a rejoin send nothing account-based and answer
+    /// `crew_account_unsupported`, worded for the host or for anyone else.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn an_older_server_answers_account_unsupported_by_role() {
+        if !crate::test_sandbox::in_a_process_of_its_own() {
+            return;
+        }
+        let (root, _env, connection, manager) = joiner_fixture(
+            "account-unsupported",
+            "6c6c6c6c-6c6c-46c6-86c6-6c6c6c6c6c6c",
+            &[JOIN_BY_NAME_CAPABILITY],
+        )
+        .await;
+        // The fake bridge's account has UID 10001; this workspace's host is 1000, Alice.
+        let principals = json!({"result": {"principals": [
+            {"id": "p-1", "uid": 1000, "username": "alice", "active": true},
+            {"id": "p-2", "uid": 10001, "username": "bob", "active": true}]}});
+        write_fake_ssh(&root, &[], &[("workspace.snapshot", principals)]);
+        attach_transport(&manager, &connection).await;
+        let id = connection.id.as_str();
+        let member_sentence = "lab's server runs an older Crew. Ask @alice to update it.";
+        for error in [
+            manager.account_join(id).await.unwrap_err(),
+            manager.account_status(id).await.unwrap_err(),
+            manager.rejoin(id).await.unwrap_err(),
+        ] {
+            assert_eq!(refusal_code(&error), Some("crew_account_unsupported"));
+            assert_eq!(error.to_string(), member_sentence);
+        }
+        assert!(logged(&root, "auth.account").is_empty());
+        assert!(logged(&root, "account.status").is_empty());
+
+        // The host is told how to update Crew there.
+        let (mut hosted, device) = joiner("6d6d6d6d-6d6d-46d6-86d6-6d6d6d6d6d6d");
+        hosted.owner_uid = 10001;
+        let host_root = root.join("host-profile");
+        fs::create_dir_all(&host_root).unwrap();
+        let host =
+            connected_manager(&host_root, &hosted, &device, &[JOIN_BY_NAME_CAPABILITY]).await;
+        let error = host.account_join(&hosted.id).await.unwrap_err();
+        assert_eq!(refusal_code(&error), Some("crew_account_unsupported"));
+        assert_eq!(
+            error.to_string(),
+            "lab's server runs an older Crew. Update it with biorouter crew setup --server bob@hpc.example.org."
+        );
+        assert!(logged(&root, "auth.account").is_empty());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    /// Add this computer again: a new device key in place, under the same connection ID, sent
+    /// as a staged key that replaces the saved device, saved only once the workspace accepts
+    /// it, and moving the policy epoch. A refusal keeps the key the connection had.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn rejoin_replaces_the_device_key_in_place_and_a_refusal_keeps_it() {
+        if !crate::test_sandbox::in_a_process_of_its_own() {
+            return;
+        }
+        let (root, _env, connection, manager) = joiner_fixture(
+            "account-rejoin",
+            "6e6e6e6e-6e6e-46e6-86e6-6e6e6e6e6e6e",
+            &[ACCOUNT_IDENTITY_CAPABILITY],
+        )
+        .await;
+        let id = connection.id.clone();
+        let before = manager.connection(&id).await.unwrap();
+        write_fake_ssh(
+            &root,
+            &[],
+            &[(
+                "auth.account",
+                json!({"result": {"role": "member", "admitted": "device",
+                    "principal": {"username": "bob", "display_name": "bob"}}}),
+            )],
+        );
+        attach_transport(&manager, &connection).await;
+        let joined = manager.rejoin(&id).await.unwrap();
+        assert_eq!(joined.status.status, JoinState::Joined);
+        assert_eq!(joined.role, AccountRole::Member);
+
+        let after = manager.connection(&id).await.unwrap();
+        assert_eq!(after.id, before.id, "the connection keeps its ID");
+        assert_ne!(after.public_key, before.public_key);
+        assert_ne!(after.device_id, before.device_id);
+        assert_eq!(
+            after.policy_epoch,
+            before.policy_epoch + 1,
+            "live grants end"
+        );
+        let sent = logged(&root, "auth.account");
+        assert_eq!(sent.len(), 1);
+        let frame: Value = serde_json::from_str(&sent[0]).unwrap();
+        assert_eq!(frame["params"]["public_key"], json!(after.public_key));
+        assert_eq!(
+            frame["params"]["replaces_device_id"],
+            json!(before.device_id)
+        );
+        assert_eq!(frame["auth"]["device_id"], json!(after.device_id));
+        // The saved key is the new one, the staged key is gone, and the file agrees.
+        let saved = manager.read_credential(&format!("device:{id}")).unwrap();
+        let saved_key: [u8; 32] = unhex(&saved).unwrap().try_into().unwrap();
+        assert_eq!(
+            hex(&SigningKey::from_bytes(&saved_key)
+                .verifying_key()
+                .to_bytes()),
+            after.public_key
+        );
+        assert!(manager
+            .read_credential(&staged_device_credential(&id))
+            .is_err());
+        assert!(manager.registry.lock().await.pending_rekeys.is_empty());
+        let on_disk: Registry =
+            serde_json::from_slice(&fs::read(root.join("connections.json")).unwrap()).unwrap();
+        assert_eq!(on_disk.connections[0].device_id, after.device_id);
+        assert!(on_disk.pending_rekeys.is_empty());
+
+        // Refused: the staged key goes and the saved one stays.
+        write_fake_ssh(
+            &root,
+            &[],
+            &[("auth.account", broker_error("removed", "removed: gone"))],
+        );
+        attach_transport(&manager, &after).await;
+        let error = manager.rejoin(&id).await.unwrap_err();
+        assert_eq!(
+            error.downcast_ref::<JoinRefused>().unwrap().api_code(),
+            "crew_join_removed"
+        );
+        let kept = manager.connection(&id).await.unwrap();
+        assert_eq!(
+            (&kept.public_key, &kept.device_id, kept.policy_epoch),
+            (&after.public_key, &after.device_id, after.policy_epoch)
+        );
+        assert_eq!(
+            *manager.read_credential(&format!("device:{id}")).unwrap(),
+            *saved
+        );
+        assert!(manager
+            .read_credential(&staged_device_credential(&id))
+            .is_err());
+        assert!(manager.registry.lock().await.pending_rekeys.is_empty());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    /// `crew_device_key_missing`: a key the credential store no longer holds is said so, with
+    /// nothing sent, and adding the computer again repairs it.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_device_key_that_is_gone_is_typed_and_a_rejoin_repairs_it() {
+        if !crate::test_sandbox::in_a_process_of_its_own() {
+            return;
+        }
+        let (root, _env, connection, manager) = joiner_fixture(
+            "account-key-missing",
+            "6f6f6f6f-6f6f-46f6-86f6-6f6f6f6f6f6f",
+            &[ACCOUNT_IDENTITY_CAPABILITY],
+        )
+        .await;
+        let id = connection.id.as_str();
+        manager.delete_credential(&format!("device:{id}")).unwrap();
+        let sentence = "This computer no longer has its key for lab. Choose Add this computer again to make a new one.";
+        for error in [
+            manager.device_code(id).await.unwrap_err(),
+            manager
+                .human_request(id, "profile.suggest", json!({}), None)
+                .await
+                .unwrap_err(),
+            manager.account_join(id).await.unwrap_err(),
+        ] {
+            assert_eq!(refusal_code(&error), Some("crew_device_key_missing"));
+            assert_eq!(error.to_string(), sentence);
+        }
+        assert!(logged(&root, "profile.suggest").is_empty());
+        assert!(logged(&root, "auth.account").is_empty());
+
+        write_fake_ssh(
+            &root,
+            &[],
+            &[("auth.account", json!({"result": {"role": "member"}}))],
+        );
+        attach_transport(&manager, &connection).await;
+        manager.rejoin(id).await.unwrap();
+        assert!(manager.device_code(id).await.is_ok());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    /// `crew_device_not_recognized`: an unknown device of an account the workspace still
+    /// counts in keeps its connection; only a removed account (or a stranger) ends it.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn an_unknown_device_of_a_member_is_not_recognized_and_its_membership_stands() {
+        if !crate::test_sandbox::in_a_process_of_its_own() {
+            return;
+        }
+        let (root, _env, connection, manager) = joiner_fixture(
+            "account-not-recognized",
+            "7a7a7a7a-7a7a-47a7-87a7-7a7a7a7a7a7a",
+            &[ACCOUNT_IDENTITY_CAPABILITY],
+        )
+        .await;
+        let id = connection.id.as_str();
+        manager.note_member(id);
+        write_fake_ssh(
+            &root,
+            &[],
+            &[
+                (
+                    "account.status",
+                    json!({"result": {"role": "member", "workspace_name": "lab"}}),
+                ),
+                ("profile.suggest", unknown_device()),
+            ],
+        );
+        attach_transport(&manager, &connection).await;
+        let error = manager
+            .human_request(id, "profile.suggest", json!({}), None)
+            .await
+            .unwrap_err();
+        assert_eq!(refusal_code(&error), Some("crew_device_not_recognized"));
+        assert_eq!(
+            error.to_string(),
+            "lab no longer recognizes this computer. Choose Add this computer again while you are still a member."
+        );
+        assert!(manager.transports.lock().await.contains_key(id));
+        let saved = manager.connection(id).await.unwrap();
+        assert_eq!(manager.last_error_code(&saved), None);
+
+        write_fake_ssh(
+            &root,
+            &[],
+            &[
+                (
+                    "account.status",
+                    json!({"result": {"role": "removed", "workspace_name": "lab"}}),
+                ),
+                ("profile.suggest", unknown_device()),
+            ],
+        );
+        attach_transport(&manager, &connection).await;
+        let error = manager
+            .human_request(id, "profile.suggest", json!({}), None)
+            .await
+            .unwrap_err();
+        assert_eq!(refusal_code(&error), None);
+        assert!(!manager.transports.lock().await.contains_key(id));
+        let ended = manager.connection(id).await.unwrap();
+        assert_eq!(
+            manager.last_error_code(&ended),
+            Some("crew_membership_ended")
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    /// The removal guard's data (AO-9): only a signed `hello` that advertises
+    /// `account_identity_v1` counts, and no `hello` at all is `None`.
+    #[test]
+    fn account_identity_counts_only_a_signed_capability() {
+        let root = fixture_root("account-identity");
+        let manager = CrewManager::new(root.clone()).unwrap();
+        let id = "7b7b7b7b-7b7b-47b7-87b7-7b7b7b7b7b7b";
+        assert_eq!(manager.account_identity(id), None);
+        remember_hello(&manager, id, 1, &[ACCOUNT_IDENTITY_CAPABILITY]);
+        assert_eq!(manager.account_identity(id), Some(false));
+        assert!(manager.offers_account_identity(id), "offered all the same");
+        remember_hello(&manager, id, 2, &[JOIN_BY_NAME_CAPABILITY]);
+        assert_eq!(manager.account_identity(id), Some(false));
+        remember_hello(&manager, id, 2, &[ACCOUNT_IDENTITY_CAPABILITY]);
+        assert_eq!(manager.account_identity(id), Some(true));
         let _ = fs::remove_dir_all(root);
     }
 }

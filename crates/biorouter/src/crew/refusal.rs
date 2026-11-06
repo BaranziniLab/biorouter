@@ -67,6 +67,28 @@ pub const GRANT_ENDED_SETTINGS_CHANGED: &str = "settings_changed";
 /// `crew_grant_ended`'s `reason` for any other end: removed, timed out, or its task finished.
 pub const GRANT_ENDED_ENDED: &str = "ended";
 
+/// `crew_device_key_missing`: this computer no longer holds the device key of a saved connection
+/// (the keyring has no entry, the development key file is gone, or an unlocked vault lacks it), so
+/// nothing can be signed for it (account ownership AO-9). Add this computer again
+/// (`POST /crew/connections/{id}/rejoin`) makes a new key in place. A locked vault or a refused
+/// keyring keeps its own codes.
+pub const DEVICE_KEY_MISSING: &str = "crew_device_key_missing";
+
+/// `crew_device_not_recognized`: the workspace refused this computer's device as unknown while it
+/// still lists this account as its host or a member (AO-9), so the membership has not ended and
+/// Add this computer again restores the device.
+pub const DEVICE_NOT_RECOGNIZED: &str = "crew_device_not_recognized";
+
+/// `crew_account_unsupported`: the workspace's server runs a Crew without
+/// `account_identity_v1`, so nothing account based (opening a workspace by account, adding this
+/// computer again, the host's first device from another computer) can work there yet (AO-9).
+/// Its sentence depends on whether this account hosts the workspace.
+pub const ACCOUNT_UNSUPPORTED: &str = "crew_account_unsupported";
+
+/// `crew_read_consent_required`: a chat asked to read a connection's workspace content as the
+/// person before the person allowed it (AO-12); the consent card is the way on.
+pub const READ_CONSENT_REQUIRED: &str = "crew_read_consent_required";
+
 /// [`NOT_CONNECTED`]'s sentence. Kept byte for byte: the desktop's transport matchers, a chat's
 /// turn error and a transfer's recovery advice all still read it.
 pub const NOT_CONNECTED_TEXT: &str =
@@ -185,6 +207,71 @@ impl CrewRefusal {
     /// [`PUBLIC_MODEL_REFUSED`] with `sentence`.
     pub(super) fn public_model(sentence: impl Into<String>) -> Self {
         Self::new(PUBLIC_MODEL_REFUSED, sentence)
+    }
+
+    /// [`DEVICE_KEY_MISSING`], answered `409`, naming `workspace` as a person calls it.
+    pub(super) fn device_key_missing(workspace: &str) -> Self {
+        Self::new(
+            DEVICE_KEY_MISSING,
+            format!(
+                "This computer no longer has its key for {workspace}. Choose Add this computer again to make a new one."
+            ),
+        )
+        .status(409)
+        .with("workspace", serde_json::json!(workspace))
+    }
+
+    /// [`DEVICE_NOT_RECOGNIZED`], answered `409`, naming `workspace` as a person calls it.
+    pub(super) fn device_not_recognized(workspace: &str) -> Self {
+        Self::new(
+            DEVICE_NOT_RECOGNIZED,
+            format!(
+                "{workspace} no longer recognizes this computer. Choose Add this computer again while you are still a member."
+            ),
+        )
+        .status(409)
+        .with("workspace", serde_json::json!(workspace))
+    }
+
+    /// [`ACCOUNT_UNSUPPORTED`] said to the workspace's host, who can update Crew on the server
+    /// signed in as `login` (the connection's SSH login).
+    pub(super) fn account_unsupported_for_host(workspace: &str, login: &str) -> Self {
+        Self::new(
+            ACCOUNT_UNSUPPORTED,
+            format!(
+                "{workspace}'s server runs an older Crew. Update it with biorouter crew setup --server {login}."
+            ),
+        )
+        .status(409)
+        .with("workspace", serde_json::json!(workspace))
+        .with("host", serde_json::json!(true))
+        .with("server_login", serde_json::json!(login))
+    }
+
+    /// [`ACCOUNT_UNSUPPORTED`] said to anyone but the host. `host` is the host's username when it
+    /// is known; when it is not, the sentence names the host without one.
+    pub(super) fn account_unsupported_for_member(workspace: &str, host: Option<&str>) -> Self {
+        let message = match host {
+            Some(host) => {
+                format!("{workspace}'s server runs an older Crew. Ask @{host} to update it.")
+            }
+            None => format!("{workspace}'s server runs an older Crew. Ask its host to update it."),
+        };
+        Self::new(ACCOUNT_UNSUPPORTED, message)
+            .status(409)
+            .with("workspace", serde_json::json!(workspace))
+            .with("host", serde_json::json!(false))
+            .with("host_username", serde_json::json!(host))
+    }
+
+    /// [`READ_CONSENT_REQUIRED`], answered `409`, naming `workspace` as a person calls it.
+    pub fn read_consent_required(workspace: &str) -> Self {
+        Self::new(
+            READ_CONSENT_REQUIRED,
+            format!("This chat needs your permission to read {workspace} as you."),
+        )
+        .status(409)
+        .with("workspace", serde_json::json!(workspace))
     }
 }
 
