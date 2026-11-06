@@ -702,6 +702,16 @@ pub struct Session {
     pub privacy_reason: Option<String>,
 }
 
+/// One child of a session, as [`SessionManager::list_subagent_children`] reads it.
+#[derive(Debug, Clone)]
+pub struct SubagentChildRow {
+    /// The child's row, with `message_count` filled and no conversation.
+    pub session: Session,
+    /// Tool requests in the child's stored messages (`toolRequest` and
+    /// `frontendToolRequest` content items).
+    pub tool_call_count: i64,
+}
+
 // `sqlx::FromRow` is hand-written rather than derived (see below) so
 // `privacy_tier` can use the same fail-closed read as [`Session`]. Deliberately
 // not a doc comment: utoipa publishes those as the schema's `description`, and
@@ -1985,6 +1995,23 @@ impl SessionManager {
 
     pub async fn get_session(&self, id: &str, include_messages: bool) -> Result<Session> {
         self.storage.get_session(id, include_messages).await
+    }
+
+    /// The `sub_agent` sessions whose `parent_session_id` is `parent_session_id`,
+    /// oldest first (spawn order), each with its message count and the number of
+    /// tool calls it made. Backs
+    /// [`crate::agents::subagent_roster::session_subagents`].
+    ///
+    /// No conversation is loaded (`Session::conversation` is `None`), and the
+    /// whole answer is two statements however many children there are: one for
+    /// the rows with a correlated message count, one grouped count of tool
+    /// requests across every child's messages. Applies NO privacy filtering; the
+    /// caller decides who may see which row.
+    pub async fn list_subagent_children(
+        &self,
+        parent_session_id: &str,
+    ) -> Result<Vec<SubagentChildRow>> {
+        self.storage.list_subagent_children(parent_session_id).await
     }
 
     /// Resume (or create + bind) a durable session keyed by a stable external
@@ -6319,6 +6346,72 @@ impl SessionStorage {
         }
 
         Ok(session)
+    }
+
+    /// See [`SessionManager::list_subagent_children`].
+    async fn list_subagent_children(
+        &self,
+        parent_session_id: &str,
+    ) -> Result<Vec<SubagentChildRow>> {
+        let pool = self.pool().await?;
+        // Oldest first, and `rowid` breaks the tie: `created_at` has whole-second
+        // precision, and a fan-out creates several siblings in the same second.
+        let sessions = sqlx::query_as::<_, Session>(
+            r#"
+        SELECT s.id, s.working_dir, s.name, s.description, s.user_set_name, s.session_type,
+               s.created_at, s.updated_at, s.extension_data,
+               s.total_tokens, s.input_tokens, s.output_tokens,
+               s.accumulated_total_tokens, s.accumulated_input_tokens, s.accumulated_output_tokens,
+               s.schedule_id, s.workflow_json, s.user_workflow_values_json,
+               s.provider_name, s.model_config_json, s.diverged_from, s.branch_point_msg_uid,
+               s.parent_session_id, s.privacy_tier, s.privacy_reason,
+               (SELECT COUNT(*) FROM messages m WHERE m.session_id = s.id) AS message_count
+        FROM sessions s
+        WHERE s.session_type = 'sub_agent' AND s.parent_session_id = ?
+        ORDER BY s.created_at ASC, s.rowid ASC
+    "#,
+        )
+        .bind(parent_session_id)
+        .fetch_all(pool)
+        .await?;
+        if sessions.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        // ONE grouped count across every child, not one query per child. A tool
+        // call is a `toolRequest` (or `frontendToolRequest`) item in a stored
+        // message's `content_json` array, which `MessageContent`'s serde tag
+        // writes as `"type"`. Blob externalization (BR-7) only rewrites tool
+        // RESPONSES, so a request is always inline. The `json_valid` and
+        // `j.type` guards keep one malformed row from failing the whole count:
+        // `json_each` and `json_extract` both raise on text that is not JSON.
+        let counts: Vec<(String, i64)> = sqlx::query_as(
+            r#"
+        SELECT m.session_id, COUNT(*)
+        FROM sessions s
+        JOIN messages m ON m.session_id = s.id
+        JOIN json_each(CASE WHEN json_valid(m.content_json) THEN m.content_json ELSE '[]' END) j
+        WHERE s.session_type = 'sub_agent' AND s.parent_session_id = ?
+          AND (CASE WHEN j.type = 'object' THEN json_extract(j.value, '$.type') END)
+              IN ('toolRequest', 'frontendToolRequest')
+        GROUP BY m.session_id
+    "#,
+        )
+        .bind(parent_session_id)
+        .fetch_all(pool)
+        .await?;
+        let counts: HashMap<String, i64> = counts.into_iter().collect();
+
+        Ok(sessions
+            .into_iter()
+            .map(|session| {
+                let tool_call_count = counts.get(&session.id).copied().unwrap_or(0);
+                SubagentChildRow {
+                    session,
+                    tool_call_count,
+                }
+            })
+            .collect())
     }
 
     async fn get_token_counts(&self, id: &str) -> Result<SessionTokenCounts> {
@@ -21437,5 +21530,127 @@ mod opening_is_not_activity_tests {
 
         let order = history_order(&sm).await;
         assert_eq!(order.last(), Some(&newest), "all three moved above it");
+    }
+}
+
+#[cfg(test)]
+mod subagent_children_tests {
+    use super::*;
+    use crate::conversation::message::Message;
+
+    async fn child_of(sm: &SessionManager, parent: &str, name: &str) -> String {
+        let child = sm
+            .create_session(
+                std::env::temp_dir(),
+                name.to_string(),
+                SessionType::SubAgent,
+            )
+            .await
+            .unwrap();
+        sm.update(&child.id)
+            .parent_session_id(Some(parent.to_string()))
+            .apply()
+            .await
+            .unwrap();
+        child.id
+    }
+
+    fn call(name: &str) -> rmcp::model::CallToolRequestParams {
+        rmcp::model::CallToolRequestParams {
+            task: None,
+            name: name.to_string().into(),
+            arguments: None,
+            meta: None,
+        }
+    }
+
+    /// Siblings created in the same second keep their spawn order (the `rowid`
+    /// tie-break), and the listing loads no conversation.
+    #[tokio::test]
+    async fn children_are_listed_in_spawn_order_without_their_conversation() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let sm = SessionManager::new(temp.path().to_path_buf());
+        let mut expected = Vec::new();
+        for i in 0..6 {
+            expected.push(child_of(&sm, "parent-order", &format!("Subagent: {i}")).await);
+        }
+        sm.add_message(&expected[0], &Message::user().with_text("hello"))
+            .await
+            .unwrap();
+
+        let rows = sm.list_subagent_children("parent-order").await.unwrap();
+        let ids: Vec<&str> = rows.iter().map(|row| row.session.id.as_str()).collect();
+        assert_eq!(ids, expected.iter().map(String::as_str).collect::<Vec<_>>());
+        assert!(rows.iter().all(|row| row.session.conversation.is_none()));
+        assert_eq!(rows[0].session.message_count, 1);
+        assert_eq!(rows[1].session.message_count, 0);
+        assert!(rows
+            .iter()
+            .all(|row| row.session.session_type == SessionType::SubAgent));
+        assert!(sm
+            .list_subagent_children("nobody")
+            .await
+            .unwrap()
+            .is_empty());
+    }
+
+    /// One malformed `content_json` row must not fail the grouped tool-call
+    /// count for every child: `json_each` raises on text that is not JSON.
+    #[tokio::test]
+    async fn a_malformed_message_row_does_not_break_the_tool_call_count() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let sm = SessionManager::new(temp.path().to_path_buf());
+        let child = child_of(&sm, "parent-malformed", "Subagent: malformed").await;
+        let other = child_of(&sm, "parent-malformed", "Subagent: clean").await;
+        sm.add_message(
+            &child,
+            &Message::assistant()
+                .with_tool_request("a", Ok(call("developer__shell")))
+                .with_tool_request("b", Ok(call("developer__shell"))),
+        )
+        .await
+        .unwrap();
+        sm.add_message(
+            &other,
+            &Message::assistant().with_tool_request("c", Ok(call("todo__add"))),
+        )
+        .await
+        .unwrap();
+
+        let pool = sm.storage().pool().await.unwrap();
+        sqlx::query(
+            "INSERT INTO messages (session_id, role, content_json, created_timestamp) \
+             VALUES (?, 'assistant', 'not json at all', 1)",
+        )
+        .bind(&child)
+        .execute(pool)
+        .await
+        .unwrap();
+        // A well-formed array whose items are not objects counts nothing.
+        sqlx::query(
+            "INSERT INTO messages (session_id, role, content_json, created_timestamp) \
+             VALUES (?, 'assistant', '[1, \"toolRequest\", null]', 2)",
+        )
+        .bind(&child)
+        .execute(pool)
+        .await
+        .unwrap();
+
+        let rows = sm.list_subagent_children("parent-malformed").await.unwrap();
+        let count = |id: &str| {
+            rows.iter()
+                .find(|row| row.session.id == id)
+                .map(|row| row.tool_call_count)
+        };
+        assert_eq!(count(&child), Some(2));
+        assert_eq!(count(&other), Some(1));
+        assert_eq!(
+            rows.iter()
+                .find(|row| row.session.id == child)
+                .unwrap()
+                .session
+                .message_count,
+            3
+        );
     }
 }

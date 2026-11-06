@@ -1,7 +1,9 @@
 //! BR-71: the `workspace` platform extension — the agent's tool surface over
 //! the daemon's sessions and (when attached) the GUI's tabs. Design of record:
 //! docs/agent-loop/designs/agent-workspace-control.md. Registered
-//! `default_enabled: false`; enabling is an explicit user decision (§5).
+//! `default_enabled: true` as a capability (#76); the delegation gate
+//! (`Agent::subagents_enabled`) still decides whether `subagent` and
+//! `workspace_orchestrate` are offered in a given chat.
 
 use crate::agents::extension::PlatformExtensionContext;
 use crate::agents::mcp_client::{Error, McpClientTrait, McpMeta};
@@ -128,8 +130,10 @@ const INSTRUCTIONS: &str = indoc! {r#"
       panel is an image with no readable text — you cannot act on a screenshot.
     - subagent: the ONLY way to delegate. A fresh agent with its own context
       window; fan-out means one call per child, with parallel calls when useful.
-      In the app, the child is a visible tab the user can watch and steer. You
-      receive its final summary; read tool_calls to verify its work.
+      It runs in the background, listed in the chat's side panel, where the
+      user can open it. You receive its final summary; read tool_calls to
+      verify its work. For a staged run the user asked for, plan phases with
+      workspace_orchestrate.
     Only the workspace tools in your tool list are available.
     Routing: to search past conversations by content use chatrecall, not these
     tools. Durable facts belong in Memory. To fold a conversation into a
@@ -732,6 +736,75 @@ struct WorkspaceWatchParams {
     assume_running: Option<bool>,
 }
 
+/// `workspace_orchestrate`'s arguments. One tool with an `action` rather than
+/// five tools, because the plan is one record and every action is a small edit
+/// of it; five more tool schemas would cost every turn of every delegating chat.
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[schemars(extend("required" = ["action"]))]
+struct WorkspaceOrchestrateParams {
+    /// "plan": declare or revise the phases (needs `phases`; `title` too for a
+    /// new plan). "start": move `phase` to in progress. "handoff": write the
+    /// results `phase` carries forward (needs `summary`). "complete": close
+    /// `phase` once none of its subagents is still working (`status` and
+    /// `summary` optional). "read": show the plan and its progress.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    action: Option<String>,
+    /// The plan's title (at most 80 characters). Required for a new plan; kept
+    /// when a revision omits it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    title: Option<String>,
+    /// What the whole plan must achieve (at most 500 characters).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    goal: Option<String>,
+    /// For "plan": every phase, in order (at most 12). A revision lists them
+    /// all again; a phase whose id you keep keeps its subagents, status and
+    /// hand-off.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    phases: Option<Vec<crate::agents::orchestration_plan::PlanPhaseInput>>,
+    /// The phase id, for "start", "handoff" and "complete".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    phase: Option<String>,
+    /// For "handoff", and optionally "complete": the results this phase hands
+    /// to the subagents of later phases (at most 4000 characters).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    summary: Option<String>,
+    /// For "complete": "completed" (default), "blocked" or "skipped".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    status: Option<String>,
+    /// For "plan": true replaces a finished plan (every phase completed or
+    /// skipped) with a new one, whose phases start empty. Use it for further
+    /// work once a plan has reached its 64-subagent or 12-phase limit.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    fresh: Option<bool>,
+}
+
+/// The phase-plan tool's bare name. `agents/agent.rs` reads it to strip the
+/// tool from a chat whose delegation gate is closed; the dispatcher and
+/// `get_tools` spell the literal, because the dispatcher-name guard reads
+/// literals out of this file's source.
+pub const ORCHESTRATE_TOOL_NAME: &str = "workspace_orchestrate";
+
+/// The model-facing description of `workspace_orchestrate`. A constant so the
+/// test that pins its when-to-use and when-not-to wording reads the same text
+/// the model does.
+const ORCHESTRATE_DESCRIPTION: &str = concat!(
+    "Run delegated work in phases: plan, research, execution, implementation, verification, ",
+    "testing, auditing, review, meeting, synthesis or other. Use it when the user asks for a ",
+    "multi-phase or workflow-style run, or a plan with stages. It is optional: a simple ",
+    "delegation never needs it, just call `subagent`. ",
+    "action \"plan\" declares or revises the phases (id, title, kind, goal, depends_on naming ",
+    "earlier phases). Spawn into a phase with the subagent tool's `phase` and `role` ",
+    "parameters; the first spawn starts the phase, or use action \"start\". ",
+    "action \"complete\" is a barrier: call it only after watching the phase's subagents with ",
+    "workspace_watch mode \"all\", and it is refused while any of them is still working. ",
+    "A hand-off (action \"handoff\", or `summary` on complete; composed from the subagents' ",
+    "results when you write none) carries a phase's results forward: every subagent later ",
+    "spawned into a phase that depends on it receives them, which is how agents of later ",
+    "phases meet earlier results. action \"read\" shows the plan with per-phase progress. ",
+    "Subagents run in the background; the user sees the plan and its subagents in the chat's ",
+    "side panel."
+);
+
 /// The `new:` half of `workspace_open`'s arguments.
 ///
 /// ⚠ **`kind` is declared first and is required, and that is the whole of issue
@@ -850,7 +923,8 @@ const DELEGATION_IS_NOT_THIS_TOOL: &str = concat!(
     "and History can never nest it under you. Delegation has its own tool. Call `subagent` with ",
     "`instructions` instead — it creates the child as session_type \"sub_agent\", stamps this ",
     "conversation as its parent before the child's first turn, applies the subagent restrictions ",
-    "and lifecycle, opens a tab the user can watch, and returns the child's summary to you. If ",
+    "and lifecycle, runs it in the background where the user can follow it from the chat's ",
+    "side panel, and returns the child's summary to you. If ",
     "you did mean a conversation for the USER to own rather than a delegate of yours, pass ",
     "kind:\"user\". Nothing was created."
 );
@@ -1610,7 +1684,7 @@ const PENDING_TOOLS: &[(&str, &str)] = &[];
 /// file's `tests` module) reads the `match` in `call_tool` out of this file's
 /// own source, both directions, so a future alias added there without being
 /// added here fails this crate's suite.
-pub(crate) const DISPATCHED_TOOL_NAMES: [&str; 9] = [
+pub(crate) const DISPATCHED_TOOL_NAMES: [&str; 10] = [
     "workspace_list",
     "workspace_read_conversation",
     "workspace_send_prompt",
@@ -1619,6 +1693,7 @@ pub(crate) const DISPATCHED_TOOL_NAMES: [&str; 9] = [
     "workspace_watch",
     "workspace_open",
     "workspace_read_panel",
+    "workspace_orchestrate",
     // Retired from `get_tools()` — reading and capturing are one tool now — and
     // still accepted by the dispatcher, which is precisely why it has to be
     // here. See the warning above.
@@ -1717,7 +1792,7 @@ impl WorkspaceClient {
     /// advertised tool surface against the capability table. A hand-maintained
     /// mirror of this function is the one place either guard can rot silently.
     pub fn get_tools() -> Vec<Tool> {
-        let mut tools = Self::panel_tools();
+        let mut tools = [Self::panel_tools(), vec![Self::orchestrate_tool()]].concat();
         tools.extend([
             Self::tool(
                 "workspace_list",
@@ -1823,6 +1898,20 @@ impl WorkspaceClient {
             ),
         ]);
         tools
+    }
+
+    /// The phase plan of a staged delegation, split out of [`Self::get_tools`]
+    /// for the per-function line baseline. Offered only where the spawn tool
+    /// is (the auto-injected grant lists it, and `Agent::list_tools_for` strips
+    /// it with the spawn tool when the delegation gate is closed), because a
+    /// plan nothing can be spawned into is a plan for nothing.
+    fn orchestrate_tool() -> Tool {
+        Self::tool(
+            "workspace_orchestrate",
+            ORCHESTRATE_DESCRIPTION,
+            serde_json::to_value(schema_for!(WorkspaceOrchestrateParams)).unwrap(),
+            false,
+        )
     }
 
     /// The preview-panel pair, split out of [`Self::get_tools`] only because
@@ -5932,6 +6021,16 @@ impl McpClientTrait for WorkspaceClient {
                 .await
             }
             "workspace_open" => self.handle_open(caller, cap, arguments).await,
+            // Builds its own `CallToolResult`, like `workspace_send_prompt`,
+            // because a success carries the plan as structured content.
+            "workspace_orchestrate" => {
+                return Ok(self
+                    .handle_orchestrate(caller, arguments)
+                    .await
+                    .unwrap_or_else(|error| {
+                        CallToolResult::error(vec![Content::text(format!("Error: {error}"))])
+                    }));
+            }
             "workspace_read_panel" | "workspace_capture_panel" => {
                 self.handle_panel(name, caller, cap, arguments).await
             }
@@ -5959,6 +6058,284 @@ impl McpClientTrait for WorkspaceClient {
     }
 
     async fn get_moim(&self, session_id: &str) -> Option<String> {
+        self.moim_parts(session_id, MoimParts::ALL).await
+    }
+
+    async fn get_moim_for(
+        &self,
+        session_id: &str,
+        config: &crate::agents::ExtensionConfig,
+    ) -> Option<String> {
+        self.moim_parts(session_id, MoimParts::granted_by(config))
+            .await
+    }
+}
+
+/// Which parts of this extension's per-turn context a chat's entry grants. Each
+/// part belongs to a tool: the orchestration plan to `workspace_orchestrate`,
+/// the preview panel to `workspace_read_panel`. The auto-injected delegation
+/// entry grants the first and not the second, so a chat that delegates sees
+/// its plan every turn without the panel being read for it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct MoimParts {
+    plan: bool,
+    panel: bool,
+}
+
+impl MoimParts {
+    const ALL: Self = Self {
+        plan: true,
+        panel: true,
+    };
+
+    fn granted_by(config: &crate::agents::ExtensionConfig) -> Self {
+        Self {
+            plan: config.is_tool_available(ORCHESTRATE_TOOL_NAME),
+            panel: config.is_tool_available("workspace_read_panel"),
+        }
+    }
+}
+
+impl WorkspaceClient {
+    /// The per-turn context `parts` allows. A part that is not granted is never
+    /// read, so a chat without the panel tool sends the renderer no
+    /// `read_panel` frame.
+    async fn moim_parts(&self, session_id: &str, parts: MoimParts) -> Option<String> {
+        let plan = if parts.plan {
+            self.plan_moim(session_id).await
+        } else {
+            None
+        };
+        let panel = if parts.panel {
+            self.panel_moim(session_id).await
+        } else {
+            None
+        };
+        match (plan, panel) {
+            (Some(plan), Some(panel)) => Some(format!("{plan}\n\n{panel}")),
+            (plan, panel) => plan.or(panel),
+        }
+    }
+
+    /// The chat's orchestration plan in a few lines, when it has one. Read
+    /// every turn, so a model that has lost the plan to compaction still sees
+    /// which phase it is in and what is left.
+    async fn plan_moim(&self, session_id: &str) -> Option<String> {
+        let sm = &self.context.session_manager;
+        // The cheap read first: most chats have no plan, and they must not pay
+        // for a roster walk on every turn.
+        crate::agents::orchestration_plan::load_plan(sm, session_id)
+            .await
+            .ok()
+            .flatten()?;
+        let snapshot = self.plan_snapshot(session_id).await?;
+        Some(crate::agents::orchestration_plan::render_moim(&snapshot))
+    }
+
+    /// Run one `workspace_orchestrate` action against the caller's plan and
+    /// return the sentence that heads the reply ("" for `read`).
+    async fn apply_orchestrate_action(
+        &self,
+        caller: &str,
+        params: &WorkspaceOrchestrateParams,
+    ) -> Result<String, String> {
+        use crate::agents::orchestration_plan as plan;
+
+        let sm = &self.context.session_manager;
+        let action = params
+            .action
+            .as_deref()
+            .map(|a| a.trim().to_ascii_lowercase())
+            .unwrap_or_default();
+        let require_phase = || {
+            params
+                .phase
+                .as_deref()
+                .map(str::trim)
+                .filter(|p| !p.is_empty())
+                .map(str::to_string)
+                .ok_or_else(|| format!("action \"{action}\" needs `phase`, a phase id."))
+        };
+        let now = chrono::Utc::now();
+
+        match action.as_str() {
+            "plan" => {
+                let phases = params.phases.clone().ok_or_else(|| {
+                    "action \"plan\" needs `phases`: every phase, in order.".to_string()
+                })?;
+                let title = params.title.clone();
+                let goal = params.goal.clone();
+                let fresh = params.fresh.unwrap_or(false);
+                let (revising, replaced) = plan::mutate_plan(sm, caller, move |current| {
+                    let existed = current.is_some();
+                    let next = if fresh {
+                        plan::apply_fresh_plan(current, title.as_deref(), goal.as_deref(), &phases)
+                    } else {
+                        plan::apply_plan(current, title.as_deref(), goal.as_deref(), &phases)
+                    };
+                    next.map(|next| (next, (existed && !fresh, existed && fresh)))
+                })
+                .await
+                .map_err(|e| e.to_string())?;
+                Ok(if revising {
+                    "Plan revised.".to_string()
+                } else if replaced {
+                    "New plan declared in place of the finished one; its phases start empty. \
+                     Spawn into a phase with subagent phase:\"<id>\"."
+                        .to_string()
+                } else {
+                    "Plan declared. Spawn into a phase with subagent phase:\"<id>\".".to_string()
+                })
+            }
+            "start" => {
+                let phase = require_phase()?;
+                plan::mutate_plan(sm, caller, |current| {
+                    plan::apply_start(current, &phase, now)
+                })
+                .await
+                .map_err(|e| e.to_string())
+            }
+            "handoff" => {
+                let phase = require_phase()?;
+                let summary = params.summary.clone().ok_or_else(|| {
+                    "action \"handoff\" needs `summary`: the results to carry forward.".to_string()
+                })?;
+                plan::mutate_plan(sm, caller, |current| {
+                    plan::apply_handoff(current, &phase, &summary, now).map(|next| (next, ()))
+                })
+                .await
+                .map_err(|e| e.to_string())?;
+                Ok(format!(
+                    "Hand-off written for phase \"{phase}\". Subagents spawned from now on \
+                     into phases that depend on it receive it."
+                ))
+            }
+            "complete" => {
+                let phase = require_phase()?;
+                self.complete_phase(caller, &phase, params, now).await
+            }
+            "read" => Ok(String::new()),
+            "" => Err(
+                "`action` is required: \"plan\", \"start\", \"handoff\", \"complete\" or \
+                 \"read\"."
+                    .to_string(),
+            ),
+            other => Err(format!(
+                "Unknown action \"{other}\". Use \"plan\", \"start\", \"handoff\", \
+                 \"complete\" or \"read\"."
+            )),
+        }
+    }
+
+    /// `action:"complete"`, the barrier. The phase's children are read BEFORE
+    /// the write and the transition is handed exactly the ids that were looked
+    /// at, so a child recorded in between is refused rather than skipped over.
+    async fn complete_phase(
+        &self,
+        caller: &str,
+        phase: &str,
+        params: &WorkspaceOrchestrateParams,
+        now: chrono::DateTime<chrono::Utc>,
+    ) -> Result<String, String> {
+        use crate::agents::orchestration_plan as plan;
+
+        let sm = &self.context.session_manager;
+        let status = match params
+            .status
+            .as_deref()
+            .map(|s| s.trim().to_ascii_lowercase())
+            .as_deref()
+        {
+            None | Some("") | Some("completed") | Some("complete") | Some("done") => {
+                plan::PhaseStatus::Completed
+            }
+            Some("blocked") => plan::PhaseStatus::Blocked,
+            Some("skipped") | Some("skip") => plan::PhaseStatus::Skipped,
+            Some(other) => {
+                return Err(format!(
+                    "status \"{other}\" is not one complete accepts: \"completed\" (the \
+                     default), \"blocked\" or \"skipped\"."
+                ))
+            }
+        };
+        // Read BEFORE the children are, and compared again inside the write: a
+        // spawn into this phase that is still starting, or that began while
+        // this call ran, may have a child the states below do not show.
+        let spawns_before = plan::phase_spawn_mark(caller, phase);
+        let stored = plan::load_plan(sm, caller)
+            .await
+            .map_err(|e| e.to_string())?;
+        let agents = stored
+            .as_ref()
+            .and_then(|p| p.phases.iter().find(|ph| ph.id == phase))
+            .map(|ph| ph.agents.clone())
+            .unwrap_or_default();
+        let states = plan::phase_agent_states(sm, caller, &agents).await;
+        let summary = params.summary.clone();
+        plan::mutate_plan(sm, caller, |current| {
+            let closed =
+                plan::apply_complete(current, phase, status, summary.as_deref(), &states, now)?;
+            plan::refuse_racing_spawns(
+                phase,
+                spawns_before,
+                plan::phase_spawn_mark(caller, phase),
+            )?;
+            Ok(closed)
+        })
+        .await
+        .map_err(|e| e.to_string())
+    }
+
+    /// The plan with per-phase counts from this chat's subagent roster.
+    async fn plan_snapshot(
+        &self,
+        session_id: &str,
+    ) -> Option<crate::agents::orchestration_plan::OrchestrationSnapshot> {
+        let sm = &self.context.session_manager;
+        let rows = match crate::agents::subagent_roster::session_subagents(sm, session_id).await {
+            Ok(roster) => roster.subagents,
+            Err(e) => {
+                tracing::warn!(session_id, "subagent roster unreadable: {e}");
+                Vec::new()
+            }
+        };
+        crate::agents::orchestration_plan::snapshot(sm, session_id, &rows).await
+    }
+
+    /// `workspace_orchestrate`. Every write is one per-key transaction on the
+    /// caller's OWN plan; nothing here reads or writes another conversation,
+    /// so the privacy gates that matter are the ones the spawn path applies.
+    async fn handle_orchestrate(
+        &self,
+        caller: &str,
+        arguments: Option<JsonObject>,
+    ) -> Result<CallToolResult, String> {
+        use crate::agents::orchestration_plan as plan;
+
+        let params: WorkspaceOrchestrateParams = parse_args(arguments)?;
+        let note = self.apply_orchestrate_action(caller, &params).await?;
+
+        let Some(snapshot) = self.plan_snapshot(caller).await else {
+            return Ok(CallToolResult::success(vec![Content::text(
+                "This chat has no orchestration plan. Declare one with action:\"plan\" when \
+                 the user asks for a staged run; a simple delegation needs none.",
+            )]));
+        };
+        let body = plan::render_snapshot_text(&snapshot);
+        let text = if note.is_empty() {
+            body
+        } else {
+            format!("{note}\n\n{body}")
+        };
+        Ok(CallToolResult {
+            content: vec![Content::text(text)],
+            structured_content: serde_json::to_value(&snapshot).ok(),
+            is_error: Some(false),
+            meta: None,
+        })
+    }
+
+    async fn panel_moim(&self, session_id: &str) -> Option<String> {
         let services = workspace_services::get()?;
         if !services.gui_attached() {
             return None;
@@ -15968,6 +16345,7 @@ pub(crate) mod tests {
                 "workspace_close".to_string(),
                 "workspace_list".to_string(),
                 "workspace_open".to_string(),
+                "workspace_orchestrate".to_string(),
                 "workspace_read_conversation".to_string(),
                 "workspace_read_panel".to_string(),
                 "workspace_send_prompt".to_string(),
@@ -16241,5 +16619,620 @@ pub(crate) mod tests {
             "{hushed}"
         );
         assert!(!hushed.contains("s-x opened"), "{hushed}");
+    }
+
+    // ---------------------------------------------------------------------
+    // workspace_orchestrate
+    // ---------------------------------------------------------------------
+
+    /// A client and a real parent chat in its store. Test-build session ids
+    /// carry a per-store prefix, so the parent id is unique in this process and
+    /// a handle registered under it cannot leak into another test.
+    async fn orchestrate_client() -> (WorkspaceClient, String) {
+        let c = client();
+        let parent = c
+            .context
+            .session_manager
+            .create_session(
+                std::env::temp_dir(),
+                "orchestrating parent".to_string(),
+                crate::session::session_manager::SessionType::User,
+            )
+            .await
+            .unwrap();
+        (c, parent.id)
+    }
+
+    async fn orchestrate(
+        c: &WorkspaceClient,
+        caller: &str,
+        args: serde_json::Value,
+    ) -> CallToolResult {
+        let args: rmcp::model::JsonObject = serde_json::from_value(args).unwrap();
+        c.call_tool(
+            "workspace_orchestrate",
+            Some(args),
+            crate::agents::mcp_client::McpMeta::new(
+                caller,
+                crate::privacy::CallCapability::for_test_restricted(),
+            ),
+            CancellationToken::new(),
+        )
+        .await
+        .unwrap()
+    }
+
+    fn result_text(result: &CallToolResult) -> String {
+        result.content[0].as_text().unwrap().text.clone()
+    }
+
+    fn three_phase_args() -> serde_json::Value {
+        json!({
+            "action": "plan",
+            "title": "Review the parser",
+            "goal": "Find and fix what is wrong",
+            "phases": [
+                { "id": "research", "title": "Read the code", "kind": "research" },
+                { "id": "fix", "title": "Fix it", "kind": "implementation",
+                  "depends_on": ["research"] },
+                { "id": "verify", "title": "Check the fix", "kind": "verification" }
+            ]
+        })
+    }
+
+    /// Every action dispatches, writes the plan through its own key and
+    /// answers with the snapshot as structured content.
+    #[tokio::test]
+    async fn every_orchestrate_action_dispatches_and_round_trips_the_plan() {
+        let (c, parent) = orchestrate_client().await;
+
+        let read = orchestrate(&c, &parent, json!({ "action": "read" })).await;
+        assert_eq!(read.is_error, Some(false));
+        assert!(result_text(&read).contains("no orchestration plan"));
+        assert!(read.structured_content.is_none());
+
+        let declared = orchestrate(&c, &parent, three_phase_args()).await;
+        assert_eq!(declared.is_error, Some(false), "{}", result_text(&declared));
+        let text = result_text(&declared);
+        assert!(text.contains("Plan declared"), "{text}");
+        assert!(text.contains("1. research [research]"), "{text}");
+        let structured = declared.structured_content.clone().unwrap();
+        assert_eq!(structured["revision"], 1);
+        assert_eq!(structured["phases"][1]["dependsOn"], json!(["research"]));
+        assert_eq!(structured["phases"][0]["status"], "pending");
+
+        let started = orchestrate(
+            &c,
+            &parent,
+            json!({ "action": "start", "phase": "research" }),
+        )
+        .await;
+        assert_eq!(started.is_error, Some(false), "{}", result_text(&started));
+        let structured = started.structured_content.clone().unwrap();
+        assert_eq!(structured["phases"][0]["status"], "in_progress");
+        assert_eq!(structured["revision"], 2);
+
+        let handoff = orchestrate(
+            &c,
+            &parent,
+            json!({ "action": "handoff", "phase": "research", "summary": "The lexer drops tabs." }),
+        )
+        .await;
+        assert_eq!(handoff.is_error, Some(false), "{}", result_text(&handoff));
+
+        let completed = orchestrate(
+            &c,
+            &parent,
+            json!({ "action": "complete", "phase": "research" }),
+        )
+        .await;
+        assert_eq!(
+            completed.is_error,
+            Some(false),
+            "{}",
+            result_text(&completed)
+        );
+        let structured = completed.structured_content.clone().unwrap();
+        assert_eq!(structured["phases"][0]["status"], "completed");
+        assert_eq!(structured["phases"][0]["handoff"], "The lexer drops tabs.");
+
+        // The hand-off reaches a child spawned into the dependent phase.
+        let context = crate::agents::orchestration_plan::handoff_context_for(
+            &c.context.session_manager,
+            &parent,
+            "fix",
+        )
+        .await
+        .unwrap();
+        assert!(context.contains("The lexer drops tabs."), "{context}");
+
+        // A revision that keeps `research` keeps its status and hand-off.
+        let revised = orchestrate(
+            &c,
+            &parent,
+            json!({
+                "action": "plan",
+                "phases": [
+                    { "id": "research", "title": "Read the code", "kind": "research" },
+                    { "id": "fix", "title": "Fix it", "kind": "implementation" }
+                ]
+            }),
+        )
+        .await;
+        assert_eq!(revised.is_error, Some(false), "{}", result_text(&revised));
+        assert!(result_text(&revised).contains("Plan revised"));
+        let structured = revised.structured_content.clone().unwrap();
+        assert_eq!(structured["title"], "Review the parser");
+        assert_eq!(structured["phases"].as_array().unwrap().len(), 2);
+        assert_eq!(structured["phases"][0]["status"], "completed");
+
+        // The record really is in the parent's extension data, under its key.
+        let stored = c
+            .context
+            .session_manager
+            .get_extension_state(
+                &parent,
+                crate::agents::orchestration_plan::PLAN_STATE,
+                crate::agents::orchestration_plan::PLAN_VERSION,
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(stored["revision"], 5);
+    }
+
+    #[tokio::test]
+    async fn orchestrate_refusals_are_errors_that_say_what_to_do() {
+        let (c, parent) = orchestrate_client().await;
+        for (args, expected) in [
+            (json!({}), "`action` is required"),
+            (json!({ "action": "dance" }), "Unknown action"),
+            (json!({ "action": "plan" }), "needs `phases`"),
+            (
+                json!({ "action": "plan", "phases": [{ "id": "a", "title": "A" }] }),
+                "needs a title",
+            ),
+            (
+                json!({ "action": "start", "phase": "a" }),
+                "no orchestration plan",
+            ),
+            (json!({ "action": "start" }), "needs `phase`"),
+        ] {
+            let result = orchestrate(&c, &parent, args.clone()).await;
+            assert_eq!(result.is_error, Some(true), "{args}");
+            let text = result_text(&result);
+            assert!(
+                text.contains(expected),
+                "{args}: expected {expected:?} in {text}"
+            );
+        }
+
+        orchestrate(&c, &parent, three_phase_args()).await;
+        for (args, expected) in [
+            (
+                json!({ "action": "start", "phase": "deploy" }),
+                "research, fix, verify",
+            ),
+            (
+                json!({ "action": "handoff", "phase": "fix" }),
+                "needs `summary`",
+            ),
+            (
+                json!({ "action": "complete", "phase": "fix", "status": "maybe" }),
+                "\"blocked\" or \"skipped\"",
+            ),
+            (
+                json!({ "action": "plan", "phases": [
+                    { "id": "a", "title": "A", "depends_on": ["b"] },
+                    { "id": "b", "title": "B" }
+                ] }),
+                "not an earlier phase",
+            ),
+        ] {
+            let result = orchestrate(&c, &parent, args.clone()).await;
+            assert_eq!(result.is_error, Some(true), "{args}");
+            let text = result_text(&result);
+            assert!(
+                text.contains(expected),
+                "{args}: expected {expected:?} in {text}"
+            );
+        }
+    }
+
+    /// THE BARRIER, end to end: a phase whose subagent is still running cannot
+    /// be completed, and the refusal names the watch call that unblocks it.
+    #[tokio::test]
+    async fn complete_is_refused_while_a_phase_child_is_running_then_composes_a_handoff() {
+        use crate::agents::subagent_handle::BackgroundSubagent;
+        use crate::agents::subagent_result::{SubagentResult, SubagentStatus};
+
+        let (c, parent) = orchestrate_client().await;
+        orchestrate(&c, &parent, three_phase_args()).await;
+
+        // Real children of the parent, as a spawn makes them: the hand-off
+        // shows a child's result only once its tier is known to be no more
+        // private than the parent's, and a child with no row has no tier.
+        let sm = &c.context.session_manager;
+        let mut children = Vec::new();
+        for name in ["Subagent: reader", "Subagent: tester"] {
+            let child = sm
+                .create_session(
+                    std::env::temp_dir(),
+                    name.to_string(),
+                    crate::session::session_manager::SessionType::SubAgent,
+                )
+                .await
+                .unwrap();
+            sm.update(&child.id)
+                .parent_session_id(Some(parent.clone()))
+                .apply()
+                .await
+                .unwrap();
+            children.push(child.id);
+        }
+        let (running_child, finished_child) = (children[0].clone(), children[1].clone());
+        for (child, role) in [(&running_child, "reader"), (&finished_child, "tester")] {
+            crate::agents::orchestration_plan::record_spawn(
+                &c.context.session_manager,
+                &parent,
+                "research",
+                child,
+                Some(role),
+            )
+            .await
+            .unwrap();
+        }
+        let running = BackgroundSubagent::register(
+            &parent,
+            &running_child,
+            "reader",
+            CancellationToken::new(),
+        );
+        let finished = BackgroundSubagent::register(
+            &parent,
+            &finished_child,
+            "tester",
+            CancellationToken::new(),
+        );
+        let mut result = SubagentResult::from_error("unused");
+        result.status = SubagentStatus::Completed;
+        result.summary = "Found the tab bug in lexer.rs".to_string();
+        finished.complete(result);
+
+        let refused = orchestrate(
+            &c,
+            &parent,
+            json!({ "action": "complete", "phase": "research" }),
+        )
+        .await;
+        assert_eq!(refused.is_error, Some(true));
+        let text = result_text(&refused);
+        assert!(text.contains("cannot be completed yet"), "{text}");
+        assert!(text.contains(&running_child), "{text}");
+        assert!(text.contains("workspace_watch"), "{text}");
+        assert!(!text.contains(&format!("{finished_child} (")), "{text}");
+        // …and nothing was written.
+        let read = orchestrate(&c, &parent, json!({ "action": "read" })).await;
+        assert_eq!(
+            read.structured_content.unwrap()["phases"][0]["status"],
+            "in_progress",
+            "the first spawn started the phase, and the refused complete left it there"
+        );
+
+        // A skip is held by the same barrier.
+        let skip = orchestrate(
+            &c,
+            &parent,
+            json!({ "action": "complete", "phase": "research", "status": "skipped" }),
+        )
+        .await;
+        assert_eq!(skip.is_error, Some(true));
+
+        let mut late = SubagentResult::from_error("unused");
+        late.status = SubagentStatus::Completed;
+        late.summary = "Read all three modules".to_string();
+        running.complete(late);
+
+        let completed = orchestrate(
+            &c,
+            &parent,
+            json!({ "action": "complete", "phase": "research" }),
+        )
+        .await;
+        assert_eq!(
+            completed.is_error,
+            Some(false),
+            "{}",
+            result_text(&completed)
+        );
+        assert!(result_text(&completed).contains("composed"));
+        let plan =
+            crate::agents::orchestration_plan::load_plan(&c.context.session_manager, &parent)
+                .await
+                .unwrap()
+                .unwrap();
+        let handoff = plan.phases[0].handoff.clone().unwrap();
+        assert_eq!(
+            handoff.source,
+            crate::agents::orchestration_plan::HandoffSource::Auto
+        );
+        assert!(
+            handoff.summary.contains("Found the tab bug"),
+            "{}",
+            handoff.summary
+        );
+        assert!(
+            handoff.summary.contains("Read all three modules"),
+            "{}",
+            handoff.summary
+        );
+        assert!(
+            handoff.summary.contains("reader [completed]"),
+            "{}",
+            handoff.summary
+        );
+        assert!(
+            !handoff.summary.contains("withheld"),
+            "children as public as their parent are shown: {}",
+            handoff.summary
+        );
+    }
+
+    /// A spawn into the phase that has not made its child visible yet (it holds
+    /// `begin_phase_spawn`'s guard from before its phase check) holds the
+    /// barrier: `complete` cannot close the phase over a child it might not see.
+    #[tokio::test]
+    async fn complete_waits_for_a_spawn_into_the_phase_that_has_not_returned() {
+        let (c, parent) = orchestrate_client().await;
+        orchestrate(&c, &parent, three_phase_args()).await;
+
+        let spawning = crate::agents::orchestration_plan::begin_phase_spawn(&parent, "research");
+        let refused = orchestrate(
+            &c,
+            &parent,
+            json!({ "action": "complete", "phase": "research" }),
+        )
+        .await;
+        assert_eq!(refused.is_error, Some(true));
+        let text = result_text(&refused);
+        assert!(text.contains("has not returned"), "{text}");
+        let read = orchestrate(&c, &parent, json!({ "action": "read" })).await;
+        assert_eq!(
+            read.structured_content.unwrap()["phases"][0]["status"],
+            "pending"
+        );
+
+        // Another phase is not held by it.
+        let other = orchestrate(
+            &c,
+            &parent,
+            json!({ "action": "complete", "phase": "verify", "status": "skipped" }),
+        )
+        .await;
+        assert_eq!(other.is_error, Some(false), "{}", result_text(&other));
+
+        drop(spawning);
+        let completed = orchestrate(
+            &c,
+            &parent,
+            json!({ "action": "complete", "phase": "research" }),
+        )
+        .await;
+        assert_eq!(
+            completed.is_error,
+            Some(false),
+            "{}",
+            result_text(&completed)
+        );
+    }
+
+    /// `fresh:true` replaces a finished plan, and is refused while a phase is
+    /// open.
+    #[tokio::test]
+    async fn a_finished_plan_is_replaced_with_fresh() {
+        let (c, parent) = orchestrate_client().await;
+        orchestrate(&c, &parent, three_phase_args()).await;
+        let next = json!({
+            "action": "plan",
+            "fresh": true,
+            "phases": [{ "id": "verify-again", "title": "Check it once more", "kind": "verification" }]
+        });
+
+        let refused = orchestrate(&c, &parent, next.clone()).await;
+        assert_eq!(refused.is_error, Some(true));
+        assert!(
+            result_text(&refused).contains("still open"),
+            "{}",
+            result_text(&refused)
+        );
+
+        for phase in ["research", "fix", "verify"] {
+            let closed = orchestrate(
+                &c,
+                &parent,
+                json!({ "action": "complete", "phase": phase, "status": "skipped" }),
+            )
+            .await;
+            assert_eq!(closed.is_error, Some(false), "{}", result_text(&closed));
+        }
+        let replaced = orchestrate(&c, &parent, next).await;
+        assert_eq!(replaced.is_error, Some(false), "{}", result_text(&replaced));
+        assert!(result_text(&replaced).contains("in place of the finished one"));
+        let structured = replaced.structured_content.unwrap();
+        assert_eq!(structured["title"], "Review the parser");
+        assert_eq!(structured["phases"].as_array().unwrap().len(), 1);
+        assert_eq!(structured["phases"][0]["id"], "verify-again");
+        assert_eq!(structured["phases"][0]["status"], "pending");
+    }
+
+    /// The plan rides the MOIM only once one exists, and it does without a GUI.
+    #[tokio::test]
+    #[serial_test::parallel(workspace_services)]
+    async fn the_moim_carries_the_plan_only_when_one_exists() {
+        let (c, parent) = orchestrate_client().await;
+        assert!(
+            c.get_moim(&parent).await.is_none(),
+            "no plan, no GUI: nothing"
+        );
+
+        orchestrate(&c, &parent, three_phase_args()).await;
+        let moim = c.get_moim(&parent).await.unwrap();
+        assert!(
+            moim.contains("Orchestration plan \"Review the parser\""),
+            "{moim}"
+        );
+        assert!(
+            moim.contains("- research (research): pending, 0/0 done"),
+            "{moim}"
+        );
+        assert!(moim.contains("- fix (implementation): pending"), "{moim}");
+        assert!(moim.contains("workspace_watch mode:\"all\""), "{moim}");
+    }
+
+    /// A chat's entry decides which parts of the per-turn context it gets: the
+    /// plan belongs to `workspace_orchestrate`, the panel to
+    /// `workspace_read_panel`. The auto-injected delegation entry (the tools
+    /// `Agent::ensure_spawn_extension` grants) holds the first and not the
+    /// second, so a delegating chat sees its plan while the renderer is never
+    /// asked for a panel the chat holds no tool to read.
+    #[tokio::test]
+    #[serial_test::serial(workspace_services)]
+    async fn the_moim_parts_follow_the_tools_the_entry_grants() {
+        let panel_reply = || {
+            serde_json::json!({
+                "type": "workspace_result",
+                "ok": true,
+                "panel": {
+                    "open": true,
+                    "kind": "webPage",
+                    "title": "Example Domains",
+                    "locator": "https://www.iana.org/help/example-domains",
+                    "sourceRevision": "1:1"
+                },
+                "content": "Example Domains\nreserved for documentation.",
+                "content_kind": "webPage",
+                "content_trust": "untrusted_external",
+                "locator": "https://www.iana.org/help/example-domains",
+                "source_revision": "1:1",
+                "truncated": false
+            })
+        };
+        let services = FakeServices::with_gui(true)
+            .gui_answers(vec![panel_reply(), panel_reply()])
+            .install();
+        let (c, parent) = orchestrate_client().await;
+        orchestrate(&c, &parent, three_phase_args()).await;
+        services.clear_frames();
+
+        let entry = |tools: &[&str]| crate::agents::ExtensionConfig::Platform {
+            name: EXTENSION_NAME.to_string(),
+            description: "test entry".to_string(),
+            bundled: Some(true),
+            available_tools: tools.iter().map(|tool| tool.to_string()).collect(),
+        };
+        let delegating = entry(&[
+            "subagent",
+            "workspace_list",
+            "workspace_read_conversation",
+            "workspace_send_prompt",
+            "workspace_close",
+            "workspace_watch",
+            "workspace_orchestrate",
+        ]);
+
+        let moim = c
+            .get_moim_for(&parent, &delegating)
+            .await
+            .expect("a delegating chat with a plan sees it");
+        assert!(moim.contains("Orchestration plan"), "{moim}");
+        assert!(!moim.contains("Example Domains"), "{moim}");
+        assert!(
+            services.frame_with_cmd("read_panel").is_none(),
+            "no panel tool, so the panel is not even read"
+        );
+
+        let moim = c
+            .get_moim_for(&parent, &entry(&["workspace_read_panel"]))
+            .await
+            .expect("the panel tool brings the panel");
+        assert!(moim.contains("Example Domains"), "{moim}");
+        assert!(!moim.contains("Orchestration plan"), "{moim}");
+
+        let moim = c
+            .get_moim_for(&parent, &entry(&[]))
+            .await
+            .expect("a full entry gets both");
+        assert!(moim.contains("Orchestration plan"), "{moim}");
+        assert!(moim.contains("Example Domains"), "{moim}");
+
+        assert!(
+            c.get_moim_for(&parent, &entry(&["workspace_list"]))
+                .await
+                .is_none(),
+            "neither tool, no per-turn context"
+        );
+        crate::workspace_services::set_for_tests(None);
+    }
+
+    /// The description is the only place the model learns when NOT to reach for
+    /// the tool, so the restraint is pinned like the spawn tool's is.
+    #[test]
+    fn the_orchestrate_description_says_when_to_use_it_and_when_not_to() {
+        let tool = WorkspaceClient::get_tools()
+            .into_iter()
+            .find(|t| t.name == ORCHESTRATE_TOOL_NAME)
+            .expect("advertised");
+        let description = tool.description.as_deref().unwrap();
+        for phrase in [
+            "when the user asks for a multi-phase or workflow-style run",
+            "It is optional: a simple delegation never needs it",
+            "`phase` and `role`",
+            "workspace_watch mode \"all\"",
+            "refused while any of them is still working",
+            "meet earlier results",
+            "run in the background",
+        ] {
+            assert!(
+                description.contains(phrase),
+                "missing {phrase:?}: {description}"
+            );
+        }
+        for kind in [
+            "plan",
+            "research",
+            "execution",
+            "implementation",
+            "verification",
+            "testing",
+            "auditing",
+            "meeting",
+            "synthesis",
+        ] {
+            assert!(description.contains(kind), "kind {kind} not named");
+        }
+        let schema = serde_json::to_value(&tool.input_schema).unwrap();
+        assert_eq!(schema["required"], json!(["action"]));
+        for field in [
+            "action", "title", "goal", "phases", "phase", "summary", "status",
+        ] {
+            assert!(schema["properties"].get(field).is_some(), "lost {field}");
+        }
+    }
+
+    /// No model-facing text in this extension may say a spawned subagent opens a
+    /// tab: subagents run in the background and show in the side panel.
+    #[test]
+    fn no_text_here_claims_a_spawned_subagent_opens_a_tab() {
+        for text in [
+            INSTRUCTIONS,
+            DELEGATION_IS_NOT_THIS_TOOL,
+            ORCHESTRATE_DESCRIPTION,
+        ] {
+            for claim in ["opens a tab the user can watch", "is a visible tab"] {
+                assert!(!text.contains(claim), "{claim:?} in {text}");
+            }
+        }
+        assert!(INSTRUCTIONS.contains("side panel"));
+        assert!(DELEGATION_IS_NOT_THIS_TOOL.contains("side panel"));
     }
 }

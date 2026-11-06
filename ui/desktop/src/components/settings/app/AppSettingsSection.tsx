@@ -8,7 +8,7 @@ import UpdateSection from './UpdateSection';
 import UsageSection from '../usage/UsageSection';
 import ResetPanel from './ResetPanel';
 import FontSizeSelector from './FontSizeSelector';
-import { NeverOpenTabsRow } from './WorkspaceSettingsSection';
+import { NeverOpenTabsRow, OpenSubagentTabsRow } from './WorkspaceSettingsSection';
 import { COST_TRACKING_ENABLED, UPDATES_ENABLED } from '../../../updates';
 import ThemeSelector from '../../BioRouterSidebar/ThemeSelector';
 import ThemeFamilySelector from '../../BioRouterSidebar/ThemeFamilySelector';
@@ -171,6 +171,7 @@ export default function AppSettingsSection() {
         </SettingRow>
 
         <NeverOpenTabsRow />
+        <OpenSubagentTabsRow />
 
         {COST_TRACKING_ENABLED && (
           <SettingRow label={generalCopy.showCosts} help={generalCopy.showCostsHelp}>

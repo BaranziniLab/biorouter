@@ -24,6 +24,12 @@ import type { DateGroup } from '../../utils/dateUtils';
  * Every other move still waits (a turn in another chat, an arrival, a rename
  * that came from the model).
  *
+ * A parent with more than three runs folds the rest behind "Show N more runs"
+ * (`splitNestedRuns`, `sessionGrouping.ts`). The fold is taken over what this
+ * module returns, not over the live nesting, so while the pointer is here the
+ * newest three and the count are the held ones, and unfolding shows the held
+ * runs: a run that started meanwhile still waits.
+ *
  * Pure, so it is tested without a DOM.
  */
 

@@ -22,9 +22,10 @@
  * and theme sections, the permissions dialog, and the served privacy statement (it renders in both
  * positions of the switch and does not wait on it). The Chat tab is the Approvals section and the
  * Spellcheck row; the App tab is the real `AppSettingsSection` (General: menu bar, Dock, Prevent
- * sleep, Never open tabs, Show costs) and the real Privacy panel, whose switch starts from the
- * app's config cache (ruling 27): the snapshot of `GET /config` the app loads when it starts, long
- * before Settings opens, and the one every privacy badge and the composer's off note paint from.
+ * sleep, Never open tabs, Open subagent tabs, Show costs) and the real Privacy panel, whose switch
+ * starts from the app's config cache (ruling 27): the snapshot of `GET /config` the app loads when
+ * it starts, long before Settings opens, and the one every privacy badge and the composer's off
+ * note paint from.
  *
  * "The instrument": a first visit with nothing warm is held, and a bundle whose controls ignore
  * the last answer is held on a later visit too. The Privacy tiers switch has its own two: an empty
@@ -265,7 +266,7 @@ async function bundle(mutation?: Mutation): Promise<string> {
 const SETUP = `
   window.__daemonDelayMs = 600;
   window.__config = { BIOROUTER_MODE: 'approve', BIOROUTER_MAX_TURNS: 25, WORKSPACE_ANNOUNCE_ONLY: true,
-    BIOROUTER_PRIVACY_TIERS: 'on' };
+    BIOROUTER_WORKSPACE_OPEN_SUBAGENT_TABS: true, BIOROUTER_PRIVACY_TIERS: 'on' };
   // The app loaded GET /config when it started; a page that sets __emptyConfigCache has not yet.
   window.__configCache = window.__emptyConfigCache ? {} : { ...window.__config };
   const held = { menuBar: false, dock: true, wakelock: false, spellcheck: false };
@@ -343,6 +344,9 @@ const APP_SWITCHES: Array<[string, string]> = [
   ['Show in Dock', 'true'],
   ['Prevent sleep while running', 'false'],
   ['Never open tabs automatically', 'true'],
+  // Saved ON, against its default OFF, so a switch that painted the default before the daemon
+  // answered could not pass by matching it.
+  ['Open subagent tabs automatically', 'true'],
   ['Privacy tiers', 'true'],
 ];
 
@@ -532,6 +536,7 @@ describe('the first frames of a Settings tab switch, in a real browser (V4-R7-2)
       expect(held.map((control) => control.name).sort()).toEqual(
         [
           'Never open tabs automatically',
+          'Open subagent tabs automatically',
           'Prevent sleep while running',
           'Show in Dock',
           'Show in menu bar',

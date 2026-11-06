@@ -557,6 +557,21 @@ pub trait McpClientTrait: Send + Sync {
     async fn get_moim(&self, _session_id: &str) -> Option<String> {
         None
     }
+
+    /// [`get_moim`](Self::get_moim) for one chat's entry of this extension, the
+    /// call `ExtensionManager::collect_moim` makes. `config` is the entry the
+    /// chat holds, so a client whose per-turn context belongs to one of its
+    /// tools leaves that part out where the entry does not grant the tool (an
+    /// auto-injected entry carries only some of them). The default ignores the
+    /// grant.
+    async fn get_moim_for(
+        &self,
+        session_id: &str,
+        config: &crate::agents::extension::ExtensionConfig,
+    ) -> Option<String> {
+        let _ = config;
+        self.get_moim(session_id).await
+    }
 }
 
 pub struct BioRouterClient {

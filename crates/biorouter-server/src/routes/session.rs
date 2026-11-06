@@ -393,7 +393,7 @@ pub struct DivergeSessionResponse {
 
 const MAX_NAME_LENGTH: usize = 200;
 
-fn is_valid_session_id(id: &str) -> bool {
+pub(crate) fn is_valid_session_id(id: &str) -> bool {
     !id.is_empty()
         && id.len() <= 128
         && id

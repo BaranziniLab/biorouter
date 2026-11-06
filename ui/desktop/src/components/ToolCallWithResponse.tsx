@@ -745,10 +745,40 @@ const summarizeDelegation = (args: Record<string, unknown>): string => {
     .replace(/\s+/g, ' ')
     .trim();
   const task = instructions ? headline(instructions) : '';
+  // The short role the parent gave (`role`, set with a phase plan) names the
+  // delegate the way the chat summary's row does.
+  const role = compactValue(firstPresent(args, ['role']) ?? '');
   if (workflow && task) return `Delegating ${workflow}: ${task}`;
   if (workflow) return `Delegating ${workflow}`;
+  if (role && task) return `Delegating to ${role}: ${task}`;
+  if (role) return `Delegating to ${role}`;
   if (task) return `Delegating: ${task}`;
   return 'Delegating to a subagent';
+};
+
+/**
+ * A label for a `workspace_orchestrate` call, by its action. It only edits the
+ * chat's phase plan; the subagents themselves run in the background and are
+ * listed in the chat summary, so nothing here promises a tab.
+ */
+const summarizeOrchestration = (args: Record<string, unknown>): string => {
+  const action = compactValue(firstPresent(args, ['action']) ?? '').toLowerCase();
+  const phase = compactValue(firstPresent(args, ['phase']) ?? '');
+  const title = compactValue(firstPresent(args, ['title']) ?? '');
+  switch (action) {
+    case 'plan':
+      return title ? `Setting up phases: ${title}` : 'Setting up phases';
+    case 'start':
+      return phase ? `Starting phase ${phase}` : 'Starting a phase';
+    case 'handoff':
+      return phase ? `Writing the hand-off for ${phase}` : 'Writing a phase hand-off';
+    case 'complete':
+      return phase ? `Completing phase ${phase}` : 'Completing a phase';
+    case 'read':
+      return 'Reading the phase plan';
+    default:
+      return 'Updating the phase plan';
+  }
 };
 
 const summarizeSearchQuery = (value: unknown): string | null => {
@@ -1185,6 +1215,7 @@ function describeToolCall(toolCall: ToolCallSummaryInput, toolResult?: unknown):
   // Before the generic name-matching chain: a delegation must be identifiable
   // by its task, not by the fact that it is a delegation.
   if (toolName === 'subagent') return summarizeDelegation(args);
+  if (toolName === 'workspace_orchestrate') return summarizeOrchestration(args);
 
   const todoSummary = toolCall.name.startsWith('todo__')
     ? summarizeTodoCall(toolName, args, toolResult)

@@ -3663,6 +3663,13 @@ export type OllamaRecommendedModel = {
  */
 export type OllamaSuitability = 'suitable' | 'below_minimum' | 'cpu_only' | 'unknown_resources';
 
+export type OrchestrationSnapshot = {
+    goal?: string | null;
+    phases: Array<PhaseSnapshot>;
+    revision: number;
+    title: string;
+};
+
 /**
  * The part of an installed package's record the interface needs. The full
  * record lives beside the skills as `biorouter-package.json`; see
@@ -3769,6 +3776,58 @@ export type PersistedMessage = {
      */
     userVisible: boolean;
 };
+
+/**
+ * Per-phase tallies, derived from the roster at read time.
+ */
+export type PhaseCounts = {
+    blocked: number;
+    /**
+     * Completed.
+     */
+    done: number;
+    /**
+     * Failed, incomplete or interrupted.
+     */
+    failed: number;
+    /**
+     * Active but with no recorded activity for a while (a heuristic, labelled
+     * as "quiet", never as "stalled" or "dead").
+     */
+    quiet: number;
+    /**
+     * Queued, running or cancelling.
+     */
+    running: number;
+    total: number;
+};
+
+/**
+ * What a phase is for. Drives the glyph a surface draws; carries no behaviour.
+ */
+export type PhaseKind = 'plan' | 'research' | 'execution' | 'implementation' | 'verification' | 'testing' | 'auditing' | 'review' | 'meeting' | 'synthesis' | 'other';
+
+export type PhaseSnapshot = {
+    /**
+     * Child session ids spawned into this phase, in spawn order.
+     */
+    agentIds: Array<string>;
+    counts: PhaseCounts;
+    dependsOn: Array<string>;
+    finishedAt?: string | null;
+    goal?: string | null;
+    /**
+     * The hand-off summary, truncated for display.
+     */
+    handoff?: string | null;
+    id: string;
+    kind: PhaseKind;
+    startedAt?: string | null;
+    status: PhaseStatus;
+    title: string;
+};
+
+export type PhaseStatus = 'pending' | 'in_progress' | 'completed' | 'blocked' | 'skipped';
 
 /**
  * One component of a planned import.
@@ -5147,6 +5206,18 @@ export type SessionSkillsResponse = {
  */
 export type SessionState = 'default' | 'added' | 'removed';
 
+/**
+ * Everything a surface needs to draw a chat's subagents and its phase plan.
+ */
+export type SessionSubagents = {
+    parentSessionId: string;
+    plan?: OrchestrationSnapshot | null;
+    /**
+     * Oldest first (spawn order).
+     */
+    subagents: Array<SubagentRow>;
+};
+
 export type SessionSummary = {
     created_at: string;
     /**
@@ -5779,6 +5850,69 @@ export type SubWorkflow = {
         [key: string]: string;
     } | null;
 };
+
+/**
+ * One subagent of a chat, as the side panel, the CLI and the TUI draw it.
+ */
+export type SubagentRow = {
+    createdAt: string;
+    /**
+     * Wall-clock run time: live elapsed while active, `ended_at - created_at`
+     * once finished.
+     */
+    elapsedSeconds?: number | null;
+    endedAt?: string | null;
+    /**
+     * Extension names the child may use (runtime-profile projection).
+     */
+    extensions: Array<string>;
+    knowledgeBases: Array<string>;
+    /**
+     * The child's agent-loop phase while it runs in this process
+     * (`provider_open`, `tool_batch`, `approval_wait`, ...). `None` otherwise.
+     */
+    loopPhase?: string | null;
+    messageCount: number;
+    modelName?: string | null;
+    /**
+     * The session name without its `Subagent: ` prefix.
+     */
+    name: string;
+    /**
+     * Orchestration phase id the child was spawned into, if any.
+     */
+    phaseId?: string | null;
+    privacyTier: SessionClassification;
+    providerName?: string | null;
+    /**
+     * Seconds since the child's last recorded activity, while it is active.
+     * Lets a surface show "quiet for 4m" without guessing.
+     */
+    quietSeconds?: number | null;
+    /**
+     * First line of the final summary, the error, or the blocked question.
+     */
+    resultLine?: string | null;
+    /**
+     * Short role label the parent gave at spawn (`role` parameter), if any.
+     */
+    role?: string | null;
+    sessionId: string;
+    skills: Array<string>;
+    status: SubagentRunStatus;
+    toolCallCount: number;
+    /**
+     * Lifetime billed tokens (`accumulated_total_tokens`).
+     */
+    totalTokens?: number | null;
+    updatedAt: string;
+};
+
+/**
+ * One child's run state. Ordered roughly by lifecycle; the order carries no
+ * meaning for callers.
+ */
+export type SubagentRunStatus = 'queued' | 'running' | 'cancelling' | 'completed' | 'blocked' | 'incomplete' | 'failed' | 'interrupted' | 'unknown';
 
 /**
  * Answering a credential card (#117).
@@ -12325,6 +12459,50 @@ export type UpdateSessionNameResponses = {
      */
     200: unknown;
 };
+
+export type GetSessionSubagentsData = {
+    body?: never;
+    path: {
+        /**
+         * The parent chat whose subagents to list
+         */
+        session_id: string;
+    };
+    query?: never;
+    url: '/sessions/{session_id}/subagents';
+};
+
+export type GetSessionSubagentsErrors = {
+    /**
+     * Invalid session id
+     */
+    400: unknown;
+    /**
+     * Unauthorized - Invalid or missing API key
+     */
+    401: unknown;
+    /**
+     * Refused by a privacy boundary: the same refusal, word for word, that `GET /sessions/{session_id}` gives (body = plain text)
+     */
+    403: unknown;
+    /**
+     * Session not found
+     */
+    404: unknown;
+    /**
+     * Internal server error
+     */
+    500: unknown;
+};
+
+export type GetSessionSubagentsResponses = {
+    /**
+     * The chat's subagents, oldest first, and its orchestration plan when one was declared. A subagent this caller could not open is omitted, never redacted, and is neither listed in nor counted by any phase of the plan
+     */
+    200: SessionSubagents;
+};
+
+export type GetSessionSubagentsResponse = GetSessionSubagentsResponses[keyof GetSessionSubagentsResponses];
 
 export type GetSessionUsageData = {
     body?: never;

@@ -9,8 +9,8 @@
 > **Audience:** developers working on the chat pane's layout, the summary, the artifact preview
 > or the yield ladder.
 
-The Chat summary holds a chat's to-do list, its statistics (tool calls, tokens, artifacts, code
-delta) and two actions (Make workflow and Diagnostics). It used to live only in a 360px popover
+The Chat summary holds a chat's to-do list, its subagents and phase plan, its statistics (tool
+calls, tokens, artifacts, code delta) and two actions (Make workflow and Diagnostics). It used to live only in a 360px popover
 behind a header button. Now, once a chat has had a turn and the window is wide enough, it docks
 as a 240px to 280px card to the right of the conversation, under the chat header, and the
 conversation moves left by half the rail's width. The column never gets narrower than 760px to
@@ -159,7 +159,10 @@ nothing changes then. Before this, dragging the window across 1344px ran the but
 transitions twice while everything else in the chat snapped.
 
 While the rail is hidden and a to-do step is running, the button carries a 6px coral dot and its
-name becomes "Chat summary, 2 of 5 to do items complete". The dot's 2px ring is the ground under
+name becomes "Chat summary, 2 of 5 to do items complete". Subagents that are queued or running
+with the rail hidden light the same dot and add their count to the name: "Chat summary, 3
+subagents running", or "Chat summary, 2 of 5 to do items complete, 1 subagent running" when both
+apply. The dot's 2px ring is the ground under
 it: the band at rest, the pressed fill while the popover is open. The terminal button beside it
 presses on the same fill.
 
@@ -187,6 +190,49 @@ and 12px for labels.
   refresh shows one line, "To do could not refresh.", with Retry, whose label ends on the
   values' right edge. On the card the 4px track rests on `--background-fill-strong`: the
   primitive's own track is `--background-muted`, which is the fill itself and would vanish.
+- **Subagents and phases** (`components/summary/SummarySubagents.tsx`, styled by
+  `summary/summaryAgents.css`), when the chat has started any subagent or declared a phase plan.
+  Subagents run in the background by default, so this list is where a person finds them; each
+  row is a button that opens the subagent as a tab and makes it the active one (the tab strip's
+  `openTab`, which activates a tab already open; from outside `/pair`, a navigation to
+  `/pair?resumeSessionId=`). Settings > App > General > "Open subagent tabs automatically"
+  (`BIOROUTER_WORKSPACE_OPEN_SUBAGENT_TABS`, off by default, read by the daemon) brings back a
+  tab for every new subagent; a spawn that asks for a tab gets one either way. "Never open tabs
+  automatically" wins over both on the daemon, so with it on no subagent tab opens at spawn; the
+  switch is not disabled for it, and its help says so.
+  - **Up to four subagents**: comfortable two-line rows. The first line is the status glyph and
+    the role the parent gave (else the session name); the second, in 12px muted ink, is the
+    model, the counts of extensions, skills and knowledge bases, and the run time
+    (`claude-sonnet-4-5 · 2 ext · 1 skill · 1 KB · 4m`).
+  - **Five or more**: dense 28px one-line rows with the run time trailing, grouped by state:
+    Running (queued, running, stopping), Needs attention (blocked, failed, incomplete,
+    interrupted) and Done (completed, and a child whose status is unknown). Each group is a
+    disclosure with its count and shows at most 12 rows, then "Show all N".
+  - **With a phase plan**: a Phases section first, with the plan's title and one row per phase:
+    a glyph for its kind (plan, research, execution, implementation, verification, testing,
+    auditing, review, meeting, synthesis, other), its title, "done of total", a 4px progress bar
+    on the card's track ground and, under it, the non-zero counts (running, quiet, blocked,
+    failed). A phase with subagents is a disclosure listing them; the phase in progress (or
+    blocked) is open, and in a plan of more than three phases the others start folded. A
+    subagent in no phase the plan knows is listed under "Other subagents".
+  - Status is told by shape, as the to-do list's is: an open circle (queued), a dashed circle
+    that turns slowly (running, still under reduced motion), a square (stopping), a check
+    (completed), a question mark (blocked), a triangle (incomplete), a cross (failed), a pause
+    (interrupted) and an ellipsis (unknown). A private child carries the lock. An active child
+    with no recorded activity for 180 seconds is labelled "quiet for 4m", never stalled; the
+    threshold is the daemon's (`QUIET_AFTER_SECONDS` in `orchestration_plan.rs`), so a row and
+    its phase's quiet count agree.
+  - **The hover card**: hovering a row for 700ms (the sidebar's chat-row delay), or reaching it
+    with Tab or the arrow keys, opens a card to its left on the tooltip's inverse surface: the
+    name, the role and phase, the status with the result line, the model and provider, the
+    extensions, skills and knowledge bases, tokens, tool calls, messages, run time and the
+    private lock. It is built the first time it opens.
+  - **Keyboard**: the whole area is one tab stop (`ui/useRovingRows.ts`); the arrow keys, Home
+    and End move between rows, disclosures and "Show all". A move made with the arrows opens the
+    row's card, which a tooltip would otherwise refuse as programmatic focus.
+  - Its rows are plain buttons in their own module, so `ChatSummary.tsx` keeps its three `Button`s
+    and the card keeps its two type sizes. A failed refresh keeps the last list and shows
+    "Subagents could not refresh." with Retry; a daemon without the route shows nothing.
 - **Statistics**: a `dl` of 28px rows: Tool calls, Tokens (with an InfoTip saying what is
   counted), Artifacts, and Code as `+N −M` in success and danger ink, read as words. A count of
   zero is muted, so a chat that touched no code shows no red. Code is the lines this chat's
@@ -215,6 +261,28 @@ and 12px for labels.
 
 The to-do list is fetched while the popover or the rail is shown, and while a turn runs so the
 button's dot stays current (`hooks/useSessionTodos.ts`, with the user-action headers).
+
+The subagents come from `GET /sessions/{session_id}/subagents` (`hooks/useSessionSubagents.ts`,
+parsed by `utils/sessionSubagents.ts`), read with the user-action headers because the daemon
+omits a private child from a caller without the proof. The hook reads on the to-do list's gate
+(shown, or a turn running) and again whenever a roster tool call answers: a spawn, the plan tool,
+a watch or a close (`subagentRosterRevision`). It polls every 2 seconds while any child is
+queued, running or stopping, or while the turn runs in a chat that has subagents, and stops when
+none is active. That poll continues after the rail is hidden, so a background child that outlives
+its parent's turn keeps the button's dot honest until it ends. A poll that would draw nothing new
+sets no state, so it does not re-render the chat. While the summary is hidden only the children and
+their states count for that, because an active child's run time, quiet time and token count change
+on every read; showing the summary again puts the newest answer up at once. The parser never drops
+a row for a status this build does not know: it reads as unknown.
+
+A row the person is focused on keeps its focus, and its card, when a poll redraws it under another
+parent: a child that finishes moves from Running to Done, and a fifth subagent turns the flat list
+into groups, and either remounts the row. `SummarySubagents` puts focus back on the row's new
+button after the render, but only when the focused element was removed, never when the person moved
+focus elsewhere.
+
+The rail and the popover behave the same in a browser served by `biorouter serve`: opening a
+subagent there opens its tab read-only, as the existing subagent tab code does.
 
 ## Motion
 
@@ -261,6 +329,14 @@ or the pointer is over the summary.
   in every other chat. The rail cell is padded 12px except on the transcript's side.
 - **State**: `hooks/useSummaryRail.ts` (measurement, timing, entrance and exit),
   `Layout/summaryRailPreference.ts` (the viewer's choice).
+- **Subagents**: `hooks/useSessionSubagents.ts` (reads and polls the roster),
+  `utils/sessionSubagents.ts` (the wire types, the parser, the groups, the labels and
+  `openSubagentTab`), `components/summary/SummarySubagents.tsx` (the sections, rows and hover
+  card). BaseChat calls the hook right after `useSessionTodos`, hands it to both surfaces in
+  `summaryProps.subagents` with the tab opener, and gives the header button the running count.
+  The hook calls the generated `getSessionSubagents`, and parses its answer itself rather than
+  trusting the generated type: the parser's types mirror `subagent_roster.rs` and
+  `orchestration_plan.rs`, and its test reads both files so a variant added there fails here.
 - **Wiring**: `BaseChat.tsx` spreads `summaryRail.splitPaneProps` beside the artifact panel's,
   merging the two `style` objects after both spreads, and renders one `ChatSummaryRail`.
 - **Following the newest line**: `components/summary/useTranscriptFollow.ts` gives the
@@ -307,10 +383,18 @@ or the pointer is over the summary.
 | `components/BaseChat.costLedger.test.tsx` | On the real hook and the real footer `CostTracker`: no Tokens value and no cost while the ledger is pending, then exactly one reading ("N/A" and no cost for an uncertified row; "2.2M" and the priced counters for a ledger with no rows) |
 | `components/ChatSummary.test.tsx` | The content, the status words, the code delta in words and its muted zeros, empty values (and `aria-busy`) for figures not known yet, the gap above the statistics, the row entrances (kept through the re-renders that follow), the glyph crossfade, the thin progress bar, the scrolling body |
 | `components/summary/codeDelta.test.ts` | The Code figure from edits only: a script's write counted from its record, the daemon's script total preferred over truncated or dropped records (and kept when the script failed later), nothing from diff-shaped text, a grep, a `git show` or a quoted snippet, no failed or unanswered call, an undo paired with its own file's last edit; and `codeDeltaCases.json`, the table the daemon's `agents::code_delta` tests also run, so the two tallies cannot drift. `tests/code_execution_integration.rs` `case31` holds the daemon's total against a real script whose write record is truncated |
-| `components/summary/SummaryHeaderButton.test.tsx` | The button's two modes, its tooltip, focus return, the dot with its count, and which flips of the pressed fill snap (geometry) and which fade (a press, the popover, the first turn) |
+| `components/summary/SummaryHeaderButton.test.tsx` | The button's two modes, its tooltip, focus return, the dot with its count (to-do steps and running subagents, alone and together), and which flips of the pressed fill snap (geometry) and which fade (a press, the popover, the first turn) |
+| `utils/sessionSubagents.test.ts` | The contract read from the Rust side (every run status, phase kind and phase status, and the quiet threshold), the parser (every field, an unknown status kept as unknown, a row without an id dropped, malformed fields degraded, a plan with an unknown kind or status), the groups and counts, the layout switch at five, phase membership and default disclosure, the labels (short model names, run time, the second line), the roster revision (which tools move it, a script's sub-calls, no move for prose, an unanswered call or a replay) and `openSubagentTab` on and off `/pair` |
+| `hooks/useSessionSubagents.test.tsx` | No read while hidden and idle, the read with the user proof once shown, a re-read when a roster tool answers and not for prose, the 2s poll while a child is active (stopping once none is), the poll outliving the hidden rail, the turn's poll only in a chat with subagents, no re-render for a hidden summary's ticking counters (and the newest answer shown at once when it is shown again), the last good data kept on a failed read, a missing route read as no roster, and a superseded read aborted and ignored |
+| `components/summary/SummarySubagents.test.tsx` | Nothing drawn for an empty roster, comfortable rows (names, setup line, quiet, the lock, a click opening the tab), dense rows grouped Running, Needs attention and Done with counts, the 12-row cap and Show all, folding a group, the phases (title, count, progress, counts line, names, default disclosure, a phase with no subagents, Other subagents, a plan with no subagents), the hover card's content and its lazy build, one tab stop with the arrows, Home and End moving between rows and opening the card, focus and the card kept on a row a poll moves to another group or a fifth spawn regroups (and left alone once moved out of the list), and a failed refresh with Retry |
+| `components/summary/ChatSummary.subagents.test.tsx` | The subagents between the to-do list and the statistics, nothing for them without the prop or with an empty roster, and BaseChat's wiring at the source: the hook's place and gate, both surfaces fed from `summaryProps`, the tab opener, and the button's running count only while the rail is hidden |
+| `components/summary/summaryAgents.browser.test.tsx` | In Chromium, in the rail's own grid at 240px (a 228px card): 30 subagents as 28px dense rows and disclosures that scroll inside the card with the footer in view and nothing overflowing sideways (with names long enough to overflow, the instrument); three subagents as 44px two-line rows; a 30-subagent phase plan with the same rows and width |
+| `components/settings/app/OpenSubagentTabsRow.test.tsx` | "Open subagent tabs automatically": the key `BIOROUTER_WORKSPACE_OPEN_SUBAGENT_TABS`, off by default, written on toggle and rolled back on a failed write, held unpainted until read, a later visit painted from the last answer (the `openSubagentTabs` key of `settings/lastKnown.ts`), and help that names "Never open tabs automatically" as the setting that wins |
+| `components/settings/app/AppSettingsSection.test.tsx`, `components/settings/warmSettings.test.ts`, `components/settings/tabSwitchFrames.browser.test.tsx` | The switch named by its label, its place right after "Never open tabs automatically" and before Show costs, held with the other four until read; its key warmed while Settings opens; and in Chromium, painted with its saved value in the first commit and every frame of a visit to the App tab |
+| `components/ToolCallWithResponse.subagentCopy.test.ts` | The delegation row naming the role, each `workspace_orchestrate` action's label and its done form, and no row claiming a tab |
 | `components/summary/summaryPopover.browser.test.tsx` | In Chromium, with the whole stylesheet, in a band shaped like BaseChat's header: the old wiring landing on the band line and past the window (the instrument); the popover 4px below the band line and 8px above the window's bottom with its body scrolling, at 1300x900, beside a side preview, at a device pixel ratio of 2 and in a 600px window; a short list at its natural height |
 | `components/alerts/toastClearance.test.ts` (WS-MOTION's) | The two class names the toast stack steps aside for, each held at the component that renders it; the stack joining the docked card's column (as wide as the card, right edges aligned, 8px under it, or at the rail top over a card that fills the rail), never left of it over the conversation; and 16px left of the popover |
-| `styles/summaryRail.test.ts` | The exact grid templates, the `:not([data-preview-layout])` key, unlayered rules, no condition, transition or animation in the geometry, the card's motion, one rail in BaseChat, the `paddingX={6}` and `const contentClassName = 'px-1';` literals the 56px comes from, and the fill: the card's fill and transparent border, no hairline in the content, the track's ground, the scroll-edge fades, the pressed fill and the dot's ring |
+| `styles/summaryRail.test.ts` | The exact grid templates, the `:not([data-preview-layout])` key, unlayered rules, no condition, transition or animation in the geometry, the card's motion, one rail in BaseChat, the `paddingX={6}` and `const contentClassName = 'px-1';` literals the 56px comes from, and the fill: the card's fill and transparent border, no hairline in the content, the track's ground, the scroll-edge fades, the pressed fill and the dot's ring; and for `summaryAgents.css`, the same two sizes, no line (every border a reset), 28px rows, the 12px gaps, the restated focus fill, no turning under reduced motion, and no `Button` in `SummarySubagents.tsx` |
 | `components/BaseChat.summaryRail.test.ts` | BaseChat's wiring: the button, the to-do hook's order and argument, the popover closing for the rail, the composer bar's and the subagent line's gutters, the first turn counted from the commit that creates a new chat, no titlebar padding under the header band, the message list memoised against everything the rail, the popover and the preview change, a loading chat's row reaching the rail, the chip, the placeholder and the ring, the commit before the load counted as loading (rail and empty state), a pending chat's composer bar and subagent line at opacity 0 and never `inert`, the Tokens value and the footer cost waiting for the ledger, and the transcript's follow hook (its arguments, both props, above the early return, the clicked card's hold), and the list settling through `useTranscriptSettle` with no first-settle force of its own (declared after the follow hook, whose hold it asks), the late row hold's arguments, its `followGrowth` on the transcript's `ScrollArea` and the one `ChatTurnError` drawing the row it decided about, and the first send: started in the commit that starts creating the chat, the chat named once created, ended wherever the composer gets the text back, drawn in the transcript slot, the four figures from `summaryFigures`, and the composer's `followUp` from `composerFollowsUp`, with the row kept out of `messagesLength`, and the composer's `reasoningDraftKey` taken from the tab alone, so the hand-off across the first send's remount finds it |
 | `components/summary/useFirstSend.test.tsx` | A new chat's first send against a fake daemon (`/agent/start` after 500ms, a 280ms load, the ledger 50ms after the session), on the real hook, `summaryFigures`, `ChatSummary`, `FirstSendTranscript` and `ProgressiveMessageList`: the old wiring leaving the text off screen and reading Tokens "0", nothing, "N/A" (the instrument); the text in the first commit after the send and in every commit after it; Tokens from empty to its answer once, the counts held at zero; the stored row the same markup as the first-send row, at rest; a placeholder that follows the store asking the open question under the drawn message (the instrument), and "Ask a follow-up" from the commit that draws it. Also the hook's life (begin, created, spent, another chat, a failure, attachments alone), `composerFollowsUp` and `summaryFigures`' cases |
 | `components/summary/transcriptSettle.test.ts` | The settle rule: the first settle lands at once while following, nothing for a reader who scrolled up (first settle too) or while a late row is held, later settles smooth, the first counted at the first settle that has messages and spent on a reader who scrolled up |
@@ -321,6 +405,11 @@ or the pointer is over the summary.
 | `components/summary/summaryRailGeometry.browser.test.ts` | In Chromium: the grid at 1055/1056 and 1067/1068, the 760px column on both sides of each seam, the composer's edges on the column's (also in cells under 816px, with and without a side preview), the subagent line on the column's left edge (with the rail, without it, beside a preview), the column moving by half the rail, 28px rows, the long list scrolling inside the card, the card's fill with no visible edge or inner hairline, and the scroll-edge fades at rest, mid-way and at the end, and the header button's `data-still` beating the Button's layered transition with its clearing starting none |
 
 ## Related documentation
+
+- [Subagents](../agent-loop/subagents.md): how a chat delegates, and why a subagent runs in the
+  background without a tab unless asked.
+- [Orchestration phases](../agent-loop/orchestration-phases.md): the phase plan the Phases
+  section draws, and how a phase hands its results forward.
 
 - [The preview panel in a narrow pane](preview-panel/narrow-panes.md): rung 2, which shares the
   split box and its grid.

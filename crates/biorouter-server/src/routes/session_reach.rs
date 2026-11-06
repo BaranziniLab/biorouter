@@ -1790,6 +1790,7 @@ mod tests {
         let knowledge_rs = include_str!("knowledge.rs");
         let active_work_rs = include_str!("active_work.rs");
         let schedule_rs = include_str!("schedule.rs");
+        let subagents_rs = include_str!("session_subagents.rs");
         for (src, func, gate_call, first_touch, what) in [
             (
                 reply_rs,
@@ -1916,6 +1917,13 @@ mod tests {
                 "session_reach(",
                 "get_session_model_usage(",
                 "the usage read, whose 200/404 said whether the id existed",
+            ),
+            (
+                subagents_rs,
+                "pub async fn get_session_subagents(",
+                "session_reach(",
+                "get_session(",
+                "the parent's row read, whose 404 said whether the id existed",
             ),
             (
                 agent_rs,
@@ -2119,6 +2127,10 @@ mod tests {
             (schedule_rs, "fn create_schedule_status("),
             (schedule_rs, "async fn sessions_handler("),
             (schedule_rs, "pub fn routes("),
+            // `routes` sits after the one gated handler in this file, and
+            // `visible_roster` between them.
+            (subagents_rs, "pub(crate) fn visible_roster("),
+            (subagents_rs, "pub fn routes("),
         ] {
             // Every spelling the rows above use, so a control is a control for
             // every row it could be over-reading into.
@@ -3769,6 +3781,7 @@ mod bypass_tests {
         vec![
             ("GET", format!("/sessions/{id}/extensions"), None),
             ("GET", format!("/sessions/{id}/usage"), None),
+            ("GET", format!("/sessions/{id}/subagents"), None),
             ("GET", format!("/agent/tools?session_id={id}"), None),
             (
                 "GET",

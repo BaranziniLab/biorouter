@@ -373,3 +373,84 @@ describe('the summary is filled, not outlined (owner message 13, R-27)', () => {
     );
   });
 });
+
+/**
+ * The subagents and phases (`summary/SummarySubagents.tsx`) sit inside the same
+ * card, so the card's rules bind their stylesheet too. Their real geometry (28px
+ * rows, a 30-row list scrolling at 240px with no sideways overflow) is measured
+ * in `components/summary/summaryAgents.browser.test.tsx`.
+ */
+describe('the subagents keep the summary’s rules', () => {
+  const AGENTS_CSS = readFileSync(
+    join(__dirname, '../components/summary/summaryAgents.css'),
+    'utf8'
+  ).replace(/\/\*[\s\S]*?\*\//g, '');
+  const AGENTS_TSX = codeWithoutComments(
+    readFileSync(join(__dirname, '../components/summary/SummarySubagents.tsx'), 'utf8')
+  );
+
+  /** The body of the one top-level rule whose selector list is exactly `selector`. */
+  function agentsRule(selector: string): string {
+    const wanted = selector.replace(/\s+/g, ' ').trim();
+    const found: string[] = [];
+    const pattern = /([^{}]+)\{([^{}]*)\}/g;
+    for (let match = pattern.exec(AGENTS_CSS); match; match = pattern.exec(AGENTS_CSS)) {
+      if (match[1].replace(/\s+/g, ' ').trim() === wanted) found.push(match[2]);
+    }
+    if (found.length !== 1)
+      throw new Error(`expected one rule for ${selector}, got ${found.length}`);
+    return found[0];
+  }
+
+  it('declares only the secondary (13) and supporting (12) sizes', () => {
+    const sizes = [...AGENTS_CSS.matchAll(/font-size:\s*([^;]+);/g)].map((match) =>
+      match[1].trim()
+    );
+    expect(sizes.length).toBeGreaterThan(0);
+    for (const size of sizes) {
+      expect(['var(--text-secondary)', 'var(--text-supporting)'], size).toContain(size);
+    }
+  });
+
+  it('draws no line: every border it names is a reset', () => {
+    const borders = [
+      ...AGENTS_CSS.matchAll(/border(?:-top|-bottom|-left|-right)?\s*:\s*([^;]+);/g),
+    ];
+    for (const [, value] of borders) expect(['0', 'none'], value).toContain(value.trim());
+    expect(AGENTS_CSS).not.toMatch(/outline:(?!\s*none\s*;)[^;]+;/);
+  });
+
+  it('gives every row the 28px of the card’s other rows', () => {
+    const rows = agentsRule(
+      '.br-agents__row, .br-agents__phase-toggle, .br-agents__group-toggle, .br-agents__more'
+    );
+    expect(property(rows, 'min-height')).toBe('28px');
+    expect(property(rows, 'font-size')).toBe('var(--text-secondary)');
+  });
+
+  it('parts its sections from the to-do list and the statistics by 12px of space', () => {
+    expect(property(agentsRule('.br-summary__body > * + .br-agents'), 'margin-top')).toBe('12px');
+    expect(property(agentsRule('.br-agents + .br-summary__stats'), 'margin-top')).toBe('12px');
+    expect(property(agentsRule('.br-agents__section + .br-agents__section'), 'margin-top')).toBe(
+      '12px'
+    );
+  });
+
+  it('restates the focus fill wherever it paints a row, and stops turning under reduced motion', () => {
+    const focus = agentsRule(
+      '.br-agents__row:focus-visible, .br-agents__phase-toggle:focus-visible, .br-agents__group-toggle:focus-visible, .br-agents__more:focus-visible, .br-agents__retry:focus-visible'
+    );
+    expect(property(focus, 'background-color')).toBe('var(--background-focus)');
+    expect(property(focus, 'box-shadow')).toBe('inset 0 0 0 2px var(--border-focus)');
+    const reduced = AGENTS_CSS.slice(AGENTS_CSS.indexOf('@media (prefers-reduced-motion: reduce)'));
+    expect(reduced).toMatch(
+      /\.br-agents__row\[data-status='running'\] \.br-agents__glyph > svg \{\s*animation: none;/
+    );
+  });
+
+  it('draws its rows as plain buttons, so the card’s three Buttons stay three', () => {
+    expect(AGENTS_TSX).not.toMatch(/<Button\b/);
+    expect(AGENTS_TSX).toMatch(/^import '\.\/summaryAgents\.css';$/m);
+    expect(AGENTS_CSS).not.toMatch(/@layer/);
+  });
+});

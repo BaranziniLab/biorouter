@@ -117,6 +117,7 @@ describe('SettingsView', () => {
     expect(recall('approvalMode')).toBe('auto');
     expect(recall('maxTurns')).toBeNull();
     expect(recall('announceOnly')).toBe(false);
+    expect(recall('openSubagentTabs')).toBe(false);
   });
 
   /**

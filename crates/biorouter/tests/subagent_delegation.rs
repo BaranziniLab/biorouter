@@ -491,6 +491,97 @@ async fn a_single_subagent_runs_and_returns_its_own_summary() {
     assert_eq!(h.ledger.distinct_started(), vec!["ok:solo".to_string()]);
 }
 
+/// The side panel's source of truth, end to end: once a batch has finished, the
+/// roster lists every child with the status its run ended in, each child's row
+/// carries its durable spawn and outcome records (so the status survives a
+/// daemon restart, when the in-memory handle is gone), and nothing was written
+/// onto the PARENT's row.
+#[tokio::test]
+async fn the_roster_reports_each_finished_child_from_its_own_records() {
+    use biorouter::agents::subagent_roster::{
+        read_outcome_record, read_spawn_record, session_subagents, SubagentRunStatus,
+        SUBAGENT_OUTCOME_STATE,
+    };
+
+    let h = harness(vec![
+        call("fine", Call::sub("fine", "ok:fine")),
+        call("broken", Call::sub("broken", "fail:broken")),
+    ])
+    .await;
+    let messages = drain(&h.agent, &h.session_id)
+        .await
+        .expect("turn completes");
+    let collected = collect_delegations(&h, &messages).await;
+    assert_eq!(collected["fine"].status, "completed");
+    assert_eq!(collected["broken"].status, "error");
+
+    let sm = h.agent.config.session_manager.clone();
+    let roster = session_subagents(&sm, &h.session_id)
+        .await
+        .expect("the roster reads");
+    assert_eq!(roster.parent_session_id, h.session_id);
+    assert_eq!(roster.subagents.len(), 2, "{:?}", roster.subagents);
+    assert!(
+        roster
+            .subagents
+            .windows(2)
+            .all(|pair| pair[0].created_at <= pair[1].created_at),
+        "oldest first"
+    );
+
+    let fine = roster
+        .subagents
+        .iter()
+        .find(|row| row.status == SubagentRunStatus::Completed)
+        .expect("the finished child reads as completed");
+    assert!(
+        fine.result_line
+            .as_deref()
+            .is_some_and(|line| line.contains("child fine done")),
+        "{fine:?}"
+    );
+    assert!(
+        fine.name.contains("fine"),
+        "the label, without its prefix: {}",
+        fine.name
+    );
+    assert!(!fine.name.starts_with("Subagent: "));
+    assert!(fine.ended_at.is_some() && fine.elapsed_seconds.is_some());
+    assert!(fine.message_count > 0);
+
+    let broken = roster
+        .subagents
+        .iter()
+        .find(|row| row.status == SubagentRunStatus::Failed)
+        .expect("the aborted child reads as failed");
+    assert!(broken.result_line.is_some(), "{broken:?}");
+
+    for row in &roster.subagents {
+        let child = sm.get_session(&row.session_id, false).await.unwrap();
+        let outcome = read_outcome_record(&child.extension_data)
+            .unwrap_or_else(|| panic!("{} has no durable outcome record", row.session_id));
+        assert_eq!(outcome.status, row.status, "the record agrees with the row");
+        let spawn = read_spawn_record(&child.extension_data)
+            .unwrap_or_else(|| panic!("{} has no spawn record", row.session_id));
+        assert_eq!(spawn.role, None);
+        assert_eq!(spawn.phase_id, None);
+        // Headless: no daemon services, so the record's knowledge bases are the
+        // empty set the spawn-context message lists as "(none)".
+        assert!(spawn.knowledge_bases.is_empty());
+        assert!(spawn.skills.is_empty());
+        // The runtime profile it was installed beside is still there.
+        assert!(!row.extensions.is_empty(), "{row:?}");
+    }
+
+    let parent = sm.get_session(&h.session_id, false).await.unwrap();
+    assert!(
+        !serde_json::to_string(&parent.extension_data)
+            .unwrap()
+            .contains(SUBAGENT_OUTCOME_STATE),
+        "a child's outcome must never be written onto its parent's row"
+    );
+}
+
 /// SUB: several DIFFERENT subagents in one batch. The headline requirement —
 /// every result must stay welded to the call that asked for it.
 #[tokio::test]

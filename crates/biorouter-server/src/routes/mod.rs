@@ -1035,6 +1035,7 @@ pub mod session;
 pub mod session_events;
 pub mod session_meta;
 pub mod session_reach;
+pub mod session_subagents;
 pub mod setup;
 pub mod shell;
 pub mod skills;
@@ -1070,6 +1071,7 @@ pub fn configure(state: Arc<crate::state::AppState>, secret_key: String) -> Rout
         .merge(config_management::routes(state.clone()))
         .merge(workflow::routes(state.clone()))
         .merge(session::routes(state.clone()))
+        .merge(session_subagents::routes(state.clone()))
         .merge(usage::routes(state.clone()))
         .merge(schedule::routes(state.clone()))
         .merge(setup::routes(state.clone()))

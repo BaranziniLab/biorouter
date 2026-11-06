@@ -1,7 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import type { SessionSummary } from '../../api';
 import { sortSidebarChats } from '../BioRouterSidebar/sidebarChatView';
-import { groupSessionsByParent, sortByActivity, withoutSubagents } from './sessionGrouping';
+import {
+  groupSessionsByParent,
+  NESTED_RUNS_SHOWN,
+  sortByActivity,
+  splitNestedRuns,
+  withoutSubagents,
+} from './sessionGrouping';
 
 describe('sortByActivity (V1-R2-8)', () => {
   const tied = '2026-09-05T17:49:17Z';
@@ -110,5 +116,46 @@ describe('withoutSubagents', () => {
 
     const mixed = [...clean, { id: 'b', session_type: 'sub_agent', parent_session_id: 'a' }];
     expect(withoutSubagents(mixed).map((r) => r.id)).toEqual(['a']);
+  });
+});
+
+describe('splitNestedRuns', () => {
+  const runs = ['r6', 'r5', 'r4', 'r3', 'r2', 'r1'];
+
+  it('shows the first three (the newest, in the order given) and counts the rest', () => {
+    expect(NESTED_RUNS_SHOWN).toBe(3);
+    expect(splitNestedRuns(runs)).toEqual({ shown: ['r6', 'r5', 'r4'], hidden: 3 });
+  });
+
+  it('folds nothing at or under the limit, and returns the runs themselves', () => {
+    const three = runs.slice(0, 3);
+    expect(splitNestedRuns(three)).toEqual({ shown: three, hidden: 0 });
+    expect(splitNestedRuns(three).shown).toBe(three);
+    expect(splitNestedRuns([])).toEqual({ shown: [], hidden: 0 });
+  });
+
+  it('keeps a run `keep` names drawn past the newest three, in its place', () => {
+    expect(splitNestedRuns(runs, { keep: (run) => run === 'r2' })).toEqual({
+      shown: ['r6', 'r5', 'r4', 'r2'],
+      hidden: 2,
+    });
+    // Already among the newest: nothing more is drawn.
+    expect(splitNestedRuns(runs, { keep: (run) => run === 'r5' })).toEqual({
+      shown: ['r6', 'r5', 'r4'],
+      hidden: 3,
+    });
+  });
+
+  it('shows every run once expanded, and drops none either way', () => {
+    expect(splitNestedRuns(runs, { expanded: true })).toEqual({ shown: runs, hidden: 0 });
+    for (const count of [0, 1, 3, 4, 30]) {
+      const list = Array.from({ length: count }, (_, i) => `r${i}`);
+      const { shown, hidden } = splitNestedRuns(list);
+      expect(shown.length + hidden, String(count)).toBe(count);
+    }
+  });
+
+  it('takes another limit', () => {
+    expect(splitNestedRuns(runs, { limit: 1 })).toEqual({ shown: ['r6'], hidden: 5 });
   });
 });

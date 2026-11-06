@@ -6,6 +6,7 @@
 //! classic readline loop) and rendered into a ratatui scrollback buffer.
 
 mod app;
+mod subagents;
 
 use std::io::Stdout;
 use std::time::Duration;
@@ -43,6 +44,7 @@ use tokio_util::task::AbortOnDropHandle;
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use biorouter::conversation::Conversation;
+use biorouter::session::SessionManager;
 
 use self::app::{App, PermissionModal, StatusInfo, ACCENT};
 use super::CliSession;
@@ -155,35 +157,298 @@ pub async fn run(session: &mut CliSession, initial_prompt: Option<String>) -> Re
     });
     let _reader = AbortOnDropHandle::new(reader);
 
+    // The subagent pane reads the roster in this process: the TUI's children
+    // run here, and no daemon knows about them.
+    let session_manager = session.agent.config.session_manager.clone();
+    let parent_id = session.session_id.clone();
+    let debug = session.debug;
+    // A resumed chat shows the subagents it already has.
+    refresh_subagents(&session_manager, &parent_id, &mut app).await;
+
     if let Some(prompt) = initial_prompt {
         submit(session, &mut app, &mut tui, &mut rx, prompt).await?;
         drain_queue(session, &mut app, &mut tui, &mut rx).await?;
     }
 
+    // Children keep working while the parent is idle, so the idle loop wakes on
+    // a timer as well as on input. The timer redraws only when the roster or an
+    // open child's chat changed, so an idle screen stays still.
+    let mut refresh = tokio::time::interval(subagents::REFRESH_INTERVAL);
+    refresh.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    let mut redraw = true;
     while !app.should_quit {
-        tui.draw(&mut app)?;
-        let Some(event) = rx.recv().await else {
-            break; // event reader closed
-        };
-        match event {
-            Event::Key(key) if key.kind == KeyEventKind::Press => {
-                if let Some(submission) = on_key(&mut app, key) {
-                    submit(session, &mut app, &mut tui, &mut rx, submission).await?;
-                    // Anything typed while that turn streamed runs next, in order.
-                    drain_queue(session, &mut app, &mut tui, &mut rx).await?;
+        if redraw {
+            tui.draw(&mut app)?;
+        }
+        redraw = true;
+        tokio::select! {
+            event = rx.recv() => {
+                let Some(event) = event else {
+                    break; // event reader closed
+                };
+                match event {
+                    Event::Key(key) if key.kind == KeyEventKind::Press => {
+                        if let Some(submission) = on_key(&mut app, key) {
+                            submit(session, &mut app, &mut tui, &mut rx, submission).await?;
+                            // Anything typed while that turn streamed runs next, in order.
+                            drain_queue(session, &mut app, &mut tui, &mut rx).await?;
+                        }
+                        open_pending_child(&session_manager, debug, &mut app).await;
+                    }
+                    Event::Paste(s) => on_paste(&mut app, &s),
+                    Event::Mouse(m) => on_mouse(&mut app, m),
+                    _ => {}
                 }
             }
-            Event::Paste(s) => app.paste(&s),
-            Event::Mouse(m) => on_mouse(&mut app, m),
-            _ => {}
+            _ = refresh.tick() => {
+                let mut changed = false;
+                if app.subagents.wants_poll(app.child.is_some()) {
+                    changed |= refresh_subagents(&session_manager, &parent_id, &mut app).await;
+                }
+                changed |= sync_child(&session_manager, &mut app).await;
+                redraw = changed;
+            }
+            received = subagents::next_child_event(app.child.as_deref_mut()) => {
+                if let Some(child) = app.child.as_deref_mut() {
+                    child.apply_recv(received);
+                    // Take the rest of a burst in one go, so a fast stream costs
+                    // one redraw per wake rather than one per token.
+                    child.drain();
+                }
+                sync_child(&session_manager, &mut app).await;
+            }
         }
     }
     Ok(())
 }
 
+/// Re-read this chat's subagents into the pane. Returns true when anything the
+/// pane draws changed, so a caller on a timer redraws only then.
+async fn refresh_subagents(
+    session_manager: &SessionManager,
+    parent_id: &str,
+    app: &mut App,
+) -> bool {
+    match biorouter::agents::subagent_roster::session_subagents(session_manager, parent_id).await {
+        Ok(snapshot) => app
+            .subagents
+            .set_model(subagents::PaneModel::from_snapshot(&snapshot)),
+        Err(error) => {
+            tracing::debug!(%error, "could not read this chat's subagents");
+            false
+        }
+    }
+}
+
+/// Apply what the open child's bus delivered, and re-read its chat from the
+/// store when a turn ended or the bus lagged. Returns true when anything
+/// changed on screen.
+async fn sync_child(session_manager: &SessionManager, app: &mut App) -> bool {
+    let Some(child) = app.child.as_deref_mut() else {
+        return false;
+    };
+    let mut changed = child.drain();
+    if child.needs_reload {
+        if child.subscription.is_none() {
+            child.subscription = Some(biorouter::session_events::subscribe(&child.session_id));
+        }
+        match session_manager.get_session(&child.session_id, true).await {
+            Ok(stored) => {
+                let messages = stored
+                    .conversation
+                    .as_ref()
+                    .map(|c| c.messages().as_slice())
+                    .unwrap_or(&[]);
+                child.load(messages);
+            }
+            Err(error) => {
+                child.needs_reload = false;
+                tracing::debug!(%error, "could not re-read a subagent's chat");
+            }
+        }
+        changed = true;
+    }
+    changed
+}
+
+/// Open the row Enter picked in the pane, if any.
+async fn open_pending_child(session_manager: &SessionManager, debug: bool, app: &mut App) {
+    if let Some(id) = app.subagents.pending_open.take() {
+        open_child(session_manager, debug, app, &id, true).await;
+    }
+}
+
+/// Show a subagent's chat, read-only, in place of the history.
+///
+/// Only this chat's own subagents reach here (`/attach` and the pane resolve
+/// against the roster), and a child's privacy tier equals its parent's, so
+/// reading it in this process crosses no privacy boundary.
+async fn open_child(
+    session_manager: &SessionManager,
+    debug: bool,
+    app: &mut App,
+    child_id: &str,
+    return_to_pane: bool,
+) {
+    let mut view = subagents::ChildView::new(child_id, return_to_pane, debug);
+    // Subscribe before the store read, so nothing published in between is
+    // lost; the view skips events for messages the read already drew.
+    view.subscription = Some(biorouter::session_events::subscribe(child_id));
+    match session_manager.get_session(child_id, true).await {
+        Ok(stored) => {
+            view.name = stored
+                .name
+                .strip_prefix("Subagent: ")
+                .unwrap_or(&stored.name)
+                .to_string();
+            view.model = stored.model_config.as_ref().map(|m| m.model_name.clone());
+            let messages = stored
+                .conversation
+                .as_ref()
+                .map(|c| c.messages().as_slice())
+                .unwrap_or(&[]);
+            view.load(messages);
+            app.subagents.focused = false;
+            app.subagents.selected = Some(child_id.to_string());
+            app.child = Some(Box::new(view));
+        }
+        Err(error) => app.push_error(&format!("Couldn't open that subagent's chat: {error}")),
+    }
+}
+
+/// Leave a subagent's chat, putting focus back in the pane when the chat was
+/// opened from it.
+fn close_child(app: &mut App) {
+    let back_to_pane = app.child.take().is_some_and(|c| c.return_to_pane);
+    if back_to_pane && app.subagents.visible() {
+        app.subagents.focused = true;
+    }
+}
+
+/// Scroll whatever the history area shows: the open subagent's chat, else
+/// this chat.
+fn scroll_history(app: &mut App, up: bool, lines: u16) {
+    let target = match app.child.as_deref_mut() {
+        Some(child) => &mut child.transcript,
+        None => app,
+    };
+    if up {
+        target.scroll_up(lines);
+    } else {
+        target.scroll_down(lines);
+    }
+}
+
+fn on_paste(app: &mut App, text: &str) {
+    if app.child.is_some() {
+        return; // read-only
+    }
+    app.subagents.focused = false;
+    app.paste(text);
+}
+
+/// What a key did to the subagent pane or a subagent's chat.
+#[derive(Debug, PartialEq, Eq)]
+enum PaneKey {
+    /// The pane or the child view used it; nothing else runs.
+    Consumed,
+    /// Not theirs: the normal input handling runs.
+    PassThrough,
+}
+
+/// Keys for the subagent pane and a subagent's chat, checked before the input
+/// editor sees a key. `Ctrl-B` shows or hides the pane and `Ctrl-O` moves focus
+/// into it and back; neither was bound before. Arrow keys stay the editor's
+/// unless the pane has focus, so composing a message is never affected.
+fn on_subagent_key(app: &mut App, key: KeyEvent, streaming: bool) -> PaneKey {
+    let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+    let typed = !key.modifiers.intersects(
+        KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::SUPER | KeyModifiers::META,
+    );
+    match key.code {
+        KeyCode::Char('b') if ctrl => {
+            app.subagents.toggle_visible();
+            return PaneKey::Consumed;
+        }
+        KeyCode::Char('o') if ctrl => {
+            if app.subagents.focused {
+                app.subagents.focused = false;
+            } else {
+                app.completion = None;
+                app.subagents.focus();
+            }
+            return PaneKey::Consumed;
+        }
+        _ => {}
+    }
+
+    if app.subagents.focused {
+        match key.code {
+            KeyCode::Up => app.subagents.move_selection(-1),
+            KeyCode::Down => app.subagents.move_selection(1),
+            KeyCode::Home => app.subagents.select_edge(false),
+            KeyCode::End => app.subagents.select_edge(true),
+            KeyCode::Enter => app.subagents.pending_open = app.subagents.selected.clone(),
+            KeyCode::Esc => app.subagents.focused = false,
+            KeyCode::PageUp => scroll_history(app, true, 10),
+            KeyCode::PageDown => scroll_history(app, false, 10),
+            // While a turn runs, ^C stops it wherever focus is.
+            KeyCode::Char('c') if ctrl && streaming => return PaneKey::PassThrough,
+            KeyCode::Char('c') if ctrl => app.subagents.focused = false,
+            KeyCode::Char('d') if ctrl && !streaming && app.child.is_none() => {
+                return PaneKey::PassThrough
+            }
+            // Typing goes back to the input and lands there, so the pane
+            // never swallows the start of a message.
+            // A paste shortcut is typing too.
+            KeyCode::Char(_)
+            | KeyCode::Backspace
+            | KeyCode::Delete
+            | KeyCode::Left
+            | KeyCode::Right
+            | KeyCode::Tab
+                if typed || (matches!(key.code, KeyCode::Char('v')) && shortcut_modifier(key)) =>
+            {
+                app.subagents.focused = false;
+                if app.child.is_none() {
+                    return PaneKey::PassThrough;
+                }
+            }
+            _ => {}
+        }
+        return PaneKey::Consumed;
+    }
+
+    if app.child.is_some() {
+        match key.code {
+            KeyCode::Esc => close_child(app),
+            KeyCode::Char('c') if ctrl && streaming => return PaneKey::PassThrough,
+            KeyCode::Char('c') if ctrl => close_child(app),
+            KeyCode::Char('d') if ctrl && !streaming => return PaneKey::PassThrough,
+            KeyCode::PageUp => scroll_history(app, true, 10),
+            KeyCode::PageDown => scroll_history(app, false, 10),
+            KeyCode::Up => scroll_history(app, true, 1),
+            KeyCode::Down => scroll_history(app, false, 1),
+            KeyCode::End => {
+                if let Some(child) = app.child.as_deref_mut() {
+                    child.transcript.scroll = 0;
+                }
+            }
+            // Read-only: nothing is typed into a subagent's chat from here.
+            _ => {}
+        }
+        return PaneKey::Consumed;
+    }
+    PaneKey::PassThrough
+}
+
 /// Handle a key press in the idle (composing) state. Returns the text to submit
 /// when the user presses Enter on a non-empty buffer.
 fn on_key(app: &mut App, key: KeyEvent) -> Option<String> {
+    if on_subagent_key(app, key, false) == PaneKey::Consumed {
+        app.refresh_completion();
+        return None;
+    }
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
     let shift = key.modifiers.contains(KeyModifiers::SHIFT);
 
@@ -278,6 +543,10 @@ enum StreamAction {
 /// the user can compose the next message (or steer) instead of being locked
 /// out. Enter queues; Ctrl-C cancels the in-flight turn.
 fn on_key_streaming(app: &mut App, key: KeyEvent) -> StreamAction {
+    if on_subagent_key(app, key, true) == PaneKey::Consumed {
+        app.refresh_completion();
+        return StreamAction::None;
+    }
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
     let shift = key.modifiers.contains(KeyModifiers::SHIFT);
 
@@ -417,8 +686,10 @@ fn move_cursor_vertical(app: &mut App, delta: i16, extend: bool) {
 
 fn on_mouse(app: &mut App, m: MouseEvent) {
     match m.kind {
-        MouseEventKind::ScrollUp => app.scroll_up(3),
-        MouseEventKind::ScrollDown => app.scroll_down(3),
+        MouseEventKind::ScrollUp => scroll_history(app, true, 3),
+        MouseEventKind::ScrollDown => scroll_history(app, false, 3),
+        // A subagent's chat is read-only, so there is no input to select in.
+        _ if app.child.is_some() => {}
         MouseEventKind::Down(MouseButton::Left) => {
             if let Some(cursor) = input_cursor_at_mouse(app, m.column, m.row) {
                 if m.modifiers.contains(KeyModifiers::SHIFT) {
@@ -541,6 +812,13 @@ async fn drive_response(
 
     let mut computer_use_challenge = None;
     let mut computer_use_poll = tokio::time::interval(Duration::from_millis(500));
+    // The subagent pane follows children this turn spawns: the spinner tick
+    // re-reads the roster, throttled to the pane's refresh interval.
+    let session_manager = session.agent.config.session_manager.clone();
+    let parent_id = session.session_id.clone();
+    let mut last_roster_read = std::time::Instant::now()
+        .checked_sub(subagents::REFRESH_INTERVAL)
+        .unwrap_or_else(std::time::Instant::now);
     loop {
         let now = std::time::Instant::now();
         if app.stream_start.is_none() || now.duration_since(last_draw) >= frame {
@@ -548,11 +826,20 @@ async fn drive_response(
             last_draw = now;
         }
         tokio::select! {
-            _ = tick.tick() => { app.spin = app.spin.wrapping_add(1); }
+            _ = tick.tick() => {
+                app.spin = app.spin.wrapping_add(1);
+                if last_roster_read.elapsed() >= subagents::REFRESH_INTERVAL {
+                    last_roster_read = std::time::Instant::now();
+                    refresh_subagents(&session_manager, &parent_id, app).await;
+                }
+                sync_child(&session_manager, app).await;
+            }
             ev = rx.recv() => {
                 match ev {
                     Some(Event::Key(k)) if k.kind == KeyEventKind::Press => {
-                        match on_key_streaming(app, k) {
+                        let action = on_key_streaming(app, k);
+                        open_pending_child(&session_manager, debug, app).await;
+                        match action {
                             StreamAction::Cancel => {
                                 session.agent.extension_manager.computer_use.revoke();
                                 cancel.cancel();
@@ -566,7 +853,7 @@ async fn drive_response(
                             StreamAction::None => {}
                         }
                     }
-                    Some(Event::Paste(s)) => app.paste(&s),
+                    Some(Event::Paste(s)) => on_paste(app, &s),
                     Some(Event::Mouse(m)) => on_mouse(app, m),
                     _ => {}
                 }
@@ -700,6 +987,9 @@ async fn drive_response(
     app.thinking = None;
     app.set_catalog(build_catalog(session).await);
     refresh_context(session, app).await;
+    // A child spawned in the turn's last moments shows without waiting for
+    // the idle loop's first tick.
+    refresh_subagents(&session_manager, &parent_id, app).await;
     tui.draw(app)?;
     Ok(())
 }
@@ -844,6 +1134,43 @@ fn backend_slash_command(text: &str) -> bool {
         || biorouter::slash_commands::get_workflow_for_command(command).is_some()
 }
 
+/// `/subagents` or `/attach`, with what follows it.
+fn subagent_command(text: &str) -> Option<(&'static str, &str)> {
+    app::TUI_ONLY_SLASH_COMMANDS.iter().find_map(|&command| {
+        let rest = text.strip_prefix(command)?;
+        (rest.is_empty() || rest.starts_with(' ')).then_some((command, rest.trim()))
+    })
+}
+
+/// `/subagents [list|show|hide]` and `/attach <n|id|name>`. Both re-read the
+/// roster first, so a child spawned a moment ago can be named.
+async fn subagent_slash(session: &CliSession, app: &mut App, text: &str) {
+    let Some((command, arg)) = subagent_command(text) else {
+        return;
+    };
+    let session_manager = session.agent.config.session_manager.clone();
+    refresh_subagents(&session_manager, session.session_id(), app).await;
+    match (command, arg) {
+        ("/subagents", "") => app.subagents.toggle_visible(),
+        ("/subagents", "list") => subagents::list_into(app),
+        ("/subagents", "show") => app.subagents.toggle = Some(true),
+        ("/subagents", "hide") => {
+            app.subagents.toggle = Some(false);
+            app.subagents.focused = false;
+        }
+        ("/subagents", _) => app.push_note("Usage: /subagents [list|show|hide]"),
+        (_, "") => {
+            app.push_note("Usage: /attach <number|id|name>. /subagents list shows the numbers.")
+        }
+        (_, arg) => match app.subagents.model.resolve(arg) {
+            Ok(child_id) => {
+                open_child(&session_manager, session.debug, app, &child_id, false).await
+            }
+            Err(reason) => app.push_note(&reason),
+        },
+    }
+}
+
 /// Handle slash commands that the TUI services locally. Returns true if handled.
 /// (`/compact` is handled in `submit` since it drives a turn.)
 async fn handle_slash(session: &mut CliSession, app: &mut App, text: &str) -> bool {
@@ -872,6 +1199,10 @@ async fn handle_slash(session: &mut CliSession, app: &mut App, text: &str) -> bo
         }
         "/help" | "/?" => {
             help_into(app);
+            true
+        }
+        s if subagent_command(s).is_some() => {
+            subagent_slash(session, app, s).await;
             true
         }
         s if s == "/diverge" || s.starts_with("/diverge ") => {
@@ -962,6 +1293,15 @@ fn draw(f: &mut Frame, app: &mut App) {
     };
     let status_h = 2u16; // model/provider on line 1; counts + context on line 2
     let hints_h = 1u16;
+    // The subagent pane: beside the history when there is room for both, else
+    // a short strip above the status lines. Hidden while the chat has none.
+    let pane_shown = app.subagents.visible();
+    let wide = area.width >= subagents::WIDE_MIN_WIDTH;
+    let strip_h = if pane_shown && !wide {
+        subagents::strip_height(&app.subagents)
+    } else {
+        0
+    };
     // The input cluster (status + box + hints) is pinned to the bottom and never
     // moves as the conversation grows; the history pane flexibly fills all the
     // space above it and scrolls to keep the latest output in view (Claude-style).
@@ -971,23 +1311,50 @@ fn draw(f: &mut Frame, app: &mut App) {
             Constraint::Min(1), // history → all remaining space at the top
             Constraint::Length(gap_h),
             Constraint::Length(queued_h),
+            Constraint::Length(strip_h),
             Constraint::Length(status_h),
             Constraint::Length(input_h),
             Constraint::Length(hints_h),
         ])
         .split(area);
 
-    draw_history(f, app, chunks[0]);
+    let open_child = app.child.as_ref().map(|c| c.session_id.clone());
+    let mut history_area = chunks[0];
+    if pane_shown && wide {
+        let split = Layout::horizontal([
+            Constraint::Min(1),
+            Constraint::Length(1),
+            Constraint::Length(subagents::side_width(area.width)),
+        ])
+        .split(chunks[0]);
+        history_area = split[0];
+        subagents::draw_side(f, &mut app.subagents, split[2], open_child.as_deref());
+    }
+    if let Some(child) = app.child.as_deref_mut() {
+        child.transcript.render_stream_if_dirty();
+        let row = app.subagents.model.row(&child.session_id);
+        subagents::draw_child(f, child, row, history_area);
+    } else {
+        draw_history(f, app, history_area);
+    }
     if queued_h > 0 {
         draw_queued(f, app, chunks[2]);
     }
-    draw_status(f, app, chunks[3]);
-    draw_input(f, app, chunks[4]);
-    draw_hints(f, chunks[5]);
+    if strip_h > 0 {
+        subagents::draw_strip(f, &mut app.subagents, chunks[3], open_child.as_deref());
+    }
+    draw_status(f, app, chunks[4]);
+    draw_input(f, app, chunks[5]);
+    draw_hints(f, app, chunks[6]);
 
-    // The completion popup floats just above the input box.
-    if app.completion.is_some() && app.modal.is_none() {
-        draw_completion(f, app, chunks[4]);
+    // The completion popup floats just above the input box, and only while
+    // the input is the thing being typed into.
+    if app.completion.is_some()
+        && app.modal.is_none()
+        && !app.subagents.focused
+        && app.child.is_none()
+    {
+        draw_completion(f, app, chunks[5]);
     }
     if app.modal.is_some() {
         draw_modal(f, app);
@@ -1064,12 +1431,20 @@ fn draw_completion(f: &mut Frame, app: &App, input_area: Rect) {
     );
 }
 
+/// Draw the history anchored to its newest row, `app.scroll` rows up from it.
+///
+/// ⚠ The rows are wrapped HERE ([`wrap_line`]) and handed to ratatui one row
+/// per `Line`, never handed whole with `Wrap`. The view is anchored by counting
+/// rows, and the count used to be cells ÷ width while ratatui wrapped at word
+/// boundaries: every long prose line took a row or so more than counted, so a
+/// transcript of long lines (a subagent's 143-line spawn context) opened that
+/// many rows above its newest message. One function both counts and draws, so
+/// the two cannot disagree.
 fn draw_history(f: &mut Frame, app: &mut App, area: Rect) {
-    let para = Paragraph::new(app.scrollback.clone()).wrap(Wrap { trim: false });
-    // The wrapped-line total is an O(content) unicode re-measure. Cache it by a
-    // cheap content signature so spinner-tick redraws (where nothing changed)
-    // don't recompute it; recompute only when scrollback grows, the viewport
-    // resizes, or a streamed token extends the in-progress text.
+    // The wrapped-row total is an O(content) re-measure. Cache it by a cheap
+    // content signature so spinner-tick redraws (where nothing changed) don't
+    // recompute it; recompute only when scrollback grows, the viewport resizes,
+    // or a streamed token extends the in-progress text.
     let sig = (app.scrollback.len(), area.width, app.stream_text.len());
     let total = match app.wrap_cache {
         Some((sb, w, st, cached)) if (sb, w, st) == sig => cached,
@@ -1081,28 +1456,148 @@ fn draw_history(f: &mut Frame, app: &mut App, area: Rect) {
     };
     app.last_total_lines = total as usize;
     app.last_viewport_h = area.height;
-    let base = total.saturating_sub(area.height);
-    let offset = base.saturating_sub(app.scroll);
-    f.render_widget(para.scroll((offset, 0)), area);
+    let height = area.height as usize;
+    let scroll = (app.scroll as usize).min((total as usize).saturating_sub(height));
+    // Only the rows from the bottom up to the top of the viewport are wrapped
+    // to be drawn, so a long history costs a redraw nothing it does not show.
+    let wanted = scroll + height;
+    let mut rows: Vec<Line<'static>> = Vec::with_capacity(wanted);
+    for line in app.scrollback.iter().rev() {
+        if rows.len() >= wanted {
+            break;
+        }
+        rows.extend(wrap_line(line, area.width).into_iter().rev());
+    }
+    rows.reverse();
+    let end = rows.len().saturating_sub(scroll);
+    let start = end.saturating_sub(height);
+    rows.truncate(end);
+    f.render_widget(Paragraph::new(rows.split_off(start)), area);
 }
 
-/// Estimate how many terminal rows the lines occupy once wrapped to `width`.
-/// (`Paragraph::line_count` is private in ratatui, so we approximate; chat
-/// content is mostly short lines where this is exact.)
-fn wrapped_count(lines: &[Line], width: u16) -> u16 {
-    let w = (width.max(1)) as usize;
-    let mut total: usize = 0;
-    for line in lines {
-        // Use unicode *display* width so wide glyphs (CJK = 2 cells) count
-        // correctly and the latest output isn't clipped.
-        let cells: usize = line
-            .spans
-            .iter()
-            .map(|s| UnicodeWidthStr::width(s.content.as_ref()))
-            .sum();
-        total += cells.div_ceil(w).max(1);
-    }
+/// How many terminal rows `lines` take in a `width`-cell viewport: exactly the
+/// rows [`wrap_line`] makes of them.
+fn wrapped_count(lines: &[Line<'static>], width: u16) -> u16 {
+    let total: usize = lines
+        .iter()
+        .map(|line| {
+            if fits_one_row(line, width) {
+                1
+            } else {
+                wrap_line(line, width).len()
+            }
+        })
+        .sum();
     total.min(u16::MAX as usize) as u16
+}
+
+/// A space a row may break at. A no-break space is not one.
+fn is_break_space(ch: char) -> bool {
+    ch.is_whitespace() && ch != '\u{a0}' && ch != '\u{202f}'
+}
+
+/// Whether `line` is drawn as it is, on one row: it fits, in display cells, and
+/// holds no control character (which [`wrap_line`] drops).
+fn fits_one_row(line: &Line, width: u16) -> bool {
+    let mut cells = 0usize;
+    for span in &line.spans {
+        for ch in span.content.chars() {
+            if ch.is_control() {
+                return false;
+            }
+            cells += UnicodeWidthChar::width(ch).unwrap_or(0);
+        }
+    }
+    cells <= usize::from(width.max(1))
+}
+
+/// The rows `line` takes in a `width`-cell viewport, word-wrapped: a row breaks
+/// after its last space when the next word does not fit, a space at the edge is
+/// not carried onto the next row, and a word wider than the row is cut. Styles,
+/// the line's own style and its alignment ride along; control characters (a
+/// stray `\n` or `\t` inside a span) are dropped, since a row cannot hold them.
+pub(super) fn wrap_line(line: &Line<'static>, width: u16) -> Vec<Line<'static>> {
+    if fits_one_row(line, width) {
+        return vec![line.clone()];
+    }
+    let width = usize::from(width.max(1));
+    let mut rows: Vec<Vec<(char, Style)>> = Vec::new();
+    let mut row: Vec<(char, Style)> = Vec::new();
+    let mut row_w = 0usize;
+    // Where the row may break (just after a space that follows a word), and
+    // the row's width up to there.
+    let mut brk: Option<(usize, usize)> = None;
+    let mut has_word = false;
+    for span in &line.spans {
+        for ch in span.content.chars() {
+            if ch.is_control() {
+                continue;
+            }
+            let cw = UnicodeWidthChar::width(ch).unwrap_or(0);
+            let space = is_break_space(ch);
+            if row_w + cw > width && !row.is_empty() {
+                if space {
+                    rows.push(std::mem::take(&mut row));
+                    row_w = 0;
+                    brk = None;
+                    has_word = false;
+                    continue;
+                }
+                match brk.take() {
+                    Some((at, w_at)) => {
+                        // The word being written moves down whole.
+                        let word = row.split_off(at);
+                        rows.push(std::mem::replace(&mut row, word));
+                        row_w -= w_at;
+                        has_word = !row.is_empty();
+                        if row_w + cw > width {
+                            rows.push(std::mem::take(&mut row));
+                            row_w = 0;
+                            has_word = false;
+                        }
+                    }
+                    None => {
+                        rows.push(std::mem::take(&mut row));
+                        row_w = 0;
+                        has_word = false;
+                    }
+                }
+            }
+            row.push((ch, span.style));
+            row_w += cw;
+            if !space {
+                has_word = true;
+            } else if has_word {
+                brk = Some((row.len(), row_w));
+            }
+        }
+    }
+    if !row.is_empty() || rows.is_empty() {
+        rows.push(row);
+    }
+    rows.into_iter()
+        .map(|cells| {
+            let mut spans: Vec<Span<'static>> = Vec::new();
+            let mut text = String::new();
+            let mut current: Option<Style> = None;
+            for (ch, style) in cells {
+                if current != Some(style) {
+                    if let Some(prev) = current {
+                        spans.push(Span::styled(std::mem::take(&mut text), prev));
+                    }
+                    current = Some(style);
+                }
+                text.push(ch);
+            }
+            if let Some(prev) = current {
+                spans.push(Span::styled(text, prev));
+            }
+            let mut out = Line::from(spans);
+            out.style = line.style;
+            out.alignment = line.alignment;
+            out
+        })
+        .collect()
 }
 
 fn draw_status(f: &mut Frame, app: &App, area: Rect) {
@@ -1189,16 +1684,52 @@ fn context_summary_spans(app: &App) -> Vec<Span<'static>> {
     )]
 }
 
-fn draw_hints(f: &mut Frame, area: Rect) {
+fn draw_hints(f: &mut Frame, app: &App, area: Rect) {
     let dim = Style::new().add_modifier(Modifier::DIM);
-    let full = "↵ send · ^J newline · / commands · ↑↓ history · ^C stop · type anytime";
-    let compact = "↵ send · ^J newline · / commands · ↑↓ history · ^C stop";
-    let text = if UnicodeWidthStr::width(full) <= area.width as usize {
-        full
-    } else {
-        compact
-    };
+    let text = hint_text(app, area.width as usize);
     f.render_widget(Paragraph::new(Line::from(Span::styled(text, dim))), area);
+}
+
+/// The hints line: the longest candidate for what has focus that fits.
+fn hint_text(app: &App, width: usize) -> String {
+    const COMPACT: &str = "↵ send · ^J newline · / commands · ↑↓ history · ^C stop";
+    let candidates: Vec<String> = if app.child.is_some() {
+        vec![
+            "esc back to your chat · PgUp/PgDn or the mouse to scroll · read-only".into(),
+            "esc back to your chat · PgUp/PgDn scroll · read-only".into(),
+            "esc back · read-only".into(),
+        ]
+    } else if app.subagents.focused {
+        vec![
+            "↑↓ select · ↵ open the subagent's chat · esc back to the input · ^B hide".into(),
+            "↑↓ select · ↵ open · esc back · ^B hide".into(),
+            "↑↓ · ↵ open · esc back".into(),
+        ]
+    } else if let Some(summary) = app.subagents.summary().filter(|_| !app.subagents.visible()) {
+        vec![
+            format!("{summary} · ^B show · ↵ send · / commands · ^C stop"),
+            format!("{summary} · ^B show · ^C stop"),
+            COMPACT.into(),
+        ]
+    } else if !app.subagents.model.rows.is_empty() {
+        vec![
+            "↵ send · ^J newline · / commands · ↑↓ history · ^C stop · ^O select a subagent · ^B hide".into(),
+            "↵ send · / commands · ↑↓ history · ^C stop · ^O select · ^B hide".into(),
+            COMPACT.into(),
+        ]
+    } else {
+        vec![
+            "↵ send · ^J newline · / commands · ↑↓ history · ^C stop · ^B subagents · type anytime"
+                .into(),
+            "↵ send · ^J newline · / commands · ↑↓ history · ^C stop · ^B subagents".into(),
+            COMPACT.into(),
+        ]
+    };
+    let last = candidates.last().cloned().unwrap_or_default();
+    candidates
+        .into_iter()
+        .find(|c| UnicodeWidthStr::width(c.as_str()) <= width)
+        .unwrap_or(last)
 }
 
 /// The queued-messages preview: the lines the user typed while the agent was
@@ -1270,6 +1801,26 @@ fn draw_input(f: &mut Frame, app: &mut App, area: Rect) {
         .border_style(Style::new().fg(border_color))
         .title(Span::styled(title, Style::new().fg(ACCENT)));
     let inner = block.inner(area);
+    if app.child.is_some() {
+        // A subagent's chat is read-only here: say why instead of offering a
+        // prompt that would send nothing. What was typed for this chat stays
+        // in the buffer and comes back with Esc.
+        app.last_input_inner = None;
+        f.render_widget(block, area);
+        f.render_widget(
+            Paragraph::new(Line::from(vec![
+                Span::styled("⊘ ", Style::new().fg(Color::Indexed(244))),
+                Span::styled(
+                    "Read-only: this is a subagent's chat. Esc returns to yours.",
+                    Style::new()
+                        .fg(Color::Indexed(244))
+                        .add_modifier(Modifier::DIM),
+                ),
+            ])),
+            inner,
+        );
+        return;
+    }
     app.last_input_inner = Some(inner);
     f.render_widget(block, area);
 
@@ -1317,7 +1868,7 @@ fn draw_input(f: &mut Frame, app: &mut App, area: Rect) {
     }
     f.render_widget(Paragraph::new(lines), inner);
 
-    if app.modal.is_none() {
+    if app.modal.is_none() && !app.subagents.focused {
         let rows = input_visual_rows(&app.input, text_w);
         let (row, col) = visual_position(&rows, &app.input, app.cursor);
         let x = inner.x + 2 + col as u16; // 2 = prompt width
@@ -1734,6 +2285,11 @@ async fn build_catalog(session: &CliSession) -> Vec<app::CompletionItem> {
             &format!("Run workflow · {}", mapping.workflow_path),
         ));
     }
+    items.push(cmd(
+        "/subagents",
+        "Show or hide this chat's subagents (list: number them)",
+    ));
+    items.push(cmd("/attach", "Read one subagent's chat"));
     items.push(cmd("/diverge", "Diverge this chat into a new window"));
     items.push(cmd("/rename", "Rename this chat"));
     items.push(cmd("/exit", "Leave the chat"));
@@ -1846,6 +2402,14 @@ fn help_into(app: &mut App) {
             "diverge this chat into a new window".to_string(),
         ),
         ("/rename <name>".to_string(), "rename this chat".to_string()),
+        (
+            "/subagents [list|show|hide]".to_string(),
+            "show or hide the subagent pane, or number this chat's subagents".to_string(),
+        ),
+        (
+            "/attach <n|id|name>".to_string(),
+            "read one subagent's chat (Esc returns)".to_string(),
+        ),
         ("/exit, /quit".to_string(), "leave the chat".to_string()),
     ];
     commands.extend(
@@ -1877,6 +2441,11 @@ fn help_into(app: &mut App) {
         ("↵", "send · ⇧↵ or ^J for a newline"),
         ("↑ / ↓", "history · scroll with PageUp/Down or the mouse"),
         ("^C", "clear the line, or quit when empty"),
+        ("^B", "show or hide the subagent pane"),
+        (
+            "^O",
+            "select a subagent: ↑↓ choose, ↵ opens its chat, esc back",
+        ),
     ] {
         app.push_line(Line::from(vec![
             Span::styled(format!("  {:<14}", k), Style::new().fg(ACCENT)),
@@ -2473,6 +3042,860 @@ mod tests {
         assert!(backend_slash_command("/extend Biorouter Copilot"));
         assert!(backend_slash_command("/knowledge"));
         assert!(!backend_slash_command("/not-a-command"));
+    }
+
+    // ── subagent pane ───────────────────────────────────────────────────────
+
+    use biorouter::agents::orchestration_plan::{PhaseCounts, PhaseKind, PhaseStatus};
+    use biorouter::agents::subagent_roster::SubagentRunStatus;
+    use subagents::{ChildView, PaneModel, PanePhase, PanePlan, PaneRow};
+
+    fn buffer_lines(app: &mut App, w: u16, h: u16) -> Vec<String> {
+        let backend = TestBackend::new(w, h);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|f| draw(f, app)).unwrap();
+        let buffer = terminal.backend().buffer();
+        (0..h)
+            .map(|y| (0..w).map(|x| buffer[(x, y)].symbol()).collect())
+            .collect()
+    }
+
+    fn press(code: KeyCode) -> KeyEvent {
+        KeyEvent::new(code, KeyModifiers::NONE)
+    }
+
+    fn ctrl(c: char) -> KeyEvent {
+        KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL)
+    }
+
+    fn sub(id: &str, name: &str, status: SubagentRunStatus) -> PaneRow {
+        let mut row = PaneRow::new(id, name, status);
+        row.model = Some("gpt-5.5".into());
+        row.provider = Some("versa_azure".into());
+        row.elapsed_seconds = Some(30);
+        row
+    }
+
+    fn two_subagents() -> PaneModel {
+        let mut research = sub("child-research", "research-api", SubagentRunStatus::Running);
+        research.role = Some("researcher".into());
+        research.extensions = vec!["developer".into(), "memory".into(), "webdocuments".into()];
+        research.skills = vec!["ggplot".into(), "single-cell".into()];
+        research.knowledge_bases = vec!["soul".into()];
+        research.elapsed_seconds = Some(102);
+        research.total_tokens = Some(12_345);
+        research.tool_call_count = 14;
+        research.message_count = 30;
+        research.loop_phase = Some("tool_batch".into());
+        research.result_line = Some("Found three candidate genes".into());
+        PaneModel {
+            rows: vec![
+                research,
+                sub("child-writer", "writer", SubagentRunStatus::Completed),
+            ],
+            plan: None,
+        }
+    }
+
+    fn app_with(model: PaneModel) -> App {
+        let mut app = App::new(StatusInfo {
+            provider: "versa_azure".into(),
+            model: "gpt-5.2".into(),
+            ..Default::default()
+        });
+        app.push_user("hello parent");
+        app.subagents.set_model(model);
+        app
+    }
+
+    fn line_with<'a>(lines: &'a [String], needle: &str) -> Option<(usize, &'a String)> {
+        lines.iter().enumerate().find(|(_, l)| l.contains(needle))
+    }
+
+    #[test]
+    fn the_pane_is_hidden_while_the_chat_has_no_subagents() {
+        let mut app = app_with(PaneModel::default());
+        for width in [160, 90] {
+            let text = buffer_text(&mut app, width, 30);
+            assert!(!text.contains("Subagents"), "width {width}:\n{text}");
+            assert!(text.contains("hello parent"));
+        }
+        // The person can still ask for it, and it says why it is empty.
+        on_key(&mut app, ctrl('b'));
+        assert!(app.subagents.visible());
+        let text = buffer_text(&mut app, 160, 30);
+        assert!(text.contains("Subagents"), "{text}");
+        assert!(text.contains("No subagents in this chat yet"), "{text}");
+        let narrow = buffer_text(&mut app, 90, 30);
+        assert!(narrow.contains("none in this chat yet"), "{narrow}");
+    }
+
+    #[test]
+    fn a_wide_pane_draws_up_to_three_subagents_on_two_lines_each() {
+        let mut app = app_with(two_subagents());
+        let lines = buffer_lines(&mut app, 160, 30);
+        let all = lines.join("\n");
+        let (header, _) = line_with(&lines, "Subagents").expect("a header");
+        assert!(lines[header].contains("running 1 · done 1/2"), "{all}");
+        let (name_at, name_line) = line_with(&lines, "◐ researcher").expect("the row");
+        assert!(
+            name_line.contains("◐ researcher  research-api"),
+            "the role leads and the name follows:\n{all}"
+        );
+        // The pane is 48 cells inside, too narrow for the words, so the
+        // knowledge base takes its short form and the time, which no longer
+        // fits whole, is left off rather than cut in half.
+        assert!(
+            lines[name_at + 1].contains("gpt-5.5 · 3 ext · 2 skills · 1 kb base …"),
+            "the setup sits on the row's second line:\n{all}"
+        );
+        let (writer_at, writer) = line_with(&lines, "● writer").expect("the second row");
+        assert!(writer.contains('●'), "{all}");
+        assert!(
+            lines[writer_at + 1].contains("    gpt-5.5 · 30s  "),
+            "a count that is zero is left out:\n{all}"
+        );
+        // Beside the history, not over it: the pane's edge is right of the text.
+        let (_, hello) = line_with(&lines, "hello parent").expect("history");
+        let text_at = hello.find("hello parent").unwrap();
+        let edge_at = hello
+            .rfind('│')
+            .expect("the pane's left edge on the same row");
+        assert!(text_at < edge_at, "{all}");
+        assert!(all.contains("^O select"), "{all}");
+    }
+
+    fn phased_subagents() -> PaneModel {
+        let mut rows = Vec::new();
+        let mut add = |n: usize, phase: &str, status: SubagentRunStatus| {
+            for i in 0..n {
+                let mut row = sub(
+                    &format!("{phase}-{i}-{}", rows.len()),
+                    &format!("{phase} agent {}", rows.len() + 1),
+                    status,
+                );
+                row.phase_id = Some(phase.to_string());
+                rows.push(row);
+            }
+        };
+        add(2, "plan", SubagentRunStatus::Completed);
+        add(3, "research", SubagentRunStatus::Completed);
+        add(2, "research", SubagentRunStatus::Running);
+        add(10, "implementation", SubagentRunStatus::Queued);
+        add(7, "implementation", SubagentRunStatus::Running);
+        add(1, "implementation", SubagentRunStatus::Failed);
+        rows[5].quiet_seconds = Some(600);
+        let counts = |total, done, running, failed, quiet| PhaseCounts {
+            total,
+            done,
+            running,
+            blocked: 0,
+            failed,
+            quiet,
+        };
+        let mut plan = PanePhase::new("plan", PhaseKind::Plan, PhaseStatus::Completed);
+        plan.counts = counts(2, 2, 0, 0, 0);
+        let mut research = PanePhase::new("research", PhaseKind::Research, PhaseStatus::InProgress);
+        research.counts = counts(5, 3, 2, 0, 1);
+        let mut implementation = PanePhase::new(
+            "implementation",
+            PhaseKind::Implementation,
+            PhaseStatus::InProgress,
+        );
+        implementation.counts = counts(18, 0, 17, 1, 0);
+        let mut testing = PanePhase::new("testing", PhaseKind::Testing, PhaseStatus::Pending);
+        testing.title = "testing".into();
+        PaneModel {
+            rows,
+            plan: Some(PanePlan {
+                title: "Gene survey".into(),
+                phases: vec![plan, research, implementation, testing],
+            }),
+        }
+    }
+
+    #[test]
+    fn many_subagents_take_one_line_each_under_their_phase_headers() {
+        let mut app = app_with(phased_subagents());
+        assert_eq!(app.subagents.model.rows.len(), 25);
+        let lines = buffer_lines(&mut app, 160, 30);
+        let all = lines.join("\n");
+        assert!(
+            all.contains("running 19 · done 5/25 · failed 1 · 1 quiet"),
+            "{all}"
+        );
+        assert!(all.contains("Gene survey"), "the plan title:\n{all}");
+        assert!(all.contains("● plan 2/2"), "{all}");
+        assert!(
+            all.contains("◐ research 3/5 · 2 running · 1 quiet"),
+            "{all}"
+        );
+        assert!(
+            !all.contains(" ext · "),
+            "dense rows carry no setup line:\n{all}"
+        );
+        assert!(all.contains("quiet 10m"), "the quiet row says so:\n{all}");
+        assert!(
+            all.contains("more"),
+            "25 rows do not fit; the rest are counted:\n{all}"
+        );
+
+        // Selecting the last row scrolls it into view and counts what is above.
+        on_key(&mut app, ctrl('o'));
+        on_key(&mut app, press(KeyCode::End));
+        let lines = buffer_lines(&mut app, 160, 30);
+        let all = lines.join("\n");
+        assert!(all.contains("implementation agent 25"), "{all}");
+        assert!(all.contains("↑ "), "{all}");
+        assert!(all.contains("○ testing · not started"), "{all}");
+    }
+
+    #[test]
+    fn a_narrow_terminal_gets_a_strip_with_a_more_line() {
+        let rows = (1..=10)
+            .map(|i| {
+                sub(
+                    &format!("c{i}"),
+                    &format!("agent {i}"),
+                    SubagentRunStatus::Running,
+                )
+            })
+            .collect();
+        let mut app = app_with(PaneModel { rows, plan: None });
+        let lines = buffer_lines(&mut app, 90, 30);
+        let all = lines.join("\n");
+        assert_eq!(subagents::strip_height(&app.subagents), 6);
+        let (strip_at, _) = line_with(&lines, "Subagents").expect("the strip");
+        let (status_at, _) = line_with(&lines, "gpt-5.2").expect("the status line");
+        assert!(
+            strip_at < status_at,
+            "the strip sits above the status:\n{all}"
+        );
+        assert!(all.contains("agent 1"), "{all}");
+        assert!(all.contains("+6 more"), "{all}");
+        let (_, hello) = line_with(&lines, "hello parent").expect("history");
+        assert!(
+            !hello.contains("agent"),
+            "no side pane at this width:\n{all}"
+        );
+    }
+
+    #[test]
+    fn the_selected_subagent_shows_its_setup() {
+        let mut app = app_with(two_subagents());
+        let unfocused = buffer_text(&mut app, 160, 40);
+        assert!(!unfocused.contains("developer, memory"), "{unfocused}");
+
+        on_key(&mut app, ctrl('o'));
+        assert_eq!(
+            app.subagents.selected.as_deref(),
+            Some("child-research"),
+            "focus selects the running row"
+        );
+        let text = buffer_text(&mut app, 160, 40);
+        for needle in [
+            "role       researcher",
+            "gpt-5.5 · versa_azure",
+            "developer, memory, webdocuments",
+            "ggplot, single-cell",
+            "knowledge  soul",
+            "tokens     12.3k",
+            "tool calls 14 · 30 messages",
+            "tool batch · 1m42s",
+            "Found three candidate genes",
+            "↑↓ select",
+        ] {
+            assert!(text.contains(needle), "missing {needle:?}:\n{text}");
+        }
+        // The narrow strip gives the same answer on one line.
+        let narrow = buffer_text(&mut app, 90, 30);
+        assert!(narrow.contains("ext: developer, memory"), "{narrow}");
+    }
+
+    #[test]
+    fn private_subagents_carry_a_lock() {
+        let mut model = two_subagents();
+        model.rows[1].private = true;
+        let mut app = app_with(model);
+        let text = buffer_text(&mut app, 160, 30);
+        assert!(text.contains('🔒'), "{text}");
+    }
+
+    #[test]
+    fn pane_keys_toggle_focus_and_never_eat_typing() {
+        let mut app = app_with(two_subagents());
+        assert!(
+            app.subagents.visible(),
+            "shown because the chat has subagents"
+        );
+        on_key(&mut app, ctrl('b'));
+        assert!(!app.subagents.visible());
+        assert!(
+            hint_text(&app, 120).starts_with("◐ 1 of 2 subagents running · ^B show"),
+            "{}",
+            hint_text(&app, 120)
+        );
+        on_key(&mut app, ctrl('b'));
+        assert!(app.subagents.visible());
+
+        // Unfocused, the arrows and letters are the editor's.
+        on_key(&mut app, press(KeyCode::Char('h')));
+        assert_eq!(app.input, "h");
+        assert!(!app.subagents.focused);
+
+        on_key(&mut app, ctrl('o'));
+        assert!(app.subagents.focused);
+        on_key(&mut app, press(KeyCode::Down));
+        assert_eq!(app.subagents.selected.as_deref(), Some("child-writer"));
+        on_key(&mut app, press(KeyCode::Up));
+        assert_eq!(app.subagents.selected.as_deref(), Some("child-research"));
+        // Typing returns to the input and lands there.
+        on_key(&mut app, press(KeyCode::Char('x')));
+        assert!(!app.subagents.focused);
+        assert_eq!(app.input, "hx");
+        // ^C in the pane leaves it rather than quitting.
+        on_key(&mut app, ctrl('o'));
+        on_key(&mut app, ctrl('c'));
+        assert!(!app.subagents.focused && !app.should_quit);
+        // Hiding the pane takes focus with it.
+        on_key(&mut app, ctrl('o'));
+        on_key(&mut app, ctrl('b'));
+        assert!(!app.subagents.focused && !app.subagents.visible());
+        // While a turn streams, ^C still stops it from inside the pane.
+        on_key(&mut app, ctrl('o'));
+        assert!(matches!(
+            on_key_streaming(&mut app, ctrl('c')),
+            StreamAction::Cancel
+        ));
+    }
+
+    fn open_research_child(app: &mut App) {
+        // What `open_child` does once the store read succeeds.
+        let mut view = ChildView::new("child-research", true, false);
+        view.load(&[
+            Message::user().with_text("Survey the GWAS catalog"),
+            Message::assistant().with_text("Reading **three** papers"),
+        ]);
+        app.subagents.focused = false;
+        app.subagents.selected = Some("child-research".into());
+        app.child = Some(Box::new(view));
+    }
+
+    #[test]
+    fn enter_opens_a_read_only_child_view_and_esc_returns() {
+        let mut app = app_with(two_subagents());
+        app.input = "draft".into();
+        app.cursor = app.input.len();
+        on_key(&mut app, ctrl('o'));
+        assert_eq!(on_key(&mut app, press(KeyCode::Enter)), None);
+        assert_eq!(
+            app.subagents.pending_open.as_deref(),
+            Some("child-research"),
+            "Enter asks the loop to open the selected row"
+        );
+        assert_eq!(app.input, "draft", "Enter in the pane sends nothing");
+
+        app.subagents.pending_open = None;
+        open_research_child(&mut app);
+        let lines = buffer_lines(&mut app, 160, 30);
+        let all = lines.join("\n");
+        let (head, _) = line_with(&lines, "◂ Subagent").expect("a header");
+        for needle in ["researcher", "running", "gpt-5.5", "esc returns"] {
+            assert!(lines[head].contains(needle), "{needle}:\n{all}");
+        }
+        assert!(all.contains("Survey the GWAS catalog"), "{all}");
+        assert!(all.contains("Reading three papers"), "{all}");
+        assert!(
+            !all.contains("hello parent"),
+            "the child replaces the history:\n{all}"
+        );
+        assert!(
+            all.contains("Read-only: this is a subagent's chat"),
+            "{all}"
+        );
+        assert!(all.contains("esc back to your chat"), "{all}");
+        assert!(
+            all.contains("› "),
+            "the open row is marked in the pane:\n{all}"
+        );
+
+        // Read-only: typing changes nothing, Enter submits nothing.
+        on_key(&mut app, press(KeyCode::Char('q')));
+        assert_eq!(on_key(&mut app, press(KeyCode::Enter)), None);
+        assert_eq!(app.input, "draft");
+        // The page keys scroll the child's chat, not the parent's.
+        app.child.as_mut().unwrap().transcript.last_total_lines = 100;
+        on_key(&mut app, press(KeyCode::PageUp));
+        assert_eq!(app.child.as_ref().unwrap().transcript.scroll, 10);
+        assert_eq!(app.scroll, 0);
+
+        // Esc returns to the parent and to the pane it was opened from.
+        on_key(&mut app, press(KeyCode::Esc));
+        assert!(app.child.is_none());
+        assert!(app.subagents.focused);
+        on_key(&mut app, press(KeyCode::Esc));
+        assert!(!app.subagents.focused);
+        let back = buffer_text(&mut app, 160, 30);
+        assert!(back.contains("hello parent"), "{back}");
+
+        // From /attach (not the pane), ^C also leaves, and focus stays on the input.
+        open_research_child(&mut app);
+        app.child.as_mut().unwrap().return_to_pane = false;
+        on_key(&mut app, ctrl('c'));
+        assert!(app.child.is_none() && !app.should_quit && !app.subagents.focused);
+    }
+
+    #[test]
+    fn subagents_list_numbers_rows_for_attach() {
+        let mut app = app_with(two_subagents());
+        subagents::list_into(&mut app);
+        let lines = buffer_lines(&mut app, 160, 40);
+        let text = lines.join("\n");
+        let (first, _) = line_with(&lines, "1. ◐ researcher").expect("the role leads");
+        assert!(
+            lines[first + 1].trim_start().starts_with("research-api"),
+            "the name follows on its own line:\n{text}"
+        );
+        assert!(text.contains("2. ● writer"), "{text}");
+        assert!(text.contains("/attach <number>"), "{text}");
+        assert_eq!(
+            app.subagents.model.resolve("2").as_deref(),
+            Ok("child-writer")
+        );
+    }
+
+    /// The live finding: a child spawned with a role showed its
+    /// instruction-derived name ("Convert 37 degrees Celsius to Fahrenheit…")
+    /// and buried the role. The role leads every row; the name follows,
+    /// dimmed, where it fits; the details keep both.
+    fn celsius_child() -> PaneRow {
+        let mut row = sub(
+            "child-celsius",
+            "Convert 37 degrees Celsius to Fahrenheit and report the number",
+            SubagentRunStatus::Completed,
+        );
+        row.role = Some("celsius".into());
+        row.model = Some("gpt-5.5-2026-04-24".into());
+        row
+    }
+
+    fn cell_is_dim(app: &mut App, w: u16, h: u16, needle: &str) -> bool {
+        let backend = TestBackend::new(w, h);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|f| draw(f, app)).unwrap();
+        let buffer = terminal.backend().buffer();
+        let cells = needle.chars().count() as u16;
+        for y in 0..h {
+            for x in 0..w.saturating_sub(cells) {
+                let here: String = (x..x + cells).map(|c| buffer[(c, y)].symbol()).collect();
+                if here == needle {
+                    return buffer[(x, y)].modifier.contains(Modifier::DIM);
+                }
+            }
+        }
+        panic!("{needle:?} is not on screen");
+    }
+
+    #[test]
+    fn a_role_is_the_rows_label_and_the_name_follows_dimmed() {
+        let mut app = app_with(PaneModel {
+            rows: vec![celsius_child()],
+            plan: None,
+        });
+        // Wide: the side pane's two-line row.
+        let lines = buffer_lines(&mut app, 160, 30);
+        let all = lines.join("\n");
+        let (at, row) = line_with(&lines, "● celsius").expect("the role leads the row");
+        assert!(
+            row.contains("● celsius  Convert 37 degrees"),
+            "the name follows the role:\n{all}"
+        );
+        assert!(row.contains('…'), "and is cut to the pane:\n{all}");
+        assert!(cell_is_dim(&mut app, 160, 30, "Convert 37"), "{all}");
+        assert!(
+            !cell_is_dim(&mut app, 160, 30, "celsius"),
+            "the label is not dimmed:\n{all}"
+        );
+        assert!(lines[at + 1].contains("gpt-5.5 · 30s"), "{all}");
+
+        // Narrow: the strip leads with the role too.
+        let narrow = buffer_lines(&mut app, 90, 30);
+        let narrow_all = narrow.join("\n");
+        let (_, strip_row) = line_with(&narrow, "● celsius").expect("{narrow_all}");
+        assert!(strip_row.contains("Convert 37"), "{narrow_all}");
+
+        // The details keep both.
+        on_key(&mut app, ctrl('o'));
+        let text = buffer_text(&mut app, 160, 40);
+        assert!(text.contains("role       celsius"), "{text}");
+        assert!(
+            text.contains("name       Convert 37 degrees Celsius"),
+            "{text}"
+        );
+
+        // Many rows (one line each) lead with the role as well.
+        let mut rows: Vec<PaneRow> = (0..5)
+            .map(|i| {
+                let mut row = celsius_child();
+                row.session_id = format!("c{i}");
+                row.role = Some(format!("reader-{i}"));
+                row
+            })
+            .collect();
+        rows[0].status = SubagentRunStatus::Running;
+        let mut dense = app_with(PaneModel { rows, plan: None });
+        let text = buffer_text(&mut dense, 160, 30);
+        for i in 0..5 {
+            assert!(text.contains(&format!("reader-{i}")), "{text}");
+        }
+
+        // `/subagents list` and `/attach` speak the role.
+        subagents::list_into(&mut app);
+        let lines = buffer_lines(&mut app, 160, 40);
+        let all = lines.join("\n");
+        let (n, _) = line_with(&lines, "1. ● celsius  done · gpt-5.5 · 30s").expect("{all}");
+        assert!(
+            lines[n + 1].trim_start().starts_with("Convert 37 degrees"),
+            "{all}"
+        );
+        assert_eq!(
+            app.subagents.model.resolve("celsius").as_deref(),
+            Ok("child-celsius")
+        );
+        assert_eq!(
+            app.subagents.model.resolve("cels").as_deref(),
+            Ok("child-celsius")
+        );
+    }
+
+    /// The live finding: "gpt-5.5-2026-04-24 · 0 ext · 0 skills · 0 k…". The
+    /// second line now names the model as the desktop does, leaves out every
+    /// count that is zero and spells knowledge bases out.
+    #[test]
+    fn the_setup_line_is_short_and_counts_only_what_a_child_has() {
+        let mut child = celsius_child();
+        child.knowledge_bases = vec!["soul".into()];
+        let mut app = app_with(PaneModel {
+            rows: vec![child],
+            plan: None,
+        });
+        let lines = buffer_lines(&mut app, 160, 30);
+        let all = lines.join("\n");
+        let (at, _) = line_with(&lines, "● celsius").expect("{all}");
+        assert!(
+            lines[at + 1].contains("    gpt-5.5 · 1 knowledge base · 30s"),
+            "{all}"
+        );
+        let row = format!("{}\n{}", lines[at], lines[at + 1]);
+        for absent in ["2026-04-24", "0 ext", "0 skills", "0 kb", " KB", " k…"] {
+            assert!(!row.contains(absent), "{absent:?} in the row:\n{all}");
+        }
+        assert!(!all.contains("2026-04-24"), "{all}");
+        // The strip and the child's header name the model the same way.
+        let narrow = buffer_text(&mut app, 90, 30);
+        assert!(narrow.contains(" · gpt-5.5"), "{narrow}");
+        assert!(!narrow.contains("2026-04-24"), "{narrow}");
+        let mut view = ChildView::new("child-celsius", true, false);
+        view.model = Some("gpt-5.5-2026-04-24".into());
+        view.load(&[Message::assistant().with_text("98.6")]);
+        app.child = Some(Box::new(view));
+        let lines = buffer_lines(&mut app, 160, 30);
+        let (head, header) = line_with(&lines, "◂ Subagent").expect("a header");
+        assert!(header.contains("celsius"), "{header}");
+        assert!(header.contains("· gpt-5.5"), "{header}");
+        assert!(!lines[head].contains("2026-04-24"), "{header}");
+    }
+
+    /// A prose paragraph the way a rendered system prompt writes one: a long
+    /// line of short words, a different length each time.
+    fn prose_line(i: usize) -> String {
+        let words = [
+            "you",
+            "are",
+            "a",
+            "careful",
+            "subagent",
+            "working",
+            "for",
+            "the",
+            "parent",
+            "and",
+            "report",
+            "back",
+            "concisely",
+            "with",
+            "answer",
+            "extraordinarily",
+            "tool",
+        ];
+        let mut text = format!("Paragraph {i}:");
+        let mut k = i;
+        while text.len() < 500 + (i * 37) % 400 {
+            k = (k * 7 + 3) % words.len();
+            text.push(' ');
+            text.push_str(words[k]);
+        }
+        text
+    }
+
+    /// The live finding: a child's chat opened in the middle of its transcript.
+    /// The history counted a line's rows as cells ÷ width while it was drawn
+    /// word-wrapped, so each long prose line took more rows than counted, and
+    /// the bottom-anchored view stopped that many rows short of the newest
+    /// message.
+    #[test]
+    fn a_child_view_opens_on_its_newest_message() {
+        let mut app = app_with(two_subagents());
+        let mut view = ChildView::new("child-research", true, false);
+        let prompt: String = (0..60).map(|i| format!("{}\n", prose_line(i))).collect();
+        view.load(&[
+            Message::user().with_text(prompt),
+            Message::user().with_text("Convert 37 degrees Celsius to Fahrenheit"),
+            Message::assistant().with_text("FINAL ANSWER 98.6"),
+        ]);
+        app.child = Some(Box::new(view));
+        for (w, h) in [(160, 30), (120, 24), (90, 40)] {
+            let lines = buffer_lines(&mut app, w, h);
+            let all = lines.join("\n");
+            assert!(
+                all.contains("FINAL ANSWER 98.6"),
+                "{w}x{h} opens on the newest message:\n{all}"
+            );
+        }
+
+        // The count is exact, so scrolling all the way up reaches the top, and
+        // no further.
+        let child = app.child.as_mut().unwrap();
+        child.transcript.scroll_up(u16::MAX);
+        let lines = buffer_lines(&mut app, 160, 30);
+        let all = lines.join("\n");
+        assert!(all.contains("Paragraph 0:"), "{all}");
+        assert!(!all.contains("FINAL ANSWER"), "{all}");
+    }
+
+    /// The parent's own history draws through the same code and is anchored
+    /// the same way.
+    #[test]
+    fn the_main_history_stays_on_its_newest_message_through_long_lines() {
+        let mut app = App::new(StatusInfo::default());
+        for i in 0..40 {
+            app.push_message(&Message::assistant().with_text(prose_line(i)), false);
+        }
+        app.push_message(&Message::assistant().with_text("NEWEST LINE"), false);
+        let text = buffer_text(&mut app, 100, 30);
+        assert!(text.contains("NEWEST LINE"), "{text}");
+    }
+
+    #[test]
+    fn wrapping_breaks_at_spaces_and_counts_what_it_draws() {
+        let text = prose_line(3);
+        let line = Line::from(vec![
+            Span::raw("▌ "),
+            Span::styled(text.clone(), Style::new().fg(Color::Yellow)),
+        ]);
+        for width in [7u16, 40, 61, 97, 120] {
+            let rows = wrap_line(&line, width);
+            assert_eq!(
+                wrapped_count(std::slice::from_ref(&line), width) as usize,
+                rows.len()
+            );
+            let mut words: Vec<String> = Vec::new();
+            for row in &rows {
+                let row_text: String = row.spans.iter().map(|s| s.content.as_ref()).collect();
+                assert!(
+                    UnicodeWidthStr::width(row_text.as_str()) <= width as usize,
+                    "{width}: {row_text:?}"
+                );
+                words.extend(row_text.split_whitespace().map(str::to_string));
+            }
+            // No word is split across rows when it fits on one (the longest
+            // word is 15 cells).
+            if width >= 16 {
+                let expected: Vec<String> = format!("▌ {text}")
+                    .split_whitespace()
+                    .map(str::to_string)
+                    .collect();
+                assert_eq!(words, expected, "{width}");
+            }
+            // Styles ride along.
+            assert!(rows
+                .iter()
+                .flat_map(|r| r.spans.iter())
+                .any(|s| s.style.fg == Some(Color::Yellow)));
+        }
+        // A word wider than the row is cut, never lost.
+        let long = Line::from("x".repeat(25));
+        let rows = wrap_line(&long, 10);
+        assert_eq!(rows.len(), 3);
+        assert_eq!(
+            rows.iter()
+                .flat_map(|r| r.spans.iter())
+                .map(|s| s.content.len())
+                .sum::<usize>(),
+            25
+        );
+        // An empty line is one empty row; a line that fits is itself.
+        assert_eq!(wrap_line(&Line::default(), 10).len(), 1);
+        assert_eq!(
+            wrap_line(&Line::from("short"), 10),
+            vec![Line::from("short")]
+        );
+    }
+
+    fn spawn_context(task: &str, prompt_lines: usize) -> String {
+        let prompt: Vec<String> = (0..prompt_lines)
+            .map(|i| format!("Rule {i}: answer the parent concisely."))
+            .collect();
+        format!(
+            "## Subagent spawn context\n\nSpawned by session: 20261104_parent\n\n\
+             ### Task instructions\n{task}\n\n\
+             ### Granted extensions\n(parent defaults)\n\n\
+             ### Granted skills\n(none)\n\n\
+             ### Knowledge bases\n(none)\n\n\
+             ### Rendered system prompt\n{}",
+            prompt.join("\n")
+        )
+    }
+
+    fn stamped(text: String) -> Message {
+        use biorouter::conversation::message::{MessageProvenance, ProvenanceKind};
+        let mut message = Message::user().with_text(text).user_only();
+        message.metadata.provenance = Some(MessageProvenance {
+            kind: ProvenanceKind::SpawnContext,
+            from_session_id: Some("20261104_parent".into()),
+            from_session_name: None,
+        });
+        message
+    }
+
+    fn scrollback_text(app: &App) -> String {
+        app.scrollback
+            .iter()
+            .map(|l| {
+                l.spans
+                    .iter()
+                    .map(|s| s.content.as_ref())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    /// The live finding: the child view printed the 143-line spawn-context
+    /// record in full. It folds to its task, the way the desktop clamps it
+    /// under its "Spawn context" chip, and is found by its provenance stamp.
+    #[test]
+    fn the_spawn_context_folds_to_its_task_instructions() {
+        let record = spawn_context("Convert 37 degrees Celsius to Fahrenheit.", 120);
+        let total = record.lines().count();
+        let mut view = ChildView::new("child-celsius", true, false);
+        view.load(&[
+            stamped(record.clone()),
+            Message::user().with_text("Convert 37 degrees Celsius to Fahrenheit."),
+            Message::assistant().with_text("98.6"),
+        ]);
+        let text = scrollback_text(&view.transcript);
+        assert!(text.contains("▌ Spawn context"), "{text}");
+        assert!(text.contains("### Task instructions"), "{text}");
+        assert!(
+            text.contains("▌ Convert 37 degrees Celsius to Fahrenheit."),
+            "the task stays visible:\n{text}"
+        );
+        // Shown: the session line, a blank, the heading and the task.
+        let hidden = total - 6;
+        assert!(
+            text.contains(&format!("⋯ {hidden} more lines")),
+            "{total} lines, {hidden} folded:\n{text}"
+        );
+        for folded in ["Granted extensions", "Rendered system prompt", "Rule 7:"] {
+            assert!(!text.contains(folded), "{folded:?} is folded:\n{text}");
+        }
+        assert!(
+            !text.contains("## Subagent spawn context"),
+            "the label replaces the record's heading:\n{text}"
+        );
+        assert!(
+            view.transcript.scrollback.len() < 20,
+            "{} rows",
+            view.transcript.scrollback.len()
+        );
+
+        // Drawn, it opens on the reply, with the folded record above it.
+        let mut app = app_with(two_subagents());
+        app.child = Some(Box::new(view));
+        let screen = buffer_text(&mut app, 160, 40);
+        assert!(screen.contains("Spawn context"), "{screen}");
+        assert!(screen.contains("98.6"), "{screen}");
+
+        // The stamp decides, not the text: the same words typed as a message
+        // are drawn as they are.
+        let mut plain = ChildView::new("c", true, false);
+        plain.load(&[Message::user().with_text(record.clone())]);
+        let text = scrollback_text(&plain.transcript);
+        assert!(text.contains("Rendered system prompt"), "{text}");
+        assert!(!text.contains("more lines"), "{text}");
+
+        // A record that arrives live folds too, and debug shows all of it.
+        let mut live = ChildView::new("c", true, false);
+        live.load(&[]);
+        live.apply(biorouter::session_events::SessionBusEvent::Agent(
+            AgentEvent::Message(stamped(record.clone())),
+        ));
+        assert!(scrollback_text(&live.transcript).contains("more lines"));
+        let mut debug = ChildView::new("c", true, true);
+        debug.load(&[stamped(record)]);
+        let text = scrollback_text(&debug.transcript);
+        assert!(text.contains("Rule 119:"), "{text}");
+        assert!(!text.contains("more lines"), "{text}");
+    }
+
+    #[test]
+    fn a_long_task_is_capped_and_a_record_without_one_shows_its_head() {
+        let task: String = (1..=20)
+            .map(|i| format!("step {i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let record = spawn_context(&task, 3);
+        let (shown, hidden) = subagents::spawn_context_preview(&record);
+        assert_eq!(shown[0], "Spawned by session: 20261104_parent");
+        assert!(shown.contains(&"step 12"), "{shown:?}");
+        assert!(!shown.contains(&"step 13"), "{shown:?}");
+        assert_eq!(shown.len() + hidden, record.lines().count() - 2);
+
+        let odd = "first\nsecond\nthird\nfourth\nfifth\nsixth\nseventh\neighth";
+        let (shown, hidden) = subagents::spawn_context_preview(odd);
+        assert_eq!(
+            shown,
+            ["first", "second", "third", "fourth", "fifth", "sixth"]
+        );
+        assert_eq!(hidden, 2);
+        let (shown, hidden) = subagents::spawn_context_preview("one line");
+        assert_eq!((shown, hidden), (vec!["one line"], 0));
+    }
+
+    #[test]
+    fn subagent_commands_parse_without_swallowing_lookalikes() {
+        assert_eq!(subagent_command("/subagents"), Some(("/subagents", "")));
+        assert_eq!(
+            subagent_command("/subagents list"),
+            Some(("/subagents", "list"))
+        );
+        assert_eq!(subagent_command("/attach  2 "), Some(("/attach", "2")));
+        assert_eq!(subagent_command("/attachment"), None);
+        assert_eq!(subagent_command("/subagentsx"), None);
+        assert_eq!(subagent_command("/help"), None);
+    }
+
+    #[test]
+    fn hints_advertise_the_pane_keys() {
+        let app = App::new(StatusInfo::default());
+        assert!(hint_text(&app, 200).contains("^B subagents"));
+        assert_eq!(
+            hint_text(&app, 64),
+            "↵ send · ^J newline · / commands · ↑↓ history · ^C stop"
+        );
+        let app = app_with(two_subagents());
+        assert!(hint_text(&app, 200).contains("^O select a subagent"));
     }
 
     #[test]

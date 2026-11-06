@@ -975,6 +975,14 @@ struct CodingAgentBridgePolicy {
 // ⚠ Adding a tool here is a security-posture change. This one is a `list` whose
 // results the tier gate already filters; do not read it as licence to add a
 // WRITE without the same scrutiny.
+//
+// `workspace_orchestrate` is a WRITE, and it passed that scrutiny because of
+// what it writes: only the calling chat's own phase plan, in its own
+// `extension_data`. It names no other conversation, so there is nothing for a
+// tier gate or a child-scope check to hold, and it is a strictly smaller
+// capability than `workspace_send_prompt` and `workspace_close` beside it, which
+// already reach into other conversations. Without it a Claude Code or Codex
+// parent could spawn into phases but never declare, start or complete one.
 const CODING_AGENT_BRIDGE_ALLOWED_WORKSPACE_TOOLS: &[&str] = &[
     "workspace__subagent",
     "workspace__workspace_list",
@@ -982,6 +990,7 @@ const CODING_AGENT_BRIDGE_ALLOWED_WORKSPACE_TOOLS: &[&str] = &[
     "workspace__workspace_send_prompt",
     "workspace__workspace_close",
     "workspace__workspace_watch",
+    "workspace__workspace_orchestrate",
 ];
 
 // The FULL Developer roster, deliberately — a coding-agent child gets the same
@@ -1308,11 +1317,12 @@ fn prepare_coding_agent_bridge_tool(tool: &Tool) -> Tool {
         let description = bridged.description.as_deref().unwrap_or_default();
         bridged.description = Some(
             format!(
-                "{description}\n\nCoding-agent bridge behavior: this starts a visible child and \
-                 returns its session id. You MUST supervise it with workspace_watch and \
-                 workspace_read_conversation until it finishes; the parent turn is not allowed \
-                 to finish while the child runs. The user can open the child tab and steer or \
-                 stop it at any time. The child can inherit only the audited Knowledge, Skills, \
+                "{description}\n\nCoding-agent bridge behavior: this starts a child in the \
+                 background and returns its session id. You MUST supervise it with \
+                 workspace_watch and workspace_read_conversation until it finishes; the parent \
+                 turn is not allowed to finish while the child runs. The user can open the child \
+                 from the chat's side panel and steer or stop it at any time. The child can \
+                 inherit only the audited Knowledge, Skills, \
                  and Extension Manager capabilities that this chat currently has. It cannot \
                  inherit Developer, Code Execution, arbitrary installed extensions, or its \
                  vendor-native shell/editor. Do not retry with one of those names. For a skill \
@@ -2024,6 +2034,7 @@ impl coding_agent_bridge::BridgeToolDispatch for ChatBridgeDispatch {
 /// [`crate::agents::workspace_extension::DISPATCHED_TOOL_NAMES`], which a
 /// source-shape test in that file pins against the `match` itself.
 use crate::agents::workspace_extension::DISPATCHED_TOOL_NAMES as WORKSPACE_TOOL_NAMES;
+use crate::agents::workspace_extension::ORCHESTRATE_TOOL_NAME;
 
 pub(crate) fn is_workspace_tool_refused_for(
     session_type: crate::session::session_manager::SessionType,
@@ -9554,6 +9565,11 @@ impl Agent {
                 "workspace_send_prompt".to_string(),
                 "workspace_close".to_string(),
                 "workspace_watch".to_string(),
+                // The phase plan of a staged delegation. It edits only this
+                // chat's own plan, so it widens nothing the spawn tool beside it
+                // does not already grant; it is here, and nowhere else by
+                // default, so it exists exactly when delegation does.
+                "workspace_orchestrate".to_string(),
             ],
         };
         // Never fatal: a session that cannot load the extension simply has no
@@ -9698,9 +9714,16 @@ impl Agent {
         // revoked. The invariant is about the tool, not about how the extension
         // arrived: no spawn tool, under any name, from any source, in a session
         // whose gate says delegation is off.
+        //
+        // `workspace_orchestrate` goes with it: a phase plan is a plan for
+        // spawning, so a chat that may not spawn is not offered one, whichever
+        // way the extension arrived.
         if !subagents_enabled {
             let prefixed_spawn_tool = format!("{}__{}", Self::SPAWN_EXTENSION, SUBAGENT_TOOL_NAME);
-            prefixed_tools.retain(|tool| tool.name != prefixed_spawn_tool);
+            let prefixed_plan_tool =
+                format!("{}__{}", Self::SPAWN_EXTENSION, ORCHESTRATE_TOOL_NAME);
+            prefixed_tools
+                .retain(|tool| tool.name != prefixed_spawn_tool && tool.name != prefixed_plan_tool);
         }
 
         // BR-71: the extension advertises the spawn tool with no sub-workflow
@@ -17543,6 +17566,7 @@ mod tests {
             "workspace__subagent",
             "workspace__workspace_watch",
             "workspace__workspace_send_prompt",
+            "workspace__workspace_orchestrate",
             "knowledge__kb_search",
             PLATFORM_INGEST_CONVERSATION_TOOL_NAME,
             PLATFORM_INGEST_SOURCE_TOOL_NAME,
@@ -20177,6 +20201,29 @@ mod tests {
                 "auto-injection must grant child supervision with {tool}: {names:?}"
             );
         }
+        // The phase plan of a staged delegation rides the same grant: it exists
+        // exactly where the spawn tool does.
+        assert!(
+            names
+                .iter()
+                .any(|name| name == "workspace__workspace_orchestrate"),
+            "auto-injection must grant the phase plan tool: {names:?}"
+        );
+        // …and the entry it rides decides the per-turn context: the plan
+        // summary belongs to `workspace_orchestrate`, the preview panel to
+        // `workspace_read_panel`, which this entry does not hold
+        // (`WorkspaceClient::get_moim_for`).
+        let extensions = &agent.extension_manager;
+        assert!(
+            extensions
+                .is_extension_tool_available(Agent::SPAWN_EXTENSION, "workspace_orchestrate")
+                .await
+        );
+        assert!(
+            !extensions
+                .is_extension_tool_available(Agent::SPAWN_EXTENSION, "workspace_read_panel")
+                .await
+        );
         // Cross-chat injection, and the discovery half without which its one
         // required argument is unobtainable. Both were on the excluded list
         // below until the write rule stopped reading lineage; a delegating
@@ -20280,6 +20327,8 @@ mod tests {
             "workspace__workspace_list",
             "workspace_list",
             "workspace__workspace_send_prompt",
+            "workspace__workspace_orchestrate",
+            "workspace_orchestrate",
             "workspace__subagent",
             "subagent",
         ] {
@@ -21263,6 +21312,12 @@ mod tests {
             !names.iter().any(|n| n.contains("subagent")),
             "…but not a spawn tool the gate says this session may not have: \
              {names:?}"
+        );
+        assert!(
+            !names
+                .iter()
+                .any(|n| n == "workspace__workspace_orchestrate"),
+            "…nor a phase plan for spawns it cannot make: {names:?}"
         );
     }
 
