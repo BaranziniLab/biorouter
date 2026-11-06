@@ -1781,6 +1781,9 @@ pub struct JoinRefused {
     broker_message: Option<String>,
     /// The workspace as a person calls it, for the sentences that name it (AO-9's removal).
     workspace: Option<String>,
+    /// What the host reads in place of [`JoinRefusal::IdentityConflict`]'s sentence, which
+    /// tells it to ask the host: built only by [`host_identity_conflict`], from names it checked.
+    host_sentence: Option<String>,
 }
 
 impl JoinRefused {
@@ -1791,6 +1794,7 @@ impl JoinRefused {
             refusal,
             broker_message: None,
             workspace: Some(workspace.to_owned()),
+            host_sentence: None,
         })
     }
     pub fn refusal(&self) -> JoinRefusal {
@@ -1807,6 +1811,9 @@ impl JoinRefused {
 
 impl fmt::Display for JoinRefused {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if let Some(sentence) = &self.host_sentence {
+            return f.write_str(sentence);
+        }
         match (self.refusal, &self.workspace) {
             (JoinRefusal::Removed, Some(workspace)) => write!(
                 f,
@@ -1818,6 +1825,57 @@ impl fmt::Display for JoinRefused {
 }
 
 impl std::error::Error for JoinRefused {}
+
+/// What the host reads when the workspace refuses its own account with `identity_conflict`:
+/// the workspace will not follow the account's new name onto one another member uses (D3).
+/// Only the host can remove that member, so "ask your host" would send it to itself. The
+/// workspace's own sentence ([`host_rename_sentence`]) is shown when it parses, else one
+/// written here for `workspace`.
+fn host_identity_conflict(message: &str, workspace: &str) -> String {
+    host_rename_sentence(message).unwrap_or_else(|| {
+        format!(
+            "Another member of {workspace} already uses the name your account on the server has now, so Crew can't let you in as its host. Rename the account back on the server, then try again."
+        )
+    })
+}
+
+/// The broker's refusal of a followed host rename, as the broker words it (D3):
+///
+/// "Crew can't follow this account's new name, @{new}, because @{other} already uses it in
+/// {workspace}. Rename the account back to @{old} on the server and remove @{other} from
+/// {workspace} before renaming it again."
+///
+/// `None` unless `message` is exactly that sentence (after its `identity_conflict:` code), with
+/// account names of printable ASCII and a valid workspace name (or "this workspace") in it.
+/// The sentence is rebuilt from those names alone, because the workspace's words are
+/// unauthenticated: no other text of its answer reaches a person.
+fn host_rename_sentence(message: &str) -> Option<String> {
+    let text = message.trim();
+    let text = text
+        .strip_prefix("identity_conflict:")
+        .map_or(text, str::trim_start);
+    let rest = text.strip_prefix("Crew can't follow this account's new name, @")?;
+    let (new, rest) = rest.split_once(", because @")?;
+    let (other, rest) = rest.split_once(" already uses it in ")?;
+    let (workspace, rest) = rest.split_once(". Rename the account back to @")?;
+    let (old, rest) = rest.split_once(" on the server and remove @")?;
+    let (other_again, rest) = rest.split_once(" from ")?;
+    let workspace_again = rest.strip_suffix(" before renaming it again.")?;
+    let account = |name: &str| {
+        biorouter_crew::valid_username(name) && name.bytes().all(|b| b.is_ascii_graphic())
+    };
+    (account(new)
+        && account(other)
+        && account(old)
+        && other == other_again
+        && workspace == workspace_again
+        && (workspace == "this workspace" || biorouter_crew::workspace_name_valid(workspace)))
+    .then(|| {
+        format!(
+            "Crew can't follow this account's new name, @{new}, because @{other} already uses it in {workspace}. Rename the account back to @{old} on the server and remove @{other} from {workspace} before renaming it again."
+        )
+    })
+}
 
 /// The workspace's refusal as the transport reports it: the envelope's `code` and `message`.
 /// `None` for anything else (an SSH failure, a local check).
@@ -3070,6 +3128,7 @@ impl CrewManager {
                     refusal,
                     broker_message: Some(message),
                     workspace: workspace_name,
+                    host_sentence: None,
                 }));
             }
         };
@@ -3445,7 +3504,10 @@ impl CrewManager {
 
     /// An `auth.account` refusal as a person reads it: the workspace's code as a
     /// [`JoinRefused`], or `crew_account_unsupported` from a server that does not know the
-    /// method. Anything that is not the workspace's answer stays as it is.
+    /// method. Anything that is not the workspace's answer stays as it is. An
+    /// `identity_conflict` refused to the host's own account (the UID the request's challenge
+    /// was answered with is the pinned host UID, used for words only) keeps its code and is
+    /// said for the host ([`host_identity_conflict`]).
     async fn account_refusal(
         &self,
         id: &str,
@@ -3462,8 +3524,15 @@ impl CrewManager {
             Some(name) => name,
             None => self.workspace_label(id).await,
         };
+        let refusal = JoinRefusal::from_broker_code(&code);
+        let host = refusal == JoinRefusal::IdentityConflict
+            && match self.connection(id).await {
+                Ok(c) => self.signs_in_as_host(id, &c),
+                Err(_) => false,
+            };
         anyhow::Error::new(JoinRefused {
-            refusal: JoinRefusal::from_broker_code(&code),
+            refusal,
+            host_sentence: host.then(|| host_identity_conflict(&message, &workspace)),
             broker_message: Some(message),
             workspace: Some(workspace),
         })
@@ -4685,7 +4754,9 @@ mod admission_tests {
             quoted(&challenge.to_string())
         );
         for (method, envelope) in answers {
-            let envelope = envelope.to_string();
+            // An apostrophe, which only a JSON string can hold, as its escape: the same JSON,
+            // and one sh word.
+            let envelope = envelope.to_string().replace('\'', "\\u0027");
             let rest = envelope
                 .strip_prefix('{')
                 .expect("an envelope is an object");
@@ -6377,6 +6448,81 @@ fi
             error.downcast_ref::<JoinRefused>().unwrap().api_code(),
             "crew_join_not_invited"
         );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    /// D3, said to the host: the workspace will not follow the host's renamed account onto a
+    /// name another member uses, and only the host can remove that member. The host reads the
+    /// workspace's own sentence, rebuilt from the names in it, never "ask your host"; an answer
+    /// that is not that sentence is replaced with this computer's sentence for the host. A
+    /// member still reads the member's sentence. The code stays `crew_join_identity_conflict`.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_host_refused_its_new_account_name_reads_a_sentence_for_the_host() {
+        if !crate::test_sandbox::in_a_process_of_its_own() {
+            return;
+        }
+        let sentence = "Crew can't follow this account's new name, @bob, because @Bob already uses it in lab. Rename the account back to @alice on the server and remove @Bob from lab before renaming it again.";
+        let answer =
+            |text: &str| broker_error("identity_conflict", &format!("identity_conflict: {text}"));
+        let (root, _env, member, manager) = joiner_fixture(
+            "account-host-rename",
+            "7b7b7b7b-7b7b-47b7-87b7-7b7b7b7b7b7b",
+            &[ACCOUNT_IDENTITY_CAPABILITY],
+        )
+        .await;
+        write_fake_ssh(&root, &[], &[("auth.account", answer(sentence))]);
+        attach_transport(&manager, &member).await;
+        let error = manager.account_join(&member.id).await.unwrap_err();
+        assert_eq!(
+            error.downcast_ref::<JoinRefused>().unwrap().api_code(),
+            "crew_join_identity_conflict"
+        );
+        assert_eq!(
+            error.to_string(),
+            "Another member of this workspace already has your username. Ask your host to remove the old account first."
+        );
+
+        // The fake bridge's account has UID 10001; with that as the host UID, this computer
+        // signs in as the host.
+        let (mut hosted, device) = joiner("7c7c7c7c-7c7c-47c7-87c7-7c7c7c7c7c7c");
+        hosted.owner_uid = 10001;
+        let host_root = root.join("host-profile");
+        fs::create_dir_all(&host_root).unwrap();
+        let host =
+            connected_manager(&host_root, &hosted, &device, &[ACCOUNT_IDENTITY_CAPABILITY]).await;
+        let id = hosted.id.as_str();
+        let error = host.account_join(id).await.unwrap_err();
+        let typed = error.downcast_ref::<JoinRefused>().unwrap();
+        assert_eq!(typed.api_code(), "crew_join_identity_conflict");
+        assert_eq!(error.to_string(), sentence);
+        // Adding this computer again is refused in the same words.
+        attach_transport(&host, &hosted).await;
+        let error = host.rejoin(id).await.unwrap_err();
+        assert_eq!(
+            error.downcast_ref::<JoinRefused>().unwrap().api_code(),
+            "crew_join_identity_conflict"
+        );
+        assert_eq!(error.to_string(), sentence);
+
+        // Any other answer reaches the host as this computer's sentence, never in the
+        // workspace's own words.
+        let for_the_host = "Another member of lab already uses the name your account on the server has now, so Crew can't let you in as its host. Rename the account back on the server, then try again.";
+        for other in [
+            "another active member is @bob; remove the old @bob first".to_owned(),
+            format!("{sentence} Your code is 7QK2-M9XA-3JTP-WZ4D."),
+            sentence.replace("@Bob already", "@B\u{202e}ob already"),
+            sentence.replace(" from lab ", " from your code 7QK2 "),
+        ] {
+            write_fake_ssh(&root, &[], &[("auth.account", answer(&other))]);
+            attach_transport(&host, &hosted).await;
+            let error = host.account_join(id).await.unwrap_err();
+            assert_eq!(
+                error.downcast_ref::<JoinRefused>().unwrap().api_code(),
+                "crew_join_identity_conflict"
+            );
+            assert_eq!(error.to_string(), for_the_host, "{other}");
+        }
         let _ = fs::remove_dir_all(root);
     }
 

@@ -8,6 +8,7 @@ import { Note } from '../../ui/note';
 import { saveFromInvitation } from '../api/join';
 import { connectionServer, sanitizeDisplayText } from '../identity';
 import { useCrew, useCrewErrorSlot } from '../state/CrewControllerContext';
+import { canFocus, focusIsLost } from '../state/focusReturn';
 import type { OpenWorkspaceRoute } from '../state/types';
 import { joinCopy, openCopy } from './copy';
 import {
@@ -21,7 +22,14 @@ import {
 import { updateJoinContext } from './joinContext';
 import { advancedInvalid, SSH_LOGIN_PATTERN } from './JoinDialog';
 import { sshUsername } from './joinText';
-import { versionOlder, type SetupIntent, type SetupRun, type SetupWorkspace } from './setup';
+import {
+  setupWorkspaceKey,
+  versionOlder,
+  type SetupIntent,
+  type SetupOutdatedReason,
+  type SetupRun,
+  type SetupWorkspace,
+} from './setup';
 import { SetupProgress, useSetupArtifact, useSetupJob } from './SetupProgress';
 import { foundWorkspaceTitle, SetupWorkspaceList, workspacesNoteText } from './SetupWorkspaces';
 
@@ -61,6 +69,13 @@ export function workspaceOutdated(
   );
 }
 
+/**
+ * Why a restart was left that Update Crew cannot change (AO-8): a workspace running a newer Crew
+ * than the one installed, or one keeping its state where Crew does not restart it. Such a row is
+ * told why and is not offered Update Crew again.
+ */
+const LEFT_FOR_GOOD: readonly SetupOutdatedReason[] = ['running_newer', 'custom_state_dir'];
+
 /** Two hosts have a workspace of one name here (AO-6): the dialog says so, and names each host. */
 function sharedNames(workspaces: readonly SetupWorkspace[]): string[] {
   const hosts = new Map<string, Set<string>>();
@@ -94,7 +109,13 @@ export interface OpenWorkspaceDialogProps {
  *   joins by account at once, because the person asked for it here.
  * - **Start**: a stopped workspace the account hosts, started on the installed Crew.
  * - **Update Crew**: a running workspace the account hosts that runs an older Crew. With other
- *   people connected it asks first: their running agent commands stop when it restarts.
+ *   people connected, or a count the server did not give (a Crew from before account ownership),
+ *   it asks first: their running agent commands stop when it restarts. Either way it restarts
+ *   that workspace and no other (`restart_workspace_ids` with `restart_workspaces: false`).
+ *
+ * Rows are told apart by workspace ID, host UID and key fingerprint, because two hosts can list
+ * one ID (AO-6). When a job ends, focus that a disabled button dropped goes to the row's first
+ * action, else to the first one found, else to Look again.
  */
 export function OpenWorkspaceDialog({ open, onOpenChange }: OpenWorkspaceDialogProps) {
   const crew = useCrew();
@@ -146,12 +167,22 @@ function OpenWorkspaceView({
   const [jobIntent, setJobIntent] = useState<SetupIntent>('check');
   /** The last finished job: its list of workspaces and what it restarted. */
   const [found, setFound] = useState<SetupRun | null>(null);
+  /** The row (`setupWorkspaceKey`) whose Update Crew is asking first. */
   const [confirmUpdate, setConfirmUpdate] = useState<string | null>(null);
+  /** The row being opened. */
   const [opening, setOpening] = useState<string | null>(null);
   const [pendingConnect, setPendingConnect] = useState<string | null>(null);
   const [daemonOutdated, setDaemonOutdated] = useState(false);
   const artifact = useSetupArtifact(open).artifact;
   const showError = useCrewErrorSlot(SOURCE);
+  const submitRef = useRef<HTMLButtonElement>(null);
+  const foundRef = useRef<HTMLDivElement>(null);
+  /**
+   * Where focus goes once the running job ends: the row it acted on (its key), the list (`''`, a
+   * look), or nowhere (`undefined`). Every control is disabled while a job runs, so the button
+   * that started it loses focus and the dialog's frame takes it.
+   */
+  const focusAfterJob = useRef<string | undefined>(undefined);
   useInitialFocus(loginRef, open && !checkAtOnce);
 
   const server =
@@ -170,12 +201,18 @@ function OpenWorkspaceView({
   /** Run a job on the server the last look used, with the device it prepared. */
   const runOnServer = async (
     intent: SetupIntent,
-    extra: { restart_workspaces?: boolean; start_workspaces?: string[] } = {},
-    on: { route: OpenWorkspaceRoute; preparationId: string } | null = looked
+    extra: {
+      restart_workspaces?: boolean;
+      restart_workspace_ids?: string[];
+      start_workspaces?: string[];
+    } = {},
+    on: { route: OpenWorkspaceRoute; preparationId: string } | null = looked,
+    row = ''
   ) => {
     if (!on) return;
     setJobIntent(intent);
     setConfirmUpdate(null);
+    focusAfterJob.current = row;
     const result = await job.start({
       target: { kind: 'server', ...on.route, preparation_id: on.preparationId },
       intent,
@@ -229,9 +266,33 @@ function OpenWorkspaceView({
     });
   }, [pendingConnect, crew, mounted, onClose]);
 
+  // Once a job ends and the rows are enabled again, put focus that the job's disabled controls
+  // dropped back on something to act with (live QA: it fell to the dialog's frame).
+  useEffect(() => {
+    const row = focusAfterJob.current;
+    if (row === undefined || !found || busy) return;
+    focusAfterJob.current = undefined;
+    const active = typeof document === 'undefined' ? null : document.activeElement;
+    const dropped =
+      focusIsLost() ||
+      active === submitRef.current ||
+      (active instanceof HTMLButtonElement && active.disabled);
+    if (!dropped) return;
+    const list = foundRef.current;
+    const rowButton = row
+      ? Array.from(list?.querySelectorAll<HTMLElement>('[data-crew-found-row]') ?? [])
+          .find((item) => item.dataset.crewFoundRow === row)
+          ?.querySelector<HTMLElement>('button')
+      : null;
+    const target = [rowButton, list?.querySelector<HTMLElement>('button'), submitRef.current].find(
+      canFocus
+    );
+    target?.focus();
+  }, [found, busy]);
+
   const openWorkspace = async (entry: SetupWorkspace) => {
     if (busy || !looked) return;
-    setOpening(entry.workspaceId);
+    setOpening(setupWorkspaceKey(entry));
     const username = sshUsername(looked.route.ssh_target);
     const saved = await crew.act(SOURCE, 'connection.save', async () => {
       let id = entry.savedConnectionId;
@@ -282,20 +343,44 @@ function OpenWorkspaceView({
   const shared = sharedNames(workspaces);
 
   // The job lists the workspaces before its restart stage, so one it just restarted or started
-  // still reads as it was: what the outcome says wins.
+  // still reads as it was: what the outcome says wins. The outcome names workspaces the account
+  // hosts by ID only, so it is read for the hosted row alone, never for another host's row that
+  // lists the same ID.
+  const hosted = (entry: SetupWorkspace) => entry.role === 'host';
   const listedOutdated = (entry: SetupWorkspace) =>
-    outcome?.outdated?.find((item) => item.workspaceId === entry.workspaceId) ?? null;
+    hosted(entry)
+      ? (outcome?.outdated?.find((item) => item.workspaceId === entry.workspaceId) ?? null)
+      : null;
   const restartedNow = (entry: SetupWorkspace) =>
+    hosted(entry) &&
     outcome?.restarted?.some((item) => item.workspaceId === entry.workspaceId) === true;
   const outdated = (entry: SetupWorkspace) =>
     !restartedNow(entry) && workspaceOutdated(entry, available, listedOutdated(entry) !== null);
-  const othersOf = (entry: SetupWorkspace) =>
-    entry.othersConnected ?? listedOutdated(entry)?.othersConnected ?? 0;
+  /** Update Crew can still help: not left running for a reason no restart changes. */
+  const updatable = (entry: SetupWorkspace) => {
+    const reason = listedOutdated(entry)?.reason;
+    return outdated(entry) && !(reason && LEFT_FOR_GOOD.includes(reason));
+  };
+  /**
+   * How many other people are connected: `null` when the server did not say, as a Crew from
+   * before account ownership never does. Unknown is not nobody.
+   */
+  const othersOf = (entry: SetupWorkspace): number | null =>
+    entry.othersConnected ?? listedOutdated(entry)?.othersConnected ?? null;
+  /** Update this workspace and no other: its ID, and no consent for the rest. */
+  const update = (entry: SetupWorkspace) =>
+    void runOnServer(
+      'install',
+      { restart_workspaces: false, restart_workspace_ids: [entry.workspaceId] },
+      looked,
+      setupWorkspaceKey(entry)
+    );
 
   const actions = (entry: SetupWorkspace) => {
     const name = foundWorkspaceTitle(entry);
+    const key = setupWorkspaceKey(entry);
     const buttons = [];
-    if (outdated(entry)) {
+    if (updatable(entry)) {
       buttons.push(
         <Button
           key="update"
@@ -305,8 +390,8 @@ function OpenWorkspaceView({
           disabled={busy}
           aria-label={openCopy.updateLabel(sanitizeDisplayText(entry.name) || name)}
           onClick={() => {
-            if (othersOf(entry) > 0) setConfirmUpdate(entry.workspaceId);
-            else void runOnServer('install');
+            if (othersOf(entry) === 0) update(entry);
+            else setConfirmUpdate(key);
           }}
         >
           {openCopy.update}
@@ -322,7 +407,15 @@ function OpenWorkspaceView({
           size="sm"
           disabled={busy}
           aria-label={openCopy.startLabel(sanitizeDisplayText(entry.name) || name)}
-          onClick={() => void runOnServer('install', { start_workspaces: [entry.workspaceId] })}
+          onClick={() =>
+            // Start this workspace, and restart no other on the way.
+            void runOnServer(
+              'install',
+              { restart_workspaces: false, start_workspaces: [entry.workspaceId] },
+              looked,
+              key
+            )
+          }
         >
           {openCopy.start}
         </Button>
@@ -338,7 +431,7 @@ function OpenWorkspaceView({
           aria-label={openCopy.openLabel(name)}
           onClick={() => void openWorkspace(entry)}
         >
-          {opening === entry.workspaceId ? openCopy.opening : openCopy.open}
+          {opening === key ? openCopy.opening : openCopy.open}
         </Button>
       );
     }
@@ -347,10 +440,15 @@ function OpenWorkspaceView({
 
   const note = (entry: SetupWorkspace) => {
     const name = sanitizeDisplayText(entry.name) || openCopy.unnamed;
-    const restarted = outcome?.restarted?.find((item) => item.workspaceId === entry.workspaceId);
-    const failed = outcome?.restartFailed?.find((item) => item.workspaceId === entry.workspaceId);
+    const restarted = hosted(entry)
+      ? outcome?.restarted?.find((item) => item.workspaceId === entry.workspaceId)
+      : undefined;
+    const failed = hosted(entry)
+      ? outcome?.restartFailed?.find((item) => item.workspaceId === entry.workspaceId)
+      : undefined;
+    const left = outdated(entry) ? listedOutdated(entry) : null;
     const lines = [];
-    if (confirmUpdate === entry.workspaceId) {
+    if (confirmUpdate === setupWorkspaceKey(entry)) {
       lines.push(
         <Note
           key="confirm"
@@ -367,11 +465,7 @@ function OpenWorkspaceView({
               >
                 {openCopy.keepRunning}
               </Button>
-              <Button
-                type="button"
-                size="sm"
-                onClick={() => void runOnServer('install', { restart_workspaces: true })}
-              >
+              <Button type="button" size="sm" onClick={() => update(entry)}>
                 {openCopy.updateAnyway}
               </Button>
             </div>
@@ -381,11 +475,29 @@ function OpenWorkspaceView({
         </Note>
       );
     } else if (outdated(entry)) {
-      lines.push(
-        <p key="outdated" className="text-supporting text-text-muted">
-          {openCopy.outdated(entry.version, available)}
-        </p>
-      );
+      // A workspace left for good is not "older" in any way Update Crew can change: its reason
+      // alone is said.
+      if (updatable(entry))
+        lines.push(
+          <p key="outdated" className="text-supporting text-text-muted">
+            {openCopy.outdated(entry.version, available)}
+          </p>
+        );
+      // Why the last update left it, when a reason says more than "older" does.
+      const reason =
+        left?.reason === 'others_connected'
+          ? openCopy.leftRunning.others_connected(othersOf(entry))
+          : left?.reason === 'running_newer'
+            ? openCopy.leftRunning.running_newer(left.runningVersion ?? entry.version)
+            : left?.reason === 'custom_state_dir'
+              ? openCopy.leftRunning.custom_state_dir(server)
+              : null;
+      if (reason)
+        lines.push(
+          <p key="left" className="text-supporting text-text-muted" role="status">
+            {reason}
+          </p>
+        );
     }
     if (restarted) {
       lines.push(
@@ -443,7 +555,7 @@ function OpenWorkspaceView({
           <Button type="button" variant="secondary" disabled={opening !== null} onClick={onClose}>
             {found ? openCopy.close : openCopy.cancel}
           </Button>
-          <Button type="submit" form={formId} disabled={busy}>
+          <Button ref={submitRef} type="submit" form={formId} disabled={busy}>
             {lookLabel}
           </Button>
         </>
@@ -541,13 +653,15 @@ function OpenWorkspaceView({
               {openCopy.sameName(name)}
             </Note>
           ))}
-          <SetupWorkspaceList
-            workspaces={workspaces}
-            label={openCopy.foundHeading(server)}
-            actions={actions}
-            note={note}
-            testId="crew-open-found"
-          />
+          <div ref={foundRef} className="contents">
+            <SetupWorkspaceList
+              workspaces={workspaces}
+              label={openCopy.foundHeading(server)}
+              actions={actions}
+              note={note}
+              testId="crew-open-found"
+            />
+          </div>
           {showError && crew.error ? (
             <Note tone="danger" role="alert">
               {crew.error.message}

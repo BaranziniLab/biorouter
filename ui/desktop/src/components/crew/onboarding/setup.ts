@@ -78,6 +78,12 @@ export interface SetupInput {
    * only reports them.
    */
   restart_workspaces?: boolean;
+  /**
+   * Restart exactly these hosted workspaces, by ID, even when others are or may be connected
+   * (AO-8): the person's consent for each one they named. One workspace's Update Crew sends its
+   * own ID with `restart_workspaces: false`, so it never restarts another workspace.
+   */
+  restart_workspace_ids?: string[];
   /** Start these stopped workspaces the account hosts, by ID (AO-7, AO-8). */
   start_workspaces?: string[];
 }
@@ -98,6 +104,11 @@ export interface SetupWorkspace {
   state: SetupWorkspaceState;
   /** The host's server account, resolved on the server from the socket's owner. */
   hostUsername: string | null;
+  /**
+   * The host's UID on the server. Two hosts can list one workspace ID (AO-6), so a row is told
+   * apart by its ID, this and its key's fingerprint (`setupWorkspaceKey`).
+   */
+  hostUid: number | null;
   /** The workspace's key fingerprint, for comparing with its host's. */
   fingerprint: string | null;
   mode: 'private' | 'public' | null;
@@ -314,6 +325,17 @@ function recordsOf(value: unknown): Record<string, unknown>[] {
 }
 
 /**
+ * A found workspace's identity in a list: its ID, its host's UID and its key's fingerprint. Two
+ * hosts can list one ID (AO-6), and the daemon keeps such entries apart, so the ID alone does not
+ * name a row.
+ */
+export function setupWorkspaceKey(
+  entry: Pick<SetupWorkspace, 'workspaceId' | 'hostUid' | 'fingerprint'>
+): string {
+  return [entry.workspaceId, entry.hostUid ?? '', entry.fingerprint ?? ''].join('\n');
+}
+
+/**
  * The workspaces a job found (AO-6, AO-8), entry by entry: one without an ID, a role or a state
  * this build knows is left out rather than refusing the rest.
  */
@@ -333,6 +355,7 @@ export function setupWorkspacesFrom(wire: unknown): SetupWorkspace[] {
         role: role as SetupWorkspaceRole,
         state: state as SetupWorkspaceState,
         hostUsername: filled(entry.host_username),
+        hostUid: countOf(entry.host_uid),
         fingerprint: filled(entry.workspace_key_fingerprint),
         mode: entry.mode === 'private' || entry.mode === 'public' ? entry.mode : null,
         institutionId: filled(entry.institution_id),
@@ -514,6 +537,9 @@ export async function startSetup(input: SetupInput): Promise<SetupRun> {
     ...(input.fix_storage_permissions ? { fix_storage_permissions: true } : {}),
     ...(typeof input.restart_workspaces === 'boolean'
       ? { restart_workspaces: input.restart_workspaces }
+      : {}),
+    ...(input.restart_workspace_ids?.length
+      ? { restart_workspace_ids: input.restart_workspace_ids }
       : {}),
     ...(input.start_workspaces?.length ? { start_workspaces: input.start_workspaces } : {}),
   };

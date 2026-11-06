@@ -23,11 +23,10 @@ use futures::future::BoxFuture;
 use serde_json::{json, Value};
 
 use super::places::{
-    channel_phrase, check_message_size, crossing, item, local_path, place, post_params, posted,
-    private_where_kept, private_write, public_safe, reading, resolve, send, size_words, yours,
-    Reading,
+    check_message_size, crossing, item, local_path, place, post_params, posted, private_where_kept,
+    private_write, public_safe, reading, resolve, send, size_words, yours, Place, Reading,
 };
-use super::{idempotency_key, naming, said, Card, Ctx, Progress};
+use super::{idempotency_key, naming, said, Card, Ctx, Progress, Resolved};
 use crate::routes::crew::names::SelectorKind;
 
 /// The most messages a page reads (the broker's own limit).
@@ -299,7 +298,7 @@ pub(super) fn files_status(ctx: &Ctx) -> BoxFuture<'_, Result<Value>> {
         let Ok(snapshot) = ctx.snapshot(&connection).await else {
             return Ok(transfer_view(&receipt, false));
         };
-        let scope = match ctx.content_scope(&connection, &snapshot) {
+        let scope = match ctx.content_scope(&connection, &snapshot).await {
             Ok(scope) if scope.channel_allowed(&receipt.channel_id) => scope,
             _ => return Ok(transfer_view(&receipt, false)),
         };
@@ -331,12 +330,10 @@ pub(super) fn send_message(ctx: &Ctx) -> BoxFuture<'_, Result<Value>> {
         let channel = resolve(ctx, &place, SelectorKind::Channel, &typed)?;
         yours(&place.snapshot, &channel, &typed)?;
         let private = private_write(ctx, &place).await?;
-        let mut card = Card::new(format!(
-            "Post this in {} as you",
-            channel_phrase(&place.snapshot, &channel)
-        ))
-        .show("channel", channel.label.clone())
-        .show("text", text.clone());
+        let mut card = place
+            .card(|here| format!("Post this in {} in {here} as you", place.channel(&channel)))
+            .show("channel", channel.label.clone())
+            .show("text", text.clone());
         if private {
             card = card.line("It is marked Private, so public models never read it.");
         }
@@ -446,6 +443,65 @@ async fn select_shown(
     Ok(capability)
 }
 
+/// The local file a share sends: its metadata and the name it is shared under. Refused when
+/// nothing is at `path`, or what is there is not one file.
+fn shareable_file(path: &std::path::Path) -> Result<(std::fs::Metadata, String)> {
+    let metadata = std::fs::metadata(path).map_err(|_| {
+        said(
+            None,
+            format!("There is no file at {} on this computer.", path.display()),
+        )
+    })?;
+    if !metadata.is_file() {
+        return Err(said(
+            None,
+            format!(
+                "{} is not a file. Share one file at a time.",
+                path.display()
+            ),
+        ));
+    }
+    let name = path.file_name().map_or_else(
+        || path.display().to_string(),
+        |name| name.to_string_lossy().into_owned(),
+    );
+    Ok((metadata, name))
+}
+
+/// The card a share parks: the file by name, size and resolved path, its channel, the post's
+/// text when there is one, and the Private marking when the write is Private. The caller adds
+/// the crossing line.
+fn share_card(
+    place: &Place,
+    channel: &Resolved,
+    path: &std::path::Path,
+    size: u64,
+    name: &str,
+    text: &str,
+    private: bool,
+) -> Card {
+    let mut card = place
+        .card(|here| {
+            format!(
+                "Share {name} ({}) from this computer in {} in {here} as you",
+                size_words(size),
+                place.channel(channel)
+            )
+        })
+        .line(format!("From {}.", path.display()))
+        .show("path", path.display().to_string())
+        .show("size_bytes", size)
+        .show("channel", channel.label.clone());
+    if !text.is_empty() {
+        card = card.show("text", text.to_owned());
+    }
+    if private {
+        card = card
+            .line("The file and the post are marked Private, so public models never read them.");
+    }
+    card
+}
+
 /// `biorouter crew files upload CHANNEL FILE`, then a post that carries it (and `text`, when
 /// given). The card names the file's resolved path and size; from a Private chat the file and
 /// the post are marked Private.
@@ -458,47 +514,21 @@ pub(super) fn files_share(ctx: &Ctx) -> BoxFuture<'_, Result<Value>> {
             .filter(|text| !text.trim().is_empty())
             .unwrap_or_default();
         check_message_size(&text)?;
-        let metadata = std::fs::metadata(&path).map_err(|_| {
-            said(
-                None,
-                format!("There is no file at {} on this computer.", path.display()),
-            )
-        })?;
-        if !metadata.is_file() {
-            return Err(said(
-                None,
-                format!(
-                    "{} is not a file. Share one file at a time.",
-                    path.display()
-                ),
-            ));
-        }
-        let name = path.file_name().map_or_else(
-            || path.display().to_string(),
-            |name| name.to_string_lossy().into_owned(),
-        );
+        let (metadata, name) = shareable_file(&path)?;
         let shown = FileStamp::of(&metadata);
         let place = place(ctx).await?;
         let channel = resolve(ctx, &place, SelectorKind::Channel, &typed)?;
         yours(&place.snapshot, &channel, &typed)?;
         let private = private_write(ctx, &place).await?;
-        let mut card = Card::new(format!(
-            "Share {name} ({}) from this computer in {} as you",
-            size_words(metadata.len()),
-            channel_phrase(&place.snapshot, &channel)
-        ))
-        .line(format!("From {}.", path.display()))
-        .show("path", path.display().to_string())
-        .show("size_bytes", metadata.len())
-        .show("channel", channel.label.clone());
-        if !text.is_empty() {
-            card = card.show("text", text.clone());
-        }
-        if private {
-            card = card.line(
-                "The file and the post are marked Private, so public models never read them.",
-            );
-        }
+        let mut card = share_card(
+            &place,
+            &channel,
+            &path,
+            metadata.len(),
+            &name,
+            &text,
+            private,
+        );
         if let Some(line) = crossing(ctx, &place, public_safe(&place, &channel.id)).await {
             card = card.line(line);
         }
@@ -584,6 +614,64 @@ fn destination(typed: Option<&str>, name: &str) -> Result<std::path::PathBuf> {
     Ok(if folder { path.join(name) } else { path })
 }
 
+/// The shared file a download names: `typed` itself when it is a file's ID, else the file by
+/// that name among those this call may see in the channel the call names. Refused when no
+/// channel is named for a name, or no file there has it; that refusal names the channel's team,
+/// so it returns as content does.
+async fn download_blob_id(ctx: &Ctx, reading: &Reading, typed: &str) -> Result<String> {
+    if uuid::Uuid::parse_str(typed).is_ok() {
+        return Ok(typed.to_owned());
+    }
+    let channel_text = ctx.text("channel").ok_or_else(|| {
+        said(
+            None,
+            "Name the channel the file was shared in, or give the file's ID from crew__read action files_list.",
+        )
+    })?;
+    let channel = reading.channel(&channel_text)?;
+    let (files, ..) = shared_files(ctx, reading, &channel.id, usize::MAX, Some(typed)).await?;
+    files
+        .iter()
+        .find(|file| file["name"].as_str() == Some(typed))
+        .and_then(|file| file["attachment_id"].as_str())
+        .map(str::to_owned)
+        .ok_or_else(|| {
+            // The phrase names the channel's team: it returns as content does.
+            naming(
+                said(
+                    Some("unknown_name"),
+                    format!(
+                        "No file you can see in {} is named {typed}.",
+                        reading.phrase(&channel)
+                    ),
+                ),
+                &reading.scope,
+            )
+        })
+}
+
+/// The card a download parks: the file, its size, the channel it was shared in as this call may
+/// name it (`shown_channel`), and where on this computer it is saved.
+fn download_card(
+    workspace: &str,
+    server: &str,
+    shown_channel: &str,
+    name: &str,
+    size: u64,
+    saved: &std::path::Path,
+) -> Card {
+    Card::at(workspace, server, |here| {
+        format!(
+            "Download {name} ({}) from {shown_channel} in {here} to {} on this computer",
+            size_words(size),
+            saved.display()
+        )
+    })
+    .show("file", name.to_owned())
+    .show("size_bytes", size)
+    .show("destination", saved.display().to_string())
+}
+
 /// `biorouter crew files download FILE`: save a file shared in a channel to this computer. Its
 /// name and the destination are the workspace's content, so this asks for the person's read
 /// consent like a read, and raises the chat as a read does; the card names the file, its size,
@@ -594,37 +682,7 @@ pub(super) fn files_download(ctx: &Ctx) -> BoxFuture<'_, Result<Value>> {
         let reading = reading(ctx).await?;
         let crew = ctx.crew()?;
         let connection_id = reading.connection.id.clone();
-        let blob_id = if uuid::Uuid::parse_str(&typed).is_ok() {
-            typed.clone()
-        } else {
-            let channel_text = ctx.text("channel").ok_or_else(|| {
-                said(
-                    None,
-                    "Name the channel the file was shared in, or give the file's ID from crew__read action files_list.",
-                )
-            })?;
-            let channel = reading.channel(&channel_text)?;
-            let (files, ..) =
-                shared_files(ctx, &reading, &channel.id, usize::MAX, Some(&typed)).await?;
-            files
-                .iter()
-                .find(|file| file["name"].as_str() == Some(typed.as_str()))
-                .and_then(|file| file["attachment_id"].as_str())
-                .map(str::to_owned)
-                .ok_or_else(|| {
-                    // The phrase names the channel's team: it returns as content does.
-                    naming(
-                        said(
-                            Some("unknown_name"),
-                            format!(
-                                "No file you can see in {} is named {typed}.",
-                                reading.phrase(&channel)
-                            ),
-                        ),
-                        &reading.scope,
-                    )
-                })?
-        };
+        let blob_id = download_blob_id(ctx, &reading, &typed).await?;
         let blob = crew
             .human_request(
                 &connection_id,
@@ -646,16 +704,15 @@ pub(super) fn files_download(ctx: &Ctx) -> BoxFuture<'_, Result<Value>> {
         let shown_channel = item(&reading.visible, "channels", &channel_id)
             .and_then(|channel| channel["name"].as_str())
             .map_or_else(|| "its channel".to_owned(), |name| format!("#{name}"));
-        ctx.approve(
-            Card::new(format!(
-                "Download {name} ({}) from {shown_channel} to {} on this computer",
-                size_words(size),
-                saved.display()
-            ))
-            .show("file", name.clone())
-            .show("size_bytes", size)
-            .show("destination", saved.display().to_string()),
-        )
+        let server = Ctx::server_label(&reading.connection).await;
+        ctx.approve(download_card(
+            &reading.workspace,
+            &server,
+            &shown_channel,
+            &name,
+            size,
+            &saved,
+        ))
         .await?;
         let key = idempotency_key(ctx, 0);
         let transfers = service().await.map_err(transfer_refusal)?;
@@ -743,12 +800,14 @@ pub(super) fn files_reference(ctx: &Ctx) -> BoxFuture<'_, Result<Value>> {
         let channel = resolve(ctx, &place, SelectorKind::Channel, &typed)?;
         yours(&place.snapshot, &channel, &typed)?;
         let private = private_where_kept(ctx, &place).await?;
-        let mut card = Card::new(format!(
-            "Post a reference to {path} on {} in {} as you",
-            place.server,
-            channel_phrase(&place.snapshot, &channel)
-        ))
-        .line("The file stays on the server; members who can read it there open it from the post. The post is restricted, so public models never read it.")
+        let mut card = place
+            .card(|here| {
+                format!(
+                    "Post a reference to the server's file {path} in {} in {here} as you",
+                    place.channel(&channel)
+                )
+            })
+            .line("The file stays on the server; members who can read it there open it from the post. The post is restricted, so public models never read it.")
         .show("path", path.clone())
         .show("channel", channel.label.clone());
         if !text.is_empty() {

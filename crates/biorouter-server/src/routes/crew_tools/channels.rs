@@ -262,11 +262,9 @@ pub(super) fn teams_create(ctx: &Ctx) -> BoxFuture<'_, Result<Value>> {
     Box::pin(async move {
         let name = ctx.required("name")?;
         let place = place(ctx).await?;
-        let mut card = Card::new(format!(
-            "Create the team {name} in {} as you",
-            place.workspace
-        ))
-        .show("name", name.clone());
+        let mut card = place
+            .card(|here| format!("Create the team {name} in {here} as you"))
+            .show("name", name.clone());
         if let Some(line) = crossing(ctx, &place, false).await {
             card = card.line(line);
         }
@@ -295,12 +293,15 @@ pub(super) fn teams_rename(ctx: &Ctx) -> BoxFuture<'_, Result<Value>> {
         let name = ctx.required("name")?;
         let place = place(ctx).await?;
         let team = resolve(ctx, &place, SelectorKind::Team, &typed)?;
-        let mut card = Card::new(format!(
-            "Rename the team {} in {} to {name}, for everyone",
-            team.label, place.workspace
-        ))
-        .show("team", team.label.clone())
-        .show("name", name.clone());
+        let mut card = place
+            .card(|here| {
+                format!(
+                    "Rename the team {} in {here} to {name}, for everyone",
+                    team.label
+                )
+            })
+            .show("team", team.label.clone())
+            .show("name", name.clone());
         if let Some(line) = crossing(ctx, &place, false).await {
             card = card.line(line);
         }
@@ -335,11 +336,9 @@ pub(super) fn teams_join(ctx: &Ctx) -> BoxFuture<'_, Result<Value>> {
             .unwrap_or("the team")
             .to_owned();
         ctx.approve(
-            Card::new(format!(
-                "Join the team {label} in {}, with its #general, as you",
-                place.workspace
-            ))
-            .show("team", label.clone()),
+            place
+                .card(|here| format!("Join the team {label} in {here}, with its #general, as you"))
+                .show("team", label.clone()),
         )
         .await?;
         send(
@@ -363,12 +362,15 @@ pub(super) fn teams_delete(ctx: &Ctx) -> BoxFuture<'_, Result<Value>> {
         let team = resolve(ctx, &place, SelectorKind::Team, &typed)?;
         let expected = stored_name(&place, "teams", &team.id);
         ctx.approve(
-            Card::new(format!(
-                "Delete the team {} in {} for everyone; this cannot be undone",
-                team.label, place.workspace
-            ))
-            .line("All its channels, #general among them, and their messages and files are removed from the workspace.")
-            .show("team", team.label.clone()),
+            place
+                .card(|here| {
+                    format!(
+                        "Delete the team {} in {here} for everyone; this cannot be undone",
+                        team.label
+                    )
+                })
+                .line("All its channels, #general among them, and their messages and files are removed from the workspace.")
+                .show("team", team.label.clone()),
         )
         .await?;
         let mut params = json!({"team_id": team.id});
@@ -414,18 +416,16 @@ pub(super) fn channels_create(ctx: &Ctx) -> BoxFuture<'_, Result<Value>> {
         };
         let shown = format!("#{}", name.trim().trim_start_matches('#'));
         let public = classification == "public_safe";
-        let mut card = Card::new(format!(
-            "Create {shown} in {} in {} as you",
-            team.label, place.workspace
-        ))
-        .line(if public {
-            "It is public-safe: where the workspace allows Public, public models may read it."
-        } else {
-            "It is restricted: public models never read it."
-        })
-        .show("name", shown.clone())
-        .show("team", team.label.clone())
-        .show("classification", classification.clone());
+        let mut card = place
+            .card(|here| format!("Create {shown} ({}) in {here} as you", team.label))
+            .line(if public {
+                "It is public-safe: where the workspace allows Public, public models may read it."
+            } else {
+                "It is restricted: public models never read it."
+            })
+            .show("name", shown.clone())
+            .show("team", team.label.clone())
+            .show("classification", classification.clone());
         if let Some(line) = crossing(ctx, &place, public).await {
             card = card.line(line);
         }
@@ -456,12 +456,15 @@ pub(super) fn channels_rename(ctx: &Ctx) -> BoxFuture<'_, Result<Value>> {
         let place = place(ctx).await?;
         let channel = resolve(ctx, &place, SelectorKind::Channel, &typed)?;
         let shown = format!("#{}", name.trim().trim_start_matches('#'));
-        let mut card = Card::new(format!(
-            "Rename {} to {shown}, for everyone",
-            channel_phrase(&place.snapshot, &channel)
-        ))
-        .show("channel", channel.label.clone())
-        .show("name", shown);
+        let mut card = place
+            .card(|here| {
+                format!(
+                    "Rename {} in {here} to {shown}, for everyone",
+                    place.channel(&channel)
+                )
+            })
+            .show("channel", channel.label.clone())
+            .show("name", shown);
         if let Some(line) = crossing(ctx, &place, public_safe(&place, &channel.id)).await {
             card = card.line(line);
         }
@@ -485,12 +488,15 @@ pub(super) fn channels_archive(ctx: &Ctx) -> BoxFuture<'_, Result<Value>> {
         let place = place(ctx).await?;
         let channel = resolve(ctx, &place, SelectorKind::Channel, &typed)?;
         ctx.approve(
-            Card::new(format!(
-                "Archive {} for everyone; this cannot be undone",
-                channel_phrase(&place.snapshot, &channel)
-            ))
-            .line("Nobody can post in it after this.")
-            .show("channel", channel.label.clone()),
+            place
+                .card(|here| {
+                    format!(
+                        "Archive {} in {here} for everyone; this cannot be undone",
+                        place.channel(&channel)
+                    )
+                })
+                .line("Nobody can post in it after this.")
+                .show("channel", channel.label.clone()),
         )
         .await?;
         send(
@@ -523,10 +529,14 @@ pub(super) fn channels_join(ctx: &Ctx) -> BoxFuture<'_, Result<Value>> {
                     .or_else(|| team["name"].as_str())
             })
         {
-            label = format!("{label} in {team}");
+            label = format!("{label} ({team})");
         }
-        ctx.approve(Card::new(format!("Join {label} as you")).show("channel", label.clone()))
-            .await?;
+        ctx.approve(
+            place
+                .card(|here| format!("Join {label} in {here} as you"))
+                .show("channel", label.clone()),
+        )
+        .await?;
         send(
             ctx,
             &place.connection,
@@ -571,11 +581,15 @@ pub(super) fn channels_delete(ctx: &Ctx) -> BoxFuture<'_, Result<Value>> {
         }
         let expected = stored_name(&place, "channels", &channel.id);
         ctx.approve(
-            Card::new(format!(
-                "Delete {phrase} for everyone; this cannot be undone"
-            ))
-            .line("Its messages and files are removed from the workspace.")
-            .show("channel", channel.label.clone()),
+            place
+                .card(|here| {
+                    format!(
+                        "Delete {} in {here} for everyone; this cannot be undone",
+                        place.channel(&channel)
+                    )
+                })
+                .line("Its messages and files are removed from the workspace.")
+                .show("channel", channel.label.clone()),
         )
         .await?;
         let mut params = json!({"channel_id": channel.id});
@@ -608,11 +622,9 @@ pub(super) fn channels_read(ctx: &Ctx) -> BoxFuture<'_, Result<Value>> {
                 "note": "It has no messages to mark read."}));
         };
         ctx.approve(
-            Card::new(format!(
-                "Mark {} read",
-                channel_phrase(&place.snapshot, &channel)
-            ))
-            .show("channel", channel.label.clone()),
+            place
+                .card(|here| format!("Mark {} in {here} read", place.channel(&channel)))
+                .show("channel", channel.label.clone()),
         )
         .await?;
         send(
@@ -656,39 +668,8 @@ pub(super) fn members_add(ctx: &Ctx) -> BoxFuture<'_, Result<Value>> {
                 &channel_in_team(team_text.as_deref(), text),
             )?);
         }
-        let channel_names: Vec<String> = channels
-            .iter()
-            .map(|channel| channel.label.clone())
-            .collect();
-        let summary = match (&team, channel_names.is_empty()) {
-            (Some(team), true) => format!(
-                "Add {} to the team {} in {}",
-                person.label, team.label, place.workspace
-            ),
-            (Some(team), false) => format!(
-                "Add {} to the team {} and to {} in {}",
-                person.label,
-                team.label,
-                and_list(&channel_names),
-                place.workspace
-            ),
-            (None, _) => format!(
-                "Add {} to {} in {}",
-                person.label,
-                and_list(&channel_names),
-                place.workspace
-            ),
-        };
-        let mut card = Card::new(summary)
-            .line("They join at once; nothing waits for them to accept.")
-            .show("member", person.label.clone());
-        if let Some(team) = &team {
-            card = card.show("team", team.label.clone());
-        }
-        if !channel_names.is_empty() {
-            card = card.show("channels", json!(channel_names));
-        }
-        ctx.approve(card).await?;
+        ctx.approve(members_add_card(&place, &person, team.as_ref(), &channels))
+            .await?;
         if let Some(team) = &team {
             let channel_ids: Vec<&str> =
                 channels.iter().map(|channel| channel.id.as_str()).collect();
@@ -749,6 +730,46 @@ pub(super) fn members_add(ctx: &Ctx) -> BoxFuture<'_, Result<Value>> {
     })
 }
 
+/// The card a direct add parks: `person` joining `team`, `channels`, or the team and those of
+/// its channels, by the names resolved in the person's snapshot.
+fn members_add_card(
+    place: &Place,
+    person: &Resolved,
+    team: Option<&Resolved>,
+    channels: &[Resolved],
+) -> Card {
+    let channel_names: Vec<String> = channels
+        .iter()
+        .map(|channel| channel.label.clone())
+        .collect();
+    let mut card = place
+        .card(|here| match (team, channel_names.is_empty()) {
+            (Some(team), true) => {
+                format!("Add {} to the team {} in {here}", person.label, team.label)
+            }
+            (Some(team), false) => format!(
+                "Add {} to the team {} and to {} in {here}",
+                person.label,
+                team.label,
+                and_list(&channel_names)
+            ),
+            (None, _) => format!(
+                "Add {} to {} in {here}",
+                person.label,
+                and_list(&channel_names)
+            ),
+        })
+        .line("They join at once; nothing waits for them to accept.")
+        .show("member", person.label.clone());
+    if let Some(team) = team {
+        card = card.show("team", team.label.clone());
+    }
+    if !channel_names.is_empty() {
+        card = card.show("channels", json!(channel_names));
+    }
+    card
+}
+
 /// What a direct add says when `channels[stopped]` refused it after the ones before it were
 /// added. By name only to a call that may be shown names from the workspace (`names`), and
 /// then only as content returns; to any other call, by count, so a resolved person's name or a
@@ -800,12 +821,13 @@ pub(super) fn invites_send(ctx: &Ctx) -> BoxFuture<'_, Result<Value>> {
         let person = resolve(ctx, &place, SelectorKind::Person, &typed)?;
         let target = resolve(ctx, &place, selector, &text)?;
         let label = if kind == "channel" {
-            channel_phrase(&place.snapshot, &target)
+            place.channel(&target)
         } else {
             format!("the team {}", target.label)
         };
         ctx.approve(
-            Card::new(format!("Invite {} to {label}", person.label))
+            place
+                .card(|here| format!("Invite {} to {label} in {here}", person.label))
                 .line("They join when they accept it.")
                 .show("member", person.label.clone())
                 .show(kind, target.label.clone()),
@@ -835,7 +857,7 @@ fn invitation_label(invitation: &Value) -> String {
         .as_str()
         .filter(|name| !name.is_empty());
     match (invitation["kind"].as_str(), target, team) {
-        (Some("channel"), Some(channel), Some(team)) => format!("#{channel} in {team}"),
+        (Some("channel"), Some(channel), Some(team)) => format!("#{channel} ({team})"),
         (Some("channel"), Some(channel), None) => format!("#{channel}"),
         (Some("channel"), None, _) => "a channel".to_owned(),
         (_, Some(team), _) => team.to_owned(),
@@ -924,11 +946,9 @@ pub(super) fn invites_accept(ctx: &Ctx) -> BoxFuture<'_, Result<Value>> {
         let id = chosen["id"].as_str().unwrap_or_default().to_owned();
         let label = invitation_label(chosen);
         ctx.approve(
-            Card::new(format!(
-                "Accept the invitation to {label} in {}",
-                place.workspace
-            ))
-            .show("invitation", label.clone()),
+            place
+                .card(|here| format!("Accept the invitation to {label} in {here}"))
+                .show("invitation", label.clone()),
         )
         .await?;
         send(
@@ -952,14 +972,17 @@ pub(super) fn ownership_offer(ctx: &Ctx) -> BoxFuture<'_, Result<Value>> {
         let channel = resolve(ctx, &place, SelectorKind::Channel, &channel_text)?;
         let successor = resolve(ctx, &place, SelectorKind::Person, &successor_text)?;
         ctx.approve(
-            Card::new(format!(
-                "Offer ownership of {} to {}",
-                channel_phrase(&place.snapshot, &channel),
-                successor.label
-            ))
-            .line("When they accept, they own it and you leave the channel.")
-            .show("channel", channel.label.clone())
-            .show("successor", successor.label.clone()),
+            place
+                .card(|here| {
+                    format!(
+                        "Offer ownership of {} in {here} to {}",
+                        place.channel(&channel),
+                        successor.label
+                    )
+                })
+                .line("When they accept, they own it and you leave the channel.")
+                .show("channel", channel.label.clone())
+                .show("successor", successor.label.clone()),
         )
         .await?;
         let mut params = json!({"channel_id": channel.id, "successor_id": successor.id});
@@ -978,11 +1001,9 @@ pub(super) fn ownership_accept(ctx: &Ctx) -> BoxFuture<'_, Result<Value>> {
         let place = place(ctx).await?;
         let channel = resolve(ctx, &place, SelectorKind::Channel, &typed)?;
         ctx.approve(
-            Card::new(format!(
-                "Take ownership of {}",
-                channel_phrase(&place.snapshot, &channel)
-            ))
-            .show("channel", channel.label.clone()),
+            place
+                .card(|here| format!("Take ownership of {} in {here}", place.channel(&channel)))
+                .show("channel", channel.label.clone()),
         )
         .await?;
         send(
@@ -1012,14 +1033,17 @@ pub(super) fn remove_member(ctx: &Ctx) -> BoxFuture<'_, Result<Value>> {
         let channel = resolve(ctx, &place, SelectorKind::Channel, &channel_text)?;
         let person = resolve(ctx, &place, kind, &member_text)?;
         ctx.approve(
-            Card::new(format!(
-                "Remove {} from {} for everyone; this cannot be undone",
-                person.label,
-                channel_phrase(&place.snapshot, &channel)
-            ))
-            .line("They lose access to its messages and files.")
-            .show("channel", channel.label.clone())
-            .show("member", person.label.clone()),
+            place
+                .card(|here| {
+                    format!(
+                        "Remove {} from {} in {here} for everyone; this cannot be undone",
+                        person.label,
+                        place.channel(&channel)
+                    )
+                })
+                .line("They lose access to its messages and files.")
+                .show("channel", channel.label.clone())
+                .show("member", person.label.clone()),
         )
         .await?;
         let mut params = json!({"channel_id": channel.id, "principal_id": person.id});

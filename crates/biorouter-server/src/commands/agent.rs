@@ -455,6 +455,55 @@ fn spawn_crew_sweep() {
     });
 }
 
+/// `app` with the web interface attached when this daemon was asked to serve one from the
+/// folder `serve_ui` names, unchanged otherwise. The caller adds it after `check_token`, so the
+/// shell and the static bundle sit outside that middleware (see `run`).
+async fn attach_web_ui(
+    app: axum::Router,
+    serve_ui: Option<&str>,
+    secret_key: &str,
+    public_url: Option<&crate::routes::PublicUrl>,
+) -> Result<axum::Router> {
+    let Some(dir) = serve_ui else {
+        return Ok(app);
+    };
+    let web_dir = std::path::PathBuf::from(dir);
+    // A browser token is minted by whoever launched this daemon --
+    // `biorouter serve` -- and refused outright for a non-loopback bind
+    // there, so its absence here means a loopback bind whose launcher
+    // chose not to require one.
+    let browser_token = std::env::var("BIOROUTER_BROWSER_TOKEN").ok();
+    // Issue #56, QA 2026-09-10 (SD-10): the interface this daemon serves is
+    // the operator's, and SD-1 pins the provider every session here runs
+    // on — so that provider's tier is the reach the listing and
+    // knowledge-base gates give a request carrying the served document's
+    // cookie. Without a token there is no such cookie, and the interface
+    // cannot be told from any other local caller, so it gets none.
+    if let Some(token) = browser_token.as_deref().filter(|t| !t.is_empty()) {
+        let capability = served_operator_capability().await;
+        info!(
+            ?capability,
+            "the served interface is given the configured provider's tier on listings \
+             and knowledge bases"
+        );
+        biorouter_server::auth::install_served_operator(token.to_string(), capability);
+    }
+    let ui = crate::routes::web_ui::WebUi::new(
+        &web_dir,
+        secret_key,
+        browser_token,
+        public_url.map(crate::routes::PublicUrl::path),
+    )
+    .map_err(|e| {
+        anyhow::anyhow!(
+            "could not read the web interface at {}: {e}",
+            web_dir.display()
+        )
+    })?;
+    info!("serving the web interface from {}", web_dir.display());
+    Ok(crate::routes::web_ui::attach(app, web_dir, ui))
+}
+
 pub async fn run(exit_with_parent: Option<u32>) -> Result<()> {
     crate::logging::setup_logging(Some("biorouterd"))?;
     biorouter_mcp::app_folder::report_once();
@@ -586,46 +635,13 @@ pub async fn run(exit_with_parent: Option<u32>) -> Result<()> {
     // `routes::web_ui` for what gates them instead, and
     // `docs/deployment/serve-architecture.md` for why the daemon serves them at
     // all rather than a separate binary proxying to it.
-    let app = match settings.serve_ui.as_deref() {
-        Some(dir) => {
-            let web_dir = std::path::PathBuf::from(dir);
-            // A browser token is minted by whoever launched this daemon --
-            // `biorouter serve` -- and refused outright for a non-loopback bind
-            // there, so its absence here means a loopback bind whose launcher
-            // chose not to require one.
-            let browser_token = std::env::var("BIOROUTER_BROWSER_TOKEN").ok();
-            // Issue #56, QA 2026-09-10 (SD-10): the interface this daemon serves is
-            // the operator's, and SD-1 pins the provider every session here runs
-            // on — so that provider's tier is the reach the listing and
-            // knowledge-base gates give a request carrying the served document's
-            // cookie. Without a token there is no such cookie, and the interface
-            // cannot be told from any other local caller, so it gets none.
-            if let Some(token) = browser_token.as_deref().filter(|t| !t.is_empty()) {
-                let capability = served_operator_capability().await;
-                info!(
-                    ?capability,
-                    "the served interface is given the configured provider's tier on listings \
-                     and knowledge bases"
-                );
-                biorouter_server::auth::install_served_operator(token.to_string(), capability);
-            }
-            let ui = crate::routes::web_ui::WebUi::new(
-                &web_dir,
-                &secret_key,
-                browser_token,
-                public_url.as_ref().map(crate::routes::PublicUrl::path),
-            )
-            .map_err(|e| {
-                anyhow::anyhow!(
-                    "could not read the web interface at {}: {e}",
-                    web_dir.display()
-                )
-            })?;
-            info!("serving the web interface from {}", web_dir.display());
-            crate::routes::web_ui::attach(app, web_dir, ui)
-        }
-        None => app,
-    };
+    let app = attach_web_ui(
+        app,
+        settings.serve_ui.as_deref(),
+        &secret_key,
+        public_url.as_ref(),
+    )
+    .await?;
 
     let app = app.layer(response_compression());
 

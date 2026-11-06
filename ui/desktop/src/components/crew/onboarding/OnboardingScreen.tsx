@@ -41,7 +41,7 @@ export function isOnboardingScreen(screen: CrewScreen): boolean {
  * never guesses from an error's words.
  */
 export function OnboardingScreen() {
-  const { screen } = useCrew();
+  const { screen, connectionId } = useCrew();
   switch (screen) {
     case 'welcome':
       return <Welcome />;
@@ -56,7 +56,10 @@ export function OnboardingScreen() {
     case 'not-set-up':
       return <NotSetUpPane />;
     case 'join':
-      return <JoinStatusCard />;
+      // Keyed by connection: what the card polled and whether Join was pressed belong to one
+      // connection, so another connection starts a fresh card and never joins on a press made
+      // for the first (`ready` joins only when the person started the flow for that workspace).
+      return <JoinStatusCard key={connectionId ?? ''} />;
     case 'no-team':
       return <NoTeamState />;
     case 'no-channel':

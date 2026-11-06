@@ -7,7 +7,9 @@ use biorouter::crew::{ClusterMode, Connection};
 use biorouter::privacy::{ProviderTier, SessionClassification};
 use serde_json::{json, Value};
 
-use super::{idempotency_key, naming, public_snapshot, said, ContentScope, Ctx, Resolved, Said};
+use super::{
+    idempotency_key, naming, public_snapshot, said, Card, ContentScope, Ctx, Resolved, Said,
+};
 use crate::routes::crew::names::SelectorKind;
 
 /// A change's workspace, read before its card is parked: the connection, the person's own
@@ -47,7 +49,7 @@ pub(super) async fn naming_scope(
     connection: &Connection,
     snapshot: &Value,
 ) -> Option<ContentScope> {
-    let scope = ctx.content_scope(connection, snapshot).ok()?;
+    let scope = ctx.content_scope(connection, snapshot).await.ok()?;
     ctx.crew()
         .ok()?
         .has_person_read(&ctx.call.session_id, &connection.id)
@@ -135,19 +137,47 @@ pub(super) fn yours(snapshot: &Value, channel: &Resolved, text: &str) -> Result<
     Ok(())
 }
 
-/// `#methods in Analysis Lab`, or the channel's label alone when its team is not known.
-pub(super) fn channel_phrase(snapshot: &Value, channel: &Resolved) -> String {
-    let team = item(snapshot, "channels", &channel.id)
+/// The name of the team `channel` belongs to in `snapshot`, when it is known.
+fn channel_team<'a>(snapshot: &'a Value, channel: &Resolved) -> Option<&'a str> {
+    item(snapshot, "channels", &channel.id)
         .and_then(|entry| entry["team_id"].as_str())
         .and_then(|team| item(snapshot, "teams", team))
         .and_then(|team| {
             team["display_name"]
                 .as_str()
                 .or_else(|| team["name"].as_str())
-        });
-    match team {
+        })
+}
+
+/// `#methods in Analysis Lab`, or the channel's label alone when its team is not known.
+pub(super) fn channel_phrase(snapshot: &Value, channel: &Resolved) -> String {
+    match channel_team(snapshot, channel) {
         Some(team) => format!("{} in {team}", channel.label),
         None => channel.label.clone(),
+    }
+}
+
+/// `#methods (Analysis Lab)`: a channel with its team, as a change card names it before the
+/// workspace and server (AO-12, "Approvals"), or the channel's label alone when its team is not
+/// known.
+pub(super) fn card_channel(snapshot: &Value, channel: &Resolved) -> String {
+    match channel_team(snapshot, channel) {
+        Some(team) => format!("{} ({team})", channel.label),
+        None => channel.label.clone(),
+    }
+}
+
+impl Place {
+    /// A card for a change to this workspace, its summary written around the workspace and
+    /// its server ([`Card::at`]).
+    pub(super) fn card(&self, summary: impl FnOnce(&str) -> String) -> Card {
+        Card::at(&self.workspace, &self.server, summary)
+    }
+
+    /// One of this workspace's channels with its team, as a change card names it
+    /// ([`card_channel`]).
+    pub(super) fn channel(&self, channel: &Resolved) -> String {
+        card_channel(&self.snapshot, channel)
     }
 }
 

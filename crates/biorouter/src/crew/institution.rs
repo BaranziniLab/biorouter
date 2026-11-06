@@ -162,6 +162,21 @@ impl CallCapability {
     pub fn check_crew_institutions(&self, institutions: &BTreeSet<String>) -> Result<()> {
         check_provider(self.tier(), self.affiliation(), institutions)
     }
+
+    /// [`check_origin`], the rule a grant's admission applies to the chat it is for, for a
+    /// caller outside `crew` (the person tools, AO-12, "Privacy"): `Ok` when every institution
+    /// the chat's content already belongs to (`origin`, its recorded affiliations, normalized)
+    /// is the workspace's (`workspace_institution_id`, normalized), else the refusal a grant
+    /// into that chat gets. An empty `origin` passes; a non-empty one fails against a workspace
+    /// with no institution. Like [`Self::check_crew_institutions`], it reads no master switch:
+    /// whether privacy tiers apply is the caller's to ask, on this same capability.
+    pub fn check_crew_origin(
+        &self,
+        origin: &BTreeSet<String>,
+        workspace_institution_id: Option<&str>,
+    ) -> Result<()> {
+        check_origin(origin, workspace_institution_id)
+    }
 }
 
 pub(super) fn check_origin(
@@ -411,5 +426,43 @@ mod tests {
             ),
             Some(refusal::PUBLIC_MODEL_REFUSED.to_owned())
         );
+    }
+
+    /// The origin wrapper answers what a grant's own `check_origin` answers, on every tier: a
+    /// chat whose content belongs to no institution, or only to the workspace's, passes; one
+    /// that holds another institution's, or any institution's against a workspace with none,
+    /// is refused with the grant's sentence.
+    #[test]
+    fn the_origin_wrapper_is_the_grant_s_check_origin() {
+        let none: BTreeSet<String> = BTreeSet::new();
+        let ucsf: BTreeSet<String> = ["ucsf".to_owned()].into();
+        let both: BTreeSet<String> = ["ucsf".to_owned(), "stanford".to_owned()].into();
+        let sentence = |result: Result<()>| result.err().map(|error| format!("{error:#}"));
+        for capability in [
+            CallCapability::for_test_affiliated(ProviderTier::Public, true, None),
+            CallCapability::for_test_affiliated(
+                ProviderTier::Private,
+                true,
+                Some(ModelAffiliation::Local),
+            ),
+            CallCapability::for_test_affiliated(ProviderTier::Private, false, None),
+        ] {
+            for origin in [&none, &ucsf, &both] {
+                for workspace in [None, Some("ucsf"), Some("stanford")] {
+                    assert_eq!(
+                        sentence(capability.check_crew_origin(origin, workspace)),
+                        sentence(check_origin(origin, workspace)),
+                        "{capability:?} {origin:?} {workspace:?}"
+                    );
+                }
+            }
+            assert!(capability.check_crew_origin(&none, None).is_ok());
+            assert!(capability.check_crew_origin(&ucsf, Some("ucsf")).is_ok());
+            assert!(capability
+                .check_crew_origin(&ucsf, Some("stanford"))
+                .is_err());
+            assert!(capability.check_crew_origin(&ucsf, None).is_err());
+            assert!(capability.check_crew_origin(&both, Some("ucsf")).is_err());
+        }
     }
 }

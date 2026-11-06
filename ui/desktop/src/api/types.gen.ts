@@ -6270,13 +6270,15 @@ export type SetupOutcome = {
      */
     restart_failed: Array<{
         /**
-         * The server's code (`stop_timeout`, `start_failed`, `not_found`), an SSH code, or
-         * `crew_setup_timed_out`.
+         * The server's code (`stop_timeout`, `start_failed`, `not_found`, or a refusal made
+         * before anything was stopped, such as `program_missing`, `busy` or `identity_conflict`),
+         * an SSH code, or `crew_setup_timed_out`. `start_failed` also stands for a failure whose
+         * output named no code.
          */
         code: string;
         /**
          * The command that starts the workspace by hand on the server; `null` when there is none
-         * to give.
+         * to give, as when the workspace was not stopped and still runs.
          */
         command?: string | null;
         /**
@@ -11015,7 +11017,7 @@ export type CrewSetupStartErrors = {
      */
     404: CrewError;
     /**
-     * `crew_host_setup_unknown`: no pending host setup (or, for a `server` target, prepared device) with that ID on this computer; `crew_host_setup_used`: it already has a saved connection; `crew_setup_busy`: a job with another intent, route or choices is under way for this server, or too many jobs at once
+     * `crew_host_setup_unknown`: no pending host setup (or, for a `server` target, prepared device) with that ID on this computer; `crew_host_setup_used`: it already has a saved connection; `crew_setup_busy`: a job is under way for this server whose intent, SSH route or any choice differs from this request's, or too many jobs are under way at once
      */
     409: CrewError;
     /**
@@ -11032,7 +11034,7 @@ export type CrewSetupStartError = CrewSetupStartErrors[keyof CrewSetupStartError
 
 export type CrewSetupStartResponses = {
     /**
-     * The job, started (or the one already under way for the same server, intent and choices): poll `GET /crew/setup/{job_id}`. A `check` job runs check, sign-in, `workspaces`, done; an `install` job adds install and `restart`; a `host` job adds the start and, with `finish`, `save`, `join` and `configure`. An installed Crew older than this app's is replaced unless `keep_older`; `replace_existing` only covers one that does not run or name its version, and a newer one is never replaced. `restart_workspaces` (`true`: restart every outdated hosted workspace even with others connected; `false`: only report them in `outcome.outdated`), `restart_workspace_ids` (hosted workspaces, by ID, the person agreed to restart even with others connected, whatever `restart_workspaces` says) and `start_workspaces` (stopped hosted workspaces, by ID) choose what the `restart` stage does. A `host` job whose account already hosts a workspace of that name on the server fails with `crew_host_name_in_use` before anything is started or restarted
+     * The job, started, or the one already under way for this server when its intent, SSH route and every choice match this request's (any other request for the server is `crew_setup_busy`): poll `GET /crew/setup/{job_id}`. A `check` job runs check, sign-in, `workspaces`, done; an `install` job adds install and `restart`; a `host` job adds the start and, with `finish`, `save`, `join` and `configure`. An installed Crew older than this app's is replaced unless `keep_older`; `replace_existing` only covers one that does not run or name its version, and a newer one is never replaced. `restart_workspaces` (`true`: restart every outdated hosted workspace even with others connected; `false`: only report them in `outcome.outdated`), `restart_workspace_ids` (hosted workspaces, by ID, the person agreed to restart even with others connected, whatever `restart_workspaces` says) and `start_workspaces` (stopped hosted workspaces, by ID) choose what the `restart` stage does. A `host` job whose account already hosts a workspace of that name on the server fails with `crew_host_name_in_use` before anything is started or restarted
      */
     200: SetupStatus;
 };
@@ -11129,7 +11131,7 @@ export type CrewSetupStatusError = CrewSetupStatusErrors[keyof CrewSetupStatusEr
 
 export type CrewSetupStatusResponses = {
     /**
-     * `state` is `running`, `needs_sign_in` (open `POST /crew/setup/{job_id}/authentication`), `finished` (`outcome`), `failed` or `cancelled` (`error`: a typed code and a sentence, such as `crew_setup_cancelled`, `crew_setup_timed_out`, `crew_setup_sign_in_expired`, `crew_setup_start_failed` (`detail` is what Crew printed), `crew_host_storage_unsafe` (other accounts can write to a folder above where the workspace is kept; `detail` lists them, and starting again with `fix_storage_permissions` fixes the account's own), `crew_host_name_in_use` (the account already hosts a workspace of that name on the server: "You already host {name} on {server}. Open it on this computer instead." when it runs, and "You already host {name} on {server}. It is stopped: start it with biorouter crew setup --server {login} --start {name}, then open it." when it is stopped), `crew_setup_changed`, `crew_install_checksum_mismatch` or an SSH code; after a `finish` saved the connection, a join refusal such as `crew_join_removed`, or `crew_account_unsupported`, with `outcome.connection_id` and `outcome.steps_left` saying what is left). `workspaces` lists the workspaces on the server for this account, each with its `role`, `state`, host and `this_computer` (`connected`, `saved` or `not_saved`), with `workspaces_scan` counting what the listing skipped and `workspaces_note` saying why there is no listing (an older Crew, a failure or a timeout, which never stops the job). `outcome.restarted`, `outcome.outdated` (with `reason` `others_connected`, `running_newer`, `not_running_installed` or `custom_state_dir`) and `outcome.restart_failed` (with the command that starts the workspace by hand) say what the `restart` stage did; a failed restart fails only that stage
+     * `state` is `running`, `needs_sign_in` (open `POST /crew/setup/{job_id}/authentication`), `finished` (`outcome`), `failed` or `cancelled` (`error`: a typed code and a sentence, such as `crew_setup_cancelled`, `crew_setup_timed_out`, `crew_setup_sign_in_expired`, `crew_setup_start_failed` (`detail` is what Crew printed), `crew_host_storage_unsafe` (other accounts can write to a folder above where the workspace is kept; `detail` lists them, and starting again with `fix_storage_permissions` fixes the account's own), `crew_host_name_in_use` (the account already hosts a workspace of that name on the server: "You already host {name} on {server}. Open it on this computer instead." when it runs, and "You already host {name} on {server}. It is stopped: start it with biorouter crew setup --server {login} --start {name}, then open it." when it is stopped), `crew_setup_changed`, `crew_install_checksum_mismatch` or an SSH code; after a `finish` saved the connection, a join refusal such as `crew_join_removed`, or `crew_account_unsupported`, with `outcome.connection_id` and `outcome.steps_left` saying what is left). `workspaces` lists the workspaces on the server for this account, each with its `role`, `state`, host and `this_computer` (`connected`, `saved` or `not_saved`), with `workspaces_scan` counting what the listing skipped and `workspaces_note` saying why there is no listing (an older Crew, a failure or a timeout, which never stops the job). `outcome.restarted`, `outcome.outdated` (with `reason` `others_connected`, `running_newer`, `not_running_installed` or `custom_state_dir`) and `outcome.restart_failed` say what the `restart` stage did; a failed restart fails only that stage. Each `restart_failed` entry has a `code` and a sentence. A refusal made before anything was stopped (such as `program_missing`, `busy`, `identity_conflict`, `identity_mismatch`, `workspace_deleted` or `unsupported`) says the workspace was not restarted and still runs the older Crew, and has no `command`; `identity_conflict` shows Crew's own sentence naming the folders that keep the workspace. Only Crew's `start_failed` says the workspace stopped and did not start again; where the workspace may be stopped, `command` starts it by hand
      */
     200: SetupStatus;
 };

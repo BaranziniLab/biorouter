@@ -19,7 +19,7 @@ use futures::future::BoxFuture;
 use serde_json::{json, Value};
 
 use super::places::{
-    channel_phrase, crossing, item, place, public_safe, reading, resolve, yours, Reading,
+    channel_phrase, crossing, item, place, public_safe, reading, resolve, yours, Place, Reading,
 };
 use super::setup::CREW_TASK_MODEL;
 use super::{idempotency_key, refusal_text, said, Card, Ctx, Progress};
@@ -319,6 +319,29 @@ fn and_list(items: &[String]) -> String {
     }
 }
 
+/// The other channels a task may read (`context_channels`), each resolved in the person's own
+/// snapshot and one of theirs, in the order named, without the task's own `channel` or a
+/// channel named twice.
+fn context_sources(
+    ctx: &Ctx,
+    place: &Place,
+    channel: &super::Resolved,
+) -> Result<Vec<super::Resolved>> {
+    let mut sources = Vec::new();
+    for text in ctx.texts("context_channels") {
+        let source = resolve(ctx, place, SelectorKind::Channel, &text)?;
+        yours(&place.snapshot, &source, &text)?;
+        if source.id != channel.id
+            && !sources
+                .iter()
+                .any(|seen: &super::Resolved| seen.id == source.id)
+        {
+            sources.push(source);
+        }
+    }
+    Ok(sources)
+}
+
 /// `biorouter crew ask CHANNEL PROMPT` / `tasks start`: start the person's own agent on a task
 /// that posts its result in a channel, with its own grant. The card names the channel, the
 /// channels it may read, its model and its server access, and shows the prompt whole.
@@ -337,18 +360,7 @@ pub(super) fn tasks_ask(ctx: &Ctx) -> BoxFuture<'_, Result<Value>> {
         let place = place(ctx).await?;
         let channel = resolve(ctx, &place, SelectorKind::Channel, &typed)?;
         yours(&place.snapshot, &channel, &typed)?;
-        let mut sources = Vec::new();
-        for text in ctx.texts("context_channels") {
-            let source = resolve(ctx, &place, SelectorKind::Channel, &text)?;
-            yours(&place.snapshot, &source, &text)?;
-            if source.id != channel.id
-                && !sources
-                    .iter()
-                    .any(|seen: &super::Resolved| seen.id == source.id)
-            {
-                sources.push(source);
-            }
-        }
+        let sources = context_sources(ctx, &place, &channel)?;
         let sessions = ctx.state.session_manager();
         let restricted = ctx.chat_classification().await == SessionClassification::Private;
         let institution_ids: BTreeSet<String> = sessions
@@ -358,15 +370,18 @@ pub(super) fn tasks_ask(ctx: &Ctx) -> BoxFuture<'_, Result<Value>> {
             .into_iter()
             .map(|id| id.as_str().to_owned())
             .collect();
-        let destination = channel_phrase(&place.snapshot, &channel);
         let source_names: Vec<String> = sources
             .iter()
             .map(|source| channel_phrase(&place.snapshot, source))
             .collect();
-        let mut card = Card::new(format!(
-            "Start an agent task in {destination} on {model} ({provider}), with its own Crew access"
-        ))
-        .line("It posts its result there as your agent.")
+        let mut card = place
+            .card(|here| {
+                format!(
+                    "Start an agent task in {} in {here}, on {model} ({provider}), with its own Crew access",
+                    place.channel(&channel)
+                )
+            })
+            .line("It posts its result there as your agent.")
         .line(if source_names.is_empty() {
             "It reads only that channel.".to_owned()
         } else {
@@ -440,11 +455,11 @@ pub(super) fn tasks_cancel(ctx: &Ctx) -> BoxFuture<'_, Result<Value>> {
                 .map_or_else(|| "its channel".to_owned(), str::to_owned),
             Err(_) => "its channel".to_owned(),
         };
+        let server = Ctx::server_label(&connection).await;
         ctx.approve(
-            Card::new(format!(
-                "Stop the task in {channel} on {} ({})",
-                connection.name, run.status
-            ))
+            Card::at(&connection.name, &server, |here| {
+                format!("Stop the task in {channel} in {here} ({})", run.status)
+            })
             .line("Its jobs on the server may keep running until their time limit.")
             .show("task", run.run_id.clone()),
         )

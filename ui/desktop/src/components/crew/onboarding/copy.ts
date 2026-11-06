@@ -61,7 +61,8 @@ export const openCopy = {
   } as Record<string, string>,
   version: (version: string) => `Crew ${version}`,
   thisComputer: {
-    connected: 'Open on this computer',
+    /** A state, not an action: Open beside it is the action. */
+    connected: 'Connected on this computer',
     saved: 'Saved on this computer',
     not_saved: '',
   } as Record<string, string>,
@@ -72,11 +73,16 @@ export const openCopy = {
   startLabel: (workspace: string) => `Start ${workspace}`,
   update: 'Update Crew',
   updateLabel: (workspace: string) => `Update Crew for ${workspace}`,
-  /** AO-8: a restart ends what members had running there. */
-  othersConnected: (count: number) =>
-    count === 1
-      ? '1 person is connected. Their running agent commands will stop.'
-      : `${count} people are connected. Their running agent commands will stop.`,
+  /**
+   * AO-8: a restart ends what members had running there. `null` is a count the server did not
+   * give (a Crew from before account ownership), which may hide people connected now.
+   */
+  othersConnected: (count: number | null) =>
+    count === null
+      ? 'Other people may be connected. Their running agent commands will stop.'
+      : count === 1
+        ? '1 person is connected. Their running agent commands will stop.'
+        : `${count} people are connected. Their running agent commands will stop.`,
   updateAnyway: 'Update and restart',
   keepRunning: 'Not now',
   /** Under a workspace that runs an older Crew than this computer has. */
@@ -84,6 +90,24 @@ export const openCopy = {
     running && installed
       ? `Runs Crew ${running}; ${installed} is available.`
       : 'Runs an older Crew.',
+  /**
+   * Why the last update left a workspace on its older Crew (AO-8's `outdated` reasons). For
+   * `running_newer` and `custom_state_dir` Update Crew cannot help, so it is not offered again.
+   */
+  leftRunning: {
+    others_connected: (count: number | null) =>
+      count === null
+        ? 'It wasn’t restarted, because other people may be connected. Choose Update Crew to restart it anyway.'
+        : count === 1
+          ? 'It wasn’t restarted, because 1 person is connected. Choose Update Crew to restart it anyway.'
+          : `It wasn’t restarted, because ${count} people are connected. Choose Update Crew to restart it anyway.`,
+    running_newer: (running: string | null) =>
+      running
+        ? `It runs Crew ${running}, newer than the Crew installed in your account, so it was left running.`
+        : 'It runs a newer Crew than the one installed in your account, so it was left running.',
+    custom_state_dir: (server: string) =>
+      `It keeps its state outside ~/.local/share/biorouter-crew, so Crew can’t restart it. Restart it on ${server} yourself.`,
+  },
   /** A removed account cannot open it; AO-2's words. */
   removed: (workspace: string) =>
     `You were removed from ${workspace}. Ask a member to invite you again.`,
@@ -268,10 +292,10 @@ export const joinCopy = {
    * that what others write can try to steer it. Shown while the level is chosen; no typing.
    */
   fullWarning: (user: string | null, server: string) =>
-    `Your agent will run commands as ${user ?? 'you'} on ${server}: it can read and change anything your account can, use the network, and start programs that keep running after access ends. Other people’s messages and files in channels it reads can try to steer it. Use a private model you trust.`,
+    `Your agent will run commands as ${user ?? 'you'} on ${server}: it can read and change anything your account can, use the network, and start programs that keep running after access ends. Other people’s messages and files in channels it reads can try to steer it. Use a private model you trust. Crew treats anything running as your account as you, so your agent can also add a computer to your account and post in Crew as you, with no agent mark.`,
   /** The host's extra sentence: their account also holds the workspace's own files. */
   fullWarningHost: (workspace: string) =>
-    `You host ${workspace} from this account, so your agent can also read the workspace’s own files on the server, including channels you’re not in.`,
+    `You host ${workspace} from this account, so your agent can also read the workspace’s own files on the server, including channels you’re not in. It can also act as the host of ${workspace}.`,
   /** Under Join (decision 5.7): pressing it also sets Crew up when the account lacks it. */
   installsCrew: (server: string) =>
     `If Crew isn’t set up for your account on ${server} yet, Biorouter installs it there for you.`,

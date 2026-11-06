@@ -710,8 +710,13 @@ const DEVICE_KEY_MISSING: &str = "crew_device_key_missing";
 const DEVICE_NOT_RECOGNIZED: &str = "crew_device_not_recognized";
 /// The daemon's code for a join refused because the person was removed (AO-9).
 const JOIN_REMOVED: &str = "crew_join_removed";
+/// The daemon's code for something the account path needs on a server whose Crew predates it
+/// (AO-9), worded by role.
+const ACCOUNT_UNSUPPORTED: &str = "crew_account_unsupported";
 /// The setup refusal for a workspace name the account already hosts (AO-9).
 const HOST_NAME_IN_USE: &str = "crew_host_name_in_use";
+/// The daemon's code for a setup job that was stopped before it finished.
+const SETUP_CANCELLED: &str = "crew_setup_cancelled";
 /// What a daemon that predates the account path answers in place of its bare 404 (AO-9).
 const RESTART_FOR_ACCOUNT: &str =
     "Restart the shared Biorouter daemon to use your server account for Crew.";
@@ -1144,6 +1149,7 @@ async fn run(api: &Api, command: CrewCommand) -> Result<Reply> {
                 replace_existing: false,
                 keep_older: false,
                 restart: false,
+                restart_workspace: Vec::new(),
                 no_restart: false,
                 start: Vec::new(),
                 check: true,
@@ -2043,6 +2049,25 @@ fn shell_word(text: &str) -> String {
     } else {
         format!("'{}'", text.replace('\'', "'\\''"))
     }
+}
+
+/// The route flags a suggested command repeats after `--server LOGIN` (finding 39): the port,
+/// key file and jump route of a setup `target`, as it was sent, each escaped for the shell and
+/// the terminal, so the command reaches the server the way the person's did. Empty when the
+/// person gave none.
+fn route_flags(target: &Value) -> String {
+    let word = |text: &str| safe_text(&shell_word(text));
+    let mut flags = String::new();
+    if let Some(port) = target["port"].as_u64() {
+        flags.push_str(&format!(" --port {port}"));
+    }
+    if let Some(identity) = target["identity_file"].as_str() {
+        flags.push_str(&format!(" --identity-file {}", word(identity)));
+    }
+    if let Some(jump) = target["proxy_jump"].as_str() {
+        flags.push_str(&format!(" --proxy-jump {}", word(jump)));
+    }
+    flags
 }
 
 /// "in 23 hours", for an invitation's expiry.
@@ -3221,10 +3246,14 @@ async fn join_until(
 }
 
 /// [`join_until`], saying when this computer joined which `role` the person holds there, when
-/// the caller knows it (`open`, from the server's list of workspaces).
+/// the caller knows it (`open`, from the server's list of workspaces: `host`, `member` or
+/// `invited`).
 ///
 /// On a server whose Crew knows the account (AO-9), `ready` joins as the account, as
 /// `approved` claims an approved code, and `removed` ends the command with the sentence for it.
+/// On one whose Crew predates the account path, a state nobody can move on from for this
+/// person ([`older_crew`]) ends the command with `crew_account_unsupported`, in AO-9's words
+/// for their role, rather than waiting for an invitation that never comes.
 async fn join_as(
     api: &Api,
     args: JoinArgs,
@@ -3242,6 +3271,8 @@ async fn join_as(
     let mut rechecking = false;
     // Whether this join already set Crew up on the server (L5): it is tried once.
     let mut set_up = false;
+    // Whether the server's Crew was already asked about the account (12, 15): once.
+    let mut asked_account = false;
     loop {
         let status = tokio::select! {
             biased;
@@ -3260,6 +3291,12 @@ async fn join_as(
         let state = status["status"].as_str().unwrap_or_default().to_owned();
         let code = status["code"].as_str().map(str::to_owned);
         let changed = shown.as_ref() != Some(&(state.clone(), code.clone()));
+        if !asked_account && asks_about_the_account(&state, role) {
+            asked_account = true;
+            if let Some(refused) = older_crew(api, role).await {
+                return Err(refused);
+            }
+        }
         match state.as_str() {
             "joined" => return say_joined(api, &status, role).await,
             // AO-9: `ready` is the account path, `approved` an older server's approved code;
@@ -3273,7 +3310,10 @@ async fn join_as(
                     let claimed = tokio::select! {
                         biased;
                         signal = &mut interrupt => { signal?; return stopped(); }
-                        claimed = claim(api, &path) => claimed?,
+                        claimed = claim(api, &path) => match claimed {
+                            Ok(claimed) => claimed,
+                            Err(error) => return Err(host_rename_conflict(api, error).await),
+                        },
                     };
                     if let Some(joined) = claimed {
                         return say_joined(api, &joined, role).await;
@@ -3290,21 +3330,10 @@ async fn join_as(
                     api.stream(&status, &join_lines(&status, !args.no_wait))?;
                 }
             }
-            "expired" => {
-                let who = status
-                    .get("inviter")
-                    .filter(|inviter| inviter.is_object())
-                    .map_or_else(
-                        || "the host".to_owned(),
-                        |inviter| {
-                            person_text(
-                                inviter["username"].as_str().unwrap_or_default(),
-                                inviter["display_name"].as_str(),
-                            )
-                        },
-                    );
-                bail!("This invitation expired. Ask {who} to invite you again.");
-            }
+            "expired" => bail!(
+                "This invitation expired. Ask {} to invite you again.",
+                inviter_text(&status)
+            ),
             "removed" => {
                 return Err(restated(
                     output::removed_sentence(status["workspace_name"].as_str()),
@@ -3341,6 +3370,57 @@ fn join_needs_setup(error: &anyhow::Error, interactive: bool) -> bool {
         Some("crew_ssh_auth_required") => interactive,
         _ => false,
     }
+}
+
+/// Who invited the person, as a join status names them, for a sentence: "the host" when it
+/// does not.
+fn inviter_text(status: &Value) -> String {
+    status
+        .get("inviter")
+        .filter(|inviter| inviter.is_object())
+        .map_or_else(
+            || "the host".to_owned(),
+            |inviter| {
+                person_text(
+                    inviter["username"].as_str().unwrap_or_default(),
+                    inviter["display_name"].as_str(),
+                )
+            },
+        )
+}
+
+/// Whether a join in `state` asks the server's Crew what it knows about the account
+/// ([`older_crew`]) before it says anything (findings 12 and 15). A server without joining by
+/// name (`unsupported`) may still be one the account hosts. And when `open` found the account
+/// already hosting or belonging to the workspace (`role`), an older Crew that says
+/// `not_invited` leaves nobody who could invite it: the host cannot invite themselves, and the
+/// contract answers a member's open with `crew_account_unsupported` too. An invited person
+/// joins by code as before.
+fn asks_about_the_account(state: &str, role: Option<&str>) -> bool {
+    match state {
+        "unsupported" => true,
+        "not_invited" => matches!(role, Some("host" | "member")),
+        _ => false,
+    }
+}
+
+/// `crew_account_unsupported` from `GET …/account`, worded by role by the daemon (AO-9), when
+/// the server's Crew predates the account path and the refusal applies to this person: always
+/// for a role `open` read from the server's list (`host` or `member`), and otherwise only when
+/// the daemon says this account hosts the workspace (`is_host`), since a new person can still
+/// join an older Crew with an enrollment token. `None` for anything else, including a daemon
+/// without the route: the join then goes on as it did.
+async fn older_crew(api: &Api, role: Option<&str>) -> Option<anyhow::Error> {
+    let path = api.path("/account").await.ok()?;
+    let error = api.client.request("GET", &path, None).await.err()?;
+    if error_code(&error).as_deref() != Some(ACCOUNT_UNSUPPORTED) {
+        return None;
+    }
+    let host = error
+        .chain()
+        .find_map(|cause| refusal_fields(cause)?.get("is_host")?.as_bool())
+        == Some(true);
+    (host || matches!(role, Some("host" | "member"))).then_some(error)
 }
 
 /// The member setup `crew join` runs itself ([`join_needs_setup`]), after saying why. A
@@ -3397,7 +3477,8 @@ fn join_setup_line(error: &anyhow::Error, server: &str, changes: bool) -> String
 async fn say_joined(api: &Api, joined: &Value, role: Option<&str>) -> Result<Reply> {
     let mut lines = joined_lines(joined);
     let mut value = joined.clone();
-    if let Some(role) = role {
+    // An invited person who joined is a member.
+    if let Some(role) = role.map(|role| if role == "host" { "host" } else { "member" }) {
         if let Some(first) = lines.first_mut() {
             *first = output::joined_as_line(joined["workspace_name"].as_str(), role);
         }
@@ -3630,6 +3711,7 @@ async fn setup(
         replace_existing,
         keep_older,
         restart,
+        restart_workspace,
         no_restart,
         start,
         check,
@@ -3639,14 +3721,20 @@ async fn setup(
     let mut choices = SetupChoices {
         replace_existing,
         keep_older,
+        // `--restart` still means every workspace; `--restart-workspace` names some.
         restart_workspaces: match (restart, no_restart) {
             (true, _) => Some(true),
             (_, true) => Some(false),
             _ => None,
         },
         start_workspaces: Vec::new(),
+        restart_workspace_ids: Vec::new(),
     };
-    let Some(server) = target.server else {
+    let named = Named {
+        start,
+        restart: restart_workspace,
+    };
+    let Some(server) = target.server.clone() else {
         let listed = api.connections().await?;
         ensure!(
             listed["connections"]
@@ -3675,11 +3763,20 @@ async fn setup(
             api.stream(&status, &lines)?;
             return Ok(Reply::Streamed);
         }
-        if !start.is_empty() {
+        if !named.is_empty() {
             let connection = api.connection().await?;
             let login = connection["ssh_target"].as_str().unwrap_or_default();
-            choices.start_workspaces =
-                start_ids(api, &connection_target, login, &start, &mut interrupt).await?;
+            let route = route_flags(&connection);
+            named
+                .match_ids(
+                    api,
+                    &connection_target,
+                    login,
+                    &route,
+                    &mut choices,
+                    &mut interrupt,
+                )
+                .await?;
         }
         let access = MemberAccess::Asked(agent_access);
         member_setup(api, &choices, access, &mut interrupt).await?;
@@ -3689,24 +3786,60 @@ async fn setup(
         api.selected.is_none(),
         "Name the server with --server or a saved connection with --connection, not both."
     );
-    // AO-8: a server with nothing saved for it is checked and set up without a device key, and
-    // every job on its login shares one sign-in.
-    let setup_target = server_target(
-        &server,
+    setup_server(api, &server, &target, check, choices, &named, interrupt).await
+}
+
+/// `setup --server LOGIN` and `doctor --server LOGIN` (AO-8): a server with nothing saved for
+/// it is checked and set up without a device key, and every job on its login shares one
+/// sign-in. A name given with `--start` or `--restart-workspace` is matched to its workspace ID
+/// first. A daemon from before the server target ([`OlderSetupDaemon`]) gets the pending
+/// target it always took, when nothing newer was asked of it.
+async fn setup_server(
+    api: &Api,
+    server: &str,
+    target: &ServerArgs,
+    check: bool,
+    mut choices: SetupChoices,
+    named: &Named,
+    interrupt: impl std::future::Future<Output = std::io::Result<()>>,
+) -> Result<Reply> {
+    tokio::pin!(interrupt);
+    let route = (
         target.port,
         target.identity_file.as_deref(),
         target.proxy_jump.as_deref(),
-        None,
-    )?;
+    );
+    let setup_target = server_target(server, route.0, route.1, route.2, None)?;
     let login = server.trim().to_owned();
-    if !start.is_empty() {
-        choices.start_workspaces =
-            start_ids(api, &setup_target, &login, &start, &mut interrupt).await?;
+    if !named.is_empty() {
+        let flags = route_flags(&setup_target);
+        named
+            .match_ids(
+                api,
+                &setup_target,
+                &login,
+                &flags,
+                &mut choices,
+                &mut interrupt,
+            )
+            .await?;
     }
     let intent = if check { "check" } else { "install" };
     let mut request = json!({"target": setup_target, "intent": intent});
     choices.apply(&mut request);
-    let (status, mut lines) = run_setup(api, request, &login, &mut interrupt).await?;
+    let (status, mut lines) = match run_setup(api, request, &login, &mut interrupt).await {
+        Err(error) if is_older_setup_daemon(&error) && !choices.newer() => {
+            // Finding 36: the daemon predates the server target; the request it always read.
+            let preparation = preparation_id(api).await?;
+            let mut request = json!({
+                "target": pending_target(&preparation, server, route.0, route.1, route.2)?,
+                "intent": intent,
+            });
+            choices.apply(&mut request);
+            run_setup(api, request, &login, &mut interrupt).await?
+        }
+        answer => answer?,
+    };
     lines.extend(output::setup_summary_lines(&status, &login, None));
     api.stream(&status, &lines)?;
     Ok(Reply::Streamed)
@@ -3714,18 +3847,19 @@ async fn setup(
 
 /// What a setup asks of Crew in the account besides installing it (AO-8): whether to replace a
 /// program that doesn't say its version, keep an older one, restart the workspaces the account
-/// hosts on the new one, and which stopped ones to start.
+/// hosts on the new one (all of them, or those named by ID), and which stopped ones to start.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 struct SetupChoices {
     replace_existing: bool,
     keep_older: bool,
     restart_workspaces: Option<bool>,
     start_workspaces: Vec<String>,
+    restart_workspace_ids: Vec<String>,
 }
 
 impl SetupChoices {
-    /// The choices made, on `request`; one left as it is sends nothing, so an older daemon
-    /// reads the request it always did.
+    /// The choices made, on `request`; one left as it is sends nothing. A daemon from before
+    /// the account path reads `replace_existing` and nothing else here ([`Self::newer`]).
     fn apply(&self, request: &mut Value) {
         if self.replace_existing {
             request["replace_existing"] = json!(true);
@@ -3739,28 +3873,65 @@ impl SetupChoices {
         if !self.start_workspaces.is_empty() {
             request["start_workspaces"] = json!(self.start_workspaces);
         }
+        if !self.restart_workspace_ids.is_empty() {
+            request["restart_workspace_ids"] = json!(self.restart_workspace_ids);
+        }
+    }
+
+    /// Whether any choice was made that a daemon from before the account path (AO-8) does not
+    /// read: everything but `replace_existing`.
+    fn newer(&self) -> bool {
+        self.keep_older
+            || self.restart_workspaces.is_some()
+            || !self.start_workspaces.is_empty()
+            || !self.restart_workspace_ids.is_empty()
     }
 }
 
-/// `setup --start NAME` (AO-8): a check job on `target` lists the workspaces on the server,
-/// and each name is matched to the one stopped workspace the account hosts under it. A name it
-/// hosts none of, or more than one of, is refused before anything is changed.
-async fn start_ids(
-    api: &Api,
-    target: &Value,
-    login: &str,
-    names: &[String],
-    interrupt: impl std::future::Future<Output = std::io::Result<()>>,
-) -> Result<Vec<String>> {
-    let request = json!({"target": target, "intent": "check"});
-    let (status, lines) = run_setup(api, request, login, interrupt).await?;
-    api.stream(&status, &lines)?;
-    let server = output::setup_server(&status, login);
-    names
-        .iter()
-        .map(|name| output::workspace_to_start(&status, name, &server))
-        .collect::<std::result::Result<Vec<_>, _>>()
-        .map_err(|sentence| restated(sentence, None))
+/// The workspaces `setup` was given by name (AO-8): stopped ones to start (`--start`) and
+/// running ones to restart (`--restart-workspace`).
+struct Named {
+    start: Vec<String>,
+    restart: Vec<String>,
+}
+
+impl Named {
+    fn is_empty(&self) -> bool {
+        self.start.is_empty() && self.restart.is_empty()
+    }
+
+    /// One check job on `target` lists the workspaces on the server, and each name is matched
+    /// to the one workspace the account hosts under it that can be started or restarted, into
+    /// `choices`. A name it hosts none of, or more than one of, is refused before anything is
+    /// changed. `route` is the route flags given, which a suggested command repeats.
+    async fn match_ids(
+        &self,
+        api: &Api,
+        target: &Value,
+        login: &str,
+        route: &str,
+        choices: &mut SetupChoices,
+        interrupt: impl std::future::Future<Output = std::io::Result<()>>,
+    ) -> Result<()> {
+        let request = json!({"target": target, "intent": "check"});
+        let (status, lines) = run_setup(api, request, login, interrupt).await?;
+        api.stream(&status, &lines)?;
+        let server = output::setup_server(&status, login);
+        let refused = |sentence| restated(sentence, None);
+        choices.start_workspaces = self
+            .start
+            .iter()
+            .map(|name| output::workspace_to_start(&status, name, &server))
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(refused)?;
+        choices.restart_workspace_ids = self
+            .restart
+            .iter()
+            .map(|name| output::workspace_to_restart(&status, name, &server, route))
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(refused)?;
+        Ok(())
+    }
 }
 
 /// Which agent access a member's setup asks for (`SetupRequest.agent_access`, OW-6).
@@ -3814,7 +3985,7 @@ fn full_access_notice(
     };
     let server = server_label(connection);
     (level == Some(AgentAccess::Full)).then(|| format!(
-        "Setup lets your agent work as you on {server}: it can run any command your account can there, starting in a work folder it makes in your home folder. Public models never get this access. {otherwise}"
+        "Setup lets your agent work as you on {server}: it can run any command your account can there, starting in a work folder it makes in your home folder. Crew treats anything running as your account as you, so your agent can also add a computer to your account and post in Crew as you, with no agent mark. Public models never get this access. {otherwise}"
     ))
 }
 
@@ -3878,30 +4049,69 @@ async fn run_setup(
     login: &str,
     interrupt: impl std::future::Future<Output = std::io::Result<()>>,
 ) -> Result<(Value, Vec<String>)> {
-    let (status, lines) = follow_setup(api, request, login, interrupt).await?;
-    if status["state"].as_str() == Some("failed") {
-        if api.text() {
-            print_lines(&lines)?;
+    let Followed {
+        status,
+        lines,
+        interrupted,
+    } = follow_setup(api, request, login, interrupt).await?;
+    match (status["state"].as_str(), interrupted) {
+        (Some("failed"), _) => {
+            if api.text() {
+                print_lines(&lines)?;
+            }
+            Err(setup_failure(&status))
         }
-        return Err(setup_failure(&status));
+        (Some("cancelled"), _) | (_, true) => {
+            if api.text() && !interrupted {
+                print_lines(&lines)?;
+            }
+            let server = output::setup_server(&status, login);
+            Err(setup_stopped(&server, interrupted, None))
+        }
+        _ => Ok((status, lines)),
     }
-    Ok((status, lines))
 }
 
-/// [`run_setup`], answering a failed job's status as well as a finished one's, so a caller can
-/// read what the job did before it stopped (`host`: the saved connection and the steps left).
+/// What a setup that was stopped says (`interrupted`: by Ctrl-C here; else from another place,
+/// such as the desktop or a chat): run the same command again, which finishes it. `code` is the
+/// daemon's code for a stopped job, which `host` keeps so it can say what is left.
+fn setup_stopped(server: &str, interrupted: bool, code: Option<&'static str>) -> anyhow::Error {
+    restated(
+        if interrupted {
+            format!("Stopped setting up {server}. Run the same command again to finish.")
+        } else {
+            format!("Setting up {server} was stopped before it finished. Run the same command again to finish.")
+        },
+        code,
+    )
+}
+
+/// How a followed setup job ended ([`follow_setup`]): its last status (`finished`, `failed`,
+/// `cancelled`, or, after Ctrl-C, the last one read before the job was stopped), the lines its
+/// last change adds, and whether Ctrl-C stopped it here.
+struct Followed {
+    status: Value,
+    lines: Vec<String>,
+    interrupted: bool,
+}
+
+/// [`run_setup`], answering a failed or stopped job's status as well as a finished one's, so a
+/// caller can read what the job did before it stopped (`host`: the saved connection and the
+/// steps left). Ctrl-C stops the job and answers at once with the last status read
+/// ([`settle_setup`] waits for where it ended).
 async fn follow_setup(
     api: &Api,
     request: Value,
     login: &str,
     interrupt: impl std::future::Future<Output = std::io::Result<()>>,
-) -> Result<(Value, Vec<String>)> {
+) -> Result<Followed> {
     tokio::pin!(interrupt);
+    let newer = uses_newer_setup(&request);
     let mut status = api
         .client
         .request("POST", "/crew/setup", Some(request))
         .await
-        .map_err(|error| older_daemon(error, RESTART_FOR_SETUP))?;
+        .map_err(|error| older_setup_daemon(error, newer))?;
     let job = status["job_id"]
         .as_str()
         .and_then(|id| component(id).ok())
@@ -3914,18 +4124,15 @@ async fn follow_setup(
     let mut signed_in_at = None;
     loop {
         let lines = output::setup_progress_lines(&shown, &status, login);
-        match status["state"].as_str() {
-            Some("finished" | "failed") => return Ok((status, lines)),
-            Some("cancelled") => {
-                if api.text() {
-                    print_lines(&lines)?;
-                }
-                return Err(restated(
-                    format!("Setting up {server} was stopped before it finished. Run the same command again to finish."),
-                    None,
-                ));
-            }
-            _ => {}
+        if matches!(
+            status["state"].as_str(),
+            Some("finished" | "failed" | "cancelled")
+        ) {
+            return Ok(Followed {
+                status,
+                lines,
+                interrupted: false,
+            });
         }
         if status != shown {
             api.stream(&status, &lines)?;
@@ -3944,15 +4151,103 @@ async fn follow_setup(
                 signal = &mut interrupt => {
                     signal?;
                     cancel_setup(api, &path).await;
-                    return Err(restated(
-                        format!("Stopped setting up {server}. Run the same command again to finish."),
-                        None,
-                    ));
+                    return Ok(Followed { status, lines: Vec::new(), interrupted: true });
                 }
                 () = tokio::time::sleep(api.setup_poll) => {}
             }
         }
         status = api.client.request("GET", &path, None).await?;
+    }
+}
+
+/// How many times [`settle_setup`] looks at a stopped job before it answers with what it has:
+/// a minute at [`SETUP_POLL`]. A Stop is heeded before the job's next change, so a stage under
+/// way still finishes.
+const SETUP_SETTLE_LOOKS: usize = 120;
+
+/// The status of the setup job `status` names once it ended after Ctrl-C stopped it (finding
+/// 13): what it did before the Stop took effect (the workspace it started, the connection it
+/// saved) is only known then. The last status read when it does not end in time, or cannot be
+/// read.
+async fn settle_setup(api: &Api, mut status: Value) -> Value {
+    let Some(job) = status["job_id"]
+        .as_str()
+        .and_then(|id| component(id).ok())
+        .map(str::to_owned)
+    else {
+        return status;
+    };
+    let path = format!("/crew/setup/{job}");
+    for _ in 0..SETUP_SETTLE_LOOKS {
+        if matches!(
+            status["state"].as_str(),
+            Some("finished" | "failed" | "cancelled")
+        ) {
+            break;
+        }
+        tokio::time::sleep(api.setup_poll).await;
+        match api.client.request("GET", &path, None).await {
+            Ok(now) => status = now,
+            Err(_) => break,
+        }
+    }
+    status
+}
+
+/// What a daemon from before the account path answers a setup request it cannot read
+/// (`crew_request_invalid`, finding 36): its fixed sentence for a body that is not the route's.
+const SETUP_REQUEST_SHAPE: &str = "Send the server to set up, what to do there, and nothing else.";
+
+/// Whether a setup `request` uses what a daemon from before the account path (AO-8, AO-9)
+/// cannot read: the server target, or a choice it does not know.
+fn uses_newer_setup(request: &Value) -> bool {
+    request["target"]["kind"] == "server"
+        || [
+            "finish",
+            "mode",
+            "institution_id",
+            "keep_older",
+            "restart_workspaces",
+            "start_workspaces",
+            "restart_workspace_ids",
+        ]
+        .iter()
+        .any(|key| request.get(key).is_some())
+}
+
+/// A daemon from before the account path, refusing a setup request that uses what it does not
+/// know (finding 36). It says [`RESTART_FOR_SETUP`]; `setup --server` and `doctor --server`
+/// with nothing newer asked try the request that daemon always read instead.
+#[derive(Debug)]
+struct OlderSetupDaemon;
+
+impl std::fmt::Display for OlderSetupDaemon {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(RESTART_FOR_SETUP)
+    }
+}
+
+impl std::error::Error for OlderSetupDaemon {}
+
+/// Whether `error` is [`OlderSetupDaemon`].
+fn is_older_setup_daemon(error: &anyhow::Error) -> bool {
+    error.chain().any(|cause| cause.is::<OlderSetupDaemon>())
+}
+
+/// `POST /crew/setup`'s refusal, with a daemon that predates the route or what the request
+/// uses (`newer`) said as one: [`RESTART_FOR_SETUP`]. A daemon of this version refuses a
+/// request it cannot read with the same sentence, but this CLI never sends it one.
+fn older_setup_daemon(error: anyhow::Error, newer: bool) -> anyhow::Error {
+    let shape = error.chain().any(|cause| {
+        refusal_code_and_message(cause).is_some_and(|(code, message)| {
+            code == "crew_request_invalid" && message.trim() == SETUP_REQUEST_SHAPE
+        })
+    });
+    match refusal(&error) {
+        Some(Refusal {
+            status: 400 | 422, ..
+        }) if newer && shape => OlderSetupDaemon.into(),
+        _ => older_daemon(error, RESTART_FOR_SETUP),
     }
 }
 
@@ -4129,10 +4424,12 @@ fn host_unfinished(
         HostStep::Governance => "opening it to every member",
         HostStep::Context => "writing its context",
     };
-    let mut lines = vec![format!(
-        "{done}, but {failed} failed: {}",
-        error_text(&error)
-    )];
+    // Finding 13: a job stopped here or elsewhere did not fail; it stopped before that step.
+    let mut lines = vec![if error_code(&error).as_deref() == Some(SETUP_CANCELLED) {
+        format!("{done}, then setup was stopped before {failed}.")
+    } else {
+        format!("{done}, but {failed} failed: {}", error_text(&error))
+    }];
     lines.push("To finish, run these in order:".to_owned());
     lines.extend(host_step_commands(
         steps,
@@ -4445,17 +4742,31 @@ async fn host(
         hosting.identity_file.as_deref(),
         hosting.proxy_jump.as_deref(),
     )?;
-    let (status, mut lines) = run_host_setup(api, &hosting, &target, interrupt).await?;
+    let Followed {
+        status,
+        mut lines,
+        interrupted,
+    } = run_host_setup(api, &hosting, &target, interrupt).await?;
     let outcome = status["outcome"].clone();
     let done = format!(
         "Started {} on {} and saved it on this computer",
         hosting.shown, hosting.login
     );
-    if status["state"].as_str() == Some("failed") {
+    // Finding 13: a job stopped here or elsewhere is said like a failed one, from what it did
+    // before it stopped, so a start it made is finished rather than tried again.
+    let error = match status["state"].as_str() {
+        Some("failed") => Some(setup_failure(&status)),
+        Some("finished") => None,
+        _ => Some(setup_stopped(
+            &output::setup_server(&status, &hosting.server),
+            interrupted,
+            Some(SETUP_CANCELLED),
+        )),
+    };
+    if let Some(error) = error {
         if api.text() {
             print_lines(&lines)?;
         }
-        let error = setup_failure(&status);
         return Err(
             host_stopped(api, &hosting, &preparation, &target, &outcome, error, &done).await,
         );
@@ -4484,14 +4795,15 @@ async fn host(
 }
 
 /// `host`'s one setup job (AO-9): `finish`, with the privacy, institution and agent access the
-/// new workspace is set up with. Answers the job's last status, finished or failed, and the
-/// lines its last change adds.
+/// new workspace is set up with. Answers the job's last status, finished, failed or stopped,
+/// and the lines its last change adds. A job Ctrl-C stopped is followed until it ends, since
+/// what it did before the Stop took effect is what is left to say ([`settle_setup`]).
 async fn run_host_setup(
     api: &Api,
     hosting: &Hosting,
     target: &Value,
     interrupt: impl std::future::Future<Output = std::io::Result<()>>,
-) -> Result<(Value, Vec<String>)> {
+) -> Result<Followed> {
     let mut request = json!({
         "target": target,
         "intent": "host",
@@ -4508,7 +4820,11 @@ async fn run_host_setup(
     if hosting.fix_permissions {
         request["fix_storage_permissions"] = json!(true);
     }
-    follow_setup(api, request, &hosting.server, interrupt).await
+    let mut followed = follow_setup(api, request, &hosting.server, interrupt).await?;
+    if followed.interrupted {
+        followed.status = settle_setup(api, followed.status).await;
+    }
+    Ok(followed)
 }
 
 /// The connection a host's job saved (`outcome.connection_id`), as the daemon lists it now:
@@ -4579,6 +4895,11 @@ async fn host_stopped(
         .flatten()
         .filter(|text| !text.trim().is_empty());
     if let Some(invitation) = started {
+        // Stopped after the start: the workspace runs and the server knows the account, so
+        // `open` saves and joins it from here (finding 13).
+        if error_code(&error).as_deref() == Some(SETUP_CANCELLED) {
+            return host_stopped_before_save(error, hosting, target);
+        }
         let folder = hosted_work_folder(outcome);
         let advanced = host_advanced(hosting, preparation, target, folder.as_deref());
         return host_unsaved(
@@ -4591,24 +4912,80 @@ async fn host_stopped(
         );
     }
     if error_code(&error).as_deref() == Some(HOST_NAME_IN_USE) {
-        return name_in_use_here(error, hosting);
+        return name_in_use_here(error, hosting, target);
     }
     error
+}
+
+/// A `host` stopped after it started the workspace and before it saved it here (finding 13):
+/// the workspace runs, so running `host` again would be refused as a name in use. `open`
+/// saves and joins it, with the agent access asked for, and the settings follow.
+fn host_stopped_before_save(
+    error: anyhow::Error,
+    hosting: &Hosting,
+    target: &Value,
+) -> anyhow::Error {
+    let Hosting {
+        name,
+        server,
+        institution,
+        mode,
+        shown,
+        login,
+        ..
+    } = hosting;
+    let mut open = format!(
+        "  biorouter crew open {} --server {}{}",
+        safe_text(&shell_word(name)),
+        safe_text(&shell_word(server)),
+        route_flags(target)
+    );
+    if hosting.agent_access != AgentAccess::Off {
+        open.push_str(&format!(
+            " --agent-access {}",
+            hosting.agent_access.as_str()
+        ));
+    }
+    let mut lines = vec![
+        format!("Started {shown} on {login}, then setup was stopped before it saved it on this computer."),
+        "To finish, run these in order:".to_owned(),
+        open,
+    ];
+    lines.extend(host_finish_commands(
+        HostStep::Privacy,
+        name,
+        "connect",
+        *mode,
+        institution.as_deref(),
+    ));
+    Unfinished {
+        sentence: lines.join("\n"),
+        source: error,
+    }
+    .into()
 }
 
 /// `crew_host_name_in_use` for a workspace that runs (AO-9): the daemon's sentence says to
 /// open it on this computer, and the command that does is said after it. The sentence for a
 /// stopped one already names its command.
-fn name_in_use_here(error: anyhow::Error, hosting: &Hosting) -> anyhow::Error {
+fn name_in_use_here(error: anyhow::Error, hosting: &Hosting, target: &Value) -> anyhow::Error {
     let said = error_text(&error);
-    if said.contains("--start") {
-        return error;
-    }
-    Worded {
-        sentence: format!(
+    // Finding 39: each command repeats the port, key and jump route `host` was given.
+    let route = route_flags(target);
+    let sentence = if said.contains("--start") {
+        let routed = output::with_route_in_start(&said, &hosting.server, &route);
+        if routed == said {
+            return error;
+        }
+        routed
+    } else {
+        format!(
             "{said}\n{}",
-            output::open_command_line(&hosting.name, &hosting.server)
-        ),
+            output::open_command_line(&hosting.name, &hosting.server, &route)
+        )
+    };
+    Worded {
+        sentence,
         source: error,
     }
     .into()
@@ -4808,12 +5185,16 @@ async fn open(
     let (status, lines) = run_setup(api, request, &login, &mut interrupt).await?;
     api.stream(&status, &lines)?;
     let shown_server = output::setup_server(&status, &login);
-    let entry = output::workspace_to_open(&status, &workspace, host.as_deref(), &shown_server)
-        .map_err(|sentence| restated(sentence, None))?;
-    let role = match entry["role"].as_str() {
-        Some("host") => "host",
-        _ => "member",
-    };
+    let entry = output::workspace_to_open(
+        &status,
+        &workspace,
+        host.as_deref(),
+        &shown_server,
+        &route_flags(&target),
+    )
+    .map_err(|sentence| restated(sentence, None))?;
+    // The account's place in it as the server listed it: `host`, `member` or `invited`.
+    let role = entry["role"].as_str().unwrap_or("member").to_owned();
     let id = match entry["saved_connection_id"].as_str() {
         Some(saved) => component(saved)?.to_owned(),
         None => save_opened(api, &entry, &target, &preparation, local_name.as_deref()).await?,
@@ -4832,7 +5213,43 @@ async fn open(
         )
         .await?;
     }
-    join_as(api, JoinArgs { no_wait: false }, Some(role), &mut interrupt).await
+    let joined = join_as(
+        api,
+        JoinArgs { no_wait: false },
+        Some(&role),
+        &mut interrupt,
+    )
+    .await;
+    match joined {
+        // Finding 15: the account's Crew is already newer than the one the workspace still runs
+        // (setup left it running because others were connected), so a restart is all it takes.
+        Err(error)
+            if role == "host"
+                && entry["binary_current"].as_bool() == Some(false)
+                && error_code(&error).as_deref() == Some(ACCOUNT_UNSUPPORTED) =>
+        {
+            let name = entry["name"].as_str().unwrap_or(&workspace);
+            Err(restart_to_open(error, name, &login, &route_flags(&target)))
+        }
+        joined => joined,
+    }
+}
+
+/// `crew_account_unsupported` said to a host whose workspace still runs an older Crew than the
+/// one installed in their account (finding 15): the daemon's sentence, then the restart that
+/// lets the workspace know the account, with the route given (`route`).
+fn restart_to_open(error: anyhow::Error, name: &str, login: &str, route: &str) -> anyhow::Error {
+    let said = error_text(&error);
+    Worded {
+        sentence: format!(
+            "{said}\nThe Crew installed in your account there is already newer. To restart {} on it now, run biorouter crew setup --server {}{route} --restart-workspace {}; what members have running there stops.",
+            name_text(name),
+            safe_text(&shell_word(login)),
+            safe_text(&shell_word(name))
+        ),
+        source: error,
+    }
+    .into()
 }
 
 /// Save the workspace `entry` names (AO-6) from its invitation line, with the login and route
@@ -4899,24 +5316,82 @@ async fn rejoin(api: &Api) -> Result<Reply> {
             api.client.request("POST", &path, None).await
         }
         answer => answer,
-    }
-    .map_err(|error| older_daemon(error, RESTART_FOR_ACCOUNT))?;
+    };
+    let answer = match answer {
+        Ok(answer) => answer,
+        Err(error) => {
+            let error = older_daemon(error, RESTART_FOR_ACCOUNT);
+            return Err(host_rename_conflict(api, error).await);
+        }
+    };
     let lines = output::rejoined_lines(&answer, &HumanOptions::new(api.show_ids));
     Ok(api.say(answer, lines))
 }
 
+/// The daemon's code for a join the workspace refused because another active member has the
+/// account's username.
+const JOIN_IDENTITY_CONFLICT: &str = "crew_join_identity_conflict";
+
+/// `crew_join_identity_conflict` said to the host (finding 20): the host's account was renamed
+/// on the server to a name another member of the workspace uses, so Crew cannot follow the
+/// rename, and the daemon's sentence ("Ask your host…") asks the host to ask themselves. The
+/// workspace's own answer about the account (`GET …/account`, unsigned) says whether this is
+/// the host, and the name it keeps for them; the host is told what only they can do. A daemon
+/// that already words it for the host, or a member, keeps the daemon's sentence.
+async fn host_rename_conflict(api: &Api, error: anyhow::Error) -> anyhow::Error {
+    if error_code(&error).as_deref() != Some(JOIN_IDENTITY_CONFLICT)
+        || !error_text(&error).contains("Ask your host")
+    {
+        return error;
+    }
+    let Ok(path) = api.path("/account").await else {
+        return error;
+    };
+    let Ok(account) = api.client.request("GET", &path, None).await else {
+        return error;
+    };
+    if account["role"].as_str() != Some("host") {
+        return error;
+    }
+    Worded {
+        sentence: host_rename_conflict_sentence(
+            account["workspace_name"].as_str(),
+            account["username"].as_str(),
+        ),
+        source: error,
+    }
+    .into()
+}
+
+/// What the host reads when Crew cannot follow their account's new name ([`host_rename_conflict`]):
+/// rename the account back to the name the workspace keeps (`kept`), remove the member who has
+/// the new one, then rename it again. The same steps as the server's own sentence for it.
+fn host_rename_conflict_sentence(workspace: Option<&str>, kept: Option<&str>) -> String {
+    let workspace = workspace
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .map_or_else(|| "this workspace".to_owned(), name_text);
+    let back = kept
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .map(|name| format!(" to @{}", safe_text(name)))
+        .unwrap_or_default();
+    format!(
+        "Crew can't follow your account's new name, because another member already uses it in {workspace}. Rename the account back{back} on the server and remove that member from {workspace} before renaming it again."
+    )
+}
+
 /// `profile devices` (AO-10): the computers enrolled as the person, which one is this computer
-/// and which are new since they last looked; `--acknowledge` marks the new ones seen.
+/// and which are new since they last looked; `--acknowledge` marks seen exactly the new ones
+/// this command shows (finding 37), so a computer added after they were read stays new.
 async fn profile_devices(api: &Api, acknowledge: bool) -> Result<Reply> {
     let snapshot = api.snapshot().await?;
     let connection = api.connection().await?;
     let new_devices = connection["new_devices"].clone();
-    let acknowledged = acknowledge
-        && new_devices
-            .as_array()
-            .is_some_and(|devices| !devices.is_empty());
+    let shown = shown_fingerprints(&new_devices);
+    let acknowledged = acknowledge && !shown.is_empty();
     if acknowledged {
-        api.connection_action("devices/acknowledge", json!({}))
+        api.connection_action("devices/acknowledge", json!({"fingerprints": shown}))
             .await
             .map_err(|error| older_daemon(error, RESTART_FOR_ACCOUNT))?;
     }
@@ -4928,6 +5403,25 @@ async fn profile_devices(api: &Api, acknowledge: bool) -> Result<Reply> {
     });
     let lines = output::profile_device_lines(&value, &api.human(Directory::default()));
     Ok(api.say(value, lines))
+}
+
+/// The fingerprints of the new devices a connection reports (`new_devices`), as it gave them,
+/// each once: what `profile devices` shows, and so what `--acknowledge` marks seen.
+fn shown_fingerprints(new_devices: &Value) -> Vec<String> {
+    let mut shown: Vec<String> = Vec::new();
+    for fingerprint in new_devices
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|device| device["fingerprint"].as_str())
+        .map(str::trim)
+        .filter(|fingerprint| !fingerprint.is_empty())
+    {
+        if !shown.iter().any(|seen| seen == fingerprint) {
+            shown.push(fingerprint.to_owned());
+        }
+    }
+    shown
 }
 
 /// `profile revoke-device` (AO-5): one of the person's own computers, by its fingerprint or as
@@ -5457,14 +5951,27 @@ async fn enroll_invite(api: &Api, args: EnrollInviteArgs) -> Result<Reply> {
     // The message is what the person needs next. The invitation stands without it, so a
     // failure here only changes what is printed.
     let invitation = fetch_invitation(api, Some(&canonical)).await.ok();
-    let lines = invite_lines(&result, &canonical, invitation.as_ref());
+    // L1: on a server whose Crew knows the account (AO-9), the person joins with no code.
+    let account = api
+        .connection()
+        .await
+        .is_ok_and(|connection| connection["account_identity"].as_bool() == Some(true));
+    let lines = invite_lines(&result, &canonical, invitation.as_ref(), account);
     if let Some(invitation) = invitation {
         result["invitation"] = invitation;
     }
     Ok(api.say(result, lines))
 }
 
-fn invite_lines(result: &Value, username: &str, invitation: Option<&Value>) -> Vec<String> {
+/// What `enroll invite` says: who was invited, the invitation to send them, and what happens
+/// next. On a server whose Crew knows the account (`account`, AO-9) the person joins as soon as
+/// they open the workspace, with no code to approve; an older one still sends the host a code.
+fn invite_lines(
+    result: &Value,
+    username: &str,
+    invitation: Option<&Value>,
+    account: bool,
+) -> Vec<String> {
     let handle = format!("@{}", safe_text(username));
     let mut lines = vec![if result["add_device"].as_bool() == Some(true) {
         format!("Invited {handle} to add another computer.")
@@ -5491,9 +5998,15 @@ fn invite_lines(result: &Value, username: &str, invitation: Option<&Value>) -> V
             "Print the invitation to send them with: biorouter crew connections invitation --for {handle}"
         )),
     }
-    lines.push(format!(
-        "When {handle} sends you a code, let them in with: biorouter crew enroll approve {handle} CODE"
-    ));
+    lines.push(if account {
+        format!(
+            "{handle} joins as soon as they open the workspace. There is no code to approve."
+        )
+    } else {
+        format!(
+            "When {handle} sends you a code, let them in with: biorouter crew enroll approve {handle} CODE"
+        )
+    });
     lines
 }
 
@@ -6967,8 +7480,14 @@ async fn watch_event(
         // Printed once, by the failure path: a sentence in text, and in JSON one line that is
         // both the observer's error frame and the command's error.
         ObserveEvent::Error { code, error, clear } => {
+            let mut message = watch_stopped(watched, &error);
+            // AO-9: a computer that lost its key, or that the workspace no longer recognizes,
+            // is added again with `rejoin`, said as the desktop says its button.
+            if matches!(code.as_str(), DEVICE_KEY_MISSING | DEVICE_NOT_RECOGNIZED) {
+                message = output::rejoin_sentence(&message);
+            }
             return Err(WatchStopped {
-                message: watch_stopped(watched, &error),
+                message,
                 code: safe_text(&code),
                 clear,
             }
@@ -13712,6 +14231,7 @@ mod tests {
             replace_existing: false,
             keep_older: false,
             restart: false,
+            restart_workspace: Vec::new(),
             no_restart: false,
             start: Vec::new(),
             check,
@@ -15193,7 +15713,8 @@ mod tests {
             .iter()
             .any(|sent| sent.path == "/crew/devices/prepare"));
 
-        // No choices: nothing but the target and the intent, so an older daemon reads it too.
+        // No choices: nothing but the target and the intent. A daemon from before the server
+        // target refuses it and gets the pending target instead (finding 36).
         let (api, fake) = api_with(OutputFormat::Json, listing_daemon(leo_workspaces()));
         let mut args = setup_command(None, false);
         leo(&mut args);
@@ -15979,5 +16500,643 @@ mod tests {
         let (api, fake) = api_with(OutputFormat::Text, waiting("running"));
         assert!(run(&api, auth("../x")).await.is_err());
         assert!(fake.sent().is_empty());
+    }
+
+    /// A daemon refusal with its other fields, as `daemon_client` keeps them.
+    fn refuse_with(status: u16, code: &str, message: &str, fields: Value) -> anyhow::Error {
+        FakeRefusal {
+            status,
+            code: Some(code.into()),
+            broker_code: None,
+            institution_refusal: None,
+            connection_institution: None,
+            message: message.to_owned(),
+            detail: None,
+            modes: None,
+            fields: fields.as_object().cloned().unwrap_or_default(),
+        }
+        .into()
+    }
+
+    const OLDER_FOR_HOST: &str =
+        "running-lab's server runs an older Crew. Update it with biorouter crew setup --server wanjun@leo.";
+    const OLDER_FOR_MEMBER: &str = "shared's server runs an older Crew. Ask @alice to update it.";
+    const ENROLLMENT_TOKEN: &str = "This workspace's server can't let people join with a code yet. Ask the host for an enrollment token instead.";
+
+    /// `GET …/account` on a server whose Crew predates the account path: the daemon's
+    /// `crew_account_unsupported`, for the host when `host`, else for a member.
+    fn older_account(host: bool) -> anyhow::Error {
+        if host {
+            refuse_with(
+                409,
+                ACCOUNT_UNSUPPORTED,
+                OLDER_FOR_HOST,
+                json!({"is_host": true, "server_login": "wanjun@leo"}),
+            )
+        } else {
+            refuse_with(
+                409,
+                ACCOUNT_UNSUPPORTED,
+                OLDER_FOR_MEMBER,
+                json!({"is_host": false, "host_username": "alice"}),
+            )
+        }
+    }
+
+    /// [`opening_daemon`] on a server whose Crew predates the account path: the join status is
+    /// `state`, and `GET …/account` answers [`older_account`].
+    fn older_opening(
+        state: &'static str,
+        host: bool,
+    ) -> impl Fn(&str, &str, Option<&Value>) -> Result<Value> {
+        let opening = opening_daemon(vec![
+            json!({"status": state, "workspace_name": "running-lab", "add_device": false}),
+        ]);
+        move |method: &str, path: &str, body: Option<&Value>| {
+            if (method, path) == ("GET", &format!("/crew/connections/{SAVED}/account")) {
+                return Err(older_account(host));
+            }
+            opening(method, path, body)
+        }
+    }
+
+    /// Findings 12 and 15: `open` and `join` against a server whose Crew predates the account
+    /// path end with `crew_account_unsupported` in AO-9's words for the person's role, instead
+    /// of waiting for an invitation nobody can send or pointing the host at an enrollment
+    /// token. An invited person and a newcomer keep the older join.
+    #[tokio::test]
+    async fn an_older_crew_on_the_server_is_said_by_role_instead_of_waited_on() {
+        let opened = |state: &'static str, host: bool, name: &str, from: Option<&str>| {
+            let (api, fake) = api_with(OutputFormat::Text, older_opening(state, host));
+            let mut args = open_args(name);
+            args.host = from.map(str::to_owned);
+            async move {
+                let outcome = tokio::time::timeout(
+                    Duration::from_secs(5),
+                    open(&api, args, std::future::pending()),
+                )
+                .await
+                .expect("open must not wait for an invitation nobody can send");
+                (outcome, fake)
+            }
+        };
+        // The host, on a server without joining by name: the update, not an enrollment token.
+        let (outcome, fake) = opened("unsupported", true, "running-lab", None).await;
+        let error = outcome.expect_err("older Crew");
+        assert_eq!(shown_text(&error, false), OLDER_FOR_HOST);
+        assert_eq!(error_code(&error).as_deref(), Some(ACCOUNT_UNSUPPORTED));
+        assert!(!fake
+            .sent()
+            .iter()
+            .any(|sent| sent.method == "POST" && sent.path.ends_with("/join")));
+        // The account already has the newer Crew, which the workspace still waits to run.
+        let mut listed = leo_workspaces();
+        listed[1]["binary_current"] = json!(false);
+        let listing = listing_daemon(listed);
+        let older = older_opening("not_invited", true);
+        let handler = move |method: &str, path: &str, body: Option<&Value>| -> Result<Value> {
+            if path == "/crew/setup" {
+                return listing(method, path, body);
+            }
+            older(method, path, body)
+        };
+        let (api, _) = api_with(OutputFormat::Text, handler);
+        let mut args = open_args("running-lab");
+        args.port = Some(2222);
+        let error = tokio::time::timeout(
+            Duration::from_secs(5),
+            open(&api, args, std::future::pending()),
+        )
+        .await
+        .expect("open must not wait")
+        .expect_err("older Crew still running");
+        assert_eq!(
+            shown_text(&error, false),
+            format!("{OLDER_FOR_HOST}\nThe Crew installed in your account there is already newer. To restart running-lab on it now, run biorouter crew setup --server wanjun@leo --port 2222 --restart-workspace running-lab; what members have running there stops.")
+        );
+        assert_eq!(error_code(&error).as_deref(), Some(ACCOUNT_UNSUPPORTED));
+        // A member's new computer, where an older Crew says nobody invited it.
+        let (outcome, _) = opened("not_invited", false, "shared", Some("alice")).await;
+        let error = outcome.expect_err("older Crew");
+        assert_eq!(shown_text(&error, false), OLDER_FOR_MEMBER);
+        // An invited person still joins as before: the enrollment token is theirs to ask for.
+        let (outcome, _) = opened("unsupported", false, "shared", Some("bob")).await;
+        assert_eq!(
+            shown_text(&outcome.expect_err("no join by name"), false),
+            ENROLLMENT_TOKEN
+        );
+
+        // `join` asks too, and tells the host apart by the daemon's `is_host`.
+        let joining = |host: bool| {
+            move |method: &str, path: &str, body: Option<&Value>| -> Result<Value> {
+                match (method, path) {
+                    ("GET", path) if path.ends_with("/join") => {
+                        Ok(json!({"status": "unsupported", "workspace_name": "lab"}))
+                    }
+                    ("GET", path) if path.ends_with("/account") => Err(older_account(host)),
+                    _ => standard(method, path, body),
+                }
+            }
+        };
+        let (api, _) = api_with(OutputFormat::Text, joining(true));
+        let error = run(&api, CrewCommand::Join(JoinArgs { no_wait: false }))
+            .await
+            .expect_err("older Crew");
+        assert_eq!(shown_text(&error, false), OLDER_FOR_HOST);
+        let (api, _) = api_with(OutputFormat::Text, joining(false));
+        let error = run(&api, CrewCommand::Join(JoinArgs { no_wait: false }))
+            .await
+            .expect_err("no join by name");
+        assert_eq!(shown_text(&error, false), ENROLLMENT_TOKEN);
+
+        // The daemon's own refusal of the join status ends the command in its words.
+        let refused = |method: &str, path: &str, body: Option<&Value>| -> Result<Value> {
+            if path.ends_with("/join") {
+                return Err(older_account(true));
+            }
+            standard(method, path, body)
+        };
+        let (api, _) = api_with(OutputFormat::Text, refused);
+        let error = run(&api, CrewCommand::Join(JoinArgs { no_wait: false }))
+            .await
+            .expect_err("older Crew");
+        assert_eq!(shown_text(&error, false), OLDER_FOR_HOST);
+    }
+
+    /// A host job whose last status is `last`, stopped by Ctrl-C (`interrupted`) or elsewhere.
+    async fn host_stopped_with(last: Value, interrupted: bool, route: bool) -> anyhow::Error {
+        let (api, fake) = api_with(OutputFormat::Text, host_job_daemon(last, true));
+        let mut args = host_command(Some("ucsf"), true);
+        if route {
+            args.port = Some(2222);
+            args.proxy_jump = Some("jump@gw".into());
+        }
+        let error = if interrupted {
+            host(&api, args, std::future::ready(Ok(()))).await
+        } else {
+            host(&api, args, std::future::pending()).await
+        }
+        .expect_err("stopped");
+        assert_eq!(
+            fake.sent().iter().any(|sent| sent.method == "DELETE"),
+            interrupted
+        );
+        error
+    }
+
+    /// Finding 13: a host job stopped after its start is said like a failed one, from what it
+    /// did: the steps left after the save, or `open` (with the route given) and the settings
+    /// before it. Running host again would be refused as a name in use. A job stopped before
+    /// anything started still says to run the same command again.
+    #[tokio::test]
+    async fn a_host_stopped_after_its_start_says_what_is_left_not_to_start_again() {
+        let cancelled = |outcome: Value| {
+            let mut status = setup_status(
+                "host",
+                "cancelled",
+                json!({"outcome": outcome, "error": {"code": SETUP_CANCELLED, "message": "Stopped. Nothing more will be done on leo."}}),
+            );
+            status["server"]["login"] = json!("alice@leo");
+            status
+        };
+        let saved = cancelled(
+            json!({"connection_id": SAVED, "steps_left": ["join", "privacy", "governance", "context"]}),
+        );
+        for interrupted in [true, false] {
+            let error = host_stopped_with(saved.clone(), interrupted, false).await;
+            assert_eq!(
+                shown_text(&error, true),
+                "Started chen-lab on alice@leo and saved it on this computer, then setup was stopped before setting it up.\n\
+                 To finish, run these in order:\n  \
+                 biorouter crew --connection chen-lab join\n  \
+                 biorouter crew --connection chen-lab privacy set-workspace private --institution ucsf\n  \
+                 biorouter crew --connection chen-lab workspace governance open\n  \
+                 biorouter crew --connection chen-lab workspace context draft --save"
+            );
+            assert_eq!(error_code(&error).as_deref(), Some(SETUP_CANCELLED));
+        }
+        let started = cancelled(json!({"host": {"kind": "found", "text": "brcrew1:abc"}}));
+        let error = host_stopped_with(started, true, true).await;
+        assert_eq!(
+            shown_text(&error, true),
+            "Started chen-lab on alice@leo, then setup was stopped before it saved it on this computer.\n\
+             To finish, run these in order:\n  \
+             biorouter crew open chen-lab --server alice@leo --port 2222 --proxy-jump jump@gw --agent-access full\n  \
+             biorouter crew --connection chen-lab privacy set-workspace private --institution ucsf\n  \
+             biorouter crew --connection chen-lab workspace governance open\n  \
+             biorouter crew --connection chen-lab workspace context draft --save"
+        );
+        let error = host_stopped_with(cancelled(json!({})), true, false).await;
+        assert_eq!(
+            shown_text(&error, true),
+            "Stopped setting up alice@leo. Run the same command again to finish."
+        );
+        let error = host_stopped_with(cancelled(json!({})), false, false).await;
+        assert_eq!(
+            shown_text(&error, true),
+            "Setting up alice@leo was stopped before it finished. Run the same command again to finish."
+        );
+    }
+
+    /// Finding 36: a daemon from before the account path refuses a request with the server
+    /// target or a new choice (400 `crew_request_invalid`, its fixed sentence). Setup and doctor
+    /// with nothing newer asked fall back to the pending target it always took; anything else
+    /// says to restart the daemon.
+    #[tokio::test]
+    async fn an_older_daemon_gets_the_setup_it_reads_or_the_restart_sentence() {
+        let older = |method: &str, path: &str, body: Option<&Value>| -> Result<Value> {
+            if (method, path) == ("POST", "/crew/setup") {
+                let request = body.expect("body");
+                if uses_newer_setup(request) {
+                    return Err(refuse(
+                        400,
+                        Some("crew_request_invalid"),
+                        SETUP_REQUEST_SHAPE,
+                    ));
+                }
+            }
+            listing_daemon(json!([]))(method, path, body)
+        };
+        let (api, fake) = api_with(OutputFormat::Json, older);
+        let mut args = setup_command(Some("wanjun@leo"), false);
+        args.replace_existing = true;
+        setup(&api, args, std::future::pending())
+            .await
+            .expect("set up as before");
+        let requests = setup_requests(&fake);
+        assert_eq!(requests.len(), 2);
+        assert_eq!(
+            requests[1],
+            json!({"target": {"kind": "pending", "preparation_id": PREPARATION, "ssh_target": "wanjun@leo"},
+                   "intent": "install", "replace_existing": true})
+        );
+        let (api, fake) = api_with(OutputFormat::Json, older);
+        run(
+            &api,
+            CrewCommand::Doctor(ServerArgs {
+                server: Some("wanjun@leo".into()),
+                port: Some(2222),
+                identity_file: None,
+                proxy_jump: None,
+            }),
+        )
+        .await
+        .expect("checked as before");
+        assert_eq!(setup_requests(&fake)[1]["target"]["kind"], "pending");
+        assert_eq!(setup_requests(&fake)[1]["target"]["port"], 2222);
+
+        let (api, _) = api_with(OutputFormat::Json, older);
+        let mut args = setup_command(Some("wanjun@leo"), false);
+        args.keep_older = true;
+        let error = setup(&api, args, std::future::pending())
+            .await
+            .expect_err("a choice it can't read");
+        assert_eq!(shown_text(&error, false), RESTART_FOR_SETUP);
+        let (api, fake) = api_with(OutputFormat::Json, older);
+        let error = host(
+            &api,
+            host_command(Some("ucsf"), true),
+            std::future::pending(),
+        )
+        .await
+        .expect_err("host needs the account path");
+        assert_eq!(shown_text(&error, false), RESTART_FOR_SETUP);
+        assert_eq!(setup_requests(&fake).len(), 1);
+        // A current daemon's other refusals keep their own words.
+        let invalid = |method: &str, path: &str, body: Option<&Value>| -> Result<Value> {
+            if (method, path) == ("POST", "/crew/setup") {
+                return Err(refuse(
+                    400,
+                    Some("crew_request_invalid"),
+                    "Name each workspace to restart by its ID.",
+                ));
+            }
+            listing_daemon(json!([]))(method, path, body)
+        };
+        let (api, _) = api_with(OutputFormat::Json, invalid);
+        let error = setup(
+            &api,
+            setup_command(Some("wanjun@leo"), false),
+            std::future::pending(),
+        )
+        .await
+        .expect_err("refused");
+        assert_eq!(
+            shown_text(&error, false),
+            "Name each workspace to restart by its ID."
+        );
+    }
+
+    /// Finding 39: the commands suggested for a name in use, or a stopped workspace, repeat
+    /// the port, jump route and key file the person gave.
+    #[tokio::test]
+    async fn suggested_commands_keep_the_route_given() {
+        let in_use = |message: &str| {
+            setup_status(
+                "host",
+                "failed",
+                json!({"error": {"code": HOST_NAME_IN_USE, "message": message}}),
+            )
+        };
+        let routed = || {
+            let mut args = host_command(Some("ucsf"), true);
+            args.port = Some(2222);
+            args.proxy_jump = Some("jump@gw".into());
+            args
+        };
+        let (api, _) = api_with(
+            OutputFormat::Text,
+            setup_daemon(vec![in_use(
+                "You already host chen-lab on leo. Open it on this computer instead.",
+            )]),
+        );
+        let error = host(&api, routed(), std::future::pending())
+            .await
+            .expect_err("in use");
+        assert_eq!(
+            shown_text(&error, false),
+            "You already host chen-lab on leo. Open it on this computer instead.\nRun biorouter crew open chen-lab --server alice@leo --port 2222 --proxy-jump jump@gw."
+        );
+        let (api, _) = api_with(
+            OutputFormat::Text,
+            setup_daemon(vec![in_use("You already host chen-lab on leo. It is stopped: start it with biorouter crew setup --server alice@leo --start chen-lab, then open it.")]),
+        );
+        let error = host(&api, routed(), std::future::pending())
+            .await
+            .expect_err("in use, stopped");
+        assert_eq!(
+            shown_text(&error, false),
+            "You already host chen-lab on leo. It is stopped: start it with biorouter crew setup --server alice@leo --port 2222 --proxy-jump jump@gw --start chen-lab, then open it."
+        );
+        // open's own sentence for a stopped workspace it found.
+        let (api, _) = api_with(OutputFormat::Json, opening_daemon(vec![Value::Null]));
+        let mut args = open_args("baranzini-lab");
+        args.port = Some(2222);
+        let error = open(&api, args, std::future::pending())
+            .await
+            .expect_err("stopped");
+        assert_eq!(
+            message(&error),
+            "baranzini-lab is stopped. Start it with biorouter crew setup --server wanjun@leo --port 2222 --start baranzini-lab, then open it."
+        );
+    }
+
+    /// L1: inviting on a server whose Crew knows the account says the person joins when they
+    /// open the workspace, with no code; an older Crew still sends the host a code.
+    #[test]
+    fn an_invitation_says_how_the_person_gets_in() {
+        let result = json!({"username": "bob", "add_device": false});
+        assert_eq!(
+            invite_lines(&result, "bob", None, true)
+                .last()
+                .map(String::as_str),
+            Some("@bob joins as soon as they open the workspace. There is no code to approve.")
+        );
+        assert_eq!(
+            invite_lines(&result, "bob", None, false).last().map(String::as_str),
+            Some("When @bob sends you a code, let them in with: biorouter crew enroll approve @bob CODE")
+        );
+    }
+
+    /// L1, end to end: the connection says its server's Crew knows the account.
+    #[tokio::test]
+    async fn the_host_invites_on_an_account_server_without_a_code_line() {
+        let handler = |method: &str, path: &str, body: Option<&Value>| -> Result<Value> {
+            if (method, path) == ("GET", "/crew/connections") {
+                let mut listed = standard(method, path, body)?;
+                listed["connections"][0]["account_identity"] = json!(true);
+                return Ok(listed);
+            }
+            if path.contains("/invitation?") {
+                return Ok(
+                    json!({"message": "Join lab on Crew.\nbrcrew1:abc", "line": "brcrew1:abc"}),
+                );
+            }
+            match body.and_then(|body| body["method"].as_str()) {
+                Some("enrollment.invite") => Ok(json!({"username": "bob", "add_device": false})),
+                _ => standard(method, path, body),
+            }
+        };
+        let (api, _) = api_with(OutputFormat::Text, handler);
+        let lines = said(
+            run(
+                &api,
+                CrewCommand::Enroll(EnrollmentCommand::Invite(EnrollInviteArgs {
+                    username: Some("@bob".into()),
+                    add_device: false,
+                    uid: None,
+                    public_key: None,
+                    existing_principal: None,
+                })),
+            )
+            .await
+            .expect("invited"),
+        );
+        assert_eq!(
+            lines.last().map(String::as_str),
+            Some("@bob joins as soon as they open the workspace. There is no code to approve.")
+        );
+        assert!(!lines.iter().any(|line| line.contains("enroll approve")));
+    }
+
+    /// `profile devices --acknowledge` sends the route exactly the fingerprints it showed
+    /// (finding 37): the route refuses an empty body, and a device added after the list was
+    /// read stays new.
+    #[tokio::test]
+    async fn acknowledging_sends_the_fingerprints_shown() {
+        let (api, fake) = api_with(OutputFormat::Text, devices_daemon);
+        run(
+            &api,
+            CrewCommand::Profile(ProfileCommand::Devices { acknowledge: true }),
+        )
+        .await
+        .expect("acknowledged");
+        let body = fake
+            .sent()
+            .into_iter()
+            .find(|sent| sent.path.ends_with("/devices/acknowledge"))
+            .and_then(|sent| sent.body)
+            .expect("acknowledged");
+        assert_eq!(body, json!({"fingerprints": ["3F2A 9C1E 77B0 D4E1"]}));
+        assert_eq!(
+            shown_fingerprints(&json!([
+                {"fingerprint": "AA"}, {"fingerprint": "AA"}, {"fingerprint": " "}, {}, {"fingerprint": "BB"}
+            ])),
+            ["AA", "BB"]
+        );
+    }
+
+    /// `--restart-workspace NAME` restarts the one running workspace the account hosts under
+    /// that name, by its ID from the listing, and `--restart` still means all of them. A name
+    /// it hosts none of, more than one of, or one that is stopped, is refused before anything
+    /// changes.
+    #[tokio::test]
+    async fn setup_restarts_a_workspace_by_name() {
+        let leo = || {
+            let mut args = setup_command(Some("wanjun@leo"), false);
+            args.target.port = Some(2222);
+            args
+        };
+        let (api, fake) = api_with(OutputFormat::Json, listing_daemon(leo_workspaces()));
+        let mut args = leo();
+        args.restart_workspace = vec!["Running-Lab".into()];
+        args.no_restart = true;
+        setup(&api, args, std::future::pending())
+            .await
+            .expect("set up");
+        let server = json!({"kind": "server", "ssh_target": "wanjun@leo", "port": 2222});
+        assert_eq!(
+            setup_requests(&fake),
+            [
+                json!({"target": server, "intent": "check"}),
+                json!({"target": server, "intent": "install", "restart_workspaces": false,
+                       "restart_workspace_ids": [RUNNING_ID]}),
+            ]
+        );
+        for (name, said) in [
+            ("missing-lab", "You don't host a workspace named missing-lab on wanjun@leo."),
+            ("twin", "You host 2 workspaces named twin on wanjun@leo, so Biorouter can't tell which one to restart."),
+            ("baranzini-lab", "baranzini-lab is stopped on wanjun@leo, so there is nothing to restart. Start it with biorouter crew setup --server wanjun@leo --port 2222 --start baranzini-lab."),
+        ] {
+            let (api, fake) = api_with(OutputFormat::Json, listing_daemon(leo_workspaces()));
+            let mut args = leo();
+            args.restart_workspace = vec![name.into()];
+            let error = setup(&api, args, std::future::pending())
+                .await
+                .expect_err("not restarted");
+            assert_eq!(message(&error), said);
+            assert_eq!(setup_requests(&fake).len(), 1, "only the check ran");
+        }
+    }
+
+    /// Two rows with one workspace ID are two rows when their host or key differs, and one row
+    /// when all three agree; a workspace kept in more than one folder is refused in the
+    /// server's own words.
+    #[tokio::test]
+    async fn listed_rows_are_told_apart_by_id_host_and_key() {
+        let entry = |host: &str, uid: u32, key: &str| {
+            json!({"workspace_id": RUNNING_ID, "name": "lab", "role": "member", "host_username": host,
+                   "host_uid": uid, "workspace_key_fingerprint": key, "state": "running",
+                   "this_computer": "not_saved", "invitation": "brcrew1:lab"})
+        };
+        let (api, _) = api_with(
+            OutputFormat::Json,
+            listing_daemon(json!([
+                entry("alice", 1001, "K1"),
+                entry("bob", 1002, "K1")
+            ])),
+        );
+        let error = open(&api, open_args("lab"), std::future::pending())
+            .await
+            .expect_err("two hosts");
+        assert_eq!(
+            message(&error),
+            "More than one host on wanjun@leo has a workspace named lab: @alice, @bob. Choose one with --host USERNAME."
+        );
+        let (api, fake) = api_with(
+            OutputFormat::Json,
+            listing_daemon(json!([
+                entry("alice", 1001, "K1"),
+                entry("alice", 1001, "K1")
+            ])),
+        );
+        // One row listed twice: it is chosen, and the save is the next step.
+        let error = open(&api, open_args("lab"), std::future::pending())
+            .await
+            .expect_err("the test daemon saves nothing");
+        assert!(!message(&error).contains("more than one"), "{error:#}");
+        assert!(fake
+            .sent()
+            .iter()
+            .any(|sent| sent.path == "/crew/connections/from-invitation"));
+
+        let conflict = "identity_conflict: Workspace 11111111-0000-4000-8000-000000000002 is kept in more than one folder of ~/.local/share/biorouter-crew (lab, lab-2). Move every copy out of that folder, keeping the workspace's own, then try again.";
+        let mut hosted = entry("wanjun", 1020, "K1");
+        hosted["role"] = json!("host");
+        hosted["state"] = json!("unknown");
+        hosted["error"] = json!(conflict);
+        let listed = json!({"workspaces": [hosted.clone(), hosted]});
+        let said = conflict.trim_start_matches("identity_conflict: ");
+        assert_eq!(
+            output::workspace_to_start(&listed, "lab", "leo"),
+            Err(said.to_owned())
+        );
+        assert_eq!(
+            output::workspace_to_restart(&listed, "lab", "leo", ""),
+            Err(said.to_owned())
+        );
+        assert_eq!(
+            output::workspace_to_open(&listed, "lab", None, "leo", "").map(|_| ()),
+            Err(said.to_owned())
+        );
+    }
+
+    /// Finding 20: a host whose renamed account collides with a member's name is told what
+    /// only they can do, not to ask their host; a member keeps the daemon's sentence.
+    #[tokio::test]
+    async fn a_host_whose_rename_collides_is_told_what_to_do() {
+        let daemon_sentence = "Another member of this workspace already has your username. Ask your host to remove the old account first.";
+        let renamed = |role: &'static str| {
+            move |method: &str, path: &str, body: Option<&Value>| -> Result<Value> {
+                if path.ends_with("/rejoin") {
+                    return Err(refuse(409, Some(JOIN_IDENTITY_CONFLICT), daemon_sentence));
+                }
+                if path.ends_with("/account") {
+                    return Ok(
+                        json!({"role": role, "workspace_name": "lab", "username": "alice", "expired": false}),
+                    );
+                }
+                standard(method, path, body)
+            }
+        };
+        let (api, _) = api_with(OutputFormat::Text, renamed("host"));
+        let error = run(&api, CrewCommand::Rejoin).await.expect_err("conflict");
+        assert_eq!(
+            shown_text(&error, false),
+            "Crew can't follow your account's new name, because another member already uses it in lab. Rename the account back to @alice on the server and remove that member from lab before renaming it again."
+        );
+        assert_eq!(error_code(&error).as_deref(), Some(JOIN_IDENTITY_CONFLICT));
+        let (api, _) = api_with(OutputFormat::Text, renamed("member"));
+        let error = run(&api, CrewCommand::Rejoin).await.expect_err("conflict");
+        assert_eq!(shown_text(&error, false), daemon_sentence);
+    }
+
+    /// AO-9: a watch that stops because this computer lost its key, or the workspace no longer
+    /// recognizes it, says how to add it again.
+    #[tokio::test]
+    async fn a_watch_stopped_by_a_lost_key_points_at_rejoin() {
+        let (api, _) = api_with(OutputFormat::Text, standard);
+        for (code, error) in [
+            (
+                DEVICE_KEY_MISSING,
+                "This computer no longer has its key for this workspace",
+            ),
+            (
+                DEVICE_NOT_RECOGNIZED,
+                "This workspace no longer recognizes this computer",
+            ),
+        ] {
+            let state = std::sync::Mutex::new(WatchState::default());
+            let stopped = match watch_event(
+                &api,
+                &state,
+                "#methods",
+                ObserveEvent::Error {
+                    code: code.into(),
+                    error: error.into(),
+                    clear: true,
+                },
+            )
+            .await
+            {
+                Ok(_) => panic!("an error frame ends the watch"),
+                Err(stopped) => stopped,
+            };
+            assert_eq!(
+                error_text(&stopped),
+                format!("Stopped watching #methods: {error}. Run biorouter crew rejoin.")
+            );
+            assert_eq!(failure_body(&stopped, "m", "req-1")["code"], code);
+        }
     }
 }

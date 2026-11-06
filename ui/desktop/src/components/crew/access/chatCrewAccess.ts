@@ -1,20 +1,22 @@
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import {
-  findSessionGrant,
+  findSessionAccess,
   grantDestinationLabel,
   sessionGrantState,
   type CrewSessionGrant,
 } from '../api/grants';
+import type { CrewPersonRead } from '../account/api';
 import type * as Api from '../../../api/types.gen';
 import { optionalText, wireOf } from '../api/parse';
 import { CrewHttpError, crewHttp } from '../crewApi';
-import { sanitizeDisplayText } from '../identity';
+import { identityCopy, sanitizeDisplayText } from '../identity';
 import {
   CONNECT_FAILURE_CODES,
   classifyConnectFailure,
   isMembershipEnded,
 } from '../state/connectFailure';
 import { accessCopy } from './copy';
+import { CREW_READ_CONSENT_EVENT } from '../../toolCallCopy';
 import { crewTurnRefusalOf, type CrewTurnRefusalKind } from './crewTurnRefusal';
 import { onGrantsChanged, revocationUnconfirmed, useUnconfirmedRevokeWatch } from './useCrewGrants';
 
@@ -48,6 +50,21 @@ export type ChatCrewAccessState =
    * work ends, so it is not "revoked" and nothing went wrong (Q2-09). The chat is held all the same.
    */
   | 'finished';
+
+/**
+ * A workspace a chat without a Crew grant may read as the person (account ownership AO-12's read
+ * consent). It lasts until it is taken back, so the chat shows it, with Revoke.
+ */
+export interface ChatPersonRead {
+  connectionId: string;
+  /** The workspace as this computer names the connection. */
+  workspace: string;
+  /** Unix seconds. */
+  grantedAt: number | null;
+}
+
+/** How long after the card is answered the daemon has recorded the consent it gave. */
+export const READ_CONSENT_SETTLE_MS = 400;
 
 export interface ChatCrewAccess {
   sessionId: string | null;
@@ -96,6 +113,11 @@ export interface ChatCrewAccess {
    * confirmed and before the daemon's list says so.
    */
   blocksComposer: boolean;
+  /**
+   * The workspaces the chat may read as the person without a grant (AO-12's read consent). Only a
+   * chat with no grant has any. Optional for callers that build this by hand.
+   */
+  reads?: readonly ChatPersonRead[];
   /** Look the grant up again now. */
   refetch(): void;
 }
@@ -309,6 +331,8 @@ interface Lookup {
   failed: boolean;
   connections: SavedConnection[];
   grant: CrewSessionGrant | null;
+  /** This chat's read consents, from the same grant lists. */
+  reads: CrewPersonRead[];
 }
 
 /**
@@ -395,16 +419,22 @@ export function useChatCrewAccess(
         const connections = savedConnections(
           await crewHttp<unknown>('/connections', 'GET', undefined, controller.signal)
         );
-        const grant = connections.length
-          ? await findSessionGrant(
+        const access = connections.length
+          ? await findSessionAccess(
               connections.map((connection) => connection.id),
               id,
               controller.signal
             )
-          : null;
-        next = { sessionId: id, failed: false, connections, grant };
+          : { grant: null, reads: [] };
+        next = {
+          sessionId: id,
+          failed: false,
+          connections,
+          grant: access.grant,
+          reads: access.reads,
+        };
       } catch {
-        next = { sessionId: id, failed: true, connections: [], grant: null };
+        next = { sessionId: id, failed: true, connections: [], grant: null, reads: [] };
       }
       if (controller.signal.aborted) return;
       setNow(Date.now());
@@ -452,6 +482,33 @@ export function useChatCrewAccess(
     window.addEventListener('message-stream-finished', onTurnFinished);
     return () => window.removeEventListener('message-stream-finished', onTurnFinished);
   }, [id, hasGrant, refetch]);
+
+  // The person allowed this chat's read consent on its card (AO-12): read again once the daemon
+  // has recorded it, and once more when the turn ends, so the chat shows what it now holds.
+  useEffect(() => {
+    if (!id) return;
+    let timer: number | undefined;
+    let pending = false;
+    const onConsent = (event: Event) => {
+      const detail = (event as CustomEvent<{ sessionId?: unknown }>).detail;
+      if (detail?.sessionId !== id) return;
+      pending = true;
+      window.clearTimeout(timer);
+      timer = window.setTimeout(refetch, READ_CONSENT_SETTLE_MS);
+    };
+    const onTurnFinished = () => {
+      if (!pending) return;
+      pending = false;
+      refetch();
+    };
+    window.addEventListener(CREW_READ_CONSENT_EVENT, onConsent);
+    window.addEventListener('message-stream-finished', onTurnFinished);
+    return () => {
+      window.clearTimeout(timer);
+      window.removeEventListener(CREW_READ_CONSENT_EVENT, onConsent);
+      window.removeEventListener('message-stream-finished', onTurnFinished);
+    };
+  }, [id, refetch]);
 
   const grant = current?.grant ?? null;
   const grantConnectionId = grant?.connection_id ?? null;
@@ -627,6 +684,20 @@ export function useChatCrewAccess(
       current?.connections.find((item) => item.id === grant.connection_id)?.name ||
       null
     : null;
+  const reads = useMemo<ChatPersonRead[]>(
+    () =>
+      current && !current.grant
+        ? current.reads.map((read) => ({
+            connectionId: read.connectionId,
+            workspace:
+              sanitizeDisplayText(
+                current.connections.find((item) => item.id === read.connectionId)?.name
+              ) || identityCopy.unnamedWorkspace,
+            grantedAt: read.grantedAt,
+          }))
+        : [],
+    [current]
+  );
   const online = useOnline();
   const offlineCause =
     state === 'offline' && grant
@@ -654,6 +725,7 @@ export function useChatCrewAccess(
     revocationConfirmed:
       grant?.revocation === 'confirmed' || grant?.revocation === 'ended_by_workspace',
     blocksComposer: state === 'revoked' || state === 'expired' || state === 'finished',
+    reads,
     refetch,
   };
 }

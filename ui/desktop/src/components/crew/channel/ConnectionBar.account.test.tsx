@@ -1,4 +1,5 @@
-import { fireEvent, screen, waitFor, within } from '@testing-library/react';
+import { act, fireEvent, screen, waitFor, within } from '@testing-library/react';
+import { useState } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { newDevicesCopy, rejoinCopy, setupJobsCopy, versionCopy } from '../account/copy';
 import { resetBuildBrokerVersionForTests } from '../account/brokerVersion';
@@ -183,6 +184,8 @@ describe('new devices on the account (AO-10)', () => {
     );
     const note = await screen.findByTestId('crew-new-devices');
     expect(note).toHaveTextContent(newDevicesCopy.one(null));
+    // Which computer: its fingerprint, as Keys lists it.
+    expect(note).toHaveTextContent(newDevicesCopy.which('AAAA BBBB CCCC DDDD'));
     expect(note).toHaveTextContent(newDevicesCopy.viaAccount);
     fireEvent.click(within(note).getByRole('button', { name: newDevicesCopy.reviewName }));
     expect(rendered.crew().openDialog).toHaveBeenCalledWith({ kind: 'keys' });
@@ -190,7 +193,123 @@ describe('new devices on the account (AO-10)', () => {
     await waitFor(() =>
       expect(calls('POST', '/connections/conn-1/devices/acknowledge')).toHaveLength(1)
     );
+    // The route requires the fingerprints the notice showed, and acknowledges only those.
+    expect(calls('POST', '/connections/conn-1/devices/acknowledge')[0][2]).toEqual({
+      fingerprints: ['AAAA BBBB CCCC DDDD'],
+    });
     await waitFor(() => expect(screen.queryByTestId('crew-new-devices')).toBeNull());
+  });
+
+  it('acknowledges every device it counted, and only those', async () => {
+    daemon({ 'POST /connections/conn-1/devices/acknowledge': () => null });
+    renderBar(
+      fakeConnection({
+        new_devices: [
+          { fingerprint: 'AAAA', added_at: 1_700_000_000, added_via: 'account' },
+          { fingerprint: 'BBBB', added_at: 1_700_000_100, added_via: 'token' },
+        ],
+      })
+    );
+    const note = await screen.findByTestId('crew-new-devices');
+    fireEvent.click(within(note).getByRole('button', { name: newDevicesCopy.acknowledge }));
+    await waitFor(() =>
+      expect(calls('POST', '/connections/conn-1/devices/acknowledge')).toHaveLength(1)
+    );
+    expect(calls('POST', '/connections/conn-1/devices/acknowledge')[0][2]).toEqual({
+      fingerprints: ['AAAA', 'BBBB'],
+    });
+  });
+
+  it('says a failed Acknowledge under its own workspace only (finding 41)', async () => {
+    daemon({
+      'POST /connections/conn-1/devices/acknowledge': () => {
+        throw new CrewHttpError('Not now.', 503, 'crew_not_sent');
+      },
+    });
+    const first = fakeConnection({
+      new_devices: [{ fingerprint: 'AAAA', added_at: null, added_via: 'account' }],
+    });
+    const rendered = renderBar(first);
+    fireEvent.click(
+      within(await screen.findByTestId('crew-new-devices')).getByRole('button', {
+        name: newDevicesCopy.acknowledge,
+      })
+    );
+    expect(await screen.findByText(newDevicesCopy.acknowledgeFailed)).toBeInTheDocument();
+    const second = fakeConnection({
+      id: 'conn-2',
+      new_devices: [{ fingerprint: 'BBBB', added_at: null, added_via: 'account' }],
+    });
+    rendered.update({
+      connectionId: 'conn-2',
+      connection: second,
+      connections: [first, second],
+      observedPrivacy: {
+        connectionId: 'conn-2',
+        mode: 'private',
+        institutionId: 'ucsf',
+        policyEpoch: 1,
+      },
+    });
+    expect(await screen.findByTestId('crew-new-devices')).toHaveTextContent(
+      newDevicesCopy.which('BBBB')
+    );
+    expect(screen.queryByText(newDevicesCopy.acknowledgeFailed)).toBeNull();
+  });
+
+  it('puts focus back on the channel once Acknowledge took its note away, even drawn late', async () => {
+    daemon({ 'POST /connections/conn-1/devices/acknowledge': () => null });
+    // The channel heading is drawn again a moment after the connections reload, as the main area
+    // can be while it reads them.
+    let showHeading: () => void = () => {};
+    let hideHeading: () => void = () => {};
+    function Stage() {
+      const [shown, setShown] = useState(true);
+      showHeading = () => setShown(true);
+      hideHeading = () => setShown(false);
+      return (
+        <div className="crew-app">
+          {shown ? (
+            <h1>
+              <button type="button">general</button>
+            </h1>
+          ) : null}
+          <ConnectionBar />
+        </div>
+      );
+    }
+    const connection = fakeConnection({
+      new_devices: [{ fingerprint: 'AAAA', added_at: null, added_via: 'account' }],
+    });
+    renderWithCrew(
+      <Stage />,
+      makeCrew({
+        connectionId: connection.id,
+        connection,
+        connections: [connection],
+        snapshot: fakeSnapshot(),
+        observedPrivacy: {
+          connectionId: connection.id,
+          mode: 'private',
+          institutionId: 'ucsf',
+          policyEpoch: 1,
+        },
+        screen: 'channel',
+        reloadConnections: vi.fn(() => {
+          hideHeading();
+          window.setTimeout(() => act(() => showHeading()), 120);
+        }),
+      })
+    );
+    const acknowledge = within(await screen.findByTestId('crew-new-devices')).getByRole('button', {
+      name: newDevicesCopy.acknowledge,
+    });
+    acknowledge.focus();
+    fireEvent.click(acknowledge);
+    await waitFor(() => expect(screen.queryByTestId('crew-new-devices')).toBeNull());
+    await waitFor(() =>
+      expect(document.activeElement).toBe(screen.getByRole('button', { name: 'general' }))
+    );
   });
 
   it('counts several', async () => {

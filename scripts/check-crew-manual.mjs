@@ -126,6 +126,13 @@
 //     that string as the code shows it, and the page a reader is sent to quotes
 //     it. The buttons and badges those pages name are names the code still shows.
 //
+// The fix wave of 2026-11 reworded the read-consent card, renamed the Keys dialog's "This
+// device" to "This computer", and added sentences the pages now quote. `account-sentences` also
+// holds the consent card's **Allow** and its answered row, a declined read, the grant's origin
+// rule, a change stopped after it was allowed, the new-device notice's fingerprint, the restart
+// question for an unknown count and why an update left a workspace running, the host's refused
+// rename, and the command line's invitation line on a server that knows accounts.
+//
 // Every rule reads the code it depends on, and a rule whose anchor in the code
 // is gone FAILS rather than passing vacuously: the fix is then to re-read the
 // code and update the rule, never to delete the anchor check.
@@ -1253,10 +1260,10 @@ export function checkCrewManual(tree = repoTree()) {
     {
       name: `the new-device notice in ${ACCOUNT_COPY}`,
       opens:
-        /^(?:A new device was added to your account|\S+ new devices were added to your account|It signed in to the server as you)\b/,
+        /^(?:A new device was added to your account|\S+ new devices were added to your account|It signed in to the server as you|Its fingerprint is)\b/,
       templates: opening(
         accountLiterals,
-        /^(?:A new device was added to your account|\{count\} new devices were added to your account|It signed in to the server as you)\b/
+        /^(?:A new device was added to your account|\{count\} new devices were added to your account|It signed in to the server as you|Its fingerprint is)\b/
       ),
       source: accountCopySource,
       requiredIn: [PRIVACY_PAGE],
@@ -1296,11 +1303,16 @@ export function checkCrewManual(tree = repoTree()) {
     },
     ...[
       [
+        // An unknown count (a Crew from before account ownership) asks too (fix wave of 2026-11).
         'who is connected before a restart',
-        /\b(?:people are|person is) connected\. Their running\b/,
+        /\b(?:people are|person is|people may be) connected\. Their running\b/,
       ],
       ['two hosts of one name', /^Two people host a workspace named\b/],
       ['an empty list', /^There are no workspaces for you on\b/],
+      [
+        'why an update left a workspace running',
+        /^(?:It wasn't restarted, because|It runs Crew \S+, newer than|It runs a newer Crew than|It keeps its state outside)\b/,
+      ],
     ].map(([what, opens]) => ({
       name: `Open a workspace on a server's note for ${what} in ${ONBOARDING_COPY}`,
       opens,
@@ -1347,6 +1359,18 @@ export function checkCrewManual(tree = repoTree()) {
       ['CONNECTION_WITHOUT_INSTITUTION', /^This connection is Private and has no institution\b/],
       ['INSTITUTIONS_DIFFER', /^This connection and its workspace are set to different\b/],
       ['RAISE_FAILED', /^Biorouter couldn't mark this chat Private\b/],
+      // The fix wave of 2026-11: a declined read, the grant's origin rule, and a change stopped
+      // after it was allowed.
+      ['READ_DECLINED', /^The person declined\. Nothing was read\b/],
+      [
+        'ANOTHER_INSTITUTIONS_CONTENT',
+        /^This chat already holds private content that belongs to another institution\b/,
+      ],
+      [
+        'AFFILIATIONS_UNREADABLE',
+        /^Biorouter couldn't read which institutions this chat's content\b/,
+      ],
+      ['STOPPED_BEFORE_IT_RAN', /^Nothing was changed: the chat was stopped\b/],
     ].map(([constant, opens]) => ({
       name: `${constant} in ${CREW_TOOLS_HOST}`,
       opens,
@@ -1384,6 +1408,50 @@ export function checkCrewManual(tree = repoTree()) {
       source: toolHostSource,
       requiredIn: [AGENTS_PAGE],
     })),
+    // The fix wave of 2026-11. The read consent lasts, so its answered card says so rather than
+    // "allowed once"; a read tried again after a decline says the decline; the host whose
+    // renamed account collides is told what only the host can do; and an invitation on a server
+    // that knows accounts says there is no code to approve.
+    {
+      name: `the read-consent card's answered row in ${APPROVAL_CARD_COPY}`,
+      opens: /^This chat may read \S+ as you until you take it back\b/,
+      templates: opening(
+        tsLiterals(approvalCardSource || ''),
+        /^This chat may read \{workspace\} as you until you take it back\b/
+      ),
+      source: approvalCardSource,
+      requiredIn: [AGENTS_PAGE],
+    },
+    {
+      name: `the read declined again in ${CREW_TOOLS_HOST}`,
+      opens: /^The person declined to let this chat read\b/,
+      templates: opening(hostLiterals, /^The person declined to let this chat read\b/),
+      source: toolHostSource,
+      requiredIn: [AGENTS_PAGE],
+      requiredWhole: true,
+    },
+    {
+      name: `the host's refused rename in ${INVITATION_RS}`,
+      opens: /^Crew can't follow this account's new name\b/,
+      templates: opening(
+        rustLiterals(invitationSource || ''),
+        /^Crew can't follow this account's new name\b.*before renaming it again\.$/
+      ),
+      source: invitationSource,
+      requiredIn: [HOSTING_PAGE, TROUBLESHOOTING],
+      requiredWhole: true,
+    },
+    {
+      name: `the account invitation's last line in ${CLI_CREW}`,
+      opens: /\bjoins as soon as they open the workspace\b/,
+      templates: opening(
+        rustLiterals(cliCrewSource || ''),
+        /\bjoins as soon as they open the workspace\b/
+      ),
+      source: cliCrewSource,
+      requiredIn: [COMMAND_LINE],
+      requiredWhole: true,
+    },
     ...[
       [
         CREW_TOOLS_PLACES,
@@ -1440,8 +1508,14 @@ export function checkCrewManual(tree = repoTree()) {
     [ACCOUNT_COPY, accountCopySource, 'Add this computer again', [JOINING_PAGE, TROUBLESHOOTING]],
     [ACCOUNT_COPY, accountCopySource, 'Remove device', [PRIVACY_PAGE]],
     [ACCOUNT_COPY, accountCopySource, 'Acknowledge', [PRIVACY_PAGE]],
-    [DIALOGS_COPY, dialogsSource, 'This device', [PRIVACY_PAGE]],
+    // The Keys dialog said "This device" until the fix wave of 2026-11; the contract says This
+    // computer, and so do the badge, the heading and this computer's own Remove.
+    [DIALOGS_COPY, dialogsSource, 'This computer', [PRIVACY_PAGE]],
+    [DIALOGS_COPY, dialogsSource, 'New', [PRIVACY_PAGE]],
+    [ACCOUNT_COPY, accountCopySource, 'Remove this computer', [PRIVACY_PAGE]],
     [APPROVAL_CARD_COPY, approvalCardSource, 'Allow once', [AGENTS_PAGE]],
+    // The read consent lasts until it is taken back, so its card's button is not "once".
+    [APPROVAL_CARD_COPY, approvalCardSource, 'Allow', [AGENTS_PAGE]],
   ];
   for (const [path, source, label, pages] of accountLabels) {
     if (source === null) continue;

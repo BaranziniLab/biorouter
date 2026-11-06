@@ -382,6 +382,15 @@ pub struct SetupArgs {
     /// themselves.
     #[arg(long, conflicts_with_all = ["check", "no_restart"])]
     pub restart: bool,
+    /// Restart one workspace you host there on the new Crew, by its name, even when other
+    /// people are connected to it. Repeat for more. The others are left as --restart or
+    /// --no-restart says.
+    #[arg(
+        long = "restart-workspace",
+        value_name = "NAME",
+        conflicts_with_all = ["check", "restart"]
+    )]
+    pub restart_workspace: Vec<String>,
     /// Restart none of the workspaces you host there; only say which still run an older Crew.
     #[arg(long, conflicts_with = "check")]
     pub no_restart: bool,
@@ -2130,9 +2139,27 @@ mod tests {
             &["setup", "--check", "--no-restart"],
             &["setup", "--check", "--keep-older"],
             &["setup", "--check", "--start", "lab"],
+            &["setup", "--check", "--restart-workspace", "lab"],
+            &["setup", "--restart", "--restart-workspace", "lab"],
         ] {
             assert!(refused(args), "{args:?}");
         }
+        // --restart still means all of them; --restart-workspace names some, with the others
+        // left as --no-restart says.
+        let CrewCommand::Setup(args) = parse(&[
+            "setup",
+            "--no-restart",
+            "--restart-workspace",
+            "baranzini-lab",
+            "--restart-workspace",
+            "other-lab",
+        ])
+        .command
+        else {
+            panic!("setup --restart-workspace")
+        };
+        assert!(args.no_restart && !args.restart);
+        assert_eq!(args.restart_workspace, ["baranzini-lab", "other-lab"]);
     }
 
     /// AO-9, AO-5, AO-10: open names a workspace and a login; rejoin, devices and revoking a

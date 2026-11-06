@@ -425,7 +425,10 @@ pub fn refusal_subject(code: &str, message: &str) -> Option<RefusalSubject> {
 /// The workspace's host as a person reads them, when the directory names them.
 pub fn host_label(directory: &Directory) -> Option<String> {
     let host = directory.host_id()?;
-    directory.people.get(host).map(Person::label)
+    directory
+        .people
+        .get(host)
+        .map(|person| directory.person_label(person))
 }
 
 /// A request whose required privacy (`--expected-mode`) is not the connection's (DW-12): both
@@ -1206,19 +1209,67 @@ fn setup_workspace_lines(status: &Value, login: &str, server: &str) -> Vec<Strin
             .map(|entry| outdated_line(entry, server, login)),
     );
     for failed in list_key(outcome, "restart_failed") {
-        lines.push(format!(
-            "{}: {}",
-            listed_name(failed),
-            str_field(failed, "message").map_or_else(|| "it didn't restart.".to_owned(), safe_text)
-        ));
-        if let Some(command) = str_field(failed, "command") {
-            lines.push(format!(
-                "  To start it by hand, run this on {server}: {}",
-                safe_text(command)
-            ));
-        }
+        lines.extend(restart_failed_lines(failed, server, login));
     }
     lines
+}
+
+/// A hosted workspace a job could not restart or start (AO-7, AO-8), and what to do about it.
+/// Two refusals the server makes before it stops anything are said in their own words, since
+/// the job's sentence for a failed restart says the workspace stopped: the installed program is
+/// missing or can't run (`program_missing`), or more than one folder holds the workspace
+/// (`identity_conflict`). Either way it still runs as it did, and starting it by hand would be
+/// refused the same way, so no command is offered for it.
+fn restart_failed_lines(failed: &Value, server: &str, login: &str) -> Vec<String> {
+    let name = listed_name(failed);
+    let code = str_field(failed, "code").unwrap_or_default();
+    let own = server_sentence(str_field(failed, "detail"), code);
+    match code {
+        "program_missing" => vec![format!(
+            "{name}: {} Install it again with biorouter crew setup --server {}.",
+            own.unwrap_or_else(|| format!(
+                "The Crew program in your account on {server} is missing or can't run, so it was left as it was."
+            )),
+            safe_text(&super::shell_word(login.trim()))
+        )],
+        "identity_conflict" => vec![format!(
+            "{name}: {}",
+            own.unwrap_or_else(|| format!(
+                "More than one folder of ~/.local/share/biorouter-crew on {server} holds it, so it was left as it was. Keep its own folder, move the other copies out of that folder, then try again."
+            ))
+        )],
+        _ => {
+            let mut lines = vec![format!(
+                "{name}: {}",
+                str_field(failed, "message")
+                    .map_or_else(|| "it didn't restart.".to_owned(), safe_text)
+            )];
+            if let Some(command) = str_field(failed, "command") {
+                lines.push(format!(
+                    "  To start it by hand, run this on {server}: {}",
+                    safe_text(command)
+                ));
+            }
+            lines
+        }
+    }
+}
+
+/// The server's own sentence for its refusal `code` in what it printed (`detail`): a line
+/// `Error: code: sentence` or `code: sentence`, or a JSON answer whose `error` says it.
+fn server_sentence(detail: Option<&str>, code: &str) -> Option<String> {
+    let after_code = |text: &str| -> Option<String> {
+        let text = text.trim();
+        let text = text.strip_prefix("Error:").map_or(text, str::trim);
+        let sentence = text.strip_prefix(code)?.strip_prefix(':')?.trim();
+        (!sentence.is_empty()).then(|| safe_text(sentence))
+    };
+    detail?.lines().find_map(|line| {
+        after_code(line).or_else(|| {
+            let answer: Value = serde_json::from_str(line.trim()).ok()?;
+            after_code(str_field(&answer, "error")?)
+        })
+    })
 }
 
 /// A workspace a setup job listed, in a sentence: its name, or "A workspace".
@@ -1296,8 +1347,13 @@ fn outdated_line(entry: &Value, server: &str, login: &str) -> String {
                 Some(n) => format!("{n} other people are connected to it"),
                 None => "other people may be connected to it".to_owned(),
             };
+            // Restart only this workspace, never every outdated one the account hosts.
+            let restart = str_field(entry, "name").map_or_else(
+                || "--restart".to_owned(),
+                |raw| format!("--restart-workspace {}", safe_text(&super::shell_word(raw))),
+            );
             format!(
-                "{name} still runs {running}, not {installed}, and {who}, so it wasn't restarted. To restart it anyway, run {setup} --restart; what they have running there stops."
+                "{name} still runs {running}, not {installed}, and {who}, so it wasn't restarted. To restart it anyway, run {setup} {restart}; what they have running there stops."
             )
         }
         Some("running_newer") => {
@@ -1418,16 +1474,36 @@ pub const REMOVAL_KEEPS_CHATS_HERE: &str = "Chats given Crew access through it c
 
 /// The command that opens `name` from `login` (AO-9).
 fn open_command(name: &str, login: &str) -> String {
+    open_command_routed(name, login, "")
+}
+
+/// [`open_command`] with the route flags the person gave (`route`, already escaped), so it
+/// reaches the server the same way.
+fn open_command_routed(name: &str, login: &str, route: &str) -> String {
     format!(
-        "biorouter crew open {} --server {}",
+        "biorouter crew open {} --server {}{route}",
         safe_text(&super::shell_word(name.trim())),
         safe_text(&super::shell_word(login.trim()))
     )
 }
 
-/// The line that points at `open` for a workspace the account hosts and runs (AO-9).
-pub fn open_command_line(name: &str, login: &str) -> String {
-    format!("Run {}.", open_command(name, login))
+/// The line that points at `open` for a workspace the account hosts and runs (AO-9), with the
+/// route flags the person gave (`route`, already escaped).
+pub fn open_command_line(name: &str, login: &str, route: &str) -> String {
+    format!("Run {}.", open_command_routed(name, login, route))
+}
+
+/// The daemon's sentence for a stopped workspace whose name is in use (`crew_host_name_in_use`),
+/// with the route flags the person gave (`route`, already escaped) put after the login in its
+/// `--start` command, which names the login alone. Left as it is when it holds no such command,
+/// or when the daemon already wrote a route there.
+pub fn with_route_in_start(sentence: &str, login: &str, route: &str) -> String {
+    let server = format!("--server {}", safe_text(&super::shell_word(login.trim())));
+    let plain = format!("{server} --start ");
+    if route.is_empty() || !sentence.contains(&plain) {
+        return sentence.to_owned();
+    }
+    sentence.replacen(&plain, &format!("{server}{route} --start "), 1)
 }
 
 /// What removing a connection to a server whose Crew knows the account means (AO-9): nothing
@@ -1487,14 +1563,38 @@ pub fn setup_signed_in_line(server: &str) -> String {
     format!("Signed in to {server}. The setup goes on by itself.")
 }
 
-/// The workspaces a setup job listed whose name is `name`, case aside.
+/// What tells one listed workspace from another: its ID, its host's UID and its key. Another
+/// host or another key can present the same ID, and those are then two rows; entries that agree
+/// on all three are one row, listed once.
+fn row_key(workspace: &Value) -> (Option<&str>, Option<u64>, Option<&str>) {
+    (
+        str_field(workspace, "workspace_id"),
+        workspace.get("host_uid").and_then(Value::as_u64),
+        str_field(workspace, "workspace_key_fingerprint"),
+    )
+}
+
+/// The workspaces a setup job listed whose name is `name`, case aside, one per row
+/// ([`row_key`]).
 fn named<'a>(status: &'a Value, name: &str) -> Vec<&'a Value> {
-    list_key(status, "workspaces")
-        .iter()
-        .filter(|workspace| {
-            str_field(workspace, "name").is_some_and(|listed| listed.eq_ignore_ascii_case(name))
-        })
-        .collect()
+    let mut rows: Vec<&Value> = Vec::new();
+    for workspace in list_key(status, "workspaces").iter().filter(|workspace| {
+        str_field(workspace, "name").is_some_and(|listed| listed.eq_ignore_ascii_case(name))
+    }) {
+        if !rows.iter().any(|row| row_key(row) == row_key(workspace)) {
+            rows.push(workspace);
+        }
+    }
+    rows
+}
+
+/// The server's own sentence for a workspace whose ID more than one folder of the account holds
+/// (`error` set to `identity_conflict: …` by the listing): nothing addressed by that ID can run
+/// until the copies are moved, so it is said in place of anything else about it.
+fn identity_conflict_in(workspace: &Value) -> Option<String> {
+    let error = str_field(workspace, "error")?.trim();
+    let sentence = error.strip_prefix("identity_conflict:")?.trim();
+    (!sentence.is_empty()).then(|| safe_text(sentence))
 }
 
 /// Why a name could not be matched because nothing was listed: the job's own note.
@@ -1508,15 +1608,31 @@ fn unlisted(status: &Value, server: &str) -> Option<String> {
     })
 }
 
-/// `setup --start NAME` (AO-8): the ID of the one stopped workspace the account hosts under
-/// `name` in a check job's listing, or the sentence that says why there is none to start.
-pub fn workspace_to_start(status: &Value, name: &str, server: &str) -> Result<String, String> {
-    let typed = name.trim();
-    let shown = display_text(typed);
+/// The command that starts the stopped workspace `name` the account hosts on `server` (AO-8),
+/// with the route flags the person gave (`route`, already escaped), so it reaches the server
+/// the same way.
+fn start_command(server: &str, route: &str, name: &str) -> String {
+    format!(
+        "biorouter crew setup --server {}{route} --start {}",
+        safe_text(&super::shell_word(server)),
+        safe_text(&super::shell_word(name))
+    )
+}
+
+/// The one workspace the account hosts under `name` in a check job's listing that is not
+/// deleted, for `setup --start` and `--restart-workspace` (`verb`: `start` or `restart`), or
+/// the sentence that says why there is none.
+fn hosted_one<'a>(
+    status: &'a Value,
+    name: &str,
+    server: &str,
+    verb: &str,
+) -> Result<&'a Value, String> {
+    let shown = display_text(name);
     if let Some(sentence) = unlisted(status, server) {
         return Err(sentence);
     }
-    let hosted: Vec<&Value> = named(status, typed)
+    let hosted: Vec<&Value> = named(status, name)
         .into_iter()
         .filter(|workspace| str_field(workspace, "role") == Some("host"))
         .collect();
@@ -1528,34 +1644,77 @@ pub fn workspace_to_start(status: &Value, name: &str, server: &str) -> Result<St
     match (live.as_slice(), hosted.is_empty()) {
         ([], true) => Err(format!("You don't host a workspace named {shown} on {server}.")),
         ([], false) => Err(format!(
-            "{shown} on {server} was deleted, so it can't be started."
+            "{shown} on {server} was deleted, so it can't be {verb}ed."
         )),
-        ([one], _) => match str_field(one, "state") {
-            Some("stopped") => str_field(one, "workspace_id")
-                .map(str::to_owned)
-                .ok_or_else(|| format!("The server didn't say which workspace {shown} is.")),
-            Some("running") => Err(format!(
-                "{shown} is already running on {server}, so there is nothing to start."
-            )),
-            _ => Err(format!(
-                "{shown} on {server} can't be started from here: Biorouter couldn't read whether it runs."
-            )),
-        },
+        ([one], _) => identity_conflict_in(one).map_or(Ok(*one), Err),
         (many, _) => Err(format!(
-            "You host {} workspaces named {shown} on {server}, so Biorouter can't tell which one to start.",
+            "You host {} workspaces named {shown} on {server}, so Biorouter can't tell which one to {verb}.",
             many.len()
         )),
     }
 }
 
+/// `setup --start NAME` (AO-8): the ID of the one stopped workspace the account hosts under
+/// `name` in a check job's listing, or the sentence that says why there is none to start.
+pub fn workspace_to_start(status: &Value, name: &str, server: &str) -> Result<String, String> {
+    let typed = name.trim();
+    let shown = display_text(typed);
+    let one = hosted_one(status, typed, server, "start")?;
+    match str_field(one, "state") {
+        Some("stopped") => str_field(one, "workspace_id")
+            .map(str::to_owned)
+            .ok_or_else(|| format!("The server didn't say which workspace {shown} is.")),
+        Some("running") => Err(format!(
+            "{shown} is already running on {server}, so there is nothing to start."
+        )),
+        _ => Err(format!(
+            "{shown} on {server} can't be started from here: Biorouter couldn't read whether it runs."
+        )),
+    }
+}
+
+/// `setup --restart-workspace NAME` (AO-8): the ID of the one running workspace the account
+/// hosts under `name` in a check job's listing, or the sentence that says why there is none to
+/// restart. A stopped one is pointed at `--start`, with the route flags given (`route`).
+pub fn workspace_to_restart(
+    status: &Value,
+    name: &str,
+    server: &str,
+    route: &str,
+) -> Result<String, String> {
+    let typed = name.trim();
+    let shown = display_text(typed);
+    let one = hosted_one(status, typed, server, "restart")?;
+    match str_field(one, "state") {
+        Some("running") => str_field(one, "workspace_id")
+            .map(str::to_owned)
+            .ok_or_else(|| format!("The server didn't say which workspace {shown} is.")),
+        Some("stopped") => Err(format!(
+            "{shown} is stopped on {server}, so there is nothing to restart. Start it with {}.",
+            start_command(server, route, typed)
+        )),
+        _ => Err(format!(
+            "{shown} on {server} can't be restarted from here: Biorouter couldn't read whether it runs."
+        )),
+    }
+}
+
+/// The host's username a setup job listed for a workspace.
+fn host_of(workspace: &Value) -> Option<String> {
+    str_field(workspace, "host_username").map(str::to_owned)
+}
+
 /// `open NAME --server LOGIN` (AO-9): the one workspace a check job listed under `name` (and
 /// `host`'s, when given) that can be opened, or the sentence that says why there is none. Two
-/// hosts with a workspace of that name are named, and neither is chosen.
+/// hosts with a workspace of that name are named, and neither is chosen. Rows are told apart
+/// by ID, host and key ([`row_key`]), so one workspace listed twice is still one. `route` is the
+/// route flags the person gave, already escaped, which a suggested command repeats.
 pub fn workspace_to_open(
     status: &Value,
     name: &str,
     host: Option<&str>,
     server: &str,
+    route: &str,
 ) -> Result<Value, String> {
     let typed = name.trim();
     let shown = display_text(typed);
@@ -1565,10 +1724,9 @@ pub fn workspace_to_open(
     let host = host
         .map(|host| host.trim().trim_start_matches('@'))
         .filter(|host| !host.is_empty());
-    let hosts_of = |workspace: &Value| str_field(workspace, "host_username").map(str::to_owned);
     let found: Vec<&Value> = named(status, typed)
         .into_iter()
-        .filter(|workspace| host.is_none_or(|host| hosts_of(workspace).as_deref() == Some(host)))
+        .filter(|workspace| host.is_none_or(|host| host_of(workspace).as_deref() == Some(host)))
         .collect();
     let openable: Vec<&Value> = found
         .iter()
@@ -1583,58 +1741,20 @@ pub fn workspace_to_open(
         .unwrap_or_default();
     let one = match openable.as_slice() {
         [one] => *one,
-        [] => {
-            return Err(match found.first() {
-                Some(workspace) if str_field(workspace, "role") == Some("removed") => {
-                    removed_sentence(Some(typed))
-                }
-                Some(_) => format!("{shown} on {server} was deleted by its host."),
-                None => {
-                    let mut sentence = format!(
-                        "No workspace named {shown}{hosted_by} on {server} is yours or invites you."
-                    );
-                    if status["workspaces_scan"]["unsupported"]
-                        .as_u64()
-                        .is_some_and(|n| n > 0)
-                    {
-                        sentence.push_str(" Some workspaces there run an older Crew, which can't say whether you belong to them: open one of those with the invitation its host sends.");
-                    }
-                    sentence
-                }
-            })
-        }
-        many => {
-            let mut hosts: Vec<String> = many
-                .iter()
-                .filter_map(|workspace| hosts_of(workspace))
-                .collect();
-            hosts.sort();
-            hosts.dedup();
-            return Err(if hosts.len() > 1 {
-                format!(
-                    "More than one host on {server} has a workspace named {shown}: {}. Choose one with --host USERNAME.",
-                    hosts
-                        .iter()
-                        .map(|host| format!("@{}", safe_text(host)))
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                )
-            } else {
-                format!(
-                    "There is more than one workspace named {shown}{hosted_by} on {server}, so Biorouter can't tell which one to open."
-                )
-            });
-        }
+        [] => return Err(none_to_open(status, &found, typed, &hosted_by, server)),
+        many => return Err(ambiguous_open(many, &shown, &hosted_by, server)),
     };
+    if let Some(sentence) = identity_conflict_in(one) {
+        return Err(sentence);
+    }
     if str_field(one, "state") == Some("stopped") {
         return Err(if str_field(one, "role") == Some("host") {
             format!(
-                "{shown} is stopped. Start it with biorouter crew setup --server {} --start {}, then open it.",
-                safe_text(&super::shell_word(server)),
-                safe_text(&super::shell_word(typed))
+                "{shown} is stopped. Start it with {}, then open it.",
+                start_command(server, route, typed)
             )
         } else {
-            let host = hosts_of(one).map_or_else(
+            let host = host_of(one).map_or_else(
                 || "its host".to_owned(),
                 |host| format!("@{}", safe_text(&host)),
             );
@@ -1645,6 +1765,61 @@ pub fn workspace_to_open(
         return Err(format!("The server didn't say how to open {shown}."));
     }
     Ok(one.clone())
+}
+
+/// Why [`workspace_to_open`] found nothing to open among the rows named `typed` (`found`): the
+/// person was removed, the host deleted it, or nothing of that name is theirs.
+fn none_to_open(
+    status: &Value,
+    found: &[&Value],
+    typed: &str,
+    hosted_by: &str,
+    server: &str,
+) -> String {
+    let shown = display_text(typed);
+    match found.first() {
+        Some(workspace) if str_field(workspace, "role") == Some("removed") => {
+            removed_sentence(Some(typed))
+        }
+        Some(_) => format!("{shown} on {server} was deleted by its host."),
+        None => {
+            let mut sentence = format!(
+                "No workspace named {shown}{hosted_by} on {server} is yours or invites you."
+            );
+            if status["workspaces_scan"]["unsupported"]
+                .as_u64()
+                .is_some_and(|n| n > 0)
+            {
+                sentence.push_str(" Some workspaces there run an older Crew, which can't say whether you belong to them: open one of those with the invitation its host sends.");
+            }
+            sentence
+        }
+    }
+}
+
+/// Why [`workspace_to_open`] cannot choose among `many` rows of one name: the hosts, when there
+/// are several, so `--host` chooses.
+fn ambiguous_open(many: &[&Value], shown: &str, hosted_by: &str, server: &str) -> String {
+    let mut hosts: Vec<String> = many
+        .iter()
+        .filter_map(|workspace| host_of(workspace))
+        .collect();
+    hosts.sort();
+    hosts.dedup();
+    if hosts.len() > 1 {
+        format!(
+            "More than one host on {server} has a workspace named {shown}: {}. Choose one with --host USERNAME.",
+            hosts
+                .iter()
+                .map(|host| format!("@{}", safe_text(host)))
+                .collect::<Vec<_>>()
+                .join(", ")
+        )
+    } else {
+        format!(
+            "There is more than one workspace named {shown}{hosted_by} on {server}, so Biorouter can't tell which one to open."
+        )
+    }
 }
 
 /// What `rejoin` says (AO-9): the workspace and the person it added this computer as, the
@@ -2250,6 +2425,29 @@ impl Directory {
         }
     }
 
+    /// The active member a former principal's account is now, when there is one: the same
+    /// username, and the same UID where both are known. A member who was removed and joined
+    /// again, or whose earlier entry the workspace replaced, has a new principal; what they
+    /// wrote under the old one is theirs, so it is shown as that member, not as a former
+    /// member (live finding). `None` for an active principal, or one nobody holds now.
+    fn now_member(&self, person: &Person) -> Option<&Person> {
+        if person.active {
+            return None;
+        }
+        let username = person.username.as_deref()?;
+        self.people.values().find(|other| {
+            other.active
+                && other.username.as_deref() == Some(username)
+                && (other.uid.is_none() || person.uid.is_none() || other.uid == person.uid)
+        })
+    }
+
+    /// How `person` reads in a line: as the member their account is now ([`Self::now_member`]),
+    /// else as themselves.
+    fn person_label(&self, person: &Person) -> String {
+        self.now_member(person).unwrap_or(person).label()
+    }
+
     /// The host: projected by newer brokers, else the active principal holding the host's UID
     /// (one active principal per UID, so the match is unique).
     fn host_id(&self) -> Option<&str> {
@@ -2374,10 +2572,10 @@ pub fn person_label(directory: &Directory, principal_id: &str, show_ids: bool) -
 /// the ID when asked.
 #[allow(dead_code)] // For the command layer's confirmations and refusals.
 pub fn authority_label(directory: &Directory, principal_id: &str, show_ids: bool) -> String {
-    let label = directory
-        .people
-        .get(principal_id)
-        .map_or_else(|| UNKNOWN_MEMBER.to_owned(), Person::label);
+    let label = directory.people.get(principal_id).map_or_else(
+        || UNKNOWN_MEMBER.to_owned(),
+        |person| directory.person_label(person),
+    );
     Ctx::new(directory.clone(), show_ids, Clock::System).with_id(label, "ID", Some(principal_id))
 }
 
@@ -2678,9 +2876,10 @@ impl Ctx {
     }
 
     fn person(&self, id: Option<&str>) -> String {
-        let label = id
-            .and_then(|id| self.dir.people.get(id))
-            .map_or_else(|| UNKNOWN_MEMBER.to_owned(), |person| person.label());
+        let label = id.and_then(|id| self.dir.people.get(id)).map_or_else(
+            || UNKNOWN_MEMBER.to_owned(),
+            |person| self.dir.person_label(person),
+        );
         self.with_id(label, "ID", id)
     }
 
@@ -2833,7 +3032,11 @@ impl Ctx {
             .and_then(|id| self.dir.people.get(id))
             .cloned()
             .unwrap_or_else(|| person_from(principal));
-        let mut row = person.label();
+        // An earlier entry of someone who is a member again is listed as that member.
+        let mut row = match self.dir.now_member(&person) {
+            Some(member) => format!("{} · a member again", member.label()),
+            None => person.label(),
+        };
         if self.is_actor(id) {
             row.push_str(" · you");
         }
@@ -4813,6 +5016,111 @@ mod tests {
         assert_no_machine_ids(&text);
     }
 
+    /// Live finding: a member who was removed and joined again has a new principal, and what
+    /// they wrote under the old one is shown as that member, not as a former member. Another
+    /// account that once had the name (another UID) stays a former member.
+    #[test]
+    fn an_earlier_entry_of_a_member_again_is_shown_as_that_member() {
+        let snapshot = json!({
+            "workspace": {"id": WORKSPACE, "name": "lab", "host_uid": 1000},
+            "actor": {"id": ALICE, "username": "alice", "uid": 1000},
+            "principals": [
+                {"id": ALICE, "username": "alice", "uid": 1000},
+                {"id": BOB, "username": "dave", "display_name": "Dave Old", "uid": 1022}
+            ],
+            "former_principals": [
+                {"id": DAVE, "username": "dave", "display_name": "Dave Old", "uid": 1022, "active": false},
+                {"id": CAROL, "username": "carol", "uid": 1030, "active": false}
+            ]
+        });
+        let page = json!({
+            "messages": [message("0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d", DAVE, NOW - 86_400 * 3, "Old notes.")],
+            "people": {DAVE: {"username":"dave","display_name":"Dave Old","active":false}},
+            "channel_names": {GENERAL: "general"},
+            "cursor": "0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d",
+        });
+        let text = named(&page, &snapshot);
+        assert_eq!(
+            text,
+            format!(
+                "{} (@dave) · Sep 21 01:50 · Restricted  Old notes.",
+                q("Dave Old")
+            )
+        );
+        let directory = Directory::from_snapshot(&snapshot);
+        assert_eq!(
+            authority_label(&directory, DAVE, false),
+            format!("{} (@dave)", q("Dave Old"))
+        );
+        let shown = named(&snapshot, &snapshot);
+        assert!(
+            shown.contains(&format!("  {} (@dave) · a member again", q("Dave Old"))),
+            "{shown}"
+        );
+        assert!(shown.contains("  @carol · former member"), "{shown}");
+        // The same name held by another account now is not the same person.
+        let mut other = snapshot.clone();
+        other["principals"][1]["uid"] = json!(1099);
+        assert_eq!(
+            authority_label(&Directory::from_snapshot(&other), DAVE, false),
+            format!("{} (@dave) · former member", q("Dave Old"))
+        );
+    }
+
+    /// The restart refusals made before anything is stopped are said in the server's own
+    /// words, with no command to start the workspace by hand: it still runs, and that command
+    /// would be refused the same way.
+    #[test]
+    fn a_restart_refused_before_any_stop_says_why_in_its_own_words() {
+        let status = json!({
+            "intent": "install",
+            "outcome": {"installed_version": "1.94.2", "restart_failed": [
+                {"workspace_id": "a", "name": "lab", "code": "identity_conflict",
+                 "message": "lab on leo stopped but didn't start again. Start it on leo with x.",
+                 "command": "biorouter-crew start --workspace-id a",
+                 "detail": "Error: identity_conflict: Workspace a is kept in more than one folder of ~/.local/share/biorouter-crew (lab, lab-2). Move every copy out of that folder, keeping the workspace's own, then try again."},
+                {"workspace_id": "b", "name": "old-lab", "code": "program_missing",
+                 "message": "old-lab on leo stopped but didn't start again. Start it on leo with x.",
+                 "command": "biorouter-crew start --workspace-id b",
+                 "detail": "{\"error\": \"program_missing: /home/w/.local/bin/biorouter-crew is missing or cannot run, so the running broker was left as it is.\"}"},
+                {"workspace_id": "c", "name": "bare-lab", "code": "program_missing",
+                 "message": "bare-lab stopped.", "command": "biorouter-crew start --workspace-id c"}
+            ]}
+        });
+        let lines = setup_summary_lines(&status, "wanjun@leo", None);
+        assert_eq!(
+            lines[1..],
+            [
+                "lab: Workspace a is kept in more than one folder of ~/.local/share/biorouter-crew (lab, lab-2). Move every copy out of that folder, keeping the workspace's own, then try again.",
+                "old-lab: /home/w/.local/bin/biorouter-crew is missing or cannot run, so the running broker was left as it is. Install it again with biorouter crew setup --server wanjun@leo.",
+                "bare-lab: The Crew program in your account on wanjun@leo is missing or can't run, so it was left as it was. Install it again with biorouter crew setup --server wanjun@leo.",
+            ]
+        );
+    }
+
+    /// L3: the listing a job reports when it ends is the one printed, so a workspace it just
+    /// started or restarted reads as running on the new Crew, never as it was before.
+    #[test]
+    fn the_listing_after_a_start_shows_what_runs_now() {
+        let status = json!({
+            "intent": "install",
+            "server": {"login": "wanjun@leo"},
+            "workspaces": [{"workspace_id": "a", "name": "acct-lab", "role": "host", "state": "running",
+                            "version": "1.94.2", "binary_current": true, "this_computer": "connected"}],
+            "outcome": {"installed_version": "1.94.2", "reused": true,
+                        "restarted": [{"workspace_id": "a", "name": "acct-lab", "to_version": "1.94.2"}]}
+        });
+        assert_eq!(
+            setup_summary_lines(&status, "wanjun@leo", None),
+            [
+                "Crew 1.94.2 was already installed in your account on wanjun@leo.",
+                "Workspaces on wanjun@leo for your account:",
+                "  acct-lab · you host it · running Crew 1.94.2 · connected on this computer",
+                "acct-lab now runs Crew 1.94.2.",
+            ]
+        );
+    }
+
     #[test]
     fn show_ids_appends_the_ids_to_history() {
         let text = with_ids(&history(), &alice_snapshot());
@@ -6632,7 +6940,7 @@ mod tests {
                 "Crew 1.94.1 in your account on leo is too old to list workspaces.",
                 "Restarted baranzini-lab: it ran Crew 1.94.1 and now runs Crew 1.94.2.",
                 "spare-lab now runs Crew 1.94.2.",
-                "busy-lab still runs Crew 1.94.1, not Crew 1.94.2, and 3 other people are connected to it, so it wasn't restarted. To restart it anyway, run biorouter crew setup --server wanjun@leo --restart; what they have running there stops.",
+                "busy-lab still runs Crew 1.94.1, not Crew 1.94.2, and 3 other people are connected to it, so it wasn't restarted. To restart it anyway, run biorouter crew setup --server wanjun@leo --restart-workspace busy-lab; what they have running there stops.",
                 "new-lab runs Crew 1.95.0, newer than Crew 1.94.2, so it was left running.",
                 "tmp-lab still runs Crew 1.94.1, not Crew 1.94.2, and keeps its state outside ~/.local/share/biorouter-crew, so setup can't restart it. Restart it on wanjun@leo yourself.",
                 "stuck-lab: The broker did not stop in 15 seconds.",
@@ -6662,11 +6970,11 @@ mod tests {
             Err("You don't host a workspace named shared on leo.".to_owned())
         );
         assert_eq!(
-            workspace_to_open(&listing, "shared", None, "leo"),
+            workspace_to_open(&listing, "shared", None, "leo", ""),
             Err("shared isn't running on leo. Ask @alice to start it.".to_owned())
         );
         assert_eq!(
-            workspace_to_open(&listing, "shared", Some("bob"), "leo"),
+            workspace_to_open(&listing, "shared", Some("bob"), "leo", ""),
             Err(
                 "No workspace named shared hosted by @bob on leo is yours or invites you."
                     .to_owned()
@@ -6683,7 +6991,7 @@ mod tests {
             Err("lab on leo was deleted, so it can't be started.".to_owned())
         );
         assert_eq!(
-            workspace_to_open(&deleted, "lab", None, "leo"),
+            workspace_to_open(&deleted, "lab", None, "leo", ""),
             Err("lab on leo was deleted by its host.".to_owned())
         );
     }

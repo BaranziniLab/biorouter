@@ -4,7 +4,7 @@ import { Disclosure } from '../../ui/disclosure';
 import { sanitizeDisplayText } from '../identity';
 import { openCopy, setupCopy, trustCopy } from './copy';
 import { hostKeyFingerprints } from './joinText';
-import type { SetupWorkspace } from './setup';
+import { setupWorkspaceKey, type SetupWorkspace } from './setup';
 
 /**
  * A found workspace as a person reads it, host named (AO-6's trust rule): "baranzini-lab, hosted
@@ -17,10 +17,13 @@ export function foundWorkspaceTitle(entry: SetupWorkspace): string {
   return host ? openCopy.hostedBy(name, host) : name;
 }
 
-/** The facts under a found workspace: what you are there, where it stands, its Crew. */
+/**
+ * The facts under a found workspace: what you are there, where it stands, its Crew. A workspace
+ * you host already says so in its title ("…, hosted by you"), so the role is not said twice.
+ */
 export function foundWorkspaceMeta(entry: SetupWorkspace): string {
   return [
-    openCopy.role[entry.role],
+    entry.role === 'host' ? null : openCopy.role[entry.role],
     openCopy.state[entry.state],
     entry.version ? openCopy.version(entry.version) : null,
     openCopy.thisComputer[entry.thisComputer] || null,
@@ -51,16 +54,19 @@ export function SetupWorkspaceList({
   if (workspaces.length === 0) return null;
   return (
     <section className="flex min-w-0 flex-col gap-1.5" aria-label={label} data-testid={testId}>
-      <h3 className="text-caps text-text-muted">{label}</h3>
+      {/* Not the caps section style: the label holds the login the person typed, whose case
+          is theirs (an SSH alias can be case-sensitive). */}
+      <h3 className="text-label text-text-muted">{label}</h3>
       <ul className="biorouter-settings-list">
         {workspaces.map((entry) => {
           const buttons = actions?.(entry);
           const extra = note?.(entry);
           return (
             <li
-              key={entry.workspaceId}
+              key={setupWorkspaceKey(entry)}
               className="biorouter-settings-row flex min-w-0 flex-col items-start gap-1 px-3 py-2"
               data-crew-found-workspace={entry.workspaceId}
+              data-crew-found-row={setupWorkspaceKey(entry)}
             >
               <div className="flex w-full min-w-0 flex-wrap items-center justify-between gap-2">
                 <div className="flex min-w-0 flex-col gap-0.5">

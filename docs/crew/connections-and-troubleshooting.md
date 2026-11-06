@@ -235,6 +235,7 @@ For messages on the join screen, see [Problems while you wait](joining-a-workspa
 | "This computer no longer has its key for {workspace}. Choose Add this computer again to make a new one." | This computer lost its key, for example after its keychain was cleared. Choose **Add this computer again** ([Add this computer again](joining-a-workspace.md#add-this-computer-again)). |
 | "{workspace} no longer recognizes this computer. Choose Add this computer again while you are still a member." | The workspace dropped this computer's key, for example after you removed it in **Keys and security…** on another computer, but your account is still a member. Choose **Add this computer again**. |
 | "You removed this computer from {workspace}. Choose Add this computer again to use it here." | You removed this computer in its own **Keys and security…**. Choose **Add this computer again**. |
+| "Crew can't follow this account's new name, @{new}, because @{other} already uses it in {workspace}. Rename the account back to @{old} on the server and remove @{other} from {workspace} before renaming it again." | You host the workspace, and your server account was renamed to a name another member already uses. Only you can fix it, in the order the sentence gives ([Limits of the host role](hosting-a-workspace.md#limits-of-the-host-role)). |
 | "Crew is being set up on {server}." or "A setup on {server} is waiting for you to sign in." | A chat or a terminal started a setup on that server. Choose **Sign in** when it waits for you, and type your password or code in the Sign in window. |
 | "{workspace}'s server runs an older Crew. Ask @{host} to update it." or "…Update it with biorouter crew setup --server {login}." | What you tried needs a current Crew on the server. Ask your host to update it, or, as the host, run that command ([Keep Crew current on the server](hosting-a-workspace.md#keep-crew-current-on-the-server)). |
 | "You were removed from {workspace}. Ask a member to invite you again." | The workspace removed your account. Ask a member for a new invitation. |
@@ -245,7 +246,7 @@ For messages on the join screen, see [Problems while you wait](joining-a-workspa
 
 ### Live update messages
 
-**Retry** in the connection bar checks the connection first.
+**Retry** in the connection bar checks the connection first. When live updates stop because this computer lost its key for the workspace, or the workspace no longer recognizes it, the connection bar shows the matching note from [Connection messages](#connection-messages), with **Add this computer again**, rather than one of these.
 
 | Message | What to do |
 |---|---|

@@ -591,13 +591,15 @@ pub enum SetupOutdatedReason {
 pub struct SetupRestartFailed {
     pub workspace_id: String,
     pub name: Option<String>,
-    /// The server's code (`stop_timeout`, `start_failed`, `not_found`), an SSH code, or
-    /// `crew_setup_timed_out`.
+    /// The server's code (`stop_timeout`, `start_failed`, `not_found`, or a refusal made
+    /// before anything was stopped, such as `program_missing`, `busy` or `identity_conflict`),
+    /// an SSH code, or `crew_setup_timed_out`. `start_failed` also stands for a failure whose
+    /// output named no code.
     pub code: String,
     /// One plain sentence for a person.
     pub message: String,
     /// The command that starts the workspace by hand on the server; `null` when there is none
-    /// to give.
+    /// to give, as when the workspace was not stopped and still runs.
     pub command: Option<String>,
     /// What the server printed, bounded, for Copy details.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1586,6 +1588,131 @@ fn server_refusal(stdout: &[u8], stderr: &str) -> Option<(String, String)> {
                 .and_then(split)
                 .or_else(|| answer.get("error").and_then(Value::as_str).and_then(split))
         })
+}
+
+/// Whether a restart's refusal `code`, with the server's own words `said`, came before the
+/// server stopped anything (design AO-7), so the workspace still runs as it did. `restart`
+/// checks the workspace's folder, its lock, the installed program and the running broker
+/// first. `stop_failed` is one only when the stop signal could not be sent; once it was sent,
+/// the broker may have stopped. `workspace_deleted` is one only in `restart`'s own words, since
+/// a start after the stop words it otherwise.
+fn refused_before_stopping(code: &str, said: Option<&str>) -> bool {
+    match code {
+        "program_missing"
+        | "busy"
+        | "restart_lock"
+        | "identity_conflict"
+        | "identity_mismatch"
+        | "invalid_params"
+        | "unsupported"
+        | "forbidden"
+        | "identity_unavailable" => true,
+        "stop_failed" => {
+            said.is_some_and(|said| said.starts_with("the broker could not be signalled"))
+        }
+        "workspace_deleted" => said.is_some_and(|said| said.ends_with("so it is not restarted.")),
+        _ => false,
+    }
+}
+
+/// The server's own sentence for a person: one line without control characters, at most 600
+/// characters, ending as a sentence. `None` when there is none.
+fn server_sentence(said: &str) -> Option<String> {
+    let line: String = said.chars().filter(|c| !c.is_control()).collect();
+    let line = line.trim();
+    if line.is_empty() {
+        return None;
+    }
+    let mut sentence: String = line.chars().take(600).collect();
+    if sentence.len() < line.len() {
+        sentence.push('…');
+    } else if !sentence.ends_with(['.', '!', '?']) {
+        sentence.push('.');
+    }
+    Some(sentence)
+}
+
+/// What a person reads about the workspace `name` on `server` whose restart (`restarted` is
+/// `Some(true)`) or start (`Some(false)`) failed with the server's `code` and own words `said`
+/// (`None` when its output named no code), or that neither reached (`None`); and whether
+/// `command`, which starts it by hand, helps. "Stopped but didn't start again" is said only
+/// when the server said `start_failed`. A refusal made before anything was stopped says the
+/// workspace still runs the older Crew, and gives no command to start it.
+fn restart_failure_words(
+    name: &str,
+    server: &str,
+    command: &str,
+    code: &str,
+    said: Option<&str>,
+    restarted: Option<bool>,
+) -> (String, bool) {
+    let own = said.and_then(server_sentence);
+    match (code, restarted) {
+        ("stop_timeout", _) => (
+            format!(
+                "{name} on {server} didn't stop in time, so it still runs the older Crew. Try again later."
+            ),
+            true,
+        ),
+        ("not_found", _) => (
+            format!("Crew on {server} found no workspace {name} in your account to start."),
+            false,
+        ),
+        // Crew keeps the workspace in more than one folder; its own sentence names them.
+        ("identity_conflict", Some(false)) => (
+            match own {
+                Some(own) => format!("Biorouter couldn't start {name} on {server}. {own}"),
+                None => format!(
+                    "Biorouter couldn't start {name} on {server}, because your account keeps it in more than one folder there."
+                ),
+            },
+            false,
+        ),
+        (_, Some(true)) if refused_before_stopping(code, said) => {
+            let kept = format!("{name} on {server} was not restarted and still runs the older Crew");
+            let message = match (code, own) {
+                ("identity_conflict", Some(own)) => format!("{kept}. {own}"),
+                ("identity_conflict", None) => {
+                    format!("{kept}, because your account keeps it in more than one folder there.")
+                }
+                ("busy", _) => format!(
+                    "{kept}, because another restart was running in your account. Try again when it has finished."
+                ),
+                ("program_missing", _) => format!(
+                    "{kept}, because Crew's program in your account is missing or can't run. Set up Crew again."
+                ),
+                ("workspace_deleted", _) => {
+                    format!("{kept}, because it was deleted and is erasing itself.")
+                }
+                _ => format!("{kept}."),
+            };
+            (message, false)
+        }
+        ("start_failed", Some(true)) if said.is_some() => (
+            format!(
+                "{name} on {server} stopped but didn't start again. Start it on {server} with {command}."
+            ),
+            true,
+        ),
+        (_, Some(true)) => (
+            format!(
+                "Crew on {server} didn't restart {name}, and Biorouter can't tell whether it still runs. If it isn't running, start it on {server} with {command}."
+            ),
+            true,
+        ),
+        (_, Some(false)) => (
+            format!(
+                "Biorouter couldn't start {name} on {server}. Start it on {server} with {command}."
+            ),
+            true,
+        ),
+        (_, None) => (
+            format!(
+                "Biorouter couldn't reach {server} to update {name}. If it isn't running, start it on {server} with {command}."
+            ),
+            true,
+        ),
+    }
 }
 
 /// The server as a person calls it in a sentence: the host of `user@host`, or the alias.
@@ -3584,7 +3711,7 @@ impl Job {
                 &CancellationToken::new(),
             )
             .await
-            .map_err(|stop| self.restart_failure(workspace, &stop.error.code, None, None))?;
+            .map_err(|stop| self.restart_failure(workspace, &stop.error.code, None, None, None))?;
         let answer = first_object(&ran.stdout)
             .filter(|answer| answer.get("restarted").and_then(Value::as_bool) == Some(true));
         match answer {
@@ -3622,7 +3749,7 @@ impl Job {
                 &CancellationToken::new(),
             )
             .await
-            .map_err(|stop| self.restart_failure(workspace, &stop.error.code, None, None))?;
+            .map_err(|stop| self.restart_failure(workspace, &stop.error.code, None, None, None))?;
         let answer = first_object(&ran.stdout).filter(|answer| {
             answer.get("started_pid").is_some_and(Value::is_u64)
                 && answer
@@ -3651,55 +3778,46 @@ impl Job {
     ) -> SetupRestartFailed {
         let printed = printed(&ran.stdout, &ran.stderr);
         if ran.timed_out {
-            return self.restart_failure(workspace, "crew_setup_timed_out", None, printed);
+            return self.restart_failure(workspace, "crew_setup_timed_out", None, None, printed);
         }
         if ran.exit_code == Some(255) {
             let kind = transport::classify_exit(ran.exit_code, &ran.stderr);
-            return self.restart_failure(workspace, kind.api_code(), None, printed);
+            return self.restart_failure(workspace, kind.api_code(), None, None, printed);
         }
-        let code = server_refusal(&ran.stdout, &ran.stderr)
-            .map_or_else(|| "start_failed".to_owned(), |(code, _)| code);
-        self.restart_failure(workspace, &code, Some(restarted), printed)
+        // Output that names no code is still recorded as `start_failed`, but is not said as a
+        // stop: nothing says the server stopped anything.
+        match server_refusal(&ran.stdout, &ran.stderr) {
+            Some((code, said)) => {
+                self.restart_failure(workspace, &code, Some(&said), Some(restarted), printed)
+            }
+            None => self.restart_failure(workspace, "start_failed", None, Some(restarted), printed),
+        }
     }
 
-    /// A [`SetupRestartFailed`] for `workspace`, said for a person by `code`. `restarted` is
-    /// `Some(true)` for a restart, `Some(false)` for a start, `None` when neither ran.
+    /// A [`SetupRestartFailed`] for `workspace`, said for a person by `code` and the server's
+    /// own words `said` ([`restart_failure_words`]). `restarted` is `Some(true)` for a restart,
+    /// `Some(false)` for a start, `None` when neither ran.
     fn restart_failure(
         &self,
         workspace: &SetupWorkspace,
         code: &str,
+        said: Option<&str>,
         restarted: Option<bool>,
         detail: Option<String>,
     ) -> SetupRestartFailed {
-        let server = self.server();
         let name = workspace.name.as_deref().unwrap_or("A workspace");
         let command = format!(
             "{INSTALLED_PATH} start --workspace-id {}",
             workspace.workspace_id
         );
-        let message = match (code, restarted) {
-            ("stop_timeout", _) => format!(
-                "{name} on {server} didn't stop in time, so it still runs the older Crew. Try again later."
-            ),
-            ("not_found", _) => format!(
-                "Crew on {server} found no workspace {name} in your account to start."
-            ),
-            (_, Some(true)) => format!(
-                "{name} on {server} stopped but didn't start again. Start it on {server} with {command}."
-            ),
-            (_, Some(false)) => format!(
-                "Biorouter couldn't start {name} on {server}. Start it on {server} with {command}."
-            ),
-            (_, None) => format!(
-                "Biorouter couldn't reach {server} to update {name}. If it isn't running, start it on {server} with {command}."
-            ),
-        };
+        let (message, by_hand) =
+            restart_failure_words(name, self.server(), &command, code, said, restarted);
         SetupRestartFailed {
             workspace_id: workspace.workspace_id.clone(),
             name: workspace.name.clone(),
             code: code.to_owned(),
             message,
-            command: (code != "not_found").then_some(command),
+            command: by_hand.then_some(command),
             detail,
         }
     }

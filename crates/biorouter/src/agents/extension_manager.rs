@@ -2382,6 +2382,24 @@ impl ExtensionManager {
         exclude: &str,
         admitted: Option<crate::privacy::CallCapability>,
     ) -> ExtensionResult<Vec<Tool>> {
+        self.get_prefixed_tools_excluding_for(exclude, admitted, None)
+            .await
+    }
+
+    /// [`Self::get_prefixed_tools_excluding`] for one chat, `session_id`, when the caller knows
+    /// which (every Code Execution handler does): its Crew tools are then the ones that chat is
+    /// offered, by the rule its own tool list follows (`Agent::list_tools`: gate B-1's
+    /// `authorize_session_tool`, then `CrewToolStanding::offers`). A granted chat imports exactly
+    /// `crew.connections` and `crew.request`, a person's own chat without a grant exactly
+    /// `crew.read` and `crew.change`, and any other session none, so a script is never handed a
+    /// binding its chat is refused (AO-12: "absent from the roster, never offered and then
+    /// refused"). Without a session, only what holds for every chat in this process is decided.
+    pub async fn get_prefixed_tools_excluding_for(
+        &self,
+        exclude: &str,
+        admitted: Option<crate::privacy::CallCapability>,
+        session_id: Option<&str>,
+    ) -> ExtensionResult<Vec<Tool>> {
         let snapshot = self.get_all_tools_cached().await?;
         let reach = self.extension_reach(admitted).await;
         let mut tools =
@@ -2414,10 +2432,15 @@ impl ExtensionManager {
         // rule the roster asks (`CrewToolStanding::offers`): with no host installed neither
         // `crew__read` nor `crew__change` runs, and where no person's proof can be obtained
         // (`biorouter serve`) no change's card can be allowed, so a script is not handed a
-        // binding that is refused the moment it is called. Only what holds for every chat in
-        // this process is decided here; the chat's own standing (a grant, an app's or a
-        // subagent's session) is still dispatch's to refuse, since this catalogue is not told
-        // which chat it is for.
+        // binding that is refused the moment it is called. Told which chat the catalogue is
+        // for, that chat's own standing decides every Crew tool, as its tool list's does (a
+        // grant, an app's or a subagent's session); told none, only what holds for every chat
+        // in this process is decided, and the rest stays dispatch's to refuse.
+        if let Some(session_id) = session_id {
+            return Ok(
+                crate::agents::crew_extension::offered_crew_tools(self, session_id, tools).await,
+            );
+        }
         let person_tools = crate::agents::crew_extension::CrewToolStanding {
             scoped: false,
             persons_chat: true,

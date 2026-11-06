@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Button } from '../../ui/button';
 import { Note } from '../../ui/note';
 import { crewErrorCode } from '../api/errors';
@@ -16,7 +16,9 @@ const CREW_NOT_FOUND = 'crew_not_found';
  * chat access pane: "Reads lab as you", each with Revoke. A chat without Crew access reads only
  * after the person allowed it once per workspace; this is where that permission is taken back.
  * Nothing is shown while there is none. Lists that cannot be read are left out quietly: the
- * consent is kept on this computer, and `biorouter crew grants list` shows the same.
+ * consent is kept on this computer, and `biorouter crew grants list` shows the same. A Revoke takes
+ * its own button away, so focus goes to the next Revoke, else to the note that says what happened
+ * (live QA: it fell to the page).
  */
 export function PersonReads({ sessionId }: { sessionId: string | null }) {
   const { connections } = useCrew();
@@ -26,6 +28,15 @@ export function PersonReads({ sessionId }: { sessionId: string | null }) {
   const [reads, setReads] = useState<CrewPersonRead[]>([]);
   const [busy, setBusy] = useState<string | null>(null);
   const [said, setSaid] = useState<{ text: string; tone: 'info' | 'danger' } | null>(null);
+  const root = useRef<HTMLElement>(null);
+  const [focusNext, setFocusNext] = useState(0);
+  useEffect(() => {
+    if (focusNext === 0) return;
+    const next =
+      root.current?.querySelector<HTMLElement>('[data-crew-read-revoke]:not([disabled])') ??
+      root.current?.querySelector<HTMLElement>('[data-crew-read-said]');
+    next?.focus();
+  }, [focusNext]);
 
   useEffect(() => {
     setSaid(null);
@@ -69,11 +80,13 @@ export function PersonReads({ sessionId }: { sessionId: string | null }) {
       }
     } finally {
       setBusy(null);
+      setFocusNext((count) => count + 1);
     }
   };
 
   return (
     <section
+      ref={root}
       className="flex min-w-0 flex-col gap-1.5 pt-3"
       aria-label={readsCopy.heading}
       data-testid="crew-person-reads"
@@ -105,6 +118,7 @@ export function PersonReads({ sessionId }: { sessionId: string | null }) {
                     size="sm"
                     aria-label={readsCopy.revokeLabel(workspace)}
                     disabled={busy !== null}
+                    data-crew-read-revoke=""
                     onClick={() => void revoke(read)}
                   >
                     {readsCopy.revoke}
@@ -116,7 +130,12 @@ export function PersonReads({ sessionId }: { sessionId: string | null }) {
         </>
       ) : null}
       {said ? (
-        <Note tone={said.tone} role={said.tone === 'danger' ? 'alert' : 'status'}>
+        <Note
+          tone={said.tone}
+          role={said.tone === 'danger' ? 'alert' : 'status'}
+          tabIndex={-1}
+          data-crew-read-said=""
+        >
           {said.text}
         </Note>
       ) : null}

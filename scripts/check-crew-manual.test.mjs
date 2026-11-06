@@ -1697,11 +1697,12 @@ test("account-sentences: the first pass's words, written from the design, are re
   const ACCOUNT_COPY = 'ui/desktop/src/components/crew/account/copy.ts';
   const TOOL_HOST = 'crates/biorouter-server/src/routes/crew_tools/mod.rs';
   const AGENT_ROUTES = 'crates/biorouter-server/src/routes/agent.rs';
-  // The badge, buttons and card answer the first pass named, which no screen shows.
+  // The badge, buttons and card answer the first pass named, which no screen shows. The badge
+  // read "This device" until the fix wave of 2026-11 renamed it; the old name is refused now.
   assertCaught(
-    { [PRIVACY]: (text) => text.replaceAll('**This device**', '**This computer**') },
+    { [PRIVACY]: (text) => text.replaceAll('**This computer**', '**This device**') },
     'account-sentences',
-    /privacy-and-security\.md does not name the control .* shows as \*\*This device\*\*/
+    /privacy-and-security\.md does not name the control .* shows as \*\*This computer\*\*/
   );
   assertCaught(
     { [HOSTING]: (text) => text.replaceAll('**Open it on this computer**', '**Open**') },
@@ -1773,6 +1774,72 @@ test("account-sentences: the first pass's words, written from the design, are re
     },
     'account-sentences',
     /found no the read-consent card's first line/
+  );
+});
+
+test('account-sentences: the words the 2026-11 fix wave replaced are refused (account ownership)', () => {
+  const TOOL_HOST = 'crates/biorouter-server/src/routes/crew_tools/mod.rs';
+  const ONBOARDING_COPY = 'ui/desktop/src/components/crew/onboarding/copy.ts';
+  // The consent card's old second line, as the first pass of the manual quoted it.
+  assertCaught(
+    {
+      [AGENTS]: swap(
+        '"It can then read what you see in chen-lab on lab.example.edu (messages, files, names and the context document), and every change still asks you first. Take this back in this chat\'s Crew bar, or with biorouter crew grants revoke 20260924_2 --reads."',
+        '"It can then read what you see in chen-lab on lab.example.edu: messages, files, names and the context document, until you take this back with biorouter crew grants revoke. It changes nothing; every change still asks you."'
+      ),
+    },
+    'account-sentences',
+    /agents-and-chat-access\.md quotes "It can then read what you see in chen-lab on lab\.example\.edu: messages/
+  );
+  // The consent lasts, so its button is not "once".
+  assertCaught(
+    { [AGENTS]: (text) => text.replaceAll('**Allow**', '**Allow once**') },
+    'account-sentences',
+    /agents-and-chat-access\.md does not name the control .* shows as \*\*Allow\*\*/
+  );
+  // A decline the code rewords, and the manual keeps the old words.
+  assertCaught(
+    {
+      [TOOL_HOST]: swap(
+        'READ_DECLINED: &str = "The person declined. Nothing was read.";',
+        'READ_DECLINED: &str = "The person declined. Nothing was read here.";'
+      ),
+    },
+    'account-sentences',
+    /quotes "The person declined\. Nothing was read\.", which is not how READ_DECLINED/
+  );
+  // The question for a count the server could not give, reworded in the code.
+  assertCaught(
+    {
+      [ONBOARDING_COPY]: swap(
+        "'Other people may be connected. Their running agent commands will stop.'",
+        "'Other people may be connected. Their running agent commands end.'"
+      ),
+    },
+    'account-sentences',
+    /joining-a-workspace\.md quotes "Other people may be connected\. Their running agent commands will stop\."/
+  );
+  // The page a host is sent to drops the host's own sentence for a refused rename.
+  assertCaught(
+    {
+      [HOSTING]: swap(
+        ' such as "Crew can\'t follow this account\'s new name, @achen, because @AChen already uses it in chen-lab. Rename the account back to @alice on the server and remove @AChen from chen-lab before renaming it again."',
+        ''
+      ),
+    },
+    'account-sentences',
+    /hosting-a-workspace\.md does not quote the host's refused rename/
+  );
+  // The command line's invitation line on a server that knows accounts, gone from its page.
+  assertCaught(
+    {
+      'docs/crew/command-line.md': swap(
+        ' and `enroll invite` ends with ``@bob joins as soon as they open the workspace. There is no code to approve.``',
+        ''
+      ),
+    },
+    'account-sentences',
+    /command-line\.md does not quote the account invitation's last line/
   );
 });
 

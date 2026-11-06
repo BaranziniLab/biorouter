@@ -335,11 +335,9 @@ pub(super) fn workspace_rename(ctx: &Ctx) -> BoxFuture<'_, Result<Value>> {
     Box::pin(async move {
         let name = ctx.required("name")?;
         let target = target(ctx).await?;
-        let mut card = Card::new(format!(
-            "Rename {} on {} to {name}, for everyone",
-            target.workspace, target.server
-        ))
-        .show("name", name.clone());
+        let mut card = target
+            .card(|here| format!("Rename {here} to {name}, for everyone"))
+            .show("name", name.clone());
         if let Some(line) = crossing(ctx, &target).await {
             card = card.line(line);
         }
@@ -374,13 +372,10 @@ pub(super) fn workspace_delete(ctx: &Ctx) -> BoxFuture<'_, Result<Value>> {
             .as_str()
             .map(str::to_owned);
         ctx.approve(
-            Card::new(format!(
-                "Delete {} on {} for everyone; this cannot be undone",
-                target.workspace, target.server
-            ))
-            .line("Its teams, channels, messages and files are erased from the server, everyone's connection to it ends, and it is removed from this computer.")
-            .show("workspace", target.workspace.clone())
-            .show("workspace_id", workspace_id.clone()),
+            target
+                .card(|here| format!("Delete {here} for everyone; this cannot be undone"))
+                .line("Its teams, channels, messages and files are erased from the server, everyone's connection to it ends, and it is removed from this computer.")
+                .show("workspace_id", workspace_id.clone()),
         )
         .await?;
         let deletion = ctx
@@ -414,18 +409,18 @@ pub(super) fn workspace_governance(ctx: &Ctx) -> BoxFuture<'_, Result<Value>> {
                 ),
             ));
         }
-        let summary = if governance == "open" {
-            format!(
-                "Make {} open: every member can manage teams, channels and people, and let people in",
-                target.workspace
-            )
-        } else {
-            format!(
-                "Make {} managed: channel owners and team creators manage them, and only you let people in",
-                target.workspace
-            )
-        };
-        ctx.approve(Card::new(summary).show("governance", governance.clone()))
+        let card = target.card(|here| {
+            if governance == "open" {
+                format!(
+                    "Make {here} open: every member can manage teams, channels and people, and let people in"
+                )
+            } else {
+                format!(
+                    "Make {here} managed: channel owners and team creators manage them, and only you let people in"
+                )
+            }
+        });
+        ctx.approve(card.show("governance", governance.clone()))
             .await?;
         let result = send(
             ctx,
@@ -464,12 +459,12 @@ pub(super) fn context_set(ctx: &Ctx) -> BoxFuture<'_, Result<Value>> {
             .await?;
         let revision = current["context"]["revision"].as_u64().unwrap_or(0);
         let old = current["context"]["text"].as_str().unwrap_or_default();
-        let mut card = Card::new(format!(
-            "Replace {}'s context document; every member's agent reads it",
-            target.workspace
-        ))
-        .show("text", text.clone())
-        .show("revision", revision);
+        let mut card = target
+            .card(|here| {
+                format!("Replace the context document of {here}; every member's agent reads it")
+            })
+            .show("text", text.clone())
+            .show("revision", revision);
         card.preview = Some(document_diff("workspace context", old, &text));
         if let Some(line) = crossing(ctx, &target).await {
             card = card.line(line);
@@ -494,24 +489,19 @@ pub(super) fn enroll_invite(ctx: &Ctx) -> BoxFuture<'_, Result<Value>> {
         let name = username(&ctx.required("username")?)?;
         let add_device = ctx.flag("add_device") == Some(true);
         let target = target(ctx).await?;
-        let summary = if add_device {
-            format!(
-                "Invite @{name} to add another computer to {}",
-                target.workspace
-            )
-        } else {
-            format!(
-                "Invite @{name} to join {} on {}",
-                target.workspace, target.server
-            )
-        };
+        let card = target.card(|here| {
+            if add_device {
+                format!("Invite @{name} to add another computer to {here}")
+            } else {
+                format!("Invite @{name} to join {here}")
+            }
+        });
         ctx.approve(
-            Card::new(summary)
-                .line(format!(
-                    "Anyone who signs in to {} as {name} can then join as @{name}.",
-                    target.server
-                ))
-                .show("username", name.clone()),
+            card.line(format!(
+                "Anyone who signs in to {} as {name} can then join as @{name}.",
+                target.server
+            ))
+            .show("username", name.clone()),
         )
         .await?;
         let mut params = json!({"username": name});
@@ -536,11 +526,9 @@ pub(super) fn enroll_cancel(ctx: &Ctx) -> BoxFuture<'_, Result<Value>> {
         let name = username(&ctx.required("username")?)?;
         let target = target(ctx).await?;
         ctx.approve(
-            Card::new(format!(
-                "Cancel @{name}'s invitation to join {}",
-                target.workspace
-            ))
-            .show("username", name.clone()),
+            target
+                .card(|here| format!("Cancel @{name}'s invitation to join {here}"))
+                .show("username", name.clone()),
         )
         .await?;
         send(
@@ -569,16 +557,13 @@ pub(super) fn enroll_approve(ctx: &Ctx) -> BoxFuture<'_, Result<Value>> {
         let replace = ctx.flag("replace") == Some(true);
         let target = target(ctx).await?;
         ctx.approve(
-            Card::new(format!(
-                "Let @{name} into {} with the code {}",
-                target.workspace,
-                code.trim()
-            ))
-            .line(format!(
-                "Only allow this with a code you got from @{name} yourself."
-            ))
-            .show("username", name.clone())
-            .show("code", code.trim().to_owned()),
+            target
+                .card(|here| format!("Let @{name} into {here} with the code {}", code.trim()))
+                .line(format!(
+                    "Only allow this with a code you got from @{name} yourself."
+                ))
+                .show("username", name.clone())
+                .show("code", code.trim().to_owned()),
         )
         .await?;
         let mut params = json!({"username": name, "code": code.trim()});
@@ -597,12 +582,17 @@ pub(super) fn enroll_revoke(ctx: &Ctx) -> BoxFuture<'_, Result<Value>> {
         let target = target(ctx).await?;
         let person = resolve_in(&target, SelectorKind::Person, &member)?;
         ctx.approve(
-            Card::new(format!(
-                "Remove {} from {} for everyone; this cannot be undone",
-                person.label, target.workspace
-            ))
-            .line("Their membership, devices and agent grants stop working.")
-            .show("member", person.label.clone()),
+            target
+                .card(|here| {
+                    format!(
+                        "Remove {} from {here} for everyone; this cannot be undone",
+                        person.label
+                    )
+                })
+                .line(
+                    "Their membership, their computers' keys and their agent grants stop working.",
+                )
+                .show("member", person.label.clone()),
         )
         .await?;
         let mut params = json!({"principal_id": person.id});
@@ -621,7 +611,7 @@ pub(super) fn profile_set(ctx: &Ctx) -> BoxFuture<'_, Result<Value>> {
             return Err(said(None, "Say what to change: nickname or avatar."));
         }
         let target = target(ctx).await?;
-        let mut card = Card::new(format!("Change your profile in {}", target.workspace));
+        let mut card = target.card(|here| format!("Change your profile in {here}"));
         if let Some(nickname) = &nickname {
             card = card.show("nickname", nickname.clone());
         }
@@ -685,21 +675,22 @@ pub(super) fn profile_revoke_device(ctx: &Ctx) -> BoxFuture<'_, Result<Value>> {
         let [device] = found.as_slice() else {
             return Err(said(
                 None,
-                "None of your devices in this workspace has that fingerprint. List them with crew__read action profile_devices.",
+                "None of your computers in this workspace has that fingerprint. List them with crew__read action profile_devices.",
             ));
         };
         let shown = device["fingerprint"]
             .as_str()
             .unwrap_or_default()
             .to_owned();
-        let here = device["this_device"].as_bool() == Some(true);
-        let mut card = Card::new(format!("Revoke the device {shown} from {}", target.workspace))
+        let this_computer = device["this_device"].as_bool() == Some(true);
+        let mut card = target
+            .card(|here| format!("Remove your computer {shown} from {here}"))
             .line(format!(
                 "A lost computer can still sign in as you while it holds an SSH key or password for your account on {}: remove its key from ~/.ssh/authorized_keys there, or change your password, first.",
                 target.server
             ))
             .show("fingerprint", shown.clone());
-        if here {
+        if this_computer {
             card = card.line(format!(
                 "This is this computer: it stops working in {} until you add it again with rejoin.",
                 target.workspace
@@ -739,6 +730,7 @@ pub(super) fn grants_revoke(ctx: &Ctx) -> BoxFuture<'_, Result<Value>> {
             .map(|found| found.name)
             .filter(|name| !name.trim().is_empty())
             .unwrap_or_else(|| session.clone());
+        let server = Ctx::server_label(&connection).await;
         if ctx.flag("reads") == Some(true) {
             let held =
                 crew.person_read_rows().await.iter().any(|row| {
@@ -751,10 +743,9 @@ pub(super) fn grants_revoke(ctx: &Ctx) -> BoxFuture<'_, Result<Value>> {
                 ));
             }
             ctx.approve(
-                Card::new(format!(
-                    "Take back chat {name}'s permission to read {} as you",
-                    connection.name
-                ))
+                Card::at(&connection.name, &server, |here| {
+                    format!("Take back chat {name}'s permission to read {here} as you")
+                })
                 .show("session", session.clone()),
             )
             .await?;
@@ -783,10 +774,9 @@ pub(super) fn grants_revoke(ctx: &Ctx) -> BoxFuture<'_, Result<Value>> {
             ));
         }
         ctx.approve(
-            Card::new(format!(
-                "Take back chat {name}'s Crew access through {}",
-                connection.name
-            ))
+            Card::at(&connection.name, &server, |here| {
+                format!("Take back chat {name}'s Crew access to {here}")
+            })
             .line("If it is a task, the task stops.")
             .show("session", session.clone()),
         )
@@ -804,8 +794,11 @@ pub(super) fn privacy_set_personal(ctx: &Ctx) -> BoxFuture<'_, Result<Value>> {
         let mode = ctx.required("mode")?;
         let institution = ctx.text("institution_id");
         let connection = ctx.connection().await?;
-        let mut card = Card::new(format!("Make your {} connection {mode}", connection.name))
-            .show("mode", mode.clone());
+        let server = Ctx::server_label(&connection).await;
+        let mut card = Card::at(&connection.name, &server, |here| {
+            format!("Make your connection to {here} {mode}")
+        })
+        .show("mode", mode.clone());
         if mode == "public" {
             card = card.line("Public models will be able to read public-safe work you can see there. Restricted content stays private.");
         }
@@ -832,12 +825,15 @@ pub(super) fn privacy_set_workspace(ctx: &Ctx) -> BoxFuture<'_, Result<Value>> {
         let mode = ctx.required("mode")?;
         let institution = ctx.text("institution_id");
         let target = target(ctx).await?;
-        let mut card = Card::new(if mode == "public" {
-            format!("Allow Public in {} for everyone", target.workspace)
-        } else {
-            format!("Make {} Private for everyone", target.workspace)
-        })
-        .show("mode", mode.clone());
+        let mut card = target
+            .card(|here| {
+                if mode == "public" {
+                    format!("Allow Public in {here} for everyone")
+                } else {
+                    format!("Make {here} Private for everyone")
+                }
+            })
+            .show("mode", mode.clone());
         if mode == "public" {
             card = card.line("Members will be able to choose Public. Agents with access will need permission again.");
         }

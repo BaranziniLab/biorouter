@@ -69,9 +69,12 @@ describe('setupCopy (OW-9)', () => {
 
   it('carries the one warning for As me on the server, and the host’s extra sentence', () => {
     expect(joinCopy.fullWarning('wanjun', 'leo.ucsf.edu')).toBe(
-      'Your agent will run commands as wanjun on leo.ucsf.edu: it can read and change anything your account can, use the network, and start programs that keep running after access ends. Other people’s messages and files in channels it reads can try to steer it. Use a private model you trust.'
+      'Your agent will run commands as wanjun on leo.ucsf.edu: it can read and change anything your account can, use the network, and start programs that keep running after access ends. Other people’s messages and files in channels it reads can try to steer it. Use a private model you trust. Crew treats anything running as your account as you, so your agent can also add a computer to your account and post in Crew as you, with no agent mark.'
     );
-    expect(joinCopy.fullWarningHost('lab')).toMatch(/channels you’re not in\.$/);
+    // Under account ownership a process running as the host's account is the host (finding 16).
+    expect(joinCopy.fullWarningHost('lab')).toMatch(
+      /channels you’re not in\. It can also act as the host of lab\.$/
+    );
     expect(joinCopy.agentLegend('leo')).toBe('What can your agent do on leo?');
     expect([joinCopy.accessOff, joinCopy.accessFolder, joinCopy.accessFull]).toEqual([
       'Off',

@@ -268,12 +268,7 @@ fn workspace_name(workspace: &SetupWorkspace) -> String {
 /// check's, taken with the program installed then, before this setup puts this app's in place;
 /// so when the setup will install, every workspace the account hosts and runs is counted as
 /// one it may restart, unless it runs a newer Crew than this app's.
-fn restart_lines(
-    login: &str,
-    keep_older: bool,
-    restart: Option<bool>,
-    start: &[String],
-) -> Vec<String> {
+fn restart_lines(login: &str, keep_older: bool, asked: &RestartsAsked<'_>) -> Vec<String> {
     let listing = last_listing(login);
     let ours = biorouter::crew::setup_artifact()
         .ok()
@@ -287,9 +282,21 @@ fn restart_lines(
             .then(|| ours.map(|ours| ours.version))
             .flatten()
             .as_deref(),
-        restart,
-        start,
+        asked,
     )
+}
+
+/// What a setup was asked to restart and start, as the request carries it.
+#[derive(Clone, Copy, Debug, Default)]
+pub(super) struct RestartsAsked<'a> {
+    /// `restart_workspaces`: every hosted workspace on an older Crew even with others connected
+    /// (`true`), none of them (`false`), or only those nobody else is connected to (absent).
+    pub(super) all: Option<bool>,
+    /// `restart_workspace_ids`: these hosted workspaces even with others connected, whatever
+    /// `all` says.
+    pub(super) named: &'a [String],
+    /// `start_workspaces`: stopped hosted workspaces to start.
+    pub(super) start: &'a [String],
 }
 
 /// `X.Y.Z`, numbers only, as setup compares versions.
@@ -328,13 +335,14 @@ fn installs_ours(
 /// (`None`: the server was never listed here). `installing` is this app's version when the
 /// setup installs it, which makes every hosted running workspace on an older Crew, or one that
 /// names none, one it restarts; otherwise only those the listing found on an older program.
-/// Who is connected decides each line, as it decides the restart; a count the server could not
+/// One kept outside `~/.local/share/biorouter-crew` is never restarted, as setup never restarts
+/// it. Who is connected decides each line, as it decides the restart, unless the person named
+/// the workspace in `restart_workspace_ids` or asked for every one; a count the server could not
 /// give is said, never read as nobody.
 pub(super) fn planned_restarts(
     workspaces: Option<&[SetupWorkspace]>,
     installing: Option<&str>,
-    restart: Option<bool>,
-    start: &[String],
+    asked: &RestartsAsked<'_>,
 ) -> Vec<String> {
     let mut lines = Vec::new();
     let newer = |version: Option<&str>| match (
@@ -344,34 +352,89 @@ pub(super) fn planned_restarts(
         (Some(running), Some(ours)) => running > ours,
         _ => false,
     };
-    let restarted = |workspace: &&SetupWorkspace| {
+    let outdated = |workspace: &&SetupWorkspace| {
         workspace.role == SetupWorkspaceRole::Host
             && workspace.state == SetupWorkspaceState::Running
+            && workspace.state_dir.is_some()
             && (workspace.binary_current == Some(false)
                 || (installing.is_some() && !newer(workspace.version.as_deref())))
     };
-    match (restart, workspaces) {
-        (Some(false), _) => {
-            lines.push("It restarts no workspace; any running an older Crew are only reported.".into())
+    let named = |workspace: &SetupWorkspace| {
+        asked
+            .named
+            .iter()
+            .any(|id| id.eq_ignore_ascii_case(&workspace.workspace_id))
+    };
+    match workspaces {
+        None if asked.all == Some(false) && asked.named.is_empty() => {
+            lines.push(
+                "It restarts no workspace; any running an older Crew are only reported.".into(),
+            );
         }
-        (_, None) => lines.push(
-            "It restarts the workspaces you host there that run an older Crew and that nobody else is connected to. Check the server first to see which.".into(),
-        ),
-        (_, Some(workspaces)) => {
-            for workspace in workspaces.iter().filter(restarted) {
-                lines.push(restart_line(workspace, restart == Some(true)));
+        None => {
+            lines.push(
+                "It restarts the workspaces you host there that run an older Crew and that nobody else is connected to. Check the server first to see which.".into(),
+            );
+            if !asked.named.is_empty() {
+                lines.push("It also restarts the workspaces you named by ID that run an older Crew, even with others connected.".into());
+            }
+        }
+        Some(workspaces) => {
+            let mut restarted_named = false;
+            for workspace in workspaces.iter().filter(outdated) {
+                let consented = named(workspace);
+                if asked.all == Some(false) && !consented {
+                    continue;
+                }
+                restarted_named |= consented;
+                lines.push(restart_line(
+                    workspace,
+                    asked.all == Some(true) || consented,
+                ));
+            }
+            if asked.all == Some(false) {
+                lines.push(if restarted_named {
+                    "It restarts no other workspace; any other running an older Crew is only reported.".into()
+                } else {
+                    "It restarts no workspace; any running an older Crew are only reported.".into()
+                });
             }
         }
     }
-    for id in start {
-        let name = workspaces
-            .into_iter()
-            .flatten()
-            .find(|workspace| &workspace.workspace_id == id)
-            .map_or_else(|| id.clone(), workspace_name);
-        lines.push(format!("It starts {name}."));
+    for id in asked.start {
+        lines.push(format!("It starts {}.", started_name(workspaces, id)));
     }
     lines
+}
+
+/// The name of the workspace a setup starts for the ID `id`, as the setup picks it: one the
+/// account hosts (`role` host) with that ID. Two listed entries are one workspace only when
+/// they agree on the ID, the host's UID and the workspace key's fingerprint, so when the
+/// account's own entries for that ID are more than one workspace, or another account's copy is
+/// all there is, no listed name is trusted and the ID is said instead.
+fn started_name(workspaces: Option<&[SetupWorkspace]>, id: &str) -> String {
+    let mut identities: Vec<(String, Option<u32>, Option<String>, String)> = workspaces
+        .into_iter()
+        .flatten()
+        .filter(|workspace| {
+            workspace.role == SetupWorkspaceRole::Host
+                && workspace.workspace_id.eq_ignore_ascii_case(id)
+        })
+        .map(|workspace| {
+            (
+                workspace.workspace_id.to_ascii_lowercase(),
+                workspace.host_uid,
+                workspace.workspace_key_fingerprint.clone(),
+                workspace_name(workspace),
+            )
+        })
+        .collect();
+    identities.sort();
+    identities.dedup_by(|a, b| (&a.0, a.1, &a.2) == (&b.0, b.1, &b.2));
+    match identities.as_slice() {
+        [(.., name)] => name.clone(),
+        _ => format!("the workspace {id}"),
+    }
 }
 
 /// What a setup does to one hosted workspace it finds on an older Crew: restarts it when nobody
@@ -404,7 +467,7 @@ fn restart_line(workspace: &SetupWorkspace, restart: bool) -> String {
 fn access_line(access: Option<&str>, server: &str) -> Option<String> {
     match access? {
         "full" => Some(format!(
-            "Agents get full access: they can run any command as you on {server}, read and change any file your account can, and use the network."
+            "Agents get full access: they can run any command as you on {server}, read and change any file your account can, and use the network. Crew treats anything running as your account as you, so they can also add a computer to your account and post in Crew as you, with no agent mark."
         )),
         "folder" => Some(format!(
             "Agents get a work folder on {server}, confined to that folder."
@@ -431,7 +494,12 @@ pub(super) fn setup(ctx: &Ctx) -> BoxFuture<'_, Result<Value>> {
             ));
         }
         let start = ctx.texts("start_workspaces");
-        if let Some(bad) = start.iter().find(|id| uuid::Uuid::parse_str(id).is_err()) {
+        let named = ctx.texts("restart_workspace_ids");
+        if let Some(bad) = start
+            .iter()
+            .chain(&named)
+            .find(|id| uuid::Uuid::parse_str(id).is_err())
+        {
             return Err(said(
                 None,
                 format!("{bad} isn't a workspace ID. Use the IDs setup_check lists."),
@@ -448,22 +516,31 @@ pub(super) fn setup(ctx: &Ctx) -> BoxFuture<'_, Result<Value>> {
         if let Some(restart) = restart {
             request["restart_workspaces"] = json!(restart);
         }
+        if !named.is_empty() {
+            request["restart_workspace_ids"] = json!(named);
+        }
         if !start.is_empty() {
             request["start_workspaces"] = json!(start);
         }
         if let Some(access) = &access {
             request["agent_access"] = json!(access);
         }
-        let summary = match &saved {
-            Some(connection) if member => format!(
-                "Set up Crew for {} on {login}: install or update it in your account there, then connect",
-                connection.name
-            ),
-            _ => format!("Install or update Crew in your account on {login}"),
+        let mut card = match &saved {
+            Some(connection) if member => Card::at(&connection.name, &login, |here| {
+                format!(
+                    "Set up Crew for {here}: install or update it in your account there, then connect"
+                )
+            }),
+            _ => Card::new(format!("Install or update Crew in your account on {login}"))
+                .show("server", login.clone()),
         };
-        let mut card = Card::new(summary).show("server", login.clone());
         let keep_older = ctx.flag("keep_older") == Some(true);
-        for line in restart_lines(&login, keep_older, restart, &start) {
+        let asked = RestartsAsked {
+            all: restart,
+            named: &named,
+            start: &start,
+        };
+        for line in restart_lines(&login, keep_older, &asked) {
             card = card.line(line);
         }
         if let Some(line) = access_line(access.as_deref(), &login) {
@@ -473,6 +550,7 @@ pub(super) fn setup(ctx: &Ctx) -> BoxFuture<'_, Result<Value>> {
             "keep_older",
             "replace_existing",
             "restart_workspaces",
+            "restart_workspace_ids",
             "start_workspaces",
             "agent_access",
         ] {
@@ -525,9 +603,9 @@ pub(super) fn host(ctx: &Ctx) -> BoxFuture<'_, Result<Value>> {
             ));
         }
         let access = ctx.text("agent_access").unwrap_or_else(|| "full".into());
-        let mut card = Card::new(format!(
-            "Host a new workspace {name} on {server} as you, and save and join it on this computer"
-        ))
+        let mut card = Card::at(&name, &server, |here| {
+            format!("Host a new workspace {here} as you, and save and join it on this computer")
+        })
         .line(match &institution {
             Some(institution) => format!("Privacy: {mode}, institution {institution}."),
             None => format!("Privacy: {mode}."),
@@ -777,9 +855,9 @@ pub(super) fn open_card(
         .as_deref()
         .map_or_else(|| "its host".to_owned(), |host| format!("@{host}"));
     let shown = workspace_name(entry);
-    let mut card = Card::new(format!(
-        "Open {shown}, hosted by {host}, on {login}, and join it as you"
-    ))
+    let mut card = Card::at(&shown, login, |here| {
+        format!("Open {here}, hosted by {host}, and join it as you")
+    })
     .line(format!(
         "Workspace key fingerprint: {}.",
         entry
@@ -803,10 +881,7 @@ pub(super) fn open_card(
             .line(format!("You join it as its {}.", role_of(entry))),
         None => card.line(format!("You join it as its {}.", role_of(entry))),
     };
-    card = card
-        .show("server", login.to_owned())
-        .show("workspace", shown)
-        .show("workspace_id", entry.workspace_id.clone());
+    card = card.show("workspace_id", entry.workspace_id.clone());
     // Agent access is set on the connection the open joins through, as its login.
     let access_login = reused.map_or(login, |saved| saved.ssh_target.as_str());
     if let Some(line) = access_line(access, access_login) {
@@ -980,10 +1055,9 @@ async fn join_invitation(ctx: &Ctx, invitation: String) -> Result<Value> {
         .or_else(|| preview.server.clone())
         .unwrap_or_else(|| "its server".to_owned());
     ctx.approve(
-        Card::new(format!(
-            "Join {}, hosted by {host}, on {server}, as you",
-            preview.workspace_label
-        ))
+        Card::at(&preview.workspace_label, &server, |here| {
+            format!("Join {here}, hosted by {host}, as you")
+        })
         .line(format!(
             "Workspace key fingerprint: {}.",
             preview.fingerprint
@@ -1088,16 +1162,12 @@ pub(super) fn join(ctx: &Ctx) -> BoxFuture<'_, Result<Value>> {
             |host| format!("@{host}"),
         );
         ctx.approve(
-            Card::new(if connected {
-                format!(
-                    "Join {}, hosted by {host}, on {server}, as you",
-                    connection.name
-                )
-            } else {
-                format!(
-                    "Connect {} to {server} and join it, hosted by {host}, as you",
-                    connection.name
-                )
+            Card::at(&connection.name, &server, |here| {
+                if connected {
+                    format!("Join {here}, hosted by {host}, as you")
+                } else {
+                    format!("Connect to {here} and join it, hosted by {host}, as you")
+                }
             })
             .line(format!(
                 "Workspace key fingerprint: {}.",
@@ -1129,10 +1199,11 @@ pub(super) fn rejoin(ctx: &Ctx) -> BoxFuture<'_, Result<Value>> {
         let connection = ctx.connection().await?;
         let server = Ctx::server_label(&connection).await;
         ctx.approve(
-            Card::new(format!(
-                "Add this computer to {} on {server} again, with a new key, as your account there",
-                connection.name
-            ))
+            Card::at(&connection.name, &server, |here| {
+                format!(
+                    "Add this computer to {here} again, with a new key, as your account there"
+                )
+            })
             .line("Its old key on this computer stops working.")
             .line("Chats with Crew access through this connection keep the connection, but each needs access granted again.")
             .show("connection", connection.name.clone()),
@@ -1160,8 +1231,10 @@ pub(super) fn connect(ctx: &Ctx) -> BoxFuture<'_, Result<Value>> {
         let connection = ctx.connection().await?;
         let server = Ctx::server_label(&connection).await;
         ctx.approve(
-            Card::new(format!("Connect {} to {server} as you", connection.name))
-                .show("connection", connection.name.clone()),
+            Card::at(&connection.name, &server, |here| {
+                format!("Connect to {here} as you")
+            })
+            .show("connection", connection.name.clone()),
         )
         .await?;
         let id = connection.id.clone();
@@ -1180,10 +1253,13 @@ pub(super) fn disconnect(ctx: &Ctx) -> BoxFuture<'_, Result<Value>> {
     Box::pin(async move {
         let crew = ctx.crew()?;
         let connection = ctx.connection().await?;
+        let server = Ctx::server_label(&connection).await;
         ctx.approve(
-            Card::new(format!("Disconnect {}", connection.name))
-                .line("Chats and tasks working through it lose it until it connects again.")
-                .show("connection", connection.name.clone()),
+            Card::at(&connection.name, &server, |here| {
+                format!("Disconnect from {here}")
+            })
+            .line("Chats and tasks working through it lose it until it connects again.")
+            .show("connection", connection.name.clone()),
         )
         .await?;
         crew.disconnect(&connection.id).await?;
@@ -1211,8 +1287,11 @@ pub(super) fn connections_remove(ctx: &Ctx) -> BoxFuture<'_, Result<Value>> {
         let crew = ctx.crew()?;
         let connection = ctx.connection().await?;
         let deleted = crew.workspace_deleted(&connection.id);
-        let mut card = Card::new(format!("Remove {} from this computer", connection.name))
-            .show("connection", connection.name.clone());
+        let server = Ctx::server_label(&connection).await;
+        let mut card = Card::at(&connection.name, &server, |here| {
+            format!("Remove {here} from this computer")
+        })
+        .show("connection", connection.name.clone());
         if deleted {
             card = card.line("Its host deleted it on the server, so this removes what is left of it here, including this computer's key for it.");
         } else {
@@ -1317,7 +1396,10 @@ pub(super) fn connections_update(ctx: &Ctx) -> BoxFuture<'_, Result<Value>> {
     Box::pin(async move {
         let connection = ctx.connection().await?;
         let mut input = saved_fields(&connection)?;
-        let mut card = Card::new(format!("Change the saved connection {}", connection.name));
+        let server = Ctx::server_label(&connection).await;
+        let mut card = Card::at(&connection.name, &server, |here| {
+            format!("Change the saved connection to {here}")
+        });
         let mut changed = false;
         for key in ["name", "ssh_target", "identity_file", "proxy_jump"] {
             if let Some(value) = ctx.text(key) {
@@ -1400,6 +1482,7 @@ pub(super) fn connections_set_access(ctx: &Ctx) -> BoxFuture<'_, Result<Value>> 
             })
         };
         let mut input = saved_fields(&connection)?;
+        let here = super::on_server(&connection.name, &server);
         let summary = match access.as_str() {
             "off" => {
                 if folder.is_some() {
@@ -1411,10 +1494,7 @@ pub(super) fn connections_set_access(ctx: &Ctx) -> BoxFuture<'_, Result<Value>> 
                 input.insert("remote_root".into(), Value::Null);
                 input.insert("remote_execution".into(), json!(false));
                 input.insert("remote_access".into(), json!("folder"));
-                format!(
-                    "Stop agents working on {server} through {}",
-                    connection.name
-                )
+                format!("Stop agents working on the server through {here}")
             }
             "folder" => {
                 let root = folder_or_existing()?;
@@ -1427,9 +1507,9 @@ pub(super) fn connections_set_access(ctx: &Ctx) -> BoxFuture<'_, Result<Value>> 
                 input.insert("remote_execution".into(), json!(confined));
                 input.insert("remote_access".into(), json!("folder"));
                 if confined {
-                    format!("Let agents work in {root} on {server}, confined to that folder")
+                    format!("Let agents work in {root} through {here}, confined to that folder")
                 } else {
-                    format!("Let agents read and write files in {root} on {server}; its kernel can't confine commands, so they can't run any there")
+                    format!("Let agents read and write files in {root} through {here}; the server's kernel can't confine commands, so they can't run any there")
                 }
             }
             _ => {
@@ -1448,13 +1528,12 @@ pub(super) fn connections_set_access(ctx: &Ctx) -> BoxFuture<'_, Result<Value>> 
                 input.insert("remote_execution".into(), json!(true));
                 input.insert("remote_access".into(), json!("full"));
                 format!(
-                    "Let agents work as you on {server}, starting in {root}: through {} an agent can run any command your account can, read and change any file it can reach, use the network, and start jobs that keep running after its task ends. Public models never get this access",
-                    connection.name
+                    "Let agents work as you through {here}, starting in {root}: an agent can run any command your account can, read and change any file it can reach, use the network, and start jobs that keep running after its task ends. Public models never get this access"
                 )
             }
         };
         ctx.approve(
-            Card::new(summary)
+            Card::at(&connection.name, &server, |_| summary)
                 .line(format!(
                     "This ends every chat's and task's access through {}; grant it again where you need it.",
                     connection.name

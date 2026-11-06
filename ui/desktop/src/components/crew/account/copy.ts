@@ -47,6 +47,8 @@ export const newDevicesCopy = {
       ? `A new device was added to your account on ${when}.`
       : 'A new device was added to your account.',
   many: (count: number) => `${count} new devices were added to your account.`,
+  /** After `one`: which device, by the fingerprint Keys lists it under and marks New. */
+  which: (fingerprint: string) => `Its fingerprint is ${fingerprint}.`,
   /** How it was added, after the sentence. */
   viaAccount: 'It signed in to the server as you.',
   review: 'Review',
@@ -68,6 +70,8 @@ export const deviceCopy = {
   thisFollows:
     'This computer stops reaching the workspace until you choose Add this computer again.',
   confirmAction: 'Remove device',
+  /** This computer's own question's button: it is the computer in use, not a lost one. */
+  confirmThisAction: 'Remove this computer',
   keep: 'Keep',
   removed: (fingerprint: string) => `Removed ${fingerprint}.`,
   removedThis: 'Removed this computer. Choose Add this computer again to use the workspace here.',
@@ -95,4 +99,5 @@ export const readsCopy = {
   failed: 'Couldn’t stop it. Try again.',
   /** The consent was already gone (404 `crew_not_found`). */
   gone: 'This chat had no permission left to take back.',
+  dismiss: 'Dismiss',
 } as const;

@@ -17,7 +17,8 @@
 //!   written from targets resolved before it is parked, showing the payload whole. The action
 //!   then acts on exactly those IDs, and the chat is checked again for a grant first.
 //! * **Read consent** ([`Ctx::read_consent`]): the first read of a connection's workspace
-//!   content in a chat asks the person once, per chat and connection.
+//!   content in a chat asks the person once, per chat and connection. A decline is said as one,
+//!   and the read is not asked again until the person writes in the chat.
 //! * **Privacy** ([`Ctx::content_scope`], [`Ctx::release`]): the call's capability, sampled
 //!   once at dispatch, decides what content a read may return, and the chat is raised Private
 //!   before content returns.
@@ -90,6 +91,11 @@ pub(crate) const CONNECTION_WITHOUT_INSTITUTION: &str = "This connection is Priv
 pub(crate) const INSTITUTIONS_DIFFER: &str = "This connection and its workspace are set to different institutions, so a chat can't read it. Set the connection's institution to the workspace's with privacy_set_personal.";
 /// Said when the chat could not be raised Private, so nothing is returned.
 pub(crate) const RAISE_FAILED: &str = "Biorouter couldn't mark this chat Private, so it returned nothing from the workspace. Try again.";
+/// Said when the chat already holds content another institution owns, or any institution's
+/// content and the workspace has none: a grant into the chat would be refused the same way.
+pub(crate) const ANOTHER_INSTITUTIONS_CONTENT: &str = "This chat already holds private content that belongs to another institution, so it can't read this workspace too. Start a new chat to read it.";
+/// Said when the institutions the chat's content belongs to can't be read, so nothing is read.
+pub(crate) const AFFILIATIONS_UNREADABLE: &str = "Biorouter couldn't read which institutions this chat's content belongs to, so it read nothing from the workspace. Try again.";
 /// Said when the connection a call names, or one read again after a card, is not saved here.
 pub(crate) const NO_CONNECTION: &str = "This computer has no saved Crew connection with that ID.";
 /// Said when the person allowed a change and then pressed Stop before it ran.
@@ -306,12 +312,34 @@ pub(crate) struct Card {
     pub(crate) preview: Option<ToolPreview>,
 }
 
+/// Where a change goes, as every change card names it (AO-12, "Approvals"): a workspace and the
+/// server it is on, `lab on lab.example.edu`. A saved connection's own name stands for its
+/// workspace where the card is about the connection.
+pub(crate) fn on_server(workspace: &str, server: &str) -> String {
+    format!("{workspace} on {server}")
+}
+
 impl Card {
     pub(crate) fn new(summary: impl Into<String>) -> Self {
         Self {
             summary: summary.into(),
             ..Self::default()
         }
+    }
+
+    /// A card for a change to `workspace` on `server`, the one way every change card says where
+    /// it goes: `summary` is written around the two named together ([`on_server`]), so a person
+    /// can tell two workspaces with a `#general` apart, and the payload shows both.
+    pub(crate) fn at(workspace: &str, server: &str, summary: impl FnOnce(&str) -> String) -> Self {
+        let here = on_server(workspace, server);
+        let summary = summary(&here);
+        debug_assert!(
+            summary.contains(&here),
+            "a card names where it goes: {summary}"
+        );
+        Self::new(summary)
+            .show("workspace", workspace)
+            .show("server", server)
     }
 
     pub(crate) fn line(mut self, line: impl Into<String>) -> Self {
@@ -397,6 +425,58 @@ pub(crate) fn remember_job_target(job_id: &str, target: Value) {
 /// The target a job this host started was started on.
 pub(crate) fn job_target(job_id: &str) -> Option<Value> {
     JOB_TARGETS.lock().ok()?.get(job_id).cloned()
+}
+
+/// Read consents the person declined, by chat and connection, each with how many messages the
+/// person had written in the chat when they declined ([`person_messages`]). Until they write
+/// again, a read of that workspace in that chat is said as declined and parks no new card
+/// ([`Ctx::read_consent`]).
+static DECLINED_READS: LazyLock<Mutex<HashMap<(String, String), usize>>> =
+    LazyLock::new(Mutex::default);
+/// How many declined reads are remembered.
+const DECLINED_READS_KEPT: usize = 256;
+
+/// Said when the person declines a chat's read of a workspace on its consent card.
+pub(crate) const READ_DECLINED: &str = "The person declined. Nothing was read.";
+
+/// Forget a declined read (`key`, chat and connection): the person wrote again, or allowed it.
+fn forget_decline(key: &(String, String)) {
+    if let Ok(mut declined) = DECLINED_READS.lock() {
+        declined.remove(key);
+    }
+}
+
+/// How many messages the person has written in `session`: user messages with text that both
+/// the person and the model see, as their own message and a steer are. A tool's answer and a
+/// note the agent loop adds for one side only are not. `None` when the chat can't be read.
+async fn person_messages(state: &AppState, session: &str) -> Option<usize> {
+    let session = state
+        .session_manager()
+        .get_session(session, true)
+        .await
+        .ok()?;
+    let conversation = session.conversation?;
+    Some(
+        conversation
+            .messages()
+            .iter()
+            .filter(|message| {
+                message.role == rmcp::model::Role::User
+                    && message.is_user_visible()
+                    && message.is_agent_visible()
+                    && !message.is_tool_response()
+                    && !message.as_concat_text().trim().is_empty()
+            })
+            .count(),
+    )
+}
+
+/// The read consent card's words (AO-12, "Read consent"): a heading, then two sentences, what
+/// the chat may then read and that changes still ask, and where the person takes it back.
+pub(crate) fn consent_prompt(workspace: &str, server: &str, session: &str) -> String {
+    format!(
+        "Let this chat read {workspace} as you\nIt can then read what you see in {workspace} on {server} (messages, files, names and the context document), and every change still asks you first. Take this back in this chat's Crew bar, or with biorouter crew grants revoke {session} --reads."
+    )
 }
 
 /// A long piece of work's stage, which [`Ctx::follow`] reports while it runs.
@@ -620,7 +700,10 @@ impl Ctx {
     ///   when what it reads is protected (a Private connection or workspace, or restricted
     ///   channels), a labelled workspace, a labelled Private connection, and a model whose
     ///   affiliation covers their institutions. Protected content raises the chat Private.
-    pub(crate) fn content_scope(
+    /// * Either way, a chat whose content already belongs to an institution reads only a
+    ///   workspace of that institution ([`Self::origin_admits`]), as a grant into it would be
+    ///   admitted, so two institutions' private Crew content never meet in one chat.
+    pub(crate) async fn content_scope(
         &self,
         connection: &Connection,
         snapshot: &Value,
@@ -636,6 +719,12 @@ impl Ctx {
             protected_channels: protected.unwrap_or_default(),
             ..ContentScope::default()
         };
+        let institution = |value: Option<&str>| {
+            value
+                .map(|id| id.trim().to_ascii_lowercase())
+                .filter(|id| !id.is_empty())
+        };
+        let workspace_institution = institution(workspace["institution_id"].as_str());
         if self.call.capability.tier() == ProviderTier::Public {
             if connection.mode != ClusterMode::Public || workspace_mode != ClusterMode::Public {
                 return Err(said(
@@ -643,16 +732,11 @@ impl Ctx {
                     PUBLIC_MODEL_READ,
                 ));
             }
+            self.origin_admits(workspace_institution.as_deref()).await?;
             scope.public_only = true;
             scope.listed_channels = listed_channels(snapshot);
             return Ok(scope);
         }
-        let institution = |value: Option<&str>| {
-            value
-                .map(|id| id.trim().to_ascii_lowercase())
-                .filter(|id| !id.is_empty())
-        };
-        let workspace_institution = institution(workspace["institution_id"].as_str());
         let connection_institution = institution(connection.institution_id.as_deref());
         if let (Some(ours), Some(theirs)) = (&connection_institution, &workspace_institution) {
             if ours != theirs {
@@ -662,6 +746,9 @@ impl Ctx {
                 ));
             }
         }
+        // Where a grant's admission checks it: after the connection and the workspace agree,
+        // before anything about the content.
+        self.origin_admits(workspace_institution.as_deref()).await?;
         let protected = connection.mode == ClusterMode::Private
             || workspace_mode == ClusterMode::Private
             || scope.all_protected
@@ -688,9 +775,43 @@ impl Ctx {
         Ok(scope)
     }
 
+    /// The chat's recorded institutions against the workspace's (`workspace_institution`,
+    /// normalized), by a grant's own rule (`CallCapability::check_crew_origin`): a chat that
+    /// already holds content an institution owns reads no workspace of another institution, nor
+    /// one with none. Affiliations that can't be read refuse, so an unknown answer never reads
+    /// as none (fail closed). With privacy tiers switched off nothing is recorded on the chat
+    /// ([`Self::release`]), so nothing is checked here either (AR-7). A refusal names nothing
+    /// from the workspace.
+    async fn origin_admits(&self, workspace_institution: Option<&str>) -> Result<()> {
+        let capability = self.call.capability;
+        if !capability.enforced() {
+            return Ok(());
+        }
+        let recorded = self
+            .state
+            .session_manager()
+            .session_affiliations(&self.call.session_id)
+            .await
+            .map_err(|_| said(None, AFFILIATIONS_UNREADABLE))?;
+        let origin: BTreeSet<String> = recorded
+            .iter()
+            .map(|institution| institution.as_str().to_owned())
+            .collect();
+        capability
+            .check_crew_origin(&origin, workspace_institution)
+            .map_err(|_| {
+                said(
+                    Some(crew_refusal::INSTITUTION_MISMATCH),
+                    ANOTHER_INSTITUTIONS_CONTENT,
+                )
+            })
+    }
+
     /// The person's consent for this chat to read `connection`'s workspace as them (AO-12,
     /// "Read consent"): already given in this chat, or asked for now on one proof-backed card.
-    /// Until it is given, reads answer `crew_read_consent_required`. On a daemon that can never
+    /// Declined, the read says the person declined, and until they write in the chat again a
+    /// retry parks no second card ([`Self::still_declined`]); a card that expired or was
+    /// stopped answers `crew_read_consent_required`. On a daemon that can never
     /// show the card (`biorouter serve`), a sentence says so instead of parking one. Answers
     /// whether a card was asked and allowed now, after which the caller judges the workspace
     /// again ([`Self::consented`]): the person may have taken minutes to answer.
@@ -712,16 +833,22 @@ impl Ctx {
                 NO_PROOF_FOR_READS,
             ));
         }
+        let declined = (self.call.session_id.clone(), connection.id.clone());
+        if self.still_declined(&declined).await {
+            return Err(said(
+                None,
+                format!(
+                    "The person declined to let this chat read {workspace} as them, so nothing was read. Biorouter asks them again only after they write in this chat."
+                ),
+            ));
+        }
         let server = Self::server_label(connection).await;
         let mut arguments = Map::new();
         arguments.insert("action".into(), json!("read as you"));
         arguments.insert("workspace".into(), json!(workspace));
         arguments.insert("server".into(), json!(server));
         arguments.insert("connection".into(), json!(connection.name));
-        let session = &self.call.session_id;
-        let prompt = format!(
-            "Let this chat read {workspace} as you\nIt can then read what you see in {workspace} on {server}: messages, files, names and the context document, until you take this back with biorouter crew grants revoke {session} --reads. It changes nothing; every change still asks you."
-        );
+        let prompt = consent_prompt(workspace, &server, &self.call.session_id);
         let outcome = self
             .park(
                 ToolRisk::Low,
@@ -730,13 +857,54 @@ impl Ctx {
                 ToolPreview::arguments_within(&arguments, 4096),
             )
             .await;
+        if let UserActionOutcome::Denied { .. } = outcome {
+            self.remember_decline(declined).await;
+            return Err(said(None, READ_DECLINED));
+        }
         if !outcome.is_allowed() || self.call.cancel.is_cancelled() {
             return Err(CrewRefusal::read_consent_required(workspace).into());
         }
         self.call.ensure_still_ungranted().await?;
         crew.grant_person_read(&self.call.session_id, &connection.id)
             .await?;
+        forget_decline(&declined);
         Ok(true)
+    }
+
+    /// Whether the person declined this chat's read of a connection's workspace (`key`, chat
+    /// and connection) and has not written in the chat since: within the rest of that turn the
+    /// read is not asked again. Once they have written, the decline is forgotten and the next
+    /// read asks. A chat whose messages can't be read keeps the decline, so a retry never
+    /// parks a card the person already answered.
+    async fn still_declined(&self, key: &(String, String)) -> bool {
+        let Some(then) = DECLINED_READS
+            .lock()
+            .ok()
+            .and_then(|declined| declined.get(key).copied())
+        else {
+            return false;
+        };
+        match person_messages(&self.state, &self.call.session_id).await {
+            Some(now) if now > then => {
+                forget_decline(key);
+                false
+            }
+            _ => true,
+        }
+    }
+
+    /// Remember that the person declined the read `key`, with how many messages they had
+    /// written in the chat then. Kept in memory only, at most [`DECLINED_READS_KEPT`] at once.
+    async fn remember_decline(&self, key: (String, String)) {
+        let written = person_messages(&self.state, &self.call.session_id)
+            .await
+            .unwrap_or(0);
+        if let Ok(mut declined) = DECLINED_READS.lock() {
+            if declined.len() >= DECLINED_READS_KEPT {
+                declined.clear();
+            }
+            declined.insert(key, written);
+        }
     }
 
     /// A content read's connection, its snapshot and the read's privacy scope, with the
@@ -749,7 +917,7 @@ impl Ctx {
         connection: Connection,
     ) -> Result<(Connection, Value, ContentScope)> {
         let snapshot = self.snapshot(&connection).await?;
-        let scope = self.content_scope(&connection, &snapshot)?;
+        let scope = self.content_scope(&connection, &snapshot).await?;
         let workspace = Self::workspace_label(&connection, Some(&snapshot));
         if !self.read_consent(&connection, &workspace).await? {
             return Ok((connection, snapshot, scope));
@@ -762,7 +930,7 @@ impl Ctx {
         let crew = self.crew()?;
         let connection = saved_connection(&crew, id).await?;
         let snapshot = self.snapshot(&connection).await?;
-        let scope = self.content_scope(&connection, &snapshot)?;
+        let scope = self.content_scope(&connection, &snapshot).await?;
         Ok((connection, snapshot, scope))
     }
 

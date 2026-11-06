@@ -174,7 +174,7 @@ pub(crate) static ACTIONS: &[Action] = &[
         name: "setup_check",
         summary: "Check a server and the Crew program in the person's account there, and list the workspaces it hosts or belongs to. Changes nothing on the server; a server no saved connection names needs the person's approval, because it signs in as them.",
         params: &[SERVER, CONNECTION, PORT, IDENTITY_FILE, PROXY_JUMP],
-        example: r#"{"server":"wanjun@leo.ucsf.edu"}"#,
+        example: r#"{"server":"you@hpc.example.edu"}"#,
         run: Some(setup::setup_check),
     },
     Action {
@@ -365,9 +365,10 @@ pub(crate) static ACTIONS: &[Action] = &[
             p("keep_older", Flag, "Keep an older Crew program instead of replacing it."),
             p("replace_existing", Flag, "Replace a Crew program that does not run or name its version."),
             p("restart_workspaces", Flag, "true restarts the hosted workspaces even with others connected; false only reports them."),
+            p("restart_workspace_ids", Texts, "IDs of hosted workspaces to restart even with others connected, from setup_check, whatever restart_workspaces says."),
             p("start_workspaces", Texts, "IDs of stopped workspaces the person hosts there to start, from setup_check."),
         ],
-        example: r#"{"server":"wanjun@leo.ucsf.edu"}"#,
+        example: r#"{"server":"you@hpc.example.edu"}"#,
         run: Some(setup::setup),
     },
     Action {
@@ -393,7 +394,7 @@ pub(crate) static ACTIONS: &[Action] = &[
             PROXY_JUMP,
             p("fix_storage_permissions", Flag, "Take other accounts' write access off the person's folders above where the workspace is kept, when Crew refuses to start there."),
         ],
-        example: r#"{"server":"wanjun@leo.ucsf.edu","name":"lab","mode":"private","institution_id":"ucsf"}"#,
+        example: r#"{"server":"you@hpc.example.edu","name":"lab","mode":"private","institution_id":"ucsf"}"#,
         run: Some(setup::host),
     },
     Action {
@@ -481,7 +482,7 @@ pub(crate) static ACTIONS: &[Action] = &[
             req("access", Choice(&["off", "folder", "full"]), "off, folder (a confined work folder) or full (run as the person)."),
             p("folder", Text, "The work folder's full path on the server, for folder or full."),
         ],
-        example: r#"{"access":"folder","folder":"/home/wanjun/crew-work/lab"}"#,
+        example: r#"{"access":"folder","folder":"/home/you/crew-work/lab"}"#,
         run: Some(setup::connections_set_access),
     },
     Action {
@@ -721,7 +722,7 @@ pub(crate) static ACTIONS: &[Action] = &[
             p("nickname", Text, "The name people see."),
             p("avatar", Text, "The avatar: an emoji or a short text."),
         ],
-        example: r#"{"nickname":"Wanjun"}"#,
+        example: r#"{"nickname":"Sam"}"#,
         run: Some(workspace::profile_set),
     },
     Action {
@@ -815,7 +816,7 @@ pub(crate) static ACTIONS: &[Action] = &[
             req("session", Text, "The chat's ID, as grants_list lists it."),
             p("reads", Flag, "Take back the chat's permission to read the workspace as the person instead."),
         ],
-        example: r#"{"session":"20261106_3","reads":true}"#,
+        example: r#"{"session":"20260924_2","reads":true}"#,
         run: Some(workspace::grants_revoke),
     },
     Action {

@@ -1,4 +1,4 @@
-import { useEffect, useState, type MouseEvent } from 'react';
+import { useEffect, useRef, useState, type MouseEvent } from 'react';
 import { AlertTriangle, KeyRound, LoaderCircle, X } from '../../icons/app-icons';
 import { Button } from '../../ui/button';
 import { Note } from '../../ui/note';
@@ -31,7 +31,12 @@ import {
 import { crewObservationCopy } from '../state/copy';
 import { useCrew } from '../state/CrewControllerContext';
 import { reconnectDaemon, useDaemonConnection } from '../state/daemonConnection';
-import { DIALOG_FOCUS_FALLBACKS, restoreFocusSoon } from '../state/focusReturn';
+import {
+  DIALOG_FOCUS_FALLBACKS,
+  focusIsLost,
+  restoreFocus,
+  restoreFocusSoon,
+} from '../state/focusReturn';
 import { CHANNEL_LOST_ERROR_CODE } from '../state/useCrewObservation';
 import { connectionBarCopy } from './copy';
 import { calendarDate, workspaceLabel } from './presentation';
@@ -144,6 +149,31 @@ function keepingFocus(event: MouseEvent<HTMLElement>, action: () => Promise<unkn
   if (result) void Promise.resolve(result).finally(settle);
 }
 
+/** How long a note's button keeps trying to hand focus on once its note has gone. */
+const FOCUS_PATIENCE_MS = 1000;
+const FOCUS_RETRY_MS = 50;
+
+/**
+ * Put focus back once a bar note took its focused button away, and keep trying for a moment:
+ * Acknowledge reloads the connections, and the channel heading or composer it falls back to can
+ * be drawn again a little later than the note goes (live QA: focus stayed on `<body>`). It only
+ * ever rescues lost focus, so a control the person chose meanwhile keeps it.
+ */
+function restoreFocusPatiently(origin: HTMLElement | null): () => void {
+  let timer: number | null = null;
+  const started = Date.now();
+  const attempt = () => {
+    timer = null;
+    if (!focusIsLost() || restoreFocus(origin, BAR_FOCUS_FALLBACKS)) return;
+    if (Date.now() - started < FOCUS_PATIENCE_MS)
+      timer = window.setTimeout(attempt, FOCUS_RETRY_MS);
+  };
+  attempt();
+  return () => {
+    if (timer !== null) window.clearTimeout(timer);
+  };
+}
+
 /** The screens that draw a verified workspace, where a closed channel's note belongs. */
 const WORKSPACE_SCREENS: readonly string[] = ['channel', 'no-channel', 'no-team'];
 
@@ -251,7 +281,18 @@ export function ConnectionBar({ className }: ConnectionBarProps) {
         acknowledged.connectionId === connectionId && acknowledged.seen.includes(device.fingerprint)
       )
   );
-  const [ackError, setAckError] = useState<string | null>(null);
+  // Tagged with its connection, as `rejoin` is: a failure on one workspace is never said under
+  // another's notice (finding 41).
+  const [ackError, setAckError] = useState<{ connectionId: string; message: string } | null>(null);
+  const ackErrorHere = ackError?.connectionId === connectionId ? ackError.message : null;
+  // Acknowledge takes its note, and so its own focused button, away: once that has rendered,
+  // focus goes back to the channel, the composer or the sidebar (`restoreFocusPatiently`).
+  const ackOrigin = useRef<HTMLElement | null>(null);
+  const [ackDone, setAckDone] = useState(0);
+  useEffect(() => {
+    if (ackDone === 0) return;
+    return restoreFocusPatiently(ackOrigin.current);
+  }, [ackDone]);
   // The workspace's server runs an older Crew than the one this build carries (AO-4): the version
   // its verified `hello` said (`server_version`) is below this build's broker's. A broker from
   // before AO-4 says no version; then a verified `hello` without `account_identity_v1` is what says
@@ -382,17 +423,21 @@ export function ConnectionBar({ className }: ConnectionBarProps) {
     }
   };
 
-  const acknowledgeDevices = async () => {
+  // Only the devices this notice showed are acknowledged (AO-10): one the daemon lists after it
+  // was drawn stays new until the person sees it.
+  const acknowledgeDevices = async (origin: HTMLElement) => {
     if (!connectionId || unseenDevices.length === 0) return;
     const id = connectionId;
     const seen = unseenDevices.map((device) => device.fingerprint);
+    ackOrigin.current = origin;
     setAckError(null);
     try {
-      await acknowledgeNewDevices(id);
+      await acknowledgeNewDevices(id, seen);
       setAcknowledged({ connectionId: id, seen });
+      setAckDone((count) => count + 1);
       crew.reloadConnections?.();
     } catch {
-      setAckError(newDevicesCopy.acknowledgeFailed);
+      setAckError({ connectionId: id, message: newDevicesCopy.acknowledgeFailed });
     }
   };
   const newestDevice = unseenDevices.reduce<(typeof unseenDevices)[number] | null>(
@@ -736,7 +781,10 @@ export function ConnectionBar({ className }: ConnectionBarProps) {
                 type="button"
                 variant="secondary"
                 size="sm"
-                onClick={(event) => keepingFocus(event, acknowledgeDevices)}
+                onClick={(event) => {
+                  const origin = event.currentTarget;
+                  keepingFocus(event, () => acknowledgeDevices(origin));
+                }}
               >
                 {newDevicesCopy.acknowledge}
               </Button>
@@ -751,11 +799,15 @@ export function ConnectionBar({ className }: ConnectionBarProps) {
                     : null
                 )
               : newDevicesCopy.many(unseenDevices.length)}
+            {/* Which one: its fingerprint, as Keys lists it and marks it New. */}
+            {unseenDevices.length === 1 && newestDevice?.fingerprint
+              ? ` ${newDevicesCopy.which(newestDevice.fingerprint)}`
+              : null}
             {unseenDevices.length === 1 && newestDevice?.added_via === 'account'
               ? ` ${newDevicesCopy.viaAccount}`
               : null}
           </p>
-          {ackError ? <p className="text-text-danger">{ackError}</p> : null}
+          {ackErrorHere ? <p className="text-text-danger">{ackErrorHere}</p> : null}
         </Note>
       )}
 

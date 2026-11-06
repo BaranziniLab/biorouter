@@ -3095,6 +3095,222 @@ async fn a_failed_restart_fails_only_its_stage_and_stopped_workspaces_start_by_i
     }
 }
 
+/// Crew's sentence for a workspace kept in more than one folder of the account (AO-7).
+fn kept_twice(id: &str) -> String {
+    format!(
+        "Workspace {id} is kept in more than one folder of ~/.local/share/biorouter-crew (/srv/a, /srv/b). Move every copy out of that folder, keeping the workspace's own, then try again."
+    )
+}
+
+/// A stand-in program's arm refusing with `code` and `said` as Crew prints it, the apostrophe
+/// written as printf's octal escape so the arm stays one single-quoted shell word.
+fn refusing(code: &str, said: &str) -> String {
+    assert!(!said.contains(['%', '\\']), "{said}");
+    format!(
+        r"printf 'Error: {code}: {}\n' >&2; exit 1",
+        said.replace('\'', r"\047")
+    )
+}
+
+/// AO-7 and AO-8: a restart the server refuses before it stops anything leaves the workspace
+/// running the older Crew, and is said so, with no command to start it by hand. Crew's own
+/// sentence for a workspace kept in more than one folder is shown, for a restart and for a
+/// start alike.
+#[tokio::test]
+async fn a_restart_refused_before_any_stop_says_the_workspace_still_runs() {
+    if !crate::test_sandbox::in_a_process_of_its_own() {
+        return;
+    }
+    let server = server().await;
+    let restart = format!(
+        r#"case "$3" in
+      {W_LAB}) {} ;;
+      *) {} ;;
+    esac"#,
+        refusing(
+            "busy",
+            "Another restart is running for a workspace in this account. Try again when it has finished."
+        ),
+        refusing("identity_conflict", &kept_twice(W_BUSY)),
+    );
+    let start_id = refusing("identity_conflict", &kept_twice(W_PARKED));
+    serve_listing(&every_kind(), &restart, Some(&start_id));
+    let done = ran(
+        &server,
+        SetupRequest {
+            restart_workspaces: Some(true),
+            start_workspaces: vec![W_PARKED.into()],
+            ..on_server(SetupIntent::Install)
+        },
+    )
+    .await;
+    assert_eq!(done.state, SetupState::Finished, "{done:?}");
+    assert_eq!(
+        stage(&done, SetupStageName::Restart).state,
+        SetupStageState::Failed
+    );
+    let outcome = done.outcome.clone().unwrap();
+    let said: Vec<(String, String, String, Option<String>)> = outcome
+        .restart_failed
+        .iter()
+        .map(|failed| {
+            (
+                failed.workspace_id.clone(),
+                failed.code.clone(),
+                failed.message.clone(),
+                failed.command.clone(),
+            )
+        })
+        .collect();
+    let row = |id: &str, code: &str, message: String| {
+        (id.to_owned(), code.to_owned(), message, None::<String>)
+    };
+    assert_eq!(
+        said,
+        [
+            row(
+                W_LAB,
+                "busy",
+                "lab on lab-server was not restarted and still runs the older Crew, because another restart was running in your account. Try again when it has finished.".into()
+            ),
+            row(
+                W_BUSY,
+                "identity_conflict",
+                format!(
+                    "busy on lab-server was not restarted and still runs the older Crew. {}",
+                    kept_twice(W_BUSY)
+                )
+            ),
+            row(
+                W_PARKED,
+                "identity_conflict",
+                format!(
+                    "Biorouter couldn't start parked on lab-server. {}",
+                    kept_twice(W_PARKED)
+                )
+            ),
+        ]
+    );
+    assert!(outcome.restarted.is_empty());
+    // Both still run the older Crew, as the list the job reports says.
+    for id in [W_LAB, W_BUSY] {
+        let listed = done
+            .workspaces
+            .iter()
+            .find(|workspace| workspace.workspace_id == id)
+            .unwrap();
+        assert_eq!(
+            (listed.state, listed.version.as_deref()),
+            (SetupWorkspaceState::Running, Some("1.0.0"))
+        );
+    }
+}
+
+/// AO-7: only the server's `start_failed` says a restart stopped the workspace. Each refusal
+/// `restart` makes before it stops anything says the workspace still runs the older Crew and
+/// gives no command; one that may have come after the stop says Biorouter can't tell.
+#[test]
+fn only_start_failed_says_a_restart_stopped_the_workspace() {
+    let command = "~/.local/bin/biorouter-crew start --workspace-id W";
+    let words = |code: &str, said: Option<&str>| {
+        restart_failure_words("lab", "lab-server", command, code, said, Some(true))
+    };
+    let kept = "lab on lab-server was not restarted and still runs the older Crew";
+    let twice = kept_twice("W");
+    let twice_said = format!(". {twice}");
+    for (code, said, reason) in [
+        (
+            "program_missing",
+            "/home/w/.local/bin/biorouter-crew is missing or cannot run, so the running broker was left as it is.",
+            ", because Crew's program in your account is missing or can't run. Set up Crew again.",
+        ),
+        (
+            "busy",
+            "Another restart is running for a workspace in this account. Try again when it has finished.",
+            ", because another restart was running in your account. Try again when it has finished.",
+        ),
+        (
+            "workspace_deleted",
+            "This workspace was deleted and is erasing itself, so it is not restarted.",
+            ", because it was deleted and is erasing itself.",
+        ),
+        ("identity_mismatch", "runtime.json names another workspace", "."),
+        ("identity_mismatch", "", "."),
+        ("unsupported", "restart requires Linux pidfd", "."),
+        (
+            "invalid_params",
+            "--workspace-id must be a workspace ID (a lowercase UUID)",
+            ".",
+        ),
+        ("stop_failed", "the broker could not be signalled", "."),
+        ("identity_conflict", twice.as_str(), twice_said.as_str()),
+    ] {
+        let (message, by_hand) = words(code, Some(said));
+        assert_eq!(message, format!("{kept}{reason}"), "{code}");
+        assert!(!by_hand, "{code}: nothing was stopped, so nothing to start");
+    }
+
+    let (message, by_hand) = words(
+        "start_failed",
+        Some("the broker did not answer within 10 seconds; last log line: listening"),
+    );
+    assert_eq!(
+        message,
+        format!("lab on lab-server stopped but didn't start again. Start it on lab-server with {command}.")
+    );
+    assert!(by_hand);
+
+    // After the stop signal was sent, after the stop (a start's own refusal), or with output
+    // that names no code, whether the workspace still runs is not known.
+    let unknown = format!(
+        "Crew on lab-server didn't restart lab, and Biorouter can't tell whether it still runs. If it isn't running, start it on lab-server with {command}."
+    );
+    for (code, said) in [
+        ("stop_failed", Some("cannot wait for the broker to exit")),
+        ("writer_active", Some("another broker holds this workspace")),
+        (
+            "workspace_deleted",
+            Some("This state directory holds a workspace its host deleted. Finish removing it."),
+        ),
+        ("start_failed", None),
+    ] {
+        assert_eq!(words(code, said), (unknown.clone(), true), "{code}");
+    }
+
+    // Unchanged: a stop that timed out, and a workspace the server does not keep.
+    assert_eq!(
+        words("stop_timeout", Some("the broker did not stop within 15 seconds")),
+        (
+            "lab on lab-server didn't stop in time, so it still runs the older Crew. Try again later."
+                .to_owned(),
+            true
+        )
+    );
+    assert!(!words("not_found", Some("No workspace with ID W")).1);
+
+    // A start shows Crew's sentence for a workspace kept twice, with no command.
+    assert_eq!(
+        restart_failure_words(
+            "parked",
+            "lab-server",
+            command,
+            "identity_conflict",
+            Some(&twice),
+            Some(false),
+        ),
+        (
+            format!("Biorouter couldn't start parked on lab-server. {twice}"),
+            false
+        )
+    );
+    // The server's words reach a person as one bounded line.
+    let long = format!("Workspace W \u{1b}[31mis kept {}", "x".repeat(900));
+    let (message, _) = words("identity_conflict", Some(&long));
+    assert!(!message.contains('\u{1b}'), "{message}");
+    assert!(message.ends_with('…'), "{message}");
+    assert!(message.chars().count() < kept.len() + 610, "{message}");
+}
+
 /// AO-8: a listing that fails, or answers nothing readable, never stops a job: it says why.
 #[tokio::test]
 async fn a_listing_that_fails_never_stops_the_job() {

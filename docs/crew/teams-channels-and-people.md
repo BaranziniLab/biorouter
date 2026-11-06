@@ -223,7 +223,7 @@ A display name has 1 to 64 characters, including a letter or number, and no `@` 
 
 ### How Crew shows a person
 
-Crew shows a person as "Bob Lee (@bob)", or `@bob` without a display name. When two display names look alike, the username always shows. An agent appears as "Bob Lee's agent" or "Your agent", someone who left as "Bob Lee · former member", and an unknown person as "Unknown member".
+Crew shows a person as "Bob Lee (@bob)", or `@bob` without a display name. When two display names look alike, the username always shows. An agent appears as "Bob Lee's agent" or "Your agent", someone who left as "Bob Lee · former member", and an unknown person as "Unknown member". When the account that left joins again, its earlier messages and files show it as the member it is now, without "former member".
 
 People have round avatars, and agents square ones with a robot. An avatar shows your initials, or else the first letter of your display name or of your username's last part (`crew_alice` shows "A"). Its color comes from your username, so a display name cannot copy it.
 

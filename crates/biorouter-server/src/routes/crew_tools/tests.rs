@@ -64,6 +64,98 @@ fn every_action_is_described_with_an_example_that_fits_it() {
     }
 }
 
+/// What `describe` shows every user's model is a placeholder, never someone's account: a login
+/// in an example is on `example.edu`, a home folder is `/home/you`, and no example carries a
+/// person's name or a real server.
+#[test]
+fn every_example_uses_placeholders_not_a_real_account() {
+    fn strings(value: &Value, found: &mut Vec<String>) {
+        match value {
+            Value::String(text) => found.push(text.clone()),
+            Value::Array(items) => items.iter().for_each(|item| strings(item, found)),
+            Value::Object(map) => map.values().for_each(|item| strings(item, found)),
+            _ => {}
+        }
+    }
+    for action in ACTIONS {
+        let example: Value = serde_json::from_str(action.example).expect(action.name);
+        let mut found = Vec::new();
+        strings(&example, &mut found);
+        for text in found {
+            let lower = text.to_ascii_lowercase();
+            for real in ["wanjun", "gbellucci", "leo", "ucsf.edu"] {
+                assert!(!lower.contains(real), "{}: {text}", action.name);
+            }
+            if let Some((user, host)) = text.split_once('@') {
+                if !user.is_empty() {
+                    assert!(
+                        host.ends_with(".example.edu"),
+                        "{}: a login in an example is a placeholder: {text}",
+                        action.name
+                    );
+                }
+            }
+            if let Some(home) = text.strip_prefix("/home/") {
+                assert!(
+                    home.starts_with("you/"),
+                    "{}: a home folder in an example is a placeholder: {text}",
+                    action.name
+                );
+            }
+        }
+    }
+    let setup = catalog::find(PersonTool::Change, "setup").unwrap();
+    assert!(setup.example.contains("you@hpc.example.edu"));
+}
+
+/// Every change card says where it goes the same way, workspace and server together, and shows
+/// both in its payload, so two workspaces that each have a `#general` can't be told apart only
+/// by guessing.
+#[test]
+fn a_change_card_names_its_workspace_and_server() {
+    let card = Card::at("acct-lab", "leo.example.edu", |here| {
+        format!("Post this in #general (Lab) in {here} as you")
+    });
+    assert_eq!(
+        card.summary,
+        "Post this in #general (Lab) in acct-lab on leo.example.edu as you"
+    );
+    assert_eq!(card.payload["workspace"], "acct-lab");
+    assert_eq!(card.payload["server"], "leo.example.edu");
+    assert_eq!(on_server("lab", "hpc"), "lab on hpc");
+}
+
+/// The read consent card is a heading and two sentences: what the chat may then read and that
+/// changes still ask, and where the person takes it back, in this chat's Crew bar or with the
+/// command that takes back exactly this consent.
+#[test]
+fn the_consent_card_says_what_it_allows_and_where_to_take_it_back() {
+    let prompt = consent_prompt("acct-lab", "leo.example.edu", "20260924_2");
+    let (heading, body) = prompt.split_once('\n').expect("a heading and a body");
+    assert_eq!(heading, "Let this chat read acct-lab as you");
+    assert!(!body.contains('\n'), "{body}");
+    let sentences: Vec<&str> = body
+        .split_inclusive(". ")
+        .map(str::trim)
+        .filter(|sentence| !sentence.is_empty())
+        .collect();
+    assert_eq!(sentences.len(), 2, "{sentences:?}");
+    assert!(
+        sentences[0].contains("acct-lab on leo.example.edu"),
+        "{body}"
+    );
+    assert!(
+        sentences[0].contains("every change still asks you"),
+        "{body}"
+    );
+    assert!(sentences[1].contains("this chat's Crew bar"), "{body}");
+    assert!(
+        sentences[1].ends_with("biorouter crew grants revoke 20260924_2 --reads."),
+        "{body}"
+    );
+    assert!(!prompt.contains(['\u{2014}', '\u{2013}']), "{prompt}");
+}
+
 #[test]
 fn parameters_are_held_to_the_table() {
     let setup = catalog::find(PersonTool::Change, "setup").unwrap();
@@ -484,7 +576,7 @@ fn listed_workspace(name: &str, version: &str, binary_current: bool) -> SetupWor
 /// program installed at the time.
 #[test]
 fn a_setup_card_names_what_it_restarts_after_installing() {
-    use super::setup::planned_restarts;
+    use super::setup::{planned_restarts, RestartsAsked};
     let mut lab = listed_workspace("lab", "1.94.0", true);
     lab.others_connected = Some(3);
     let quiet = listed_workspace("quiet", "1.94.0", true);
@@ -493,7 +585,7 @@ fn a_setup_card_names_what_it_restarts_after_installing() {
     let newer = listed_workspace("newer", "1.96.0", true);
     let listing = [lab, quiet, unknown, newer];
 
-    let lines = planned_restarts(Some(&listing), Some("1.95.0"), None, &[]);
+    let lines = planned_restarts(Some(&listing), Some("1.95.0"), &RestartsAsked::default());
     assert_eq!(
         lines,
         [
@@ -503,7 +595,14 @@ fn a_setup_card_names_what_it_restarts_after_installing() {
         ],
         "{lines:?}"
     );
-    let forced = planned_restarts(Some(&listing), Some("1.95.0"), Some(true), &[]);
+    let forced = planned_restarts(
+        Some(&listing),
+        Some("1.95.0"),
+        &RestartsAsked {
+            all: Some(true),
+            ..RestartsAsked::default()
+        },
+    );
     assert!(
         forced[0].starts_with("It restarts lab: 3 other people are connected"),
         "{forced:?}"
@@ -513,10 +612,125 @@ fn a_setup_card_names_what_it_restarts_after_installing() {
         "{forced:?}"
     );
     // Nothing installed: only what the listing found on an older program.
-    assert!(planned_restarts(Some(&listing), None, None, &[]).is_empty());
+    assert!(planned_restarts(Some(&listing), None, &RestartsAsked::default()).is_empty());
     for line in lines.iter().chain(&forced) {
         assert!(!line.contains(['\u{2014}', '\u{2013}']), "{line}");
     }
+}
+
+/// `restart_workspace_ids` is the person's consent for exactly the workspaces it names: the
+/// card says each named one restarts even with others connected, while one not named is left
+/// running, and with `restart_workspaces` false only the named ones restart. A workspace kept
+/// outside Crew's own folder is never said to restart, as setup never restarts it.
+#[test]
+fn a_setup_card_restarts_the_workspaces_the_person_named() {
+    use super::setup::{planned_restarts, RestartsAsked};
+    let mut lab = listed_workspace("lab", "1.94.0", false);
+    lab.others_connected = Some(3);
+    let mut busy = listed_workspace("busy", "1.94.0", false);
+    busy.others_connected = Some(2);
+    let mut elsewhere = listed_workspace("elsewhere", "1.94.0", false);
+    elsewhere.others_connected = Some(0);
+    elsewhere.state_dir = None;
+    let listing = [lab, busy, elsewhere];
+    let named = ["LAB-ID".to_owned()];
+
+    let lines = planned_restarts(
+        Some(&listing),
+        None,
+        &RestartsAsked {
+            named: &named,
+            ..RestartsAsked::default()
+        },
+    );
+    assert_eq!(
+        lines,
+        [
+            "It restarts lab: 3 other people are connected, and their running agent commands will stop.",
+            "It leaves busy running the older Crew: 2 other people are connected.",
+        ],
+        "{lines:?}"
+    );
+    let only_named = planned_restarts(
+        Some(&listing),
+        None,
+        &RestartsAsked {
+            all: Some(false),
+            named: &named,
+            ..RestartsAsked::default()
+        },
+    );
+    assert_eq!(
+        only_named,
+        [
+            "It restarts lab: 3 other people are connected, and their running agent commands will stop.",
+            "It restarts no other workspace; any other running an older Crew is only reported.",
+        ],
+        "{only_named:?}"
+    );
+    let none = planned_restarts(
+        Some(&listing),
+        None,
+        &RestartsAsked {
+            all: Some(false),
+            ..RestartsAsked::default()
+        },
+    );
+    assert_eq!(
+        none,
+        ["It restarts no workspace; any running an older Crew are only reported."]
+    );
+}
+
+/// A start ID is said by the name of the workspace the setup would start: one the account hosts
+/// with that ID. Another account's entry presenting the same ID and a name of its choosing is
+/// never what the card names, and when the account's own entries for the ID are two workspaces
+/// (their host UID or key fingerprint differ), the card says the ID rather than pick a name.
+#[test]
+fn a_start_is_named_by_the_workspace_it_starts_not_by_its_id_alone() {
+    use super::setup::{planned_restarts, RestartsAsked};
+    use biorouter::crew::{SetupWorkspaceRole, SetupWorkspaceState};
+    let id = "3f2a9c1e-77b0-4d4e-8a11-0000000d00aa".to_owned();
+    let stopped = |name: &str, role: SetupWorkspaceRole, fingerprint: &str| {
+        let mut workspace = listed_workspace(name, "1.95.0", true);
+        workspace.workspace_id = id.clone();
+        workspace.role = role;
+        workspace.state = SetupWorkspaceState::Stopped;
+        workspace.binary_current = None;
+        workspace.workspace_key_fingerprint = Some(fingerprint.to_owned());
+        workspace
+    };
+    let start = [id.clone()];
+    let asked = RestartsAsked {
+        start: &start,
+        ..RestartsAsked::default()
+    };
+    let copy = stopped("payroll", SetupWorkspaceRole::Member, "EEEE EEEE EEEE EEEE");
+    let ours = stopped("lab", SetupWorkspaceRole::Host, "AAAA BBBB CCCC DDDD");
+    // The copy listed first: an ID-only lookup named it.
+    let listing = [copy.clone(), ours.clone()];
+    assert_eq!(
+        planned_restarts(Some(&listing), None, &asked),
+        ["It starts lab."]
+    );
+    let only_the_copy = [copy];
+    assert_eq!(
+        planned_restarts(Some(&only_the_copy), None, &asked),
+        [format!("It starts the workspace {}.", start[0])]
+    );
+    let mut twin = stopped("lab-old", SetupWorkspaceRole::Host, "1111 2222 3333 4444");
+    twin.host_uid = Some(1000);
+    let two_of_ours = [ours.clone(), twin];
+    assert_eq!(
+        planned_restarts(Some(&two_of_ours), None, &asked),
+        [format!("It starts the workspace {}.", start[0])]
+    );
+    // The same workspace listed twice is still one.
+    let listed_twice = [ours.clone(), ours];
+    assert_eq!(
+        planned_restarts(Some(&listed_twice), None, &asked),
+        ["It starts lab."]
+    );
 }
 
 fn saved(name: &str, ssh_target: &str) -> Connection {

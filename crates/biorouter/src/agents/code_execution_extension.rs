@@ -2833,11 +2833,16 @@ impl CodeExecutionClient {
     /// states, that "a script's tool call inherits the script's permission". A
     /// resample here would let a model switch mid-turn and change what a running
     /// script can import. `get_moim` is the one caller with nothing to inherit.
+    ///
+    /// `session_id` is the chat the catalogue is for, so the tools whose offer depends on the
+    /// chat follow that chat's own standing, as its tool list does: Crew's (AO-12) are a
+    /// granted chat's two worker tools, or a person's own chat's two person tools, never both.
     async fn get_tool_infos(
         &self,
         admitted: Option<crate::privacy::CallCapability>,
+        session_id: &str,
     ) -> Vec<ToolInfo> {
-        self.get_catalogue(admitted)
+        self.get_catalogue(admitted, session_id)
             .await
             .iter()
             .filter_map(ToolInfo::from_mcp_tool)
@@ -2850,6 +2855,7 @@ impl CodeExecutionClient {
     async fn get_catalogue(
         &self,
         admitted: Option<crate::privacy::CallCapability>,
+        session_id: &str,
     ) -> Vec<McpTool> {
         let Some(manager) = self
             .context
@@ -2861,7 +2867,7 @@ impl CodeExecutionClient {
         };
 
         manager
-            .get_prefixed_tools_excluding(EXTENSION_NAME, admitted)
+            .get_prefixed_tools_excluding_for(EXTENSION_NAME, admitted, Some(session_id))
             .await
             .unwrap_or_default()
     }
@@ -2920,7 +2926,7 @@ impl CodeExecutionClient {
             .ok_or("Missing required parameter: code")?
             .to_string();
 
-        let catalogue = self.get_catalogue(Some(cap)).await;
+        let catalogue = self.get_catalogue(Some(cap), session_id).await;
         let tools: Vec<ToolInfo> = catalogue
             .iter()
             .filter_map(ToolInfo::from_mcp_tool)
@@ -3030,6 +3036,7 @@ impl CodeExecutionClient {
         &self,
         arguments: Option<JsonObject>,
         cap: crate::privacy::CallCapability,
+        session_id: &str,
     ) -> Result<Vec<Content>, String> {
         let path = arguments
             .as_ref()
@@ -3037,7 +3044,7 @@ impl CodeExecutionClient {
             .and_then(|v| v.as_str())
             .ok_or("Missing required parameter: module_path")?;
 
-        let tools = self.get_tool_infos(Some(cap)).await;
+        let tools = self.get_tool_infos(Some(cap), session_id).await;
         let parts: Vec<&str> = path.trim_start_matches('/').split('/').collect();
 
         // Issue #141: `platform` is *permanently* absent from this catalogue,
@@ -3104,6 +3111,7 @@ impl CodeExecutionClient {
         &self,
         arguments: Option<JsonObject>,
         cap: crate::privacy::CallCapability,
+        session_id: &str,
     ) -> Result<Vec<Content>, String> {
         let terms = arguments
             .as_ref()
@@ -3152,7 +3160,7 @@ impl CodeExecutionClient {
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
 
-        let tools = self.get_tool_infos(Some(cap)).await;
+        let tools = self.get_tool_infos(Some(cap), session_id).await;
         Self::handle_search(&tools, &terms_vec, use_regex)
     }
 
@@ -4003,8 +4011,14 @@ impl McpClientTrait for CodeExecutionClient {
         let content = match name {
             // Issue #56 Gate E: these two ARE the discovery surface, so they see
             // the world the capability this call was admitted on may see.
-            "read_module" => self.handle_read_module(arguments, meta.capability).await,
-            "search_modules" => self.handle_search_modules(arguments, meta.capability).await,
+            "read_module" => {
+                self.handle_read_module(arguments, meta.capability, &meta.session_id)
+                    .await
+            }
+            "search_modules" => {
+                self.handle_search_modules(arguments, meta.capability, &meta.session_id)
+                    .await
+            }
             _ => Err(format!("Unknown tool: {name}")),
         };
 
@@ -4020,10 +4034,10 @@ impl McpClientTrait for CodeExecutionClient {
         Some(&self.info)
     }
 
-    async fn get_moim(&self, _session_id: &str) -> Option<String> {
+    async fn get_moim(&self, session_id: &str) -> Option<String> {
         // The one catalogue read with no admitted call to inherit from: MOIM is
         // assembled for the prompt, not inside a tool call, so it samples.
-        let tools = self.get_tool_infos(None).await;
+        let tools = self.get_tool_infos(None, session_id).await;
         if tools.is_empty() {
             return None;
         }
@@ -4178,6 +4192,7 @@ mod tests {
                 .handle_read_module(
                     Some(object!({ "module_path": path })),
                     crate::privacy::CallCapability::for_test_restricted(),
+                    "test-session-id",
                 )
                 .await
                 .expect_err("there is no importable platform module");
@@ -4195,6 +4210,7 @@ mod tests {
             .handle_read_module(
                 Some(object!({ "module_path": "platformish" })),
                 crate::privacy::CallCapability::for_test_restricted(),
+                "test-session-id",
             )
             .await
             .expect_err("an unknown module is still unknown");
@@ -5804,6 +5820,7 @@ record_result({ status: out.trim() });"#,
             .handle_read_module(
                 Some(args),
                 crate::privacy::CallCapability::for_test_restricted(),
+                "test-session-id",
             )
             .await;
         assert!(result.is_err());
@@ -7843,5 +7860,142 @@ mod gate_c_bridge_tests {
 
         assert_ne!(kind, "dispatch_error", "{result:?}");
         result.expect("a private model may call a private extension from a script");
+    }
+}
+
+/// AO-12 in Code Execution, which is on by default: a script imports from `crew` exactly the Crew
+/// tools its own chat is offered, so no binding is listed that dispatch would refuse.
+#[cfg(test)]
+mod crew_catalogue_tests {
+    use super::*;
+    use crate::agents::extension::ExtensionConfig;
+    use crate::agents::{Agent, AgentConfig};
+    use crate::config::permission::PermissionManager;
+    use crate::config::BioRouterMode;
+    use crate::crew::tool_host::{CrewToolHost, PersonToolCall};
+    use crate::session::session_manager::SessionType;
+    use crate::session::{Session, SessionManager};
+    use std::sync::Arc;
+
+    /// A host that is installed and is never called here.
+    struct InstalledHost;
+
+    #[async_trait::async_trait]
+    impl CrewToolHost for InstalledHost {
+        async fn call(&self, _call: PersonToolCall) -> anyhow::Result<Value> {
+            anyhow::bail!("not in this test")
+        }
+    }
+
+    fn host() -> Option<Arc<dyn CrewToolHost>> {
+        Some(Arc::new(InstalledHost))
+    }
+
+    /// A person's own chat, in a store of its own, whose agent carries the Crew extension.
+    async fn crew_chat(name: &str) -> (Agent, Session) {
+        let temp = tempfile::TempDir::new().unwrap();
+        let sessions = Arc::new(SessionManager::new(temp.path().to_path_buf()));
+        let session = sessions
+            .create_session(temp.path().to_path_buf(), name.into(), SessionType::User)
+            .await
+            .unwrap();
+        std::mem::forget(temp); // keep the sqlite file alive for the test
+        let agent = Agent::with_config(AgentConfig::new(
+            sessions,
+            PermissionManager::instance(),
+            None,
+            BioRouterMode::Auto,
+        ));
+        agent
+            .add_extension(ExtensionConfig::Platform {
+                name: crate::agents::crew_extension::EXTENSION_NAME.into(),
+                description: "Crew".into(),
+                bundled: Some(true),
+                available_tools: vec![],
+            })
+            .await
+            .unwrap();
+        (agent, session)
+    }
+
+    /// What a script in `session` may import from `crew`, as `read_module`, `search_modules` and
+    /// `execute_code` read the catalogue.
+    async fn crew_module(agent: &Agent, session: &Session) -> Vec<String> {
+        let client = CodeExecutionClient::new(PlatformExtensionContext {
+            extension_manager: Some(Arc::downgrade(&agent.extension_manager)),
+            session_manager: Arc::clone(&agent.config.session_manager),
+        })
+        .unwrap();
+        let capability =
+            crate::privacy::CallCapability::for_test(crate::privacy::ProviderTier::Private, true);
+        let mut names: Vec<String> = client
+            .get_tool_infos(Some(capability), &session.id)
+            .await
+            .into_iter()
+            .filter(|tool| tool.server_name == crate::agents::crew_extension::EXTENSION_NAME)
+            .map(|tool| tool.tool_name)
+            .collect();
+        names.sort();
+        names
+    }
+
+    /// A person's own chat with no grant imports `crew.read` and `crew.change`, and never the
+    /// grant's `connections` or `request`, which it would be refused (the live run's finding:
+    /// `read_module("crew")` listed all four in such a chat).
+    #[tokio::test]
+    async fn a_persons_chat_without_a_grant_imports_only_the_person_tools() {
+        let (agent, session) = crew_chat("A chat").await;
+        let listed =
+            crate::crew::tool_host::with_host_for_tests(host(), crew_module(&agent, &session))
+                .await;
+        assert_eq!(listed, ["change", "read"]);
+    }
+
+    /// A chat holding a Crew grant imports exactly the grant's two worker tools, and never a
+    /// person tool, which gate B-1 refuses it.
+    #[tokio::test]
+    async fn a_granted_chat_imports_only_the_grant_s_worker_tools() {
+        let (agent, session) = crew_chat("A granted chat").await;
+        let crew = crate::crew::install_test_scope(&session.id, None).await;
+        let listed =
+            crate::crew::tool_host::with_host_for_tests(host(), crew_module(&agent, &session))
+                .await;
+        crate::crew::remove_test_scope(&crew, &session.id).await;
+        assert_eq!(listed, ["connections", "request"]);
+    }
+
+    /// Any other session, a subagent here, imports no Crew tool at all.
+    #[tokio::test]
+    async fn a_subagent_imports_no_crew_tool() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let sessions = Arc::new(SessionManager::new(temp.path().to_path_buf()));
+        let session = sessions
+            .create_session(
+                temp.path().to_path_buf(),
+                "A subagent".into(),
+                SessionType::SubAgent,
+            )
+            .await
+            .unwrap();
+        std::mem::forget(temp);
+        let agent = Agent::with_config(AgentConfig::new(
+            sessions,
+            PermissionManager::instance(),
+            None,
+            BioRouterMode::Auto,
+        ));
+        agent
+            .add_extension(ExtensionConfig::Platform {
+                name: crate::agents::crew_extension::EXTENSION_NAME.into(),
+                description: "Crew".into(),
+                bundled: Some(true),
+                available_tools: vec![],
+            })
+            .await
+            .unwrap();
+        let listed =
+            crate::crew::tool_host::with_host_for_tests(host(), crew_module(&agent, &session))
+                .await;
+        assert!(listed.is_empty(), "{listed:?}");
     }
 }

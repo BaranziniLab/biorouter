@@ -1024,12 +1024,17 @@ fn a_change_parks_one_card_and_changes_nothing_when_denied() {
         assert_eq!(denied.cards.len(), 1);
         let card = &denied.cards[0];
         assert_eq!(card.tool, "crew__change");
+        let server = biorouter::crew::server_label(&connection.ssh_target, connection.port).await;
         assert!(
-            card.prompt
-                .starts_with(&format!("Change the saved connection {}", connection.name)),
+            card.prompt.starts_with(&format!(
+                "Change the saved connection to {} on {server}",
+                connection.name
+            )),
             "{}",
             card.prompt
         );
+        assert_eq!(card.arguments["workspace"], connection.name.as_str());
+        assert_eq!(card.arguments["server"], server.as_str());
         assert_eq!(
             card.arguments["name"], "lab-renamed",
             "{:?}",
@@ -1264,9 +1269,10 @@ fn workspace_changes_send_what_the_card_showed() {
 }
 
 /// The first read of a workspace's content in a chat parks one card, "Let this chat read lab
-/// as you"; until it is allowed the read answers `crew_read_consent_required`. Allowed, the
-/// chat is raised Private before the content returns, and later reads ask nothing. The consent
-/// is listed by `grants_list` and taken back by `grants_revoke`.
+/// as you", which says where the consent is taken back. Declined, the read says so, and a retry
+/// before the person writes again parks no second card. Allowed, the chat is raised Private
+/// before the content returns, and later reads ask nothing. The consent is listed by
+/// `grants_list` and taken back by `grants_revoke`.
 #[test]
 #[serial]
 fn a_chat_reads_a_workspace_only_after_the_person_lets_it() {
@@ -1283,6 +1289,8 @@ fn a_chat_reads_a_workspace_only_after_the_person_lets_it() {
         .await;
         let session = chat("consent").await;
 
+        // Fresh, the person has not written yet: a read before their first message is still
+        // asked once and answered.
         let denied = call(
             &session,
             private_local().await,
@@ -1292,40 +1300,58 @@ fn a_chat_reads_a_workspace_only_after_the_person_lets_it() {
             &["deny"],
         )
         .await;
-        assert!(
-            denied
-                .refusal()
-                .contains("This chat needs your permission to read lab as you."),
-            "{}",
-            denied.refusal()
-        );
-        assert!(
-            denied.refusal().contains("crew_read_consent_required"),
-            "{}",
-            denied.refusal()
-        );
+        // A decline is said as one, never as a card still waiting.
+        assert_eq!(denied.refusal(), "The person declined. Nothing was read.");
         assert_eq!(denied.cards.len(), 1);
         assert_eq!(denied.cards[0].tool, "crew__read");
+        let (heading, body) = denied.cards[0]
+            .prompt
+            .split_once('\n')
+            .expect("a heading and a body");
+        assert_eq!(heading, "Let this chat read lab as you");
+        // Where to take it back: this chat's Crew bar, or the command that takes back this
+        // chat's consent, not a Crew grant it never had.
+        assert!(body.contains("in this chat's Crew bar"), "{body}");
         assert!(
-            denied.cards[0]
-                .prompt
-                .starts_with("Let this chat read lab as you"),
-            "{}",
-            denied.cards[0].prompt
-        );
-        // The command it names takes back this chat's consent, not a Crew grant it never had.
-        assert!(
-            denied.cards[0].prompt.contains(&format!(
-                "until you take this back with biorouter crew grants revoke {session} --reads."
+            body.ends_with(&format!(
+                "or with biorouter crew grants revoke {session} --reads."
             )),
-            "{}",
-            denied.cards[0].prompt
+            "{body}"
         );
         assert!(!crew().has_person_read(&session, &connection.id).await);
         assert_eq!(
             classification(&session).await,
             SessionClassification::Public
         );
+
+        // A retry in the same turn parks no second card: the person already answered.
+        let retried = call(
+            &session,
+            private_local().await,
+            PersonTool::Read,
+            "members",
+            json!({}),
+            &["allow_once"],
+        )
+        .await;
+        assert!(retried.cards.is_empty(), "{:?}", retried.cards);
+        assert!(
+            retried.refusal().contains("The person declined"),
+            "{}",
+            retried.refusal()
+        );
+        assert!(!crew().has_person_read(&session, &connection.id).await);
+
+        // Once the person writes again, the read asks again.
+        state()
+            .await
+            .session_manager()
+            .add_message(
+                &session,
+                &biorouter::conversation::message::Message::user().with_text("Go ahead, read it."),
+            )
+            .await
+            .unwrap();
 
         let allowed = call(
             &session,
@@ -1965,12 +1991,57 @@ fn joining_a_saved_connection_names_its_host() {
         .await;
         assert_eq!(denied.cards.len(), 1, "{:?}", denied.answer);
         let prompt = &denied.cards[0].prompt;
+        let server = biorouter::crew::server_label(&connection.ssh_target, connection.port).await;
         assert!(
-            prompt.starts_with(&format!("Join {}, hosted by @alice, on ", connection.name)),
+            prompt.starts_with(&format!(
+                "Join {} on {server}, hosted by @alice, as you",
+                connection.name
+            )),
             "{prompt}"
         );
         assert!(prompt.contains("Workspace key fingerprint:"), "{prompt}");
         remove(&connection).await;
+    });
+}
+
+/// AO-12, "Which chats": a chat's tool listing (`GET /agent/tools`, which the desktop draws a
+/// chat's tools from) shows the Crew tools that chat is offered and no other: a person's chat
+/// with no grant lists `crew__read` and `crew__change`, never the grant's worker tools it would
+/// be refused. Every other extension's tools stay listed.
+#[test]
+#[serial]
+fn a_chat_s_tool_listing_shows_only_the_crew_tools_it_is_offered() {
+    run(async {
+        let session = chat("tool listing").await;
+        let agent = state()
+            .await
+            .get_agent_for_route(session.clone())
+            .await
+            .expect("the chat's agent");
+        agent
+            .add_extension(biorouter::agents::ExtensionConfig::Platform {
+                name: "crew".into(),
+                description: "Crew".into(),
+                bundled: Some(true),
+                available_tools: vec![],
+            })
+            .await
+            .expect("the crew extension");
+        let (status, body) = http(
+            "GET",
+            &format!("/agent/tools?session_id={session}&extension_name=crew"),
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let mut names: Vec<&str> = body
+            .as_array()
+            .expect("a list of tools")
+            .iter()
+            .filter_map(|tool| tool["name"].as_str())
+            .collect();
+        names.sort_unstable();
+        assert_eq!(names, ["crew__change", "crew__read"], "{body}");
     });
 }
 

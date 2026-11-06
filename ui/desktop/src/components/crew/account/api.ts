@@ -33,11 +33,20 @@ export async function rejoinConnection(connectionId: string): Promise<CrewRejoin
   return { role: role as Api.AccountRole, evictedFingerprint: evicted ?? null };
 }
 
-/** The new devices the person has seen (AO-10): the notice goes until another is added. */
-export async function acknowledgeNewDevices(connectionId: string): Promise<void> {
+/**
+ * The new devices the person has seen (AO-10), by the grouped fingerprints the notice showed: only
+ * those stop being reported, so a device listed after the notice was drawn is still said. The
+ * route takes exactly this body (`AcknowledgeDevicesRequest`) and refuses a request without one.
+ */
+export async function acknowledgeNewDevices(
+  connectionId: string,
+  fingerprints: readonly string[]
+): Promise<void> {
+  const body: Api.AcknowledgeDevicesRequest = { fingerprints: [...fingerprints] };
   await crewHttp<unknown>(
     `/connections/${encodeURIComponent(connectionId)}/devices/acknowledge`,
-    'POST'
+    'POST',
+    body
   );
 }
 
@@ -68,14 +77,23 @@ export async function listPersonReads(
   connectionId: string,
   signal?: AbortSignal
 ): Promise<CrewPersonRead[]> {
-  const result = wireOf<Api.CrewGrantList>(
+  return personReadsFrom(
     await crewHttp<unknown>(
       `/connections/${encodeURIComponent(connectionId)}/grants`,
       'GET',
       undefined,
       signal
-    )
+    ),
+    connectionId
   );
+}
+
+/**
+ * The read consents in one `GET …/grants` answer, read as `listPersonReads` reads them: a chat's
+ * Crew bar takes them from the same answer it reads the chat's grant from, rather than asking twice.
+ */
+export function personReadsFrom(answer: unknown, connectionId: string): CrewPersonRead[] {
+  const result = wireOf<Api.CrewGrantList>(answer);
   const rows = Array.isArray(result?.person_reads) ? result.person_reads : [];
   return rows.flatMap((row: unknown): CrewPersonRead[] => {
     const read = wireOf<Api.CrewPersonReadView>(row);

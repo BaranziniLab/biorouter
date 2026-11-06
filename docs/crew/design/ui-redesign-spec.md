@@ -504,14 +504,18 @@ old `/host|SSH|key|authentication/i` match is deleted because it sent every SSH 
   **Join a workspace…** and **Host a new workspace…**, as the welcome screen offers **Open a workspace on a server**
   as a link beside **Host a new workspace**. On a workspace whose broker advertises `account_identity_v1`,
   **Keys and security…** lists every device on the person's account, each with its fingerprint, "Added {date}" and
-  how ("by signing in to the server" for `added_via: account`), and **Remove**, the one marked **This device**
-  included. **Remove** turns the row into an inline question, "Remove {fingerprint} from your account?" ("Remove this
-  computer from your account?" for this one), with AO-5's warning: "A lost computer can still sign in as you while it
-  has an SSH key or password for your account. First remove its key from ~/.ssh/authorized_keys on the server, or
-  change your password. Then remove it here." This computer's adds "This computer stops reaching the workspace until
-  you choose Add this computer again." The answers are **Remove device** and **Keep**, and the result reads
-  "Removed {fingerprint}." or "Removed this computer. Choose Add this computer again to use the workspace here."
-  Removing this computer marks the connection as needing **Add this computer again**.
+  how ("by signing in to the server" for `added_via: account`), and **Remove**, the one marked **This computer**
+  included; a device the new-device notice is about is marked **New** until it is acknowledged. **Remove** turns the
+  row into an inline question, "Remove {fingerprint} from your account?", with AO-5's warning: "A lost computer can
+  still sign in as you while it has an SSH key or password for your account. First remove its key from
+  ~/.ssh/authorized_keys on the server, or change your password. Then remove it here." The answers are **Remove
+  device** and **Keep**. This computer is the one in use, not a lost one, so its question, "Remove this computer from
+  your account?", carries no SSH warning, only "This computer stops reaching the workspace until you choose Add this
+  computer again.", and its answers are **Remove this computer** and **Keep**. **Keep** and Escape return focus to
+  the row's **Remove**. The result reads "Removed {fingerprint}." or "Removed this computer. Choose Add this computer
+  again to use the workspace here." Removing this computer marks the connection as needing **Add this computer
+  again**. *Amended by the 2026-11 fixes:* this computer was labelled **This device** until then; every label a person
+  reads about their own computers says "computer".
 
 ### The channel header and channel menu
 
@@ -760,13 +764,20 @@ older joiner's code. Against a broker without the capability every row above app
 **Open a workspace on a server** (*added for account ownership, AO-6, AO-8, AO-9*): **Your server login** (with
 **Advanced** for the route) and **Look for workspaces**, which prepares a device and runs a check job on the server
 target, verifying the host key as Join does. Under "Workspaces on {server}" it lists what `SetupStatus.workspaces`
-holds, each titled with its host ("lab, hosted by @alice", or "lab, hosted by you") and described by role ("You host
-it", "You’re a member", "You’re invited", "You were removed"), state ("Running", "Stopped", "Deleted"), "Crew
-{version}" and "Open on this computer" or "Saved on this computer". It offers **Open** (running, not removed: save
-from the entry's `invitation`, connect, join), **Start** (stopped, hosted by the person: an install job with
-`start_workspaces`) and **Update Crew** (running, hosted by the person, older than this app's Crew or naming no
-version: an install job; when others are connected it asks first, "{n} people are connected. Their running agent
-commands will stop.", with **Update and restart** and **Not now**). A removed entry reads "You were removed from
+holds, each titled with its host ("lab, hosted by @alice", or "lab, hosted by you") and described by role ("You’re a
+member", "You’re invited", "You were removed"; a hosted row's title already says so), state ("Running", "Stopped",
+"Deleted"), "Crew {version}" and "Connected on this computer" or "Saved on this computer". It offers **Open** (running,
+not removed: save from the entry's `invitation`, connect, join), **Start** (stopped, hosted by the person: an install
+job with `start_workspaces` and `restart_workspaces: false`) and **Update Crew** (running, hosted by the person, older
+than this app's Crew or naming no version: an install job with `restart_workspace_ids: [that ID]` and
+`restart_workspaces: false`, so it restarts that workspace alone; when others are connected it asks first, "{n}
+people are connected. Their running agent commands will stop.", and when the count is unknown, as on every Crew from
+before account ownership, "Other people may be connected. Their running agent commands will stop.", with **Update and
+restart** and **Not now**). *Amended by the 2026-11 fixes:* the list's heading keeps the server name as typed, not in capitals; rows are keyed
+by workspace ID, host UID and key fingerprint, since two hosts can list one ID; after a job, a row left running says
+why ("It wasn’t restarted, because {n} people are connected. Choose Update Crew to restart it anyway.", or for a newer
+Crew or a custom state folder a reason with no **Update Crew**); and focus a finished job's disabled buttons dropped
+goes to the acted row's first button, else the first found, else **Look again**. A removed entry reads "You were removed from
 {workspace}. Ask a member to invite you again.", two hosts with one name raise "Two people host a workspace named
 {workspace} here. Check the host before you open one.", and an empty list reads "There are no workspaces for you on
 {server}. To join someone else’s, ask them to invite you."
@@ -951,7 +962,7 @@ was added to your account on {date}." with **Review** opening Keys and security)
 | The person's devices (*added for account ownership, AO-5, AO-10*) | **Keys and security…** lists each device with how and when it was added; a device added since this computer last looked raises the new-device notice at the next connect |
 | The server's Crew version (*added for account ownership, AO-4*) | When the connection's `server_version` (the version the verified `hello` reported) is older than the Crew server program this app carries, or, for a broker that reports no version, when its `hello` does not advertise `account_identity_v1`, the connection bar says "{workspace}’s server runs an older Crew.": **Update Crew** for the host (it opens **Open a workspace on a server** for that server and looks at once), "Ask @{host} to update Crew." for others, and × to dismiss |
 | Setups started elsewhere (*added for account ownership, AO-8, AO-12*) | A setup job this window did not start, such as a chat's, shows at the top of Crew as "Crew is being set up on {server}.", or "A setup on {server} is waiting for you to sign in." with **Sign in** |
-| A chat's read consent (*added for account ownership, AO-12*) | Under the Chat access pane, "Reads as you" lists "Reads {workspace} as you", "Since {date}" and **Revoke**, which answers "This chat no longer reads {workspace} as you." |
+| A chat's read consent (*added for account ownership, AO-12*) | Under the Chat access pane, "Reads as you" lists "Reads {workspace} as you", "Since {date}" and **Revoke**, which answers "This chat no longer reads {workspace} as you." *Amended 2026-11:* the chat itself shows it too. A chat with a read consent and no grant carries a slim bar above its composer, one "Reads {workspace} as you" chip per workspace with **Revoke**, whose result note has **Dismiss**; focus goes to the next **Revoke**, else **Dismiss**, then the composer. The bar appears as soon as the consent card is allowed. The consent card's button reads **Allow**, not **Allow once**, its answered row reads "This chat may read {workspace} as you until you take it back", and a Crew person-tool card shows its summary and each line under it on separate lines, with no **Change** link. `crew__read` and `crew__change` are left out of the per-tool permission choices. |
 
 ## Every existing screen, control and string: old to new
 
@@ -1374,7 +1385,7 @@ the Advanced summary. **Req** means native `required`, a `type="submit"` button 
 | **Chat access** (grant) | The consent summary only | Also read other channels (none) |
 | **Share a server path** | Path on {host} (req, `pattern="/.*"`) | Label (the file name) |
 | **Remove from workspace** | Type {username} to confirm (req, exact, case-sensitive) | None |
-| **Keys and security** | Storage status line; Unlock/Lock for a vault; This device's key (`CopyField`) | Use an encrypted vault instead (fresh profiles only) |
+| **Keys and security** | Storage status line; Unlock/Lock for a vault; This device's key (`CopyField`; *amended 2026-11:* headed "This computer") | Use an encrypted vault instead (fresh profiles only) |
 
 Every submit with an invalid field inside a closed Advanced opens it and focuses that field.
 
@@ -1588,8 +1599,8 @@ Advanced. `{person}` means `personLabel` output; `{first}` is the display name's
 | `bar.keyRefused` / `bar.brokerStopped*` | *Added by wave 2 (F5, R-7); `crew/channel/copy.ts` is the source.* {host} refused this computer's SSH key for {user}. Check Your server login in Connection settings. · Crew isn't running on {host}. Start it on the server, then connect. *(the host)* · The workspace server isn't running. Ask {host person} to start Crew. *(a member)* · Crew isn't running on {host}. Its host starts it again on the server. *(when this computer cannot tell)* |
 | `bar.vaultLocked` | Your Crew vault is locked. · Unlock |
 | `bar.reconnecting` | Reconnecting to {workspace}… |
-| `bar.newDevice` | A new device was added to your account on {date}. · Review *Amended for account ownership (AO-10):* raised for every device added since the daemon last saw the list, reported at each connect and snapshot until acknowledged: A new device was added to your account on {date}. · It signed in to the server as you. (for `added_via: account`) · {count} new devices were added to your account. · Review · Acknowledge · Couldn’t mark the new devices as seen. Try again. |
-| *(added for account ownership, AO-9)* | This computer no longer has its key for {workspace}. Choose Add this computer again to make a new one. · {workspace} no longer recognizes this computer. Choose Add this computer again while you are still a member. · You removed this computer from {workspace}. Choose Add this computer again to use it here. · Add this computer again · Adding this computer… · This computer is back in {workspace}. Chats that had Crew access through it need access again. · To make room, the workspace removed your oldest device, {fingerprint}. · Couldn’t add this computer again. · {workspace}'s server runs an older Crew. Update it with biorouter crew setup --server {login}. · {workspace}'s server runs an older Crew. Ask @{host} to update it. · {workspace}’s server runs an older Crew. · Update Crew · Ask @{host} to update Crew. · You were removed from {workspace}. Ask a member to invite you again. |
+| `bar.newDevice` | A new device was added to your account on {date}. · Review *Amended for account ownership (AO-10):* raised for every device added since the daemon last saw the list, reported at each connect and snapshot until acknowledged: A new device was added to your account on {date}. · It signed in to the server as you. (for `added_via: account`) · {count} new devices were added to your account. · Review · Acknowledge · Couldn’t mark the new devices as seen. Try again. *Amended 2026-11:* a single new device's notice adds Its fingerprint is {fingerprint}., Keys marks it New, and Acknowledge sends exactly the fingerprints the notice showed; its error shows under that workspace's notice only |
+| *(added for account ownership, AO-9)* | *Amended 2026-11:* the bar shows these for a failed connect and for an observation that ends with `crew_device_key_missing` or `crew_device_not_recognized` (both are answered observation codes, not a dropped connection). This computer no longer has its key for {workspace}. Choose Add this computer again to make a new one. · {workspace} no longer recognizes this computer. Choose Add this computer again while you are still a member. · You removed this computer from {workspace}. Choose Add this computer again to use it here. · Add this computer again · Adding this computer… · This computer is back in {workspace}. Chats that had Crew access through it need access again. · To make room, the workspace removed your oldest device, {fingerprint}. · Couldn’t add this computer again. · {workspace}'s server runs an older Crew. Update it with biorouter crew setup --server {login}. · {workspace}'s server runs an older Crew. Ask @{host} to update it. · {workspace}’s server runs an older Crew. · Update Crew · Ask @{host} to update Crew. · You were removed from {workspace}. Ask a member to invite you again. |
 | `offline.*` | {workspace} is offline · Connect to see your channels. · Connect to {workspace} |
 | `signInNeeded.*` | Sign in to {host} · The server needs your password or a verification code. · Sign in |
 
@@ -1607,7 +1618,7 @@ Advanced. `{person}` means `personLabel` output; `{first}` is the display name's
 | Transfer ownership | Transfer ownership of #{channel} · New owner · They'll need to accept. · Offer ownership |
 | Rename | Rename team / Rename channel · Name · Rename |
 | Edit profile | Edit profile · Display name · Initials (optional) · Your username: @{username} · Save profile |
-| Keys and security | Keys and security · Stored in your system keychain. / Stored in an encrypted vault · Locked / … · Unlocked · Unlock · Lock · This device's key · Use an encrypted vault instead · Only for a new Crew profile. Existing identities aren't moved. · Set up vault… · Done *Amended for account ownership (AO-5):* each device row: fingerprint · Added {date} · by signing in to the server (or its other way in) · This device, with **Remove**, its inline question (Remove {fingerprint} from your account? / Remove this computer from your account?), the SSH-access warning, **Remove device** and **Keep** |
+| Keys and security | Keys and security · Stored in your system keychain. / Stored in an encrypted vault · Locked / … · Unlocked · Unlock · Lock · This device's key · Use an encrypted vault instead · Only for a new Crew profile. Existing identities aren't moved. · Set up vault… · Done *Amended for account ownership (AO-5):* each device row: fingerprint · Added {date} · by signing in to the server (or its other way in) · This computer · New, with **Remove**, its inline question (Remove {fingerprint} from your account?, with the SSH-access warning and **Remove device** / Remove this computer from your account?, with what follows and **Remove this computer**) and **Keep**. *Amended 2026-11:* This device's key reads This computer, and its copy label this computer’s fingerprint |
 | Share a server path | Share a path on {host} · Path · /home/you/project/data.h5ad · Label (optional) · Add to message |
 
 | Action | Primitive | Title | Description | Confirm |
@@ -1686,7 +1697,10 @@ Rules:
 1. **Never an ID.** An unknown principal renders "Unknown member" with **Copy person ID** in its `⋯`. The old
    `actorName` fallback to the raw ID (CV:151-154) is deleted.
 2. **Former members** (from S1's projected former principals) render muted with ` · former member`. Before S1 they
-   are "Unknown member", never an ID.
+   are "Unknown member", never an ID. *Amended for account ownership (AO-1), 2026-11:* the account is the person, so
+   a former principal whose exact username an active member holds now (an account removed and invited again)
+   renders as that member, with no ` · former member`; it stays a former principal in member lists, pickers and
+   remove or transfer actions, where the account is listed once, as the active member.
 3. **Collisions** use the daemon-projected labels (`collides`) when present; otherwise the client builds a
    directory keyed by the confusable skeleton of the display name. Any collision renders `Display name (@username)`
    everywhere, chips included.

@@ -7,6 +7,7 @@ import {
   resetSetupStartedHereForTests,
   setupRunFrom,
   setupStartedHere,
+  setupWorkspaceKey,
   setupWorkspacesFrom,
   startSetup,
   versionOlder,
@@ -143,6 +144,45 @@ describe('the server target and its choices (AO-8)', () => {
       restart_workspaces: false,
     });
   });
+
+  it('names the workspaces the person agreed to restart, and nothing when there are none', async () => {
+    const fetchMock = answer(200, { ...RUNNING, intent: 'install' });
+    await startSetup({
+      target: { kind: 'server', ssh_target: 'wanjun@leo.ucsf.edu' },
+      intent: 'install',
+      restart_workspaces: false,
+      restart_workspace_ids: [HOSTED.workspace_id],
+    });
+    expect(sentBody(fetchMock)).toEqual({
+      target: { kind: 'server', ssh_target: 'wanjun@leo.ucsf.edu' },
+      intent: 'install',
+      restart_workspaces: false,
+      restart_workspace_ids: [HOSTED.workspace_id],
+    });
+    await startSetup({
+      target: { kind: 'server', ssh_target: 'wanjun@leo.ucsf.edu' },
+      intent: 'install',
+      restart_workspace_ids: [],
+    });
+    expect(sentBody(fetchMock, 1)).toEqual({
+      target: { kind: 'server', ssh_target: 'wanjun@leo.ucsf.edu' },
+      intent: 'install',
+    });
+  });
+});
+
+describe('a found row is its ID, host and key (AO-6)', () => {
+  it('tells apart two hosts that list one workspace ID', () => {
+    const [mine, theirs] = setupWorkspacesFrom([
+      HOSTED,
+      { ...HOSTED, role: 'member', host_uid: 1001, host_username: 'alice' },
+    ]);
+    expect(mine.hostUid).toBe(1000);
+    expect(theirs.hostUid).toBe(1001);
+    expect(setupWorkspaceKey(mine)).not.toBe(setupWorkspaceKey(theirs));
+    expect(setupWorkspaceKey({ ...mine, fingerprint: 'other' })).not.toBe(setupWorkspaceKey(mine));
+    expect(setupWorkspaceKey({ ...mine })).toBe(setupWorkspaceKey(mine));
+  });
 });
 
 describe('what a job found and did (AO-6, AO-8)', () => {
@@ -170,6 +210,7 @@ describe('what a job found and did (AO-6, AO-8)', () => {
       role: 'host',
       state: 'running',
       hostUsername: 'wanjun',
+      hostUid: 1000,
       fingerprint: 'abcd',
       mode: 'private',
       institutionId: 'ucsf',

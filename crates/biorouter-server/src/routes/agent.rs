@@ -1638,37 +1638,8 @@ async fn permission_editor_tools(
             .await?
     };
 
-    if session_id.is_empty() {
-        let Some(extension_name) = extension_name.as_deref() else {
-            return Ok(Json(Vec::new()));
-        };
-        let Some(extension) = biorouter::config::get_all_extensions()
-            .into_iter()
-            .find(|entry| entry.enabled && entry.config.key() == extension_name)
-        else {
-            return Ok(Json(Vec::new()));
-        };
-
-        agent
-            .remove_extension(extension_name)
-            .await
-            .map_err(|error| {
-                warn!(extension = extension_name, %error, "Failed to refresh permission settings extension");
-                StatusCode::INTERNAL_SERVER_ERROR
-            })?;
-        tokio::time::timeout(
-            PERMISSION_SETTINGS_LOAD_TIMEOUT,
-            agent.add_extension(extension.config),
-        )
-        .await
-        .map_err(|_| {
-            warn!(extension = extension_name, "Timed out loading extension for permission settings");
-            StatusCode::REQUEST_TIMEOUT
-        })?
-        .map_err(|error| {
-            warn!(extension = extension_name, %error, "Failed to load extension for permission settings");
-            StatusCode::INTERNAL_SERVER_ERROR
-        })?;
+    if session_id.is_empty() && !load_settings_extension(&agent, extension_name.as_deref()).await? {
+        return Ok(Json(Vec::new()));
     }
 
     let permission_manager = agent.config.permission_manager.clone();
@@ -1686,9 +1657,23 @@ async fn permission_editor_tools(
     // which loads one globally enabled extension purely so its tools can be
     // listed here. Gate E is about the model's context; this is the user's own
     // administration surface. Do not swap this for `list_tools`.
-    let mut tools: Vec<ToolInfo> = agent
+    let mut listed = agent
         .list_tools_for_permission_settings(&session_id, extension_name)
-        .await
+        .await;
+    // AO-12: Crew's tools are not a privacy tier's to hide but the chat's own standing, and a
+    // chat is offered only the Crew tools it can use (a granted chat its two worker tools, any
+    // other chat the person tools it may use). So a chat's listing shows exactly those, by the
+    // rule the model's list follows, never a Crew tool the chat is refused. The settings page's
+    // global listing (`session_id` empty) names no chat and is left as it is.
+    if !session_id.is_empty() {
+        listed = biorouter::agents::crew_extension::offered_crew_tools(
+            &agent.extension_manager,
+            &session_id,
+            listed,
+        )
+        .await;
+    }
+    let mut tools: Vec<ToolInfo> = listed
         .into_iter()
         .map(|tool| {
             let permission = permission_manager
@@ -1727,6 +1712,46 @@ async fn permission_editor_tools(
     tools.sort_by(|a, b| a.name.cmp(&b.name));
 
     Ok(Json(tools))
+}
+
+/// For the settings page's global listing (an empty `session_id`): load the one globally
+/// enabled extension it names into `agent` afresh, so its tools can be listed. `false` when it
+/// names none, or no enabled extension has that name, and then the listing is empty.
+async fn load_settings_extension(
+    agent: &biorouter::agents::Agent,
+    extension_name: Option<&str>,
+) -> Result<bool, StatusCode> {
+    let Some(extension_name) = extension_name else {
+        return Ok(false);
+    };
+    let Some(extension) = biorouter::config::get_all_extensions()
+        .into_iter()
+        .find(|entry| entry.enabled && entry.config.key() == extension_name)
+    else {
+        return Ok(false);
+    };
+
+    agent
+        .remove_extension(extension_name)
+        .await
+        .map_err(|error| {
+            warn!(extension = extension_name, %error, "Failed to refresh permission settings extension");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+    tokio::time::timeout(
+        PERMISSION_SETTINGS_LOAD_TIMEOUT,
+        agent.add_extension(extension.config),
+    )
+    .await
+    .map_err(|_| {
+        warn!(extension = extension_name, "Timed out loading extension for permission settings");
+        StatusCode::REQUEST_TIMEOUT
+    })?
+    .map_err(|error| {
+        warn!(extension = extension_name, %error, "Failed to load extension for permission settings");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+    Ok(true)
 }
 
 #[utoipa::path(

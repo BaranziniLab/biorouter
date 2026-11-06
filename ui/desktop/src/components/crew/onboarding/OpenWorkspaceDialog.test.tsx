@@ -61,6 +61,7 @@ function entry(overrides: Partial<SetupWorkspace> = {}): SetupWorkspace {
     role: 'member',
     state: 'running',
     hostUsername: 'wanjun',
+    hostUid: 1000,
     fingerprint: 'abcd',
     mode: 'private',
     institutionId: 'ucsf',
@@ -233,6 +234,8 @@ describe('Open a workspace on a server', () => {
     expect(mocks.startSetup.mock.calls[1][0]).toEqual({
       target: { kind: 'server', ssh_target: LOGIN, preparation_id: 'prep-1' },
       intent: 'install',
+      // Starting one workspace restarts no other.
+      restart_workspaces: false,
       start_workspaces: ['11111111-2222-4333-8444-555555555555'],
     });
   });
@@ -255,11 +258,124 @@ describe('Open a workspace on a server', () => {
     expect(mocks.startSetup).toHaveBeenCalledTimes(1);
     fireEvent.click(within(ask).getByRole('button', { name: openCopy.updateAnyway }));
     await waitFor(() => expect(mocks.startSetup).toHaveBeenCalledTimes(2));
+    // The consent is for this workspace alone: its ID, and no restart of any other.
     expect(mocks.startSetup.mock.calls[1][0]).toEqual({
       target: { kind: 'server', ssh_target: LOGIN, preparation_id: 'prep-1' },
       intent: 'install',
-      restart_workspaces: true,
+      restart_workspaces: false,
+      restart_workspace_ids: ['11111111-2222-4333-8444-555555555555'],
     });
+  });
+
+  it('asks first when the server cannot say who is connected, as a Crew from before account ownership', async () => {
+    // The leo case: an older broker names no version and no count (findings 1 and 3).
+    mocks.startSetup.mockResolvedValue(
+      finished([
+        entry({ role: 'host', version: null, binaryCurrent: false, othersConnected: null }),
+      ])
+    );
+    renderDialog();
+    const dialog = await look();
+    fireEvent.click(
+      await within(dialog).findByRole('button', { name: openCopy.updateLabel('baranzini-lab') })
+    );
+    const ask = await within(dialog).findByTestId('crew-open-update-confirm');
+    expect(ask).toHaveTextContent(
+      'Other people may be connected. Their running agent commands will stop.'
+    );
+    expect(mocks.startSetup).toHaveBeenCalledTimes(1);
+    fireEvent.click(within(ask).getByRole('button', { name: openCopy.updateAnyway }));
+    await waitFor(() => expect(mocks.startSetup).toHaveBeenCalledTimes(2));
+    expect(mocks.startSetup.mock.calls[1][0]).toEqual({
+      target: { kind: 'server', ssh_target: LOGIN, preparation_id: 'prep-1' },
+      intent: 'install',
+      restart_workspaces: false,
+      restart_workspace_ids: ['11111111-2222-4333-8444-555555555555'],
+    });
+  });
+
+  it('restarts only the workspace whose Update Crew was confirmed (findings 7, 14 and 18)', async () => {
+    const labA = entry({
+      role: 'host',
+      name: 'lab-a',
+      binaryCurrent: false,
+      version: '1.94.1',
+      othersConnected: 1,
+    });
+    const labB = entry({
+      workspaceId: '22222222-2222-4333-8444-555555555555',
+      role: 'host',
+      name: 'lab-b',
+      binaryCurrent: false,
+      version: '1.94.1',
+      othersConnected: 5,
+    });
+    mocks.startSetup.mockResolvedValue(finished([labA, labB]));
+    renderDialog();
+    const dialog = await look();
+    fireEvent.click(
+      await within(dialog).findByRole('button', { name: openCopy.updateLabel('lab-a') })
+    );
+    const ask = await within(dialog).findByTestId('crew-open-update-confirm');
+    expect(ask).toHaveTextContent('1 person is connected.');
+    fireEvent.click(within(ask).getByRole('button', { name: openCopy.updateAnyway }));
+    await waitFor(() => expect(mocks.startSetup).toHaveBeenCalledTimes(2));
+    const sent = mocks.startSetup.mock.calls[1][0] as SetupInput;
+    expect(sent.restart_workspace_ids).toEqual([labA.workspaceId]);
+    expect(sent.restart_workspaces).toBe(false);
+  });
+
+  it('says why an update left a workspace running, and offers no update that cannot help', async () => {
+    const custom = entry({
+      role: 'host',
+      name: 'tmp-lab',
+      binaryCurrent: false,
+      othersConnected: 0,
+    });
+    const busy = entry({
+      workspaceId: '22222222-2222-4333-8444-555555555555',
+      role: 'host',
+      name: 'busy-lab',
+      binaryCurrent: false,
+      othersConnected: null,
+    });
+    mocks.startSetup.mockResolvedValue(
+      finished([custom, busy], {
+        outdated: [
+          {
+            workspaceId: custom.workspaceId,
+            name: 'tmp-lab',
+            runningVersion: '1.94.1',
+            installedVersion: '1.95.0',
+            othersConnected: 0,
+            reason: 'custom_state_dir',
+          },
+          {
+            workspaceId: busy.workspaceId,
+            name: 'busy-lab',
+            runningVersion: '1.94.1',
+            installedVersion: '1.95.0',
+            othersConnected: null,
+            reason: 'others_connected',
+          },
+        ],
+      })
+    );
+    renderDialog();
+    const dialog = await look();
+    const found = await within(dialog).findByTestId('crew-open-found');
+    expect(
+      within(found).getByText(openCopy.leftRunning.custom_state_dir('leo.ucsf.edu'))
+    ).toBeVisible();
+    expect(
+      within(found).queryByRole('button', { name: openCopy.updateLabel('tmp-lab') })
+    ).toBeNull();
+    // Only the reason: "older, update available" would offer what cannot help.
+    expect(within(found).getAllByText(openCopy.outdated('1.95.0', '1.95.0'))).toHaveLength(1);
+    expect(within(found).getByText(openCopy.leftRunning.others_connected(null))).toBeVisible();
+    expect(
+      within(found).getByRole('button', { name: openCopy.updateLabel('busy-lab') })
+    ).toBeVisible();
   });
 
   it('updates at once when nobody else is connected', async () => {
@@ -275,6 +391,8 @@ describe('Open a workspace on a server', () => {
     expect(mocks.startSetup.mock.calls[1][0]).toEqual({
       target: { kind: 'server', ssh_target: LOGIN, preparation_id: 'prep-1' },
       intent: 'install',
+      restart_workspaces: false,
+      restart_workspace_ids: ['11111111-2222-4333-8444-555555555555'],
     });
     expect(within(dialog).queryByTestId('crew-open-update-confirm')).toBeNull();
   });
@@ -355,6 +473,53 @@ describe('Open a workspace on a server', () => {
       target: { kind: 'server', ssh_target: LOGIN, port: 2222, preparation_id: 'prep-1' },
       intent: 'check',
     });
+  });
+
+  it('lists two hosts that present one workspace ID as two rows (AO-6)', async () => {
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      mocks.startSetup.mockResolvedValue(
+        finished([
+          entry({ hostUsername: 'wanjun', hostUid: 1000 }),
+          entry({ hostUsername: 'alice', hostUid: 1001, fingerprint: 'ffff' }),
+        ])
+      );
+      renderDialog();
+      const dialog = await look();
+      const found = await within(dialog).findByTestId('crew-open-found');
+      expect(within(found).getAllByRole('listitem')).toHaveLength(2);
+      expect(within(found).getByText(openCopy.hostedBy('baranzini-lab', 'alice'))).toBeVisible();
+      const keyWarnings = errors.mock.calls.filter((call) => String(call[0]).includes('same key'));
+      expect(keyWarnings).toEqual([]);
+    } finally {
+      errors.mockRestore();
+    }
+  });
+
+  it('says "hosted by you" once, and shows the login as typed', async () => {
+    mocks.startSetup.mockResolvedValue(finished([entry({ role: 'host' })]));
+    renderDialog();
+    const dialog = await look('Leo-WJ-Crew');
+    const found = await within(dialog).findByTestId('crew-open-found');
+    expect(within(found).getByText(openCopy.hostedByYou('baranzini-lab'))).toBeVisible();
+    expect(within(found).queryByText(new RegExp(openCopy.role.host))).toBeNull();
+    const heading = within(found).getByRole('heading', { level: 3 });
+    expect(heading).toHaveTextContent('Workspaces on Leo-WJ-Crew');
+    expect(heading.className).not.toMatch(/text-caps/);
+  });
+
+  it('puts focus on the first workspace found once the look ends', async () => {
+    mocks.startSetup.mockResolvedValue(finished([entry()]));
+    renderDialog();
+    const dialog = await screen.findByRole('dialog', { name: openCopy.title });
+    fireEvent.change(within(dialog).getByLabelText(openCopy.login), { target: { value: LOGIN } });
+    const submit = within(dialog).getByRole('button', { name: openCopy.look });
+    submit.focus();
+    fireEvent.click(submit);
+    const open = await within(dialog).findByRole('button', {
+      name: openCopy.openLabel(openCopy.hostedBy('baranzini-lab', 'wanjun')),
+    });
+    await waitFor(() => expect(document.activeElement).toBe(open));
   });
 
   it('keeps the dialog when a daemon refuses the save, saying why', async () => {

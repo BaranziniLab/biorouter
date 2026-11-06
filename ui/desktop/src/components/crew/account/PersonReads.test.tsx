@@ -76,6 +76,18 @@ describe('PersonReads', () => {
     expect(screen.queryByRole('button', { name: readsCopy.revokeLabel('lab') })).toBeNull();
   });
 
+  it('keeps focus off the page once Revoke took its own button away', async () => {
+    renderReads();
+    const section = await screen.findByTestId('crew-person-reads');
+    const revoke = within(section).getByRole('button', { name: readsCopy.revokeLabel('lab') });
+    revoke.focus();
+    fireEvent.click(revoke);
+    const said = await screen.findByText(readsCopy.revoked('lab'));
+    // No Revoke is left: the note that says what happened has focus.
+    await waitFor(() => expect(said.closest('[data-crew-read-said]')).toHaveFocus());
+    expect(document.activeElement).not.toBe(document.body);
+  });
+
   it('says so when there was nothing left to take back, and keeps a refusal visible', async () => {
     mocks.crewHttp.mockImplementation(async (path: string, method = 'GET') => {
       if (method === 'GET') return path.includes('conn-1') ? grants('conn-1', ['chat-1']) : {};

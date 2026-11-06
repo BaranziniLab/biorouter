@@ -252,6 +252,17 @@ describe('InvitePeopleDialog', () => {
     expect(next.textContent).not.toMatch(/expired/);
   });
 
+  it('says how an account gets in when only the saved connection says the server takes accounts', async () => {
+    // No capabilities from a state frame, but the verified hello said account_identity_v1: no
+    // code is sent there, so "sends you a code" would be stale (live L1).
+    renderInvite(undefined, { connections: [{ ...connection, account_identity: true }] });
+    await invite('bob');
+    expect(
+      await screen.findByText(inviteCopy.nextStepAccount('Bob'), { exact: false })
+    ).toBeInTheDocument();
+    expect(screen.queryByText(inviteCopy.nextStep('Bob'), { exact: false })).toBeNull();
+  });
+
   it('says an invitation that has already run out is expired, not a time in the past', async () => {
     renderInvite(undefined, { expiresAt: Math.floor(Date.now() / 1000) - 60 });
     await invite('bob');

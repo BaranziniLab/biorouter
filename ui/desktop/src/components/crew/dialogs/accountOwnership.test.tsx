@@ -49,9 +49,13 @@ beforeEach(() => {
 });
 afterEach(() => vi.clearAllMocks());
 
-function renderKeys(capabilities: string[] | null = [ACCOUNT_IDENTITY_CAPABILITY]) {
+function renderKeys(
+  capabilities: string[] | null = [ACCOUNT_IDENTITY_CAPABILITY],
+  connections = [connection]
+) {
   return renderWithCrew(<KeysDialog onClose={vi.fn()} />, {
     capabilities,
+    connections,
     snapshot: makeSnapshot({
       actor: {
         ...alice,
@@ -106,8 +110,11 @@ describe('Keys: removing a device (AO-5)', () => {
     fireEvent.click(within(devices).getByRole('button', { name: deviceCopy.removeThisLabel }));
     const ask = within(devices).getByRole('group', { name: deviceCopy.confirmThis });
     expect(ask).toHaveTextContent(deviceCopy.thisFollows);
+    // The computer in use is not a lost one: its question has its own words and button.
+    expect(ask).not.toHaveTextContent(deviceCopy.sshWarning);
+    expect(within(ask).queryByRole('button', { name: deviceCopy.confirmAction })).toBeNull();
     await act(async () => {
-      fireEvent.click(within(ask).getByRole('button', { name: deviceCopy.confirmAction }));
+      fireEvent.click(within(ask).getByRole('button', { name: deviceCopy.confirmThisAction }));
     });
     await waitFor(() =>
       expect(requestsFor(crew, 'device.revoke')).toEqual([{ fingerprint: MINE }])
@@ -130,6 +137,39 @@ describe('Keys: removing a device (AO-5)', () => {
     renderKeys(null);
     const older = await screen.findByRole('region', { name: keysCopy.devices });
     expect(within(older).queryByRole('button', { name: /^Remove/ })).toBeNull();
+  });
+
+  it('puts focus back on the Remove that asked, after Keep or Escape (finding 42)', async () => {
+    renderKeys();
+    const devices = await screen.findByRole('region', { name: keysCopy.devices });
+    fireEvent.click(within(devices).getByRole('button', { name: deviceCopy.removeLabel(OTHER) }));
+    fireEvent.click(within(devices).getByRole('button', { name: deviceCopy.keep }));
+    await waitFor(() =>
+      expect(document.activeElement).toBe(
+        within(devices).getByRole('button', { name: deviceCopy.removeLabel(OTHER) })
+      )
+    );
+    fireEvent.click(within(devices).getByRole('button', { name: deviceCopy.removeThisLabel }));
+    const ask = within(devices).getByRole('group', { name: deviceCopy.confirmThis });
+    fireEvent.keyDown(ask, { key: 'Escape' });
+    await waitFor(() =>
+      expect(document.activeElement).toBe(
+        within(devices).getByRole('button', { name: deviceCopy.removeThisLabel })
+      )
+    );
+  });
+
+  it('marks This computer, and New on the device the new-device notice is about', async () => {
+    renderKeys(
+      [ACCOUNT_IDENTITY_CAPABILITY],
+      [{ ...connection, new_devices: [{ fingerprint: OTHER, added_at: 1_700_000_000 }] }]
+    );
+    const devices = await screen.findByRole('region', { name: keysCopy.devices });
+    const rows = within(devices).getAllByRole('listitem');
+    expect(rows[0]).toHaveTextContent(OTHER);
+    expect(rows[0]).toHaveTextContent(keysCopy.newDevice);
+    expect(rows[1]).toHaveTextContent('This computer');
+    expect(rows[1]).not.toHaveTextContent(keysCopy.newDevice);
   });
 
   it('says why a revoke was refused, in the dialog', async () => {

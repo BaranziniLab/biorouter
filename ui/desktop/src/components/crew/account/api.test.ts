@@ -44,10 +44,13 @@ describe('account ownership routes', () => {
     });
   });
 
-  it('acknowledges new devices, and revokes one as a signed mutation', async () => {
+  it('acknowledges the new devices it was shown, and revokes one as a signed mutation', async () => {
     mocks.crewHttp.mockResolvedValue(null);
-    await acknowledgeNewDevices('conn-1');
-    expect(mocks.crewHttp).toHaveBeenCalledWith('/connections/conn-1/devices/acknowledge', 'POST');
+    await acknowledgeNewDevices('conn-1', ['AAAA BBBB', 'CCCC DDDD']);
+    // The route requires the body: only the devices the person saw stop being reported.
+    expect(mocks.crewHttp).toHaveBeenCalledWith('/connections/conn-1/devices/acknowledge', 'POST', {
+      fingerprints: ['AAAA BBBB', 'CCCC DDDD'],
+    });
     await revokeDevice('conn-1', 'AAAA BBBB');
     expect(mocks.crewRequest).toHaveBeenCalledWith(
       'conn-1',

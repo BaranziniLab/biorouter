@@ -1005,7 +1005,30 @@ async fn change(
     assert_eq!(called.cards.len(), 1, "{action}: {:?}", called.cards);
     assert_eq!(called.cards[0].tool, "crew__change", "{action}");
     assert_eq!(called.cards[0].arguments["action"], action);
+    names_where_it_goes(action, &called.cards[0]);
     called
+}
+
+/// Every change card says where it goes the same way (AO-12, "Approvals"): its heading names
+/// the workspace and its server together, `lab on teams.example.test`, and its payload shows
+/// both, so two workspaces that each have a `#general` in a same-named team are told apart.
+fn names_where_it_goes(action: &str, card: &SeenCard) {
+    let workspace = card.arguments["workspace"]
+        .as_str()
+        .unwrap_or_else(|| panic!("{action}: no workspace on the card: {card:?}"));
+    let server = card.arguments["server"]
+        .as_str()
+        .unwrap_or_else(|| panic!("{action}: no server on the card: {card:?}"));
+    let heading = card.prompt.lines().next().unwrap_or_default();
+    assert!(
+        heading.contains(&format!("{workspace} on {server}")),
+        "{action}: {heading}"
+    );
+}
+
+/// The server a saved connection reaches, as a card names it.
+async fn server_of(connection: &biorouter::crew::Connection) -> String {
+    biorouter::crew::server_label(&connection.ssh_target, connection.port).await
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -1052,6 +1075,7 @@ fn team_and_channel_changes_send_what_the_card_showed() {
         .await;
         let session = chat("teams and channels").await;
         let model = private_local().await;
+        let server = server_of(&connection).await;
 
         let denied = change(
             &session,
@@ -1066,9 +1090,9 @@ fn team_and_channel_changes_send_what_the_card_showed() {
             "The person declined. Nothing was changed."
         );
         assert!(
-            denied.cards[0].prompt.starts_with(
-                "Delete the team Analysis Lab in lab for everyone; this cannot be undone"
-            ),
+            denied.cards[0].prompt.starts_with(&format!(
+                "Delete the team Analysis Lab in lab on {server} for everyone; this cannot be undone"
+            )),
             "{}",
             denied.cards[0].prompt
         );
@@ -1161,9 +1185,9 @@ fn team_and_channel_changes_send_what_the_card_showed() {
         .await;
         archived.ok();
         assert!(
-            archived.cards[0].prompt.starts_with(
-                "Archive #methods in Analysis Lab for everyone; this cannot be undone"
-            ),
+            archived.cards[0].prompt.starts_with(&format!(
+                "Archive #methods (Analysis Lab) in lab on {server} for everyone; this cannot be undone"
+            )),
             "{}",
             archived.cards[0].prompt
         );
@@ -1282,9 +1306,9 @@ fn team_and_channel_changes_send_what_the_card_showed() {
         )
         .await;
         assert!(
-            accepted.cards[0]
-                .prompt
-                .starts_with("Accept the invitation to field-team in lab"),
+            accepted.cards[0].prompt.starts_with(&format!(
+                "Accept the invitation to field-team in lab on {server}"
+            )),
             "{}",
             accepted.cards[0].prompt
         );
@@ -1426,10 +1450,11 @@ fn an_open_workspace_lists_and_joins_what_a_public_model_may_see() {
             "allow_once",
         )
         .await;
+        let server = server_of(&connection).await;
         assert!(
-            joined.cards[0]
-                .prompt
-                .starts_with("Join #field-notes in Analysis Lab"),
+            joined.cards[0].prompt.starts_with(&format!(
+                "Join #field-notes (Analysis Lab) in lab on {server} as you"
+            )),
             "{}",
             joined.cards[0].prompt
         );
@@ -1612,10 +1637,16 @@ fn a_private_chat_s_posts_are_marked_private() {
         .await;
         assert_eq!(posted.ok()["message_id"], "m-new");
         let prompt = &posted.cards[0].prompt;
+        // The live run's card named neither: AO-12's summary names the workspace and server.
+        let server = server_of(&connection).await;
         assert!(
-            prompt.starts_with("Post this in #general in Analysis Lab as you"),
+            prompt.starts_with(&format!(
+                "Post this in #general (Analysis Lab) in lab on {server} as you\n"
+            )),
             "{prompt}"
         );
+        assert_eq!(posted.cards[0].arguments["workspace"], "lab");
+        assert_eq!(posted.cards[0].arguments["server"], server.as_str());
         assert!(prompt.contains("It is marked Private"), "{prompt}");
         assert!(
             prompt.contains("a public-safe channel: a private-to-public crossing"),
@@ -1743,10 +1774,11 @@ fn files_are_shared_and_referenced_as_the_card_said() {
         )
         .await;
         denied.refusal();
+        let server = server_of(&connection).await;
         assert!(
-            denied.cards[0].prompt.starts_with(
-                "Share notes.csv (8 bytes) from this computer in #general in Analysis Lab as you"
-            ),
+            denied.cards[0].prompt.starts_with(&format!(
+                "Share notes.csv (8 bytes) from this computer in #general (Analysis Lab) in lab on {server} as you"
+            )),
             "{}",
             denied.cards[0].prompt
         );
@@ -1939,8 +1971,9 @@ fn a_download_names_the_file_and_a_public_model_gets_no_restricted_one() {
         )
         .await;
         denied.refusal();
+        let server = server_of(&connection).await;
         let expected = format!(
-            "Download notes.csv (12 bytes) from #general to {} on this computer",
+            "Download notes.csv (12 bytes) from #general in lab on {server} to {} on this computer",
             folder.join("notes.csv").display()
         );
         assert!(
@@ -2062,10 +2095,11 @@ fn tasks_are_asked_for_on_one_card_and_a_private_chat_s_cannot_use_a_public_mode
         .await;
         asked.refusal();
         let prompt = &asked.cards[0].prompt;
+        let server = server_of(&connection).await;
         assert!(
-            prompt.starts_with(
-                "Start an agent task in #general in Analysis Lab on gpt-4o (openai), with its own Crew access"
-            ),
+            prompt.starts_with(&format!(
+                "Start an agent task in #general (Analysis Lab) in lab on {server}, on gpt-4o (openai), with its own Crew access"
+            )),
             "{prompt}"
         );
         assert!(
@@ -2363,6 +2397,83 @@ fn a_share_refuses_a_file_changed_while_its_card_waited() {
         );
         assert!(sent(HOST, "blob.begin").is_empty());
         assert!(sent(HOST, "message.post").is_empty());
+        remove(&connection).await;
+    });
+}
+
+/// AO-12, "Privacy", by a grant's own origin rule: a chat that already holds content another
+/// institution owns reads no workspace of a different institution, so two institutions' private
+/// Crew content never meet in one chat. It is refused before the person is asked and before any
+/// content is fetched, and it names nothing from the workspace. A chat whose content is the
+/// workspace's own institution's reads it.
+#[test]
+#[serial]
+fn a_chat_holding_another_institution_s_content_reads_no_workspace_of_a_different_one() {
+    run(async {
+        const WORKSPACE: &str = "3f2a9c1e-77b0-4d4e-8a11-0000000d0010";
+        const HOST: &str = "origin.example.test";
+        // A ucsf workspace, through a Private ucsf connection.
+        let connection = workspace(
+            HOST,
+            false,
+            scenario(WORKSPACE, "private", snapshot("private", true)),
+        )
+        .await;
+        let app = state().await;
+        let sessions = app.session_manager();
+        let stanford_chat = chat("origin stanford").await;
+        sessions
+            .record_required_session_affiliation(
+                &stanford_chat,
+                biorouter::privacy::affiliation::InstitutionId::new("stanford"),
+            )
+            .await
+            .unwrap();
+        let refused = call(
+            &stanford_chat,
+            private_local().await,
+            PersonTool::Read,
+            "history",
+            on(&connection, json!({"channel": "#general"})),
+            &["allow_once"],
+        )
+        .await;
+        assert!(refused.cards.is_empty(), "{:?}", refused.cards);
+        assert!(
+            refused.refusal().contains("crew_institution_mismatch"),
+            "{}",
+            refused.refusal()
+        );
+        assert!(
+            refused.refusal().contains("another institution"),
+            "{}",
+            refused.refusal()
+        );
+        for name in ["lab", "general", "Analysis"] {
+            assert!(!refused.refusal().contains(name), "{}", refused.refusal());
+        }
+        assert!(sent(HOST, "messages.history").is_empty());
+        assert!(!crew().has_person_read(&stanford_chat, &connection.id).await);
+
+        let ucsf_chat = chat("origin ucsf").await;
+        sessions
+            .record_required_session_affiliation(
+                &ucsf_chat,
+                biorouter::privacy::affiliation::InstitutionId::new("ucsf"),
+            )
+            .await
+            .unwrap();
+        let read = call(
+            &ucsf_chat,
+            private_local().await,
+            PersonTool::Read,
+            "history",
+            on(&connection, json!({"channel": "#general"})),
+            &["allow_once"],
+        )
+        .await;
+        assert_eq!(read.cards.len(), 1, "the read consent");
+        assert_eq!(read.ok()["channel_id"], GENERAL);
         remove(&connection).await;
     });
 }

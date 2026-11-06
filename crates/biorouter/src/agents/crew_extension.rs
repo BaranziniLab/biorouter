@@ -221,6 +221,42 @@ pub(crate) async fn roster_standing(
     Some(crew_tool_standing_for(crew, extensions, session_id).await)
 }
 
+/// `tools` without the Crew tools the chat `session_id` is not offered, by the rule the model's
+/// own list follows (`Agent::list_tools`: gate B-1's `authorize_session_tool`, then
+/// [`CrewToolStanding::offers`]), for a surface that lists a chat's tools to a person
+/// (`GET /agent/tools`): it then never shows a Crew tool the chat can never use. Every other
+/// extension's tool is kept as it is. When Crew's policy can't be read, no Crew tool is kept,
+/// as the model's list keeps none then.
+pub async fn offered_crew_tools(
+    extensions: &ExtensionManager,
+    session_id: &str,
+    tools: Vec<Tool>,
+) -> Vec<Tool> {
+    if !tools.iter().any(|tool| tool.name.starts_with(TOOL_PREFIX)) {
+        return tools;
+    }
+    let Ok(crew) = crate::crew::manager() else {
+        return tools
+            .into_iter()
+            .filter(|tool| !tool.name.starts_with(TOOL_PREFIX))
+            .collect();
+    };
+    let standing = crew_tool_standing_for(&crew, extensions, session_id).await;
+    let mut kept = Vec::with_capacity(tools.len());
+    for tool in tools {
+        if !tool.name.starts_with(TOOL_PREFIX)
+            || (standing.offers(&tool.name)
+                && crew
+                    .authorize_session_tool(session_id, &tool.name)
+                    .await
+                    .is_ok())
+        {
+            kept.push(tool);
+        }
+    }
+    kept
+}
+
 /// Crew's checks at dispatch, in order: a chat a grant restricts may call only its two worker
 /// tools and the checklist ([`crate::crew::CrewManager::authorize_session_tool`], gate B-1),
 /// and a Crew tool this chat is not offered is refused ([`dispatch_refusal`], AO-12). Answers

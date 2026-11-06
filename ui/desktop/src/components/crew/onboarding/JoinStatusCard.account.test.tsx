@@ -5,6 +5,7 @@ import { joinStateCopy } from './copy';
 import { resetJoinClaimForTests } from './joinClaimState';
 import { resetJoinContextForTests, updateJoinContext } from './joinContext';
 import { JoinStatusCard } from './JoinStatusCard';
+import { OnboardingScreen } from './OnboardingScreen';
 import { fakeConnection, makeCrew, renderWithCrew } from './testCrew';
 
 /**
@@ -95,6 +96,42 @@ describe('JoinStatusCard on a workspace that belongs to accounts', () => {
     expect(await screen.findByText(joinStateCopy.notInvitedTitle('lab'))).toBeInTheDocument();
     expect(screen.queryByTestId('crew-join-not-invited-before')).toBeNull();
     expect(document.body.textContent).not.toMatch(/Add another device/);
+  });
+
+  it('never joins another connection on a Join pressed for the first (finding 40)', async () => {
+    // A's claim never settles; B is ready, but the person never started its flow.
+    mocks.crewHttp.mockImplementation(async (path: string, method: string) => {
+      if (method === 'GET' && path === '/connections/conn-1/join')
+        return { status: 'ready', add_device: false, workspace_name: 'lab' };
+      if (method === 'GET' && path === '/connections/conn-2/join')
+        return { status: 'ready', add_device: false, workspace_name: 'other-lab' };
+      if (method === 'POST' && path === '/connections/conn-1/join') return new Promise(() => {});
+      if (method === 'POST' && path === '/connections/conn-2/join')
+        return { joined: true, status: 'joined', add_device: false };
+      return {};
+    });
+    const posts = (id: string) =>
+      mocks.crewHttp.mock.calls.filter(
+        ([path, method]) => path === `/connections/${id}/join` && method === 'POST'
+      );
+    const first = fakeConnection({ account_identity: true });
+    const second = fakeConnection({ id: 'conn-2', name: 'other-lab', account_identity: true });
+    const rendered = renderWithCrew(
+      <OnboardingScreen />,
+      makeCrew({
+        connectionId: 'conn-1',
+        connection: first,
+        connections: [first, second],
+        screen: 'join',
+      })
+    );
+    fireEvent.click(await screen.findByRole('button', { name: joinStateCopy.readyAction('lab') }));
+    await waitFor(() => expect(posts('conn-1')).toHaveLength(1));
+    rendered.update({ connectionId: 'conn-2', connection: second });
+    expect(
+      await screen.findByRole('button', { name: joinStateCopy.readyAction('other-lab') })
+    ).toBeInTheDocument();
+    expect(posts('conn-2')).toHaveLength(0);
   });
 
   it('keeps Add another device on an older server', async () => {

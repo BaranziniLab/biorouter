@@ -116,10 +116,10 @@ export const connectionSettingsCopy = {
    * the person's consent. `user` is the account (`@crew_alice`), `server` the server's name.
    */
   fullWarning: (user: string, server: string) =>
-    `Your agent will run commands as ${user} on ${server || 'the server'}: it can read and change anything your account can, use the network, and start programs that keep running after access ends. Other people’s messages and files in channels it reads can try to steer it. Use a private model you trust.`,
+    `Your agent will run commands as ${user} on ${server || 'the server'}: it can read and change anything your account can, use the network, and start programs that keep running after access ends. Other people’s messages and files in channels it reads can try to steer it. Use a private model you trust. Crew treats anything running as your account as you, so your agent can also add a computer to your account and post in Crew as you, with no agent mark.`,
   /** The host's extra sentence: the broker's own files live in this account. */
   fullWarningHost: (workspace: string) =>
-    `You host ${workspace} in this account, so it can also read everything ${workspace} keeps on the server, including channels you aren’t in.`,
+    `You host ${workspace} in this account, so it can also read everything ${workspace} keeps on the server, including channels you aren’t in. It can also act as the host of ${workspace}.`,
   portRange: 'Use a port from 1 to 65535.',
   /** Its own disclosure, closed until opened, whatever Advanced holds (QA T-33). */
   workspaceDetails: 'Workspace details',
@@ -753,10 +753,15 @@ export const keysCopy = {
   unlocked: 'Unlocked',
   unlock: 'Unlock',
   lock: 'Lock',
-  /** This device's key, shown as its grouped fingerprint — never the 64-hex key (QA T-33). */
-  deviceKey: 'This device',
-  deviceKeyLabel: 'this device’s fingerprint',
-  thisDevice: 'This device',
+  /**
+   * This computer's key, shown as its grouped fingerprint — never the 64-hex key (QA T-33). "This
+   * computer", as the account ownership contract and the command line say it.
+   */
+  deviceKey: 'This computer',
+  deviceKeyLabel: 'this computer’s fingerprint',
+  thisDevice: 'This computer',
+  /** A device the new-device notice is about, until it is acknowledged (AO-10). */
+  newDevice: 'New',
   devices: 'Devices on your account',
   deviceAdded: (date: string) => `Added ${date}`,
   addedVia: {

@@ -77,8 +77,12 @@ export function InvitePeopleDialog({ onClose }: InvitePeopleDialogProps) {
   const typed = typedUsername(username);
   const refusalId = `${formId}-refusal`;
   // A workspace that belongs to accounts (account ownership): a member's new computer gets in by
-  // signing in to the server as them, so Add another device is never offered there.
-  const accountBroker = crew.capabilities?.includes(ACCOUNT_IDENTITY_CAPABILITY) === true;
+  // signing in to the server as them, so Add another device is never offered there, and nobody is
+  // told to wait for a code. The saved connection's `account_identity` (its verified hello) says
+  // so too, before a state frame has carried the capabilities, as Keys reads it.
+  const accountBroker =
+    crew.capabilities?.includes(ACCOUNT_IDENTITY_CAPABILITY) === true ||
+    crew.connection?.account_identity === true;
   // The broker refused a plain invitation for a member (F3): the way on is Add another device,
   // which the refusal's sentence names, so it is turned on for the next Invite.
   const alreadyMember = refusal?.alreadyMember === true;

@@ -41,6 +41,7 @@ const FOUND: SetupWorkspace = {
   role: 'member',
   state: 'running',
   hostUsername: 'chen',
+  hostUid: 1001,
   fingerprint: null,
   mode: 'private',
   institutionId: 'ucsf',
@@ -116,7 +117,7 @@ describe('SetupProgress for account ownership', () => {
     );
     const found = screen.getByRole('region', { name: setupCopy.foundLabel('leo.ucsf.edu') });
     expect(within(found).getByText(openCopy.hostedBy('chen-lab', 'chen'))).toBeVisible();
-    expect(within(found).getByText(/Open on this computer/)).toBeVisible();
+    expect(within(found).getByText(/Connected on this computer/)).toBeVisible();
   });
 
   it('says why the workspaces could not be listed, and goes on', async () => {
