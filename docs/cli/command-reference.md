@@ -62,6 +62,18 @@ the non-interactive route instead: choose the model with
 `biorouter models set --provider <provider> --model <model>` and pass the
 provider's API key in its environment variable (for example `OPENAI_API_KEY`).
 
+The provider list, and the lead and worker lists of lead/worker mode, leave out the two
+decision-model providers (`ollama_decision`, `baseten_decision`), as the desktop's provider
+catalog does. A decision model answers typed questions and writes no reply, so the setup's test
+request could never succeed, and a decision model as the lead would make every new chat a
+decision chat. When the default model is itself a decision model, the lead/worker setup says
+that lead/worker mode does not apply and changes nothing, because the worker is the default
+model. To make a decision model a chat's model, use
+`biorouter models set --provider ollama_decision --model tev1:0.8b`, or `--provider` and
+`--model` for one session or run; see [Decision models](../agent-loop/decision-models.md#a-decision-model-as-the-chats-own-model).
+Their keys are their chat siblings' (`OLLAMA_HOST`, `BASETEN_API_KEY`), which configuring Ollama
+or Baseten saves.
+
 ### info [options]
 
 Shows biorouter information, including the version, configuration file location, session storage, and logs.
@@ -123,15 +135,18 @@ model's. A model pulled through Ollama is removed with `ollama rm`. See the
 
 `models decision list` lists the decision models available now: the ones pulled into the local
 Ollama that declare the decision capability, and Baseten's when a Baseten API key is saved. Each
-line names the model as `provider/model` (the spelling `--model` takes everywhere), its privacy
+line names the model as `provider/model` (the spelling `--model` takes everywhere), with
+Baseten's by their aliases (`baseten_decision/joey-1`, `elephant-1`, `mammoth-1`), its privacy
 tier, whether it runs on this computer, its context window in tokens, the question kinds it
 answers (yes/no, choice, score) and the adapter that reads its probabilities. The list is in the
 order the automatic choice tries it: local models first, with the shipped default `tev1:0.8b`
 first among the Ollama models and the rest by name, then Baseten's smallest first. A copy Ollama
-cannot load (one in a format it no longer supports) is listed last, marked `cannot be loaded`,
-with a line under it naming the fix (`ollama pull <model>` or `ollama rm <model>`); the automatic
-choice skips it. With `--format json` that sentence is the entry's `loadRefusal`, present only
-when it is set. See [`decide`](#decide-options) and
+cannot load (one in a format it no longer supports) is listed after the other Ollama models and
+before Baseten's, marked `cannot be loaded`, with a line under it naming the fix
+(`ollama pull <model>` or `ollama rm <model>`); the automatic choice skips it. With
+`--format json` that sentence is the entry's `loadRefusal`, present only when it is set, and a
+Baseten entry keeps Baseten's slug in `model` (`decision-models/baseten-joey-2b-latest`) with
+the alias in `displayName`. See [`decide`](#decide-options) and
 [Decision models](../agent-loop/decision-models.md).
 
 ### version
@@ -183,11 +198,15 @@ dash in TURNS. The range table and the month summary each add one line:
 Decision models: 600 requests, 1,200,600 tokens, $0.12. Counted in TOTAL and COST, not in TURNS.
 ```
 
-The second sentence is on the table's line only. A local decision model has no price, so its
-share reads `not metered` (or `$X, some not metered` for a mix), it counts as $0, and it does not
-mark the totals as incomplete. A Baseten decision model with no known price does, because Baseten
-billed it. `--json` carries the same split as `decisionRequests` and `decisions` on each row
-and on the totals. A decision with no chat is not in this report; `biorouter decide` prints its
+The second sentence is on the table's line only. A local decision model has no price, so it
+counts as $0 and does not mark the totals as incomplete. A Baseten decision model with no known
+price does, because Baseten billed it. The line's cost tells the two apart: `not metered` when
+every request went to a local model, `$X, some not metered` when local requests sit beside priced
+ones, `cost unavailable` when the requests went to a Baseten model with no known price (that
+model's own row shows `—`), and `$X, some unavailable` when such requests sit beside priced ones. `--json` carries the same split
+as `decisionRequests` and `decisions` on each row and on the totals, where `decisions.hasUnmetered`
+marks requests to a local model and `decisions.hasUnpriced` requests to a hosted one with no
+known price. A decision with no chat is not in this report; `biorouter decide` prints its
 usage on stderr instead. See
 [Usage and billing](../agent-loop/decision-models.md#usage-and-billing).
 
@@ -664,6 +683,8 @@ of the desktop's decision history view.
 passed and failed, errors, the last answer and its probability, the model), then one line per
 source for each recent turn. A page of calls follows, newest first: the time, the source, the
 criterion (and the chunk), the answers, the probability, the outcome, the model and the latency.
+A model is named by its short name: an Ollama tag as it is (`tev1:0.8b`), and a Baseten model by
+its alias (`joey-1`), never by the slug the log records; `--json` keeps the slug.
 
 ```
 Decisions in session 20261104_1: 618 calls
@@ -983,6 +1004,10 @@ Answer: yes  p 0.82  calibrated  ollama_decision/tev1:0.8b  22 ms
 Threshold: P(yes) 0.82 ≥ 0.80, passed
 ```
 
+The Answer line names the model as `provider/model`, a Baseten one by its alias
+(`baseten_decision/joey-1`), the same name the stderr lines below and `models decision list`
+use; `--json` keeps Baseten's slug in the decision's `model`.
+
 `calibrated` means the probabilities are the model's own distribution, or token probabilities
 that covered at least 90% of the probability. `uncalibrated` says where the number came from
 instead, for example a number the model wrote. Either way these are model probabilities that have
@@ -1010,7 +1035,10 @@ usage: 2 requests on baseten_decision/mammoth-1: 1,200,000 input and 3 output to
 
 **Privacy.** With `--session`, the chat's privacy tier decides which decision models may read the
 text, exactly as it does for the agent: a private chat never reaches a model hosted outside your
-institution, and the refusal comes before anything is sent. The text is yours, not the chat's, and
+institution, and the refusal comes before anything is sent. Its advice follows where the model
+came from: a model you named with `--model`, or the chat's own default, is refused with "Name a
+private decision model", and one the configured default chose with "Set
+BIOROUTER_DECISION_MODEL to a private model". The text is yours, not the chat's, and
 it is kept in the chat's decision history at the chat's reach, which is why a chat that is not
 private gets the note above. Without `--session` there is no chat to protect and nothing is
 logged. When the model the command resolved is hosted outside your institution (Baseten's are),
@@ -1487,7 +1515,9 @@ last calls and Esc goes back. In the TUI and the classic CLI a turn's decision c
 line per source (`◇ Monitor Form reached: 18 checks this turn · 18 failed · last P 0.31`), never
 one line per call, and the reply of a chat whose main model is a decision model shows as a small
 card with a bar per option. Such a chat has no running context, so neither prints a context
-meter for it, and `/compact` answers that there is no context to compact. The following commands
+meter for it, and `/compact` answers that there is no context to compact, without announcing a
+compaction or asking you to confirm one first. The TUI's decision card names a Baseten model by
+its alias (`joey-1`). The following commands
 are **classic CLI only**; start it with `BIOROUTER_CLI_CLASSIC=1 biorouter session`:
 
 - `/builtin <names>` — add built-in extensions by name, comma-separated.

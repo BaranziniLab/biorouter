@@ -448,7 +448,11 @@ same groups) could not run on one. Their keys are their chat siblings' (`BASETEN
 `OLLAMA_HOST`), so the Baseten and Ollama rows set them up. `getOrderedProviderGroups` still
 classifies them by the daemon's tier and hands them back per tab as `decisionProviders`, and in
 Settings the tab says, in one quiet line with an InfoTip, that they are chosen per chat in the
-model picker's Decision models group. First run says nothing about them. See
+model picker's Decision models group. First run says nothing about them. The same rule holds
+off the grid: `biorouter configure` leaves them out of its provider list and its lead and worker
+lists, and a privacy barrier card's list of private models to switch to
+(`available_private_providers` in `crates/biorouter-server/src/routes/agent.rs`) leaves out
+`ollama_decision`, so the card never offers a model the grid does not show. See
 [Decision models in the desktop app](decision-models.md).
 
 ## Naming an institution

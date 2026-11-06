@@ -44,7 +44,7 @@ Everything comes from the daemon's decision routes, through `utils/sessionDecisi
 | `GET /sessions/{id}/decisions` | the history view's list, a page at a time | `DecisionPage` of `DecisionRecord` |
 | `GET /sessions/{id}/decisions/{decision_id}` | the history view's detail pane | `DecisionDetail`, with the context |
 | `GET` and `PUT /sessions/{id}/decision-settings` | the summary (monitors), the Monitors dialog | `DecisionSettings` (`settings.rs`) |
-| `GET /decisions/models` | the Monitors dialog's model list | `DecisionModelsResponse` of `DecisionModelInfo` (`crates/biorouter-server/src/routes/decisions.rs`, not this folder; it carries `unavailableReason`, the daemon's reason this chat may not use a model) |
+| `GET /decisions/models` | the Monitors dialog's model list | `DecisionModelsResponse` of `DecisionModelInfo` (`crates/biorouter-server/src/routes/decisions.rs`, not this folder; it carries `unavailableReason`, the daemon's reason this chat may not use a model, and `sessionUnavailableReason`, its reason this chat may use none) |
 
 Every request carries `userActionHeaders()`. The routes ask `session_reach`, so without the
 person's proof a private chat's decisions would be refused. The module calls each route through
@@ -59,6 +59,17 @@ and a row with no id is dropped. `utils/sessionDecisions.test.ts` reads `Decisio
 on one side fails there. Rust's externally tagged enums (`{"binary":{}}`, `{"yes":0.8}`) become
 tagged unions in the renderer, and `questionToWire`, `thresholdToWire` and
 `decisionSettingsToWire` turn them back.
+
+**How a model is named.** The records keep Baseten's slug
+(`decision-models/baseten-joey-2b-latest`), and the panel names a model with one helper,
+`decisionModelLabel` in `utils/sessionDecisions.ts`: a Baseten decision model by its alias
+(`joey-1`, `elephant-1`, `mammoth-1`, through `decisionModelName` in `utils/usageStats.ts`, the
+rule the model picker, the Usage panel, Home and the decision chat's reply follow), an unknown
+Baseten slug without its `decision-models/` prefix, and an Ollama tag as it is (`tev1:0.8b`). The
+history rows and detail pane, the decision card, the Monitors list and the `decide` card's head
+all use it, so one batch on `joey-1` reads `joey-1` on every surface. A decision card names a
+Baseten model by its alias even when Baseten reported the id that served it; the detail pane
+keeps that id under "Served by".
 
 ## The Decisions section of the Chat summary
 
@@ -76,6 +87,10 @@ statistics, in the docked rail and in the header popover alike.
   when it is off, a warning after an error; a check, a cross or an alert for a gate that
   passed, failed or is blocked; the decision mark (a gauge) for calls that simply decided.
   The word is the row's accessible name, ahead of the label.
+- **A blocked gate says why.** Its row reads "blocked after 3 attempts" only when the gate used
+  every attempt. A gate blocked by evaluation errors in a row, which use no attempt (the model
+  was refused, unreachable or too small for the text), reads "blocked: could not be evaluated", whatever
+  attempts it had used before (`gateBlockedUnevaluated` in `summary/copy.ts`).
 - **Pressing a row** opens the decision history filtered to that source.
 - **Monitors.** A row under the sources opens the Monitors dialog and says how many monitors
   are on.
@@ -175,10 +190,13 @@ Save writes the whole list with `PUT /sessions/{id}/decision-settings`.
   A refusal the daemon sends anyway is shown above the footer, and the dialog stays open.
 - **Privacy.** The dialog asks for the catalog naming the chat (`GET /decisions/models?sessionId=`),
   so each model carries the daemon's own reason the chat may not use it (its tier, an
-  institution the model does not cover, or a local copy Ollama cannot load, whose reason names
-  the `ollama pull` or `ollama rm` that fixes it). The list shows each model's tier, and a model
-  with a reason is offered disabled, with the reason, because Gate H refuses it before anything
-  is sent, or Ollama would refuse to load it. Where the daemon gave no reason, a public model is
+  institution the model does not cover, a Crew grant on the chat, or a local copy Ollama cannot
+  load, whose reason names the `ollama pull` or `ollama rm` that fixes it). The list shows each
+  model's tier, and a model with a reason is offered disabled, with the reason, because Gate H or
+  the Crew rule refuses it before anything is sent, or Ollama would refuse to load it. In a
+  Crew-scoped chat every model carries the Crew sentence, and so does "The chat's decision
+  model", which the catalog's `sessionUnavailableReason` gives because no row stands for it, so
+  the dialog saves no monitor there that every check would refuse. Where the daemon gave no reason, a public model is
   still refused for a private chat.
 - **The proof.** Save needs the person's proof on a daemon that holds a user-action key (the
   desktop app's) and none on a daemon that holds none (`biorouter serve`), so the dialog works
@@ -199,7 +217,12 @@ phase from a daemon before gates has no `gate` and draws no chip.
 ## The `decide` card in the transcript
 
 A `decisions__decide` tool row's well (`components/decisions/DecideToolSummary.tsx`) shows the
-questions the call asked. Once the call answers, it shows a head line (chunks, model, errors,
+questions the call asked, read the way the tool reads them (`decideArguments` in
+`decisionWire.ts`): `question` stands for `instructions`, a question with `options` and no `type`
+is a choice and one with `levels` a score, and the tool's synonyms (`multiple_choice`, `rating`
+and the others `question_type` in `decisions_extension.rs` takes) count. Once the call answers,
+each question's kind is the one the daemon ran. The card then shows a head line (chunks, the
+model by the name the rest of the panel uses, `joey-1` for a Baseten slug, errors,
 "uncalibrated" when it applies, the time) and one line per question with counts only:
 
 - for a yes/no question, how many said yes; for a choice or score, each answer's count;
@@ -227,7 +250,7 @@ asked on its own and nothing adds to the chat's token total, so a ring would sho
 never moves against a window from a static table, and its Compact action would ask a model that
 cannot summarise. `ChatInput` also skips the context-window lookup for such a chat. A message
 too long for the model is refused with a sentence naming its window, and a typed `/compact`
-answers that there is no context to compact.
+answers that there is no context to compact, as it does in the terminal UI and the classic CLI.
 
 ## Decision models in the Usage panel
 
@@ -235,8 +258,13 @@ Settings > Usage counts decision-model usage in its totals and shows it on its o
 (`components/settings/usage/UsagePanel.tsx`):
 
 - **A Decision models line** under the month's totals, with an InfoTip: "620 requests, 1.2M
-  tokens, $0.12". The cost part reads "Not metered" for a local model and "$0.04, some not
-  metered" for a mix, and it is dropped while costs are hidden.
+  tokens, $0.12". The cost part (`formatDecisionCost`) says which requests had no price, from the
+  subtotal's `hasUnmetered` and `hasUnpriced`: "Not metered" when every request went to a local
+  model, "$0.04, some not metered" when local requests sit beside priced ones, "Unavailable" when
+  the requests went to a Baseten model with no known price, which Baseten still billed, and
+  "$0.04, some unavailable" when such requests sit beside priced ones. So the line never calls a
+  billed request unmetered while that model's row reads "Unavailable". The cost part is dropped
+  while costs are hidden.
 - **In the per-model table** a decision model shows its short name (`joey-1`), the subtitle
   "Decision model · N requests", and a dash in Turns, which a screen reader reads as "Decision
   requests are not turns." An unpriced local decision model reads "Not metered" rather than
@@ -268,9 +296,10 @@ never shows one, and the calls are never rows of their own.
 
 | What | Test |
 |---|---|
-| Parsers, wire round trips, the Rust enum variants, one row per source for 5,000 calls, the refetch revision, the proof on every request | `utils/sessionDecisions.test.ts` |
+| Parsers, wire round trips, the Rust enum variants, one row per source for 5,000 calls, the refetch revision, the proof on every request, a Baseten model named by its alias | `utils/sessionDecisions.test.ts` |
+| A Baseten model named by its alias in the history rows and detail, the decision card and the Monitors list | `components/decisions/DecisionHistory.test.tsx`, `components/decisions/DecisionCard.test.tsx`, `components/decisions/MonitorsDialog.test.tsx` |
 | The hook's gate, re-reads and polling | `hooks/useSessionDecisions.test.tsx` |
-| The section's rows, states, hiding, actions and stylesheet rules; the gate chip | `components/summary/SummaryDecisions.test.tsx` |
+| The section's rows, states, hiding, actions and stylesheet rules; a blocked gate's reason; the gate chip | `components/summary/SummaryDecisions.test.tsx` |
 | The section at 240px in Chromium: six rows for 5,000 calls, at least 28px, nothing past the card | `components/summary/summaryDecisions.browser.test.tsx` |
 | The history view's window, paging, selection, detail (with the Model tier label) and filters | `components/decisions/DecisionHistory.test.tsx` |
 | 2,000 rows scrolled to the end in Chromium: every page loaded, 44px rows, a bounded window | `components/decisions/decisionHistory.browser.test.tsx` |
@@ -278,9 +307,9 @@ never shows one, and the calls are never rows of their own.
 | The Monitors dialog's validation, save, privacy reasons, the browser, its read on every open (a caller's older copy is not what it saves) and its filled rows | `components/decisions/MonitorsDialog.test.tsx` |
 | The composer's `+` row that opens the dialog, only in a chat that exists | `components/ChatInput.decisionMonitors.test.tsx` |
 | The History count on top-level rows only | `components/sessions/SessionListView.decisionCount.test.tsx` |
-| The `decide` card's per-question line, the to-review count on a choice with a threshold, and the review fields read under their own names | `components/decisions/DecideToolSummary.test.tsx`, `components/decisions/decisionWire.test.ts` |
+| The `decide` card's per-question line, the to-review count on a choice with a threshold, the review fields read under their own names, the questions read as the tool reads them (`question`, inferred and synonym types), and the model named by its alias in the head | `components/decisions/DecideToolSummary.test.tsx`, `components/decisions/decisionWire.test.ts` |
 | No context ring and no window lookup in a decision chat, the ring still drawn for a chat model, and the footer without its ring | `components/ChatInput.decisionChatGauge.test.tsx`, `components/bottom_menu/ComposerFooter.test.tsx` |
-| The Usage panel's Decision models line, a decision model's row, and Home leaving decision models out of Favorite model and ranking them last in the Models tab | `components/settings/usage/UsagePanel.test.tsx`, `utils/usageStats.test.ts` |
+| The Usage panel's Decision models line (Not metered for local requests, Unavailable for an unpriced Baseten model), a decision model's row, and Home leaving decision models out of Favorite model and ranking them last in the Models tab | `components/settings/usage/UsagePanel.test.tsx`, `utils/usageStats.test.ts` |
 | A local decision model leaves a chat's cost exact and reads "Not metered" in its breakdown; an unpriced Baseten one leaves it partial | `components/bottom_menu/CostTracker.test.ts`, `components/bottom_menu/CostTracker.render.test.tsx`, `components/bottom_menu/ModelBreakdownTable.test.tsx` |
 
 Run them with

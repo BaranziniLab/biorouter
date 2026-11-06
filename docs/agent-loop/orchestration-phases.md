@@ -121,7 +121,7 @@ A revision that lists the phase again without its gate keeps the gate and its re
 
 `complete` with `status:"blocked"` or `status:"skipped"` never asks the gate.
 
-**How it shows.** Every evaluation is one row of the chat's decision log (origin `gate`, the phase id and title), never a transcript row. The plan's snapshot carries the gate on its phase (`gate`: the threshold, the question count, the attempts used and allowed, the last verdict, the lowest P(yes) at the last verdict, and whether the gate has blocked the phase). The tool's reply prints it as one line under the phase, the per-turn plan summary marks the phase as gated, and the desktop app draws a chip on the phase row: passed, failed with attempt n of m, or blocked. A surface reading an older snapshot without the field shows no chip.
+**How it shows.** Every evaluation is one row of the chat's decision log (origin `gate`, the phase id and title), never a transcript row. The plan's snapshot carries the gate on its phase (`gate`: the threshold, the question count, the attempts used and allowed, the last verdict, the lowest P(yes) at the last verdict, and whether the gate has blocked the phase). The tool's reply prints it as one line under the phase, the per-turn plan summary marks the phase as gated, and the desktop app draws a chip on the phase row: passed, failed with attempt n of m, or blocked. The gate's row in the chat summary's Decisions section says why a phase is blocked: "blocked after 3 attempts" when every attempt was used, and "blocked: could not be evaluated" when evaluation errors in a row blocked it, which use no attempt. A surface reading an older snapshot without the field shows no chip.
 
 ## Hand-offs: how later phases meet earlier results
 

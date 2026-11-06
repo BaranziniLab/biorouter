@@ -294,7 +294,17 @@ this section is the ledger.
     is an Ollama decision model on a host that is not this computer, and an Ollama cloud tag. A
     refused decision is logged as `refused`, and nothing is sent.
     When models are listed but this rule rules out every one for a chat, the automatic choice is
-    refused too, as a named public model is, rather than reported as no model.
+    refused too, as a named public model is, rather than reported as no model. The refusal's
+    advice follows where the model came from. When a monitor, a gate or the `decide` call named
+    it, the refusal ends "Name a private decision model (decision_models lists them), or start
+    this work in a public chat." When it came from the configured default, it ends "Set
+    BIOROUTER_DECISION_MODEL to a private model, or start this work in a public chat."
+  - **Gate A's barrier never offers a decision provider.** The list of private models a refused
+    model switch offers (`available_private_providers` in
+    `crates/biorouter-server/src/routes/agent.rs`) leaves out `ollama_decision`, which is Private
+    on a loopback host, and `baseten_decision`, as the desktop's provider grid does. Following
+    that advice would turn an ordinary chat into a decision chat with no tools and no language
+    model loop.
   - **A public chat may use a private (local) decision model (owner ruling, 2026-11-05).** The
     model reads only text the chat's public model already has (a monitor's window is the stored
     conversation, the `decide` tool's chunks are text the chat model wrote into its call, a gate
@@ -333,6 +343,9 @@ this section is the ledger.
     chunks not yet asked are then not asked at all, and one refused row names them.
   - **Affiliation is checked beside the tier**, as for every Gate H site, and a Crew-scoped chat
     is refused every decision, because a Crew grant fixes the one model its content may reach.
+    The listings say so too: for a Crew-scoped chat, `decision_models` and
+    `GET /decisions/models?sessionId=` give every model the Crew gate's own sentence, so the
+    Monitors dialog never offers a model every check would refuse.
   - **The routes** (`crates/biorouter-server/src/routes/decisions.rs`) ask `session_reach` first
     on every route that names a chat. That includes the decision log, which stores what each call
     was sent and is therefore the chat's content, or for an ad hoc decision the caller's text at
@@ -343,8 +356,9 @@ this section is the ledger.
     the store directly under the tier rule alone. Both doors are in
     [SD-11](../deployment/serve-decisions.md#sd-11--stop-works-on-a-daemon-with-no-key-steering-does-not-and-a-subagents-tab-stays-the-persons)'s
     table. `GET /decisions/models?sessionId=` gives, for
-    each model, the sentence the gate would refuse it with, so a picker can explain a public model
-    in a private chat before the person picks it. The gate is asked again before every call
+    each model, the sentence the gate would refuse it with (Gate H's, affiliation's or the Crew
+    rule's), so a picker can explain a public model in a private chat before the person picks
+    it. The gate is asked again before every call
     whatever a setting names.
   - **The census** (`crates/biorouter/tests/privacy_guard_wiring.rs`) counts the one
     `assert_alt_tier_allowed` call and the routes' one `session_reach` call.
