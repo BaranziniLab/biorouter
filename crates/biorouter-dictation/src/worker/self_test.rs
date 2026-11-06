@@ -24,6 +24,7 @@ use serde::Serialize;
 
 use super::exit;
 use crate::build_info::{self, fixtures};
+use crate::catalog::{Catalog, SttKind, CATALOG};
 use crate::cpu::{self, CpuReport, HardwareClass};
 use crate::engine::{self, Backend, Engine, LoadOptions};
 
@@ -101,10 +102,12 @@ pub fn run_with(
     let model = absolute(&args.model);
     let vad = absolute(&args.vad);
     let wav = absolute(&args.wav);
-    if !is_pinned(&model, &fixtures::MODEL_PINS) || !is_pinned(&vad, &fixtures::DETECTOR_PINS) {
+    if !is_pinned(&model, &fixtures::MODEL_PINS, SttKind::Speech, &CATALOG)
+        || !is_pinned(&vad, &fixtures::DETECTOR_PINS, SttKind::Vad, &CATALOG)
+    {
         let _ = writeln!(
             err,
-            "The self test accepts only the pinned fixture files; the model or the voice detector file is missing, unreadable or not pinned."
+            "The self test accepts only pinned files: the fixtures and the speech model catalog. The model or the voice detector file is missing, unreadable or not pinned."
         );
         return fail(out, "pin", exit::NOT_PINNED, None);
     }
@@ -268,13 +271,30 @@ fn absolute(path: &Path) -> PathBuf {
     std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf())
 }
 
-/// Every pinned fixture is under 1 MiB; a larger file is refused before it is hashed, so
-/// passing a real 574 MB model costs a `stat`, not a read of the whole file.
+/// Every pinned fixture is under 1 MiB, so a file up to this size is hashed against the
+/// fixture pins.
 const MAX_FIXTURE_BYTES: u64 = 4 << 20;
 
-fn is_pinned(path: &Path, pins: &[&str]) -> bool {
-    std::fs::metadata(path).is_ok_and(|m| m.is_file() && m.len() <= MAX_FIXTURE_BYTES)
-        && build_info::sha256_file(path).is_ok_and(|digest| pins.contains(&digest.as_str()))
+/// A fixture (`pins`), or a catalog file of `kind` by its pin or an accepted earlier
+/// revision (the M1 design's step 2, extended by PR-11). A file is hashed only when its
+/// size is a fixture's or at most the largest catalog file of `kind`; anything larger
+/// is refused for the cost of a `stat`.
+fn is_pinned(path: &Path, pins: &[&str], kind: SttKind, catalog: &Catalog) -> bool {
+    let Ok(meta) = std::fs::metadata(path) else {
+        return false;
+    };
+    let of_kind = || catalog.entries.iter().filter(move |e| e.kind == kind);
+    let ceiling = of_kind()
+        .map(|e| e.size_bytes)
+        .max()
+        .unwrap_or(0)
+        .max(MAX_FIXTURE_BYTES);
+    if !meta.is_file() || meta.len() > ceiling {
+        return false;
+    }
+    build_info::sha256_file(path).is_ok_and(|digest| {
+        pins.contains(&digest.as_str()) || of_kind().any(|e| e.accepts(&digest))
+    })
 }
 
 /// The features the ggml CPU backend reports that this build's ISA promises but lacks.
@@ -504,6 +524,62 @@ mod tests {
                     .is_ok_and(|m| m.len() <= MAX_FIXTURE_BYTES)),
             "a pinned fixture outgrew MAX_FIXTURE_BYTES"
         );
+    }
+
+    /// A catalog file is accepted by its pin, as a model or a detector of its own kind
+    /// only; one byte flipped in a file of the catalog's size is refused; a file larger
+    /// than any catalog file is refused before it is read.
+    #[test]
+    fn a_catalog_file_is_pinned() {
+        use crate::catalog::{
+            Languages, SttCatalogEntry, SttEngine, SttFormat, Tokenizer, STT_MODEL_CATALOG,
+        };
+        use sha2::{Digest, Sha256};
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        // Larger than any fixture, so only the catalog can admit it.
+        let mut bytes: Vec<u8> = (0..(5u32 << 20))
+            .map(|i| (i.wrapping_mul(31) >> 3) as u8)
+            .collect();
+        let digest: &'static str = Box::leak(
+            Sha256::digest(&bytes)
+                .iter()
+                .map(|b| format!("{b:02x}"))
+                .collect::<String>()
+                .into_boxed_str(),
+        );
+        let mut entry: SttCatalogEntry = STT_MODEL_CATALOG[0];
+        entry.size_bytes = bytes.len() as u64;
+        entry.sha256 = digest;
+        entry.accepted_sha256 = Box::leak(vec![digest].into_boxed_slice());
+        entry.languages = Languages::EnglishOnly;
+        entry.engine = SttEngine::WhisperCpp;
+        entry.format = SttFormat::GgmlBin;
+        entry.tokenizer = Tokenizer::Gpt2;
+        let catalog = Catalog {
+            entries: Box::leak(vec![entry].into_boxed_slice()),
+            retired: &[],
+        };
+        let model = dir.path().join("renamed.bin");
+        std::fs::write(&model, &bytes).expect("write");
+        assert!(is_pinned(&model, &[], SttKind::Speech, &catalog));
+        assert!(
+            !is_pinned(&model, &[], SttKind::Vad, &catalog),
+            "a speech model is not a detector"
+        );
+        let last = bytes.len() - 1;
+        bytes[last] ^= 0x01;
+        std::fs::write(&model, &bytes).expect("write");
+        assert!(!is_pinned(&model, &[], SttKind::Speech, &catalog));
+        let file = std::fs::File::create(&model).expect("create");
+        file.set_len(bytes.len() as u64 + 1).expect("a sparse file");
+        assert!(!is_pinned(&model, &[], SttKind::Speech, &catalog));
+        // The compiled catalog's detector is the detector fixture, byte for byte.
+        assert!(is_pinned(
+            &fixtures::path(fixtures::SILERO),
+            &[],
+            SttKind::Vad,
+            &CATALOG
+        ));
     }
 
     #[test]

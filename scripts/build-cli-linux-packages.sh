@@ -49,6 +49,34 @@ BR_HINT_LABEL="cli-pkg"
 # shellcheck source=scripts/lib/dependency-hint.sh
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/dependency-hint.sh"
 
+# No speech model ships in a package (R6, PR-11): in both smoke containers every file the
+# installed package lists (`dpkg -L`, `rpm -ql`) is read for the legacy ggml magic (`lmgg`
+# on disk), wherever packaging put it, and an empty list fails. The binary size ceilings,
+# which catch a speech model compiled into a binary, live in
+# scripts/smoke-test-release-artifacts.sh, which `release.sh verify` runs on these packages.
+# `set -x` is off while the list is read, so the log stays short.
+# shellcheck disable=SC2016
+GGML_SCAN='ggml_magic_at() {
+  [ "$(head -c 4 "$1" | tr -d "\000")" = lmgg ]
+}
+scan_ggml_list() {
+  local f n=0 trace=$-
+  set +x
+  while IFS= read -r f; do
+    [ -f "$f" ] && [ ! -L "$f" ] || continue
+    n=$((n + 1))
+    if ggml_magic_at "$f"; then
+      echo "a speech model file ships in the package: $f" >&2
+      return 1
+    fi
+  done
+  if [ "$n" -eq 0 ]; then
+    echo "scan_ggml_list: the package lists no files" >&2
+    return 1
+  fi
+  case $trace in *x*) set -x ;; esac
+}'
+
 # `biorouter dictation status --format json`, written by a smoke container to
 # $OUT/dictation-status-<distro>.json, must be schema 1 with no model installed
 # (nothing is ever installed with a package) and no terminal microphone yet
@@ -120,11 +148,14 @@ log "rpm: $RPM ($(du -h "$RPM" | cut -f1))"
 # ── 2. Smoke-test the .deb on a clean Debian system ───────────────────────────
 log "smoke-testing .deb on debian:bookworm-slim"
 docker run --rm --platform linux/amd64 -e ROSETTA_ADVERTISE_AVX=1 -v "$ROOT/$OUT":/pkg \
+  -e "GGML_SCAN=$GGML_SCAN" \
   -v "$ROOT/vendor/whisper.cpp":/whisper.cpp:ro \
   -v "$ROOT/scripts/dictation-self-test.sh":/smoke/dictation-self-test.sh:ro \
   debian:bookworm-slim bash -euxc '
   apt-get update -q
   apt-get install -y --no-install-recommends "/pkg/'"$(basename "$DEB")"'"
+  eval "$GGML_SCAN"
+  dpkg -L "$(dpkg-deb -f "/pkg/'"$(basename "$DEB")"'" Package)" | scan_ggml_list
   test -x /usr/libexec/biorouter/computer-use/ocu
   test -s /usr/libexec/biorouter/computer-use/manifest.json
   /usr/libexec/biorouter/computer-use/ocu --version
@@ -159,10 +190,13 @@ check_dictation_status debian
 # ── 3. Smoke-test the .rpm on a clean Rocky Linux system ──────────────────────
 log "smoke-testing .rpm on rockylinux:9"
 docker run --rm --platform linux/amd64 -e ROSETTA_ADVERTISE_AVX=1 -v "$ROOT/$OUT":/pkg \
+  -e "GGML_SCAN=$GGML_SCAN" \
   -v "$ROOT/vendor/whisper.cpp":/whisper.cpp:ro \
   -v "$ROOT/scripts/dictation-self-test.sh":/smoke/dictation-self-test.sh:ro \
   rockylinux:9 bash -euxc '
   dnf install -y "/pkg/'"$(basename "$RPM")"'"
+  eval "$GGML_SCAN"
+  rpm -ql "$(rpm -qp --qf "%{NAME}" "/pkg/'"$(basename "$RPM")"'")" | scan_ggml_list
   test -x /usr/libexec/biorouter/computer-use/ocu
   test -s /usr/libexec/biorouter/computer-use/manifest.json
   /usr/libexec/biorouter/computer-use/ocu --version

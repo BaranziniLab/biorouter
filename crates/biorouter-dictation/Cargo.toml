@@ -32,11 +32,25 @@ cc = { version = "1.2.64", optional = true }
 [dependencies]
 serde = { version = "1", features = ["derive"] }
 serde_json = { workspace = true }
-# The self test refuses a model or detector whose SHA-256 is not pinned (P-11).
-sha2 = "0.10"
+# The self test refuses a model or detector whose SHA-256 is not pinned (P-11), and
+# the installer verifies every file against the catalog's pins (PR-11). 0.11, not
+# 0.10: 0.10 uses the ARMv8 SHA-2 instructions only with its `asm` feature, so on
+# Apple Silicon it hashed in software at about 320 MB/s [M]; 0.11 detects them, and
+# x86's SHA extensions, at run time. Already in Cargo.lock through lzma-rust2.
+sha2 = "0.11.0"
 # The supervisor (PR-10) runs on the host process's runtime. The worker never
 # starts one: it reads and writes frames on two plain threads.
 tokio = { workspace = true }
+# The installer (PR-11, DD-21): ranged downloads from GitHub's release assets with
+# the environment's proxies, a per model lock, the free space check and the
+# timestamps of `installed.json`. All four are already in Cargo.lock.
+reqwest = { version = "0.12.9", default-features = false, features = ["rustls-tls-native-roots"] }
+# Only for its error type: a download that failed in TLS stops at once (DD-21), and the
+# installer tells that from a dropped connection by type, never by the message's words.
+# The same rustls reqwest already links; no feature of its own.
+rustls = { version = "0.23", default-features = false }
+fs2 = "0.4.3"
+chrono = { version = "0.4.38", default-features = false, features = ["clock", "std"] }
 
 # `sysctlbyname` for the Rosetta and macOS version checks of the CPU gate,
 # `dup`/`dup2` so the self test's one stdout line and the worker's frames cannot
@@ -48,7 +62,9 @@ libc = "0.2"
 # The worker's peak working set on Windows (`K32GetProcessMemoryInfo`), and no
 # crash report holding its memory (`SetErrorMode`, `WerSetFlags`; P-1).
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Diagnostics_Debug", "Win32_System_ErrorReporting", "Win32_System_ProcessStatus", "Win32_System_Threading"] }
+# Total memory and physical cores for the suitability rules, and the elevation that
+# `install --system` needs (PR-11).
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Diagnostics_Debug", "Win32_System_ErrorReporting", "Win32_Security", "Win32_System_ProcessStatus", "Win32_System_SystemInformation", "Win32_System_Threading"] }
 
 [dev-dependencies]
 tempfile = "3"

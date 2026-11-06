@@ -10,7 +10,11 @@ const {
   inspectCrewBroker,
   isCrewBrokerPath,
 } = require('./crew-broker-resources');
-const { cleanBinDirectory, foreignBinaries } = require('./prepare-platform-binaries');
+const {
+  cleanBinDirectory,
+  foreignBinaries,
+  speechModelFiles,
+} = require('./prepare-platform-binaries');
 
 /// The first 64 bytes of an x86-64 PIE: what the checks read, nothing more.
 function elf({ machine = 0x3e } = {}) {
@@ -161,6 +165,22 @@ test('the foreign-binary sweep never reads the broker as another platform', () =
   assert.deepEqual(foreignBinaries('darwin', bin), [path.join('llamacpp', 'llama-server.exe')]);
   assert.deepEqual(foreignBinaries('linux', bin), [path.join('llamacpp', 'llama-server.exe')]);
   assert.deepEqual(foreignBinaries('win32', bin), []);
+});
+
+test('the speech model guard finds a ggml file anywhere in src/bin and nothing else (R6)', () => {
+  // The legacy ggml magic as it lies on disk, then whatever follows in a model.
+  const model = Buffer.concat([Buffer.from('lmgg', 'latin1'), Buffer.alloc(60, 7)]);
+  const bin = binDir({
+    extra: {
+      'llamacpp/deep/model': model,
+      'llamacpp/model.gguf': Buffer.from('GGUF\u0003\u0000\u0000\u0000', 'latin1'),
+      tiny: 'lm',
+      biorouterd: elf(),
+    },
+  });
+  assert.deepEqual(speechModelFiles(bin), [path.join('llamacpp', 'deep', 'model')]);
+  fs.rmSync(path.join(bin, 'llamacpp', 'deep', 'model'));
+  assert.deepEqual(speechModelFiles(bin), []);
 });
 
 test('cleaning src/bin for any platform keeps the staged broker', () => {

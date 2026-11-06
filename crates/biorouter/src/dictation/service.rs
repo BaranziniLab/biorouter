@@ -10,6 +10,11 @@
 //! For latency, [`DictationService::prepare_with`] starts the worker process before it
 //! works out the thread count, so the two overlap, and the caller that arms a
 //! microphone does not await it: the model loads while the person speaks.
+//!
+//! [`DictationService::resolve`] turns a catalog id (or the configured one) into the
+//! files the worker loads, through the lookup order of [`super::paths`] and the
+//! verification cache (PR-11). [`DictationService::warm_up`] runs one decode right after
+//! an install, so the first dictation on Metal does not pay the 3 to 4 s shader compile.
 
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
@@ -28,9 +33,13 @@ use biorouter_dictation::worker::{ENGINE_ROLE, WORKER_MARKER};
 use serde::Serialize;
 use tokio_util::sync::CancellationToken;
 
+use biorouter_dictation::catalog::{SttCatalogEntry, CATALOG};
+use biorouter_dictation::hardware::{self, BenchRecord};
+
+use super::paths::{self, Installed, Roots};
 use crate::config::paths::Paths;
 use crate::config::Config;
-use crate::managed::Allowance;
+use crate::managed::{Allowance, DictationPolicy};
 
 /// `config.yaml`: seconds without a request before the worker is stopped (DD-91).
 pub const IDLE_UNLOAD_KEY: &str = "BIOROUTER_DICTATION_IDLE_UNLOAD_SECS";
@@ -38,6 +47,11 @@ pub const IDLE_UNLOAD_KEY: &str = "BIOROUTER_DICTATION_IDLE_UNLOAD_SECS";
 pub const LANGUAGE_KEY: &str = "BIOROUTER_DICTATION_LANGUAGE";
 /// Environment only: an absolute path to the binary the worker runs from.
 pub const WORKER_ENV: &str = "BIOROUTER_DICTATION_WORKER";
+/// `config.yaml`: the catalog id dictation uses (DD-17); `biorouter dictation use` writes it.
+pub const MODEL_KEY: &str = "BIOROUTER_DICTATION_MODEL";
+/// The speech the warm up decodes: long enough for a real decoder pass, short enough to
+/// cost little on Metal.
+pub const WARM_UP_CLIP_MS: u64 = 2_000;
 /// The idle unload when `config.yaml` sets none (DD-7).
 pub const DEFAULT_IDLE_UNLOAD_SECS: u64 = 300;
 /// How long the thread count waits for the llama sidecar's status (DD-32).
@@ -120,6 +134,28 @@ pub enum DictationError {
     BadAudio,
     Cancelled,
     Internal(String),
+    /// An id the catalog does not know.
+    UnknownModel(String),
+    /// A catalog speech model with no verified copy in any folder.
+    NotInstalled {
+        id: String,
+    },
+    /// The speech model is there and the voice detector it needs is not. The repair is
+    /// installing the speech model again, which fetches only the detector; installing the
+    /// detector by its own id is refused (MSG-DETECTOR-ONLY).
+    DetectorNotInstalled {
+        model: String,
+        detector: String,
+    },
+    /// No speech model is installed at all: MSG-NO-MODEL-CLI's first sentence.
+    NoModel {
+        host: String,
+        account: String,
+    },
+    /// MSG-LANGUAGE-EN.
+    EnglishOnly {
+        model: String,
+    },
 }
 
 impl std::fmt::Display for DictationError {
@@ -149,6 +185,26 @@ impl std::fmt::Display for DictationError {
             DictationError::BadAudio => f.write_str("The audio could not be used."),
             DictationError::Cancelled => f.write_str("Dictation was cancelled."),
             DictationError::Internal(message) => write!(f, "Dictation failed: {message}."),
+            DictationError::UnknownModel(id) => write!(
+                f,
+                "There is no speech model named {id}. Run `biorouter dictation list` to see the models."
+            ),
+            DictationError::NotInstalled { id } => write!(
+                f,
+                "{id} is not installed on this computer. Run `biorouter dictation install {id}`."
+            ),
+            DictationError::DetectorNotInstalled { model, detector } => write!(
+                f,
+                "{model} needs the voice detector {detector}, which is not installed on this computer. Run `biorouter dictation install {model}`."
+            ),
+            DictationError::NoModel { host, account } => write!(
+                f,
+                "Dictation needs a speech model on this computer ({host}, account {account}). Run `biorouter dictation install`."
+            ),
+            DictationError::EnglishOnly { model } => write!(
+                f,
+                "{model} understands only English. Choose a multilingual model for other languages, or set the language to English."
+            ),
         }
     }
 }
@@ -196,6 +252,22 @@ impl TranscribeRequest {
             cancel: CancellationToken::new(),
         }
     }
+}
+
+/// What [`DictationService::warm_up`] measured.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct WarmUp {
+    pub model: String,
+    pub backend: String,
+    /// The lookup and the verification cache: id to load spec.
+    pub resolve_ms: u64,
+    /// Spawn to `loaded`, as the caller saw it.
+    pub ready_ms: u64,
+    /// The worker's own load and warm up figures.
+    pub load_ms: u64,
+    pub warmup_ms: u64,
+    /// The one decode of [`WARM_UP_CLIP_MS`] of speech.
+    pub decode_ms: u64,
 }
 
 /// `status --verbose`: a worker's `hello`, or why there was none.
@@ -305,6 +377,118 @@ impl DictationService {
         }
     }
 
+    /// The files the worker loads for `id`, or for the configured model when `id` is
+    /// `None` (DD-17, DD-19): the first verified copy of the model and of its voice
+    /// detector in lookup order. Refused for an unknown or uninstalled id, a model the
+    /// organization's policy leaves out, and a `.en` model while the language is not
+    /// English. It sits on the arming path, so it looks up only what it will load, after
+    /// the policy and language checks: no other model is opened, and with no `id` the
+    /// candidates are tried in order and the first usable one ends the search. Hashing a
+    /// copy that changed runs off the runtime's threads.
+    pub async fn resolve(&self, id: Option<&str>) -> Result<LoadSpec, DictationError> {
+        let id = id.map(str::to_string);
+        tokio::task::spawn_blocking(move || {
+            let policy = crate::managed::ManagedPolicy::load().dictation().clone();
+            let roots = Roots::current();
+            spec_for(
+                &mut paths::Lookup::new(&roots),
+                &policy,
+                id.as_deref(),
+                configured_model().as_deref(),
+                &configured_language(),
+                cpu::host_report().class,
+            )
+        })
+        .await
+        .map_err(|e| DictationError::Internal(e.to_string()))?
+    }
+
+    /// Loads `id` (or the configured model), resolving when it is ready.
+    pub async fn prepare(&self, id: Option<&str>) -> Result<Loaded, DictationError> {
+        let spec = self.resolve(id).await?;
+        self.prepare_with(spec).await
+    }
+
+    /// One decode right after an install (PR-11): loads `id` and decodes
+    /// [`WARM_UP_CLIP_MS`] of the bench clip, so the Metal pipelines a model needs are
+    /// compiled into the per user Metal cache before the first dictation (a cold cache
+    /// costs 3.0 to 4.2 s [M]). On a CPU host there is nothing to compile, and a turbo
+    /// decode would burn seconds of CPU, so only a GPU backend runs it.
+    pub async fn warm_up(&self, id: &str) -> Result<WarmUp, DictationError> {
+        let started = Instant::now();
+        let spec = self.resolve(Some(id)).await?;
+        let resolve_ms = started.elapsed().as_millis() as u64;
+        let loaded = self.prepare_with(spec.clone()).await?;
+        let ready_ms = started.elapsed().as_millis() as u64;
+        let mut decode_ms = 0;
+        if loaded.backend == "metal" {
+            let clip = hardware::bench_clip(WARM_UP_CLIP_MS).ok_or(DictationError::NotCompiled)?;
+            let decode = Instant::now();
+            self.transcribe_with(
+                spec,
+                0,
+                PcmSlice::whole(clip.into()),
+                TranscribeRequest::new("en"),
+            )
+            .await?;
+            decode_ms = decode.elapsed().as_millis() as u64;
+        }
+        Ok(WarmUp {
+            model: id.to_string(),
+            backend: loaded.backend,
+            resolve_ms,
+            ready_ms,
+            load_ms: loaded.load_ms,
+            warmup_ms: loaded.warmup_ms,
+            decode_ms,
+        })
+    }
+
+    /// `biorouter dictation bench` and **Test speed** (DD-22): loads the model, decodes
+    /// the bench clip once to warm and once to time, and records the real time factor in
+    /// `bench.json`. The clip is [`hardware::BENCH_CLIP_MS`] long, the length of a
+    /// dictated sentence, because the encoder's cost does not shrink with the audio.
+    pub async fn bench(&self, id: Option<&str>) -> Result<(String, BenchRecord), DictationError> {
+        let mut spec = self.resolve(id).await?;
+        let model = CATALOG
+            .by_sha256(&spec.model_sha256)
+            .map(|entry| entry.id.to_string())
+            .unwrap_or_default();
+        if spec.n_threads == 0 {
+            spec.n_threads = self.threads().await;
+        }
+        let loaded = self.prepare_with(spec.clone()).await?;
+        let clip: Arc<[i16]> = hardware::bench_clip(hardware::BENCH_CLIP_MS)
+            .ok_or(DictationError::NotCompiled)?
+            .into();
+        let audio_ms = (clip.len() as u64) / biorouter_dictation::audio::SAMPLES_PER_MS;
+        let mut elapsed = Duration::ZERO;
+        for _ in 0..2 {
+            let started = Instant::now();
+            self.transcribe_with(
+                spec.clone(),
+                0,
+                PcmSlice::whole(Arc::clone(&clip)),
+                TranscribeRequest::new("en"),
+            )
+            .await?;
+            elapsed = started.elapsed();
+        }
+        let record = BenchRecord {
+            rtf: elapsed.as_secs_f64() / (audio_ms as f64 / 1000.0),
+            elapsed_ms: elapsed.as_millis() as u64,
+            audio_ms,
+            threads: spec.n_threads,
+            backend: loaded.backend,
+            measured_at: chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+            version: env!("CARGO_PKG_VERSION").to_string(),
+        };
+        hardware::write_bench(&bench_path(), &model, record.clone()).map_err(|e| {
+            DictationError::Internal(format!("the bench result was not saved ({e})"))
+        })?;
+        Ok((model, record))
+    }
+
     /// For `status --verbose`: the running worker's `hello`, or one from a worker
     /// started only to say it. Refused, before anything starts, while the organization's
     /// policy turns dictation off.
@@ -394,6 +578,17 @@ impl DictationService {
         *slot = Some(Arc::clone(&supervisor));
         Ok(supervisor)
     }
+}
+
+/// Why nothing can run here, before any download: no engine in this build, or a
+/// processor the engine cannot use (MSG-NO-ENGINE, MSG-CPU). `None` when it can.
+pub fn spawn_refusal() -> Option<DictationError> {
+    gate(biorouter_dictation::ENGINE_COMPILED, cpu::host_report()).err()
+}
+
+/// This computer's hardware class (`AS`, `CPU` or `NO`).
+pub fn host_class() -> cpu::HardwareClass {
+    cpu::host_report().class
 }
 
 /// The checks every spawn passes, in order: an engine is linked, then the processor.
@@ -549,7 +744,125 @@ pub fn configured_language() -> String {
 
 /// Where this account's speech models go (DD-19).
 pub fn models_dir() -> PathBuf {
-    Paths::in_local_data_dir("dictation/models")
+    paths::user_models_dir()
+}
+
+/// `bench`'s records (DD-22).
+pub fn bench_path() -> PathBuf {
+    Paths::in_local_data_dir("dictation/bench.json")
+}
+
+/// `BIOROUTER_DICTATION_MODEL` from `config.yaml`.
+pub fn configured_model() -> Option<String> {
+    Config::global()
+        .get_param::<String>(MODEL_KEY)
+        .ok()
+        .map(|id| id.trim().to_string())
+        .filter(|id| !id.is_empty())
+}
+
+/// The bench record that still describes this host for `id`: same version, backend and
+/// thread count (DD-22).
+pub fn current_bench(id: &str) -> Option<BenchRecord> {
+    let record = hardware::read_bench(&bench_path()).remove(id)?;
+    record
+        .applies(env!("CARGO_PKG_VERSION"), default_backend(), base_threads())
+        .then_some(record)
+}
+
+/// The speech model dictation uses: the configured one when its files are verified and
+/// policy allows it (a retired id stands for its replacement), else the class default,
+/// else the first usable model in catalog order. Policy is asked before a model is looked
+/// up, so a model the organization leaves out is never hashed, and the search stops at
+/// the first usable model.
+pub fn active_model(
+    installed: &mut dyn Installed,
+    policy: &DictationPolicy,
+    configured: Option<&str>,
+    class: cpu::HardwareClass,
+) -> Option<&'static SttCatalogEntry> {
+    let mut usable = |entry: &'static SttCatalogEntry| {
+        policy.model(entry.id).allowed && installed.usable(&CATALOG, entry)
+    };
+    if let Some((entry, _)) = configured.and_then(|id| CATALOG.resolve(id)) {
+        if usable(entry) {
+            return Some(entry);
+        }
+    }
+    if let Some(entry) = CATALOG.default_for(class) {
+        if usable(entry) {
+            return Some(entry);
+        }
+    }
+    CATALOG.speech_models().find(|e| usable(e))
+}
+
+/// MSG-LANGUAGE-EN for a `.en` model asked for another language.
+pub fn check_language(entry: &SttCatalogEntry, language: &str) -> Result<(), DictationError> {
+    if entry.english_only() && !language.eq_ignore_ascii_case("en") {
+        return Err(DictationError::EnglishOnly {
+            model: entry.id.to_string(),
+        });
+    }
+    Ok(())
+}
+
+/// The load spec for `id` (or the active model) from what is installed: a
+/// [`paths::Lookup`] for a load, a [`paths::Inventory`] in tests.
+pub fn spec_for(
+    installed: &mut dyn Installed,
+    policy: &DictationPolicy,
+    id: Option<&str>,
+    configured: Option<&str>,
+    language: &str,
+    class: cpu::HardwareClass,
+) -> Result<LoadSpec, DictationError> {
+    if !policy.enabled.is_allowed() {
+        return Err(DictationError::Policy(policy.enabled.allowance()));
+    }
+    let entry = match id {
+        Some(id) => {
+            let (entry, _) = CATALOG
+                .resolve(id)
+                .ok_or_else(|| DictationError::UnknownModel(id.to_string()))?;
+            if !entry.is_speech() {
+                return Err(DictationError::UnknownModel(id.to_string()));
+            }
+            entry
+        }
+        None => active_model(installed, policy, configured, class).ok_or_else(|| {
+            DictationError::NoModel {
+                host: host(),
+                account: account(),
+            }
+        })?,
+    };
+    let allowance = policy.model(entry.id);
+    if !allowance.allowed {
+        return Err(DictationError::Policy(allowance));
+    }
+    check_language(entry, language)?;
+    let model = installed
+        .found(entry)
+        .ok_or_else(|| DictationError::NotInstalled {
+            id: entry.id.to_string(),
+        })?;
+    let vad_id = entry.requires.first().copied().unwrap_or_default();
+    let vad = CATALOG
+        .entry(vad_id)
+        .and_then(|vad| installed.found(vad))
+        .ok_or_else(|| DictationError::DetectorNotInstalled {
+            model: entry.id.to_string(),
+            detector: vad_id.to_string(),
+        })?;
+    Ok(LoadSpec {
+        model_path: model.path.clone(),
+        model_sha256: model.sha256.clone(),
+        model_size: std::fs::metadata(&model.path).map_or(entry.size_bytes, |m| m.len()),
+        vad_path: vad.path.clone(),
+        use_gpu: default_use_gpu(),
+        n_threads: 0,
+    })
 }
 
 /// The account the models belong to.
@@ -626,6 +939,7 @@ pub fn worker_command(program: &Path) -> tokio::process::Command {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::dictation::paths::Inventory;
     use biorouter_dictation::cpu::{classify_for, CpuFeatures, Platform};
     use biorouter_dictation::supervisor::QueueStatus;
 
@@ -862,6 +1176,210 @@ mod tests {
             DictationError::from(SupervisorError::Cancelled),
             DictationError::Cancelled
         ));
+    }
+
+    /// MSG-LANGUAGE-EN, and the model refusals of PR-11.
+    #[test]
+    fn the_model_sentences() {
+        let cases = [
+            (
+                DictationError::EnglishOnly {
+                    model: "whisper-small.en-q8_0".into(),
+                },
+                "whisper-small.en-q8_0 understands only English. Choose a multilingual model for other languages, or set the language to English.",
+            ),
+            (
+                DictationError::UnknownModel("whisper-tiny".into()),
+                "There is no speech model named whisper-tiny. Run `biorouter dictation list` to see the models.",
+            ),
+            (
+                DictationError::NotInstalled {
+                    id: "whisper-large-v3-turbo-q5_0".into(),
+                },
+                "whisper-large-v3-turbo-q5_0 is not installed on this computer. Run `biorouter dictation install whisper-large-v3-turbo-q5_0`.",
+            ),
+            // The repair names the speech model, because `install silero-vad-v6.2.0` is
+            // refused (MSG-DETECTOR-ONLY) and `install <model>` fetches only the detector.
+            (
+                DictationError::DetectorNotInstalled {
+                    model: "whisper-small.en-q8_0".into(),
+                    detector: "silero-vad-v6.2.0".into(),
+                },
+                "whisper-small.en-q8_0 needs the voice detector silero-vad-v6.2.0, which is not installed on this computer. Run `biorouter dictation install whisper-small.en-q8_0`.",
+            ),
+            (
+                DictationError::NoModel {
+                    host: "lab-mac".into(),
+                    account: "ana".into(),
+                },
+                "Dictation needs a speech model on this computer (lab-mac, account ana). Run `biorouter dictation install`.",
+            ),
+        ];
+        for (error, sentence) in cases {
+            assert_eq!(error.to_string(), sentence);
+        }
+    }
+
+    fn found(id: &str) -> super::paths::Found {
+        let entry = CATALOG.entry(id).unwrap();
+        super::paths::Found {
+            entry,
+            location: super::paths::Location::User,
+            path: PathBuf::from("/m").join(id).join(entry.file_name),
+            sha256: entry.sha256.to_string(),
+            superseded: false,
+        }
+    }
+
+    fn inventory(ids: &[&str]) -> Inventory {
+        Inventory {
+            found: ids.iter().map(|id| found(id)).collect(),
+            strays: Vec::new(),
+        }
+    }
+
+    /// Which model a load uses, and every refusal before it starts (DD-15, DD-17, DD-90).
+    #[test]
+    fn the_load_spec_follows_the_installed_files_policy_and_language() {
+        use biorouter_dictation::catalog::{SMALL_EN_ID, TURBO_ID, VAD_ID};
+        use cpu::HardwareClass::{As, Cpu};
+        let open = DictationPolicy::unmanaged();
+        let spec = |inv: &Inventory, policy: &DictationPolicy, id, configured, language| {
+            spec_for(&mut inv.clone(), policy, id, configured, language, As)
+        };
+
+        let none = inventory(&[]);
+        assert!(matches!(
+            spec(&none, &open, None, None, "en"),
+            Err(DictationError::NoModel { .. })
+        ));
+        // A model without its detector cannot load.
+        let no_vad = inventory(&[SMALL_EN_ID]);
+        assert!(matches!(
+            spec(&no_vad, &open, Some(SMALL_EN_ID), None, "en"),
+            Err(DictationError::DetectorNotInstalled { model, detector })
+                if model == SMALL_EN_ID && detector == VAD_ID
+        ));
+        assert!(matches!(
+            spec(&no_vad, &open, None, None, "en"),
+            Err(DictationError::NoModel { .. })
+        ));
+
+        let small = inventory(&[VAD_ID, SMALL_EN_ID]);
+        // On Apple Silicon the class default (turbo) is missing, so small.en is used,
+        // even when turbo is the configured model.
+        let chosen = spec(&small, &open, None, Some(TURBO_ID), "en").unwrap();
+        assert!(chosen.model_path.ends_with("ggml-small.en-q8_0.bin"));
+        assert!(chosen.vad_path.ends_with("ggml-silero-v6.2.0.bin"));
+        assert_eq!(
+            chosen.model_sha256,
+            CATALOG.entry(SMALL_EN_ID).unwrap().sha256
+        );
+        assert_eq!(chosen.n_threads, 0);
+        assert_eq!(chosen.use_gpu, default_use_gpu());
+        assert!(matches!(
+            spec(&small, &open, Some(TURBO_ID), None, "en"),
+            Err(DictationError::NotInstalled { id }) if id == TURBO_ID
+        ));
+        assert!(matches!(
+            spec(&small, &open, Some("whisper-tiny"), None, "en"),
+            Err(DictationError::UnknownModel(_))
+        ));
+        assert!(matches!(
+            spec(&small, &open, Some(VAD_ID), None, "en"),
+            Err(DictationError::UnknownModel(_))
+        ));
+        assert!(matches!(
+            spec(&small, &open, None, None, "fr"),
+            Err(DictationError::EnglishOnly { .. })
+        ));
+
+        let both = inventory(&[VAD_ID, SMALL_EN_ID, TURBO_ID]);
+        let class_default =
+            |class| active_model(&mut both.clone(), &open, None, class).map(|e| e.id);
+        assert_eq!(class_default(As), Some(TURBO_ID));
+        assert_eq!(class_default(Cpu), Some(SMALL_EN_ID));
+        assert_eq!(
+            active_model(&mut both.clone(), &open, Some(SMALL_EN_ID), As).map(|e| e.id),
+            Some(SMALL_EN_ID)
+        );
+        // Turbo is multilingual, so another language is fine.
+        assert!(spec(&both, &open, Some(TURBO_ID), None, "fr").is_ok());
+
+        let only_turbo = DictationPolicy {
+            managed: true,
+            allowed_models: Some(vec![TURBO_ID.to_string()]),
+            ..DictationPolicy::unmanaged()
+        };
+        assert!(matches!(
+            spec(&both, &only_turbo, Some(SMALL_EN_ID), None, "en"),
+            Err(DictationError::Policy(_))
+        ));
+        assert!(matches!(
+            spec(&small, &only_turbo, None, None, "en"),
+            Err(DictationError::NoModel { .. })
+        ));
+        assert!(matches!(
+            spec(&both, &DictationPolicy::off(), None, None, "en"),
+            Err(DictationError::Policy(_))
+        ));
+    }
+
+    /// The entries a lookup was asked for, in order: the copies a load would hash. A
+    /// repeat is not recorded, because `paths::Lookup` answers it from what it found.
+    struct Recorder {
+        inventory: Inventory,
+        asked: Vec<&'static str>,
+    }
+
+    impl Installed for Recorder {
+        fn found(&mut self, entry: &'static SttCatalogEntry) -> Option<paths::Found> {
+            if !self.asked.contains(&entry.id) {
+                self.asked.push(entry.id);
+            }
+            self.inventory.get(entry.id).cloned()
+        }
+    }
+
+    /// The arming path looks up only what it loads (DD-17): an explicit id reads that
+    /// model and its detector, never another model; with no id the search stops at the
+    /// first usable model; a model the policy leaves out, or one a refusal stops, is never
+    /// looked up.
+    #[test]
+    fn a_load_looks_up_only_what_it_loads() {
+        use biorouter_dictation::catalog::{SMALL_EN_ID, TURBO_ID, VAD_ID};
+        use cpu::HardwareClass::As;
+        let open = DictationPolicy::unmanaged();
+        let asked = |policy: &DictationPolicy, id, configured, language| {
+            let mut recorder = Recorder {
+                inventory: inventory(&[VAD_ID, SMALL_EN_ID, TURBO_ID]),
+                asked: Vec::new(),
+            };
+            let _ = spec_for(&mut recorder, policy, id, configured, language, As);
+            recorder.asked
+        };
+        assert_eq!(
+            asked(&open, Some(SMALL_EN_ID), None, "en"),
+            [SMALL_EN_ID, VAD_ID]
+        );
+        assert_eq!(
+            asked(&open, None, Some(SMALL_EN_ID), "en"),
+            [SMALL_EN_ID, VAD_ID]
+        );
+        // The class default on Apple Silicon, then its detector; small.en is not opened.
+        assert_eq!(asked(&open, None, None, "en"), [TURBO_ID, VAD_ID]);
+        let only_turbo = DictationPolicy {
+            managed: true,
+            allowed_models: Some(vec![TURBO_ID.to_string()]),
+            ..DictationPolicy::unmanaged()
+        };
+        assert_eq!(
+            asked(&only_turbo, None, Some(SMALL_EN_ID), "en"),
+            [TURBO_ID, VAD_ID]
+        );
+        assert!(asked(&only_turbo, Some(SMALL_EN_ID), None, "en").is_empty());
+        assert!(asked(&open, Some(SMALL_EN_ID), None, "fr").is_empty());
+        assert!(asked(&DictationPolicy::off(), None, None, "en").is_empty());
     }
 
     /// The sentences of the message catalog's worker diagnostics (MSG-DIAG-*, shown by

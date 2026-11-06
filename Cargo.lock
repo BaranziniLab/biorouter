@@ -1252,11 +1252,15 @@ name = "biorouter-dictation"
 version = "1.94.1"
 dependencies = [
  "cc",
+ "chrono",
  "cmake",
+ "fs2",
  "libc",
+ "reqwest 0.12.28",
+ "rustls 0.23.31",
  "serde",
  "serde_json",
- "sha2 0.10.9",
+ "sha2 0.11.0",
  "tempfile",
  "tokio",
  "windows-sys 0.61.2",

@@ -1117,6 +1117,103 @@ enum DictationCommand {
         #[arg(short, long)]
         verbose: bool,
     },
+
+    /// Every speech model Biorouter knows: size, languages, how well it suits this
+    /// computer, and where it is installed
+    #[command(
+        about = "List the speech models and where they are installed",
+        visible_alias = "ls"
+    )]
+    List {
+        #[arg(
+            long = "format",
+            value_name = "FORMAT",
+            default_value = "text",
+            value_parser = clap::builder::PossibleValuesParser::new(["text", "json"])
+        )]
+        format: String,
+    },
+
+    /// Download a speech model (the one recommended for this computer when MODEL is
+    /// left out) and its voice detector into this account's data folder, after checking
+    /// each file against the SHA-256 pinned in Biorouter
+    #[command(about = "Install a speech model", visible_alias = "pull")]
+    Install {
+        /// A model id from `biorouter dictation list`
+        #[arg(value_name = "MODEL")]
+        model: Option<String>,
+
+        /// Install files you already downloaded (see `biorouter dictation urls`); each
+        /// is identified by its SHA-256, whatever its name
+        #[arg(long = "from", value_name = "FILE|DIR")]
+        from: Option<std::path::PathBuf>,
+
+        /// Install into the computer's shared folder, which every account reads (needs
+        /// root or Administrator)
+        #[arg(long)]
+        system: bool,
+
+        /// Install without asking (needed without a terminal)
+        #[arg(short, long)]
+        yes: bool,
+    },
+
+    /// Delete an installed speech model; removing the last one removes the voice
+    /// detector too
+    #[command(about = "Remove an installed speech model", visible_alias = "rm")]
+    Remove {
+        #[arg(value_name = "MODEL")]
+        model: String,
+
+        /// Remove the copy in the computer's shared folder (needs root or Administrator)
+        #[arg(long)]
+        system: bool,
+
+        /// Remove without asking (needed without a terminal)
+        #[arg(short, long)]
+        yes: bool,
+    },
+
+    /// Choose the speech model dictation uses
+    #[command(about = "Choose the speech model dictation uses")]
+    Use {
+        #[arg(value_name = "MODEL")]
+        model: String,
+    },
+
+    /// Print the address, size and SHA-256 of a model and of every file it needs, to
+    /// download them on another computer and install them with `install --from`
+    #[command(about = "Print the download addresses of a model's files")]
+    Urls {
+        #[arg(value_name = "MODEL")]
+        model: Option<String>,
+    },
+
+    /// Hash every installed model file again; a copy in this account's folder that
+    /// fails is deleted
+    #[command(about = "Check every installed model file against its pin")]
+    Verify {},
+
+    /// Time the model in use on a 5.5 s recording and record how fast this computer runs
+    /// it
+    #[command(about = "Measure how fast this computer transcribes")]
+    Bench {
+        #[arg(
+            long = "format",
+            value_name = "FORMAT",
+            default_value = "text",
+            value_parser = clap::builder::PossibleValuesParser::new(["text", "json"])
+        )]
+        format: String,
+    },
+
+    /// Load a model and decode once, so the first dictation does not wait for the GPU's
+    /// shaders to compile. `install` starts it in the background.
+    #[command(name = "warm-up", hide = true)]
+    WarmUp {
+        #[arg(value_name = "MODEL")]
+        model: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -3163,6 +3260,39 @@ async fn dispatch(command: Option<Command>) -> anyhow::Result<()> {
         Some(Command::Dictation { command }) => match command {
             DictationCommand::Status { format, verbose } => {
                 crate::commands::dictation::handle_status(&format, verbose).await
+            }
+            DictationCommand::List { format } => {
+                crate::commands::dictation::handle_list(&format).await
+            }
+            DictationCommand::Install {
+                model,
+                from,
+                system,
+                yes,
+            } => {
+                crate::commands::dictation::handle_install(
+                    crate::commands::dictation::InstallArgs {
+                        model,
+                        from,
+                        system,
+                        yes,
+                    },
+                )
+                .await
+            }
+            DictationCommand::Remove { model, system, yes } => {
+                crate::commands::dictation::handle_remove(&model, system, yes).await
+            }
+            DictationCommand::Use { model } => crate::commands::dictation::handle_use(&model).await,
+            DictationCommand::Urls { model } => {
+                crate::commands::dictation::handle_urls(model.as_deref())
+            }
+            DictationCommand::Verify {} => crate::commands::dictation::handle_verify().await,
+            DictationCommand::Bench { format } => {
+                crate::commands::dictation::handle_bench(&format).await
+            }
+            DictationCommand::WarmUp { model } => {
+                crate::commands::dictation::handle_warm_up(&model).await
             }
         },
         Some(Command::Knowledge { command }) => handle_knowledge_subcommand(command).await,

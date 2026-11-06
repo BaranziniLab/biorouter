@@ -139,6 +139,9 @@ smoke_mac() (
     || die "$arch CLI architecture mismatch"
   "${runner[@]}" "$app/Contents/Resources/bin/biorouter" --version | grep -q "$VERSION"
   "${runner[@]}" "$app/Contents/Resources/bin/biorouterd" --version | grep -q "$VERSION"
+  check_dictation_size "darwin-$arch" "$app/Contents/Resources/bin/biorouter"
+  check_dictation_size "darwin-$arch" "$app/Contents/Resources/bin/biorouterd"
+  scan_ggml "$app" || die "$arch app bundle carries a speech model"
   # The local dictation engine loads and decodes in both shipped binaries (DD-12): Metal on
   # arm64. The Intel build runs under Rosetta, which hides AVX2 from CPUID unless
   # ROSETTA_ADVERTISE_AVX=1 asks it not to, and honours that only on macOS 15 or later.
@@ -213,6 +216,99 @@ PYKEY
 # and per-window checks. `timeout` also bounds the whole container run.
 LINUX_DESKTOP_SMOKE="$ROOT/scripts/smoke-linux-desktop.sh"
 
+# No speech model ships in any artifact (R6, PR-11). Two guards here, because each misses
+# what the other catches:
+#
+# * a scan of every packaged file for the legacy ggml magic (`lmgg` on disk), which finds
+#   a model file however it is named: on Linux every file the installed package lists
+#   (`dpkg -L`, `rpm -ql`), on macOS the whole app bundle;
+# * a size ceiling for `biorouter` and `biorouterd`, which finds a speech model compiled
+#   into a binary with `include_bytes!`. A scan of the binaries cannot: the loader itself
+#   holds the magic. The smallest speech model is 264 MB, so any of them blows the
+#   ceiling. The 885,098 B voice detector does not, and is left to the source test
+#   `no_model_is_embedded` in crates/biorouter-dictation, which finds it by its path.
+#
+# Each ceiling is the binary's shipped size in v1.94.1 (before the engine), plus the growth
+# since, plus slack. On macOS arm64 the growth is measured [M]: this branch's release build
+# at PR-11 against v1.94.1 with its signature removed, +9,613,412 B for biorouter and
+# +8,306,152 B for biorouterd (2026-11-06), which is PR-09's spike figure of 6.69 MB plus
+# what the engine's spike left out, PR-10's supervisor and PR-11's installer and 352,078 B
+# bench clip; its slack is 1 MiB. No Linux or Intel macOS build of this branch was
+# measured, so their growth is inferred [I]: PR-09's figure for the target (Linux 2.17 MB,
+# macOS x86_64 1.69 MB) plus the same non-spike growth as arm64 (biorouter 2,923,412 B,
+# biorouterd 1,616,152 B), with 32 MiB of slack so an estimate off by a few MB does not
+# fail the release; 32 MiB still hides no speech model. Replace an inferred leg with a
+# measured one, and its slack with 1 MiB, from the first CI cross build of these binaries.
+# A pull request that grows other code raises its ceiling here, in the same change, and
+# says why.
+dictation_size_ceiling() { # <platform> <binary>
+  local slack=1048576 inferred=$((32 << 20)) more_cli=2923412 more_daemon=1616152
+  case "$1/$2" in
+    linux-x64/biorouter) echo $((187413248 + 2170000 + more_cli + inferred)) ;;
+    linux-x64/biorouterd) echo $((176920720 + 2170000 + more_daemon + inferred)) ;;
+    darwin-arm64/biorouter) echo $((164389760 + 9613412 + slack)) ;;
+    darwin-arm64/biorouterd) echo $((154775664 + 8306152 + slack)) ;;
+    darwin-x64/biorouter) echo $((176538336 + 1690000 + more_cli + inferred)) ;;
+    darwin-x64/biorouterd) echo $((166285184 + 1690000 + more_daemon + inferred)) ;;
+    *) die "no dictation size ceiling for $1/$2" ;;
+  esac
+}
+
+check_dictation_size() { # <platform> <binary path>
+  local name size ceiling
+  name="$(basename "$2")"
+  size="$(wc -c <"$2" | tr -d ' ')"
+  ceiling="$(dictation_size_ceiling "$1" "$name")"
+  [ "$size" -le "$ceiling" ] \
+    || die "$1 $name is $size bytes, over its ceiling of $ceiling: is a speech model compiled in?"
+}
+
+# Defined as text so the Linux containers run the same functions (eval "$GGML_SCAN").
+# `scan_ggml <path>...` reads every file under the given paths and fails on a path that
+# does not exist, so a renamed folder cannot make it scan nothing. `scan_ggml_list` reads
+# a package's own file list on stdin (`dpkg -L <package>`, `rpm -ql <package>`), checks
+# each regular file in it, and fails on an empty list. Both fail on the first file that
+# starts with the ggml magic, and turn off `set -x` while they read, so a bundle of
+# thousands of files does not flood the log.
+GGML_SCAN='ggml_magic_at() {
+  [ "$(head -c 4 "$1" | tr -d "\000")" = lmgg ]
+}
+scan_ggml() {
+  local f p trace=$-
+  set +x
+  for p in "$@"; do
+    if [ ! -e "$p" ]; then
+      echo "scan_ggml: $p does not exist" >&2
+      return 1
+    fi
+  done
+  while IFS= read -r f; do
+    if ggml_magic_at "$f"; then
+      echo "a speech model file ships in the package: $f" >&2
+      return 1
+    fi
+  done < <(find "$@" -type f)
+  case $trace in *x*) set -x ;; esac
+}
+scan_ggml_list() {
+  local f n=0 trace=$-
+  set +x
+  while IFS= read -r f; do
+    [ -f "$f" ] && [ ! -L "$f" ] || continue
+    n=$((n + 1))
+    if ggml_magic_at "$f"; then
+      echo "a speech model file ships in the package: $f" >&2
+      return 1
+    fi
+  done
+  if [ "$n" -eq 0 ]; then
+    echo "scan_ggml_list: the package lists no files" >&2
+    return 1
+  fi
+  case $trace in *x*) set -x ;; esac
+}'
+eval "$GGML_SCAN"
+
 # The dictation self test inside a Linux container: the helper and the vendored fixtures
 # mounted read only, and ROSETTA_ADVERTISE_AVX=1 for Docker Desktop's amd64 emulation on an
 # Apple Silicon Mac (an x86 host ignores it). Run in the container as
@@ -222,6 +318,9 @@ dictation_container_args() {
   require_file "$DICTATION_SELF_TEST"
   require_file "$ROOT/vendor/whisper.cpp/source/samples/jfk.wav"
   DICTATION_DOCKER_ARGS=(-e ROSETTA_ADVERTISE_AVX=1
+    -e "CEIL_BIOROUTER=$(dictation_size_ceiling linux-x64 biorouter)"
+    -e "CEIL_BIOROUTERD=$(dictation_size_ceiling linux-x64 biorouterd)"
+    -e "GGML_SCAN=$GGML_SCAN"
     -v "$ROOT/vendor/whisper.cpp":/whisper.cpp:ro
     -v "$DICTATION_SELF_TEST":/smoke/dictation-self-test.sh:ro)
 }
@@ -240,6 +339,10 @@ smoke_deb() {
       apt-get install -y -qq /pkg/biorouter.deb xvfb >/dev/null
       /usr/lib/biorouter/resources/bin/biorouter --version | grep -q "$VERSION"
       /usr/lib/biorouter/resources/bin/biorouterd --version | grep -q "$VERSION"
+      test "$(stat -c %s /usr/lib/biorouter/resources/bin/biorouter)" -le "$CEIL_BIOROUTER"
+      test "$(stat -c %s /usr/lib/biorouter/resources/bin/biorouterd)" -le "$CEIL_BIOROUTERD"
+      eval "$GGML_SCAN"
+      dpkg -L "$(dpkg-deb -f /pkg/biorouter.deb Package)" | scan_ggml_list
       bash /smoke/dictation-self-test.sh --fixtures /whisper.cpp/source --expect-backend cpu \
         /usr/lib/biorouter/resources/bin/biorouter /usr/lib/biorouter/resources/bin/biorouterd
       timeout -k 10 600 bash /smoke/linux-desktop.sh /usr/bin/biorouter
@@ -260,6 +363,10 @@ smoke_rpm() {
       dnf install -y -q /pkg/biorouter.rpm xorg-x11-server-Xvfb >/dev/null
       /usr/lib/Biorouter/resources/bin/biorouter --version | grep -q "$VERSION"
       /usr/lib/Biorouter/resources/bin/biorouterd --version | grep -q "$VERSION"
+      test "$(stat -c %s /usr/lib/Biorouter/resources/bin/biorouter)" -le "$CEIL_BIOROUTER"
+      test "$(stat -c %s /usr/lib/Biorouter/resources/bin/biorouterd)" -le "$CEIL_BIOROUTERD"
+      eval "$GGML_SCAN"
+      rpm -ql "$(rpm -qp --qf "%{NAME}" /pkg/biorouter.rpm)" | scan_ggml_list
       bash /smoke/dictation-self-test.sh --fixtures /whisper.cpp/source --expect-backend cpu \
         /usr/lib/Biorouter/resources/bin/biorouter /usr/lib/Biorouter/resources/bin/biorouterd
       timeout -k 10 600 bash /smoke/linux-desktop.sh /usr/bin/Biorouter
@@ -284,6 +391,10 @@ smoke_cli_packages() {
       apt-get install -y -qq /pkg/biorouter-cli.deb >/dev/null
       biorouter --version | grep -q "$VERSION"
       biorouterd --version | grep -q "$VERSION"
+      test "$(stat -c %s /usr/bin/biorouter)" -le "$CEIL_BIOROUTER"
+      test "$(stat -c %s /usr/bin/biorouterd)" -le "$CEIL_BIOROUTERD"
+      eval "$GGML_SCAN"
+      dpkg -L "$(dpkg-deb -f /pkg/biorouter-cli.deb Package)" | scan_ggml_list
       bash /smoke/dictation-self-test.sh --fixtures /whisper.cpp/source --expect-backend cpu \
         "$(command -v biorouter)" "$(command -v biorouterd)"
       HOME=$(mktemp -d) biorouter dictation status --format json >/status/debian.json
@@ -295,6 +406,10 @@ smoke_cli_packages() {
       dnf install -y -q /pkg/biorouter-cli.rpm >/dev/null
       biorouter --version | grep -q "$VERSION"
       biorouterd --version | grep -q "$VERSION"
+      test "$(stat -c %s /usr/bin/biorouter)" -le "$CEIL_BIOROUTER"
+      test "$(stat -c %s /usr/bin/biorouterd)" -le "$CEIL_BIOROUTERD"
+      eval "$GGML_SCAN"
+      rpm -ql "$(rpm -qp --qf "%{NAME}" /pkg/biorouter-cli.rpm)" | scan_ggml_list
       bash /smoke/dictation-self-test.sh --fixtures /whisper.cpp/source --expect-backend cpu \
         "$(command -v biorouter)" "$(command -v biorouterd)"
       HOME=$(mktemp -d) biorouter dictation status --format json >/status/rocky.json
@@ -307,7 +422,7 @@ smoke_cli_packages() {
       || die "dictation status in the $distro CLI package is not schema 1"
   done
   rm -rf "$status_dir"
-  log "CLI-only DEB/RPM version, dictation self test and status, and terminal entry points passed"
+  log "CLI-only DEB/RPM version, dictation self test and status, binary size ceilings, no speech model, and terminal entry points passed"
 }
 
 smoke_serve() {

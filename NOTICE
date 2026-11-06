@@ -53,7 +53,7 @@ llama.cpp
   Licence:   MIT
   Copyright: Copyright (c) 2023-2026 The ggml authors
   Upstream:  https://github.com/ggml-org/llama.cpp
-  Version:   build b9611
+  Version:   build b11429
   Licence text:
     in an installed app  next to llama-server, in the llamacpp directory
 
@@ -101,6 +101,30 @@ miniaudio
 
   It arrives inside the vendored whisper.cpp tree, which carries it for
   upstream's examples, and shares that tree's pin and hash manifest.
+
+
+Speech models downloaded on request
+-----------------------------------
+  Used for:  local dictation, only after a person installs a model with
+             `biorouter dictation install` or from Settings
+  Licence:   MIT
+  Copyright: Copyright (c) 2022 OpenAI (the Whisper weights);
+             Copyright (c) 2023-2026 The ggml authors (their ggml
+             conversions); Copyright (c) 2020-present Silero Team (the
+             Silero VAD v6.2.0 voice detector)
+  Upstream:  https://github.com/BaranziniLab/biorouter-models, one immutable
+             release per file, each a byte identical copy of the upstream
+             file
+  Licence text:
+    with each model      beside the installed file, and as release assets:
+                         LICENSE-openai-whisper.txt and
+                         LICENSE-whisper.cpp.txt for the Whisper models,
+                         LICENSE-silero-vad.txt for the voice detector
+    in this repository   crates/biorouter-dictation/licenses/
+
+  No speech model is part of an install or an update of Biorouter. The
+  installer checks every file against a SHA-256 pin compiled into Biorouter
+  before anything reads it, and writes the license texts beside it.
 
 
 JavaScript and CSS libraries compiled into the binary
