@@ -1088,6 +1088,7 @@ dependencies = [
  "walkdir",
  "webbrowser",
  "which 8.0.0",
+ "whoami",
  "winapi",
  "windows 0.61.3",
  "windows-sys 0.61.2",
@@ -1257,6 +1258,8 @@ dependencies = [
  "serde_json",
  "sha2 0.10.9",
  "tempfile",
+ "tokio",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

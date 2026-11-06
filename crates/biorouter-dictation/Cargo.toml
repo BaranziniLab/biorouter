@@ -34,15 +34,26 @@ serde = { version = "1", features = ["derive"] }
 serde_json = { workspace = true }
 # The self test refuses a model or detector whose SHA-256 is not pinned (P-11).
 sha2 = "0.10"
+# The supervisor (PR-10) runs on the host process's runtime. The worker never
+# starts one: it reads and writes frames on two plain threads.
+tokio = { workspace = true }
 
-# `sysctlbyname` for the Rosetta and macOS version checks of the CPU gate, and
-# `dup`/`dup2` so the self test's one stdout line cannot be joined by a stray
-# write from C or C++ code.
+# `sysctlbyname` for the Rosetta and macOS version checks of the CPU gate,
+# `dup`/`dup2` so the self test's one stdout line and the worker's frames cannot
+# be joined by a stray write from C or C++ code, and `getrusage` for the
+# worker's peak resident size.
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 
+# The worker's peak working set on Windows (`K32GetProcessMemoryInfo`), and no
+# crash report holding its memory (`SetErrorMode`, `WerSetFlags`; P-1).
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Diagnostics_Debug", "Win32_System_ErrorReporting", "Win32_System_ProcessStatus", "Win32_System_Threading"] }
+
 [dev-dependencies]
 tempfile = "3"
+# The supervisor's deadlines are tested on tokio's paused clock.
+tokio = { workspace = true, features = ["test-util"] }
 
 [[test]]
 name = "dictation_engine_offline"

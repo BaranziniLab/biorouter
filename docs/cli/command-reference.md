@@ -129,7 +129,7 @@ biorouter --version
 
 ### doctor [options]
 
-Check system prerequisites and the CLI install. It prints one status line per prerequisite (Git, uv, Python 3, Node.js, AWS CLI, `llama-server`, the Rust toolchain), says whether `biorouter` is on your PATH, and reports the local model sidecar. Run it first when an extension will not start or a package runner is missing.
+Check system prerequisites and the CLI install. It prints one status line per prerequisite (Git, uv, Python 3, Node.js, AWS CLI, `llama-server`, the Rust toolchain), says whether `biorouter` is on your PATH, and reports the local model sidecar. Its **Dictation** section prints the lines of `biorouter dictation status`, and `--format json` carries the same object as `dictation`; it never starts a dictation worker. Run it first when an extension will not start or a package runner is missing.
 
 **Options:**
 
@@ -143,6 +143,22 @@ Check system prerequisites and the CLI install. It prints one status line per pr
 biorouter doctor
 biorouter doctor --fix uv
 biorouter doctor --format json --no-update
+```
+
+### dictation status [options]
+
+Show whether this computer can dictate with Biorouter's local engine, and why: whether this build carries the engine, whether the processor can run it (with the sentence that says what it lacks), the backend and thread count, the worker's state and memory, the speech models (none until the model commands arrive), the model folder and account, and what your organization's managed policy allows. Reading the status never starts a dictation worker. It always exits 0.
+
+**Options:**
+
+- **`--format <FORMAT>`**: `text` (default) or `json`, a versioned object (`"schema": 1`) for scripts
+- **`-v, --verbose`**: Also start a worker only to read its first message (its protocol, engine build and CPU features) and stop it again, or show why it could not start, with the last lines it wrote to stderr. Under a managed policy that turns dictation off, nothing is started and the policy's sentence is shown instead
+
+**Usage:**
+
+```bash
+biorouter dictation status
+biorouter dictation status --format json --verbose
 ```
 
 ### usage [options]

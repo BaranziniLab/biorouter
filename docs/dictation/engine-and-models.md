@@ -223,7 +223,7 @@ fn on_worker_thread(f: impl FnOnce() -> i32 + Send + 'static) -> i32 {
 | `capture` | `biorouter` only | The terminal's microphone child ([surfaces](surfaces.md)), in `crates/biorouter-dictation-capture`; `biorouterd __br-dictation-worker capture` exits 2 (P-10), because capture code is linked only into `biorouter` ([The crate and its features](#the-crate-and-its-features)) |
 | `self-test` | both | The offline release smoke ([Self test](#self-test)) |
 
-The marker is not a clap subcommand, so it never appears in `--help` and never collides with `biorouter dictation …`. Exit codes: 0 after stdin end of file or `shutdown`, 2 for a role this binary does not have, 20 for an unsupported processor, 70 when the worker thread panicked.
+The marker is not a clap subcommand, so it never appears in `--help` and never collides with `biorouter dictation …`. Exit codes: 0 after stdin end of file or `shutdown`, 2 for a role this binary does not have, 20 for an unsupported processor, 21 when the self test is handed a file that is not pinned, 22 when one of its checks fails, 65 when the engine role reads a frame it cannot parse or one over a cap (it writes nothing more), 70 when the worker thread panicked. The marker, the role names and these codes are in the leaf crate in every build, engine or not, so the supervisor can read them; without a linked engine every role answers 2.
 
 ### Frame protocol
 
@@ -233,9 +233,9 @@ Frames go both ways as `[u32 LE json_len][json][u32 LE payload_len][payload]`, w
 
 | Message | Direction | JSON fields | Payload |
 |---|---|---|---|
-| `hello` | worker to parent, first frame | `protocol: 1`, `whisper: "4da27c41"`, `ggml`, `backends: ["metal", "cpu"]`, `cpu: {avx2, fma, f16c, bmi2, dotprod}`, `isa`, `system_info` (the string `whisper_print_system_info()` returns) | none |
+| `hello` | worker to parent, first frame | `protocol: 1`, `whisper: "4da27c41"`, `ggml`, `backends: ["metal", "cpu"]`, `cpu: {avx2, fma, f16c, bmi2, dotprod}`, `isa`, `system_info` (the string `whisper_print_system_info()` returns; `""` when the worker's own CPU gate refused, because calling into ggml on such a processor could itself fault, and the worker then exits 20) | none |
 | `load` | parent to worker | `model_path`, `model_sha256`, `model_size`, `vad_dir`, `vad_file`, `use_gpu`, `n_threads` | none |
-| `loaded` | worker to parent | `load_ms`, `backend: "metal" \| "cpu"`, `device`, `rss_bytes`, `n_vocab`, `multilingual` | none |
+| `loaded` | worker to parent | `load_ms` (the model and both detectors), `warmup_ms` (the warm up that follows them, reported apart), `backend: "metal" \| "cpu"`, `device`, `rss_bytes` (peak resident size), `n_vocab`, `multilingual` | none |
 | `set_bias` | parent to worker | `revision`, `scope` (the key of one filtered set: `"public"`, `"all"`, or `"private:"` followed by the target affiliation's key, because private rows are filtered by institution, O-32 [I]), `entries: [{written, bias: "auto" \| "always"}]`, `params` (the decoder bonus parameters of [dictionary](dictionary.md)) | none |
 | `bias_ready` | worker to parent | `revision`, `scope`, `nodes`, `build_ms` | none |
 | `transcribe` | parent to worker | `id`, `bias: {revision, scope} \| null`, `prompt_terms` (ordered, best last), `prompt_budget_tokens: 150`, `language`, `decode` (DD-47), `vad` (DD-48) | PCM, at most 25 s |
@@ -246,7 +246,7 @@ Frames go both ways as `[u32 LE json_len][json][u32 LE payload_len][payload]`, w
 | `shutdown` | parent to worker | none | none |
 | `error` | worker to parent | `id` or null, `code: "model_load_failed" \| "bad_audio" \| "cancelled" \| "internal"`, `message` (a fixed English phrase, never text, prompt or audio) | none |
 
-The supervisor refuses a worker whose `hello.protocol` is not 1 and names the binary in the error; that matters for a `BIOROUTER_DICTATION_WORKER` override.
+The supervisor refuses a worker whose `hello.protocol` is not 1 and names the binary in the error (`worker <program> speaks protocol 2; this build speaks 1`); that matters for a `BIOROUTER_DICTATION_WORKER` override. It reads `protocol` before any other field, because another version's fields may differ. Frames are capped at 4 MiB of JSON and 32 MiB in all; the header alone decides, so an oversized frame is refused before anything is allocated. Unknown fields are ignored and an unknown `type` is answered `error {code: "internal", message: "unsupported message"}`, as `set_bias` and a `transcribe` with `prompt_terms` or `bias` are until PR-14. A second `load` of the model already loaded (same hash, paths and backend) is answered from memory. The codec is `crates/biorouter-dictation/src/protocol.rs`; the worker's loop is `worker/serve.rs`.
 
 ### Inside the worker
 
@@ -275,7 +275,7 @@ The decode parameters the shim sets (DD-47; the reasons are in the register):
 | context params | `flash_attn` on; `use_gpu` from `load` |
 | printing | `print_realtime`, `print_progress`, `print_timestamps`, `print_special` all false (DD-13) |
 
-Voice detection uses threshold 0.50, minimum speech 250 ms, minimum silence 100 ms and `speech_pad_ms = 30` (DD-48). Both sets of parameters land in PR-12 with `biorouter transcribe`, the first command that decodes real speech.
+Voice detection uses threshold 0.50, minimum speech 250 ms, minimum silence 100 ms and `speech_pad_ms = 30` (DD-48). Both sets of values landed with PR-09, because its self test runs the detector and a decode: `engine::decode_params` and `engine::vad_params` in the worker, and `protocol::DecodeOptions::dd47` and `VadOptions::dd48` on the parent's side, which every `transcribe` frame carries and a test holds equal to the worker's. PR-12 adds the parameter snapshot test with `biorouter transcribe`, the first command that decodes real speech.
 
 What runs where, so every host shares one pipeline:
 
@@ -316,56 +316,62 @@ const char *br_system_info(void);
 The leaf crate's `supervisor.rs` spawns, frames, times and restarts the worker. It has no Biorouter dependency, so the command it runs is a value handed in by the core crate (DD-4: "the worker command is a value"). The core crate's `crates/biorouter/src/dictation/service.rs` owns one supervisor per host process in a `OnceLock`, like `llamacpp_sidecar::global` [C `crates/biorouter/src/providers/llamacpp_sidecar.rs:369`].
 
 ```rust
-// crates/biorouter/src/dictation/service.rs
+// crates/biorouter/src/dictation/service.rs, as PR-10 built it
 pub fn service() -> &'static DictationService; // one per process: biorouterd, an interactive biorouter
 
 impl DictationService {
-    pub fn status(&self) -> EngineStatus;                                  // never spawns
-    pub async fn prepare(&self, model: &SttModelId) -> Result<(), DictationError>; // spawn and load, on arm
-    pub async fn transcribe(&self, pcm: Pcm16k, req: TranscribeRequest) -> Result<Transcript, DictationError>;
-    pub async fn vad_segments(&self, pcm: &Pcm16k) -> Result<Vec<Span>, DictationError>;
-    pub async fn bench(&self, model: &SttModelId) -> Result<BenchResult, DictationError>;
-    pub async fn unload(&self);                                            // before a delete, and on idle
+    pub fn status(&self) -> EngineStatus;                                  // never spawns, never waits
+    pub async fn prepare_with(&self, spec: LoadSpec) -> Result<Loaded, DictationError>; // spawn and load, on arm
+    pub async fn transcribe_with(&self, spec: LoadSpec, stream: u64, pcm: PcmSlice, req: TranscribeRequest)
+        -> Result<TranscribeResult, DictationError>;                       // at most 25 s
+    pub async fn vad_segments_with(&self, spec: LoadSpec, pcm: PcmSlice) -> Result<Vec<Span>, DictationError>; // at most 600 s
+    pub async fn probe_worker(&self) -> Result<WorkerProbe, DictationError>; // status --verbose
+    pub async fn threads(&self) -> u32;                                    // DD-32
+    pub async fn unload(&self);                                            // before a delete
 }
 
-pub struct TranscribeRequest {
-    pub language: Language,
-    pub bias: EligibleEntries,        // built only by bias::bias_set (P-3)
-    pub context: Option<String>,      // at most 2 KiB, ranking only, never logged
-    pub cancel: CancellationToken,
-}
+pub struct TranscribeRequest { pub language: String, pub cancel: CancellationToken } // PR-14 adds bias and context
 
 pub struct EngineStatus {
     pub compiled: bool,
     pub state: EngineState,           // no_engine | unsupported_cpu | stopped | starting | ready | error
-    pub backend: Option<Backend>,     // metal | cpu
+    pub backend: Option<String>,      // "metal" | "cpu"
     pub device: Option<String>,
     pub threads: u32,
-    pub missing_cpu_features: Vec<&'static str>,
+    pub missing_cpu_features: Vec<String>,
     pub rss_bytes: Option<u64>,
+    pub build: Option<EngineBuild>,   // whisper, ggml, isa; None without an engine
+    #[serde(skip)] pub cpu_sentences: Vec<String>, // MSG-CPU or MSG-CPU-ROSETTA, then MSG-CPU-VM
 }
 
-pub enum DictationError {
-    NotCompiled, Policy(Allowance), UnsupportedCpu { sentence: String }, NoModel,
-    LanguageUnsupported, ServerMemory { need_bytes: u64, free_bytes: u64 },
-    WorkerExited { code: Option<i32> }, Deadline, Protocol, ModelLoadFailed, BadAudio, Cancelled, Internal,
-}
+pub enum DictationError {       // Display: the catalog's sentences, MSG-DIAG-EXIT to MSG-DIAG-CANCELLED for the worker
+    NotCompiled, Policy(Allowance), UnsupportedCpu { sentence: String },
+    WorkerExited { code: Option<i32> }, Deadline { phase: &'static str }, Protocol(String),
+    ModelLoadFailed { reason: String }, BadAudio, Cancelled, Internal(String),
+}   // NoModel (PR-11), LanguageUnsupported (PR-12) and ServerMemory (PR-15) arrive with their catalog text
 ```
 
-`Transcript` has the HTTP shape of [Request and response shapes](#request-and-response-shapes). A build without the `local-dictation` feature still has the module: `status()` answers `compiled: false, state: no_engine`, and every other call answers `NotCompiled` (MSG-NO-ENGINE).
+`LoadSpec` (model path, SHA-256 and size, detector path, `use_gpu`, `n_threads`, where 0 asks the service for DD-32's count) and `PcmSlice` (a stretch of a shared `Arc<[i16]>` recording, so a job is written to the pipe without a copy) come from the leaf crate. PR-11 adds `prepare(&SttModelId)` and the catalog over these, and PR-15 maps `TranscribeResult` to the HTTP shape of [Request and response shapes](#request-and-response-shapes). The detail the engine doc's first sketch lacked is kept, not dropped: `Deadline` names its phase, `ModelLoadFailed` and `Internal` carry the worker's fixed phrase, and `Protocol` names the worker binary. The leaf crate is a dependency of the core crate in every build, with whisper.cpp only behind `local-dictation`, so a build without the feature has the same API: `status()` answers `compiled: false, state: no_engine`, and every other call answers `NotCompiled` (MSG-NO-ENGINE) before anything is spawned. Every call that could spawn passes the same gates first: an engine is linked, the CPU gate does not refuse (MSG-CPU and friends), and `BIOROUTER_DICTATION_WORKER`, when set, is absolute.
+
+The leaf crate's supervisor (`supervisor.rs`) is one actor task per service. Callers send it commands and await one-shot answers; a writer task writes frames, a reader task reads them and a third keeps stderr, so no caller ever blocks on the pipe and a stuck worker cannot stall a deadline. Its tests run every deadline and rule on tokio's paused clock against an in-memory worker; a real process cannot share a paused clock, because tokio advances paused time whenever the runtime is idle, including while it waits on a pipe.
+
+`probe_worker` refuses with the policy's sentence (MSG-POLICY), before anything starts, while a managed `enabled: false` holds; `biorouter dictation status --verbose` checks the same thing first. The other calls leave the policy to their doors (PR-12's `transcribe`, PR-15's routes, PR-25's terminal), because reading the managed file on every request would put file reads on the path from stop to text.
 
 ### Lifecycle and deadlines
 
 | Event | Behavior (DD-7) |
 |---|---|
-| The person arms a microphone, or a file transcription starts | `prepare` spawns the worker and sends `load`; status reports `starting` until `loaded`, so loading overlaps speech |
+| The person arms a microphone, or a file transcription starts | `prepare_with` spawns the worker first (`spawn_ahead`), works out the thread count while the process starts, and sends `load` once `hello` arrives; status reports `starting` until `loaded`, so loading overlaps speech. The arming door does not await it |
 | No request for `BIOROUTER_DICTATION_IDLE_UNLOAD_SECS` (default 300) | The supervisor sends `shutdown`, waits 5 s, then kills; process exit returns all CPU and GPU memory |
 | `hello` not received | Killed after 60 s |
 | `loaded` not received | Killed after 180 s |
-| `result` not received | Killed after max(30 s, 10 × audio seconds) on the GPU, max(120 s, 20 × audio seconds) on the CPU |
+| `result` not received | Killed after max(30 s, 10 × audio seconds) on the GPU, max(120 s, 20 × audio seconds) on the CPU. Only a `transcribe` on a Metal worker is a GPU request: `vad_segments` runs on the separate detector, which the shim opens with `use_gpu = false`, so it gets the CPU deadline on any worker |
 | The worker exits or is killed during a GPU request | The same request is retried once in a fresh worker with `use_gpu = false`; the supervisor stays on the CPU until its next idle unload |
+| The worker exits, is killed or answers `model_load_failed` during a GPU `load` | The Metal warm up runs inside `load`, so this is where a GPU that cannot serve shows. The same `load` is sent once more, in a fresh worker, with `use_gpu = false`; the waiting requests stay queued for it. If it loads, the supervisor stays on the CPU until its next idle unload; if it fails too, the GPU was not the cause (a damaged file fails both ways), the requests get the error, and the next load asks for the GPU again |
 | Any other worker exit | The request fails with a typed error; the next request spawns a fresh worker; the audio stays with the caller for a retry |
 | The parent dies | The worker reads end of file on stdin, sets the abort flag and exits; no pid file is needed |
+| The person presses Ctrl-C in a terminal | On Unix the worker leads a process group of its own (`process_group(0)`), so the SIGINT a terminal sends to its foreground group reaches the interactive `biorouter`, which cancels a turn, and never a warm worker. On Windows the worker has no console (`CREATE_NO_WINDOW`) |
+| The worker crashes | No memory reaches the disk (P-1): the engine role sets its core file limit to zero before it reads a frame, on Linux also clears its dumpable flag, and on Windows turns off Windows Error Reporting for its own crashes (`SetErrorMode` with `SEM_NOGPFAULTERRORBOX`) and asks that a report still made, as for a fail fast abort, leave out the heap (`WerSetFlags(WER_FAULT_REPORTING_FLAG_NOHEAP)`) |
 | A model is deleted or replaced | `unload()` runs first, because on Windows a file opened without `FILE_SHARE_DELETE` (as MSVC `fopen` opens it) cannot be deleted while it is open; whisper.cpp closes the model file after loading, so the conflict exists only during a load |
 
 Measured on Apple Silicon with Metal [M], on a machine under heavy load, so the absolute times are upper bounds:
@@ -379,11 +385,41 @@ Measured on Apple Silicon with Metal [M], on a machine under heavy load, so the 
 | `Engine::load` as the first load of a fresh process (Metal device, model and warm up, no process start), `small.en` f16 and turbo `q5_0`, warm file and Metal caches | 373 to 436 ms and 578 to 755 ms, of which the encoder warm up is 59 to 63 ms and 258 to 263 ms; with the warm up removed the first request was 6 to 14 ms slower than the steady state (2026-11-05, M4 Max, load average 15 to 60) |
 | Idle footprint of a warm worker: `small.en`, turbo `q5_0` | about 690 MB, about 730 MB |
 
+Through the real supervisor and worker (`worker_latency_real_models` in `crates/biorouter-cli/tests/dictation_worker.rs`, a debug parent driving the Release engine; 2026-11-06, M4 Max, macOS 26.7.1, load average 10 to 25 with other agents' builds running beside it, so the CPU rows are upper bounds; the Metal rows matched within a few milliseconds across two runs) [M]:
+
+| Measure (36 clips of 3 to 6 s, three voices) | turbo `q5_0` | `small.en` f16 | `base.en` f16 |
+|---|---|---|---|
+| Spawn to `hello` | 77 ms | 79 ms | 77 ms |
+| `hello` to `loaded`, Metal (`load_ms` + `warmup_ms`) | 351 ms (98 + 253) | 175 ms (102 + 72) | 74 ms (46 + 27) |
+| Spawn to ready, Metal, first worker of the run for turbo | 428 ms | 254 ms | 151 ms |
+| First request after `loaded`, Metal | 279 ms | 103 ms | 47 ms |
+| Steady state per utterance, Metal: median, p90 | 283, 294 ms | 110, 130 ms | 53, 61 ms |
+| Warm decode on Metal of a 2 s, 5 s and 11 s clip (median of 5) | 261, 285, 316 ms | 77, 110, 153 ms | 34, 56, 88 ms |
+| Steady state, 8 CPU threads: median, p90 | 4.5, 6.0 s | 884 ms, 1.16 s | 212, 232 ms |
+| Warm decode on 8 CPU threads of a 2 s, 5 s and 11 s clip | 4.8, 4.7, 4.5 s | 683, 717, 769 ms | 189, 207, 238 ms |
+| Steady state, 4 CPU threads: median, p90 | not run | 1.69, 2.29 s | 366, 375 ms |
+| `vad_segments` on 60 s (one detector thread) | 107 ms | 109 ms | 110 ms |
+| Re-arm after `unload` (spawn to ready again), Metal, warm file cache | 443 ms | 225 ms | 153 ms |
+| Peak resident size at `loaded`, Metal; peak footprint after the row | 823 MB; 964 MB | 778 MB; 917 MB | 355 MB; 489 MB |
+| 60 s dictation streamed in real time, stop to text | 309 to 330 ms, Metal | 729 ms, 8 CPU threads (4.2 s in a run at load average 25) | |
+
+Where a warm decode goes, from the worker's own timings: turbo's encoder takes 242 ms on Metal (4.4 to 4.8 s on 8 CPU threads) and `small.en`'s 650 ms on 8 CPU threads, whatever the length, because the encoder always runs Whisper's full 30 s window; the decoder grows with the words (turbo on Metal 13, 29 and 45 ms for 2, 5 and 11 s); and everything before the first encoder pass, the integrated detector and the log mel spectrogram, costs about 2.5 ms per second of audio (6.5, 13.5 and 27.6 ms). The supervisor, the pipe and the parent add 1 to 4 ms. So a short utterance on turbo pays mostly its fixed encoder pass; sizing `audio_ctx` to the segment (L-9, M-10) is the lever that would change that.
+
+In the streamed rows the replay cut 10 segments while it played, each a sentence or two of 4 to 10 s (at 10.0 s buffered the open second sentence kept the cut to the first), and at stop the last sentence, 5.9 s with its pads, was still undecoded: the stop cost the tail's detection (11 ms) and one decode (282 to 293 ms on turbo, 702 ms on 8 CPU threads). In the slow CPU run a segment cut 1.4 s before stop was still decoding, so the tail's detection waited 1.47 s behind it and the final decode took 2.68 s on a loaded machine. The first request after `loaded` was within 7 ms of the steady median on Metal for every model, so the warm up in `load` leaves nothing for the first dictation to pay on a warm Metal cache. The self test took 347 to 364 ms on the CPU and 209 to 220 ms on Metal, in both binaries.
+
+A worker killed in the middle of a real turbo transcription (`a_worker_killed_mid_transcription_real_model`, ignored, same run) [M]: during a Metal job the same job was retried in a new worker on the CPU and answered 4.65 s after the kill; during the following CPU job the request failed with `WorkerExited` 8 ms after the kill, and the next request ran in a new worker. An `unload` then put the supervisor back on Metal. `BIOROUTER_DICTATION_IDLE_UNLOAD_SECS: 2` in `config.yaml` stopped the service's worker 2.01 s after it was ready (`the_idle_unload_follows_config_yaml`, ignored).
+
+The worker still answers `loaded` after its warm up, not before it as the M1 design's latency finding 15.4 item 1 asked. That item is deferred: splitting the warm up out of `Engine::load` changes PR-09's engine, and the measurement above shows no first request cost to recover on a warm Metal cache (M1-L7). On a cold Metal cache the 3 to 4 s of pipeline compiles fall inside `load` either way, and a request that arrives meanwhile waits for them in both designs; what the split would change is that `status` reads `starting` until the warm up ends, and that a GPU fault in the warm up is a load fault (which the CPU load retry above covers) rather than a fault in `Ready`.
+
+A cold `transcribe_with` (nothing loaded, no `prepare_with` first) through the CLI's own service, against the `for-tests` fixture on the CPU, four rounds each (`cold_transcribe_latency` in `dictation_worker.rs`; 2026-11-06, M4 Max, with other builds running) [M]: with the thread count worked out first and the request sent after it, as PR-10 first did, median 483 ms and p90 729 ms; with the worker started before the sidecar is asked, median 410 ms and p90 473 ms. The sidecar probe alone took a median of 132 ms and at most 305 ms, past its 250 ms bound, because `llamacpp_sidecar::status()` builds a new HTTP client, which loads the system's root certificates, before its first await, and a timeout around a future cannot cut short work done inside one poll. The probe now runs on a task of its own, so the bound holds (a second measurement, three rounds: median 141 ms, at most 224 ms, against 233 ms inline the same hour) and the caller's task never runs that work. `prepare_with` and `transcribe_with` both overlap it with the process start (about 80 ms to `hello`), so a cold start still waits about 50 ms for it (median 382 ms with the worker started first, 484 ms with the probe first); a probe that reuses one client would remove that.
+
 Any utterance longer than about 0.5 s hides a warm start of `small.en`, and about 0.8 s one of turbo with its encoder warm up. A cold start is hidden by a 5 s utterance; after a 2 s utterance the person waits 1 to 2 s more, and after a one word command about 3 s [M]. The `arming` phase of the composer covers the rest ([surfaces](surfaces.md)).
 
 ### Concurrency
 
-One worker per host process, one `whisper_context`, one request at a time (DD-6). The integrated detector runs only through `whisper_full` (and `whisper_full_parallel`), which call `whisper_vad` on the context's default state; `whisper_full_with_state` never runs it [R upstream `src/whisper.cpp`]. So v1 has no second decoder state. Requests from several chats, windows and streams queue first in, first out by stream, served round robin one segment (25 s or less) at a time, so a long dictation never starves a short one. Several decoder states wait for M-14.
+One worker per host process, one `whisper_context`, one request at a time (DD-6). The integrated detector runs only through `whisper_full` (and `whisper_full_parallel`), which call `whisper_vad` on the context's default state; `whisper_full_with_state` never runs it [R upstream `src/whisper.cpp`]. So v1 has no second decoder state. Requests from several chats, windows and streams queue first in, first out by stream, served round robin one segment (25 s or less) at a time, so a long dictation never starves a short one. `vad_segments` requests go before any transcription, because they gate the segmentation of a dictation still in progress. A job for another model than the loaded one waits for the running job, then the supervisor sends `load` again. The supervisor reports its queue (`streams`, `segments`) for PR-15's 429 rule and does not cap it itself. Several decoder states wait for M-14.
+
+The segment planner is `audio::plan_closed_segments` and `audio::plan_final_segments` (DD-50). While the person speaks it plans nothing until 8 s lie past the decoded mark; then every span that ended more than 0.3 s before the buffered end becomes one segment, padded by 0.3 s that never reach past the middle of the pause before the next span, and split only to respect the 25 s cap, at the longest pause or every 25 s inside speech with no pause. At stop, everything after the mark is planned. PR-12 and PR-15 call it; PR-10 tests it and the latency measurement below uses it.
 
 The desktop daemon and an interactive `biorouter` on the same account each own a supervisor, so two copies of a model can be resident at once when both dictate. The idle unload bounds how long, and status reports `rss_bytes` for each.
 
@@ -391,11 +427,13 @@ The desktop daemon and an interactive `biorouter` on the same account each own a
 
 ```rust
 // crates/biorouter/src/dictation/service.rs
-fn worker_command(role: &str) -> tokio::process::Command {
-    let mut cmd = tokio::process::Command::new(worker_program()); // see below
-    cmd.arg(biorouter_dictation::worker::WORKER_MARKER).arg(role)
+pub fn worker_command(program: &Path) -> tokio::process::Command { // program = worker_program(), below
+    let mut cmd = tokio::process::Command::new(program);
+    cmd.arg(biorouter_dictation::worker::WORKER_MARKER).arg(biorouter_dictation::worker::ENGINE_ROLE)
         .stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped())
         .kill_on_drop(true);
+    #[cfg(unix)]
+    cmd.process_group(0);                               // a terminal's Ctrl-C never reaches a warm worker
     for (key, _) in std::env::vars_os() {
         let key = key.to_string_lossy();
         if key.starts_with("GGML_") || key.starts_with("WHISPER_") { // GGML_VK_* included
@@ -482,7 +520,7 @@ The leaf crate has no Biorouter dependency and takes every path as an argument (
 
 | Crate | Feature | Contents |
 |---|---|---|
-| `crates/biorouter` | `local-dictation` | `["dep:biorouter-dictation", "biorouter-dictation/engine"]` |
+| `crates/biorouter` | `local-dictation` | `["biorouter-dictation/engine"]`. The leaf crate itself is a plain dependency from PR-10, not an optional one, so `dictation::service` has one API in every build; without `engine` the leaf crate compiles only the protocol, the supervisor, the planner and the CPU gate, with no CMake. PR-09 had it optional |
 | `crates/biorouter-server` | `default = ["jemalloc", "local-dictation"]` | `local-dictation = ["biorouter/local-dictation", "dep:biorouter-dictation"]` (the direct dependency is for `run_if_invoked`) |
 | `crates/biorouter-cli` | `default = ["jemalloc", "local-dictation", "dictation"]` | `local-dictation` as in the server (PR-09); `dictation` = `biorouter/local-dictation` + `symphonia` (PR-12) + `dep:biorouter-dictation-capture` (PR-25) |
 | `crates/biorouter-dictation-capture` (PR-25) | none | `cc` builds `shim/br_capture.c` over the vendored `examples/miniaudio.h`; depends on `biorouter-dictation` for the frame protocol; `biorouter-cli` is its only dependent |
@@ -609,7 +647,7 @@ Memory on Metal, from the benchmark processes [M]: turbo peak RSS 0.94 GB (footp
 
 ### CPU threads
 
-The worker uses `min(8, available_parallelism)` threads, halved while the llama sidecar or a loopback Ollama is serving (DD-32). The service treats the sidecar as serving while `llamacpp_sidecar::global()` reports a running server, and Ollama as serving while an agent in this process is bound to the `ollama` provider at a loopback address [I]. Whether `available_parallelism` honors a cgroup v2 CPU quota on a hub node is part of M-14.
+The worker uses `min(8, available_parallelism)` threads, halved (at least 1) while the llama sidecar or a loopback Ollama is serving (DD-32). The service treats the sidecar as serving while `llamacpp_sidecar::global().status()` reports `ready` or `starting` within 250 ms (a slower answer counts as not serving), reuses the count for 10 s so a stream's segments do not each ask again, and works it out while the worker process starts. Ollama counts as serving while an agent in this process is bound to the `ollama` provider at a loopback address [I]; that half needs agent state the service does not have and arrives with PR-15. `status` never probes the sidecar: it reports the loaded worker's count, or `min(8, available_parallelism)` when none is loaded. Whether `available_parallelism` honors a cgroup v2 CPU quota on a hub node is part of M-14.
 
 ### The CPUID gate
 
@@ -619,24 +657,14 @@ The parent checks the processor before it starts a worker, and before any downlo
 // crates/biorouter-dictation/src/cpu.rs
 pub enum HardwareClass { As, Cpu, No }
 
-pub fn host_class() -> (HardwareClass, Vec<&'static str>) { // cached in a OnceLock
-    #[cfg(all(target_arch = "aarch64", target_os = "macos"))]
-    return (HardwareClass::As, vec![]);
-    #[cfg(all(target_arch = "aarch64", not(target_os = "macos")))]
-    return if std::arch::is_aarch64_feature_detected!("dotprod") { (HardwareClass::Cpu, vec![]) }
-           else { (HardwareClass::No, vec!["dotprod"]) };
-    #[cfg(target_arch = "x86_64")]
-    {
-        if rosetta_translated() { return probe_worker_hello(); } // Rosetta hides AVX from CPUID
-        let missing: Vec<_> = [("avx2", is_x86_feature_detected!("avx2")), ("fma", is_x86_feature_detected!("fma")),
-                               ("f16c", is_x86_feature_detected!("f16c")), ("bmi2", is_x86_feature_detected!("bmi2"))]
-            .into_iter().filter(|(_, ok)| !ok).map(|(name, _)| name).collect();
-        (if missing.is_empty() { HardwareClass::Cpu } else { HardwareClass::No }, missing)
-    }
-}
+pub fn detect() -> CpuFeatures;                          // this process's CPUID view; no ggml call
+pub fn classify(f: &CpuFeatures, rosetta: bool, macos_major: Option<u32>) -> CpuReport; // pure
+pub fn host_report() -> &'static CpuReport;              // OnceLock; never spawns
 ```
 
-On a host the gate refuses, the engine would die with `SIGILL` (exit 132); the gate turns that into exit 20 and a sentence [M]. The CPU class and the missing features appear in `GET /dictation/status` as `engine.state: "unsupported_cpu"` and `missing_cpu_features`, and the sentence rides on `install.reason`.
+`classify` gives Apple Silicon `As`; Linux arm64 `Cpu` with `dotprod`, else `No`; x86_64 `Cpu` when AVX2, FMA, F16C and BMI2 are all present, else `No` with the list. Under Rosetta, which hides those features from CPUID, an x86_64 build on macOS 15 or later is `Cpu` (the parent starts the worker with `ROSETTA_ADVERTISE_AVX=1`), and on anything earlier `No` with MSG-CPU-ROSETTA. No status call spawns: the earlier sketch's `probe_worker_hello()` inside the gate is replaced by the confirmation the worker gives anyway. The worker runs the gate again on its own CPUID view before it calls into ggml, and refuses when any feature is missing, whatever the parent decided; its `hello.cpu` reports that view, and the supervisor treats a `hello` that lacks a feature, or exit 20, as unsupported for the life of the process and spawns nothing more.
+
+On a host the gate refuses, the engine would die with `SIGILL` (exit 132); the gate turns that into exit 20 and a sentence [M]. The CPU class and the missing features appear in `biorouter dictation status` (and from PR-15 in `GET /dictation/status`) as `engine.state: "unsupported_cpu"` and `missing_cpu_features`, `engine.backend: null`, and the sentence in the text status; PR-11 adds it to `install.reason`.
 
 ### Rosetta
 

@@ -18,7 +18,7 @@
 #   dist/cli/biorouter-cli-<version>-1.x86_64.rpm
 #
 # Each package is then smoke-tested in a clean container (install + run
-# `biorouter --version`, the dictation self test and `biorouter doctor`) so we
+# `biorouter --version`, the dictation self test and status, and `biorouter doctor`) so we
 # only ship functional artifacts.
 #
 # The dictation self test (scripts/dictation-self-test.sh) loads the vendored
@@ -48,6 +48,19 @@ die() { printf '\033[1;31m[cli-pkg] %s\033[0m\n' "$*" >&2; exit 1; }
 BR_HINT_LABEL="cli-pkg"
 # shellcheck source=scripts/lib/dependency-hint.sh
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/dependency-hint.sh"
+
+# `biorouter dictation status --format json`, written by a smoke container to
+# $OUT/dictation-status-<distro>.json, must be schema 1 with no model installed
+# (nothing is ever installed with a package) and no terminal microphone yet
+# (`capture.reason` is `not_compiled` until PR-25). The file is removed after the check,
+# so only the packages stay in $OUT.
+check_dictation_status() {
+  local file="$ROOT/$OUT/dictation-status-$1.json"
+  [ -s "$file" ] || die "the $1 smoke container wrote no dictation status"
+  python3 -I "$ROOT/scripts/check-dictation-status-json.py" --expect-capture-reason not_compiled \
+    --expect-no-models "$file" || die "dictation status in the $1 package is not schema 1"
+  rm -f "$file"
+}
 
 
 br_require_command docker "The deb and rpm are built inside a container."
@@ -120,6 +133,7 @@ docker run --rm --platform linux/amd64 -e ROSETTA_ADVERTISE_AVX=1 -v "$ROOT/$OUT
   biorouter --version
   biorouterd --version
   bash /smoke/dictation-self-test.sh --fixtures /whisper.cpp/source --expect-backend cpu "$(command -v biorouter)" "$(command -v biorouterd)"
+  HOME=$(mktemp -d) biorouter dictation status --format json >"/pkg/dictation-status-$(. /etc/os-release && echo "$ID").json"
   test -x /usr/libexec/biorouter/esbuild
   test "$(/usr/libexec/biorouter/esbuild --version)" = "'"$(node -p "require('./ui/desktop/scripts/fetch-esbuild').ESBUILD_VERSION")"'"
   printf "console.log(1);\n" >/tmp/app.ts
@@ -140,6 +154,7 @@ docker run --rm --platform linux/amd64 -e ROSETTA_ADVERTISE_AVX=1 -v "$ROOT/$OUT
   echo "DEB_SMOKE_OK"
 ' | grep -q DEB_SMOKE_OK || die "deb smoke test FAILED"
 log "deb smoke test passed ✓"
+check_dictation_status debian
 
 # ── 3. Smoke-test the .rpm on a clean Rocky Linux system ──────────────────────
 log "smoke-testing .rpm on rockylinux:9"
@@ -156,6 +171,7 @@ docker run --rm --platform linux/amd64 -e ROSETTA_ADVERTISE_AVX=1 -v "$ROOT/$OUT
   biorouter --version
   biorouterd --version
   bash /smoke/dictation-self-test.sh --fixtures /whisper.cpp/source --expect-backend cpu "$(command -v biorouter)" "$(command -v biorouterd)"
+  HOME=$(mktemp -d) biorouter dictation status --format json >"/pkg/dictation-status-$(. /etc/os-release && echo "$ID").json"
   test -x /usr/libexec/biorouter/esbuild
   test "$(/usr/libexec/biorouter/esbuild --version)" = "'"$(node -p "require('./ui/desktop/scripts/fetch-esbuild').ESBUILD_VERSION")"'"
   printf "console.log(1);\n" >/tmp/app.ts
@@ -176,6 +192,7 @@ docker run --rm --platform linux/amd64 -e ROSETTA_ADVERTISE_AVX=1 -v "$ROOT/$OUT
   echo "RPM_SMOKE_OK"
 ' | grep -q RPM_SMOKE_OK || die "rpm smoke test FAILED"
 log "rpm smoke test passed ✓"
+check_dictation_status rocky
 
 log "CLI-only Linux packages built and verified:"
 log "  $DEB"

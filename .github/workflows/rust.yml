@@ -549,18 +549,20 @@ jobs:
       - name: cargo test (sandbox integration)
         run: cargo test -p biorouter-sandbox --test sandbox ${{ matrix.os == 'windows-latest' && '--test bounded_fs' || '' }} --locked --no-fail-fast
 
-      # The dictation engine's offline tests and the real `biorouterd`'s worker roles
-      # (PR-09): capture and an unknown role answer 2, and the self test decodes jfk.wav
-      # with the vendored fixtures. Ubuntu runs both binaries in the offline integration
-      # step below; this is their run on macOS and on the MSVC leg, which is where M-3 is
-      # decided (`MSVC_NATIVE` in crates/biorouter-dictation/build.rs). `--workspace`
-      # keeps the unit graph of the lib + bins step, so only biorouterd and the two tests
-      # are compiled again.
-      - name: cargo test (dictation engine and worker roles)
+      # The dictation engine's offline tests, the real `biorouterd`'s worker roles (PR-09:
+      # capture and an unknown role answer 2, and the self test decodes jfk.wav with the
+      # vendored fixtures), and the real engine worker under the real supervisor with
+      # `biorouter dictation status` (PR-10: frames on real pipes, a killed worker, a
+      # refused header, the managed policy). Ubuntu runs the three binaries in the offline
+      # integration step below; this is their run on macOS and on the MSVC leg, which is
+      # where M-3 is decided (`MSVC_NATIVE` in crates/biorouter-dictation/build.rs).
+      # `--workspace` keeps the unit graph of the lib + bins step, so only biorouterd and
+      # the three tests are compiled again.
+      - name: cargo test (dictation engine, worker roles and supervisor)
         if: matrix.os != 'ubuntu-latest'
         env:
           BIOROUTER_DISABLE_KEYRING: "true"
-        run: cargo test --workspace --test dictation_engine_offline --test dictation_worker_role --locked --no-fail-fast
+        run: cargo test --workspace --test dictation_engine_offline --test dictation_worker_role --test dictation_worker --locked --no-fail-fast
 
       # ── Every other `tests/*.rs` binary, bar a table of exceptions ─────────
       #
@@ -796,12 +798,13 @@ jobs:
       # must answer exit 20 with the MSG-CPU sentence instead of dying on SIGILL. A compiler
       # that vectorizes a static initializer would break `--version` for every user of such a
       # processor, before any check of ours runs. The self test first proves each step can
-      # fail. `--no-status` until `biorouter dictation status` lands with PR-10.
+      # fail. The last step reads `biorouter dictation status --format json` under the old
+      # processor: `unsupported_cpu`, with `avx2` among the missing features.
       - name: Old processors get a sentence, not a crash (DD-12)
         run: |
           set -euo pipefail
           ./scripts/check-dictation-isa.sh --self-test
-          ./scripts/check-dictation-isa.sh --no-status
+          ./scripts/check-dictation-isa.sh
 
       # whisper.cpp is C++. A mingw link that takes libstdc++, libgcc, winpthreads or OpenMP
       # as a DLL starts here and fails on a user's machine with a loader dialog (DD-10 rules
@@ -867,6 +870,35 @@ jobs:
           }
           Write-Host 'biorouterd.exe answers the capture role with exit 2'
           exit 0
+
+      # PR-10 on real Windows: `biorouter dictation status --verbose` starts the engine
+      # worker over its pipes (frames on stdout, the tokio spawner, the peak working set
+      # through K32GetProcessMemoryInfo) and reads its hello. Schema 1, no model, no
+      # terminal microphone yet; the probe worker says protocol 1 and exits 0 at end of file.
+      - name: dictation status --verbose of the mingw biorouter.exe
+        shell: pwsh
+        run: |
+          $root = Join-Path $env:RUNNER_TEMP 'dictation-status-root'
+          New-Item -ItemType Directory -Force -Path $root | Out-Null
+          $env:BIOROUTER_PATH_ROOT = $root
+          $env:BIOROUTER_DISABLE_KEYRING = 'true'
+          $cli = Join-Path $env:GITHUB_WORKSPACE 'mingw-binaries\biorouter.exe'
+          $file = Join-Path $env:RUNNER_TEMP 'dictation-status.json'
+          $errFile = Join-Path $env:RUNNER_TEMP 'dictation-status.err'
+          $out = @(& $cli dictation status --format json --verbose 2> $errFile)
+          $code = $LASTEXITCODE
+          if ($code -ne 0) {
+            Get-Content -LiteralPath $errFile -ErrorAction SilentlyContinue | Select-Object -Last 40 | ForEach-Object { Write-Host $_ }
+            throw "biorouter.exe dictation status --format json --verbose exited $code"
+          }
+          [System.IO.File]::WriteAllText($file, ($out -join "`n"))
+          python -I scripts/check-dictation-status-json.py --expect-capture-reason not_compiled --expect-no-models $file
+          if ($LASTEXITCODE -ne 0) { throw 'the dictation status of biorouter.exe is not schema 1' }
+          $status = Get-Content -Raw -LiteralPath $file | ConvertFrom-Json
+          if ($status.probe.hello.protocol -ne 1 -or $status.probe.exit_code -ne 0) {
+            throw "the probe worker did not say hello with protocol 1 and exit 0: $($status.probe | ConvertTo-Json -Compress -Depth 4)"
+          }
+          Write-Host "biorouter.exe dictation status: engine $($status.engine.state), worker hello protocol $($status.probe.hello.protocol), exit $($status.probe.exit_code)"
 
   # `biorouter serve` end to end: the daemon serving the interface, the token
   # exchange, and the endpoints that were previously unauthenticated.

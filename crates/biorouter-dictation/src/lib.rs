@@ -5,15 +5,22 @@
 //! It only ever runs in a worker process ([`worker`]), never inside the daemon or an
 //! interactive CLI (DD-4). The CPU gate ([`cpu`]) runs before any worker starts.
 //!
+//! The parent half is plain Rust and builds on every target, with or without the
+//! engine: the frame protocol ([`protocol`]), the PCM helpers and the segment planner
+//! ([`audio`]) and the [`supervisor`] that spawns, times and restarts the worker.
+//!
 //! A leaf crate: no Biorouter dependency, and every path is an argument.
 
+pub mod audio;
 pub mod build_info;
 pub mod cpu;
 #[cfg(all(feature = "engine", not(br_no_native)))]
 pub mod engine;
-/// Exists whenever the feature is on, so both `main()` functions can call
-/// `worker::run_if_invoked()`; under `br_no_native` it answers 2 for every role.
-#[cfg(feature = "engine")]
+pub mod protocol;
+pub mod supervisor;
+/// The worker's marker, roles and exit codes. Present in every build, so both `main()`
+/// functions can call `worker::run_if_invoked()` and the supervisor can read the exit
+/// codes; without a linked engine every role answers 2.
 pub mod worker;
 
 /// True only when whisper.cpp is linked into this binary.

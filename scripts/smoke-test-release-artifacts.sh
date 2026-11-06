@@ -273,8 +273,12 @@ smoke_cli_packages() {
   require_file "$deb"
   require_file "$rpm"
   dictation_container_args
+  # `biorouter dictation status --format json` from each container lands here and is
+  # checked against schema 1 on this machine (PR-10).
+  local status_dir
+  status_dir="$(mktemp -d)"
   docker run --rm --platform linux/amd64 -e VERSION="$VERSION" \
-    "${DICTATION_DOCKER_ARGS[@]}" \
+    "${DICTATION_DOCKER_ARGS[@]}" -v "$status_dir":/status \
     -v "$deb":/pkg/biorouter-cli.deb:ro debian:bookworm-slim bash -euxc '
       apt-get update -qq
       apt-get install -y -qq /pkg/biorouter-cli.deb >/dev/null
@@ -282,19 +286,28 @@ smoke_cli_packages() {
       biorouterd --version | grep -q "$VERSION"
       bash /smoke/dictation-self-test.sh --fixtures /whisper.cpp/source --expect-backend cpu \
         "$(command -v biorouter)" "$(command -v biorouterd)"
+      HOME=$(mktemp -d) biorouter dictation status --format json >/status/debian.json
       biorouter term --help >/dev/null
     '
   docker run --rm --platform linux/amd64 -e VERSION="$VERSION" \
-    "${DICTATION_DOCKER_ARGS[@]}" \
+    "${DICTATION_DOCKER_ARGS[@]}" -v "$status_dir":/status \
     -v "$rpm":/pkg/biorouter-cli.rpm:ro rockylinux:9 bash -euxc '
       dnf install -y -q /pkg/biorouter-cli.rpm >/dev/null
       biorouter --version | grep -q "$VERSION"
       biorouterd --version | grep -q "$VERSION"
       bash /smoke/dictation-self-test.sh --fixtures /whisper.cpp/source --expect-backend cpu \
         "$(command -v biorouter)" "$(command -v biorouterd)"
+      HOME=$(mktemp -d) biorouter dictation status --format json >/status/rocky.json
       biorouter term --help >/dev/null
     '
-  log "CLI-only DEB/RPM version, dictation self test and terminal entry points passed"
+  local distro
+  for distro in debian rocky; do
+    python3 -I "$ROOT/scripts/check-dictation-status-json.py" --expect-capture-reason not_compiled \
+      --expect-no-models "$status_dir/$distro.json" \
+      || die "dictation status in the $distro CLI package is not schema 1"
+  done
+  rm -rf "$status_dir"
+  log "CLI-only DEB/RPM version, dictation self test and status, and terminal entry points passed"
 }
 
 smoke_serve() {

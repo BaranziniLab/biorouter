@@ -16,7 +16,9 @@
 #   2. runs `--version` of both under `qemu-x86_64 -cpu Nehalem` (SSE4.2, no AVX): exit 0;
 #   3. runs the self test under Nehalem: exit 20 with MSG-CPU on stderr;
 #   4. unless --no-status, runs `biorouter dictation status --format json` under Nehalem and
-#      requires engine.state "unsupported_cpu" with "avx2" among the missing features (PR-10).
+#      requires engine.state "unsupported_cpu" with "avx2" among the missing features, then
+#      the text `biorouter dictation status`, whose `Processor:` line must carry the MSG-CPU
+#      sentence (PR-10; schema 1 has no field for the sentence).
 #
 # The container gets the packages the shipped deb declares (from
 # scripts/check-linux-runtime-deps.sh --print-deb-packages), so the binaries load as they do
@@ -31,10 +33,11 @@
 # bookworm's qemu-user 7.2 refuses all of them and still runs SSE4.2. The glibc floor is not
 # this script's job: rust.yml boots the same binaries, self test included, on debian:bullseye.
 #
-# --self-test compiles stand-in programs in the same container that answer the three kinds of
+# --self-test compiles stand-in programs in the same container that answer the four kinds of
 # invocation the way a correct build would, and four broken ones (an AVX2 static initializer;
-# a self test that skips the processor check; a status that ignores the processor), and
-# requires the check to pass, then to fail at step 2, 3 and 4. They are not Biorouter.
+# a self test that skips the processor check; a status that ignores the processor; a text
+# status that reports the processor in JSON but prints no sentence), and requires the check to
+# pass, then to fail at step 2, 3, 4 and 4. They are not Biorouter.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -112,6 +115,15 @@ run_checks() {
     python3 -I /w/scripts/check-dictation-status-json.py --expect-state unsupported_cpu \
       --expect-missing-feature avx2 /tmp/dictation-status.json \
       || { step_failed 4 "dictation status under Nehalem does not report unsupported_cpu with avx2 missing"; return 1; }
+    rc=0
+    # shellcheck disable=SC2086
+    HOME="$home" $NEHALEM "$bin/biorouter" dictation status >/tmp/dictation-status.txt || rc=$?
+    [ "$rc" -eq 0 ] || { step_failed 4 "biorouter dictation status exited $rc under Nehalem"; return 1; }
+    if ! grep -Eq '^ *Processor: +This processor does not support the instructions local dictation needs \(' /tmp/dictation-status.txt; then
+      sed 's/^/     /' /tmp/dictation-status.txt
+      step_failed 4 "the text dictation status under Nehalem does not print the MSG-CPU sentence on its Processor: line"
+      return 1
+    fi
   fi
   echo "check-dictation-isa: both binaries start on a processor without AVX and refuse dictation with a sentence"
 }
@@ -203,6 +215,22 @@ int main(int argc, char **argv) {
            "\"account\":\"fixture\",\"host\":\"fixture\",\"models_dir\":\"/tmp/models\"}\n", PIN);
     return 0;
   }
+  if (argc == 3 && strcmp(argv[1], "dictation") == 0 && strcmp(argv[2], "status") == 0) {
+    n = missing_features(m);
+#if defined(STATUS_IGNORES_CPU) || defined(STATUS_NO_SENTENCE)
+    n = 0;
+#endif
+    puts("  Dictation");
+    if (n) {
+      fputs("    Processor:     This processor does not support the instructions local dictation needs (", stdout);
+      for (i = 0; i < n; i++)
+        printf("%s%s", i == 0 ? "" : (i == n - 1 ? " and " : ", "), names[m[i]]);
+      puts("). Your system's own dictation still works, without your Biorouter dictionary.");
+    } else {
+      puts("    Processor:     supported");
+    }
+    return 0;
+  }
   return 2;
 }
 EOF
@@ -215,7 +243,7 @@ self_test_inside() {
   [ -n "$pin" ] || { echo "::error::cannot read the engine pin from vendor/whisper.cpp/pin.json"; return 1; }
   src=/tmp/isa-fixture.c
   write_fixture_source "$src"
-  for variant in good AVX2_CTOR NO_GATE STATUS_IGNORES_CPU; do
+  for variant in good AVX2_CTOR NO_GATE STATUS_IGNORES_CPU STATUS_NO_SENTENCE; do
     out="/tmp/isa-fixtures/$variant"
     mkdir -p "$out"
     if [ "$variant" = good ]; then
@@ -245,6 +273,7 @@ self_test_inside() {
   expect AVX2_CTOR "step 2" "an AVX2 static initializer fails step 2 (--version under Nehalem)"
   expect NO_GATE "step 3" "a self test that skips the processor check fails step 3"
   expect STATUS_IGNORES_CPU "step 4" "a status that ignores the processor fails step 4"
+  expect STATUS_NO_SENTENCE "step 4" "a text status that prints no MSG-CPU sentence fails step 4"
   if [ "$failures" -ne 0 ]; then
     echo "::error::$failures of $cases check-dictation-isa self test case(s) did not behave as expected"
     return 1

@@ -1100,6 +1100,26 @@ enum ModelsCommand {
 }
 
 #[derive(Subcommand)]
+enum DictationCommand {
+    /// Whether this computer can dictate, and why: engine, processor, backend, models,
+    /// policy, account and data folder
+    #[command(about = "Show whether this computer can dictate, and why")]
+    Status {
+        #[arg(
+            long = "format",
+            value_name = "FORMAT",
+            default_value = "text",
+            value_parser = clap::builder::PossibleValuesParser::new(["text", "json"])
+        )]
+        format: String,
+
+        /// Also start a worker and show its hello, or its kept stderr lines when it fails
+        #[arg(short, long)]
+        verbose: bool,
+    },
+}
+
+#[derive(Subcommand)]
 enum LocalModelCommand {
     /// List the local model catalog and what is already downloaded
     #[command(
@@ -1673,6 +1693,13 @@ enum Command {
         command: ModelsCommand,
     },
 
+    /// Local dictation: engine status and speech models
+    #[command(about = "Local dictation: engine status and speech models")]
+    Dictation {
+        #[command(subcommand)]
+        command: DictationCommand,
+    },
+
     /// Manage personal knowledge bases (ingest, lint, query)
     #[command(about = "Manage personal knowledge bases", visible_alias = "kb")]
     Knowledge {
@@ -1947,6 +1974,7 @@ fn get_command_name(command: &Option<Command>) -> &'static str {
         Some(Command::Schedule { .. }) => "schedule",
         Some(Command::Usage { .. }) => "usage",
         Some(Command::Models { .. }) => "models",
+        Some(Command::Dictation { .. }) => "dictation",
         Some(Command::Knowledge { .. }) => "knowledge",
         Some(Command::Extension { .. }) => "extension",
         Some(Command::Skill { .. }) => "skill",
@@ -3132,6 +3160,11 @@ async fn dispatch(command: Option<Command>) -> anyhow::Result<()> {
         Some(Command::Bench { cmd }) => handle_bench_command(cmd).await,
         Some(Command::Workflow { command }) => handle_workflow_subcommand(command),
         Some(Command::Models { command }) => handle_models_subcommand(command).await,
+        Some(Command::Dictation { command }) => match command {
+            DictationCommand::Status { format, verbose } => {
+                crate::commands::dictation::handle_status(&format, verbose).await
+            }
+        },
         Some(Command::Knowledge { command }) => handle_knowledge_subcommand(command).await,
         Some(Command::Extension { command }) => handle_extension_subcommand(command).await,
         Some(Command::Skill { command }) => handle_skill_subcommand(command).await,
