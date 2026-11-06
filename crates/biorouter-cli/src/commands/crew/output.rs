@@ -21,7 +21,7 @@
 use super::args::OutputFormat;
 use anyhow::{ensure, Context, Result};
 use chrono::{DateTime, Datelike, FixedOffset, Local, TimeZone, Utc};
-use serde_json::{Map, Value};
+use serde_json::{json, Map, Value};
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::io::{Read, Write};
@@ -898,6 +898,10 @@ const SETUP_FAILURES: &[(&str, &str)] = &[
         "crew_install_incompatible",
         "The Crew in your account on the server doesn't run, or doesn't say which version it is.",
     ),
+    (
+        "crew_host_name_in_use",
+        "You already host a workspace of that name on the server. Open it on this computer instead.",
+    ),
 ];
 
 /// Whether `code` is one of the setup routes' codes ([`SETUP_FAILURES`]).
@@ -994,10 +998,15 @@ pub fn setup_stage_words(name: &str) -> String {
         "check" => "Checking the server".to_owned(),
         "sign_in" => "Signing in".to_owned(),
         "install" => "Installing Crew in your account".to_owned(),
+        "workspaces" => "Looking for workspaces".to_owned(),
+        "restart" => "Updating running workspaces".to_owned(),
         "start" => "Starting the workspace".to_owned(),
         "connect" => "Connecting".to_owned(),
         "work_folder" => "Making the work folder".to_owned(),
         "context" => "Reading what the server has, for the workspace context".to_owned(),
+        "save" => "Saving the workspace on this computer".to_owned(),
+        "join" => "Joining it as its host".to_owned(),
+        "configure" => "Setting up the workspace".to_owned(),
         "done" => "Ready".to_owned(),
         other => sentence_case(&other.replace('_', " ")),
     }
@@ -1019,6 +1028,11 @@ pub fn setup_progress_lines(previous: &Value, current: &Value, login: &str) -> V
     let mut lines: Vec<String> = list(current, "stages")
         .iter()
         .filter(|stage| matches!(str_field(stage, "state"), Some("running" | "done")))
+        // AO-8: a job that found workspaces this computer cannot reach says so in place of a
+        // bare "Ready" (the Done stage's detail), and the summary says it.
+        .filter(|stage| {
+            !(str_field(stage, "name") == Some("done") && str_field(stage, "detail").is_some())
+        })
         .filter_map(|stage| str_field(stage, "name"))
         .filter(|name| !seen(previous, name))
         .map(|name| match name {
@@ -1073,8 +1087,9 @@ pub fn setup_summary_lines(status: &Value, login: &str, connection: Option<&Valu
             Some("symlink") => "~/.local/bin/biorouter-crew there is a symbolic link, which setup never replaces. Remove it, then run biorouter crew setup.".to_owned(),
             Some("file") => match (str_field(installed, "version").map(safe_text), &artifact) {
                 (Some(version), Some(ours)) => match release_order(&version, ours) {
+                    // AO-8: setup replaces an older Crew by default.
                     Some(std::cmp::Ordering::Less) => format!(
-                        "Crew {version} is installed in your account there. This computer has Crew {ours}; biorouter crew setup --replace-existing updates it."
+                        "Crew {version} is installed in your account there. This computer has Crew {ours}; biorouter crew setup updates it."
                     ),
                     Some(std::cmp::Ordering::Greater) => format!(
                         "Crew {version} is installed in your account there, newer than this computer's {ours}, so setup leaves it in place."
@@ -1104,6 +1119,7 @@ pub fn setup_summary_lines(status: &Value, login: &str, connection: Option<&Valu
         if unconfined {
             lines.push("Agents can run commands there only with full access: its kernel can't confine them to a folder.".to_owned());
         }
+        lines.extend(setup_workspace_lines(status, login, &server));
         return lines;
     }
     let version = str_field(outcome, "installed_version")
@@ -1137,7 +1153,181 @@ pub fn setup_summary_lines(status: &Value, login: &str, connection: Option<&Valu
         }
         lines.extend(member_access_line(outcome, connection, &server));
     }
+    lines.extend(setup_workspace_lines(status, login, &server));
     lines
+}
+
+/// What a setup job found and did about the workspaces on the server (AO-6, AO-8). A check or
+/// an install lists the workspaces there for the account, then, in place of a bare "Ready", the
+/// daemon's sentences for those this computer cannot reach (the Done stage's detail), or why
+/// it could not list them. Every job then says which workspaces it restarted or started, which
+/// still run an older Crew and why, and which restarts failed, with the command that starts
+/// each by hand. Nothing when the job reported none of it.
+fn setup_workspace_lines(status: &Value, login: &str, server: &str) -> Vec<String> {
+    let mut lines = Vec::new();
+    if matches!(str_field(status, "intent"), Some("check" | "install")) {
+        let workspaces = list_key(status, "workspaces");
+        if !workspaces.is_empty() {
+            lines.push(format!("Workspaces on {server} for your account:"));
+            lines.extend(
+                workspaces
+                    .iter()
+                    .map(|workspace| format!("  {}", setup_workspace_row(workspace))),
+            );
+        }
+    }
+    // Said in place of "Ready" by any job that found such a workspace.
+    lines.extend(stage_detail(status, "done"));
+    if matches!(str_field(status, "intent"), Some("check" | "install")) {
+        if let Some(note) = str_field(status, "workspaces_note") {
+            lines.push(safe_text(note));
+        }
+        let scan = &status["workspaces_scan"];
+        match scan.get("unsupported").and_then(Value::as_u64).unwrap_or(0) {
+            0 => {}
+            1 => lines.push(format!(
+                "Another workspace on {server} runs an older Crew, which can't say whether you belong to it."
+            )),
+            n => lines.push(format!(
+                "{n} other workspaces on {server} run an older Crew, which can't say whether you belong to them."
+            )),
+        }
+        if scan.get("truncated").and_then(Value::as_bool) == Some(true) {
+            lines.push(format!(
+                "There was more on {server} than setup looks through at once, so this list may not be complete."
+            ));
+        }
+    }
+    let outcome = &status["outcome"];
+    lines.extend(list_key(outcome, "restarted").iter().map(restarted_line));
+    lines.extend(
+        list_key(outcome, "outdated")
+            .iter()
+            .map(|entry| outdated_line(entry, server, login)),
+    );
+    for failed in list_key(outcome, "restart_failed") {
+        lines.push(format!(
+            "{}: {}",
+            listed_name(failed),
+            str_field(failed, "message").map_or_else(|| "it didn't restart.".to_owned(), safe_text)
+        ));
+        if let Some(command) = str_field(failed, "command") {
+            lines.push(format!(
+                "  To start it by hand, run this on {server}: {}",
+                safe_text(command)
+            ));
+        }
+    }
+    lines
+}
+
+/// A workspace a setup job listed, in a sentence: its name, or "A workspace".
+fn listed_name(workspace: &Value) -> String {
+    str_field(workspace, "name").map_or_else(|| "A workspace".to_owned(), display_text)
+}
+
+/// One workspace on the server, as a setup job listed it (AO-6): its name, who hosts it and the
+/// account's place in it, whether it runs and on which Crew, and what this computer has for it.
+fn setup_workspace_row(workspace: &Value) -> String {
+    let host = str_field(workspace, "host_username").map(|host| format!("@{}", safe_text(host)));
+    let role = match (str_field(workspace, "role"), host) {
+        (Some("host"), _) => "you host it".to_owned(),
+        (Some("member"), Some(host)) => format!("hosted by {host}, you're a member"),
+        (Some("member"), None) => "you're a member".to_owned(),
+        (Some("invited"), Some(host)) => format!("hosted by {host}, you're invited"),
+        (Some("invited"), None) => "you're invited".to_owned(),
+        (Some("removed"), _) => "you were removed".to_owned(),
+        (_, Some(host)) => format!("hosted by {host}"),
+        (_, None) => "your place in it is unknown".to_owned(),
+    };
+    let state = match (
+        str_field(workspace, "state"),
+        str_field(workspace, "version"),
+    ) {
+        (Some("running"), Some(version)) => format!("running Crew {}", safe_text(version)),
+        (Some("running"), None) => "running".to_owned(),
+        (Some("stopped"), _) => "stopped".to_owned(),
+        (Some("deleted"), _) => "deleted".to_owned(),
+        (Some("storage_failed"), _) => "its storage failed".to_owned(),
+        _ => "state unknown".to_owned(),
+    };
+    let here = match str_field(workspace, "this_computer") {
+        Some("connected") => "connected on this computer",
+        Some("saved") => "saved on this computer",
+        _ => "not on this computer",
+    };
+    format!("{} · {role} · {state} · {here}", listed_name(workspace))
+}
+
+/// A workspace a setup job restarted on the installed Crew, or started (AO-8).
+fn restarted_line(entry: &Value) -> String {
+    let name = listed_name(entry);
+    let from = str_field(entry, "from_version").map(safe_text);
+    let to = str_field(entry, "to_version").map(safe_text);
+    match (from, to) {
+        (Some(from), Some(to)) if from != to => {
+            format!("Restarted {name}: it ran Crew {from} and now runs Crew {to}.")
+        }
+        (_, Some(to)) => format!("{name} now runs Crew {to}."),
+        (_, None) => format!("{name} is running again."),
+    }
+}
+
+/// A workspace the account hosts that still runs an older Crew than the one installed, and why
+/// setup left it (AO-8), with the command that restarts it where one can.
+fn outdated_line(entry: &Value, server: &str, login: &str) -> String {
+    let name = listed_name(entry);
+    let running = str_field(entry, "running_version").map_or_else(
+        || "an older Crew".to_owned(),
+        |version| format!("Crew {}", safe_text(version)),
+    );
+    let installed = str_field(entry, "installed_version").map_or_else(
+        || "the Crew installed there".to_owned(),
+        |version| format!("Crew {}", safe_text(version)),
+    );
+    let setup = format!(
+        "biorouter crew setup --server {}",
+        safe_text(&super::shell_word(login.trim()))
+    );
+    match str_field(entry, "reason") {
+        Some("others_connected") => {
+            let who = match entry.get("others_connected").and_then(Value::as_u64) {
+                Some(1) => "1 other person is connected to it".to_owned(),
+                Some(n) => format!("{n} other people are connected to it"),
+                None => "other people may be connected to it".to_owned(),
+            };
+            format!(
+                "{name} still runs {running}, not {installed}, and {who}, so it wasn't restarted. To restart it anyway, run {setup} --restart; what they have running there stops."
+            )
+        }
+        Some("running_newer") => {
+            format!("{name} runs {running}, newer than {installed}, so it was left running.")
+        }
+        Some("custom_state_dir") => format!(
+            "{name} still runs {running}, not {installed}, and keeps its state outside ~/.local/share/biorouter-crew, so setup can't restart it. Restart it on {server} yourself."
+        ),
+        _ => format!("{name} still runs {running}, not {installed}. Run {setup} to restart it."),
+    }
+}
+
+/// A stage's detail, when the daemon wrote one: what it found or why it was skipped.
+fn stage_detail(status: &Value, name: &str) -> Option<String> {
+    list(status, "stages")
+        .iter()
+        .find(|stage| str_field(stage, "name") == Some(name))
+        .and_then(|stage| str_field(stage, "detail"))
+        .map(safe_text)
+}
+
+/// Why a job skipped the stage `name`, as the daemon said it (`host`'s Configure, AO-9).
+pub fn skipped_stage_detail(status: &Value, name: &str) -> Option<String> {
+    list(status, "stages")
+        .iter()
+        .find(|stage| {
+            str_field(stage, "name") == Some(name) && str_field(stage, "state") == Some("skipped")
+        })
+        .and_then(|stage| str_field(stage, "detail"))
+        .map(safe_text)
 }
 
 /// The version an install replaced, as the daemon reports it: `upgraded_from` (a version, or
@@ -1203,6 +1393,451 @@ fn release_order(left: &str, right: &str) -> Option<std::cmp::Ordering> {
             .collect::<Option<Vec<_>>>()
     };
     Some(parts(left)?.cmp(&parts(right)?))
+}
+
+// ---------------------------------------------------------------------------------------------
+// Account ownership (design AO-5, AO-9, AO-10, AO-12)
+// ---------------------------------------------------------------------------------------------
+
+/// The desktop's button in the daemon's sentences for a lost or unrecognized device key
+/// (`crew_device_key_missing`, `crew_device_not_recognized`), said as the command that does
+/// the same here.
+pub fn rejoin_sentence(sentence: &str) -> String {
+    const DESKTOP: &str = "Choose Add this computer again";
+    const TERMINAL: &str = "Run biorouter crew rejoin";
+    if sentence.contains(DESKTOP) {
+        sentence.replace(DESKTOP, TERMINAL)
+    } else {
+        format!("{} {TERMINAL}.", sentence.trim_end())
+    }
+}
+
+/// Said before a connection is removed (AO-11): the chats granted through it stay bound to it,
+/// and a computer that only lost its key keeps the connection with `rejoin`.
+pub const REMOVAL_KEEPS_CHATS_HERE: &str = "Chats given Crew access through it can't get it through a new connection. If this computer only lost its key, run biorouter crew rejoin instead: it keeps the connection.";
+
+/// The command that opens `name` from `login` (AO-9).
+fn open_command(name: &str, login: &str) -> String {
+    format!(
+        "biorouter crew open {} --server {}",
+        safe_text(&super::shell_word(name.trim())),
+        safe_text(&super::shell_word(login.trim()))
+    )
+}
+
+/// The line that points at `open` for a workspace the account hosts and runs (AO-9).
+pub fn open_command_line(name: &str, login: &str) -> String {
+    format!("Run {}.", open_command(name, login))
+}
+
+/// What removing a connection to a server whose Crew knows the account means (AO-9): nothing
+/// is lost for good, since any computer that signs in as the account opens it again, the host
+/// controls included. `workspace` is already escaped for display; `name` is the workspace's own
+/// name for the command.
+pub fn account_removal_notice(
+    host: bool,
+    workspace: &str,
+    name: &str,
+    server: &str,
+    login: &str,
+) -> String {
+    let open = open_command(name, login);
+    if host {
+        format!(
+            "You host {workspace}. The host controls stay with your account on {server}: open it again from any computer that signs in as it, with {open}."
+        )
+    } else {
+        format!(
+            "You can open {workspace} again from any computer that signs in as your account on {server}, with {open}."
+        )
+    }
+}
+
+/// Added to the host-controls refusal on a server whose Crew predates the account path (AO-9).
+pub fn update_crew_for_host_controls(server: &str, login: &str) -> String {
+    format!(
+        "Or first update Crew on {server} with biorouter crew setup --server {}: then the host controls follow your account there, from any computer that signs in as it.",
+        safe_text(&super::shell_word(login.trim()))
+    )
+}
+
+/// AO-2's sentence for an account the workspace removed (`crew_join_removed`).
+pub fn removed_sentence(workspace: Option<&str>) -> String {
+    let workspace = workspace
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .map_or_else(|| "this workspace".to_owned(), display_text);
+    format!("You were removed from {workspace}. Ask a member to invite you again.")
+}
+
+/// "You're in lab as its host." (AO-9): the join `open` ends with, with the person's role.
+pub fn joined_as_line(workspace: Option<&str>, role: &str) -> String {
+    let workspace = workspace
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .map_or_else(|| "the workspace".to_owned(), display_text);
+    match role {
+        "host" => format!("You're in {workspace} as its host."),
+        _ => format!("You're in {workspace} as a member."),
+    }
+}
+
+/// What `auth --setup-job` says once the sign-in it opened ended.
+pub fn setup_signed_in_line(server: &str) -> String {
+    format!("Signed in to {server}. The setup goes on by itself.")
+}
+
+/// The workspaces a setup job listed whose name is `name`, case aside.
+fn named<'a>(status: &'a Value, name: &str) -> Vec<&'a Value> {
+    list_key(status, "workspaces")
+        .iter()
+        .filter(|workspace| {
+            str_field(workspace, "name").is_some_and(|listed| listed.eq_ignore_ascii_case(name))
+        })
+        .collect()
+}
+
+/// Why a name could not be matched because nothing was listed: the job's own note.
+fn unlisted(status: &Value, server: &str) -> Option<String> {
+    let note = str_field(status, "workspaces_note")?;
+    list_key(status, "workspaces").is_empty().then(|| {
+        format!(
+            "Biorouter couldn't list the workspaces on {server}. {}",
+            safe_text(note)
+        )
+    })
+}
+
+/// `setup --start NAME` (AO-8): the ID of the one stopped workspace the account hosts under
+/// `name` in a check job's listing, or the sentence that says why there is none to start.
+pub fn workspace_to_start(status: &Value, name: &str, server: &str) -> Result<String, String> {
+    let typed = name.trim();
+    let shown = display_text(typed);
+    if let Some(sentence) = unlisted(status, server) {
+        return Err(sentence);
+    }
+    let hosted: Vec<&Value> = named(status, typed)
+        .into_iter()
+        .filter(|workspace| str_field(workspace, "role") == Some("host"))
+        .collect();
+    let live: Vec<&Value> = hosted
+        .iter()
+        .copied()
+        .filter(|workspace| str_field(workspace, "state") != Some("deleted"))
+        .collect();
+    match (live.as_slice(), hosted.is_empty()) {
+        ([], true) => Err(format!("You don't host a workspace named {shown} on {server}.")),
+        ([], false) => Err(format!(
+            "{shown} on {server} was deleted, so it can't be started."
+        )),
+        ([one], _) => match str_field(one, "state") {
+            Some("stopped") => str_field(one, "workspace_id")
+                .map(str::to_owned)
+                .ok_or_else(|| format!("The server didn't say which workspace {shown} is.")),
+            Some("running") => Err(format!(
+                "{shown} is already running on {server}, so there is nothing to start."
+            )),
+            _ => Err(format!(
+                "{shown} on {server} can't be started from here: Biorouter couldn't read whether it runs."
+            )),
+        },
+        (many, _) => Err(format!(
+            "You host {} workspaces named {shown} on {server}, so Biorouter can't tell which one to start.",
+            many.len()
+        )),
+    }
+}
+
+/// `open NAME --server LOGIN` (AO-9): the one workspace a check job listed under `name` (and
+/// `host`'s, when given) that can be opened, or the sentence that says why there is none. Two
+/// hosts with a workspace of that name are named, and neither is chosen.
+pub fn workspace_to_open(
+    status: &Value,
+    name: &str,
+    host: Option<&str>,
+    server: &str,
+) -> Result<Value, String> {
+    let typed = name.trim();
+    let shown = display_text(typed);
+    if let Some(sentence) = unlisted(status, server) {
+        return Err(sentence);
+    }
+    let host = host
+        .map(|host| host.trim().trim_start_matches('@'))
+        .filter(|host| !host.is_empty());
+    let hosts_of = |workspace: &Value| str_field(workspace, "host_username").map(str::to_owned);
+    let found: Vec<&Value> = named(status, typed)
+        .into_iter()
+        .filter(|workspace| host.is_none_or(|host| hosts_of(workspace).as_deref() == Some(host)))
+        .collect();
+    let openable: Vec<&Value> = found
+        .iter()
+        .copied()
+        .filter(|workspace| {
+            str_field(workspace, "state") != Some("deleted")
+                && str_field(workspace, "role") != Some("removed")
+        })
+        .collect();
+    let hosted_by = host
+        .map(|host| format!(" hosted by @{}", safe_text(host)))
+        .unwrap_or_default();
+    let one = match openable.as_slice() {
+        [one] => *one,
+        [] => {
+            return Err(match found.first() {
+                Some(workspace) if str_field(workspace, "role") == Some("removed") => {
+                    removed_sentence(Some(typed))
+                }
+                Some(_) => format!("{shown} on {server} was deleted by its host."),
+                None => {
+                    let mut sentence = format!(
+                        "No workspace named {shown}{hosted_by} on {server} is yours or invites you."
+                    );
+                    if status["workspaces_scan"]["unsupported"]
+                        .as_u64()
+                        .is_some_and(|n| n > 0)
+                    {
+                        sentence.push_str(" Some workspaces there run an older Crew, which can't say whether you belong to them: open one of those with the invitation its host sends.");
+                    }
+                    sentence
+                }
+            })
+        }
+        many => {
+            let mut hosts: Vec<String> = many
+                .iter()
+                .filter_map(|workspace| hosts_of(workspace))
+                .collect();
+            hosts.sort();
+            hosts.dedup();
+            return Err(if hosts.len() > 1 {
+                format!(
+                    "More than one host on {server} has a workspace named {shown}: {}. Choose one with --host USERNAME.",
+                    hosts
+                        .iter()
+                        .map(|host| format!("@{}", safe_text(host)))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                )
+            } else {
+                format!(
+                    "There is more than one workspace named {shown}{hosted_by} on {server}, so Biorouter can't tell which one to open."
+                )
+            });
+        }
+    };
+    if str_field(one, "state") == Some("stopped") {
+        return Err(if str_field(one, "role") == Some("host") {
+            format!(
+                "{shown} is stopped. Start it with biorouter crew setup --server {} --start {}, then open it.",
+                safe_text(&super::shell_word(server)),
+                safe_text(&super::shell_word(typed))
+            )
+        } else {
+            let host = hosts_of(one).map_or_else(
+                || "its host".to_owned(),
+                |host| format!("@{}", safe_text(&host)),
+            );
+            format!("{shown} isn't running on {server}. Ask {host} to start it.")
+        });
+    }
+    if str_field(one, "invitation").is_none() {
+        return Err(format!("The server didn't say how to open {shown}."));
+    }
+    Ok(one.clone())
+}
+
+/// What `rejoin` says (AO-9): the workspace and the person it added this computer as, the
+/// oldest computer the workspace removed to stay within its limit, and that the chats given
+/// access through the connection need it again.
+pub fn rejoined_lines(answer: &Value, options: &HumanOptions) -> Vec<String> {
+    let ctx = Ctx::new(options.directory.clone(), options.show_ids, options.clock);
+    let workspace = str_field(&answer["status"], "workspace_name")
+        .map_or_else(|| "the workspace".to_owned(), display_text);
+    let person = answer
+        .get("principal")
+        .filter(|principal| principal.is_object())
+        .and_then(|principal| {
+            let username = str_field(principal, "username")?;
+            let directory = Directory::from_snapshot(&json!({"principals": [{
+                "id": "person", "username": username,
+                "display_name": principal.get("display_name")
+            }]}));
+            Some(person_label(&directory, "person", false))
+        });
+    let mut lines = vec![match person {
+        Some(person) => {
+            format!("Added this computer to {workspace} again as {person}, with a new device key.")
+        }
+        None => format!("Added this computer to {workspace} again, with a new device key."),
+    }];
+    if let Some(evicted) = answer
+        .get("evicted_device")
+        .filter(|device| device.is_object())
+    {
+        lines.push(format!(
+            "{workspace} keeps up to 32 computers for each person, so it removed your oldest one: {}.",
+            ctx.device_row(evicted)
+        ));
+    }
+    lines.push(
+        "Chats that had Crew access through this connection need it given again: biorouter crew grants grant SESSION CHANNEL."
+            .to_owned(),
+    );
+    lines
+}
+
+/// The hex digits of a fingerprint as a person typed it, uppercased, or `None` when it holds
+/// anything but hex digits, spaces and dashes.
+fn fingerprint_hex(text: &str) -> Option<String> {
+    let digits: String = text
+        .chars()
+        .filter(|ch| !ch.is_whitespace() && *ch != '-')
+        .collect();
+    digits
+        .chars()
+        .all(|ch| ch.is_ascii_hexdigit())
+        .then(|| digits.to_ascii_uppercase())
+}
+
+/// Whether two device entries are the same computer, by fingerprint.
+fn same_device(left: &Value, right: &Value) -> bool {
+    let digits = |device: &Value| str_field(device, "fingerprint").and_then(fingerprint_hex);
+    digits(left).is_some() && digits(left) == digits(right)
+}
+
+/// `profile devices` (AO-10): the computers enrolled as the person (`devices`), which one is
+/// this computer, which are new since they last looked (`new_devices`), and what to do about a
+/// new one that isn't theirs.
+pub fn profile_device_lines(value: &Value, options: &HumanOptions) -> Vec<String> {
+    let ctx = Ctx::new(options.directory.clone(), options.show_ids, options.clock);
+    let workspace = str_field(value, "workspace_name")
+        .map_or_else(|| "this workspace".to_owned(), display_text);
+    let devices = list_key(value, "devices");
+    let new = list_key(value, "new_devices");
+    let mut lines = if devices.is_empty() {
+        vec![format!("No computers are enrolled as you in {workspace}.")]
+    } else {
+        vec![format!("Computers enrolled as you in {workspace}:")]
+    };
+    for device in devices {
+        let mut row = ctx.device_row(device);
+        if new.iter().any(|added| same_device(added, device)) {
+            row.push_str(" · new");
+        }
+        lines.push(format!("  {row}"));
+    }
+    if new.is_empty() {
+        return lines;
+    }
+    if value.get("acknowledged").and_then(Value::as_bool) == Some(true) {
+        lines.push(format!(
+            "Marked {} as seen.",
+            count(new.len(), "new computer", "new computers")
+        ));
+    } else {
+        lines.push(format!(
+            "{} added since you last looked. If one isn't yours, take its SSH access to the server away first, then remove it with biorouter crew profile revoke-device FINGERPRINT. Mark them seen with biorouter crew profile devices --acknowledge.",
+            if new.len() == 1 {
+                "1 computer was".to_owned()
+            } else {
+                format!("{} computers were", new.len())
+            }
+        ));
+    }
+    lines
+}
+
+/// `profile revoke-device` (AO-5): the device of the person's own the command names, from
+/// their snapshot: this computer's (`this_device`), or the one with the fingerprint typed.
+pub fn device_to_revoke(
+    snapshot: &Value,
+    fingerprint: &[String],
+    this_device: bool,
+) -> Result<Value, String> {
+    let devices = list_key(&snapshot["actor"], "devices");
+    if this_device {
+        return devices
+            .iter()
+            .find(|device| device.get("this_device").and_then(Value::as_bool) == Some(true))
+            .cloned()
+            .ok_or_else(|| {
+                "The workspace doesn't list this computer among yours, so there is nothing to revoke here. biorouter crew profile devices lists them."
+                    .to_owned()
+            });
+    }
+    let typed = fingerprint.join(" ");
+    let wanted = fingerprint_hex(&typed).filter(|digits| digits.len() == 16);
+    let Some(wanted) = wanted else {
+        return Err(
+            "A fingerprint has 16 letters and digits, like 3F2A 9C1E 77B0 D4E1. biorouter crew profile devices lists yours."
+                .to_owned(),
+        );
+    };
+    devices
+        .iter()
+        .find(|device| {
+            str_field(device, "fingerprint").and_then(fingerprint_hex).as_deref() == Some(&wanted)
+        })
+        .cloned()
+        .ok_or_else(|| {
+            format!(
+                "None of your computers has the fingerprint {}. biorouter crew profile devices lists them.",
+                safe_text(typed.trim())
+            )
+        })
+}
+
+/// Said before a device is revoked (AO-5): for this computer, that it stops until it is added
+/// again; for another, that its SSH access goes first, since a computer that can still sign
+/// in as the person can add itself again.
+pub fn revoke_device_warning(
+    fingerprint: &str,
+    here: bool,
+    workspace: &str,
+    server: &str,
+) -> String {
+    if here {
+        format!(
+            "{} is this computer. Revoking it stops this computer from using {workspace} until you add it again with biorouter crew rejoin.",
+            safe_text(fingerprint)
+        )
+    } else {
+        format!(
+            "A computer that can still sign in to {server} as you can add itself to {workspace} again. Take its SSH access away first: remove its key from ~/.ssh/authorized_keys on {server}, or change your password there."
+        )
+    }
+}
+
+/// What `profile revoke-device` says once the workspace revoked the device (AO-5).
+pub fn device_revoked_lines(fingerprint: &str, here: bool, workspace: &str) -> Vec<String> {
+    if here {
+        vec![
+            format!("Revoked this computer's device for {workspace}."),
+            "Add this computer again with biorouter crew rejoin.".to_owned(),
+        ]
+    } else {
+        vec![format!(
+            "Revoked {}. That computer can no longer use {workspace} as you.",
+            safe_text(fingerprint)
+        )]
+    }
+}
+
+/// `grants revoke SESSION --reads` once the chat's permission is gone (AO-12).
+pub fn person_read_revoked_sentence(session: &str, workspace: &str) -> String {
+    format!(
+        "Chat {} can no longer read {workspace} as you.",
+        safe_text(session)
+    )
+}
+
+/// `grants revoke SESSION --reads` for a chat that had no such permission (AO-12).
+pub fn no_person_read_sentence(session: &str, workspace: &str) -> String {
+    format!(
+        "Chat {} had no permission to read {workspace} as you.",
+        safe_text(session)
+    )
 }
 
 /// Markdown text as it is printed, line by line, each made terminal-safe.
@@ -2242,11 +2877,42 @@ impl Ctx {
                 "bootstrap" => "workspace setup".into(),
                 "token" => "enrollment token".into(),
                 "invitation_code" => "invitation code".into(),
+                // AO-2: a computer that signed in to the server as the account.
+                "account" => "account sign-in".into(),
                 other => sentence_case(other).to_lowercase(),
             };
             parts.push(format!("via {via}"));
         }
+        // AO-5: the key that signed the snapshot this row came from.
+        if device.get("this_device").and_then(Value::as_bool) == Some(true) {
+            parts.push("This computer".into());
+        }
         parts.join(" · ")
+    }
+
+    /// AO-10: a line under a connection for each computer added to the person's account there
+    /// since they last looked, until they mark it seen.
+    fn new_device_lines(&self, connection: &Value) -> Vec<String> {
+        let devices = list_key(connection, "new_devices");
+        if devices.is_empty() {
+            return Vec::new();
+        }
+        let command = match str_field(connection, "name") {
+            Some(name) => format!(
+                "biorouter crew --connection {} profile devices",
+                safe_text(&super::shell_word(name))
+            ),
+            None => "biorouter crew profile devices".to_owned(),
+        };
+        devices
+            .iter()
+            .map(|device| {
+                format!(
+                    "  New computer on your account: {}. Check it with {command}.",
+                    self.device_row(device)
+                )
+            })
+            .collect()
     }
 
     fn team_row(&self, team: &Value) -> Vec<String> {
@@ -2391,6 +3057,7 @@ impl Ctx {
         )];
         out.extend(server_storage_lines(connection));
         out.extend(workspace_deleted_lines(connection));
+        out.extend(self.new_device_lines(connection));
         out.extend(last_error_lines(connection));
         out
     }
@@ -2454,6 +3121,7 @@ impl Ctx {
         if let Some(file) = str_field(connection, "identity_file") {
             out.push(format!("  SSH key file: {}", safe_text(file)));
         }
+        out.extend(self.new_device_lines(connection));
         out.extend(last_error_lines(connection));
         out.extend(self.detail_ids(connection, CONNECTION_IDS));
         out
@@ -2638,12 +3306,19 @@ impl Ctx {
     /// daemon keeps (`replaced_grants`, F3): replaced by a new grant to the same chat, or left
     /// by a deleted chat whose id a new chat now holds.
     fn grants(&self, value: &Value) -> Vec<String> {
-        let mut out = self.rows(
-            value,
-            "grants",
-            "No chats have Crew access.",
-            Self::grant_row,
-        );
+        // AO-12: a chat the person let read a workspace as them is listed after the grants.
+        let reads = list_key(value, "person_reads");
+        let mut out = if reads.is_empty() || !list_key(value, "grants").is_empty() {
+            self.rows(
+                value,
+                "grants",
+                "No chats have Crew access.",
+                Self::grant_row,
+            )
+        } else {
+            Vec::new()
+        };
+        out.extend(reads.iter().flat_map(|read| self.person_read_row(read)));
         let replaced = value
             .get("replaced_grants")
             .and_then(Value::as_array)
@@ -2706,6 +3381,25 @@ impl Ctx {
             let _ = write!(row, " · policy epoch {epoch}");
         }
         vec![self.with_id(row, "task ID", str_field(grant, "run_id"))]
+    }
+
+    /// A chat the person let read a workspace as them (AO-12): the chat, the workspace (the
+    /// saved connection's name the command added), and since when. `grants revoke SESSION
+    /// --reads` withdraws it.
+    fn person_read_row(&self, read: &Value) -> Vec<String> {
+        let session =
+            str_field(read, "session_id").map_or_else(|| "this chat".to_owned(), safe_text);
+        let chat = match str_field(read, "session_name").filter(|title| !title.trim().is_empty()) {
+            Some(title) => format!("Chat {} (chat {session})", quoted_name(title)),
+            None => format!("Chat {session}"),
+        };
+        let workspace = str_field(read, "connection_name")
+            .map_or_else(|| "its workspace".to_owned(), display_text);
+        let mut row = format!("{chat} reads {workspace} as you");
+        if let Some(at) = read.get("granted_at").and_then(Value::as_i64) {
+            let _ = write!(row, " · since {}", self.date(at));
+        }
+        vec![row]
     }
 
     /// A grant's state as the desktop's access list says it (`accessRows.ts`): a stop the
@@ -5728,9 +6422,10 @@ mod tests {
             "installed": {"path": "~/.local/bin/biorouter-crew", "state": "file", "version": "1.92.1"},
             "artifact": {"version": "1.93.0"}
         });
+        // AO-8: setup replaces an older Crew by default, so the plain command updates it.
         let found = [
             "bob@leo: Linux x86_64, glibc 2.35.",
-            "Crew 1.92.1 is installed in your account there. This computer has Crew 1.93.0; biorouter crew setup --replace-existing updates it.",
+            "Crew 1.92.1 is installed in your account there. This computer has Crew 1.93.0; biorouter crew setup updates it.",
         ];
         assert_eq!(setup_summary_lines(&check, "bob@leo", None), found);
         // A saved connection's bridge does say, from its last connect (leo: Landlock ABI 1).
@@ -5854,6 +6549,169 @@ mod tests {
                 "Installed Crew 1.93.0 in your account on bob@leo.",
                 "Connected."
             ]
+        );
+    }
+
+    /// AO-6, AO-8: a check lists the workspaces on the server for the account and, in place of
+    /// a bare "Ready", the daemon's sentences for those this computer cannot reach; any job
+    /// says what it restarted or started, what still runs an older Crew and why, and which
+    /// restarts failed with the command that starts each by hand.
+    #[test]
+    fn setup_summaries_list_the_servers_workspaces_and_what_was_restarted() {
+        let reach = "You host baranzini-lab here (running). This computer has no connection to it. Open it with biorouter crew open baranzini-lab --server wanjun@leo.";
+        let check = json!({
+            "intent": "check", "state": "finished",
+            "server": {"login": "wanjun@leo"},
+            "installed": {"state": "file", "version": "1.94.2"},
+            "artifact": {"version": "1.94.2"},
+            "stages": [stage("workspaces", "done"), {"name": "done", "state": "done", "detail": reach}],
+            "workspaces": [
+                {"workspace_id": "a", "name": "baranzini-lab", "role": "host", "host_username": "wanjun",
+                 "state": "running", "version": "1.94.1", "this_computer": "not_saved"},
+                {"workspace_id": "b", "name": "chen-lab", "role": "member", "host_username": "alice",
+                 "state": "running", "this_computer": "connected"},
+                {"workspace_id": "c", "name": "old-lab", "role": "invited", "host_username": "bob",
+                 "state": "stopped", "this_computer": "saved"},
+                {"workspace_id": "d", "role": "removed", "state": "unknown", "this_computer": "not_saved"}
+            ],
+            "workspaces_scan": {"skipped": 0, "unsupported": 2, "truncated": true},
+            "outcome": {"outdated": [
+                {"workspace_id": "a", "name": "baranzini-lab", "running_version": "1.94.1",
+                 "installed_version": "1.94.2", "others_connected": 1, "reason": "not_running_installed"}
+            ]}
+        });
+        assert_eq!(
+            setup_summary_lines(&check, "wanjun@leo", None),
+            [
+                "Crew 1.94.2 is installed in your account there.",
+                "Workspaces on wanjun@leo for your account:",
+                "  baranzini-lab · you host it · running Crew 1.94.1 · not on this computer",
+                "  chen-lab · hosted by @alice, you're a member · running · connected on this computer",
+                "  old-lab · hosted by @bob, you're invited · stopped · saved on this computer",
+                "  A workspace · you were removed · state unknown · not on this computer",
+                reach,
+                "2 other workspaces on wanjun@leo run an older Crew, which can't say whether you belong to them.",
+                "There was more on wanjun@leo than setup looks through at once, so this list may not be complete.",
+                "baranzini-lab still runs Crew 1.94.1, not Crew 1.94.2. Run biorouter crew setup --server wanjun@leo to restart it.",
+            ]
+        );
+        // The reach sentences replace "Ready", so the progress lines leave it out.
+        assert!(setup_progress_lines(&Value::Null, &check, "wanjun@leo")
+            .iter()
+            .all(|line| line != "Ready"));
+        assert_eq!(
+            setup_progress_lines(&Value::Null, &check, "wanjun@leo"),
+            ["Looking for workspaces…"]
+        );
+
+        let install = json!({
+            "intent": "install", "state": "finished", "server": {"login": "wanjun@leo"},
+            "workspaces_note": "Crew 1.94.1 in your account on leo is too old to list workspaces.",
+            "outcome": {
+                "installed_version": "1.94.2", "reused": false,
+                "restarted": [
+                    {"workspace_id": "a", "name": "baranzini-lab", "from_version": "1.94.1", "to_version": "1.94.2"},
+                    {"workspace_id": "e", "name": "spare-lab", "from_version": null, "to_version": "1.94.2"}
+                ],
+                "outdated": [
+                    {"workspace_id": "b", "name": "busy-lab", "running_version": "1.94.1", "installed_version": "1.94.2", "others_connected": 3, "reason": "others_connected"},
+                    {"workspace_id": "c", "name": "new-lab", "running_version": "1.95.0", "installed_version": "1.94.2", "reason": "running_newer"},
+                    {"workspace_id": "d", "name": "tmp-lab", "running_version": "1.94.1", "installed_version": "1.94.2", "reason": "custom_state_dir"}
+                ],
+                "restart_failed": [
+                    {"workspace_id": "f", "name": "stuck-lab", "code": "stop_timeout",
+                     "message": "The broker did not stop in 15 seconds.",
+                     "command": "biorouter-crew start --workspace-id f"}
+                ]
+            }
+        });
+        assert_eq!(
+            setup_summary_lines(&install, "wanjun@leo", None),
+            [
+                "Installed Crew 1.94.2 in your account on wanjun@leo.",
+                "Crew 1.94.1 in your account on leo is too old to list workspaces.",
+                "Restarted baranzini-lab: it ran Crew 1.94.1 and now runs Crew 1.94.2.",
+                "spare-lab now runs Crew 1.94.2.",
+                "busy-lab still runs Crew 1.94.1, not Crew 1.94.2, and 3 other people are connected to it, so it wasn't restarted. To restart it anyway, run biorouter crew setup --server wanjun@leo --restart; what they have running there stops.",
+                "new-lab runs Crew 1.95.0, newer than Crew 1.94.2, so it was left running.",
+                "tmp-lab still runs Crew 1.94.1, not Crew 1.94.2, and keeps its state outside ~/.local/share/biorouter-crew, so setup can't restart it. Restart it on wanjun@leo yourself.",
+                "stuck-lab: The broker did not stop in 15 seconds.",
+                "  To start it by hand, run this on wanjun@leo: biorouter-crew start --workspace-id f",
+            ]
+        );
+        assert_eq!(setup_stage_words("workspaces"), "Looking for workspaces");
+        assert_eq!(setup_stage_words("restart"), "Updating running workspaces");
+        assert_eq!(setup_stage_words("configure"), "Setting up the workspace");
+    }
+
+    /// AO-6, AO-9: setup --start and open match a name to one workspace in a check job's
+    /// listing, and say in a sentence why when they can't.
+    #[test]
+    fn a_workspace_is_matched_by_name_in_a_listing() {
+        let listing = json!({"workspaces": [
+            {"workspace_id": "a", "name": "lab", "role": "host", "state": "stopped", "invitation": "brcrew1:a"},
+            {"workspace_id": "b", "name": "lab", "role": "host", "state": "deleted"},
+            {"workspace_id": "c", "name": "shared", "role": "member", "host_username": "alice", "state": "stopped", "invitation": "brcrew1:c"}
+        ]});
+        assert_eq!(
+            workspace_to_start(&listing, "LAB", "leo"),
+            Ok("a".to_owned())
+        );
+        assert_eq!(
+            workspace_to_start(&listing, "shared", "leo"),
+            Err("You don't host a workspace named shared on leo.".to_owned())
+        );
+        assert_eq!(
+            workspace_to_open(&listing, "shared", None, "leo"),
+            Err("shared isn't running on leo. Ask @alice to start it.".to_owned())
+        );
+        assert_eq!(
+            workspace_to_open(&listing, "shared", Some("bob"), "leo"),
+            Err(
+                "No workspace named shared hosted by @bob on leo is yours or invites you."
+                    .to_owned()
+            )
+        );
+        let unlisted = json!({"workspaces": [], "workspaces_note": "Crew 1.94.1 in your account on leo is too old to list workspaces."});
+        assert_eq!(
+            workspace_to_start(&unlisted, "lab", "leo"),
+            Err("Biorouter couldn't list the workspaces on leo. Crew 1.94.1 in your account on leo is too old to list workspaces.".to_owned())
+        );
+        let deleted = json!({"workspaces": [{"workspace_id": "b", "name": "lab", "role": "host", "state": "deleted"}]});
+        assert_eq!(
+            workspace_to_start(&deleted, "lab", "leo"),
+            Err("lab on leo was deleted, so it can't be started.".to_owned())
+        );
+        assert_eq!(
+            workspace_to_open(&deleted, "lab", None, "leo"),
+            Err("lab on leo was deleted by its host.".to_owned())
+        );
+    }
+
+    /// AO-5, AO-12: device rows name an account sign-in and this computer, and the grants list
+    /// names a chat that reads a workspace as the person.
+    #[test]
+    fn devices_and_reads_are_said_in_words() {
+        let options = HumanOptions::in_utc_at(1_790_214_655);
+        let device = json!({"fingerprint": "3F2A 9C1E 77B0 D4E1", "added_at": 1_790_200_000, "added_via": "account", "this_device": true});
+        assert_eq!(
+            device_text(&device, &options),
+            "3F2A 9C1E 77B0 D4E1 · added Sep 23, 2026 · via account sign-in · This computer"
+        );
+        let grants = json!({"grants": [], "person_reads": [
+            {"session_id": "20260924_2", "connection_id": "c", "granted_at": 1_790_200_000, "connection_name": "lab"}
+        ]});
+        assert_eq!(
+            render_text(&grants, &options),
+            "Chat 20260924_2 reads lab as you · since Sep 23, 2026"
+        );
+        assert_eq!(
+            render_text(&json!({"grants": []}), &options),
+            "No chats have Crew access."
+        );
+        assert_eq!(
+            removed_sentence(None),
+            "You were removed from this workspace. Ask a member to invite you again."
         );
     }
 

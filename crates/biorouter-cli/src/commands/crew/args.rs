@@ -151,19 +151,28 @@ pub enum CrewCommand {
     /// Host a new workspace from start to finish: install Crew in your account on the server,
     /// start the workspace, save and connect it here, and set it up open to every member.
     Host(Box<HostArgs>),
+    /// Open a workspace on a server that your account there hosts, belongs to or is invited
+    /// to: find it, save it on this computer, connect and join.
+    Open(Box<OpenArgs>),
     /// List, save, change or remove this computer's saved connections.
     #[command(subcommand)]
     Connections(ConnectionCommand),
-    /// Authenticate SSH through the shared daemon's owned authentication session.
-    Auth,
+    /// Authenticate SSH through the shared daemon's owned authentication session, for the
+    /// selected connection or for a setup that waits for someone to sign in.
+    Auth(AuthArgs),
     /// Open the verified SSH bridge for the selected connection.
     Connect,
     /// Close the selected SSH connection.
     Disconnect,
-    /// Join the workspace a saved connection points to: show this computer's code for the
+    /// Join the workspace a saved connection points to. On a server whose Crew knows your
+    /// account, you join as that account; on an older one, show this computer's code for the
     /// host, then wait until they let you in. Sets Crew up in your account on the server first
     /// when it isn't there yet.
     Join(JoinArgs),
+    /// Add this computer to the selected connection's workspace again with a new device key,
+    /// as your account on the server. The connection stays, so chats can be given Crew access
+    /// through it again.
+    Rejoin,
     /// Show the workspace, set it up once as its host, rename or delete it, choose who manages
     /// it, or keep its context document.
     #[command(subcommand)]
@@ -295,17 +304,18 @@ pub enum ConnectionCommand {
         input: PathBuf,
     },
     /// Remove the selected connection from this computer and delete its device key for the
-    /// workspace. Asks you to type the connection's name first. A host's only computer is
-    /// refused unless --give-up-host-controls is added, because nothing restores the host
-    /// controls afterwards. A host with other enrolled computers is shown them first: the host
-    /// controls continue only if one of them still has the workspace saved.
+    /// workspace. Asks you to type the connection's name first. On a server whose Crew knows
+    /// your account, the workspace can be opened again from any computer that signs in as it,
+    /// the host controls included. On an older one, a host's only computer is refused unless
+    /// --give-up-host-controls is added, because nothing restores the host controls afterwards,
+    /// and a host with other enrolled computers is shown them first.
     Remove {
         /// Confirm by typing the connection's name again. Required when there is no terminal
         /// to ask in.
         #[arg(long, value_name = "NAME")]
         confirm: Option<String>,
-        /// Remove the workspace even from the only computer that can act as its host, which
-        /// ends the host controls for good.
+        /// On a server with an older Crew, remove the workspace even from the only computer
+        /// that can act as its host, which ends the host controls for good.
         #[arg(long)]
         give_up_host_controls: bool,
     },
@@ -353,15 +363,31 @@ pub struct ServerArgs {
     pub proxy_jump: Option<String>,
 }
 
-/// `setup`: install Crew's server program in your own account (design OW-9).
+/// `setup`: install Crew's server program in your own account (design OW-9), keep it current
+/// and the workspaces you host on it (AO-8).
 #[derive(Args)]
 pub struct SetupArgs {
     #[command(flatten)]
     pub target: ServerArgs,
-    /// Replace an older copy of Crew, or a file Biorouter didn't put there, at
-    /// ~/.local/bin/biorouter-crew. The old one is kept beside it.
+    /// Replace a Crew at ~/.local/bin/biorouter-crew that doesn't run or doesn't say which
+    /// version it is, or a file Biorouter didn't put there. The old one is kept beside it. An
+    /// older Crew is replaced without this.
     #[arg(long, conflicts_with = "check")]
     pub replace_existing: bool,
+    /// Keep an older Crew in your account on the server instead of replacing it.
+    #[arg(long, conflicts_with = "check")]
+    pub keep_older: bool,
+    /// Restart the workspaces you host there on the new Crew even when other people are
+    /// connected to them. What they had running there stops; their computers reconnect by
+    /// themselves.
+    #[arg(long, conflicts_with_all = ["check", "no_restart"])]
+    pub restart: bool,
+    /// Restart none of the workspaces you host there; only say which still run an older Crew.
+    #[arg(long, conflicts_with = "check")]
+    pub no_restart: bool,
+    /// Start a stopped workspace you host there, by its name. Repeat for more.
+    #[arg(long = "start", value_name = "NAME", conflicts_with = "check")]
+    pub start: Vec<String>,
     /// Only check the server, changing nothing (the same as biorouter crew doctor).
     #[arg(long)]
     pub check: bool,
@@ -370,6 +396,48 @@ pub struct SetupArgs {
     /// has no work folder yet; otherwise it is left as it is.
     #[arg(long, value_enum, conflicts_with_all = ["check", "server"])]
     pub agent_access: Option<AgentAccess>,
+}
+
+/// `open`: a workspace on a server that the account there hosts, belongs to or is invited to
+/// (design AO-9).
+#[derive(Args)]
+pub struct OpenArgs {
+    /// The workspace's name on the server.
+    #[arg(value_name = "NAME")]
+    pub workspace: String,
+    /// The SSH login to open it as: an alias from your SSH settings or user@host.
+    #[arg(long, value_name = "LOGIN")]
+    pub server: String,
+    /// The workspace's host, as their username on the server, when two hosts there have a
+    /// workspace of that name.
+    #[arg(long, value_name = "USERNAME")]
+    pub host: Option<String>,
+    /// The server's SSH port.
+    #[arg(long)]
+    pub port: Option<u16>,
+    /// The SSH private key file to sign in with. A relative path or a leading ~/ is made
+    /// absolute before it is sent.
+    #[arg(long)]
+    pub identity_file: Option<String>,
+    /// A jump route.
+    #[arg(long)]
+    pub proxy_jump: Option<String>,
+    /// What agents may do on the server through the connection: nothing (off), work in one
+    /// folder (folder), or run commands as you (full). Default: off; choose later with
+    /// connections set-access.
+    #[arg(long, value_enum)]
+    pub agent_access: Option<AgentAccess>,
+    /// This computer's name for the connection. Default: the workspace's name.
+    #[arg(long = "name", value_name = "LOCAL_NAME")]
+    pub local_name: Option<String>,
+}
+
+/// `auth`: sign in for the selected connection, or for a setup job.
+#[derive(Args)]
+pub struct AuthArgs {
+    /// Sign in for this setup job, which waits for someone to sign in to its server.
+    #[arg(long, value_name = "ID")]
+    pub setup_job: Option<String>,
 }
 
 /// `host`: a new workspace, from installing Crew to an open workspace with its context.
@@ -401,6 +469,10 @@ pub struct HostArgs {
     /// Crew's storage that other accounts can write to. Hosting is refused while they can.
     #[arg(long)]
     pub fix_permissions: bool,
+    /// What your agent may do on the server through the new workspace's connection: nothing
+    /// (off), work in a folder setup makes (folder), or run commands as you (full).
+    #[arg(long, value_enum, default_value = "full")]
+    pub agent_access: AgentAccess,
     /// Go ahead without asking. Needed when there is no terminal to ask in.
     #[arg(long)]
     pub yes: bool,
@@ -750,6 +822,28 @@ pub enum ProfileCommand {
         #[arg(long)]
         avatar: Option<String>,
     },
+    /// List the computers enrolled as you: each one's fingerprint, how and when it was added,
+    /// which one is this computer, and which are new.
+    Devices {
+        /// Mark the new computers as seen, so biorouter crew status stops naming them.
+        #[arg(long)]
+        acknowledge: bool,
+    },
+    /// Remove one of your computers from the workspace, by the fingerprint profile devices
+    /// shows. Take its SSH access to the server away first: a computer that can still sign in
+    /// as you can add itself again. Asks first; add --yes where there is no terminal to ask in.
+    #[command(group(ArgGroup::new("device").required(true).args(["fingerprint", "this_device"])))]
+    RevokeDevice {
+        /// The device's fingerprint as profile devices shows it, like 3F2A 9C1E 77B0 D4E1.
+        #[arg(num_args = 1..)]
+        fingerprint: Vec<String>,
+        /// This computer's own device.
+        #[arg(long, conflicts_with = "fingerprint")]
+        this_device: bool,
+        /// Remove it without asking. Needed when there is no terminal to ask in.
+        #[arg(long)]
+        yes: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -1000,6 +1094,10 @@ pub enum GrantCommand {
     Revoke {
         /// The chat's session ID.
         session: String,
+        /// Withdraw the permission you gave the chat to read the workspace as you, instead of
+        /// a Crew grant.
+        #[arg(long)]
+        reads: bool,
     },
 }
 
@@ -1998,5 +2096,145 @@ mod tests {
         for hidden in ["--uid", "--public-key", "--existing-principal"] {
             assert!(!help.contains(hidden), "{hidden} is hidden: {help}");
         }
+    }
+
+    /// AO-8: setup keeps Crew current by default; the flags keep an older one, restart
+    /// workspaces others use, restart none, or start stopped ones by name. A check changes
+    /// nothing, so it takes none of them.
+    #[test]
+    fn setup_takes_the_restart_and_start_choices() {
+        let CrewCommand::Setup(args) = parse(&[
+            "setup",
+            "--server",
+            "wanjun@leo.ucsf.edu",
+            "--keep-older",
+            "--restart",
+            "--start",
+            "baranzini-lab",
+            "--start",
+            "other-lab",
+        ])
+        .command
+        else {
+            panic!("setup")
+        };
+        assert!(args.keep_older && args.restart && !args.no_restart);
+        assert_eq!(args.start, ["baranzini-lab", "other-lab"]);
+        let CrewCommand::Setup(args) = parse(&["setup", "--no-restart"]).command else {
+            panic!("setup --no-restart")
+        };
+        assert!(args.no_restart && !args.restart && args.start.is_empty() && !args.keep_older);
+        for args in [
+            &["setup", "--restart", "--no-restart"][..],
+            &["setup", "--check", "--restart"],
+            &["setup", "--check", "--no-restart"],
+            &["setup", "--check", "--keep-older"],
+            &["setup", "--check", "--start", "lab"],
+        ] {
+            assert!(refused(args), "{args:?}");
+        }
+    }
+
+    /// AO-9, AO-5, AO-10: open names a workspace and a login; rejoin, devices and revoking a
+    /// device take what they need; auth signs in for a setup job; host chooses agent access.
+    #[test]
+    fn account_commands_parse() {
+        let CrewCommand::Open(args) = parse(&[
+            "open",
+            "baranzini-lab",
+            "--server",
+            "wanjun@leo.ucsf.edu",
+            "--host",
+            "wanjun",
+            "--port",
+            "2222",
+            "--agent-access",
+            "folder",
+            "--name",
+            "Lab on leo",
+        ])
+        .command
+        else {
+            panic!("open")
+        };
+        assert_eq!(args.workspace, "baranzini-lab");
+        assert_eq!(args.server, "wanjun@leo.ucsf.edu");
+        assert_eq!(args.host.as_deref(), Some("wanjun"));
+        assert_eq!(args.port, Some(2222));
+        assert_eq!(args.agent_access, Some(AgentAccess::Folder));
+        assert_eq!(args.local_name.as_deref(), Some("Lab on leo"));
+        assert!(refused(&["open", "baranzini-lab"]));
+        assert!(refused(&["open", "--server", "leo"]));
+
+        assert!(matches!(parse(&["rejoin"]).command, CrewCommand::Rejoin));
+        let CrewCommand::Auth(args) = parse(&["auth", "--setup-job", "abc"]).command else {
+            panic!("auth --setup-job")
+        };
+        assert_eq!(args.setup_job.as_deref(), Some("abc"));
+        let CrewCommand::Auth(args) = parse(&["auth"]).command else {
+            panic!("auth")
+        };
+        assert!(args.setup_job.is_none());
+
+        let CrewCommand::Profile(ProfileCommand::Devices { acknowledge }) =
+            parse(&["profile", "devices", "--acknowledge"]).command
+        else {
+            panic!("profile devices")
+        };
+        assert!(acknowledge);
+        let CrewCommand::Profile(ProfileCommand::RevokeDevice {
+            fingerprint,
+            this_device,
+            yes,
+        }) = parse(&["profile", "revoke-device", "3F2A", "9C1E", "77B0", "D4E1"]).command
+        else {
+            panic!("profile revoke-device")
+        };
+        assert_eq!(fingerprint, ["3F2A", "9C1E", "77B0", "D4E1"]);
+        assert!(!this_device && !yes);
+        let CrewCommand::Profile(ProfileCommand::RevokeDevice {
+            fingerprint,
+            this_device,
+            yes,
+        }) = parse(&["profile", "revoke-device", "--this-device", "--yes"]).command
+        else {
+            panic!("profile revoke-device --this-device")
+        };
+        assert!(fingerprint.is_empty() && this_device && yes);
+        assert!(refused(&["profile", "revoke-device"]));
+        assert!(refused(&[
+            "profile",
+            "revoke-device",
+            "3F2A",
+            "--this-device"
+        ]));
+
+        let CrewCommand::Grants(GrantCommand::Revoke { session, reads }) =
+            parse(&["grants", "revoke", "20260924_2", "--reads"]).command
+        else {
+            panic!("grants revoke --reads")
+        };
+        assert_eq!(session, "20260924_2");
+        assert!(reads);
+
+        let CrewCommand::Host(args) = parse(&["host", "--name", "lab", "--server", "hpc"]).command
+        else {
+            panic!("host")
+        };
+        assert_eq!(args.agent_access, AgentAccess::Full);
+        let CrewCommand::Host(args) = parse(&[
+            "host",
+            "--name",
+            "lab",
+            "--server",
+            "hpc",
+            "--agent-access",
+            "off",
+        ])
+        .command
+        else {
+            panic!("host --agent-access off")
+        };
+        assert_eq!(args.agent_access, AgentAccess::Off);
     }
 }

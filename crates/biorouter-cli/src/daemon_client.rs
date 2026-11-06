@@ -50,6 +50,9 @@ pub struct DaemonRefusal {
 /// in neither list, so a field the daemon adds is never silently dropped from JSON output.
 pub const REFUSAL_FIELDS: &[&str] = &[
     "host",
+    "is_host",
+    "server_login",
+    "host_username",
     "connection_id",
     "reason",
     "missing",
