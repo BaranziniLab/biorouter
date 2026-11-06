@@ -722,6 +722,19 @@
   gap: 8px;
 }
 
+/* A score monitor's levels and watched level: shown, not edited. */
+.br-monitors__levels {
+  margin: 0;
+  padding-inline-start: 20px;
+  font-size: var(--text-secondary);
+  list-style: decimal;
+}
+
+.br-monitors__value {
+  margin: 0;
+  font-size: var(--text-secondary);
+}
+
 .br-monitors__threshold {
   display: flex;
   align-items: center;

@@ -11,7 +11,8 @@
 //!
 //! - [`CriterionState`]: the pure state machine for one criterion (threshold,
 //!   consecutive evaluations, the latch and its re-arm level, the error streak,
-//!   the per-turn evaluation cap). No I/O; unit tested on its own.
+//!   the per-turn evaluation cap and its once-a-turn report). No I/O; unit
+//!   tested on its own.
 //! - [`MonitorRegistry`]: every chat's criterion states and its settings, cached
 //!   once per turn, held on the `Agent` (never as a local of the reply loop's
 //!   generator, whose `poll` frame is close to the stack cliff).
@@ -87,7 +88,11 @@ pub enum Step {
         p: f64,
     },
     /// It would have stopped the turn, but a message the person typed is
-    /// waiting; the person's message wins and the criterion stays armed.
+    /// waiting; the person's message wins and the criterion stays armed. On
+    /// the criterion's last evaluation of the turn the stop is kept instead
+    /// ([`CriterionTurn::held_stop`]). Also a `steer` that fired where another
+    /// criterion stops the turn: the agent is not told, and the criterion
+    /// stays armed ([`MonitorRegistry::apply`]).
     Suppressed {
         p: Option<f64>,
     },
@@ -96,10 +101,20 @@ pub enum Step {
         error: String,
     },
     /// The call failed; show this once. `off`: the criterion is off for the
-    /// rest of the turn (a refusal, or the third error in a row).
+    /// rest of the turn (a refusal, the third error in a row, or the
+    /// criterion's last evaluation of the turn).
     ErrorNotice {
         error: String,
         off: bool,
+    },
+    /// The criterion has had its `limit` evaluations this turn and is not
+    /// checked again until the next turn. Reported once a turn, where a check
+    /// is really skipped (see [`CriterionState::limit_step`]). `stops`: the
+    /// criterion fails closed (`onError: pause`), so not being able to check
+    /// stops the turn, as a [`Step::FailedClosed`] error does.
+    LimitReached {
+        limit: u32,
+        stops: bool,
     },
 }
 
@@ -113,6 +128,19 @@ pub struct CriterionTurn {
     pub fired: bool,
     pub disabled: bool,
     error_notice_shown: bool,
+    limit_reported: bool,
+    /// The P of a stop held back ([`Step::Suppressed`]) on the criterion's
+    /// last evaluation of the turn, where no next evaluation would fire it.
+    /// The next point of its timing with no message the person typed waiting
+    /// makes it ([`CriterionState::pending_limit_step`]): the turn's one stop,
+    /// with no [`Step::LimitReached`] beside it.
+    pub held_stop: Option<f64>,
+}
+
+/// The evaluations a criterion gets in one turn: its own cap, never above
+/// [`MAX_EVALS_PER_TURN`].
+fn evaluation_limit(criterion: &MonitorCriterion) -> u32 {
+    criterion.max_evals_per_turn.min(MAX_EVALS_PER_TURN)
 }
 
 /// One criterion's state. The latch and the consecutive count survive turns
@@ -140,7 +168,128 @@ impl CriterionState {
         criterion.enabled
             && criterion.timing == timing
             && !self.turn.disabled
-            && self.turn.evaluations < criterion.max_evals_per_turn.min(MAX_EVALS_PER_TURN)
+            && self.turn.evaluations < evaluation_limit(criterion)
+    }
+
+    /// Asked after [`Self::observe`], with the step it gave, at the check
+    /// that may have been the criterion's last this turn. Without a report a
+    /// criterion at its limit would stop checking with nothing said, and a
+    /// fail-closed one would fail open; but the check that reaches the limit
+    /// skips nothing yet, so it is reported here only when the turn surely
+    /// goes on past this point. Then a fail-closed criterion stops the turn
+    /// before the model's next request, which it could not check.
+    ///
+    /// Otherwise the limit is left for [`Self::pending_limit_step`], at the
+    /// next point that would have checked the criterion: when `observed`
+    /// stops the turn (one stop, one notice; a turn the person carries on is
+    /// a new turn, with its checks back); when `observed` steers the agent, so
+    /// the agent reads the note before a fail-closed criterion stops the turn,
+    /// as the notice says it does; and when `held`: something besides
+    /// `observed` keeps the turn from surely going on past this point. That is
+    /// a turn ending here (the model's reply ended it, a structured final
+    /// output is about to, or this is a `turn_end` point), so a turn that ends
+    /// here hears nothing of a limit it never felt, or, decided by
+    /// [`MonitorRegistry::apply`] for the whole point, another criterion's
+    /// step that stops the turn or steers the agent, or another criterion's
+    /// limit that stops the turn.
+    pub fn limit_step(
+        &mut self,
+        criterion: &MonitorCriterion,
+        observed: &Step,
+        steer_waiting: bool,
+        held: bool,
+    ) -> Option<Step> {
+        if held || holds_limits(observed) {
+            return None;
+        }
+        self.report_limit(criterion, steer_waiting)
+    }
+
+    /// Whether a point at `timing` would have checked the criterion but for
+    /// its limit, and the criterion has something to say there this turn: a
+    /// limit not yet reported, or a stop held on its last check.
+    pub fn limit_pending(&self, criterion: &MonitorCriterion, timing: MonitorTiming) -> bool {
+        criterion.enabled
+            && criterion.timing == timing
+            && (self.limit_unsaid(criterion) || self.turn.held_stop.is_some())
+    }
+
+    /// At a point for `timing` that would have checked the criterion but for
+    /// its limit ([`Self::limit_pending`]): the stop held on its last check,
+    /// made as the fire it is once no message the person typed is waiting, or
+    /// else the report [`Self::limit_step`] left for it; `None` when there is
+    /// neither, or the person's message still wins.
+    pub fn pending_limit_step(
+        &mut self,
+        criterion: &MonitorCriterion,
+        timing: MonitorTiming,
+        steer_waiting: bool,
+    ) -> Option<Step> {
+        if !self.limit_pending(criterion, timing) {
+            return None;
+        }
+        if let Some(p) = self.turn.held_stop {
+            if steer_waiting {
+                return None;
+            }
+            // What `observe_probability` does when it fires, and the limit
+            // needs no word of its own: one stop, one notice.
+            self.turn.held_stop = None;
+            self.turn.limit_reported = true;
+            self.latched = true;
+            self.consecutive = 0;
+            self.turn.fired = true;
+            return Some(Step::Fired {
+                action: MonitorAction::Stop,
+                p,
+            });
+        }
+        self.report_limit(criterion, steer_waiting)
+    }
+
+    /// Whether what the criterion has to say about its limit now stops the
+    /// turn: a held stop, or a fail-closed criterion's limit, once no message
+    /// the person typed is waiting.
+    fn limit_report_stops(&self, criterion: &MonitorCriterion, steer_waiting: bool) -> bool {
+        !steer_waiting
+            && (self.turn.held_stop.is_some()
+                || (self.limit_unsaid(criterion)
+                    && criterion.on_error == MonitorErrorPolicy::Pause))
+    }
+
+    /// At its limit, still on, and not yet reported this turn. A criterion
+    /// already off this turn has said why it stopped checking, and one whose
+    /// last check held back a stop makes that stop instead.
+    fn limit_unsaid(&self, criterion: &MonitorCriterion) -> bool {
+        !self.turn.disabled
+            && !self.turn.limit_reported
+            && self.turn.held_stop.is_none()
+            && self.turn.evaluations > 0
+            && self.turn.evaluations >= evaluation_limit(criterion)
+    }
+
+    /// The [`Step::LimitReached`] for a criterion at its limit, once a turn.
+    /// A fail-closed criterion stops the turn with it, unless a message the
+    /// person typed is waiting (`steer_waiting`): their message wins, and, as
+    /// a [`Step::FailedClosed`] error is held back as [`Step::Suppressed`]
+    /// until the next failed check, nothing is said yet and the next point
+    /// that would have checked the criterion says it and stops the turn.
+    fn report_limit(&mut self, criterion: &MonitorCriterion, steer_waiting: bool) -> Option<Step> {
+        if !self.limit_unsaid(criterion) {
+            return None;
+        }
+        let stops = criterion.on_error == MonitorErrorPolicy::Pause;
+        if stops && steer_waiting {
+            return None;
+        }
+        self.turn.limit_reported = true;
+        if stops {
+            self.turn.fired = true;
+        }
+        Some(Step::LimitReached {
+            limit: evaluation_limit(criterion),
+            stops,
+        })
     }
 
     /// Fold one evaluation in. `steer_waiting`: a message the person typed is
@@ -174,7 +323,9 @@ impl CriterionState {
                 self.turn.error_notice_shown = true;
                 Step::ErrorNotice {
                     error: message,
-                    off,
+                    // At its limit it is not checked again this turn either,
+                    // so the notice must not say it keeps trying.
+                    off: off || self.turn.evaluations >= evaluation_limit(criterion),
                 }
             }
         }
@@ -218,6 +369,11 @@ impl CriterionState {
         if steer_waiting && criterion.action == MonitorAction::Stop {
             // Stays at the threshold count, so the next evaluation fires if
             // P is still there once the person's message has been answered.
+            // The last evaluation of the turn has no next one: the stop is
+            // kept, and made at the next point of its timing.
+            if self.turn.evaluations >= evaluation_limit(criterion) {
+                self.turn.held_stop = Some(p);
+            }
             return Step::Suppressed { p: Some(p) };
         }
         self.latched = true;
@@ -227,6 +383,17 @@ impl CriterionState {
             action: criterion.action,
             p,
         }
+    }
+
+    /// Undo a `steer` that just fired, because another criterion stops the
+    /// turn at the same point: the criterion is left as a stop held back for
+    /// the person's message is ([`Step::Suppressed`]), unlatched at the
+    /// threshold count, so its next check tells the agent if P is still
+    /// there. `fired_before`: whether it had fired earlier this turn.
+    fn hold_steer(&mut self, criterion: &MonitorCriterion, fired_before: bool) {
+        self.latched = false;
+        self.consecutive = criterion.consecutive.clamp(1, 5);
+        self.turn.fired = fired_before;
     }
 }
 
@@ -375,6 +542,17 @@ pub struct MonitorEvent {
     pub step: Step,
 }
 
+/// `criterion`'s event for `step`.
+fn monitor_event(criterion: &MonitorCriterion, step: Step) -> MonitorEvent {
+    MonitorEvent {
+        criterion_id: criterion.id.clone(),
+        name: criterion.name.clone(),
+        question: criterion.question.instructions.clone(),
+        threshold: criterion.threshold,
+        step,
+    }
+}
+
 /// The outcome of one planned request: the decisions, or why there were none.
 pub type AskOutcome = DecisionResult<Vec<Decision>>;
 
@@ -446,8 +624,9 @@ impl MonitorRegistry {
             .and_then(|entry| entry.settings.clone())
     }
 
-    /// Whether any criterion is due at `timing`. Synchronous and cheap: the
-    /// loop asks this before it awaits anything.
+    /// Whether any criterion is due at `timing`, or has a limit to report
+    /// there ([`Self::take_pending_limits`]). Synchronous and cheap: the loop
+    /// asks this before it awaits anything.
     pub fn any_due(&self, session_id: &str, timing: MonitorTiming) -> bool {
         let sessions = self.lock();
         let Some(entry) = sessions.get(session_id) else {
@@ -460,9 +639,71 @@ impl MonitorRegistry {
             entry
                 .criteria
                 .get(&criterion.id)
-                .map(|state| state.is_due(criterion, timing))
+                .map(|state| {
+                    state.is_due(criterion, timing) || state.limit_pending(criterion, timing)
+                })
                 .unwrap_or_else(|| CriterionState::default().is_due(criterion, timing))
         })
+    }
+
+    /// What an evaluation point at `timing` reports before it plans anything,
+    /// for each criterion it would have checked but for its per-turn limit
+    /// ([`CriterionState::pending_limit_step`]): the stop held on its last
+    /// check, or its limit, once a turn. Either can stop the turn without a
+    /// request being sent, and no limit is said beside a stop made here (the
+    /// turn the person carries on is a new one). Every held stop is made, as
+    /// [`Self::apply`] reports every stop that fires at one point: each is the
+    /// fire of a condition seen, and each latches it. Only when there is none
+    /// does the first fail-closed limit stop the turn, alone.
+    pub fn take_pending_limits(
+        &self,
+        session_id: &str,
+        timing: MonitorTiming,
+        steer_waiting: bool,
+    ) -> Vec<MonitorEvent> {
+        let mut sessions = self.lock();
+        let Some(entry) = sessions.get_mut(session_id) else {
+            return Vec::new();
+        };
+        let Some(settings) = entry.settings.clone() else {
+            return Vec::new();
+        };
+        // Who speaks: every held stop when one is made here, else the first
+        // fail-closed limit when one stops the turn, else every criterion.
+        let mut held_stops = false;
+        let mut limit_stop: Option<&str> = None;
+        for criterion in &settings.monitors {
+            let Some(state) = entry.criteria.get(&criterion.id) else {
+                continue;
+            };
+            if !state.limit_pending(criterion, timing)
+                || !state.limit_report_stops(criterion, steer_waiting)
+            {
+                continue;
+            }
+            if state.turn.held_stop.is_some() {
+                held_stops = true;
+            } else if limit_stop.is_none() {
+                limit_stop = Some(criterion.id.as_str());
+            }
+        }
+        settings
+            .monitors
+            .iter()
+            .filter_map(|criterion| {
+                let state = entry.criteria.get_mut(&criterion.id)?;
+                let speaks = if held_stops {
+                    state.turn.held_stop.is_some()
+                } else {
+                    limit_stop.is_none_or(|id| id == criterion.id)
+                };
+                if !speaks {
+                    return None;
+                }
+                let step = state.pending_limit_step(criterion, timing, steer_waiting)?;
+                Some(monitor_event(criterion, step))
+            })
+            .collect()
     }
 
     /// The models the criteria due at `timing` ask (`None`: the service
@@ -619,13 +860,28 @@ impl MonitorRegistry {
     }
 
     /// Fold the answers to `planned` in, in the same order, and return what
-    /// each criterion with something to say decided.
+    /// each criterion with something to say decided. `turn_ending`: the point
+    /// comes as the turn is about to end (the model's reply ended it, a
+    /// structured final output is about to, or a `turn_end` point).
+    ///
+    /// A check that reaches a criterion's limit reports it only where the
+    /// turn surely goes on past this point, which is decided for the point as
+    /// a whole ([`CriterionState::limit_step`]): not when it is ending, and
+    /// not when any criterion's step here stops the turn or steers the agent.
+    /// Where it goes on, the first criterion whose limit stops the turn is the
+    /// point's one stop, and every other limit reached here is left for a
+    /// later point, if one comes.
+    ///
+    /// A `steer` that fires where another criterion's step stops the turn is
+    /// held back ([`Step::Suppressed`]) and stays armed, so the events never
+    /// hold both a stop and a note the agent would not read.
     pub fn apply(
         &self,
         session_id: &str,
         planned: &[PlannedRequest],
         outcomes: Vec<AskOutcome>,
         steer_waiting: bool,
+        turn_ending: bool,
     ) -> Vec<MonitorEvent> {
         let mut sessions = self.lock();
         let Some(entry) = sessions.get_mut(session_id) else {
@@ -634,7 +890,7 @@ impl MonitorRegistry {
         let Some(settings) = entry.settings.clone() else {
             return Vec::new();
         };
-        let mut events = Vec::new();
+        let mut observed: Vec<(&MonitorCriterion, Step, bool)> = Vec::new();
         for (plan, outcome) in planned.iter().zip(outcomes) {
             for (id, _) in &plan.criteria {
                 let Some(criterion) = settings.monitors.iter().find(|m| &m.id == id) else {
@@ -661,15 +917,54 @@ impl MonitorRegistry {
                 if outcome.is_ok() {
                     state.last_window = Some(plan.window_sha.clone());
                 }
+                let fired_before = state.turn.fired;
                 let step = state.observe(criterion, observation, steer_waiting);
+                observed.push((criterion, step, fired_before));
+            }
+        }
+        // A stop here ends the turn before the agent could read a note, so a
+        // `steer` that fired beside it is held back, as a stop is for a
+        // message the person typed: nothing is told or said, and the
+        // criterion stays armed for its next check.
+        let stopping = observed.iter().any(|(_, step, _)| step_stops(step));
+        let observed: Vec<(&MonitorCriterion, Step)> = observed
+            .into_iter()
+            .map(|(criterion, step, fired_before)| match step {
+                Step::Fired {
+                    action: MonitorAction::Steer,
+                    p,
+                } if stopping => {
+                    let state = entry.criteria.entry(criterion.id.clone()).or_default();
+                    state.hold_steer(criterion, fired_before);
+                    (criterion, Step::Suppressed { p: Some(p) })
+                }
+                step => (criterion, step),
+            })
+            .collect();
+        // Every criterion is observed before any limit is said, so a limit
+        // reached here hears what the others did at the same point.
+        let held = turn_ending || observed.iter().any(|(_, step)| holds_limits(step));
+        let stopper = if held {
+            None
+        } else {
+            observed
+                .iter()
+                .map(|(criterion, _)| *criterion)
+                .find(|criterion| {
+                    entry
+                        .criteria
+                        .get(&criterion.id)
+                        .is_some_and(|state| state.limit_report_stops(criterion, steer_waiting))
+                })
+        };
+        let mut events = Vec::new();
+        for (criterion, step) in observed {
+            let state = entry.criteria.entry(criterion.id.clone()).or_default();
+            let held = held || stopper.is_some_and(|stopper| stopper.id != criterion.id);
+            let limit = state.limit_step(criterion, &step, steer_waiting, held);
+            for step in std::iter::once(step).chain(limit) {
                 if step != Step::Quiet {
-                    events.push(MonitorEvent {
-                        criterion_id: id.clone(),
-                        name: criterion.name.clone(),
-                        question: criterion.question.instructions.clone(),
-                        threshold: criterion.threshold,
-                        step,
-                    });
+                    events.push(monitor_event(criterion, step));
                 }
             }
         }
@@ -798,6 +1093,22 @@ pub fn event_notice(event: &MonitorEvent) -> Option<String> {
             "Monitor '{name}' could not be checked ({error}). It keeps trying; after \
              {ERRORS_BEFORE_OFF} failures in a row it is off for the rest of this turn."
         )),
+        Step::LimitReached { limit, stops } => {
+            let checked = plural(u64::from(*limit), "time", "times");
+            Some(if *stops {
+                format!(
+                    "Monitor '{name}' has been checked {checked} this turn, its limit. It is \
+                     set to pause when it cannot check, so the turn stops here. Send a message \
+                     to carry on."
+                )
+            } else {
+                format!(
+                    "Monitor '{name}' has been checked {checked} this turn, its limit, so it \
+                     stops checking until the next turn. Raise its check limit \
+                     (maxEvalsPerTurn, up to {MAX_EVALS_PER_TURN}) to watch longer turns."
+                )
+            })
+        }
     }
 }
 
@@ -864,13 +1175,32 @@ pub fn steer_note(event: &MonitorEvent) -> Option<String> {
 
 /// Whether an event ends the turn.
 pub fn event_stops(event: &MonitorEvent) -> bool {
+    step_stops(&event.step)
+}
+
+fn step_stops(step: &Step) -> bool {
     matches!(
-        event.step,
+        step,
         Step::Fired {
             action: MonitorAction::Stop,
             ..
         } | Step::FailedClosed { .. }
+            | Step::LimitReached { stops: true, .. }
     )
+}
+
+/// Whether a step leaves every limit reached at its point unsaid there: it
+/// stops the turn (the point's one stop), or it steers the agent (the agent
+/// reads the note before a fail-closed criterion stops the turn).
+fn holds_limits(step: &Step) -> bool {
+    step_stops(step)
+        || matches!(
+            step,
+            Step::Fired {
+                action: MonitorAction::Steer,
+                ..
+            }
+        )
 }
 
 // ---------------------------------------------------------------------------
@@ -1366,6 +1696,10 @@ mod tests {
         );
         assert!(!state.latched);
         assert!(!state.turn.fired);
+        assert_eq!(
+            state.turn.held_stop, None,
+            "not its last check, so the next one decides"
+        );
         // Once the person's message is answered, it fires.
         assert!(matches!(
             state.observe(&c, p(0.9), false),
@@ -1400,6 +1734,866 @@ mod tests {
         c.max_evals_per_turn = 10_000;
         state.turn.evaluations = MAX_EVALS_PER_TURN;
         assert!(!state.is_due(&c, MonitorTiming::PostIteration));
+    }
+
+    fn event(step: Step) -> MonitorEvent {
+        MonitorEvent {
+            criterion_id: "m1".into(),
+            name: "Form reached".into(),
+            question: String::new(),
+            threshold: 0.85,
+            step,
+        }
+    }
+
+    fn limit(limit: u32, stops: bool) -> Step {
+        Step::LimitReached { limit, stops }
+    }
+
+    /// One evaluation point at `timing` of chat `s` over `conv`, as the agent
+    /// runs it: the limits it reports first, then every criterion asked
+    /// answered with P `p`. The steps reported, in order. `ending`: the turn
+    /// ends at this point unless something reopens it.
+    fn point_at(
+        registry: &MonitorRegistry,
+        timing: MonitorTiming,
+        conv: &Conversation,
+        p: f64,
+        steer: bool,
+        ending: bool,
+    ) -> Vec<Step> {
+        point_events(registry, timing, conv, p, steer, ending)
+            .into_iter()
+            .map(|event| event.step)
+            .collect()
+    }
+
+    /// [`point_at`], as the events, each naming its criterion.
+    fn point_events(
+        registry: &MonitorRegistry,
+        timing: MonitorTiming,
+        conv: &Conversation,
+        p: f64,
+        steer: bool,
+        ending: bool,
+    ) -> Vec<MonitorEvent> {
+        let mut events = registry.take_pending_limits("s", timing, steer);
+        let planned = registry.plan("s", timing, conv, 1);
+        let outcomes = planned
+            .iter()
+            .map(|plan| {
+                Ok(plan
+                    .criteria
+                    .iter()
+                    .map(|(id, _)| decision_for(id, p))
+                    .collect())
+            })
+            .collect();
+        events.extend(registry.apply("s", &planned, outcomes, steer, ending));
+        events
+    }
+
+    /// A post-iteration point's events, as (criterion id, step).
+    fn steps_by_criterion(
+        registry: &MonitorRegistry,
+        conv: &Conversation,
+        p: f64,
+        steer: bool,
+        ending: bool,
+    ) -> Vec<(String, Step)> {
+        point_events(
+            registry,
+            MonitorTiming::PostIteration,
+            conv,
+            p,
+            steer,
+            ending,
+        )
+        .into_iter()
+        .map(|event| (event.criterion_id, event.step))
+        .collect()
+    }
+
+    fn point(
+        registry: &MonitorRegistry,
+        conv: &Conversation,
+        p: f64,
+        steer: bool,
+        ending: bool,
+    ) -> Vec<Step> {
+        point_at(
+            registry,
+            MonitorTiming::PostIteration,
+            conv,
+            p,
+            steer,
+            ending,
+        )
+    }
+
+    /// Four conversations, each one message longer, so every point has a new
+    /// window to ask about.
+    fn growing() -> [Conversation; 4] {
+        [
+            conversation(&["Open the form."]),
+            conversation(&["Open the form.", "Opening."]),
+            conversation(&["Open the form.", "Opening.", "Still opening."]),
+            conversation(&["Open the form.", "Opening.", "Still opening.", "Again."]),
+        ]
+    }
+
+    /// A monitor at its per-turn cap stops checking; in a turn that goes on
+    /// that is said once, at the check that reached the cap, and again in the
+    /// next turn.
+    #[test]
+    fn reaching_the_evaluation_cap_is_reported_once_a_turn() {
+        let mut c = criterion(0.85);
+        c.max_evals_per_turn = 2;
+        let registry = MonitorRegistry::default();
+        registry.begin_turn("s", "t1");
+        registry.cache_settings("s", settings(vec![c.clone()]));
+        let [one, two, three, four] = growing();
+
+        assert_eq!(
+            point(&registry, &one, 0.1, false, false),
+            Vec::<Step>::new()
+        );
+        assert_eq!(
+            point(&registry, &two, 0.1, false, false),
+            vec![limit(2, false)]
+        );
+        // At the cap nothing is due, and nothing is left to say.
+        assert!(!registry.any_due("s", MonitorTiming::PostIteration));
+        assert!(point(&registry, &three, 0.1, false, false).is_empty());
+
+        registry.begin_turn("s", "t2");
+        registry.cache_settings("s", settings(vec![c.clone()]));
+        assert!(registry.any_due("s", MonitorTiming::PostIteration));
+        assert_eq!(
+            point(&registry, &three, 0.1, false, false),
+            Vec::<Step>::new()
+        );
+        assert_eq!(
+            point(&registry, &four, 0.1, false, false),
+            vec![limit(2, false)],
+            "a new turn checks again and says so again"
+        );
+
+        // Asked again at the cap, however it got there, it says nothing more.
+        let mut state = CriterionState::default();
+        let step = state.observe(&c, p(0.1), false);
+        assert_eq!(state.limit_step(&c, &step, false, false), None);
+        let step = state.observe(&c, p(0.1), false);
+        assert!(state.limit_step(&c, &step, false, false).is_some());
+        let step = state.observe(&c, p(0.1), false);
+        assert_eq!(state.limit_step(&c, &step, false, false), None);
+        assert_eq!(
+            state.pending_limit_step(&c, MonitorTiming::PostIteration, false),
+            None
+        );
+        assert!(!state.is_due(&c, MonitorTiming::PostIteration));
+        state.begin_turn();
+        assert!(state.is_due(&c, MonitorTiming::PostIteration));
+    }
+
+    /// The check that reaches the cap skips nothing. When the turn ends there
+    /// nothing is said or stopped; when something reopens the turn, the next
+    /// point that would have checked the monitor says so, and a fail-closed
+    /// one stops the turn there.
+    #[test]
+    fn a_check_that_ends_the_turn_leaves_its_cap_for_a_point_that_would_check() {
+        let mut c = criterion(0.85);
+        c.max_evals_per_turn = 2;
+        c.on_error = MonitorErrorPolicy::Pause;
+        let registry = MonitorRegistry::default();
+        registry.begin_turn("s", "t1");
+        registry.cache_settings("s", settings(vec![c.clone()]));
+        let [one, two, three, _] = growing();
+
+        assert!(point(&registry, &one, 0.1, false, false).is_empty());
+        assert!(
+            point(&registry, &two, 0.1, false, true).is_empty(),
+            "the model's reply ended the turn at the cap"
+        );
+        assert!(!registry.marker_items("s")[0].fired);
+
+        // The turn ended there: the next turn starts with nothing to say.
+        registry.begin_turn("s", "t2");
+        registry.cache_settings("s", settings(vec![c.clone()]));
+        assert!(registry
+            .take_pending_limits("s", MonitorTiming::PostIteration, false)
+            .is_empty());
+        assert!(point(&registry, &one, 0.1, false, false).is_empty());
+        assert!(point(&registry, &two, 0.1, false, true).is_empty());
+
+        // Something reopened it, and the next point would have checked it.
+        assert!(registry.any_due("s", MonitorTiming::PostIteration));
+        assert!(
+            registry
+                .take_pending_limits("s", MonitorTiming::TurnEnd, false)
+                .is_empty(),
+            "only at its own timing"
+        );
+        assert_eq!(
+            point(&registry, &three, 0.1, false, true),
+            vec![limit(2, true)],
+            "said, and the turn stops, even as it ends"
+        );
+        assert!(registry.marker_items("s")[0].fired);
+        assert!(!registry.any_due("s", MonitorTiming::PostIteration));
+        assert!(
+            registry
+                .take_pending_limits("s", MonitorTiming::PostIteration, false)
+                .is_empty(),
+            "once a turn"
+        );
+    }
+
+    /// A `turn_end` monitor checked once a turn with a cap of 1 never skips a
+    /// check, so it never says so; a turn reopened after it was checked would
+    /// have checked it again, so that one does.
+    #[test]
+    fn a_turn_end_monitor_with_a_cap_of_one_is_quiet_until_a_turn_reopens() {
+        let mut c = criterion(0.85);
+        c.timing = MonitorTiming::TurnEnd;
+        c.max_evals_per_turn = 1;
+        c.on_error = MonitorErrorPolicy::Pause;
+        let registry = MonitorRegistry::default();
+        let [one, two, three, _] = growing();
+        for (turn, conv) in [("t1", &one), ("t2", &two)] {
+            registry.begin_turn("s", turn);
+            registry.cache_settings("s", settings(vec![c.clone()]));
+            assert!(point_at(&registry, MonitorTiming::TurnEnd, conv, 0.1, false, true).is_empty());
+        }
+        assert!(
+            point(&registry, &three, 0.1, false, false).is_empty(),
+            "a post-iteration point would not have checked it"
+        );
+        assert_eq!(
+            point_at(&registry, MonitorTiming::TurnEnd, &three, 0.1, false, true),
+            vec![limit(1, true)]
+        );
+    }
+
+    #[test]
+    fn only_a_fail_closed_criterion_stops_the_turn_at_its_cap() {
+        let mut notify = criterion(0.85);
+        notify.max_evals_per_turn = 1;
+        let mut state = CriterionState::default();
+        let step = state.observe(&notify, p(0.1), false);
+        let reached = state.limit_step(&notify, &step, false, false).unwrap();
+        assert_eq!(reached, limit(1, false));
+        assert!(!state.turn.fired);
+        let shown = event(reached);
+        assert!(!event_stops(&shown));
+        assert_eq!(
+            event_notice(&shown).as_deref(),
+            Some(
+                "Monitor 'Form reached' has been checked 1 time this turn, its limit, so it \
+                 stops checking until the next turn. Raise its check limit (maxEvalsPerTurn, \
+                 up to 200) to watch longer turns."
+            )
+        );
+
+        let mut pause = criterion(0.85);
+        pause.on_error = MonitorErrorPolicy::Pause;
+        pause.max_evals_per_turn = 3;
+        let mut state = CriterionState::default();
+        for _ in 0..2 {
+            let step = state.observe(&pause, p(0.1), false);
+            assert_eq!(state.limit_step(&pause, &step, false, false), None);
+        }
+        let step = state.observe(&pause, p(0.1), false);
+        let reached = state.limit_step(&pause, &step, false, false).unwrap();
+        assert_eq!(reached, limit(3, true));
+        assert!(state.turn.fired, "a stop is the monitor acting");
+        let shown = event(reached);
+        assert!(event_stops(&shown));
+        assert_eq!(
+            event_notice(&shown).as_deref(),
+            Some(
+                "Monitor 'Form reached' has been checked 3 times this turn, its limit. It is \
+                 set to pause when it cannot check, so the turn stops here. Send a message to \
+                 carry on."
+            )
+        );
+    }
+
+    /// A message the person typed wins over the stop, as it does over a
+    /// fail-closed error: nothing is said yet, and the next point that would
+    /// have checked the monitor says so and stops the turn once the message
+    /// has been answered.
+    #[test]
+    fn a_waiting_steer_holds_back_a_fail_closed_stop_at_the_cap_until_the_next_point() {
+        let mut pause = criterion(0.85);
+        pause.on_error = MonitorErrorPolicy::Pause;
+        pause.max_evals_per_turn = 1;
+        let post = MonitorTiming::PostIteration;
+        let mut state = CriterionState::default();
+        let step = state.observe(&pause, p(0.1), true);
+        assert_eq!(state.limit_step(&pause, &step, true, false), None);
+        assert!(!state.turn.fired);
+        assert!(state.limit_pending(&pause, post));
+        assert_eq!(
+            state.pending_limit_step(&pause, post, true),
+            None,
+            "still waiting"
+        );
+        assert_eq!(
+            state.pending_limit_step(&pause, post, false),
+            Some(limit(1, true))
+        );
+        assert!(state.turn.fired);
+
+        let mut state = CriterionState::default();
+        let step = state.observe(&pause, error(), true);
+        assert_eq!(step, Step::Suppressed { p: None });
+        assert_eq!(state.limit_step(&pause, &step, true, false), None);
+        assert_eq!(
+            state.pending_limit_step(&pause, post, false),
+            Some(limit(1, true))
+        );
+
+        // A criterion that stops nothing holds nothing back.
+        let mut notify = criterion(0.85);
+        notify.max_evals_per_turn = 1;
+        let mut state = CriterionState::default();
+        let step = state.observe(&notify, p(0.1), true);
+        assert_eq!(
+            state.limit_step(&notify, &step, true, false),
+            Some(limit(1, false))
+        );
+    }
+
+    /// A check that stops the turn at the cap is the one stop, and a check
+    /// that steers the agent lets the agent read the note first: neither says
+    /// the cap there.
+    #[test]
+    fn a_check_that_stops_or_steers_at_the_cap_leaves_the_cap_unsaid() {
+        let mut pause = criterion(0.85);
+        pause.on_error = MonitorErrorPolicy::Pause;
+        pause.max_evals_per_turn = 1;
+        let registry = MonitorRegistry::default();
+        registry.begin_turn("s", "t1");
+        registry.cache_settings("s", settings(vec![pause.clone()]));
+        let [one, ..] = growing();
+        assert_eq!(
+            point(&registry, &one, 0.9, false, false),
+            vec![Step::Fired {
+                action: MonitorAction::Stop,
+                p: 0.9
+            }]
+        );
+        // The turn stops there, and a turn the person carries on is new.
+        registry.begin_turn("s", "t2");
+        registry.cache_settings("s", settings(vec![pause.clone()]));
+        assert!(registry
+            .take_pending_limits("s", MonitorTiming::PostIteration, false)
+            .is_empty());
+
+        let mut state = CriterionState::default();
+        let step = state.observe(&pause, error(), false);
+        assert!(matches!(step, Step::FailedClosed { .. }));
+        assert_eq!(state.limit_step(&pause, &step, false, false), None);
+
+        let mut steer = pause.clone();
+        steer.action = MonitorAction::Steer;
+        let mut state = CriterionState::default();
+        let step = state.observe(&steer, p(0.9), false);
+        assert!(matches!(
+            step,
+            Step::Fired {
+                action: MonitorAction::Steer,
+                ..
+            }
+        ));
+        assert_eq!(state.limit_step(&steer, &step, false, false), None);
+        assert_eq!(
+            state.pending_limit_step(&steer, MonitorTiming::PostIteration, false),
+            Some(limit(1, true)),
+            "the next point that would have checked it stops the turn"
+        );
+    }
+
+    /// An error on a monitor's last check of the turn does not say it keeps
+    /// trying.
+    #[test]
+    fn an_error_on_the_last_check_does_not_say_it_keeps_trying() {
+        let mut c = criterion(0.85);
+        c.max_evals_per_turn = 2;
+        let mut state = CriterionState::default();
+        state.observe(&c, p(0.1), false);
+        let step = state.observe(&c, error(), false);
+        assert_eq!(
+            step,
+            Step::ErrorNotice {
+                error: "connection refused".into(),
+                off: true
+            }
+        );
+        assert_eq!(
+            event_notice(&event(step.clone())).as_deref(),
+            Some(
+                "Monitor 'Form reached' could not be checked (connection refused), and is off \
+                 for the rest of this turn."
+            )
+        );
+        assert!(!state.turn.disabled, "its limit, not the error, is why");
+        assert_eq!(
+            state.limit_step(&c, &step, false, false),
+            Some(limit(2, false))
+        );
+
+        c.max_evals_per_turn = 3;
+        let mut state = CriterionState::default();
+        state.observe(&c, p(0.1), false);
+        assert!(matches!(
+            state.observe(&c, error(), false),
+            Step::ErrorNotice { off: false, .. }
+        ));
+    }
+
+    /// A criterion already off this turn has said why it stopped checking.
+    #[test]
+    fn a_criterion_off_for_the_turn_reports_no_cap() {
+        let mut c = criterion(0.85);
+        c.max_evals_per_turn = 1;
+        let mut state = CriterionState::default();
+        let step = state.observe(
+            &c,
+            Observation::Error {
+                message: "private chat".into(),
+                refused: true,
+            },
+            false,
+        );
+        assert!(matches!(step, Step::ErrorNotice { off: true, .. }));
+        assert_eq!(state.limit_step(&c, &step, false, false), None);
+        assert!(!state.limit_pending(&c, MonitorTiming::PostIteration));
+        assert_eq!(
+            state.pending_limit_step(&c, MonitorTiming::PostIteration, false),
+            None
+        );
+    }
+
+    /// A criterion with its own id and name, for points with several.
+    fn named(id: &str, threshold: f64) -> MonitorCriterion {
+        let mut c = criterion(threshold);
+        c.id = id.into();
+        c.name = id.into();
+        c
+    }
+
+    fn stop_at(p: f64) -> Step {
+        Step::Fired {
+            action: MonitorAction::Stop,
+            p,
+        }
+    }
+
+    /// A check that reaches one monitor's cap where another monitor stops the
+    /// turn skips nothing: that stop is the point's one notice, under either
+    /// error policy, and the capped monitor has not acted. The next turn is
+    /// a new one, with its checks back.
+    #[test]
+    fn another_monitors_stop_at_the_same_point_leaves_the_cap_unsaid() {
+        for on_error in [MonitorErrorPolicy::Notify, MonitorErrorPolicy::Pause] {
+            let mut capped = named("cap", 0.95);
+            capped.max_evals_per_turn = 1;
+            capped.on_error = on_error;
+            let registry = MonitorRegistry::default();
+            registry.begin_turn("s", "t1");
+            registry.cache_settings("s", settings(vec![capped.clone(), named("stop", 0.5)]));
+            let [one, ..] = growing();
+            assert_eq!(
+                steps_by_criterion(&registry, &one, 0.9, false, false),
+                vec![("stop".to_string(), stop_at(0.9))],
+                "{on_error:?}"
+            );
+            let items = registry.marker_items("s");
+            assert!(
+                !items[0].fired,
+                "{on_error:?}: the capped monitor did not act"
+            );
+            assert!(items[1].fired);
+
+            // A fail-closed error at the same point is a stop too.
+            let mut failing = named("fails", 0.5);
+            failing.on_error = MonitorErrorPolicy::Pause;
+            registry.begin_turn("s", "t2");
+            registry.cache_settings("s", settings(vec![capped.clone(), failing]));
+            let [_, two, ..] = growing();
+            let planned = registry.plan("s", MonitorTiming::PostIteration, &two, 1);
+            // The model answers for the capped monitor only.
+            let events = registry.apply(
+                "s",
+                &planned,
+                vec![Ok(vec![decision_for("cap", 0.1)])],
+                false,
+                false,
+            );
+            assert_eq!(events.len(), 1, "{on_error:?}: {events:?}");
+            assert_eq!(events[0].criterion_id, "fails");
+            assert!(matches!(events[0].step, Step::FailedClosed { .. }));
+            assert!(!registry.marker_items("s")[0].fired, "{on_error:?}");
+        }
+    }
+
+    /// Two caps reached at one point where the turn goes on: a fail-closed
+    /// one stops the turn and is the point's one notice; the others, a second
+    /// fail-closed one and a notify one, do not say a stop or a skipped check
+    /// the person never sees. Notify caps alone are each said.
+    #[test]
+    fn caps_reached_at_one_point_make_one_stop() {
+        let caps: Vec<MonitorCriterion> = [
+            ("first", MonitorErrorPolicy::Notify),
+            ("second", MonitorErrorPolicy::Pause),
+            ("third", MonitorErrorPolicy::Pause),
+        ]
+        .into_iter()
+        .map(|(id, on_error)| {
+            let mut c = named(id, 0.95);
+            c.max_evals_per_turn = 1;
+            c.on_error = on_error;
+            c
+        })
+        .collect();
+        let registry = MonitorRegistry::default();
+        registry.begin_turn("s", "t1");
+        registry.cache_settings("s", settings(caps.clone()));
+        let [one, two, ..] = growing();
+        assert_eq!(
+            steps_by_criterion(&registry, &one, 0.1, false, false),
+            vec![("second".to_string(), limit(1, true))]
+        );
+        let fired: Vec<bool> = registry
+            .marker_items("s")
+            .iter()
+            .map(|item| item.fired)
+            .collect();
+        assert_eq!(fired, vec![false, true, false]);
+
+        let notify: Vec<MonitorCriterion> = caps
+            .iter()
+            .cloned()
+            .map(|mut c| {
+                c.on_error = MonitorErrorPolicy::Notify;
+                c
+            })
+            .collect();
+        registry.begin_turn("s", "t2");
+        registry.cache_settings("s", settings(notify));
+        assert_eq!(
+            steps_by_criterion(&registry, &two, 0.1, false, false),
+            vec![
+                ("first".to_string(), limit(1, false)),
+                ("second".to_string(), limit(1, false)),
+                ("third".to_string(), limit(1, false)),
+            ]
+        );
+    }
+
+    /// A fail-closed cap reached where another monitor steers the agent is
+    /// left for the next point that would have checked it: the steer stands,
+    /// so the agent reads its note, and then the cap stops the turn.
+    #[test]
+    fn a_steer_at_the_same_point_holds_a_fail_closed_cap_until_the_next_point() {
+        let mut capped = named("cap", 0.95);
+        capped.action = MonitorAction::Notify;
+        capped.max_evals_per_turn = 1;
+        capped.on_error = MonitorErrorPolicy::Pause;
+        let mut steer = named("steer", 0.5);
+        steer.action = MonitorAction::Steer;
+        let registry = MonitorRegistry::default();
+        registry.begin_turn("s", "t1");
+        registry.cache_settings("s", settings(vec![capped, steer]));
+        let [one, two, ..] = growing();
+        let first = steps_by_criterion(&registry, &one, 0.9, false, false);
+        assert_eq!(
+            first,
+            vec![(
+                "steer".to_string(),
+                Step::Fired {
+                    action: MonitorAction::Steer,
+                    p: 0.9
+                }
+            )]
+        );
+        assert!(!first.iter().any(|(_, step)| step_stops(step)));
+        assert!(!registry.marker_items("s")[0].fired);
+        assert!(registry.any_due("s", MonitorTiming::PostIteration));
+        assert_eq!(
+            steps_by_criterion(&registry, &two, 0.9, false, false),
+            vec![("cap".to_string(), limit(1, true))]
+        );
+        assert!(registry.marker_items("s")[0].fired);
+    }
+
+    /// A stop held back on a monitor's last check of the turn, because a
+    /// message the person typed was waiting, is kept under either error
+    /// policy: once the message has been answered, the next point that would
+    /// have checked the monitor makes it, as the fire it is, with no notice of
+    /// the limit; the monitor latches, so the turn the person carries on does
+    /// not stop on it again.
+    #[test]
+    fn a_stop_held_back_on_the_last_check_is_made_once_the_message_is_answered() {
+        for on_error in [MonitorErrorPolicy::Notify, MonitorErrorPolicy::Pause] {
+            let mut c = criterion(0.85);
+            c.max_evals_per_turn = 1;
+            c.on_error = on_error;
+            let post = MonitorTiming::PostIteration;
+            let registry = MonitorRegistry::default();
+            registry.begin_turn("s", "t1");
+            registry.cache_settings("s", settings(vec![c.clone()]));
+            let [one, two, three, four] = growing();
+
+            assert_eq!(
+                point(&registry, &one, 0.9, true, false),
+                vec![Step::Suppressed { p: Some(0.9) }],
+                "{on_error:?}: no limit beside it"
+            );
+            assert!(!registry.marker_items("s")[0].fired);
+            assert!(registry.any_due("s", post));
+            assert!(
+                point(&registry, &two, 0.9, true, false).is_empty(),
+                "{on_error:?}: the message still waits"
+            );
+            assert!(
+                registry
+                    .take_pending_limits("s", MonitorTiming::TurnEnd, false)
+                    .is_empty(),
+                "only at its own timing"
+            );
+            assert_eq!(
+                point(&registry, &three, 0.2, false, true),
+                vec![stop_at(0.9)],
+                "{on_error:?}: made with the P it fired at, even as the turn ends"
+            );
+            assert!(registry.marker_items("s")[0].fired);
+            assert!(!registry.any_due("s", post));
+            assert!(
+                point(&registry, &four, 0.9, false, false).is_empty(),
+                "{on_error:?}: once a turn"
+            );
+
+            registry.begin_turn("s", "t2");
+            registry.cache_settings("s", settings(vec![c.clone()]));
+            assert!(
+                point(&registry, &two, 0.9, false, true).is_empty(),
+                "{on_error:?}: latched, so one stop for the one condition"
+            );
+        }
+    }
+
+    /// What several criteria have left at one point makes one stop, and no
+    /// other limit is said beside it. Two fail-closed caps and a stop held
+    /// back on a last check would each stop the turn; the held stop is made,
+    /// since it is a condition seen and latches, and neither cap nor a
+    /// notify cap says anything. Without the held stop, the first fail-closed
+    /// cap is said, alone.
+    #[test]
+    fn what_is_left_for_one_point_makes_one_stop() {
+        let caps: Vec<MonitorCriterion> = [
+            ("plain", MonitorErrorPolicy::Notify),
+            ("cap", MonitorErrorPolicy::Pause),
+            ("cap2", MonitorErrorPolicy::Pause),
+        ]
+        .into_iter()
+        .map(|(id, on_error)| {
+            let mut c = named(id, 0.95);
+            c.max_evals_per_turn = 1;
+            c.on_error = on_error;
+            c
+        })
+        .collect();
+        let mut held = named("held", 0.5);
+        held.max_evals_per_turn = 1;
+        let registry = MonitorRegistry::default();
+        registry.begin_turn("s", "t1");
+        let mut all = caps.clone();
+        all.insert(2, held);
+        registry.cache_settings("s", settings(all));
+        let [one, two, three, four] = growing();
+        let fired = |registry: &MonitorRegistry| -> Vec<bool> {
+            registry
+                .marker_items("s")
+                .iter()
+                .map(|item| item.fired)
+                .collect()
+        };
+        // A message waits and the reply ends the turn: nothing is said yet.
+        assert_eq!(
+            steps_by_criterion(&registry, &one, 0.9, true, true),
+            vec![("held".to_string(), Step::Suppressed { p: Some(0.9) })]
+        );
+        assert_eq!(
+            steps_by_criterion(&registry, &two, 0.9, false, false),
+            vec![("held".to_string(), stop_at(0.9))]
+        );
+        assert_eq!(fired(&registry), vec![false, false, true, false]);
+
+        registry.begin_turn("s", "t2");
+        registry.cache_settings("s", settings(caps));
+        assert!(steps_by_criterion(&registry, &three, 0.1, false, true).is_empty());
+        assert_eq!(
+            steps_by_criterion(&registry, &four, 0.1, false, false),
+            vec![("cap".to_string(), limit(1, true))]
+        );
+        assert_eq!(fired(&registry), vec![false, true, false]);
+    }
+
+    /// Two monitors that each held back a stop on their last check make both
+    /// stops at the next point, as both would fire at one check without the
+    /// limit: each latches, so the turn the person carries on does not stop
+    /// on either condition again. No limit is said beside them.
+    #[test]
+    fn every_stop_held_back_at_one_point_is_made_there() {
+        let held: Vec<MonitorCriterion> = ["a", "b"]
+            .into_iter()
+            .map(|id| {
+                let mut c = named(id, 0.5);
+                c.max_evals_per_turn = 1;
+                c
+            })
+            .collect();
+        let mut plain = named("plain", 0.95);
+        plain.max_evals_per_turn = 1;
+        let mut all = held.clone();
+        all.push(plain);
+        let registry = MonitorRegistry::default();
+        registry.begin_turn("s", "t1");
+        registry.cache_settings("s", settings(all.clone()));
+        let [one, two, three, ..] = growing();
+        assert_eq!(
+            steps_by_criterion(&registry, &one, 0.9, true, false),
+            vec![
+                ("a".to_string(), Step::Suppressed { p: Some(0.9) }),
+                ("b".to_string(), Step::Suppressed { p: Some(0.9) }),
+                ("plain".to_string(), limit(1, false)),
+            ]
+        );
+        assert_eq!(
+            steps_by_criterion(&registry, &two, 0.2, false, false),
+            vec![
+                ("a".to_string(), stop_at(0.9)),
+                ("b".to_string(), stop_at(0.9)),
+            ]
+        );
+        let fired: Vec<bool> = registry
+            .marker_items("s")
+            .iter()
+            .map(|item| item.fired)
+            .collect();
+        assert_eq!(fired, vec![true, true, false]);
+        assert!(!registry.any_due("s", MonitorTiming::PostIteration));
+
+        registry.begin_turn("s", "t2");
+        registry.cache_settings("s", settings(all));
+        // The reply ends the turn here, so no limit is said either.
+        assert!(
+            steps_by_criterion(&registry, &three, 0.9, false, true).is_empty(),
+            "both latched: one stop for each condition"
+        );
+    }
+
+    /// A `steer` that fires where another monitor stops the turn is held
+    /// back: the turn stops before the agent could read a note, so none is
+    /// asked for and no notice says the agent was told. The monitor stays
+    /// armed, so its next check, in the turn the person carries on, tells the
+    /// agent if the answer is still there. A `notify` fire beside the stop is
+    /// still shown: it tells the person, and the person sees it.
+    #[test]
+    fn a_steer_beside_a_stop_is_held_back_and_stays_armed() {
+        let mut steer = named("steer", 0.5);
+        steer.action = MonitorAction::Steer;
+        steer.consecutive = 2;
+        let mut notify = named("notify", 0.5);
+        notify.action = MonitorAction::Notify;
+        let mut stop = named("stop", 0.5);
+        stop.consecutive = 2;
+        let all = vec![stop, steer.clone(), notify];
+        let registry = MonitorRegistry::default();
+        registry.begin_turn("s", "t1");
+        registry.cache_settings("s", settings(all.clone()));
+        let [one, two, three, four] = growing();
+        assert_eq!(
+            steps_by_criterion(&registry, &one, 0.9, false, false),
+            vec![(
+                "notify".to_string(),
+                Step::Fired {
+                    action: MonitorAction::Notify,
+                    p: 0.9
+                }
+            )]
+        );
+        let events = point_events(
+            &registry,
+            MonitorTiming::PostIteration,
+            &two,
+            0.9,
+            false,
+            false,
+        );
+        let steps: Vec<(String, Step)> = events
+            .iter()
+            .map(|event| (event.criterion_id.clone(), event.step.clone()))
+            .collect();
+        assert_eq!(
+            steps,
+            vec![
+                ("stop".to_string(), stop_at(0.9)),
+                ("steer".to_string(), Step::Suppressed { p: Some(0.9) }),
+            ]
+        );
+        assert!(events.iter().all(|event| steer_note(event).is_none()));
+        assert_eq!(
+            events.iter().filter_map(event_notice).count(),
+            1,
+            "only the stop is said"
+        );
+        let fired: Vec<bool> = registry
+            .marker_items("s")
+            .iter()
+            .map(|item| item.fired)
+            .collect();
+        assert_eq!(fired, vec![true, false, true]);
+
+        registry.begin_turn("s", "t2");
+        registry.cache_settings("s", settings(all));
+        assert_eq!(
+            steps_by_criterion(&registry, &three, 0.9, false, false),
+            vec![(
+                "steer".to_string(),
+                Step::Fired {
+                    action: MonitorAction::Steer,
+                    p: 0.9
+                }
+            )],
+            "still at its threshold count, so its next check fires"
+        );
+        assert!(steps_by_criterion(&registry, &four, 0.9, false, false).is_empty());
+
+        // A fail-closed error beside it is a stop too.
+        let mut failing = named("fails", 0.5);
+        failing.on_error = MonitorErrorPolicy::Pause;
+        let mut steer = named("steer", 0.5);
+        steer.action = MonitorAction::Steer;
+        let registry = MonitorRegistry::default();
+        registry.begin_turn("s", "t1");
+        registry.cache_settings("s", settings(vec![failing, steer]));
+        let planned = registry.plan("s", MonitorTiming::PostIteration, &one, 1);
+        // The model answers for the steer monitor only.
+        let events = registry.apply(
+            "s",
+            &planned,
+            vec![Ok(vec![decision_for("steer", 0.9)])],
+            false,
+            false,
+        );
+        assert_eq!(events.len(), 2, "{events:?}");
+        assert!(matches!(events[0].step, Step::FailedClosed { .. }));
+        assert_eq!(events[1].step, Step::Suppressed { p: Some(0.9) });
+        assert!(!registry.marker_items("s")[1].fired);
     }
 
     fn conversation(texts: &[&str]) -> Conversation {
@@ -1504,6 +2698,7 @@ mod tests {
             &planned,
             vec![Ok(vec![decision_for("m1", 0.3), decision_for("m2", 0.9)])],
             false,
+            false,
         );
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].criterion_id, "m2");
@@ -1542,6 +2737,7 @@ mod tests {
             "s",
             &planned,
             vec![Err(DecisionError::Refused("this chat is private".into()))],
+            false,
             false,
         );
         assert_eq!(events.len(), 1);

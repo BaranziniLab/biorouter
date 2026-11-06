@@ -20,7 +20,7 @@ use biorouter::decision::settings::{
     DecisionSettings, MonitorAction, MonitorCriterion, MonitorErrorPolicy, MonitorTiming,
     MonitorWindow, MAX_MONITORS,
 };
-use biorouter::decision::{DecisionKind, DecisionModelRef, Question};
+use biorouter::decision::{DecisionKind, DecisionModelRef, Question, Threshold};
 use biorouter::session::SessionManager;
 
 use super::apps::configured_port;
@@ -321,9 +321,22 @@ fn action_text(action: MonitorAction) -> &'static str {
     }
 }
 
-/// What a monitor compares, readable: `P(yes) ≥ 0.85`, `P(rrms) ≥ 0.70`.
+/// What a monitor compares, readable: `P(yes) ≥ 0.85`, `P(rrms) ≥ 0.70`, and
+/// for a score `P(at least mild) ≥ 0.85`, the level named by its label whether
+/// `option` gives the label or its index, as `decide` names the same threshold.
 pub fn condition_text(monitor: &MonitorCriterion) -> String {
-    let answer = monitor.option.as_deref().unwrap_or("yes");
+    let answer = match (monitor.pass_threshold(), &monitor.question.kind) {
+        (Ok(Threshold::AtLeastLevel { level, .. }), DecisionKind::Score { levels }) => {
+            let label = levels
+                .get(level)
+                .map(|label| label.trim())
+                .filter(|label| !label.is_empty())
+                .map(str::to_string)
+                .unwrap_or_else(|| format!("level {level}"));
+            format!("at least {label}")
+        }
+        _ => monitor.option.as_deref().unwrap_or("yes").to_string(),
+    };
     format!("P({answer}) ≥ {}", format_p(monitor.threshold))
 }
 
@@ -769,6 +782,31 @@ mod tests {
         .contains("at most 8"));
         assert_eq!(slug("  !!  "), "monitor");
         assert_eq!(slug("EDSS: stated?"), "edss-stated");
+    }
+
+    /// A score monitor (set over HTTP) names the lowest level that counts by its
+    /// label, whether its `option` holds the label or the level's index; it used
+    /// to print the raw option, so `"1"` read as `P(1)`.
+    #[test]
+    fn condition_text_names_a_score_level_by_its_label() {
+        let mut monitor = build_monitor(
+            &add(&["--name", "Severity", "--ask", "q", "--threshold", "0.85"]),
+            &[],
+        )
+        .unwrap();
+        assert_eq!(condition_text(&monitor), "P(yes) ≥ 0.85");
+        monitor.option = Some("no".to_string());
+        assert_eq!(condition_text(&monitor), "P(no) ≥ 0.85");
+
+        monitor.question.kind = DecisionKind::Score {
+            levels: vec!["none".into(), "mild".into(), "severe".into()],
+        };
+        monitor.option = Some("mild".to_string());
+        assert_eq!(condition_text(&monitor), "P(at least mild) ≥ 0.85");
+        monitor.option = Some("2".to_string());
+        assert_eq!(condition_text(&monitor), "P(at least severe) ≥ 0.85");
+        monitor.option = Some("0".to_string());
+        assert_eq!(condition_text(&monitor), "P(at least none) ≥ 0.85");
     }
 
     #[test]

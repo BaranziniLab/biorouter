@@ -11115,19 +11115,43 @@ impl Agent {
     /// typed: either one wins, and the evaluation is dropped with nothing
     /// observed (the window is asked again at the next point). A plain `async
     /// fn` the loop boxes, so none of this joins `reply_internal`'s frame.
+    /// `turn_ending`: the turn is about to end at this point (see
+    /// [`crate::decision::monitor::MonitorRegistry::apply`]); a structured
+    /// final output waiting to be emitted counts as well, read here.
     async fn run_monitor_point(
         &self,
         session_id: &str,
         timing: crate::decision::settings::MonitorTiming,
         conversation: &Conversation,
         iteration: u32,
+        turn_ending: bool,
         cancel_token: Option<&CancellationToken>,
     ) -> Result<MonitorVerdict> {
+        // A workflow with a response schema ends its turn by calling the
+        // final-output tool, so the reply never sets `exit_chat`; the loop
+        // top then emits the output and ends the turn with no further point
+        // (`take_structured_final_output_action` returning `Emit`).
+        let turn_ending = turn_ending || {
+            let output_waiting = self
+                .final_output_tool
+                .lock()
+                .await
+                .as_ref()
+                .is_some_and(|tool| tool.final_output.is_some());
+            output_waiting && delegated_work_supervision_prompt(session_id).is_none()
+        };
         let (previous_phase, _) = self.loop_phase.snapshot();
         self.loop_phase
             .enter(crate::agents::loop_phase::LoopPhase::Monitoring);
         let verdict = self
-            .evaluate_monitor_point(session_id, timing, conversation, iteration, cancel_token)
+            .evaluate_monitor_point(
+                session_id,
+                timing,
+                conversation,
+                iteration,
+                turn_ending,
+                cancel_token,
+            )
             .await;
         self.loop_phase.enter(previous_phase);
         verdict
@@ -11186,11 +11210,25 @@ impl Agent {
         timing: crate::decision::settings::MonitorTiming,
         conversation: &Conversation,
         iteration: u32,
+        turn_ending: bool,
         cancel_token: Option<&CancellationToken>,
     ) -> Result<MonitorVerdict> {
         use crate::decision::monitor;
         let registry = &self.decisions.monitors;
         let mut verdict = MonitorVerdict::default();
+        let mut notes: Vec<String> = Vec::new();
+        // A criterion this point would have checked but for its per-turn
+        // limit says so first, or makes the stop its last check held back;
+        // one that stops the turn ends the point here, before anything is
+        // read or sent. These reports are never a `steer`, so they bring no
+        // note, and no note of this point is asked for once one stops it.
+        let limits =
+            registry.take_pending_limits(session_id, timing, self.has_pending_user_direct_steer());
+        self.fold_monitor_events(session_id, &limits, &mut verdict, &mut notes)
+            .await;
+        if verdict.stop {
+            return Ok(verdict);
+        }
         let custom = self.decisions.service.custom();
         let service: &crate::decision::DecisionService = match custom.as_deref() {
             Some(service) => service,
@@ -11253,9 +11291,38 @@ impl Agent {
             &planned,
             outcomes,
             self.has_pending_user_direct_steer(),
+            turn_ending,
         );
-        let mut notes: Vec<String> = Vec::new();
-        for event in &events {
+        self.fold_monitor_events(session_id, &events, &mut verdict, &mut notes)
+            .await;
+        // `apply` holds back a steer that fires beside a stop, so a point
+        // that stops brings no note; the guard keeps it that way.
+        if !verdict.stop && !notes.is_empty() {
+            // #59 / #66 SHAPE 2: model-only, named for the client, like the
+            // done gate's feedback.
+            let (note, published) = persist_steering_message(
+                &self.config.session_manager,
+                session_id,
+                notes.join("\n\n"),
+            )
+            .await?;
+            verdict.events.extend(published);
+            verdict.steer = Some(Box::new(note));
+        }
+        Ok(verdict)
+    }
+
+    /// Store and queue each event's notice, mark the verdict to stop when an
+    /// event ends the turn, and collect a `steer` monitor's note in `notes`.
+    async fn fold_monitor_events(
+        &self,
+        session_id: &str,
+        events: &[crate::decision::monitor::MonitorEvent],
+        verdict: &mut MonitorVerdict,
+        notes: &mut Vec<String>,
+    ) {
+        use crate::decision::monitor;
+        for event in events {
             if let Some(text) = monitor::event_notice(event) {
                 let notice = self.durable_notice(session_id, text).await;
                 verdict.events.push(AgentEvent::Message(notice));
@@ -11270,19 +11337,6 @@ impl Agent {
             }
             notes.extend(monitor::steer_note(event));
         }
-        if !verdict.stop && !notes.is_empty() {
-            // #59 / #66 SHAPE 2: model-only, named for the client, like the
-            // done gate's feedback.
-            let (note, published) = persist_steering_message(
-                &self.config.session_manager,
-                session_id,
-                notes.join("\n\n"),
-            )
-            .await?;
-            verdict.events.extend(published);
-            verdict.steer = Some(Box::new(note));
-        }
-        Ok(verdict)
     }
 
     /// Whether this turn has anything for the decision marker. Synchronous.
@@ -13848,7 +13902,9 @@ impl Agent {
                 // iteration's results are folded in, the exit gates are next.
                 // The check is synchronous, so a chat with no monitor due pays
                 // nothing; the evaluation and its state live in the boxed
-                // helper and on the Agent, never in this frame.
+                // helper and on the Agent, never in this frame. `exit_chat`
+                // tells it the turn ends here unless something reopens it;
+                // the helper adds a structured final output about to end it.
                 if self.decisions.monitors.any_due(
                     &session_config.id,
                     crate::decision::settings::MonitorTiming::PostIteration,
@@ -13859,6 +13915,7 @@ impl Agent {
                         crate::decision::settings::MonitorTiming::PostIteration,
                         &conversation,
                         turns_taken,
+                        exit_chat,
                         cancel_token.as_ref(),
                     ))
                     .await?;
@@ -14029,6 +14086,7 @@ impl Agent {
                             crate::decision::settings::MonitorTiming::TurnEnd,
                             &conversation,
                             turns_taken,
+                            true,
                             cancel_token.as_ref(),
                         ))
                         .await?;

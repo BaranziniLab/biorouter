@@ -542,6 +542,42 @@ fn validate_placement(requested: Option<&str>) -> Result<&'static str, String> {
     }
 }
 
+/// The refusal for a child that would run on a decision model, or `None` for
+/// any other provider.
+///
+/// A decision model answers one typed question (yes/no, choice, score) about
+/// the text it is sent, and has no agent loop: `Agent::reply` hands a chat
+/// bound to one to the decision-chat path (`bound_decision_chat_provider`).
+/// A child's prompt is "Begin." with its task in the system prompt, so that
+/// path answered with its how-to-ask text, and `subagent_result` filed it as a
+/// `Completed` run: the parent was told the task was done. Refusing before the
+/// child exists is the only outcome that tells the parent the truth.
+fn decision_model_refusal(provider: &str) -> Option<String> {
+    crate::providers::decision::chat::is_decision_chat_provider(provider).then(|| {
+        format!(
+            "`{provider}` is a decision model. It answers yes/no, choice or score questions \
+             and cannot carry out a subagent's task. Give the subagent a chat model, or call \
+             `{}` to screen items with a decision model.",
+            crate::agents::decisions_extension::DECIDE_TOOL_NAME
+        )
+    })
+}
+
+/// The provider a child is about to be constructed under: the one `settings`
+/// names, else the parent's own. A `model` or `temperature` override keeps the
+/// parent's provider name ([`apply_provider_override_and_composite_fork`]), and
+/// no `settings` at all keeps the parent's instance, so both inherit it.
+fn requested_child_provider<'a>(
+    params: &'a SubagentParams,
+    task_config: &'a TaskConfig,
+) -> &'a str {
+    params
+        .settings
+        .as_ref()
+        .and_then(|settings| settings.provider.as_deref())
+        .unwrap_or_else(|| task_config.provider.get_name())
+}
+
 /// BR-71 §4.5 step 3: announce the child over the WorkspaceBridge. Background
 /// open (never steals the composer) + a subagent badge carrying the parent link.
 /// Returns the resolved visibility so the caller can fold
@@ -908,6 +944,11 @@ pub struct SubagentSettings {
 
 pub fn create_subagent_tool(sub_workflows: &[SubWorkflow]) -> Tool {
     let description = build_tool_description(sub_workflows);
+    // Named from the list the refusal checks, so the advice cannot drift from it.
+    let provider_description = format!(
+        "Override LLM provider. Use a chat model: a decision model provider ({}) is refused.",
+        crate::providers::decision::chat::DECISION_CHAT_PROVIDERS.join(", ")
+    );
 
     let schema = json!({
         "type": "object",
@@ -933,7 +974,7 @@ pub fn create_subagent_tool(sub_workflows: &[SubWorkflow]) -> Tool {
             "settings": {
                 "type": "object",
                 "properties": {
-                    "provider": {"type": "string", "description": "Override LLM provider"},
+                    "provider": {"type": "string", "description": provider_description},
                     "model": {"type": "string", "description": "Override model"},
                     "temperature": {"type": "number", "description": "Override temperature"}
                 },
@@ -1288,6 +1329,19 @@ fn handle_subagent_tool_inner(
         return ToolCallResult::from(Err(ErrorData {
             code: ErrorCode::INVALID_PARAMS,
             message: Cow::from(e),
+            data: None,
+        }));
+    }
+
+    // Here for the same reason, and before any provider is constructed: a child
+    // on a decision model cannot do its task. `apply_settings_overrides` asks
+    // again of the instance the factory returns, on both doors.
+    if let Some(refusal) =
+        decision_model_refusal(requested_child_provider(&parsed_params, &task_config))
+    {
+        return ToolCallResult::from(Err(ErrorData {
+            code: ErrorCode::INVALID_PARAMS,
+            message: Cow::from(refusal),
             data: None,
         }));
     }
@@ -2497,6 +2551,14 @@ pub async fn apply_settings_overrides(
     let privacy_enforced = crate::privacy::privacy_tiers_enabled();
 
     apply_provider_override_and_composite_fork(&mut task_config, params.settings.as_ref()).await?;
+
+    // The tool entry point refused a decision model by the requested name. The
+    // instance can still be one: with `BIOROUTER_LEAD_MODEL` set the factory
+    // returns a composite whose name is its lead's, and `Agent::reply` routes
+    // on that name. Asked here, before the row exists, on both spawn doors.
+    if let Some(refusal) = decision_model_refusal(task_config.provider.get_name()) {
+        return Err(anyhow!(refusal));
+    }
 
     // Judge the constructed instance: the factory can return a composite under
     // the requested provider name.
@@ -7578,5 +7640,245 @@ mod tests {
             "the parent must be told which capability its child lost: {text}"
         );
         crate::workspace_services::clear_test_override();
+    }
+
+    // -----------------------------------------------------------------------
+    // A child on a decision model is refused before it exists.
+    //
+    // A decision model has no agent loop. A child bound to one reached
+    // `Agent::reply`'s decision-chat path, answered its "Begin." with the
+    // how-to-ask text, and came back to the parent as `Completed`. These drive
+    // the real doors and count rows, because the bug was a run that existed.
+    // -----------------------------------------------------------------------
+
+    /// The sentence the parent's model reads, written out here rather than
+    /// built by the helper under test, so a change to the wording fails.
+    fn decision_refusal_sentence(provider: &str) -> String {
+        format!(
+            "`{provider}` is a decision model. It answers yes/no, choice or score questions \
+             and cannot carry out a subagent's task. Give the subagent a chat model, or call \
+             `decisions__decide` to screen items with a decision model."
+        )
+    }
+
+    /// Off-box Ollama, so both Ollama flavours resolve Public like the parent
+    /// below: without the refusal these spawns pass every privacy gate and
+    /// run, which is the bug, rather than being refused for a tier reason.
+    fn off_box_ollama() -> HashMap<String, String> {
+        HashMap::from([(
+            "OLLAMA_HOST".to_string(),
+            "https://ollama.example.com".to_string(),
+        )])
+    }
+
+    fn public_tiered_parent() -> std::sync::Arc<dyn crate::providers::base::Provider> {
+        std::sync::Arc::new(TieredParent {
+            tier: ProviderTier::Public,
+        })
+    }
+
+    fn baseten_decision_parent() -> std::sync::Arc<dyn crate::providers::base::Provider> {
+        std::sync::Arc::new(
+            crate::providers::decision::chat::BasetenDecisionChatProvider::with_model(
+                crate::model::ModelConfig::new_or_fail("joey-1"),
+            ),
+        )
+    }
+
+    #[derive(Clone, Copy, Debug)]
+    enum SpawnDoor {
+        /// `handle_subagent_tool`: every parent-facing spawn, detached.
+        Background,
+        /// `handle_subagent_tool_inner` with no supervision default and
+        /// `background` unset: `run_blocking_child`.
+        Blocking,
+    }
+
+    const BOTH_DOORS: [SpawnDoor; 2] = [SpawnDoor::Background, SpawnDoor::Blocking];
+
+    /// One spawn through one door, into a fresh store, returning the call's
+    /// result and how many sessions the store holds afterwards. The overrides
+    /// wrap the result future, which is where the provider is resolved.
+    async fn spawn_through(
+        door: SpawnDoor,
+        params: Value,
+        parent: std::sync::Arc<dyn crate::providers::base::Provider>,
+        overrides: HashMap<String, String>,
+    ) -> (Result<CallToolResult, ErrorData>, u64) {
+        let temp = tempfile::TempDir::new().unwrap();
+        let root = temp.path().to_path_buf();
+        let sm = std::sync::Arc::new(crate::session::SessionManager::new(root.clone()));
+        let config = AgentConfig::new(
+            sm.clone(),
+            crate::config::permission::PermissionManager::instance(),
+            None,
+            crate::config::BioRouterMode::Auto,
+        );
+        let task_config = TaskConfig::new(parent, "decision-parent", &root, vec![]);
+        let call = match door {
+            SpawnDoor::Background => handle_subagent_tool(
+                &config,
+                params,
+                task_config,
+                HashMap::new(),
+                root.clone(),
+                None,
+            ),
+            SpawnDoor::Blocking => handle_subagent_tool_inner(
+                &config,
+                params,
+                task_config,
+                HashMap::new(),
+                root.clone(),
+                None,
+                None,
+            ),
+        };
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(20),
+            crate::config::with_config_overrides(overrides, call.result),
+        )
+        .await
+        .unwrap_or_else(|_| {
+            panic!("{door:?}: a refusal returns at once; this spawn queued or ran instead")
+        });
+        (result, sm.count_all_sessions().await.unwrap())
+    }
+
+    /// The direct case: the spawning model names a decision provider.
+    #[tokio::test]
+    async fn a_spawn_naming_a_decision_model_is_refused_at_both_doors_and_creates_no_child() {
+        // Every concurrency permit held: the entry point's refusal returns at
+        // once on both doors, while a spawn that got past it would park in the
+        // blocking door's queue and time out. "Before anything" is measured.
+        let _serialised = QUEUE_DEPTH_TESTS.lock().await;
+        let _held = hold_every_subagent_permit().await;
+        for provider in ["baseten_decision", "ollama_decision"] {
+            for door in BOTH_DOORS {
+                let (result, sessions) = spawn_through(
+                    door,
+                    json!({
+                        "instructions": "Screen these abstracts for human studies.",
+                        "settings": { "provider": provider }
+                    }),
+                    public_tiered_parent(),
+                    off_box_ollama(),
+                )
+                .await;
+                let err = result.expect_err("a decision model cannot run a subagent");
+                assert_eq!(err.code, ErrorCode::INVALID_PARAMS, "{provider} {door:?}");
+                assert_eq!(
+                    err.message,
+                    decision_refusal_sentence(provider),
+                    "{provider} {door:?}"
+                );
+                assert_eq!(
+                    sessions, 0,
+                    "{provider} {door:?}: the refusal must precede the child's row"
+                );
+            }
+        }
+    }
+
+    /// Inheritance, defensively: a decision chat's reply never dispatches
+    /// tools, and `/agent/call_tool` cannot reach the spawn tool, so no door
+    /// hands a decision model to a child today. If one ever does, a child
+    /// that names no provider, or only a model or a temperature, keeps that
+    /// provider and must be refused.
+    #[tokio::test]
+    async fn a_child_that_would_inherit_a_decision_model_is_refused_and_creates_no_child() {
+        // As above: refused at the entry point, so no door reaches its queue.
+        let _serialised = QUEUE_DEPTH_TESTS.lock().await;
+        let _held = hold_every_subagent_permit().await;
+        let asks = [
+            json!({ "instructions": "Summarise the cohort." }),
+            json!({ "instructions": "Summarise the cohort.", "settings": { "model": "joey-1" } }),
+            json!({ "instructions": "Summarise the cohort.", "settings": { "temperature": 0.2 } }),
+        ];
+        for ask in asks {
+            for door in BOTH_DOORS {
+                let (result, sessions) =
+                    spawn_through(door, ask.clone(), baseten_decision_parent(), HashMap::new())
+                        .await;
+                let err = result.expect_err("a decision model cannot run a subagent");
+                assert_eq!(err.code, ErrorCode::INVALID_PARAMS, "{ask} {door:?}");
+                assert_eq!(
+                    err.message,
+                    decision_refusal_sentence("baseten_decision"),
+                    "{ask} {door:?}"
+                );
+                assert_eq!(
+                    sessions, 0,
+                    "{ask} {door:?}: the refusal must precede the child's row"
+                );
+            }
+        }
+    }
+
+    /// The constructed instance, which the requested name does not decide:
+    /// with `BIOROUTER_LEAD_MODEL` set, `providers::create("ollama", ..)`
+    /// returns a lead/worker composite whose name is its lead's. The entry
+    /// point sees `ollama`; `apply_settings_overrides` sees the decision model.
+    #[tokio::test]
+    async fn a_composite_led_by_a_decision_model_is_refused_and_creates_no_child() {
+        // The blocking door claims a concurrency permit before it resolves the
+        // provider, so it must not run while a queue-depth test holds them all.
+        let _serialised = QUEUE_DEPTH_TESTS.lock().await;
+        let mut overrides = off_box_ollama();
+        overrides.insert("BIOROUTER_LEAD_MODEL".to_string(), "joey-1".to_string());
+        overrides.insert(
+            "BIOROUTER_LEAD_PROVIDER".to_string(),
+            "baseten_decision".to_string(),
+        );
+        for door in BOTH_DOORS {
+            let (result, sessions) = spawn_through(
+                door,
+                json!({
+                    "instructions": "Summarise the cohort.",
+                    "settings": { "provider": "ollama" }
+                }),
+                public_tiered_parent(),
+                overrides.clone(),
+            )
+            .await;
+            let err =
+                result.expect_err("a composite led by a decision model cannot run a subagent");
+            assert_eq!(err.code, ErrorCode::INVALID_PARAMS, "{door:?}");
+            assert_eq!(
+                err.message,
+                decision_refusal_sentence("baseten_decision"),
+                "{door:?}"
+            );
+            assert_eq!(
+                sessions, 0,
+                "{door:?}: the refusal must precede the child's row"
+            );
+        }
+    }
+
+    /// The control for the three tests above: the same parent, the same off-box
+    /// host and the same door code resolve an ordinary chat provider, so what
+    /// they refuse is the decision model and nothing about the harness.
+    #[tokio::test]
+    async fn an_ordinary_provider_override_still_resolves() {
+        let params: SubagentParams = serde_json::from_value(json!({
+            "instructions": "Summarise the cohort.",
+            "settings": { "provider": "ollama" }
+        }))
+        .unwrap();
+        let task_config = TaskConfig::new(
+            public_tiered_parent(),
+            "decision-parent",
+            std::path::Path::new("."),
+            vec![],
+        );
+        assert!(decision_model_refusal(requested_child_provider(&params, &task_config)).is_none());
+        let child = crate::config::with_config_overrides(
+            off_box_ollama(),
+            apply_settings_overrides(task_config, &params),
+        )
+        .await
+        .expect("an ordinary chat provider still resolves");
+        assert_eq!(child.provider.get_name(), "ollama");
     }
 }

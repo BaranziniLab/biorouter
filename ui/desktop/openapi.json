@@ -13556,7 +13556,8 @@
           "question": {
             "$ref": "#/components/schemas/Question"
           }
-        }
+        },
+        "additionalProperties": false
       },
       "DecisionChunk": {
         "type": "object",
@@ -14067,7 +14068,8 @@
               "$ref": "#/components/schemas/MonitorCriterion"
             }
           }
-        }
+        },
+        "additionalProperties": false
       },
       "DecisionTurnMarker": {
         "type": "object",
@@ -18342,7 +18344,7 @@
           },
           "option": {
             "type": "string",
-            "description": "For a choice question: the option whose probability is compared. Binary\nquestions compare P(yes).",
+            "description": "The answer whose probability is compared: `yes` (or none) or `no` for a\nyes/no question, an option's name for a choice, and the lowest level that\ncounts for a score, by its label or its index (`\"0\"` is the lowest).",
             "nullable": true
           },
           "question": {
@@ -18365,7 +18367,8 @@
           "window": {
             "$ref": "#/components/schemas/MonitorWindow"
           }
-        }
+        },
+        "additionalProperties": false
       },
       "MonitorErrorPolicy": {
         "type": "string",
@@ -18408,7 +18411,8 @@
             "type": "boolean",
             "description": "Include tool calls and results."
           }
-        }
+        },
+        "additionalProperties": false
       },
       "ObserveEvent": {
         "oneOf": [

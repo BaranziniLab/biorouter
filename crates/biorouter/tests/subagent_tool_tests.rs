@@ -127,3 +127,26 @@ fn adhoc_tool_schema_carries_the_br71_visibility_params() {
         serde_json::json!(["tab", "split", "window"])
     );
 }
+
+/// A decision model cannot run a subagent, and the spawn refuses one. The
+/// schema says so where the model chooses a provider, naming each decision
+/// provider id, so the model is told before it asks rather than after.
+#[test]
+fn the_provider_override_says_a_decision_model_is_refused() {
+    let tool = create_subagent_tool(&[]);
+    let description = tool.input_schema["properties"]["settings"]["properties"]["provider"]
+        ["description"]
+        .as_str()
+        .expect("the provider override is described");
+
+    assert!(
+        description.contains("is refused"),
+        "the provider override must say a decision model is refused: {description}"
+    );
+    for provider in ["baseten_decision", "ollama_decision"] {
+        assert!(
+            description.contains(provider),
+            "the provider override must name `{provider}`: {description}"
+        );
+    }
+}
