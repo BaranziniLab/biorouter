@@ -11,7 +11,14 @@
 //! - `GET /crew/connections/{id}/invitation`: the invitation message a host sends.
 //! - `GET /crew/connections/{id}/join`: where this computer stands in joining, with the device
 //!   code this daemon computed itself.
-//! - `POST /crew/connections/{id}/join`: claim the join once the host approved the code.
+//! - `POST /crew/connections/{id}/join`: claim the join once the host approved the code, or,
+//!   on a server that takes joining by account, join as the account (account ownership AO-9).
+//! - `POST /crew/connections/{id}/rejoin`: add this computer again, with a new device key in
+//!   place of the saved one (AO-9).
+//! - `GET /crew/connections/{id}/account`: what the workspace knows about the account this
+//!   computer signs in to the server as (AO-3).
+//! - `POST /crew/connections/{id}/devices/acknowledge`: the person has seen the account's new
+//!   devices (AO-10).
 //!
 //! Every admission route asks for proof that a person acted, with the codes and words of
 //! `routes::crew`'s person gate. They name a saved connection, never a chat, so no chat reach
@@ -29,9 +36,10 @@ use axum::{
     Json, Router,
 };
 use biorouter::crew::authentication::{
-    self, AuthenticationSession, HandoffFailed, InvitationAdvanced, InvitationOutcome,
-    InvitationOverrides, InvitationPreview, InvitationRefusal, InvitationRefused, InvitationText,
-    JoinPerson, JoinRefused, JoinState, JoinStatus, TerminalEvent,
+    self, AccountJoined, AccountStatus, AuthenticationSession, HandoffFailed, InvitationAdvanced,
+    InvitationOutcome, InvitationOverrides, InvitationPreview, InvitationRefusal,
+    InvitationRefused, InvitationText, JoinPerson, JoinRefused, JoinState, JoinStatus,
+    TerminalEvent,
 };
 use biorouter::crew::{
     manager, ClusterMode, Connection, CrewManager, CrewRefusal, SshFailure, WorkspaceIdentityError,
@@ -368,6 +376,14 @@ pub const INVITATION_FAILED: &str = "Biorouter couldn't build an invitation for 
 pub const JOIN_STATUS_FAILED: &str = "Biorouter couldn't check this computer's join with the workspace. Try again. If it keeps failing, the Biorouter log has the details.";
 /// What `POST /crew/connections/{id}/join` answers for a failure the core did not type.
 pub const JOIN_FAILED: &str = "Biorouter couldn't finish joining the workspace. Try again. If it keeps failing, the Biorouter log has the details.";
+/// `crew_request_refused`'s sentence when adding this computer again fails for a reason the
+/// daemon cannot type.
+pub const REJOIN_FAILED: &str = "Biorouter couldn't add this computer to the workspace again. Try again. If it keeps failing, the Biorouter log has the details.";
+/// `crew_request_refused`'s sentence when the workspace could not be asked about the account.
+pub const ACCOUNT_STATUS_FAILED: &str = "Biorouter couldn't ask the workspace about your account. Try again. If it keeps failing, the Biorouter log has the details.";
+/// `crew_request_refused`'s sentence when the person's acknowledgement of new devices could not
+/// be saved.
+pub const ACKNOWLEDGE_FAILED: &str = "Biorouter couldn't save that you have seen these devices. Try again. If it keeps failing, the Biorouter log has the details.";
 
 /// A refusal from an admission route: `{code, error}` and any typed fields beside them. Every
 /// refusal carries a code, so a client can tell a refusal from a daemon without the route.
@@ -829,11 +845,11 @@ pub async fn invitation(
     path = "/crew/connections/{id}/join",
     params(("id" = String, Path, description = "The joiner's saved Crew connection")),
     responses(
-        (status = 200, description = "Where this computer stands in joining. `code` is computed here from the saved device key and the pinned workspace key, never read from the workspace's answer. `unsupported` when the workspace's server can't join by invitation", body = JoinStatus),
+        (status = 200, description = "Where this computer stands in joining. `code` is computed here from the saved device key and the pinned workspace key, never read from the workspace's answer, and is never shown against a server that takes joining by account. `unsupported` when the workspace's server can't join by invitation. On a server that takes joining by account (`account_identity_v1`): `ready` when the account may join with this computer's key and no code (it is invited, or it is the host or a member and the workspace does not know this computer), which `POST` on this route then does; `expired` for an invitation that ran out; `joined` when this computer's key is a member's device; `removed` when the workspace removed the account; `not_invited` otherwise. `ready` never joins by itself", body = JoinStatus),
         (status = 400, description = "A typed connection failure (`crew_ssh_*`, `crew_bridge_missing`, `crew_broker_not_running`, `crew_workspace_identity_mismatch`), `crew_credential_store_unavailable` or `crew_credential_store_refused` when the device key cannot be read, or `crew_request_refused` with a fixed sentence for any other failure. The workspace's own words, which are unauthenticated, go to the log and never into the answer", body = CrewError),
         (status = 403, description = "No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no user-action key", body = CrewError),
         (status = 404, description = "`crew_connection_not_found`: no saved connection has that ID", body = CrewError),
-        (status = 409, description = "`crew_not_connected`: connect first", body = CrewError),
+        (status = 409, description = "`crew_not_connected`: connect first; `crew_device_key_missing`: this computer no longer holds its device key for the workspace, so only adding it again (`POST /crew/connections/{id}/rejoin`) helps; `workspace` names it", body = CrewError),
         (status = 503, description = "The workspace could not be asked: `crew_not_sent` (nothing reached it; `ssh_code` when an SSH failure caused it) or `crew_reconnecting` (Biorouter is dialling it again; `workspace` names it)", body = CrewError)
     ),
     tag = "Crew"
@@ -884,11 +900,11 @@ impl JoinClaimed {
     path = "/crew/connections/{id}/join",
     params(("id" = String, Path, description = "The joiner's saved Crew connection")),
     responses(
-        (status = 200, description = "This computer is a member. Idempotent: a member answers this without asking the workspace again", body = JoinClaimed),
+        (status = 200, description = "This computer is a member. Idempotent: a member answers this without asking the workspace again. On `ready` (a server that takes joining by account) this joins as the account the connection signs in to the server as, with no code", body = JoinClaimed),
         (status = 400, description = "A typed connection failure (`crew_ssh_*`, `crew_bridge_missing`, `crew_broker_not_running`, `crew_workspace_identity_mismatch`), a failed sign-in handoff (`crew_handoff_failed`), `crew_credential_store_unavailable` or `crew_credential_store_refused` when the device key cannot be read, or `crew_request_refused` with a fixed sentence for any other failure. The workspace's own words, which are unauthenticated, go to the log and never into the answer", body = CrewError),
         (status = 403, description = "No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no user-action key", body = CrewError),
         (status = 404, description = "`crew_connection_not_found`: no saved connection has that ID", body = CrewError),
-        (status = 409, description = "`crew_not_connected`, or a typed join refusal: `crew_join_unsupported`, `crew_join_not_approved`, `crew_join_code_mismatch`, `crew_join_not_invited`, `crew_join_expired`, `crew_join_replaced`, `crew_join_account_changed`, `crew_join_device_conflict`, `crew_join_identity_conflict` or `crew_join_refused`", body = CrewError),
+        (status = 409, description = "`crew_not_connected`, or a typed join refusal: `crew_join_unsupported`, `crew_join_not_approved`, `crew_join_code_mismatch`, `crew_join_not_invited`, `crew_join_expired`, `crew_join_replaced`, `crew_join_account_changed`, `crew_join_device_conflict`, `crew_join_identity_conflict`, `crew_join_removed` (the workspace removed this account: \"You were removed from {workspace}. Ask a member to invite you again.\") or `crew_join_refused`. Joining by account also answers `crew_account_unsupported` (the server's Crew is older; `host`, `server_login` or `host_username` choose the words) and `crew_device_key_missing` (this computer no longer holds its key; add it again with `POST /crew/connections/{id}/rejoin`)", body = CrewError),
         (status = 503, description = "The claim did not go through: `crew_not_sent` (nothing reached the workspace; `ssh_code` when an SSH failure caused it), `crew_outcome_unknown` (whether the workspace applied it is not known; claiming again is safe) or `crew_reconnecting` (Biorouter is dialling it again; `workspace` names it)", body = CrewError)
     ),
     tag = "Crew"
@@ -906,6 +922,105 @@ pub async fn join(
     }
 }
 
+/// Add this computer again (account ownership AO-9): give the saved connection a new device key
+/// in place of the one it holds, keeping its ID, so chats granted through it can be granted
+/// again. For a computer whose key is gone (`crew_device_key_missing`) or that the workspace no
+/// longer recognizes (`crew_device_not_recognized`). The workspace decides: it admits the key
+/// only for its host or a member signing in to the server as their own account.
+///
+/// ⚠ **Device identity; needs human review.** The key is replaced only when the workspace
+/// accepts the new one; a refusal keeps the old key.
+#[utoipa::path(
+    post,
+    operation_id = "crew_connection_rejoin",
+    path = "/crew/connections/{id}/rejoin",
+    params(("id" = String, Path, description = "The saved Crew connection to add this computer to again")),
+    responses(
+        (status = 200, description = "This computer is a device of the account again, under a new key. The connection keeps its ID; its grants ended and can be granted again. `status.status` is always `joined`; `role` is `host` or `member`; `evicted_device` names a device the workspace removed to keep the account within its device limit", body = AccountJoined),
+        (status = 400, description = "A typed connection failure (`crew_ssh_*`, `crew_bridge_missing`, `crew_broker_not_running`, `crew_workspace_identity_mismatch`), `crew_credential_store_unavailable` or `crew_credential_store_refused` when the new key cannot be saved, or `crew_request_refused` with a fixed sentence for any other failure. The workspace's own words go to the log and never into the answer", body = CrewError),
+        (status = 403, description = "No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no user-action key", body = CrewError),
+        (status = 404, description = "`crew_connection_not_found`: no saved connection has that ID", body = CrewError),
+        (status = 409, description = "`crew_not_connected`: connect first. `crew_account_unsupported`: the server's Crew is older and cannot add a computer by account; nothing was sent (`workspace`, and `host` with `server_login` for the host or `host_username` for anyone else). A typed refusal of the workspace, which keeps the old key: `crew_join_removed` (the workspace removed this account), `crew_join_not_invited` (this account is not a member), `crew_join_account_changed`, `crew_join_device_conflict`, `crew_join_identity_conflict` or `crew_join_refused`", body = CrewError),
+        (status = 503, description = "The request did not go through: `crew_not_sent` (nothing reached the workspace; `ssh_code` when an SSH failure caused it), `crew_outcome_unknown` (whether the workspace took the new key is not known; adding this computer again sends the same key, which the workspace answers as a retry) or `crew_reconnecting` (Biorouter is dialling it again; `workspace` names it)", body = CrewError)
+    ),
+    tag = "Crew"
+)]
+pub async fn rejoin(
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> Result<Json<AccountJoined>, AdmissionRefusal> {
+    require_person(&headers)?;
+    let crew = crew()?;
+    require_connected(&saved_connection(&crew, &id).await?)?;
+    match crew.rejoin(&id).await {
+        Ok(joined) => Ok(Json(joined)),
+        Err(error) => Err(core_refusal(&crew, Some(&id), error, REJOIN_FAILED).await),
+    }
+}
+
+/// What the connection's workspace knows about the account this computer signs in to the server
+/// as (`account.status`, account ownership AO-3). Unsigned and answered about that account
+/// alone: it chooses which card to show and which words to use, and the workspace still decides
+/// every join.
+#[utoipa::path(
+    get,
+    operation_id = "crew_connection_account",
+    path = "/crew/connections/{id}/account",
+    params(("id" = String, Path, description = "The saved Crew connection")),
+    responses(
+        (status = 200, description = "The account's `role` in the workspace (`host`, `member`, `invited`, `removed` or `none`) and what that role carries: its `username`, the host's `host_username`, `invited_by` and `expires_at` (`expired`) for an invitation, how many `devices` it has, and, for the host only, `others_connected`, how many other accounts are connected now. `workspace_name` is the signed `hello`'s where there is one", body = AccountStatus),
+        (status = 400, description = "A typed connection failure (`crew_ssh_*`, `crew_bridge_missing`, `crew_broker_not_running`, `crew_workspace_identity_mismatch`), or `crew_request_refused` with a fixed sentence for any other failure. The workspace's own words go to the log and never into the answer", body = CrewError),
+        (status = 403, description = "No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no user-action key", body = CrewError),
+        (status = 404, description = "`crew_connection_not_found`: no saved connection has that ID", body = CrewError),
+        (status = 409, description = "`crew_not_connected`: connect first. `crew_account_unsupported`: the server's Crew is older and does not answer about accounts; nothing was sent (`workspace`, and `host` with `server_login` for the host or `host_username` for anyone else)", body = CrewError),
+        (status = 503, description = "The workspace could not be asked: `crew_not_sent` (nothing reached it; `ssh_code` when an SSH failure caused it) or `crew_reconnecting` (Biorouter is dialling it again; `workspace` names it)", body = CrewError)
+    ),
+    tag = "Crew"
+)]
+pub async fn account_status(
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> Result<Json<AccountStatus>, AdmissionRefusal> {
+    require_person(&headers)?;
+    let crew = crew()?;
+    require_connected(&saved_connection(&crew, &id).await?)?;
+    match crew.account_status(&id).await {
+        Ok(status) => Ok(Json(status)),
+        Err(error) => Err(core_refusal(&crew, Some(&id), error, ACCOUNT_STATUS_FAILED).await),
+    }
+}
+
+/// The person has seen the new devices of their account on this connection (account ownership
+/// AO-10): stop reporting them in `new_devices`, on every Biorouter process of this profile.
+/// Asks the workspace nothing, so it works while the connection is down.
+#[utoipa::path(
+    post,
+    operation_id = "crew_connection_acknowledge_devices",
+    path = "/crew/connections/{id}/devices/acknowledge",
+    params(("id" = String, Path, description = "The saved Crew connection")),
+    responses(
+        (status = 204, description = "Acknowledged: the connection's `new_devices` is empty until the workspace lists another device this computer has not seen. Acknowledging when nothing is new changes nothing"),
+        (status = 400, description = "`crew_request_refused` with a fixed sentence: the acknowledgement could not be saved", body = CrewError),
+        (status = 403, description = "No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no user-action key", body = CrewError),
+        (status = 404, description = "`crew_connection_not_found`: no saved connection has that ID", body = CrewError),
+        (status = 409, description = "`crew_registry_unreadable`: Crew's saved settings on this computer can't be read by this build, so nothing was changed; `detail` holds the reader's own words, for support", body = CrewError)
+    ),
+    tag = "Crew"
+)]
+pub async fn acknowledge_devices(
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> Result<StatusCode, AdmissionRefusal> {
+    require_person(&headers)?;
+    let crew = crew()?;
+    saved_connection(&crew, &id).await?;
+    match crew.acknowledge_devices(&id).await {
+        Ok(()) => Ok(StatusCode::NO_CONTENT),
+        // Not a request to the workspace, so a connection that is down is no reason to refuse.
+        Err(error) => Err(core_refusal(&crew, None, error, ACKNOWLEDGE_FAILED).await),
+    }
+}
+
 pub fn routes() -> Router {
     Router::new()
         .route("/crew/connections/{id}/authentication", post(prepare))
@@ -914,6 +1029,12 @@ pub fn routes() -> Router {
         .route("/crew/connections/from-invitation", post(from_invitation))
         .route("/crew/connections/{id}/invitation", get(invitation))
         .route("/crew/connections/{id}/join", get(join_status).post(join))
+        .route("/crew/connections/{id}/rejoin", post(rejoin))
+        .route("/crew/connections/{id}/account", get(account_status))
+        .route(
+            "/crew/connections/{id}/devices/acknowledge",
+            post(acknowledge_devices),
+        )
 }
 
 #[cfg(test)]

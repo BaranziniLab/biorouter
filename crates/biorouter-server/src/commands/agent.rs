@@ -440,6 +440,21 @@ fn declared_public_url(serve_ui: Option<&str>) -> Result<Option<crate::routes::P
     Ok(public_url)
 }
 
+/// Crew account ownership AO-11: forget the chat-access records of connections removed since
+/// the last start. Called once this process's own session store is resolved: before that,
+/// Crew can confirm no chat is gone, so every grant reads as kept in another store and only the
+/// records that name no chat would be pruned. Off the startup path, since it asks the store
+/// about each candidate chat; it changes nothing when Crew's saved settings cannot be read.
+fn spawn_crew_sweep() {
+    let _ = biorouter::session::SessionManager::shared_store_root();
+    tokio::spawn(async {
+        match biorouter::crew::manager() {
+            Ok(crew) => crew.sweep_removed_connections().await,
+            Err(error) => tracing::debug!(%error, "Crew is unavailable; nothing to sweep"),
+        }
+    });
+}
+
 pub async fn run(exit_with_parent: Option<u32>) -> Result<()> {
     crate::logging::setup_logging(Some("biorouterd"))?;
     biorouter_mcp::app_folder::report_once();
@@ -524,6 +539,7 @@ pub async fn run(exit_with_parent: Option<u32>) -> Result<()> {
         None
     };
     let app_state = state::AppState::new().await?;
+    spawn_crew_sweep();
 
     // BR-71: publish the daemon's platform services to the `biorouter` crate so
     // the workspace extension's tools can reach the turn lock, the detached turn

@@ -337,6 +337,73 @@ async fn grants_and_revoke_refuse_a_caller_without_the_persons_proof() {
     );
 }
 
+/// Account ownership AO-12: the person's grant list names the chats they let read the
+/// connection's workspace as them, and `DELETE /crew/sessions/{session_id}/reads/{connection_id}`
+/// takes one back, for the person only: 204 when there was one, 404 `crew_not_found` when
+/// there was none. A refused revoke keeps the consent.
+#[tokio::test(flavor = "multi_thread")]
+#[serial]
+async fn a_chats_read_consent_is_listed_and_taken_back_by_the_person_only() {
+    let (state, chat) = setup().await;
+    let crew = biorouter::crew::manager().unwrap();
+    crew.grant_person_read(&chat, CONNECTION)
+        .await
+        .expect("a consent for a saved chat and connection");
+    let listed = |body: &Value| -> Vec<Value> {
+        body["person_reads"]
+            .as_array()
+            .unwrap_or_else(|| panic!("no person_reads array: {body}"))
+            .clone()
+    };
+    let (status, body) = send(
+        &state,
+        "GET",
+        &format!("/crew/connections/{CONNECTION}/grants"),
+        Credential::Proof,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let reads = listed(&body);
+    assert_eq!(reads.len(), 1, "{body}");
+    assert_eq!(reads[0]["session_id"], chat.as_str(), "{body}");
+    assert_eq!(reads[0]["connection_id"], CONNECTION, "{body}");
+    assert_eq!(reads[0]["session_name"], CHAT_TITLE, "{body}");
+    assert!(
+        reads[0]["granted_at"].as_u64().is_some_and(|at| at > 0),
+        "{body}"
+    );
+    assert!(
+        reads[0].get("session_incarnation").is_none(),
+        "the chat's incarnation decides reads and is not shown: {body}"
+    );
+
+    let revoke_read = format!("/crew/sessions/{chat}/reads/{CONNECTION}");
+    for credential in [Credential::SecretOnly, Credential::WrongKey] {
+        let (status, body) = send(&state, "DELETE", &revoke_read, credential).await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{credential:?}: {body}");
+        assert_eq!(body["code"], "crew_user_action_required", "{body}");
+    }
+    assert!(crew.has_person_read(&chat, CONNECTION).await);
+
+    let (status, body) = send(&state, "DELETE", &revoke_read, Credential::Proof).await;
+    assert_eq!(status, StatusCode::NO_CONTENT, "{body}");
+    assert!(!crew.has_person_read(&chat, CONNECTION).await);
+    let (status, body) = send(&state, "DELETE", &revoke_read, Credential::Proof).await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
+    assert_eq!(body["code"], "crew_not_found", "{body}");
+    assert!(body["error"].as_str().is_some_and(|text| !text.is_empty()));
+
+    let (status, body) = send(
+        &state,
+        "GET",
+        &format!("/crew/connections/{CONNECTION}/grants"),
+        Credential::Proof,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(listed(&body).is_empty(), "{body}");
+}
+
 #[tokio::test(flavor = "multi_thread")]
 #[serial]
 async fn revoking_a_session_without_a_grant_is_not_found() {

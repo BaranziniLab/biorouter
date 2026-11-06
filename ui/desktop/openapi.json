@@ -2228,7 +2228,7 @@
         "operationId": "crew_list_connections",
         "responses": {
           "200": {
-            "description": "Every connection saved on this computer, each with `server_label`, the person's own name for its server (their SSH alias when one maps to the address, else the host; display only), and `last_error_code` when the daemon has a code for `last_error`: `crew_membership_ended` (the workspace refused this computer or its person as no longer a member, so the daemon stops dialling it), an SSH failure's code or `crew_workspace_identity_mismatch`. `server_storage` says when a connected workspace's server has stopped saving changes (`code` `storage_full` or `storage_failed`, `since` when); `null` while it saves or when that is not known. `server_access` says what agents can do on the server as the last connect found (whether full access is available, whether commands can be confined, the bridge's version, account and home); `null` before the first connect. `workspace_deleted` is `true` once the workspace answered `crew_workspace_deleted`: its host deleted it, so the person can only remove it from this computer",
+            "description": "Every connection saved on this computer, each with `server_label`, the person's own name for its server (their SSH alias when one maps to the address, else the host; display only), and `last_error_code` when the daemon has a code for `last_error`: `crew_membership_ended` (the workspace refused this computer or its person as no longer a member, so the daemon stops dialling it), an SSH failure's code or `crew_workspace_identity_mismatch`. `server_storage` says when a connected workspace's server has stopped saving changes (`code` `storage_full` or `storage_failed`, `since` when); `null` while it saves or when that is not known. `server_access` says what agents can do on the server as the last connect found (whether full access is available, whether commands can be confined, the bridge's version, account and home); `null` before the first connect. `workspace_deleted` is `true` once the workspace answered `crew_workspace_deleted`: its host deleted it, so the person can only remove it from this computer. `new_devices` lists devices of the person's account added since this computer last saw them, with how and when each was added, until `POST /crew/connections/{id}/devices/acknowledge`. `account_identity` is `true` when the workspace's server takes joining by account (any computer that signs in to the server as the account can open the workspace again, so removing the host's last computer no longer ends the host controls), `false` for an older server, and `null` while not connected",
             "content": {
               "application/json": {
                 "schema": {
@@ -2429,6 +2429,56 @@
       }
     },
     "/crew/connections/{id}": {
+      "get": {
+        "tags": [
+          "Crew"
+        ],
+        "summary": "One saved connection, as `GET /crew/connections` lists it.",
+        "operationId": "crew_get_connection",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "The saved connection",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The connection, in the shape `GET /crew/connections` lists it, `new_devices` and `account_identity` included",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CrewConnectionView"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no user-action key",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CrewError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`crew_connection_not_found`: no saved connection has that ID",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CrewError"
+                }
+              }
+            }
+          }
+        }
+      },
       "delete": {
         "tags": [
           "Crew"
@@ -2567,6 +2617,89 @@
           },
           "415": {
             "description": "`crew_request_invalid`: the body is not sent as `application/json`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CrewError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/crew/connections/{id}/account": {
+      "get": {
+        "tags": [
+          "Crew"
+        ],
+        "summary": "What the connection's workspace knows about the account this computer signs in to the server",
+        "description": "as (`account.status`, account ownership AO-3). Unsigned and answered about that account\nalone: it chooses which card to show and which words to use, and the workspace still decides\nevery join.",
+        "operationId": "crew_connection_account",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "The saved Crew connection",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The account's `role` in the workspace (`host`, `member`, `invited`, `removed` or `none`) and what that role carries: its `username`, the host's `host_username`, `invited_by` and `expires_at` (`expired`) for an invitation, how many `devices` it has, and, for the host only, `others_connected`, how many other accounts are connected now. `workspace_name` is the signed `hello`'s where there is one",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AccountStatus"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "A typed connection failure (`crew_ssh_*`, `crew_bridge_missing`, `crew_broker_not_running`, `crew_workspace_identity_mismatch`), or `crew_request_refused` with a fixed sentence for any other failure. The workspace's own words go to the log and never into the answer",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CrewError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no user-action key",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CrewError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`crew_connection_not_found`: no saved connection has that ID",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CrewError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`crew_not_connected`: connect first. `crew_account_unsupported`: the server's Crew is older and does not answer about accounts; nothing was sent (`workspace`, and `host` with `server_login` for the host or `host_username` for anyone else)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CrewError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The workspace could not be asked: `crew_not_sent` (nothing reached it; `ssh_code` when an SSH failure caused it) or `crew_reconnecting` (Biorouter is dialling it again; `workspace` names it)",
             "content": {
               "application/json": {
                 "schema": {
@@ -2854,6 +2987,72 @@
         }
       }
     },
+    "/crew/connections/{id}/devices/acknowledge": {
+      "post": {
+        "tags": [
+          "Crew"
+        ],
+        "summary": "The person has seen the new devices of their account on this connection (account ownership",
+        "description": "AO-10): stop reporting them in `new_devices`, on every Biorouter process of this profile.\nAsks the workspace nothing, so it works while the connection is down.",
+        "operationId": "crew_connection_acknowledge_devices",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "The saved Crew connection",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Acknowledged: the connection's `new_devices` is empty until the workspace lists another device this computer has not seen. Acknowledging when nothing is new changes nothing"
+          },
+          "400": {
+            "description": "`crew_request_refused` with a fixed sentence: the acknowledgement could not be saved",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CrewError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no user-action key",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CrewError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`crew_connection_not_found`: no saved connection has that ID",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CrewError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`crew_registry_unreadable`: Crew's saved settings on this computer can't be read by this build, so nothing was changed; `detail` holds the reader's own words, for support",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CrewError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/crew/connections/{id}/disconnect": {
       "post": {
         "tags": [
@@ -2911,7 +3110,7 @@
           "Crew"
         ],
         "summary": "The chats and tasks holding a grant on this connection (RV-D2). Each row adds, to what",
-        "description": "the Crew registry records:\n\n- `kind`: `task` when the grant is one of this device's ledger tasks (the ledger holds its\nsession and its current run), else `chat`; `null` when the ledger could not be read, so\nthe list still answers while the task ledger is unavailable.\n- `session_name`: the conversation's title, or `null` when the conversation is gone or\nuntitled.\n- `expires_at`: when the workspace ends the grant on its own, from grant time; `null` for\na grant recorded before that was kept.\n\nAll three are display only: revoking still decides on the registry and the ledger.\n\n`replaced_grants` rows (earlier grants kept until the workspace confirms their revocation,\nF3) get the same `kind` and `expires_at`, and a `null` `session_name`: the id may now name a\ndifferent conversation, whose title would mislabel the grant.",
+        "description": "the Crew registry records:\n\n- `kind`: `task` when the grant is one of this device's ledger tasks (the ledger holds its\nsession and its current run), else `chat`; `null` when the ledger could not be read, so\nthe list still answers while the task ledger is unavailable.\n- `session_name`: the conversation's title, or `null` when the conversation is gone or\nuntitled.\n- `expires_at`: when the workspace ends the grant on its own, from grant time; `null` for\na grant recorded before that was kept.\n\nAll three are display only: revoking still decides on the registry and the ledger.\n\n`replaced_grants` rows (earlier grants kept until the workspace confirms their revocation,\nF3) get the same `kind` and `expires_at`, and a `null` `session_name`: the id may now name a\ndifferent conversation, whose title would mislabel the grant.\n\n`person_reads` lists the chats the person let read this connection's workspace as them\n(account ownership AO-12), named as the grants are. Like the grants, they are listed to the\nperson alone, whose proof this route asks for; whether a chat may read is decided on the\nchat as it is now, never on this list.",
         "operationId": "crew_profile_grants",
         "parameters": [
           {
@@ -2926,7 +3125,7 @@
         ],
         "responses": {
           "200": {
-            "description": "The chats and tasks holding a grant on this connection, and the earlier grants whose revocation the workspace has not confirmed yet",
+            "description": "The chats and tasks holding a grant on this connection, the earlier grants whose revocation the workspace has not confirmed yet, and `person_reads`: the chats the person let read the workspace as them, each with `session_id`, `connection_id`, `granted_at` and `session_name`",
             "content": {
               "application/json": {
                 "schema": {
@@ -3068,7 +3267,7 @@
         ],
         "responses": {
           "200": {
-            "description": "Where this computer stands in joining. `code` is computed here from the saved device key and the pinned workspace key, never read from the workspace's answer. `unsupported` when the workspace's server can't join by invitation",
+            "description": "Where this computer stands in joining. `code` is computed here from the saved device key and the pinned workspace key, never read from the workspace's answer, and is never shown against a server that takes joining by account. `unsupported` when the workspace's server can't join by invitation. On a server that takes joining by account (`account_identity_v1`): `ready` when the account may join with this computer's key and no code (it is invited, or it is the host or a member and the workspace does not know this computer), which `POST` on this route then does; `expired` for an invitation that ran out; `joined` when this computer's key is a member's device; `removed` when the workspace removed the account; `not_invited` otherwise. `ready` never joins by itself",
             "content": {
               "application/json": {
                 "schema": {
@@ -3108,7 +3307,7 @@
             }
           },
           "409": {
-            "description": "`crew_not_connected`: connect first",
+            "description": "`crew_not_connected`: connect first; `crew_device_key_missing`: this computer no longer holds its device key for the workspace, so only adding it again (`POST /crew/connections/{id}/rejoin`) helps; `workspace` names it",
             "content": {
               "application/json": {
                 "schema": {
@@ -3147,7 +3346,7 @@
         ],
         "responses": {
           "200": {
-            "description": "This computer is a member. Idempotent: a member answers this without asking the workspace again",
+            "description": "This computer is a member. Idempotent: a member answers this without asking the workspace again. On `ready` (a server that takes joining by account) this joins as the account the connection signs in to the server as, with no code",
             "content": {
               "application/json": {
                 "schema": {
@@ -3187,7 +3386,7 @@
             }
           },
           "409": {
-            "description": "`crew_not_connected`, or a typed join refusal: `crew_join_unsupported`, `crew_join_not_approved`, `crew_join_code_mismatch`, `crew_join_not_invited`, `crew_join_expired`, `crew_join_replaced`, `crew_join_account_changed`, `crew_join_device_conflict`, `crew_join_identity_conflict` or `crew_join_refused`",
+            "description": "`crew_not_connected`, or a typed join refusal: `crew_join_unsupported`, `crew_join_not_approved`, `crew_join_code_mismatch`, `crew_join_not_invited`, `crew_join_expired`, `crew_join_replaced`, `crew_join_account_changed`, `crew_join_device_conflict`, `crew_join_identity_conflict`, `crew_join_removed` (the workspace removed this account: \"You were removed from {workspace}. Ask a member to invite you again.\") or `crew_join_refused`. Joining by account also answers `crew_account_unsupported` (the server's Crew is older; `host`, `server_login` or `host_username` choose the words) and `crew_device_key_missing` (this computer no longer holds its key; add it again with `POST /crew/connections/{id}/rejoin`)",
             "content": {
               "application/json": {
                 "schema": {
@@ -3332,6 +3531,89 @@
         }
       }
     },
+    "/crew/connections/{id}/rejoin": {
+      "post": {
+        "tags": [
+          "Crew"
+        ],
+        "summary": "Add this computer again (account ownership AO-9): give the saved connection a new device key",
+        "description": "in place of the one it holds, keeping its ID, so chats granted through it can be granted\nagain. For a computer whose key is gone (`crew_device_key_missing`) or that the workspace no\nlonger recognizes (`crew_device_not_recognized`). The workspace decides: it admits the key\nonly for its host or a member signing in to the server as their own account.\n\n⚠ **Device identity; needs human review.** The key is replaced only when the workspace\naccepts the new one; a refusal keeps the old key.",
+        "operationId": "crew_connection_rejoin",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "The saved Crew connection to add this computer to again",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "This computer is a device of the account again, under a new key. The connection keeps its ID; its grants ended and can be granted again. `status.status` is always `joined`; `role` is `host` or `member`; `evicted_device` names a device the workspace removed to keep the account within its device limit",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AccountJoined"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "A typed connection failure (`crew_ssh_*`, `crew_bridge_missing`, `crew_broker_not_running`, `crew_workspace_identity_mismatch`), `crew_credential_store_unavailable` or `crew_credential_store_refused` when the new key cannot be saved, or `crew_request_refused` with a fixed sentence for any other failure. The workspace's own words go to the log and never into the answer",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CrewError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no user-action key",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CrewError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`crew_connection_not_found`: no saved connection has that ID",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CrewError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`crew_not_connected`: connect first. `crew_account_unsupported`: the server's Crew is older and cannot add a computer by account; nothing was sent (`workspace`, and `host` with `server_login` for the host or `host_username` for anyone else). A typed refusal of the workspace, which keeps the old key: `crew_join_removed` (the workspace removed this account), `crew_join_not_invited` (this account is not a member), `crew_join_account_changed`, `crew_join_device_conflict`, `crew_join_identity_conflict` or `crew_join_refused`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CrewError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The request did not go through: `crew_not_sent` (nothing reached the workspace; `ssh_code` when an SSH failure caused it), `crew_outcome_unknown` (whether the workspace took the new key is not known; adding this computer again sends the same key, which the workspace answers as a retry) or `crew_reconnecting` (Biorouter is dialling it again; `workspace` names it)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CrewError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/crew/connections/{id}/request": {
       "post": {
         "tags": [
@@ -3393,7 +3675,7 @@
             }
           },
           "409": {
-            "description": "`crew_not_connected`: the connection is down and nothing is dialling it again, so connect it (signing in if asked) and try again; `workspace` names it. Nothing was sent. `crew_workspace_deleted`: the workspace's host deleted it, so it answers nothing else and the connection can only be removed from this computer; `workspace` names it",
+            "description": "`crew_not_connected`: the connection is down and nothing is dialling it again, so connect it (signing in if asked) and try again; `workspace` names it. Nothing was sent. `crew_workspace_deleted`: the workspace's host deleted it, so it answers nothing else and the connection can only be removed from this computer; `workspace` names it. `crew_device_key_missing`: this computer no longer holds its device key for the workspace, so nothing was sent; `crew_device_not_recognized`: the workspace no longer recognizes this computer's device while the account is still its host or a member. For both, `POST /crew/connections/{id}/rejoin` adds this computer again; `workspace` names it",
             "content": {
               "application/json": {
                 "schema": {
@@ -4853,13 +5135,108 @@
         }
       }
     },
+    "/crew/sessions/{session_id}/reads/{connection_id}": {
+      "delete": {
+        "tags": [
+          "Crew"
+        ],
+        "summary": "Take back a chat's consent to read a connection's workspace as the person (account",
+        "description": "ownership AO-12). Like every stop it holds on this computer even when it cannot be saved.",
+        "operationId": "crew_profile_revoke_read",
+        "parameters": [
+          {
+            "name": "session_id",
+            "in": "path",
+            "description": "The chat that may read the workspace",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "connection_id",
+            "in": "path",
+            "description": "The saved connection whose workspace it may read",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Taken back: the chat's reads of the workspace as the person answer `crew_read_consent_required` until the person allows them again"
+          },
+          "403": {
+            "description": "No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no user-action key",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CrewError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`crew_not_found`: the chat held no consent to read that connection's workspace",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CrewError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "`crew_revocation_not_saved`: stopped on this computer, but the change could not be saved, so the chat could read again after a restart. Retry",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CrewError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/crew/setup": {
+      "get": {
+        "tags": [
+          "Crew"
+        ],
+        "summary": "This computer's setup jobs (account ownership AO-8), so the Crew view can show one a chat or",
+        "description": "another window started.",
+        "operationId": "crew_setup_jobs",
+        "responses": {
+          "200": {
+            "description": "Every job under way on this computer and every one that finished in the last 15 minutes, the newest first, each as `GET /crew/setup/{job_id}` answers it. A bare array, empty when there is none",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CrewSetupJobs"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no user-action key",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CrewError"
+                }
+              }
+            }
+          }
+        }
+      },
       "post": {
         "tags": [
           "Crew"
         ],
-        "summary": "Set Crew up on a server (OW-9).",
-        "description": "Check the server, sign in when it asks for a password or a code, install this app's Crew\nprogram in the account, then start the workspace (`host`) or connect (`member`). The body\nnames no command: every step is a fixed script.",
+        "summary": "Set Crew up on a server (OW-9, account ownership AO-8).",
+        "description": "Check the server, sign in when it asks for a password or a code, install this app's Crew\nprogram in the account, list the workspaces there and update the ones the account hosts,\nthen start the workspace (`host`) or connect (`member`). The body names no command: every\nstep is a fixed script.",
         "operationId": "crew_setup_start",
         "requestBody": {
           "content": {
@@ -4873,7 +5250,7 @@
         },
         "responses": {
           "200": {
-            "description": "The job, started (or the one already under way for the same server and intent): poll `GET /crew/setup/{job_id}`",
+            "description": "The job, started (or the one already under way for the same server and intent): poll `GET /crew/setup/{job_id}`. A `check` job runs check, sign-in, `workspaces`, done; an `install` job adds install and `restart`; a `host` job adds the start and, with `finish`, `save`, `join` and `configure`. An installed Crew older than this app's is replaced unless `keep_older`; `replace_existing` only covers one that does not run or name its version, and a newer one is never replaced. `restart_workspaces` (`true`: restart even with others connected; `false`: only report in `outcome.outdated`) and `start_workspaces` (stopped hosted workspaces, by ID) choose what the `restart` stage does. A `host` job whose account already hosts a workspace of that name on the server fails with `crew_host_name_in_use` before anything is started or restarted",
             "content": {
               "application/json": {
                 "schema": {
@@ -4883,7 +5260,7 @@
             }
           },
           "400": {
-            "description": "`crew_request_invalid`: a body that is not JSON, a field the route does not take, a workspace name, login or route outside what a connection allows, a `host` job without a pending host setup and a name, or a `member` job without a saved connection; `crew_request_refused` for an SSH configuration the preflight refuses",
+            "description": "`crew_request_invalid`: a body that is not JSON, a field the route does not take, a workspace name, login or route outside what a connection allows, a `host` job without a pending host setup and a name, a `member` job without a saved connection, a `host` or `member` job on a `server` target, `start_workspaces` on a `check` job or an ID that is not a workspace ID, or `finish` without `mode`, on a job that does not host, or for a Private workspace without `institution_id`; `crew_request_refused` for an SSH configuration the preflight refuses",
             "content": {
               "application/json": {
                 "schema": {
@@ -4913,7 +5290,7 @@
             }
           },
           "409": {
-            "description": "`crew_host_setup_unknown`: no pending host setup with that ID on this computer; `crew_host_setup_used`: it already has a saved connection; `crew_setup_busy`: another kind of job is under way for this server, or too many jobs at once",
+            "description": "`crew_host_setup_unknown`: no pending host setup (or, for a `server` target, prepared device) with that ID on this computer; `crew_host_setup_used`: it already has a saved connection; `crew_setup_busy`: another kind of job is under way for this server, or too many jobs at once",
             "content": {
               "application/json": {
                 "schema": {
@@ -5006,7 +5383,7 @@
         ],
         "responses": {
           "200": {
-            "description": "`state` is `running`, `needs_sign_in` (open `POST /crew/setup/{job_id}/authentication`), `finished` (`outcome`), `failed` or `cancelled` (`error`: a typed code and a sentence, such as `crew_setup_cancelled`, `crew_setup_timed_out`, `crew_setup_sign_in_expired`, `crew_setup_start_failed` (`detail` is what Crew printed), `crew_host_storage_unsafe` (other accounts can write to a folder above where the workspace is kept; `detail` lists them, and starting again with `fix_storage_permissions` fixes the account's own), `crew_setup_changed`, `crew_install_checksum_mismatch` or an SSH code)",
+            "description": "`state` is `running`, `needs_sign_in` (open `POST /crew/setup/{job_id}/authentication`), `finished` (`outcome`), `failed` or `cancelled` (`error`: a typed code and a sentence, such as `crew_setup_cancelled`, `crew_setup_timed_out`, `crew_setup_sign_in_expired`, `crew_setup_start_failed` (`detail` is what Crew printed), `crew_host_storage_unsafe` (other accounts can write to a folder above where the workspace is kept; `detail` lists them, and starting again with `fix_storage_permissions` fixes the account's own), `crew_host_name_in_use` (the account already hosts a workspace of that name on the server: \"You already host {name} on {server}. Open it on this computer instead.\" when it runs, and \"You already host {name} on {server}. It is stopped: start it with biorouter crew setup --server {login} --start {name}, then open it.\" when it is stopped), `crew_setup_changed`, `crew_install_checksum_mismatch` or an SSH code; after a `finish` saved the connection, a join refusal such as `crew_join_removed`, or `crew_account_unsupported`, with `outcome.connection_id` and `outcome.steps_left` saying what is left). `workspaces` lists the workspaces on the server for this account, each with its `role`, `state`, host and `this_computer` (`connected`, `saved` or `not_saved`), with `workspaces_scan` counting what the listing skipped and `workspaces_note` saying why there is no listing (an older Crew, a failure or a timeout, which never stops the job). `outcome.restarted`, `outcome.outdated` (with `reason` `others_connected`, `running_newer`, `not_running_installed` or `custom_state_dir`) and `outcome.restart_failed` (with the command that starts the workspace by hand) say what the `restart` stage did; a failed restart fails only that stage",
             "content": {
               "application/json": {
                 "schema": {
@@ -10566,6 +10943,127 @@
           }
         }
       },
+      "AccountAdmission": {
+        "type": "string",
+        "description": "How the workspace admitted this computer's key (`auth.account`'s `admitted`, AO-2). Shown,\nnever relied on: a retried request answers `device` whatever the first one did.",
+        "enum": [
+          "device",
+          "host",
+          "invitation"
+        ]
+      },
+      "AccountJoined": {
+        "type": "object",
+        "description": "What [`CrewManager::account_join`] and [`CrewManager::rejoin`] answer: the join status\n(always [`JoinState::Joined`]) and what the workspace said about the account.",
+        "required": [
+          "status",
+          "role"
+        ],
+        "properties": {
+          "admitted": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/AccountAdmission"
+              }
+            ],
+            "nullable": true
+          },
+          "evicted_device": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/EvictedDevice"
+              }
+            ],
+            "nullable": true
+          },
+          "principal": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/JoinPerson"
+              }
+            ],
+            "nullable": true
+          },
+          "role": {
+            "$ref": "#/components/schemas/AccountRole"
+          },
+          "status": {
+            "$ref": "#/components/schemas/JoinStatus"
+          }
+        }
+      },
+      "AccountRole": {
+        "type": "string",
+        "description": "What a workspace knows about the account a bridge signs in as (`account.status`, AO-3).",
+        "enum": [
+          "host",
+          "member",
+          "invited",
+          "removed",
+          "none"
+        ]
+      },
+      "AccountStatus": {
+        "type": "object",
+        "description": "The workspace's answer to `account.status` (AO-3), read about the account the bridge signs\nin as and nothing else. Unsigned: it chooses which card to show and which words to use, and\nthe workspace still decides every join itself.",
+        "required": [
+          "role",
+          "expired"
+        ],
+        "properties": {
+          "devices": {
+            "type": "integer",
+            "format": "int64",
+            "description": "How many devices the account has, for the host or a member.",
+            "nullable": true,
+            "minimum": 0
+          },
+          "expired": {
+            "type": "boolean",
+            "description": "The invitation expired."
+          },
+          "expires_at": {
+            "type": "integer",
+            "format": "int64",
+            "description": "When the invitation expires (seconds since the Unix epoch), with [`AccountRole::Invited`].",
+            "nullable": true,
+            "minimum": 0
+          },
+          "host_username": {
+            "type": "string",
+            "description": "The host principal's stored username; absent before the host has one.",
+            "nullable": true
+          },
+          "invited_by": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/JoinPerson"
+              }
+            ],
+            "nullable": true
+          },
+          "others_connected": {
+            "type": "integer",
+            "format": "int64",
+            "description": "How many live connections the server holds from other accounts; told only to the host.",
+            "nullable": true,
+            "minimum": 0
+          },
+          "role": {
+            "$ref": "#/components/schemas/AccountRole"
+          },
+          "username": {
+            "type": "string",
+            "description": "The account's username as the workspace stored it; absent for [`AccountRole::None`].",
+            "nullable": true
+          },
+          "workspace_name": {
+            "type": "string",
+            "description": "The workspace's name as the answer gives it; a signed `hello`'s name is preferred\nwherever both are known.",
+            "nullable": true
+          }
+        }
+      },
       "ActionRequired": {
         "type": "object",
         "required": [
@@ -12583,9 +13081,15 @@
             "type": "object",
             "required": [
               "server_label",
-              "workspace_deleted"
+              "workspace_deleted",
+              "new_devices"
             ],
             "properties": {
+              "account_identity": {
+                "type": "boolean",
+                "description": "Whether the workspace's verified `hello` advertises `account_identity_v1` under its v2\nsignature (AO-9): `true` means any computer that signs in to the server as the account\ncan open the workspace again, so removing the host's last computer no longer ends the\nhost controls. `false` for an older server; `null` while this computer holds no verified\n`hello` (not connected). Display and the removal guard only: the workspace decides\nevery join.",
+                "nullable": true
+              },
               "last_error_code": {
                 "allOf": [
                   {
@@ -12593,6 +13097,13 @@
                   }
                 ],
                 "nullable": true
+              },
+              "new_devices": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/NewDevice"
+                },
+                "description": "Devices of the person's account added since this computer last saw the account's\ndevices, with how and when each was added, until the person acknowledges them\n(`POST /crew/connections/{id}/devices/acknowledge`; account ownership AO-10). Read from\nthe workspace's signed snapshots; empty before the first one."
               },
               "server_access": {
                 "allOf": [
@@ -12713,6 +13224,11 @@
             "description": "The SSH hop an SSH failure concerns, a jump host's included.",
             "nullable": true
           },
+          "host_username": {
+            "type": "string",
+            "description": "`crew_account_unsupported` said to anyone but the host: the host's username, `null` when\nit could not be learned.",
+            "nullable": true
+          },
           "institution": {
             "type": "string",
             "description": "`crew_institution_mismatch` on a save: the institution the save gave.",
@@ -12732,6 +13248,11 @@
               "type": "string"
             },
             "description": "`crew_institution_mismatch` when connections to one workspace disagree: every\ninstitution they name.",
+            "nullable": true
+          },
+          "is_host": {
+            "type": "boolean",
+            "description": "`crew_account_unsupported`: whether this account hosts the workspace, which decides the\nsentence: the host is told to update Crew with `server_login`, anyone else to ask\n`host_username`.",
             "nullable": true
           },
           "kind": {
@@ -12777,6 +13298,11 @@
           "run_id": {
             "type": "string",
             "description": "A revocation refusal: the grant's run.",
+            "nullable": true
+          },
+          "server_login": {
+            "type": "string",
+            "description": "`crew_account_unsupported` said to the host: the SSH login that updates Crew on the\nserver (`biorouter crew setup --server {server_login}`).",
             "nullable": true
           },
           "session_id": {
@@ -12847,6 +13373,9 @@
           "crew_handoff_failed",
           "crew_workspace_identity_mismatch",
           "crew_workspace_deleted",
+          "crew_device_key_missing",
+          "crew_device_not_recognized",
+          "crew_account_unsupported",
           "crew_not_sent",
           "crew_outcome_unknown",
           "crew_reconnecting",
@@ -12869,6 +13398,8 @@
           "crew_grant_other_connection",
           "crew_grant_replaced",
           "crew_grant_ended",
+          "crew_read_consent_required",
+          "crew_not_found",
           "crew_profile_refused",
           "crew_transfer_refused",
           "crew_file_is_credential",
@@ -12892,6 +13423,7 @@
           "crew_join_device_conflict",
           "crew_join_identity_conflict",
           "crew_join_refused",
+          "crew_join_removed",
           "crew_host_setup_unknown",
           "crew_host_setup_used",
           "crew_host_start_busy",
@@ -12908,6 +13440,7 @@
           "crew_setup_start_failed",
           "crew_setup_changed",
           "crew_host_storage_unsafe",
+          "crew_host_name_in_use",
           "crew_server_probe_unsupported",
           "crew_install_artifact_unavailable",
           "crew_install_unsupported_platform",
@@ -12941,7 +13474,8 @@
         "description": "`GET /crew/connections/{id}/grants`.",
         "required": [
           "grants",
-          "replaced_grants"
+          "replaced_grants",
+          "person_reads"
         ],
         "properties": {
           "grants": {
@@ -12950,6 +13484,13 @@
               "$ref": "#/components/schemas/CrewGrantView"
             },
             "description": "The chats and tasks holding a grant on this connection."
+          },
+          "person_reads": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CrewPersonReadView"
+            },
+            "description": "The chats the person let read this connection's workspace as them (account ownership\nAO-12). Until a chat has one, its person tools answer `crew_read_consent_required`;\n`DELETE /crew/sessions/{session_id}/reads/{connection_id}` takes one back."
           },
           "replaced_grants": {
             "type": "array",
@@ -13018,6 +13559,36 @@
           "workspace_institution": {
             "type": "string",
             "description": "The workspace's institution.",
+            "nullable": true
+          }
+        }
+      },
+      "CrewPersonReadView": {
+        "type": "object",
+        "description": "One chat's consent to read a connection's workspace as the person, as\n`GET /crew/connections/{id}/grants` lists it. Display only: whether a chat may read is\ndecided on the chat as it is now, never on this row.",
+        "required": [
+          "session_id",
+          "connection_id",
+          "granted_at"
+        ],
+        "properties": {
+          "connection_id": {
+            "type": "string",
+            "description": "The saved connection whose workspace it may read."
+          },
+          "granted_at": {
+            "type": "integer",
+            "format": "int64",
+            "description": "When the person gave it, in seconds since the Unix epoch.",
+            "minimum": 0
+          },
+          "session_id": {
+            "type": "string",
+            "description": "The chat the consent was given in."
+          },
+          "session_name": {
+            "type": "string",
+            "description": "The chat's title; `null` when the chat is gone or untitled.",
             "nullable": true
           }
         }
@@ -13151,6 +13722,13 @@
             "description": "The chat the grant is for."
           }
         }
+      },
+      "CrewSetupJobs": {
+        "type": "array",
+        "items": {
+          "$ref": "#/components/schemas/SetupStatus"
+        },
+        "description": "`GET /crew/setup`: this computer's setup jobs, those under way and those finished in the\nlast 15 minutes, the newest first. A bare array on the wire."
       },
       "CrewTransferForgotten": {
         "type": "object",
@@ -14667,6 +15245,25 @@
         "properties": {
           "message": {
             "type": "string"
+          }
+        }
+      },
+      "EvictedDevice": {
+        "type": "object",
+        "description": "The device the workspace removed to keep the account within its device cap (AO-2).",
+        "required": [
+          "fingerprint"
+        ],
+        "properties": {
+          "added_at": {
+            "type": "integer",
+            "format": "int64",
+            "nullable": true,
+            "minimum": 0
+          },
+          "fingerprint": {
+            "type": "string",
+            "description": "The grouped 16-hex fingerprint (`3F2A 9C1E 77B0 D4E1`)."
           }
         }
       },
@@ -16508,7 +17105,9 @@
           "not_invited",
           "expired",
           "joined",
-          "unsupported"
+          "unsupported",
+          "ready",
+          "removed"
         ]
       },
       "JoinStatus": {
@@ -18407,6 +19006,31 @@
           "toolCalls": {
             "type": "boolean",
             "description": "Include tool calls and results."
+          }
+        }
+      },
+      "NewDevice": {
+        "type": "object",
+        "description": "A device of the person's account this computer has not told them about yet: one added\nsince this computer last saw the account's devices, and not yet acknowledged.",
+        "required": [
+          "fingerprint"
+        ],
+        "properties": {
+          "added_at": {
+            "type": "integer",
+            "format": "int64",
+            "description": "When it was added, in seconds since the Unix epoch, as the workspace says.",
+            "nullable": true,
+            "minimum": 0
+          },
+          "added_via": {
+            "type": "string",
+            "description": "How it was added, as the workspace says (`account`, `invitation`, `bootstrap`).",
+            "nullable": true
+          },
+          "fingerprint": {
+            "type": "string",
+            "description": "The grouped 16-hex fingerprint the snapshot shows (`3F2A 9C1E 77B0 D4E1`)."
           }
         }
       },
@@ -22173,7 +22797,7 @@
         "properties": {
           "code": {
             "type": "string",
-            "description": "The SSH codes (`crew_ssh_auth_required`, `crew_ssh_key_refused`,\n`crew_ssh_host_key_unknown`, `crew_ssh_host_key_changed`, `crew_ssh_unreachable`,\n`crew_bridge_missing`, `crew_broker_not_running`, `crew_ssh_failed`), a connect's\n(`crew_workspace_identity_mismatch`, `crew_request_refused`), or one of setup's own:\n`crew_setup_cancelled`, `crew_setup_timed_out`, `crew_setup_sign_in_expired`,\n`crew_setup_server_unreadable` (the server's answer could not be read),\n`crew_setup_start_failed` (Crew did not start the workspace; see `outcome.host`, and\n`detail` for what Crew printed), `crew_host_storage_unsafe` (other accounts can write to\na folder above where the workspace is kept; `detail` lists them one per line, and\n`fix_storage_permissions` lets setup fix the ones the account owns),\n`crew_setup_changed` (the connection's login or route changed while the job ran),\n`crew_install_artifact_unavailable`, `crew_install_unsupported_platform`,\n`crew_install_dependency_missing`, `crew_install_incompatible` (the program there does\nnot run or name its version), `crew_install_unexpected_target` (a link, a folder or\nanother account's file where the program goes), `crew_install_checksum_tool_missing`,\n`crew_install_no_space`, `crew_install_permission_denied`, `crew_install_busy` (another\ninstall in the account), `crew_install_transfer_incomplete`,\n`crew_install_checksum_mismatch` (nothing was replaced) or\n`crew_install_outcome_unknown` (the connection dropped after the transfer; set up again\nto check)."
+            "description": "The SSH codes (`crew_ssh_auth_required`, `crew_ssh_key_refused`,\n`crew_ssh_host_key_unknown`, `crew_ssh_host_key_changed`, `crew_ssh_unreachable`,\n`crew_bridge_missing`, `crew_broker_not_running`, `crew_ssh_failed`), a connect's\n(`crew_workspace_identity_mismatch`, `crew_request_refused`), or one of setup's own:\n`crew_setup_cancelled`, `crew_setup_timed_out`, `crew_setup_sign_in_expired`,\n`crew_setup_server_unreadable` (the server's answer could not be read),\n`crew_setup_start_failed` (Crew did not start the workspace; see `outcome.host`, and\n`detail` for what Crew printed), `crew_host_storage_unsafe` (other accounts can write to\na folder above where the workspace is kept; `detail` lists them one per line, and\n`fix_storage_permissions` lets setup fix the ones the account owns),\n`crew_host_name_in_use` (the account already hosts a workspace of that name or in that\nfolder: open it, or start it when it is stopped), a join's or a save's own codes after a\nhost's `finish` saved the workspace (`outcome.connection_id` and `outcome.steps_left`\nsay what is left),\n`crew_setup_changed` (the connection's login or route changed while the job ran),\n`crew_install_artifact_unavailable`, `crew_install_unsupported_platform`,\n`crew_install_dependency_missing`, `crew_install_incompatible` (the program there does\nnot run or name its version), `crew_install_unexpected_target` (a link, a folder or\nanother account's file where the program goes), `crew_install_checksum_tool_missing`,\n`crew_install_no_space`, `crew_install_permission_denied`, `crew_install_busy` (another\ninstall in the account), `crew_install_transfer_incomplete`,\n`crew_install_checksum_mismatch` (nothing was replaced) or\n`crew_install_outcome_unknown` (the connection dropped after the transfer; set up again\nto check)."
           },
           "detail": {
             "type": "string",
@@ -22242,17 +22866,41 @@
         "description": "What a job did, once it is done.",
         "required": [
           "reused",
-          "previous_kept"
+          "previous_kept",
+          "restarted",
+          "outdated",
+          "restart_failed",
+          "steps_left"
         ],
         "properties": {
           "connection_id": {
             "type": "string",
-            "description": "A member's connection, connected and verified.",
+            "description": "A member's connection, connected and verified; or the connection a host's `finish`\nsaved, set as soon as it is saved, so a job that stops after the save still names it.",
             "nullable": true
           },
           "context_draft": {
             "type": "string",
             "description": "The first context document, drafted from the server's facts (Markdown).",
+            "nullable": true
+          },
+          "context_revision": {
+            "type": "integer",
+            "format": "int64",
+            "description": "A host's `finish`: the revision of the context document it saved from the draft.",
+            "nullable": true,
+            "minimum": 0
+          },
+          "governance": {
+            "allOf": [
+              {
+                "type": "string",
+                "description": "A new workspace's governance after a host's `finish`.",
+                "enum": [
+                  "open",
+                  "managed"
+                ]
+              }
+            ],
             "nullable": true
           },
           "host": {
@@ -22265,13 +22913,61 @@
           },
           "host_command": {
             "type": "string",
-            "description": "The start command that ran, character for character what the Host dialog shows.",
+            "description": "The start command that ran, character for character: the Host dialog's, with `--create`\non the start line.",
             "nullable": true
           },
           "installed_version": {
             "type": "string",
             "description": "The Crew program in the account now.",
             "nullable": true
+          },
+          "outdated": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "description": "A hosted workspace still running an older program than the one installed\n([`SetupOutcome::outdated`]).",
+              "required": [
+                "workspace_id",
+                "reason"
+              ],
+              "properties": {
+                "installed_version": {
+                  "type": "string",
+                  "description": "The version installed in the account.",
+                  "nullable": true
+                },
+                "name": {
+                  "type": "string",
+                  "nullable": true
+                },
+                "others_connected": {
+                  "type": "integer",
+                  "format": "int32",
+                  "description": "How many other accounts are connected to it; `null` when the server did not say.",
+                  "nullable": true,
+                  "minimum": 0
+                },
+                "reason": {
+                  "type": "string",
+                  "description": "Why an outdated workspace was not restarted.",
+                  "enum": [
+                    "others_connected",
+                    "running_newer",
+                    "not_running_installed",
+                    "custom_state_dir"
+                  ]
+                },
+                "running_version": {
+                  "type": "string",
+                  "description": "The version it runs; `null` when it names none.",
+                  "nullable": true
+                },
+                "workspace_id": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "The hosted workspaces still running an older program than the one installed, and why\neach was not restarted."
           },
           "previous_kept": {
             "type": "boolean",
@@ -22285,9 +22981,94 @@
             ],
             "nullable": true
           },
+          "restart_failed": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "description": "A hosted workspace whose restart or start failed ([`SetupOutcome::restart_failed`]).",
+              "required": [
+                "workspace_id",
+                "code",
+                "message"
+              ],
+              "properties": {
+                "code": {
+                  "type": "string",
+                  "description": "The server's code (`stop_timeout`, `start_failed`, `not_found`), an SSH code, or\n`crew_setup_timed_out`."
+                },
+                "command": {
+                  "type": "string",
+                  "description": "The command that starts the workspace by hand on the server; `null` when there is none\nto give.",
+                  "nullable": true
+                },
+                "detail": {
+                  "type": "string",
+                  "description": "What the server printed, bounded, for Copy details.",
+                  "nullable": true
+                },
+                "message": {
+                  "type": "string",
+                  "description": "One plain sentence for a person."
+                },
+                "name": {
+                  "type": "string",
+                  "nullable": true
+                },
+                "workspace_id": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "The hosted workspaces whose restart or start failed, each with the command that starts\nit by hand. A failure here fails only the `restart` stage."
+          },
+          "restarted": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "description": "A hosted workspace a job restarted or started ([`SetupOutcome::restarted`]).",
+              "required": [
+                "workspace_id"
+              ],
+              "properties": {
+                "from_version": {
+                  "type": "string",
+                  "description": "The version it ran before; `null` for one that was stopped, or a program that named none.",
+                  "nullable": true
+                },
+                "name": {
+                  "type": "string",
+                  "nullable": true
+                },
+                "to_version": {
+                  "type": "string",
+                  "description": "The version it runs now.",
+                  "nullable": true
+                },
+                "workspace_id": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "The hosted workspaces this job restarted on the installed program, or started."
+          },
           "reused": {
             "type": "boolean",
             "description": "The program already there was kept: the same version as this app's, a newer one, or an\nolder one that was not to be replaced."
+          },
+          "steps_left": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "description": "A step of hosting a host's `finish` left to do ([`SetupOutcome::steps_left`]).",
+              "enum": [
+                "connect",
+                "join",
+                "privacy",
+                "governance",
+                "context"
+              ]
+            },
+            "description": "A host's `finish` that stopped after the save, or that left the settings of a workspace\nwhose start did not say it created it: what is left to do, in order."
           },
           "upgraded_from": {
             "allOf": [
@@ -22351,16 +23132,49 @@
             ],
             "nullable": true
           },
+          "finish": {
+            "type": "boolean",
+            "description": "Host in one job (design AO-9): after the start, save the workspace's connection, join\nas its host and, when the start created the workspace, set its privacy, open it to every\nmember and save the drafted context. Only a host's job takes it."
+          },
           "fix_storage_permissions": {
             "type": "boolean",
             "description": "Take write access for other accounts away (`chmod go-w`) from the folders the job finds\nabove where the workspace is kept, which the account owns, when Crew would otherwise\nrefuse to start there (`crew_host_storage_unsafe`). Only a host's job reads it."
           },
+          "institution_id": {
+            "type": "string",
+            "description": "The new workspace's institution, for `finish`. A Private workspace needs one.",
+            "nullable": true
+          },
           "intent": {
             "$ref": "#/components/schemas/SetupIntent"
           },
+          "keep_older": {
+            "type": "boolean",
+            "description": "Keep a Crew program in the account that is older than this app's (design AO-8). Without\nit an older program is replaced, the one replaced kept as `biorouter-crew.previous`."
+          },
+          "mode": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/ClusterMode"
+              }
+            ],
+            "nullable": true
+          },
           "replace_existing": {
             "type": "boolean",
-            "description": "Replace a Crew program in the account that is older than this app's, or that does not\nrun. The one replaced stays as `biorouter-crew.previous`. A newer one is never replaced;\none of this app's version that is another build of it (another SHA-256) is replaced\nwhether or not this is set."
+            "description": "Replace a Crew program in the account that does not run or does not name its version\n(`crew_install_incompatible`). The one replaced stays as `biorouter-crew.previous`. An\nolder program is replaced without it (see `keep_older`), and a newer one never is."
+          },
+          "restart_workspaces": {
+            "type": "boolean",
+            "description": "Whether to restart the hosted workspaces still running an older program than the one\ninstalled (design AO-8). Absent restarts only those nobody else is connected to; `true`\nrestarts them even with others connected, which ends what those members had in flight;\n`false` only reports them in `outcome.outdated`.",
+            "nullable": true
+          },
+          "start_workspaces": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Stopped workspaces the account hosts to start, by workspace ID (design AO-8). A check\nchanges nothing, so it takes none."
           },
           "target": {
             "$ref": "#/components/schemas/SetupTarget"
@@ -22507,10 +23321,15 @@
           "check",
           "sign_in",
           "install",
+          "workspaces",
+          "restart",
           "start",
           "connect",
           "work_folder",
           "context",
+          "save",
+          "join",
+          "configure",
           "done"
         ]
       },
@@ -22544,7 +23363,8 @@
           "state",
           "stage",
           "stages",
-          "server"
+          "server",
+          "workspaces"
         ],
         "properties": {
           "artifact": {
@@ -22599,6 +23419,179 @@
           },
           "state": {
             "$ref": "#/components/schemas/SetupState"
+          },
+          "workspaces": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "description": "A workspace on the server, as `biorouter-crew workspaces` listed it (design AO-6), with\nwhat this computer has for it. Every text field is the server's own, checked and bounded.",
+              "required": [
+                "workspace_id",
+                "role",
+                "state",
+                "this_computer"
+              ],
+              "properties": {
+                "binary_current": {
+                  "type": "boolean",
+                  "description": "Whether the program it runs is the one installed now; `null` when it is not running.",
+                  "nullable": true
+                },
+                "error": {
+                  "type": "string",
+                  "description": "Why it could not be read, when it could not.",
+                  "nullable": true
+                },
+                "found_by": {
+                  "type": "string",
+                  "description": "How it was found: `scan` for another account's workspace.",
+                  "nullable": true
+                },
+                "host_uid": {
+                  "type": "integer",
+                  "format": "int32",
+                  "nullable": true,
+                  "minimum": 0
+                },
+                "host_username": {
+                  "type": "string",
+                  "nullable": true
+                },
+                "institution_id": {
+                  "type": "string",
+                  "nullable": true
+                },
+                "invitation": {
+                  "type": "string",
+                  "description": "Its `brcrew1:` invitation line without the server, which opens it through the ordinary\njoin path.",
+                  "nullable": true
+                },
+                "mode": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/ClusterMode"
+                    }
+                  ],
+                  "nullable": true
+                },
+                "name": {
+                  "type": "string",
+                  "nullable": true
+                },
+                "others_connected": {
+                  "type": "integer",
+                  "format": "int32",
+                  "description": "How many other accounts are connected to it, for one the account hosts and runs.",
+                  "nullable": true,
+                  "minimum": 0
+                },
+                "role": {
+                  "type": "string",
+                  "description": "Where a workspace on the server stands for this account (design AO-6).",
+                  "enum": [
+                    "host",
+                    "member",
+                    "invited",
+                    "removed"
+                  ]
+                },
+                "saved_connection_id": {
+                  "type": "string",
+                  "description": "The saved connection on this computer for it, if there is one.",
+                  "nullable": true
+                },
+                "socket_path": {
+                  "type": "string",
+                  "nullable": true
+                },
+                "state": {
+                  "type": "string",
+                  "description": "Whether a workspace on the server runs.",
+                  "enum": [
+                    "running",
+                    "stopped",
+                    "deleted",
+                    "storage_failed",
+                    "unknown"
+                  ]
+                },
+                "state_dir": {
+                  "type": "string",
+                  "description": "Where it keeps its state, for display; `null` for one kept outside\n`~/.local/share/biorouter-crew`, or found elsewhere.",
+                  "nullable": true
+                },
+                "this_computer": {
+                  "type": "string",
+                  "description": "What this computer has for a workspace on the server.",
+                  "enum": [
+                    "connected",
+                    "saved",
+                    "not_saved"
+                  ]
+                },
+                "version": {
+                  "type": "string",
+                  "description": "The version of the program it runs.",
+                  "nullable": true
+                },
+                "workspace_id": {
+                  "type": "string"
+                },
+                "workspace_key_fingerprint": {
+                  "type": "string",
+                  "nullable": true
+                }
+              }
+            },
+            "description": "The workspaces on the server the account hosts or belongs to, once the `workspaces`\nstage listed them (design AO-6, AO-8)."
+          },
+          "workspaces_note": {
+            "type": "string",
+            "description": "Why the workspaces could not be listed: the program in the account is missing or too old,\nor the listing failed or took too long. It never stops a job.",
+            "nullable": true
+          },
+          "workspaces_scan": {
+            "allOf": [
+              {
+                "type": "object",
+                "description": "What else the listing said (design AO-6).",
+                "required": [
+                  "skipped",
+                  "unsupported",
+                  "truncated"
+                ],
+                "properties": {
+                  "account_uid": {
+                    "type": "integer",
+                    "format": "int32",
+                    "description": "The account the listing ran as.",
+                    "nullable": true,
+                    "minimum": 0
+                  },
+                  "account_username": {
+                    "type": "string",
+                    "nullable": true
+                  },
+                  "skipped": {
+                    "type": "integer",
+                    "format": "int64",
+                    "description": "Places it could not read.",
+                    "minimum": 0
+                  },
+                  "truncated": {
+                    "type": "boolean",
+                    "description": "Whether it stopped at its limits before looking everywhere."
+                  },
+                  "unsupported": {
+                    "type": "integer",
+                    "format": "int64",
+                    "description": "Workspaces found whose server program is too old to say what they are for the account.",
+                    "minimum": 0
+                  }
+                }
+              }
+            ],
+            "nullable": true
           }
         }
       },
@@ -22650,6 +23643,43 @@
               },
               "preparation_id": {
                 "type": "string"
+              },
+              "proxy_jump": {
+                "type": "string",
+                "nullable": true
+              },
+              "ssh_target": {
+                "type": "string"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "A server and an account on it, with nothing saved for it yet (design AO-8): a check or\nan install. Its sign-in is shared by every job on the same login and route; with\n`preparation_id` (this computer's prepared device, `POST /crew/devices/prepare`), the\njob uses that preparation's sign-in, so opening a workspace after it needs no second one.\nIt makes no device key.",
+            "required": [
+              "ssh_target",
+              "kind"
+            ],
+            "properties": {
+              "identity_file": {
+                "type": "string",
+                "nullable": true
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "server"
+                ]
+              },
+              "port": {
+                "type": "integer",
+                "format": "int32",
+                "nullable": true,
+                "minimum": 0
+              },
+              "preparation_id": {
+                "type": "string",
+                "nullable": true
               },
               "proxy_jump": {
                 "type": "string",

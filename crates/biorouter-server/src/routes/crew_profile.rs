@@ -1,5 +1,6 @@
 use super::crew::wire::{
-    CrewGrantKind, CrewGrantList, CrewGrantView, CrewJson, CrewRevocation, CrewWorkspaceAnswer,
+    CrewGrantKind, CrewGrantList, CrewGrantView, CrewJson, CrewPersonReadView, CrewRevocation,
+    CrewWorkspaceAnswer,
 };
 use super::crew::{cancel_owned_session, owned_run_views, OwnedCancellation};
 use crate::state::AppState;
@@ -7,7 +8,7 @@ use axum::{
     extract::{DefaultBodyLimit, Path, State},
     http::{HeaderMap, StatusCode},
     response::{IntoResponse, Response},
-    routing::{get, post},
+    routing::{delete, get, post},
     Json, Router,
 };
 use biorouter::crew::{
@@ -46,6 +47,12 @@ pub const REVOCATION_UNCONFIRMED: &str = "crew_revocation_unconfirmed";
 /// The text of a [`REVOCATION_UNCONFIRMED`] refusal (RV-D1). The daemon asks the workspace
 /// again by itself whenever the connection is back (F3), so it asks nothing more of the person.
 pub const REVOCATION_UNCONFIRMED_MESSAGE: &str = "Stopped on this device. The workspace hasn't confirmed yet; Biorouter confirms it by itself when the connection is back.";
+/// A chat held no consent to read the connection's workspace as the person (AO-12).
+pub const NOT_FOUND: &str = "crew_not_found";
+/// [`NOT_FOUND`]'s sentence for a read consent.
+pub const NO_READ_CONSENT: &str = "This chat has no permission to read that workspace as you.";
+/// [`REVOCATION_NOT_SAVED`]'s sentence for a read consent taken back on this computer only.
+pub const READ_CONSENT_NOT_SAVED: &str = "Stopped on this computer, but Biorouter couldn't save the change, so the chat could read again after a restart. Try again.";
 
 /// A refusal: `{code, error}` plus any fields a route adds beside them (`detail`, …).
 pub struct Refusal {
@@ -241,13 +248,18 @@ pub async fn lock(headers: HeaderMap) -> Result<CredentialStatus> {
 /// `replaced_grants` rows (earlier grants kept until the workspace confirms their revocation,
 /// F3) get the same `kind` and `expires_at`, and a `null` `session_name`: the id may now name a
 /// different conversation, whose title would mislabel the grant.
+///
+/// `person_reads` lists the chats the person let read this connection's workspace as them
+/// (account ownership AO-12), named as the grants are. Like the grants, they are listed to the
+/// person alone, whose proof this route asks for; whether a chat may read is decided on the
+/// chat as it is now, never on this list.
 #[utoipa::path(
     get,
     operation_id = "crew_profile_grants",
     path = "/crew/connections/{id}/grants",
     params(("id" = String, Path, description = "The saved connection")),
     responses(
-        (status = 200, description = "The chats and tasks holding a grant on this connection, and the earlier grants whose revocation the workspace has not confirmed yet", body = CrewGrantList),
+        (status = 200, description = "The chats and tasks holding a grant on this connection, the earlier grants whose revocation the workspace has not confirmed yet, and `person_reads`: the chats the person let read the workspace as them, each with `session_id`, `connection_id`, `granted_at` and `session_name`", body = CrewGrantList),
         (status = 400, description = "`crew_profile_refused`: no saved connection has that ID, or the grants could not be read", body = CrewError),
         (status = 403, description = "No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no user-action key", body = CrewError)
     ),
@@ -259,7 +271,8 @@ pub async fn grants(
     Path(id): Path<String>,
 ) -> Result<CrewGrantList> {
     person(&headers)?;
-    let listed = manager()?.session_grant_rows(&id).await?;
+    let crew = manager()?;
+    let listed = crew.session_grant_rows(&id).await?;
     let tasks: Option<HashSet<(String, String)>> = match owned_run_views(&id).await {
         Ok(views) => Some(
             views
@@ -298,9 +311,27 @@ pub async fn grants(
             grant,
         })
         .collect();
+    let mut person_reads = Vec::new();
+    for row in crew.person_read_rows().await {
+        if row.consent.connection_id != id {
+            continue;
+        }
+        person_reads.push(CrewPersonReadView {
+            session_name: consent_session_name(
+                &state,
+                &row.session_id,
+                row.consent.session_incarnation,
+            )
+            .await,
+            session_id: row.session_id,
+            connection_id: row.consent.connection_id,
+            granted_at: row.consent.granted_at,
+        });
+    }
     Ok(Json(CrewGrantList {
         grants,
         replaced_grants,
+        person_reads,
     }))
 }
 /// The conversation's title, or `None` when it cannot be read or has none.
@@ -315,6 +346,57 @@ async fn session_name(state: &AppState, session: &str) -> Option<String> {
         .ok()
         .map(|found| found.name)
         .filter(|name| !name.trim().is_empty())
+}
+/// A read consent's chat title: only while the chat holding `session` is the one the consent
+/// was given in (SCOPE-BIND), since a reissued id names another chat, whose title would
+/// mislabel the consent. `None` when the chat is gone, untitled or another.
+async fn consent_session_name(state: &AppState, session: &str, incarnation: i64) -> Option<String> {
+    match state.session_manager().session_incarnation(session).await {
+        Ok(Some(now)) if now == incarnation => session_name(state, session).await,
+        _ => None,
+    }
+}
+
+/// Take back a chat's consent to read a connection's workspace as the person (account
+/// ownership AO-12). Like every stop it holds on this computer even when it cannot be saved.
+#[utoipa::path(
+    delete,
+    operation_id = "crew_profile_revoke_read",
+    path = "/crew/sessions/{session_id}/reads/{connection_id}",
+    params(
+        ("session_id" = String, Path, description = "The chat that may read the workspace"),
+        ("connection_id" = String, Path, description = "The saved connection whose workspace it may read")
+    ),
+    responses(
+        (status = 204, description = "Taken back: the chat's reads of the workspace as the person answer `crew_read_consent_required` until the person allows them again"),
+        (status = 403, description = "No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no user-action key", body = CrewError),
+        (status = 404, description = "`crew_not_found`: the chat held no consent to read that connection's workspace", body = CrewError),
+        (status = 500, description = "`crew_revocation_not_saved`: stopped on this computer, but the change could not be saved, so the chat could read again after a restart. Retry", body = CrewError)
+    ),
+    tag = "Crew"
+)]
+pub async fn revoke_read(
+    headers: HeaderMap,
+    Path((session, connection)): Path<(String, String)>,
+) -> std::result::Result<StatusCode, Refusal> {
+    person(&headers)?;
+    match manager()?.revoke_person_read(&session, &connection).await {
+        Ok(true) => Ok(StatusCode::NO_CONTENT),
+        Ok(false) => Err(Refusal::new(
+            StatusCode::NOT_FOUND,
+            NOT_FOUND,
+            NO_READ_CONSENT,
+        )),
+        Err(error) => {
+            tracing::warn!(%error, "a Crew read consent was taken back on this computer only");
+            Err(Refusal::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                REVOCATION_NOT_SAVED,
+                READ_CONSENT_NOT_SAVED,
+            )
+            .with("detail", error.to_string()))
+        }
+    }
 }
 
 /// The context a chat's grant reads, as the workspace lists it (`context.manifest`).
@@ -570,6 +652,10 @@ pub fn routes(state: Arc<AppState>) -> Router {
         .route(
             "/crew/connections/{id}/sessions/{session_id}/revoke",
             post(revoke),
+        )
+        .route(
+            "/crew/sessions/{session_id}/reads/{connection_id}",
+            delete(revoke_read),
         )
         .layer(DefaultBodyLimit::max(8 * 1024))
         .with_state(state)

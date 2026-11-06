@@ -15,7 +15,9 @@ use axum::response::{IntoResponse, Response};
 use axum::Json;
 use biorouter::crew::authentication::InvitationMissing;
 use biorouter::crew::observation::RunView;
-use biorouter::crew::{ClusterMode, Connection, GrantRow, ServerAccess, ServerStorage};
+use biorouter::crew::{
+    ClusterMode, Connection, GrantRow, NewDevice, ServerAccess, ServerStorage, SetupStatus,
+};
 use biorouter_server::crew::transfers::Receipt;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
@@ -118,6 +120,10 @@ pub enum CrewErrorCode {
     CrewHandoffFailed,
     CrewWorkspaceIdentityMismatch,
     CrewWorkspaceDeleted,
+    // This computer's device and the account it signs in as (account ownership AO-9).
+    CrewDeviceKeyMissing,
+    CrewDeviceNotRecognized,
+    CrewAccountUnsupported,
     // A request the workspace was sent.
     CrewNotSent,
     CrewOutcomeUnknown,
@@ -143,6 +149,9 @@ pub enum CrewErrorCode {
     CrewGrantOtherConnection,
     CrewGrantReplaced,
     CrewGrantEnded,
+    // A chat's consent to read a workspace as the person (AO-12).
+    CrewReadConsentRequired,
+    CrewNotFound,
     // The credential vault.
     CrewProfileRefused,
     // Files and transfers.
@@ -170,6 +179,7 @@ pub enum CrewErrorCode {
     CrewJoinDeviceConflict,
     CrewJoinIdentityConflict,
     CrewJoinRefused,
+    CrewJoinRemoved,
     // Starting Crew on a server for its host.
     CrewHostSetupUnknown,
     CrewHostSetupUsed,
@@ -188,6 +198,7 @@ pub enum CrewErrorCode {
     CrewSetupStartFailed,
     CrewSetupChanged,
     CrewHostStorageUnsafe,
+    CrewHostNameInUse,
     CrewServerProbeUnsupported,
     CrewInstallArtifactUnavailable,
     CrewInstallUnsupportedPlatform,
@@ -221,6 +232,19 @@ pub struct CrewError {
     /// The SSH hop an SSH failure concerns, a jump host's included.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub host: Option<String>,
+    /// `crew_account_unsupported`: whether this account hosts the workspace, which decides the
+    /// sentence: the host is told to update Crew with `server_login`, anyone else to ask
+    /// `host_username`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub is_host: Option<bool>,
+    /// `crew_account_unsupported` said to the host: the SSH login that updates Crew on the
+    /// server (`biorouter crew setup --server {server_login}`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub server_login: Option<String>,
+    /// `crew_account_unsupported` said to anyone but the host: the host's username, `null` when
+    /// it could not be learned.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub host_username: Option<String>,
     /// The workspace's own refusal code, when `code` is `crew_request_refused` because the
     /// workspace refused (`name_taken`, `forbidden`, `response_too_large`, ...).
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -354,6 +378,18 @@ pub struct CrewConnectionView {
     /// The workspace's host deleted it: its server answered `crew_workspace_deleted`, so the
     /// person can only remove the connection from this computer.
     pub workspace_deleted: bool,
+    /// Devices of the person's account added since this computer last saw the account's
+    /// devices, with how and when each was added, until the person acknowledges them
+    /// (`POST /crew/connections/{id}/devices/acknowledge`; account ownership AO-10). Read from
+    /// the workspace's signed snapshots; empty before the first one.
+    pub new_devices: Vec<NewDevice>,
+    /// Whether the workspace's verified `hello` advertises `account_identity_v1` under its v2
+    /// signature (AO-9): `true` means any computer that signs in to the server as the account
+    /// can open the workspace again, so removing the host's last computer no longer ends the
+    /// host controls. `false` for an older server; `null` while this computer holds no verified
+    /// `hello` (not connected). Display and the removal guard only: the workspace decides
+    /// every join.
+    pub account_identity: Option<bool>,
 }
 
 /// `GET /crew/connections`.
@@ -496,7 +532,32 @@ pub struct CrewGrantList {
     /// Earlier grants whose revocation the workspace has not confirmed yet (F3). The daemon
     /// keeps asking by itself.
     pub replaced_grants: Vec<CrewGrantView>,
+    /// The chats the person let read this connection's workspace as them (account ownership
+    /// AO-12). Until a chat has one, its person tools answer `crew_read_consent_required`;
+    /// `DELETE /crew/sessions/{session_id}/reads/{connection_id}` takes one back.
+    pub person_reads: Vec<CrewPersonReadView>,
 }
+
+/// One chat's consent to read a connection's workspace as the person, as
+/// `GET /crew/connections/{id}/grants` lists it. Display only: whether a chat may read is
+/// decided on the chat as it is now, never on this row.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct CrewPersonReadView {
+    /// The chat the consent was given in.
+    pub session_id: String,
+    /// The saved connection whose workspace it may read.
+    pub connection_id: String,
+    /// When the person gave it, in seconds since the Unix epoch.
+    pub granted_at: u64,
+    /// The chat's title; `null` when the chat is gone or untitled.
+    pub session_name: Option<String>,
+}
+
+/// `GET /crew/setup`: this computer's setup jobs, those under way and those finished in the
+/// last 15 minutes, the newest first. A bare array on the wire.
+#[derive(Debug, Serialize, ToSchema)]
+#[serde(transparent)]
+pub struct CrewSetupJobs(pub Vec<SetupStatus>);
 
 /// `POST /crew/connections/{id}/sessions/{session_id}/revoke`: a grant stopped here and
 /// confirmed by the workspace. One the workspace did not confirm is refused instead

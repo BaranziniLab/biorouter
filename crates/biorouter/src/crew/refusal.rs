@@ -244,7 +244,7 @@ impl CrewRefusal {
         )
         .status(409)
         .with("workspace", serde_json::json!(workspace))
-        .with("host", serde_json::json!(true))
+        .with("is_host", serde_json::json!(true))
         .with("server_login", serde_json::json!(login))
     }
 
@@ -260,7 +260,7 @@ impl CrewRefusal {
         Self::new(ACCOUNT_UNSUPPORTED, message)
             .status(409)
             .with("workspace", serde_json::json!(workspace))
-            .with("host", serde_json::json!(false))
+            .with("is_host", serde_json::json!(false))
             .with("host_username", serde_json::json!(host))
     }
 
