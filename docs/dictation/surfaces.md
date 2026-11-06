@@ -592,7 +592,7 @@ The banner knows the port and the token, so both messages name the full address 
 
 **Standing.** A `serve` browser holds no proof; `userActionHeaders()` states the host's configured provider in `X-Caller-Provider` [C]. On a host configured with a private model that gives private standing, so dictation into a private chat there uses private entries; on a host configured with a public model it uses public entries only. The Dictionary page on `serve` disables publicize and privatize before the click with MSG-DICTIONARY-HOST-TIER; raising `agent_writes` and turning chat learning or suggestions on with MSG-DICTIONARY-HOST-SETTINGS, which names `biorouter dictionary settings` (DD-75); and, without private standing, **Only in private chats** with MSG-DICTIONARY-HOST-PRIVATE ([dictionary](dictionary.md) has the full rules).
 
-**The shared origin notice.** MSG-SHARED-ORIGIN shows once per origin before the first recording in either of two cases. First, under a path prefix (`new URL('./', document.baseURI).pathname !== '/'`, such as JupyterHub's `/user/<name>/biorouter/`), because the browser's grant then covers every page on the hub. Second, at any path, in a browser that does not enforce `Permissions-Policy` (`!('featurePolicy' in document) && !('permissionsPolicy' in document)` [I; M-8 confirms the check in Chromium, Firefox and Safari]), because app pages share the shell's origin (SD-14) and the PR-03 header then does not keep agent written app code away from a persistent grant. That second case covers Firefox and Safari on S5 at `127.0.0.1` and on S6 at the root.
+**The shared origin notice.** MSG-SHARED-ORIGIN shows once per origin before the first recording, on every `serve` origin and in every browser. App pages share the shell's origin (SD-14), and PR-03's `Permissions-Policy` header keeps an app page itself and the frames it holds away from the microphone in Chromium, but not a persistent grant: a same origin popup that an app page opens (`window.open('about:blank')`, or any same origin document served without the header) records in Chromium 157, measured on 2026-11-05 [M], and Firefox and Safari do not enforce the header at all. A path prefix, such as JupyterHub's `/user/<name>/biorouter/`, widens the grant further to every page on the hub. So the notice always recommends a one time grant, and per app origins remain the lasting fix (SD-16).
 
 **The chord.** Browsers bind ⌘⇧D to their own commands (Chrome and Firefox bookmark all tabs; Safari adds to the Reading List [R]), and M-18 measures whether a page can take it. Until M-18 shows the page receives the chord, a `serve` browser's tooltip reads "Dictate" without it, Settings hides the **Shortcut** row, and the field's key handler does not claim the chord.
 
@@ -626,7 +626,7 @@ M-17 runs the upload ladder through CHP, `jupyter-server-proxy`, `ingress-nginx`
 | Models | The account that runs `serve`; the browser's Settings installs there unless locked, or `biorouter dictation install` on the host |
 | Bias | Public; private only for a private target with private standing (a private host's browser states `X-Caller-Provider`); an identical response shape either way |
 | Entry points | The served composer's microphone; the served **Dictionary** page; Settings |
-| Messages | MSG-MIC-BROWSER, MSG-INSTALL-LOCKED, MSG-DISCLOSE-HOST (once per host), MSG-SHARED-ORIGIN (once, in a browser that does not enforce `Permissions-Policy`), MSG-CPU-SERVER, MSG-NOTHING, MSG-WAIT, MSG-ENGINE-FAILED |
+| Messages | MSG-MIC-BROWSER, MSG-INSTALL-LOCKED, MSG-DISCLOSE-HOST (once per host), MSG-SHARED-ORIGIN (once per origin), MSG-CPU-SERVER, MSG-NOTHING, MSG-WAIT, MSG-ENGINE-FAILED |
 | Residuals | Copilot holding a grant on the browser that shows this page can click the microphone, with no refusal (DD-88, O-15; recorded in SD-16) |
 | Release | PR-21 |
 | Acceptance | The `rust.yml` `serve` job: Playwright Chromium (16 kHz) and Firefox (the native rate fallback) against `serve` on loopback with the debug test model show MSG-NOTHING, and the daemon received 32,000 B per second of audio; M-8 (Safari at `127.0.0.1`, including the first click and the first ⌘⇧D before the status store has loaded, which must reach `recording`) recorded |
@@ -641,7 +641,7 @@ M-17 runs the upload ladder through CHP, `jupyter-server-proxy`, `ingress-nginx`
 | Models | Per account, or `sudo biorouter dictation install --system`, or managed `models_dir` on hubs with one daemon per user |
 | Bias | As S5 |
 | Entry points | As S5 |
-| Messages | MSG-SHARED-ORIGIN (once, under a path prefix or in a browser that does not enforce `Permissions-Policy`), MSG-413, MSG-WAIT, MSG-SERVER-BUSY, MSG-SERVER-MEMORY, MSG-DISCLOSE-HOST, MSG-ENGINE-FAILED |
+| Messages | MSG-SHARED-ORIGIN (once per origin), MSG-413, MSG-WAIT, MSG-SERVER-BUSY, MSG-SERVER-MEMORY, MSG-DISCLOSE-HOST, MSG-ENGINE-FAILED |
 | Phones and tablets | Untested; checklist row S6.6 (iPhone Safari and Android Chrome: dictate once, deny once) before any claim |
 | Release | PR-21 |
 | Acceptance | The `serve` job's `nginx:stable` container under `/user/a/biorouter/`: the worklet resolves, a 1 MiB plus 2 B `PUT` gets 413 and halves, and with `client_body_buffer_size 512k;` the nginx log holds no `buffered to a temporary file` line; a build output check that the worklet is an `assets/*.js` file referenced by the entry chunk; M-5 (two tabs while a turn streams, then behind HTTP/2 nginx) and M-17 recorded |
@@ -1137,7 +1137,7 @@ Two groups of message ids were retired on 2026-11-05 and are not reused: the Cop
 | MSG-NO-DEVICE | No microphone found. Connect one or make it the system default, then try again. | Composer card, review card, CLI |
 | MSG-MIC-BUSY | The microphone is in use by another app, or the system blocked it. | Composer card, review card |
 | MSG-INSECURE | Dictation needs a secure address. Your browser blocks the microphone on http://\<host>. Open Biorouter through an SSH tunnel (then it is localhost) or through an HTTPS address. | Microphone tooltip on an insecure page |
-| MSG-SHARED-ORIGIN | Your browser's microphone permission covers every page at \<origin>, including pages that code or an agent wrote there, such as Biorouter apps and notebook outputs. Choose Allow this time unless you trust every page there. | Once per origin before the first recording: on `serve` under a path prefix or in a browser that does not enforce `Permissions-Policy` |
+| MSG-SHARED-ORIGIN | Your browser's microphone permission covers every page at \<origin>, including pages that code or an agent wrote there, such as Biorouter apps and notebook outputs. Choose Allow this time unless you trust every page there. | Once per origin before the first recording, on every `serve` origin (SD-16) |
 | MSG-413 | The proxy in front of Biorouter refused the audio upload (413). Its request size limit is below 64 KB. | Composer card |
 | MSG-WAIT | Waiting for a free connection to Biorouter | Composer card after 1.5 s without an answer |
 | MSG-SERVER-BUSY | The server is busy transcribing for other people. Trying again in \<n> seconds. | Composer card on a 429 |
