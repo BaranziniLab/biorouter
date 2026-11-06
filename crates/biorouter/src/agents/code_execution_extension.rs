@@ -3600,6 +3600,16 @@ impl CodeExecutionClient {
         ) {
             return Some(("knowledge_delete_consent", refusal));
         }
+        // DD-42: the dictionary's writing tools stamp a term with the capability the call
+        // was admitted with, and a script a person ran through `POST /agent/call_tool`
+        // runs as public, so a private chat's term would land public. Refused from
+        // either tier; `dictionary__list_terms` stays callable. The store's path, read
+        // from the evaluated arguments, is refused here too.
+        if let Some(refusal) = crate::security::dictionary_store::uninspected_boundary_refusal(
+            tool_name, evaluated, BOUNDARY,
+        ) {
+            return Some(("dictionary_store", refusal));
+        }
         // Issue #56, the first-crossing disclosure, and the sharpest of the
         // three: an undisclosed write here does not merely escape ONE approval
         // card — the handler then records the (caller, target) pair as having

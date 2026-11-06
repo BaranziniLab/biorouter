@@ -3294,7 +3294,7 @@ fn dispatch_failure_response(error: &anyhow::Error) -> Result<CallToolResponse, 
 /// straight to the extension manager — bypassing the agent loop and therefore
 /// every [`ToolInspector`](biorouter::tool_inspection::ToolInspector).
 ///
-/// The four share one shape: an inspector would have refused or asked, nothing
+/// The five share one shape: an inspector would have refused or asked, nothing
 /// in an HTTP handler can put an operation to the user and wait, so the call is
 /// refused here rather than performed unasked. Each returns a tool ERROR rather
 /// than a status code, because the caller is a tool caller and the remedy is in
@@ -3321,6 +3321,10 @@ fn dispatch_failure_response(error: &anyhow::Error) -> Result<CallToolResponse, 
 ///   `code_execution__execute_code` script sent here are judged at the script
 ///   door (`CodeExecution::uninspected_boundary_refusal`), which has no managed
 ///   arm yet, so a managed-denied tool a person's script calls still runs.
+/// * **The dictionary** (DD-42). This route dispatches as
+///   `CallCapability::public_enforced()` on the secret alone, so
+///   `dictionary__add_terms` from a private chat's model would land a public row.
+///   Both writing tools are refused whatever the tier, and so is the store's path.
 ///
 /// Extracted from [`call_tool`] rather than inlined: the third gate pushed that
 /// handler past the `clippy::too_many_lines` baseline, and a list of boundary
@@ -3364,6 +3368,11 @@ fn call_tool_boundary_refusal_under(
         })
         .or_else(|| {
             biorouter::security::knowledge_delete::uninspected_boundary_refusal(
+                tool_name, arguments, BOUNDARY,
+            )
+        })
+        .or_else(|| {
+            biorouter::security::dictionary_store::uninspected_boundary_refusal(
                 tool_name, arguments, BOUNDARY,
             )
         })
@@ -3438,11 +3447,32 @@ mod managed_call_tool_tests {
         }
         for yaml in ["dictation:\n  capture: false\n", "dictation: {}\n"] {
             assert_eq!(
-                refusal(&policy(yaml), "dictionary__add_terms"),
+                refusal(&policy(yaml), "dictionary__list_terms"),
                 None,
                 "{yaml:?}"
             );
+            // The writing tools are refused here whatever the policy (DD-42), and not
+            // with the managed sentence.
+            assert_ne!(
+                refusal(&policy(yaml), "dictionary__add_terms").as_deref(),
+                Some(MANAGED_DENY_REASON),
+                "{yaml:?}"
+            );
         }
+    }
+
+    /// DD-42: this route dispatches as public on the secret alone, so a private chat's
+    /// term written through it would land public. Both writing tools are refused with
+    /// no policy at all, the listing tool is not, and neither is an ordinary tool.
+    #[test]
+    fn call_tool_refuses_the_dictionary_writing_tools() {
+        let managed = ManagedPolicy::empty();
+        for tool in ["dictionary__add_terms", "dictionary__remove_added_terms"] {
+            let refused = refusal(&managed, tool).unwrap_or_else(|| panic!("{tool} ran"));
+            assert!(refused.contains(tool), "{refused}");
+        }
+        assert_eq!(refusal(&managed, "dictionary__list_terms"), None);
+        assert_eq!(refusal(&managed, "developer__text_editor"), None);
     }
 
     /// The route reads the policy file for each request, and decides before it

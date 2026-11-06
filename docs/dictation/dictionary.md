@@ -180,18 +180,19 @@ pub struct RowAffiliation { pub institutions: Vec<String> } // normalized ids, e
 |---|---|
 | `empty` or `too_long` | fewer than 1 or more than 64 characters after NFC and trim (cues: more than 32) |
 | `too_many_words` | more than 6 whitespace separated words |
-| `line_break` | contains CR or LF |
-| `control_character` | contains any Unicode control character |
+| `line_break` | contains CR, LF, NEL (U+0085), or the Unicode line or paragraph separator (U+2028, U+2029), which are not control characters |
+| `control_character` | contains any Unicode control character, or a formatting character that hides or reorders text (zero width characters, the direction overrides and isolates, the word joiners, the byte order mark, the soft hyphen) |
 | `angle_bracket` | contains `<` or `>` |
 | `url` | contains `://` or starts with `www.` |
 | `email` | has the shape `local@domain.tld` |
 | `path` | starts with `/`, `~`, `./`, `../` or a drive letter, or contains two or more `/` or `\` separators |
 | `digits_only` | only digits and separators |
 | `long_hex` | a run of 16 or more hexadecimal digits |
-| `secret_shaped` | a known key prefix (`sk-`, `AKIA`, `ghp_`, `xox`) or a base64 shaped run of 32 or more characters |
-| `common_word_misrecognition` | a misrecognition that is a single common English word, on an `agent`, `auto` or `correction` row. The learner applies the same rule to every row it changes ([Effects on the dictionary](#effects-on-the-dictionary)) |
+| `secret_shaped` | a word of 12 or more characters that starts with a known key prefix (`sk-`, `AKIA`, `ghp_`, `gho_`, `ghu_`, `ghs_`, `github_pat_`, `xox`), or a base64 shaped run of 32 or more characters that holds a digit, a capital and a small letter. A long hyphenated phrase passes: one with no digit never mixes all three, and a run whose hyphen separated pieces are each a word of at most 16 letters (`Factor`, `alpha`, `RNA`), a number of at most 6 digits or a symbol of at most 8 capitals and digits (`HIF1A`) is a phrase, so `Hypoxia-Inducible-Factor-1-alpha` and `Interleukin-1-Receptor-Antagonist` pass. A random key's pieces mix cases and digits, and an `_`, `+`, `/` or `=` makes a piece no word |
+| `too_many_forms` | more than 8 spoken forms, 16 misrecognitions or 8 cues on one row |
+| `common_word_misrecognition` | a misrecognition that is a single common English word, on an `agent`, `auto` or `correction` row. The learner applies the same rule to every row it changes ([Effects on the dictionary](#effects-on-the-dictionary)). It needs the English word list, so it arrives with PR-14; PR-13 has no writer that stores such a row |
 
-The leaf crate cannot call the core's secret scanner, so every caller that can (the routes, the capability, the extractor and the CLI) also refuses a term for which `biorouter::guardrails::secret_output::redact_text` returns `Some` [C `crates/biorouter/src/guardrails/secret_output.rs` `redact_text`].
+The leaf crate cannot call the core's secret scanner, so every caller that can (the routes, the capability, the extractor and the CLI) also refuses a term for which `biorouter::guardrails::secret_output::redact_text` returns `Some` [C `crates/biorouter/src/guardrails/secret_output.rs` `redact_text`]. `StoreFile::import` takes that scan as an argument, so an import refuses the same terms as an add.
 
 ### Uniqueness, fold keys and twins
 
@@ -228,21 +229,24 @@ Caps count only the caller tier's rows, so a public chat at a cap learns nothing
 | Agent terms per session | 30 | The 31st and later land `suggested` in every mode |
 | Terms per tool call | 10 | A call with 11 or more is refused by the tool's schema |
 
-At about 300 B an entry, 5,000 rows are about 1.5 MB per tier [I].
+A row with one spoken form, one misrecognition and a short note takes 538 B in the file, so a store near both active caps (7,800 such rows) is 4.2 MB [M, 2026-11-06].
 
 ### Validation and cap texts
 
-These sentences are in the message catalog in [Surfaces](surfaces.md) under the ids below, and `components/dictionary/copy.ts` and `crates/biorouter-cli/src/dictation/messages.rs` read them from there:
+These sentences are in the message catalog in [Surfaces](surfaces.md) under the ids below. Every Rust caller reads them from `ValidationCode::message` and the store's constants in `crates/biorouter-dictation/src/store/` (PR-13), and `components/dictionary/copy.ts` reads them from the catalog:
 
 | Code | Id | Text |
 |---|---|---|
 | `too_long` | MSG-TERM-TOO-LONG | Use a term of at most 64 characters. |
 | `too_many_words` | MSG-TERM-WORDS | Use a term of at most six words. |
-| `line_break`, `control_character`, `angle_bracket` | MSG-TERM-PLAIN | Use one line of plain text. |
+| `empty`, `line_break`, `control_character`, `angle_bracket` | MSG-TERM-PLAIN | Use one line of plain text. |
+| `too_many_forms` | MSG-TERM-FORMS | Use at most eight spoken forms and sixteen misrecognitions for a term. |
 | `url`, `email`, `path` | MSG-TERM-ADDRESS | A dictionary term cannot be a web address, an email address or a file path. |
 | `digits_only`, `long_hex`, `secret_shaped` | MSG-TERM-IDENTIFIER | This looks like an identifier or a key, so it was not added. |
 | `cap` | MSG-DICTIONARY-CAP | Your dictionary holds 5,000 active terms here, the most dictation can use. Delete terms you no longer dictate, then add this one. |
 | `stale` | MSG-DICTIONARY-STALE | This term changed since you opened it. Reload it and try again. |
+| `duplicate` (an edit to a spelling another row of its tier has) | MSG-DICTIONARY-DUPLICATE | That spelling is already a term here, so the edit was not made. |
+| `unreadable` (an import row) | MSG-IMPORT-ROW-UNREADABLE | This row could not be read. |
 
 **Acceptance.** PR-13: the validation table above (control characters, newline, angle brackets, 65 characters, seven words, NFC, URL, email, path, digits only, long hex); rows per tier (a private add of an existing public term leaves the public row byte identical); the "same letters" warning; tombstones per tier; caps per tier; a usage bump leaves `rev` unchanged. PR-14: twins merge in `EligibleEntries` and never disable each other's key.
 
@@ -258,7 +262,7 @@ These sentences are in the message catalog in [Surfaces](surfaces.md) under the 
 | systemd service account (S8) | the service account's config folder, written with `sudo -u biorouter -H biorouter dictionary …` |
 | Docker (S16) | the config volume at `/home/biorouter/.config/biorouter` |
 
-The core resolves the folder with `Paths::in_config_dir("dictionary")` [C `crates/biorouter/src/config/paths.rs`] and passes it to the leaf crate, which takes every path as an argument. The folder holds `dictionary.json`, `usage.json` and `.lock`. `crates/biorouter/tests/path_resolver_agreement.rs` gains a row for it. The store holds no absolute paths, so the Windows legacy folder rewrite needs no row. Two machines, and a Windows desktop and its WSL account, have two dictionaries; export and import move terms between them ([Syncing two hosts](#syncing-two-hosts)).
+The core resolves the folder with `Paths::in_config_dir("dictionary")` [C `crates/biorouter/src/config/paths.rs`] and passes it to the leaf crate, which takes every path as an argument. Since PR-13 that is `biorouter::security::dictionary_store::dictionary_dir()`, and `open_store()` there opens the store; the same module re-exports the leaf crate's `store`, so the CLI and the routes reach the store and its guard through one module. The folder holds `dictionary.json`, `usage.json` and `.lock`. `crates/biorouter/tests/path_resolver_agreement.rs` has a row for it (`dictionary_store_honours_the_sandbox_root`). The store holds no absolute paths, so the Windows legacy folder rewrite needs no row. Two machines, and a Windows desktop and its WSL account, have two dictionaries; export and import move terms between them ([Syncing two hosts](#syncing-two-hosts)).
 
 ### Writing and locking
 
@@ -272,15 +276,21 @@ Memory's pattern [C `crates/biorouter-mcp/src/memory/mod.rs` `StoreLock`, `lock_
 
 The folder is created 0700 and the files 0600 on Unix, because private rows may sit there.
 
+A write that leaves the file as it was (an add of a term already there, an edit that changes nothing) writes nothing, so the file stays byte identical. The file holds one row per line, so a person can read it and repair it by hand.
+
 Two budgets: the daemon's and the CLI's ordinary writes wait for the lock. The extractor and usage flushes use `try_write_within(50 ms)`, which retries `try_lock_exclusive` every 5 ms and drops the write when the budget ends.
+
+Measured at 7,800 rows (4.2 MB) on this Mac's SSD in a release build [M, 2026-11-06]: an add takes 40 ms, most of it the two `fsync` calls, which on macOS flush the disk's cache; a flush of 30 usage bumps takes 19 ms; an import of 1,000 new rows takes 57 ms in one write. An import does not compute the "same letters" warning, which it never reports, so it stays linear in the store's size. None of these sits between a stop and the text: writes are the person's or the agent's acts, and usage flushes run after the text is out.
 
 ### Reading and caching
 
-Readers parse without the lock. The daemon and an interactive CLI cache the parsed view keyed by the (mtime, length) of both files and reparse on any change, so a term added in one process is listed by another at once. Each reparse increments an in process generation number. The generation is never exposed: no route reports a store wide revision (DD-40).
+Readers parse without the lock. The daemon and an interactive CLI cache the parsed view keyed by the modification time, length and identity of both files and reparse on any change, so a term added in one process is listed by another at once. Identity is in the key because every write renames a new file into place: two writes within one clock tick that leave the length alone still reparse. It is the inode on Unix and the NTFS file index on Windows (`GetFileInformationByHandle` on the open file), never the creation time: NTFS tunnelling gives a file created or renamed onto a name removed within the last 15 s that file's creation time, so each write's `dictionary.json.tmp` would carry the previous one's. Each reparse increments an in process generation number. The generation is never exposed: no route reports a store wide revision (DD-40).
+
+The view is what dictation reads when a recording starts: a cached view costs two `stat` calls, 2.1 µs, and a reparse at 7,800 rows takes 8.7 ms [M, 2026-11-06, release build], paid once after each change to the store, not per dictation.
 
 ### When the file cannot be read
 
-A parse failure, an unknown `format`, or a `version` other than 1 fails closed:
+A parse failure, an unknown `format`, a `version` other than 1, a key this version does not know, or two rows with one id fails closed (an unknown key fails rather than being dropped, because a CLI on the PATH often lags the app, and an older writer would otherwise erase a newer field on its next write):
 
 - every listing is empty, every dictation runs with an empty bias set, and every write and observation is refused with MSG-DICTIONARY-FILE: "The dictionary file at `<path>` could not be read, so nothing was changed. Fix or remove it, then try again.";
 - the file is never rewritten from a failed parse, so the person can repair it by hand;
@@ -288,13 +298,15 @@ A parse failure, an unknown `format`, or a `version` other than 1 fails closed:
 
 ### Store API
 
+PR-13 builds it in `crates/biorouter-dictation/src/store/`: `mod.rs` (the store, its cache and errors), `schema.rs`, `validate.rs`, `fold.rs`, `lock.rs`, `ops.rs` (what each write does to the file: adds with the tier, tombstone and cap rules, edits, deletes, accepts, and `remove_confirmed`, which deletes only the rows a person confirmed that still match), `tier_user.rs`, `transfer.rs` (import and export) and `usage.rs`.
+
 ```rust
 // crates/biorouter-dictation/src/store/mod.rs
-pub struct DictionaryStore { dir: PathBuf }
+pub struct DictionaryStore { dir: PathBuf, cache: Mutex<Option<(CacheKey, Arc<StoreView>)>> }
 
 impl DictionaryStore {
     pub fn open(dir: impl Into<PathBuf>) -> Self;
-    /// Cached by the (mtime, len) of dictionary.json and usage.json.
+    /// Cached by the modification time, length and identity of dictionary.json and usage.json.
     pub fn view(&self) -> Result<Arc<StoreView>, StoreError>;
     /// Exclusive lock, fresh parse, change, temp file, fsync, rename.
     pub fn write<T>(&self, f: impl FnOnce(&mut StoreFile) -> Result<T, StoreError>) -> Result<T, StoreError>;
@@ -311,9 +323,12 @@ pub enum StoreError {
     Stale { current_rev: u64 },          // If-Match mismatch
     NotFound,                             // also for a row the caller may not list
     Cap(CapKind),
+    Duplicate,                            // an edit that would give two rows of one tier one written form
     Io(std::io::Error),
 }
 ```
+
+A usage file that cannot be read counts as empty for `view` (a lost usage figure costs ranking, never a term), and `flush_usage` refuses to write over it.
 
 **Acceptance.** PR-13: a suggestion racing a delete loses nothing (two processes); a corrupt file refuses writes and stays byte identical; a term added in one terminal is listed by a second process at once.
 
@@ -924,6 +939,8 @@ No LLM corrector in v1.
 | `kind` null | as `term` |
 | an agent row | `exact`, always (DD-54) |
 
+The store writes the default when a row is created (`MatchPolicy::default_for`, PR-13). An edit that changes the spelling or the kind and names no `match` of its own moves a stored value equal to the old form's default to the new form's default, turns `fuzzy` into `exact` when the new form's default is `exact`, and keeps anything else (`prompt_only`, an `exact` chosen for a long name) (`match_after_edit` in `ops.rs`): `Ventolinn` edited to `HRAS` stops being fuzzy. An agent row stays `exact`. The `collides` arm needs the English word list, which arrives with PR-14, so PR-14's matcher never applies fuzzy matching to a `collides` entry whatever its stored `match`.
+
 ### What was measured
 
 Fuzzy matching is what makes coined names work (`ventilin`, `klenl`, `FLET3`) [M], and over a 26 term drug list the guarded corrector made 0 genuine false edits across 7,108 real consultation utterances [M]. It is unsafe for short symbols: over a 37 term gene list, the guarded pass made 45 false edits across 4,651 real sentences (`here's` to HRAS 21 times, `aren't` and `ain't` to ARNT 12 times, `ras` to HRAS, `norms` to NRAS) [M]. Over the same sentences the 14 term list of the synthetic benchmark made 13 false edits (`UCSD` to UCSF 4 times, `exon 1` to EGLN1 3 times, `spikes` to SPOKE, `CRISPR` to CRISPRi) [M]. On real audio, the corrector turned NTRK, heard as `N-TRAC`, into NRAS [M]. The defaults above and the stop list would have blocked every one of those measured false edits [I]; M-22 and the Tier 1 gate check that on public real corpora.
@@ -1335,30 +1352,32 @@ New `components/dictionary/{DictionaryView,DictionaryRow,TermDialog,AddTermsDial
 ```text
 biorouter dictionary list      [--format text|json|csv] [--status active|suggested|all]
 biorouter dictionary add       TERM… [--spoken "…"] [--private]
-biorouter dictionary edit      TERM [--term NEW] [--spoken …]
-biorouter dictionary remove    TERM… | --id ID
+biorouter dictionary edit      TERM | --id ID  [--term NEW] [--spoken …]
+biorouter dictionary remove    TERM… | --id ID…
 biorouter dictionary review
 biorouter dictionary accept    ID…
 biorouter dictionary dismiss   ID…
 biorouter dictionary import    FILE|- [--format txt|csv|tsv|json] [--dry-run]
 biorouter dictionary export    [FILE|-] [--include-private]
-biorouter dictionary publicize TERM
-biorouter dictionary privatize TERM
+biorouter dictionary publicize TERM | --id ID
+biorouter dictionary privatize TERM | --id ID
 biorouter dictionary settings  [--agent-writes suggest|on_request|add] [--learn-from-chats on|off]
-                               [--suggest-from-chats on|off]
+                               [--suggest-from-chats on|off]   (PR-23)
 biorouter dictionary clear     [--suggested-only]
 ```
 
-- Every command prints the account and the store folder it acts on to stderr, so stdout stays clean for `list` and `export`.
-- `--spoken` takes a comma separated list and may repeat. `add` stamps public unless `--private` (O-6: a terminal add starts from no chat), and a private terminal add carries no institution (O-36).
+- Every command prints the account and the store folder it acts on to stderr (`Dictionary: <folder> (account <user>)`), so stdout stays clean for `list` and `export`. A refusal prints its sentence alone.
+- `--spoken` takes a comma separated list and may repeat; with `add` it goes with one term at a time. `add` stamps public unless `--private` (O-6: a terminal add starts from no chat), and a private terminal add carries no institution (O-36).
 - A new store starts with `agent_writes` set to `on_request` (O-3); `settings --agent-writes suggest` lowers it and asks nothing, `--agent-writes add` raises it and asks first.
 - A `TERM` names every row with that exact written form that the caller can list. When it names more than one (twins), the command lists them with ids and asks which, or takes `--id`.
-- `review` shows suggestions and unreviewed agent rows in a multiselect (written form, source, lock for private, reason); the selected rows are accepted or kept, then it asks "Dismiss the rest? [y/N]".
-- `publicize` and `privatize` show MSG-PUBLICIZE-WARN (publicize) and then ask the person to type the term exactly (O-5). Only then is `UserDictionaryTierChange` constructed.
-- `clear` prints "This deletes `<n>` terms from `<folder>`." and asks the person to type `delete <n>`. `--suggested-only` deletes suggestions only.
-- `import` takes the format from the file's extension (`.txt`, `.csv`, `.tsv`, `.json`); `--format` overrides it, and standard input (`-`) needs it unless the content is the export JSON.
-- `settings` with no flag prints the three settings. A flag that raises `agent_writes`, or turns `learn_from_chats` or `suggest_from_chats` on, asks "Change this setting? [y/N]" first; lowering or turning off asks nothing. `--suggest-from-chats` goes through `activation.rs`, as the install box does. This is the host step that MSG-DICTIONARY-HOST-SETTINGS names on `serve`.
-- `list --format text` columns: written, status, tier, source, uses, id; `csv` the same; `json` an array of `EntryView`.
+- `review` shows suggestions and unreviewed agent rows in a multiselect (written form, source, "private" for a private row, reason); the selected rows are accepted or kept, then it asks "Dismiss the rest? [y/N]". A row another surface accepted or kept while the person answered is not dismissed.
+- `publicize` and `privatize` show MSG-PUBLICIZE-WARN (publicize) and then ask the person to type the term exactly (O-5). Only then is `UserDictionaryTierChange` constructed. A blank answer cancels; one that does not match exits 1 and changes nothing. `publicize TERM` names the private row, `privatize TERM` the public one.
+- Escape at any question cancels the command as a blank answer or **Cancel** does: every question comes before the command's one write, so it prints "Nothing was changed." (`export`: "Nothing was exported.") and exits 0; until the live check of 2026-11-06 it printed cliclack's "operation interrupted" and exited 1 [M]. Ctrl-C ends the process with SIGINT (`console` raises it), also before any write; no question holds the store's lock, so another terminal's add lands while one waits [M].
+- `clear` counts the rows `list` shows, prints "This deletes `<n>` terms from `<folder>`." (MSG-CLEAR) and asks the person to type `delete <n>`. `--suggested-only` counts suggestions only. It then deletes those rows and no other, as the page's **Delete all terms…** deletes the listed rows: a row another process added while the person typed (an agent's term, a suggestion) stays, `--suggested-only` keeps a suggestion accepted meanwhile, and the report says how many were deleted. An `auto` row seen once, which no listing shows, is neither counted nor deleted. Each deleted row leaves its tombstone, as a delete on the Dictionary page does.
+- `import` takes the format from the file's extension (`.txt`, `.csv`, `.tsv`, `.json`); `--format` overrides it, and standard input (`-`) needs it unless the content is the export JSON. It reads at most 16 MB. It prints `Imported: <n> new, <n> merged, <n> duplicate, <n> invalid.` (`Dry run:` with `--dry-run`) and one `line <n>: <code>: <sentence>` per refused row. Without a terminal the rows a file marks private are reported as one count, `Private terms received: <n>.`, never as new or already present, so the plan counts only rows the caller can list (oracle rule 3).
+- `settings` with no flag prints the stored settings, which work without a terminal. A flag that raises `agent_writes`, or turns `learn_from_chats` or `suggest_from_chats` on, asks "Change this setting? [y/N]" first; lowering or turning off asks nothing. Under managed `dictionary_agent_writes: false`, raising either is refused with the policy's sentence. `--suggest-from-chats` goes through `activation.rs`, as the install box does, and arrives with it in PR-23; until then `settings` prints two settings. This is the host step that MSG-DICTIONARY-HOST-SETTINGS names on `serve`.
+- `list --format text` columns: written, status, tier, source, uses, id; `csv` the same; `json` an array of `EntryView`. Without a terminal `uses` reads `-` and `EntryView` carries no usage fields or `suggested_in`, as a route gives a caller without private standing (oracle rule 5). Like every route, `list` and `review` never show an `auto` row seen fewer than two times.
+- Export carries active rows only: a suggestion still waits for the person, and an import elsewhere would make it active. A file written with private terms is 0600 on Unix, also one that was already there (an earlier public export at 0644): it is narrowed while still empty, before a private term is written.
 
 ### Terminal only rules
 
@@ -1367,7 +1386,9 @@ biorouter dictionary clear     [--suggested-only]
 | Interactive terminal (`prompt_can_run()` [C `crates/biorouter-cli/src/commands/needs_terminal.rs:49`]), `BIOROUTER_TERMINAL` unset | yes | yes | after the typed confirmation | listed and reviewed; exported only with `--include-private`, `caller_capability()` Private [C `crates/biorouter-cli/src/session/privacy.rs:65`] and MSG-EXPORT-PRIVATE |
 | No terminal (pipe, cron, `ssh host cmd`), `BIOROUTER_TERMINAL` unset | public rows | refused (exit 2), except `import` | refused | withheld, with no count |
 | An agent's shell (`BIOROUTER_TERMINAL=1`) | public rows | refused with MSG-DICTIONARY-AGENT (exit 2) | refused | withheld, with no count |
-| Managed `dictionary: false` | yes | refused with MSG-POLICY (exit 2); `remove` and `export` allowed | refused | as above |
+| Managed `dictionary: false` | yes | refused with MSG-POLICY (exit 2); deleting (`remove`, `dismiss`, `clear`) and `export` allowed | refused | as above |
+
+The refusals are checked before the store is touched, in this order: an agent's shell, then the policy, then the terminal. A write other than `import` without a terminal answers "Changing the dictionary needs you at an interactive terminal. To add terms from a file or a pipe, use `biorouter dictionary import`.", and `export --include-private` where DD-77 does not admit it answers "Exporting private terms needs you at your own terminal and a private model configured on this computer. Run the command without --include-private to export public terms."; both exit 2, as MSG-DICTIONARY-TTY and MSG-EXPORT-PRIVATE-REFUSED in the message catalog, where every other sentence these commands print has its id too (MSG-SPOKEN-ONE-TERM to MSG-DICTIONARY-FOLDER), pinned by `the_dictionary_sentences_are_the_catalogs` in `commands/dictionary.rs`. MSG-DICTIONARY-AGENT names `dictionary__add_terms`, which PR-23 adds. A store that cannot be read answers MSG-DICTIONARY-FILE with exit 1.
 
 `import` is admitted without a terminal (still refused under `BIOROUTER_TERMINAL=1` and by policy), because the documented sync pipes into it over SSH; it only merges and never deletes. Rows marked `tier: "private"` import private, and the rest import public. Every other write, `settings` included, needs a terminal, the rule DD-76 applies to live capture, as accident prevention and not a boundary. Private rows follow DD-37 at an interactive terminal with `BIOROUTER_TERMINAL` unset: `list` and `review` show every row. Only `export --include-private` also needs `caller_capability()` Private, the part of DD-77 that applies here.
 
@@ -1399,7 +1420,7 @@ Import accepts:
 
 | Format | Shape |
 |---|---|
-| `lines` (`--format txt`) | one term per line; `EPAS1 = epas one, e pass one` adds spoken forms; `#` starts a comment |
+| `lines` (`--format txt`) | one term per line; `EPAS1 = epas one, e pass one` adds spoken forms; a `#` at the start of a line or after a space or tab starts a comment, so `C#` and `F#` import as written |
 | `csv`, `tsv` | header `written,spoken_forms,note`; spoken forms separated by `;` inside the field |
 | `json` | the export shape above |
 
@@ -1421,7 +1442,7 @@ On a systemd host, the receiving side runs as the service account (`sudo -u bior
 
 ### The path inspector
 
-New `crates/biorouter/src/security/dictionary_store.rs` (PR-13), modelled on `security/session_store.rs` [C]: `is_in_dictionary_store(path)`, a `DictionaryStoreInspector` registered beside `SessionStoreInspector` in `Agent::create_tool_inspection_manager` [C `agent.rs:6264`], and an `uninspected_boundary_refusal(tool_name, arguments, boundary)`. It refuses tool reads and writes of `<config>/dictionary/` for callers of both tiers, using the same path resolution as the session store inspector (DD-42).
+New `crates/biorouter/src/security/dictionary_store.rs` (PR-13), modelled on `security/session_store.rs` [C]: `is_in_dictionary_store(path)`, a `DictionaryStoreInspector` registered beside `SessionStoreInspector` in `Agent::create_tool_inspection_manager` [C `agent.rs:6264`], and an `uninspected_boundary_refusal(tool_name, arguments, boundary)`. It refuses tool reads and writes of `<config>/dictionary/` for callers of both tiers, using the same path resolution as the session store inspector (DD-42). Its refusal reaches the model in its own words: `tool_execution::denied_response_text` passes the reasons of both store inspectors through. Before PR-13 the session store's reason was replaced with "The user has declined to run this tool", and the dictionary's was too until a live run showed it: GPT-5.5 on `versa_azure`, asked to `cat` the store and view it with the text editor, batched both into one `execute_code` call, which the inspector refused, and reported that the user had declined [M, 2026-11-06]. After the fix the same run received the refusal, tried no other way to the file, and the private term in the store never appeared in its output [M].
 
 ### Boundary refusals
 
@@ -1430,7 +1451,7 @@ New `crates/biorouter/src/security/dictionary_store.rs` (PR-13), modelled on `se
 - `call_tool_boundary_refusal` [C `routes/agent.rs:3320`], chained after the global memory, session store and knowledge delete refusals;
 - the `execute_code` chain's `uninspected_boundary_refusal` [C `crates/biorouter/src/agents/code_execution_extension.rs:3569`].
 
-The script door refuses both tools even from a private chat, as DD-42 says. A script's inner calls inherit the capability its `execute_code` call was admitted with [C `code_execution_extension.rs` `get_tool_infos`], and the inspector chain does not reach a script that a person ran through `POST /agent/call_tool` [C `uninspected_boundary_refusal` doc comment]. Such a script runs as `public_enforced()`, so a private chat's term added from it would land public. The agent calls `dictionary__add_terms` directly instead; `dictionary__list_terms` stays callable from scripts.
+Both doors also refuse a call whose already evaluated arguments name the store's folder, as the session store's boundary refusal does for its database, so a path a script assembles at run time is refused there although the inspector cannot see it. PR-13 lands both refusals: `call_tool_refuses_the_dictionary_writing_tools` in `routes/agent.rs` asks the route's chain, and `every_door_asks_this_module` in `security/dictionary_store.rs` reads the inspector registry and both chains. The script door refuses both tools even from a private chat, as DD-42 says. A script's inner calls inherit the capability its `execute_code` call was admitted with [C `code_execution_extension.rs` `get_tool_infos`], and the inspector chain does not reach a script that a person ran through `POST /agent/call_tool` [C `uninspected_boundary_refusal` doc comment]. Such a script runs as `public_enforced()`, so a private chat's term added from it would land public. The agent calls `dictionary__add_terms` directly instead; `dictionary__list_terms` stays callable from scripts.
 
 ### Managed policy keys
 
@@ -1443,7 +1464,7 @@ The managed `dictation:` block ([Engine and models](engine-and-models.md) and [m
 
 ### What a shell can still do
 
-A shell can read `dictionary.json` directly, because DR-17 left the filesystem open. The inspector stops a cooperative agent's file tools and named paths, not a determined actor. On a keyless daemon a shell that recovers the daemon secret (`ps eww`) can also make every dictionary write a `serve` browser may make and install a pinned model ([What is and is not claimed](#what-is-and-is-not-claimed)). These are recorded as residuals, as accident prevention.
+A shell can read `dictionary.json` directly, because DR-17 left the filesystem open. The inspector stops a cooperative agent's file tools and named paths, not a determined actor. It compares the path as written, as the session store's inspector does: through `POST /agent/call_tool` in a live session on `versa_azure`, `cat` and `grep` of the store, `text_editor` view and write, and an `execute_code` script naming it were all refused, while `cd <config> && cat dictionary/dictionary.json`, a glob (`<config>/dict*/`), a doubled slash, a `/./` segment and `Dictionary` on the case insensitive macOS disk each returned the private term [M, 2026-11-06]. On a keyless daemon a shell that recovers the daemon secret (`ps eww`) can also make every dictionary write a `serve` browser may make and install a pinned model ([What is and is not claimed](#what-is-and-is-not-claimed)). These are recorded as residuals, as accident prevention.
 
 **Acceptance.** PR-13: `cat` and `text_editor view` of the store refused for both tiers. PR-23: `/agent/call_tool` with `dictionary__add_terms` refused. PR-23, with the policy tests of PR-05: a resumed roster does not load `dictionary` under policy.
 

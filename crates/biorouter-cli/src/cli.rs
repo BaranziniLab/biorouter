@@ -1216,6 +1216,259 @@ enum DictationCommand {
     },
 }
 
+/// `biorouter dictionary` (DD-75). Writes need a person at an interactive terminal,
+/// except `import`; none runs in an agent's shell.
+#[derive(Subcommand)]
+enum DictionaryCommand {
+    /// The terms in this account's dictionary. Without a terminal only the public terms
+    /// are listed
+    #[command(about = "List the dictionary's terms", visible_alias = "ls")]
+    List {
+        #[arg(
+            long = "format",
+            value_name = "FORMAT",
+            default_value = "text",
+            value_parser = clap::builder::PossibleValuesParser::new(["text", "json", "csv"])
+        )]
+        format: String,
+
+        #[arg(
+            long = "status",
+            value_name = "STATUS",
+            default_value = "all",
+            value_parser = clap::builder::PossibleValuesParser::new(["active", "suggested", "all"])
+        )]
+        status: String,
+    },
+
+    /// Add words dictation should spell your way, such as UCSF or EPAS1
+    #[command(about = "Add terms to the dictionary")]
+    Add {
+        #[arg(value_name = "TERM", required = true)]
+        terms: Vec<String>,
+
+        /// How you say the term, comma separated; may repeat
+        #[arg(long = "spoken", value_name = "FORMS")]
+        spoken: Vec<String>,
+
+        /// Use the terms only when dictating into chats on private models
+        #[arg(long)]
+        private: bool,
+    },
+
+    /// Change a term's spelling or how you say it
+    #[command(
+        about = "Change a term",
+        group(clap::ArgGroup::new("change").required(true).multiple(true).args(["new_term", "spoken"]))
+    )]
+    Edit {
+        #[arg(value_name = "TERM", required_unless_present = "id")]
+        term: Option<String>,
+
+        /// The entry's id, for a term that is both public and private
+        #[arg(long, value_name = "ID")]
+        id: Option<String>,
+
+        /// The new spelling
+        #[arg(long = "term", value_name = "NEW")]
+        new_term: Option<String>,
+
+        /// How you say the term, comma separated; replaces the spoken forms
+        #[arg(long = "spoken", value_name = "FORMS")]
+        spoken: Option<Vec<String>>,
+    },
+
+    /// Delete terms
+    #[command(
+        about = "Remove terms from the dictionary",
+        visible_alias = "rm",
+        group(clap::ArgGroup::new("which").required(true).multiple(true).args(["terms", "ids"]))
+    )]
+    Remove {
+        #[arg(value_name = "TERM")]
+        terms: Vec<String>,
+
+        /// An entry's id; may repeat
+        #[arg(long = "id", value_name = "ID")]
+        ids: Vec<String>,
+    },
+
+    /// Accept or dismiss the suggestions and the agent's terms waiting for you
+    #[command(about = "Review suggested terms")]
+    Review {},
+
+    /// Accept suggestions by id
+    #[command(about = "Accept suggested terms")]
+    Accept {
+        #[arg(value_name = "ID", required = true)]
+        ids: Vec<String>,
+    },
+
+    /// Dismiss suggestions by id; they are not suggested again
+    #[command(about = "Dismiss suggested terms")]
+    Dismiss {
+        #[arg(value_name = "ID", required = true)]
+        ids: Vec<String>,
+    },
+
+    /// Merge terms from a file or standard input: one term per line
+    /// (`EPAS1 = epas one, e pass one`), CSV or TSV with the header
+    /// `written,spoken_forms,note`, or an export. Never deletes
+    #[command(about = "Import terms")]
+    Import {
+        /// The file, or - for standard input
+        #[arg(value_name = "FILE|-")]
+        input: String,
+
+        /// The file's format (default: from its extension; standard input needs it
+        /// unless it is an export)
+        #[arg(
+            long = "format",
+            value_name = "FORMAT",
+            value_parser = clap::builder::PossibleValuesParser::new(["txt", "csv", "tsv", "json"])
+        )]
+        format: Option<String>,
+
+        /// Print what would change, and change nothing
+        #[arg(long)]
+        dry_run: bool,
+    },
+
+    /// Write the terms as JSON, for `import` on another computer. Without ids or usage
+    #[command(about = "Export terms")]
+    Export {
+        /// The file, or - for standard output (the default)
+        #[arg(value_name = "FILE|-")]
+        output: Option<String>,
+
+        /// Include private terms, after a confirmation (needs a terminal and a private
+        /// model configured)
+        #[arg(long)]
+        include_private: bool,
+    },
+
+    /// Let a private term shape dictation into chats on public models
+    #[command(about = "Make a private term public")]
+    Publicize {
+        #[arg(value_name = "TERM", required_unless_present = "id")]
+        term: Option<String>,
+
+        #[arg(long, value_name = "ID")]
+        id: Option<String>,
+    },
+
+    /// Use a term only when dictating into chats on private models
+    #[command(about = "Make a public term private")]
+    Privatize {
+        #[arg(value_name = "TERM", required_unless_present = "id")]
+        term: Option<String>,
+
+        #[arg(long, value_name = "ID")]
+        id: Option<String>,
+    },
+
+    /// Show the dictionary's settings, or change them
+    #[command(about = "Show or change the dictionary's settings")]
+    Settings {
+        /// What the agent's terms do: wait for you (suggest), go in when you ask
+        /// (on_request), or go in at once (add)
+        #[arg(
+            long = "agent-writes",
+            value_name = "MODE",
+            value_parser = clap::builder::PossibleValuesParser::new(["suggest", "on_request", "add"])
+        )]
+        agent_writes: Option<String>,
+
+        /// Also find terms in the messages you write, automatically, on this computer
+        #[arg(
+            long = "learn-from-chats",
+            value_name = "ON|OFF",
+            value_parser = clap::builder::PossibleValuesParser::new(["on", "off"])
+        )]
+        learn_from_chats: Option<String>,
+    },
+
+    /// Delete every term, after you type the count
+    #[command(about = "Delete every term")]
+    Clear {
+        /// Delete only the suggestions
+        #[arg(long)]
+        suggested_only: bool,
+    },
+}
+
+impl DictionaryCommand {
+    fn into_action(self) -> crate::commands::dictionary::Action {
+        use crate::commands::dictionary::{Action, ListFormat, StatusFilter};
+        match self {
+            Self::List { format, status } => Action::List {
+                format: match format.as_str() {
+                    "json" => ListFormat::Json,
+                    "csv" => ListFormat::Csv,
+                    _ => ListFormat::Text,
+                },
+                status: match status.as_str() {
+                    "active" => StatusFilter::Active,
+                    "suggested" => StatusFilter::Suggested,
+                    _ => StatusFilter::All,
+                },
+            },
+            Self::Add {
+                terms,
+                spoken,
+                private,
+            } => Action::Add {
+                terms,
+                spoken,
+                private,
+            },
+            Self::Edit {
+                term,
+                id,
+                new_term,
+                spoken,
+            } => Action::Edit {
+                term,
+                id,
+                new_term,
+                spoken,
+            },
+            Self::Remove { terms, ids } => Action::Remove { terms, ids },
+            Self::Review {} => Action::Review,
+            Self::Accept { ids } => Action::Accept { ids },
+            Self::Dismiss { ids } => Action::Dismiss { ids },
+            Self::Import {
+                input,
+                format,
+                dry_run,
+            } => Action::Import {
+                input,
+                format,
+                dry_run,
+            },
+            Self::Export {
+                output,
+                include_private,
+            } => Action::Export {
+                output,
+                include_private,
+            },
+            Self::Publicize { term, id } => Action::Publicize { term, id },
+            Self::Privatize { term, id } => Action::Privatize { term, id },
+            Self::Settings {
+                agent_writes,
+                learn_from_chats,
+            } => Action::Settings {
+                agent_writes: agent_writes
+                    .as_deref()
+                    .and_then(biorouter::security::dictionary_store::store::AgentWrites::parse),
+                learn_from_chats: learn_from_chats.map(|value| value == "on"),
+            },
+            Self::Clear { suggested_only } => Action::Clear { suggested_only },
+        }
+    }
+}
+
 #[derive(Subcommand)]
 enum LocalModelCommand {
     /// List the local model catalog and what is already downloaded
@@ -1829,6 +2082,13 @@ enum Command {
         model: Option<String>,
     },
 
+    /// The personal dictionary dictation spells your words from, kept on this computer
+    #[command(about = "Manage the words dictation spells your way")]
+    Dictionary {
+        #[command(subcommand)]
+        command: DictionaryCommand,
+    },
+
     /// Manage personal knowledge bases (ingest, lint, query)
     #[command(about = "Manage personal knowledge bases", visible_alias = "kb")]
     Knowledge {
@@ -2105,6 +2365,7 @@ fn get_command_name(command: &Option<Command>) -> &'static str {
         Some(Command::Models { .. }) => "models",
         Some(Command::Dictation { .. }) => "dictation",
         Some(Command::Transcribe { .. }) => "transcribe",
+        Some(Command::Dictionary { .. }) => "dictionary",
         Some(Command::Knowledge { .. }) => "knowledge",
         Some(Command::Extension { .. }) => "extension",
         Some(Command::Skill { .. }) => "skill",
@@ -2962,6 +3223,10 @@ async fn handle_extension_subcommand(command: ExtensionCommand) -> Result<()> {
     }
 }
 
+async fn handle_dictionary_subcommand(command: DictionaryCommand) -> Result<()> {
+    crate::commands::dictionary::handle(command.into_action()).await
+}
+
 async fn handle_skill_subcommand(command: SkillCommand) -> Result<()> {
     use crate::commands::skill;
     match command {
@@ -3346,6 +3611,7 @@ async fn dispatch(command: Option<Command>) -> anyhow::Result<()> {
             )
             .await
         }
+        Some(Command::Dictionary { command }) => handle_dictionary_subcommand(command).await,
         Some(Command::Knowledge { command }) => handle_knowledge_subcommand(command).await,
         Some(Command::Extension { command }) => handle_extension_subcommand(command).await,
         Some(Command::Skill { command }) => handle_skill_subcommand(command).await,

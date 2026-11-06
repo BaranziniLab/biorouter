@@ -6317,6 +6317,14 @@ impl Agent {
             crate::security::session_store::SessionStoreInspector,
         ));
 
+        // DD-42: refuse tool reads and writes of the dictionary store,
+        // `<config>/dictionary/`, which holds both tiers' terms. By channel, as the
+        // session store above: a private-capability caller is refused too, and a doc
+        // or a commit message that merely names the path is not.
+        tool_inspection_manager.add_inspector(Box::new(
+            crate::security::dictionary_store::DictionaryStoreInspector,
+        ));
+
         // Show the user what a `kb_delete_base` would destroy, before it does.
         // Inert for every other tool. Active in every mode that runs tools, not
         // just Auto: an `AlwaysAllow` granted for one scratch base would

@@ -10,7 +10,8 @@
 //! ([`audio`]) and the [`supervisor`] that spawns, times and restarts the worker. The
 //! speech model catalog ([`catalog`]), the installer ([`models`]) and the suitability
 //! rules ([`hardware`]) build everywhere too, and so does [`recognize`], which decides
-//! what of the engine's output is speech.
+//! what of the engine's output is speech. So does the personal dictionary's [`store`],
+//! which the daemon, the CLI and the agent's capability share under one lock.
 //!
 //! A leaf crate: no Biorouter dependency, and every path is an argument.
 
@@ -24,6 +25,7 @@ pub mod hardware;
 pub mod models;
 pub mod protocol;
 pub mod recognize;
+pub mod store;
 pub mod supervisor;
 /// The worker's marker, roles and exit codes. Present in every build, so both `main()`
 /// functions can call `worker::run_if_invoked()` and the supervisor can read the exit

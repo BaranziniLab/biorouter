@@ -50,7 +50,14 @@ reqwest = { version = "0.12.9", default-features = false, features = ["rustls-tl
 # The same rustls reqwest already links; no feature of its own.
 rustls = { version = "0.23", default-features = false }
 fs2 = "0.4.3"
-chrono = { version = "0.4.38", default-features = false, features = ["clock", "std"] }
+# `serde` for the dictionary store's timestamps (PR-13), written as RFC 3339.
+chrono = { version = "0.4.38", default-features = false, features = ["clock", "std", "serde"] }
+# The dictionary store (PR-13, DD-33 to DD-43): terms are NFC before they are compared,
+# entry ids are `dct_` plus a random UUID v4, and `import` reads CSV and TSV with quoted
+# fields. All three are already in Cargo.lock.
+unicode-normalization = "0.1.25"
+uuid = { version = "1.19.0", features = ["v4"] }
+csv = "1.3"
 
 # `sysctlbyname` for the Rosetta and macOS version checks of the CPU gate,
 # `dup`/`dup2` so the self test's one stdout line and the worker's frames cannot
@@ -63,8 +70,10 @@ libc = "0.2"
 # crash report holding its memory (`SetErrorMode`, `WerSetFlags`; P-1).
 [target.'cfg(windows)'.dependencies]
 # Total memory and physical cores for the suitability rules, and the elevation that
-# `install --system` needs (PR-11).
-windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Diagnostics_Debug", "Win32_System_ErrorReporting", "Win32_Security", "Win32_System_ProcessStatus", "Win32_System_SystemInformation", "Win32_System_Threading"] }
+# `install --system` needs (PR-11). `Win32_Storage_FileSystem` for the dictionary store's
+# cache key (PR-13): `GetFileInformationByHandle` gives the NTFS file index, which a
+# write's rename changes, where the creation time does not.
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Storage_FileSystem", "Win32_System_Diagnostics_Debug", "Win32_System_ErrorReporting", "Win32_Security", "Win32_System_ProcessStatus", "Win32_System_SystemInformation", "Win32_System_Threading"] }
 
 [dev-dependencies]
 tempfile = "3"

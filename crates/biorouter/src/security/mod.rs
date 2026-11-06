@@ -1,4 +1,5 @@
 pub mod computer_use;
+pub mod dictionary_store;
 pub mod global_memory;
 pub mod knowledge_delete;
 pub mod patterns;
@@ -86,7 +87,8 @@ pub(crate) fn is_command_argument_key(key: &str) -> bool {
 /// doors bypass the inspector chain?", and two copies of the answer are a gap in
 /// exactly one of them, silently. [`global_memory`] refuses machine-wide memory
 /// operations at these doors; [`session_store`] refuses reads of the transcript
-/// database at them. A third boundary added to the tree is one row here and a
+/// database at them; [`dictionary_store`] refuses the dictionary's two writing tools
+/// and its store's path. A third boundary added to the tree is one row here and a
 /// red build at every gate that has not decided about it, rather than a hole in
 /// whichever gate nobody remembered.
 ///

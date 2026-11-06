@@ -176,6 +176,33 @@ fn agent_drafter_store_honours_the_sandbox_root() {
     });
 }
 
+/// The dictionary store (DD-33, PR-13) is `<config>/dictionary`, resolved by the core
+/// and handed to the leaf crate, which takes every path as an argument. Under a sandbox
+/// root it must land inside the sandbox, or an isolated run would read and write the
+/// person's real terms.
+#[test]
+#[serial]
+fn dictionary_store_honours_the_sandbox_root() {
+    with_path_root(Some("/tmp/br-path-agreement"), || {
+        assert_eq!(
+            biorouter::security::dictionary_store::dictionary_dir(),
+            PathBuf::from("/tmp/br-path-agreement/config/dictionary"),
+            "the dictionary must be read from the sandbox, not the user's global store"
+        );
+        assert_eq!(
+            biorouter::security::dictionary_store::open_store().store_path(),
+            PathBuf::from("/tmp/br-path-agreement/config/dictionary/dictionary.json")
+        );
+    });
+    with_path_root(None, || {
+        assert_eq!(
+            biorouter::security::dictionary_store::dictionary_dir(),
+            Paths::config_dir().join("dictionary"),
+            "without a root the store sits in the platform's configuration folder"
+        );
+    });
+}
+
 #[test]
 #[serial]
 fn knowledge_store_honours_the_sandbox_root() {
