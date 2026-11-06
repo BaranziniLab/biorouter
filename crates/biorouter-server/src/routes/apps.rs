@@ -148,14 +148,49 @@ const APP_FILE_CSP: &str = "default-src 'none'; script-src 'self'; style-src 'se
 /// differs from the shell's.
 const APP_PAGE_COOP: &str = "noopener-allow-popups";
 
-/// Attach [`APP_FILE_CSP`] (and `nosniff`) to a `dist`/`assets` file response, so
-/// every byte a browser loads for a live app carries the strict policy (the
-/// NOT_FOUND paths deliberately omit it).
+/// The `Permissions-Policy` of every document an app serves: its page (and the
+/// build failure page), its `dist/` and `assets/` files, the figure frame and
+/// the launch bounce. Every `text/html` response in this file sends it; a test
+/// reads this file and fails on an HTML responder of the shapes it recognises
+/// that does not (`every_html_response_in_this_file_denies_the_microphone`).
+///
+/// On `biorouter serve` an app page shares the shell's origin (SD-14), and a
+/// browser grants the microphone, the camera and screen capture to an origin,
+/// not to a page. Without this header, code an agent wrote into an app could
+/// call `getUserMedia` in its own page on the person's grant to the shell and
+/// record without a prompt. With it, Chromium refuses `getUserMedia` and
+/// `getDisplayMedia` in the page and in every frame it holds with
+/// `NotAllowedError`, whatever the origin's grant. The header governs those
+/// documents only; it does not take the grant away from the origin.
+///
+/// ⚠ So it does not close the hole on its own. In Chromium a same-origin popup
+/// the page opens does not inherit this policy: `window.open('about:blank')`,
+/// or any document of this origin served without the header (`/status`, a JSON
+/// route), records on a lasting grant through the popup's `navigator` (measured
+/// in Chrome 157, 2026-11-05). Firefox and Safari ignore `Permissions-Policy`
+/// altogether. SD-16 in `docs/deployment/serve-decisions.md` records both
+/// residuals. No response header closes the `about:blank` case or the Firefox
+/// and Safari one; per app origins close both.
+const APP_PERMISSIONS_POLICY: &str = "microphone=(), camera=(), display-capture=()";
+
+/// The header [`APP_PERMISSIONS_POLICY`] is sent as. `http` has no constant for
+/// it.
+const PERMISSIONS_POLICY: header::HeaderName =
+    header::HeaderName::from_static("permissions-policy");
+
+/// Attach [`APP_FILE_CSP`], [`APP_PERMISSIONS_POLICY`] and `nosniff` to a
+/// `dist`/`assets` file response, so every byte a browser loads for a live app
+/// carries the strict policy, and an `assets/*.html` opened on its own gets no
+/// microphone (the NOT_FOUND paths deliberately omit both).
 fn with_app_file_csp(mut resp: Response) -> Response {
     let headers = resp.headers_mut();
     headers.insert(
         header::CONTENT_SECURITY_POLICY,
         header::HeaderValue::from_static(APP_FILE_CSP),
+    );
+    headers.insert(
+        PERMISSIONS_POLICY,
+        header::HeaderValue::from_static(APP_PERMISSIONS_POLICY),
     );
     headers.insert(
         header::X_CONTENT_TYPE_OPTIONS,
@@ -178,8 +213,9 @@ fn app_page_csp(extra: &[String]) -> String {
 }
 
 /// An app page (or its build-failure page) with every header an app page
-/// carries: its policy, its opener policy, `nosniff`, and `no-store` — the page
-/// embeds this daemon run's socket token, which nothing should keep.
+/// carries: its policy, its opener policy, its [`APP_PERMISSIONS_POLICY`],
+/// `nosniff`, and `no-store`, because the page embeds this daemon run's socket
+/// token, which nothing should keep.
 fn app_page_response(status: StatusCode, html: String, csp: &str) -> Response {
     let policy = header::HeaderValue::from_str(csp)
         .unwrap_or_else(|_| header::HeaderValue::from_static(APP_CSP));
@@ -194,6 +230,10 @@ fn app_page_response(status: StatusCode, html: String, csp: &str) -> Response {
     headers.insert(
         header::HeaderName::from_static("cross-origin-opener-policy"),
         header::HeaderValue::from_static(APP_PAGE_COOP),
+    );
+    headers.insert(
+        PERMISSIONS_POLICY,
+        header::HeaderValue::from_static(APP_PERMISSIONS_POLICY),
     );
     headers.insert(
         header::X_CONTENT_TYPE_OPTIONS,
@@ -425,7 +465,8 @@ struct PageQuery {
 /// only this account can read and open that file, and a `file:` page is another
 /// site. The navigation this page starts is same-site, so the cookie goes with
 /// it. A meta refresh rather than a script, because the page's policy allows no
-/// script at all.
+/// script at all. It is a document of the app's origin, so it carries
+/// [`APP_PERMISSIONS_POLICY`] like the page it moves on to.
 fn launch_bounce(cookie: Option<String>) -> Response {
     // `./` rather than `/apps/{id}/`: the link is redeemed at the page's own
     // address, `/apps/{id}/?t=…`, so `./` is that page, and it stays so under a
@@ -444,7 +485,8 @@ fn launch_bounce(cookie: Option<String>) -> Response {
             header::CONTENT_SECURITY_POLICY,
             "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; \
              form-action 'none'; frame-ancestors 'none'",
-        );
+        )
+        .header(PERMISSIONS_POLICY, APP_PERMISSIONS_POLICY);
     if let Some(cookie) = cookie {
         bounce = bounce.header(header::SET_COOKIE, cookie);
     }
@@ -5604,7 +5646,9 @@ if(window.parent!==window)window.parent.postMessage({type:\"biorouter-figure-rea
 /// Visualiser figure in (`renderFigure` in `templates/sdk.ts`), served under its
 /// own policy, [`FIGURE_FRAME_CSP`]. The same for every app and holding nothing
 /// of any; it sits under `/apps/{id}/` so the app's access cookie admits it
-/// (`auth::is_app_browser_get`) and its origin is the app page's.
+/// (`auth::is_app_browser_get`) and its origin is the app page's. Framed by an
+/// app page it inherits that page's [`APP_PERMISSIONS_POLICY`]; it carries the
+/// header itself for the case where something opens it at the top level.
 async fn figure_frame(Path(id): Path<String>) -> Response {
     if validate_artifact_id(&id).is_err() {
         return (StatusCode::BAD_REQUEST, "invalid app id").into_response();
@@ -5613,6 +5657,7 @@ async fn figure_frame(Path(id): Path<String>) -> Response {
         .status(StatusCode::OK)
         .header(header::CONTENT_TYPE, "text/html; charset=utf-8")
         .header(header::CONTENT_SECURITY_POLICY, FIGURE_FRAME_CSP)
+        .header(PERMISSIONS_POLICY, APP_PERMISSIONS_POLICY)
         .header(header::X_CONTENT_TYPE_OPTIONS, "nosniff")
         .header(header::REFERRER_POLICY, "no-referrer")
         .header(header::CACHE_CONTROL, "no-store")
@@ -5839,6 +5884,9 @@ mod app_isolation_and_lifecycle_tests {
         assert!(!policy.contains("allow-same-origin"), "{policy}");
         assert_eq!(header(header::CACHE_CONTROL), "no-store");
         assert_eq!(header(header::X_CONTENT_TYPE_OPTIONS), "nosniff");
+        // Opened at the top level, the frame still gets no microphone, camera
+        // or screen capture from the origin's grants (SD-16).
+        assert_eq!(header(PERMISSIONS_POLICY), APP_PERMISSIONS_POLICY);
         let body = body_of(resp).await;
         assert_eq!(body, FIGURE_FRAME_HTML);
         assert!(body.contains("biorouter-figure-ready"));
@@ -9477,6 +9525,222 @@ mod tests {
         );
     }
 
+    /// App pages share the `biorouter serve` shell's origin (SD-14), and a
+    /// browser grants the microphone to an origin. Every document an app serves
+    /// therefore turns the microphone, the camera and screen capture off, so
+    /// code an agent wrote cannot record on the person's grant to the shell
+    /// from the page or any frame it holds (PR-03, DD-79, SD-16; a popup it
+    /// opens is the residual SD-16 records). Pinned verbatim: a looser value
+    /// (`microphone=*`, or `(self)`, which IS the shared origin) would let it.
+    #[test]
+    fn every_app_document_denies_the_microphone_camera_and_screen_capture() {
+        use axum::http::{header, StatusCode};
+        use axum::response::IntoResponse;
+        assert_eq!(
+            super::APP_PERMISSIONS_POLICY,
+            "microphone=(), camera=(), display-capture=()"
+        );
+        assert_eq!(super::PERMISSIONS_POLICY.as_str(), "permissions-policy");
+        let policy = |resp: &axum::response::Response| {
+            resp.headers()
+                .get("permissions-policy")
+                .and_then(|v| v.to_str().ok())
+                .map(str::to_string)
+        };
+        let expected = Some(super::APP_PERMISSIONS_POLICY.to_string());
+
+        // The page, at both statuses it is served with.
+        let page = super::app_page_response(StatusCode::OK, "<html></html>".into(), super::APP_CSP);
+        assert_eq!(policy(&page), expected, "the app page");
+        let failed = super::build_failure_page("t", "error: Could not resolve");
+        assert_eq!(failed.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(policy(&failed), expected, "the build failure page");
+
+        // A `dist/` or `assets/` file, HTML or not.
+        for mime in ["text/html; charset=utf-8", "text/javascript; charset=utf-8"] {
+            let file = super::with_app_file_csp(
+                ([(header::CONTENT_TYPE, mime)], vec![1u8, 2, 3]).into_response(),
+            );
+            assert_eq!(policy(&file), expected, "{mime}");
+        }
+
+        // The launch bounce, whether the link redeemed or not.
+        for cookie in [None, Some("biorouter_app_x=y; HttpOnly".to_string())] {
+            let bounce = super::launch_bounce(cookie.clone());
+            assert_eq!(bounce.status(), StatusCode::OK);
+            assert_eq!(policy(&bounce), expected, "{cookie:?}");
+        }
+    }
+
+    /// The HTML responders in `production` (Rust source), each with whether it
+    /// sends [`super::APP_PERMISSIONS_POLICY`]. What it scans: each item that
+    /// starts at column 0, a function of any visibility or an `impl` block
+    /// (whose methods count as one unit), from that line to the `}` at column 0
+    /// that closes it, with comment lines dropped so prose naming a header
+    /// counts for nothing. An item nested inside another one is scanned as
+    /// part of the item around it. An item is an HTML responder when its code
+    /// names `text/html`, axum's `Html(` or `Html::`, or `mime_for(`; it sends
+    /// the policy when it names the constant or calls `with_app_file_csp` or
+    /// `app_page_response`.
+    fn html_responders(production: &str) -> Vec<(String, bool)> {
+        let item_name = |line: &str| -> Option<String> {
+            if line.starts_with("impl ") || line.starts_with("impl<") {
+                return Some(line.trim_end_matches(['{', ' ']).to_string());
+            }
+            // Any visibility (`pub`, `pub(crate)`, `pub(super)`, `pub(in …)`),
+            // then any qualifiers, then `fn`.
+            let mut rest = line;
+            if let Some(after) = rest.strip_prefix("pub(") {
+                rest = after.split_once(") ")?.1;
+            } else if let Some(after) = rest.strip_prefix("pub ") {
+                rest = after;
+            }
+            for qualifier in ["const ", "async ", "unsafe "] {
+                if let Some(after) = rest.strip_prefix(qualifier) {
+                    rest = after;
+                }
+            }
+            let rest = rest.strip_prefix("fn ")?;
+            Some(
+                rest.chars()
+                    .take_while(|c| c.is_alphanumeric() || *c == '_')
+                    .collect(),
+            )
+        };
+        let mut functions: Vec<(String, String)> = Vec::new();
+        let mut open: Option<(String, String)> = None;
+        for line in production.lines() {
+            if let Some(name) = item_name(line) {
+                // An item written on one line never reaches a `}` of its own;
+                // keep it rather than lose it to the next one.
+                if let Some(done) = open.take() {
+                    functions.push(done);
+                }
+                open = Some((name, String::new()));
+            }
+            if let Some((_, body)) = open.as_mut() {
+                if !line.trim_start().starts_with("//") {
+                    body.push_str(line);
+                    body.push('\n');
+                }
+            }
+            if line == "}" {
+                if let Some(done) = open.take() {
+                    functions.push(done);
+                }
+            }
+        }
+        if let Some(done) = open.take() {
+            functions.push(done);
+        }
+        // `mime_for` names the type for `serve_file`, which is what answers;
+        // a function that calls it is an HTML responder too. axum's `Html`
+        // sets `text/html` itself, so the literal never appears beside it.
+        functions
+            .into_iter()
+            .filter(|(name, body)| {
+                name != "mime_for"
+                    && (body.contains("text/html")
+                        || body.contains("Html(")
+                        || body.contains("Html::")
+                        || body.contains("mime_for("))
+            })
+            .map(|(name, body)| {
+                let guarded = body.contains("APP_PERMISSIONS_POLICY")
+                    || body.contains("with_app_file_csp(")
+                    || body.contains("app_page_response(");
+                (name, guarded)
+            })
+            .collect()
+    }
+
+    /// The guard behind [`super::APP_PERMISSIONS_POLICY`]: every HTML responder
+    /// [`html_responders`] finds in this file's production code sends the
+    /// policy. A new HTML response of the shapes it recognises that forgets it
+    /// fails here, before it lands on the shell's origin with the person's
+    /// microphone grant.
+    #[test]
+    fn every_html_response_in_this_file_denies_the_microphone() {
+        let src = include_str!("apps.rs");
+        let production = src
+            .split_once(concat!("\n#[cfg(te", "st)]\nmod tests {"))
+            .expect("this file still has a test half to exclude")
+            .0;
+        let responders = html_responders(production);
+        let names: Vec<&str> = responders.iter().map(|(name, _)| name.as_str()).collect();
+        for known in [
+            "app_page_response",
+            "launch_bounce",
+            "serve_file",
+            "figure_frame",
+        ] {
+            assert!(
+                names.contains(&known),
+                "the scan no longer sees `{known}`, so it may see nothing at all: {names:?}"
+            );
+        }
+        for (name, guarded) in &responders {
+            assert!(
+                guarded,
+                "`{name}` answers with HTML on the app origin without \
+                 `APP_PERMISSIONS_POLICY`. On `biorouter serve` that page would share the \
+                 shell's microphone grant (SD-16): send the header, or answer through \
+                 `app_page_response` or `with_app_file_csp`."
+            );
+        }
+    }
+
+    /// The scan sees each shape an HTML responder can take here, so the guard
+    /// above cannot pass by missing one: axum's `Html`, a `pub(super)` or
+    /// `pub(in …)` function, a method inside an `impl` block, and a function
+    /// written on one line. Comments naming the header do not count.
+    #[test]
+    fn the_html_responder_scan_sees_every_shape() {
+        let source = [
+            "async fn html_page() -> Response {",
+            "    Html(\"<p>hi</p>\").into_response()",
+            "}",
+            "pub(super) fn super_page() -> Response {",
+            "    ([(header::CONTENT_TYPE, \"text/html\")], \"x\").into_response()",
+            "}",
+            "pub(in crate::routes) async fn scoped_page() -> Html<String> {",
+            "    Html::from(String::new())",
+            "}",
+            "impl Pages {",
+            "    fn method_page(&self) -> Response {",
+            "        Html(\"<p>m</p>\").into_response()",
+            "    }",
+            "}",
+            "fn one_line() -> Response { Html(\"x\").into_response() }",
+            "fn commented() -> Response {",
+            "    // APP_PERMISSIONS_POLICY is named here only in prose.",
+            "    Html(\"x\").into_response()",
+            "}",
+            "fn guarded() -> Response {",
+            "    let mut r = Html(\"x\").into_response();",
+            "    r.headers_mut().insert(PERMISSIONS_POLICY, HeaderValue::from_static(APP_PERMISSIONS_POLICY));",
+            "    r",
+            "}",
+            "fn json_only() -> Response {",
+            "    Json(1).into_response()",
+            "}",
+        ]
+        .join("\n");
+        let found = html_responders(&source);
+        assert_eq!(
+            found,
+            vec![
+                ("html_page".to_string(), false),
+                ("super_page".to_string(), false),
+                ("scoped_page".to_string(), false),
+                ("impl Pages".to_string(), false),
+                ("one_line".to_string(), false),
+                ("commented".to_string(), false),
+                ("guarded".to_string(), true),
+            ]
+        );
+    }
+
     fn sha256_source(text: &str) -> String {
         use base64::Engine as _;
         use sha2::Digest as _;
@@ -9585,6 +9849,13 @@ mod tests {
                 .get("cross-origin-opener-policy")
                 .and_then(|v| v.to_str().ok()),
             Some(super::APP_PAGE_COOP)
+        );
+        // The page an app's author wrote gets no microphone (SD-16).
+        assert_eq!(
+            headers
+                .get("permissions-policy")
+                .and_then(|v| v.to_str().ok()),
+            Some(super::APP_PERMISSIONS_POLICY)
         );
         assert!(
             !body.contains("dist/app.js"),

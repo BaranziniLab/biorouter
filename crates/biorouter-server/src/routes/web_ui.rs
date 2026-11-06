@@ -408,6 +408,7 @@ async fn index(
         .header(header::CONTENT_SECURITY_POLICY, SHELL_CSP)
         .header(header::X_FRAME_OPTIONS, "DENY")
         .header("cross-origin-opener-policy", "same-origin")
+        .header("permissions-policy", SHELL_PERMISSIONS_POLICY)
         .body(Body::from(with_base(&ui.index_html, &mount)))
         .expect("valid html response")
 }
@@ -480,6 +481,21 @@ fn with_base(shell: &str, mount: &str) -> String {
 /// other. The interface still opens an app in a new tab: the tab is opened
 /// blank, sent to the app, and cut off from the shell (`openAppInThisBrowser`).
 const SHELL_CSP: &str = "frame-ancestors 'none'";
+
+/// The shell's `Permissions-Policy`: the microphone for the shell's own
+/// document, and for no frame of another origin.
+///
+/// It is the browser's default made explicit, and it is half of a pair. Every
+/// document an Agent Drafter app serves on this origin sends
+/// `microphone=(), camera=(), display-capture=()` (`routes::apps`,
+/// `APP_PERMISSIONS_POLICY`), because a browser grants the microphone to an
+/// origin, and the shell and every app share one (SD-14). In Chromium, an app
+/// page and the frames it holds therefore cannot use the grant the person
+/// gives the shell for dictation. The grant still belongs to the origin: a
+/// same-origin popup an app page opens does not inherit the app's policy and
+/// can record on a lasting grant, and Firefox and Safari ignore the header.
+/// SD-16 in `docs/deployment/serve-decisions.md` records both residuals.
+const SHELL_PERMISSIONS_POLICY: &str = "microphone=(self)";
 
 fn insecure_address() -> Response<Body> {
     (
@@ -1456,5 +1472,33 @@ mod tests {
         assert!(value("content-security-policy").contains("frame-ancestors 'none'"));
         assert_eq!(value("x-frame-options"), "DENY");
         assert_eq!(value("cross-origin-opener-policy"), "same-origin");
+    }
+
+    /// The shell may use the microphone, for dictation, and no frame of
+    /// another origin may. App pages on the same origin turn it off for
+    /// themselves and their frames (`routes::apps`); a popup they open does
+    /// not inherit that, which is the residual SD-16 records. Pinned verbatim,
+    /// and on the shell itself, at the root and on a deep link that falls
+    /// through to it.
+    #[tokio::test]
+    async fn the_shell_alone_declares_the_microphone() {
+        assert_eq!(SHELL_PERMISSIONS_POLICY, "microphone=(self)");
+        for path in ["/", "/sessions/abc"] {
+            let res = index(
+                State(ui_with(Some("tok"))),
+                cookie_request(Some("navigate"), Some("document")),
+                Query(IndexQuery { t: None }),
+                path.parse().unwrap(),
+            )
+            .await;
+            assert_eq!(res.status(), StatusCode::OK, "{path}");
+            assert_eq!(
+                res.headers()
+                    .get("permissions-policy")
+                    .and_then(|v| v.to_str().ok()),
+                Some("microphone=(self)"),
+                "{path}"
+            );
+        }
     }
 }
