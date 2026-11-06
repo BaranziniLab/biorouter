@@ -114,9 +114,16 @@ fn jfk() -> Arc<[i16]> {
 ///
 /// A `--version` pays only the first. So the tests that time the worker, or start
 /// several at once, first run one engine worker to its `hello` with stdin at end of
-/// file, and wait for its exit: both costs are paid before any test starts a clock, and
-/// the compile happens once, not once per test running in parallel, each against the
-/// 60 s `hello` deadline.
+/// file, and wait for its exit. That pays the exec check, and on the maintainer's Mac it
+/// leaves the shader library in the cache for every later worker: for a debug build whose
+/// shaders were not cached yet, the first such run took 3.2 s and the next two 0.18 s and
+/// 0.14 s (2026-11-06, M4 Max). On the runner it does not always: in rust.yml run
+/// 42271278739 the run to that first `hello` took about 16 s, and a worker started right
+/// after it, beside two others, still took 20.0 s from its spawn to a refused `load`,
+/// while workers started about 45 s later reached `hello` within about 0.2 s. It still
+/// keeps the first compile from running in every parallel test at once against the 60 s
+/// `hello` deadline, but no clock here may include a worker's start on Apple Silicon: the
+/// corrupt header test times from `hello`.
 fn first_worker_done() {
     static ONCE: std::sync::Once = std::sync::Once::new();
     ONCE.call_once(|| {
@@ -212,6 +219,14 @@ fn corrupt_model(dir: &Path) -> (PathBuf, u64) {
     (model, bytes.len() as u64)
 }
 
+/// The 2 s bound is on the refusal: from the moment the worker can take a `load` (its
+/// `hello`) to the `error` that answers it. The header is read and refused in Rust before
+/// any ggml call, so nothing in that span depends on the machine's Metal cache. The
+/// worker's start before `hello` is held to the supervisor's 60 s `hello` deadline; on
+/// Apple Silicon it includes the shader library compile whenever the per user Metal cache
+/// lacks it, which took 16 to 46 s on GitHub's runner (see [`first_worker_done`]). Where
+/// a worker's start compiles no shaders, the whole span from the spawn to the refusal is
+/// held to the same 2 s.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_corrupt_model_header_is_refused_within_2_s() {
     if !ENGINE_COMPILED {
@@ -227,14 +242,28 @@ async fn a_corrupt_model_header_is_refused_within_2_s() {
     };
     first_worker_done();
     let supervisor = Supervisor::start(spawner(), SupervisorConfig::default());
+    let spawned = Instant::now();
+    supervisor.spawn_ahead();
+    wait_for_hello(&supervisor).await;
+    let to_hello = spawned.elapsed();
     let started = Instant::now();
     let result = supervisor.prepare(Arc::new(spec)).await;
     let took = started.elapsed();
+    let whole = spawned.elapsed();
     let Err(SupervisorError::ModelLoadFailed(reason)) = result else {
         panic!("{result:?}")
     };
     assert!(reason.starts_with("model could not be loaded"), "{reason}");
-    assert!(took < Duration::from_secs(2), "{took:?}");
+    assert!(
+        took < Duration::from_secs(2),
+        "{took:?} from hello to the refusal ({to_hello:?} from the spawn to hello)"
+    );
+    if !cfg!(all(target_os = "macos", target_arch = "aarch64")) {
+        assert!(
+            whole < Duration::from_secs(2),
+            "{whole:?} from the spawn to the refusal ({to_hello:?} to hello)"
+        );
+    }
 }
 
 /// A frame client over the real worker's pipes.
