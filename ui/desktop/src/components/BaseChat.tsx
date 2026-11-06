@@ -2028,7 +2028,13 @@ function BaseChatContent({
     return submitAndReturnToBottom({ sessionId, submit: heldSubmit }, textValue, attachments);
   };
 
-  const { sessionCosts, modelRows, ledgerSettled } = useCostTracking({ session });
+  // `tokenState` is what moves in a live chat: `session` is the row the chat was
+  // opened with, so keyed on it alone the ledger, and the footer's cost and By
+  // model list, stayed as they were on open until a reload.
+  const { sessionCosts, modelRows, ledgerSettled } = useCostTracking({
+    session,
+    liveCounters: tokenState,
+  });
   // The footer prices this chat's ledger, or its counters when the ledger has no
   // rows; never the counters while the ledger is still to answer, or the cost
   // it shows is withdrawn a moment later (vision V2-R5-5).
