@@ -107,8 +107,15 @@ cross_linux() {
       # assert_glibc_floor is the only thing that would catch it.
       sed -i 's|^deb http://deb.debian.org|# deb http://deb.debian.org|; s|^# deb http://snapshot.debian.org|deb http://snapshot.debian.org|' /etc/apt/sources.list
       printf 'Acquire::Check-Valid-Until \"false\";\n' > /etc/apt/apt.conf.d/99no-check-valid-until
-      dpkg --add-architecture amd64 && apt-get update -q
-      apt-get install -y --no-install-recommends gcc-x86-64-linux-gnu g++-x86-64-linux-gnu \
+      # snapshot.debian.org answers 503 and 504 under load: three dispatched runs of this
+      # job on 2026-11-05 and 2026-11-06 died in apt before compiling anything, while the
+      # same step passed on main in between. apt 2.2 retries a failed file at once, so
+      # each whole command is also retried after a pause that grows by 20 s per attempt.
+      printf 'Acquire::Retries \"3\";\n' > /etc/apt/apt.conf.d/99retries
+      apt_retry() { n=0; until \"\$@\"; do n=\$((n + 1)); [ \$n -ge 6 ] && return 1; echo \"apt failed (attempt \$n), retrying in \$((n * 20)) s\"; sleep \$((n * 20)); done; }
+      dpkg --add-architecture amd64
+      apt_retry apt-get update -q
+      apt_retry apt-get install -y --no-install-recommends gcc-x86-64-linux-gnu g++-x86-64-linux-gnu \
         protobuf-compiler cmake libxcb1-dev:amd64 libbz2-dev:amd64
       export CC_x86_64_unknown_linux_gnu=x86_64-linux-gnu-gcc \
              CXX_x86_64_unknown_linux_gnu=x86_64-linux-gnu-g++ \
